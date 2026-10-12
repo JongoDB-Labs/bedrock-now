@@ -181,6 +181,13 @@ cmd_prices() {
   prices_notes
 }
 
+# config_prices_line -> the "# prices: …" line of litellm/config.yaml (which prices it was rendered with), or empty
+config_prices_line() {
+  local cfg="$STACK_DIR/litellm/config.yaml"
+  [ -r "$cfg" ] || return 0
+  sed -n 's/^# prices: //p' "$cfg" | head -n 1
+}
+
 # reprice_litellm_config — re-renders litellm/config.yaml (enabled models, current prices and .env);
 # 0 = the file changed (LiteLLM must restart to see it), 1 = unchanged or nothing to render yet.
 reprice_litellm_config() {

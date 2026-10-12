@@ -307,6 +307,23 @@ test_cmd_up_updates_open_webui_prices_once() {
   assert_eq "$(grep -v '^phase\|^or-hook' "$TMP/calls" | tr '\n' '|')" "session|banner|or-after-up changed=1|"
 }
 
+test_cmd_up_resyncs_bedrock_when_openrouter_rerendered_with_newer_prices() {
+  # the portal's daily job already wrote new prices (no refresh here); OpenRouter changed in the same up and
+  # re-rendered the config with them (and restarted LiteLLM), so reprice finds nothing — Bedrock descriptions
+  # and tiers must still re-sync, without a second LiteLLM restart
+  _setup; _stub_up
+  mkdir -p "$TMP/litellm"; printf '# GENERATED\n# prices: auto old111\nmodel_list:\n' > "$TMP/litellm/config.yaml"
+  refresh_prices() { PRICES_CHANGED=0; }; reprice_litellm_config() { return 1; }; DC_PS=abc123
+  openrouter_up_hook() { echo or-hook >> "$TMP/calls"; OR_UP_CHANGED=1
+    printf '# GENERATED\n# prices: auto new222\nmodel_list:\n' > "$TMP/litellm/config.yaml"; }
+  cmd_up 2>/dev/null
+  assert_eq "$(grep -v '^phase dc up -d --wait' "$TMP/calls" | tr '\n' '|')" "or-hook|session|banner|hook|or-labels|"
+  # same prices line after the hook: OpenRouter's own after-up only
+  : > "$TMP/calls"
+  cmd_up 2>/dev/null
+  assert_eq "$(grep -v '^phase dc up -d --wait' "$TMP/calls" | tr '\n' '|')" "or-hook|session|banner|or-after-up changed=1|"
+}
+
 test_cmd_costs_names_the_price_source() {
   _setup; _auto 2026-10-10 '# warning: big input: LiteLLM $5 vs AWS $4.4 per 1M tokens (13.6% apart)
 '

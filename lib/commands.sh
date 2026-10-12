@@ -706,7 +706,7 @@ offer_symlink() {
 # --- day-2 commands ---
 
 cmd_up() {
-  local repriced=0 restart=0
+  local repriced=0 restart=0 before
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   check_portal_host "$(portal_host)"
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
@@ -716,7 +716,11 @@ cmd_up() {
   # changed it re-renders (with these prices) and recreates LiteLLM itself, so reprice_litellm_config then finds
   # nothing to change. Otherwise a running LiteLLM is recreated once here, before the rest comes up.
   refresh_prices 12 --no-crosscheck --timeout 20
+  # The prices the running config carries, before OpenRouter's hook: if the hook re-renders with newer prices
+  # (the portal's daily job updated them), Bedrock's descriptions/tiers must re-sync too (repriced, no restart).
+  before="$(config_prices_line)"
   openrouter_up_hook   # optional; refreshes OpenRouter models/prices when a key is set
+  [ "$(config_prices_line)" = "$before" ] || repriced=1
   if reprice_litellm_config; then
     repriced=1
     [ -z "$(dc ps -q --status running litellm 2>/dev/null)" ] || restart=1
