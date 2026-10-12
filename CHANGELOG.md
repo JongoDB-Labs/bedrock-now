@@ -18,7 +18,8 @@ All notable changes to bedrock-now are documented here. The format follows
   LiteLLM as `or/<id>` with their per-token prices (so spend, budgets and `./stack costs` include them),
   labelled in Open WebUI in a few batched requests (`… · OpenRouter`, tags `OpenRouter` + `Free`/`Paid` +
   vendor; entries no longer offered are removed) and listed on Home with a provider column and Bedrock / free
-  / paid filters. `./stack costs`, `./stack models`, `./stack openrouter status` and Home show the key's
+  / paid filters. Open WebUI's per-answer cost line prices `or/…` models too (the cost filter's prices
+  now reach the container on stdin, so hundreds of models fit). `./stack costs`, `./stack models`, `./stack openrouter status` and Home show the key's
   usage, limit and free-model requests (credits with a management key). The model list is cached in
   `litellm/openrouter-models.{tsv,json}`, fetched at setup and `./stack openrouter refresh`, and by
   `./stack up` when older than 12 hours. The key is never on a command line or sent to the browser; curl

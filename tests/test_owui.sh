@@ -175,10 +175,11 @@ test_cost_filter_version_matches_module() {
 test_merge_valves_keeps_the_admins_settings() {
   _need_python || return 77
   _stub_owui
-  out="$(printf '%s' '{"priority":5,"enabled":false,"prices_json":"{}"}' | owui_merge_valves '{"m":{"name":"M"}}')"
+  # stdin: the prices JSON on line 1, then the current valves (never argv: the prices can be hundreds of KB)
+  out="$(printf '%s\n%s' '{"m":{"name":"M"}}' '{"priority":5,"enabled":false,"prices_json":"{}"}' | owui_merge_valves)"
   assert_eq "$out" '{"priority": 5, "enabled": false, "prices_json": "{\"m\":{\"name\":\"M\"}}"}'
-  assert_eq "$(printf '%s' 'null' | owui_merge_valves '{}')" '{"prices_json": "{}"}'
-  assert_eq "$(printf '%s' '{"prices_json":"{}"}' | owui_merge_valves '{}')" ''   # unchanged: no POST
+  assert_eq "$(printf '%s\n%s' '{}' 'null' | owui_merge_valves)" '{"prices_json": "{}"}'
+  assert_eq "$(printf '%s\n%s' '{}' '{"prices_json":"{}"}' | owui_merge_valves)" ''   # unchanged: no POST
 }
 
 # Cost filter stub: a tiny module whose installed copy matches when $REMOTE_CONTENT is its text.

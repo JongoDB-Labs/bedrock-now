@@ -207,6 +207,21 @@ openrouter_owui_models() {
     }'
 }
 
+# openrouter_cost_prices_entries -> ',"or/<id>":{"name":"Llama 3.3 70B Instruct (OpenRouter)","input_cost_per_token":…,
+# "output_cost_per_token":…[,"cache_read_input_token_cost":…][,"cache_creation_input_token_cost":…]}' for every
+# enabled OpenRouter model (one awk pass), appended by cost_prices_json so Open WebUI's per-message cost footer
+# prices them too. Nothing when OpenRouter is off.
+openrouter_cost_prices_entries() {
+  openrouter_enabled || return 0
+  or_selected | awk -F'\t' '{
+    name = $2; if (index(name, ": ")) name = substr(name, index(name, ": ") + 2)
+    o = ",\"input_cost_per_token\":" $4 ",\"output_cost_per_token\":" $5
+    if ($6 != "") o = o ",\"cache_read_input_token_cost\":" $6
+    if ($7 != "") o = o ",\"cache_creation_input_token_cost\":" $7
+    printf ",\"or/%s\":{\"name\":\"%s (OpenRouter)\"%s}", $1, name, o
+  }'
+}
+
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
 # "---existing---" line, then GET /api/v1/models/base JSON. stdout: "IMPORT <json>" lines (POST
 # /api/v1/models/import bodies, ≤100 models each: new entries and changed ones as complete objects),

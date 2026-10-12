@@ -228,6 +228,8 @@ cost_prices_json() {
     IFS=, read -r -a alias_list <<< "$aliases"
     for a in ${alias_list[@]+"${alias_list[@]}"}; do [ -z "$a" ] || out="$out,\"$a\":$entry"; done
   done 3< <(catalog_rows)
+  # Optional OpenRouter models ("or/<id>", lib/openrouter.sh): nothing unless OpenRouter is on.
+  ! declare -F openrouter_cost_prices_entries >/dev/null || out="$out$(openrouter_cost_prices_entries)"
   printf '{%s}\n' "${out#,}"
 }
 
@@ -252,16 +254,18 @@ print(json.dumps({"id": sys.argv[1], "name": "Bedrock cost", "content": sys.stdi
     "$COST_FILTER_ID" "$1"
 }
 
-# owui_merge_valves PRICES_JSON < current valves JSON (or null) -> valves with only prices_json replaced
-# (the admin's enabled/priority stay), or nothing when nothing changed.
+# owui_merge_valves < "PRICES_JSON<newline>current valves JSON (or null)" -> valves with only prices_json replaced
+# (the admin's enabled/priority stay), or nothing when nothing changed. Both arrive on stdin, never argv: with
+# OpenRouter on, the prices are hundreds of KB, beyond the per-argument limit of `docker exec`'s execve.
 owui_merge_valves() {
   # shellcheck disable=SC2016  # Python source, not shell
   _owui_py 'import json, sys
-cur = json.load(sys.stdin)
+prices, _, rest = sys.stdin.read().partition("\n")
+cur = json.loads(rest)
 v = dict(cur) if isinstance(cur, dict) else {}
-v["prices_json"] = sys.argv[1]
+v["prices_json"] = prices
 if v != cur:
-    print(json.dumps(v))' "$1"
+    print(json.dumps(v))'
 }
 
 # owui_install_cost_filter — installs the "Bedrock cost" filter and keeps its code and prices current.
@@ -302,7 +306,7 @@ owui_install_cost_filter() {
     set_env OWUI_COST_FILTER_INSTALLED true
   fi
   code="$(_owui_get "/api/v1/functions/id/$COST_FILTER_ID/valves" "$tmp")"
-  if [ "$code" != 200 ] || ! merged="$(owui_merge_valves "$(cost_prices_json)" < "$tmp" 2>/dev/null)"; then
+  if [ "$code" != 200 ] || ! merged="$({ cost_prices_json; cat "$tmp"; } | owui_merge_valves 2>/dev/null)"; then
     rm -f "$tmp"; warn "Open WebUI: could not read the cost filter's settings (HTTP $code) — prices not updated; re-run ./stack setup to retry"; return 0
   fi
   if [ -n "$merged" ]; then

@@ -2,6 +2,7 @@
 # Optional OpenRouter provider: model list parsing, free/paid filtering, LiteLLM render, key checks, hooks.
 # tests/fixtures/openrouter_models.json is a trimmed copy of the public GET /api/v1/models response.
 . "$STACK_DIR/lib/commands.sh"   # also sources lib/openrouter.sh
+. "$STACK_DIR/lib/owui.sh"
 FIXJ="$STACK_DIR/tests/fixtures/openrouter_models.json"
 
 _rows() { or_models_tsv < "$FIXJ" | or_classify; }
@@ -267,6 +268,41 @@ test_owui_sync_after_remove_cleans_up_only_with_marker() {
   openrouter_sync_owui 2>/dev/null
   assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id":"or/a/b"}'
   [ ! -e "$STATE_DIR/openrouter-owui-synced" ]
+}
+
+test_cost_prices_include_openrouter_only_when_on() {
+  _with_cache
+  printf 'big\tchat\tbedrock/x.big\t-\t-\n' > "$TMP/cat.tsv"
+  out="$(CATALOG="$TMP/cat.tsv" PRICES="$STACK_DIR/none.tsv" cost_prices_json)"
+  assert_contains "$out" '"or/meta-llama/llama-3.3-70b-instruct":{"name":"Llama 3.3 70B Instruct (OpenRouter)","input_cost_per_token":0.00000022,"output_cost_per_token":0.0000005,"cache_read_input_token_cost":0.00000011}'
+  assert_contains "$out" '"or/anthropic/claude-haiku-5.5":{"name":"Claude Haiku 5.5 (OpenRouter)","input_cost_per_token":0.0000001,"output_cost_per_token":0.0000005,"cache_read_input_token_cost":0.00000001,"cache_creation_input_token_cost":0.000000125}'
+  assert_contains "$out" '"or/openrouter/free":{"name":"Free Models Router (OpenRouter)","input_cost_per_token":0,"output_cost_per_token":0}'
+  case "$out" in '{'*'}') ;; *) return 1 ;; esac
+  if command -v python3 >/dev/null; then
+    assert_eq "$(printf '%s' "$out" | python3 -c 'import json, sys; print(sum(k.startswith("or/") for k in json.load(sys.stdin)))')" 7
+  fi
+  printf 'OPENROUTER_API_KEY=\n' > "$ENV_FILE"
+  assert_not_contains "$(CATALOG="$TMP/cat.tsv" PRICES="$STACK_DIR/none.tsv" cost_prices_json)" "or/"
+}
+
+test_cost_filter_valves_go_through_stdin() {
+  command -v python3 >/dev/null || { echo "python3 not on the host" >&2; return 77; }
+  _with_cache 'OPENWEBUI_API_KEY=sk-ow
+OWUI_COST_FILTER_INSTALLED=true
+'
+  # ~450 models' prices: far more than one argv string may hold in a real `docker exec`
+  awk 'BEGIN { for (i = 1; i <= 3000; i++) printf "v/m%04d\tModel %d\t\t0.000001\t0.000002\t\t\tpaid\t%d\n", i, i, i }' >> "$TMP/litellm/openrouter-models.tsv"
+  # shellcheck disable=SC2034  # read by the sourced lib functions
+  { printf 'big\tchat\tbedrock/x.big\t-\t-\n' > "$TMP/cat.tsv"; CATALOG="$TMP/cat.tsv"; PRICES="$STACK_DIR/none.tsv"; }
+  COST_FILTER_FILE="$TMP/f.py"; printf 'x = 1\n' > "$COST_FILTER_FILE"
+  _owui_get() { case "$1" in */valves) printf '{"priority":0,"prices_json":"{}"}' > "$2" ;; *) printf '{"content":"x = 1\\n","is_active":true,"is_global":true}' > "$2" ;; esac; echo 200; }
+  _owui_post() { printf '%s %s\n' "$1" "$2" >> "$TMP/posts"; echo 200; }
+  dc() { local a n=0; for a in "$@"; do [ "${#a}" -le "$n" ] || n="${#a}"; done; echo "$n" >> "$TMP/argmax"; shift 3; "$@"; }
+  owui_install_cost_filter 2>/dev/null
+  assert_contains "$(cat "$TMP/posts")" '/valves/update {"priority": 0, "prices_json": "{\"or/anthropic/claude-haiku-5.5\"'
+  assert_contains "$(cat "$TMP/posts")" 'or/v/m3000'
+  # the largest single argument handed to docker exec is the Python source, not the prices
+  [ "$(sort -n "$TMP/argmax" | tail -n 1)" -lt 2000 ]
 }
 
 test_portal_json_counts_and_validity() {

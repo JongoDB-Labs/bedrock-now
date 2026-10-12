@@ -184,7 +184,9 @@ What setup configures in Open WebUI (re-applied on every `./stack setup`; your o
   `≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈ $0.0412`: this answer's cost and the whole
   chat's, from the same prices as `./stack costs` (cached tokens at the cache price). It comes from the
   "Bedrock cost" filter (Admin Panel → Functions), which also strips these lines before the chat goes back to
-  the model, so they never cost tokens. An answer without token usage (e.g. a stopped one) gets no line.
+  the model, so they never cost tokens. With OpenRouter on, `or/…` models get the line too, priced from
+  OpenRouter's per-token prices (an estimate; see *Optional: OpenRouter* for what it leaves out). An answer
+  without token usage (e.g. a stopped one) gets no line.
   After **Continue response** the line prices only the continued part, so the chat total runs slightly low;
   `./stack costs` is always exact.
   Setup installs the filter switched on for all models once; after that it only updates the filter's code
