@@ -48,6 +48,7 @@ case "$cmd" in
     cmd_serve "$@" ;;
   ssh-info) cmd_ssh_info "$@" ;;
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
+  stt) [ ! -f "$ENV_FILE" ] || guard_project; cmd_stt "$@" ;;
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;
 esac

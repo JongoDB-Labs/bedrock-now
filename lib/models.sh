@@ -168,6 +168,8 @@ render_litellm_config() {
   [ "$n" -gt 0 ] || die "no models to render (none of the catalog models are enabled)"
   # Optional OpenRouter models ("or/<id>", lib/openrouter.sh): nothing without OPENROUTER_API_KEY in .env.
   ! declare -F openrouter_yaml >/dev/null || openrouter_yaml
+  # Optional speech-to-text model "stt" (lib/stt.sh): nothing without STT_PROVIDER + STT_API_KEY in .env.
+  ! declare -F stt_yaml >/dev/null || stt_yaml
   printf '\nrouter_settings:\n'
   if [ -n "$aliases_out" ]; then printf '  model_group_alias:\n%s' "$aliases_out"; else printf '  model_group_alias: {}\n'; fi
   cat <<EOT

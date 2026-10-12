@@ -81,6 +81,8 @@ services:
       WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
       # Optional; blank = no OpenRouter models are rendered (lib/openrouter.sh).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Optional speech-to-text provider key (OpenAI or Groq); blank = no "stt" model is rendered (lib/stt.sh).
+      STT_API_KEY: ${STT_API_KEY:-}
     volumes:
       - ./litellm:/app/config:ro,z
     ports:
@@ -153,10 +155,17 @@ services:
         "chats":false,"notes":false,"channels":false,"skills":false,"tasks":false,"automations":false,
         "calendar":false,"notifications":false,"subagents":false,"memory":false}}
       ENABLE_VERSION_UPDATE_CHECK: "false"
-      # No changelog popup / update toast; voice uses the browser (Web Speech API in, system voices out).
-      DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false,"showUpdateToast":false,"audio":{"stt":{"engine":"web"},"tts":{"engine":""}}}'
-      AUDIO_STT_ENGINE: web                                  # "Web API" (browser); the slim image has no local Whisper
-      AUDIO_TTS_ENGINE: ""                                   # "" = browser voices
+      # No changelog popup / update toast; read-aloud uses the browser's system voices. The microphone follows
+      # AUDIO_STT_ENGINE (no per-user STT default, so turning server speech-to-text on reaches every user).
+      DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false,"showUpdateToast":false,"audio":{"tts":{"engine":""}}}'
+      # Speech-to-text: "web" = the browser's Web Speech API (the slim image has no local Whisper; Call is then
+      # unavailable). Opt-in "openai" (OWUI_STT_ENGINE, set by ./stack stt): OpenAI or Groq through LiteLLM's
+      # "stt" model with Open WebUI's own key, so it counts on that key's budget (lib/stt.sh).
+      AUDIO_STT_ENGINE: ${OWUI_STT_ENGINE:-web}
+      AUDIO_STT_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      AUDIO_STT_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
+      AUDIO_STT_MODEL: stt
+      AUDIO_TTS_ENGINE: ""                                   # "" = browser voices (Call reads answers with them too)
       DEFAULT_PROMPT_SUGGESTIONS: '[{"title":["Summarize a document","attach a file and get the key points"],"content":"Summarize the attached document: the key points first, then anything that needs a decision or follow-up."},{"title":["Explain this code","paste a snippet"],"content":"Explain what this code does, step by step, and point out anything risky or surprising:\n\n"},{"title":["Draft an email","from a few bullet points"],"content":"Draft a short, friendly, professional email from these points:\n- "},{"title":["Compare two options","pros, cons and a recommendation"],"content":"Compare these two options. Give pros and cons of each in a table, then a recommendation with the main reason:\nOption A: \nOption B: "}]'
       ENABLE_COMMUNITY_SHARING: "false"                     # no sharing to openwebui.com
       OFFLINE_MODE: "true"                                  # no Hugging Face downloads, no update check

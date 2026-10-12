@@ -187,12 +187,12 @@ dc() {
     warn "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME in your shell is ignored: this checkout is project '$p' (from .env or the default)"
     _DC_PROJECT_WARNED=1
   fi
-  # Compose lets shell variables beat --env-file: OpenRouter is opt-in via .env only, so an OPENROUTER_* in
-  # your shell never switches it on (or keeps it on after ./stack openrouter remove).
+  # Compose lets shell variables beat --env-file: OpenRouter and speech-to-text are opt-in via .env only, so an
+  # OPENROUTER_* or STT_* in your shell never switches them on (or keeps them on after a remove).
   # (A subshell, not `env -u`: same effect on docker's environment, and tests can still stub docker.)
   # The same for AWS: .env decides the key (or none, with AWS_AUTH=instance-role) and the region, never the shell
   # (./stack warns once per command when your shell's key differs: warn_shell_aws_ignored in lib/host.sh).
-  ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS \
+  ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
     COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@" )
 }

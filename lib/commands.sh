@@ -36,6 +36,8 @@ Usage: ./stack <command> [--yes]
   ssh-info     How to use claude-bedrock from your phone over SSH (Tailscale name, apps, tmux)
   openrouter   Optional OpenRouter models: status | set | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
+  stt          Optional speech-to-text for voice calls (OpenAI or Groq, outside Bedrock):
+               status | set openai|groq [model] | remove   (see README)
   uninstall    Remove containers and ALL data volumes
 
   Commands without a $ note make no Bedrock calls.
@@ -345,6 +347,7 @@ cmd_setup() {
   setup_ports
   setup_secrets
   setup_openrouter   # optional; lib/openrouter.sh
+  setup_stt          # optional; lib/stt.sh
   setup_bringup_and_probe
   setup_keys_and_ui
   write_mcp_config
@@ -547,6 +550,7 @@ setup_keys_and_ui() {
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
   openrouter_sync_owui   # optional; lib/openrouter.sh
+  stt_sync_owui          # optional; lib/stt.sh
   owui_install_cost_filter
   sync_budget_banner
   portal_session_end
@@ -631,6 +635,7 @@ cmd_costs() {
   esac
   rm -f "$tmp"
   openrouter_costs_section
+  stt_costs_section
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   printf 'Alerts at 80%%: set ALERT_WEBHOOK_URL in .env, then ./stack setup (%s)\n' \
@@ -671,6 +676,7 @@ SUMMARY
   Models          ./stack models            (which models your AWS key can use)
 SUMMARY
   openrouter_summary_line
+  stt_summary_line
   printf '\n  All credentials live in .env (mode 600).\n'
 }
 
@@ -760,6 +766,7 @@ cmd_up() {
   # its models changed too; after OpenRouter changes alone, openrouter_after_up.
   if portal_session_start; then
     sync_budget_banner
+    stt_after_up   # lib/stt.sh: hides the speech-to-text model after ./stack stt set while stopped
     if [ "$PRICES_CHANGED" = 1 ] || [ "$repriced" = 1 ]; then
       on_prices_changed
       [ "${OR_UP_CHANGED:-0}" != 1 ] || ! declare -F openrouter_sync_owui >/dev/null || openrouter_sync_owui || true
@@ -1172,6 +1179,7 @@ cmd_update() {
   # from .env, never from this shell (a removed OpenRouter key stays removed).
   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_REGION_NAME -u AWS_REGION \
     -u OPENROUTER_API_KEY -u OPENROUTER_MODELS -u OPENROUTER_MAX_MODELS -u BEDROCK_NOW_OPENROUTER_FROM_ENV \
+    -u STT_PROVIDER -u STT_API_KEY -u STT_MODEL -u BEDROCK_NOW_STT_FROM_ENV \
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
@@ -1236,6 +1244,8 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/lock.sh"
 # Optional OpenRouter provider (setup step, ./stack openrouter, costs/models/summary sections).
 . "$STACK_DIR/lib/openrouter.sh"
+# Optional speech-to-text for Open WebUI's voice calls (setup step, ./stack stt, costs/summary lines).
+. "$STACK_DIR/lib/stt.sh"
 # Image cleanup and disk usage (./stack update, ./stack clean, ./stack status).
 . "$STACK_DIR/lib/images.sh"
 # Installed version, the portal's release check, and the .state folders the portal mounts.

@@ -8,6 +8,15 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
+- **Optional speech-to-text for voice calls** (`./stack stt set openai|groq [model]`, `status`, `remove`; setup
+  asks once). Open WebUI's Call button needs server speech-to-text, which Bedrock does not have; this is an
+  opt-in, documented exception to Bedrock-only: your recorded speech goes to OpenAI (`gpt-4o-mini-transcribe`,
+  $0.003/min, default) or Groq (`whisper-large-v3-turbo`, $0.0007/min). It runs through a hidden LiteLLM model
+  `stt` with Open WebUI's own key, so it counts on the `open-webui` budget and in Home's and `./stack costs`'
+  spend. The key is checked with the provider first, stored in `.env` (600) and passed to LiteLLM only; shell
+  `STT_*` variables are ignored unless you opt in. With it on, the microphone uses it too (dictation then works
+  in Firefox and installed/home-screen apps); calls read answers with the browser's voices. Off (the default),
+  nothing changes. See docs/voice.md.
 - **Precise image cleanup.** `./stack update` records the images this install uses before it changes anything,
   keeps **one** previous version of each image it replaces (so going back needs no download; local builds keep
   theirs as `<project>/portal:previous` and `<project>/shared-mcp:previous`) and, once the new version runs,
