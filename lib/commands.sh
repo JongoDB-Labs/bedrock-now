@@ -1,6 +1,9 @@
 # shellcheck shell=bash
 # ./stack subcommands.
 
+# Long-running services, in the order ./stack status lists them.
+STACK_SERVICES="caddy open-webui litellm rustfs shared-mcp postgres"
+
 cmd_help() {
   cat <<'EOF'
 Usage: ./stack <command> [--yes]
@@ -115,7 +118,8 @@ run_phase() {
 
 image_size_mb() { # rough on-disk size of a pinned image, for the first-run download notice
   case "$1" in
-    *litellm*) echo 1750 ;; *open-webui*) echo 950 ;; *aws-cli*) echo 680 ;; *pgvector*) echo 660 ;; *rustfs*) echo 360 ;; *) echo 300 ;;
+    *litellm*) echo 1750 ;; *open-webui*) echo 950 ;; *aws-cli*) echo 680 ;; *pgvector*) echo 660 ;; *rustfs*) echo 360 ;;
+    *caddy*) echo 90 ;; *) echo 300 ;;
   esac
 }
 
@@ -140,11 +144,11 @@ ensure_images() {
   done
 }
 
-# fix_bind_mount_perms — containers read litellm/ and postgres/init.sql as non-owner users, so a strict
-# umask (077) on clone must not make them unreadable.
+# fix_bind_mount_perms — containers read litellm/, postgres/init.sql, caddy/Caddyfile and catalog/ (the portal)
+# as non-owner users, so a strict umask (077) on clone must not make them unreadable.
 fix_bind_mount_perms() {
-  chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres"
-  chmod 644 "$STACK_DIR/postgres/init.sql"
+  chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
+  chmod 644 "$STACK_DIR/postgres/init.sql" "$STACK_DIR/caddy/Caddyfile" "$STACK_DIR"/catalog/*.tsv
   [ ! -f "$STACK_DIR/litellm/config.yaml" ] || chmod 644 "$STACK_DIR/litellm/config.yaml"
 }
 
@@ -253,6 +257,8 @@ setup_aws_creds() {
 }
 
 setup_ports() {
+  setup_portal_host
+  resolve_portal_port
   resolve_port LITELLM_PORT 4000 litellm 4000
   resolve_port OPENWEBUI_PORT 8080 open-webui 8080
   resolve_port RUSTFS_CONSOLE_PORT 9001 rustfs 9001
@@ -681,16 +687,17 @@ offer_symlink() {
 cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   ensure_images "./stack up"
-  run_phase "bedrock-now" "postgres rustfs litellm open-webui shared-mcp" dc up -d --wait
+  run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
   cmd_status
 }
 cmd_down()   { dc down; }
 cmd_logs()   { dc logs -f --tail=200 "$@"; }
-status_url() { # status_url SERVICE -> where to open it
+status_url() { # status_url SERVICE -> where to open it (browser UIs: through the portal)
   case "$1" in
-    litellm) echo "http://127.0.0.1:$(get_env LITELLM_PORT)/ui" ;;
-    open-webui) echo "http://127.0.0.1:$(get_env OPENWEBUI_PORT)" ;;
-    rustfs) echo "http://127.0.0.1:$(get_env RUSTFS_CONSOLE_PORT)" ;;
+    caddy) echo "$(portal_url)   (portal)" ;;
+    open-webui) portal_url chat ;;
+    litellm) echo "$(portal_url admin)/ui" ;;
+    rustfs) portal_url files ;;
     shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
     *) echo "- (internal only)" ;;
   esac
@@ -702,7 +709,7 @@ status_table() {
   out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
-  for s in postgres rustfs litellm open-webui shared-mcp; do
+  for s in $STACK_SERVICES; do
     row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "\t" $3; exit }')"
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
@@ -723,7 +730,8 @@ cmd_status() {
   if ! printf '%s\n' "$ps" | grep -q '	running	'; then
     printf '\n  The stack is not running — start it with ./stack up\n'
   else
-    printf '\n  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
+    printf '\n  Open %s (one login: PORTAL_PASSWORD in .env)   LiteLLM API: http://127.0.0.1:%s\n' "$(portal_url)" "$(get_env LITELLM_PORT)"
+    printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
   fi
 }
 

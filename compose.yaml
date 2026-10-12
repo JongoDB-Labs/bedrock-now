@@ -168,6 +168,30 @@ services:
       rustfs-init: { condition: service_completed_successfully }
     logging: *logging
 
+  # The only way in for browsers: http://${PORTAL_HOST} and its chat./admin./files. subdomains (caddy/Caddyfile).
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    restart: unless-stopped
+    user: "65534:65534"          # unprivileged: listens on 8080 inside the container
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/data, /config]
+    environment:
+      PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
+    # Directory mount, so a Caddyfile replaced by git (new inode) is seen after a restart.
+    volumes:
+      - ./caddy:/etc/caddy:ro,z
+    ports:
+      - "127.0.0.1:${PORTAL_PORT:-80}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/caddy-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging: *logging
+
+
 volumes:
   pgdata:
   s3data:

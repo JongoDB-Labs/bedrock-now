@@ -6,6 +6,16 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Caddy (2.11.7, pinned by version and digest) is the single way in for browsers: `http://bedrock-now.localhost`
+  (the portal) with `chat.`, `admin.` and `files.` subdomains for Open WebUI, LiteLLM and RustFS. It listens on
+  `127.0.0.1:80` when that port is free and Docker may bind it (not rootless Docker), else on 8800; URLs leave
+  out `:80`. `caddy/Caddyfile` takes everything from the environment and holds no secrets.
+- `PORTAL_HOST` / `PORTAL_PORT` in `.env`. A second copy (`COMPOSE_PROJECT_NAME=bn-dev`) gets
+  `bn-dev.localhost`, so two stacks never share host names or cookies.
+- `./stack status` lists the portal URLs (and the new `caddy` service).
+
 ## [0.1.2] - 2026-10-12
 
 ### Fixed

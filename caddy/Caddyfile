@@ -1,0 +1,80 @@
+# bedrock-now reverse proxy: one login (the portal) in front of every browser UI.
+# Values come from the environment ({$VAR}, set in compose.yaml from .env) — nothing secret lives here.
+#   {$PORTAL_HOST}         portal: login + Home          (default bedrock-now.localhost)
+#   chat.{$PORTAL_HOST}    Open WebUI                    (logged in via the trusted X-Portal-User header)
+#   admin.{$PORTAL_HOST}   LiteLLM admin UI              (frame-blocking headers removed so the portal can embed it)
+#   files.{$PORTAL_HOST}   RustFS console                (Host passed through unchanged: the console signs S3 requests with it)
+# Every host first deletes any client-supplied X-Portal-User, then asks the portal (forward_auth) whether the
+# bn_session cookie is valid; only the portal's answer can set X-Portal-User. Directives inside `route` run in
+# the order written (outside it, Caddy would run request_header AFTER forward_auth).
+{
+	admin off
+	auto_https off
+	persist_config off
+	# Unprivileged listener inside the container; compose publishes it on 127.0.0.1:${PORTAL_PORT}.
+	http_port 8080
+}
+
+(portal_auth) {
+	forward_auth portal:8000 {
+		uri /auth/verify
+		copy_headers X-Portal-User
+	}
+}
+
+# The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it.
+(drop_session_cookie) {
+	header_up Cookie "bn_session=[^;]*;?\s*" ""
+}
+
+http://{$PORTAL_HOST} {
+	route {
+		request_header -X-Portal-User
+		# Caddy's own check endpoint is internal; browsers never need it.
+		respond /auth/verify 404
+		# The login page and what it needs are public; everything else requires a session.
+		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg
+		reverse_proxy @public portal:8000
+		import portal_auth
+		reverse_proxy portal:8000
+	}
+}
+
+http://chat.{$PORTAL_HOST} {
+	route {
+		request_header -X-Portal-User
+		import portal_auth
+		reverse_proxy open-webui:8080 {
+			import drop_session_cookie
+		}
+	}
+}
+
+http://admin.{$PORTAL_HOST} {
+	route {
+		request_header -X-Portal-User
+		import portal_auth
+		reverse_proxy litellm:4000 {
+			import drop_session_cookie
+			# LiteLLM always sends these, which would block the portal's Admin tab (an iframe).
+			header_down -X-Frame-Options
+			header_down -Content-Security-Policy
+		}
+	}
+}
+
+http://files.{$PORTAL_HOST} {
+	route {
+		request_header -X-Portal-User
+		import portal_auth
+		reverse_proxy rustfs:9001 {
+			import drop_session_cookie
+		}
+	}
+}
+
+# Any other Host (a typo, or a DNS-rebinding page pointing its own name at 127.0.0.1) gets nothing.
+http:// {
+	respond /caddy-health 200
+	respond "unknown host" 404
+}

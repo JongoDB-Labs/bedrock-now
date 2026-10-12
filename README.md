@@ -287,7 +287,9 @@ Setup stores the name in that copy's `.env` on its **first** run, so every later
 folder targets the `bn-test` containers, volumes and shared-mcp image, never the main stack's. The name is
 fixed from then on: a `COMPOSE_PROJECT_NAME` left over in your shell never repoints a checkout (`./stack
 setup` refuses and changes nothing; other commands ignore it with a warning). You don't need to set it again
-for later commands in the copy. Ports move automatically because
+for later commands in the copy. The copy's portal gets its own host name, `<name>.localhost` (here
+`http://bn-test.localhost`, with `chat.`, `admin.` and `files.` in front for the apps; `PORTAL_HOST` in `.env`),
+so the two stacks never share browser cookies. Ports move automatically because
 the main stack holds the defaults. `--yes` never touches your `~/.local/bin/claude-bedrock` link; run
 `bin/claude-bedrock` from the copy's folder instead. Remove the copy with `./stack uninstall` inside it.
 
