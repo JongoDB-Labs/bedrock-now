@@ -11,7 +11,8 @@ bedrock-now gives you a private, single-user AI workbench on your own Mac or Lin
 | **shared-mcp**: shared files and knowledge search for Claude Code | http://127.0.0.1:8765/mcp | bearer token, wired up for you |
 | **`claude-bedrock`**: Claude Code, billed to Bedrock | your terminal | none |
 
-`./stack status` always prints the real URLs. Setup moves a port when something else is already using it.
+`./stack status` always prints the real URLs (a SERVICE / STATE / HEALTH / URL table). Setup moves a port when
+something else is already using it and says so in one line, e.g. `port 8080 is in use → using 8083 for Open WebUI`.
 
 ```
  you (browser) ─────────────► Open WebUI ──┐            ┌────────────────────────┐
@@ -48,17 +49,23 @@ git clone <this repo> bedrock-now && cd bedrock-now
 ```
 
 Setup asks for your AWS key (the secret is hidden while you type), region (default `us-east-1`) and an admin
-email. If `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are already exported in your shell, setup asks before
-using them (`--yes` and non-interactive runs use them directly). Temporary credentials (`ASIA…` keys or
+email (default: your `git config user.email`; setup prints which address it used and where it came from). If
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are already exported in your shell, setup asks before using them
+(default Yes for a long-lived `AKIA…` key; `--yes` and non-interactive runs use them directly). Temporary credentials (`ASIA…` keys or
 `AWS_SESSION_TOKEN`) are refused because they expire; use a long-lived IAM user key. It then:
 1. verifies the key with AWS, picks free ports and generates every secret into `.env` (mode 600, never committed);
 2. starts the stack and **probes every model** in `catalog/models.tsv` with your key: a real 1-token request
-   for chat, embedding and rerank models (< $0.01 in total) and a free check for image models. It prints a
-   table of ENABLED/DISABLED with the price and the reason for each model;
-3. creates LiteLLM virtual keys with budgets, wires Open WebUI to LiteLLM and runs a smoke test;
+   for chat, embedding and rerank models (< $0.01 in total, booked on the `setup` key) and a free check for image
+   models. It prints a table of ENABLED/DISABLED with the price and a short reason for each model, and saves
+   it for `./stack models`;
+3. creates LiteLLM virtual keys with budgets, wires Open WebUI to LiteLLM and runs a smoke test (~$0.0001);
 4. offers to link `claude-bedrock` into `~/.local/bin` (interactive runs only; `--yes` never creates or
    replaces that link, and a link to a different checkout is replaced only after you answer `y`). It never
    edits your shell rc files or `~/.claude`.
+
+Setup prints one line per phase (`==> LiteLLM ready (16s)`); on a first run it announces and downloads the
+images first (a few GB). If a service fails to start, it shows the last log lines and the `./stack logs`
+command to run. `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output.
 
 The first setup prints the Open WebUI and LiteLLM admin passwords once. Later runs only point you to
 `OPENWEBUI_ADMIN_PASSWORD` / `LITELLM_UI_PASSWORD` in `.env`.
@@ -70,9 +77,9 @@ and re-checks which models work.
 
 ```bash
 ./stack up | down          # start / stop (data is kept)
-./stack status             # containers + URLs
+./stack status             # services, health + URLs
 ./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp
-./stack test               # end-to-end smoke test
+./stack test               # end-to-end smoke test (~$0.0001, on the setup key)
 ./stack costs              # prices for your models + spend per key
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else
@@ -83,6 +90,8 @@ only, so plain `claude` stays exactly as it was. It takes the same arguments as 
 - Model slots: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks and
   subagents) = `claude-haiku-5-5`. To use a cheaper main model for a session, run
   `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`.
+- `claude-bedrock --help` starts with a short header about the wrapper (models, key, env vars, cost) and then
+  shows Claude Code's own help. `--help` and `--version` print no cost line.
 - Each launch prints one cost line, which `CLAUDE_BEDROCK_QUIET=1` hides:
   `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`
 - Claude Code warns that "claude.ai connectors are disabled". This is expected because the wrapper's auth token
@@ -166,15 +175,17 @@ on Haiku cost about $0.04, and a one-word answer from Opus cost about $0.19. A l
 can cost dollars. Use Haiku or Sonnet for routine work.
 
 **Where to watch spend:**
-- `./stack costs` shows the prices for your enabled models plus spend and budget per key.
+- `./stack costs` shows the prices for your enabled models, spend and budget per key, and the total across all
+  keys for the last 30 days.
 - The `claude-bedrock` launch line shows spend this period.
 - The LiteLLM UI (http://127.0.0.1:4000/ui → **Usage**) breaks spend down by model and day.
 - In Open WebUI, each model's description in the picker shows its price.
 
-**Budgets:** setup creates two LiteLLM virtual keys with a monthly budget each: `claude-code` **$200** and
-`open-webui` **$50**. `./stack costs` shows the reset date per key. When a key reaches its budget, LiteLLM
+**Budgets:** setup creates three LiteLLM virtual keys, each with a monthly budget (resets on the date shown by
+`./stack costs`): `claude-code` **$200**, `open-webui` **$50**, and `setup` **$5**, which pays for the model
+probe and `./stack test` so you can see what setup itself costs. When a key reaches its budget, LiteLLM
 refuses requests on that key until the reset. To change a budget, edit `BUDGET_CLAUDE_CODE` /
-`BUDGET_OPENWEBUI` in `.env` and run `./stack setup`. The reset date stays the same.
+`BUDGET_OPENWEBUI` / `BUDGET_SETUP` in `.env` and run `./stack setup`. The reset date stays the same.
 
 ## Bedrock only
 
@@ -256,7 +267,7 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 
 | Symptom | Fix |
 |---|---|
-| A model shows **DISABLED: not subscribed** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then re-run `./stack setup`. |
+| A model shows **DISABLED: no Marketplace access** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then run `./stack models --recheck`. |
 | "no models are usable with this AWS key" | Same as above: the key has no Bedrock model access, or the region is wrong. |
 | A URL from this README doesn't work | Setup moved a port because something else used it (e.g. Docker Desktop holds 8080). See `./stack status` or `*_PORT` in `.env`. |
 | A setting changed in the Open WebUI admin UI reverts after a restart | This is by design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration, so re-running setup always gives a known state. |
@@ -266,12 +277,14 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
 | Setup can't sign in to Open WebUI | You changed the admin password in the UI. Put the new password in `OPENWEBUI_ADMIN_PASSWORD` in `.env`. |
 | Speech-to-text error in Open WebUI | Expected. See *Bedrock only → Audio*. |
-| Anything else | Run `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
+| A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup` to see all compose output. |
+| Anything else | Run `./stack status` and `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
 
 ## Asking your AWS admin for model access
 
 If the probe shows models as **DISABLED**, send your AWS admin a request like this one. List only the models
-your probe table reports as *not subscribed* or *access denied*, with the Bedrock IDs from `catalog/models.tsv`.
+your probe table (`./stack models`) reports as *no Marketplace access* or *access denied*, with the Bedrock IDs
+from `catalog/models.tsv`.
 
 > Subject: Bedrock model access for bedrock-now
 >
@@ -279,7 +292,7 @@ your probe table reports as *not subscribed* or *access denied*, with the Bedroc
 > you gave me. Could you please:
 >
 > 1. **Enable model access / the AWS Marketplace subscription** in our account for these models, which the
->    setup probe reports as "not subscribed":
+>    setup probe reports as "no Marketplace access":
 >    - `<model name>` (`<Bedrock model ID>`), `<region>`
 >    - (Stability image models are only offered in **us-west-2**.)
 > 2. **Make sure the IAM user has these actions** on the models above:
@@ -291,7 +304,7 @@ your probe table reports as *not subscribed* or *access denied*, with the Bedroc
 >
 > Thanks!
 
-After access changes, re-run `./stack setup` to re-probe the models.
+After access changes, run `./stack models --recheck` (or `./stack setup`) to re-probe the models.
 
 ## Repo layout
 
