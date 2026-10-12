@@ -1,22 +1,38 @@
 # shellcheck shell=bash
-# Optional OpenRouter provider. Off unless OPENROUTER_API_KEY is in .env: without a key nothing here talks to
-# the network and the rendered LiteLLM config is Bedrock only.
+# Optional OpenRouter provider. Off unless a valid OPENROUTER_API_KEY is in .env: without one nothing here talks
+# to the network and the rendered LiteLLM config is Bedrock only. Only .env counts — an OPENROUTER_* variable in
+# your shell is ignored (dc() strips it; setup adopts a shell key only after asking, see setup_openrouter).
 #
 # Data flow: GET /api/v1/models (public) → litellm/openrouter-models.tsv (every eligible model, free/paid) →
 # OPENROUTER_MODELS (all|free|paid|id,id,…) picks the ones rendered into litellm/config.yaml as "or/<id>" and
 # written to litellm/openrouter-models.json for the portal. The key only goes to openrouter.ai, via curl -K -.
+#
+# Hooks for other parts of ./stack:
+#   openrouter_refresh [MAX_AGE_MIN]  re-fetch models/prices (daily price job, setup, ./stack up); sets OR_CHANGED
+#   openrouter_yaml                   LiteLLM model_list entries (render_litellm_config)
+#   openrouter_sync_owui              Open WebUI names/tags/prices, batched (needs a portal session)
+#   openrouter_up_hook / openrouter_after_up   ./stack up, before `compose up` / inside its portal session
 
-OPENROUTER_API="${OPENROUTER_API:-https://openrouter.ai/api/v1}"
+# Tests may point this at another server; users cannot (no OPENROUTER_API override).
+OPENROUTER_API="${BEDROCK_NOW_TEST_OPENROUTER_API:-https://openrouter.ai/api/v1}"
 OPENROUTER_MAX_DEFAULT=1000   # safety cap; OpenRouter lists ~450 text models today
 
 or_cache_tsv() { printf '%s\n' "$STACK_DIR/litellm/openrouter-models.tsv"; }
 or_cache_json() { printf '%s\n' "$STACK_DIR/litellm/openrouter-models.json"; }
-openrouter_enabled() { [ -n "$(get_env OPENROUTER_API_KEY)" ]; }
-or_mode() { local m; m="$(get_env OPENROUTER_MODELS)"; printf '%s\n' "${m:-all}"; }
-or_max() { local m; m="$(get_env OPENROUTER_MAX_MODELS)"; case "$m" in '' | *[!0-9]*) m=$OPENROUTER_MAX_DEFAULT ;; esac; printf '%s\n' "$m"; }
 
 # valid_or_key KEY -> 0 if it looks like an API key we can store and send safely (no quotes/spaces).
 valid_or_key() { case "$1" in '' | *[!A-Za-z0-9_-]*) return 1 ;; esac; }
+
+# openrouter_enabled -> 0 when .env holds a usable key. A malformed key counts as off (or_key_problem says why)
+# and is never handed to curl.
+openrouter_enabled() { valid_or_key "$(get_env OPENROUTER_API_KEY)"; }
+or_key_problem() { # warns when .env has an OPENROUTER_API_KEY that cannot be a real key
+  local k; k="$(get_env OPENROUTER_API_KEY)"
+  [ -z "$k" ] || valid_or_key "$k" || warn "OPENROUTER_API_KEY in .env is not a valid key (letters, digits, - and _ only) — OpenRouter stays off; fix it with ./stack openrouter set"
+}
+or_mode() { local m; m="$(get_env OPENROUTER_MODELS)"; printf '%s\n' "${m:-all}"; }
+or_max() { local m; m="$(get_env OPENROUTER_MAX_MODELS)"; case "$m" in '' | *[!0-9]*) m=$OPENROUTER_MAX_DEFAULT ;; esac; printf '%s\n' "$m"; }
+or_aliases() { [ "$(get_env OPENROUTER_INCLUDE_ALIASES)" = true ] && echo 1 || echo 0; }
 
 # valid_or_mode MODE -> 0 for all|free|paid or a comma list of model ids
 valid_or_mode() { case "$1" in all | free | paid) return 0 ;; '' | *[!A-Za-z0-9._/:~,-]*) return 1 ;; esac; }
@@ -67,18 +83,34 @@ or_models_tsv() {
 
 # or_classify < or_models_tsv -> eligible models: id name context prompt completion cache_read cache_write tier created
 # Eligible = text-only output (no image/audio generation), a known non-negative per-token price ("-1" marks
-# OpenRouter's variable-priced routers), and an id safe to write into YAML/JSON. tier = free when prompt and
-# completion are both 0 (":free" variants and a few others), else paid. Prices in e-notation become plain
+# OpenRouter's variable-priced routers), an id safe to write into YAML/JSON, and not a ":batch" variant (those
+# run only through OpenRouter's asynchronous batch API, not chat completions). tier = free when prompt and
+# completion are both 0 (":free" variants and a few others), else paid. Prices in e-notation become exact plain
 # decimals (YAML 1.1 reads "1e-7" as a string). Names lose quotes/backslashes (they go into JSON unescaped).
+# Only prompt/completion/input_cache_read/input_cache_write are used; README › Optional: OpenRouter lists the rest.
 or_classify() {
-  awk -F'\t' -v OFS='\t' '
+  # Control characters go first, with tr: mawk (Debian's default awk) has no [[:cntrl:]] class.
+  tr -d '\001-\010\013-\037\177' | awk -F'\t' -v OFS='\t' '
     function num(v) { return v ~ /^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/ }
-    function dec(v,  s) { if (v !~ /[eE]/) return v; s = sprintf("%.15f", v); sub(/0+$/, "", s); sub(/\.$/, "", s); return s }
+    # dec: e-notation → plain decimal by moving the point in the digit string (exact; no float rounding)
+    function dec(v,  m, e, x, ip, fp, dg, pt, s, i) {
+      if (v !~ /[eE]/) return v
+      x = match(v, /[eE]/); m = substr(v, 1, x - 1); e = substr(v, x + 1) + 0
+      ip = m; fp = ""; if (index(m, ".")) { ip = substr(m, 1, index(m, ".") - 1); fp = substr(m, index(m, ".") + 1) }
+      dg = ip fp; pt = length(ip) + e
+      if (pt <= 0) { s = "0."; for (i = 0; i < -pt; i++) s = s "0"; s = s dg }
+      else if (pt >= length(dg)) { s = dg; for (i = length(dg); i < pt; i++) s = s "0" }
+      else s = substr(dg, 1, pt) "." substr(dg, pt + 1)
+      sub(/^0+/, "", s); if (s == "" || substr(s, 1, 1) == ".") s = "0" s
+      if (index(s, ".")) { sub(/0+$/, "", s); sub(/\.$/, "", s) }
+      return s
+    }
     $1 !~ /^[A-Za-z0-9~][A-Za-z0-9._:~-]*\/[A-Za-z0-9._\/:~-]+$/ { next }
+    $1 ~ /:batch$/ { next }
     $8 != "text" { next }
     !num($4) || !num($5) { next }
     {
-      name = $2; gsub(/["\\]/, "", name); gsub(/[[:cntrl:]]/, " ", name); gsub(/  +/, " ", name); if (name == "") name = $1
+      name = $2; gsub(/["\\]/, "", name); gsub(/  +/, " ", name); if (name == "") name = $1
       ctx = ($3 ~ /^[0-9]+$/) ? $3 : ""
       rd = num($6) ? dec($6) : ""; wr = num($7) ? dec($7) : ""
       tier = ($4 + 0 == 0 && $5 + 0 == 0) ? "free" : "paid"
@@ -86,27 +118,28 @@ or_classify() {
     }'
 }
 
-# or_select MODE MAX < or_classify rows -> the rows OPENROUTER_MODELS picks, sorted by id.
-# MODE: all | free | paid | comma list of OpenRouter ids (an "or/" prefix is accepted). Over MAX rows, the
-# newest MAX (by OpenRouter's "created") are kept.
+# or_select MODE MAX [ALIASES] < or_classify rows -> the rows OPENROUTER_MODELS picks, sorted by id.
+# MODE: all | free | paid | comma list of OpenRouter ids (an "or/" prefix is accepted). all/free/paid leave out
+# the "~vendor/…-latest" alias entries unless ALIASES=1 (OPENROUTER_INCLUDE_ALIASES=true); a list may name them.
+# Over MAX rows, the newest MAX (by OpenRouter's "created") are kept.
 or_select() {
-  local mode="$1" max="$2"
-  M="$mode" awk -F'\t' '
-    BEGIN { m = ENVIRON["M"]; if (m != "all" && m != "free" && m != "paid") { n = split(m, l, ","); for (i = 1; i <= n; i++) { x = l[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", x); sub(/^or\//, "", x); if (x != "") want[x] = 1 } } }
-    m == "all" || m == $8 || ($1 in want)' |
-    sort -t "$(printf '\t')" -k9,9nr | head -n "$max" | sort -t "$(printf '\t')" -k1,1
+  local mode="$1" max="$2" aliases="${3:-0}"
+  M="$mode" A="$aliases" awk -F'\t' '
+    BEGIN { m = ENVIRON["M"]; if (m != "all" && m != "free" && m != "paid") { n = split(m, l, ","); for (i = 1; i <= n; i++) { x = l[i]; gsub(/^[ \t]+|[ \t]+$/, "", x); sub(/^or\//, "", x); if (x != "") want[x] = 1 } } }
+    ($1 in want) || ((m == "all" || m == $8) && (ENVIRON["A"] == 1 || $1 !~ /^~/))' |
+    sort -t "$(printf '\t')" -k9,9nr | awk -v n="$max" 'NR <= n' | sort -t "$(printf '\t')" -k1,1
 }
 
 # or_missing MODE < or_classify rows -> ids named in a comma-list MODE that OpenRouter does not offer (as text models)
 or_missing() {
   case "$1" in all | free | paid) cat > /dev/null; return 0 ;; esac
   M="$1" awk -F'\t' '{ have[$1] = 1 }
-    END { n = split(ENVIRON["M"], l, ","); for (i = 1; i <= n; i++) { x = l[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", x); sub(/^or\//, "", x); if (x != "" && !(x in have)) print x } }'
+    END { n = split(ENVIRON["M"], l, ","); for (i = 1; i <= n; i++) { x = l[i]; gsub(/^[ \t]+|[ \t]+$/, "", x); sub(/^or\//, "", x); if (x != "" && !(x in have)) print x } }'
 }
 
 # or_cached_rows -> the cached eligible rows (no header), empty if there is no cache
 or_cached_rows() { local f; f="$(or_cache_tsv)"; [ -r "$f" ] || return 0; grep -v '^#' "$f" || true; }
-or_selected() { or_cached_rows | or_select "$(or_mode)" "$(or_max)"; }
+or_selected() { or_cached_rows | or_select "$(or_mode)" "$(or_max)" "$(or_aliases)"; }
 # or_selected_dashed -> or_selected with empty fields as "-" (`read` with IFS=TAB would merge empty fields)
 or_selected_dashed() { or_selected | awk -F'\t' -v OFS='\t' '{ for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print }'; }
 or_fetched_at() { local f; f="$(or_cache_tsv)"; [ -r "$f" ] || return 0; sed -n 's/^# fetched_at: //p' "$f" | head -n 1; }
@@ -151,61 +184,119 @@ or_ctx_label() {
 
 # openrouter_owui_models -> one line per enabled OpenRouter model for Open WebUI (TAB-separated):
 #   id ("or/…")  display name  description  tags (comma-separated: OpenRouter,Free|Paid,<vendor>)
-# Nothing contains quotes or backslashes, so the fields can go into JSON as they are.
+# Nothing contains quotes, backslashes or tabs, so the fields can go into JSON as they are.
+# One awk pass (a per-model shell loop took seconds for ~400 models); same rules as or_price_label,
+# or_ctx_label, or_vendor and or_display_name, which tests compare it against.
 openrouter_owui_models() {
-  local id name ctx p c _rd _wr tier _cr desc ctxl tag
   openrouter_enabled || return 0
-  while IFS=$'\t' read -r id name ctx p c _rd _wr tier _cr; do
-    [ -n "$id" ] || continue
-    desc="OpenRouter · $(or_price_label "$p" "$c")"; ctxl="$(or_ctx_label "$ctx")"; [ -z "$ctxl" ] || desc="$desc · $ctxl"
-    if [ "$tier" = free ]; then tag=Free; desc="$desc · free models may log prompts (see OpenRouter privacy settings)"; else tag=Paid; fi
-    printf 'or/%s\t%s\t%s\tOpenRouter,%s,%s\n' "$id" "$(or_display_name "$name")" "$desc" "$tag" "$(or_vendor "$name" "$id" | tr -d ',')"
-  done < <(or_selected_dashed)
+  or_selected | awk -F'\t' '
+    function money(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
+    function ctxl(c,  v, u) {
+      if (c == "" || c + 0 == 0) return ""
+      if (c >= 1000000) { v = (c % 1048576 == 0) ? c / 1048576 : c / 1000000; u = "M" } else { v = (c % 1024 == 0) ? c / 1024 : c / 1000; u = "K" }
+      return (v == int(v) ? int(v) : sprintf("%.1f", v)) u " context"
+    }
+    {
+      name = $2; vendor = $1; sub(/\/.*/, "", vendor); sub(/^~/, "", vendor)
+      if (index(name, ": ")) { vendor = substr(name, 1, index(name, ": ") - 1); name = substr(name, index(name, ": ") + 2) }
+      gsub(/,/, "", vendor)
+      desc = "OpenRouter · " (($4 + 0 == 0 && $5 + 0 == 0) ? "free" : money($4 * 1000000) " in / " money($5 * 1000000) " out per 1M tokens")
+      if (ctxl($3) != "") desc = desc " · " ctxl($3)
+      if ($8 == "free") { tag = "Free"; desc = desc " · free models may log prompts (see OpenRouter privacy settings)" } else tag = "Paid"
+      printf "or/%s\t%s · OpenRouter\t%s\tOpenRouter,%s,%s\n", $1, name, desc, tag, vendor
+    }'
 }
 
-# or_owui_model_json ID NAME DESCRIPTION TAGS -> Open WebUI ModelForm (public, like owui_model_json) with tags
-or_owui_model_json() {
-  local tags
-  tags="$(printf '%s' "$4" | awk -F, '{ for (i = 1; i <= NF; i++) printf "%s{\"name\":\"%s\"}", (i > 1 ? "," : ""), $i }')"
-  printf '{"id":"%s","name":"%s","base_model_id":null,"meta":{"description":"%s","tags":[%s]},"params":{},"access_grants":[{"principal_type":"user","principal_id":"*","permission":"read"}],"is_active":true}' \
-    "$1" "$2" "$3" "$tags"
-}
+# Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
+# "---existing---" line, then GET /api/v1/models/base JSON. stdout: "IMPORT <json>" lines (POST
+# /api/v1/models/import bodies, ≤100 models each: new entries and changed ones as complete objects),
+# "DELETE <id>" lines (our or/ entries that are no longer offered) and one "UNCHANGED <n>" line.
+# Our entries carry meta.bedrock_now="openrouter"; only those are ever deleted. A user's own name (anything
+# not ending in " · OpenRouter"), extra tags, icon, params, knowledge and access grants are kept.
+# shellcheck disable=SC2016  # Python source, not shell
+OR_OWUI_SYNC_PY='import json, sys
+raw = sys.stdin.read()
+want_txt, _, existing_txt = raw.partition("---existing---\n")
+existing = json.loads(existing_txt or "[]")
+if isinstance(existing, dict):
+    existing = existing.get("items") or existing.get("data") or []
+by_id = {m.get("id"): m for m in existing if isinstance(m, dict)}
+public = [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
+out, wanted, unchanged = [], set(), 0
+for line in want_txt.splitlines():
+    f = line.split("\t")
+    if len(f) != 4:
+        continue
+    mid, name, desc, tags = f
+    wanted.add(mid)
+    tag_list = [{"name": t} for t in tags.split(",") if t]
+    cur = by_id.get(mid)
+    if cur is None:
+        out.append({"id": mid, "name": name, "base_model_id": None, "params": {}, "access_grants": public, "is_active": True,
+                    "meta": {"description": desc, "tags": tag_list, "bedrock_now": "openrouter"}})
+        continue
+    d = json.loads(json.dumps(cur))
+    before = json.dumps(d, sort_keys=True)
+    meta = d["meta"] = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    meta["description"] = desc
+    meta["bedrock_now"] = "openrouter"
+    cn = d.get("name") or ""
+    if cn in ("", mid) or cn.endswith(" · OpenRouter"):
+        d["name"] = name
+    ours = {"OpenRouter", "Free", "Paid"} | {t["name"] for t in tag_list}
+    meta["tags"] = tag_list + [t for t in (meta.get("tags") or []) if isinstance(t, dict) and t.get("name") not in ours]
+    if json.dumps(d, sort_keys=True) == before:
+        unchanged += 1
+    else:
+        out.append(d)
+for i in range(0, len(out), 100):
+    print("IMPORT " + json.dumps({"models": out[i:i + 100]}))
+for m in existing:
+    if not isinstance(m, dict):
+        continue
+    mid, meta = str(m.get("id") or ""), m.get("meta") if isinstance(m.get("meta"), dict) else {}
+    if mid.startswith("or/") and meta.get("bedrock_now") == "openrouter" and mid not in wanted:
+        print("DELETE " + mid)
+print("UNCHANGED %d" % unchanged)'
 
-# or_owui_merge DESCRIPTION TAGS < model JSON -> same JSON, description replaced and missing tags added; the
-# name and every other user setting are kept (runs Python in the open-webui container, like owui_set_description).
-or_owui_merge() {
-  dc exec -T open-webui python3 -c 'import json, sys
-d = json.load(sys.stdin)
-m = d["meta"] = d.get("meta") or {}
-m["description"] = sys.argv[1]
-tags = m.get("tags") or []
-have = {t.get("name") for t in tags if isinstance(t, dict)}
-m["tags"] = tags + [{"name": t} for t in sys.argv[2].split(",") if t and t not in have]
-json.dump(d, sys.stdout)' "$1" "$2"
-}
-
-# openrouter_sync_owui — names, tags (OpenRouter + Free/Paid + vendor) and price descriptions for the enabled
-# OpenRouter models in Open WebUI's picker. Needs a portal session ($PORTAL_JAR). Never fatal.
+# openrouter_sync_owui — names ("… · OpenRouter"), tags (OpenRouter + Free/Paid + vendor) and price descriptions
+# for the enabled OpenRouter models in Open WebUI's picker, in a few requests: one GET of every base-model entry,
+# one Python run in the open-webui container to diff, then POST /api/v1/models/import (≤100 per request) only for
+# new/changed entries, and a delete per entry we created that is no longer offered (also after `remove`).
+# Needs a portal session ($PORTAL_JAR). Never fatal.
 openrouter_sync_owui() {
-  local id name desc tags tmp code body ok=0 bad=0
-  openrouter_enabled || return 0
+  local tmp code plan line n_imp=0 n_del=0 bad=0 unchanged=0 marker="$STATE_DIR/openrouter-owui-synced"
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || return 0
+  # Off: only clean up entries an earlier sync created.
+  openrouter_enabled || [ -e "$marker" ] || return 0
   tmp="$(mktemp)"
-  while IFS=$'\t' read -r id name desc tags; do
-    code="$(portal_curl_auth "$(get_env OPENWEBUI_API_KEY)" chat "/api/v1/models/model?id=$id" -sS -m 30 -o "$tmp" -w '%{http_code}' 2>/dev/null || true)"
-    if [ "$code" = 200 ] && grep -qF "\"description\":\"$desc\"" "$tmp"; then ok=$((ok + 1)); continue; fi
-    if [ "$code" = 200 ]; then
-      if body="$(or_owui_merge "$desc" "$tags" < "$tmp" 2>/dev/null)" && [ -n "$body" ]; then
-        code="$(_owui_post /api/v1/models/model/update "$body" "$tmp")"
-      else code=merge; fi
-    else
-      code="$(_owui_post /api/v1/models/create "$(or_owui_model_json "$id" "$name" "$desc" "$tags")" "$tmp")"
-    fi
-    if [ "$code" = 200 ]; then ok=$((ok + 1)); else bad=$((bad + 1)); fi
-  done < <(openrouter_owui_models)
+  code="$(_owui_get /api/v1/models/base "$tmp")"
+  if [ "$code" != 200 ]; then
+    rm -f "$tmp"; warn "Open WebUI: could not list models (HTTP $code) — OpenRouter names/tags not updated; ./stack openrouter refresh retries"; return 0
+  fi
+  if ! plan="$({ openrouter_owui_models; printf '%s\n' '---existing---'; cat "$tmp"; } | _owui_py "$OR_OWUI_SYNC_PY" 2>/dev/null)"; then
+    rm -f "$tmp"; warn "Open WebUI: could not compare OpenRouter models — names/tags not updated"; return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      "IMPORT "*)
+        code="$(_owui_post /api/v1/models/import "${line#IMPORT }" "$tmp")"
+        if [ "$code" = 200 ]; then n_imp=$((n_imp + $(printf '%s' "$line" | grep -o '"id": "or/' | wc -l))); else bad=$((bad + 1)); fi ;;
+      "DELETE "*)
+        code="$(_owui_post /api/v1/models/model/delete "{\"id\":\"${line#DELETE }\"}" "$tmp")"
+        if [ "$code" = 200 ]; then n_del=$((n_del + 1)); else bad=$((bad + 1)); fi ;;
+      "UNCHANGED "*) unchanged="${line#UNCHANGED }" ;;
+    esac
+  done <<< "$plan"
   rm -f "$tmp"
-  if [ "$bad" -eq 0 ]; then log "Open WebUI model picker shows OpenRouter names, Free/Paid tags and prices ($ok models)"
-  else warn "$bad of $((ok + bad)) OpenRouter model(s) could not be labelled in Open WebUI — they still work; re-run ./stack openrouter refresh to retry"; fi
+  if [ "$bad" -gt 0 ]; then
+    warn "Open WebUI: $bad OpenRouter model update(s) failed — the models still work; ./stack openrouter refresh retries"
+  elif openrouter_enabled; then
+    mkdir -p "$STATE_DIR"; : > "$marker"
+    log "Open WebUI: OpenRouter models named and tagged ($n_imp updated, $unchanged unchanged, $n_del removed)"
+  else
+    rm -f "$marker"; [ "$n_del" -eq 0 ] || log "Open WebUI: removed $n_del OpenRouter model entries"
+  fi
 }
 
 # or_write_portal_json — litellm/openrouter-models.json for the portal's Home: the enabled models with
@@ -230,7 +321,7 @@ or_write_portal_json() {
 or_fetch_models() {
   local out="$1" raw rows n
   raw="$(mktemp)"; rows="$(mktemp)"
-  if ! curl -fsS --connect-timeout 10 -m 60 --max-filesize 20000000 -o "$raw" "$OPENROUTER_API/models" 2>/dev/null; then
+  if ! curl --proto '=https' -fsS --connect-timeout 10 -m 60 --max-filesize 20000000 -o "$raw" "$OPENROUTER_API/models" 2>/dev/null; then
     rm -f "$raw" "$rows"; OR_ERR="could not download the model list from openrouter.ai"; return 1
   fi
   or_models_tsv < "$raw" | or_classify > "$rows"
@@ -242,14 +333,21 @@ or_fetch_models() {
   rm -f "$raw" "$rows"
 }
 
-# openrouter_refresh — re-fetch OpenRouter's models and prices (daily price job, setup, ./stack up). With a key
-# only; failures keep the last cache and only warn. Re-renders litellm/config.yaml when the enabled models or
-# their prices changed (if setup has rendered one) and sets OR_CHANGED=1 — the caller restarts LiteLLM.
+# openrouter_refresh [MAX_AGE_MIN] — PUBLIC HOOK (daily price job, setup, ./stack up, ./stack openrouter refresh):
+# re-fetch OpenRouter's models and prices. With a key only. With MAX_AGE_MIN, a cache younger than that is kept
+# without any network call (./stack up uses 720 = 12 h, so it works offline). Failures keep the last cache and
+# only warn; it never fails. When the enabled models or their prices changed it re-renders litellm/config.yaml
+# (if setup has rendered one) and sets OR_CHANGED=1: the caller then recreates LiteLLM
+# (`dc up -d --no-deps --force-recreate litellm`) and, with a portal session, runs openrouter_sync_owui.
 openrouter_refresh() {
   local f tmp before after
   OR_CHANGED=0; OR_ERR=''
   openrouter_enabled || { rm -f "$(or_cache_json)"; return 0; }
   f="$(or_cache_tsv)"; mkdir -p "$(dirname "$f")"
+  if [ -n "${1:-}" ] && [ -s "$f" ] && [ -n "$(find "$f" -mmin "-$1" 2>/dev/null)" ]; then
+    [ -s "$(or_cache_json)" ] || or_write_portal_json
+    return 0
+  fi
   tmp="$(mktemp "$f.XXXXXX")" || return 0
   if ! or_fetch_models "$tmp"; then
     rm -f "$tmp"
@@ -269,7 +367,8 @@ openrouter_refresh() {
 
 # or_key_check KEY OUTFILE -> HTTP status of GET /api/v1/key with KEY (000 = no answer); KEY via curl -K - only
 or_key_check() {
-  curl_auth "$1" -sS --connect-timeout 10 -m 20 -o "$2" -w '%{http_code}' "$OPENROUTER_API/key" 2>/dev/null || true
+  valid_or_key "$1" || { echo 000; return 0; }
+  curl_auth "$1" --proto '=https' -sS --connect-timeout 10 -m 20 -o "$2" -w '%{http_code}' "$OPENROUTER_API/key" 2>/dev/null || true
 }
 
 # or_validate_key KEY -> 0 if openrouter.ai accepts KEY; otherwise OR_ERR explains why
@@ -291,6 +390,7 @@ or_validate_key() {
 # them, account credits. /api/v1/credits needs a management key; a normal key gets 403 and a pointer instead.
 or_account_lines() {
   local tmp code flat label usage month limit left free fu fl credits used
+  valid_or_key "$1" || { echo "key       not a valid OpenRouter key — ./stack openrouter set to replace it"; return 0; }
   tmp="$(mktemp)"; code="$(or_key_check "$1" "$tmp")"
   if [ "$code" != 200 ]; then
     rm -f "$tmp"
@@ -303,12 +403,14 @@ or_account_lines() {
   month="$(printf '%s\n' "$flat" | or_field data.usage_monthly)"; limit="$(printf '%s\n' "$flat" | or_field data.limit)"
   left="$(printf '%s\n' "$flat" | or_field data.limit_remaining)"; free="$(printf '%s\n' "$flat" | or_field data.is_free_tier)"
   fu="$(printf '%s\n' "$flat" | or_field data.free_model_daily_requests.used)"; fl="$(printf '%s\n' "$flat" | or_field data.free_model_daily_requests.limit)"
+  # An unnamed key's label is a masked copy of the key ("sk-or-v1-0e6...1c4"): never print even that.
+  case "$label" in '' | sk-*) label='unnamed key' ;; esac
   if [ "$free" = true ]; then free='   (free tier: no credits bought yet)'; else free=''; fi
-  printf 'key       %s%s\n' "${label:-unnamed}" "$free"
+  printf 'key       %s%s\n' "$label" "$free"
   if [ -n "$limit" ]; then printf 'usage     %s total, %s this month   (key limit %s, %s left)\n' "$(usd "${usage:-0}")" "$(usd "${month:-0}")" "$(usd "$limit")" "$(usd "${left:-0}")"
   else printf 'usage     %s total, %s this month   (no key limit)\n' "$(usd "${usage:-0}")" "$(usd "${month:-0}")"; fi
   [ -z "$fl" ] || printf 'free      %s of %s free-model requests used today\n' "${fu:-0}" "$fl"
-  code="$(curl_auth "$1" -sS --connect-timeout 10 -m 20 -o "$tmp" -w '%{http_code}' "$OPENROUTER_API/credits" 2>/dev/null || true)"
+  code="$(curl_auth "$1" --proto '=https' -sS --connect-timeout 10 -m 20 -o "$tmp" -w '%{http_code}' "$OPENROUTER_API/credits" 2>/dev/null || true)"
   if [ "$code" = 200 ]; then
     flat="$(or_json_flatten < "$tmp")"
     credits="$(printf '%s\n' "$flat" | or_field data.total_credits)"; used="$(printf '%s\n' "$flat" | or_field data.total_usage)"
@@ -329,6 +431,7 @@ or_counts() {
 
 # openrouter_costs_section — ./stack costs: OpenRouter account and model counts (one line when it is off)
 openrouter_costs_section() {
+  or_key_problem
   printf '\nOpenRouter'
   if ! openrouter_enabled; then printf ': off (Bedrock only) — ./stack openrouter set adds a key\n'; return 0; fi
   printf ' (prompts go to openrouter.ai and the model provider; spend through LiteLLM is in the keys above)\n'
@@ -345,9 +448,9 @@ openrouter_models_section() {
 
 # openrouter_list — every enabled OpenRouter model with tier, price and context
 openrouter_list() {
-  local id name ctx p c _rd _wr tier _cr
+  local id _name ctx p c _rd _wr tier _cr
   printf '  %-52s %-5s %-36s %s\n' MODEL TIER 'PRICE (per 1M tokens)' CONTEXT
-  while IFS=$'\t' read -r id name ctx p c _rd _wr tier _cr; do
+  while IFS=$'\t' read -r id _name ctx p c _rd _wr tier _cr; do
     printf '  %-52s %-5s %-36s %s\n' "or/$id" "$tier" "$(or_price_label "$p" "$c" | sed 's/ per 1M tokens//')" "$(or_ctx_label "$ctx" | sed 's/ context//')"
   done < <(or_selected_dashed)
 }
@@ -358,18 +461,39 @@ openrouter_summary_line() {
   printf '  OpenRouter      %s   (./stack openrouter status)\n' "$(or_counts)"
 }
 
-# setup_openrouter — setup step: asks once (interactive) for an optional key, or takes OPENROUTER_API_KEY from the
-# environment; a key already in .env is kept. Never fatal: a rejected key means Bedrock only, with a warning.
-setup_openrouter() {
-  local key="${OPENROUTER_API_KEY:-}" marker="$STATE_DIR/openrouter-asked"
-  [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; }
-  if [ -z "$key" ] && [ -z "$(get_env OPENROUTER_API_KEY)" ] && [ ! -e "$marker" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
-    log "Optional: OpenRouter adds hundreds of other models (some free) next to Bedrock. Prompts to them go to openrouter.ai."
-    key="$(ask_secret "OpenRouter API key (optional — Enter to skip)")"
-    mkdir -p "$STATE_DIR"; : > "$marker"
-    [ -n "$key" ] || log "no OpenRouter key — Bedrock only (./stack openrouter set adds one later)"
+# _or_env_key_wanted -> 0 if setup may adopt the OPENROUTER_API_KEY from the shell: interactively only after a
+# "y"; non-interactively (--yes) only with BEDROCK_NOW_OPENROUTER_FROM_ENV=1.
+_or_env_key_wanted() {
+  if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+    case "$(ask "found OPENROUTER_API_KEY in your environment — use it for bedrock-now (prompts to or/… models go to openrouter.ai)? [y/N]" "n")" in
+      [Yy]*) return 0 ;; *) return 1 ;;
+    esac
   fi
-  if [ -n "$key" ] && [ "$key" != "$(get_env OPENROUTER_API_KEY)" ]; then
+  [ "${BEDROCK_NOW_OPENROUTER_FROM_ENV:-0}" = 1 ] && return 0
+  log "OPENROUTER_API_KEY in your environment is ignored (OpenRouter is opt-in: ./stack openrouter set, or BEDROCK_NOW_OPENROUTER_FROM_ENV=1)"
+  return 1
+}
+
+# setup_openrouter — setup step. A key already in .env is kept. Otherwise: a key in the shell's environment is
+# adopted only after asking (or with BEDROCK_NOW_OPENROUTER_FROM_ENV=1 when non-interactive), and an interactive
+# setup asks once for an optional key (hidden). Never fatal: a rejected key means Bedrock only, with a warning.
+setup_openrouter() {
+  local key='' marker="$STATE_DIR/openrouter-asked"
+  or_key_problem
+  if [ -z "$(get_env OPENROUTER_API_KEY)" ]; then
+    if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+      if _or_env_key_wanted; then
+        key="$OPENROUTER_API_KEY"
+        [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; }
+      fi
+    elif [ ! -e "$marker" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+      log "Optional: OpenRouter adds hundreds of other models (some free) next to Bedrock. Prompts to them go to openrouter.ai."
+      key="$(ask_secret "OpenRouter API key (optional — Enter to skip)")"
+      [ -n "$key" ] || log "no OpenRouter key — Bedrock only (./stack openrouter set adds one later)"
+    fi
+    if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then mkdir -p "$STATE_DIR"; : > "$marker"; fi
+  fi
+  if [ -n "$key" ]; then
     if or_validate_key "$key"; then set_env OPENROUTER_API_KEY "$key"; log "OpenRouter key accepted and stored in .env"
     else warn "OpenRouter: $OR_ERR — not stored; continuing with Bedrock only"; fi
   fi
@@ -378,14 +502,20 @@ setup_openrouter() {
   log "OpenRouter: $(or_counts) (OPENROUTER_MODELS=$(or_mode))"
 }
 
-# openrouter_up_hook — ./stack up: refresh models/prices; when they changed and LiteLLM is running, recreate it
-# (the following `docker compose up --wait` waits for it). A stopped LiteLLM just starts with the new config.
+# openrouter_up_hook — ./stack up, before `compose up`: refresh models/prices unless the list is < 12 h old; when
+# they changed and LiteLLM is running, recreate it (the following `compose up --wait` waits for it). A stopped
+# LiteLLM just starts with the new config. Remembers the change for openrouter_after_up.
 openrouter_up_hook() {
+  OR_UP_CHANGED=0
   openrouter_enabled || return 0
-  openrouter_refresh
+  openrouter_refresh 720
   [ "$OR_CHANGED" = 1 ] || return 0
+  OR_UP_CHANGED=1
   [ -z "$(dc ps -q litellm 2>/dev/null)" ] || dc up -d --no-deps --force-recreate litellm >/dev/null 2>&1 || warn "could not restart LiteLLM with the new OpenRouter models"
 }
+
+# openrouter_after_up — ./stack up, inside its portal session: relabel Open WebUI when the hook saw changes.
+openrouter_after_up() { [ "${OR_UP_CHANGED:-0}" != 1 ] || openrouter_sync_owui || true; }
 
 # _or_apply — after the key or the model set changed: re-render, recreate LiteLLM and the portal (their
 # OPENROUTER_API_KEY changed) and label the models in Open WebUI. Before the first setup, nothing to apply.
@@ -407,6 +537,7 @@ cmd_openrouter() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   case "${1:-status}" in
     set)
+      # An explicit command: here OPENROUTER_API_KEY from the environment is the documented non-interactive input.
       key="${OPENROUTER_API_KEY:-}"
       [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(ask_secret "OpenRouter API key (hidden)")"; } ||
         die "no key: export OPENROUTER_API_KEY or run this in a terminal"
@@ -419,7 +550,7 @@ cmd_openrouter() {
       log "OpenRouter: $(or_counts) (OPENROUTER_MODELS=$(or_mode))"
       _or_apply ;;
     remove)
-      openrouter_enabled || { log "no OpenRouter key in .env — nothing to remove"; return 0; }
+      [ -n "$(get_env OPENROUTER_API_KEY)" ] || { log "no OpenRouter key in .env — nothing to remove"; return 0; }
       unset_env OPENROUTER_API_KEY
       rm -f "$(or_cache_tsv)" "$(or_cache_json)"
       log "OpenRouter key removed from .env — Bedrock only (revoke the key at https://openrouter.ai/settings/keys if you no longer need it)"
@@ -433,6 +564,7 @@ cmd_openrouter() {
       log "OpenRouter: $(or_counts) (OPENROUTER_MODELS=$2)"
       _or_apply ;;
     refresh)
+      or_key_problem
       openrouter_enabled || die "no OpenRouter key — ./stack openrouter set adds one"
       openrouter_refresh
       log "OpenRouter: $(or_counts) (list as of $(or_fetched_at))"
@@ -442,6 +574,7 @@ cmd_openrouter() {
       [ -s "$(or_cache_tsv)" ] || die "no model list yet — ./stack openrouter refresh"
       openrouter_list ;;
     status)
+      or_key_problem
       if ! openrouter_enabled; then
         printf 'OpenRouter: off — Bedrock only. ./stack openrouter set adds a key (see README › Optional: OpenRouter).\n'; return 0
       fi

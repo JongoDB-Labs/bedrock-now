@@ -8,17 +8,21 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
-- Optional OpenRouter provider (off without a key; README › Optional: OpenRouter). Setup asks once for an
-  `OPENROUTER_API_KEY` (hidden; Enter skips; non-interactive: the environment variable), checks it with
-  OpenRouter and stores it in `.env`; `./stack openrouter set|remove|status|refresh|list` and
-  `./stack openrouter models all|free|paid|<ids>` (`OPENROUTER_MODELS`) manage it later. OpenRouter's text
-  models are rendered into LiteLLM as `or/<id>` with their per-token prices (so spend, budgets and
-  `./stack costs` include them), labelled in Open WebUI (`… · OpenRouter`, tags `OpenRouter` + `Free`/`Paid`
-  + vendor) and listed on Home with a provider column and Bedrock / free / paid filters. `./stack costs`,
-  `./stack models`, `./stack openrouter status` and Home show the key's usage, limit and free-model requests
-  (credits with a management key). The model list is cached in `litellm/openrouter-models.{tsv,json}` and
-  refreshed at setup, `./stack up` and `./stack openrouter refresh`. The key is never on a command line or
-  sent to the browser.
+- Optional OpenRouter provider (off without a key; README › Optional: OpenRouter). An interactive setup asks
+  once for an `OPENROUTER_API_KEY` (hidden; Enter skips), checks it with OpenRouter and stores it in `.env`;
+  `./stack openrouter set|remove|status|refresh|list` and `./stack openrouter models all|free|paid|<ids>`
+  (`OPENROUTER_MODELS`) manage it later. Only `.env` counts: a key in your shell is ignored by Docker Compose
+  calls and `./stack update`, and setup adopts it only after asking (or with
+  `BEDROCK_NOW_OPENROUTER_FROM_ENV=1` under `--yes`). OpenRouter's text models (no `:batch` variants, no
+  variable-priced routers; `~…-latest` aliases only with `OPENROUTER_INCLUDE_ALIASES=true`) are rendered into
+  LiteLLM as `or/<id>` with their per-token prices (so spend, budgets and `./stack costs` include them),
+  labelled in Open WebUI in a few batched requests (`… · OpenRouter`, tags `OpenRouter` + `Free`/`Paid` +
+  vendor; entries no longer offered are removed) and listed on Home with a provider column and Bedrock / free
+  / paid filters. `./stack costs`, `./stack models`, `./stack openrouter status` and Home show the key's
+  usage, limit and free-model requests (credits with a management key). The model list is cached in
+  `litellm/openrouter-models.{tsv,json}`, fetched at setup and `./stack openrouter refresh`, and by
+  `./stack up` when older than 12 hours. The key is never on a command line or sent to the browser; curl
+  calls to openrouter.ai are https-only.
 
 - Caddy (2.11.7, pinned by version and digest) is the single way in for browsers: `http://bedrock-now.localhost`
   (the portal) with `chat.`, `admin.` and `files.` subdomains for Open WebUI, LiteLLM and RustFS. It listens on

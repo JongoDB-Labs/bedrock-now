@@ -350,27 +350,39 @@ daily request limits); the rest are **paid** from credits you buy at OpenRouter.
 to your Bedrock models. It is off unless you give it a key, and all it needs is the key (no email, no account
 API).
 
-- **Turn it on:** setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden input). Later, or
-  without a terminal: `./stack openrouter set` (asks, or reads `OPENROUTER_API_KEY` from the environment).
-  The key is checked with OpenRouter first (`GET /api/v1/key`); a rejected key is not stored. Create keys at
-  https://openrouter.ai/settings/keys; a per-key credit limit there caps what it can spend.
-- **Turn it off:** `./stack openrouter remove` deletes the key from `.env` and the cached model list, and
-  restarts LiteLLM with Bedrock only.
+- **Turn it on:** an interactive setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden
+  input). Later, or without a terminal: `./stack openrouter set` (asks, or reads `OPENROUTER_API_KEY` from
+  the environment). The key is checked with OpenRouter first (`GET /api/v1/key`); a rejected key is not
+  stored. Create keys at https://openrouter.ai/settings/keys; a per-key credit limit there caps what it can
+  spend.
+- **Only `.env` counts.** An `OPENROUTER_API_KEY` that happens to be in your shell never turns OpenRouter on
+  by itself: `./stack` strips `OPENROUTER_*` from what Docker Compose sees, an interactive setup asks
+  `found OPENROUTER_API_KEY in your environment — use it for bedrock-now? [y/N]`, and `setup --yes` uses it
+  only with `BEDROCK_NOW_OPENROUTER_FROM_ENV=1`. `./stack update` ignores it, so a removed key stays removed.
+- **Turn it off:** `./stack openrouter remove` deletes the key from `.env` and the cached model list,
+  restarts LiteLLM with Bedrock only and removes the OpenRouter entries it created in Open WebUI.
 - **Pick models:** `./stack openrouter models free` (only free models), `paid`, `all` (default), or a comma
   list of ids: `./stack openrouter models meta-llama/llama-3.3-70b-instruct,google/gemma-4-31b-it:free`.
   Stored as `OPENROUTER_MODELS` in `.env`. Only models that answer in text are offered (no image/audio
-  generation), and OpenRouter's variable-priced routers are left out. `OPENROUTER_MAX_MODELS` (default 1000;
-  the newest are kept) is a safety cap; today there are about 450.
-- **Where they show up:** in LiteLLM as `or/<openrouter id>` (for example `or/meta-llama/llama-3.3-70b-instruct`),
-  so they never clash with Bedrock names, and any LiteLLM key can call them through the LiteLLM API. In Chat they are named like `Llama 3.3 70B Instruct · OpenRouter` and tagged
-  `OpenRouter`, `Free` or `Paid` and the vendor, with the price in the description. Home lists them with a
-  provider column and Bedrock / free / paid filters.
-- **Prices and spend:** OpenRouter's per-token prices go into LiteLLM's config, so spend per key, budgets and
-  `./stack costs` include OpenRouter calls (cache discounts and long-context tiers aside: OpenRouter bills
-  what it bills). The model list and prices are re-fetched at setup, `./stack up` and
-  `./stack openrouter refresh`. `./stack costs`, `./stack openrouter status` and Home also show the key's
-  own usage, its limit and today's free-model requests. The account's credit balance needs an OpenRouter
-  *management* key, so with a normal key they link to https://openrouter.ai/settings/credits instead.
+  generation). Always left out: OpenRouter's variable-priced routers (price `-1`) and `:batch` variants
+  (they run only through OpenRouter's asynchronous batch API). Left out of `all`/`free`/`paid` unless
+  `OPENROUTER_INCLUDE_ALIASES=true`: the `~vendor/…-latest` aliases, which point at another listed model (a
+  comma list may still name one). `OPENROUTER_MAX_MODELS` (default 1000; the newest are kept) is a safety
+  cap; today about 440 models qualify.
+- **Where they show up:** in LiteLLM as `or/<openrouter id>` (for example
+  `or/meta-llama/llama-3.3-70b-instruct`), so they never clash with Bedrock names, and any LiteLLM key can call
+  them through the LiteLLM API. In Chat they are named like `Llama 3.3 70B Instruct · OpenRouter` and tagged
+  `OpenRouter`, `Free` or `Paid` and the vendor, with the price in the description (your own renames and tags
+  are kept). Home lists them with a provider column and Bedrock / free / paid filters.
+- **Prices and spend:** OpenRouter's per-token `prompt`, `completion`, `input_cache_read` and
+  `input_cache_write` prices go into LiteLLM's config, so spend per key, budgets and `./stack costs` include
+  OpenRouter calls. Not modelled (OpenRouter bills them, LiteLLM's numbers leave them out): long-context price
+  tiers (`overrides`), `input_cache_write_1h`, `internal_reasoning`, `web_search`, `audio`, `image` and any
+  other per-request fee. The model list and prices are fetched at setup and by `./stack openrouter refresh`;
+  `./stack up` fetches only when the list is more than 12 hours old (it starts fine offline). `./stack costs`,
+  `./stack openrouter status` and Home also show the key's own usage, its limit and today's free-model
+  requests. The account's credit balance needs an OpenRouter *management* key, so with a normal key they link
+  to https://openrouter.ai/settings/credits instead.
 - `./stack openrouter list` prints every enabled model with tier, price and context length.
 
 **Privacy.** A prompt to an `or/…` model leaves your machine and goes to OpenRouter and from there to the

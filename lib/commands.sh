@@ -701,7 +701,7 @@ cmd_up() {
   openrouter_up_hook   # optional; refreshes OpenRouter models/prices when a key is set
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup)
-  if portal_session_start; then sync_budget_banner; else warn "could not sign in to the portal — budget banner not refreshed"; fi
+  if portal_session_start; then sync_budget_banner; openrouter_after_up; else warn "could not sign in to the portal — budget banner not refreshed"; fi
   portal_session_end
   cmd_status
   maybe_auto_open
@@ -1070,8 +1070,10 @@ cmd_update() {
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
   dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
   log "update: 4/4 setup (non-interactive; keeps .env, keys and AWS creds)"
-  # Separate process (keeps set -e working inside setup); AWS creds come from .env, never from this shell.
+  # Separate process (keeps set -e working inside setup); AWS creds and the optional OpenRouter settings come
+  # from .env, never from this shell (a removed OpenRouter key stays removed).
   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_REGION_NAME -u AWS_REGION \
+    -u OPENROUTER_API_KEY -u OPENROUTER_MODELS -u OPENROUTER_MAX_MODELS -u BEDROCK_NOW_OPENROUTER_FROM_ENV \
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"

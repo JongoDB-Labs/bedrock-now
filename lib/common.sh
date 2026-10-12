@@ -187,7 +187,11 @@ dc() {
     warn "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME in your shell is ignored: this checkout is project '$p' (from .env or the default)"
     _DC_PROJECT_WARNED=1
   fi
-  COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"
+  # Compose lets shell variables beat --env-file: OpenRouter is opt-in via .env only, so an OPENROUTER_* in
+  # your shell never switches it on (or keeps it on after ./stack openrouter remove).
+  # (A subshell, not `env -u`: same effect on docker's environment, and tests can still stub docker.)
+  ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS
+    COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@" )
 }
 
 # curl with a bearer token that never appears in `ps` output (token is fed via -K stdin).
