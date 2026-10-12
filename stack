@@ -18,7 +18,7 @@ set -- ${args[@]+"${args[@]}"}
 
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
-  setup | up | down | status | logs | test | costs | backup | restore | update | uninstall)
+  setup | up | down | status | logs | test | costs | models | backup | restore | update | uninstall)
     "cmd_${cmd}" "$@" ;;
   rotate-aws) cmd_rotate_aws "$@" ;;
   help | -h | --help) cmd_help ;;

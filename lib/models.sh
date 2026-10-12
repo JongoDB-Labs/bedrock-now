@@ -165,15 +165,19 @@ EOT
 # Policy: least restrictive. Only an explicit "you can't use this model" from AWS disables a model;
 # anything else keeps it, with the reason shown so the user knows what happened.
 classify_probe() {
-  local kind="$1" status="$2" text excerpt region="${4:-}"
+  local kind="$1" status="$2" text lower excerpt region="${4:-}"
   # `|| true`: a missing/unreadable body file (e.g. curl never connected) must not abort under set -e.
   text="$(head -c 4000 "$3" 2>/dev/null | tr '\t\n\r' '   ' || true)"
+  lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
   excerpt="$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' | cut -c1-160)"
-  case "$text" in
-    *aws-marketplace*) printf 'DISABLED\tnot subscribed in this AWS account — ask your AWS admin to enable it in Bedrock model access\n'; return ;;
+  # Every "this account has no access to this model" wording (Marketplace subscription, model access not
+  # granted) maps to ONE reason; a plain IAM denial (not authorized to perform bedrock:…) stays separate.
+  case "$lower" in
+    *marketplace* | *"have access to the model"* | *"not subscribed"*) printf 'DISABLED\tnot subscribed in this AWS account — ask your AWS admin to enable it in Bedrock model access\n'; return ;;
     *"on-demand throughput"*) printf 'DISABLED\tneeds an inference profile (on-demand not supported) — fix the id in catalog/models.tsv\n'; return ;;
-    *ResourceNotFound* | *"end of its life"* | *"identifier is invalid"*) [ -n "$region" ] || region="$(get_env AWS_REGION_NAME)"; printf 'DISABLED\tnot available in %s (retired or wrong id)\n' "${region:-this region}"; return ;;
-    *AccessDenied* | *"not authorized"*) printf 'DISABLED\taccess denied for your IAM user — ask your AWS admin\n'; return ;;
+    *resourcenotfound* | *"end of its life"* | *"identifier is invalid"*) [ -n "$region" ] || region="$(get_env AWS_REGION_NAME)"; printf 'DISABLED\tnot available in %s (retired or wrong id)\n' "${region:-this region}"; return ;;
+    *"budget has been exceeded"* | *budget_exceeded*) printf 'ENABLED\tunverified: the setup key is over its budget (BUDGET_SETUP in .env) — kept\n'; return ;;
+    *accessdenied* | *"not authorized"*) printf 'DISABLED\taccess denied for your IAM user — ask your AWS admin\n'; return ;;
   esac
   if [ "$kind" = bedrock ]; then
     case "$text" in
@@ -227,12 +231,92 @@ probe_bedrock_invalid() { # probe_bedrock_invalid BEDROCK_ID ERRFILE REGION -> a
   fi
 }
 
-# probe_models OUTFILE — writes the names of usable models, one per line, and prints a
-# transparent table (model, mode, verdict, reason) plus a one-line summary, all on stderr.
+# --- model table (setup probe and ./stack models) ---
+
+# reason_code LONG_REASON -> the short WHY shown in the table (the long reason becomes a footnote)
+reason_code() {
+  case "$1" in
+    ok) echo ok ;;
+    "authorized (free check"*) echo "ok (free check)" ;;
+    "not subscribed"*) echo "no Marketplace access" ;;
+    "not available in"*) echo "not in region" ;;
+    "access denied"*) echo "access denied" ;;
+    "needs an inference profile"*) echo "needs inference profile" ;;
+    throttled*) echo "throttled (kept)" ;;
+    *"over its budget"*) echo "unverified: setup budget" ;;
+    "unverified: no response"*) echo "unverified: timeout" ;;
+    "unverified (aws exit "*) printf 'unverified: aws exit %s\n' "$(printf '%s' "$1" | sed -n 's/^unverified (aws exit \([0-9]*\)).*/\1/p')" ;;
+    unverified:*"HTTP "[0-9]*) printf 'unverified: HTTP %s\n' "$(printf '%s' "$1" | sed -n 's/.*HTTP \([0-9][0-9]*\).*/\1/p')" ;;
+    *) echo unverified ;;
+  esac
+}
+
+# reason_footnote CODE LONG_REASON -> footnote text (empty for ok), pointing admin issues at the README
+reason_footnote() {
+  case "$1" in
+    ok | "ok (free check)") ;;
+    "no Marketplace access" | "access denied") printf '%s: %s (see README › Asking your AWS admin for model access)\n' "$1" "$2" ;;
+    *) printf '%s: %s\n' "$1" "$2" ;;
+  esac
+}
+
+kind_short() { case "$1" in embedding) echo embed ;; image_generation) echo image ;; *) echo "$1" ;; esac; }
+
+price_short() { # price_short NAME -> compact price for the table: "$4.40/$22.00 /1M", "$0.08/image", "-"
+  local in out img q
+  in="$(price_field "$1" in)"; out="$(price_field "$1" out)"; img="$(price_field "$1" per_image)"; q="$(price_field "$1" per_query)"
+  if [ -n "$in" ] && [ -n "$out" ]; then printf '%s/%s /1M\n' "$(money "$in")" "$(money "$out")"
+  elif [ -n "$in" ]; then printf '%s /1M\n' "$(money "$in")"
+  elif [ -n "$img" ]; then printf '%s/image\n' "$(money "$img")"
+  elif [ -n "$q" ]; then printf '%s/1K queries\n' "$(money "$(awk -v q="$q" 'BEGIN { print q * 1000 }')")"
+  else echo '-'; fi
+}
+
+model_header() { printf '  %-20s %-6s %-8s %-18s %s\n' MODEL KIND STATUS PRICE WHY; }
+
+# model_row NAME KIND VERDICT PRICE CODE — STATUS is green ENABLED / red DISABLED (colour codes only on a TTY)
+model_row() {
+  local col="$C_RED"; [ "$3" = ENABLED ] && col="$C_GRN"
+  printf '  %-20s %-6s %s%-8s%s %-18s %s\n' "$1" "$2" "$col" "$3" "$C_OFF" "$4" "$5"
+}
+
+# model_footnotes < results TSV -> one footnote per distinct non-ok reason (same reason on many models = one line)
+model_footnotes() {
+  local name kind verdict reason price ts code seen='|' fn
+  while IFS=$'\t' read -r name kind verdict reason price ts; do
+    case "$name" in '' | '#'*) continue ;; esac
+    code="$(reason_code "$reason")"
+    case "$seen" in *"|$reason|"*) continue ;; esac
+    seen="$seen$reason|"
+    fn="$(reason_footnote "$code" "$reason")"
+    [ -z "$fn" ] || printf '  %s\n' "$fn"
+  done
+}
+
+# models_table < results TSV -> header, rows, footnotes, summary (stdout)
+models_table() {
+  local name kind verdict reason price ts on=0 off=0 rows fn
+  rows="$(cat)"
+  model_header
+  while IFS=$'\t' read -r name kind verdict reason price ts; do
+    case "$name" in '' | '#'*) continue ;; esac
+    model_row "$name" "$kind" "$verdict" "$price" "$(reason_code "$reason")"
+    if [ "$verdict" = ENABLED ]; then on=$((on + 1)); else off=$((off + 1)); fi
+  done <<< "$rows"
+  fn="$(printf '%s\n' "$rows" | model_footnotes)"
+  [ -z "$fn" ] || printf '\n%s\n' "$fn"
+  printf '\n  %d enabled, %d unavailable for this AWS key\n' "$on" "$off"
+}
+
+# probe_models OUTFILE [RESULTS_TSV] — writes the names of usable models, one per line, prints the model
+# table (MODEL KIND STATUS PRICE WHY, footnotes once per distinct reason) on stderr and, when RESULTS_TSV is
+# given, saves name/kind/verdict/reason/price/checked_at there for ./stack models.
 probe_models() {
-  local out="$1" tmp name mode model aliases mregion r status verdict reason region n_on=0 n_off=0
-  region="$(get_env AWS_REGION_NAME)"; tmp="$(mktemp)"; : > "$out"
-  printf '  %-20s %-17s %-9s %-37s %s\n' MODEL MODE RESULT PRICE WHY >&2
+  local out="$1" results="${2:-}" tmp res name mode model aliases mregion r status verdict reason region ts kind price fn n_on=0 n_off=0
+  region="$(get_env AWS_REGION_NAME)"; tmp="$(mktemp)"; res="$(mktemp)"; : > "$out"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '# name\tkind\tverdict\treason\tprice\tchecked_at\n' > "$res"
+  model_header >&2
   while IFS=$'\t' read -r name mode model aliases mregion <&3; do
     : > "$tmp"; r="$(model_region "$mregion" "$region")"
     if [ "$mode" = image_generation ]; then
@@ -242,9 +326,14 @@ probe_models() {
       status="$(probe_litellm "$mode" "$name" "$tmp")"
       IFS=$'\t' read -r verdict reason <<< "$(classify_probe litellm "$status" "$tmp" "$r")"
     fi
-    printf '  %-20s %-17s %-9s %-37s %s\n' "$name" "$mode" "$verdict" "$(price_label "$name")" "$reason" >&2
+    kind="$(kind_short "$mode")"; price="$(price_short "$name")"
+    model_row "$name" "$kind" "$verdict" "$price" "$(reason_code "$reason")" >&2
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$kind" "$verdict" "$reason" "$price" "$ts" >> "$res"
     if [ "$verdict" = ENABLED ]; then echo "$name" >> "$out"; n_on=$((n_on + 1)); else n_off=$((n_off + 1)); fi
   done 3< <(catalog_rows)
+  fn="$(model_footnotes < "$res")"
+  [ -z "$fn" ] || printf '\n%s\n' "$fn" >&2
+  if [ -n "$results" ]; then chmod 644 "$res"; mv "$res" "$results"; else rm -f "$res"; fi
   rm -f "$tmp"
-  log "$n_on model(s) enabled, $n_off unavailable for this AWS key (re-run ./stack setup any time to re-check)"
+  log "$n_on model(s) enabled, $n_off unavailable for this AWS key (./stack models shows this table again; ./stack models --recheck re-checks)"
 }

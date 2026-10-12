@@ -6,6 +6,11 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `./stack models` prints the model table from the last check without calling Bedrock; `--recheck` re-probes.
+  Results are saved to `litellm/probe-results.tsv`.
+
 ### Changed
 
 - Setup and `./stack up` print one line per phase with elapsed time (`==> LiteLLM ready (16s)`) instead of raw
@@ -15,6 +20,8 @@ All notable changes to bedrock-now are documented here. The format follows
 - Setup announces its decisions: each moved port in one line (`port 8080 is in use → using 8083 for Open WebUI`),
   the Open WebUI admin email and where it came from. The "use the AWS key from your environment?" prompt
   defaults to Yes for a long-lived (AKIA…) key.
+- The model table fits 100 columns (MODEL, KIND, coloured STATUS, PRICE, short WHY) with one footnote per
+  reason and its action. Marketplace and "no access to the model" denials map to one reason.
 
 ## [0.1.0] - 2026-10-12
 

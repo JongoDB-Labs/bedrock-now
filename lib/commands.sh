@@ -15,6 +15,7 @@ Usage: ./stack <command> [--yes]
   update       Backup, pull pinned images, re-run setup, test
   rotate-aws   Replace the AWS access key (e.g. after a scheduled rotation)
   costs        Bedrock prices for your enabled models + spend per key
+  models       Which models your AWS key can use (last check; --recheck re-probes)
   uninstall    Remove containers and ALL data volumes
 
   --yes        Accept defaults (non-interactive). AWS creds can come from
@@ -338,7 +339,7 @@ setup_bringup_and_probe() {
   warn "LiteLLM restarts while probing models; active claude-bedrock/Open WebUI requests may fail for ~1 min"
   run_phase "LiteLLM (full catalog, for probing)" litellm dc up -d --no-deps --force-recreate --wait litellm
   log "probing which models your AWS key can use (chat/embedding/rerank: 1-token requests, < \$0.01 total; images: free check)"
-  probe_models "$en.new"
+  probe_models "$en.new" "$STACK_DIR/litellm/probe-results.tsv"
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
   mv "$en.new" "$en"
   render_config "$en"
@@ -409,6 +410,31 @@ setup_keys_and_ui() {
   ensure_openwebui_api_key
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
+}
+
+# --- ./stack models ---
+
+# models_recheck — re-runs the model probe (LiteLLM restarts with the full catalog), then recreates the
+# services whose settings depend on the enabled models and refreshes the Open WebUI price descriptions.
+models_recheck() {
+  [ -f "$ENV_FILE" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
+  check_prereqs
+  setup_bringup_and_probe
+  run_phase "Open WebUI + shared-mcp" "open-webui shared-mcp" dc up -d --wait open-webui shared-mcp
+  sync_openwebui_models
+}
+
+cmd_models() {
+  local f="$STACK_DIR/litellm/probe-results.tsv" ts
+  case "${1:-}" in
+    --recheck) models_recheck; return ;;
+    '') ;;
+    *) die "usage: ./stack models [--recheck]" ;;
+  esac
+  [ -s "$f" ] || die "no saved model check yet — run ./stack models --recheck (or ./stack setup)"
+  ts="$(awk -F'\t' '!/^#/ && NF >= 6 { print $6; exit }' "$f")"
+  printf 'Model access for your AWS key, as checked %s (no Bedrock calls; ./stack models --recheck re-checks, < $0.01)\n\n' "${ts:-at the last setup}"
+  models_table < "$f"
 }
 
 # --- cost transparency ---

@@ -74,6 +74,7 @@ and re-checks which models work.
 ./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp
 ./stack test               # end-to-end smoke test
 ./stack costs              # prices for your models + spend per key
+./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else
 ```
 
@@ -98,7 +99,9 @@ only if an image model is enabled for your key.
 ## Models
 
 The probe decides what you get. Only an explicit "no" from AWS (not subscribed, access denied, wrong region)
-disables a model. Anything else keeps it and shows why. Re-run `./stack setup` after your AWS admin changes your access.
+disables a model. Anything else keeps it and shows why. `./stack models` shows the last result (MODEL, KIND,
+STATUS, PRICE, WHY, with one footnote per reason); after your AWS admin changes your access, run
+`./stack models --recheck` (1-token requests, < $0.01) or `./stack setup`.
 
 | Model | Use | Notes |
 |---|---|---|
