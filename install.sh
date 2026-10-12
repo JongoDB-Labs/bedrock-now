@@ -2,7 +2,8 @@
 # bedrock-now one-line installer:
 #   curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash -s -- --yes
-# Env: BEDROCK_NOW_DIR (default ~/bedrock-now), BEDROCK_NOW_REF (tag/branch/commit; default: latest release).
+# Env: BEDROCK_NOW_DIR (default ~/bedrock-now), BEDROCK_NOW_REF (tag/branch/commit; default: latest release),
+#      BEDROCK_NOW_REPO (git URL or path to clone from; default the GitHub repo — for forks and tests).
 # Everything is inside functions and main runs on the last line, so a truncated download does nothing.
 set -euo pipefail
 
@@ -54,30 +55,36 @@ target_decision() {
   echo refuse
 }
 
-# pick_ref REQUESTED TAGS(newest first, one per line) -> ref to check out
+# latest_release_tag GIT_DIR -> newest vX.Y.Z tag, pre-releases (anything with "-") excluded.
+# Same logic as newest_release_tag in lib/commands.sh (this file can't source lib/; a test checks they agree).
+latest_release_tag() {
+  git -C "$1" -c versionsort.suffix=- tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | sed -n '1p' || true
+}
+
+# pick_ref REQUESTED LATEST_RELEASE_TAG -> ref to check out
 pick_ref() {
-  if [ -n "$1" ]; then echo "$1"; return; fi
-  local t; t="$(printf '%s\n' "$2" | sed -n '1p')"
-  if [ -n "$t" ]; then echo "$t"; else echo main; fi
+  if [ -n "$1" ]; then echo "$1"; elif [ -n "$2" ]; then echo "$2"; else echo main; fi
 }
 
 main() {
-  local dir="${BEDROCK_NOW_DIR:-$HOME/bedrock-now}" repo="${BEDROCK_NOW_REPO:-$BN_REPO_URL}" ref tags
+  local dir="${BEDROCK_NOW_DIR:-$HOME/bedrock-now}" repo="${BEDROCK_NOW_REPO:-$BN_REPO_URL}" ref tag qdir
   check_prereqs "$(uname -s)"
+  qdir="$(printf '%q' "$dir")"
   case "$(target_decision "$dir")" in
     refuse) fail "$dir exists and is not a bedrock-now checkout — move it away or choose another folder with BEDROCK_NOW_DIR=/path" ;;
     update)
       say "bedrock-now is already installed in $dir — nothing was changed."
-      say "To update it (newest release, with a backup first): cd $dir && ./stack update"
+      say "To update it (backup first, then the newest release): cd $qdir && ./stack update"
       return 0 ;;
   esac
   say "installing bedrock-now into $dir (from $repo)"
   say "setup then downloads ~5 GB of Docker images on the first run (5-15 minutes) and asks for your AWS key"
   git clone --quiet "$repo" "$dir" || fail "git clone of $repo failed (network?)"
-  tags="$(git -C "$dir" tag --sort=-v:refname)"
-  ref="$(pick_ref "${BEDROCK_NOW_REF:-}" "$tags")"
-  [ -n "${BEDROCK_NOW_REF:-}" ] || [ -n "$tags" ] || say "no release tags yet — using main"
-  git -C "$dir" -c advice.detachedHead=false checkout --quiet "$ref" || fail "could not check out '$ref' in $dir"
+  tag="$(latest_release_tag "$dir")"
+  ref="$(pick_ref "${BEDROCK_NOW_REF:-}" "$tag")"
+  [ -n "${BEDROCK_NOW_REF:-}" ] || [ -n "$tag" ] || say "no release tags yet — using main"
+  git -C "$dir" -c advice.detachedHead=false checkout --quiet "$ref" ||
+    fail "could not check out '$ref' (see git's message above). The clone is in $dir: pick another ref with  git -C $qdir checkout <ref>  and run ./setup.sh there, or start over with  rm -rf $qdir"
   say "checked out $ref"
   cd "$dir"
   if has_tty; then
@@ -88,7 +95,7 @@ main() {
     exec ./setup.sh --yes "$@"
   fi
   say "no terminal to ask for your AWS key. Next, run:"
-  printf '\n    cd %s && ./setup.sh\n\n' "$dir"
+  printf '\n    cd %s && ./setup.sh\n\n' "$qdir"
 }
 
 # Tests source this file with BEDROCK_NOW_INSTALL_LIB=1 (BASH_SOURCE is empty when piped into bash).

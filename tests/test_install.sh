@@ -47,8 +47,8 @@ test_target_decision() {
 }
 
 test_pick_ref() {
-  assert_eq "$(pick_ref "" "$(printf 'v0.2.0\nv0.1.0')")" "v0.2.0"
-  assert_eq "$(pick_ref main "$(printf 'v0.2.0\nv0.1.0')")" "main"
+  assert_eq "$(pick_ref "" v0.2.0)" "v0.2.0"
+  assert_eq "$(pick_ref main v0.2.0)" "main"
   assert_eq "$(pick_ref "" "")" "main"
 }
 
@@ -86,4 +86,15 @@ test_main_existing_checkout_points_to_update() {
   out="$(_installer 2>&1)"
   assert_contains "$out" "already installed"
   assert_contains "$out" "./stack update"
+}
+
+test_main_bad_ref_explains_recovery() {
+  if out="$( (unset AWS_ACCESS_KEY_ID; BEDROCK_NOW_REF=no-such-ref _installer) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not check out 'no-such-ref'"
+  assert_contains "$out" "rm -rf $TMP/inst"
+  assert_contains "$out" "git -C $TMP/inst checkout <ref>"
+}
+
+test_installer_documents_repo_override() {
+  assert_contains "$(sed -n 1,12p "$STACK_DIR/install.sh")" "BEDROCK_NOW_REPO"
 }

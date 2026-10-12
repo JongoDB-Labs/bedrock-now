@@ -17,10 +17,14 @@ export ASSUME_YES
 set -- ${args[@]+"${args[@]}"}
 
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
+# Every command that touches this checkout's Compose project first checks that no other checkout owns it
+# (setup runs the same check itself, after it has settled the project name).
 case "$cmd" in
-  setup | up | down | status | logs | test | costs | models | backup | restore | update | uninstall)
+  setup) cmd_setup "$@" ;;
+  up | down | status | logs | test | costs | models | backup | restore | update | uninstall)
+    [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
-  rotate-aws) cmd_rotate_aws "$@" ;;
+  rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;
 esac

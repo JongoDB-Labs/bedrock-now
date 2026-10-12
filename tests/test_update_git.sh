@@ -63,22 +63,88 @@ test_not_a_git_checkout_skips_code_update() {
   assert_eq "$CODE_CHANGED" 0
 }
 
-test_cmd_update_reexecs_new_code_after_checkout() {
-  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
-  printf '#!/bin/sh\necho "STACK $* done=${BEDROCK_NOW_CODE_UPDATED:-unset}" >> "%s/calls"\n' "$TMP" > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"
+_fake_stack() { # $STACK_DIR/stack that logs its args + the re-exec env and exits with $1
+  printf '#!/bin/sh\necho "STACK $* done=${BEDROCK_NOW_CODE_UPDATED:-unset} backup=${BEDROCK_NOW_UPDATE_BACKUP:-unset} from=${BEDROCK_NOW_UPDATE_FROM:-unset}" >> "%s/calls"\nexit %s\n' "$TMP" "${1:-0}" > "$STACK_DIR/stack"
+  chmod +x "$STACK_DIR/stack"
+}
+
+test_cmd_update_backs_up_before_code_and_reexecs_with_context() {
+  _fixture; printf 'X=1\n' > "$ENV_FILE"; _fake_stack
+  from="$(git -C "$STACK_DIR" rev-parse HEAD)"
+  _backup_named() { LAST_BACKUP=backups/20261012-auto; echo BACKUP >> "$TMP/calls"; }
+  prune_auto_backups() { echo PRUNE >> "$TMP/calls"; }
   update_checkout() { echo "CHECKOUT ${1:-}" >> "$TMP/calls"; CODE_CHANGED=1; }
-  _backup_named() { echo BACKUP >> "$TMP/calls"; }
-  (cmd_update --to v9.9.9) 2>/dev/null
-  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "CHECKOUT v9.9.9;STACK update done=1;"
+  (ASSUME_YES=1 cmd_update --to v9.9.9) 2> "$TMP/err"
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "BACKUP;PRUNE;CHECKOUT v9.9.9;STACK update --yes done=1 backup=backups/20261012-auto from=$from;"
+  assert_contains "$(cat "$TMP/err")" "update: 1/4 backup"
+  assert_contains "$(cat "$TMP/err")" "update: 2/4 code"
   if (cmd_update --to) 2>/dev/null; then return 1; fi
   if (cmd_update --bogus) 2>/dev/null; then return 1; fi
 }
 
-test_cmd_update_skips_checkout_when_reexeced() {
-  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
-  printf '#!/bin/sh\necho "SETUP $*" >> "%s/calls"\n' "$TMP" > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"
+test_cmd_update_without_yes_does_not_add_it() {
+  _fixture; printf 'X=1\n' > "$ENV_FILE"; _fake_stack
+  _backup_named() { LAST_BACKUP=b; }; prune_auto_backups() { :; }
+  update_checkout() { CODE_CHANGED=1; }
+  (ASSUME_YES=0 cmd_update) 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "STACK update done=1"
+}
+
+test_cmd_update_reexec_skips_backup_and_checkout() {
+  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack
   update_checkout() { echo CHECKOUT >> "$TMP/calls"; }
-  _backup_named() { LAST_BACKUP=b; echo BACKUP >> "$TMP/calls"; }; prune_auto_backups() { :; }; dc() { :; }
-  BEDROCK_NOW_CODE_UPDATED=1 cmd_update 2>/dev/null
-  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "BACKUP;SETUP setup --yes;"
+  _backup_named() { echo BACKUP >> "$TMP/calls"; }; prune_auto_backups() { :; }; dc() { echo "dc $*" >> "$TMP/calls"; }
+  BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2> "$TMP/err"
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "dc pull --ignore-buildable;STACK setup --yes done=unset backup=unset from=unset;"
+  assert_contains "$(cat "$TMP/err")" "update: 3/4 images"
+  assert_contains "$(cat "$TMP/err")" "update: 4/4 setup"
+}
+
+test_cmd_update_failure_after_code_change_explains_rollback() {
+  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack 3
+  dc() { :; }
+  if out="$( (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update) 2>&1)"; then return 1; fi
+  assert_contains "$out" "git -C $STACK_DIR checkout abc123 && ./stack restore backups/b"
+}
+
+test_cmd_update_failure_without_code_change_names_backup() {
+  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack 3
+  _backup_named() { LAST_BACKUP=backups/b; }; prune_auto_backups() { :; }; dc() { :; }
+  if out="$( (cmd_update) 2>&1)"; then return 1; fi
+  assert_contains "$out" "./stack restore backups/b"
+  assert_not_contains "$out" "git -C"
+}
+
+# --- release-tag selection and downgrade guard ---
+
+_rc_fixture() {
+  _fixture
+  git -C "$TMP/origin" tag -d v0.1.0 >/dev/null; git -C "$TMP/origin" tag -a v0.1.1 -m x v0.2.0~1
+  git -C "$TMP/origin" tag -a v0.2.0-rc1 -m x main; git -C "$TMP/origin" tag -a v0.10.0-beta -m x main
+  git -C "$STACK_DIR" fetch -q --tags origin
+}
+
+test_newest_release_tag_skips_prereleases() {
+  _rc_fixture
+  assert_eq "$(newest_release_tag "$STACK_DIR")" "v0.2.0"
+}
+
+test_installer_and_stack_agree_on_newest_release_tag() {
+  _rc_fixture
+  assert_eq "$(BEDROCK_NOW_INSTALL_LIB=1; . "$T_ROOT/install.sh"; latest_release_tag "$STACK_DIR")" "$(newest_release_tag "$STACK_DIR")"
+}
+
+test_update_refuses_silent_downgrade() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q origin/main   # ahead of v0.2.0
+  before="$(git -C "$STACK_DIR" rev-parse HEAD)"
+  if out="$( (update_checkout "") 2>&1)"; then return 1; fi
+  assert_contains "$out" "your checkout is ahead of v0.2.0 — use ./stack update --to <ref>"
+  assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$before"
+}
+
+test_checkout_failure_shows_git_error() {
+  _fixture
+  if out="$( (update_checkout nope-ref) 2>&1)"; then return 1; fi
+  assert_contains "$out" "nope-ref"
+  assert_contains "$out" "error:"
 }

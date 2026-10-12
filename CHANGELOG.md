@@ -6,6 +6,23 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-12
+
+### Fixed
+
+- Two checkouts can no longer share one Docker Compose project. Every `./stack` command refuses when another
+  folder already runs the same project name, and a first setup refuses to start on existing data volumes of
+  that name (their database password would not match). Before, a second install with the default name reused
+  the first one's volumes (LiteLLM failed with `P1000 Authentication failed`) and recreated its containers.
+- `./stack update` takes the backup **before** changing the code (steps 1/4 backup, 2/4 code, 3/4 images,
+  4/4 setup). If a later step fails it prints the exact way back (`git -C <dir> checkout <commit> &&
+  ./stack restore <backup>`), and it keeps `--yes` when it continues with the new code.
+- The newest release tag ignores pre-releases (`v0.2.0-rc1`) in both `./stack update` and the installer, and
+  `./stack update` without `--to` never moves to an older version than you have.
+- A failed checkout shows git's own error message.
+- Installer: a bad `BEDROCK_NOW_REF` explains how to recover (`git -C <dir> checkout <ref>` or `rm -rf <dir>`),
+  paths in its hints are shell-quoted, and `BEDROCK_NOW_REPO` is documented.
+
 ## [0.1.1] - 2026-10-12
 
 ### Added
@@ -18,7 +35,7 @@ All notable changes to bedrock-now are documented here. The format follows
 - A third LiteLLM virtual key, `setup` (`BUDGET_SETUP`, default $5), pays for the model probe and the paid
   `./stack test` calls. `./stack test` checks the other keys with free `/key/info` calls.
 - `./stack costs` lists the `setup` key and a total across all keys (last 30 days, from `/global/spend`).
-- `./stack update` updates the code first: a release-tag install moves to the newest tag
+- `./stack update` also updates the code: a release-tag install moves to the newest tag
   (`updating v0.1.0 → v0.1.1`), a branch checkout gets `git pull --ff-only`, and `--to <tag|branch>` picks a
   version. Local changes to tracked files stop the update; they are never discarded.
 - `NO_COLOR` turns all colours off.
@@ -67,6 +84,7 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.1.0

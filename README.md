@@ -230,15 +230,18 @@ What it does not cover:
 ```bash
 ./stack backup                     # → backups/<timestamp>/ (both databases, both buckets, a copy of .env)
 ./stack restore backups/<ts>       # replaces ALL current data (offers a backup of the current state first)
-./stack update                     # new code (git) → backup (…-auto) → pull pinned images → setup --yes → test
+./stack update                     # backup (…-auto) → new code (git) → pull pinned images → setup --yes → test
 ./stack rotate-aws                 # new AWS key: verified with AWS first, .env changed only if valid
 ./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
 ```
 
-`./stack update` updates the code first: an install from a release tag (the one-line installer) moves to the
-newest release tag and says so (`updating v0.1.0 → v0.1.1`); a checkout on a branch gets `git pull --ff-only`.
-`./stack update --to <tag|branch>` picks a specific version. Local changes to tracked files stop the update with
-a message; they are never discarded.
+`./stack update` runs four steps: **1/4** a backup with the current code, **2/4** the code: an install from a
+release tag (the one-line installer) moves to the newest release tag, never a pre-release and never an older
+version than you have, and says so (`updating v0.1.1 → v0.1.2`); a checkout on a branch gets
+`git pull --ff-only`; **3/4** the pinned images; **4/4** setup and the smoke test, run by the new code.
+`./stack update --to <tag|branch>` picks a specific version (also older ones). Local changes to tracked files
+stop the update with a message; they are never discarded. If a step after the code update fails, the message
+shows how to go back exactly: `git -C <dir> checkout <previous commit> && ./stack restore <backup>`.
 
 Backups contain secrets (a copy of `.env`) and your chats, so keep them private.
 
@@ -268,7 +271,12 @@ LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with 
 
 ## Running a second copy
 
-To try a branch or a fresh clone next to your main stack, give it its own Docker Compose project name:
+Each checkout needs its own Docker Compose project name (default `bedrock-now`). Two checkouts with the same
+name would share containers and data volumes, so every `./stack` command refuses when another folder already
+uses the name (`project 'bedrock-now' is already used by the bedrock-now install in <dir>…`), and a first setup
+refuses when data volumes of that name already exist. Nothing is changed in either case.
+
+To try a branch or a fresh clone next to your main stack, give it its own name:
 
 ```bash
 git clone https://github.com/JongoDB-Labs/bedrock-now bedrock-now-test && cd bedrock-now-test
@@ -295,6 +303,7 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 | `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
 | Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
+| "project '…' is already used by the bedrock-now install in …" | Another folder runs a stack with this project name. Use that install, remove it (`./stack uninstall` there), or set up this copy as `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
 | Setup can't sign in to Open WebUI | You changed the admin password in the UI. Put the new password in `OPENWEBUI_ADMIN_PASSWORD` in `.env`. |
 | Speech-to-text error in Open WebUI | Expected. See *Bedrock only → Audio*. |
 | A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup` to see all compose output. |
