@@ -188,7 +188,7 @@ test_install_on_linux_writes_a_user_unit() {
   assert_contains "$(cat "$TMP/svc")" "systemctl --user enable --now bedrock-now-helper-bn-t.service"
   helper_uninstall 2>/dev/null
   [ ! -f "$f" ] || return 1
-  assert_contains "$(cat "$TMP/svc")" "systemctl --user disable --now bedrock-now-helper-bn-t.service"
+  assert_contains "$(cat "$TMP/svc")" "systemctl --user stop bedrock-now-helper-bn-t.service"
 }
 
 test_install_without_systemd_user_session_explains_the_fallback() {
@@ -365,4 +365,31 @@ test_unit_files_escape_specifiers_and_sanitize_path() {   # I5, M8
   assert_not_contains "$p" "relative"
   assert_not_contains "$p" "::"
   assert_contains "$p" "/usr/bin"
+}
+
+test_uninstall_removes_files_before_stopping_the_service() {
+  _checkout; _stub_services; HELPER_OS=Darwin
+  helper_install 2>/dev/null; helper_heartbeat
+  launchctl() {   # by the time the agent is stopped, nothing is left to restart it or offer the buttons
+    if [ "$1" = bootout ]; then
+      [ ! -f "$(helper_plist)" ] && [ ! -f "$(helper_beat_file)" ] && echo "bootout-after-files" >> "$TMP/svc"
+    fi
+  }
+  helper_uninstall 2>/dev/null
+  assert_contains "$(cat "$TMP/svc")" "bootout-after-files"
+  HELPER_OS=Linux; helper_install() { :; }
+  mkdir -p "$TMP/systemd"; : > "$(helper_unit_file)"
+  systemctl() { [ "$2" != stop ] || [ -f "$(helper_unit_file)" ] || echo "stop-after-files" >> "$TMP/svc"; }
+  helper_uninstall 2>/dev/null
+  assert_contains "$(cat "$TMP/svc")" "stop-after-files"
+}
+
+test_helper_limits_ignore_non_numeric_settings() {
+  _checkout; HELPER_MIN_INTERVAL_S=abc HELPER_MAX_PER_DAY='1;x'
+  helper_limits clean; _helper_count clean
+  assert_contains "$(helper_limits clean 2>&1 || true)" "one every 60s"
+  HELPER_MIN_INTERVAL_S=0
+  now="$(date +%s)"; : > "$(helper_dir)/jobs"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf '%s clean\n' $((now - 100 * i)) >> "$(helper_dir)/jobs"; done
+  assert_contains "$(helper_limits clean 2>&1 || true)" "limit of 12 actions a day"
 }

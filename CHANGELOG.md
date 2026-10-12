@@ -49,7 +49,7 @@ All notable changes to bedrock-now are documented here. The format follows
   setgid folder's group. Under rootless Docker the portal's uid is read from `/etc/subuid` (or set
   `HELPER_PORTAL_UID`).
 - **One `./stack update | rollback | clean | restore | setup` at a time** per checkout (`.state/lock/`, with the
-  owner's pid; a stale lock is taken over).
+  owner's pid; a lock whose process is gone or is no longer ./stack is moved aside and taken over).
 - `UPDATE_REQUIRE_SIGNED_TAGS=true` in `.env`: `./stack update` only checks out release tags that
   `git verify-tag` accepts (docs/security.md › Code provenance).
 

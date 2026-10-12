@@ -8,6 +8,12 @@
 
 lock_dir() { printf '%s/lock\n' "$STATE_DIR"; }
 
+# _lock_pid_alive PID -> 0 when PID runs and is a ./stack process (a reused pid of something else is stale)
+_lock_pid_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  ps -p "$1" -o command= 2>/dev/null | grep -qi 'stack'
+}
+
 # stack_lock_holder -> "PID COMMAND" of a live lock owner ("" when free or stale)
 stack_lock_holder() {
   local d pid what
@@ -19,7 +25,7 @@ stack_lock_holder() {
     [ -z "$(find "$d" -maxdepth 0 -mmin -1 2>/dev/null)" ] || printf '0 %s\n' "${what:-starting}"
     return 0
   fi
-  kill -0 "$pid" 2>/dev/null && printf '%s %s\n' "$pid" "${what:-command}"
+  _lock_pid_alive "$pid" && printf '%s %s\n' "$pid" "${what:-command}"
   return 0
 }
 
@@ -28,7 +34,7 @@ stack_lock() {
   local d holder tries=0
   d="$(lock_dir)"
   if [ -n "${BEDROCK_NOW_LOCK_HELD:-}" ] && [ "$(head -c 20 "$d/pid" 2>/dev/null)" = "$BEDROCK_NOW_LOCK_HELD" ] &&
-     kill -0 "$BEDROCK_NOW_LOCK_HELD" 2>/dev/null; then
+     _lock_pid_alive "$BEDROCK_NOW_LOCK_HELD"; then
     # ours: a child of the owner, or the owner after `exec` (same pid), which then also releases it
     [ "$BEDROCK_NOW_LOCK_HELD" != "$$" ] || on_exit stack_unlock
     return 0
@@ -38,7 +44,8 @@ stack_lock() {
     holder="$(stack_lock_holder)"
     [ -z "$holder" ] || die "another ./stack ${holder#* } is running (pid ${holder%% *}) — wait for it to finish, then try again"
     tries=$((tries + 1)); [ "$tries" -le 3 ] || die "cannot take the lock $d — remove it if no other ./stack command is running"
-    rm -rf "$d"   # stale: its process is gone
+    # stale (its process is gone): moved aside first, so two takers never delete each other's fresh lock
+    mv "$d" "$d.stale.$$" 2>/dev/null && rm -rf "$d.stale.$$"
   done
   printf '%s\n' "$1" > "$d/what"; printf '%s\n' "$$" > "$d/pid"
   BEDROCK_NOW_LOCK_HELD="$$"; export BEDROCK_NOW_LOCK_HELD

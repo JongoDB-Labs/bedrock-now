@@ -32,3 +32,19 @@ test_locked_commands() {
     assert_contains "$(declare -f "$f")" "stack_lock"
   done
 }
+
+test_a_reused_pid_of_another_program_is_stale() {
+  sleep 30 & other=$!   # alive, but not a ./stack process
+  mkdir -p "$STATE_DIR/lock"; echo "$other" > "$STATE_DIR/lock/pid"; echo update > "$STATE_DIR/lock/what"
+  assert_eq "$(stack_lock_holder)" ""
+  ( unset BEDROCK_NOW_LOCK_HELD; stack_lock clean; cat "$STATE_DIR/lock/what" > "$TMP/what" )
+  kill "$other" 2>/dev/null || true
+  assert_eq "$(cat "$TMP/what")" "clean"
+}
+
+test_stale_takeover_moves_the_lock_aside_atomically() {
+  mkdir -p "$STATE_DIR/lock"; echo 999999 > "$STATE_DIR/lock/pid"
+  assert_contains "$(declare -f stack_lock)" 'mv "$d" "$d.stale.$$"'
+  ( unset BEDROCK_NOW_LOCK_HELD; stack_lock clean )
+  for x in "$STATE_DIR"/lock.stale.*; do [ ! -e "$x" ] || { echo "left behind: $x" >&2; return 1; }; done
+}

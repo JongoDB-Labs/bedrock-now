@@ -18,6 +18,8 @@ HELPER_POLL_S="${HELPER_POLL_S:-3}"
 # only stop a hijacked browser session): jobs at least this far apart, at most this many a day.
 HELPER_MIN_INTERVAL_S="${HELPER_MIN_INTERVAL_S:-60}"
 HELPER_MAX_PER_DAY="${HELPER_MAX_PER_DAY:-12}"
+# _helper_num VALUE DEFAULT -> VALUE when it is plain digits, else DEFAULT (limits never become "no limit")
+_helper_num() { case "$1" in '' | *[!0-9]*) printf '%s\n' "$2" ;; *) printf '%s\n' "$1" ;; esac; }
 HELPER_LOG_MAX_BYTES=1000000
 
 request_dir()      { printf '%s/requests\n' "$STATE_DIR"; }
@@ -153,22 +155,28 @@ helper_install() {
 helper_uninstall() {
   local f uid
   uid="$(id -u)"
+  # Files and messages first, the service last: when the helper itself runs this (a rollback to a version
+  # without it), stopping the service may end this very process.
+  rm -f "$(helper_beat_file)"   # Home stops offering the buttons right away
+  rm -f "$(request_dir)"/req-*.json 2>/dev/null || true
   case "$(_helper_os)" in
     Darwin)
       f="$(helper_plist)"
-      launchctl bootout "gui/$uid/$(helper_label)" >/dev/null 2>&1 || true
-      [ ! -f "$f" ] || { rm -f "$f"; log "removed the launchd agent $(helper_label)"; } ;;
+      if [ -f "$f" ]; then rm -f "$f"; log "removed the launchd agent $(helper_label)"; fi
+      log "update helper is not installed"
+      launchctl bootout "gui/$uid/$(helper_label)" >/dev/null 2>&1 || true ;;
     *)
       f="$(helper_unit_file)"
       if [ -f "$f" ]; then
-        systemctl --user disable --now "$(helper_unit)" >/dev/null 2>&1 || true
-        rm -f "$f"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+        rm -f "$f" "$(_systemd_user_dir)/default.target.wants/$(helper_unit)"   # what `disable` would remove
         log "removed the systemd user unit $(helper_unit)"
+        log "update helper is not installed"
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        systemctl --user stop "$(helper_unit)" >/dev/null 2>&1 || true
+      else
+        log "update helper is not installed"
       fi ;;
   esac
-  rm -f "$(helper_beat_file)"   # Home stops offering the buttons right away
-  rm -f "$(request_dir)"/req-*.json 2>/dev/null || true
-  log "update helper is not installed"
 }
 
 helper_status_text() {
@@ -274,15 +282,16 @@ _remember_nonce() {
 # helper_limits ACTION — the helper's own rate limits (state in its private folder): fails with the reason.
 #   jobs at least HELPER_MIN_INTERVAL_S apart, at most HELPER_MAX_PER_DAY a day, one rollback per recorded update
 helper_limits() {
-  local f now last n at done_for
+  local f now last n at done_for min max
   f="$(helper_dir)/jobs"; now="$(date +%s)"
+  min="$(_helper_num "$HELPER_MIN_INTERVAL_S" 60)"; max="$(_helper_num "$HELPER_MAX_PER_DAY" 12)"
   if [ -f "$f" ]; then
     last="$(tail -n 1 "$f" | cut -d' ' -f1 | tr -cd '0-9')"
-    if [ -n "$last" ] && [ $((now - last)) -lt "$HELPER_MIN_INTERVAL_S" ] && [ $((now - last)) -ge 0 ]; then
-      echo "too soon after the last action (the helper allows one every ${HELPER_MIN_INTERVAL_S}s)" >&2; return 1
+    if [ -n "$last" ] && [ $((now - last)) -lt "$min" ] && [ $((now - last)) -ge 0 ]; then
+      echo "too soon after the last action (the helper allows one every ${min}s)" >&2; return 1
     fi
     n="$(awk -v t=$((now - 86400)) '$1 + 0 >= t' "$f" | wc -l | tr -d ' ')"
-    [ "$n" -lt "$HELPER_MAX_PER_DAY" ] || { echo "the helper's limit of $HELPER_MAX_PER_DAY actions a day is reached" >&2; return 1; }
+    [ "$n" -lt "$max" ] || { echo "the helper's limit of $max actions a day is reached" >&2; return 1; }
   fi
   if [ "$1" = rollback ]; then
     at="$(_record_get at)"; done_for="$(head -c 20 "$(helper_dir)/rolled-back" 2>/dev/null | tr -cd '0-9' || true)"

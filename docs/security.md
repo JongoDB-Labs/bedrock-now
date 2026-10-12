@@ -80,7 +80,7 @@ what the request says beyond the three fields, or run as root.
   (that would install whatever the branch has now, not a release) unless `BEDROCK_NOW_HELPER_ALLOW_BRANCH=1`
   is in `.env`.
 - [x] **One at a time.** `./stack update`, `rollback`, `clean`, `restore` and `setup` take the lock
-  `.state/lock/` (owner pid and command; a lock whose process is gone is taken over). While a terminal command
+  `.state/lock/` (owner pid and command; a lock whose process is gone, or whose pid now belongs to a program other than ./stack, is moved aside and taken over). While a terminal command
   holds it, the helper answers "Busy" instead of starting.
 - [x] **Fresh authentication.** The portal accepts a request only with a valid session, `X-Requested-With`, an
   `Origin` of the portal itself, **and the portal password typed again**. Wrong passwords there count toward the
