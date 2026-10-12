@@ -334,6 +334,13 @@ probe_models() {
     else
       status="$(probe_litellm "$mode" "$name" "$tmp")"
       IFS=$'\t' read -r verdict reason <<< "$(classify_probe litellm "$status" "$tmp" "$r")"
+      # LiteLLM can drop the Marketplace detail from an AccessDenied (e.g. on /v1/rerank). Ask Bedrock directly
+      # with the free invalid-body check; only a more specific "not subscribed" answer replaces the reason.
+      case "$reason" in
+        "access denied"*)
+          : > "$tmp"; status="$(probe_bedrock_invalid "$(bedrock_id "$model" "$r")" "$tmp" "$r")"
+          case "$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)" in "not subscribed"*) reason="$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)" ;; esac ;;
+      esac
     fi
     kind="$(kind_short "$mode")"; price="$(price_short "$name")"
     model_row "$name" "$kind" "$verdict" "$price" "$(reason_code "$reason")" >&2

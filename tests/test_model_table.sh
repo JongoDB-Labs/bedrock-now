@@ -117,3 +117,22 @@ test_cmd_models_recheck_runs_probe() {
   assert_eq "$(cat "$TMP/calls")" "RECHECK"
   if (cmd_models --bogus) 2>/dev/null; then return 1; fi
 }
+
+test_litellm_access_denied_is_refined_by_free_bedrock_check() {
+  printf 'AWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
+  printf 'rr\trerank\tbedrock/arn:aws:bedrock:{region}::foundation-model/vendor.rr:0\t-\nsmall\tchat\tbedrock/x.small\t-\n' > "$TMP/cat.tsv"
+  probe_litellm() { case "$2" in rr) printf 'AccessDeniedException' > "$3"; echo 400 ;; *) echo 200 ;; esac; }
+  probe_bedrock_invalid() { echo "$1" >> "$TMP/probed"; printf 'AccessDeniedException: not authorized to perform the required AWS Marketplace actions' > "$2"; echo 254; }
+  CATALOG="$TMP/cat.tsv" probe_models "$TMP/enabled" "$TMP/res.tsv" 2>/dev/null
+  assert_eq "$(cat "$TMP/probed")" "arn:aws:bedrock:us-east-1::foundation-model/vendor.rr:0"
+  assert_contains "$(grep '^rr' "$TMP/res.tsv" | cut -f4)" "not subscribed"
+}
+
+test_plain_access_denied_kept_when_bedrock_check_agrees() {
+  printf 'AWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
+  printf 'small\tchat\tbedrock/x.small\t-\n' > "$TMP/cat.tsv"
+  probe_litellm() { printf 'AccessDeniedException' > "$3"; echo 400; }
+  probe_bedrock_invalid() { printf 'ValidationException' > "$2"; echo 254; }
+  CATALOG="$TMP/cat.tsv" probe_models "$TMP/enabled" "$TMP/res.tsv" 2>/dev/null
+  assert_contains "$(grep '^small' "$TMP/res.tsv" | cut -f4)" "access denied"
+}

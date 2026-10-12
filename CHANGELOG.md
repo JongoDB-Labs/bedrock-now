@@ -24,7 +24,8 @@ All notable changes to bedrock-now are documented here. The format follows
   the Open WebUI admin email and where it came from. The "use the AWS key from your environment?" prompt
   defaults to Yes for a long-lived (AKIA…) key.
 - The model table fits 100 columns (MODEL, KIND, coloured STATUS, PRICE, short WHY) with one footnote per
-  reason and its action. Marketplace and "no access to the model" denials map to one reason.
+  reason and its action. Marketplace and "no access to the model" denials map to one reason; when LiteLLM
+  reports a bare AccessDenied (e.g. for rerank), a free direct Bedrock check finds the Marketplace cause.
 - `./stack status` is a compact SERVICE / STATE / HEALTH / URL table instead of raw `docker compose ps`.
 - `./stack help` marks the commands that call Bedrock and what they cost; `claude-bedrock --help` starts with a
   six-line header about the wrapper, and `--help`/`--version` no longer print the launch cost line or need
