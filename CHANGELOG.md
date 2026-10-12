@@ -179,6 +179,10 @@ Upgrading from v0.1.x: run `./stack update`, then open the portal URL it prints 
   not reflected.
 - The cost line after **Continue response** prices only the continued part (documented; `./stack costs` is
   exact).
+- The cost line under chat answers showed its HTML tags (`<sub>≈ $0.0011 · … </sub>`): Open WebUI v0.12 does
+  not render `<sub>`. It is now one line of Markdown in italics. Answers with the old line still have it
+  stripped before the chat goes back to the model and still count towards the chat total; `./stack setup`
+  installs the new filter (version 3).
 - A stopped install keeps its Compose project name. Before, once one checkout ran `./stack down`, another
   set-up checkout with the same name could start on its data volumes (wrong database password) or delete them
   with `./stack uninstall`. The first checkout that starts or changes a project (`setup`, `up`, `update`,

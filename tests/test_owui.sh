@@ -169,7 +169,7 @@ test_cost_prices_json_is_per_token_with_names_and_aliases() {
 }
 
 test_cost_filter_version_matches_module() {
-  assert_eq "$(cost_filter_version)" "2"
+  assert_eq "$(cost_filter_version)" "3"
 }
 
 test_merge_valves_keeps_the_admins_settings() {

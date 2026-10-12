@@ -99,7 +99,7 @@ def test_cost_unknown_price_is_none():
 def test_footer_format():
     t = {"input": 1240, "uncached": 1240, "cache_read": 0, "cache_write": 0, "output": 380}
     s = bc.footer(0.0069, t, "Claude Sonnet 5.5", 0.0412)
-    assert s == "<sub>≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈ $0.0412</sub>"
+    assert s == "*≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈ $0.0412*"
 
 
 def test_footer_mentions_cached_tokens():
@@ -110,7 +110,7 @@ def test_footer_mentions_cached_tokens():
 def test_footer_unknown_price():
     t = {"input": 10, "uncached": 10, "cache_read": 0, "cache_write": 0, "output": 5}
     s = bc.footer(None, t, "M", None)
-    assert s == "<sub>10 in / 5 out · M · price unknown</sub>"
+    assert s == "*10 in / 5 out · M · price unknown*"
 
 
 def test_strip_footer_roundtrip():
@@ -118,9 +118,9 @@ def test_strip_footer_roundtrip():
     with_footer = body + "\n\n" + bc.footer(0.01, {"input": 1, "uncached": 1, "cache_read": 0, "cache_write": 0, "output": 1}, "M", 0.02)
     assert bc.strip_footer(with_footer) == body
     assert bc.strip_footer(body) == body
-    # a <sub> in the middle of an answer is left alone
-    mid = "a <sub>≈ $1 · x</sub> b"
-    assert bc.strip_footer(mid) == mid
+    # a <sub> or italics in the middle of an answer is left alone
+    for mid in ("a <sub>≈ $1 · x</sub> b", "a *≈ $1 · x* b", "*1 in / 2 out*"):
+        assert bc.strip_footer(mid) == mid
 
 
 def test_footer_cost_parses_back():
@@ -153,16 +153,16 @@ def test_outlet_appends_footer_with_chat_total():
     out = run(f.outlet(body))
     content = out["messages"][-1]["content"]
     cost = 1240 * 0.0000022 + 380 * 0.000011
-    assert content.startswith("Answer.\n\n<sub>≈ " + bc.fmt_usd(cost))
+    assert content.startswith("Answer.\n\n*≈ " + bc.fmt_usd(cost))
     assert "Claude Sonnet 5.5" in content
-    assert content.endswith("chat ≈ " + bc.fmt_usd(cost + 0.0343) + "</sub>")
+    assert content.endswith("chat ≈ " + bc.fmt_usd(cost + 0.0343) + "*")
 
 
 def test_outlet_reads_usage_from_info_too():
     f = make_filter()
     body = {"model": "claude-sonnet-5-5", "messages": [{"role": "assistant", "content": "A", "info": {"usage": _usage()}}]}
     out = run(f.outlet(body))
-    assert "<sub>≈ " in out["messages"][-1]["content"]
+    assert "\n\n*≈ " in out["messages"][-1]["content"]
 
 
 def test_outlet_without_usage_leaves_message_alone():
@@ -178,7 +178,7 @@ def test_outlet_is_idempotent():
     once = run(f.outlet(body))["messages"][-1]["content"]
     twice = run(f.outlet(body))["messages"][-1]["content"]
     assert once == twice
-    assert once.count("<sub>") == 1
+    assert once.count("≈") == 2  # one footer: "≈ $…" and "chat ≈ $…"
 
 
 def test_outlet_updates_output_items_as_well():
@@ -199,7 +199,7 @@ def test_outlet_unknown_model_shows_tokens_only():
     f = make_filter()
     body = {"model": "mystery", "messages": [{"role": "assistant", "content": "A", "usage": _usage()}]}
     out = run(f.outlet(body))
-    assert out["messages"][-1]["content"].endswith("<sub>1,240 in / 380 out · mystery · price unknown</sub>")
+    assert out["messages"][-1]["content"].endswith("\n\n*1,240 in / 380 out · mystery · price unknown*")
 
 
 def test_outlet_uses_model_name_from_open_webui_when_not_in_prices():
@@ -289,7 +289,7 @@ def test_chat_total_counts_price_unknown_answers_as_zero():
     ]}
     content = run(f.outlet(body))["messages"][-1]["content"]
     cost = 1240 * 0.0000022 + 380 * 0.000011
-    assert content.endswith("chat ≈ " + bc.fmt_usd(cost) + "</sub>")
+    assert content.endswith("chat ≈ " + bc.fmt_usd(cost) + "*")
 
 
 def test_continue_response_keeps_one_footer():
@@ -297,8 +297,8 @@ def test_continue_response_keeps_one_footer():
     old = bc.footer(0.01, _T, "M", 0.01)
     body = {"model": "claude-sonnet-5-5", "messages": [{"role": "assistant", "content": "A\n\n" + old + " more", "usage": _usage()}]}
     content = run(f.outlet(body))["messages"][-1]["content"]
-    assert content.count("<sub>") == 1
-    assert content.startswith("A more\n\n<sub>")
+    assert content.count("≈") == 2
+    assert content.startswith("A more\n\n*≈ ")
 
 
 def test_price_falls_back_to_base_model_id():
@@ -306,5 +306,51 @@ def test_price_falls_back_to_base_model_id():
     body = {"model": "my-custom-sonnet", "messages": [{"role": "assistant", "content": "A", "usage": _usage()}]}
     model = {"id": "my-custom-sonnet", "name": "Terse Sonnet", "info": {"base_model_id": "claude-sonnet-5-5"}}
     content = run(f.outlet(body, __model__=model))["messages"][-1]["content"]
-    assert content.startswith("A\n\n<sub>≈ $")
+    assert content.startswith("A\n\n*≈ $")
     assert "· Claude Sonnet 5.5 ·" in content
+
+
+# --- version 2 footers (<sub>…</sub>, shown as literal tags by Open WebUI v0.12) ---
+
+_V2 = "<sub>≈ $0.0011 · 9,844 in / 56 out · Claude Haiku 5.5 · chat ≈ $0.0011</sub>"
+_V2_UNKNOWN = "<sub>10 in / 5 out · M · price unknown</sub>"
+
+
+def test_strip_footer_removes_old_sub_footers_too():
+    assert bc.strip_footer("answer\n\n" + _V2) == "answer"
+    assert bc.strip_footer("answer\n\n" + _V2_UNKNOWN) == "answer"
+    new = bc.footer(0.01, _T, "M", 0.02)
+    assert bc.strip_footer("one\n\n" + _V2 + " two\n\n" + new) == "one two"
+
+
+def test_footer_cost_reads_old_and_new_footers():
+    assert abs(bc.footer_cost("a\n\n" + _V2) - 0.0011) < 1e-12
+    assert bc.footer_cost("a\n\n" + _V2_UNKNOWN) == 0.0
+    assert bc.footer_cost(_V2 + " b\n\n" + bc.footer(0.25, _T, "M", 0.3)) == 0.25
+
+
+def test_chat_total_includes_answers_with_old_footers():
+    f = make_filter()
+    body = {"model": "claude-sonnet-5-5", "messages": [
+        {"role": "assistant", "content": "old\n\n" + _V2, "usage": _usage()},
+        {"role": "assistant", "content": "A", "usage": _usage()},
+    ]}
+    content = run(f.outlet(body))["messages"][-1]["content"]
+    cost = 1240 * 0.0000022 + 380 * 0.000011
+    assert content.endswith("chat ≈ " + bc.fmt_usd(cost + 0.0011) + "*")
+    assert "<sub>" not in content
+
+
+def test_inlet_strips_old_sub_footers():
+    f = make_filter()
+    out = run(f.inlet({"messages": [{"role": "assistant", "content": "a1\n\n" + _V2}]}))
+    assert out["messages"][0]["content"] == "a1"
+
+
+def test_footer_is_one_markdown_line_without_html_or_math():
+    s = bc.footer(0.00001, {"input": 9844, "uncached": 9844, "cache_read": 0, "cache_write": 0, "output": 56}, "M", 1234.5)
+    assert "\n" not in s and "<sub>" not in s
+    assert s.startswith("*") and s.endswith("*") and s.count("*") == 2
+    # every "$" is followed by a digit, so Open WebUI's KaTeX rule ("$…$" closed by a "$" before a space or
+    # punctuation) never matches
+    assert all(s[i + 1].isdigit() for i, ch in enumerate(s) if ch == "$")

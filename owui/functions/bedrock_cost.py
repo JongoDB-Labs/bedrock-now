@@ -2,7 +2,7 @@
 title: Bedrock cost
 author: bedrock-now
 description: Adds a small cost line under every answer (this message and the whole chat), priced from bedrock-now's Bedrock price list. Installed and updated by ./stack setup.
-version: 2
+version: 3
 """
 
 # Installed into Open WebUI by ./stack setup (lib/owui.sh) as a global filter function with id
@@ -17,17 +17,22 @@ import re
 
 from pydantic import BaseModel, Field
 
-# The exact shape footer() writes. strip_footer() removes every occurrence anywhere in a message (after
-# "continue response" an old footer sits in the middle) and footer_cost() reads the last one; change all
-# three together.
+# The exact shape footer() writes: one line in italics, "*≈ $0.0069 · 1,240 in / 380 out · Model · chat ≈ $0.04*"
+# (Open WebUI's Markdown renderer shows HTML such as <sub> as literal text, so the footer is plain Markdown; a "$"
+# is always followed by a digit, so its KaTeX "$…$" rule never turns the line into math). Footers written by
+# version 2 used <sub>…</sub> instead; both shapes are recognised so old answers still get stripped and summed.
+# strip_footer() removes every occurrence anywhere in a message (after "continue response" an old footer sits in
+# the middle) and footer_cost() reads the last one; change all three together.
 #
 # Known limit: after "Continue response" the message's usage covers only the continuation, so the new footer
 # (and the chat total built from it) prices only that part; the earlier part's cost is dropped with its old
 # footer, a small undercount. ./stack costs (LiteLLM's spend log) stays exact.
 _COST = r"(?:\$[0-9][0-9,]*\.[0-9]+|<\$0\.0001)"
 _TOKENS = r"[0-9,]+ in(?: \([0-9,]+ cached\))? / [0-9,]+ out · "
-_FOOTER_RE = re.compile(r"[ \t]*\n*[ \t]*<sub>(?:≈ " + _COST + " · )?" + _TOKENS + r"[^<\n]*</sub>(?:[ \t]*(?=\n|\Z))?")
-_FOOTER_COST_RE = re.compile(r"<sub>(?:≈ (" + _COST + ") · )?" + _TOKENS + r"[^<\n]*</sub>")
+_BODY = r"(?:≈ (" + _COST + ") · )?" + _TOKENS
+_SHAPES = r"(?:\*" + _BODY + r"[^*\n]*\*|<sub>" + _BODY + r"[^<\n]*</sub>)"  # italic | legacy <sub>
+_FOOTER_RE = re.compile(r"[ \t]*\n*[ \t]*" + _SHAPES + r"(?:[ \t]*(?=\n|\Z))?")
+_FOOTER_COST_RE = re.compile(_SHAPES)
 
 
 def fmt_usd(v):
@@ -124,8 +129,8 @@ def footer(cost, tokens, name, chat_total):
         toks += " (" + fmt_int(tokens["cache_read"]) + " cached)"
     toks += " / " + fmt_int(tokens["output"]) + " out"
     if cost is None:
-        return "<sub>%s · %s · price unknown</sub>" % (toks, name)
-    return "<sub>≈ %s · %s · %s · chat ≈ %s</sub>" % (fmt_usd(cost), toks, name, fmt_usd(chat_total or cost))
+        return "*%s · %s · price unknown*" % (toks, name)
+    return "*≈ %s · %s · %s · chat ≈ %s*" % (fmt_usd(cost), toks, name, fmt_usd(chat_total or cost))
 
 
 def strip_footer(text):
@@ -143,7 +148,7 @@ def footer_cost(text):
     found = _FOOTER_COST_RE.findall(text)
     if not found:
         return None
-    last = found[-1]
+    last = found[-1][0] or found[-1][1]  # one group per shape: italic, legacy <sub>
     if not last or last.startswith("<"):
         return 0.0
     return float(last[1:].replace(",", ""))
