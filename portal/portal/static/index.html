@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>bedrock-now</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/login.css">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body class="shell">
+<nav class="sidebar" aria-label="Apps">
+  <div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>
+  <ul class="tabs">
+    <li><button type="button" class="tab" data-tab="home" aria-current="page">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-3.5v-4.5h-5V17H4a1 1 0 0 1-1-1z"/></svg>Home</button></li>
+    <li><button type="button" class="tab" data-tab="chat">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H9l-4 3v-3H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>Chat</button>
+      <a class="popout" data-app="chat" target="_blank" rel="noopener" title="Open Chat in its own window" aria-label="Open Chat in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
+    <li><button type="button" class="tab" data-tab="admin">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9m4 7V5m4 11v-5m4 5V7"/></svg>Admin</button>
+      <a class="popout" data-app="admin" target="_blank" rel="noopener" title="Open Admin in its own window" aria-label="Open Admin in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
+    <li><button type="button" class="tab" data-tab="files">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>Files</button>
+      <a class="popout" data-app="files" target="_blank" rel="noopener" title="Open Files in its own window" aria-label="Open Files in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
+  </ul>
+  <form method="post" action="/logout" class="logout"><button type="submit">Sign out</button></form>
+</nav>
+
+<main class="stage">
+  <section id="home" class="home" aria-labelledby="home-title">
+    <header class="home-head">
+      <h1 id="home-title">Home</h1>
+      <p class="updated"><span id="updated">Loading…</span> <button type="button" id="refresh" class="quiet">Refresh</button></p>
+    </header>
+    <p id="load-error" class="banner" hidden></p>
+
+    <div class="grid">
+      <div class="col">
+      <section class="spend" aria-labelledby="spend-title">
+        <h2 id="spend-title">Bedrock spend</h2>
+        <p class="total"><span id="total" class="figure">–</span> <span class="total-note">in the last 30 days, all keys</span></p>
+        <ul id="meters" class="meters"></ul>
+        <p class="note">Each key has a monthly budget that resets on the date shown. Change budgets with <code>BUDGET_*</code> in <code>.env</code>, then run <code>./stack setup</code>.</p>
+      </section>
+
+      <section class="models" aria-labelledby="models-title">
+        <h2 id="models-title">Models your AWS key can use</h2>
+        <p class="note" id="models-note"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Model</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Price (USD)</th><th scope="col">Why</th></tr></thead>
+            <tbody id="models"></tbody>
+          </table>
+        </div>
+      </section>
+      </div>
+      <div class="col">
+      <section class="services" aria-labelledby="svc-title">
+        <h2 id="svc-title">Services</h2>
+        <ul id="services" class="svc-list"></ul>
+      </section>
+
+      <section class="logins" aria-labelledby="logins-title">
+        <h2 id="logins-title">Sign-ins inside Admin and Files</h2>
+        <p class="note">LiteLLM and RustFS still ask for their own sign-in. Copy it from here.</p>
+        <dl id="logins" class="logins-list">
+          <div><dt>Admin (LiteLLM)</dt><dd><span class="cred" data-login="admin" data-field="username">–</span> <button type="button" class="copy" data-login="admin" data-field="username">Copy user</button> <button type="button" class="copy" data-login="admin" data-field="password">Copy password</button></dd></div>
+          <div><dt>Files (RustFS)</dt><dd><span class="cred" data-login="files" data-field="username">–</span> <button type="button" class="copy" data-login="files" data-field="username">Copy access key</button> <button type="button" class="copy" data-login="files" data-field="password">Copy secret key</button></dd></div>
+        </dl>
+      </section>
+
+      <section class="claude" aria-labelledby="claude-title">
+        <h2 id="claude-title">Claude Code in your terminal</h2>
+        <p class="cmdline"><code id="claude-cmd">claude-bedrock</code> <button type="button" class="copy" id="copy-claude">Copy</button></p>
+        <p class="note">Runs Claude Code against Bedrock through this stack; plain <code>claude</code> is unchanged. Its spend shows in Bedrock spend, under Claude Code.</p>
+      </section>
+      </div>
+    </div>
+  </section>
+  <div id="frames" class="frames"></div>
+  <p id="toast" class="toast" role="status" aria-live="polite"></p>
+</main>
+</body>
+</html>

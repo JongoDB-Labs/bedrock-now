@@ -116,10 +116,16 @@ def test_logout_revokes_sessions(client):
 def test_index_requires_session(client):
     r = client.get("/")
     assert r.status_code == 302 and r.headers["location"] == "http://bedrock-now.localhost/login"
+    login(client)
+    r = client.get("/")
+    assert r.status_code == 200 and 'id="home"' in r.text
+    csp = r.headers["content-security-policy"]
+    assert "frame-src http://chat.bedrock-now.localhost http://admin.bedrock-now.localhost http://files.bedrock-now.localhost" in csp
+    assert "script-src 'self'" in csp and "unsafe-inline" not in csp
 
 
-def test_login_assets_load(client):
-    for path in ("/static/login.css", "/static/logo.svg", "/favicon.svg"):
+def test_static_assets_load(client):
+    for path in ("/static/app.js", "/static/app.css", "/static/login.css", "/static/logo.svg", "/favicon.svg"):
         assert client.get(path).status_code == 200, path
 
 
@@ -136,7 +142,7 @@ def test_api_requires_session_and_header(client):
 
 def test_secrets_never_in_html(client):
     login(client)
-    for path in ("/login",):
+    for path in ("/", "/login", "/static/app.js"):
         body = client.get(path).text
         for secret in ("ui-pass", "rustfs-secret", "sk-master", "sk-cc", "correct horse"):
             assert secret not in body
