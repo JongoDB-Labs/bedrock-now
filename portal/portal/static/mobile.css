@@ -21,7 +21,8 @@
 
 /* Touch screens: every control at least 44 px tall. */
 @media (pointer: coarse) {
-  .chip, .copy, .quiet, .logout button { min-height: 44px; }
+  .chip, .copy, .quiet, .logout button, .action { min-height: 44px; }
+  #update-link { display: inline-block; min-height: 44px; line-height: 44px; }
   .chip, .quiet { padding-inline: 14px; }
   .popout { width: 44px; height: 44px; }
   .tab { min-height: 44px; }
@@ -92,7 +93,15 @@
   .grid { display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; }
   .col { display: contents; }
   .col > section { padding: 16px; border-radius: 12px; }
-  .spend { order: 1; } .services { order: 2; } .models { order: 3; } .logins { order: 4; }
+  .spend { order: 1; } .services { order: 2; } .models { order: 3; } .logins { order: 4; } .maint { order: 5; }
+
+  /* Update card and progress, compact: the release and the button (if this device may use it); the step list
+     and the terminal command are for the desktop. */
+  .update-card, .job { margin-top: 14px; padding: 16px; }
+  .update-card .update-sub, #update-steps, #update-card .cmdline code, #copy-update { display: none; }
+  #update-card .cmdline .action { margin-left: 0; }
+  .action { min-height: 44px; padding-inline: 16px; }
+  .admin-off .maint-actions, .admin-off #update-now { display: none; }
   .claude { display: none; }
   .figure { font-size: 38px; }
   .total { margin-bottom: 14px; }

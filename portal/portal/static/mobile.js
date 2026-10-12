@@ -128,6 +128,18 @@
     set(PHONE.matches); count();
   }
 
+  // --- Update card and Maintenance on a phone: the one-click buttons only when this device may use them
+  // (remote access has them off unless REMOTE_ADMIN_ACTIONS=true; the API answers 403 anyway).
+  document.addEventListener("bn:admin", (e) => {
+    const a = e.detail || {};
+    const usable = Boolean(a.running && a.allowed);
+    document.body.classList.toggle("admin-off", !usable);
+    if (!PHONE.matches || usable) return;
+    const where = "on the computer running bedrock-now";
+    if (a.running) $("#maint-state").textContent = `Update, Rollback and Clean are off on this device: use a desktop browser ${where}.`;
+    $("#update-hint").textContent = `To update, run ./stack update ${where}, or use Home in a desktop browser there.`;
+  });
+
   document.addEventListener("bn:tab", (e) => {
     current = e.detail;
     const hint = $("#frames .voice-hint");

@@ -295,6 +295,7 @@ function renderAdmin(a) {
   $("#update-hint").textContent = usable ? "Or click Update now: the update helper runs it for you (asks for the portal password)."
     : "Run it in your bedrock-now folder. (./stack helper install adds a one-click button here.)";
   renderJob(a.job, a.in_progress);
+  document.dispatchEvent(new CustomEvent("bn:admin", { detail: a }));  // mobile.js: phone wording
 }
 
 function dismissed(id) { try { return localStorage.getItem("bn.job.dismissed") === id; } catch (_) { return false; } }

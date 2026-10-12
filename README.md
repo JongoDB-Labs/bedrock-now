@@ -95,11 +95,13 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   http it can still add a shortcut). It opens full screen with the bedrock-now icon, like any other app.
 - **Phone layout:** a tab bar at the bottom with **Home** and **Chat**; the phone opens on Chat and then
   remembers the tab you used last. Home is compact: total spend and each key's budget bar, one health line
-  (tap it for every service), the update notice when there is one, and the models as cards with an
+  (tap it for every service), the update card when there is one, and the models as cards with an
   **Enabled only** filter (on by default on a phone). Chat fills the screen and shrinks above the keyboard, so
   the message box stays visible.
 - **Admin and Files** are desktop apps: on a phone they sit under **Desktop** in the tab bar and open in a new
   browser tab (they still ask for their own sign-in, copied from the bottom of Home). **Sign out** is there too.
+  Update, Rollback and Clean are off from a phone unless `REMOTE_ADMIN_ACTIONS=true`; Home then says to use a
+  desktop browser on the computer running bedrock-now.
 - **Tablets** get the sidebar as a row of icons.
 - **Dictation on iPhone and iPad:** use the 🎤 on the keyboard. It works in any text box, runs on the device,
   and does not need Open WebUI's microphone button (Chat shows this tip once; ✕ hides it for good).

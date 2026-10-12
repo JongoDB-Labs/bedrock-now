@@ -107,7 +107,8 @@ All notable changes to bedrock-now are documented here. The format follows
   reach bedrock-now" page when the network is down; `/api/*` and everything else pass straight through.
 - **Phone layout (under 768 px):** bottom tab bar with Home and Chat (phones open on Chat, then the last tab);
   Admin, Files and Sign out under **Desktop**, opening in a new tab. Compact Home: spend and budget bars, a
-  one-line health summary that expands, an `#update-notice` slot, models as cards with an **Enabled only**
+  one-line health summary that expands, the update card without the desktop-only parts (one-click buttons only
+  when allowed for this device), models as cards with an **Enabled only**
   filter, sign-ins. Chat fills the screen and follows the on-screen keyboard (visualViewport), with
   safe-area insets for notched phones. On iPhone and iPad, Chat shows a dismissible tip to use the keyboard's
   dictation.

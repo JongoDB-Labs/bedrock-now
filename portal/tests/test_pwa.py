@@ -102,7 +102,7 @@ def test_shell_links_manifest_icons_and_mobile_modules(client):
     for needle in ('rel="manifest" href="/manifest.webmanifest"', 'rel="apple-touch-icon" href="/icons/app-touch-180.png"',
                    "viewport-fit=cover", 'name="apple-mobile-web-app-capable" content="yes"',
                    'name="theme-color"', '(prefers-color-scheme: dark)',
-                   'src="/static/mobile.js"', 'href="/static/mobile.css"', 'id="update-notice"'):
+                   'src="/static/mobile.js"', 'href="/static/mobile.css"'):
         assert needle in page, needle
 
 
