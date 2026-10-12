@@ -28,7 +28,7 @@ All notable changes to bedrock-now are documented here. The format follows
 - `./stack test` reaches the apps the way a browser does: through Caddy with a portal session (cookie in a
   mode-600 file, deleted afterwards). It also checks that a forged `X-Portal-User` without a session, a
   foreign `next=` and unknown host names are refused, and that Chat, Admin and Files may be framed only by the
-  portal.
+  portal. A cookie file it creates is removed even when a check fails.
 
 ### Changed
 

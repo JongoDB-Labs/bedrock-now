@@ -111,3 +111,44 @@ test_status_table_shows_portal_urls() {
 test_image_size_knows_caddy() {
   assert_eq "$(image_size_mb caddy:2.11.7-alpine@sha256:abc)" 90
 }
+
+# --- ./stack test: the browser path through Caddy (stubbed) ---
+
+# _fake_caddy: answers like a healthy portal; FRAME_CSP overrides what the apps send.
+_fake_caddy() {
+  portal_curl() {
+    local sub="$1" path="$2" hdr='' prev='' a; shift 2
+    for a in "$@"; do [ "$prev" = -D ] && hdr="$a"; prev="$a"; done
+    local code=200 h=''
+    case "$sub:$path:${PORTAL_JAR:-}" in
+      ':/login:'*) code=200 ;;
+      chat:/:) code=302; h="Location: $(portal_url)/login?next=x" ;;
+      chat:/api/v1/auths/signin:) code=401 ;;
+      nope:*) code=404 ;;
+      :/login\?next=*) code=303; h="Location: /" ;;
+      chat:/*|admin:/*|files:/*) h="Content-Security-Policy: ${FRAME_CSP:-frame-ancestors $(portal_url)}" ;;
+    esac
+    [ -z "$hdr" ] || printf '%s\r\n' "$h" > "$hdr"
+    case " $* " in *" -w "*) printf '%s' "$code" ;; esac
+  }
+  portal_curl_auth() { shift; echo '"o"'; }
+  portal_session_start() { PORTAL_JAR="$(mktemp "$STATE_DIR/portal-session.XXXXXX")"; JAR_SEEN="$PORTAL_JAR"; }
+}
+
+test_test_portal_passes_and_deletes_the_session_file() {
+  printf 'PORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=8800\nCLAUDE_BEDROCK_OPUS_MODEL=o\n' > "$ENV_FILE"; mkdir -p "$STATE_DIR"
+  _fake_caddy; fails=0
+  out="$(_test_portal; echo "fails=$fails")"
+  assert_contains "$out" "fails=0"
+  assert_contains "$out" "ok    admin. loads, framable only by the portal"
+  _test_portal >/dev/null
+  [ ! -e "$JAR_SEEN" ] || { echo "session file left behind" >&2; return 1; }
+}
+
+test_test_portal_flags_a_frameable_app() {
+  printf 'PORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\n' > "$ENV_FILE"; mkdir -p "$STATE_DIR"
+  _fake_caddy; fails=0; FRAME_CSP="frame-ancestors *"
+  out="$(_test_portal; echo "fails=$fails")"
+  assert_contains "$out" "FAIL  admin. loads, framable only by the portal"
+  assert_contains "$out" "fails=3"
+}

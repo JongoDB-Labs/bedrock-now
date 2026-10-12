@@ -103,7 +103,7 @@ and re-checks which models work.
 ./stack up | down          # start / stop (data is kept)
 ./stack status             # services, health + URLs
 ./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy
-./stack test               # end-to-end smoke test (~$0.0001, on the setup key)
+./stack test               # end-to-end smoke test, incl. the portal login and its refusals (~$0.0001, setup key)
 ./stack costs              # prices for your models + spend per key
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else (NO_COLOR=1 turns colours off)
