@@ -144,6 +144,11 @@ test_render_env_login_switch() {
   assert_contains "$out" "litellm_settings:"
 }
 
+test_render_never_calls_the_breached_password_service() {
+  # LiteLLM 1.105 checks haveibeenpwned.com by default (password_policy_check_breached_passwords)
+  assert_contains "$(CATALOG="$FIX" render_litellm_config "" us-east-1 false)" "  password_policy_check_breached_passwords: false"
+}
+
 test_catalog_ships_without_legacy_aliases() {
   assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-"')" ""
   assert_contains "$(render_litellm_config "" us-east-1 false)" "model_group_alias: {}"

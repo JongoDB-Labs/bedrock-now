@@ -2,7 +2,7 @@
 title: Bedrock cost
 author: bedrock-now
 description: Adds a small cost line under every answer (this message and the whole chat), priced from bedrock-now's Bedrock price list. Installed and updated by ./stack setup.
-version: 1
+version: 2
 """
 
 # Installed into Open WebUI by ./stack setup (lib/owui.sh) as a global filter function with id
@@ -17,10 +17,13 @@ import re
 
 from pydantic import BaseModel, Field
 
-# The footer always starts with "<sub>" and sits at the very end of an answer. strip_footer() and
-# footer_cost() rely on that shape; change them together.
-_FOOTER_RE = re.compile(r"\s*<sub>(?:≈ (?:\$[0-9][0-9,]*\.[0-9]+|<\$0\.0001) · )?[0-9,]+ in[^<\n]*</sub>\s*$")
-_FOOTER_COST_RE = re.compile(r"<sub>≈ (\$[0-9][0-9,]*\.[0-9]+|<\$0\.0001) · [^<\n]*</sub>\s*$")
+# The exact shape footer() writes. strip_footer() removes every occurrence anywhere in a message (after
+# "continue response" an old footer sits in the middle) and footer_cost() reads the last one; change all
+# three together.
+_COST = r"(?:\$[0-9][0-9,]*\.[0-9]+|<\$0\.0001)"
+_TOKENS = r"[0-9,]+ in(?: \([0-9,]+ cached\))? / [0-9,]+ out · "
+_FOOTER_RE = re.compile(r"[ \t]*\n*[ \t]*<sub>(?:≈ " + _COST + " · )?" + _TOKENS + r"[^<\n]*</sub>(?:[ \t]*(?=\n|\Z))?")
+_FOOTER_COST_RE = re.compile(r"<sub>(?:≈ (" + _COST + ") · )?" + _TOKENS + r"[^<\n]*</sub>")
 
 
 def fmt_usd(v):
@@ -31,7 +34,7 @@ def fmt_usd(v):
         return "<$0.0001"
     if round(v, 2) < 1:
         return "$%.4f" % v
-    return "$%.2f" % v
+    return "${:,.2f}".format(v)
 
 
 def fmt_int(n):
@@ -122,21 +125,24 @@ def footer(cost, tokens, name, chat_total):
 
 
 def strip_footer(text):
+    """TEXT without any cost footer (all of them, wherever they are), trailing whitespace trimmed."""
     if not isinstance(text, str):
         return text
-    return _FOOTER_RE.sub("", text)
+    out = _FOOTER_RE.sub("", text)
+    return out.rstrip() if out != text else text
 
 
 def footer_cost(text):
-    """The per-message cost a footer at the end of TEXT shows, or None if there is none."""
+    """The cost the last footer in TEXT shows (0 for "price unknown" or crumbs), or None without a footer."""
     if not isinstance(text, str):
         return None
-    m = _FOOTER_COST_RE.search(text)
-    if not m:
+    found = _FOOTER_COST_RE.findall(text)
+    if not found:
         return None
-    if m.group(1).startswith("<"):
+    last = found[-1]
+    if not last or last.startswith("<"):
         return 0.0
-    return float(m.group(1)[1:].replace(",", ""))
+    return float(last[1:].replace(",", ""))
 
 
 def _text(message):
@@ -229,6 +235,10 @@ class Filter:
         model_id = body.get("model") if isinstance(body.get("model"), str) else ""
         prices = self._prices()
         price = prices.get(model_id) if isinstance(prices.get(model_id), dict) else None
+        if price is None and isinstance(model, dict) and isinstance(model.get("info"), dict):
+            base = model["info"].get("base_model_id")  # a custom model built on a Bedrock one
+            if isinstance(base, str) and isinstance(prices.get(base), dict):
+                price = prices[base]
         name = (price or {}).get("name")
         if not isinstance(name, str) or not name:
             name = (model or {}).get("name") if isinstance(model, dict) else None

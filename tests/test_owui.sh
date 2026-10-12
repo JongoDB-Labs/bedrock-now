@@ -158,59 +158,103 @@ test_cost_prices_json_is_per_token_with_names_and_aliases() {
   assert_not_contains "$out" '"img"'
   assert_not_contains "$out" '"rr"'
   case "$out" in '{"big"'*'}') ;; *) echo "not an object: $out" >&2; return 1 ;; esac
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$(cost_valves_json)" | python3 -c 'import json,sys; v=json.load(sys.stdin); p=json.loads(v["prices_json"]); assert p["small"]["output_cost_per_token"] == 5.5e-07'
-  fi
 }
 
 test_cost_filter_version_matches_module() {
-  assert_eq "$(cost_filter_version)" "1"
+  assert_eq "$(cost_filter_version)" "2"
 }
 
-test_install_cost_filter_creates_enables_and_sets_prices() {
+test_merge_valves_keeps_the_admins_settings() {
   _need_python || return 77
-  _fixtures; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf 'small\n' > "$TMP/litellm/enabled-models.txt"
   _stub_owui
-  get_reply() { echo '401 {"detail":"not found"}'; }
+  out="$(printf '%s' '{"priority":5,"enabled":false,"prices_json":"{}"}' | owui_merge_valves '{"m":{"name":"M"}}')"
+  assert_eq "$out" '{"priority": 5, "enabled": false, "prices_json": "{\"m\":{\"name\":\"M\"}}"}'
+  assert_eq "$(printf '%s' 'null' | owui_merge_valves '{}')" '{"prices_json": "{}"}'
+  assert_eq "$(printf '%s' '{"prices_json":"{}"}' | owui_merge_valves '{}')" ''   # unchanged: no POST
+}
+
+# Cost filter stub: a tiny module whose installed copy matches when $REMOTE_CONTENT is its text.
+_stub_filter() {
+  _fixtures; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf 'small\n' > "$TMP/litellm/enabled-models.txt"
+  COST_FILTER_FILE="$TMP/f.py"; printf 'x = 1\n' > "$COST_FILTER_FILE"
+  _stub_owui
+  get_reply() {
+    case "$1" in
+      */valves) echo "${VALVES_REPLY:-200 null}" ;;
+      *) echo "$FUNC_REPLY" ;;
+    esac
+  }
+}
+
+test_install_cost_filter_first_install_enables_and_sets_prices() {
+  _need_python || return 77
+  _stub_filter
+  FUNC_REPLY='401 {"detail":"not found"}'
   POST_BODY='{"id":"bedrock_cost","is_active":false,"is_global":false}' owui_install_cost_filter 2> "$TMP/err"
   p="$(cat "$TMP/posts")"
-  assert_contains "$p" '/api/v1/functions/create {"id": "bedrock_cost", "name": "Bedrock cost", "content": "\"\"\"\ntitle: Bedrock cost'
+  assert_contains "$p" '/api/v1/functions/create {"id": "bedrock_cost", "name": "Bedrock cost", "content": "x = 1\n"'
   assert_contains "$p" '/api/v1/functions/id/bedrock_cost/toggle {}'
   assert_contains "$p" '/api/v1/functions/id/bedrock_cost/toggle/global {}'
-  assert_contains "$p" '/api/v1/functions/id/bedrock_cost/valves/update {"prices_json":"{\"small\":{\"name\":\"Small One\"'
+  assert_contains "$p" '/api/v1/functions/id/bedrock_cost/valves/update {"prices_json": "{\"small\":{\"name\":\"Small One\"'
+  assert_eq "$(get_env OWUI_COST_FILTER_INSTALLED)" true
   assert_contains "$(cat "$TMP/err")" "cost of each answer"
 }
 
 test_install_cost_filter_is_idempotent() {
-  _fixtures; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf 'small\n' > "$TMP/litellm/enabled-models.txt"
-  _stub_owui
-  get_reply() { echo '200 {"id":"bedrock_cost","is_active":true,"is_global":true,"meta":{"manifest":{"version":"1"}}}'; }
+  _need_python || return 77
+  _stub_filter
+  printf 'OWUI_COST_FILTER_INSTALLED=true\n' >> "$ENV_FILE"
+  FUNC_REPLY='200 {"id":"bedrock_cost","content":"x = 1\n","is_active":true,"is_global":true}'
+  VALVES_REPLY="200 {\"prices_json\":\"$(cost_prices_json | sed 's/"/\\"/g')\"}"
   owui_install_cost_filter 2>/dev/null
-  p="$(cat "$TMP/posts")"
-  assert_not_contains "$p" "/create"
-  assert_not_contains "$p" "/update {\"id\""
-  assert_not_contains "$p" "toggle"
-  assert_contains "$p" "/valves/update"
+  assert_eq "$(cat "$TMP/posts")" ""
 }
 
-test_install_cost_filter_updates_an_old_version_without_retoggling() {
+test_install_cost_filter_updates_changed_code_and_respects_admin_switches() {
   _need_python || return 77
-  _fixtures; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf 'small\n' > "$TMP/litellm/enabled-models.txt"
-  _stub_owui
-  get_reply() { echo '200 {"id":"bedrock_cost","is_active":true,"is_global":true,"meta":{"manifest":{"version":"0"}}}'; }
-  POST_BODY='{"id":"bedrock_cost","is_active":true,"is_global":true}' owui_install_cost_filter 2>/dev/null
+  _stub_filter
+  printf 'OWUI_COST_FILTER_INSTALLED=true\n' >> "$ENV_FILE"
+  # same version line, different code: the hash decides; the admin turned the filter off and set a priority
+  FUNC_REPLY='200 {"id":"bedrock_cost","content":"x = 0\n","is_active":false,"is_global":false}'
+  VALVES_REPLY='200 {"priority":7,"enabled":true,"prices_json":"{}"}'
+  POST_BODY='{"id":"bedrock_cost","is_active":false,"is_global":false}' owui_install_cost_filter 2>/dev/null
   p="$(cat "$TMP/posts")"
   assert_contains "$p" '/api/v1/functions/id/bedrock_cost/update {"id": "bedrock_cost"'
   assert_not_contains "$p" "toggle"
+  assert_contains "$p" '/valves/update {"priority": 7, "enabled": true, "prices_json": "{\"small\"'
+}
+
+test_install_cost_filter_reinstalls_a_deleted_filter() {
+  _need_python || return 77
+  _stub_filter
+  printf 'OWUI_COST_FILTER_INSTALLED=true\n' >> "$ENV_FILE"
+  FUNC_REPLY='401 {"detail":"not found"}'
+  POST_BODY='{"id":"bedrock_cost","is_active":false,"is_global":false}' owui_install_cost_filter 2>/dev/null
+  p="$(cat "$TMP/posts")"
+  assert_contains "$p" "/api/v1/functions/create"
+  assert_contains "$p" "/toggle {}"
 }
 
 test_install_cost_filter_never_fails() {
-  _fixtures; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf 'small\n' > "$TMP/litellm/enabled-models.txt"
-  _stub_owui
-  get_reply() { echo '000 '; }
+  _stub_filter
+  FUNC_REPLY='000 '
   dc() { cat >/dev/null; return 1; }
   owui_install_cost_filter 2> "$TMP/err"
   assert_contains "$(cat "$TMP/err")" "could not prepare the cost filter"
+  _need_python || return 77
+  _stub_filter
+  FUNC_REPLY='200 {"content":"x = 1\n","is_active":true,"is_global":true}'
+  printf 'OWUI_COST_FILTER_INSTALLED=true\n' >> "$ENV_FILE"
+  VALVES_REPLY='000 '
+  owui_install_cost_filter 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "prices not updated"
+}
+
+test_file_sha256_matches_python_hash() {
+  _need_python || return 77
+  _stub_owui
+  printf 'x = 1\n' > "$TMP/f.py"
+  assert_eq "$(file_sha256 "$TMP/f.py")" "$(printf '%s' '{"content":"x = 1\n"}' | owui_function_hash)"
 }
 
 # --- budget banner ---
@@ -352,16 +396,16 @@ test_db_admin_failure_reports_step() {
   assert_contains "$LITELLM_ADMIN_ERR" "setting LITELLM_UI_PASSWORD failed (HTTP 400)"
 }
 
-test_setup_litellm_admin_upgrades_password_and_turns_env_login_off_once() {
-  printf 'LITELLM_UI_PASSWORD=0123456789abcdef01234567\n' > "$ENV_FILE"
+test_setup_litellm_admin_turns_env_login_off_once() {
+  printf 'LITELLM_UI_PASSWORD=Bn9-0123456789ab\n' > "$ENV_FILE"
   ensure_litellm_db_admin() { echo "admin with $(get_env LITELLM_UI_PASSWORD)" >> "$TMP/calls"; }
   render_config() { echo "render $(get_env LITELLM_DB_ADMIN_READY)" >> "$TMP/calls"; }
   run_phase() { echo "restart" >> "$TMP/calls"; }
   setup_litellm_admin 2>/dev/null
-  assert_eq "$(cat "$TMP/calls")" "$(printf 'admin with Bn9-0123456789abcdef01234567\nrender true\nrestart')"
+  assert_eq "$(cat "$TMP/calls")" "$(printf 'admin with Bn9-0123456789ab\nrender true\nrestart')"
   : > "$TMP/calls"
   setup_litellm_admin 2>/dev/null
-  assert_eq "$(cat "$TMP/calls")" "admin with Bn9-0123456789abcdef01234567"   # no second restart, no double prefix
+  assert_eq "$(cat "$TMP/calls")" "admin with Bn9-0123456789ab"   # no second restart
 }
 
 test_setup_litellm_admin_failure_keeps_env_login() {
@@ -369,7 +413,73 @@ test_setup_litellm_admin_failure_keeps_env_login() {
   ensure_litellm_db_admin() { LITELLM_ADMIN_ERR="boom"; return 1; }
   render_config() { echo render >> "$TMP/calls"; }
   setup_litellm_admin 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/err")" "could not create the LiteLLM admin account (boom)"
+  assert_contains "$(cat "$TMP/err")" "could not create the LiteLLM admin account (boom) — keeping the admin / LITELLM_UI_PASSWORD login"
   assert_eq "$(get_env LITELLM_DB_ADMIN_READY)" ""
   assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+}
+
+test_setup_litellm_admin_failure_after_ready_does_not_claim_env_login() {
+  printf 'LITELLM_UI_PASSWORD=Bn9-0123456789ab\nLITELLM_DB_ADMIN_READY=true\n' > "$ENV_FILE"
+  ensure_litellm_db_admin() { LITELLM_ADMIN_ERR="creating the user failed (HTTP 000)"; return 1; }
+  setup_litellm_admin 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "could not check the LiteLLM admin account"
+  assert_not_contains "$(cat "$TMP/err")" "keeping the admin"
+  assert_eq "$(get_env LITELLM_DB_ADMIN_READY)" "true"
+}
+
+test_upgrade_litellm_password() {
+  printf 'LITELLM_UI_PASSWORD=0123456789abcdef01234567\n' > "$ENV_FILE"
+  upgrade_litellm_password 2>/dev/null
+  assert_eq "$(get_env LITELLM_UI_PASSWORD)" "Bn9-0123456789abcdef01234567"
+  upgrade_litellm_password 2>/dev/null
+  assert_eq "$(get_env LITELLM_UI_PASSWORD)" "Bn9-0123456789abcdef01234567"   # once only, no Bn9-Bn9-
+  printf 'LITELLM_UI_PASSWORD=Bn9-short\n' > "$ENV_FILE"   # a prefixed value that still fails: replaced
+  upgrade_litellm_password 2> "$TMP/err"
+  pw="$(get_env LITELLM_UI_PASSWORD)"
+  litellm_password_ok "$pw" || return 1
+  case "$pw" in Bn9-Bn9-*) return 1 ;; esac
+  assert_contains "$(cat "$TMP/err")" "generated a new one"
+  printf 'LITELLM_UI_PASSWORD=abc\n' > "$ENV_FILE"   # too short even with the prefix
+  upgrade_litellm_password 2>/dev/null
+  litellm_password_ok "$(get_env LITELLM_UI_PASSWORD)" || return 1
+  printf 'LITELLM_UI_PASSWORD=My-Own-Pass-123\n' > "$ENV_FILE"   # compliant hand-set value is left alone
+  upgrade_litellm_password
+  assert_eq "$(get_env LITELLM_UI_PASSWORD)" "My-Own-Pass-123"
+}
+
+# --- icons ---
+
+test_icon_url_inlines_svg_files_offline() {
+  printf '# n\td\ti\tt\nbig\tBig\tanthropic\t-\nurl\tU\thttps://example.test/i.png\t-\nbad\tB\t../x\t-\nnone\tN\t-\t-\n' > "$TMP/d.tsv"
+  DISPLAY_CATALOG="$TMP/d.tsv"
+  out="$(icon_url big)"
+  case "$out" in data:image/svg+xml\;base64,*) ;; *) echo "not a data URI: $out" >&2; return 1 ;; esac
+  assert_contains "$(printf '%s' "${out#data:image/svg+xml;base64,}" | openssl base64 -d -A)" 'id="bedrock-now-icon"'
+  assert_eq "$(icon_url url)" "https://example.test/i.png"
+  assert_eq "$(icon_url bad)" ""
+  assert_eq "$(icon_url none)" ""
+}
+
+test_every_real_catalog_icon_exists_and_is_local() {
+  missing="$(catalog_rows | while IFS=$'\t' read -r n _; do [ -n "$(icon_url "$n")" ] || echo "$n"; done)"
+  assert_eq "$missing" ""
+  assert_eq "$(grep -ho 'https\?://[^"]*' "$STACK_DIR"/catalog/icons/*.svg | sort -u)" "http://www.w3.org/2000/svg"
+}
+
+test_owui_create_payload_carries_icon() {
+  assert_contains "$(owui_model_json big B d '[]' false 'data:image/svg+xml;base64,AAA')" '"tags":[],"profile_image_url":"data:image/svg+xml;base64,AAA"}'
+}
+
+test_owui_merge_sets_icon_but_respects_a_users_own() {
+  _need_python || return 77
+  _stub_owui
+  ours="data:image/svg+xml;base64,$(printf '<svg id="bedrock-now-icon"/>' | openssl base64 -A)"
+  newer="data:image/svg+xml;base64,$(printf '<svg id="bedrock-now-icon" v="2"/>' | openssl base64 -A)"
+  for cur in '' '"profile_image_url":"/static/favicon.png",' "\"profile_image_url\":\"$ours\","; do
+    out="$(printf '{"id":"big","name":"B","meta":{%s"description":"d","tags":[]}}' "$cur" | owui_merge_model B B d '[]' false "$newer")"
+    assert_contains "$out" "\"profile_image_url\": \"$newer\""
+  done
+  mine='data:image/png;base64,iVBORw0KGgo='
+  out="$(printf '{"id":"big","name":"B","meta":{"profile_image_url":"%s","description":"d","tags":[]}}' "$mine" | owui_merge_model B B d '[]' false "$newer")"
+  assert_eq "$out" ""   # nothing to change: the user's icon stays
 }

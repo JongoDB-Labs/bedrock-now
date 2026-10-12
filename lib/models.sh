@@ -150,6 +150,7 @@ general_settings:
   database_url: os.environ/DATABASE_URL
   store_prompts_in_spend_logs: $store
   maximum_spend_logs_retention_period: "90d"
+  password_policy_check_breached_passwords: false   # no haveibeenpwned.com call (Bedrock-only rule)
 EOT
   [ "$env_login_off" != true ] || printf '  disable_env_credential_login: true\n'
   cat <<EOT

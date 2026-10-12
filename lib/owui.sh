@@ -22,6 +22,21 @@ display_field() {
 
 display_name() { local d; d="$(display_field "$1" 2)"; printf '%s\n' "${d:-$1}"; }
 
+ICONS_DIR="${ICONS_DIR:-$STACK_DIR/catalog/icons}"
+
+# icon_url NAME -> the picker icon for NAME: a catalog/icons/<key>.svg as an inline data: URI (no network
+# needed), a data:/http(s)/absolute URL as written, or nothing.
+icon_url() {
+  local v; v="$(display_field "$1" 3)"
+  case "$v" in
+    '') ;;
+    data:* | http://* | https://* | /*) printf '%s\n' "$v" ;;
+    *[!a-z0-9_-]*) ;;
+    *) [ -r "$ICONS_DIR/$v.svg" ] && printf 'data:image/svg+xml;base64,%s\n' "$(openssl base64 -A < "$ICONS_DIR/$v.svg")" ;;
+  esac
+  return 0
+}
+
 # model_tier NAME -> "$" (< $0.50), "$$" (< $3.00) or "$$$" by input price per 1M tokens; empty without one.
 # Input price alone keeps the tiers stable and easy to explain; output is usually 4-5x input on Bedrock.
 model_tier() {
@@ -72,26 +87,38 @@ _owui_py() { local s="$1"; shift; dc exec -T open-webui python3 -c "$s" "$@"; }
 
 # --- models: friendly names, prices, hidden helper models ---
 
-# owui_model_json ID NAME DESCRIPTION TAGS_JSON HIDDEN(true|false) -> Open WebUI v0.12 ModelForm for a NEW
-# base-model override (same id as the LiteLLM model, base_model_id null) readable by every user.
-# No JSON escaping: ids/names come from catalog/*.tsv and descriptions from price_label (no quotes/backslashes).
+# owui_model_json ID NAME DESCRIPTION TAGS_JSON HIDDEN(true|false) [ICON_URL] -> Open WebUI v0.12 ModelForm for
+# a NEW base-model override (same id as the LiteLLM model, base_model_id null) readable by every user.
+# No JSON escaping: ids/names come from catalog/*.tsv, descriptions from price_label and icons are
+# base64/URLs (no quotes/backslashes).
 owui_model_json() {
-  local hidden=''
-  [ "$5" = true ] && hidden=',"hidden":true'
+  local extra=''
+  [ "$5" = true ] && extra=',"hidden":true'
+  [ -z "${6:-}" ] || extra="$extra,\"profile_image_url\":\"$6\""
   printf '{"id":"%s","name":"%s","base_model_id":null,"meta":{"description":"%s","tags":%s%s},"params":{},"access_grants":[{"principal_type":"user","principal_id":"*","permission":"read"}],"is_active":true}' \
-    "$1" "$2" "$3" "$4" "$hidden"
+    "$1" "$2" "$3" "$4" "$extra"
 }
 
-# owui_merge_model NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN < model JSON (GET /api/v1/models/model)
+# owui_merge_model NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN ICON_URL < model JSON (GET /api/v1/models/model)
 # -> the updated JSON, or nothing when it is already up to date. User customisations survive:
 #   - name changes only while it is still one we generated (the id, DISPLAY, or "DISPLAY · <tier>");
-#   - user tags are kept (only the tier tags and "Bedrock" are ours);
+#   - user tags are kept, but ours (tier, "Bedrock", the display.tsv tags) are re-added every setup;
+#   - the icon changes only while it is unset, Open WebUI's default, or one of ours (catalog/icons SVGs
+#     carry id="bedrock-now-icon");
 #   - hidden is set only when the user never chose (an unhidden helper model stays visible);
 #   - params, capabilities, knowledge, system prompt and access grants are untouched.
+# Known leftovers: after a display_name change in catalog/display.tsv the old generated name no longer
+# matches, so it stays until renamed by hand; a vendor tag removed from display.tsv stays as a user tag.
 owui_merge_model() {
   # shellcheck disable=SC2016  # Python source, not shell
-  _owui_py 'import json, sys
-name, display, desc, tags, hidden = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5] == "true"
+  _owui_py 'import base64, json, sys
+name, display, desc, tags, hidden, icon = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5] == "true", sys.argv[6]
+def our_icon(url):
+    p = "data:image/svg+xml;base64,"
+    try:
+        return url.startswith(p) and b"bedrock-now-icon" in base64.b64decode(url[len(p):])
+    except Exception:
+        return False
 d = json.load(sys.stdin)
 before = json.dumps(d, sort_keys=True)
 meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
@@ -105,24 +132,28 @@ kept = [t for t in (meta.get("tags") or []) if isinstance(t, dict) and t.get("na
 meta["tags"] = tags + kept
 if hidden and "hidden" not in meta:
     meta["hidden"] = True
+cur_icon = meta.get("profile_image_url")
+if icon and (cur_icon in (None, "", "/static/favicon.png") or (isinstance(cur_icon, str) and our_icon(cur_icon))):
+    meta["profile_image_url"] = icon
 if json.dumps(d, sort_keys=True) != before:
     json.dump(d, sys.stdout)' "$@"
 }
 
-# owui_upsert_model ID NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN -> 0 when Open WebUI is up to date.
-# On failure OWUI_ERR says why.
+# owui_upsert_model ID NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN [ICON_URL] -> 0 when Open WebUI is up to
+# date. On failure OWUI_ERR says why.
 owui_upsert_model() {
   local tmp code body
   tmp="$(mktemp)"
   code="$(_owui_get "/api/v1/models/model?id=$1" "$tmp")"
   if [ "$code" = 200 ]; then
-    if ! body="$(owui_merge_model "$2" "$3" "$4" "$5" "$6" < "$tmp" 2>/dev/null)"; then
+    if ! body="$(owui_merge_model "$2" "$3" "$4" "$5" "$6" "${7:-}" < "$tmp" 2>/dev/null)"; then
       OWUI_ERR="could not edit its existing settings safely, so they were left untouched"; rm -f "$tmp"; return 1
     fi
     [ -n "$body" ] || { rm -f "$tmp"; return 0; }
     code="$(_owui_post /api/v1/models/model/update "$body" "$tmp")"
   else
-    code="$(_owui_post /api/v1/models/create "$(owui_model_json "$1" "$2" "$4" "$5" "$6")" "$tmp")"
+    body="$(owui_model_json "$1" "$2" "$4" "$5" "$6" "${7:-}")"
+    code="$(_owui_post /api/v1/models/create "$body" "$tmp")"
   fi
   [ "$code" = 200 ] || { OWUI_ERR="HTTP $code: $(head -c 200 "$tmp" | tr '\n' ' ')"; rm -f "$tmp"; return 1; }
   rm -f "$tmp"
@@ -140,7 +171,8 @@ sync_openwebui_models() {
     is_enabled "$name" "$en" || continue
     desc="AWS Bedrock · $(price_label "$name")"
     if [ "$mode" = chat ]; then hidden=false; else hidden=true; fi
-    if owui_upsert_model "$name" "$(owui_model_name "$name" "$mode")" "$(display_name "$name")" "$desc" "$(owui_tags_json "$name" "$mode")" "$hidden"
+    if owui_upsert_model "$name" "$(owui_model_name "$name" "$mode")" "$(display_name "$name")" "$desc" \
+      "$(owui_tags_json "$name" "$mode")" "$hidden" "$(icon_url "$name")"
     then ok=$((ok + 1)); else bad=$((bad + 1)); warn "Open WebUI: could not update $name ($OWUI_ERR)"; fi
     [ "$aliases" != - ] && [ -n "$aliases" ] || continue
     IFS=, read -r -a alias_list <<< "$aliases"
@@ -184,10 +216,18 @@ cost_prices_json() {
   printf '{%s}\n' "${out#,}"
 }
 
-# cost_valves_json -> {"prices_json":"<cost_prices_json as a JSON string>"} (no backslashes to escape)
-cost_valves_json() { printf '{"prices_json":"%s"}\n' "$(cost_prices_json | sed 's/"/\\"/g')"; }
-
 cost_filter_version() { sed -n 's/^version:[[:space:]]*//p' "$COST_FILTER_FILE" | head -n 1; }
+
+# file_sha256 FILE -> hex digest
+file_sha256() { openssl dgst -sha256 < "$1" | awk '{ print $NF }'; }
+
+# owui_function_hash < GET /api/v1/functions/id/… JSON -> sha256 of the installed source
+owui_function_hash() {
+  # shellcheck disable=SC2016  # Python source, not shell
+  _owui_py 'import hashlib, json, sys
+d = json.load(sys.stdin) or {}
+print(hashlib.sha256((d.get("content") or "").encode("utf-8")).hexdigest())'
+}
 
 # owui_function_json DESCRIPTION < function source -> FunctionForm JSON (Python does the escaping)
 owui_function_json() {
@@ -197,35 +237,65 @@ print(json.dumps({"id": sys.argv[1], "name": "Bedrock cost", "content": sys.stdi
     "$COST_FILTER_ID" "$1"
 }
 
-# owui_install_cost_filter — installs/updates the "Bedrock cost" filter, keeps it enabled and global, and
-# writes the current prices into its valves. Idempotent; never fatal.
+# owui_merge_valves PRICES_JSON < current valves JSON (or null) -> valves with only prices_json replaced
+# (the admin's enabled/priority stay), or nothing when nothing changed.
+owui_merge_valves() {
+  # shellcheck disable=SC2016  # Python source, not shell
+  _owui_py 'import json, sys
+cur = json.load(sys.stdin)
+v = dict(cur) if isinstance(cur, dict) else {}
+v["prices_json"] = sys.argv[1]
+if v != cur:
+    print(json.dumps(v))' "$1"
+}
+
+# owui_install_cost_filter — installs the "Bedrock cost" filter and keeps its code and prices current.
+# Setup owns the code and the prices_json valve only: the filter is enabled and made global once, at its
+# first install (OWUI_COST_FILTER_INSTALLED=true in .env); after that, turning it off, un-globalling it or
+# changing its other valves in Admin Panel → Functions sticks. A deleted filter is installed again.
+# Idempotent; never fatal.
 owui_install_cost_filter() {
-  local tmp code body ver path
+  local tmp code body path first=0 merged
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || { warn "no Open WebUI API key — skipping the chat cost filter"; return 0; }
   [ -r "$COST_FILTER_FILE" ] || { warn "missing $COST_FILTER_FILE — skipping the chat cost filter"; return 0; }
-  tmp="$(mktemp)"; ver="$(cost_filter_version)"
+  tmp="$(mktemp)"
   code="$(_owui_get "/api/v1/functions/id/$COST_FILTER_ID" "$tmp")"
-  if [ "$code" != 200 ] || ! grep -qF "\"version\":\"$ver\"" "$tmp"; then
-    if [ "$code" = 200 ]; then path="/api/v1/functions/id/$COST_FILTER_ID/update"; else path=/api/v1/functions/create; fi
+  if [ "$code" = 200 ]; then
+    path=''
+    [ "$(owui_function_hash < "$tmp" 2>/dev/null)" = "$(file_sha256 "$COST_FILTER_FILE")" ] || path="/api/v1/functions/id/$COST_FILTER_ID/update"
+  else
+    path=/api/v1/functions/create; first=1
+  fi
+  [ "$(get_env OWUI_COST_FILTER_INSTALLED)" = true ] || first=1
+  if [ -n "$path" ]; then
     if ! body="$(owui_function_json "Cost of each answer and of the whole chat, from bedrock-now's Bedrock prices" < "$COST_FILTER_FILE")" || [ -z "$body" ]; then
       rm -f "$tmp"; warn "Open WebUI: could not prepare the cost filter — answers won't show their cost"; return 0
     fi
     code="$(_owui_post "$path" "$body" "$tmp")"
     [ "$code" = 200 ] || { warn "Open WebUI: could not install the cost filter (HTTP $code: $(head -c 200 "$tmp" | tr '\n' ' '))"; rm -f "$tmp"; return 0; }
   fi
-  # toggle endpoints flip the flag, so only call them when it is off
-  if ! grep -qF '"is_active":true' "$tmp"; then
-    code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/toggle" '{}' "$tmp")"
-    [ "$code" = 200 ] || warn "Open WebUI: could not enable the cost filter (HTTP $code)"
+  if [ "$first" = 1 ]; then
+    # toggle endpoints flip the flag, so only call them when it is off
+    if ! grep -qF '"is_active":true' "$tmp"; then
+      code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/toggle" '{}' "$tmp")"
+      [ "$code" = 200 ] || warn "Open WebUI: could not enable the cost filter (HTTP $code)"
+    fi
+    if ! grep -qF '"is_global":true' "$tmp"; then
+      code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/toggle/global" '{}' "$tmp")"
+      [ "$code" = 200 ] || warn "Open WebUI: could not make the cost filter global (HTTP $code)"
+    fi
+    set_env OWUI_COST_FILTER_INSTALLED true
   fi
-  if ! grep -qF '"is_global":true' "$tmp"; then
-    code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/toggle/global" '{}' "$tmp")"
-    [ "$code" = 200 ] || warn "Open WebUI: could not make the cost filter global (HTTP $code)"
+  code="$(_owui_get "/api/v1/functions/id/$COST_FILTER_ID/valves" "$tmp")"
+  if [ "$code" != 200 ] || ! merged="$(owui_merge_valves "$(cost_prices_json)" < "$tmp" 2>/dev/null)"; then
+    rm -f "$tmp"; warn "Open WebUI: could not read the cost filter's settings (HTTP $code) — prices not updated; re-run ./stack setup to retry"; return 0
   fi
-  code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/valves/update" "$(cost_valves_json)" "$tmp")"
+  if [ -n "$merged" ]; then
+    code="$(_owui_post "/api/v1/functions/id/$COST_FILTER_ID/valves/update" "$merged" "$tmp")"
+    [ "$code" = 200 ] || { rm -f "$tmp"; warn "Open WebUI: could not update the cost filter's prices (HTTP $code) — re-run ./stack setup to retry"; return 0; }
+  fi
   rm -f "$tmp"
-  if [ "$code" = 200 ]; then log "Open WebUI shows the cost of each answer (and of the chat) under every reply"
-  else warn "Open WebUI: could not update the cost filter's prices (HTTP $code) — re-run ./stack setup to retry"; fi
+  log "Open WebUI shows the cost of each answer (and of the chat) under every reply"
 }
 
 # --- budget banner in Open WebUI ---
@@ -303,16 +373,6 @@ sync_budget_banner() {
 
 # --- LiteLLM database admin (replaces the shared env-credential login) ---
 
-# litellm_password_ok PASSWORD -> 0 when it meets LiteLLM's default policy: 12+ chars with an upper- and a
-# lowercase letter, a digit and a symbol.
-litellm_password_ok() {
-  [ "${#1}" -ge 12 ] || return 1
-  case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
-  case "$1" in *[[:lower:]]*) ;; *) return 1 ;; esac
-  case "$1" in *[[:digit:]]*) ;; *) return 1 ;; esac
-  case "$1" in *[![:alnum:]]*) ;; *) return 1 ;; esac
-}
-
 # jwt_claim TOKEN CLAIM -> a string claim from a JWT's payload (no signature check: LiteLLM just issued it)
 jwt_claim() {
   local p; p="$(printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+')"
@@ -368,18 +428,18 @@ ensure_litellm_db_admin() {
   log "created LiteLLM admin $email (password: LITELLM_UI_PASSWORD in .env)"
 }
 
-# setup_litellm_admin — makes sure LITELLM_UI_PASSWORD meets LiteLLM's password policy, creates the database
-# admin, and then turns the shared env-credential login (and its red warning banner) off by re-rendering
-# the config with disable_env_credential_login (one extra LiteLLM restart, first time only). Never fatal.
+# setup_litellm_admin — creates the LiteLLM database admin (LITELLM_UI_PASSWORD already meets LiteLLM's
+# policy: setup_secrets sees to that), then turns the shared env-credential login (and its red warning
+# banner) off by re-rendering the config with disable_env_credential_login (one extra LiteLLM restart,
+# first time only). Never fatal.
 setup_litellm_admin() {
-  local pw LITELLM_ADMIN_ERR=''
-  pw="$(get_env LITELLM_UI_PASSWORD)"
-  if ! litellm_password_ok "$pw"; then
-    set_env LITELLM_UI_PASSWORD "Bn9-$pw"
-    log "LITELLM_UI_PASSWORD in .env now starts with Bn9- (LiteLLM requires upper/lowercase, a digit and a symbol)"
-  fi
+  local LITELLM_ADMIN_ERR=''
   if ! ensure_litellm_db_admin; then
-    warn "could not create the LiteLLM admin account ($LITELLM_ADMIN_ERR) — keeping the admin / LITELLM_UI_PASSWORD login; re-run ./stack setup to retry"
+    if [ "$(get_env LITELLM_DB_ADMIN_READY)" = true ]; then
+      warn "could not check the LiteLLM admin account ($LITELLM_ADMIN_ERR) — re-run ./stack setup to retry; see README › Troubleshooting if you can't log in"
+    else
+      warn "could not create the LiteLLM admin account ($LITELLM_ADMIN_ERR) — keeping the admin / LITELLM_UI_PASSWORD login; re-run ./stack setup to retry"
+    fi
     return 0
   fi
   [ "$(get_env LITELLM_DB_ADMIN_READY)" = true ] && return 0

@@ -251,3 +251,60 @@ def test_inlet_never_raises():
     f = make_filter()
     for body in (None, {}, {"messages": None}, {"messages": [None, {"role": "assistant"}]}):
         run(f.inlet(body))
+
+
+# --- review follow-ups ---
+
+_T = {"input": 1, "uncached": 1, "cache_read": 0, "cache_write": 0, "output": 1}
+
+
+def test_fmt_usd_thousands():
+    assert bc.fmt_usd(1234.5) == "$1,234.50"
+
+
+def test_strip_footer_removes_every_footer_anywhere():
+    f1 = bc.footer(0.01, _T, "M", 0.01)
+    f2 = bc.footer(None, _T, "M", None)
+    # "continue response": the old footer ends up in the middle, the new text follows it
+    text = "part one\n\n" + f1 + " and more\n\n" + f2
+    assert bc.strip_footer(text) == "part one and more"
+    assert bc.strip_footer("a\n\n" + f1 + "\nb") == "a\nb"
+    # only the exact footer shape is removed
+    assert bc.strip_footer("x <sub>1 in</sub> y") == "x <sub>1 in</sub> y"
+
+
+def test_footer_cost_takes_the_last_footer_and_unknown_counts_zero():
+    f1 = bc.footer(0.5, _T, "M", 0.5)
+    f2 = bc.footer(0.25, _T, "M", 0.75)
+    assert bc.footer_cost("a\n\n" + f1 + "b\n\n" + f2) == 0.25
+    assert bc.footer_cost("a\n\n" + bc.footer(None, _T, "M", None)) == 0.0
+    assert bc.footer_cost("a\n\n" + bc.footer(1234.5, _T, "M", 1234.5)) == 1234.5
+
+
+def test_chat_total_counts_price_unknown_answers_as_zero():
+    f = make_filter()
+    body = {"model": "claude-sonnet-5-5", "messages": [
+        {"role": "assistant", "content": "old\n\n" + bc.footer(None, _T, "X", None), "usage": _usage(10**6, 0)},
+        {"role": "assistant", "content": "A", "usage": _usage()},
+    ]}
+    content = run(f.outlet(body))["messages"][-1]["content"]
+    cost = 1240 * 0.0000022 + 380 * 0.000011
+    assert content.endswith("chat ≈ " + bc.fmt_usd(cost) + "</sub>")
+
+
+def test_continue_response_keeps_one_footer():
+    f = make_filter()
+    old = bc.footer(0.01, _T, "M", 0.01)
+    body = {"model": "claude-sonnet-5-5", "messages": [{"role": "assistant", "content": "A\n\n" + old + " more", "usage": _usage()}]}
+    content = run(f.outlet(body))["messages"][-1]["content"]
+    assert content.count("<sub>") == 1
+    assert content.startswith("A more\n\n<sub>")
+
+
+def test_price_falls_back_to_base_model_id():
+    f = make_filter()
+    body = {"model": "my-custom-sonnet", "messages": [{"role": "assistant", "content": "A", "usage": _usage()}]}
+    model = {"id": "my-custom-sonnet", "name": "Terse Sonnet", "info": {"base_model_id": "claude-sonnet-5-5"}}
+    content = run(f.outlet(body, __model__=model))["messages"][-1]["content"]
+    assert content.startswith("A\n\n<sub>≈ $")
+    assert "· Claude Sonnet 5.5 ·" in content

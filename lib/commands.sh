@@ -259,6 +259,34 @@ setup_ports() {
   resolve_port SHARED_MCP_PORT 8765 shared-mcp 8000
 }
 
+# litellm_password_ok PASSWORD -> 0 when it meets LiteLLM's default policy: 12+ chars with an upper- and a
+# lowercase letter, a digit and a symbol.
+litellm_password_ok() {
+  [ "${#1}" -ge 12 ] || return 1
+  case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
+  case "$1" in *[[:lower:]]*) ;; *) return 1 ;; esac
+  case "$1" in *[[:digit:]]*) ;; *) return 1 ;; esac
+  case "$1" in *[![:alnum:]]*) ;; *) return 1 ;; esac
+}
+
+# upgrade_litellm_password — runs before LiteLLM starts, so it always starts with a password its policy
+# accepts. Older installs have hex passwords: they get a "Bn9-" prefix (once). Anything else that still
+# fails the policy is replaced by a new generated one.
+upgrade_litellm_password() {
+  local pw; pw="$(get_env LITELLM_UI_PASSWORD)"
+  litellm_password_ok "$pw" && return 0
+  case "$pw" in
+    Bn9-*) ;;
+    *) if litellm_password_ok "Bn9-$pw"; then
+         set_env LITELLM_UI_PASSWORD "Bn9-$pw"
+         log "LITELLM_UI_PASSWORD in .env now starts with Bn9- (LiteLLM requires upper/lowercase, a digit and a symbol)"
+         return 0
+       fi ;;
+  esac
+  set_env LITELLM_UI_PASSWORD "Bn9-$(gen_hex 12)"
+  warn "LITELLM_UI_PASSWORD in .env did not meet LiteLLM's password policy (12+ characters, upper/lowercase, digit, symbol) — generated a new one (see .env)"
+}
+
 # FIRST_SETUP=1 when this run creates the Open WebUI admin (print_summary then shows the passwords once).
 setup_secrets() {
   if [ -z "$(get_env OPENWEBUI_ADMIN_PASSWORD)" ]; then FIRST_SETUP=1; else FIRST_SETUP=0; fi
@@ -266,6 +294,7 @@ setup_secrets() {
   ensure_env LITELLM_MASTER_KEY "sk-$(gen_hex 24)"
   ensure_env LITELLM_SALT_KEY "sk-$(gen_hex 24)"   # never change after first run: encrypts stored creds
   ensure_env LITELLM_UI_PASSWORD "Bn9-$(gen_hex 12)"   # LiteLLM's policy: upper+lower case, digit, symbol
+  upgrade_litellm_password
   ensure_env WEBUI_SECRET_KEY "$(gen_hex 32)"
   ensure_env OPENWEBUI_ADMIN_PASSWORD "$(gen_hex 12)"
   ensure_env RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"
