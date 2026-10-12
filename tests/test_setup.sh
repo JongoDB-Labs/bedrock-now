@@ -117,16 +117,18 @@ test_ensure_virtual_key_dies_on_other_status_without_duplicate() {
 }
 
 test_cmd_test_reports_every_failure_on_closed_ports() {
-  printf 'LITELLM_PORT=9\nOPENWEBUI_PORT=9\nSHARED_MCP_PORT=9\nCLAUDE_BEDROCK_HAIKU_MODEL=h\nCLAUDE_BEDROCK_OPUS_MODEL=o\nOWUI_EMBED_MODEL=e\n' > "$ENV_FILE"
+  printf 'LITELLM_PORT=9\nPORTAL_PORT=9\nSHARED_MCP_PORT=9\nCLAUDE_BEDROCK_HAIKU_MODEL=h\nCLAUDE_BEDROCK_OPUS_MODEL=o\nOWUI_EMBED_MODEL=e\n' > "$ENV_FILE"
   # run like ./stack does: errexit + pipefail active, not in a conditional context
   set +e; (set -eo pipefail; cmd_test) > "$TMP/o" 2>&1; rc=$?; set -e; out="$(cat "$TMP/o")"
   [ "$rc" -ne 0 ] || { echo "cmd_test should fail" >&2; return 1; }
-  assert_eq "$(printf '%s\n' "$out" | grep -c '  FAIL ')" 9
-  assert_contains "$out" "9 check(s) failed"
+  assert_eq "$(printf '%s\n' "$out" | grep -c '  FAIL ')" 12
+  assert_contains "$out" "12 check(s) failed"
+  assert_contains "$out" "skip  checks behind the portal login"
 }
 
 test_cmd_test_skips_model_visibility_without_opus() {
-  printf 'LITELLM_PORT=9\nOPENWEBUI_PORT=9\nSHARED_MCP_PORT=9\n' > "$ENV_FILE"
+  printf 'LITELLM_PORT=9\nPORTAL_PORT=9\nSHARED_MCP_PORT=9\n' > "$ENV_FILE"
+  portal_session_start() { PORTAL_JAR="$TMP/jar"; : > "$PORTAL_JAR"; }   # pretend the login worked
   set +e; (set -eo pipefail; cmd_test) > "$TMP/o" 2>&1; set -e; out="$(cat "$TMP/o")"
   assert_contains "$out" "skip  open-webui sees litellm models"
 }

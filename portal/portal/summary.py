@@ -1,0 +1,167 @@
+"""Data for the Home page: health, spend, models, prices. Every secret stays on this side of /api/summary."""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+from .config import Settings
+
+TIMEOUT = httpx.Timeout(4.0, connect=2.0)
+
+
+def reason_code(reason: str) -> str:
+    """Short WHY for a probe reason (mirrors reason_code in lib/models.sh)."""
+    r = reason or ""
+    if r == "ok":
+        return "ok"
+    prefixes = (
+        ("authorized (free check", "ok (free check)"),
+        ("not subscribed", "no Marketplace access"),
+        ("no access to this model", "no model access"),
+        ("not available in", "not in region"),
+        ("access denied", "access denied"),
+        ("needs an inference profile", "needs inference profile"),
+        ("throttled", "throttled (kept)"),
+    )
+    for prefix, code in prefixes:
+        if r.startswith(prefix):
+            return code
+    if "over its budget" in r:
+        return "unverified: setup budget"
+    if r.startswith("unverified: no response"):
+        return "unverified: timeout"
+    m = re.match(r"unverified \(aws exit (\d+)\)", r)
+    if m:
+        return f"unverified: aws exit {m.group(1)}"
+    m = re.search(r"HTTP (\d+)", r)
+    if r.startswith("unverified:") and m:
+        return f"unverified: HTTP {m.group(1)}"
+    return "unverified"
+
+
+def read_models(litellm_dir: Path) -> dict:
+    """litellm/probe-results.tsv (written by setup / ./stack models --recheck)."""
+    path = litellm_dir / "probe-results.tsv"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"checked_at": None, "rows": [], "error": "no model check yet — run ./stack models --recheck"}
+    except OSError as e:
+        return {"checked_at": None, "rows": [], "error": f"cannot read probe-results.tsv: {e.strerror}"}
+    rows, checked = [], None
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split("\t")
+        if len(f) < 6:
+            continue
+        name, kind, verdict, reason, price, ts = f[:6]
+        checked = checked or ts
+        rows.append({
+            "name": name, "kind": kind, "enabled": verdict == "ENABLED",
+            "why": reason_code(reason), "reason": reason, "price": price,
+        })
+    return {"checked_at": checked, "rows": rows, "error": None}
+
+
+def read_prices_as_of(catalog_dir: Path) -> str | None:
+    try:
+        for line in (catalog_dir / "prices.tsv").read_text(encoding="utf-8").splitlines():
+            m = re.match(r"#\s*as_of:\s*(\d{4}-\d{2}-\d{2})", line)
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+async def _health(client: httpx.AsyncClient, url: str) -> tuple[bool, dict | None, str]:
+    try:
+        r = await client.get(url, timeout=TIMEOUT)
+    except httpx.HTTPError as e:
+        return False, None, type(e).__name__
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    return r.status_code == 200, body if isinstance(body, dict) else None, f"HTTP {r.status_code}"
+
+
+async def services(client: httpx.AsyncClient, s: Settings) -> list[dict]:
+    lite, owui, rust, mcp = await asyncio.gather(
+        _health(client, f"{s.litellm_url}/health/readiness"),  # never plain /health: it calls every model
+        _health(client, f"{s.openwebui_url}/health"),
+        _health(client, f"{s.rustfs_url}/health"),
+        _health(client, f"{s.shared_mcp_url}/healthz"),
+    )
+    db = (lite[1] or {}).get("db")
+    out = [
+        {"id": "litellm", "name": "LiteLLM", "role": "Bedrock gateway", "ok": lite[0], "detail": "ready" if lite[0] else lite[2]},
+        {"id": "postgres", "name": "Postgres", "role": "databases", "ok": db == "connected",
+         "detail": "connected" if db == "connected" else (f"LiteLLM reports {db}" if db else "unknown (LiteLLM not ready)")},
+        {"id": "open-webui", "name": "Open WebUI", "role": "chat", "ok": owui[0], "detail": "ready" if owui[0] else owui[2]},
+        {"id": "rustfs", "name": "RustFS", "role": "file storage", "ok": rust[0], "detail": "ready" if rust[0] else rust[2]},
+        {"id": "shared-mcp", "name": "Shared MCP", "role": "files for Claude Code", "ok": mcp[0], "detail": "ready" if mcp[0] else mcp[2]},
+    ]
+    return out
+
+
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+async def _key_spend(client: httpx.AsyncClient, s: Settings, alias: str, label: str, key: str) -> dict:
+    row = {"alias": alias, "label": label, "spend": None, "max_budget": None, "reset_at": None, "error": None}
+    if not key:
+        row["error"] = "no key yet — run ./stack setup"
+        return row
+    try:
+        # The key asks about itself: keeps it out of URLs (and LiteLLM's access log).
+        r = await client.get(f"{s.litellm_url}/key/info", headers={"Authorization": f"Bearer {key}"}, timeout=TIMEOUT)
+    except httpx.HTTPError as e:
+        row["error"] = f"LiteLLM did not answer ({type(e).__name__})"
+        return row
+    if r.status_code != 200:
+        row["error"] = f"LiteLLM answered HTTP {r.status_code}"
+        return row
+    try:
+        info = (r.json() or {}).get("info") or {}
+    except ValueError:
+        info = {}
+    row["spend"] = _num(info.get("spend")) or 0.0
+    row["max_budget"] = _num(info.get("max_budget"))
+    row["reset_at"] = info.get("budget_reset_at") if isinstance(info.get("budget_reset_at"), str) else None
+    return row
+
+
+async def spend(client: httpx.AsyncClient, s: Settings) -> dict:
+    rows = await asyncio.gather(*(_key_spend(client, s, a, label, k) for a, label, k in s.keys))
+    total, error = None, None
+    try:
+        r = await client.get(f"{s.litellm_url}/global/spend",
+                             headers={"Authorization": f"Bearer {s.litellm_master_key}"}, timeout=TIMEOUT)
+        if r.status_code == 200:
+            total = _num((r.json() or {}).get("spend")) or 0.0  # null = nothing logged yet
+        else:
+            error = f"LiteLLM answered HTTP {r.status_code}"
+    except (httpx.HTTPError, ValueError) as e:
+        error = f"LiteLLM did not answer ({type(e).__name__})"
+    return {"keys": list(rows), "total_30d": total, "total_error": error}
+
+
+async def build(client: httpx.AsyncClient, s: Settings) -> dict:
+    svc, sp = await asyncio.gather(services(client, s), spend(client, s))
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "portal": {"url": s.origin(), "user": s.user_email},
+        "services": svc,
+        "spend": sp,
+        "models": read_models(s.litellm_dir),
+        "prices": {"as_of": read_prices_as_of(s.catalog_dir), "source": "catalog/prices.tsv"},
+        "claude": {"command": "claude-bedrock", "models": s.claude_models},
+    }

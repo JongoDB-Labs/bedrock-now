@@ -102,10 +102,10 @@ test_claude_bedrock_cmd_quotes_paths_with_spaces() {
 test_summary_shows_working_command_and_try_it() {
   printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\nCLAUDE_BEDROCK_HAIKU_MODEL=claude-haiku-5-5\n' > "$ENV_FILE"
   claude_bedrock_cmd() { echo /opt/bn/bin/claude-bedrock; }
-  out="$(FIRST_SETUP=0 print_summary 2>&1)"
+  out="$(print_summary 2>&1)"
   assert_contains "$out" "Claude Code     /opt/bn/bin/claude-bedrock"
   assert_contains "$out" 'CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 /opt/bn/bin/claude-bedrock -p'
   assert_contains "$out" '(~$0.02)'
   printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
-  assert_not_contains "$(FIRST_SETUP=0 print_summary 2>&1)" "Try it"
+  assert_not_contains "$(print_summary 2>&1)" "Try it"
 }

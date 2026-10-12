@@ -3,28 +3,36 @@
 bedrock-now gives you a private, single-user AI workbench on your own Mac or Linux box. Every model call goes to
 **AWS Bedrock** under your team's AWS access key. Install it with one command. Nothing listens beyond `127.0.0.1`.
 
-| What | Where (default port, setup may move it) | Login |
+Everything you open in a browser sits behind **one portal with one password**:
+
+| What | Where | Login |
 |---|---|---|
-| **Open WebUI**: chat, documents/RAG, images (if enabled) | http://127.0.0.1:8080 | `OPENWEBUI_ADMIN_EMAIL` / `OPENWEBUI_ADMIN_PASSWORD` in `.env` |
-| **LiteLLM admin**: keys, spend, budgets, logs | http://127.0.0.1:4000/ui | `admin` / `LITELLM_UI_PASSWORD` in `.env` |
-| **RustFS console**: the shared object store (S3) | http://127.0.0.1:9001 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` in `.env` |
+| **Portal**: Home (health, spend and budgets, model access) with tabs for the three apps below | http://bedrock-now.localhost | `PORTAL_PASSWORD` in `.env` (setup prints it once) |
+| **Chat** (Open WebUI): chat, documents/RAG, images (if enabled) | http://chat.bedrock-now.localhost | signed in automatically by the portal |
+| **Admin** (LiteLLM): keys, spend, budgets, logs | http://admin.bedrock-now.localhost/ui | portal, then LiteLLM's own sign-in (copy it from Home) |
+| **Files** (RustFS console): the shared object store (S3) | http://files.bedrock-now.localhost | portal, then RustFS's own sign-in (copy it from Home) |
+| **LiteLLM API**: OpenAI/Anthropic-compatible, for tools | http://127.0.0.1:4000 | virtual keys in `.env` |
 | **shared-mcp**: shared files and knowledge search for Claude Code | http://127.0.0.1:8765/mcp | bearer token, wired up for you |
 | **`claude-bedrock`**: Claude Code, billed to Bedrock | your terminal | none |
 
-`./stack status` always prints the real URLs (a SERVICE / STATE / HEALTH / URL table). Setup moves a port when
-something else is already using it and says so in one line, e.g. `port 8080 is in use → using 8083 for Open WebUI`.
+`*.localhost` names point at your own computer in every current browser, so there is nothing to configure.
+The portal uses port 80 when it is free (so the URLs carry no port); otherwise setup picks 8800 and says so,
+e.g. `port 80 is in use → using 8800 for the portal (PORTAL_PORT): http://bedrock-now.localhost:8800`.
+`./stack status` always prints the real URLs (a SERVICE / STATE / HEALTH / URL table). Setup moves other
+ports the same way when something else uses them.
 
 ```
- you (browser) ─────────────► Open WebUI ──┐            ┌────────────────────────┐
- you (terminal) ─► claude-bedrock          ├─► LiteLLM ─┼─► AWS Bedrock           │
-   (Claude Code) ──── models ──────────────┘  (only     │   (us-east-1; images    │
-        │                                      holder of │    us-west-2)           │
-        │ MCP tools                            AWS creds)└────────────────────────┘
-        ▼                                        │
-   shared-mcp ──── search / ingest ─► Open WebUI │ keys, budgets, spend
-        │                                        ▼
-        └──────── files ──────────► RustFS ◄── Open WebUI uploads     Postgres + pgvector
-                                   (buckets: shared, openwebui)        (DBs: litellm, openwebui)
+ you (browser) ─► Caddy :80 ──── asks the portal: valid session? (forward_auth)
+                  127.0.0.1  ├─ bedrock-now.localhost ─────► portal (login, Home)
+                             ├─ chat.  ─► Open WebUI ──┐            ┌────────────────────────┐
+                             ├─ admin. ─► LiteLLM UI   ├─► LiteLLM ─┼─► AWS Bedrock           │
+                             └─ files. ─► RustFS       │  (only     │   (us-east-1; images    │
+ you (terminal) ─► claude-bedrock ── models ───────────┘   holder of│    us-west-2)           │
+        │                                                  AWS creds)└────────────────────────┘
+        │ MCP tools (127.0.0.1:8765)                         │
+        ▼                                                    │ keys, budgets, spend
+   shared-mcp ──── search / ingest ─► Open WebUI             ▼
+        └──────── files ──────────► RustFS ◄── uploads    Postgres + pgvector (DBs: litellm, openwebui)
           all containers on one private Docker network; host ports bind to 127.0.0.1 only
 ```
 
@@ -68,7 +76,8 @@ email (default: your `git config user.email`; setup prints which address it used
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are already exported in your shell, setup asks before using them
 (default Yes for a long-lived `AKIA…` key; `--yes` and non-interactive runs use them directly). Temporary credentials (`ASIA…` keys or
 `AWS_SESSION_TOKEN`) are refused because they expire; use a long-lived IAM user key. It then:
-1. verifies the key with AWS, picks free ports and generates every secret into `.env` (mode 600, never committed);
+1. verifies the key with AWS, picks free ports and the portal address, and generates every secret into `.env`
+   (mode 600, never committed), including the portal password;
 2. starts the stack and **probes every model** in `catalog/models.tsv` with your key: a real 1-token request
    for chat, embedding and rerank models (< $0.01 in total, booked on the `setup` key) and a free check for image
    models. It prints a table of ENABLED/DISABLED with the price and a short reason for each model, and saves
@@ -82,8 +91,8 @@ Setup prints one line per phase (`==> LiteLLM ready (16s)`); on a first run it a
 images first (a few GB). If a service fails to start, it shows the last log lines and the `./stack logs`
 command to run. `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output.
 
-The first setup prints the Open WebUI and LiteLLM admin passwords once. Later runs only point you to
-`OPENWEBUI_ADMIN_PASSWORD` / `LITELLM_UI_PASSWORD` in `.env`.
+The first setup prints the portal address and password once. Later runs only point you to `PORTAL_PASSWORD`
+in `.env`. The LiteLLM and RustFS sign-ins are on the portal's Home page, with copy buttons.
 
 You don't edit anything by hand. `./stack setup` is safe to re-run at any time. It keeps your keys and data
 and re-checks which models work.
@@ -93,12 +102,24 @@ and re-checks which models work.
 ```bash
 ./stack up | down          # start / stop (data is kept)
 ./stack status             # services, health + URLs
-./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp
+./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy
 ./stack test               # end-to-end smoke test (~$0.0001, on the setup key)
 ./stack costs              # prices for your models + spend per key
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else (NO_COLOR=1 turns colours off)
 ```
+
+**The portal.** Open http://bedrock-now.localhost (or the URL `./stack status` shows) and sign in with
+`PORTAL_PASSWORD` from `.env`. You stay signed in for 30 days; **Sign out** at the bottom of the sidebar ends
+every session at once. The sidebar switches between:
+- **Home**: whether each service is up, spend per key against its monthly budget (amber from 80%, red at
+  100%) and the 30-day total, the models your AWS key can use with prices and reasons, the LiteLLM and RustFS
+  sign-ins (copy buttons; the values never appear in the page source), and the `claude-bedrock` command.
+  It refreshes every 30 seconds and makes no Bedrock calls.
+- **Chat**, **Admin**, **Files**: the apps themselves, each kept open while you switch tabs. The arrow next to
+  a tab opens that app in its own browser tab (same login).
+
+To change the password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`; every browser is signed out.
 
 **Claude Code.** `claude-bedrock` is Claude Code pointed at this stack. It sets the env vars for its own process
 only, so plain `claude` stays exactly as it was. It takes the same arguments as `claude`.
@@ -193,7 +214,8 @@ can cost dollars. Use Haiku or Sonnet for routine work.
 - `./stack costs` shows the prices for your enabled models, spend and budget per key, and the total across all
   keys for the last 30 days.
 - The `claude-bedrock` launch line shows spend this period.
-- The LiteLLM UI (http://127.0.0.1:4000/ui → **Usage**) breaks spend down by model and day.
+- The portal's Home page shows spend per key against its budget and the 30-day total.
+- The LiteLLM UI (portal → **Admin** → **Usage**) breaks spend down by model and day.
 - In Open WebUI, each model's description in the picker shows its price.
 
 **Budgets:** setup creates three LiteLLM virtual keys, each with a monthly budget (resets on the date shown by
@@ -216,6 +238,18 @@ What the stack guarantees:
 - LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
   `LITELLM_STORE_PROMPTS=true` in `.env` and run `./stack setup`. Spend logs are kept for 90 days (LiteLLM's built-in cleanup job, `maximum_spend_logs_retention_period`).
 
+**How the single login works.** Caddy is the only thing that publishes a browser UI, on `127.0.0.1` only.
+Before every request to any of the four host names it asks the portal whether the `bn_session` cookie is
+valid (Caddy `forward_auth`). Without a session you get the login page. The cookie is signed with
+`PORTAL_SECRET`, `HttpOnly`, `SameSite=Strict`, scoped to `bedrock-now.localhost` and its subdomains, and
+valid for 30 days; it is never passed on to the apps. Open WebUI signs you in from an `X-Portal-User` header
+that only Caddy sets, after the portal confirmed the session; any `X-Portal-User` a client sends is deleted
+first, and Open WebUI publishes no port, so the header can't be forged. The login form only accepts a POST
+from the portal itself, sends you back only to a portal address (no open redirect), compares the password in
+constant time and slows down after five wrong attempts. Chat, Admin and Files may be framed only by the
+portal (`Content-Security-Policy: frame-ancestors <portal>`); the portal can't be framed at all. Host names
+other than the four answer 404.
+
 What it does not cover:
 - **Audio.** Bedrock has no speech-to-text model, and the slim Open WebUI image has no local Whisper, so
   server-side speech-to-text is **unavailable** and shows an error. Open WebUI's read-aloud and the
@@ -234,6 +268,13 @@ What it does not cover:
 ./stack rotate-aws                 # new AWS key: verified with AWS first, .env changed only if valid
 ./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
 ```
+
+**Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (`OPENWEBUI_PORT`,
+`RUSTFS_CONSOLE_PORT`; setup removes them from `.env`). After `./stack update`, the old Open WebUI address
+(e.g. http://127.0.0.1:8080) stops working: open the portal URL that the update prints, sign in with the
+new `PORTAL_PASSWORD` (printed once, also in `.env`) and use the **Chat** tab. Your chats, knowledge bases
+and files are unchanged. Bookmarks to the LiteLLM UI on `127.0.0.1:4000/ui` still work, but the portal's Admin
+tab is the supported way in.
 
 `./stack update` runs four steps: **1/4** a backup with the current code, **2/4** the code: an install from a
 release tag (the one-line installer) moves to the newest release tag, never a pre-release and never an older
@@ -299,14 +340,18 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 |---|---|
 | A model shows **DISABLED: no Marketplace access**, **no model access** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then run `./stack models --recheck`. |
 | "no models are usable with this AWS key" | Same as above: the key has no Bedrock model access, or the region is wrong. |
-| A URL from this README doesn't work | Setup moved a port because something else used it (e.g. Docker Desktop holds 8080). See `./stack status` or `*_PORT` in `.env`. |
+| A URL from this README doesn't work | Setup moved a port because something else used it (port 80 taken, or rootless Docker, which can't use it → the portal is on 8800). See `./stack status` or `PORTAL_PORT` / `*_PORT` in `.env`. |
+| `http://bedrock-now.localhost` doesn't resolve | Use a current Chrome, Edge, Firefox or Safari; they resolve `*.localhost` themselves. Command-line tools may not: `curl --resolve bedrock-now.localhost:80:127.0.0.1 http://bedrock-now.localhost/login`. |
+| The portal shows its login page again after you clicked a link to it on another site | Expected with `SameSite=Strict`: such a visit arrives without the session cookie. Type or bookmark the URL, or sign in again. |
+| Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`. After five wrong tries the login waits a few seconds (up to five minutes) before it accepts another. |
+| The old Open WebUI address (`127.0.0.1:8080`/`8082`) stopped working after an update | By design: browsers reach every app through the portal now. Open the URL from `./stack status`. |
 | A setting changed in the Open WebUI admin UI reverts after a restart | This is by design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration, so re-running setup always gives a known state. |
 | `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in `~/.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper's environment. Remove those keys, or move them to a project-level setting you don't use with `claude-bedrock`. |
 | `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
 | Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
 | "project '…' is already used by the bedrock-now install in …" | Another folder runs a stack with this project name. Use that install, remove it (`./stack uninstall` there), or set up this copy as `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
-| Setup can't sign in to Open WebUI | You changed the admin password in the UI. Put the new password in `OPENWEBUI_ADMIN_PASSWORD` in `.env`. |
+| Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD`, run `./stack setup` so the portal picks it up. |
 | Speech-to-text error in Open WebUI | Expected. See *Bedrock only → Audio*. |
 | A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup` to see all compose output. |
 | Anything else | Run `./stack status` and `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
@@ -339,9 +384,10 @@ After access changes, run `./stack models --recheck` (or `./stack setup`) to re-
 
 ## Repo layout
 
-`stack` (CLI) · `setup.sh` · `bin/claude-bedrock` · `compose.yaml` · `catalog/models.tsv`, `catalog/prices.tsv` ·
-`lib/*.sh` (bash 3.2-compatible) · `shared-mcp/` (Python MCP server, with its own pytest suite) · `tests/run.sh`
-(shell tests).
+`stack` (CLI) · `setup.sh` · `bin/claude-bedrock` · `compose.yaml` · `caddy/Caddyfile` (reverse proxy; no
+secrets) · `portal/` (Python login + Home service; its pytest suite runs in the Docker `test` stage:
+`docker build --target test portal`) · `catalog/models.tsv`, `catalog/prices.tsv` · `lib/*.sh` (bash
+3.2-compatible) · `shared-mcp/` (Python MCP server, with its own pytest suite) · `tests/run.sh` (shell tests).
 
 ## License
 

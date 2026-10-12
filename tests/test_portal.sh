@@ -99,7 +99,8 @@ test_unset_env_removes_only_that_key() {
 test_status_table_shows_portal_urls() {
   printf 'PORTAL_HOST=bn-dev.localhost\nPORTAL_PORT=8800\nLITELLM_PORT=4000\nSHARED_MCP_PORT=8765\n' > "$ENV_FILE"
   out="$(printf 'caddy\trunning\thealthy\t0\n' | status_table)"
-  assert_contains "$(printf '%s\n' "$out" | grep '^  caddy ')" "http://bn-dev.localhost:8800"
+  out="$(printf 'caddy\trunning\thealthy\t0\nportal\trunning\thealthy\t0\n' | status_table)"
+  assert_contains "$(printf '%s\n' "$out" | grep '^  portal ')" "http://bn-dev.localhost:8800"
   assert_contains "$(printf '%s\n' "$out" | grep '^  open-webui ')" "http://chat.bn-dev.localhost:8800"
   assert_contains "$(printf '%s\n' "$out" | grep '^  litellm ')" "http://admin.bn-dev.localhost:8800/ui"
   assert_contains "$(printf '%s\n' "$out" | grep '^  rustfs ')" "http://files.bn-dev.localhost:8800"

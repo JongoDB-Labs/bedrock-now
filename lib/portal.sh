@@ -31,6 +31,10 @@ portal_url() {
   if [ "$p" = 80 ]; then printf 'http://%s\n' "$h"; else printf 'http://%s:%s\n' "$h" "$p"; fi
 }
 
+# save_portal_origin — PORTAL_ORIGIN (= portal_url) in .env, for Caddy's frame-ancestors; rewritten whenever
+# the host or port is decided.
+save_portal_origin() { set_env PORTAL_ORIGIN "$(portal_url)"; }
+
 # setup_portal_host — PORTAL_HOST in .env: kept if set (validated), else derived from the project name.
 setup_portal_host() {
   local h; h="$(get_env PORTAL_HOST)"
@@ -56,13 +60,14 @@ _port80_usable() {
 resolve_portal_port() {
   local cur why
   cur="$(get_env PORTAL_PORT)"
-  if [ -n "$cur" ] && [ "$cur" != 80 ]; then resolve_port PORTAL_PORT "$cur" caddy 8080; return 0; fi
-  if _port80_usable; then set_env PORTAL_PORT 80; return 0; fi
+  if [ -n "$cur" ] && [ "$cur" != 80 ]; then resolve_port PORTAL_PORT "$cur" caddy 8080; save_portal_origin; return 0; fi
+  if _port80_usable; then set_env PORTAL_PORT 80; save_portal_origin; return 0; fi
   if _docker_rootless; then why="rootless Docker cannot publish port 80"
   elif port_taken_by_other PORTAL_PORT 80; then why="port 80 is already assigned to another service in .env"
   else why="port 80 is in use"; fi
   set_env PORTAL_PORT "$PORTAL_FALLBACK_PORT"
   resolve_port PORTAL_PORT "$PORTAL_FALLBACK_PORT" caddy 8080
+  save_portal_origin
   warn "$why → using $(get_env PORTAL_PORT) for the portal (PORTAL_PORT): $(portal_url)"
 }
 
