@@ -15,8 +15,9 @@ All notable changes to bedrock-now are documented here. The format follows
   key crosses its soft budget and its full budget.
 - `claude-bedrock` prints the session's cost when Claude Code exits
   (`session: 14 requests · 420K tokens (38% cached) · $0.0384`). Each request carries a per-launch
-  `x-litellm-session-id` and the tag `claude-bedrock`. Claude Code now runs as a child of the wrapper;
-  signals are passed on and its exit code is kept. `CLAUDE_BEDROCK_QUIET=1` hides the summary.
+  `x-litellm-session-id` and the tag `claude-bedrock`. The summary appears only when stderr is a terminal
+  (`CLAUDE_BEDROCK_SUMMARY=1` forces it; `CLAUDE_BEDROCK_QUIET=1` hides it). For it, Claude Code runs as a
+  foreground child of the wrapper: same terminal and process group, exit code kept, Ctrl-C/TERM re-raised.
 - `./stack open` opens the portal in its own app window (Chrome, Edge, Brave or Chromium with `--app` and a
   per-copy profile; otherwise the default browser; over SSH or without a display it prints the URL).
   `./stack setup` and `./stack up` open it at the end when run in a terminal (`BEDROCK_NOW_NO_OPEN=1` turns

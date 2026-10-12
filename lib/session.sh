@@ -83,13 +83,27 @@ utc_day() {
   date -u -v"${s}d" +%Y-%m-%d 2>/dev/null || date -u -d "@$(( $(date +%s) + o * 86400 ))" +%Y-%m-%d
 }
 
+# session_start_day ID -> UTC day before the session started (from the id's timestamp), so sessions that run
+# for days are still covered; yesterday if the id carries no timestamp.
+session_start_day() {
+  local d e
+  d="$(printf '%s' "$1" | sed -n 's/^cb-\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)T.*/\1-\2-\3/p')"
+  if [ -n "$d" ] && e="$(date_to_epoch "$d")"; then
+    e=$((e - 86400))
+    date -u -r "$e" +%Y-%m-%d 2>/dev/null || date -u -d "@$e" +%Y-%m-%d
+  else
+    utc_day -1
+  fi
+}
+
 # session_fetch ID -> aggregate line (see session_aggregate) over all pages; fails if LiteLLM doesn't answer 200.
-# The date window (yesterday..tomorrow, UTC) is required by the endpoint; the id alone selects the rows.
+# The date window (day before the session started .. tomorrow, UTC) is required by the endpoint; the id alone
+# selects the rows.
 session_fetch() {
-  local id="$1" page=1 tmp code agg rows=0 tok=0 prompt=0 cache=0 spend=0 newest=- total r t p c s e
-  tmp="$(mktemp)"
+  local id="$1" page=1 tmp code agg rows=0 tok=0 prompt=0 cache=0 spend=0 newest=- total r t p c s e from
+  tmp="$(mktemp)"; from="$(session_start_day "$id")"
   while :; do
-    code="$(litellm_api GET "/spend/logs/v2?session_id=$id&start_date=$(utc_day -1)&end_date=$(utc_day 1)&page=$page&page_size=1000" "" "$tmp")"
+    code="$(litellm_api GET "/spend/logs/v2?session_id=$id&start_date=$from&end_date=$(utc_day 1)&page=$page&page_size=1000" "" "$tmp")"
     [ "$code" = 200 ] || { rm -f "$tmp"; return 1; }
     agg="$(session_aggregate < "$tmp")"
     read -r r t p c s e total <<< "$agg"

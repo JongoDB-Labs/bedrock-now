@@ -98,8 +98,9 @@ case "$1" in --help) printf 'Usage: claude\n\nCommands:\n  mcp            Config
 [ -z "${STUB_STDIN:-}" ] || { printf 'STDIN '; cat; }
 printf 'CLAUDE %s\n' "$*"
 printf 'HEADERS %s\n' "$(printf '%s' "$ANTHROPIC_CUSTOM_HEADERS" | tr '\n' '|')"
+[ -z "${STUB_DUMP:-}" ] || { printf 'ARGV %s\n' "$*"; env; } > "$STUB_DUMP"
 if [ -n "${STUB_SLEEP:-}" ]; then
-  trap 'echo GOT_TERM > "$STUB_MARK"; exit 143' TERM
+  trap 'echo GOT_INT > "$STUB_MARK"; exit 130' INT
   echo started > "$STUB_MARK.started"
   sleep "$STUB_SLEEP" & wait $!
 fi
@@ -108,6 +109,7 @@ EOS
   cat > "$TMP/bin/curl" <<'EOS'
 #!/bin/sh
 out=''; w=''; url=''; prev=''
+[ -z "${STUB_CURLLOG:-}" ] || printf 'CURL %s\n' "$*" >> "$STUB_CURLLOG"
 for a in "$@"; do
   [ "$prev" = -K ] && cat > /dev/null
   [ "$prev" = -o ] && out="$a"; [ "$prev" = -w ] && w="$a"
@@ -123,8 +125,9 @@ if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; 
 [ -z "$w" ] || printf 200
 EOS
   chmod +x "$TMP/bin/claude" "$TMP/bin/curl"
-  printf 'LITELLM_PORT=9\nCLAUDE_BEDROCK_OPUS_MODEL=claude-opus-5-5\nLITELLM_KEY_CLAUDE_CODE=sk-cc\nLITELLM_MASTER_KEY=sk-m\n' > "$ENV_FILE"
-  export STUB_V2="$FIXTURE_V2" CLAUDE_BEDROCK_SUMMARY_WAIT=0
+  printf 'LITELLM_PORT=9\nCLAUDE_BEDROCK_OPUS_MODEL=claude-opus-5-5\nLITELLM_KEY_CLAUDE_CODE=sk-cc\nLITELLM_MASTER_KEY=sk-master-SECRET\n' > "$ENV_FILE"
+  # stderr goes to a file in these tests, so the summary has to be forced on
+  export STUB_V2="$FIXTURE_V2" CLAUDE_BEDROCK_SUMMARY_WAIT=0 CLAUDE_BEDROCK_SUMMARY=1
 }
 
 _run_wrapper() { PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" "$@"; }
@@ -160,16 +163,45 @@ test_wrapper_quiet_and_subcommands_print_no_summary() {
   assert_not_contains "$(cat "$TMP/err")" "session"
 }
 
-test_wrapper_forwards_term_to_claude() {
+test_wrapper_ctrl_c_reaches_claude_and_summary_still_prints() {
   _wrapper_env
   export STUB_SLEEP=30 STUB_MARK="$TMP/mark"
-  PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" -p hi > /dev/null 2>&1 &
+  # Like Ctrl-C in a terminal: SIGINT to the whole process group (wrapper + claude). Job control gives the
+  # wrapper its own group, and keeps SIGINT from being ignored as it would be in a plain `&` job.
+  set -m
+  PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" -p hi > /dev/null 2> "$TMP/err" &
   w=$!
+  set +m
   i=0; while [ ! -f "$STUB_MARK.started" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  kill -TERM "$w"
+  kill -INT -- "-$w"
   rc=0; wait "$w" || rc=$?
-  assert_eq "$(cat "$STUB_MARK" 2>/dev/null)" "GOT_TERM"
-  assert_eq "$rc" "143"
+  assert_eq "$(cat "$STUB_MARK" 2>/dev/null)" "GOT_INT"
+  assert_eq "$rc" "130"
+  assert_contains "$(cat "$TMP/err")" "session: 2 requests"
+}
+
+test_wrapper_without_terminal_skips_summary_and_spend_lookup() {
+  _wrapper_env; export STUB_CURLLOG="$TMP/curl"
+  rc=0; STUB_RC=4 CLAUDE_BEDROCK_SUMMARY=0 _run_wrapper -p hi > /dev/null 2> "$TMP/err" || rc=$?
+  assert_eq "$rc" "4"
+  assert_not_contains "$(cat "$TMP/err")" "session"
+  assert_not_contains "$(cat "$TMP/curl")" "/spend/logs"
+}
+
+test_master_key_never_reaches_claude_or_argv() {
+  _wrapper_env; export STUB_DUMP="$TMP/dump" STUB_CURLLOG="$TMP/curl"
+  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/curl")" "/spend/logs/v2"   # the summary did run
+  assert_contains "$(cat "$TMP/dump")" "ANTHROPIC_AUTH_TOKEN=sk-cc"
+  assert_not_contains "$(cat "$TMP/dump")" "sk-master-SECRET"
+  assert_not_contains "$(cat "$TMP/curl")" "sk-master-SECRET"
+  assert_not_contains "$(cat "$TMP/err")" "sk-master-SECRET"
+}
+
+test_session_start_day_covers_long_sessions() {
+  assert_eq "$(session_start_day cb-20261012T191028-abcdef)" "2026-10-11"
+  assert_eq "$(session_start_day cb-20260301T000000-abcdef)" "2026-02-28"
+  assert_eq "$(session_start_day weird)" "$(utc_day -1)"
 }
 
 test_wrapper_launch_line_warns_at_80_percent_of_budget() {

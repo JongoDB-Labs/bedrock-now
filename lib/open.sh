@@ -35,7 +35,24 @@ open_headless() {
   esac
 }
 
-_mac_app_present() { [ -d "/Applications/$1.app" ] || [ -d "$HOME/Applications/$1.app" ]; }
+# _mac_app_present APP -> 0 if installed: the usual folders first, then LaunchServices (`open -Ra`), which also
+# finds apps installed elsewhere.
+_mac_app_present() {
+  [ -d "/Applications/$1.app" ] || [ -d "$HOME/Applications/$1.app" ] || open -Ra "$1" >/dev/null 2>&1
+}
+
+# _launch_detached CMD ARGS... — start a browser that outlives this shell (own session via setsid when
+# available, immune to hangups via nohup). Fails if it exits non-zero within OPEN_CHECK_DELAY seconds
+# (default 1); still running, or a quick clean exit (handed off to a running browser), counts as success.
+_launch_detached() {
+  local p
+  if command -v setsid >/dev/null 2>&1; then nohup setsid "$@" >/dev/null 2>&1 < /dev/null &
+  else nohup "$@" >/dev/null 2>&1 < /dev/null & fi
+  p=$!
+  sleep "${OPEN_CHECK_DELAY:-1}"
+  kill -0 "$p" 2>/dev/null && return 0
+  wait "$p"
+}
 
 # open_choose_browser -> "app:<macOS app name>", "bin:<command>", "default:<open|xdg-open>" or "none"
 open_choose_browser() {
@@ -66,7 +83,11 @@ cmd_open() {
     bin:*)
       log "opening $url in ${choice#bin:} (own window)"
       mkdir -p "$dir"
-      ("${choice#bin:}" --app="$url" --user-data-dir="$dir" --no-first-run >/dev/null 2>&1 &) && return 0 ;;
+      _launch_detached "${choice#bin:}" --app="$url" --user-data-dir="$dir" --no-first-run && return 0
+      warn "${choice#bin:} did not start"
+      if command -v xdg-open >/dev/null 2>&1 && xdg-open "$url" >/dev/null 2>&1; then
+        log "opened $url in your default browser instead"; return 0
+      fi ;;
     default:*)
       log "opening $url in your default browser"
       "${choice#default:}" "$url" >/dev/null 2>&1 && return 0 ;;

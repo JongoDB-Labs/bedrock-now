@@ -105,7 +105,9 @@ and re-checks which models work.
 setup chose) as its own app window: the first of Google Chrome, Microsoft Edge, Brave and Chromium that is
 installed, started with `--app=<url>` and a separate browser profile for this copy (macOS:
 `~/Library/Application Support/bedrock-now`, Linux: `~/.local/share/bedrock-now`), so its logins don't mix
-with your everyday browser. Without any of them it uses your default browser (`open` / `xdg-open`); over
+with your everyday browser. On macOS it finds them in `/Applications`, `~/Applications` or wherever
+LaunchServices knows them; on Linux the browser is started detached (`nohup setsid`), and if it fails at
+once the default browser is used. Without any of them it uses your default browser (`open` / `xdg-open`); over
 SSH or on Linux without a display it only prints the URL. `./stack setup` and `./stack up` open it at the
 end when they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without
 a terminal never open a window.
@@ -125,8 +127,12 @@ only, so plain `claude` stays exactly as it was. It takes the same arguments as 
   the prompt cache). Every request of the session carries an `x-litellm-session-id: cb-<time>-<random>`
   header (and the tag `claude-bedrock`), so you can also find it in the LiteLLM UI under Logs. LiteLLM writes
   spend logs every few seconds, so the summary can take up to 6 s (`CLAUDE_BEDROCK_SUMMARY_WAIT` changes the
-  limit; Ctrl-C skips it). `CLAUDE_BEDROCK_QUIET=1` and subcommands (`claude-bedrock mcp list`, …) print no
-  summary. Your own `ANTHROPIC_CUSTOM_HEADERS` are kept, and claude's exit code is the wrapper's.
+  limit; Ctrl-C skips it). The summary is printed only when stderr is a terminal, so scripts and pipelines
+  get none (`CLAUDE_BEDROCK_SUMMARY=1` forces it). `CLAUDE_BEDROCK_QUIET=1` and subcommands
+  (`claude-bedrock mcp list`, …) print no summary either; then the wrapper simply `exec`s claude. Otherwise
+  claude runs as an ordinary foreground child: Ctrl-C, Ctrl-Z and closing the terminal reach it as usual, its
+  exit code is the wrapper's, and if it was killed by Ctrl-C or TERM the wrapper ends with the same signal.
+  Your own `ANTHROPIC_CUSTOM_HEADERS` are kept.
 - Claude Code warns that "claude.ai connectors are disabled". This is expected because the wrapper's auth token
   takes precedence over your claude.ai login.
 - `/mcp` shows the **`bedrock-shared`** server, which has these tools: `list_files`, `read_file`,

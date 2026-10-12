@@ -63,13 +63,33 @@ test_cmd_open_mac_launches_app_window() {
 }
 
 test_cmd_open_linux_launches_binary_detached() {
-  HOME="$TMP/home"; printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0; unset XDG_DATA_HOME
+  HOME="$TMP/home"; printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2; unset XDG_DATA_HOME
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$TMP" > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
   cmd_open 2>/dev/null
   i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(tr '\n' '|' < "$TMP/args")" "--app=http://bedrock-now.localhost:8800|--user-data-dir=$TMP/home/.local/share/bedrock-now|--no-first-run|"
   [ -d "$TMP/home/.local/share/bedrock-now" ] || { echo "profile dir not created" >&2; return 1; }
+}
+
+test_cmd_open_linux_browser_that_fails_at_once_falls_back() {
+  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.3; HOME="$TMP/home"
+  mkdir -p "$TMP/bin"; printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
+  open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
+  out="$(PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>&1)"   # no xdg-open in $TMP/bin; /usr/bin has none on macOS
+  assert_contains "$out" "did not start"
+  assert_contains "$out" "http://bedrock-now.localhost:8800"
+  printf '#!/bin/sh\necho "XDG $*" > "%s/xdg"\n' "$TMP" > "$TMP/bin/xdg-open"; chmod +x "$TMP/bin/xdg-open"
+  out="$(PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>&1)"
+  assert_contains "$out" "default browser instead"
+  assert_eq "$(cat "$TMP/xdg")" "XDG http://bedrock-now.localhost:8800"
+}
+
+test_mac_app_present_asks_launchservices_last() {
+  HOME="$TMP/home"
+  open() { [ "$1 $2" = "-Ra Elsewhere Browser" ]; }
+  _mac_app_present "Elsewhere Browser" || { echo "open -Ra not used" >&2; return 1; }
+  if _mac_app_present "Missing Browser"; then return 1; fi
 }
 
 test_cmd_open_falls_back_to_default_browser_then_url() {
