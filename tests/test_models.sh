@@ -135,3 +135,16 @@ test_real_catalog_pins_stability_to_us_west_2() {
   assert_eq "$out" "sd3-5-large=us-west-2 stable-image-ultra=us-west-2 stable-image-core=us-west-2 "
   assert_eq "$(awk -F'\t' '!/^#/ && NF != 5' "$STACK_DIR/catalog/models.tsv")" ""
 }
+
+test_render_env_login_switch() {
+  out="$(CATALOG="$FIX" render_litellm_config "" us-east-1 false)"
+  assert_not_contains "$out" "disable_env_credential_login"
+  out="$(CATALOG="$FIX" render_litellm_config "" us-east-1 false true)"
+  assert_contains "$out" "  disable_env_credential_login: true"
+  assert_contains "$out" "litellm_settings:"
+}
+
+test_catalog_ships_without_legacy_aliases() {
+  assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-"')" ""
+  assert_contains "$(render_litellm_config "" us-east-1 false)" "model_group_alias: {}"
+}

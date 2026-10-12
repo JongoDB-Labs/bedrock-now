@@ -1,14 +1,16 @@
-# TAB-separated. aliases: comma list or "-". region: AWS region for this model, "-" = AWS_REGION_NAME from .env.
+# TAB-separated. aliases: comma list of extra names LiteLLM also answers to (e.g. an old model id a tool still
+# sends), or "-"; see README › Model aliases. region: AWS region for this model, "-" = AWS_REGION_NAME from .env.
+# Friendly names shown in Open WebUI live in catalog/display.tsv.
 # name	mode	litellm_model	aliases	region
-claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	claude-3-opus-20240229,claude-opus	-
+claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	-	-
 claude-sonnet-5-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-5-5	-	-
 claude-haiku-5-5	chat	bedrock/invoke/us.anthropic.claude-haiku-5-5	-	-
-claude-sonnet-4-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-4-5-20250929-v1:0	claude-3-5-sonnet-20241022	-
+claude-sonnet-4-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-4-5-20250929-v1:0	-	-
 gpt-6-sol	chat	bedrock/us.openai.gpt-6-sol	-	-
 gpt-6-luna	chat	bedrock/us.openai.gpt-6-luna	-	-
-grok-4-7	chat	bedrock/us.xai.grok-4.7	grok-4.7	-
-llama-3-3-70b	chat	bedrock/us.meta.llama3-3-70b-instruct-v1:0	llama-3.3-70b	-
-mistral-large-3	chat	bedrock/mistral.mistral-large-3-675b-instruct	mistral-large	-
+grok-4-7	chat	bedrock/us.xai.grok-4.7	-	-
+llama-3-3-70b	chat	bedrock/us.meta.llama3-3-70b-instruct-v1:0	-	-
+mistral-large-3	chat	bedrock/mistral.mistral-large-3-675b-instruct	-	-
 cohere-embed-v4	embedding	bedrock/cohere.embed-v4:0	-	-
 titan-embed-v2	embedding	bedrock/amazon.titan-embed-text-v2:0	-	-
 cohere-rerank-3-5	rerank	bedrock/arn:aws:bedrock:{region}::foundation-model/cohere.rerank-v3-5:0	-	-

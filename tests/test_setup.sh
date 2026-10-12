@@ -194,67 +194,6 @@ test_cmd_costs_without_probe_lists_whole_catalog() {
   assert_not_contains "$out" "days old"
 }
 
-# Open WebUI stub: GET answers $GET_CODE with $GET_BODY; POSTs are logged and answer $POST_CODE.
-_stub_owui() {
-  curl_auth() {
-    local out='' url='' code a prev=''
-    for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; url="$a"; done
-    case " $* " in
-      *" POST "*) local b; for a in "$@"; do case "$a" in @*) b="$(cat "${a#@}")" ;; esac; done
-        printf '%s %s\n' "${url#http://127.0.0.1:8082}" "$b" >> "$TMP/posts"; code="$POST_CODE"; printf 'detail' > "$out" ;;
-      *) printf '%s' "$GET_BODY" > "$out"; code="$GET_CODE" ;;
-    esac
-    printf '%s' "$code"
-  }
-}
-
-test_owui_upsert_creates_missing_model_public() {
-  printf 'OPENWEBUI_PORT=8082\nOPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"; _stub_owui
-  GET_CODE=401 GET_BODY='{"detail":"not found"}' POST_CODE=200 owui_upsert_model big 'AWS Bedrock · $1 per image'
-  assert_contains "$(cat "$TMP/posts")" '/api/v1/models/create {"id":"big","name":"big","base_model_id":null,"meta":{"description":"AWS Bedrock · $1 per image"}'
-  assert_contains "$(cat "$TMP/posts")" '"access_grants":[{"principal_type":"user","principal_id":"*","permission":"read"}]'
-}
-
-test_owui_upsert_updates_only_the_description_and_skips_current() {
-  command -v python3 >/dev/null 2>&1 || { echo "python3 not on host (the real code runs it inside open-webui)" >&2; return 77; }
-  printf 'OPENWEBUI_PORT=8082\nOPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"; _stub_owui
-  dc() { shift 3; "$@"; }   # `dc exec -T open-webui python3 -c …` → local python3
-  GET_CODE=200 GET_BODY='{"id":"big","name":"Big","meta":{"description":"AWS Bedrock · old","capabilities":{"vision":false}},"params":{"system":"Be terse"},"access_grants":[{"principal_type":"group","principal_id":"g1","permission":"read"}]}' \
-    POST_CODE=200 owui_upsert_model big 'AWS Bedrock · new'
-  p="$(cat "$TMP/posts")"
-  assert_contains "$p" '/api/v1/models/model/update '
-  assert_contains "$p" '"system": "Be terse"'
-  assert_contains "$p" '"vision": false'
-  assert_contains "$p" '"principal_id": "g1"'
-  assert_contains "$p" '"description": "AWS Bedrock \u00b7 new"'
-  assert_contains "$p" '"name": "Big"'
-  : > "$TMP/posts"
-  GET_CODE=200 GET_BODY='{"id":"big","meta":{"description":"AWS Bedrock · new"}}' POST_CODE=500 owui_upsert_model big 'AWS Bedrock · new'
-  assert_eq "$(cat "$TMP/posts")" ""
-}
-
-test_owui_upsert_leaves_existing_model_alone_when_edit_fails() {
-  printf 'OPENWEBUI_PORT=8082\nOPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"; _stub_owui
-  dc() { cat >/dev/null; return 1; }
-  OWUI_ERR=''
-  if GET_CODE=200 GET_BODY='{"id":"big","meta":{"description":"old"}}' POST_CODE=200 owui_upsert_model big 'new'; then return 1; fi
-  assert_contains "$OWUI_ERR" "left untouched"
-  assert_eq "$(cat "$TMP/posts" 2>/dev/null)" ""
-}
-
-test_sync_openwebui_models_warns_but_never_fails() {
-  PRICES="$STACK_DIR/tests/fixtures/prices.tsv"; CATALOG="$FIX"; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"
-  printf 'big\n' > "$TMP/litellm/enabled-models.txt"
-  printf 'OPENWEBUI_PORT=8082\nOPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"; _stub_owui
-  GET_CODE=401; GET_BODY=''; POST_CODE=403
-  sync_openwebui_models > "$TMP/o" 2>&1
-  out="$(cat "$TMP/o")"
-  assert_contains "$out" "could not set the price description of big (HTTP 403"
-  assert_contains "$out" "could not set the price description of old-big"
-  assert_contains "$out" "3 Open WebUI model description(s) failed"
-  assert_contains "$(cat "$TMP/posts")" '"id":"legacy","name":"legacy","base_model_id":null,"meta":{"description":"AWS Bedrock · alias of big · $4.40 in / $22.00 out per 1M tokens"}'
-}
-
 _image_default() { # _image_default MODEL... -> OWUI_ENABLE_IMAGES/OWUI_IMAGE_MODEL after choose_defaults
   STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf '%s\n' "$@" > "$TMP/litellm/enabled-models.txt"
   choose_defaults 2>/dev/null
@@ -266,4 +205,32 @@ test_choose_defaults_image_preference_best_first() {
   assert_eq "$(_image_default stable-image-core stable-image-ultra)" "true stable-image-ultra"
   assert_eq "$(_image_default stable-image-core stable-image-ultra sd3-5-large)" "true sd3-5-large"
   assert_eq "$(_image_default titan-embed-v2)" "false "
+}
+
+_owui_models() { # _owui_models MODEL... -> OWUI_DEFAULT_MODEL/OWUI_TASK_MODEL after choose_defaults
+  STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; printf '%s\n' "$@" > "$TMP/litellm/enabled-models.txt"
+  choose_defaults 2>/dev/null
+  printf '%s %s\n' "$(get_env OWUI_DEFAULT_MODEL)" "$(get_env OWUI_TASK_MODEL)"
+}
+
+test_choose_defaults_open_webui_default_and_task_model() {
+  assert_eq "$(_owui_models claude-haiku-5-5 claude-sonnet-4-5 claude-sonnet-5-5)" "claude-sonnet-5-5 claude-haiku-5-5"
+  assert_eq "$(_owui_models claude-haiku-5-5 claude-sonnet-4-5)" "claude-sonnet-4-5 claude-haiku-5-5"
+  assert_eq "$(_owui_models claude-sonnet-4-5)" "claude-sonnet-4-5 claude-sonnet-4-5"   # no Haiku: task model = default
+  assert_eq "$(_owui_models claude-haiku-5-5)" "claude-haiku-5-5 claude-haiku-5-5"
+  assert_eq "$(_owui_models gpt-6-sol)" " "   # none of the three: Open WebUI's own defaults apply
+}
+
+test_new_litellm_ui_password_meets_litellm_policy() {
+  printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
+  setup_secrets 2>/dev/null
+  pw="$(get_env LITELLM_UI_PASSWORD)"
+  case "$pw" in Bn9-????????????????????????) ;; *) echo "unexpected: $pw" >&2; return 1 ;; esac
+}
+
+test_litellm_ui_user_follows_db_admin_state() {
+  printf 'OPENWEBUI_ADMIN_EMAIL=me@x.io\n' > "$ENV_FILE"
+  assert_eq "$(litellm_ui_user)" "admin"
+  printf 'LITELLM_DB_ADMIN_READY=true\n' >> "$ENV_FILE"
+  assert_eq "$(litellm_ui_user)" "me@x.io"
 }

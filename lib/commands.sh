@@ -265,7 +265,7 @@ setup_secrets() {
   ensure_env POSTGRES_PASSWORD "$(gen_hex 24)"
   ensure_env LITELLM_MASTER_KEY "sk-$(gen_hex 24)"
   ensure_env LITELLM_SALT_KEY "sk-$(gen_hex 24)"   # never change after first run: encrypts stored creds
-  ensure_env LITELLM_UI_PASSWORD "$(gen_hex 12)"
+  ensure_env LITELLM_UI_PASSWORD "Bn9-$(gen_hex 12)"   # LiteLLM's policy: upper+lower case, digit, symbol
   ensure_env WEBUI_SECRET_KEY "$(gen_hex 32)"
   ensure_env OPENWEBUI_ADMIN_PASSWORD "$(gen_hex 12)"
   ensure_env RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"
@@ -318,11 +318,16 @@ cmd_setup() {
 render_config() {
   local out="${2:-$STACK_DIR/litellm/config.yaml}" tmp
   tmp="$(mktemp "$out.XXXXXX")" || die "cannot create a temp file next to $out"
-  if ! (render_litellm_config "$1" "$(get_env AWS_REGION_NAME)" "$(get_env LITELLM_STORE_PROMPTS)") > "$tmp"; then
+  if ! (render_litellm_config "$1" "$(get_env AWS_REGION_NAME)" "$(get_env LITELLM_STORE_PROMPTS)" "$(get_env LITELLM_DB_ADMIN_READY)") > "$tmp"; then
     rm -f "$tmp"; die "could not render $out"
   fi
   chmod 644 "$tmp"   # read by the litellm container
   mv "$tmp" "$out"
+}
+
+# litellm_ui_user -> the LiteLLM UI login name: the database admin's email once setup created it, else "admin"
+litellm_ui_user() {
+  if [ "$(get_env LITELLM_DB_ADMIN_READY)" = true ]; then get_env OPENWEBUI_ADMIN_EMAIL; echo; else echo admin; fi
 }
 
 valid_budget() { # valid_budget VALUE -> 0 if a plain non-negative number (e.g. 200 or 12.50)
@@ -340,6 +345,12 @@ choose_defaults() { # derive model choices from litellm/enabled-models.txt
   set_env CLAUDE_BEDROCK_SONNET_MODEL "$(first_enabled "$en" claude-sonnet-5-5 claude-sonnet-4-5)"
   set_env CLAUDE_BEDROCK_HAIKU_MODEL "$(first_enabled "$en" claude-haiku-5-5 claude-sonnet-4-5)"
   [ -n "$(get_env CLAUDE_BEDROCK_OPUS_MODEL)" ] || warn "no Claude model is usable with this key — claude-bedrock will not work"
+
+  # Open WebUI: default chat model, and the cheap model for titles/tags/follow-up suggestions.
+  m="$(first_enabled "$en" claude-sonnet-5-5 claude-sonnet-4-5 claude-haiku-5-5)"
+  set_env OWUI_DEFAULT_MODEL "$m"
+  set_env OWUI_TASK_MODEL "$(first_enabled "$en" claude-haiku-5-5)"
+  [ -n "$(get_env OWUI_TASK_MODEL)" ] || set_env OWUI_TASK_MODEL "$m"
 
   # Bedrock-only rule: never let Open WebUI fall back to a local (Hugging Face-downloaded) embedder.
   m="$(first_enabled "$en" cohere-embed-v4 titan-embed-v2)"
@@ -443,10 +454,13 @@ setup_keys_and_ui() {
   log "creating LiteLLM virtual keys with monthly budgets"
   ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env BUDGET_CLAUDE_CODE)"
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
+  setup_litellm_admin
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   ensure_openwebui_api_key
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
+  owui_install_cost_filter
+  sync_budget_banner
 }
 
 # --- ./stack models ---
@@ -459,6 +473,7 @@ models_recheck() {
   setup_bringup_and_probe
   run_phase "Open WebUI + shared-mcp" "open-webui shared-mcp" dc up -d --wait open-webui shared-mcp
   sync_openwebui_models
+  owui_install_cost_filter
 }
 
 cmd_models() {
@@ -517,82 +532,14 @@ cmd_costs() {
     *) printf '  Total (all keys, last 30 days): unavailable (HTTP %s)\n' "$code" ;;
   esac
   rm -f "$tmp"
-  printf '\nBreakdown by model and day: http://127.0.0.1:%s/ui → Usage (login: admin / LITELLM_UI_PASSWORD in .env)\n' "$(get_env LITELLM_PORT)"
+  printf '\nBreakdown by model and day: http://127.0.0.1:%s/ui → Usage (login: %s / LITELLM_UI_PASSWORD in .env)\n' "$(get_env LITELLM_PORT)" "$(litellm_ui_user)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   age="$(prices_age_days)"
   if [ -z "$age" ]; then warn "catalog/prices.tsv has no '# as_of:' date — prices may be stale"
   elif [ "$age" -gt 90 ]; then warn "prices are $age days old — check https://aws.amazon.com/bedrock/pricing/ and update catalog/prices.tsv"; fi
 }
 
-# _owui_post PATH JSON OUTFILE -> HTTP status of an Open WebUI API call with OPENWEBUI_API_KEY (000 = no answer)
-_owui_post() {
-  local body; body="$(mktemp)"; chmod 600 "$body"; printf '%s' "$2" > "$body"
-  curl_auth "$(get_env OPENWEBUI_API_KEY)" -sS -m 30 -X POST -o "$3" -w '%{http_code}' -H 'Content-Type: application/json' \
-    --data-binary "@$body" "http://127.0.0.1:$(get_env OPENWEBUI_PORT)$1" 2>/dev/null || true
-  rm -f "$body"
-}
-
-# owui_model_json ID DESCRIPTION -> Open WebUI v0.12 ModelForm for a NEW base-model override (same id as
-# the LiteLLM model, base_model_id null) that is readable by every user (access grant user:* read).
-# No JSON escaping: ids come from catalog/models.tsv and descriptions from price_label, neither of which
-# contains quotes or backslashes.
-owui_model_json() {
-  printf '{"id":"%s","name":"%s","base_model_id":null,"meta":{"description":"%s"},"params":{},"access_grants":[{"principal_type":"user","principal_id":"*","permission":"read"}],"is_active":true}' "$1" "$1" "$2"
-}
-
-# owui_set_description DESCRIPTION < model JSON (GET /api/v1/models/model) -> the same JSON with only
-# meta.description changed, so params, capabilities, knowledge, system prompt and access grants survive
-# the update. Runs Python inside the open-webui container (no jq/python needed on the host).
-owui_set_description() {
-  dc exec -T open-webui python3 -c 'import json, sys
-d = json.load(sys.stdin)
-d["meta"] = d.get("meta") or {}
-d["meta"]["description"] = sys.argv[1]
-json.dump(d, sys.stdout)' "$1"
-}
-
-# owui_upsert_model ID DESCRIPTION -> 0 if Open WebUI now shows DESCRIPTION for ID. New models are created
-# public; existing ones get only their description changed; up-to-date ones are left alone.
-owui_upsert_model() {
-  local tmp code body
-  tmp="$(mktemp)"
-  code="$(curl_auth "$(get_env OPENWEBUI_API_KEY)" -sS -m 30 -o "$tmp" -w '%{http_code}' \
-    "http://127.0.0.1:$(get_env OPENWEBUI_PORT)/api/v1/models/model?id=$1" 2>/dev/null || true)"
-  if [ "$code" = 200 ] && grep -qF "\"description\":\"$2\"" "$tmp"; then rm -f "$tmp"; return 0; fi
-  if [ "$code" = 200 ]; then
-    if ! body="$(owui_set_description "$2" < "$tmp" 2>/dev/null)" || [ -z "$body" ]; then
-      OWUI_ERR="could not edit its existing settings safely, so they were left untouched"; rm -f "$tmp"; return 1
-    fi
-    code="$(_owui_post /api/v1/models/model/update "$body" "$tmp")"
-  else
-    code="$(_owui_post /api/v1/models/create "$(owui_model_json "$1" "$2")" "$tmp")"
-  fi
-  [ "$code" = 200 ] || { OWUI_ERR="HTTP $code: $(head -c 200 "$tmp" | tr '\n' ' ')"; rm -f "$tmp"; return 1; }
-  rm -f "$tmp"
-}
-
-# sync_openwebui_models — puts "AWS Bedrock · <price>" in Open WebUI's model picker for every enabled
-# model and alias. Never fatal: prices still show in ./stack costs and the LiteLLM UI.
-sync_openwebui_models() {
-  local en name _ aliases a desc ok=0 bad=0 OWUI_ERR=''
-  local -a alias_list
-  en="$(_enabled_or_all)"
-  [ -n "$(get_env OPENWEBUI_API_KEY)" ] || { warn "no Open WebUI API key — skipping model price descriptions"; return 0; }
-  while IFS=$'\t' read -r name _ _ aliases _ <&3; do
-    is_enabled "$name" "$en" || continue
-    desc="AWS Bedrock · $(price_label "$name")"
-    if owui_upsert_model "$name" "$desc"; then ok=$((ok + 1)); else bad=$((bad + 1)); warn "Open WebUI: could not set the price description of $name ($OWUI_ERR)"; fi
-    [ "$aliases" != - ] && [ -n "$aliases" ] || continue
-    IFS=, read -r -a alias_list <<< "$aliases"
-    for a in ${alias_list[@]+"${alias_list[@]}"}; do
-      [ -n "$a" ] || continue
-      if owui_upsert_model "$a" "AWS Bedrock · alias of $name · $(price_label "$name")"; then ok=$((ok + 1))
-      else bad=$((bad + 1)); warn "Open WebUI: could not set the price description of $a ($OWUI_ERR)"; fi
-    done
-  done 3< <(catalog_rows)
-  if [ "$bad" -eq 0 ]; then log "Open WebUI model picker shows Bedrock prices ($ok models)"
-  else warn "$bad Open WebUI model description(s) failed — prices are still in ./stack costs and the LiteLLM UI; re-run ./stack setup to retry"; fi
-}
+# Open WebUI model names/prices, the cost filter and budget banners: lib/owui.sh
 
 # Passwords are printed only on the very first setup (when the Open WebUI admin was just created);
 # afterwards the summary points at .env so re-runs and updates don't leave them in scrollback/logs.
@@ -601,10 +548,10 @@ print_summary() {
   out_colors
   if [ "${FIRST_SETUP:-0}" = 1 ]; then
     owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / $(get_env OPENWEBUI_ADMIN_PASSWORD) (initial password — shown once; also in .env)"
-    lite_login="admin / $(get_env LITELLM_UI_PASSWORD)"
+    lite_login="$(litellm_ui_user) / $(get_env LITELLM_UI_PASSWORD)"
   else
     owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / see OPENWEBUI_ADMIN_PASSWORD in .env"
-    lite_login="admin / see LITELLM_UI_PASSWORD in .env"
+    lite_login="$(litellm_ui_user) / see LITELLM_UI_PASSWORD in .env"
   fi
   cb="$(claude_bedrock_cmd)"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   cat <<SUMMARY
@@ -682,6 +629,7 @@ cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   ensure_images "./stack up"
   run_phase "bedrock-now" "postgres rustfs litellm open-webui shared-mcp" dc up -d --wait
+  sync_budget_banner   # Open WebUI keeps banners in memory only
   cmd_status
 }
 cmd_down()   { dc down; }

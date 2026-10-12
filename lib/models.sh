@@ -106,11 +106,12 @@ first_enabled() { # first_enabled ENABLED_FILE PREF... -> first pref present, or
   return 0
 }
 
-# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) -> YAML on stdout
-# STORE_PROMPTS is anything-but-"true" = false. Dies on a bad region, a missing catalog, or
+# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) [ENV_LOGIN_OFF(true|false)] -> YAML on stdout
+# STORE_PROMPTS is anything-but-"true" = false. ENV_LOGIN_OFF=true (setup created a LiteLLM database admin)
+# turns off the shared UI_USERNAME/UI_PASSWORD login. Dies on a bad region, a missing catalog, or
 # when no catalog model is enabled (LiteLLM would start with an empty model list).
 render_litellm_config() {
-  local enabled="$1" region="$2" store="${3:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
+  local enabled="$1" region="$2" store="${3:-false}" env_login_off="${4:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
   local -a alias_list
   valid_region "$region" || die "invalid AWS region: '$region'"
   [ -r "$CATALOG" ] || die "catalog not found: $CATALOG"
@@ -149,6 +150,9 @@ general_settings:
   database_url: os.environ/DATABASE_URL
   store_prompts_in_spend_logs: $store
   maximum_spend_logs_retention_period: "90d"
+EOT
+  [ "$env_login_off" != true ] || printf '  disable_env_credential_login: true\n'
+  cat <<EOT
 
 litellm_settings:
   drop_params: true

@@ -1,0 +1,4 @@
+# name	display_name	icon	tags
+big	Big Model 1.0	-	VendorA,Extra
+small	Small One	-	-
+emb	Embedder	-	VendorB

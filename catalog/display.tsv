@@ -1,0 +1,21 @@
+# Friendly names for Open WebUI's model picker. TAB-separated; "-" = none.
+# name = catalog/models.tsv name. icon = image URL or data: URI for the picker (optional).
+# tags = comma list of extra picker tags (the price tier and "Bedrock" are added by ./stack setup).
+# Chat models are shown as "<display_name> · <tier>"; tier comes from the input price per 1M tokens:
+#   $ under $0.50 · $$ under $3.00 · $$$ $3.00 and up.
+# name	display_name	icon	tags
+claude-opus-5-5	Claude Opus 5.5	-	Anthropic
+claude-sonnet-5-5	Claude Sonnet 5.5	-	Anthropic
+claude-haiku-5-5	Claude Haiku 5.5	-	Anthropic
+claude-sonnet-4-5	Claude Sonnet 4.5	-	Anthropic
+gpt-6-sol	GPT-6 Sol	-	OpenAI
+gpt-6-luna	GPT-6 Luna	-	OpenAI
+grok-4-7	Grok 4.7	-	xAI
+llama-3-3-70b	Llama 3.3 70B	-	Meta
+mistral-large-3	Mistral Large 3	-	Mistral
+cohere-embed-v4	Cohere Embed v4	-	Cohere
+titan-embed-v2	Titan Text Embeddings v2	-	Amazon
+cohere-rerank-3-5	Cohere Rerank 3.5	-	Cohere
+sd3-5-large	Stable Diffusion 3.5 Large	-	Stability
+stable-image-ultra	Stable Image Ultra	-	Stability
+stable-image-core	Stable Image Core	-	Stability
