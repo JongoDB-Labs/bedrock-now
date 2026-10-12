@@ -118,11 +118,13 @@ first_enabled() { # first_enabled ENABLED_FILE PREF... -> first pref present, or
   return 0
 }
 
-# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) [ALERTING(true|false)] -> YAML on stdout
-# STORE_PROMPTS is anything-but-"true" = false; ALERTING=true adds webhook budget alerts. Dies on a bad
-# region, a missing catalog, or when no catalog model is enabled (LiteLLM would start with an empty model list).
+# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) [ALERTING(true|false)] [ENV_LOGIN_OFF(true|false)]
+#   -> YAML on stdout. STORE_PROMPTS is anything-but-"true" = false; ALERTING=true adds webhook budget alerts;
+# ENV_LOGIN_OFF=true (setup created a LiteLLM database admin) turns off the shared UI_USERNAME/UI_PASSWORD login.
+# Dies on a bad region, a missing catalog, or when no catalog model is enabled (LiteLLM would start with an
+# empty model list).
 render_litellm_config() {
-  local enabled="$1" region="$2" store="${3:-false}" alerting="${4:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
+  local enabled="$1" region="$2" store="${3:-false}" alerting="${4:-false}" env_login_off="${5:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
   local -a alias_list
   valid_region "$region" || die "invalid AWS region: '$region'"
   [ -r "$CATALOG" ] || die "catalog not found: $CATALOG"
@@ -162,9 +164,11 @@ general_settings:
   store_prompts_in_spend_logs: $store
   maximum_spend_logs_retention_period: "90d"
   proxy_batch_write_at: 1   # spend logs land within ~1-6 s (claude-bedrock's exit summary reads them)
+  password_policy_check_breached_passwords: false   # no haveibeenpwned.com call (Bedrock-only rule)
 EOT
   # Budget alerts (soft_budget = 80%, max_budget) go to WEBHOOK_URL, which compose fills from ALERT_WEBHOOK_URL.
   [ "$alerting" != true ] || printf '  alerting: ["webhook"]\n  alert_types: ["budget_alerts"]\n'
+  [ "$env_login_off" != true ] || printf '  disable_env_credential_login: true\n'
   cat <<EOT
 
 litellm_settings:

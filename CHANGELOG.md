@@ -43,6 +43,25 @@ All notable changes to bedrock-now are documented here. The format follows
   per-copy profile; otherwise the default browser; over SSH or without a display it prints the URL).
   `./stack setup` and `./stack up` open it at the end when run in a terminal (`BEDROCK_NOW_NO_OPEN=1` turns
   that off).
+- Open WebUI shows the cost of every answer and the chat's running total under each reply
+  (`≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈ $0.0412`), via a "Bedrock cost" filter
+  function that setup installs, enables globally and keeps priced from `catalog/prices.tsv`. Cached tokens are
+  priced at cache rates; the lines are stripped before the chat goes back to the model (also after
+  "continue response"). Setup enables the filter once and afterwards only updates its code and prices, so an
+  admin's switches stick; custom models are priced like their base model.
+- Friendly model names with price tiers in Open WebUI's picker (`Claude Sonnet 5.5 · $$`) from the new
+  `catalog/display.tsv`, plus tier/vendor tags and small offline vendor icons (`catalog/icons/`). Embedding, rerank and image models are hidden from the picker
+  (still usable). Names, icons and visibility you set yourself are kept. The portal's Home model table shows
+  the same names and tiers.
+- Open WebUI defaults: Sonnet 5.5 (or 4.5, or Haiku 5.5) as the default chat model; Haiku 5.5 for chat titles,
+  tags and follow-up suggestions; token usage on every answer; four prompt cards; no changelog popup or
+  update toast; the microphone uses the browser's speech recognition and read-aloud the system voices.
+- A budget banner in Open WebUI while the `open-webui` or `claude-code` key is at 80%+ of its monthly budget
+  (red at 100%), refreshed by setup and `./stack up`.
+- LiteLLM admin login is now a real database account (`OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD`, shown on the
+  portal's Home page), and the
+  shared env-credential login is turned off, so the red "Environment-credential login is enabled" banner is
+  gone.
 
 ### Changed
 
@@ -54,6 +73,13 @@ All notable changes to bedrock-now are documented here. The format follows
   of three separate logins.
 - LiteLLM writes spend logs every 1–6 s instead of every 10–15 s (`proxy_batch_write_at: 1`), so spend shows
   up almost immediately.
+- The catalog ships without legacy model aliases (`claude-opus`, `claude-3-opus-20240229`, `grok-4.7`, …).
+  The `aliases` column still works; the README shows how to add one.
+- `LITELLM_UI_PASSWORD` must meet LiteLLM's password policy (upper- and lowercase, digit, symbol). New installs
+  generate `Bn9-…`; an existing hex password gets the `Bn9-` prefix on the next `./stack setup` (before
+  LiteLLM starts), and any other password that fails the policy is replaced with a generated one.
+- LiteLLM never contacts haveibeenpwned.com for password checks (`password_policy_check_breached_passwords:
+  false`; it is on by default in LiteLLM 1.105).
 
 ### Security
 

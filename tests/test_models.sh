@@ -135,3 +135,27 @@ test_real_catalog_pins_stability_to_us_west_2() {
   assert_eq "$out" "sd3-5-large=us-west-2 stable-image-ultra=us-west-2 stable-image-core=us-west-2 "
   assert_eq "$(awk -F'\t' '!/^#/ && NF != 5' "$STACK_DIR/catalog/models.tsv")" ""
 }
+
+test_render_env_login_switch() {
+  out="$(CATALOG="$FIX" render_litellm_config "" us-east-1 false)"
+  assert_not_contains "$out" "disable_env_credential_login"
+  out="$(CATALOG="$FIX" render_litellm_config "" us-east-1 false false true)"
+  assert_contains "$out" "  disable_env_credential_login: true"
+  assert_not_contains "$out" "alerting"
+  out="$(CATALOG="$FIX" render_litellm_config "" us-east-1 false true true)"   # both together, in general_settings
+  assert_contains "$out" "  disable_env_credential_login: true"
+  assert_contains "$out" '  alerting: ["webhook"]'
+  assert_contains "$out" "  proxy_batch_write_at: 1"
+  assert_contains "$out" "  password_policy_check_breached_passwords: false"
+  assert_contains "$out" "litellm_settings:"
+}
+
+test_render_never_calls_the_breached_password_service() {
+  # LiteLLM 1.105 checks haveibeenpwned.com by default (password_policy_check_breached_passwords)
+  assert_contains "$(CATALOG="$FIX" render_litellm_config "" us-east-1 false)" "  password_policy_check_breached_passwords: false"
+}
+
+test_catalog_ships_without_legacy_aliases() {
+  assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-"')" ""
+  assert_contains "$(render_litellm_config "" us-east-1 false)" "model_group_alias: {}"
+}

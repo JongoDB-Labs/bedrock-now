@@ -44,8 +44,30 @@ def reason_code(reason: str) -> str:
     return "unverified"
 
 
-def read_models(litellm_dir: Path) -> dict:
-    """litellm/probe-results.tsv (written by setup / ./stack models --recheck)."""
+def tier(input_per_mtok: float | None) -> str:
+    """Price tier by input price per 1M tokens — the same rule as ./stack's model_tier (lib/owui.sh)."""
+    if input_per_mtok is None:
+        return ""
+    return "$" if input_per_mtok < 0.5 else "$$" if input_per_mtok < 3 else "$$$"
+
+
+def _tsv_column(path: Path, col: int) -> dict:
+    """{first column: column COL} for the non-comment rows of a catalog TSV ("-" = empty); {} if unreadable."""
+    out = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            f = line.rstrip("\r").split("\t")
+            if line.startswith("#") or len(f) <= col:
+                continue
+            out[f[0]] = "" if f[col] == "-" else f[col]
+    except OSError:
+        pass
+    return out
+
+
+def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
+    """litellm/probe-results.tsv (written by setup / ./stack models --recheck), with the friendly names
+    (catalog/display.tsv) and price tiers Open WebUI's picker shows."""
     path = litellm_dir / "probe-results.tsv"
     try:
         text = path.read_text(encoding="utf-8")
@@ -53,6 +75,8 @@ def read_models(litellm_dir: Path) -> dict:
         return {"checked_at": None, "rows": [], "error": "no model check yet — run ./stack models --recheck"}
     except OSError as e:
         return {"checked_at": None, "rows": [], "error": f"cannot read probe-results.tsv: {e.strerror}"}
+    names = _tsv_column(catalog_dir / "display.tsv", 1) if catalog_dir else {}
+    inputs = _tsv_column(catalog_dir / "prices.tsv", 1) if catalog_dir else {}
     rows, checked = [], None
     for line in text.splitlines():
         if not line.strip() or line.startswith("#"):
@@ -62,9 +86,14 @@ def read_models(litellm_dir: Path) -> dict:
             continue
         name, kind, verdict, reason, price, ts = f[:6]
         checked = checked or ts
+        try:
+            price_in = float(inputs[name]) if kind == "chat" and inputs.get(name) else None
+        except ValueError:
+            price_in = None
         rows.append({
             "name": name, "kind": kind, "enabled": verdict == "ENABLED",
             "why": reason_code(reason), "reason": reason, "price": price,
+            "display": names.get(name) or name, "tier": tier(price_in),
         })
     return {"checked_at": checked, "rows": rows, "error": None}
 
@@ -161,7 +190,7 @@ async def build(client: httpx.AsyncClient, s: Settings) -> dict:
         "portal": {"url": s.origin(), "user": s.user_email},
         "services": svc,
         "spend": sp,
-        "models": read_models(s.litellm_dir),
+        "models": read_models(s.litellm_dir, s.catalog_dir),
         "prices": {"as_of": read_prices_as_of(s.catalog_dir), "source": "catalog/prices.tsv"},
         "claude": {"command": "claude-bedrock", "models": s.claude_models},
     }

@@ -30,6 +30,18 @@ def test_read_models(settings):
     assert m["rows"][1]["why"] == "no Marketplace access" and not m["rows"][1]["enabled"]
 
 
+def test_read_models_adds_friendly_names_and_tiers(settings):
+    (settings.litellm_dir / "probe-results.tsv").write_text(PROBE)
+    (settings.catalog_dir / "display.tsv").write_text(
+        "# name\tdisplay_name\ticon\ttags\nclaude-haiku-5-5\tClaude Haiku 5.5\tanthropic\tAnthropic\n")
+    (settings.catalog_dir / "prices.tsv").write_text(
+        "# as_of: 2026-10-12\nclaude-haiku-5-5\t0.11\t0.55\t-\t-\t-\t-\ncohere-embed-v4\t0.12\t-\t-\t-\t-\t-\n")
+    rows = summary.read_models(settings.litellm_dir, settings.catalog_dir)["rows"]
+    assert (rows[0]["display"], rows[0]["tier"]) == ("Claude Haiku 5.5", "$")
+    assert (rows[1]["display"], rows[1]["tier"]) == ("cohere-embed-v4", "")   # no row; tiers only for chat
+    assert summary.tier(0.5) == "$$" and summary.tier(3.0) == "$$$" and summary.tier(None) == ""
+
+
 def test_prices_as_of(settings):
     assert summary.read_prices_as_of(settings.catalog_dir) is None
     (settings.catalog_dir / "prices.tsv").write_text("# comment\n# as_of: 2026-10-12\nx\t1\n")

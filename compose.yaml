@@ -130,6 +130,19 @@ services:
       IMAGES_OPENAI_API_BASE_URL: http://litellm:4000/v1
       IMAGES_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
       IMAGE_GENERATION_MODEL: ${OWUI_IMAGE_MODEL:-}
+      # Chat experience (OWUI_* model choices are made by setup from the models your key can use)
+      DEFAULT_MODELS: ${OWUI_DEFAULT_MODEL:-}                # default chat model for users without their own
+      TASK_MODEL_EXTERNAL: ${OWUI_TASK_MODEL:-}              # titles, tags, follow-ups: a cheap model
+      ENABLE_TITLE_GENERATION: "true"
+      ENABLE_TAGS_GENERATION: "true"
+      ENABLE_FOLLOW_UP_GENERATION: "true"
+      DEFAULT_MODEL_METADATA: '{"capabilities":{"usage":true}}'   # token usage per answer (cost filter needs it)
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      # No changelog popup / update toast; voice uses the browser (Web Speech API in, system voices out).
+      DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false,"showUpdateToast":false,"audio":{"stt":{"engine":"web"},"tts":{"engine":""}}}'
+      AUDIO_STT_ENGINE: web                                  # "Web API" (browser); the slim image has no local Whisper
+      AUDIO_TTS_ENGINE: ""                                   # "" = browser voices
+      DEFAULT_PROMPT_SUGGESTIONS: '[{"title":["Summarize a document","attach a file and get the key points"],"content":"Summarize the attached document: the key points first, then anything that needs a decision or follow-up."},{"title":["Explain this code","paste a snippet"],"content":"Explain what this code does, step by step, and point out anything risky or surprising:\n\n"},{"title":["Draft an email","from a few bullet points"],"content":"Draft a short, friendly, professional email from these points:\n- "},{"title":["Compare two options","pros, cons and a recommendation"],"content":"Compare these two options. Give pros and cons of each in a table, then a recommendation with the main reason:\nOption A: \nOption B: "}]'
       ENABLE_COMMUNITY_SHARING: "false"                     # no sharing to openwebui.com
       OFFLINE_MODE: "true"                                  # no Hugging Face downloads, no update check
       ANONYMIZED_TELEMETRY: "false"
@@ -191,6 +204,7 @@ services:
       LITELLM_KEY_CLAUDE_CODE: ${LITELLM_KEY_CLAUDE_CODE:-}
       LITELLM_KEY_OPENWEBUI: ${LITELLM_KEY_OPENWEBUI:-}
       LITELLM_KEY_SETUP: ${LITELLM_KEY_SETUP:-}
+      LITELLM_UI_USER: ${LITELLM_UI_USER:-admin}   # the admin email once setup created LiteLLM's database admin
       LITELLM_UI_PASSWORD: ${LITELLM_UI_PASSWORD:-}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-}

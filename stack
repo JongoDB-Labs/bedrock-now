@@ -10,6 +10,7 @@ export STACK_DIR
 . "$STACK_DIR/lib/commands.sh"
 . "$STACK_DIR/lib/guard.sh"
 . "$STACK_DIR/lib/open.sh"
+. "$STACK_DIR/lib/owui.sh"
 
 ASSUME_YES=0
 args=()

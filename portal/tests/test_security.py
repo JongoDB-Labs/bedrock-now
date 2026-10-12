@@ -113,3 +113,9 @@ def test_from_env_requires_secrets_and_lowercases_email():
     assert s.port == 8800 and s.host == "bn-dev.localhost"
     assert s.origin("chat") == "http://chat.bn-dev.localhost:8800"
     assert ("setup", "Setup and tests", "sk-s") in s.keys
+
+
+def test_from_env_litellm_ui_user_follows_setup():
+    base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "z" * 40}
+    assert from_env(base).litellm_ui_user == "admin"
+    assert from_env({**base, "LITELLM_UI_USER": "me@example.com"}).litellm_ui_user == "me@example.com"

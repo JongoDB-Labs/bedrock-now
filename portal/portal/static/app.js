@@ -100,7 +100,8 @@ function renderModels(models, prices) {
   const body = $("#models"); body.replaceChildren();
   for (const m of models.rows) {
     body.append(el("tr", {},
-      el("td", { class: "name", text: m.name }), el("td", { text: m.kind }),
+      el("td", { class: "name", title: m.name, text: m.tier ? `${m.display || m.name} · ${m.tier}` : (m.display || m.name) }),
+      el("td", { text: m.kind }),
       el("td", { class: m.enabled ? "status-on" : "status-off", text: m.enabled ? "Enabled" : "Not available" }),
       el("td", { class: "price", text: m.price }),
       el("td", { class: "why", title: m.reason, text: m.why })));
