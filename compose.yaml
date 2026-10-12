@@ -77,6 +77,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run ./stack setup}
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
       WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
+      # Optional; blank = no OpenRouter models are rendered (lib/openrouter.sh).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - ./litellm:/app/config:ro,z
     ports:
@@ -212,6 +214,8 @@ services:
       CLAUDE_BEDROCK_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
       CLAUDE_BEDROCK_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
       CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
+      # Optional: Home asks openrouter.ai for the key's usage/credits server-side; never sent to the browser.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     # Read-only: model check results (probe-results.tsv) and catalog prices for Home. No Docker socket.
     # portal-state (/state) is the only writable mount besides /tmp: the logout time, so a restart keeps it.
     volumes:

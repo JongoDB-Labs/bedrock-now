@@ -23,6 +23,8 @@ Usage: ./stack <command> [--yes]
   update       Backup, new code (git), pinned images, re-run setup (< $0.01 Bedrock)
                --to <tag|branch> picks a version; local changes are never discarded
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
+  openrouter   Optional OpenRouter models: status | set | remove | refresh | list
+               | models all|free|paid|<ids>   (no Bedrock calls; see README)
   uninstall    Remove containers and ALL data volumes
 
   Commands without a $ note make no Bedrock calls.
@@ -320,6 +322,7 @@ cmd_setup() {
   setup_aws_creds
   setup_ports
   setup_secrets
+  setup_openrouter   # optional; lib/openrouter.sh
   setup_bringup_and_probe
   setup_keys_and_ui
   write_mcp_config
@@ -514,6 +517,7 @@ setup_keys_and_ui() {
   ensure_openwebui_api_key
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
+  openrouter_sync_owui   # optional; lib/openrouter.sh
   owui_install_cost_filter
   sync_budget_banner
   portal_session_end
@@ -530,6 +534,7 @@ models_recheck() {
   run_phase "Open WebUI + shared-mcp + portal" "open-webui shared-mcp portal" dc up -d --wait open-webui shared-mcp portal
   portal_session_or_die
   sync_openwebui_models
+  openrouter_sync_owui   # optional; lib/openrouter.sh
   owui_install_cost_filter
   portal_session_end
 }
@@ -547,6 +552,7 @@ cmd_models() {
   [ "$bad" -eq 0 ] || warn "$f looks corrupt ($bad incomplete line(s) skipped) — run ./stack models --recheck"
   printf 'Model access for your AWS key, as checked %s (no Bedrock calls; ./stack models --recheck re-checks, < $0.01)\n\n' "${ts:-at the last setup}"
   awk -F'\t' '/^#/ || NF >= 6' "$f" | models_table
+  openrouter_models_section
 }
 
 # --- cost transparency ---
@@ -591,6 +597,7 @@ cmd_costs() {
     *) printf '  Total (all keys, last 30 days): unavailable (HTTP %s)\n' "$code" ;;
   esac
   rm -f "$tmp"
+  openrouter_costs_section
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   printf 'Alerts at 80%%: set ALERT_WEBHOOK_URL in .env, then ./stack setup (%s)\n' \
@@ -628,9 +635,9 @@ SUMMARY
   LiteLLM API     http://127.0.0.1:$(get_env LITELLM_PORT)   (for tools; keys in .env)
   Costs           ./stack costs             (Bedrock prices as of $(prices_as_of) + spend per key)
   Models          ./stack models            (which models your AWS key can use)
-
-  All credentials live in .env (mode 600).
 SUMMARY
+  openrouter_summary_line
+  printf '\n  All credentials live in .env (mode 600).\n'
 }
 
 # claude_bedrock_cmd -> "claude-bedrock" when that name on PATH runs this checkout's wrapper, else its
@@ -691,6 +698,7 @@ cmd_up() {
   check_portal_host "$(portal_host)"
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_images "./stack up"
+  openrouter_up_hook   # optional; refreshes OpenRouter models/prices when a key is set
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup)
   if portal_session_start; then sync_budget_banner; else warn "could not sign in to the portal — budget banner not refreshed"; fi
@@ -1110,3 +1118,6 @@ cmd_uninstall() {
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
 }
+
+# Optional OpenRouter provider (setup step, ./stack openrouter, costs/models/summary sections).
+. "$STACK_DIR/lib/openrouter.sh"

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from . import openrouter
 from .config import Settings
 
 TIMEOUT = httpx.Timeout(4.0, connect=2.0)
@@ -94,6 +95,7 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
             "name": name, "kind": kind, "enabled": verdict == "ENABLED",
             "why": reason_code(reason), "reason": reason, "price": price,
             "display": names.get(name) or name, "tier": tier(price_in),
+            "provider": "Bedrock", "access": "bedrock",
         })
     return {"checked_at": checked, "rows": rows, "error": None}
 
@@ -183,14 +185,26 @@ async def spend(client: httpx.AsyncClient, s: Settings) -> dict:
     return {"keys": list(rows), "total_30d": total, "total_error": error}
 
 
+def models_with_openrouter(s: Settings) -> dict:
+    """Bedrock probe results, plus the enabled OpenRouter models when a key is configured."""
+    models = read_models(s.litellm_dir, s.catalog_dir)
+    models["openrouter"] = None
+    if s.openrouter_api_key:
+        orm = openrouter.read_models(s.litellm_dir)
+        models["rows"] = models["rows"] + orm["rows"]
+        models["openrouter"] = {k: orm[k] for k in ("fetched_at", "mode", "counts")}
+    return models
+
+
 async def build(client: httpx.AsyncClient, s: Settings) -> dict:
-    svc, sp = await asyncio.gather(services(client, s), spend(client, s))
+    svc, sp, acct = await asyncio.gather(services(client, s), spend(client, s), openrouter.account(client, s.openrouter_api_key))
+    sp["openrouter"] = acct
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "portal": {"url": s.origin(), "user": s.user_email},
         "services": svc,
         "spend": sp,
-        "models": read_models(s.litellm_dir, s.catalog_dir),
+        "models": models_with_openrouter(s),
         "prices": {"as_of": read_prices_as_of(s.catalog_dir), "source": "catalog/prices.tsv"},
         "claude": {"command": "claude-bedrock", "models": s.claude_models},
     }

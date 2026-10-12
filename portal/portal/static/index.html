@@ -43,15 +43,22 @@
         <h2 id="spend-title">Bedrock spend</h2>
         <p class="total"><span id="total" class="figure">–</span> <span class="total-note">in the last 30 days, all keys</span></p>
         <ul id="meters" class="meters"></ul>
+        <div id="openrouter" class="or-account" hidden></div>
         <p class="note">Each key has a monthly budget that resets on the date shown. Change budgets with <code>BUDGET_*</code> in <code>.env</code>, then run <code>./stack setup</code>.</p>
       </section>
 
       <section class="models" aria-labelledby="models-title">
         <h2 id="models-title">Models your AWS key can use</h2>
         <p class="note" id="models-note"></p>
+        <div id="model-filter" class="chips" role="group" aria-label="Show models" hidden>
+          <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-filter="bedrock" aria-pressed="false">Bedrock</button>
+          <button type="button" class="chip" data-filter="free" aria-pressed="false">OpenRouter free</button>
+          <button type="button" class="chip" data-filter="paid" aria-pressed="false">OpenRouter paid</button>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th scope="col">Model</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Price (USD)</th><th scope="col">Why</th></tr></thead>
+            <thead><tr><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Price (USD)</th><th scope="col">Why</th></tr></thead>
             <tbody id="models"></tbody>
           </table>
         </div>

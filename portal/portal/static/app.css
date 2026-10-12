@@ -68,6 +68,16 @@ td.name { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
 .status-on { color: var(--ok); font-weight: 500; }
 .status-off { color: var(--bad); font-weight: 500; }
 td.why { color: var(--muted); }
+td.provider { white-space: nowrap; color: var(--muted); }
+td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); font-size: 12px; color: var(--ink); }
+
+/* Optional OpenRouter: provider filter chips and the account line under the spend meters. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); border-radius: 999px; padding: 3px 12px; font-size: 13px; }
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); font-weight: 500; }
+.chip .count { margin-left: 4px; font-variant-numeric: tabular-nums; }
+.or-account { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 14px; }
+.or-account .meter-head b { font-family: var(--figures); font-weight: 600; font-size: 16px; }
 
 .logins-list { margin: 0; display: grid; gap: 14px; }
 .logins-list dt { font-weight: 500; }

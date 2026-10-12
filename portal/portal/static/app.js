@@ -7,6 +7,7 @@ const API_HEADERS = { "X-Requested-With": "bedrock-now" };
 const REFRESH_MS = 30000;
 let logins = null;
 let timer = null;
+let lastSummary = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const appUrl = (app) => `${location.protocol}//${app}.${location.host}${APPS[app]}`;
@@ -96,12 +97,52 @@ function renderServices(services) {
   }
 }
 
+// Optional OpenRouter account line under the spend meters (usage of the key; credits when readable).
+function renderOpenRouter(acct) {
+  const box = $("#openrouter");
+  box.hidden = !(acct && acct.enabled);
+  $("#spend-title").textContent = box.hidden ? "Bedrock spend" : "Spend";
+  if (box.hidden) return;
+  box.replaceChildren();
+  const head = el("div", { class: "meter-head" }, el("span", { text: `OpenRouter${acct.label ? ` (${acct.label})` : ""}` }));
+  const foot = [];
+  if (acct.error) {
+    head.append(el("span", { class: "amount", text: "unavailable" })); foot.push(acct.error);
+  } else {
+    head.append(el("span", { class: "amount" }, el("b", { text: usd(acct.usage_monthly) }), " this month"));
+    foot.push(`${usd(acct.usage)} in total on this key`);
+    if (acct.limit != null) foot.push(`key limit ${usd(acct.limit)}, ${usd(acct.limit_remaining)} left`);
+    if (acct.credits) foot.push(`credits ${usd(acct.credits.remaining)} left of ${usd(acct.credits.total)}`);
+    else if (acct.credits_note) foot.push(acct.credits_note);
+    if (acct.free_requests) foot.push(`free models: ${acct.free_requests.used} of ${acct.free_requests.limit} requests today`);
+    if (acct.is_free_tier) foot.push("free tier (no credits bought yet)");
+  }
+  box.append(head, el("div", { class: "meter-foot", text: foot.join(" · ") }));
+}
+
+let modelFilter = "all";
+const matchesFilter = (m) => modelFilter === "all" || (modelFilter === "bedrock" ? (m.provider || "Bedrock") === "Bedrock" : m.access === modelFilter);
+
 function renderModels(models, prices) {
   const body = $("#models"); body.replaceChildren();
+  const or = models.openrouter;
+  $("#model-filter").hidden = !or;
+  $("#models-title").textContent = or ? "Models" : "Models your AWS key can use";
+  if (!or) modelFilter = "all";
+  const counts = { all: models.rows.length, bedrock: 0, free: 0, paid: 0 };
+  for (const m of models.rows) counts[(m.provider || "Bedrock") === "Bedrock" ? "bedrock" : m.access] += 1;
+  for (const b of document.querySelectorAll("#model-filter .chip")) {
+    b.setAttribute("aria-pressed", String(b.dataset.filter === modelFilter));
+    let c = b.querySelector(".count"); if (!c) { c = el("span", { class: "count" }); b.append(c); }
+    c.textContent = String(counts[b.dataset.filter] || 0);
+  }
   for (const m of models.rows) {
+    if (!matchesFilter(m)) continue;
+    const provider = el("td", { class: "provider", text: m.provider || "Bedrock" });
+    if (m.provider === "OpenRouter") provider.append(el("span", { class: "tier", text: m.access === "free" ? "Free" : "Paid" }));
     body.append(el("tr", {},
       el("td", { class: "name", title: m.name, text: m.tier ? `${m.display || m.name} · ${m.tier}` : (m.display || m.name) }),
-      el("td", { text: m.kind }),
+      provider, el("td", { text: m.kind }),
       el("td", { class: m.enabled ? "status-on" : "status-off", text: m.enabled ? "Enabled" : "Not available" }),
       el("td", { class: "price", text: m.price }),
       el("td", { class: "why", title: m.reason, text: m.why })));
@@ -110,6 +151,7 @@ function renderModels(models, prices) {
   if (models.error) bits.push(models.error);
   else if (models.checked_at) bits.push(`Checked ${ago(models.checked_at)}; ./stack models --recheck checks again (< $0.01).`);
   if (prices.as_of) bits.push(`Prices are Bedrock on-demand rates per 1M tokens as of ${prices.as_of}.`);
+  if (or) bits.push(`OpenRouter models (or/…) send prompts to openrouter.ai; prices as of ${ago(or.fetched_at)}. ./stack openrouter changes which ones are offered.`);
   $("#models-note").textContent = bits.join(" ");
 }
 
@@ -124,7 +166,8 @@ async function refresh() {
   clearTimeout(timer);
   try {
     const d = await api("/api/summary");
-    renderSpend(d.spend); renderServices(d.services); renderModels(d.models, d.prices);
+    renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices);
+    lastSummary = d;
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;
     $("#load-error").hidden = true;
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -164,6 +207,9 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const a of document.querySelectorAll(".popout")) a.href = appUrl(a.dataset.app);
   for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => showTab(b.dataset.tab));
   $("#refresh").addEventListener("click", refresh);
+  for (const b of document.querySelectorAll("#model-filter .chip")) {
+    b.addEventListener("click", () => { modelFilter = b.dataset.filter; if (lastSummary) renderModels(lastSummary.models, lastSummary.prices); });
+  }
   $("#copy-claude").addEventListener("click", () => copy($("#claude-cmd").textContent, "the command"));
   for (const b of document.querySelectorAll(".copy[data-login]")) {
     b.addEventListener("click", async () => {

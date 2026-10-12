@@ -1,7 +1,9 @@
 # bedrock-now
 
 bedrock-now gives you a private, single-user AI workbench on your own Mac or Linux box. Every model call goes to
-**AWS Bedrock** under your team's AWS access key. Install it with one command. Nothing listens beyond `127.0.0.1`.
+**AWS Bedrock** under your team's AWS access key (and, only if you add an OpenRouter key, the `or/…` models go
+to OpenRouter; see [Optional: OpenRouter](#optional-openrouter)). Install it with one command. Nothing listens
+beyond `127.0.0.1`.
 
 Everything you open in a browser sits behind **one portal with one password**:
 
@@ -302,9 +304,11 @@ JSON, not Slack's message format.
 ## Bedrock only
 
 What the stack guarantees:
-- **Every model call** (chat, embeddings, rerank, images) goes **LiteLLM → AWS Bedrock**. There are no local
-  models, no third-party APIs and no fallbacks. If no Bedrock model is enabled for a capability, that
-  capability is off and setup tells you why.
+- **Bedrock by default; OpenRouter only if you add a key.** Every model call (chat, embeddings, rerank,
+  images) goes **LiteLLM → AWS Bedrock**. There are no local models and no fallbacks. If no Bedrock model is
+  enabled for a capability, that capability is off and setup tells you why. The one exception is opt-in: with
+  an `OPENROUTER_API_KEY` in `.env`, the chat models named `or/…` go **LiteLLM → OpenRouter** (see
+  [Optional: OpenRouter](#optional-openrouter)). Without a key, nothing contacts openrouter.ai.
 - AWS credentials reach only the `litellm` container (and throwaway `aws-cli` containers during setup). They
   are never passed on a command line.
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
@@ -338,6 +342,46 @@ What it does not cover:
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so Bedrock sessions send no telemetry, error reports or update
   checks. Plain `claude` is not affected and follows Claude Code's own settings.
 
+## Optional: OpenRouter
+
+[OpenRouter](https://openrouter.ai) is one API in front of hundreds of models from many providers (Llama,
+Gemma, Mistral, DeepSeek, Qwen, GPT, Gemini and more). Some of them are **free** (ids ending in `:free`, with
+daily request limits); the rest are **paid** from credits you buy at OpenRouter. bedrock-now can add them next
+to your Bedrock models. It is off unless you give it a key, and all it needs is the key (no email, no account
+API).
+
+- **Turn it on:** setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden input). Later, or
+  without a terminal: `./stack openrouter set` (asks, or reads `OPENROUTER_API_KEY` from the environment).
+  The key is checked with OpenRouter first (`GET /api/v1/key`); a rejected key is not stored. Create keys at
+  https://openrouter.ai/settings/keys; a per-key credit limit there caps what it can spend.
+- **Turn it off:** `./stack openrouter remove` deletes the key from `.env` and the cached model list, and
+  restarts LiteLLM with Bedrock only.
+- **Pick models:** `./stack openrouter models free` (only free models), `paid`, `all` (default), or a comma
+  list of ids: `./stack openrouter models meta-llama/llama-3.3-70b-instruct,google/gemma-4-31b-it:free`.
+  Stored as `OPENROUTER_MODELS` in `.env`. Only models that answer in text are offered (no image/audio
+  generation), and OpenRouter's variable-priced routers are left out. `OPENROUTER_MAX_MODELS` (default 1000;
+  the newest are kept) is a safety cap; today there are about 450.
+- **Where they show up:** in LiteLLM as `or/<openrouter id>` (for example `or/meta-llama/llama-3.3-70b-instruct`),
+  so they never clash with Bedrock names, and any LiteLLM key can call them through the LiteLLM API. In Chat they are named like `Llama 3.3 70B Instruct · OpenRouter` and tagged
+  `OpenRouter`, `Free` or `Paid` and the vendor, with the price in the description. Home lists them with a
+  provider column and Bedrock / free / paid filters.
+- **Prices and spend:** OpenRouter's per-token prices go into LiteLLM's config, so spend per key, budgets and
+  `./stack costs` include OpenRouter calls (cache discounts and long-context tiers aside: OpenRouter bills
+  what it bills). The model list and prices are re-fetched at setup, `./stack up` and
+  `./stack openrouter refresh`. `./stack costs`, `./stack openrouter status` and Home also show the key's
+  own usage, its limit and today's free-model requests. The account's credit balance needs an OpenRouter
+  *management* key, so with a normal key they link to https://openrouter.ai/settings/credits instead.
+- `./stack openrouter list` prints every enabled model with tier, price and context length.
+
+**Privacy.** A prompt to an `or/…` model leaves your machine and goes to OpenRouter and from there to the
+model's provider. Each provider has its own logging and training policy, and **some free models may log or
+train on your prompts**. Read [OpenRouter's provider logging policy](https://openrouter.ai/docs/guides/privacy/provider-logging)
+and [privacy policy](https://openrouter.ai/privacy), and set which providers may see your data in your
+OpenRouter [privacy settings](https://openrouter.ai/settings/privacy). Keep confidential work on Bedrock
+models. The key itself stays in `.env` (mode 600) and reaches only the LiteLLM and portal containers; curl
+gets it on stdin (never on a command line), and the portal calls OpenRouter server-side, so the key never
+reaches a browser.
+
 ## Backup, restore, update, keys
 
 ```bash
@@ -345,6 +389,7 @@ What it does not cover:
 ./stack restore backups/<ts>       # replaces ALL current data (offers a backup of the current state first)
 ./stack update                     # backup (…-auto) → new code (git) → pull pinned images → setup --yes → test
 ./stack rotate-aws                 # new AWS key: verified with AWS first, .env changed only if valid
+./stack openrouter set|remove      # optional OpenRouter key: checked with OpenRouter first (see above)
 ./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
 ```
 
