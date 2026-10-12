@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-from . import openrouter
+from . import icons, openrouter
 from . import prices as price_update
 from .config import Settings
 
@@ -80,6 +80,7 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None, prices: dict
     except OSError as e:
         return {"checked_at": None, "rows": [], "error": f"cannot read probe-results.tsv: {e.strerror}"}
     names = _tsv_column(catalog_dir / "display.tsv", 1) if catalog_dir else {}
+    logos = _tsv_column(catalog_dir / "display.tsv", 2) if catalog_dir else {}
     inputs = _tsv_column(catalog_dir / "prices.tsv", 1) if catalog_dir else {}
     rows, checked = [], None
     for line in text.splitlines():
@@ -103,7 +104,7 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None, prices: dict
             "name": name, "kind": kind, "enabled": verdict == "ENABLED",
             "why": reason_code(reason), "reason": reason, "price": price,
             "display": names.get(name) or name, "tier": tier(price_in),
-            "provider": "Bedrock", "access": "bedrock",
+            "provider": "Bedrock", "access": "bedrock", "icon": icons.bedrock(catalog_dir, logos.get(name)),
         })
     return {"checked_at": checked, "rows": rows, "error": None}
 
@@ -191,7 +192,7 @@ def models_with_openrouter(s: Settings) -> dict:
     models = read_models(s.litellm_dir, s.catalog_dir, price_update.effective_prices(price_paths(s)))
     models["openrouter"] = None
     if s.openrouter_api_key:
-        orm = openrouter.read_models(s.litellm_dir)
+        orm = openrouter.read_models(s.litellm_dir, s.catalog_dir)
         models["rows"] = models["rows"] + orm["rows"]
         models["openrouter"] = {k: orm[k] for k in ("fetched_at", "mode", "counts")}
     return models

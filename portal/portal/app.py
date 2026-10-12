@@ -17,7 +17,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import prices, summary
+from . import icons, prices, summary
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -169,6 +169,13 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
+    async def icon(request: Request) -> Response:
+        """A provider logo from catalog/icons for Home's model table (behind the login at Caddy, like Home)."""
+        f = icons.file(settings.catalog_dir, request.path_params["path"])
+        if f is None:
+            return PlainTextResponse("not found", status_code=404)
+        return FileResponse(f, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
     @asynccontextmanager
     async def lifespan(app: Starlette):
         async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
@@ -195,6 +202,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/summary", api_summary),
             Route("/api/logins", api_logins),
             Route("/favicon.svg", favicon),
+            Route("/icons/{path:path}", icon),
             Mount("/static", StaticFiles(directory=STATIC), name="static"),
         ],
         lifespan=lifespan,

@@ -24,12 +24,10 @@ display_name() { local d; d="$(display_field "$1" 2)"; printf '%s\n' "${d:-$1}";
 
 ICONS_DIR="${ICONS_DIR:-$STACK_DIR/catalog/icons}"
 
-# icon_url NAME -> the picker icon for NAME: a catalog/icons/<key>.png as an inline data:image/png URI (no
-# network needed), a data:/http(s)/absolute URL as written, or nothing. PNG, not SVG: Open WebUI only keeps
-# png/jpeg/gif/webp data URIs (an SVG one is silently stored as no icon). Each PNG is rendered from the SVG
-# source next to it (128x128, kept small); after editing an SVG, from catalog/icons run:
-#   docker run --rm -v "$PWD:/i" alpine:3.20 sh -c 'apk add -q rsvg-convert optipng font-dejavu &&
-#     for f in /i/*.svg; do rsvg-convert -w 128 -h 128 "$f" -o "${f%.svg}.png" && optipng -quiet -o7 -strip all "${f%.svg}.png"; done'
+# icon_url NAME -> the picker icon for NAME: catalog/icons/<key>.png (a provider logo from lobe-icons, 128x128,
+# rendered by catalog/icons/build.sh) as an inline data:image/png URI (no network needed), a
+# data:/http(s)/absolute URL as written, or nothing. PNG, not SVG: Open WebUI only keeps png/jpeg/gif/webp
+# data URIs (an SVG one is silently stored as no icon).
 icon_url() {
   local v; v="$(display_field "$1" 3)"
   case "$v" in
@@ -41,17 +39,39 @@ icon_url() {
   return 0
 }
 
-# owui_our_icon_hashes -> the sha256 of every data: URI bedrock-now sends or used to send for catalog/icons
-# (the PNGs, and the SVG ones of older versions), space-separated: how owui_merge_model tells our icons
-# from one the user picked.
+# sha256 of the data: URIs of the generic two-letter badges bedrock-now 0.1.x-0.2.0 sent (catalog/icons/
+# {amazon,anthropic,cohere,meta,mistral,openai,stability,xai}.png and the .svg ones before that). Models
+# still showing one of them get the real logo; an icon the user picked is never one of these.
+OWUI_LEGACY_ICON_HASHES='7504a6fae0e5521cc79d58e0c69a39af32ae357c5e984decc912e118427a0c2d
+7502060cee56a99f76bcfcbdc3fffea6e376f4ff48039a87945f41536373c802
+49d493375866ab791e7d97d008d6abaaad4d29a282091d229c7d7d7fd78f824e
+d5b8e897fc2949ee5c2ec6c2ef99959700e3a8a01e98ab3f12315f60ba09c797
+7966a1fedc02221fd37a27d4e648c7be95fe1f85a8f4fcdc7226a3d4735f7a2d
+fdcf78164abb1674e7fab250c028aa7b588293e2531a398510c266a9c1c8ec0a
+35c856567f6ca60c038e80b122b8a0e5c518838e642fc6f83bd9ce0f5ad05f70
+72c2def73f19a28d147b6eae5f7c6f848b37f81fae608abdc1f644e22dfefb4d
+f7eb161dc0351c923afbff51cce38e913b6f5de08a6c2e882b57650d77eb2033
+431ea8da288ff86889c3668d06719ebf96aa910e4c0ade8c81604411ec1f2621
+03c06c7fb8626dcd2cbabed243f89f934f3975afc4c41014122712809240b1b8
+03254f1286174c3209e72f0b890b7a05fba5532ed5ae203eccaaf3035b4fba30
+bc024cae81e96d54737c8b86c3ebe566e35ab14d4b55d2de8ab1ee26dbc82643
+a4133ed7d206cc3085720a2ddaba28096063215df0a467f8ebdd1b39105602c5
+a5f161255ef7a5ad3ac4246fc69030669eb285c5b031e3b0386763f40a867638
+839b5b09509ae3bb69fd392f50ee1dd04b00dedfc4098926b22d6f4531ca6806'
+
+# icon_data_uri FILE -> data:image/png;base64,… (FILE is a PNG)
+icon_data_uri() { printf 'data:image/png;base64,%s' "$(openssl base64 -A < "$1")"; }
+
+# owui_our_icon_hashes -> the sha256 of every data: URI bedrock-now sends (catalog/icons/*.png and
+# catalog/icons/or/*.png) or used to send (OWUI_LEGACY_ICON_HASHES), space-separated: how owui_merge_model
+# and the OpenRouter sync tell our icons from one the user picked.
 owui_our_icon_hashes() {
-  local f mime out=''
-  for f in "$ICONS_DIR"/*.png "$ICONS_DIR"/*.svg; do
+  local f out=''
+  for f in "$ICONS_DIR"/*.png "$ICONS_DIR"/or/*.png; do
     [ -r "$f" ] || continue
-    case "$f" in *.png) mime=image/png ;; *) mime=image/svg+xml ;; esac
-    out="$out $(printf 'data:%s;base64,%s' "$mime" "$(openssl base64 -A < "$f")" | openssl dgst -sha256 | awk '{print $NF}')"
+    out="$out $(icon_data_uri "$f" | openssl dgst -sha256 | awk '{print $NF}')"
   done
-  printf '%s\n' "${out# }"
+  printf '%s\n' "$(printf '%s %s' "${out# }" "$OWUI_LEGACY_ICON_HASHES" | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"
 }
 
 # model_tier NAME -> "$" (< $0.50), "$$" (< $3.00) or "$$$" by input price per 1M tokens; empty without one.
@@ -121,7 +141,7 @@ owui_model_json() {
 #   - name changes only while it is still one we generated (the id, DISPLAY, or "DISPLAY · <tier>");
 #   - user tags are kept, but ours (tier, "Bedrock", the display.tsv tags) are re-added every setup;
 #   - the icon changes only while it is unset, Open WebUI's default, or one of ours: a data: URI whose
-#     sha256 is in OUR_ICON_HASHES (owui_our_icon_hashes: current PNGs and legacy SVGs);
+#     sha256 is in OUR_ICON_HASHES (owui_our_icon_hashes: current logos and the old generic badges);
 #   - hidden is set only when the user never chose (an unhidden helper model stays visible);
 #   - params, capabilities, knowledge, system prompt and access grants are untouched.
 # Known leftovers: after a display_name change in catalog/display.tsv the old generated name no longer

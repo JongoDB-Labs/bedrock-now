@@ -6,6 +6,17 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Real provider logos in Chat and on Home** instead of the generic two-letter badges: Claude, OpenAI, Grok,
+  Meta, Mistral, Cohere, Stability and AWS for the Bedrock models, and the vendor's logo for OpenRouter models
+  (Claude, OpenAI, Gemini/Gemma, Grok, Llama, Mistral, Qwen, DeepSeek, Kimi, Z.ai, MiniMax, NVIDIA, Nova and
+  about 25 more, by the id's vendor prefix in `catalog/openrouter-icons.tsv`; the OpenRouter logo otherwise).
+  From [lobe-icons](https://github.com/lobehub/lobe-icons) (MIT, see `catalog/icons/LICENSE-lobe-icons`),
+  rendered by `catalog/icons/build.sh` as small PNGs on a white disc (128 px Bedrock, 64 px OpenRouter;
+  ~52 KB in all). `./stack setup` / `./stack models --recheck` replace the old badges; icons you picked
+  yourself stay. Home's model table shows the same logos, served by the portal (offline).
+
 ## [0.2.0] - 2026-10-12
 
 One portal with one login for everything, and cost you can see everywhere. Highlights:

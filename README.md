@@ -85,7 +85,7 @@ password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can us
 ### Chat (Open WebUI)
 
 - **Models and tiers:** the picker shows friendly names with a price tier, e.g. `Claude Sonnet 5.5 · $$`
-  (`$` under $0.50, `$$` under $3.00, `$$$` from $3.00 per 1M input tokens), a vendor icon, the exact price in
+  (`$` under $0.50, `$$` under $3.00, `$$$` from $3.00 per 1M input tokens), the provider's logo, the exact price in
   the description and tags (`Bedrock`, vendor, tier). Embedding, rerank and image models are hidden from the
   picker but still work. Your own renames, icons and tags are kept.
 - **Defaults:** `claude-sonnet-5-5` (else `claude-sonnet-4-5`, else `claude-haiku-5-5`) for anyone who hasn't
@@ -249,7 +249,8 @@ add them next to your Bedrock models as `or/<id>`; it is **off unless you give i
 ./stack openrouter remove              # back to Bedrock only
 ```
 
-Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
+In Chat they show their vendor's logo (Claude, GPT, Gemini, Llama, Qwen, DeepSeek, … or the OpenRouter logo
+for vendors without one). Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
 **Privacy:** a prompt to an `or/…` model goes to OpenRouter and the model's provider, and some free models may
 log or train on your prompts; keep confidential work on Bedrock. Details: [docs/openrouter.md](docs/openrouter.md).
 
@@ -382,3 +383,8 @@ docs/                         longer reference pages
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+**Logos:** the model logos in `catalog/icons/` come from [lobe-icons](https://github.com/lobehub/lobe-icons)
+(MIT, © LobeHub; see [catalog/icons/LICENSE-lobe-icons](catalog/icons/LICENSE-lobe-icons)). They are
+trademarks of their respective owners and are used only to identify each provider's models; no endorsement is
+implied.

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from . import icons
 from .config import valid_openrouter_key as valid_key
 
 API = "https://openrouter.ai/api/v1"
@@ -34,13 +35,14 @@ def price_short(prompt: float, completion: float) -> str:
     return f"{money(prompt * 1e6)}/{money(completion * 1e6)} /1M"
 
 
-def read_models(litellm_dir: Path) -> dict:
-    """litellm/openrouter-models.json (written by ./stack setup / ./stack openrouter) → Home table rows."""
+def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
+    """litellm/openrouter-models.json (written by ./stack setup / ./stack openrouter) → Home table rows, each
+    with its vendor's logo (catalog/openrouter-icons.tsv) when CATALOG_DIR is given."""
     try:
         data = json.loads((litellm_dir / "openrouter-models.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"fetched_at": None, "mode": None, "counts": None, "rows": []}
-    rows = []
+    rows, logos = [], icons.openrouter_map(catalog_dir)
     for m in data.get("models") or []:
         if not isinstance(m, dict) or not isinstance(m.get("id"), str):
             continue
@@ -51,7 +53,7 @@ def read_models(litellm_dir: Path) -> dict:
         rows.append({
             "name": m["id"], "display": m.get("name") or m["id"], "tier": None, "kind": "chat", "enabled": True,
             "why": "ok", "reason": "OpenRouter model (OPENROUTER_MODELS)", "price": price_short(p, c),
-            "provider": "OpenRouter", "access": access,
+            "provider": "OpenRouter", "access": access, "icon": icons.openrouter(catalog_dir, m["id"], logos),
         })
     return {"fetched_at": data.get("fetched_at"), "mode": data.get("mode"), "counts": data.get("counts"), "rows": rows}
 

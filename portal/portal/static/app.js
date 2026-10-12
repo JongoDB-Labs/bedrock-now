@@ -141,7 +141,9 @@ function renderModels(models, prices) {
     const provider = el("td", { class: "provider", text: m.provider || "Bedrock" });
     if (m.provider === "OpenRouter") provider.append(el("span", { class: "tier", text: m.access === "free" ? "Free" : "Paid" }));
     body.append(el("tr", {},
-      el("td", { class: "name", title: m.name, text: m.tier ? `${m.display || m.name} · ${m.tier}` : (m.display || m.name) }),
+      el("td", { class: "name", title: m.name },
+        m.icon ? el("img", { class: "logo", src: m.icon, alt: "", width: "16", height: "16", loading: "lazy" }) : null,
+        m.tier ? `${m.display || m.name} · ${m.tier}` : (m.display || m.name)),
       provider, el("td", { text: m.kind }),
       el("td", { class: m.enabled ? "status-on" : "status-off", text: m.enabled ? "Enabled" : "Not available" }),
       el("td", { class: "price", text: m.price }),

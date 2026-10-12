@@ -197,11 +197,11 @@ test_update_setup_ignores_shell_openrouter_vars() {
 test_owui_models_names_tags_descriptions() {
   _with_cache
   out="$(openrouter_owui_models)"
-  assert_contains "$out" "$(printf 'or/meta-llama/llama-3.3-70b-instruct\tLlama 3.3 70B Instruct · OpenRouter\tOpenRouter · $0.22 in / $0.50 out per 1M tokens · 128K context\tOpenRouter,Paid,Meta')"
+  assert_contains "$out" "$(printf 'or/meta-llama/llama-3.3-70b-instruct\tLlama 3.3 70B Instruct · OpenRouter\tOpenRouter · $0.22 in / $0.50 out per 1M tokens · 128K context\tOpenRouter,Paid,Meta\tmeta-color')"
   assert_contains "$out" "$(printf 'or/google/gemma-4-31b-it:free\tGemma 4 31B (free) · OpenRouter\tOpenRouter · free · 256K context · free models may log prompts')"
-  assert_contains "$out" "$(printf '\tOpenRouter,Free,Google\n')"
+  assert_contains "$out" "$(printf '\tOpenRouter,Free,Google\tgemma-color\n')"
   assert_contains "$out" "$(printf 'or/openrouter/free\tFree Models Router · OpenRouter\t')"
-  assert_contains "$out" "$(printf '\tOpenRouter,Free,openrouter')"
+  assert_contains "$out" "$(printf '\tOpenRouter,Free,openrouter\topenrouter')"
   assert_not_contains "$out" '"'
 }
 
@@ -212,7 +212,7 @@ test_owui_models_match_the_shell_helpers() {
   while IFS=$'\t' read -r id name ctx p c _ _ tier _; do
     desc="OpenRouter · $(or_price_label "$p" "$c")"; [ -z "$(or_ctx_label "$ctx")" ] || desc="$desc · $(or_ctx_label "$ctx")"
     if [ "$tier" = free ]; then t=Free; desc="$desc · free models may log prompts (see OpenRouter privacy settings)"; else t=Paid; fi
-    want="$want$(printf 'or/%s\t%s\t%s\tOpenRouter,%s,%s' "$id" "$(or_display_name "$name")" "$desc" "$t" "$(or_vendor "$name" "$id")")
+    want="$want$(printf 'or/%s\t%s\t%s\tOpenRouter,%s,%s\t%s' "$id" "$(or_display_name "$name")" "$desc" "$t" "$(or_vendor "$name" "$id")" "$(or_icon_key "$id")")
 "
   done < <(or_selected_dashed)
   assert_eq "$(openrouter_owui_models)" "${want%
@@ -232,10 +232,10 @@ test_owui_sync_batches_creates_updates_and_deletes() {
   _with_cache 'OPENROUTER_MODELS=or/meta-llama/llama-3.3-70b-instruct,or/openrouter/free
 '
   _stub_owui || return $?
-  # llama: a user renamed it and added a tag (kept); openrouter/free: up to date; old one: ours, gone → deleted;
+  # llama: a user renamed it and added a tag (kept); openrouter/free: up to date (own icon); old one: ours, gone → deleted;
   # user/own: not ours → untouched.
   OWUI_BASE='[{"id":"or/meta-llama/llama-3.3-70b-instruct","name":"My Llama","params":{"temperature":0.2},"meta":{"description":"old","tags":[{"name":"OpenRouter"},{"name":"mine"}],"bedrock_now":"openrouter"}},
- {"id":"or/openrouter/free","name":"Free Models Router · OpenRouter","meta":{"description":"OpenRouter · free · 200K context · free models may log prompts (see OpenRouter privacy settings)","tags":[{"name":"OpenRouter"},{"name":"Free"},{"name":"openrouter"}],"bedrock_now":"openrouter"}},
+ {"id":"or/openrouter/free","name":"Free Models Router · OpenRouter","meta":{"profile_image_url":"https://example.test/own.png","description":"OpenRouter · free · 200K context · free models may log prompts (see OpenRouter privacy settings)","tags":[{"name":"OpenRouter"},{"name":"Free"},{"name":"openrouter"}],"bedrock_now":"openrouter"}},
  {"id":"or/old/model","name":"x · OpenRouter","meta":{"bedrock_now":"openrouter"}},
  {"id":"or/user/own","name":"mine","meta":{}}]'
   out="$(openrouter_sync_owui 2>&1)"
@@ -277,6 +277,80 @@ test_owui_sync_after_remove_cleans_up_only_with_marker() {
   openrouter_sync_owui 2>/dev/null
   assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id": "or/a/b"}'
   [ ! -e "$STATE_DIR/openrouter-owui-synced" ]
+}
+
+# --- logos ---
+
+test_or_icon_key_maps_vendor_prefixes_with_fallback() {
+  local p
+  for p in anthropic/claude-haiku-5.5:claude-color '~anthropic/claude-latest:claude-color' openai/gpt-6:openai \
+      google/gemma-4-31b-it:free:gemma-color google/gemini-3-pro:gemini-color x-ai/grok-5:grok \
+      meta-llama/llama-3.3-70b-instruct:meta-color mistralai/mistral-large:mistral-color deepseek/deepseek-v4:deepseek-color \
+      qwen/qwen3:qwen-color z-ai/glm-5:zai moonshotai/kimi-k3:kimi amazon/nova-pro:nova-color cohere/command-a:cohere-color \
+      nvidia/nemotron:nvidia-color microsoft/phi-5:microsoft-color minimax/m3:minimax-color perplexity/sonar:perplexity-color \
+      openrouter/free:openrouter someone-new/model:openrouter; do
+    assert_eq "$(or_icon_key "${p%:*}")" "${p##*:}"
+  done
+  OR_ICON_MAP="$TMP/none.tsv"; assert_eq "$(or_icon_key anthropic/claude)" "openrouter"   # no map: fallback
+}
+
+test_every_openrouter_icon_in_the_map_is_bundled() {
+  local k missing=''
+  for k in $(awk -F'\t' '!/^#/ && NF >= 2 { print $2 }' "$STACK_DIR/catalog/openrouter-icons.tsv") openrouter; do
+    [ -r "$STACK_DIR/catalog/icons/or/$k.png" ] || missing="$missing $k"
+  done
+  assert_eq "$missing" ""
+}
+
+test_or_icon_lines_send_each_logo_once() {
+  out="$(printf 'or/a\tA\td\tt\tgrok\nor/b\tB\td\tt\tgrok\nor/c\tC\td\tt\t../x\nor/d\tD\td\tt\tnosuch\n' | or_icon_lines)"
+  assert_eq "$(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')" "grok openrouter "
+  assert_eq "$(printf '%s\n' "$out" | sed -n 1p | cut -f2)" "data:image/png;base64,$(openssl base64 -A < "$STACK_DIR/catalog/icons/or/grok.png")"
+}
+
+test_owui_sync_sets_logos_and_keeps_a_users_icon() {
+  _with_cache 'OPENROUTER_MODELS=or/meta-llama/llama-3.3-70b-instruct,or/openrouter/free,or/anthropic/claude-haiku-5.5
+'
+  _stub_owui || return $?
+  ICONS_DIR="$T_ROOT/catalog/icons"; OR_ICON_MAP="$T_ROOT/catalog/openrouter-icons.tsv"
+  meta="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/or/meta-color.png")"
+  claude="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/or/claude-color.png")"
+  badge="data:image/png;base64,$(openssl base64 -A < "$T_ROOT/tests/fixtures/legacy-icons/anthropic.png")"
+  # llama: new → gets its logo; claude: shows an old badge of ours → upgraded; free router: the user's own icon → kept
+  OWUI_BASE='[{"id":"or/anthropic/claude-haiku-5.5","name":"Claude Haiku 5.5 · OpenRouter","meta":{"profile_image_url":"'"$badge"'","bedrock_now":"openrouter"}},
+ {"id":"or/openrouter/free","name":"Free Models Router · OpenRouter","meta":{"profile_image_url":"https://example.test/mine.png","bedrock_now":"openrouter"}}]'
+  openrouter_sync_owui >/dev/null 2>&1
+  imp="$(grep '^POST /api/v1/models/import ' "$TMP/owui" | cut -d' ' -f3-)"
+  assert_eq "$(printf '%s' "$imp" | python3 -c 'import json, sys
+for m in sorted(json.load(sys.stdin)["models"], key=lambda m: m["id"]): print(m["id"], m["meta"].get("profile_image_url", "")[:40])')" \
+"or/anthropic/claude-haiku-5.5 ${claude:0:40}
+or/meta-llama/llama-3.3-70b-instruct ${meta:0:40}
+or/openrouter/free https://example.test/mine.png"
+  assert_contains "$imp" "$claude"; assert_contains "$imp" "$meta"
+  # fed back, nothing changes any more
+  OWUI_BASE="$(printf '%s' "$imp" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)["models"]))')"; export OWUI_BASE
+  : > "$TMP/owui"
+  assert_contains "$(openrouter_sync_owui 2>&1)" "0 updated, 3 unchanged, 0 removed"
+}
+
+# ~400 models with logos still go in ≤100-model imports that stay well under 512 KB each.
+test_owui_sync_import_payloads_stay_small_with_logos() {
+  command -v python3 >/dev/null || { echo "python3 not on the host" >&2; return 77; }
+  local i vendors
+  ICONS_DIR="$T_ROOT/catalog/icons"; OR_ICON_MAP="$T_ROOT/catalog/openrouter-icons.tsv"
+  vendors="$(awk -F'\t' '!/^#/ && NF >= 2 { print $1 }' "$OR_ICON_MAP" | tr '\n' ' ')"
+  models="$(i=0; while [ "$i" -lt 400 ]; do for v in $vendors; do [ "$i" -lt 400 ] || break
+      id="${v}model-$i"; printf 'or/%s\t%s some long model name · OpenRouter\tOpenRouter · $0.22 in / $0.50 out per 1M tokens · 128K context\tOpenRouter,Paid,Vendor\t%s\n' "$id" "$id" "$(or_icon_key "$id")"
+      i=$((i + 1)); done; done)"
+  plan="$({ printf '%s\n---icons---\n' "$models"; printf '%s\n' "$models" | or_icon_lines; printf -- '---existing---\n[]'; } |
+    python3 -c "$OR_OWUI_SYNC_PY" "$(owui_our_icon_hashes)")"
+  assert_eq "$(printf '%s\n' "$plan" | grep -c '^IMPORT ')" 4
+  max="$(printf '%s\n' "$plan" | grep '^IMPORT ' | awk '{ if (length($0) > m) m = length($0) } END { print m }')"
+  total="$(printf '%s\n' "$plan" | grep '^IMPORT ' | wc -c | tr -d ' ')"
+  echo "max import $max bytes, total $total bytes" >&2
+  [ "$max" -lt 524288 ] || { echo "an import is $max bytes" >&2; return 1; }
+  [ "$total" -lt 1572864 ] || { echo "imports total $total bytes" >&2; return 1; }
+  assert_eq "$(printf '%s\n' "$plan" | grep '^IMPORT ' | grep -o '"profile_image_url": "data:image/png;base64,' | wc -l | tr -d ' ')" 400
 }
 
 test_cost_prices_include_openrouter_only_when_on() {

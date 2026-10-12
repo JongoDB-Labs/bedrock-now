@@ -98,8 +98,12 @@ compose output. `NO_COLOR=1` turns colours off.
 ## Model names, icons and tiers
 
 `catalog/display.tsv` maps each model to the name Open WebUI shows (`claude-sonnet-5-5` → `Claude Sonnet 5.5`),
-an icon (`catalog/icons/<key>.svg`, sent inline as its 128×128 PNG render `<key>.png` so it works offline; Open
-WebUI only accepts PNG/JPEG/GIF/WebP icons, and `lib/owui.sh` shows how to re-render the PNGs) and extra tags.
+the provider's logo (`catalog/icons/<key>.png`, 128×128, sent inline as a PNG data URI so it works offline; Open
+WebUI only accepts PNG/JPEG/GIF/WebP icons) and extra tags. OpenRouter models get a 64×64 logo from
+`catalog/icons/or/` chosen by the vendor prefix of their id (`catalog/openrouter-icons.tsv`; unknown vendors
+get the OpenRouter logo). The logos come from [lobe-icons](https://github.com/lobehub/lobe-icons) (MIT);
+`catalog/icons/build.sh` re-renders them (Docker) after you change a key. An icon you set yourself in Open
+WebUI is never replaced.
 Chat models get a price tier from their **input** price per 1M tokens: `$` under $0.50 (Haiku 5.5, GPT-6
 Luna), `$$` under $3.00 (Sonnet 5.5, GPT-6 Sol, Grok, Llama, Mistral), `$$$` from $3.00 (Opus 5.5, Sonnet
 4.5). On Bedrock output costs about 4-5x input for most models here, so the order is mostly the same. API

@@ -169,6 +169,19 @@ def test_static_assets_load(client):
         assert client.get(path).status_code == 200, path
 
 
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def test_icon_route(client, settings):
+    for p in ("claude-color.png", "or/grok.png"):
+        (settings.catalog_dir / "icons" / p).parent.mkdir(parents=True, exist_ok=True)
+        (settings.catalog_dir / "icons" / p).write_bytes(PNG)
+    r = client.get("/icons/claude-color.png")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content == PNG
+    assert client.get("/icons/or/grok.png").status_code == 200
+    assert client.get("/icons/missing.png").status_code == 404
+    assert client.get("/icons/..%2Fdisplay.tsv").status_code == 404
+
 def test_api_requires_session_and_header(client):
     assert client.get("/api/logins", headers=API).status_code == 401
     login(client)

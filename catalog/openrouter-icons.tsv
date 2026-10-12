@@ -1,0 +1,45 @@
+# Picker logo per OpenRouter model, by the vendor prefix of its id (a leading "~" is ignored).
+# TAB-separated. prefix = the start of the id; the longest matching prefix wins, so "google/gemma" beats
+# "google/". icon = catalog/icons/or/<icon>.png (64x64, from lobe-icons; see catalog/icons/build.sh).
+# A vendor not listed here gets the OpenRouter logo (catalog/icons/or/openrouter.png).
+# prefix	icon
+anthropic/	claude-color
+openai/	openai
+google/gemma	gemma-color
+google/	gemini-color
+x-ai/	grok
+meta-llama/	meta-color
+meta/	meta-color
+mistralai/	mistral-color
+cohere/	cohere-color
+amazon/	nova-color
+deepseek/	deepseek-color
+qwen/	qwen-color
+z-ai/	zai
+thudm/	zhipu-color
+moonshotai/	kimi
+minimax/	minimax-color
+nvidia/	nvidia-color
+microsoft/	microsoft-color
+perplexity/	perplexity-color
+inflection/	inflection
+ai21/	ai21
+tencent/	hunyuan-color
+bytedance-seed/	bytedance-color
+bytedance/	bytedance-color
+xiaomi/	xiaomimimo
+meituan/	longcat-color
+stepfun/	stepfun-color
+aion-labs/	aionlabs-color
+sakana/	sakana-color
+poolside/	poolside-color
+upstage/	upstage-color
+nousresearch/	nousresearch
+ibm-granite/	ibm
+rekaai/	reka
+inception/	inception
+morph/	morph-color
+relace/	relace
+liquid/	liquid
+arcee-ai/	arcee-color
+openrouter/	openrouter

@@ -462,7 +462,7 @@ test_upgrade_litellm_password() {
 # Open WebUI v0.12 (utils/validate.py validate_image_url) keeps only png/jpeg/gif/webp data URIs: an SVG one
 # is stored as no icon, so icon_url must send the PNG renders.
 test_icon_url_inlines_png_files_offline() {
-  printf '# n\td\ti\tt\nbig\tBig\tanthropic\t-\nurl\tU\thttps://example.test/i.png\t-\nbad\tB\t../x\t-\nnone\tN\t-\t-\nmiss\tM\tnosuch\t-\n' > "$TMP/d.tsv"
+  printf '# n\td\ti\tt\nbig\tBig\tclaude-color\t-\nurl\tU\thttps://example.test/i.png\t-\nbad\tB\t../x\t-\nnone\tN\t-\t-\nmiss\tM\tnosuch\t-\n' > "$TMP/d.tsv"
   DISPLAY_CATALOG="$TMP/d.tsv"
   out="$(icon_url big)"
   case "$out" in data:image/png\;base64,*) ;; *) echo "not a PNG data URI: ${out:0:40}" >&2; return 1 ;; esac
@@ -476,49 +476,83 @@ test_icon_url_inlines_png_files_offline() {
 test_every_real_catalog_icon_exists_and_is_local() {
   missing="$(catalog_rows | while IFS=$'\t' read -r n _; do [ -n "$(icon_url "$n")" ] || echo "$n"; done)"
   assert_eq "$missing" ""
-  assert_eq "$(grep -ho 'https\?://[^"]*' "$STACK_DIR"/catalog/icons/*.svg | sort -u)" "http://www.w3.org/2000/svg"
+  [ -z "$(ls "$STACK_DIR"/catalog/icons/*.svg 2>/dev/null)" ] || { echo "SVG icons are back (Open WebUI drops them)" >&2; return 1; }
 }
 
-test_every_icon_svg_has_a_small_128px_png_render() {
-  local f png
-  for f in "$STACK_DIR"/catalog/icons/*.svg; do
-    png="${f%.svg}.png"
-    [ -r "$png" ] || { echo "no PNG for $f" >&2; return 1; }
-    # PNG signature + IHDR width/height 128x128
-    assert_eq "$(od -An -tx1 -N8 "$png" | tr -d ' \n')" "89504e470d0a1a0a"
-    assert_eq "$(od -An -tx1 -j16 -N8 "$png" | tr -d ' \n')" "0000008000000080"
-    [ "$(wc -c < "$png")" -lt 6144 ] || { echo "$png is over 6 KB" >&2; return 1; }
+# Each Bedrock model shows its maker's real logo (lobe-icons), not a generic badge.
+test_bedrock_models_map_to_their_provider_logos() {
+  local n want
+  for n in claude-opus-5-5:claude-color claude-sonnet-4-5:claude-color gpt-6-sol:openai gpt-6-luna:openai \
+      grok-4-7:grok llama-3-3-70b:meta-color mistral-large-3:mistral-color cohere-embed-v4:cohere-color \
+      cohere-rerank-3-5:cohere-color titan-embed-v2:aws-color sd3-5-large:stability-color stable-image-ultra:stability-color; do
+    want="data:image/png;base64,$(openssl base64 -A < "$STACK_DIR/catalog/icons/${n#*:}.png")"
+    assert_eq "$(icon_url "${n%%:*}")" "$want"
   done
+}
+
+# 128x128 PNGs for Bedrock, 64x64 for OpenRouter; small, and the whole set stays modest.
+test_logo_pngs_are_small_and_sized() {
+  local f total=0
+  for f in "$STACK_DIR"/catalog/icons/*.png "$STACK_DIR"/catalog/icons/or/*.png; do
+    assert_eq "$(od -An -tx1 -N8 "$f" | tr -d ' \n')" "89504e470d0a1a0a"
+    case "$f" in
+      */or/*) assert_eq "$(od -An -tx1 -j16 -N8 "$f" | tr -d ' \n')" "0000004000000040"
+              [ "$(wc -c < "$f")" -lt 4096 ] || { echo "$f is over 4 KB" >&2; return 1; } ;;
+      *)      assert_eq "$(od -An -tx1 -j16 -N8 "$f" | tr -d ' \n')" "0000008000000080"
+              [ "$(wc -c < "$f")" -lt 8192 ] || { echo "$f is over 8 KB" >&2; return 1; } ;;
+    esac
+    total=$((total + $(wc -c < "$f")))
+  done
+  [ "$total" -lt 153600 ] || { echo "logos total $total bytes" >&2; return 1; }
+}
+
+test_logo_license_and_attribution_ship_with_the_logos() {
+  local l="$STACK_DIR/catalog/icons/LICENSE-lobe-icons"
+  [ -r "$l" ] || { echo "no $l" >&2; return 1; }
+  assert_contains "$(cat "$l")" "MIT License"
+  assert_contains "$(cat "$l")" "Copyright (c) 2023 LobeHub"
+  assert_contains "$(cat "$l")" "trademarks of their respective owners"
+  assert_contains "$(cat "$STACK_DIR/README.md")" "catalog/icons/LICENSE-lobe-icons"
+  assert_contains "$(cat "$STACK_DIR/README.md")" "trademarks of their respective owners"
 }
 
 test_owui_create_payload_carries_icon() {
   assert_contains "$(owui_model_json big B d '[]' false 'data:image/png;base64,AAA')" '"tags":[],"profile_image_url":"data:image/png;base64,AAA"}'
 }
 
-test_owui_our_icon_hashes_cover_png_and_legacy_svg_uris() {
-  ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR"
-  printf 'png-bytes' > "$ICONS_DIR/a.png"; printf '<svg id="x"/>' > "$ICONS_DIR/a.svg"
-  png_uri="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/a.png")"
-  svg_uri="data:image/svg+xml;base64,$(openssl base64 -A < "$ICONS_DIR/a.svg")"
+test_owui_our_icon_hashes_cover_current_logos_and_old_badges() {
+  ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR/or"
+  printf 'png-bytes' > "$ICONS_DIR/a.png"; printf 'or-bytes' > "$ICONS_DIR/or/b.png"
   hashes="$(owui_our_icon_hashes)"
-  assert_contains " $hashes " " $(printf '%s' "$png_uri" | openssl dgst -sha256 | awk '{print $NF}') "
-  assert_contains " $hashes " " $(printf '%s' "$svg_uri" | openssl dgst -sha256 | awk '{print $NF}') "
-  assert_eq "$(printf '%s\n' "$hashes" | wc -w | tr -d ' ')" "2"
-  ICONS_DIR="$TMP/none"; assert_eq "$(owui_our_icon_hashes)" ""
+  for f in "$ICONS_DIR/a.png" "$ICONS_DIR/or/b.png"; do
+    assert_contains " $hashes " " $(printf 'data:image/png;base64,%s' "$(openssl base64 -A < "$f")" | openssl dgst -sha256 | awk '{print $NF}') "
+  done
+  assert_eq "$(printf '%s\n' "$hashes" | wc -w | tr -d ' ')" "18"   # 2 + the 16 old badges (8 PNG, 8 SVG)
+  ICONS_DIR="$TMP/none"; assert_eq "$(owui_our_icon_hashes)" "$(printf '%s' "$OWUI_LEGACY_ICON_HASHES" | tr '\n' ' ')"
+}
+
+# An install from 0.2.0 or older shows the generic two-letter badges; they are ours, so they get upgraded.
+test_old_generic_badges_are_recognised_as_ours() {
+  local f
+  for f in "$STACK_DIR"/tests/fixtures/legacy-icons/*; do
+    case "$f" in *.png) m=image/png ;; *) m=image/svg+xml ;; esac
+    assert_contains " $(owui_our_icon_hashes) " " $(printf 'data:%s;base64,%s' "$m" "$(openssl base64 -A < "$f")" | openssl dgst -sha256 | awk '{print $NF}') "
+  done
 }
 
 test_owui_merge_upgrades_our_icons_but_keeps_a_users_own() {
   _need_python || return 77
   _stub_owui
   ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR"
-  printf 'old-png' > "$ICONS_DIR/old.png"; printf '<svg id="bedrock-now-icon"/>' > "$ICONS_DIR/old.svg"
+  printf 'old-png' > "$ICONS_DIR/old.png"
   ours_png="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/old.png")"
-  ours_svg="data:image/svg+xml;base64,$(openssl base64 -A < "$ICONS_DIR/old.svg")"
+  badge="data:image/png;base64,$(openssl base64 -A < "$STACK_DIR/tests/fixtures/legacy-icons/anthropic.png")"
+  ours_svg="data:image/svg+xml;base64,$(openssl base64 -A < "$STACK_DIR/tests/fixtures/legacy-icons/openai.svg")"
   hashes="$(owui_our_icon_hashes)"
   newer='data:image/png;base64,TkVXLVBORw=='
-  # unset, empty, Open WebUI's default, our PNG, our legacy SVG -> replaced with the new icon
+  # unset, empty, Open WebUI's default, our PNG, an old generic badge (PNG or SVG) -> replaced with the new icon
   for cur in '' '"profile_image_url":null,' '"profile_image_url":"",' '"profile_image_url":"/static/favicon.png",' \
-      "\"profile_image_url\":\"$ours_png\"," "\"profile_image_url\":\"$ours_svg\","; do
+      "\"profile_image_url\":\"$ours_png\"," "\"profile_image_url\":\"$badge\"," "\"profile_image_url\":\"$ours_svg\","; do
     out="$(printf '{"id":"big","name":"B","meta":{%s"description":"d","tags":[]}}' "$cur" | owui_merge_model B B d '[]' false "$newer" "$hashes")"
     assert_contains "$out" "\"profile_image_url\": \"$newer\""
   done

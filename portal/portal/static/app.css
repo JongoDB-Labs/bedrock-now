@@ -65,6 +65,7 @@ td { padding: 7px 8px 7px 4px; border-bottom: 1px solid var(--line); vertical-al
 tr:last-child td { border-bottom: 0; }
 td.price { font-variant-numeric: tabular-nums; white-space: nowrap; }
 td.name { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+td.name img.logo { width: 16px; height: 16px; margin: 0 6px -3px 0; border-radius: 50%; }
 .status-on { color: var(--ok); font-weight: 500; }
 .status-off { color: var(--bad); font-weight: 500; }
 td.why { color: var(--muted); }

@@ -1,22 +1,23 @@
 # Friendly names for Open WebUI's model picker. TAB-separated; "-" = none.
-# name = catalog/models.tsv name. icon = a file in catalog/icons/ without .svg (sent as an inline data: URI,
-# so it works offline), or a data:/http(s) URL. Icons a user set in Open WebUI are kept.
+# name = catalog/models.tsv name. icon = a logo in catalog/icons/ without .png (a lobe-icons name, rendered by
+# catalog/icons/build.sh; sent as an inline data: URI, so it works offline), or a data:/http(s) URL.
+# Icons a user set in Open WebUI are kept.
 # tags = comma list of extra picker tags (the price tier and "Bedrock" are added by ./stack setup).
 # Chat models are shown as "<display_name> · <tier>"; tier comes from the input price per 1M tokens:
 #   $ under $0.50 · $$ under $3.00 · $$$ $3.00 and up.
 # name	display_name	icon	tags
-claude-opus-5-5	Claude Opus 5.5	anthropic	Anthropic
-claude-sonnet-5-5	Claude Sonnet 5.5	anthropic	Anthropic
-claude-haiku-5-5	Claude Haiku 5.5	anthropic	Anthropic
-claude-sonnet-4-5	Claude Sonnet 4.5	anthropic	Anthropic
+claude-opus-5-5	Claude Opus 5.5	claude-color	Anthropic
+claude-sonnet-5-5	Claude Sonnet 5.5	claude-color	Anthropic
+claude-haiku-5-5	Claude Haiku 5.5	claude-color	Anthropic
+claude-sonnet-4-5	Claude Sonnet 4.5	claude-color	Anthropic
 gpt-6-sol	GPT-6 Sol	openai	OpenAI
 gpt-6-luna	GPT-6 Luna	openai	OpenAI
-grok-4-7	Grok 4.7	xai	xAI
-llama-3-3-70b	Llama 3.3 70B	meta	Meta
-mistral-large-3	Mistral Large 3	mistral	Mistral
-cohere-embed-v4	Cohere Embed v4	cohere	Cohere
-titan-embed-v2	Titan Text Embeddings v2	amazon	Amazon
-cohere-rerank-3-5	Cohere Rerank 3.5	cohere	Cohere
-sd3-5-large	Stable Diffusion 3.5 Large	stability	Stability
-stable-image-ultra	Stable Image Ultra	stability	Stability
-stable-image-core	Stable Image Core	stability	Stability
+grok-4-7	Grok 4.7	grok	xAI
+llama-3-3-70b	Llama 3.3 70B	meta-color	Meta
+mistral-large-3	Mistral Large 3	mistral-color	Mistral
+cohere-embed-v4	Cohere Embed v4	cohere-color	Cohere
+titan-embed-v2	Titan Text Embeddings v2	aws-color	Amazon
+cohere-rerank-3-5	Cohere Rerank 3.5	cohere-color	Cohere
+sd3-5-large	Stable Diffusion 3.5 Large	stability-color	Stability
+stable-image-ultra	Stable Image Ultra	stability-color	Stability
+stable-image-core	Stable Image Core	stability-color	Stability

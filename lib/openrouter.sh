@@ -189,14 +189,41 @@ or_ctx_label() {
     printf "%s%s context\n", (v == int(v) ? int(v) : sprintf("%.1f", v)), u }'
 }
 
+# Picker logos: catalog/openrouter-icons.tsv maps an id prefix ("anthropic/", "google/gemma") to a logo in
+# catalog/icons/or/ (64x64 PNG); the longest matching prefix wins, anything else gets the OpenRouter logo.
+OR_ICON_MAP="${OR_ICON_MAP:-$STACK_DIR/catalog/openrouter-icons.tsv}"
+# awk: load the map from the first file (ARGV[1]); or_icon(ID) -> icon key
+# shellcheck disable=SC2016  # awk source, not shell
+OR_ICON_AWK='FILENAME == ARGV[1] { gsub(/\r/, ""); if ($0 !~ /^[[:space:]]*#/ && NF >= 2 && $2 ~ /^[a-z0-9-]+$/) ICON[$1] = $2; next }
+function or_icon(id,  k, best, bl) {
+  sub(/^~/, "", id); best = "openrouter"; bl = 0
+  for (k in ICON) if (length(k) > bl && substr(id, 1, length(k)) == k) { best = ICON[k]; bl = length(k) }
+  return best
+}'
+_or_icon_map() { if [ -r "$OR_ICON_MAP" ]; then printf '%s\n' "$OR_ICON_MAP"; else echo /dev/null; fi; }
+
+# or_icon_key ID -> the logo key for OpenRouter model ID (catalog/icons/or/<key>.png), "openrouter" if unknown
+or_icon_key() { printf '%s\n' "$1" | awk -F'\t' "$OR_ICON_AWK"' { print or_icon($1) }' "$(_or_icon_map)" -; }
+
+# or_icon_lines < openrouter_owui_models output -> "key<TAB>data:image/png;base64,…" for every logo key used
+# (plus "openrouter", the fallback when a key has no file). Sent once per sync, not once per model.
+or_icon_lines() {
+  local k f dir="${ICONS_DIR:-$STACK_DIR/catalog/icons}/or"
+  { cut -f5; echo openrouter; } | LC_ALL=C sort -u | while IFS= read -r k; do
+    case "$k" in '' | *[!a-z0-9-]*) continue ;; esac
+    f="$dir/$k.png"; [ -r "$f" ] || continue
+    printf '%s\tdata:image/png;base64,%s\n' "$k" "$(openssl base64 -A < "$f")"
+  done
+}
+
 # openrouter_owui_models -> one line per enabled OpenRouter model for Open WebUI (TAB-separated):
-#   id ("or/…")  display name  description  tags (comma-separated: OpenRouter,Free|Paid,<vendor>)
+#   id ("or/…")  display name  description  tags (comma-separated: OpenRouter,Free|Paid,<vendor>)  logo key
 # Nothing contains quotes, backslashes or tabs, so the fields can go into JSON as they are.
 # One awk pass (a per-model shell loop took seconds for ~400 models); same rules as or_price_label,
-# or_ctx_label, or_vendor and or_display_name, which tests compare it against.
+# or_ctx_label, or_vendor, or_display_name and or_icon_key, which tests compare it against.
 openrouter_owui_models() {
   openrouter_enabled || return 0
-  or_selected | awk -F'\t' '
+  or_selected | awk -F'\t' "$OR_ICON_AWK"'
     function money(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
     function ctxl(c,  v, u) {
       if (c == "" || c + 0 == 0) return ""
@@ -210,8 +237,8 @@ openrouter_owui_models() {
       desc = "OpenRouter · " (($4 + 0 == 0 && $5 + 0 == 0) ? "free" : money($4 * 1000000) " in / " money($5 * 1000000) " out per 1M tokens")
       if (ctxl($3) != "") desc = desc " · " ctxl($3)
       if ($8 == "free") { tag = "Free"; desc = desc " · free models may log prompts (see OpenRouter privacy settings)" } else tag = "Paid"
-      printf "or/%s\t%s · OpenRouter\t%s\tOpenRouter,%s,%s\n", $1, name, desc, tag, vendor
-    }'
+      printf "or/%s\t%s · OpenRouter\t%s\tOpenRouter,%s,%s\t%s\n", $1, name, desc, tag, vendor, or_icon($1)
+    }' "$(_or_icon_map)" -
 }
 
 # openrouter_cost_prices_entries -> ',"or/<id>":{"name":"Llama 3.3 70B Instruct (OpenRouter)","input_cost_per_token":…,
@@ -230,33 +257,47 @@ openrouter_cost_prices_entries() {
 }
 
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
-# "---existing---" line, then GET /api/v1/models/base JSON. stdout: "IMPORT <json>" lines (POST
-# /api/v1/models/import bodies, ≤100 models each: new entries and changed ones as complete objects),
-# 'DELETE {"id": …}' lines (our or/ entries that are no longer offered; the JSON is the POST body for
-# /api/v1/models/model/delete, posted as it is) and one "UNCHANGED <n>" line.
+# "---icons---" line, or_icon_lines, a "---existing---" line, then GET /api/v1/models/base JSON. argv[1]: our
+# icon hashes (owui_our_icon_hashes). stdout: "IMPORT <json>" lines (POST /api/v1/models/import bodies, ≤100
+# models each: new entries and changed ones as complete objects), 'DELETE {"id": …}' lines (our or/ entries
+# that are no longer offered; the JSON is the POST body for /api/v1/models/model/delete, posted as it is) and
+# one "UNCHANGED <n>" line.
 # Our entries carry meta.bedrock_now="openrouter"; only those are ever deleted. A user's own name (anything
-# not ending in " · OpenRouter"), extra tags, icon, params, knowledge and access grants are kept.
+# not ending in " · OpenRouter"), extra tags, params, knowledge and access grants are kept. The logo is set
+# while the icon is unset, Open WebUI's default or one of ours (a data: URI whose sha256 is in argv[1]); an
+# icon the user picked stays.
 # shellcheck disable=SC2016  # Python source, not shell
-OR_OWUI_SYNC_PY='import json, sys
+OR_OWUI_SYNC_PY='import hashlib, json, sys
 raw = sys.stdin.read()
-want_txt, _, existing_txt = raw.partition("---existing---\n")
-existing = json.loads(existing_txt or "[]")
+want_txt, _, rest = raw.partition("---existing---\n")
+want_txt, _, icons_txt = want_txt.partition("---icons---\n")
+existing = json.loads(rest or "[]")
 if isinstance(existing, dict):
     existing = existing.get("items") or existing.get("data") or []
+icons = dict(l.split("\t", 1) for l in icons_txt.splitlines() if "\t" in l)
+ours = set(sys.argv[1].split()) if len(sys.argv) > 1 else set()
+ours |= {hashlib.sha256(u.encode()).hexdigest() for u in icons.values()}
+def replaceable(url):
+    return url in (None, "", "/static/favicon.png") or (
+        isinstance(url, str) and url.startswith("data:") and hashlib.sha256(url.encode()).hexdigest() in ours)
 by_id = {m.get("id"): m for m in existing if isinstance(m, dict)}
 public = [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
 out, wanted, unchanged = [], set(), 0
 for line in want_txt.splitlines():
     f = line.split("\t")
-    if len(f) != 4:
+    if len(f) not in (4, 5):
         continue
-    mid, name, desc, tags = f
+    mid, name, desc, tags = f[:4]
+    icon = icons.get(f[4], icons.get("openrouter")) if len(f) == 5 else None
     wanted.add(mid)
     tag_list = [{"name": t} for t in tags.split(",") if t]
     cur = by_id.get(mid)
     if cur is None:
+        meta = {"description": desc, "tags": tag_list, "bedrock_now": "openrouter"}
+        if icon:
+            meta["profile_image_url"] = icon
         out.append({"id": mid, "name": name, "base_model_id": None, "params": {}, "access_grants": public, "is_active": True,
-                    "meta": {"description": desc, "tags": tag_list, "bedrock_now": "openrouter"}})
+                    "meta": meta})
         continue
     d = json.loads(json.dumps(cur))
     before = json.dumps(d, sort_keys=True)
@@ -266,8 +307,10 @@ for line in want_txt.splitlines():
     cn = d.get("name") or ""
     if cn in ("", mid) or cn.endswith(" · OpenRouter"):
         d["name"] = name
-    ours = {"OpenRouter", "Free", "Paid"} | {t["name"] for t in tag_list}
-    meta["tags"] = tag_list + [t for t in (meta.get("tags") or []) if isinstance(t, dict) and t.get("name") not in ours]
+    mine = {"OpenRouter", "Free", "Paid"} | {t["name"] for t in tag_list}
+    meta["tags"] = tag_list + [t for t in (meta.get("tags") or []) if isinstance(t, dict) and t.get("name") not in mine]
+    if icon and replaceable(meta.get("profile_image_url")):
+        meta["profile_image_url"] = icon
     if json.dumps(d, sort_keys=True) == before:
         unchanged += 1
     else:
@@ -282,13 +325,13 @@ for m in existing:
         print("DELETE " + json.dumps({"id": mid}))
 print("UNCHANGED %d" % unchanged)'
 
-# openrouter_sync_owui — names ("… · OpenRouter"), tags (OpenRouter + Free/Paid + vendor) and price descriptions
+# openrouter_sync_owui — names ("… · OpenRouter"), tags (OpenRouter + Free/Paid + vendor), logos and price descriptions
 # for the enabled OpenRouter models in Open WebUI's picker, in a few requests: one GET of every base-model entry,
 # one Python run in the open-webui container to diff, then POST /api/v1/models/import (≤100 per request) only for
 # new/changed entries, and a delete per entry we created that is no longer offered (also after `remove`).
 # Needs a portal session ($PORTAL_JAR). Never fatal.
 openrouter_sync_owui() {
-  local tmp code plan line n_imp=0 n_del=0 bad=0 unchanged=0 marker="$STATE_DIR/openrouter-owui-synced"
+  local tmp code plan line models n_imp=0 n_del=0 bad=0 unchanged=0 marker="$STATE_DIR/openrouter-owui-synced"
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || return 0
   # Off: only clean up entries an earlier sync created.
   openrouter_enabled || [ -e "$marker" ] || return 0
@@ -297,7 +340,10 @@ openrouter_sync_owui() {
   if [ "$code" != 200 ]; then
     rm -f "$tmp"; warn "Open WebUI: could not list models (HTTP $code) — OpenRouter names/tags not updated; ./stack openrouter refresh retries"; return 0
   fi
-  if ! plan="$({ openrouter_owui_models; printf '%s\n' '---existing---'; cat "$tmp"; } | _owui_py "$OR_OWUI_SYNC_PY" 2>/dev/null)"; then
+  models="$(openrouter_owui_models)"
+  if ! plan="$({ [ -z "$models" ] || printf '%s\n' "$models"; printf '%s\n' '---icons---'
+      [ -z "$models" ] || printf '%s\n' "$models" | or_icon_lines; printf '%s\n' '---existing---'; cat "$tmp"; } |
+      _owui_py "$OR_OWUI_SYNC_PY" "$(owui_our_icon_hashes)" 2>/dev/null)"; then
     rm -f "$tmp"; warn "Open WebUI: could not compare OpenRouter models — names/tags not updated"; return 0
   fi
   while IFS= read -r line; do
