@@ -75,7 +75,6 @@ class Settings:
     remote_mode: str = ""
     remote_host: str = ""
     remote_app_hosts: dict = field(default_factory=dict)  # {"chat": host, "admin": host, "files": host}
-    remote_cookie_domain: str = ""  # the parent of all remote host names (<tailnet>.ts.net, or REMOTE_HOST)
     tailscale_allowed_login: str = ""  # tailscale mode: Tailscale-User-Login, when present, must be this login
 
     def remote_on(self) -> bool:
@@ -153,7 +152,6 @@ def from_env(env: dict | None = None) -> Settings:
         remote_mode=(env.get("REMOTE_MODE") or "").strip().lower(),
         remote_host=(env.get("REMOTE_HOST") or "").strip().lower(),
         remote_app_hosts={sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()},
-        remote_cookie_domain=(env.get("REMOTE_COOKIE_DOMAIN") or "").strip().lower(),
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),

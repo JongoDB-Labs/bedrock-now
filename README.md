@@ -212,8 +212,8 @@ A small Tailscale container joins your tailnet and serves four
 need the Tailscale app. Remote requests need your **Tailscale login and the portal password**. The local address
 keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services, a policy snippet
 and an auth key) are printed with your names filled in. Your own domain instead
-(`./stack remote enable domain bedrock.example.com`, Let's Encrypt wildcard via Cloudflare DNS), the cookie
-caveat, and Cloudflare Tunnel: [docs/remote.md](docs/remote.md).
+(`./stack remote enable domain bedrock.example.com`, Let's Encrypt wildcard via Cloudflare DNS), how the
+host-only session cookies work, and Cloudflare Tunnel: [docs/remote.md](docs/remote.md).
 
 ## Costs & budgets
 
@@ -528,8 +528,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote; an SSH tunnel or
   your own reverse proxy to `127.0.0.1` counts as local.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
-  connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site has its own
-  `Secure` cookie and checks your Tailscale login ([docs/remote.md](docs/remote.md)).
+  connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
+  host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale
+  login ([docs/remote.md](docs/remote.md)).
 
 Details: [docs/security.md](docs/security.md).
 

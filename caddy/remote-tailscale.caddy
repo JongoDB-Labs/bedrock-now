@@ -6,7 +6,7 @@
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
 # Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
-# the remote origin and the remote cookie (__Secure-bn_session, Secure, Domain={$REMOTE_COOKIE_DOMAIN}).
+# the remote origin and a host-only cookie per remote host (__Host-bn_session; app hosts get theirs via the hand-off).
 
 (remote_request) {
 	request_header -X-Portal-User
@@ -16,7 +16,17 @@
 
 # The remote session cookie is never handed to the apps.
 (drop_remote_session_cookie) {
-	header_up Cookie "__Secure-bn_session=[^;]*;?\s*" ""
+	header_up Cookie "__Host-bn_session=[^;]*;?\s*" ""
+}
+
+# The hand-off callback (portal/portal/app.py auth_callback): each app host gets its own host-only session cookie
+# from a one-time token minted by the portal host. Answered by the portal, never by the app, and before the
+# session check (the host has no cookie yet).
+(handoff_callback) {
+	@bn_callback path /.bn/callback
+	reverse_proxy @bn_callback portal:8000 {
+		rewrite /auth/callback?{query}
+	}
 }
 
 (frame_by_remote_portal_only) {
@@ -34,6 +44,7 @@ http://{$REMOTE_HOST}:8081 {
 http://{$REMOTE_CHAT_HOST}:8081 {
 	route {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy open-webui:8080 {
 			import drop_remote_session_cookie
@@ -45,6 +56,7 @@ http://{$REMOTE_CHAT_HOST}:8081 {
 http://{$REMOTE_ADMIN_HOST}:8081 {
 	route {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy litellm:4000 {
 			import drop_remote_session_cookie
@@ -56,6 +68,7 @@ http://{$REMOTE_ADMIN_HOST}:8081 {
 http://{$REMOTE_FILES_HOST}:8081 {
 	route {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import drop_remote_session_cookie

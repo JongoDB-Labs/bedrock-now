@@ -261,7 +261,6 @@ services:
       REMOTE_CHAT_HOST: ${REMOTE_CHAT_HOST:-}
       REMOTE_ADMIN_HOST: ${REMOTE_ADMIN_HOST:-}
       REMOTE_FILES_HOST: ${REMOTE_FILES_HOST:-}
-      REMOTE_COOKIE_DOMAIN: ${REMOTE_COOKIE_DOMAIN:-}
       TAILSCALE_ALLOWED_LOGIN: ${TAILSCALE_ALLOWED_LOGIN:-}
     # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home, and
     # .state/status (the installed version, written by ./stack). Writable besides /tmp: portal-state (/state:

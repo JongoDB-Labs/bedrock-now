@@ -18,7 +18,17 @@
 }
 
 (drop_remote_session_cookie) {
-	header_up Cookie "__Secure-bn_session=[^;]*;?\s*" ""
+	header_up Cookie "__Host-bn_session=[^;]*;?\s*" ""
+}
+
+# The hand-off callback (portal/portal/app.py auth_callback): each app host gets its own host-only session cookie
+# from a one-time token minted by the portal host. Answered by the portal, never by the app, and before the
+# session check (the host has no cookie yet).
+(handoff_callback) {
+	@bn_callback path /.bn/callback
+	reverse_proxy @bn_callback portal:8000 {
+		rewrite /auth/callback?{query}
+	}
 }
 
 (frame_by_remote_portal_only) {
@@ -41,6 +51,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@chat host {$REMOTE_CHAT_HOST}
 	route @chat {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy open-webui:8080 {
 			import drop_remote_session_cookie
@@ -51,6 +62,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@admin host {$REMOTE_ADMIN_HOST}
 	route @admin {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy litellm:4000 {
 			import drop_remote_session_cookie
@@ -61,6 +73,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@files host {$REMOTE_FILES_HOST}
 	route @files {
 		import remote_request
+		import handoff_callback
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import drop_remote_session_cookie

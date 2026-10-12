@@ -56,19 +56,25 @@ Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](
   `.env` once the sidecar is logged in.
 - **A separate site.** Remote site blocks delete any client-sent `X-Portal-User` and `X-Portal-Remote`, then set
   `X-Portal-Remote: 1`; the local blocks always delete it. The portal uses that marker to pick the remote
-  cookie (`__Secure-bn_session`: `Secure`, `HttpOnly`, `SameSite=Strict`, `Domain=<tailnet>.ts.net` or your
-  domain), the remote origin for its CSRF check and login redirects (https on the remote names only), and the
-  remote app addresses. Caddy strips that cookie before the apps too; the apps may be framed only by the remote
-  portal origin on the remote names.
+  cookie, the remote origin for its CSRF check and login redirects (https on the remote names only), and the
+  remote app addresses. The apps may be framed only by the remote portal origin on the remote names.
+- **Host-only cookies.** Every remote cookie is `__Host-bn_session` (`Secure`, `HttpOnly`, `SameSite=Strict`,
+  `Path=/`, no `Domain`), so no other machine under `<tailnet>.ts.net` (or your domain) ever receives one; Caddy
+  strips it before the apps. The portal host's cookie comes from the login; each app host gets its own through a
+  **hand-off**: `/auth/handoff` (portal host, signed in, the target must be one of the three app hosts) mints a
+  token — signed with `PORTAL_SECRET` under its own salt, 60 seconds, a random nonce that is accepted once (kept
+  in memory until it expires), bound to one host and to the Tailscale login — and redirects to
+  `https://<app host>/.bn/callback`, which Caddy forwards to the portal. The callback checks host, expiry, nonce
+  and login, re-checks the session (so a sign-out in between wins), sets that host's cookie with the portal
+  session's start time (same 30-day end, same `not_before` revocation) and redirects to a path on the same host
+  only. Responses carrying tokens are `no-store` with `Referrer-Policy: no-referrer`; tokens are never logged.
 - **Your Tailscale login.** Tailscale deletes client-sent `Tailscale-User-*` headers and adds
-  `Tailscale-User-Login` for devices signed in as a user. With `TAILSCALE_ALLOWED_LOGIN` set, the portal
-  refuses remote requests that name another login (login page, sign-in and every app request). Tagged devices
-  get no header and fall back to the password; `./stack remote status` says which case it saw. In own-domain
-  mode TLS ends at Caddy, so the header cannot exist (Caddy deletes client copies): the tailnet grant and the
-  password are the gates.
-- **Cookie scope caveat.** In Tailscale mode the cookie's domain is `<tailnet>.ts.net`, so a browser would send it
-  to any machine of your tailnet it visits under that name. It is HTTPS-only and not readable by scripts, but a
-  hostile machine in your own tailnet could replay it; sign out on Home revokes all sessions.
+  `Tailscale-User-Login` for devices signed in as a user (also on Services traffic, per its source). With
+  `TAILSCALE_ALLOWED_LOGIN` set, the portal requires it: a remote request without it or with another login is
+  refused (login page, sign-in, hand-off and every app request), and remote sessions are bound to it. Tagged
+  devices get no header and are therefore refused; `./stack remote status` says what it saw. In own-domain mode
+  TLS ends at Caddy, so the header cannot exist (Caddy deletes client copies): the tailnet grant and the password
+  are the gates, and there is no login binding.
 - Open WebUI's `token` cookie becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`) while remote access is on.
 
 ## The update helper

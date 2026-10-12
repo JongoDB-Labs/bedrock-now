@@ -125,9 +125,9 @@ test_hosts_tailscale_and_domain() {
   remote_hosts_tailscale "$TN"
   assert_eq "$(get_env REMOTE_HOST) $(get_env REMOTE_CHAT_HOST) $(get_env REMOTE_FILES_HOST)" \
     "bedrock-now.$TN bedrock-now-chat.$TN bedrock-now-files.$TN"
-  assert_eq "$(get_env REMOTE_COOKIE_DOMAIN) $(get_env REMOTE_ORIGIN)" "$TN https://bedrock-now.$TN"
+  assert_eq "$(get_env REMOTE_ORIGIN)" "https://bedrock-now.$TN"
   remote_hosts_domain bedrock.example.com
-  assert_eq "$(get_env REMOTE_ADMIN_HOST) $(get_env REMOTE_COOKIE_DOMAIN)" "admin.bedrock.example.com bedrock.example.com"
+  assert_eq "$(get_env REMOTE_ADMIN_HOST)" "admin.bedrock.example.com"
   set_env REMOTE_MODE domain
   assert_eq "$(remote_url chat)" "https://chat.bedrock.example.com"
   assert_contains "$(remote_dns_records 100.1.2.3)" "*.bedrock.example.com"
@@ -204,7 +204,7 @@ test_identity_text() {
   echo "present since 2026-10-12 10:00 UTC" > "$TMP/identity"
   assert_contains "$(remote_identity_text)" "Tailscale login me@example.com AND the portal password"
   echo "absent since 2026-10-12 10:00 UTC" > "$TMP/identity"
-  assert_contains "$(remote_identity_text)" "password only — the last remote request"
+  assert_contains "$(remote_identity_text)" "carried no Tailscale-User-Login and were REFUSED"
   set_env REMOTE_MODE domain
   assert_contains "$(remote_identity_text)" "own-domain mode"
 }
@@ -275,11 +275,12 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     assert_eq "$(grep -c 'import remote_request' "$f")" 4
   done
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" "request_header -Tailscale-User-Login"
+  for m in tailscale domain; do assert_eq "$(grep -c "import handoff_callback" "$STACK_DIR/caddy/remote-$m.caddy")" 3; done
 }
 
 test_remote_cookie_name_matches_portal_and_caddy() {
   name="$(sed -n 's/^REMOTE_COOKIE = "\(.*\)".*/\1/p' "$STACK_DIR/portal/portal/security.py")"
-  assert_eq "$name" "__Secure-bn_session"
+  assert_eq "$name" "__Host-bn_session"
   for m in tailscale domain; do assert_contains "$(cat "$STACK_DIR/caddy/remote-$m.caddy")" "header_up Cookie \"$name="; done
 }
 

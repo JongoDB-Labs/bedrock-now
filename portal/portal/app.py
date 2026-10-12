@@ -10,7 +10,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -22,8 +22,8 @@ from starlette.staticfiles import StaticFiles
 from . import admin, appicons, icons, prices, summary, updates, webapp
 from .config import Settings
 from .security import (
-    MAX_AGE, LoginThrottle, Sessions, cookie_params, is_remote, password_ok, remote_identity_ok, safe_next, same_origin,
-    tailscale_login,
+    MAX_AGE, Handoff, LoginThrottle, Sessions, cookie_params, is_remote, password_ok, remote_identity_ok, safe_next,
+    same_origin, session_login, tailscale_login,
 )
 
 log = logging.getLogger("portal")
@@ -33,9 +33,13 @@ MAX_FORM = 8192
 
 def _security_headers(resp: Response, s: Settings) -> Response:
     apps = " ".join(s.app_origins())
+    frames = ("'self' " if s.remote_on() else "") + apps
+    # frame-src 'self' (remote access only): a framed remote app without its own cookie yet passes through
+    # /auth/handoff (a redirect on the portal host) inside its frame; portal pages themselves still refuse
+    # framing (frame-ancestors 'none').
     resp.headers.setdefault("Content-Security-Policy", (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-        f"frame-src {apps}; form-action 'self' {apps}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"))
+        f"frame-src {frames}; form-action 'self' {apps}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"))
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
@@ -63,23 +67,29 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
     admin_rate = admin.RateLimit()
 
+    handoff = Handoff(settings.secret)
     identity_file = settings.state_dir / "remote-identity" if settings.state_dir else None
     identity_seen = {"kind": None}
 
-    # Two sites can be served at once: local (http://PORTAL_HOST, bn_session) and, with remote access on, remote
-    # (https://REMOTE_HOST, __Secure-bn_session), told apart by Caddy's X-Portal-Remote marker.
+    # Two sites can be served at once: local (http://PORTAL_HOST, bn_session for it and its subdomains) and, with
+    # remote access on, remote (https://REMOTE_HOST, a host-only __Host-bn_session per remote host name, carried
+    # from the portal host to each app host by the hand-off below), told apart by Caddy's X-Portal-Remote marker.
     def remote(request: Request) -> bool:
         return is_remote(request.headers, settings)
 
+    def session_claims(request: Request) -> dict | None:
+        return sessions.claims(request.cookies.get(cookie_params(settings, remote(request))["key"]),
+                               session_login(request.headers, settings))
+
     def authed(request: Request) -> bool:
-        return sessions.valid(request.cookies.get(cookie_params(settings, remote(request))["key"]))
+        return session_claims(request) is not None
 
     # SameSite=Strict: the app hosts are same-site with the portal (local: subdomains of PORTAL_HOST; remote: the
     # same <tailnet>.ts.net or REMOTE_HOST), so the portal's iframes, the redirect after login and typed/bookmarked
     # URLs all carry it; only a link clicked on another site arrives without it (that shows the login page once).
-    def set_session(resp: Response, rem: bool) -> None:
+    def set_session(resp: Response, rem: bool, login: str | None = None, iat: float | None = None) -> None:
         c = cookie_params(settings, rem)
-        resp.set_cookie(c["key"], sessions.issue(), max_age=MAX_AGE, path="/", domain=c["domain"],
+        resp.set_cookie(c["key"], sessions.issue(iat, login), max_age=MAX_AGE, path="/", domain=c["domain"],
                         httponly=True, samesite="strict", secure=c["secure"])
 
     def clear_session(resp: Response, rem: bool) -> None:
@@ -128,9 +138,14 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         accept = request.headers.get("accept", "")
         if method in ("GET", "HEAD") and "text/html" in accept:
             rem = remote(request)
-            host = request.headers.get("x-forwarded-host", "")
+            host = request.headers.get("x-forwarded-host", "").lower()
             uri = request.headers.get("x-forwarded-uri", "/")
             nxt = safe_next(f"{'https' if rem else 'http'}://{host}{uri}" if host else uri, settings)
+            if rem and host in remote_app_hosts():
+                # An app host has no cookie of its own yet: fetch one from the portal host (hand-off).
+                target = (f"{settings.origin(remote=True)}/auth/handoff?to={quote('https://' + host, safe='')}"
+                          f"&next={quote(nxt, safe='')}")
+                return _no_store(RedirectResponse(target, status_code=302))
             return _no_store(login_redirect(nxt, rem))
         return _no_store(PlainTextResponse("login required", status_code=401))
 
@@ -170,7 +185,67 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                 nxt, "That password is not right. It is PORTAL_PASSWORD in the .env file of your bedrock-now folder.", 401), settings)
         throttle.success()
         resp = RedirectResponse(nxt, status_code=303)
-        set_session(resp, remote(request))
+        set_session(resp, remote(request), session_login(request.headers, settings))
+        return _no_store(resp)
+
+    def remote_app_hosts() -> set[str]:
+        return {h for h in settings.remote_app_hosts.values() if h} if settings.remote_on() else set()
+
+    def _same_host_path(url: str, host: str) -> str:
+        """The path+query of url when it is on https://host (or already a local path); "/" otherwise."""
+        nxt = safe_next(url, settings)
+        if nxt.startswith("/"):
+            return nxt
+        u = urlsplit(nxt)
+        if u.scheme != "https" or (u.hostname or "").lower() != host:
+            return "/"
+        return (u.path or "/") + (f"?{u.query}" if u.query else "")
+
+    async def auth_handoff(request: Request) -> Response:
+        """Portal host, remote, signed in: a one-time token for exactly one app host (?to=https://<app host>),
+        then on to that host's /.bn/callback (Caddy forwards it to /auth/callback). Caddy's forward_auth already
+        sent a browser without a session to the login page (and back here afterwards)."""
+        if not remote(request):
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        claims = session_claims(request)
+        if claims is None:
+            back = f"{settings.origin(remote=True)}/auth/handoff?{request.url.query}"
+            return _no_store(login_redirect(safe_next(back, settings), True))
+        to = request.query_params.get("to", "")
+        host = to[len("https://"):] if to.startswith("https://") else ""
+        if host not in remote_app_hosts():
+            return _no_store(PlainTextResponse("unknown app address", status_code=400))
+        nxt = _same_host_path(request.query_params.get("next", ""), host)
+        token = handoff.issue(host, claims["iat"], session_login(request.headers, settings))
+        resp = RedirectResponse(f"https://{host}/.bn/callback?t={quote(token, safe='')}&next={quote(nxt, safe='')}",
+                                status_code=302)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        return _no_store(resp)
+
+    async def auth_callback(request: Request) -> Response:
+        """https://<app host>/.bn/callback (Caddy → here): redeems a hand-off token for this very host and sets the
+        host's own cookie (same session start, so the portal's expiry and Sign out still apply)."""
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if not remote(request) or host not in remote_app_hosts():
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        data = handoff.redeem(request.query_params.get("t"), host)
+        login = session_login(request.headers, settings)
+        if data is None or (data["u"] or None) != login:
+            return _no_store(PlainTextResponse("This sign-in link has expired or was already used — reload the page.",
+                                               status_code=400))
+        cookie = sessions.issue(data["iat"], login)
+        if not sessions.valid(cookie, login):   # signed out (or expired) since the token was issued
+            return _no_store(login_redirect("/", True))
+        nxt = request.query_params.get("next", "/")
+        if not nxt.startswith("/") or nxt.startswith("//") or "\\" in nxt or any(ord(c) < 33 for c in nxt):
+            nxt = "/"
+        resp = RedirectResponse(nxt, status_code=303)
+        set_session(resp, True, login, data["iat"])
+        resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
 
     async def logout(request: Request) -> Response:
@@ -343,6 +418,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         routes=[
             Route("/healthz", healthz),
             Route("/auth/verify", verify, methods=["GET", "HEAD"]),
+            Route("/auth/handoff", auth_handoff, methods=["GET"]),
+            Route("/auth/callback", auth_callback, methods=["GET"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),
             Route("/logout", logout, methods=["POST"]),

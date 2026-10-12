@@ -7,9 +7,10 @@ import hmac
 import logging
 import math
 import os
+import secrets
 import time
-from pathlib import Path
 from email.header import decode_header, make_header
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -80,22 +81,37 @@ class Sessions:
             except OSError:
                 pass
 
-    def issue(self) -> str:
-        return self._ser.dumps({"v": 1, "fp": self._fp, "iat": self._clock()})
+    def issue(self, iat: float | None = None, login: str | None = None) -> str:
+        """A new session token. iat: the session's start (a remote app host's cookie from the hand-off keeps the
+        portal session's, so it expires and is revoked with it); login: the Tailscale login it is bound to."""
+        data = {"v": 1, "fp": self._fp, "iat": self._clock() if iat is None else iat}
+        if login:
+            data["u"] = login
+        return self._ser.dumps(data)
 
-    def valid(self, token: str | None) -> bool:
+    def claims(self, token: str | None, login: str | None = None) -> dict | None:
+        """The token's data if it is a valid session (and, when it is bound to a login, for that login)."""
         if not token or len(token) > 4096:
-            return False
+            return None
         try:
             data = self._ser.loads(token, max_age=MAX_AGE)
         except (BadSignature, ValueError, TypeError):
-            return False
+            return None
         if not isinstance(data, dict) or data.get("v") != 1:
-            return False
+            return None
         iat = data.get("iat")
-        if not isinstance(iat, (int, float)) or iat <= self.not_before:
-            return False
-        return hmac.compare_digest(str(data.get("fp", "")), self._fp)
+        if not isinstance(iat, (int, float)) or iat <= self.not_before or self._clock() - iat > MAX_AGE:
+            return None
+        if not hmac.compare_digest(str(data.get("fp", "")), self._fp):
+            return None
+        bound = data.get("u")
+        if bound is not None and (not isinstance(bound, str) or login is None
+                                  or not hmac.compare_digest(bound.encode(), login.encode())):
+            return None
+        return data
+
+    def valid(self, token: str | None, login: str | None = None) -> bool:
+        return self.claims(token, login) is not None
 
     def revoke_all(self) -> None:
         self.not_before = self._clock()
@@ -172,7 +188,10 @@ def same_origin(headers, settings: Settings) -> bool:
 
 # --- remote access (./stack remote; docs/remote.md) ---
 
-REMOTE_COOKIE = "__Secure-bn_session"  # = REMOTE_COOKIE_NAME in lib/remote.sh; Caddy strips it before the apps
+# Remote cookies are host-only (no Domain): one per remote host name, so no other machine under the same parent
+# (every node of a tailnet is <name>.<tailnet>.ts.net) ever receives one. __Host- makes browsers enforce it
+# (Secure, Path=/, no Domain). Caddy strips it before the apps (caddy/remote-*.caddy).
+REMOTE_COOKIE = "__Host-bn_session"
 TAILSCALE_LOGIN_HEADER = "tailscale-user-login"
 
 
@@ -183,10 +202,11 @@ def is_remote(headers, settings: Settings) -> bool:
 
 
 def cookie_params(settings: Settings, remote: bool) -> dict:
-    """The session cookie of a site. Local: bn_session for PORTAL_HOST and its subdomains, not Secure (plain
-    HTTP on 127.0.0.1). Remote: __Secure-bn_session, Secure, for the parent of all remote names."""
+    """The session cookie of a site. Local: bn_session for PORTAL_HOST and its subdomains (a .localhost name
+    nobody else can serve), not Secure (plain HTTP on 127.0.0.1). Remote: __Host-bn_session, host-only and
+    Secure, on the portal host; each app host gets its own through the hand-off (Handoff below)."""
     if remote:
-        return {"key": REMOTE_COOKIE, "domain": settings.remote_cookie_domain or settings.remote_host, "secure": True}
+        return {"key": REMOTE_COOKIE, "domain": None, "secure": True}
     return {"key": COOKIE, "domain": settings.host, "secure": False}
 
 
@@ -203,10 +223,66 @@ def tailscale_login(headers) -> str | None:
     return value.strip().lower()
 
 
+def identity_required(settings: Settings) -> bool:
+    return settings.remote_mode == "tailscale" and bool(settings.tailscale_allowed_login)
+
+
 def remote_identity_ok(headers, settings: Settings) -> bool:
-    """Tailscale mode with TAILSCALE_ALLOWED_LOGIN: a remote request that names a Tailscale login must name that
-    one. Without the header (tagged devices) it is the password alone, which ./stack remote status reports."""
-    if not is_remote(headers, settings) or settings.remote_mode != "tailscale" or not settings.tailscale_allowed_login:
+    """Tailscale mode with TAILSCALE_ALLOWED_LOGIN: a remote request must carry Tailscale-User-Login, and it must
+    be that login. Tailscale sends it on Service traffic from devices signed in as a user; tagged devices send
+    none and are refused (./stack remote status says so)."""
+    if not is_remote(headers, settings) or not identity_required(settings):
         return True
     login = tailscale_login(headers)
-    return login is None or hmac.compare_digest(login.encode(), settings.tailscale_allowed_login.encode())
+    return login is not None and hmac.compare_digest(login.encode(), settings.tailscale_allowed_login.encode())
+
+
+def session_login(headers, settings: Settings) -> str | None:
+    """The login a remote session is bound to (tailscale mode with TAILSCALE_ALLOWED_LOGIN), else None."""
+    return tailscale_login(headers) if is_remote(headers, settings) and identity_required(settings) else None
+
+
+class Handoff:
+    """Single-use, short-lived, audience-bound tokens that carry a remote portal session to one app host.
+
+    /auth/handoff on the portal host (session required) issues one for exactly one app host and redirects the
+    browser to https://<app host>/.bn/callback?t=…; Caddy forwards that path to /auth/callback, which redeems it
+    (right host, not expired, never used before) and sets that host's own host-only cookie with the portal
+    session's start time, so the portal's expiry and Sign out (not_before) govern it too. Used nonces are kept in
+    memory until they expire; a portal restart forgets them, but by then every issued token has expired anyway
+    (TTL), as tokens carry their own expiry."""
+
+    TTL = 60
+
+    def __init__(self, secret: str, clock=time.time):
+        self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.handoff")
+        self._clock = clock
+        self._used: dict[str, float] = {}
+
+    def issue(self, aud: str, iat: float, login: str | None) -> str:
+        return self._ser.dumps({"aud": aud, "iat": iat, "u": login or "", "n": secrets.token_hex(16),
+                                "exp": self._clock() + self.TTL})
+
+    def redeem(self, token: str | None, aud: str) -> dict | None:
+        if not token or len(token) > 2048:
+            return None
+        try:
+            data = self._ser.loads(token, max_age=self.TTL + 5)
+        except (BadSignature, ValueError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        now = self._clock()
+        exp, nonce, iat = data.get("exp"), data.get("n"), data.get("iat")
+        if not isinstance(exp, (int, float)) or exp < now or exp > now + self.TTL + 5:
+            return None
+        if not isinstance(nonce, str) or not isinstance(iat, (int, float)) or not isinstance(data.get("u"), str):
+            return None
+        if not isinstance(data.get("aud"), str) or not hmac.compare_digest(data["aud"].encode(), aud.encode()):
+            return None
+        for n in [n for n, t in self._used.items() if t < now]:
+            del self._used[n]
+        if nonce in self._used:
+            return None
+        self._used[nonce] = exp
+        return data

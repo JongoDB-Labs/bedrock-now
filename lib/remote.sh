@@ -87,23 +87,22 @@ remote_url() {
   ! valid_hostname "$h" || printf 'https://%s\n' "$h"
 }
 
-# remote_set_hosts PORTAL CHAT ADMIN FILES COOKIE_DOMAIN — the remote site in .env (empty strings clear it)
+# remote_set_hosts PORTAL CHAT ADMIN FILES — the remote site in .env (empty strings clear it)
 remote_set_hosts() {
   set_env REMOTE_HOST "$1"; set_env REMOTE_CHAT_HOST "$2"; set_env REMOTE_ADMIN_HOST "$3"; set_env REMOTE_FILES_HOST "$4"
-  set_env REMOTE_COOKIE_DOMAIN "$5"
   if [ -n "$1" ]; then set_env REMOTE_ORIGIN "https://$1"; else set_env REMOTE_ORIGIN ""; fi
 }
-
-# remote_hosts_tailscale TAILNET — <base>.<tailnet>, <base>-chat.<tailnet>, …; the cookie covers <tailnet>
+# remote_hosts_tailscale TAILNET — <base>.<tailnet>, <base>-chat.<tailnet>, … (ts.net is a public suffix, so all
+# four share the "site" <tailnet>.ts.net: same-site for SameSite cookies; each cookie stays host-only).
 # (ts.net is a public suffix, so <tailnet>.ts.net is the registrable "site" all four names share).
 remote_hosts_tailscale() {
   local b t="$1"; b="$(ts_base)"
-  remote_set_hosts "$b.$t" "$b-chat.$t" "$b-admin.$t" "$b-files.$t" "$t"
+  remote_set_hosts "$b.$t" "$b-chat.$t" "$b-admin.$t" "$b-files.$t"
 }
 
-# remote_hosts_domain HOST — HOST plus chat./admin./files.HOST; the cookie covers HOST and its subdomains only
+# remote_hosts_domain HOST — HOST plus chat./admin./files.HOST
 remote_hosts_domain() {
-  remote_set_hosts "$1" "chat.$1" "admin.$1" "files.$1" "$1"
+  remote_set_hosts "$1" "chat.$1" "admin.$1" "files.$1"
 }
 
 # check_remote_domain HOST — dies unless HOST is a real name we may request a certificate for
@@ -359,7 +358,7 @@ remote_enable() {
   # The tailscale names need the tailnet's DNS name, which the sidecar tells us once it is logged in.
   if [ "$mode" = domain ]; then remote_hosts_domain "$host"; write_ts_serve_config domain
   elif valid_tailnet "$(get_env TS_TAILNET)"; then remote_hosts_tailscale "$(get_env TS_TAILNET)"; write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
-  else remote_set_hosts "" "" "" "" ""; write_ts_serve_config off; fi
+  else remote_set_hosts "" "" "" ""; write_ts_serve_config off; fi
   if [ "$mode" = domain ]; then run_phase "Caddy with the DNS plugin (build)" caddy dc build -q caddy; fi
   run_phase "Tailscale sidecar (start)" tailscale dc up -d tailscale
   log "waiting for the sidecar to log in to your tailnet…"
@@ -428,9 +427,9 @@ remote_identity_text() {
   fi
   seen="$(dc exec -T portal cat /state/remote-identity 2>/dev/null | head -n 1 | tr -d '\r' || true)"
   case "$seen" in
-    present*) echo "Tailscale login $login AND the portal password (Tailscale sent Tailscale-User-Login on the last remote request, ${seen#present })" ;;
-    absent*) echo "password only — the last remote request (${seen#absent }) carried no Tailscale-User-Login (Tailscale omits it for tagged devices); the login check applies whenever it is present" ;;
-    *) echo "Tailscale login $login AND the portal password when Tailscale sends Tailscale-User-Login (devices signed in as a user); requests without it (tagged devices) fall back to password only — no remote request seen yet" ;;
+    present*) echo "Tailscale login $login AND the portal password; sessions are bound to it (Tailscale sent Tailscale-User-Login on remote requests, ${seen#present })" ;;
+    absent*) echo "Tailscale login $login required — but remote requests (${seen#absent }) carried no Tailscale-User-Login and were REFUSED (Tailscale sends none from tagged devices; sign in to Tailscale as $login on that device)" ;;
+    *) echo "Tailscale login $login required (Tailscale-User-Login, sent for devices signed in as a user; tagged devices are refused) AND the portal password — no remote request seen yet" ;;
   esac
 }
 

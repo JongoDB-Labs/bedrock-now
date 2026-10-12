@@ -9,7 +9,7 @@ port to the internet. The local address keeps working exactly as before.
 | Mode | Command | Addresses | Certificate | Who can connect |
 |---|---|---|---|---|
 | off (default) | `./stack remote disable` | `http://bedrock-now.localhost` | none (plain HTTP on 127.0.0.1) | this computer |
-| **Tailscale** (recommended) | `./stack remote enable tailscale` | `https://bedrock-now.<tailnet>.ts.net` plus `-chat`, `-admin`, `-files` | Tailscale (Let's Encrypt, automatic) | devices in your tailnet that your policy allows; your Tailscale login **and** the portal password |
+| **Tailscale** (recommended) | `./stack remote enable tailscale` | `https://bedrock-now.<tailnet>.ts.net` plus `-chat`, `-admin`, `-files` | Tailscale (Let's Encrypt, automatic) | devices in your tailnet that your policy allows, signed in to Tailscale as you; your Tailscale login **and** the portal password |
 | Own domain | `./stack remote enable domain bedrock.example.com` | `https://bedrock.example.com` plus `chat.`, `admin.`, `files.` | Let's Encrypt wildcard via DNS-01 (Cloudflare) | devices in your tailnet that your policy allows; the portal password |
 
 Setup asks once: *only this computer, or also your phone/laptop through Tailscale?* (default: only this
@@ -26,7 +26,8 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
                              ▼
                      caddy:8081 (remote listener, NOT published on the host)
                              │  sets X-Portal-Remote: 1 (after deleting any client copy)
-                             │  forward_auth → portal: remote cookie + Tailscale login check
+                             │  forward_auth → portal: this host's own cookie + Tailscale login check
+                             │  (no cookie on an app host yet → one-time hand-off from the portal host)
                              ▼
                      portal / Open WebUI / LiteLLM / RustFS (as for local access)
 ```
@@ -42,30 +43,38 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
 - Caddy's remote site (`caddy/remote-tailscale.caddy`) listens on port 8081 **inside** the Docker network
   only; nothing on your machine or LAN can reach it. It marks requests with `X-Portal-Remote: 1`, which the
   local site always deletes.
-- The portal then uses a separate session cookie, `__Secure-bn_session` (`Secure`, `HttpOnly`,
-  `SameSite=Strict`), the remote origin for its CSRF check and redirects, and `https://…` app addresses on
-  Home. Open WebUI's own cookie becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`).
+- The portal then uses **host-only** session cookies, `__Host-bn_session` (`Secure`, `HttpOnly`,
+  `SameSite=Strict`, `Path=/`, no `Domain` — the `__Host-` prefix makes the browser enforce that), the remote
+  origin for its CSRF check and redirects, and `https://…` app addresses on Home. Open WebUI's own cookie
+  becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`).
+- **Hand-off.** Each app host gets its own cookie, never a shared one: an app host without a cookie sends the
+  browser to `https://<portal>/auth/handoff?to=<app>&next=…`; the portal (signed in) mints a token that is
+  signed, valid for 60 seconds, usable once, and only for that one host, and redirects to
+  `https://<app host>/.bn/callback?t=…`. Caddy hands that path to the portal, which checks the token and sets
+  the host's own cookie with the portal session's start time — so it expires with the portal session and
+  **Sign out** (or a changed password) ends it too. `next` stays on the same host. This works inside Home's
+  frames as well (tested in Chromium and WebKit: the four names are one "site", so `SameSite=Strict` holds).
 - One-click Update / Rollback / Clean stay off for remote requests unless you set `REMOTE_ADMIN_ACTIONS=true`
   ([security](security.md#the-update-helper)).
 
 ### Your Tailscale login, checked
 
-Tailscale adds `Tailscale-User-Login` (your login name) to every request from a device signed in as a user,
-after deleting any copy the client sent. Setup asks for your login (`TAILSCALE_ALLOWED_LOGIN`); the portal then
-refuses (403) any remote request that names a **different** login, before and after sign-in. Devices that are
-**tagged** (servers, not people) get no such header from Tailscale; for them it is the password alone.
-`./stack remote status` tells you which case it saw last ("Identity").
+Tailscale adds `Tailscale-User-Login` (your login name) to proxied Service requests from a device signed in as
+a user, after deleting any copy the client sent (Tailscale's `ipn/ipnlocal/serve.go`; nothing there exempts
+Services). Setup asks for your login (`TAILSCALE_ALLOWED_LOGIN`); the portal then **requires** it: a remote
+request without the header, or with another login, is refused (403) — on the login page, at sign-in and on
+every app request. Sessions (and hand-off tokens) are bound to that login. **Tagged** devices (servers, not
+people) never get the header from Tailscale, so they cannot use the portal remotely while a login is set;
+leave `TAILSCALE_ALLOWED_LOGIN` blank to allow them (password only). `./stack remote status` shows what the
+portal last saw ("Identity"). This has been checked against Tailscale's source, not yet end to end on a real
+tailnet: `./stack remote test`'s checklist covers it.
 
-### The cookie caveat (Tailscale mode)
+### Cookies stay on their own host
 
-All four names live under `<tailnet>.ts.net`, so the session cookie is scoped to that domain
-(`ts.net` is a [public suffix](https://publicsuffix.org/list/), so `<tailnet>.ts.net` is a site of its own).
-That means **every machine in your tailnet** whose `*.ts.net` name your browser visits would receive the
-cookie. Mitigations: the cookie is `Secure` (only over HTTPS), `HttpOnly` (no page script can read it),
-`SameSite=Strict`, has a distinctive name, is never forwarded by Caddy to the apps, and is useless without
-the portal's `PORTAL_SECRET` — but a malicious machine in your own tailnet that you browse to could replay it
-for up to 30 days. **Sign out** on Home (or change `PORTAL_PASSWORD`) revokes every session. If other people
-run machines in your tailnet, consider the own-domain mode (its cookie is scoped to `bedrock.example.com`).
+All four names live under `<tailnet>.ts.net`, next to every other machine of your tailnet. A cookie scoped to
+that domain would be sent to all of them, so none is: every cookie is host-only (`__Host-`), each app host gets
+its own through the hand-off, and Caddy never forwards them to the apps. Own-domain mode works the same way
+(nothing is scoped to `bedrock.example.com` either).
 
 ## Tailscale mode, step by step
 
@@ -137,8 +146,9 @@ in one tailnet. `TS_SERVICE`, `TS_HOSTNAME` and `TS_TAG` in `.env` override the 
   Another provider: change `DNS_PLUGIN` in `caddy/Dockerfile` to its [caddy-dns](https://github.com/caddy-dns)
   module at a pinned version, the `dns` line in `caddy/remote-domain.caddy`, and the token variable in
   `compose.domain.yaml`.
-- Tailscale cannot see inside this TLS, so there is no `Tailscale-User-Login`: access is your tailnet grant
-  (to `tag:bedrock-now`, port 443) plus the portal password. The cookie is scoped to `bedrock.example.com` only.
+- Tailscale cannot see inside this TLS, so there is no `Tailscale-User-Login` (Caddy deletes client copies) and
+  no binding to your login: access is your tailnet grant (to `tag:bedrock-now`, port 443) plus the portal
+  password. Cookies are host-only, as above.
 
 ## Cloudflare Tunnel + Access (documentation only)
 
@@ -174,5 +184,6 @@ WebUI's cookie non-`Secure` again. The sidecar's login stays in the `tailscale-s
 | Phone: name does not resolve | MagicDNS on; the Service defined; the host approved (Services page) |
 | Phone: connection refused/times out | the grant (step 2); Linux clients ≤ v1.93: `--accept-routes` |
 | Certificate warning | HTTPS Certificates enabled (DNS page); own domain: `./stack logs caddy` (DNS-01) |
-| "not shared with your Tailscale login" | you are signed in to Tailscale as someone else than `TAILSCALE_ALLOWED_LOGIN` |
+| "not shared with your Tailscale login" | you are signed in to Tailscale as someone else than `TAILSCALE_ALLOWED_LOGIN`, or the device is tagged (no login header) |
+| "sign-in link has expired or was already used" | reload the page (the hand-off token lives 60 s and works once) |
 | Login page loops | the device's clock; a stale cookie — sign out on Home, or clear site data |
