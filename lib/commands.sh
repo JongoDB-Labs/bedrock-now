@@ -11,6 +11,8 @@ Usage: ./stack <command> [--yes]
   setup        First-time (or repeat) setup: AWS creds, ports, model probe, keys (< $0.01 Bedrock)
   up | down    Start / stop the stack
   status       Services, health and URLs (the portal: one login for every browser UI)
+  open         The portal in its own browser window (setup and up open it too;
+               BEDROCK_NOW_NO_OPEN=1 turns that off)
   logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
@@ -295,6 +297,7 @@ cmd_setup() {
   cmd_test
   offer_symlink
   print_summary
+  maybe_auto_open
 }
 
 # --- setup part 2: bring-up, model probe, virtual keys, Open WebUI ---
@@ -303,7 +306,8 @@ cmd_setup() {
 render_config() {
   local out="${2:-$STACK_DIR/litellm/config.yaml}" tmp
   tmp="$(mktemp "$out.XXXXXX")" || die "cannot create a temp file next to $out"
-  if ! (render_litellm_config "$1" "$(get_env AWS_REGION_NAME)" "$(get_env LITELLM_STORE_PROMPTS)") > "$tmp"; then
+  if ! (render_litellm_config "$1" "$(get_env AWS_REGION_NAME)" "$(get_env LITELLM_STORE_PROMPTS)" \
+        "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo true || echo false)") > "$tmp"; then
     rm -f "$tmp"; die "could not render $out"
   fi
   chmod 644 "$tmp"   # read by the litellm container
@@ -404,17 +408,18 @@ portal_session_or_die() {
 }
 
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
-  local envk="$1" alias="$2" budget="$3" cur tmp code key
+  local envk="$1" alias="$2" budget="$3" cur tmp code key soft
   valid_budget "$budget" || die "budget for $alias must be a number of USD, got '$budget' (see BUDGET_* in .env)"
+  soft="$(soft_budget_of "$budget")"   # 80%: LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
   cur="$(get_env "$envk")"
   if [ -n "$cur" ]; then
     # /key/info with the key itself as bearer (keeps the key out of URLs/argv).
     code="$(litellm_key_status "$cur")"
     case "$code" in
       200)
-        # keep the key; sync only max_budget (budget_duration untouched so the reset date stays put)
+        # keep the key; sync max_budget + soft_budget (budget_duration untouched so the reset date stays put)
         tmp="$(mktemp)"
-        code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget}" "$tmp")"
+        code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget,\"soft_budget\":$soft}" "$tmp")"
         [ "$code" = 200 ] || warn "could not update the budget of LiteLLM key '$alias' (HTTP $code): $(head -c 300 "$tmp")"
         rm -f "$tmp"
         log "kept existing LiteLLM key '$alias' (monthly budget \$$budget, resets on the date shown by ./stack costs)"
@@ -424,7 +429,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
     esac
   fi
   tmp="$(mktemp)"
-  code="$(litellm_api POST /key/generate "{\"key_alias\":\"$alias\",\"max_budget\":$budget,\"budget_duration\":\"30d\"}" "$tmp")"
+  code="$(litellm_api POST /key/generate "{\"key_alias\":\"$alias\",\"max_budget\":$budget,\"soft_budget\":$soft,\"budget_duration\":\"30d\"}" "$tmp")"
   [ "$code" = 200 ] || { head -c 500 "$tmp" >&2; rm -f "$tmp"; die "could not create LiteLLM key '$alias' (HTTP $code)"; }
   key="$(parse_virtual_key < "$tmp")" || { head -c 300 "$tmp" >&2; rm -f "$tmp"; die "unexpected /key/generate response for '$alias' (no sk- key found)"; }
   set_env "$envk" "$key"
@@ -506,7 +511,7 @@ _enabled_or_all() { # -> path of enabled-models.txt, or "" (= whole catalog) if 
 }
 
 cmd_costs() {
-  local en name _ mregion cr age j reset label envk alias tmp total code
+  local en name _ mregion cr age j reset label envk alias tmp total code bw
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   en="$(_enabled_or_all)"
   printf 'Bedrock on-demand prices (USD) as of %s — https://aws.amazon.com/bedrock/pricing/\n' "$(prices_as_of)"
@@ -527,7 +532,8 @@ cmd_costs() {
       printf '  %-12s unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n' "$alias"; continue
     fi
     reset="$(printf '%s' "$j" | json_get budget_reset_at | cut -c1-10)"
-    printf '  %-12s %s%s\n' "$alias" "$label" "${reset:+   (resets $reset)}"
+    bw="$(printf '%s' "$j" | budget_warning)" || bw=''
+    printf '  %-12s %s%s%s\n' "$alias" "$label" "${reset:+   (resets $reset)}" "${bw:+   $bw}"
   done
   # /global/spend sums LiteLLM's spend log over the last 30 days: every key, including master-key calls.
   tmp="$(mktemp)"
@@ -541,6 +547,8 @@ cmd_costs() {
   rm -f "$tmp"
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
+  printf 'Alerts at 80%%: set ALERT_WEBHOOK_URL in .env, then ./stack setup (%s)\n' \
+    "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo 'webhook set' || echo 'none set')"
   age="$(prices_age_days)"
   if [ -z "$age" ]; then warn "catalog/prices.tsv has no '# as_of:' date — prices may be stale"
   elif [ "$age" -gt 90 ]; then warn "prices are $age days old — check https://aws.amazon.com/bedrock/pricing/ and update catalog/prices.tsv"; fi
@@ -706,6 +714,7 @@ cmd_up() {
   ensure_images "./stack up"
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
   cmd_status
+  maybe_auto_open
 }
 cmd_down()   { dc down; }
 cmd_logs()   { dc logs -f --tail=200 "$@"; }

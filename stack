@@ -9,6 +9,7 @@ export STACK_DIR
 . "$STACK_DIR/lib/models.sh"
 . "$STACK_DIR/lib/commands.sh"
 . "$STACK_DIR/lib/guard.sh"
+. "$STACK_DIR/lib/open.sh"
 
 ASSUME_YES=0
 args=()
@@ -33,6 +34,7 @@ case "$cmd" in
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
+  open) cmd_open "$@" ;;
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;
 esac

@@ -29,6 +29,20 @@ All notable changes to bedrock-now are documented here. The format follows
   mode-600 file, deleted afterwards). It also checks that a forged `X-Portal-User` without a session, a
   foreign `next=` and unknown host names are refused, and that Chat, Admin and Files may be framed only by the
   portal. A cookie file it creates is removed even when a check fails.
+- Soft budgets: every LiteLLM key gets `soft_budget` = 80% of its monthly budget (existing keys are updated by
+  `./stack setup`). From 80% on, `./stack costs` and the `claude-bedrock` launch line show
+  `⚠ N% of monthly budget used`.
+- Optional budget alerts: with `ALERT_WEBHOOK_URL` in `.env`, LiteLLM posts a JSON alert to that URL when a
+  key crosses its soft budget and its full budget.
+- `claude-bedrock` prints the session's cost when Claude Code exits
+  (`session: 14 requests · 420K tokens (38% cached) · $0.0384`). Each request carries a per-launch
+  `x-litellm-session-id` and the tag `claude-bedrock`. The summary appears only when stderr is a terminal
+  (`CLAUDE_BEDROCK_SUMMARY=1` forces it; `CLAUDE_BEDROCK_QUIET=1` hides it). For it, Claude Code runs as a
+  foreground child of the wrapper: same terminal and process group, exit code kept, Ctrl-C/TERM re-raised.
+- `./stack open` opens the portal in its own app window (Chrome, Edge, Brave or Chromium with `--app` and a
+  per-copy profile; otherwise the default browser; over SSH or without a display it prints the URL).
+  `./stack setup` and `./stack up` open it at the end when run in a terminal (`BEDROCK_NOW_NO_OPEN=1` turns
+  that off).
 
 ### Changed
 
@@ -38,6 +52,8 @@ All notable changes to bedrock-now are documented here. The format follows
   LiteLLM API (`127.0.0.1:4000`) and shared-mcp (`127.0.0.1:8765`) stay where they were for command-line tools.
 - Setup talks to Open WebUI through Caddy with a portal session; the setup summary shows the portal instead
   of three separate logins.
+- LiteLLM writes spend logs every 1–6 s instead of every 10–15 s (`proxy_batch_write_at: 1`), so spend shows
+  up almost immediately.
 
 ### Security
 

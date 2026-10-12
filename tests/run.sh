@@ -18,7 +18,7 @@ pass=0; fail=0; skip=0
 # shellcheck disable=SC2016
 CHILD='
 TMP=$(mktemp -d)
-export STACK_DIR="$T_ROOT" ENV_FILE="$TMP/.env" STATE_DIR="$TMP/.state"
+export STACK_DIR="$T_ROOT" ENV_FILE="$TMP/.env" STATE_DIR="$TMP/.state" BEDROCK_NOW_NO_OPEN=1
 ( set -euo pipefail
   . lib/common.sh; . lib/ports.sh; . lib/portal.sh; . lib/models.sh; . tests/assert.sh
   . "$T_FILE"

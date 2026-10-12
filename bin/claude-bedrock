@@ -12,6 +12,7 @@ STACK_DIR="$(cd -P "$(dirname "$src")/.." && pwd)"
 export STACK_DIR
 . "$STACK_DIR/lib/common.sh"
 . "$STACK_DIR/lib/models.sh"   # price_label / key_info / spend_text for the launch line
+. "$STACK_DIR/lib/session.sh"  # session id header + cost summary on exit
 
 # --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
 case "${1:-}" in
@@ -29,7 +30,7 @@ case "${1:-}" in
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)
   Model    $m
   Proxy    $p
-  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line; ANTHROPIC_* apply to this process only
+  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line and the session cost on exit
   Cost     $c
   Below    Claude Code's own help; every option works with claude-bedrock
 
@@ -70,6 +71,7 @@ if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
   line="bedrock · $ANTHROPIC_MODEL ($(price_label "$ANTHROPIC_MODEL"))"
   if info="$(key_info "$key" 2 1)" && spent="$(printf '%s' "$info" | spend_text)"; then
     line="$line · spent $spent this period"
+    if bw="$(printf '%s' "$info" | budget_warning)"; then line="$line · $bw"; fi
   fi
   printf '%s\n' "$line" >&2
 fi
@@ -89,5 +91,43 @@ case "${1:-}" in
   *) for c in $subcmds; do [ "$c" = "$1" ] && { add_mcp=0; break; }; done ;;
 esac
 [ "$add_mcp" = 1 ] && [ -f "$STATE_DIR/mcp.json" ] && mcp_args=(--mcp-config "$STATE_DIR/mcp.json")
+
+# Every request of this run carries a session id, so its cost can be looked up on exit (and found in
+# LiteLLM UI › Logs). Your own ANTHROPIC_CUSTOM_HEADERS are kept.
+session_id="$(session_new_id)"
+ANTHROPIC_CUSTOM_HEADERS="$(session_headers "$session_id" "${ANTHROPIC_CUSTOM_HEADERS:-}")"
+export ANTHROPIC_CUSTOM_HEADERS
+
 restore_caller_locale   # Claude Code and its shell tools get the user's locale, not our C locale
-exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+# The session summary is for people: it is printed when stderr is a terminal (CLAUDE_BEDROCK_SUMMARY=1 forces
+# it, e.g. for a script that wants it on stderr). Subcommands and CLAUDE_BEDROCK_QUIET=1 never get one.
+# Without a summary the process is handed straight to claude, exactly as before.
+want_summary=0
+if [ "$add_mcp" = 1 ] && [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
+  if [ -t 2 ] || [ "${CLAUDE_BEDROCK_SUMMARY:-0}" = 1 ]; then want_summary=1; fi
+fi
+[ "$want_summary" = 1 ] || exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+
+# claude runs as an ordinary FOREGROUND child: same terminal, same process group, so Ctrl-C / Ctrl-Z / a closed
+# terminal reach it directly, as with `exec`. The ':' traps only keep this wrapper alive until claude exits
+# (a trapped signal is reset to its default in the child; `trap ''` would be inherited, so it is not used).
+trap ':' INT QUIT TERM
+trap 'exit 129' HUP
+if claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}; then rc=0; else rc=$?; fi
+t_exit="$(date +%s)"
+trap 'exit "$rc"' INT QUIT TERM HUP   # Ctrl-C while the summary is fetched: just leave
+
+export LC_ALL=C   # number formatting in the summary (claude has already exited)
+if [ -t 2 ]; then
+  trap 'printf "\n" >&2; exit "$rc"' INT QUIT TERM HUP
+  printf 'session: tallying cost…' >&2
+  summary="$(session_summary "$session_id" "$t_exit")"
+  printf '\r\033[K%s\n' "$summary" >&2
+else
+  session_summary "$session_id" "$t_exit" >&2
+fi
+# claude was killed by INT or TERM: die of the same signal, so callers (shells, `timeout`, CI) see it.
+case "$rc" in
+  130 | 143) trap - INT TERM; kill -s "$([ "$rc" = 130 ] && echo INT || echo TERM)" "$$"; sleep 1 ;;
+esac
+exit "$rc"
