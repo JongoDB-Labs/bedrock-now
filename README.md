@@ -297,7 +297,8 @@ Groq `whisper-large-v3-turbo` $0.0007 per minute. Transcriptions go through Lite
 they count on the `open-webui` budget and in Home's and `./stack costs`' spend (not in Chat's per-answer
 cost line). With it on, the microphone uses it too, so dictation also works in Firefox and in installed or
 home-screen web apps; answers in a call are read aloud by your browser's voices.
-**Privacy:** your recorded speech goes to OpenAI or Groq. Details: [docs/voice.md](docs/voice.md).
+**Privacy:** your recorded speech goes to OpenAI or Groq. Details, and why Bedrock's Voxtral models are not an
+option yet: [docs/voice.md](docs/voice.md).
 
 ## Bedrock by default: what leaves your machine
 

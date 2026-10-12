@@ -70,6 +70,26 @@ With speech-to-text on, the audio you record with the microphone or during a cal
 (`api.openai.com`) or Groq (`api.groq.com`), under that provider's API data policy. Nothing else changes: the
 transcript is then sent to the chat model as usual. Turn it off with `./stack stt remove`.
 
+## What about Bedrock?
+
+Bedrock does offer speech-understanding models: Mistral **Voxtral Mini** (`mistral.voxtral-mini-3b-2507`) and
+**Voxtral Small** (`mistral.voxtral-small-24b-2507`), on-demand, with speech input and text output (Amazon
+Nova Sonic is a two-way speech model, not a transcription service). They are not wired up yet because, as of
+LiteLLM 1.105 and Open WebUI v0.12 slim:
+
+- LiteLLM's Bedrock transcription route fails for Voxtral (it adds a system message, which Voxtral rejects:
+  *"Found system messages at indexes [0] and audio chunks…"*), and its chat route drops audio for Bedrock.
+- Voxtral on Bedrock takes WAV, MP3, FLAC or Ogg, while browsers record WebM (Chrome, Edge, Firefox) or MP4/AAC
+  (Safari), and the slim Open WebUI image does not convert them.
+- Voxtral is a chat model, so transcription is an instruction ("Transcribe this audio verbatim…", temperature
+  0). Voxtral Small follows it reliably in our tests; Voxtral Mini sometimes answers the question it hears
+  instead of transcribing it.
+
+A Bedrock option would need a small converter in the stack (browser audio → WAV/MP3, then Voxtral Small
+through LiteLLM's Bedrock pass-through, which does record spend on the calling key). Until then, OpenAI and
+Groq are the choices. If you want Voxtral later, ask your AWS admin to enable Mistral Voxtral Small in
+Bedrock model access.
+
 ## Troubleshooting
 
 - **The microphone still uses the browser** after turning it on: a user who saved their own audio settings
