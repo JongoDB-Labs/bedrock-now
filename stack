@@ -25,7 +25,10 @@ case "$cmd" in
   setup) cmd_setup "$@" ;;
   status) [ ! -f "$ENV_FILE" ] || guard_project --warn; cmd_status "$@" ;;
   uninstall) guard_uninstall; cmd_uninstall "$@"; release_project ;;
-  up | down | logs | test | costs | models | backup | restore | update)
+  down | logs | costs | models)   # stop or read: check, but don't claim the project
+    [ ! -f "$ENV_FILE" ] || guard_project --no-claim
+    "cmd_${cmd}" "$@" ;;
+  up | test | backup | restore | update)
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;

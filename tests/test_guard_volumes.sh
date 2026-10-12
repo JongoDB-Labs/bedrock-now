@@ -17,8 +17,11 @@ _stub_docker() {
       "ps -a --filter label=com.docker.compose.project=$WANT"*) [ -z "${OWNERS:-}" ] || printf '%s\n' "$OWNERS" ;;
       "volume ls -q --filter label=com.docker.compose.project=$WANT") [ -z "${VOLS:-}" ] || printf '%s\n' "$VOLS" ;;
       "volume inspect --format "*) [ -f "$TMP/markers/$m" ] || return 1; cat "$TMP/markers/$m" ;;
-      "volume create "*)
+      "volume create "*)   # like Docker: an existing volume keeps its labels. $RACE_DIR claims it just before us.
         echo "create $m" >> "$TMP/dcalls"
+        [ -z "${RACE_DIR:-}" ] || [ -f "$TMP/markers/$m" ] || printf '%s\n' "$RACE_DIR" > "$TMP/markers/$m"
+        [ "${CREATE_FAILS:-0}" = 0 ] || return 1
+        [ -f "$TMP/markers/$m" ] && return 0
         for a in "$@"; do case "$a" in io.bedrock-now.dir=*) printf '%s\n' "${a#*=}" > "$TMP/markers/$m" ;; esac; done ;;
       "volume rm "*) echo "rm $m" >> "$TMP/dcalls"; rm -f "$TMP/markers/$m" ;;
       *) echo "unexpected docker $*" >&2; return 1 ;;
@@ -89,7 +92,7 @@ test_set_up_checkout_is_not_told_to_rename() {
   if out="$( (guard_project) 2>&1)"; then return 1; fi
   assert_not_contains "$out" "COMPOSE_PROJECT_NAME=bedrock-now-2"
   assert_contains "$out" "is set up for project 'bedrock-now' too"
-  assert_contains "$out" "Keep only one"
+  assert_contains "$out" "Otherwise keep only one"
   assert_contains "$out" "cd $TMP/a && ./stack uninstall"
 }
 
@@ -198,4 +201,82 @@ test_rollback_hint_keeps_branch_users_on_their_branch() {
   assert_contains "$out" "git -C $STACK_DIR switch -C main abc123 && ./stack restore backups/b"
   if out="$( (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 BEDROCK_NOW_UPDATE_BRANCH='' cmd_update) 2>&1)"; then return 1; fi
   assert_contains "$out" "git -C $STACK_DIR checkout abc123 && ./stack restore backups/b"
+}
+
+# --- review of c8c1d8e ---
+
+test_concurrent_claim_loser_dies_and_keeps_the_winner() {   # I1
+  _mk_install "$TMP/a"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=''; _stub_docker; RACE_DIR="$(_real_dir "$TMP/a")"
+  if out="$( (guard_project) 2>&1)"; then echo "should refuse" >&2; return 1; fi
+  assert_contains "$out" "project 'bedrock-now' was just claimed by the bedrock-now install in $(_real_dir "$TMP/a")"
+  assert_contains "$out" "Nothing was changed"
+  assert_eq "$(_marker bedrock-now)" "$(_real_dir "$TMP/a")"
+}
+
+test_failed_create_rechecks_the_owner() {   # I1
+  _mk_install "$TMP/a"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=''; _stub_docker; RACE_DIR="$(_real_dir "$TMP/a")" CREATE_FAILS=1
+  if (guard_project) 2>/dev/null; then echo "should refuse" >&2; return 1; fi
+  RACE_DIR='' CREATE_FAILS=1; rm -f "$TMP/markers"/*
+  guard_project   # Docker error, nobody else owns it: not fatal
+}
+
+test_own_containers_win_over_another_folders_marker() {   # I1: interleaved first setups
+  _mk_install "$TMP/a"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS="$TMP/b" VOLS=bedrock-now_pgdata; _stub_docker; _mark bedrock-now "$TMP/a"
+  guard_project
+  assert_eq "$(_marker bedrock-now)" "$(_real_dir "$TMP/b")"
+}
+
+test_set_up_checkout_hint_covers_a_moved_or_copied_folder() {   # I2
+  _mk_install "$TMP/a"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=bedrock-now_pgdata; _stub_docker; _mark bedrock-now "$TMP/a"
+  if out="$( (guard_project) 2>&1)"; then return 1; fi
+  a="$(_real_dir "$TMP/a")"
+  assert_contains "$out" "If this folder replaces $a (you moved or copied it with its .env)"
+  assert_contains "$out" "delete $a and re-run here — the data is kept"
+  assert_contains "$out" "remove it with its data"
+}
+
+test_read_only_and_stop_commands_do_not_claim() {   # M1
+  STACK_DIR="$TMP/me"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=p\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=bedrock-now_pgdata; _stub_docker
+  guard_project --no-claim
+  [ ! -f "$TMP/dcalls" ] || { echo "--no-claim must not claim" >&2; return 1; }
+  d="$(sed -n '/^case "\$cmd" in/,/^esac/p' "$GV_ROOT/stack")"
+  assert_contains "$(printf '%s\n' "$d" | grep -A1 'down | logs | costs | models)')" 'guard_project --no-claim'
+  up="$(printf '%s\n' "$d" | grep -A1 '  up | test | backup | restore | update)')"
+  assert_contains "$up" 'guard_project'
+  assert_not_contains "$up" '--no-claim'
+}
+
+test_owner_folder_without_env_still_owns_its_volumes() {   # M2
+  _mk_install "$TMP/a"; rm "$TMP/a/.env"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=bedrock-now_pgdata; _stub_docker; _mark bedrock-now "$TMP/a"
+  if out="$( (guard_project) 2>&1)"; then echo "should refuse" >&2; return 1; fi
+  assert_contains "$out" "That folder has no .env any more, but its install still owns the data volumes"
+  assert_eq "$(_marker bedrock-now)" "$(_real_dir "$TMP/a")"
+}
+
+test_containers_from_a_missing_folder_suggest_compose_down() {   # M3
+  STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS="$TMP/vanished" VOLS=''; _stub_docker
+  if out="$( (guard_project) 2>&1)"; then return 1; fi
+  assert_contains "$out" "containers started from $TMP/vanished, a folder that no longer exists"
+  assert_contains "$out" "docker compose -p bedrock-now down"
+  assert_not_contains "$out" "cd $TMP/vanished"
+  if out="$( (guard_uninstall) 2>&1)"; then return 1; fi
+  assert_contains "$out" "docker compose -p bedrock-now down"
+  assert_not_contains "$out" "cd $TMP/vanished"
+}
+
+test_refused_first_setup_creates_no_marker() {   # M5
+  STACK_DIR="$TMP/new"; mkdir -p "$STACK_DIR"; printf 'X=1\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=bedrock-now_pgdata; _stub_docker
+  check_prereqs() { :; }; setup_aws_creds() { echo touched >> "$TMP/calls"; }; STATE_DIR="$TMP/state"
+  if out="$( (cmd_setup) 2>&1)"; then return 1; fi
+  assert_contains "$out" "already has data volumes (bedrock-now_pgdata)"
+  assert_eq "$(_marker bedrock-now)" ""
+  [ ! -f "$TMP/dcalls" ] || { echo "refused setup touched markers: $(cat "$TMP/dcalls")" >&2; return 1; }
 }

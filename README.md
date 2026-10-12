@@ -279,17 +279,25 @@ uses the name (`project 'bedrock-now' is already used by the bedrock-now install
 refuses when data volumes of that name already exist. Nothing is changed in either case. `./stack status` only
 prints the warning and still shows its table.
 
-A stopped install keeps its name too: the first checkout that uses a project records itself in a small, empty
-Docker volume `<project>_bedrock-now-owner` (label `io.bedrock-now.dir`), so another folder can't start on,
-or `./stack uninstall`, its data while it is down. This also covers volumes created before the record existed:
-the first checkout to run a command after upgrading claims them. `./stack uninstall` lists the volumes it
-will delete and removes the record. If you move a checkout to another folder, the record of the old folder
-is ignored and replaced. The data volumes themselves are not labelled, because Compose would offer to
-recreate them (deleting the data) when a label changes.
+A stopped install keeps its name too: the first checkout that starts or changes a project (`setup`, `up`,
+`update`, `restore`, `test`, `backup`, `rotate-aws`) records itself in a small, empty Docker volume
+`<project>_bedrock-now-owner` (label `io.bedrock-now.dir`), so another folder can't start on, or
+`./stack uninstall`, its data while it is down. `down`, `logs`, `status`, `costs` and `models` only check.
+This also covers volumes created before the record existed: the first checkout to start or change the stack
+after upgrading claims them. If two checkouts claim at the same moment, one wins and the other stops with
+"was just claimed by …". `./stack uninstall` lists the volumes it will delete and removes the record. A
+record whose folder no longer exists (you moved or deleted the checkout) is replaced. A folder that still
+exists keeps its claim even without a `.env`; delete the folder if that install is gone. The data volumes
+themselves are not labelled, because Compose would offer to recreate them (deleting the data) when a label
+changes.
 
 If the message says a **checkout that is already set up** clashes with another install, that checkout can't
-take a new name (its `.env` belongs to the project). Keep only one of the two: use the other install, or
-remove it (`./stack uninstall` there) and run `./stack setup` here. A second copy needs its own fresh checkout.
+take a new name (its `.env` belongs to the project). If this folder replaces the other one (you moved or
+copied it with its `.env`), stop the stack there (`./stack down`), delete the old folder and re-run here: the
+data is kept. Otherwise keep only one of the two: use the other install, or remove it together with its data
+(`./stack uninstall` there) and run `./stack setup` here. A second copy needs its own fresh checkout. If the
+containers come from a folder that no longer exists, remove them with `docker compose -p <project> down`
+(the data volumes are kept).
 
 To try a branch or a fresh clone next to your main stack, give it its own name:
 
@@ -318,7 +326,9 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 | `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
 | Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
-| "project '…' is already used by the bedrock-now install in …" | Another folder owns this project name (running, or stopped with its data volumes). Use that install, or remove it (`./stack uninstall` there). Only a checkout that was never set up can take another name: `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. See *Running a second copy*. |
+| "project '…' is already used by the bedrock-now install in …" | Another folder owns this project name (running, or stopped with its data volumes). If this folder replaces it (you moved or copied it with its `.env`), run `./stack down` there, delete that folder and re-run here; the data is kept. Otherwise use that install, or remove it with its data (`./stack uninstall` there). Only a checkout that was never set up can take another name: `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. See *Running a second copy*. |
+| "… containers started from …, a folder that no longer exists" | Remove them with `docker compose -p <project> down` (the data volumes are kept), then re-run. |
+| "project '…' was just claimed by …" | Another checkout ran a command at the same moment and now owns the project. Fix it as for "already used by the bedrock-now install". |
 | "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this Compose project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
 | "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
 | Setup can't sign in to Open WebUI | You changed the admin password in the UI. Put the new password in `OPENWEBUI_ADMIN_PASSWORD` in `.env`. |

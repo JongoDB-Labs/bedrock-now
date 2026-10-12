@@ -10,11 +10,18 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - A stopped install keeps its Compose project name. Before, once one checkout ran `./stack down`, another
   set-up checkout with the same name could start on its data volumes (wrong database password) or delete them
-  with `./stack uninstall`. The first checkout that uses a project now records itself in an empty Docker volume
-  `<project>_bedrock-now-owner`; other folders are refused while that install still has data. Existing volumes
-  are claimed by the first checkout that runs a command after the upgrade. A record whose folder is gone
-  (moved or deleted checkout) is replaced. The data volumes are not labelled: Compose would offer to recreate
-  them, deleting the data, whenever a volume label changes.
+  with `./stack uninstall`. The first checkout that starts or changes a project (`setup`, `up`, `update`,
+  `restore`, `test`, `backup`, `rotate-aws`; not `down`, `logs`, `status`, `costs`, `models`) now records
+  itself in an empty Docker volume `<project>_bedrock-now-owner`; other folders are refused while that install
+  still has data. Existing volumes are claimed by the first checkout that starts or changes the stack after the
+  upgrade. Of two simultaneous claims exactly one wins; the other stops with "was just claimed by …". A checkout
+  whose own containers run the project always wins. A record is replaced only when its folder no longer exists
+  (moved or deleted checkout); a folder without `.env` keeps its claim, and the message explains it. The data
+  volumes are not labelled: Compose would offer to recreate them, deleting the data, whenever a volume label
+  changes.
+- If the clashing install's containers come from a folder that no longer exists, the message suggests
+  `docker compose -p <project> down` instead of `cd` into it. A set-up checkout that replaces another folder
+  (moved or copied with its `.env`) is told to stop and delete the old folder; the data is kept.
 - `./stack uninstall` lists the data volumes it will delete, refuses when they belong to another folder (also
   without a `.env`), and removes the ownership record afterwards.
 - Clash messages only suggest `COMPOSE_PROJECT_NAME=<name>-2 ./setup.sh` on a first setup, where it works. A
