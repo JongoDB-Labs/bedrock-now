@@ -140,14 +140,16 @@ services:
       ENABLE_FOLLOW_UP_GENERATION: "true"
       # usage: token usage per answer (the cost filter needs it). builtinTools: v0.12 sends the specs of ~40
       # built-in tools (knowledge bases, chat history, notes, calendar, automations, skills, tasks, time…)
-      # with EVERY chat request — ~8-10K input tokens for a one-line question. Those categories are off;
-      # memory, image generation, code interpreter, web search and attached-file tools stay on (each is sent
-      # only while the user turns that feature on in the chat). Attachments and #knowledge still use RAG.
-      # A model's own Builtin Tools settings (Workspace → Models) override this. README: Costs.
+      # with EVERY chat request — ~8-10K input tokens for a one-line question. Those categories are off, and
+      # so are the 8 memory tools (~2K tokens; the browser turns Memory on in every chat): saved memories still
+      # reach the model as context, it just can't edit them itself. Image generation, code interpreter, web
+      # search and attached-file tools stay on (each is sent only while the user turns that feature on in the
+      # chat). Attachments and #knowledge still use RAG. A model's own Builtin Tools settings (Workspace →
+      # Models) override this. README: Costs.
       DEFAULT_MODEL_METADATA: >-
         {"capabilities":{"usage":true},"builtinTools":{"time":false,"user_input":false,"knowledge":false,
         "chats":false,"notes":false,"channels":false,"skills":false,"tasks":false,"automations":false,
-        "calendar":false,"notifications":false,"subagents":false}}
+        "calendar":false,"notifications":false,"subagents":false,"memory":false}}
       ENABLE_VERSION_UPDATE_CHECK: "false"
       # No changelog popup / update toast; voice uses the browser (Web Speech API in, system voices out).
       DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false,"showUpdateToast":false,"audio":{"stt":{"engine":"web"},"tts":{"engine":""}}}'
