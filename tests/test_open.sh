@@ -32,6 +32,7 @@ test_mac_chain_prefers_chrome_then_edge_brave_chromium() {
   APPS='|Microsoft Edge| |Chromium|'; assert_eq "$(open_choose_browser)" "app:Microsoft Edge"
   APPS='|Brave Browser| |Chromium|'; assert_eq "$(open_choose_browser)" "app:Brave Browser"
   APPS='|Chromium|'; assert_eq "$(open_choose_browser)" "app:Chromium"
+  _mac_bundle_found() { return 1; }
   APPS=''; open() { :; }; assert_eq "$(open_choose_browser)" "default:open"
 }
 
@@ -85,11 +86,35 @@ test_cmd_open_linux_browser_that_fails_at_once_falls_back() {
   assert_eq "$(cat "$TMP/xdg")" "XDG http://bedrock-now.localhost:8800"
 }
 
-test_mac_app_present_asks_launchservices_last() {
-  HOME="$TMP/home"
-  open() { [ "$1 $2" = "-Ra Elsewhere Browser" ]; }
-  _mac_app_present "Elsewhere Browser" || { echo "open -Ra not used" >&2; return 1; }
-  if _mac_app_present "Missing Browser"; then return 1; fi
+_stub_mdfind() { # mdfind on PATH that "finds" only the bundle ids in $FOUND; logs every query
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/sh\necho "$*" >> "%s/mdfind.log"\nfor b in $FOUND; do case "$*" in *"== '"'"'$b'"'"'"*) echo "/Volumes/Apps/$b.app" ;; esac; done\n' "$TMP" > "$TMP/bin/mdfind"
+  chmod +x "$TMP/bin/mdfind"
+}
+
+test_mac_spotlight_lookup_is_read_only_and_follows_the_chain() {
+  _mac; _stub_mdfind; HOME="$TMP/home"
+  _mac_app_present() { return 1; }   # nothing in the Applications folders
+  out="$(FOUND="com.brave.Browser org.chromium.Chromium" PATH="$TMP/bin:$PATH" open_choose_browser)"
+  assert_eq "$out" "bundle:com.brave.Browser"
+  assert_contains "$(cat "$TMP/mdfind.log")" "kMDItemCFBundleIdentifier == 'com.google.Chrome'"
+  assert_contains "$(cat "$TMP/mdfind.log")" "kMDItemCFBundleIdentifier == 'com.microsoft.edgemac'"
+  open() { :; }
+  assert_eq "$(FOUND='' PATH="$TMP/bin:$PATH" open_choose_browser)" "default:open"
+  # the folders win over Spotlight, even for a browser later in the chain
+  _mac_app_present() { [ "$1" = Chromium ]; }
+  n="$(wc -l < "$TMP/mdfind.log")"
+  assert_eq "$(FOUND=com.google.Chrome PATH="$TMP/bin:$PATH" open_choose_browser)" "app:Chromium"
+  assert_eq "$(wc -l < "$TMP/mdfind.log")" "$n"   # Spotlight not even asked
+  assert_not_contains "$(grep -v '^[[:space:]]*#' "$STACK_DIR/lib/open.sh")" "open -R"   # reveals in Finder
+}
+
+test_cmd_open_mac_launches_spotlight_found_browser_by_bundle_id() {
+  HOME="$TMP/home"; : > "$ENV_FILE"; _mac
+  open_choose_browser() { echo "bundle:com.brave.Browser"; }
+  open() { printf '%s\n' "$@" > "$TMP/args"; }
+  cmd_open 2>/dev/null
+  assert_eq "$(tr '\n' '|' < "$TMP/args")" "-nb|com.brave.Browser|--args|--app=http://bedrock-now.localhost|--user-data-dir=$TMP/home/Library/Application Support/bedrock-now|--no-first-run|"
 }
 
 test_cmd_open_falls_back_to_default_browser_then_url() {

@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # ./stack open: the portal in its own app window (Chrome-family --app), or the default browser.
 
-OPEN_MAC_APPS="Google Chrome|Microsoft Edge|Brave Browser|Chromium"
+# macOS: "App name=bundle id", in order of preference
+OPEN_MAC_APPS="Google Chrome=com.google.Chrome|Microsoft Edge=com.microsoft.edgemac|Brave Browser=com.brave.Browser|Chromium=org.chromium.Chromium"
 OPEN_LINUX_BINS="google-chrome microsoft-edge brave-browser chromium chromium-browser"
 
 # portal_url -> http://bedrock-now.localhost (PORTAL_HOST / PORTAL_PORT from .env; ":80" is left out).
@@ -35,11 +36,12 @@ open_headless() {
   esac
 }
 
-# _mac_app_present APP -> 0 if installed: the usual folders first, then LaunchServices (`open -Ra`), which also
-# finds apps installed elsewhere.
-_mac_app_present() {
-  [ -d "/Applications/$1.app" ] || [ -d "$HOME/Applications/$1.app" ] || open -Ra "$1" >/dev/null 2>&1
-}
+# _mac_app_present APP -> 0 if APP.app is in /Applications or ~/Applications
+_mac_app_present() { [ -d "/Applications/$1.app" ] || [ -d "$HOME/Applications/$1.app" ]; }
+
+# _mac_bundle_found BUNDLE_ID -> 0 if Spotlight knows an app with that bundle id anywhere on disk
+# (read-only lookup; `open -Ra` would reveal the app in Finder).
+_mac_bundle_found() { mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null | grep -q .; }
 
 # _launch_detached CMD ARGS... — start a browser that outlives this shell (own session via setsid when
 # available, immune to hangups via nohup). Fails if it exits non-zero within OPEN_CHECK_DELAY seconds
@@ -54,13 +56,18 @@ _launch_detached() {
   wait "$p"
 }
 
-# open_choose_browser -> "app:<macOS app name>", "bin:<command>", "default:<open|xdg-open>" or "none"
+# open_choose_browser -> "app:<macOS app name>", "bundle:<macOS bundle id>", "bin:<command>",
+# "default:<open|xdg-open>" or "none". macOS: the Applications folders first (whole chain), then Spotlight.
 open_choose_browser() {
-  local a b
+  local a b list
   if [ "$(open_os)" = Darwin ]; then
-    while IFS= read -r a; do
+    list="$(printf '%s\n' "$OPEN_MAC_APPS" | tr '|' '\n')"
+    while IFS='=' read -r a b; do
       _mac_app_present "$a" && { echo "app:$a"; return 0; }
-    done <<< "$(printf '%s\n' "$OPEN_MAC_APPS" | tr '|' '\n')"
+    done <<< "$list"
+    while IFS='=' read -r a b; do
+      _mac_bundle_found "$b" && { echo "bundle:$b"; return 0; }
+    done <<< "$list"
     command -v open >/dev/null 2>&1 && { echo default:open; return 0; }
   else
     for b in $OPEN_LINUX_BINS; do command -v "$b" >/dev/null 2>&1 && { echo "bin:$b"; return 0; }; done
@@ -80,6 +87,9 @@ cmd_open() {
     app:*)
       log "opening $url in ${choice#app:} (own window)"
       open -na "${choice#app:}" --args --app="$url" --user-data-dir="$dir" --no-first-run && return 0 ;;
+    bundle:*)
+      log "opening $url in ${choice#bundle:} (own window)"
+      open -nb "${choice#bundle:}" --args --app="$url" --user-data-dir="$dir" --no-first-run && return 0 ;;
     bin:*)
       log "opening $url in ${choice#bin:} (own window)"
       mkdir -p "$dir"

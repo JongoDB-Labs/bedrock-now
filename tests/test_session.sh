@@ -180,6 +180,25 @@ test_wrapper_ctrl_c_reaches_claude_and_summary_still_prints() {
   assert_contains "$(cat "$TMP/err")" "session: 2 requests"
 }
 
+test_wrapper_is_killed_by_sigint_like_claude() {
+  python3 -I -c 'import sys' >/dev/null 2>&1 || { echo "python3 not available" >&2; return 77; }
+  _wrapper_env
+  export STUB_SLEEP=30 STUB_MARK="$TMP/mark" T_WRAPPER="$STACK_DIR/bin/claude-bedrock" T_PATH="$TMP/bin:$PATH"
+  # Popen's returncode is -N when the process died of signal N (an exit(130) would give 130).
+  rc="$(python3 -I -c '
+import os, signal, subprocess, sys, time
+env = dict(os.environ, PATH=os.environ["T_PATH"])
+p = subprocess.Popen([os.environ.get("BASH", "bash"), os.environ["T_WRAPPER"], "-p", "hi"], env=env,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+for _ in range(50):
+    if os.path.exists(os.environ["STUB_MARK"] + ".started"): break
+    time.sleep(0.1)
+os.killpg(p.pid, signal.SIGINT)
+print(p.wait(timeout=20))')"
+  assert_eq "$rc" "-2"
+  assert_eq "$(cat "$STUB_MARK" 2>/dev/null)" "GOT_INT"
+}
+
 test_wrapper_without_terminal_skips_summary_and_spend_lookup() {
   _wrapper_env; export STUB_CURLLOG="$TMP/curl"
   rc=0; STUB_RC=4 CLAUDE_BEDROCK_SUMMARY=0 _run_wrapper -p hi > /dev/null 2> "$TMP/err" || rc=$?

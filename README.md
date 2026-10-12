@@ -105,8 +105,8 @@ and re-checks which models work.
 setup chose) as its own app window: the first of Google Chrome, Microsoft Edge, Brave and Chromium that is
 installed, started with `--app=<url>` and a separate browser profile for this copy (macOS:
 `~/Library/Application Support/bedrock-now`, Linux: `~/.local/share/bedrock-now`), so its logins don't mix
-with your everyday browser. On macOS it finds them in `/Applications`, `~/Applications` or wherever
-LaunchServices knows them; on Linux the browser is started detached (`nohup setsid`), and if it fails at
+with your everyday browser. On macOS it looks in `/Applications` and `~/Applications` first, then asks
+Spotlight by bundle id (`mdfind`, read-only) for browsers installed elsewhere; on Linux the browser is started detached (`nohup setsid`), and if it fails at
 once the default browser is used. Without any of them it uses your default browser (`open` / `xdg-open`); over
 SSH or on Linux without a display it only prints the URL. `./stack setup` and `./stack up` open it at the
 end when they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without
