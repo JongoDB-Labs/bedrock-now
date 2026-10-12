@@ -240,8 +240,10 @@ release tag (the one-line installer) moves to the newest release tag, never a pr
 version than you have, and says so (`updating v0.1.1 → v0.1.2`); a checkout on a branch gets
 `git pull --ff-only`; **3/4** the pinned images; **4/4** setup and the smoke test, run by the new code.
 `./stack update --to <tag|branch>` picks a specific version (also older ones). Local changes to tracked files
-stop the update with a message; they are never discarded. If a step after the code update fails, the message
-shows how to go back exactly: `git -C <dir> checkout <previous commit> && ./stack restore <backup>`.
+stop the update before anything happens (no backup is taken or pruned); they are never discarded. If a step
+after the code update fails, the message shows how to go back exactly: `git -C <dir> checkout <previous commit>
+&& ./stack restore <backup>` for a release-tag install, or `git -C <dir> switch -C <branch> <previous commit> &&
+./stack restore <backup>` if you were on a branch (you stay on it).
 
 Backups contain secrets (a copy of `.env`) and your chats, so keep them private.
 
@@ -274,7 +276,20 @@ LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with 
 Each checkout needs its own Docker Compose project name (default `bedrock-now`). Two checkouts with the same
 name would share containers and data volumes, so every `./stack` command refuses when another folder already
 uses the name (`project 'bedrock-now' is already used by the bedrock-now install in <dir>…`), and a first setup
-refuses when data volumes of that name already exist. Nothing is changed in either case.
+refuses when data volumes of that name already exist. Nothing is changed in either case. `./stack status` only
+prints the warning and still shows its table.
+
+A stopped install keeps its name too: the first checkout that uses a project records itself in a small, empty
+Docker volume `<project>_bedrock-now-owner` (label `io.bedrock-now.dir`), so another folder can't start on,
+or `./stack uninstall`, its data while it is down. This also covers volumes created before the record existed:
+the first checkout to run a command after upgrading claims them. `./stack uninstall` lists the volumes it
+will delete and removes the record. If you move a checkout to another folder, the record of the old folder
+is ignored and replaced. The data volumes themselves are not labelled, because Compose would offer to
+recreate them (deleting the data) when a label changes.
+
+If the message says a **checkout that is already set up** clashes with another install, that checkout can't
+take a new name (its `.env` belongs to the project). Keep only one of the two: use the other install, or
+remove it (`./stack uninstall` there) and run `./stack setup` here. A second copy needs its own fresh checkout.
 
 To try a branch or a fresh clone next to your main stack, give it its own name:
 
@@ -303,7 +318,9 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 | `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
 | Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
-| "project '…' is already used by the bedrock-now install in …" | Another folder runs a stack with this project name. Use that install, remove it (`./stack uninstall` there), or set up this copy as `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
+| "project '…' is already used by the bedrock-now install in …" | Another folder owns this project name (running, or stopped with its data volumes). Use that install, or remove it (`./stack uninstall` there). Only a checkout that was never set up can take another name: `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. See *Running a second copy*. |
+| "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this Compose project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
+| "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
 | Setup can't sign in to Open WebUI | You changed the admin password in the UI. Put the new password in `OPENWEBUI_ADMIN_PASSWORD` in `.env`. |
 | Speech-to-text error in Open WebUI | Expected. See *Bedrock only → Audio*. |
 | A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup` to see all compose output. |

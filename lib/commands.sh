@@ -167,30 +167,7 @@ persist_project_name() {
   set_env COMPOSE_PROJECT_NAME "$want"
 }
 
-# --- one Compose project per checkout ---
-
-_real_dir() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
-
-# guard_project — dies if this checkout's Compose project already belongs to ANOTHER checkout (its containers
-# carry that checkout's working_dir label), or if a first setup (no POSTGRES_PASSWORD in .env yet) would land on
-# existing data volumes, whose database password would not match. Never shares silently, --yes included.
-guard_project() { # guard_project [NAME] (default: this checkout's project name)
-  local name="${1:-}" me d vols
-  docker info >/dev/null 2>&1 || return 0   # commands that need Docker report a stopped daemon themselves
-  [ -n "$name" ] || name="$(project_name)"
-  me="$(_real_dir "$STACK_DIR")"
-  while IFS= read -r d; do
-    [ -n "$d" ] || continue
-    [ "$(_real_dir "$d")" = "$me" ] && continue
-    die "project '$name' is already used by the bedrock-now install in $d. Either use that install (cd $d), remove it (cd $d && ./stack uninstall), or give this copy its own name: COMPOSE_PROJECT_NAME=$name-2 ./setup.sh. Nothing was changed."
-  done <<EOF
-$(docker ps -a --filter "label=com.docker.compose.project=$name" --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | sort -u)
-EOF
-  [ -z "$(get_env POSTGRES_PASSWORD)" ] || return 0
-  vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$name" 2>/dev/null | tr '\n' ' ')"
-  [ -n "${vols% }" ] || return 0
-  die "project '$name' already has data volumes (${vols% }) from another or an earlier bedrock-now install, and this checkout's .env is new — its database password would not match. Either use that install, give this copy its own name: COMPOSE_PROJECT_NAME=$name-2 ./setup.sh, or, if you no longer need that data: docker volume rm ${vols% }. Nothing was changed."
-}
+# --- one Compose project per checkout: lib/guard.sh (guard_project, guard_uninstall) ---
 
 # aws_cli ARGS... — runs aws-cli in a throwaway container with creds from .env (never on argv).
 # AWS_REGION_OVERRIDE=<region> calls a different region than .env's AWS_REGION_NAME (per-model regions).
@@ -924,6 +901,16 @@ newest_release_tag() {
 }
 
 _git() { git -C "$STACK_DIR" "$@"; }
+_require_clean_tree() { # ./stack update never starts (no backup, no pruning) over local changes to tracked files
+  [ -e "$STACK_DIR/.git" ] || return 0
+  [ -z "$(_git status --porcelain --untracked-files=no)" ] ||
+    die "this checkout has local changes to tracked files — commit or stash them (git stash), then re-run ./stack update. Nothing was changed."
+}
+# _rollback_cmd COMMIT [BRANCH] -> the git command that puts the code back; branch users stay on their branch
+_rollback_cmd() {
+  if [ -n "${2:-}" ]; then printf 'git -C %q switch -C %q %s' "$STACK_DIR" "$2" "$1"
+  else printf 'git -C %q checkout %s' "$STACK_DIR" "$1"; fi
+}
 
 # update_checkout [REF] — moves this checkout to newer code; sets CODE_CHANGED=1 when HEAD moved.
 #   on a branch: git pull --ff-only;  on a tag / detached HEAD (install.sh): the newest release tag, never
@@ -932,9 +919,7 @@ update_checkout() {
   local to="${1:-}" branch target before cur
   CODE_CHANGED=0
   if [ ! -e "$STACK_DIR/.git" ]; then warn "$STACK_DIR is not a git checkout — skipping the code update (images and setup still run)"; return 0; fi
-  if [ -n "$(_git status --porcelain --untracked-files=no)" ]; then
-    die "this checkout has local changes to tracked files — commit or stash them (git stash), then re-run ./stack update. Nothing was changed."
-  fi
+  _require_clean_tree
   before="$(_git rev-parse HEAD)"; cur="$(_git describe --tags --always 2>/dev/null || echo "$before")"
   _git fetch --quiet --tags origin || die "could not fetch updates from origin (network?) — the code was not changed"
   branch="$(_git symbolic-ref -q --short HEAD || true)"
@@ -962,10 +947,10 @@ update_checkout() {
 }
 
 # ./stack update: 1/4 backup (current code) → 2/4 code → [re-exec new code] → 3/4 images → 4/4 setup.
-# The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir and the previous commit, so a later failure
+# The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir, the previous commit and branch, so a later failure
 # can tell you exactly how to go back.
 cmd_update() {
-  local to='' backup from='' hint yes=()
+  local to='' backup from='' branch='' hint yes=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) [ -n "${2:-}" ] || die "usage: ./stack update [--to <tag|branch>]"; to="$2"; shift 2 ;;
@@ -974,31 +959,32 @@ cmd_update() {
   done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
+    _require_clean_tree
     log "update: 1/4 backup"
     _backup_named auto
     prune_auto_backups 5
     backup="$LAST_BACKUP"
-    [ ! -e "$STACK_DIR/.git" ] || from="$(_git rev-parse HEAD)"
+    if [ -e "$STACK_DIR/.git" ]; then from="$(_git rev-parse HEAD)"; branch="$(_git symbolic-ref -q --short HEAD || true)"; fi
     log "update: 2/4 code (git)"
     update_checkout "$to"
     if [ "$CODE_CHANGED" = 1 ]; then
       # Continue in a fresh process so images and setup run with the NEW scripts.
       [ "${ASSUME_YES:-0}" != 1 ] || yes=(--yes)
       exec env BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" BEDROCK_NOW_UPDATE_FROM="$from" \
-        "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
+        BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
     fi
     hint="your pre-update backup is $backup (./stack restore $backup)"
   else
     backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
-    hint="the code was updated; to go back: $(printf 'git -C %q checkout %s' "$STACK_DIR" "$from") && ./stack restore $backup"
+    hint="the code was updated; to go back: $(_rollback_cmd "$from" "${BEDROCK_NOW_UPDATE_BRANCH:-}") && ./stack restore $backup"
   fi
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
   dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
   log "update: 4/4 setup (non-interactive; keeps .env, keys and AWS creds)"
   # Separate process (keeps set -e working inside setup); AWS creds come from .env, never from this shell.
   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_REGION_NAME -u AWS_REGION \
-    -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM \
+    -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
 }

@@ -2,6 +2,10 @@
 # Two checkouts must never share one Compose project (shared volumes = wrong DB password, and one checkout
 # would recreate the other's containers). Docker is stubbed: $OWNERS = working_dir labels, $VOLS = volumes.
 . "$STACK_DIR/lib/commands.sh"
+. "$STACK_DIR/lib/guard.sh"
+
+# _mk_install DIR — a folder that looks like a bedrock-now checkout
+_mk_install() { mkdir -p "$1"; : > "$1/compose.yaml"; printf '#!/usr/bin/env bash\n# bedrock-now CLI\n' > "$1/stack"; }
 
 _stub_docker() {
   docker() {
@@ -11,6 +15,7 @@ _stub_docker() {
       "ps -a"*) ;;
       "volume ls -q --filter label=com.docker.compose.project=$WANT") [ -z "${VOLS:-}" ] || printf '%s\n' "$VOLS" ;;
       "volume ls"*) ;;
+      "volume inspect"* | "volume create"* | "volume rm"*) ;;   # owner marker: tests/test_guard_volumes.sh
       *) echo "unexpected docker $*" >&2; return 1 ;;
     esac
   }
@@ -29,7 +34,7 @@ test_guard_allows_own_project_via_symlinked_path() {
 }
 
 test_guard_refuses_project_owned_by_other_dir() {
-  STACK_DIR="$TMP/new"; mkdir -p "$STACK_DIR" "$TMP/dev"; printf 'POSTGRES_PASSWORD=p\n' > "$ENV_FILE"
+  STACK_DIR="$TMP/new"; mkdir -p "$STACK_DIR"; _mk_install "$TMP/dev"; printf 'X=1\n' > "$ENV_FILE"
   WANT=bedrock-now OWNERS="$TMP/dev" VOLS=bedrock-now_pgdata; _stub_docker
   if out="$( (guard_project) 2>&1)"; then echo "should refuse" >&2; return 1; fi
   assert_contains "$out" "project 'bedrock-now' is already used by the bedrock-now install in $TMP/dev"
@@ -55,7 +60,7 @@ test_guard_allows_rerun_with_volumes_after_down() {
 }
 
 test_guard_uses_dotenv_project_name() {
-  STACK_DIR="$TMP/me"; mkdir -p "$STACK_DIR" "$TMP/other"; printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
+  STACK_DIR="$TMP/me"; mkdir -p "$STACK_DIR" "$TMP/other"; printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
   WANT=bn-dev OWNERS="$TMP/other"; _stub_docker
   if out="$( (guard_project) 2>&1)"; then return 1; fi
   assert_contains "$out" "project 'bn-dev'"
@@ -68,7 +73,7 @@ test_guard_skips_when_docker_is_down() {
 }
 
 test_setup_runs_guard_after_project_name_and_before_any_change() {
-  STACK_DIR="$TMP/new"; mkdir -p "$STACK_DIR" "$TMP/dev"; printf 'X=1\n' > "$ENV_FILE"; before="$(cat "$ENV_FILE")"
+  STACK_DIR="$TMP/new"; mkdir -p "$STACK_DIR"; _mk_install "$TMP/dev"; printf 'X=1\n' > "$ENV_FILE"; before="$(cat "$ENV_FILE")"
   WANT=bedrock-now OWNERS="$TMP/dev"; _stub_docker
   check_prereqs() { :; }; fix_bind_mount_perms() { echo touched >> "$TMP/calls"; }
   setup_aws_creds() { echo touched >> "$TMP/calls"; }; dc() { echo touched >> "$TMP/calls"; }
@@ -86,7 +91,7 @@ test_stack_dispatcher_guards_every_compose_command() {
 }
 
 test_first_setup_with_shell_name_is_guarded_before_it_is_saved() {
-  STACK_DIR="$TMP/third"; mkdir -p "$STACK_DIR" "$TMP/dev"; printf 'X=1\n' > "$ENV_FILE"
+  STACK_DIR="$TMP/third"; mkdir -p "$STACK_DIR"; _mk_install "$TMP/dev"; printf 'X=1\n' > "$ENV_FILE"
   WANT=bn-dev OWNERS="$TMP/dev"; _stub_docker
   check_prereqs() { :; }; setup_aws_creds() { echo touched >> "$TMP/calls"; }; STATE_DIR="$TMP/state"
   if out="$( (COMPOSE_PROJECT_NAME=bn-dev cmd_setup) 2>&1)"; then return 1; fi
