@@ -44,7 +44,22 @@ something else is already using it and says so in one line, e.g. `port 8080 is i
 ## Install
 
 ```bash
-git clone <this repo> bedrock-now && cd bedrock-now
+curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash
+```
+
+The installer checks the prerequisites (Docker with Compose v2 and a running daemon, git, curl, openssl) and
+says how to install anything missing. It tells you what it will do, clones the latest release into
+`~/bedrock-now` (`BEDROCK_NOW_DIR=/path` for another folder, `BEDROCK_NOW_REF=main` for the newest code) and
+starts setup. It never overwrites an existing folder: for an existing bedrock-now checkout it only fetches
+and prints the update command. Arguments go to setup: `… | bash -s -- --yes`. Without a terminal it runs
+`./setup.sh --yes` only when `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are exported, otherwise it prints
+the command to run next.
+
+Prefer to inspect first?
+
+```bash
+git clone https://github.com/JongoDB-Labs/bedrock-now && cd bedrock-now
+less install.sh setup.sh      # optional
 ./setup.sh
 ```
 
@@ -220,6 +235,10 @@ git pull && ./stack update         # backup (…-auto) → pull pinned images �
 ./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
 ```
 
+If you installed with the one-line installer you are on a release tag, where `git pull` does not apply: run
+`git fetch --tags && git checkout <newest tag> && ./stack update` instead (re-running the installer prints the
+exact command).
+
 Backups contain secrets (a copy of `.env`) and your chats, so keep them private.
 
 Restore also puts the backup's LiteLLM virtual keys and Open WebUI API key back into `.env` (the restored
@@ -244,14 +263,15 @@ secret. The secret is hidden while you type (non-interactively, export `AWS_ACCE
 to deactivate the old key.
 
 **Supply chain:** every image version is pinned in `compose.yaml`. LiteLLM is pinned to **1.105.0**. Never use
-LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with `git pull && ./stack update`.
+LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with `git pull && ./stack update`
+(installed from a release tag: `git fetch --tags && git checkout <newest tag> && ./stack update`).
 
 ## Running a second copy
 
 To try a branch or a fresh clone next to your main stack, give it its own Docker Compose project name:
 
 ```bash
-git clone <this repo> bedrock-now-test && cd bedrock-now-test
+git clone https://github.com/JongoDB-Labs/bedrock-now bedrock-now-test && cd bedrock-now-test
 COMPOSE_PROJECT_NAME=bn-test ./setup.sh
 ```
 

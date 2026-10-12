@@ -8,6 +8,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
+- One-line installer: `curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash`
+  checks prerequisites (with per-OS install hints), clones the latest release into `~/bedrock-now`
+  (`BEDROCK_NOW_DIR`, `BEDROCK_NOW_REF`), never overwrites an existing folder, and starts setup.
 - `./stack models` prints the model table from the last check without calling Bedrock; `--recheck` re-probes.
   Results are saved to `litellm/probe-results.tsv`.
 - A third LiteLLM virtual key, `setup` (`BUDGET_SETUP`, default $5), pays for the model probe and the paid

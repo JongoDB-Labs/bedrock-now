@@ -1,0 +1,89 @@
+# shellcheck shell=bash
+# Task A6: one-line installer (install.sh). Sourced with BEDROCK_NOW_INSTALL_LIB=1 so main does not run.
+BEDROCK_NOW_INSTALL_LIB=1 . "$STACK_DIR/install.sh"
+
+test_prereq_hint_per_os() {
+  assert_contains "$(prereq_hint docker Darwin)" "Docker Desktop"
+  assert_contains "$(prereq_hint docker Linux)" "docs.docker.com/engine/install"
+  assert_contains "$(prereq_hint git Darwin)" "brew install git"
+  assert_contains "$(prereq_hint git Linux)" "package manager"
+  assert_contains "$(prereq_hint compose Linux)" "docker-compose-plugin"
+  assert_contains "$(prereq_hint daemon Darwin)" "start Docker Desktop"
+  assert_contains "$(prereq_hint daemon Linux)" "systemctl start docker"
+  assert_contains "$(prereq_hint openssl Linux)" "openssl"
+}
+
+test_check_prereqs_reports_every_missing_tool_and_fails() {
+  have() { case "$1" in git | curl) return 1 ;; *) return 0 ;; esac; }
+  docker() { return 0; }
+  if out="$( (check_prereqs Linux) 2>&1)"; then echo "should fail" >&2; return 1; fi
+  assert_contains "$out" "git is missing"
+  assert_contains "$out" "curl is missing"
+  assert_not_contains "$out" "openssl is missing"
+}
+
+test_check_prereqs_detects_compose_and_daemon() {
+  have() { return 0; }
+  docker() { case "$1" in compose) return 1 ;; *) return 0 ;; esac; }
+  if out="$( (check_prereqs Darwin) 2>&1)"; then return 1; fi
+  assert_contains "$out" "Docker Compose v2"
+  docker() { case "$1" in info) return 1 ;; *) return 0 ;; esac; }
+  if out="$( (check_prereqs Darwin) 2>&1)"; then return 1; fi
+  assert_contains "$out" "start Docker Desktop"
+  docker() { return 0; }
+  (check_prereqs Darwin) 2>/dev/null
+}
+
+test_target_decision() {
+  assert_eq "$(target_decision "$TMP/new")" "clone"
+  mkdir -p "$TMP/empty"; assert_eq "$(target_decision "$TMP/empty")" "clone"
+  mkdir -p "$TMP/other"; : > "$TMP/other/file"; assert_eq "$(target_decision "$TMP/other")" "refuse"
+  : > "$TMP/afile"; assert_eq "$(target_decision "$TMP/afile")" "refuse"
+  mkdir -p "$TMP/bn"; git -C "$TMP/bn" init -q; : > "$TMP/bn/stack"; chmod +x "$TMP/bn/stack"
+  git -C "$TMP/bn" remote add origin https://github.com/JongoDB-Labs/bedrock-now.git
+  assert_eq "$(target_decision "$TMP/bn")" "update"
+  mkdir -p "$TMP/foreign"; git -C "$TMP/foreign" init -q; git -C "$TMP/foreign" remote add origin https://example.com/x.git
+  assert_eq "$(target_decision "$TMP/foreign")" "refuse"
+}
+
+test_pick_ref() {
+  assert_eq "$(pick_ref "" "$(printf 'v0.2.0\nv0.1.0')")" "v0.2.0"
+  assert_eq "$(pick_ref main "$(printf 'v0.2.0\nv0.1.0')")" "main"
+  assert_eq "$(pick_ref "" "")" "main"
+}
+
+_installer() { # run main in a subshell: no TTY, prereqs stubbed, local repo as the source
+  ( has_tty() { return 1; }; check_prereqs() { :; }
+    BEDROCK_NOW_REPO="$STACK_DIR" BEDROCK_NOW_DIR="$TMP/inst" main )
+}
+
+test_main_without_tty_or_creds_clones_and_prints_next_command() {
+  out="$( (unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; BEDROCK_NOW_REF="" _installer) 2>&1)"
+  [ -x "$TMP/inst/stack" ] || { echo "not cloned: $out" >&2; return 1; }
+  assert_contains "$out" "cd $TMP/inst && ./setup.sh"
+  assert_contains "$out" "GB"
+  [ ! -f "$TMP/inst/.env" ] || { echo "setup must not run" >&2; return 1; }
+}
+
+test_main_honours_ref() {
+  ref="$(git -C "$STACK_DIR" rev-parse HEAD~1)"
+  (unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; BEDROCK_NOW_REF="$ref" _installer) > "$TMP/out" 2>&1
+  assert_eq "$(git -C "$TMP/inst" rev-parse HEAD)" "$ref"
+  assert_contains "$(cat "$TMP/out")" "$ref"
+}
+
+test_main_refuses_foreign_dir_and_keeps_it() {
+  mkdir -p "$TMP/inst"; echo keep > "$TMP/inst/mine.txt"
+  if out="$( (unset AWS_ACCESS_KEY_ID; _installer) 2>&1)"; then return 1; fi
+  assert_contains "$out" "is not a bedrock-now checkout"
+  assert_eq "$(cat "$TMP/inst/mine.txt")" "keep"
+}
+
+test_main_existing_checkout_points_to_update() {
+  git clone -q "$STACK_DIR" "$TMP/inst"
+  git -C "$TMP/inst" remote set-url origin https://github.com/JongoDB-Labs/bedrock-now.git
+  git -C "$TMP/inst" remote add local "$STACK_DIR"
+  out="$( (git() { if [ "${3:-}" = fetch ]; then return 0; fi; command git "$@"; }; _installer) 2>&1)"
+  assert_contains "$out" "already installed"
+  assert_contains "$out" "./stack update"
+}
