@@ -238,15 +238,7 @@ warn_shell_aws_ignored() {
   fi
 }
 
-# remote_url -> the remote portal URL when remote access is on (REMOTE_MODE set and not off, REMOTE_HOST in .env);
-# nothing otherwise.
-remote_url() {
-  local mode host
-  mode="$(get_env REMOTE_MODE)"; host="$(get_env REMOTE_HOST)"
-  case "$mode" in '' | off | false | none | 0 | no) return 0 ;; esac
-  case "$host" in '' | *[!A-Za-z0-9.:/_-]*) return 0 ;; esac
-  case "$host" in http://* | https://*) printf '%s\n' "$host" ;; *) printf 'https://%s\n' "$host" ;; esac
-}
+# remote_url (the remote portal URL, or nothing while remote access is off): lib/remote.sh
 
 # aws_auth_check — before ./stack up: role mode only on an EC2 host; key mode needs a key in .env.
 aws_auth_check() {

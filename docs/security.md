@@ -45,6 +45,32 @@ session you get the login page.
 - The LiteLLM and RustFS sign-ins shown on Home come from the portal's API with copy buttons; the values never
   appear in the page source.
 
+## Remote access
+
+Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](remote.md)). What changes:
+
+- **Still nothing published.** A `tailscale/tailscale` container (pinned by digest, userspace networking,
+  `cap_drop: ALL`, `no-new-privileges`) connects outbound to your tailnet and terminates HTTPS for four Tailscale
+  Services. It forwards to Caddy's remote listener on port 8081, which exists only inside the Docker network.
+  Own-domain mode forwards raw TCP 443 to Caddy's TLS listener (8443), also internal. The auth key is removed from
+  `.env` once the sidecar is logged in.
+- **A separate site.** Remote site blocks delete any client-sent `X-Portal-User` and `X-Portal-Remote`, then set
+  `X-Portal-Remote: 1`; the local blocks always delete it. The portal uses that marker to pick the remote
+  cookie (`__Secure-bn_session`: `Secure`, `HttpOnly`, `SameSite=Strict`, `Domain=<tailnet>.ts.net` or your
+  domain), the remote origin for its CSRF check and login redirects (https on the remote names only), and the
+  remote app addresses. Caddy strips that cookie before the apps too; the apps may be framed only by the remote
+  portal origin on the remote names.
+- **Your Tailscale login.** Tailscale deletes client-sent `Tailscale-User-*` headers and adds
+  `Tailscale-User-Login` for devices signed in as a user. With `TAILSCALE_ALLOWED_LOGIN` set, the portal
+  refuses remote requests that name another login (login page, sign-in and every app request). Tagged devices
+  get no header and fall back to the password; `./stack remote status` says which case it saw. In own-domain
+  mode TLS ends at Caddy, so the header cannot exist (Caddy deletes client copies): the tailnet grant and the
+  password are the gates.
+- **Cookie scope caveat.** In Tailscale mode the cookie's domain is `<tailnet>.ts.net`, so a browser would send it
+  to any machine of your tailnet it visits under that name. It is HTTPS-only and not readable by scripts, but a
+  hostile machine in your own tailnet could replay it; sign out on Home revokes all sessions.
+- Open WebUI's `token` cookie becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`) while remote access is on.
+
 ## The update helper
 
 Optional (`./stack helper install`; setup asks once, `--yes` installs it only with `BEDROCK_NOW_HELPER=1`). It
@@ -95,10 +121,10 @@ what the request says beyond the three fields, or run as root.
   compromised: jobs at least 60 seconds apart, at most 12 a day, and at most one rollback per recorded update
   (state in `.state/helper/`).
 - [x] **Remote access.** Requests marked as remote (`X-Portal-Remote: 1`) are refused unless
-  `REMOTE_ADMIN_ACTIONS=true` is in `.env`; the default is off. Caddy deletes any client-sent copy of that header,
-  and only a remote-access site block (not part of this release) sets it. Until such a block exists, nothing is
-  marked remote: an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local, so protect those
-  yourself.
+  `REMOTE_ADMIN_ACTIONS=true` is in `.env`; the default is off. Caddy deletes any client-sent copy of that header
+  on every site, and only the remote site blocks of `./stack remote` (`caddy/remote-*.caddy`, reachable only
+  through the Tailscale sidecar) set it. An SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local,
+  so protect those yourself.
 - [x] **Permissions.** `.state/` is 700. `.state/requests/` is 700 on macOS, and 2770 (setgid, group
   `PORTAL_GID`, your primary group; under rootless Docker group 0 in the container, which is your group on the
   host) on Linux. Request files are 640, so on Linux you read them through that group while they belong to the
@@ -118,9 +144,9 @@ version. They cannot choose a version, a backup or a command. The worst they can
 downtime, at most twelve times a day. The helper never reads anything else the portal writes. Its own code is
 the checkout's: whoever can change your checkout could already run anything as you (see Code provenance below).
 
-**Remote access, later.** When remote access is added, `portal/portal/admin.py` has the hooks: `is_remote()`
-(which requests count as remote), `remote_allowed()` (the `REMOTE_ADMIN_ACTIONS` switch) and
-`fresh_auth_required()` (always true today; stricter rules for remote requests can go there).
+**Remote access.** `portal/portal/admin.py` has the hooks: `is_remote()` (which requests count as remote),
+`remote_allowed()` (the `REMOTE_ADMIN_ACTIONS` switch) and `fresh_auth_required()` (always true today; stricter
+rules for remote requests can go there). Remote access itself: [Remote access](#remote-access) below.
 
 **macOS note.** launchd agents cannot read folders under `~/Documents`, `~/Desktop` or `~/Downloads` without
 Full Disk Access. Keep the checkout elsewhere (the installer's default is fine) if you use the helper.

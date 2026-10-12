@@ -7,6 +7,7 @@ import contextlib
 import html
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, quote
@@ -20,7 +21,10 @@ from starlette.staticfiles import StaticFiles
 
 from . import admin, appicons, icons, prices, summary, updates, webapp
 from .config import Settings
-from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
+from .security import (
+    MAX_AGE, LoginThrottle, Sessions, cookie_params, is_remote, password_ok, remote_identity_ok, safe_next, same_origin,
+    tailscale_login,
+)
 
 log = logging.getLogger("portal")
 STATIC = Path(__file__).parent / "static"
@@ -59,24 +63,56 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
     admin_rate = admin.RateLimit()
 
+    identity_file = settings.state_dir / "remote-identity" if settings.state_dir else None
+    identity_seen = {"kind": None}
+
+    # Two sites can be served at once: local (http://PORTAL_HOST, bn_session) and, with remote access on, remote
+    # (https://REMOTE_HOST, __Secure-bn_session), told apart by Caddy's X-Portal-Remote marker.
+    def remote(request: Request) -> bool:
+        return is_remote(request.headers, settings)
+
     def authed(request: Request) -> bool:
-        return sessions.valid(request.cookies.get(COOKIE))
+        return sessions.valid(request.cookies.get(cookie_params(settings, remote(request))["key"]))
 
-    # SameSite=Strict: chat./admin./files. are same-site with PORTAL_HOST, so the portal's iframes, the redirect
-    # after login and typed/bookmarked URLs all carry it; only a link clicked on another site arrives without
-    # it (that shows the login page once).
-    def set_session(resp: Response) -> None:
-        resp.set_cookie(COOKIE, sessions.issue(), max_age=MAX_AGE, path="/", domain=settings.host,
-                        httponly=True, samesite="strict", secure=False)
+    # SameSite=Strict: the app hosts are same-site with the portal (local: subdomains of PORTAL_HOST; remote: the
+    # same <tailnet>.ts.net or REMOTE_HOST), so the portal's iframes, the redirect after login and typed/bookmarked
+    # URLs all carry it; only a link clicked on another site arrives without it (that shows the login page once).
+    def set_session(resp: Response, rem: bool) -> None:
+        c = cookie_params(settings, rem)
+        resp.set_cookie(c["key"], sessions.issue(), max_age=MAX_AGE, path="/", domain=c["domain"],
+                        httponly=True, samesite="strict", secure=c["secure"])
 
-    def clear_session(resp: Response) -> None:
-        resp.delete_cookie(COOKIE, path="/", domain=settings.host, httponly=True, samesite="strict")
+    def clear_session(resp: Response, rem: bool) -> None:
+        c = cookie_params(settings, rem)
+        resp.delete_cookie(c["key"], path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])
 
-    def login_redirect(next_url: str) -> RedirectResponse:
-        target = settings.origin() + "/login"
+    def login_redirect(next_url: str, rem: bool = False) -> RedirectResponse:
+        target = settings.origin(remote=rem) + "/login"
         if next_url and next_url != "/":
             target += "?next=" + quote(next_url, safe="")
         return RedirectResponse(target, status_code=302)
+
+    def note_identity(request: Request) -> None:
+        """Remembers (state volume) whether remote requests carry Tailscale-User-Login, for ./stack remote status."""
+        if identity_file is None or not remote(request) or settings.remote_mode != "tailscale":
+            return
+        kind = "present" if tailscale_login(request.headers) is not None else "absent"
+        if identity_seen["kind"] == kind:
+            return
+        identity_seen["kind"] = kind
+        try:
+            identity_file.write_text(f"{kind} since {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}\n", encoding="ascii")
+        except OSError as e:
+            log.warning("cannot write %s (%s)", identity_file, e)
+
+    def foreign_login(request: Request) -> Response | None:
+        """403 for a remote request from a Tailscale login other than TAILSCALE_ALLOWED_LOGIN (tailscale mode)."""
+        note_identity(request)
+        if remote_identity_ok(request.headers, settings):
+            return None
+        log.warning("remote request from another Tailscale login refused")
+        return _no_store(PlainTextResponse(
+            "This bedrock-now is not shared with your Tailscale login (TAILSCALE_ALLOWED_LOGIN).", status_code=403))
 
     async def healthz(request: Request) -> Response:
         return PlainTextResponse("ok")
@@ -84,18 +120,23 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def verify(request: Request) -> Response:
         """Caddy forward_auth: 200 + X-Portal-User for a valid session; otherwise a redirect to the login
         page for browser navigations, a bare 401 for everything else (XHR, WebSocket, API)."""
+        if (deny := foreign_login(request)) is not None:
+            return deny
         if authed(request):
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         method = request.headers.get("x-forwarded-method", "GET").upper()
         accept = request.headers.get("accept", "")
         if method in ("GET", "HEAD") and "text/html" in accept:
+            rem = remote(request)
             host = request.headers.get("x-forwarded-host", "")
             uri = request.headers.get("x-forwarded-uri", "/")
-            nxt = safe_next(f"http://{host}{uri}" if host else uri, settings)
-            return _no_store(login_redirect(nxt))
+            nxt = safe_next(f"{'https' if rem else 'http'}://{host}{uri}" if host else uri, settings)
+            return _no_store(login_redirect(nxt, rem))
         return _no_store(PlainTextResponse("login required", status_code=401))
 
     async def login_get(request: Request) -> Response:
+        if (deny := foreign_login(request)) is not None:
+            return deny
         nxt = safe_next(request.query_params.get("next"), settings)
         if authed(request):
             return _no_store(RedirectResponse(nxt, status_code=303))
@@ -104,6 +145,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def login_post(request: Request) -> Response:
         if not same_origin(request.headers, settings):
             return _no_store(PlainTextResponse("cross-site login refused", status_code=403))
+        if (deny := foreign_login(request)) is not None:
+            return deny
         # Refuse before reading: a body must declare its length, and a small one (Caddy caps it too).
         length = request.headers.get("content-length", "")
         if not length.isdigit() or not length.isascii():
@@ -127,7 +170,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                 nxt, "That password is not right. It is PORTAL_PASSWORD in the .env file of your bedrock-now folder.", 401), settings)
         throttle.success()
         resp = RedirectResponse(nxt, status_code=303)
-        set_session(resp)
+        set_session(resp, remote(request))
         return _no_store(resp)
 
     async def logout(request: Request) -> Response:
@@ -135,14 +178,19 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(PlainTextResponse("cross-site logout refused", status_code=403))
         if authed(request):
             sessions.revoke_all()
-        resp = RedirectResponse(settings.origin() + "/login", status_code=303)
-        clear_session(resp)
+        resp = RedirectResponse(settings.origin(remote=remote(request)) + "/login", status_code=303)
+        clear_session(resp, remote(request))
         return _no_store(resp)
 
     async def index(request: Request) -> Response:
         if not authed(request):
-            return _no_store(login_redirect("/"))
-        return _security_headers(_no_store(FileResponse(STATIC / "index.html")), settings)
+            return _no_store(login_redirect("/", remote(request)))
+        # Where Home opens each app on this site (app host names differ per site, e.g. <name>-chat.<tailnet>.ts.net),
+        # as data the page reads synchronously: <meta name="bn-apps" content="{json}">.
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+        meta = f'<meta name="bn-apps" content="{html.escape(json.dumps(settings.app_urls(remote(request))), quote=True)}">'
+        page = page.replace("</head>", meta + "\n</head>", 1)
+        return _security_headers(_no_store(HTMLResponse(page)), settings)
 
     def api_guard(request: Request) -> Response | None:
         if not authed(request):
@@ -156,15 +204,21 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if (deny := api_guard(request)) is not None:
             return deny
         data = await summary.build(request.app.state.http, settings)
+        rem = remote(request)
+        data["portal"]["url"] = settings.origin(remote=rem)
+        data["apps"] = settings.app_urls(rem)
+        data["remote"] = {"on": settings.remote_on(), "here": rem, "mode": settings.remote_mode if settings.remote_on() else "off",
+                          "url": settings.origin(remote=True) if settings.remote_on() else ""}
         return _no_store(JSONResponse(data))
 
     async def api_logins(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
             return deny
+        urls = settings.app_urls(remote(request))
         return _no_store(JSONResponse({
-            "admin": {"url": settings.origin("admin") + "/ui/", "username": settings.litellm_ui_user,
+            "admin": {"url": urls["admin"], "username": settings.litellm_ui_user,
                       "password": settings.litellm_ui_password},
-            "files": {"url": settings.origin("files") + "/rustfs/console/", "username": settings.rustfs_access_key,
+            "files": {"url": urls["files"], "username": settings.rustfs_access_key,
                       "password": settings.rustfs_secret_key},
         }))
 

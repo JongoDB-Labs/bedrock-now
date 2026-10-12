@@ -24,10 +24,19 @@ valid_hostname() {
 portal_host() { local h; h="$(get_env PORTAL_HOST)"; [ -n "$h" ] || h="$(default_portal_host "$(project_name)")"; printf '%s\n' "$h"; }
 portal_port() { local p; p="$(get_env PORTAL_PORT)"; printf '%s\n' "${p:-80}"; }
 
-# portal_url [SUB] -> http://[SUB.]PORTAL_HOST[:PORTAL_PORT] — ":80" is left out
+# app_host [SUB] -> PORTAL_HOST, or an app's host name: CHAT_HOST / ADMIN_HOST / FILES_HOST from .env, else
+# SUB.PORTAL_HOST (the default; any other SUB is always SUB.PORTAL_HOST)
+app_host() {
+  local h k=''
+  h="$(portal_host)"
+  case "${1:-}" in '') printf '%s\n' "$h"; return 0 ;; chat) k=CHAT_HOST ;; admin) k=ADMIN_HOST ;; files) k=FILES_HOST ;; esac
+  [ -z "$k" ] || k="$(get_env "$k")"
+  printf '%s\n' "${k:-$1.$h}"
+}
+
+# portal_url [SUB] -> http://<app_host SUB>[:PORTAL_PORT] — ":80" is left out
 portal_url() {
-  local h p; h="$(portal_host)"; p="$(portal_port)"
-  [ -z "${1:-}" ] || h="$1.$h"
+  local h p; h="$(app_host "${1:-}")"; p="$(portal_port)"
   if [ "$p" = 80 ]; then printf 'http://%s\n' "$h"; else printf 'http://%s:%s\n' "$h" "$p"; fi
 }
 
@@ -50,6 +59,24 @@ setup_portal_host() {
   local h; h="$(get_env PORTAL_HOST)"
   if [ -z "$h" ]; then h="$(default_portal_host "$(project_name)")"; set_env PORTAL_HOST "$h"; fi
   check_portal_host "$h"
+  check_app_hosts
+}
+
+# check_app_hosts — CHAT_HOST / ADMIN_HOST / FILES_HOST, when set, follow PORTAL_HOST's rules, and all four names
+# must differ: Open WebUI and LiteLLM both keep a host-only cookie named "token".
+check_app_hosts() {
+  local k v seen; seen=" $(portal_host) "
+  for k in CHAT_HOST ADMIN_HOST FILES_HOST; do
+    v="$(get_env "$k")"
+    if [ -n "$v" ]; then
+      valid_hostname "$v" || die "$k=$v in .env is not a valid host name"
+      case "$v" in *.localhost) ;; *) [ "${BEDROCK_NOW_ALLOW_PUBLIC_HOST:-$(get_env BEDROCK_NOW_ALLOW_PUBLIC_HOST)}" = 1 ] ||
+        die "$k=$v does not end in .localhost (same rule as PORTAL_HOST; BEDROCK_NOW_ALLOW_PUBLIC_HOST=1 allows it)" ;; esac
+    fi
+    v="$(app_host "$(printf '%s' "${k%_HOST}" | tr '[:upper:]' '[:lower:]')")"
+    case "$seen" in *" $v "*) die "$k=$v is the same host name as another app or the portal — each needs its own (their cookies would collide)" ;; esac
+    seen="$seen$v "
+  done
 }
 
 # check_portal_host HOST — dies unless HOST is a valid name under .localhost, or BEDROCK_NOW_ALLOW_PUBLIC_HOST=1
@@ -106,7 +133,7 @@ migrate_direct_ports() {
 # so no DNS is needed) with the session cookie in $PORTAL_JAR when set.
 portal_curl() {
   local sub="$1" path="$2" h p jar=(); shift 2
-  h="$(portal_host)"; [ -z "$sub" ] || h="$sub.$h"; p="$(portal_port)"
+  h="$(app_host "$sub")"; p="$(portal_port)"
   [ -z "${PORTAL_JAR:-}" ] || jar=(-b "$PORTAL_JAR")
   curl --resolve "$h:$p:127.0.0.1" ${jar[@]+"${jar[@]}"} "$@" "$(portal_url "$sub")$path"
 }
@@ -114,7 +141,7 @@ portal_curl() {
 # portal_curl_auth TOKEN SUB PATH CURL_ARGS... — portal_curl plus "Authorization: Bearer TOKEN" (never on argv)
 portal_curl_auth() {
   local token="$1" sub="$2" path="$3" h p jar=(); shift 3
-  h="$(portal_host)"; [ -z "$sub" ] || h="$sub.$h"; p="$(portal_port)"
+  h="$(app_host "$sub")"; p="$(portal_port)"
   [ -z "${PORTAL_JAR:-}" ] || jar=(-b "$PORTAL_JAR")
   curl_auth "$token" --resolve "$h:$p:127.0.0.1" ${jar[@]+"${jar[@]}"} "$@" "$(portal_url "$sub")$path"
 }

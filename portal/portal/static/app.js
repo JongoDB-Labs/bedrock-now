@@ -11,7 +11,12 @@ let lastSummary = null;
 let lastNotes = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
-const appUrl = (app) => `${location.protocol}//${app}.${location.host}${APPS[app]}`;
+// The server puts each app's URL for this site into <meta name="bn-apps"> (app host names differ per site:
+// remote Tailscale names are <name>-chat.<tailnet>.ts.net, not chat.<portal host>).
+const APP_URLS = (() => {
+  try { return JSON.parse(document.querySelector('meta[name="bn-apps"]').content); } catch (e) { return {}; }
+})();
+const appUrl = (app) => APP_URLS[app] || `${location.protocol}//${app}.${location.host}${APPS[app]}`;
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);

@@ -367,8 +367,6 @@ test_remote_url_from_env_only_when_remote_mode_is_on() {
   printf 'REMOTE_MODE=off\nREMOTE_HOST=box.tail1234.ts.net\n' > "$ENV_FILE"; assert_eq "$(remote_url)" ""
   printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=box.tail1234.ts.net\n' > "$ENV_FILE"
   assert_eq "$(remote_url)" "https://box.tail1234.ts.net"
-  printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=https://box.tail1234.ts.net/\n' > "$ENV_FILE"
-  assert_eq "$(remote_url)" "https://box.tail1234.ts.net/"
   printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=bad host\n' > "$ENV_FILE"; assert_eq "$(remote_url)" ""
 }
 

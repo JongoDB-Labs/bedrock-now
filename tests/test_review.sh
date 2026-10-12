@@ -122,9 +122,10 @@ test_costs_budget_wording() {
 test_fix_bind_mount_perms_under_strict_umask() {
   STACK_DIR="$TMP/stack"
   ( umask 077; mkdir -p "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
-    : > "$STACK_DIR/postgres/init.sql"; : > "$STACK_DIR/litellm/config.yaml"; : > "$STACK_DIR/caddy/Caddyfile"; : > "$STACK_DIR/catalog/prices.tsv" )
+    : > "$STACK_DIR/postgres/init.sql"; : > "$STACK_DIR/litellm/config.yaml"; : > "$STACK_DIR/caddy/Caddyfile"; : > "$STACK_DIR/caddy/remote-off.caddy"; : > "$STACK_DIR/catalog/prices.tsv" )
   fix_bind_mount_perms
   assert_eq "$(ls -l "$STACK_DIR/caddy/Caddyfile" | cut -c1-10)" "-rw-r--r--"
+  assert_eq "$(ls -l "$STACK_DIR/caddy/remote-off.caddy" | cut -c1-10)" "-rw-r--r--"
   assert_eq "$(ls -l "$STACK_DIR/catalog/prices.tsv" | cut -c1-10)" "-rw-r--r--"
   assert_eq "$(ls -ld "$STACK_DIR/catalog" | cut -c1-10)" "drwxr-xr-x"
   assert_eq "$(ls -ld "$STACK_DIR/litellm" | cut -c1-10)" "drwxr-xr-x"

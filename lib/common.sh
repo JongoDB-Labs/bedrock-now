@@ -192,9 +192,21 @@ dc() {
   # (A subshell, not `env -u`: same effect on docker's environment, and tests can still stub docker.)
   # The same for AWS: .env decides the key (or none, with AWS_AUTH=instance-role) and the region, never the shell
   # (./stack warns once per command when your shell's key differs: warn_shell_aws_ignored in lib/host.sh).
+  local f=() o
+  for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
-    COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@" )
+    COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
+      --env-file "$ENV_FILE" "$@" )
+}
+
+# compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)
+# adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin.
+compose_overlays() {
+  case "$(get_env REMOTE_MODE)" in
+    tailscale) echo compose.tailscale.yaml ;;
+    domain) echo compose.tailscale.yaml compose.domain.yaml ;;
+  esac
 }
 
 # curl with a bearer token that never appears in `ps` output (token is fed via -K stdin).

@@ -1,0 +1,72 @@
+# Remote site, own-domain mode (./stack remote enable domain HOST; imported by Caddyfile).
+# DNS: HOST and *.HOST point at the tailscale sidecar's 100.x address, which forwards TCP 443 untouched to this
+# listener, caddy:8443 (NOT published on the host). Caddy terminates TLS with Let's Encrypt certificates for
+# HOST and *.HOST, obtained by DNS-01 through the Cloudflare API (caddy/Dockerfile builds the plugin in), so no
+# port is ever opened to the internet and the app names stay out of certificate-transparency logs.
+#   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
+#   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
+# Tailscale cannot see inside this TLS, so it passes no identity: access is the tailnet grant plus the password.
+
+(remote_request) {
+	request_header -X-Portal-User
+	# A client could send these itself here (Tailscale does not proxy HTTP in this mode).
+	request_header -Tailscale-User-Login
+	request_header -Tailscale-User-Name
+	request_header -Tailscale-User-Profile-Pic
+	request_header -X-Portal-Remote
+	request_header X-Portal-Remote 1
+}
+
+(drop_remote_session_cookie) {
+	header_up Cookie "__Secure-bn_session=[^;]*;?\s*" ""
+}
+
+(frame_by_remote_portal_only) {
+	header_down -X-Frame-Options
+	header_down Content-Security-Policy "frame-ancestors {$REMOTE_ORIGIN}"
+}
+
+https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	header Strict-Transport-Security "max-age=31536000"
+
+	@portal host {$REMOTE_HOST}
+	route @portal {
+		import remote_request
+		import portal_routes
+	}
+
+	@chat host {$REMOTE_CHAT_HOST}
+	route @chat {
+		import remote_request
+		import portal_auth
+		reverse_proxy open-webui:8080 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+
+	@admin host {$REMOTE_ADMIN_HOST}
+	route @admin {
+		import remote_request
+		import portal_auth
+		reverse_proxy litellm:4000 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+
+	@files host {$REMOTE_FILES_HOST}
+	route @files {
+		import remote_request
+		import portal_auth
+		reverse_proxy rustfs:9001 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+
+	respond "unknown host" 404
+}

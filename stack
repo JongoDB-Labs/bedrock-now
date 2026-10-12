@@ -41,6 +41,7 @@ case "$cmd" in
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
   prices) [ ! -f "$ENV_FILE" ] || guard_project; cmd_prices "$@" ;;   # runs the portal image: claims, like up
   helper) [ ! -f "$ENV_FILE" ] || guard_project --no-claim; cmd_helper "$@" ;;   # no Compose changes
+  remote) [ ! -f "$ENV_FILE" ] || guard_project; cmd_remote "$@" ;;
   open) cmd_open "$@" ;;
   serve)   # runs up: claims, like up; --stop only ends the wake lock
     if [ "${1:-}" = --stop ]; then [ ! -f "$ENV_FILE" ] || guard_project --no-claim

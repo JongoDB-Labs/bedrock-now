@@ -18,8 +18,12 @@ def valid_openrouter_key(key: str) -> bool:
 def openrouter_key(key: str) -> str:
     return key if valid_openrouter_key(key) else ""
 
-# Subdomains of PORTAL_HOST that the portal fronts (Caddy routes them; see caddy/Caddyfile).
+# The apps the portal fronts and their start paths (Caddy routes them; see caddy/Caddyfile). Each has its own host
+# name: CHAT_HOST / ADMIN_HOST / FILES_HOST, by default chat./admin./files. under PORTAL_HOST.
 APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
+APP_HOST_ENV = {"chat": "CHAT_HOST", "admin": "ADMIN_HOST", "files": "FILES_HOST"}
+REMOTE_APP_HOST_ENV = {"chat": "REMOTE_CHAT_HOST", "admin": "REMOTE_ADMIN_HOST", "files": "REMOTE_FILES_HOST"}
+REMOTE_MODES = ("tailscale", "domain")
 
 # LiteLLM virtual keys shown on Home: (env var, key alias, label)
 KEYS = (
@@ -65,14 +69,41 @@ class Settings:
     # One-click actions through the host helper (portal/admin.py): the only folder they write is request_dir.
     request_dir: Path = Path("/data/requests")
     remote_admin_actions: bool = False  # REMOTE_ADMIN_ACTIONS=true allows them from remote (non-localhost) access
+    app_hosts: dict = field(default_factory=dict)  # local overrides {"chat": host, ...}; missing = <app>.<host>
+    # Remote access (./stack remote, docs/remote.md): a second site, https on 443, that Caddy marks with
+    # X-Portal-Remote: 1. Off unless remote_mode is tailscale/domain and remote_host is set.
+    remote_mode: str = ""
+    remote_host: str = ""
+    remote_app_hosts: dict = field(default_factory=dict)  # {"chat": host, "admin": host, "files": host}
+    remote_cookie_domain: str = ""  # the parent of all remote host names (<tailnet>.ts.net, or REMOTE_HOST)
+    tailscale_allowed_login: str = ""  # tailscale mode: Tailscale-User-Login, when present, must be this login
 
-    def origin(self, sub: str | None = None) -> str:
-        """http://[sub.]host[:port] — ':80' left out, exactly as browsers send it in Origin."""
-        host = f"{sub}.{self.host}" if sub else self.host
+    def remote_on(self) -> bool:
+        return self.remote_mode in REMOTE_MODES and bool(self.remote_host)
+
+    def app_host(self, sub: str | None = None, remote: bool = False) -> str:
+        if remote:
+            return self.remote_app_hosts.get(sub, "") if sub else self.remote_host
+        return (self.app_hosts.get(sub) or f"{sub}.{self.host}") if sub else self.host
+
+    def origin(self, sub: str | None = None, remote: bool = False) -> str:
+        """http://<host>[:port] (':80' left out, exactly as browsers send it in Origin); remote: https://<host>."""
+        host = self.app_host(sub, remote)
+        if remote:
+            return f"https://{host}"
         return f"http://{host}" if self.port == 80 else f"http://{host}:{self.port}"
 
+    def portal_origins(self) -> list[str]:
+        """The portal's own origins: the local one, plus the remote one while remote access is on."""
+        return [self.origin()] + ([self.origin(remote=True)] if self.remote_on() else [])
+
     def app_origins(self) -> list[str]:
-        return [self.origin(sub) for sub in APPS]
+        local = [self.origin(sub) for sub in APPS]
+        return local + ([self.origin(sub, remote=True) for sub in APPS] if self.remote_on() else [])
+
+    def app_urls(self, remote: bool = False) -> dict:
+        """{"chat": "https://…/", …}: where Home opens each app on this site."""
+        return {sub: self.origin(sub, remote) + path for sub, path in APPS.items()}
 
 
 def from_env(env: dict | None = None) -> Settings:
@@ -118,6 +149,12 @@ def from_env(env: dict | None = None) -> Settings:
         status_dir=Path(env.get("PORTAL_STATUS_DIR", "/data/status")),
         request_dir=Path(env.get("PORTAL_REQUEST_DIR", "/data/requests")),
         remote_admin_actions=(env.get("REMOTE_ADMIN_ACTIONS") or "false").strip().lower() in ("true", "1", "yes", "on"),
+        app_hosts={sub: env.get(var, "").strip().lower() for sub, var in APP_HOST_ENV.items() if env.get(var, "").strip()},
+        remote_mode=(env.get("REMOTE_MODE") or "").strip().lower(),
+        remote_host=(env.get("REMOTE_HOST") or "").strip().lower(),
+        remote_app_hosts={sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()},
+        remote_cookie_domain=(env.get("REMOTE_COOKIE_DOMAIN") or "").strip().lower(),
+        tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

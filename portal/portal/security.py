@@ -9,6 +9,7 @@ import math
 import os
 import time
 from pathlib import Path
+from email.header import decode_header, make_header
 from urllib.parse import urlsplit
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -130,8 +131,9 @@ class LoginThrottle:
 
 
 def safe_next(raw: str | None, settings: Settings) -> str:
-    """Where to go after login: a local path, or an http URL on the portal host or one of its app
-    subdomains (same port). Anything else falls back to "/" — no open redirect."""
+    """Where to go after login: a local path, or a URL on one of the portal's own sites — http on the portal
+    host or an app host (same port), or, with remote access on, https on a remote host (port 443). Anything
+    else falls back to "/" — no open redirect."""
     if not raw or len(raw) > 2000:
         return "/"
     if any(ord(c) < 33 or c == "\\" or ord(c) == 127 for c in raw):
@@ -140,23 +142,71 @@ def safe_next(raw: str | None, settings: Settings) -> str:
         return raw if not raw.startswith("//") else "/"
     try:
         u = urlsplit(raw)
-        port = u.port or 80
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme, 0)
     except ValueError:
         return "/"
-    if u.scheme != "http" or u.username is not None or u.password is not None:
+    if u.username is not None or u.password is not None:
         return "/"
     host = (u.hostname or "").lower()
-    allowed = {settings.host} | {f"{sub}.{settings.host}" for sub in APPS}
-    if host not in allowed or port != settings.port:
-        return "/"
-    return raw
+    if u.scheme == "http" and port == settings.port and host in _site_hosts(settings, remote=False):
+        return raw
+    if u.scheme == "https" and port == 443 and settings.remote_on() and host in _site_hosts(settings, remote=True):
+        return raw
+    return "/"
+
+
+def _site_hosts(settings: Settings, remote: bool) -> set[str]:
+    return {h for h in [settings.app_host(None, remote)] + [settings.app_host(sub, remote) for sub in APPS] if h}
 
 
 def same_origin(headers, settings: Settings) -> bool:
-    """CSRF check for state-changing POSTs: Origin (or, without it, Referer) must be the portal itself."""
-    want = settings.origin()
+    """CSRF check for state-changing POSTs: Origin (or, without it, Referer) must be the portal itself — its
+    local origin, or its remote one while remote access is on (settings.portal_origins())."""
+    wants = settings.portal_origins()
     origin = headers.get("origin")
     if origin is not None:
-        return origin == want
+        return origin in wants
     referer = headers.get("referer")
-    return bool(referer) and (referer == want or referer.startswith(want + "/"))
+    return bool(referer) and any(referer == w or referer.startswith(w + "/") for w in wants)
+
+
+# --- remote access (./stack remote; docs/remote.md) ---
+
+REMOTE_COOKIE = "__Secure-bn_session"  # = REMOTE_COOKIE_NAME in lib/remote.sh; Caddy strips it before the apps
+TAILSCALE_LOGIN_HEADER = "tailscale-user-login"
+
+
+def is_remote(headers, settings: Settings) -> bool:
+    """A request through the remote site: Caddy deletes any client-sent X-Portal-Remote everywhere and sets "1"
+    only on the remote site blocks (caddy/remote-*.caddy). Ignored while remote access is off."""
+    return settings.remote_on() and headers.get("x-portal-remote") == "1"
+
+
+def cookie_params(settings: Settings, remote: bool) -> dict:
+    """The session cookie of a site. Local: bn_session for PORTAL_HOST and its subdomains, not Secure (plain
+    HTTP on 127.0.0.1). Remote: __Secure-bn_session, Secure, for the parent of all remote names."""
+    if remote:
+        return {"key": REMOTE_COOKIE, "domain": settings.remote_cookie_domain or settings.remote_host, "secure": True}
+    return {"key": COOKIE, "domain": settings.host, "secure": False}
+
+
+def tailscale_login(headers) -> str | None:
+    """Tailscale-User-Login as Tailscale sends it (RFC 2047-encoded when not ASCII), lower-cased; None if absent.
+    Tailscale deletes client-sent copies and sets it only for devices signed in as a user (not tagged ones)."""
+    raw = headers.get(TAILSCALE_LOGIN_HEADER)
+    if raw is None:
+        return None
+    try:
+        value = str(make_header(decode_header(raw)))
+    except (ValueError, LookupError, UnicodeDecodeError):
+        value = raw
+    return value.strip().lower()
+
+
+def remote_identity_ok(headers, settings: Settings) -> bool:
+    """Tailscale mode with TAILSCALE_ALLOWED_LOGIN: a remote request that names a Tailscale login must name that
+    one. Without the header (tagged devices) it is the password alone, which ./stack remote status reports."""
+    if not is_remote(headers, settings) or settings.remote_mode != "tailscale" or not settings.tailscale_allowed_login:
+        return True
+    login = tailscale_login(headers)
+    return login is None or hmac.compare_digest(login.encode(), settings.tailscale_allowed_login.encode())

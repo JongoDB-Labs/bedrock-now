@@ -1,0 +1,46 @@
+# Remote access through Tailscale (./stack remote enable tailscale|domain; lib/remote.sh adds this file to every
+# docker compose call while REMOTE_MODE is tailscale or domain). Nothing is published on the host: the sidecar
+# joins your tailnet over outbound connections (userspace networking: no /dev/net/tun, no capabilities) and
+# forwards to Caddy's internal remote listener as described in tailscale/serve.json (written by ./stack).
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065
+    restart: unless-stopped
+    hostname: ${TS_HOSTNAME:-bedrock-now-node}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # Used only for the first login (./stack removes it from .env afterwards); the node key then lives in
+      # the tailscale-state volume, so the sidecar stays the same machine across restarts and updates.
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_AUTH_ONCE: "true"
+      TS_HOSTNAME: ${TS_HOSTNAME:-bedrock-now-node}
+      # Tailscale Services need a tagged host (https://tailscale.com/kb/1552/tailscale-services).
+      TS_EXTRA_ARGS: --advertise-tags=${TS_TAG:-tag:bedrock-now}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_ACCEPT_DNS: "false"
+      # Directory mount: containerboot watches the directory and applies a rewritten serve.json at once; it
+      # advertises the Services listed there on start (TS_EXPERIMENTAL_SERVICE_AUTO_ADVERTISEMENT, default true
+      # since v1.96).
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: 127.0.0.1:9002
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale:/config:ro,z
+    tmpfs: [/tmp, /var/run/tailscale]
+    depends_on: [caddy]
+    healthcheck:
+      # 200 once the node has a tailnet address
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9002/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  tailscale-state:

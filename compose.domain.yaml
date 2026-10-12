@@ -1,0 +1,17 @@
+# Remote access under your own domain (./stack remote enable domain HOST): on top of compose.tailscale.yaml.
+# Caddy terminates TLS itself with a Let's Encrypt wildcard certificate for HOST and *.HOST, obtained by DNS-01
+# (no inbound port needed), so it runs a build with a DNS provider plugin (caddy/Dockerfile) and keeps its
+# certificates in a volume (a tmpfs would re-issue them on every restart and hit Let's Encrypt's rate limits).
+services:
+  caddy:
+    build: { context: ./caddy }
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/caddy-dns:local   # per project, like portal and shared-mcp
+    environment:
+      CADDY_AUTO_HTTPS: disable_redirects          # certificates for the remote site; no HTTP→HTTPS listener
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?run ./stack remote enable domain HOST}
+    tmpfs: !override ["/config:uid=65534,gid=65534,mode=0700"]
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  caddy-data:

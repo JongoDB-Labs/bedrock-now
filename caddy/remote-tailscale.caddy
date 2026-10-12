@@ -1,0 +1,69 @@
+# Remote site, Tailscale Services mode (./stack remote enable tailscale; imported by Caddyfile).
+# The tailscale sidecar terminates HTTPS for svc:<name>[-chat|-admin|-files] and proxies plain HTTP to this
+# listener, caddy:8081, which is NOT published on the host: only containers on the stack's network reach it.
+# Host stays <service>.<tailnet>.ts.net; the sidecar deletes any client-sent Tailscale-User-* headers and adds
+# Tailscale-User-Login for devices signed in as a user, which the portal checks against TAILSCALE_ALLOWED_LOGIN.
+#   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
+#   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
+# Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
+# the remote origin and the remote cookie (__Secure-bn_session, Secure, Domain={$REMOTE_COOKIE_DOMAIN}).
+
+(remote_request) {
+	request_header -X-Portal-User
+	request_header -X-Portal-Remote
+	request_header X-Portal-Remote 1
+}
+
+# The remote session cookie is never handed to the apps.
+(drop_remote_session_cookie) {
+	header_up Cookie "__Secure-bn_session=[^;]*;?\s*" ""
+}
+
+(frame_by_remote_portal_only) {
+	header_down -X-Frame-Options
+	header_down Content-Security-Policy "frame-ancestors {$REMOTE_ORIGIN}"
+}
+
+http://{$REMOTE_HOST}:8081 {
+	route {
+		import remote_request
+		import portal_routes
+	}
+}
+
+http://{$REMOTE_CHAT_HOST}:8081 {
+	route {
+		import remote_request
+		import portal_auth
+		reverse_proxy open-webui:8080 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+}
+
+http://{$REMOTE_ADMIN_HOST}:8081 {
+	route {
+		import remote_request
+		import portal_auth
+		reverse_proxy litellm:4000 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+}
+
+http://{$REMOTE_FILES_HOST}:8081 {
+	route {
+		import remote_request
+		import portal_auth
+		reverse_proxy rustfs:9001 {
+			import drop_remote_session_cookie
+			import frame_by_remote_portal_only
+		}
+	}
+}
+
+http://:8081 {
+	respond "unknown host" 404
+}

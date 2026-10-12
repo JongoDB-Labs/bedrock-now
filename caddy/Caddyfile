@@ -1,20 +1,30 @@
 # bedrock-now reverse proxy: one login (the portal) in front of every browser UI.
 # Values come from the environment ({$VAR}, set in compose.yaml from .env) — nothing secret lives here.
-#   {$PORTAL_HOST}         portal: login + Home          (default bedrock-now.localhost)
-#   chat.{$PORTAL_HOST}    Open WebUI                    (logged in via the trusted X-Portal-User header)
-#   admin.{$PORTAL_HOST}   LiteLLM admin UI
-#   files.{$PORTAL_HOST}   RustFS console                (Host passed through unchanged: the console signs S3 requests with it)
+#   {$PORTAL_HOST}   portal: login + Home   (default bedrock-now.localhost)
+#   {$CHAT_HOST}     Open WebUI             (default chat.PORTAL_HOST; logged in via the trusted X-Portal-User header)
+#   {$ADMIN_HOST}    LiteLLM admin UI       (default admin.PORTAL_HOST)
+#   {$FILES_HOST}    RustFS console         (default files.PORTAL_HOST; Host passed through unchanged: the console
+#                                           signs S3 requests with it)
+# The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
 # Every host first deletes any client-supplied X-Portal-User, then asks the portal (forward_auth) whether the
 # bn_session cookie is valid; only the portal's answer can set X-Portal-User. Directives inside `route` run in
 # the order written (outside it, Caddy would run request_header AFTER forward_auth).
 # The three apps may be framed by the portal ({$PORTAL_ORIGIN}, e.g. http://bedrock-now.localhost:8800) and
 # nothing else; the portal itself refuses all framing (its own CSP: frame-ancestors 'none').
+# Remote access (./stack remote, docs/remote.md) adds a second site from remote-{$REMOTE_MODE}.caddy, imported at
+# the end. Only that site sets X-Portal-Remote: 1; every block here deletes a client-sent one.
 {
 	admin off
-	auto_https off
+	# "off"; own-domain remote access (compose.domain.yaml) sets disable_redirects: its HTTPS site needs certificates
+	auto_https {$CADDY_AUTO_HTTPS}
 	persist_config off
 	# Unprivileged listener inside the container; compose publishes it on 127.0.0.1:${PORTAL_PORT}.
 	http_port 8080
+	# The Tailscale remote listener (remote-tailscale.caddy) is never published; only the sidecar reaches it.
+	# Trusting the sidecar's X-Forwarded-Proto: https keeps the apps' own redirects and links on https.
+	servers :8081 {
+		trusted_proxies static private_ranges
+	}
 }
 
 (portal_auth) {
@@ -37,39 +47,45 @@
 }
 
 # The portal paths reachable without a session: the login page and what it needs, and the installable web app's
-# manifest, icons and service worker (browsers fetch those without the cookie). Every portal site block (this one,
-# and a remote-access block later) imports this one list, so they can never drift apart. The icons are named one
-# by one (portal/portal/appicons.py FILES; tests/test_portal.sh keeps the two equal): no wildcard under /icons/.
+# manifest, icons and service worker (browsers fetch those without the cookie). Every portal site block (the local
+# one and the remote ones in remote-*.caddy, all through portal_routes) imports this one list, so they can never
+# drift apart. The icons are named one by one (portal/portal/appicons.py FILES; tests/test_portal.sh keeps the two
+# equal): no wildcard under /icons/.
 (public_paths) {
 	@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-16.png /icons/app-32.png /icons/app-48.png /icons/app-192.png /icons/app-512.png /icons/app-1024.png /icons/app-maskable-192.png /icons/app-maskable-512.png /icons/app-monochrome-512.png /icons/app-touch-180.png
+}
+
+# The portal's routes, shared by the local site below and the remote site (remote-*.caddy).
+(portal_routes) {
+	# Caddy's own check endpoint is internal; browsers never need it.
+	respond /auth/verify 404
+	# The login form is a password and a next= URL; a larger body is refused before it reaches the portal.
+	request_body /login {
+		max_size 16KB
+	}
+	# One-click Update/Rollback/Clean: a tiny JSON body (action + password).
+	request_body /api/admin/* {
+		max_size 4KB
+	}
+	# The public paths (snippet above) need no session; everything else does.
+	import public_paths
+	reverse_proxy @public portal:8000
+	import portal_auth
+	reverse_proxy portal:8000
 }
 
 http://{$PORTAL_HOST} {
 	route {
 		request_header -X-Portal-User
-		# Only a remote-access site block (not part of this file yet) may mark a request as remote; a client never can.
 		request_header -X-Portal-Remote
-		# Caddy's own check endpoint is internal; browsers never need it.
-		respond /auth/verify 404
-		# The login form is a password and a next= URL; a larger body is refused before it reaches the portal.
-		request_body /login {
-			max_size 16KB
-		}
-		# One-click Update/Rollback/Clean: a tiny JSON body (action + password).
-		request_body /api/admin/* {
-			max_size 4KB
-		}
-		# The public paths (snippet above) need no session; everything else does.
-		import public_paths
-		reverse_proxy @public portal:8000
-		import portal_auth
-		reverse_proxy portal:8000
+		import portal_routes
 	}
 }
 
-http://chat.{$PORTAL_HOST} {
+http://{$CHAT_HOST} {
 	route {
 		request_header -X-Portal-User
+		request_header -X-Portal-Remote
 		import portal_auth
 		reverse_proxy open-webui:8080 {
 			import drop_session_cookie
@@ -78,9 +94,10 @@ http://chat.{$PORTAL_HOST} {
 	}
 }
 
-http://admin.{$PORTAL_HOST} {
+http://{$ADMIN_HOST} {
 	route {
 		request_header -X-Portal-User
+		request_header -X-Portal-Remote
 		import portal_auth
 		reverse_proxy litellm:4000 {
 			import drop_session_cookie
@@ -90,9 +107,10 @@ http://admin.{$PORTAL_HOST} {
 	}
 }
 
-http://files.{$PORTAL_HOST} {
+http://{$FILES_HOST} {
 	route {
 		request_header -X-Portal-User
+		request_header -X-Portal-Remote
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import drop_session_cookie
@@ -106,3 +124,6 @@ http:// {
 	respond /caddy-health 200
 	respond "unknown host" 404
 }
+
+# Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.
+import remote-{$REMOTE_MODE}.caddy

@@ -196,6 +196,25 @@ In `claude-bedrock`, `/mcp` shows the **`bedrock-shared`** server with the tools
 then shows up in the **Files** tab (bucket `shared`) and in Chat as a knowledge base, and `search_knowledge`
 searches the same index as Chat's `#`.
 
+## Remote access
+
+The portal from your phone or laptop, over HTTPS, without opening a port to the internet:
+
+```bash
+./stack remote enable tailscale      # https://bedrock-now.<tailnet>.ts.net (+ -chat, -admin, -files)
+./stack remote status                # URLs, the Tailscale sidecar, whether your Tailscale login is checked
+./stack remote test                  # checks from here, then a checklist for your phone
+./stack remote disable               # back to this computer only
+```
+
+A small Tailscale container joins your tailnet and serves four
+[Tailscale Services](https://tailscale.com/kb/1552/tailscale-services) with real certificates; your devices
+need the Tailscale app. Remote requests need your **Tailscale login and the portal password**. The local address
+keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services, a policy snippet
+and an auth key) are printed with your names filled in. Your own domain instead
+(`./stack remote enable domain bedrock.example.com`, Let's Encrypt wildcard via Cloudflare DNS), the cookie
+caveat, and Cloudflare Tunnel: [docs/remote.md](docs/remote.md).
+
 ## Costs & budgets
 
 You pay AWS Bedrock on-demand prices (USD, for the `us.` US-only inference profiles); nothing else in the
@@ -393,6 +412,7 @@ option yet: [docs/voice.md](docs/voice.md).
 | `./stack clean [--yes]` | Remove this install's old images (lists them first; keeps one previous version) | none |
 | `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
 | `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
+| `./stack remote status\|enable tailscale\|enable domain HOST\|disable\|test` | Optional: the portal from your phone/laptop over HTTPS through Tailscale ([docs/remote.md](docs/remote.md)) | none |
 | `./stack rotate-aws [--use-keys \| --use-instance-role]` | Replace the AWS key (verified first), then test; the flags switch between an EC2 IAM role and a key | ~$0.0001 |
 | `./stack serve [--background \| --stop]` | Start the stack and keep the Mac awake until Ctrl-C (prints the URLs) | none |
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
@@ -505,8 +525,11 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
 - The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
   request that the portal writes after you re-enter the password, within its own rate limits. It is off for
-  remote access by default. That default applies once a remote-access Caddy block marks such requests; until
-  then an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
+  remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote; an SSH tunnel or
+  your own reverse proxy to `127.0.0.1` counts as local.
+- Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
+  connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site has its own
+  `Secure` cookie and checks your Tailscale login ([docs/remote.md](docs/remote.md)).
 
 Details: [docs/security.md](docs/security.md).
 
@@ -517,7 +540,10 @@ stack, setup.sh, install.sh   the CLI, setup and the one-line installer
 bin/claude-bedrock            Claude Code wrapper
 bin/bedrock-now-helper        the optional update helper (./stack helper install)
 compose.yaml                  all services (images pinned)
-caddy/Caddyfile               the reverse proxy (no secrets)
+compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
+compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin
+caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site
+tailscale/                    the sidecar's serve config (written by ./stack remote)
 portal/                       login + Home service (Python; tests: docker build --target test portal)
 shared-mcp/                   MCP server for shared files and knowledge (Python; tests: docker build --target test shared-mcp)
 owui/functions/               the Open WebUI cost filter (tests in owui/tests)

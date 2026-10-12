@@ -175,6 +175,10 @@ services:
       # Login comes from the portal: Caddy deletes any client-sent X-Portal-User and sets it only for a valid
       # portal session. Safe only because Open WebUI publishes no port (reachable through Caddy alone).
       WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Portal-User
+      # Remote access (./stack remote): its "token" cookie Secure (https), and links built for the remote name.
+      # Local-only installs: false and empty, Open WebUI's own defaults.
+      WEBUI_AUTH_COOKIE_SECURE: ${OWUI_COOKIE_SECURE:-false}
+      WEBUI_URL: ${REMOTE_CHAT_HOST:+https://${REMOTE_CHAT_HOST:-}}
     volumes:
       - owui:/app/backend/data
     depends_on:
@@ -248,6 +252,17 @@ services:
       UPDATE_CHECK: ${UPDATE_CHECK:-true}
       # One-click Update/Rollback/Clean from a remote (non-localhost) browser: off unless set to true.
       REMOTE_ADMIN_ACTIONS: ${REMOTE_ADMIN_ACTIONS:-false}
+      # App host names (blank = chat./admin./files.PORTAL_HOST) and the remote site (./stack remote; blank = off).
+      CHAT_HOST: ${CHAT_HOST:-}
+      ADMIN_HOST: ${ADMIN_HOST:-}
+      FILES_HOST: ${FILES_HOST:-}
+      REMOTE_MODE: ${REMOTE_MODE:-off}
+      REMOTE_HOST: ${REMOTE_HOST:-}
+      REMOTE_CHAT_HOST: ${REMOTE_CHAT_HOST:-}
+      REMOTE_ADMIN_HOST: ${REMOTE_ADMIN_HOST:-}
+      REMOTE_FILES_HOST: ${REMOTE_FILES_HOST:-}
+      REMOTE_COOKIE_DOMAIN: ${REMOTE_COOKIE_DOMAIN:-}
+      TAILSCALE_ALLOWED_LOGIN: ${TAILSCALE_ALLOWED_LOGIN:-}
     # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home, and
     # .state/status (the installed version, written by ./stack). Writable besides /tmp: portal-state (/state:
     # the logout time, so a restart keeps it), litellm/prices/ (only prices.auto.tsv + prices.meta.json from the
@@ -277,6 +292,18 @@ services:
     environment:
       PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
       PORTAL_ORIGIN: ${PORTAL_ORIGIN:-http://bedrock-now.localhost}   # written by setup: http://HOST[:PORT]
+      CHAT_HOST: ${CHAT_HOST:-chat.${PORTAL_HOST:-bedrock-now.localhost}}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.${PORTAL_HOST:-bedrock-now.localhost}}
+      FILES_HOST: ${FILES_HOST:-files.${PORTAL_HOST:-bedrock-now.localhost}}
+      CADDY_AUTO_HTTPS: "off"   # compose.domain.yaml: disable_redirects (certificates for the remote site)
+      # Remote site (caddy/remote-<mode>.caddy; ./stack remote). The .invalid names only keep the file valid
+      # while the sidecar has not told us the tailnet's name yet: nothing can match them.
+      REMOTE_MODE: ${REMOTE_MODE:-off}
+      REMOTE_HOST: ${REMOTE_HOST:-remote.invalid}
+      REMOTE_CHAT_HOST: ${REMOTE_CHAT_HOST:-chat.remote.invalid}
+      REMOTE_ADMIN_HOST: ${REMOTE_ADMIN_HOST:-admin.remote.invalid}
+      REMOTE_FILES_HOST: ${REMOTE_FILES_HOST:-files.remote.invalid}
+      REMOTE_ORIGIN: ${REMOTE_ORIGIN:-https://remote.invalid}
     depends_on:
       portal: { condition: service_healthy }   # forward_auth needs it; avoids 502s on the first requests
     # Directory mount, so a Caddyfile replaced by git (new inode) is seen after a restart.

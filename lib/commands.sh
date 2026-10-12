@@ -30,6 +30,8 @@ Usage: ./stack <command> [--yes]
   clean        Remove this project's old images (lists them first; keeps one previous version)
   rollback     Back to the version before the last update: code, data (its backup) and images
   helper       Optional one-click Update / Rollback / Clean on Home: install | uninstall | status
+  remote       The portal from your phone/laptop over HTTPS (Tailscale): status | enable tailscale
+               | enable domain HOST | disable | test   (docs/remote.md)
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
                --use-instance-role / --use-keys switch between an EC2 IAM role and a key
   serve        Keep the stack up and this Mac awake until Ctrl-C (caffeinate; prints the URLs)
@@ -145,7 +147,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local | */portal:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local | */caddy-dns:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
@@ -165,8 +167,10 @@ ensure_images() {
 # fix_bind_mount_perms — containers read litellm/, postgres/init.sql, caddy/Caddyfile and catalog/ (the portal)
 # as non-owner users, so a strict umask (077) on clone must not make them unreadable.
 fix_bind_mount_perms() {
+  local f
   chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
   chmod 644 "$STACK_DIR/postgres/init.sql" "$STACK_DIR/caddy/Caddyfile" "$STACK_DIR"/catalog/*.tsv
+  for f in "$STACK_DIR"/caddy/*.caddy "$STACK_DIR/caddy/Dockerfile"; do [ ! -f "$f" ] || chmod 644 "$f"; done   # remote access
   [ ! -f "$STACK_DIR/litellm/config.yaml" ] || chmod 644 "$STACK_DIR/litellm/config.yaml"
 }
 
@@ -346,6 +350,7 @@ cmd_setup() {
   fix_bind_mount_perms
   setup_aws_creds
   setup_ports
+  setup_remote_choice   # lib/remote.sh: asks once — this computer only (default), or your devices too
   setup_secrets
   setup_openrouter   # optional; lib/openrouter.sh
   setup_stt          # optional; lib/stt.sh
@@ -355,6 +360,7 @@ cmd_setup() {
   cmd_test
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
+  if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_setup_hook; fi
   print_summary
   [ "$(host_os)" != Darwin ] || docker_autostart_hint   # lib/host.sh: read-only check, never edits settings
   maybe_auto_open
@@ -678,6 +684,7 @@ SUMMARY
 SUMMARY
   openrouter_summary_line
   stt_summary_line
+  remote_summary_line
   printf '\n  All credentials live in .env (mode 600).\n'
 }
 
@@ -793,6 +800,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
     litellm) echo "$(portal_url admin)/ui" ;;
     rustfs) portal_url files ;;
     shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
+    tailscale) if [ -n "$(remote_url)" ]; then echo "$(remote_url)   (your devices; ./stack remote status)"; else echo "- (./stack remote status)"; fi ;;
     *) echo "- (internal only)" ;;
   esac
 }
@@ -803,7 +811,7 @@ status_table() {
   out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
-  for s in $STACK_SERVICES; do
+  for s in $STACK_SERVICES $(remote_on && echo tailscale); do
     row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "\t" $3; exit }')"
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
@@ -829,6 +837,7 @@ cmd_status() {
   else
     printf '\n  Open %s (one login: PORTAL_PASSWORD in .env)   LiteLLM API: http://127.0.0.1:%s\n' "$(portal_url)" "$(get_env LITELLM_PORT)"
     printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
+    ! remote_on || printf '  Remote: %s   (./stack remote status)\n' "$(remote_url || true)"
   fi
   printf '  %s   (./stack clean frees old images)\n' "$(disk_line_cached $fresh)"
   if upd="$(update_available)"; then
@@ -1259,3 +1268,5 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/helper.sh"
 # EC2 instance role, ./stack serve (keep the Mac awake), ./stack ssh-info.
 . "$STACK_DIR/lib/host.sh"
+# Remote access from your devices (./stack remote; Tailscale sidecar, remote Caddy site).
+. "$STACK_DIR/lib/remote.sh"

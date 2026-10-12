@@ -20,6 +20,24 @@ All notable changes to bedrock-now are documented here. The format follows
   cannot list models are accepted with a note. Groq bills at least 10 s per request, so for Groq the recorded
   spend is approximate (its bill can be 2–5× higher, still about $0.0001 per utterance). See docs/voice.md,
   which also explains why Bedrock's Mistral Voxtral models are not an option yet.
+- **Remote access over HTTPS through Tailscale** (`./stack remote status | enable tailscale | enable domain HOST
+  | disable | test`; setup asks once, default: this computer only). A `tailscale/tailscale` sidecar (v1.102.5,
+  pinned by digest, userspace networking, no capabilities, its login in the `tailscale-state` volume) hosts four
+  Tailscale Services — `svc:bedrock-now`, `-chat`, `-admin`, `-files` — with Tailscale certificates, forwarding
+  to a new Caddy listener that exists only inside the Docker network; nothing is published on the host. Remote
+  requests need your Tailscale login (`TAILSCALE_ALLOWED_LOGIN`, checked against `Tailscale-User-Login` when
+  Tailscale sends it) **and** the portal password. The command prints the one-time admin-console steps and a
+  policy snippet (tag owner, auto-approvers, a grant to port 443) with your names; the auth key leaves `.env` once
+  the sidecar is logged in. `./stack remote test` checks what it can from the computer and prints a checklist
+  for your phone. Details and the cookie-scope caveat: [docs/remote.md](docs/remote.md).
+- **Own-domain mode** (`./stack remote enable domain bedrock.example.com`): Caddy gets a Let's Encrypt
+  certificate for the name and a wildcard for its subdomains by DNS-01 (a Caddy build with the Cloudflare DNS
+  plugin, `caddy/Dockerfile`, built only in this mode; certificates kept in a volume); DNS points at the sidecar's
+  Tailscale address, so only your tailnet can connect. Cloudflare Tunnel + Access is documented, not automated.
+- The portal serves the local and the remote site side by side: per-site session cookie (remote:
+  `__Secure-bn_session`, `Secure`), origins, login redirects and app addresses (Home reads them from
+  `<meta name="bn-apps">`); `./stack status`, the setup summary and `/api/summary` show the remote address.
+  The apps' host names are configurable (`CHAT_HOST`, `ADMIN_HOST`, `FILES_HOST`; default unchanged).
 - **Precise image cleanup.** `./stack update` records the images this install uses before it changes anything,
   keeps **one** previous version of each image it replaces (so going back needs no download; local builds keep
   theirs as `<project>/portal:previous` and `<project>/shared-mcp:previous`) and, once the new version runs,
