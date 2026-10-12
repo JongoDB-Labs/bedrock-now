@@ -29,7 +29,7 @@ test_marketplace_wordings_map_to_one_reason() {
   m3="$(_cls litellm 400 "$(_body "AccessDeniedException: You don't have access to the model with the specified model ID.")")"
   assert_eq "$(reason_code "$m1")" "no Marketplace access"
   assert_eq "$m2" "$m1"
-  assert_eq "$m3" "$m1"
+  assert_eq "$(reason_code "$m3")" "no model access"
 }
 
 test_plain_iam_denial_stays_access_denied() {

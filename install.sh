@@ -62,15 +62,13 @@ pick_ref() {
 }
 
 main() {
-  local dir="${BEDROCK_NOW_DIR:-$HOME/bedrock-now}" repo="${BEDROCK_NOW_REPO:-$BN_REPO_URL}" ref tags latest
+  local dir="${BEDROCK_NOW_DIR:-$HOME/bedrock-now}" repo="${BEDROCK_NOW_REPO:-$BN_REPO_URL}" ref tags
   check_prereqs "$(uname -s)"
   case "$(target_decision "$dir")" in
     refuse) fail "$dir exists and is not a bedrock-now checkout — move it away or choose another folder with BEDROCK_NOW_DIR=/path" ;;
     update)
-      git -C "$dir" fetch --quiet --tags origin || fail "could not fetch updates into $dir (network?)"
-      latest="$(git -C "$dir" tag --sort=-v:refname | sed -n '1p')"
       say "bedrock-now is already installed in $dir — nothing was changed."
-      say "To update it: cd $dir && git checkout ${latest:-main} && ./stack update"
+      say "To update it (newest release, with a backup first): cd $dir && ./stack update"
       return 0 ;;
   esac
   say "installing bedrock-now into $dir (from $repo)"

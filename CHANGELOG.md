@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-12
+
 ### Added
 
 - One-line installer: `curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash`
@@ -16,6 +18,10 @@ All notable changes to bedrock-now are documented here. The format follows
 - A third LiteLLM virtual key, `setup` (`BUDGET_SETUP`, default $5), pays for the model probe and the paid
   `./stack test` calls. `./stack test` checks the other keys with free `/key/info` calls.
 - `./stack costs` lists the `setup` key and a total across all keys (last 30 days, from `/global/spend`).
+- `./stack update` updates the code first: a release-tag install moves to the newest tag
+  (`updating v0.1.0 → v0.1.1`), a branch checkout gets `git pull --ff-only`, and `--to <tag|branch>` picks a
+  version. Local changes to tracked files stop the update; they are never discarded.
+- `NO_COLOR` turns all colours off.
 
 ### Changed
 
@@ -27,8 +33,9 @@ All notable changes to bedrock-now are documented here. The format follows
   the Open WebUI admin email and where it came from. The "use the AWS key from your environment?" prompt
   defaults to Yes for a long-lived (AKIA…) key.
 - The model table fits 100 columns (MODEL, KIND, coloured STATUS, PRICE, short WHY) with one footnote per
-  reason and its action. Marketplace and "no access to the model" denials map to one reason; when LiteLLM
-  reports a bare AccessDenied (e.g. for rerank), a free direct Bedrock check finds the Marketplace cause.
+  reason and its action. Marketplace denials show as "no Marketplace access", other "no access to the model"
+  denials as "no model access"; when LiteLLM reports a bare AccessDenied (e.g. for rerank), a free direct
+  Bedrock check finds the precise cause.
 - `./stack status` is a compact SERVICE / STATE / HEALTH / URL table instead of raw `docker compose ps`.
 - `./stack help` marks the commands that call Bedrock and what they cost; `claude-bedrock --help` starts with a
   six-line header about the wrapper, and `--help`/`--version` no longer print the launch cost line or need
@@ -36,6 +43,16 @@ All notable changes to bedrock-now are documented here. The format follows
 - Budgets are described the same way everywhere: monthly budget (resets on the date shown by `./stack costs`).
 - The setup summary shows a `claude-bedrock` command that works as typed (absolute path when the
   `~/.local/bin` link is missing or not on PATH) and a "Try it" line with Haiku (~$0.02).
+- `./stack status` says "the Docker daemon is not running" instead of showing every service as not created.
+
+### Fixed
+
+- Tables and the setup summary no longer write colour codes when stdout is piped (colours are chosen per stream).
+- `./stack costs` shows $0.00 when nothing has been spent yet and the HTTP status when LiteLLM refuses the
+  total.
+- `claude-bedrock --help` before setup says "not set up yet" instead of printing an empty port and price.
+- Temporary files from bring-up and the model probe are removed on Ctrl-C.
+- `./stack models` skips incomplete lines in `litellm/probe-results.tsv` with one warning.
 
 ## [0.1.0] - 2026-10-12
 
@@ -50,5 +67,6 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.1.0

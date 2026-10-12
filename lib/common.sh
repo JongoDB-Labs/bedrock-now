@@ -21,11 +21,33 @@ CATALOG="${CATALOG:-$STACK_DIR/catalog/models.tsv}"
 # shellcheck disable=SC2034  # used by lib/commands.sh
 AWS_CLI_IMAGE="amazon/aws-cli:2.37.12"
 
-if [ -t 2 ]; then
+# color_on FD -> 0 if output on FD should be coloured: a TTY, and NO_COLOR (https://no-color.org) unset/empty.
+# Checked at call time, so a function whose stdout is redirected decides for where it really writes.
+color_on() { [ -z "${NO_COLOR:-}" ] && [ -t "$1" ]; }
+
+# C_* are for messages on stderr (log/warn/die and progress lines).
+if color_on 2; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_OFF=$'\033[0m'
 else
   C_RED=''; C_GRN=''; C_YEL=''; C_OFF=''
 fi
+
+# out_colors -> sets O_RED O_GRN O_YEL O_OFF for text written to stdout (tables, summary)
+# shellcheck disable=SC2034  # read by the callers, which declare them local
+out_colors() {
+  if color_on 1; then O_RED=$'\033[31m'; O_GRN=$'\033[32m'; O_YEL=$'\033[33m'; O_OFF=$'\033[0m'
+  else O_RED=''; O_GRN=''; O_YEL=''; O_OFF=''; fi
+}
+
+# _cleanup_on_signal FILE... — on INT/TERM remove FILEs, then re-raise the signal (callers reset with
+# `trap - INT TERM` once the files are gone).
+_cleanup_on_signal() {
+  local q; q="$(printf '%q ' "$@")"
+  # shellcheck disable=SC2064  # expand the file list now
+  trap "rm -f $q; trap - INT; kill -INT \$\$" INT
+  # shellcheck disable=SC2064
+  trap "rm -f $q; trap - TERM; kill -TERM \$\$" TERM
+}
 
 log()  { printf '%s==>%s %s\n' "$C_GRN" "$C_OFF" "$*" >&2; }
 warn() { printf '%s!!%s  %s\n' "$C_YEL" "$C_OFF" "$*" >&2; }

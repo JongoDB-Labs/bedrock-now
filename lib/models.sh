@@ -173,7 +173,8 @@ classify_probe() {
   # Every "this account has no access to this model" wording (Marketplace subscription, model access not
   # granted) maps to ONE reason; a plain IAM denial (not authorized to perform bedrock:…) stays separate.
   case "$lower" in
-    *marketplace* | *"have access to the model"* | *"not subscribed"*) printf 'DISABLED\tnot subscribed in this AWS account — ask your AWS admin to enable it in Bedrock model access\n'; return ;;
+    *marketplace*) printf 'DISABLED\tnot subscribed in this AWS account (AWS Marketplace) — ask your AWS admin to enable it in Bedrock model access\n'; return ;;
+    *"have access to the model"* | *"not subscribed"*) printf 'DISABLED\tno access to this model in this AWS account — ask your AWS admin to enable it in Bedrock model access\n'; return ;;
     *"on-demand throughput"*) printf 'DISABLED\tneeds an inference profile (on-demand not supported) — fix the id in catalog/models.tsv\n'; return ;;
     *resourcenotfound* | *"end of its life"* | *"identifier is invalid"*) [ -n "$region" ] || region="$(get_env AWS_REGION_NAME)"; printf 'DISABLED\tnot available in %s (retired or wrong id)\n' "${region:-this region}"; return ;;
     *"budget has been exceeded"* | *budget_exceeded*) printf 'ENABLED\tunverified: the setup key is over its budget (BUDGET_SETUP in .env) — kept\n'; return ;;
@@ -248,6 +249,7 @@ reason_code() {
     ok) echo ok ;;
     "authorized (free check"*) echo "ok (free check)" ;;
     "not subscribed"*) echo "no Marketplace access" ;;
+    "no access to this model"*) echo "no model access" ;;
     "not available in"*) echo "not in region" ;;
     "access denied"*) echo "access denied" ;;
     "needs an inference profile"*) echo "needs inference profile" ;;
@@ -264,7 +266,7 @@ reason_code() {
 reason_footnote() {
   case "$1" in
     ok | "ok (free check)") ;;
-    "no Marketplace access" | "access denied") printf '%s: %s (see README › Asking your AWS admin for model access)\n' "$1" "$2" ;;
+    "no Marketplace access" | "no model access" | "access denied") printf '%s: %s (see README › Asking your AWS admin for model access)\n' "$1" "$2" ;;
     *) printf '%s: %s\n' "$1" "$2" ;;
   esac
 }
@@ -285,8 +287,11 @@ model_header() { printf '  %-20s %-6s %-8s %-18s %s\n' MODEL KIND STATUS PRICE W
 
 # model_row NAME KIND VERDICT PRICE CODE — STATUS is green ENABLED / red DISABLED (colour codes only on a TTY)
 model_row() {
-  local col="$C_RED"; [ "$3" = ENABLED ] && col="$C_GRN"
-  printf '  %-20s %-6s %s%-8s%s %-18s %s\n' "$1" "$2" "$col" "$3" "$C_OFF" "$4" "$5"
+  local O_RED O_GRN O_OFF col
+  # shellcheck disable=SC2034  # set by out_colors; unused here
+  local O_YEL
+  out_colors; col="$O_RED"; [ "$3" = ENABLED ] && col="$O_GRN"
+  printf '  %-20s %-6s %s%-8s%s %-18s %s\n' "$1" "$2" "$col" "$3" "$O_OFF" "$4" "$5"
 }
 
 # model_footnotes < results TSV -> one footnote per distinct non-ok reason (same reason on many models = one line)
@@ -321,8 +326,9 @@ models_table() {
 # table (MODEL KIND STATUS PRICE WHY, footnotes once per distinct reason) on stderr and, when RESULTS_TSV is
 # given, saves name/kind/verdict/reason/price/checked_at there for ./stack models.
 probe_models() {
-  local out="$1" results="${2:-}" tmp res name mode model aliases mregion r status verdict reason region ts kind price fn n_on=0 n_off=0
+  local out="$1" results="${2:-}" tmp res name mode model aliases mregion r status verdict reason region ts kind price fn r2 n_on=0 n_off=0
   region="$(get_env AWS_REGION_NAME)"; tmp="$(mktemp)"; res="$(mktemp)"; : > "$out"
+  _cleanup_on_signal "$tmp" "$res"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '# name\tkind\tverdict\treason\tprice\tchecked_at\n' > "$res"
   model_header >&2
@@ -339,7 +345,8 @@ probe_models() {
       case "$reason" in
         "access denied"*)
           : > "$tmp"; status="$(probe_bedrock_invalid "$(bedrock_id "$model" "$r")" "$tmp" "$r")"
-          case "$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)" in "not subscribed"*) reason="$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)" ;; esac ;;
+          r2="$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)"
+          case "$r2" in "not subscribed"* | "no access to this model"*) reason="$r2" ;; esac ;;
       esac
     fi
     kind="$(kind_short "$mode")"; price="$(price_short "$name")"
@@ -350,6 +357,6 @@ probe_models() {
   fn="$(model_footnotes < "$res")"
   [ -z "$fn" ] || printf '\n%s\n' "$fn" >&2
   if [ -n "$results" ]; then chmod 644 "$res"; mv "$res" "$results"; else rm -f "$res"; fi
-  rm -f "$tmp"
+  rm -f "$tmp"; trap - INT TERM
   log "$n_on model(s) enabled, $n_off unavailable for this AWS key (./stack models shows this table again; ./stack models --recheck re-checks)"
 }

@@ -16,13 +16,21 @@ export STACK_DIR
 # --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
 case "${1:-}" in
   -h | --help)
-    opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"
+    opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"; port="$(get_env LITELLM_PORT)"
+    if [ -n "$opus" ] && [ -n "$port" ]; then
+      m="$opus (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session"
+      p="LiteLLM on 127.0.0.1:$port, key 'claude-code' (monthly budget; ./stack costs)"
+      c="billed by Bedrock per token; $opus: $(price_label "$opus")"
+    else
+      m="not set up yet — run $STACK_DIR/stack setup"; p="not set up yet — run $STACK_DIR/stack setup"
+      c="billed by Bedrock per token; prices: $STACK_DIR/stack costs"
+    fi
     cat <<EOT
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)
-  Model    ${opus:-none} (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session
-  Proxy    LiteLLM on 127.0.0.1:$(get_env LITELLM_PORT), key 'claude-code' (monthly budget; ./stack costs)
+  Model    $m
+  Proxy    $p
   Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line; ANTHROPIC_* apply to this process only
-  Cost     billed by Bedrock per token; ${opus:-opus}: $(price_label "${opus:-}")
+  Cost     $c
   Below    Claude Code's own help; every option works with claude-bedrock
 
 EOT

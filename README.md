@@ -50,8 +50,8 @@ curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/insta
 The installer checks the prerequisites (Docker with Compose v2 and a running daemon, git, curl, openssl) and
 says how to install anything missing. It tells you what it will do, clones the latest release into
 `~/bedrock-now` (`BEDROCK_NOW_DIR=/path` for another folder, `BEDROCK_NOW_REF=main` for the newest code) and
-starts setup. It never overwrites an existing folder: for an existing bedrock-now checkout it only fetches
-and prints the update command. Arguments go to setup: `… | bash -s -- --yes`. Without a terminal it runs
+starts setup. It never overwrites an existing folder: for an existing bedrock-now checkout it changes nothing
+and tells you to run `./stack update`. Arguments go to setup: `… | bash -s -- --yes`. Without a terminal it runs
 `./setup.sh --yes` only when `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are exported, otherwise it prints
 the command to run next.
 
@@ -97,7 +97,7 @@ and re-checks which models work.
 ./stack test               # end-to-end smoke test (~$0.0001, on the setup key)
 ./stack costs              # prices for your models + spend per key
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
-./stack help               # everything else
+./stack help               # everything else (NO_COLOR=1 turns colours off)
 ```
 
 **Claude Code.** `claude-bedrock` is Claude Code pointed at this stack. It sets the env vars for its own process
@@ -230,14 +230,15 @@ What it does not cover:
 ```bash
 ./stack backup                     # → backups/<timestamp>/ (both databases, both buckets, a copy of .env)
 ./stack restore backups/<ts>       # replaces ALL current data (offers a backup of the current state first)
-git pull && ./stack update         # backup (…-auto) → pull pinned images → setup --yes → smoke test
+./stack update                     # new code (git) → backup (…-auto) → pull pinned images → setup --yes → test
 ./stack rotate-aws                 # new AWS key: verified with AWS first, .env changed only if valid
 ./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
 ```
 
-If you installed with the one-line installer you are on a release tag, where `git pull` does not apply: run
-`git fetch --tags && git checkout <newest tag> && ./stack update` instead (re-running the installer prints the
-exact command).
+`./stack update` updates the code first: an install from a release tag (the one-line installer) moves to the
+newest release tag and says so (`updating v0.1.0 → v0.1.1`); a checkout on a branch gets `git pull --ff-only`.
+`./stack update --to <tag|branch>` picks a specific version. Local changes to tracked files stop the update with
+a message; they are never discarded.
 
 Backups contain secrets (a copy of `.env`) and your chats, so keep them private.
 
@@ -263,8 +264,7 @@ secret. The secret is hidden while you type (non-interactively, export `AWS_ACCE
 to deactivate the old key.
 
 **Supply chain:** every image version is pinned in `compose.yaml`. LiteLLM is pinned to **1.105.0**. Never use
-LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with `git pull && ./stack update`
-(installed from a release tag: `git fetch --tags && git checkout <newest tag> && ./stack update`).
+LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with `./stack update`.
 
 ## Running a second copy
 
@@ -287,7 +287,7 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 
 | Symptom | Fix |
 |---|---|
-| A model shows **DISABLED: no Marketplace access** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then run `./stack models --recheck`. |
+| A model shows **DISABLED: no Marketplace access**, **no model access** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then run `./stack models --recheck`. |
 | "no models are usable with this AWS key" | Same as above: the key has no Bedrock model access, or the region is wrong. |
 | A URL from this README doesn't work | Setup moved a port because something else used it (e.g. Docker Desktop holds 8080). See `./stack status` or `*_PORT` in `.env`. |
 | A setting changed in the Open WebUI admin UI reverts after a restart | This is by design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration, so re-running setup always gives a known state. |
@@ -303,7 +303,7 @@ the main stack holds the defaults. `--yes` never touches your `~/.local/bin/clau
 ## Asking your AWS admin for model access
 
 If the probe shows models as **DISABLED**, send your AWS admin a request like this one. List only the models
-your probe table (`./stack models`) reports as *no Marketplace access* or *access denied*, with the Bedrock IDs
+your probe table (`./stack models`) reports as *no Marketplace access*, *no model access* or *access denied*, with the Bedrock IDs
 from `catalog/models.tsv`.
 
 > Subject: Bedrock model access for bedrock-now

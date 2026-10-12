@@ -82,7 +82,7 @@ test_budget_wording_is_consistent() {
   printf 'K=sk-old\n' > "$ENV_FILE"
   litellm_key_status() { echo 200; }; litellm_api() { echo 200; }
   ensure_virtual_key K alias 7 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/err")" 'monthly budget $7 (resets on the date shown by ./stack costs)'
+  assert_contains "$(cat "$TMP/err")" 'monthly budget $7, resets on the date shown by ./stack costs'
 }
 
 test_claude_bedrock_cmd_short_when_linked_on_path() {

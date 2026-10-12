@@ -15,7 +15,8 @@ Usage: ./stack <command> [--yes]
                --recheck re-probes them (< $0.01 Bedrock)
   backup       Databases + buckets + .env → backups/<timestamp>/
   restore DIR  Restore from a backup directory (then runs test: ~$0.0001 Bedrock)
-  update       Backup, pull pinned images, re-run setup (< $0.01 Bedrock)
+  update       New code (git), backup, pinned images, re-run setup (< $0.01 Bedrock)
+               --to <tag|branch> picks a version; local changes are never discarded
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
   uninstall    Remove containers and ALL data volumes
 
@@ -23,6 +24,7 @@ Usage: ./stack <command> [--yes]
   --yes        Accept defaults (non-interactive). AWS creds can come from
                AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME.
   BEDROCK_NOW_VERBOSE=1 ./stack setup   shows the full docker compose output.
+  NO_COLOR=1   turns colours off.
 EOF
 }
 
@@ -86,11 +88,12 @@ run_phase() {
     log "$label: starting…"
     "$@" || rc=$?
   else
-    out="$(mktemp)"
+    out="$(mktemp)"; _cleanup_on_signal "$out"
     [ ! -t 2 ] || printf '%s==>%s %s: starting…' "$C_GRN" "$C_OFF" "$label" >&2
     "$@" > "$out" 2>&1 || rc=$?
     [ ! -t 2 ] || printf '\r\033[K' >&2
   fi
+  [ -z "${out:-}" ] || trap - INT TERM
   if [ "$rc" -eq 0 ]; then
     [ -z "${out:-}" ] || rm -f "$out"
     log "$(phase_line "$label" $(($(_now) - start)))"
@@ -125,15 +128,15 @@ missing_images() {
   done
 }
 
-# ensure_images — downloads missing pinned images up front, with Docker's own progress output.
+# ensure_images [RERUN_CMD] — downloads missing pinned images up front, with Docker's own progress output.
 ensure_images() {
-  local missing img n=0 mb=0
+  local rerun="${1:-./stack setup}" missing img n=0 mb=0
   missing="$(missing_images)"
   [ -n "$missing" ] || return 0
   for img in $missing; do n=$((n + 1)); mb=$((mb + $(image_size_mb "$img"))); done
   log "downloading $n image(s) (~$(awk -v m="$mb" 'BEGIN { printf "%.1f", m / 1000 }') GB on disk; on a first run this takes several minutes)"
   for img in $missing; do
-    docker pull "$img" || die "could not download $img — check your network / registry access and re-run ./stack setup"
+    docker pull "$img" || die "could not download $img — check your network / registry access and re-run $rerun"
   done
 }
 
@@ -370,7 +373,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
         code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget}" "$tmp")"
         [ "$code" = 200 ] || warn "could not update the budget of LiteLLM key '$alias' (HTTP $code): $(head -c 300 "$tmp")"
         rm -f "$tmp"
-        log "kept existing LiteLLM key '$alias' (monthly budget \$$budget (resets on the date shown by ./stack costs))"
+        log "kept existing LiteLLM key '$alias' (monthly budget \$$budget, resets on the date shown by ./stack costs)"
         return 0 ;;
       401 | 403 | 404) warn "LiteLLM key '$alias' in .env is no longer valid (HTTP $code) — creating a new one" ;;
       *) die "LiteLLM returned HTTP $code while checking key '$alias' — not creating a duplicate; see ./stack logs litellm" ;;
@@ -381,7 +384,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   [ "$code" = 200 ] || { head -c 500 "$tmp" >&2; rm -f "$tmp"; die "could not create LiteLLM key '$alias' (HTTP $code)"; }
   key="$(parse_virtual_key < "$tmp")" || { head -c 300 "$tmp" >&2; rm -f "$tmp"; die "unexpected /key/generate response for '$alias' (no sk- key found)"; }
   set_env "$envk" "$key"
-  log "created LiteLLM key '$alias' (monthly budget \$$budget (resets on the date shown by ./stack costs))"
+  log "created LiteLLM key '$alias' (monthly budget \$$budget, resets on the date shown by ./stack costs)"
   rm -f "$tmp"
 }
 
@@ -430,7 +433,7 @@ models_recheck() {
 }
 
 cmd_models() {
-  local f="$STACK_DIR/litellm/probe-results.tsv" ts
+  local f="$STACK_DIR/litellm/probe-results.tsv" ts bad
   case "${1:-}" in
     --recheck) models_recheck; return ;;
     '') ;;
@@ -438,8 +441,10 @@ cmd_models() {
   esac
   [ -s "$f" ] || die "no saved model check yet — run ./stack models --recheck (or ./stack setup)"
   ts="$(awk -F'\t' '!/^#/ && NF >= 6 { print $6; exit }' "$f")"
+  bad="$(awk -F'\t' '!/^#/ && NF > 0 && NF < 6' "$f" | wc -l | tr -d ' ')"
+  [ "$bad" -eq 0 ] || warn "$f looks corrupt ($bad incomplete line(s) skipped) — run ./stack models --recheck"
   printf 'Model access for your AWS key, as checked %s (no Bedrock calls; ./stack models --recheck re-checks, < $0.01)\n\n' "${ts:-at the last setup}"
-  models_table < "$f"
+  awk -F'\t' '/^#/ || NF >= 6' "$f" | models_table
 }
 
 # --- cost transparency ---
@@ -450,7 +455,7 @@ _enabled_or_all() { # -> path of enabled-models.txt, or "" (= whole catalog) if 
 }
 
 cmd_costs() {
-  local en name _ mregion cr age j reset label envk alias tmp total
+  local en name _ mregion cr age j reset label envk alias tmp total code
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   en="$(_enabled_or_all)"
   printf 'Bedrock on-demand prices (USD) as of %s — https://aws.amazon.com/bedrock/pricing/\n' "$(prices_as_of)"
@@ -474,11 +479,15 @@ cmd_costs() {
     printf '  %-12s %s%s\n' "$alias" "$label" "${reset:+   (resets $reset)}"
   done
   # /global/spend sums LiteLLM's spend log over the last 30 days: every key, including master-key calls.
-  tmp="$(mktemp)"; total=''
-  [ "$(litellm_api GET /global/spend "" "$tmp")" = 200 ] && total="$(json_num spend < "$tmp")"
+  tmp="$(mktemp)"
+  code="$(litellm_api GET /global/spend "" "$tmp")"
+  case "$code" in
+    200) total="$(json_num spend < "$tmp")"   # null (no spend logged yet) -> $0.00
+         printf '  Total (all keys, last 30 days): %s\n' "$(usd "${total:-0}")" ;;
+    000 | '') printf '  Total (all keys, last 30 days): unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n' ;;
+    *) printf '  Total (all keys, last 30 days): unavailable (HTTP %s)\n' "$code" ;;
+  esac
   rm -f "$tmp"
-  if [ -n "$total" ]; then printf '  Total (all keys, last 30 days): %s\n' "$(usd "$total")"
-  else printf '  Total (all keys, last 30 days): unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n'; fi
   printf '\nBreakdown by model and day: http://127.0.0.1:%s/ui → Usage (login: admin / LITELLM_UI_PASSWORD in .env)\n' "$(get_env LITELLM_PORT)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   age="$(prices_age_days)"
@@ -559,7 +568,8 @@ sync_openwebui_models() {
 # Passwords are printed only on the very first setup (when the Open WebUI admin was just created);
 # afterwards the summary points at .env so re-runs and updates don't leave them in scrollback/logs.
 print_summary() {
-  local owui_login lite_login cb haiku
+  local owui_login lite_login cb haiku O_RED O_GRN O_YEL O_OFF
+  out_colors
   if [ "${FIRST_SETUP:-0}" = 1 ]; then
     owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / $(get_env OPENWEBUI_ADMIN_PASSWORD) (initial password — shown once; also in .env)"
     lite_login="admin / $(get_env LITELLM_UI_PASSWORD)"
@@ -570,7 +580,7 @@ print_summary() {
   cb="$(claude_bedrock_cmd)"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   cat <<SUMMARY
 
-  ${C_GRN}bedrock-now is up.${C_OFF}
+  ${O_GRN}bedrock-now is up.${O_OFF}
 
   Open WebUI      http://127.0.0.1:$(get_env OPENWEBUI_PORT)   login: $owui_login
   LiteLLM admin   http://127.0.0.1:$(get_env LITELLM_PORT)/ui  login: $lite_login
@@ -641,7 +651,7 @@ offer_symlink() {
 
 cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  ensure_images
+  ensure_images "./stack up"
   run_phase "bedrock-now" "postgres rustfs litellm open-webui shared-mcp" dc up -d --wait
   cmd_status
 }
@@ -659,7 +669,8 @@ status_url() { # status_url SERVICE -> where to open it
 
 # status_table < "service<TAB>state<TAB>health<TAB>exit code" lines (dc ps -a --format) -> SERVICE STATE HEALTH URL
 status_table() {
-  local ps s row state health sc hc
+  local ps s row state health sc hc O_RED O_GRN O_YEL O_OFF
+  out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
   for s in postgres rustfs litellm open-webui shared-mcp; do
@@ -667,9 +678,9 @@ status_table() {
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
     [ -n "$health" ] || health='-'
-    sc="$C_RED"; [ "$state" = running ] && sc="$C_GRN"
-    case "$health" in healthy) hc="$C_GRN" ;; unhealthy) hc="$C_RED" ;; -) hc='' ;; *) hc="$C_YEL" ;; esac
-    printf '  %-11s %s%-12s%s %s%-10s%s %s\n' "$s" "$sc" "$state" "$C_OFF" "$hc" "$health" "$C_OFF" "$(status_url "$s")"
+    sc="$O_RED"; [ "$state" = running ] && sc="$O_GRN"
+    case "$health" in healthy) hc="$O_GRN" ;; unhealthy) hc="$O_RED" ;; -) hc='' ;; *) hc="$O_YEL" ;; esac
+    printf '  %-11s %s%-12s%s %s%-10s%s %s\n' "$s" "$sc" "$state" "$O_OFF" "$hc" "$health" "$O_OFF" "$(status_url "$s")"
   done
   row="$(printf '%s\n' "$ps" | awk -F'\t' '$1 == "rustfs-init" && $4 != "" && $4 != "0" { print $4 }')"
   [ -z "$row" ] || warn "bucket setup (rustfs-init) exited with code $row — see ./stack logs rustfs-init"
@@ -677,6 +688,7 @@ status_table() {
 
 cmd_status() {
   local ps
+  check_docker_daemon   # a stopped daemon would otherwise look like "not created" everywhere
   ps="$(dc ps -a --format '{{.Service}}	{{.State}}	{{.Health}}	{{.ExitCode}}' 2>/dev/null || true)"
   printf '%s\n' "$ps" | status_table
   if ! printf '%s\n' "$ps" | grep -q '	running	'; then
@@ -876,8 +888,56 @@ prune_auto_backups() {
   [ "$removed" -eq 0 ] || log "removed $removed old automatic backup(s); ./stack update keeps the newest $keep (manual backups are never pruned)"
 }
 
+# update_checkout [REF] — moves this checkout to newer code; sets CODE_CHANGED=1 when HEAD moved.
+#   on a branch: git pull --ff-only;  on a tag / detached HEAD (install.sh): the newest release tag;
+#   REF given (--to): that tag/branch/commit. Local modifications to tracked files stop it — never discarded.
+update_checkout() {
+  local to="${1:-}" branch target before cur
+  CODE_CHANGED=0
+  if [ ! -e "$STACK_DIR/.git" ]; then warn "$STACK_DIR is not a git checkout — skipping the code update (images and setup still run)"; return 0; fi
+  g() { git -C "$STACK_DIR" "$@"; }
+  if [ -n "$(g status --porcelain --untracked-files=no)" ]; then
+    die "this checkout has local changes to tracked files — commit or stash them (git stash), then re-run ./stack update. Nothing was changed."
+  fi
+  before="$(g rev-parse HEAD)"; cur="$(g describe --tags --always 2>/dev/null || echo "$before")"
+  g fetch --quiet --tags origin || die "could not fetch updates from origin (network?) — nothing was changed"
+  branch="$(g symbolic-ref -q --short HEAD || true)"
+  if [ -n "$to" ]; then
+    target="$to"
+  elif [ -n "$branch" ]; then
+    g pull --quiet --ff-only || die "could not fast-forward branch $branch (it has diverged from origin) — nothing was changed; merge it yourself or use ./stack update --to <tag>"
+    if [ "$(g rev-parse HEAD)" = "$before" ]; then log "branch $branch is already up to date"
+    else log "updated branch $branch: $cur → $(g describe --tags --always)"; CODE_CHANGED=1; fi
+    return 0
+  else
+    target="$(g tag --sort=-v:refname | sed -n '1p')"
+    [ -n "$target" ] || die "no release tags found on origin — use ./stack update --to main"
+  fi
+  g -c advice.detachedHead=false checkout --quiet "$target" 2>/dev/null ||
+    die "could not check out '$target' (unknown tag/branch/commit?) — nothing was changed"
+  if [ -n "$(g symbolic-ref -q HEAD || true)" ]; then
+    g pull --quiet --ff-only || die "could not fast-forward $target — merge it yourself"
+  fi
+  if [ "$(g rev-parse HEAD)" = "$before" ]; then log "already on $target"; return 0; fi
+  log "updating $cur → $target"
+  CODE_CHANGED=1
+}
+
 cmd_update() {
+  local to=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) [ -n "${2:-}" ] || die "usage: ./stack update [--to <tag|branch>]"; to="$2"; shift 2 ;;
+      *) die "usage: ./stack update [--to <tag|branch>]" ;;
+    esac
+  done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
+    log "update: 0/3 code (git)"
+    update_checkout "$to"
+    # New code: continue in a fresh process so the rest of the update runs the new scripts.
+    if [ "$CODE_CHANGED" = 1 ]; then exec env BEDROCK_NOW_CODE_UPDATED=1 "$STACK_DIR/stack" update; fi
+  fi
   log "update: 1/3 backup"
   _backup_named auto
   prune_auto_backups 5
@@ -886,7 +946,7 @@ cmd_update() {
   log "update: 3/3 re-running setup non-interactively (keeps .env, keys and AWS creds)"
   # Separate process (keeps set -e working inside setup); AWS creds come from .env, never from this shell.
   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_REGION_NAME -u AWS_REGION \
-    -u COMPOSE_PROJECT_NAME \
+    -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — your pre-update backup is $LAST_BACKUP (./stack restore $LAST_BACKUP)"
 }

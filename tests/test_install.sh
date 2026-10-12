@@ -83,7 +83,7 @@ test_main_existing_checkout_points_to_update() {
   git clone -q "$STACK_DIR" "$TMP/inst"
   git -C "$TMP/inst" remote set-url origin https://github.com/JongoDB-Labs/bedrock-now.git
   git -C "$TMP/inst" remote add local "$STACK_DIR"
-  out="$( (git() { if [ "${3:-}" = fetch ]; then return 0; fi; command git "$@"; }; _installer) 2>&1)"
+  out="$(_installer 2>&1)"
   assert_contains "$out" "already installed"
   assert_contains "$out" "./stack update"
 }
