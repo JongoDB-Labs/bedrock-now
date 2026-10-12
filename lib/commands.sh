@@ -19,6 +19,7 @@ Usage: ./stack <command> [--yes]
 
   --yes        Accept defaults (non-interactive). AWS creds can come from
                AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME.
+  BEDROCK_NOW_VERBOSE=1 ./stack setup   shows the full docker compose output.
 EOF
 }
 
@@ -48,6 +49,90 @@ check_docker_engine() { # Linux: Docker Engine < 28 can expose 127.0.0.1-publish
 }
 
 _docker_rootless() { docker info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -q rootless; }
+
+# --- quiet, phased bring-up (BEDROCK_NOW_VERBOSE=1 shows all compose output) ---
+
+fmt_elapsed() { # fmt_elapsed SECONDS -> "16s" / "2m05s"
+  local s="${1:-0}"
+  if [ "$s" -lt 60 ]; then printf '%ss\n' "$s"; else printf '%dm%02ds\n' $((s / 60)) $((s % 60)); fi
+}
+phase_line() { printf '%s ready (%s)\n' "$1" "$(fmt_elapsed "$2")"; }   # phase_line LABEL SECONDS
+_now() { date +%s; }
+is_verbose() { [ "${BEDROCK_NOW_VERBOSE:-0}" = 1 ]; }
+
+# _failed_services SVCS... -> the ones that are not running, or are unhealthy/still starting (all if none match)
+_failed_services() {
+  local ps s state bad=''
+  ps="$(dc ps -a --format '{{.Service}}	{{.State}}	{{.Health}}' 2>/dev/null || true)"
+  for s in "$@"; do
+    state="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "/" $3 }')"
+    case "$state" in running/healthy | running/) ;; *) bad="$bad $s" ;; esac
+  done
+  [ -n "$bad" ] || bad=" $*"
+  printf '%s\n' "${bad# }"
+}
+
+# run_phase LABEL "SERVICES" CMD... — runs CMD (usually a dc call) with its output hidden, then prints
+# "==> LABEL ready (16s)". On failure: the last 30 output lines, the last 30 log lines of each failed
+# service, and the ./stack logs hint; then dies.
+run_phase() {
+  local label="$1" svcs="$2" start rc=0 out s failed first
+  shift 2
+  start="$(_now)"
+  if is_verbose; then
+    log "$label: starting…"
+    "$@" || rc=$?
+  else
+    out="$(mktemp)"
+    [ ! -t 2 ] || printf '%s==>%s %s: starting…' "$C_GRN" "$C_OFF" "$label" >&2
+    "$@" > "$out" 2>&1 || rc=$?
+    [ ! -t 2 ] || printf '\r\033[K' >&2
+  fi
+  if [ "$rc" -eq 0 ]; then
+    [ -z "${out:-}" ] || rm -f "$out"
+    log "$(phase_line "$label" $(($(_now) - start)))"
+    return 0
+  fi
+  warn "$label failed after $(fmt_elapsed $(($(_now) - start)))"
+  if [ -n "${out:-}" ]; then
+    printf '  --- last 30 lines of output ---\n' >&2; tail -n 30 "$out" | sed 's/^/    /' >&2; rm -f "$out"
+  fi
+  # shellcheck disable=SC2086  # word-split the service list on purpose
+  failed="$(_failed_services $svcs)"
+  for s in $failed; do
+    printf '  --- last 30 log lines of %s ---\n' "$s" >&2
+    dc logs --no-color --tail 30 "$s" 2>&1 | sed 's/^/    /' >&2 || true
+  done
+  first="${failed%% *}"
+  die "$label did not come up — full logs: ./stack logs ${first:-<service>}   (BEDROCK_NOW_VERBOSE=1 ./stack setup shows all compose output)"
+}
+
+image_size_mb() { # rough on-disk size of a pinned image, for the first-run download notice
+  case "$1" in
+    *litellm*) echo 1750 ;; *open-webui*) echo 950 ;; *aws-cli*) echo 680 ;; *pgvector*) echo 660 ;; *rustfs*) echo 360 ;; *) echo 300 ;;
+  esac
+}
+
+# missing_images -> compose images not present locally (locally built ones excluded)
+missing_images() {
+  local img
+  dc config --images 2>/dev/null | while IFS= read -r img; do
+    case "$img" in '' | */shared-mcp:local) continue ;; esac
+    docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
+  done
+}
+
+# ensure_images — downloads missing pinned images up front, with Docker's own progress output.
+ensure_images() {
+  local missing img n=0 mb=0
+  missing="$(missing_images)"
+  [ -n "$missing" ] || return 0
+  for img in $missing; do n=$((n + 1)); mb=$((mb + $(image_size_mb "$img"))); done
+  log "downloading $n image(s) (~$(awk -v m="$mb" 'BEGIN { printf "%.1f", m / 1000 }') GB on disk; on a first run this takes several minutes)"
+  for img in $missing; do
+    docker pull "$img" || die "could not download $img — check your network / registry access and re-run ./stack setup"
+  done
+}
 
 # fix_bind_mount_perms — containers read litellm/ and postgres/init.sql as non-owner users, so a strict
 # umask (077) on clone must not make them unreadable.
@@ -236,11 +321,10 @@ setup_bringup_and_probe() {
   log "rendering LiteLLM config with the full catalog for probing"
   trap _restore_litellm_config EXIT
   render_config ""
-  log "starting postgres, rustfs, litellm (first run pulls images)…"
-  dc up -d --wait postgres rustfs
-  dc up -d rustfs-init
+  ensure_images
+  run_phase "Postgres + RustFS" "postgres rustfs" _up_data_services
   warn "LiteLLM restarts while probing models; active claude-bedrock/Open WebUI requests may fail for ~1 min"
-  dc up -d --no-deps --force-recreate --wait litellm   # (re-)load the full catalog
+  run_phase "LiteLLM (full catalog, for probing)" litellm dc up -d --no-deps --force-recreate --wait litellm
   log "probing which models your AWS key can use (chat/embedding/rerank: 1-token requests, < \$0.01 total; images: free check)"
   probe_models "$en.new"
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
@@ -248,8 +332,11 @@ setup_bringup_and_probe() {
   render_config "$en"
   trap - EXIT
   choose_defaults
-  dc up -d --no-deps --force-recreate --wait litellm
+  run_phase "LiteLLM ($(wc -l < "$en" | tr -d ' ') models)" litellm dc up -d --no-deps --force-recreate --wait litellm
 }
+
+_up_data_services() { dc up -d --wait postgres rustfs && dc up -d rustfs-init; }
+_build_and_up_mcp() { dc build -q shared-mcp && dc up -d --wait shared-mcp; }
 
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   local envk="$1" alias="$2" budget="$3" cur tmp code key
@@ -306,12 +393,9 @@ setup_keys_and_ui() {
   log "creating LiteLLM virtual keys with monthly budgets"
   ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env BUDGET_CLAUDE_CODE)"
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
-  log "starting Open WebUI (first boot can take a minute)…"
-  dc up -d --wait open-webui
+  run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   ensure_openwebui_api_key
-  log "building and starting shared-mcp"
-  dc build -q shared-mcp
-  dc up -d --wait shared-mcp
+  run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
 }
 
@@ -489,7 +573,12 @@ offer_symlink() {
 
 # --- day-2 commands ---
 
-cmd_up()     { [ -f "$ENV_FILE" ] || die "run ./stack setup first"; dc up -d --wait; cmd_status; }
+cmd_up() {
+  [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  ensure_images
+  run_phase "bedrock-now" "postgres rustfs litellm open-webui shared-mcp" dc up -d --wait
+  cmd_status
+}
 cmd_down()   { dc down; }
 cmd_logs()   { dc logs -f --tail=200 "$@"; }
 cmd_status() {

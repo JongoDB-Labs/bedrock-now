@@ -1,0 +1,89 @@
+# shellcheck shell=bash
+# Task A1: quiet, phased bring-up output (lib/commands.sh). Docker is stubbed.
+. "$STACK_DIR/lib/commands.sh"
+
+test_fmt_elapsed() {
+  assert_eq "$(fmt_elapsed 0)" "0s"
+  assert_eq "$(fmt_elapsed 16)" "16s"
+  assert_eq "$(fmt_elapsed 59)" "59s"
+  assert_eq "$(fmt_elapsed 60)" "1m00s"
+  assert_eq "$(fmt_elapsed 125)" "2m05s"
+}
+
+test_phase_line() {
+  assert_eq "$(phase_line LiteLLM 16)" "LiteLLM ready (16s)"
+  assert_eq "$(phase_line "Open WebUI" 75)" "Open WebUI ready (1m15s)"
+}
+
+_noisy() { local i; for i in 1 2 3; do echo "compose noise $i"; done; echo "compose err" >&2; }
+
+test_run_phase_quiet_by_default() {
+  _now() { echo 100; }
+  out="$(BEDROCK_NOW_VERBOSE=0 run_phase LiteLLM litellm _noisy 2>&1)"
+  assert_contains "$out" "LiteLLM ready (0s)"
+  assert_not_contains "$out" "compose noise"
+  assert_not_contains "$out" "compose err"
+}
+
+test_run_phase_verbose_shows_compose_output() {
+  out="$(BEDROCK_NOW_VERBOSE=1 run_phase LiteLLM litellm _noisy 2>&1)"
+  assert_contains "$out" "compose noise 2"
+  assert_contains "$out" "compose err"
+  assert_contains "$out" "LiteLLM ready ("
+}
+
+test_run_phase_failure_shows_tail_logs_and_hint() {
+  _fail() { local i; for i in $(seq 1 40); do echo "line $i"; done; return 1; }
+  dc() { case "$*" in "logs --no-color --tail 30 litellm") echo "litellm says: bad config" ;; ps*) printf 'litellm\texited\t\n' ;; esac; }
+  if out="$( (run_phase LiteLLM litellm _fail) 2>&1)"; then echo "should fail" >&2; return 1; fi
+  assert_contains "$out" "line 40"
+  assert_contains "$out" "line 11"
+  assert_not_contains "$out" "line 10
+"
+  assert_contains "$out" "litellm says: bad config"
+  assert_contains "$out" "./stack logs litellm"
+  assert_contains "$out" "BEDROCK_NOW_VERBOSE=1"
+}
+
+test_run_phase_failure_logs_only_unhealthy_services() {
+  _fail() { return 1; }
+  dc() {
+    case "$*" in
+      ps*) printf 'postgres\trunning\thealthy\nlitellm\trunning\tunhealthy\n' ;;
+      "logs --no-color --tail 30 "*) local a="$*"; echo "LOGS ${a##* }" ;;
+    esac
+  }
+  if out="$( (run_phase stack "postgres litellm" _fail) 2>&1)"; then return 1; fi
+  assert_contains "$out" "LOGS litellm"
+  assert_not_contains "$out" "LOGS postgres"
+  assert_contains "$out" "./stack logs litellm"
+}
+
+test_missing_images_skips_local_builds_and_present_images() {
+  dc() { printf 'pgvector/pgvector:0.8.7-pg17\nghcr.io/berriai/litellm:1.105.0\nbedrock-now/shared-mcp:local\n'; }
+  docker() { case "$*" in "image inspect pgvector/pgvector:0.8.7-pg17") return 0 ;; *) return 1 ;; esac; }
+  assert_eq "$(missing_images | tr '\n' ' ')" "ghcr.io/berriai/litellm:1.105.0 "
+}
+
+test_ensure_images_announces_size_and_pulls_only_missing() {
+  missing_images() { printf 'ghcr.io/berriai/litellm:1.105.0\nghcr.io/open-webui/open-webui:v0.12.0-slim\n'; }
+  docker() { echo "docker $*" >> "$TMP/calls"; }
+  ensure_images 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "downloading 2 image(s) (~2.7 GB"
+  assert_contains "$(cat "$TMP/err")" "several minutes"
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "docker pull ghcr.io/berriai/litellm:1.105.0;docker pull ghcr.io/open-webui/open-webui:v0.12.0-slim;"
+}
+
+test_ensure_images_silent_when_nothing_missing() {
+  missing_images() { :; }
+  docker() { echo "docker $*" >> "$TMP/calls"; }
+  assert_eq "$(ensure_images 2>&1)" ""
+  [ ! -f "$TMP/calls" ]
+}
+
+test_ensure_images_pull_failure_is_actionable() {
+  missing_images() { echo rustfs/rustfs:1.0.1; }
+  docker() { return 1; }
+  if out="$( (ensure_images) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not download rustfs/rustfs:1.0.1"
+}

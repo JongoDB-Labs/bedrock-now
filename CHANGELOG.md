@@ -6,6 +6,13 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Setup and `./stack up` print one line per phase with elapsed time (`==> LiteLLM ready (16s)`) instead of raw
+  compose output; on failure they show the last output and service log lines plus a `./stack logs` hint.
+  `BEDROCK_NOW_VERBOSE=1` restores the full compose output. Missing images are announced (with size) and
+  downloaded up front with progress.
+
 ## [0.1.0] - 2026-10-12
 
 Initial public release.
