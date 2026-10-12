@@ -1,0 +1,6 @@
+# name	mode	litellm_model	aliases	region (optional 5th column)
+big	chat	bedrock/invoke/us.anthropic.big	old-big,legacy
+small	chat	bedrock/us.vendor.small	-
+emb	embedding	bedrock/vendor.emb:0	-
+rr	rerank	bedrock/arn:aws:bedrock:{region}::foundation-model/vendor.rr:0	-
+img	image_generation	bedrock/vendor.img:0	-	us-west-2

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# bedrock-now CLI. Run `./stack help`.
+set -euo pipefail
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export STACK_DIR
+. "$STACK_DIR/lib/common.sh"
+. "$STACK_DIR/lib/ports.sh"
+. "$STACK_DIR/lib/models.sh"
+. "$STACK_DIR/lib/commands.sh"
+
+ASSUME_YES=0
+args=()
+for a in "$@"; do
+  case "$a" in -y | --yes) ASSUME_YES=1 ;; *) args+=("$a") ;; esac
+done
+export ASSUME_YES
+set -- ${args[@]+"${args[@]}"}
+
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  setup | up | down | status | logs | test | costs | backup | restore | update | uninstall)
+    "cmd_${cmd}" "$@" ;;
+  rotate-aws) cmd_rotate_aws "$@" ;;
+  help | -h | --help) cmd_help ;;
+  *) die "unknown command: $cmd (try ./stack help)" ;;
+esac

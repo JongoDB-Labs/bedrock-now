@@ -1,0 +1,8 @@
+# test prices
+# as_of: 2026-01-01
+# name	in_per_mtok	out_per_mtok	cache_read_per_mtok	cache_write_per_mtok	per_image	per_query
+big	4.40	22.00	0.22	5.50	-	-
+small	0.11	0.55	-	-	-	-
+emb	0.12	-	-	-	-	-
+rr	-	-	-	-	-	0.002
+img	-	-	-	-	0.08	-

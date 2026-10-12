@@ -1,0 +1,4 @@
+-c requirements.txt
+pytest>=8,<9
+moto[s3]>=5,<6
+respx>=0.22,<1

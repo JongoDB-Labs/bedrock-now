@@ -1,0 +1,15 @@
+# secrets & per-user generated state — never commit
+.env
+.env.*
+!.env.example
+.state/
+litellm/*
+!litellm/.gitkeep
+backups/
+# never commit credential documents
+*bedrock-setup*.md
+*credentials*
+# python
+__pycache__/
+.pytest_cache/
+*.pyc

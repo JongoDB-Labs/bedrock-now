@@ -1,0 +1,174 @@
+# bedrock-now stack. All host ports bind to 127.0.0.1. Values come from .env (written by ./stack setup).
+# Vars marked :? are created before the first compose call; the :- ones are filled in later setup steps.
+name: bedrock-now
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./stack setup}
+      POSTGRES_DB: litellm
+    # Bind mounts carry ",z" so SELinux hosts (Fedora/RHEL) relabel them; it is a no-op elsewhere.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging: *logging
+
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?run ./stack setup}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?run ./stack setup}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - s3data:/data
+    ports:
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9001}:9001"
+    logging: *logging
+
+  # One-shot: waits for RustFS, creates buckets idempotently, exits 0.
+  rustfs-init:
+    image: amazon/aws-cli:2.37.12
+    depends_on: [rustfs]
+    restart: "no"
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        S3="aws --endpoint-url http://rustfs:9000"
+        for i in $$(seq 1 60); do $$S3 s3 ls >/dev/null 2>&1 && break; sleep 2; done
+        for b in openwebui shared; do
+          $$S3 s3api head-bucket --bucket $$b >/dev/null 2>&1 || $$S3 s3 mb s3://$$b
+        done
+    logging: *logging
+
+  litellm:
+    image: ghcr.io/berriai/litellm:1.105.0
+    restart: unless-stopped
+    # Directory mount (not a single-file mount): setup replaces config.yaml atomically via mv,
+    # which a file bind mount would not follow.
+    command: ["--config", "/app/config/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run ./stack setup}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?run ./stack setup}
+      UI_USERNAME: admin
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD:?run ./stack setup}
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch from GitHub; catalog/prices.tsv sets prices
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?run ./stack setup}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run ./stack setup}
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+    volumes:
+      - ./litellm:/app/config:ro,z
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    logging: *logging
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.12.0-slim
+    restart: unless-stopped
+    environment:
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?run ./stack setup}
+      WEBUI_ADMIN_EMAIL: ${OPENWEBUI_ADMIN_EMAIL:?run ./stack setup}
+      WEBUI_ADMIN_PASSWORD: ${OPENWEBUI_ADMIN_PASSWORD:?run ./stack setup}
+      WEBUI_ADMIN_NAME: Admin
+      ENABLE_SIGNUP: "false"
+      ENABLE_PERSISTENT_CONFIG: "false"   # .env always wins over values saved in the DB
+      ENABLE_API_KEYS: "true"
+      ENABLE_OLLAMA_API: "false"
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      VECTOR_DB: pgvector
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
+      STORAGE_PROVIDER: s3
+      S3_ENDPOINT_URL: http://rustfs:9000
+      S3_BUCKET_NAME: openwebui
+      S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+      S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+      S3_REGION_NAME: us-east-1
+      S3_ADDRESSING_STYLE: path
+      RAG_EMBEDDING_ENGINE: ${OWUI_EMBED_ENGINE:-openai}   # never the local sentence-transformers default
+      ENABLE_WEB_SEARCH: "false"                            # no third-party search APIs
+      ENABLE_OPENAI_API: "true"                             # only connection = LiteLLM
+      RAG_EMBEDDING_MODEL: ${OWUI_EMBED_MODEL:-}
+      RAG_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      RAG_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
+      ENABLE_RAG_HYBRID_SEARCH: ${OWUI_HYBRID_SEARCH:-false}
+      RAG_RERANKING_ENGINE: ${OWUI_RERANK_ENGINE:-}
+      RAG_RERANKING_MODEL: ${OWUI_RERANK_MODEL:-}
+      RAG_EXTERNAL_RERANKER_URL: http://litellm:4000/v1/rerank
+      RAG_EXTERNAL_RERANKER_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
+      ENABLE_IMAGE_GENERATION: ${OWUI_ENABLE_IMAGES:-false}
+      IMAGE_GENERATION_ENGINE: openai
+      IMAGES_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      IMAGES_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
+      IMAGE_GENERATION_MODEL: ${OWUI_IMAGE_MODEL:-}
+      ENABLE_COMMUNITY_SHARING: "false"                     # no sharing to openwebui.com
+      OFFLINE_MODE: "true"                                  # no Hugging Face downloads, no update check
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+    volumes:
+      - owui:/app/backend/data
+    ports:
+      - "127.0.0.1:${OPENWEBUI_PORT:-8080}:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      litellm: { condition: service_healthy }
+      rustfs-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    logging: *logging
+
+  shared-mcp:
+    build: { context: ./shared-mcp, target: runtime }
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/shared-mcp:local   # per project: a second copy never clobbers it
+    restart: unless-stopped
+    environment:
+      SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:?run ./stack setup}
+      S3_ENDPOINT_URL: http://rustfs:9000
+      S3_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY}
+      S3_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY}
+      SHARED_BUCKET: shared
+      OPENWEBUI_URL: http://open-webui:8080
+      OPENWEBUI_API_KEY: ${OPENWEBUI_API_KEY:-}
+    ports:
+      - "127.0.0.1:${SHARED_MCP_PORT:-8765}:8000"
+    depends_on:
+      open-webui: { condition: service_healthy }
+      rustfs-init: { condition: service_completed_successfully }
+    logging: *logging
+
+volumes:
+  pgdata:
+  s3data:
+  owui:

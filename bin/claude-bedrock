@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Launch Claude Code against AWS Bedrock via this stack's LiteLLM proxy.
+# Env vars are set for THIS process only — plain `claude` and ~/.claude are untouched.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do   # resolve symlinks portably (no readlink -f on older macOS)
+  dir="$(cd -P "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+STACK_DIR="$(cd -P "$(dirname "$src")/.." && pwd)"
+export STACK_DIR
+. "$STACK_DIR/lib/common.sh"
+. "$STACK_DIR/lib/models.sh"   # price_label / key_info / spend_text for the launch line
+
+[ -f "$ENV_FILE" ] || die "stack not set up — run $STACK_DIR/stack setup"
+command -v claude >/dev/null 2>&1 || die "Claude Code (claude) is not installed"
+port="$(get_env LITELLM_PORT)"
+curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$port/health/liveliness" ||
+  die "LiteLLM is not running on 127.0.0.1:$port — run: $STACK_DIR/stack up"
+opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"
+[ -n "$opus" ] || die "no Claude model enabled for your AWS key — re-run $STACK_DIR/stack setup"
+key="$(get_env LITELLM_KEY_CLAUDE_CODE)"
+[ -n "$key" ] || die "no LiteLLM key for Claude Code in $ENV_FILE — re-run $STACK_DIR/stack setup"
+
+unset ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$port"
+export ANTHROPIC_AUTH_TOKEN="$key"
+export ANTHROPIC_MODEL="${CLAUDE_BEDROCK_MODEL:-$opus}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus"
+ANTHROPIC_DEFAULT_SONNET_MODEL="$(get_env CLAUDE_BEDROCK_SONNET_MODEL)"
+ANTHROPIC_DEFAULT_HAIKU_MODEL="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
+export ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1   # Bedrock rejects Anthropic beta headers
+export ENABLE_TOOL_SEARCH=true
+# No telemetry, error reporting or update checks from Bedrock sessions; plain `claude` is unaffected.
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# One cost line on stderr (CLAUDE_BEDROCK_QUIET=1 hides it). Spend comes from LiteLLM with this key;
+# if that takes >2s or fails, the spend part is left out rather than delaying the launch.
+if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
+  line="bedrock · $ANTHROPIC_MODEL ($(price_label "$ANTHROPIC_MODEL"))"
+  if info="$(key_info "$key" 2 1)" && spent="$(printf '%s' "$info" | spend_text)"; then
+    line="$line · spent $spent this period"
+  fi
+  printf '%s\n' "$line" >&2
+fi
+
+# Sessions get the shared MCP server. Subcommands (`claude-bedrock mcp list`, `doctor`, …) reject
+# --mcp-config, so it is added only when $1 is empty, an option, or not a subcommand. The subcommand
+# list is parsed from `claude --help` on every launch (falls back to the 2.1.296 list).
+# Known gap: options before a subcommand (`claude-bedrock --debug mcp list`) still get --mcp-config
+# and fail; put options after the subcommand, or run plain `claude` for management commands.
+subcmds="$(claude --help 2>/dev/null </dev/null | claude_subcommands || true)"
+[ -n "$subcmds" ] || subcmds="agents attach auth auto-mode config doctor gateway import install logs mcp
+  migrate-installer plugin plugins purge respawn rm setup-token stop kill ultrareview update upgrade"
+mcp_args=()
+add_mcp=1
+case "${1:-}" in
+  '' | -*) ;;
+  *) for c in $subcmds; do [ "$c" = "$1" ] && { add_mcp=0; break; }; done ;;
+esac
+[ "$add_mcp" = 1 ] && [ -f "$STATE_DIR/mcp.json" ] && mcp_args=(--mcp-config "$STATE_DIR/mcp.json")
+restore_caller_locale   # Claude Code and its shell tools get the user's locale, not our C locale
+exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}

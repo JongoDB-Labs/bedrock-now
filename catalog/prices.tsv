@@ -1,0 +1,23 @@
+# Bedrock on-demand prices, USD, us-east-1, `us.` (Geo) inference profiles where applicable.
+# Stability image models are called in us-west-2 (same price there). Stable Image Core $0.04/image: confirmed 2026-10-12
+# on the Bedrock pricing page Stability table (aws.amazon.com/bedrock/pricing); LiteLLM 1.105.0 maps it at $0.04 too.
+# as_of: 2026-10-12
+# source: https://aws.amazon.com/bedrock/pricing/  (OpenAI/xAI: Bedrock model cards)
+# Not modeled: long-context tiers (GPT-6 >272K input, Haiku 5.5 long context), 1-hour cache writes, batch, priority/flex.
+# TAB-separated; "-" = not applicable. Per-1M-token prices; per_image / per_query in USD each.
+# name	in_per_mtok	out_per_mtok	cache_read_per_mtok	cache_write_per_mtok	per_image	per_query
+claude-opus-5-5	4.40	22.00	0.22	5.50	-	-
+claude-sonnet-5-5	2.20	11.00	0.11	2.75	-	-
+claude-haiku-5-5	0.11	0.55	0.011	0.1375	-	-
+claude-sonnet-4-5	3.30	16.50	0.33	4.125	-	-
+gpt-6-sol	2.20	11.00	0.22	2.75	-	-
+gpt-6-luna	0.11	0.55	0.011	0.1375	-	-
+grok-4-7	2.20	6.60	0.55	-	-	-
+llama-3-3-70b	0.72	0.72	-	-	-	-
+mistral-large-3	0.50	1.50	-	-	-	-
+cohere-embed-v4	0.12	-	-	-	-	-
+titan-embed-v2	0.02	-	-	-	-	-
+cohere-rerank-3-5	-	-	-	-	-	0.002
+sd3-5-large	-	-	-	-	0.08	-
+stable-image-ultra	-	-	-	-	0.14	-
+stable-image-core	-	-	-	-	0.04	-
