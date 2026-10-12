@@ -22,16 +22,17 @@ port_taken_by_other() {
     END { exit !f }' "$ENV_FILE"
 }
 
-# check_port KEY PORT -> dies unless PORT is an integer in 1024..65535.
+# check_port KEY PORT -> dies unless PORT is an integer in 1024..65535 (PORTAL_PORT may also be 80).
 check_port() {
   case "$2" in '' | *[!0-9]*) die "invalid port for $1: '$2'" ;; esac
+  [ "$1:$2" != PORTAL_PORT:80 ] || return 0
   { [ "$2" -ge 1024 ] && [ "$2" -le 65535 ]; } || die "port $2 for $1 is out of range (1024-65535)"
 }
 
 svc_label() { # svc_label COMPOSE_SERVICE -> name used in messages
   case "$1" in
     litellm) echo LiteLLM ;; open-webui) echo "Open WebUI" ;; rustfs) echo "the RustFS console" ;;
-    shared-mcp) echo "the shared MCP server" ;; *) echo "$1" ;;
+    shared-mcp) echo "the shared MCP server" ;; caddy) echo "the portal" ;; *) echo "$1" ;;
   esac
 }
 

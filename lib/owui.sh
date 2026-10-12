@@ -2,14 +2,14 @@
 # Open WebUI experience (friendly model names, hidden helper models, the cost filter function, budget
 # banners) and the LiteLLM database admin. Needs lib/common.sh, lib/models.sh and lib/commands.sh.
 # Everything here is best-effort during setup: failures warn, never abort.
+# Open WebUI publishes no port: every call goes through Caddy (lib/portal.sh) with the portal session the
+# caller opened (portal_session_or_die / portal_session_start … portal_session_end) plus OPENWEBUI_API_KEY.
 
 DISPLAY_CATALOG="${DISPLAY_CATALOG:-$STACK_DIR/catalog/display.tsv}"
 COST_FILTER_ID=bedrock_cost
 COST_FILTER_FILE="${COST_FILTER_FILE:-$STACK_DIR/owui/functions/bedrock_cost.py}"
 LITELLM_DB_ADMIN_ID=bedrock-now-admin
 
-# owui_base_url -> where the host reaches Open WebUI's API (the one place to change if the port moves).
-owui_base_url() { printf 'http://127.0.0.1:%s\n' "$(get_env OPENWEBUI_PORT)"; }
 
 # --- friendly names and tiers (catalog/display.tsv) ---
 
@@ -67,18 +67,18 @@ owui_tags_json() {
   printf '[%s]\n' "$out"
 }
 
-# --- Open WebUI API helpers (OPENWEBUI_API_KEY = the admin's API key) ---
+# --- Open WebUI API helpers (OPENWEBUI_API_KEY = the admin's API key; through Caddy at chat.PORTAL_HOST) ---
 
 # _owui_get PATH OUTFILE -> HTTP status (000 = no answer)
 _owui_get() {
-  curl_auth "$(get_env OPENWEBUI_API_KEY)" -sS -m 30 -o "$2" -w '%{http_code}' "$(owui_base_url)$1" 2>/dev/null || true
+  portal_curl_auth "$(get_env OPENWEBUI_API_KEY)" chat "$1" -sS -m 30 -o "$2" -w '%{http_code}' 2>/dev/null || true
 }
 
 # _owui_post PATH JSON OUTFILE -> HTTP status (000 = no answer). The body goes through a mode-600 file.
 _owui_post() {
   local body; body="$(mktemp)"; chmod 600 "$body"; printf '%s' "$2" > "$body"
-  curl_auth "$(get_env OPENWEBUI_API_KEY)" -sS -m 30 -X POST -o "$3" -w '%{http_code}' -H 'Content-Type: application/json' \
-    --data-binary "@$body" "$(owui_base_url)$1" 2>/dev/null || true
+  portal_curl_auth "$(get_env OPENWEBUI_API_KEY)" chat "$1" -sS -m 30 -X POST -o "$3" -w '%{http_code}' \
+    -H 'Content-Type: application/json' --data-binary "@$body" 2>/dev/null || true
   rm -f "$body"
 }
 
@@ -442,8 +442,10 @@ setup_litellm_admin() {
     fi
     return 0
   fi
-  [ "$(get_env LITELLM_DB_ADMIN_READY)" = true ] && return 0
-  set_env LITELLM_DB_ADMIN_READY true
-  render_config "$(_enabled_or_all)"
-  run_phase "LiteLLM (admin login: $(get_env OPENWEBUI_ADMIN_EMAIL))" litellm dc up -d --no-deps --force-recreate --wait litellm
+  if [ "$(get_env LITELLM_DB_ADMIN_READY)" != true ]; then
+    set_env LITELLM_DB_ADMIN_READY true
+    render_config "$(_enabled_or_all)"
+    run_phase "LiteLLM (admin login: $(get_env OPENWEBUI_ADMIN_EMAIL))" litellm dc up -d --no-deps --force-recreate --wait litellm
+  fi
+  set_env LITELLM_UI_USER "$(litellm_ui_user)"   # the portal's Home shows this sign-in
 }

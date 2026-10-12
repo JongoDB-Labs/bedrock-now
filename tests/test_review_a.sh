@@ -25,7 +25,7 @@ test_tables_have_no_escapes_when_piped() {
   assert_not_contains "$out" "$ESC"
   out="$(printf 'litellm\trunning\thealthy\t0\n' | status_table)"
   assert_not_contains "$out" "$ESC"
-  out="$(FIRST_SETUP=0 print_summary)"
+  out="$(print_summary)"
   assert_not_contains "$out" "$ESC"
 }
 

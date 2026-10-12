@@ -3,17 +3,17 @@
 # Task A4: compact status, cost-aware help, claude-bedrock --help, budget wording, summary command.
 . "$STACK_DIR/lib/commands.sh"
 
-_ports_env() { printf 'LITELLM_PORT=4000\nOPENWEBUI_PORT=8082\nRUSTFS_CONSOLE_PORT=9001\nSHARED_MCP_PORT=8765\n' > "$ENV_FILE"; }
+_ports_env() { printf 'LITELLM_PORT=4000\nPORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\nSHARED_MCP_PORT=8765\n' > "$ENV_FILE"; }
 
 test_status_table_rows_and_urls() {
   _ports_env
   out="$(printf 'litellm\trunning\thealthy\t0\nrustfs\trunning\t\t0\nrustfs-init\texited\t\t0\nopen-webui\trunning\tstarting\t0\n' | status_table)"
   assert_contains "$out" "SERVICE"; assert_contains "$out" "STATE"; assert_contains "$out" "HEALTH"; assert_contains "$out" "URL"
-  assert_contains "$(printf '%s\n' "$out" | grep '^  litellm ')" "http://127.0.0.1:4000/ui"
+  assert_contains "$(printf '%s\n' "$out" | grep '^  litellm ')" "http://admin.bedrock-now.localhost/ui"
   assert_contains "$(printf '%s\n' "$out" | grep '^  litellm ')" "healthy"
-  assert_contains "$(printf '%s\n' "$out" | grep '^  open-webui ')" "http://127.0.0.1:8082"
+  assert_contains "$(printf '%s\n' "$out" | grep '^  open-webui ')" "http://chat.bedrock-now.localhost"
   assert_contains "$(printf '%s\n' "$out" | grep '^  open-webui ')" "starting"
-  assert_contains "$(printf '%s\n' "$out" | grep '^  rustfs ')" "http://127.0.0.1:9001"
+  assert_contains "$(printf '%s\n' "$out" | grep '^  rustfs ')" "http://files.bedrock-now.localhost"
   assert_contains "$(printf '%s\n' "$out" | grep '^  shared-mcp ')" "not created"
   assert_contains "$(printf '%s\n' "$out" | grep '^  shared-mcp ')" "http://127.0.0.1:8765/mcp"
   assert_contains "$(printf '%s\n' "$out" | grep '^  postgres ')" "internal"
@@ -102,10 +102,10 @@ test_claude_bedrock_cmd_quotes_paths_with_spaces() {
 test_summary_shows_working_command_and_try_it() {
   printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\nCLAUDE_BEDROCK_HAIKU_MODEL=claude-haiku-5-5\n' > "$ENV_FILE"
   claude_bedrock_cmd() { echo /opt/bn/bin/claude-bedrock; }
-  out="$(FIRST_SETUP=0 print_summary 2>&1)"
+  out="$(print_summary 2>&1)"
   assert_contains "$out" "Claude Code     /opt/bn/bin/claude-bedrock"
   assert_contains "$out" 'CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 /opt/bn/bin/claude-bedrock -p'
   assert_contains "$out" '(~$0.02)'
   printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
-  assert_not_contains "$(FIRST_SETUP=0 print_summary 2>&1)" "Try it"
+  assert_not_contains "$(print_summary 2>&1)" "Try it"
 }

@@ -84,21 +84,28 @@ test_symlink_created_interactively_by_default() {
 # --- summary ---
 
 test_summary_hides_passwords_after_first_setup() {
-  printf 'OPENWEBUI_ADMIN_PASSWORD=owuipw123\nLITELLM_UI_PASSWORD=litepw456\nOPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
-  FIRST_SETUP=0; out="$(print_summary 2>&1)"
+  printf 'OPENWEBUI_ADMIN_PASSWORD=owuipw123\nLITELLM_UI_PASSWORD=litepw456\nPORTAL_PASSWORD=portalpw789\nOPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
+  out="$(print_summary 2>&1)"
+  assert_contains "$out" "portalpw789"
   assert_not_contains "$out" "owuipw123"; assert_not_contains "$out" "litepw456"
-  assert_contains "$out" "OPENWEBUI_ADMIN_PASSWORD"
-  assert_contains "$out" "LITELLM_UI_PASSWORD"
-  FIRST_SETUP=1; out="$(print_summary 2>&1)"
-  assert_contains "$out" "owuipw123"
+  out="$(print_summary 2>&1)"
+  for pw in owuipw123 litepw456 portalpw789; do assert_not_contains "$out" "$pw"; done
+  assert_contains "$out" "PORTAL_PASSWORD in .env"
 }
 
-test_setup_secrets_flags_first_setup() {
-  printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"; FIRST_SETUP=0
-  setup_secrets
-  assert_eq "$FIRST_SETUP" 1
-  setup_secrets
-  assert_eq "$FIRST_SETUP" 0
+test_new_portal_password_is_shown_even_after_a_failed_run() {
+  printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=x\n' > "$ENV_FILE"
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/portal-password-shown"
+  setup_secrets 2>/dev/null          # generates it; the run then "fails" before its summary
+  assert_contains "$(print_summary 2>&1)" "$(get_env PORTAL_PASSWORD)"
+}
+
+test_setup_secrets_creates_portal_secrets_once() {
+  printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
+  setup_secrets 2>/dev/null
+  pw="$(get_env PORTAL_PASSWORD)"; [ -n "$pw" ] && [ "$(get_env PORTAL_SECRET | wc -c)" -ge 64 ]
+  setup_secrets 2>/dev/null
+  assert_eq "$(get_env PORTAL_PASSWORD)" "$pw"
 }
 
 test_costs_budget_wording() {
@@ -114,8 +121,12 @@ test_costs_budget_wording() {
 
 test_fix_bind_mount_perms_under_strict_umask() {
   STACK_DIR="$TMP/stack"
-  ( umask 077; mkdir -p "$STACK_DIR/litellm" "$STACK_DIR/postgres"; : > "$STACK_DIR/postgres/init.sql"; : > "$STACK_DIR/litellm/config.yaml" )
+  ( umask 077; mkdir -p "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
+    : > "$STACK_DIR/postgres/init.sql"; : > "$STACK_DIR/litellm/config.yaml"; : > "$STACK_DIR/caddy/Caddyfile"; : > "$STACK_DIR/catalog/prices.tsv" )
   fix_bind_mount_perms
+  assert_eq "$(ls -l "$STACK_DIR/caddy/Caddyfile" | cut -c1-10)" "-rw-r--r--"
+  assert_eq "$(ls -l "$STACK_DIR/catalog/prices.tsv" | cut -c1-10)" "-rw-r--r--"
+  assert_eq "$(ls -ld "$STACK_DIR/catalog" | cut -c1-10)" "drwxr-xr-x"
   assert_eq "$(ls -ld "$STACK_DIR/litellm" | cut -c1-10)" "drwxr-xr-x"
   assert_eq "$(ls -ld "$STACK_DIR/postgres" | cut -c1-10)" "drwxr-xr-x"
   assert_eq "$(ls -l "$STACK_DIR/postgres/init.sql" | cut -c1-10)" "-rw-r--r--"

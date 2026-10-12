@@ -1,14 +1,17 @@
 # shellcheck shell=bash
 # ./stack subcommands.
 
+# Long-running services, in the order ./stack status lists them.
+STACK_SERVICES="caddy portal open-webui litellm rustfs shared-mcp postgres"
+
 cmd_help() {
   cat <<'EOF'
 Usage: ./stack <command> [--yes]
 
   setup        First-time (or repeat) setup: AWS creds, ports, model probe, keys (< $0.01 Bedrock)
   up | down    Start / stop the stack
-  status       Services, health and URLs
-  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp)
+  status       Services, health and URLs (the portal: one login for every browser UI)
+  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
   models       Which models your AWS key can use (last check)
@@ -115,7 +118,8 @@ run_phase() {
 
 image_size_mb() { # rough on-disk size of a pinned image, for the first-run download notice
   case "$1" in
-    *litellm*) echo 1750 ;; *open-webui*) echo 950 ;; *aws-cli*) echo 680 ;; *pgvector*) echo 660 ;; *rustfs*) echo 360 ;; *) echo 300 ;;
+    *litellm*) echo 1750 ;; *open-webui*) echo 950 ;; *aws-cli*) echo 680 ;; *pgvector*) echo 660 ;; *rustfs*) echo 360 ;;
+    *caddy*) echo 90 ;; *) echo 300 ;;
   esac
 }
 
@@ -123,7 +127,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
@@ -140,11 +144,11 @@ ensure_images() {
   done
 }
 
-# fix_bind_mount_perms — containers read litellm/ and postgres/init.sql as non-owner users, so a strict
-# umask (077) on clone must not make them unreadable.
+# fix_bind_mount_perms — containers read litellm/, postgres/init.sql, caddy/Caddyfile and catalog/ (the portal)
+# as non-owner users, so a strict umask (077) on clone must not make them unreadable.
 fix_bind_mount_perms() {
-  chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres"
-  chmod 644 "$STACK_DIR/postgres/init.sql"
+  chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
+  chmod 644 "$STACK_DIR/postgres/init.sql" "$STACK_DIR/caddy/Caddyfile" "$STACK_DIR"/catalog/*.tsv
   [ ! -f "$STACK_DIR/litellm/config.yaml" ] || chmod 644 "$STACK_DIR/litellm/config.yaml"
 }
 
@@ -253,9 +257,10 @@ setup_aws_creds() {
 }
 
 setup_ports() {
+  migrate_direct_ports
+  setup_portal_host
+  resolve_portal_port
   resolve_port LITELLM_PORT 4000 litellm 4000
-  resolve_port OPENWEBUI_PORT 8080 open-webui 8080
-  resolve_port RUSTFS_CONSOLE_PORT 9001 rustfs 9001
   resolve_port SHARED_MCP_PORT 8765 shared-mcp 8000
 }
 
@@ -287,9 +292,12 @@ upgrade_litellm_password() {
   warn "LITELLM_UI_PASSWORD in .env did not meet LiteLLM's password policy (12+ characters, upper/lowercase, digit, symbol) — generated a new one (see .env)"
 }
 
-# FIRST_SETUP=1 when this run creates the Open WebUI admin (print_summary then shows the passwords once).
+# A newly generated portal password (first setup, or the first setup after an update from v0.1.x) is shown by
+# the next summary that gets printed (marker .state/portal-password-shown), even if this run fails first.
 setup_secrets() {
-  if [ -z "$(get_env OPENWEBUI_ADMIN_PASSWORD)" ]; then FIRST_SETUP=1; else FIRST_SETUP=0; fi
+  [ -n "$(get_env PORTAL_PASSWORD)" ] || rm -f "$STATE_DIR/portal-password-shown"
+  ensure_env PORTAL_PASSWORD "$(gen_hex 10)"
+  ensure_env PORTAL_SECRET "$(gen_hex 32)"
   ensure_env POSTGRES_PASSWORD "$(gen_hex 24)"
   ensure_env LITELLM_MASTER_KEY "sk-$(gen_hex 24)"
   ensure_env LITELLM_SALT_KEY "sk-$(gen_hex 24)"   # never change after first run: encrypts stored creds
@@ -428,6 +436,36 @@ setup_bringup_and_probe() {
 _up_data_services() { dc up -d --wait postgres rustfs && dc up -d rustfs-init; }
 _build_and_up_mcp() { dc build -q shared-mcp && dc up -d --wait shared-mcp; }
 
+# _build_and_up_portal — portal, then Caddy (recreated: with its admin API off, a changed Caddyfile is only
+# read at start). If Docker refuses to publish port 80 after all, falls back to 8800 once.
+_build_and_up_portal() {
+  local out rc=0
+  dc build -q portal && dc up -d --wait portal || return 1
+  out="$(dc up -d --wait --force-recreate caddy 2>&1)" || rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -ne 0 ] || return 0
+  # Only a refused port 80 (rootless/unprivileged engines) moves the portal; any other failure is reported.
+  [ "$(portal_port)" = 80 ] && printf '%s\n' "$out" | grep -qiE 'bind|privileged|port is already allocated|ports are not available' || return 1
+  PORTAL_PORT_FELL_BACK=1
+  set_env PORTAL_PORT "$PORTAL_FALLBACK_PORT"
+  resolve_port PORTAL_PORT "$PORTAL_FALLBACK_PORT" caddy 8080
+  save_portal_origin
+  dc up -d --wait portal && dc up -d --wait --force-recreate caddy   # portal: its PORTAL_PORT changed too
+}
+
+# up_portal — the portal phase of setup (and models --recheck): new code, settings and Caddyfile take effect.
+up_portal() {
+  PORTAL_PORT_FELL_BACK=0
+  run_phase "Portal ($(portal_url))" "portal caddy" _build_and_up_portal
+  [ "$PORTAL_PORT_FELL_BACK" = 0 ] || warn "Docker could not publish port 80 → using $(portal_port) for the portal (PORTAL_PORT): $(portal_url)"
+}
+
+# portal_session_or_die — a portal session for setup's Open WebUI calls (they go through Caddy like a browser).
+portal_session_or_die() {
+  portal_session_start ||
+    die "could not sign in to the portal at $(portal_url) (HTTP ${PORTAL_LOGIN_CODE:-?}) — see ./stack logs portal and ./stack logs caddy"
+}
+
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   local envk="$1" alias="$2" budget="$3" cur tmp code key
   valid_budget "$budget" || die "budget for $alias must be a number of USD, got '$budget' (see BUDGET_* in .env)"
@@ -457,22 +495,24 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   rm -f "$tmp"
 }
 
+# Open WebUI publishes no port: setup reaches it through Caddy with a portal session ($PORTAL_JAR), exactly
+# like the browser. Sign-in uses the trusted header Caddy adds for that session (the admin's email).
 ensure_openwebui_api_key() {
-  local base cur tmp token key
-  base="http://127.0.0.1:$(get_env OPENWEBUI_PORT)"; cur="$(get_env OPENWEBUI_API_KEY)"
+  local cur tmp token key
+  cur="$(get_env OPENWEBUI_API_KEY)"
   # Validity check on an endpoint shared-mcp really uses (v0.12 refuses API keys on /api/v1/auths/:
   # "A human session is required").
-  if [ -n "$cur" ] && curl_auth "$cur" -fsS -m 30 -o /dev/null "$base/api/v1/knowledge/" 2>/dev/null; then
+  if [ -n "$cur" ] && portal_curl_auth "$cur" chat /api/v1/knowledge/ -fsS -m 30 -o /dev/null 2>/dev/null; then
     log "kept existing Open WebUI API key"; return 0
   fi
   tmp="$(mktemp)"
-  E="$(get_env OPENWEBUI_ADMIN_EMAIL)" P="$(get_env OPENWEBUI_ADMIN_PASSWORD)" \
-    awk 'BEGIN { printf "{\"email\":\"%s\",\"password\":\"%s\"}", ENVIRON["E"], ENVIRON["P"] }' |
-    curl -fsS -m 30 -o "$tmp" -H 'Content-Type: application/json' --data-binary @- "$base/api/v1/auths/signin" ||
-    { rm -f "$tmp"; die "could not sign in to Open WebUI as $(get_env OPENWEBUI_ADMIN_EMAIL) (if you changed the Open WebUI admin password, update OPENWEBUI_ADMIN_PASSWORD in .env)"; }
+  # In trusted-header mode Open WebUI ignores the password and signs in the header's user; the form still needs both fields.
+  printf '{"email":"","password":""}' |
+    portal_curl chat /api/v1/auths/signin -fsS -m 30 -o "$tmp" -H 'Content-Type: application/json' --data-binary @- ||
+    { rm -f "$tmp"; die "could not sign in to Open WebUI through the portal as $(get_env OPENWEBUI_ADMIN_EMAIL) — see ./stack logs open-webui"; }
   token="$(json_get token < "$tmp")"
   [ -n "$token" ] || { rm -f "$tmp"; die "Open WebUI sign-in returned no token"; }
-  curl_auth "$token" -fsS -m 30 -X POST -o "$tmp" "$base/api/v1/auths/api_key" || { rm -f "$tmp"; die "could not create Open WebUI API key"; }
+  portal_curl_auth "$token" chat /api/v1/auths/api_key -fsS -m 30 -X POST -o "$tmp" || { rm -f "$tmp"; die "could not create Open WebUI API key"; }
   key="$(json_get api_key < "$tmp")"; rm -f "$tmp"
   case "$key" in sk-?*) ;; *) die "unexpected Open WebUI API key response" ;; esac
   set_env OPENWEBUI_API_KEY "$key"
@@ -485,11 +525,14 @@ setup_keys_and_ui() {
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
   setup_litellm_admin
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
+  up_portal
+  portal_session_or_die
   ensure_openwebui_api_key
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
   owui_install_cost_filter
   sync_budget_banner
+  portal_session_end
 }
 
 # --- ./stack models ---
@@ -500,9 +543,11 @@ models_recheck() {
   [ -f "$ENV_FILE" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
   check_prereqs
   setup_bringup_and_probe
-  run_phase "Open WebUI + shared-mcp" "open-webui shared-mcp" dc up -d --wait open-webui shared-mcp
+  run_phase "Open WebUI + shared-mcp + portal" "open-webui shared-mcp portal" dc up -d --wait open-webui shared-mcp portal
+  portal_session_or_die
   sync_openwebui_models
   owui_install_cost_filter
+  portal_session_end
 }
 
 cmd_models() {
@@ -561,7 +606,7 @@ cmd_costs() {
     *) printf '  Total (all keys, last 30 days): unavailable (HTTP %s)\n' "$code" ;;
   esac
   rm -f "$tmp"
-  printf '\nBreakdown by model and day: http://127.0.0.1:%s/ui → Usage (login: %s / LITELLM_UI_PASSWORD in .env)\n' "$(get_env LITELLM_PORT)" "$(litellm_ui_user)"
+  printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   age="$(prices_age_days)"
   if [ -z "$age" ]; then warn "catalog/prices.tsv has no '# as_of:' date — prices may be stale"
@@ -570,30 +615,30 @@ cmd_costs() {
 
 # Open WebUI model names/prices, the cost filter and budget banners: lib/owui.sh
 
-# Passwords are printed only on the very first setup (when the Open WebUI admin was just created);
-# afterwards the summary points at .env so re-runs and updates don't leave them in scrollback/logs.
+# The portal password is printed once: by the first summary after setup generated it (first setup, or the first
+# setup after an update from v0.1.x); afterwards the summary points at .env so re-runs and updates don't leave
+# it in scrollback/logs. The LiteLLM and RustFS sign-ins are on the portal's Home page (copy buttons).
 print_summary() {
-  local owui_login lite_login cb haiku O_RED O_GRN O_YEL O_OFF
+  local login cb haiku O_RED O_GRN O_YEL O_OFF
   out_colors
-  if [ "${FIRST_SETUP:-0}" = 1 ]; then
-    owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / $(get_env OPENWEBUI_ADMIN_PASSWORD) (initial password — shown once; also in .env)"
-    lite_login="$(litellm_ui_user) / $(get_env LITELLM_UI_PASSWORD)"
+  if [ ! -e "$STATE_DIR/portal-password-shown" ] && [ -n "$(get_env PORTAL_PASSWORD)" ]; then
+    login="password $(get_env PORTAL_PASSWORD)   (shown once; also PORTAL_PASSWORD in .env)"
+    mkdir -p "$STATE_DIR" && : > "$STATE_DIR/portal-password-shown"
   else
-    owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / see OPENWEBUI_ADMIN_PASSWORD in .env"
-    lite_login="$(litellm_ui_user) / see LITELLM_UI_PASSWORD in .env"
+    login="password: PORTAL_PASSWORD in .env"
   fi
   cb="$(claude_bedrock_cmd)"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   cat <<SUMMARY
 
   ${O_GRN}bedrock-now is up.${O_OFF}
 
-  Open WebUI      http://127.0.0.1:$(get_env OPENWEBUI_PORT)   login: $owui_login
-  LiteLLM admin   http://127.0.0.1:$(get_env LITELLM_PORT)/ui  login: $lite_login
-  Object store    http://127.0.0.1:$(get_env RUSTFS_CONSOLE_PORT)   login: RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY in .env
+  Portal          $(portal_url)   $login
+                  Home, Chat (Open WebUI), Admin (LiteLLM) and Files (RustFS) behind one login
   Claude Code     $cb   (plain \`claude\` is unchanged)
 SUMMARY
   [ -z "$haiku" ] || printf '  Try it          CLAUDE_BEDROCK_MODEL=%s %s -p "Say hello in five words"   (~$0.02)\n' "$haiku" "$cb"
   cat <<SUMMARY
+  LiteLLM API     http://127.0.0.1:$(get_env LITELLM_PORT)   (for tools; keys in .env)
   Costs           ./stack costs             (Bedrock prices as of $(prices_as_of) + spend per key)
   Models          ./stack models            (which models your AWS key can use)
 
@@ -657,17 +702,21 @@ offer_symlink() {
 cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   ensure_images "./stack up"
-  run_phase "bedrock-now" "postgres rustfs litellm open-webui shared-mcp" dc up -d --wait
-  sync_budget_banner   # Open WebUI keeps banners in memory only
+  run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
+  # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup)
+  if portal_session_start; then sync_budget_banner; else warn "could not sign in to the portal — budget banner not refreshed"; fi
+  portal_session_end
   cmd_status
 }
 cmd_down()   { dc down; }
 cmd_logs()   { dc logs -f --tail=200 "$@"; }
-status_url() { # status_url SERVICE -> where to open it
+status_url() { # status_url SERVICE -> where to open it (browser UIs: through the portal)
   case "$1" in
-    litellm) echo "http://127.0.0.1:$(get_env LITELLM_PORT)/ui" ;;
-    open-webui) echo "http://127.0.0.1:$(get_env OPENWEBUI_PORT)" ;;
-    rustfs) echo "http://127.0.0.1:$(get_env RUSTFS_CONSOLE_PORT)" ;;
+    portal) echo "$(portal_url)   (Home: one login for all)" ;;
+    caddy) echo "- (serves the portal URLs)" ;;
+    open-webui) portal_url chat ;;
+    litellm) echo "$(portal_url admin)/ui" ;;
+    rustfs) portal_url files ;;
     shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
     *) echo "- (internal only)" ;;
   esac
@@ -679,7 +728,7 @@ status_table() {
   out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
-  for s in postgres rustfs litellm open-webui shared-mcp; do
+  for s in $STACK_SERVICES; do
     row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "\t" $3; exit }')"
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
@@ -700,7 +749,8 @@ cmd_status() {
   if ! printf '%s\n' "$ps" | grep -q '	running	'; then
     printf '\n  The stack is not running — start it with ./stack up\n'
   else
-    printf '\n  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
+    printf '\n  Open %s (one login: PORTAL_PASSWORD in .env)   LiteLLM API: http://127.0.0.1:%s\n' "$(portal_url)" "$(get_env LITELLM_PORT)"
+    printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
   fi
 }
 
@@ -709,12 +759,59 @@ _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
 }
 _skip() { printf '  skip  %s (%s)\n' "$1" "$2"; }
 
+# _hdr NAME < curl -D headers -> the value of header NAME (case-insensitive; CR stripped; empty if absent)
+_hdr() { tr -d '\r' | N="$1" awk -F': ' 'tolower($1) == tolower(ENVIRON["N"]) { sub(/^[^:]*: /, ""); print; exit }'; }
+
+# _test_portal — the browser path: Caddy + portal login + the three apps behind it (uses cmd_test's `fails`).
+# Open WebUI publishes no port, so its checks go through Caddy too. The session cookie lives in a mode-600 file
+# in .state/ and is deleted at the end.
+_test_portal() {
+  local code hdr loc csp origin opus
+  origin="$(portal_url)"; opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"; hdr="$(mktemp)"
+  # shellcheck disable=SC2034  # read by portal_curl (lib/portal.sh)
+  PORTAL_JAR=''
+  code="$(portal_curl '' /login -s -m 10 -o /dev/null -w '%{http_code}' || true)"
+  _check "portal login page ($origin)" "$code" 200
+  code="$(portal_curl chat / -s -m 10 -o /dev/null -D "$hdr" -w '%{http_code}' -H 'Accept: text/html' || true)"
+  loc="$(_hdr location < "$hdr")"
+  _check "chat without a session → login" "$code ${loc%%\?*}" "302 $origin/login"
+  code="$(portal_curl chat /api/v1/auths/signin -s -m 10 -o /dev/null -w '%{http_code}' -H 'X-Portal-User: '"$(get_env OPENWEBUI_ADMIN_EMAIL)" \
+    -H 'Content-Type: application/json' -d '{"email":"","password":""}' || true)"
+  _check "spoofed X-Portal-User without a session is refused" "$code" 401
+  code="$(portal_curl nope / -s -m 10 -o /dev/null -w '%{http_code}' || true)"
+  _check "unknown host name is refused" "$code" 404
+  if ! portal_session_start; then
+    _check "portal login (PORTAL_PASSWORD)" "${PORTAL_LOGIN_CODE:-}" 303
+    _skip "checks behind the portal login" "login failed"
+    portal_session_end; rm -f "$hdr"; return 0
+  fi
+  _check "portal login (PORTAL_PASSWORD)" 303 303
+  code="$(portal_curl '' /login?next=http://evil.example/ -s -m 10 -o /dev/null -D "$hdr" -w '%{http_code}' || true)"
+  _check "login refuses a foreign next= (no open redirect)" "$code $(_hdr location < "$hdr")" "303 /"
+  code="$(portal_curl '' /api/summary -s -m 30 -o /dev/null -w '%{http_code}' -H 'X-Requested-With: bedrock-now' || true)"
+  _check "portal Home data (/api/summary)" "$code" 200
+  code="$(portal_curl chat /health -s -m 10 -o /dev/null -w '%{http_code}' || true)"
+  _check "open-webui health (chat.)" "$code" 200
+  if [ -n "$opus" ]; then
+    code="$(portal_curl_auth "$(get_env OPENWEBUI_API_KEY)" chat /api/models -s -m 60 2>/dev/null | grep -c "\"$opus\"" || true)"
+    _check "open-webui sees litellm models" "$([ "${code:-0}" -gt 0 ] && echo yes || echo no)" yes
+  else
+    _skip "open-webui sees litellm models" "no Claude model enabled"
+  fi
+  for k in chat:/ admin:/ui/ files:/rustfs/console/; do
+    code="$(portal_curl "${k%%:*}" "${k#*:}" -s -m 20 -o /dev/null -D "$hdr" -w '%{http_code}' || true)"
+    csp="$(_hdr content-security-policy < "$hdr")"
+    _check "${k%%:*}. loads, framable only by the portal" "$code|$csp|$(_hdr x-frame-options < "$hdr")" "200|frame-ancestors $origin|"
+  done
+  portal_session_end; rm -f "$hdr"
+}
+
 # Every probe below is `|| true` inside its substitution: under set -e/pipefail a transport error or a
 # grep without match must turn into a FAIL line, not silently end the test run.
 cmd_test() {
-  local fails=0 tmp lp op mp code haiku opus sk alias envk k
+  local fails=0 tmp lp mp code haiku opus sk alias envk k
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  tmp="$(mktemp)"; lp="$(get_env LITELLM_PORT)"; op="$(get_env OPENWEBUI_PORT)"; mp="$(get_env SHARED_MCP_PORT)"
+  tmp="$(mktemp)"; lp="$(get_env LITELLM_PORT)"; mp="$(get_env SHARED_MCP_PORT)"
   haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"; opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"
   sk="$(get_env LITELLM_KEY_SETUP)"
 
@@ -748,14 +845,7 @@ cmd_test() {
   else
     _skip "embeddings" "no setup key — run ./stack setup"
   fi
-  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$op/health" || true)"
-  _check "open-webui health" "$code" 200
-  if [ -n "$opus" ]; then
-    code="$(curl_auth "$(get_env OPENWEBUI_API_KEY)" -s -m 60 "http://127.0.0.1:$op/api/models" 2>/dev/null | grep -c "\"$opus\"" || true)"
-    _check "open-webui sees litellm models" "$([ "${code:-0}" -gt 0 ] && echo yes || echo no)" yes
-  else
-    _skip "open-webui sees litellm models" "no Claude model enabled"
-  fi
+  _test_portal
   code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$mp/healthz" || true)"
   _check "shared-mcp health" "$code" 200
   code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$mp/mcp" || true)"

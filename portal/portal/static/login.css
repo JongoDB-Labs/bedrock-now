@@ -1,0 +1,36 @@
+/* Shared tokens + the sign-in page. Public (served before login), so nothing here is sensitive. */
+:root {
+  --bg: #edf0f2; --surface: #ffffff; --ink: #18232e; --muted: #5a6775; --line: #d5dce2;
+  --accent: #1d6a84; --accent-ink: #ffffff; --ok: #2f7d4e; --warn: #a86b12; --bad: #b4373a;
+  --track: #e1e6ea; --sidebar: #e3e8ec;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  --figures: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111820; --surface: #18212b; --ink: #e4e9ee; --muted: #93a0ae; --line: #2a3540;
+    --accent: #73b6cd; --accent-ink: #0e1a21; --ok: #6cc08c; --warn: #e0a84a; --bad: #ee7b7b;
+    --track: #24303b; --sidebar: #141c25;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+code { font-family: var(--mono); font-size: 0.9em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button { font: inherit; cursor: pointer; }
+
+body.login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login-panel { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 32px 28px 24px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+.login h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin: 28px 0 4px; }
+.lede { color: var(--muted); margin: 0 0 20px; }
+.login form { display: grid; gap: 8px; }
+.login label { font-weight: 500; }
+.login input[type=password] { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.login button[type=submit] { margin-top: 8px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.login .error { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; border-left: 3px solid var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.hint { color: var(--muted); font-size: 13px; margin: 20px 0 0; }

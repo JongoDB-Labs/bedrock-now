@@ -5,6 +5,7 @@ STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export STACK_DIR
 . "$STACK_DIR/lib/common.sh"
 . "$STACK_DIR/lib/ports.sh"
+. "$STACK_DIR/lib/portal.sh"
 . "$STACK_DIR/lib/models.sh"
 . "$STACK_DIR/lib/commands.sh"
 . "$STACK_DIR/lib/owui.sh"

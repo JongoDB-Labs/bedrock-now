@@ -1,4 +1,6 @@
-# bedrock-now stack. All host ports bind to 127.0.0.1. Values come from .env (written by ./stack setup).
+# bedrock-now stack. All host ports bind to 127.0.0.1. Browsers reach every UI through caddy (the portal);
+# only the LiteLLM API and the shared MCP server are published directly, for command-line tools.
+# Values come from .env (written by ./stack setup).
 # Vars marked :? are created before the first compose call; the :- ones are filled in later setup steps.
 name: bedrock-now
 
@@ -34,8 +36,7 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
       - s3data:/data
-    ports:
-      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9001}:9001"
+    # No published port: the console is reached through the portal (files.${PORTAL_HOST}).
     logging: *logging
 
   # One-shot: waits for RustFS, creates buckets idempotently, exits 0.
@@ -146,10 +147,11 @@ services:
       ANONYMIZED_TELEMETRY: "false"
       DO_NOT_TRACK: "true"
       SCARF_NO_ANALYTICS: "true"
+      # Login comes from the portal: Caddy deletes any client-sent X-Portal-User and sets it only for a valid
+      # portal session. Safe only because Open WebUI publishes no port (reachable through Caddy alone).
+      WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Portal-User
     volumes:
       - owui:/app/backend/data
-    ports:
-      - "127.0.0.1:${OPENWEBUI_PORT:-8080}:8080"
     depends_on:
       postgres: { condition: service_healthy }
       litellm: { condition: service_healthy }
@@ -179,6 +181,65 @@ services:
     depends_on:
       open-webui: { condition: service_healthy }
       rustfs-init: { condition: service_completed_successfully }
+    logging: *logging
+
+  # Login, Home dashboard, and the auth check Caddy asks before every request (/auth/verify).
+  portal:
+    build: { context: ./portal, target: runtime }
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/portal:local   # per project, like shared-mcp
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    environment:
+      # Not :? — ./stack update pulls images before setup has created these; the portal refuses to start without them.
+      PORTAL_PASSWORD: ${PORTAL_PASSWORD:-}
+      PORTAL_SECRET: ${PORTAL_SECRET:-}
+      PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
+      PORTAL_PORT: ${PORTAL_PORT:-80}
+      PORTAL_USER_EMAIL: ${OPENWEBUI_ADMIN_EMAIL:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      LITELLM_KEY_CLAUDE_CODE: ${LITELLM_KEY_CLAUDE_CODE:-}
+      LITELLM_KEY_OPENWEBUI: ${LITELLM_KEY_OPENWEBUI:-}
+      LITELLM_KEY_SETUP: ${LITELLM_KEY_SETUP:-}
+      LITELLM_UI_USER: ${LITELLM_UI_USER:-admin}   # the admin email once setup created LiteLLM's database admin
+      LITELLM_UI_PASSWORD: ${LITELLM_UI_PASSWORD:-}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-}
+      CLAUDE_BEDROCK_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
+      CLAUDE_BEDROCK_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
+      CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
+    # Read-only: model check results (probe-results.tsv) and catalog prices for Home. No Docker socket.
+    volumes:
+      - ./litellm:/data/litellm:ro,z
+      - ./catalog:/data/catalog:ro,z
+    logging: *logging
+
+  # The only way in for browsers: http://${PORTAL_HOST} and its chat./admin./files. subdomains (caddy/Caddyfile).
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    restart: unless-stopped
+    user: "65534:65534"          # unprivileged: listens on 8080 inside the container
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]   # the image's caddy binary carries this file capability; exec fails without it
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/data, /config]
+    environment:
+      PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
+      PORTAL_ORIGIN: ${PORTAL_ORIGIN:-http://bedrock-now.localhost}   # written by setup: http://HOST[:PORT]
+    depends_on: [portal]
+    # Directory mount, so a Caddyfile replaced by git (new inode) is seen after a restart.
+    volumes:
+      - ./caddy:/etc/caddy:ro,z
+    ports:
+      - "127.0.0.1:${PORTAL_PORT:-80}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/caddy-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     logging: *logging
 
 volumes:

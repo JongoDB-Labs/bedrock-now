@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Sign in · bedrock-now</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/login.css">
+</head>
+<body class="login">
+<main class="login-panel">
+  <div class="brand"><img src="/static/logo.svg" alt="" width="36" height="36"><span>bedrock-now</span></div>
+  <h1>Sign in</h1>
+  <p class="lede">One password opens Home, Chat, Admin and Files on this computer.</p>
+  {{error}}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{next}}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="hint">Forgot it? It is <code>PORTAL_PASSWORD</code> in the <code>.env</code> file of your bedrock-now folder. You stay signed in for 30 days.</p>
+</main>
+</body>
+</html>

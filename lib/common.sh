@@ -89,6 +89,17 @@ set_env() {
   fi
 }
 
+# unset_env KEY -> removes every KEY= line from $ENV_FILE atomically (mode 600 kept); no-op if absent.
+unset_env() {
+  local tmp
+  [ -f "$ENV_FILE" ] || return 0
+  tmp="$(mktemp "${ENV_FILE}.XXXXXX")" || die "unset_env: cannot create temp file next to $ENV_FILE"
+  chmod 600 "$tmp"
+  if ! K="$1" awk 'index($0, ENVIRON["K"] "=") != 1' "$ENV_FILE" > "$tmp" || ! mv "$tmp" "$ENV_FILE"; then
+    rm -f "$tmp"; die "unset_env: failed to update $ENV_FILE"
+  fi
+}
+
 # ensure_env KEY VALUE -> set only if currently empty (makes setup idempotent).
 ensure_env() { [ -n "$(get_env "$1")" ] || set_env "$1" "$2"; }
 

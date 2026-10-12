@@ -6,6 +6,14 @@
 . "$STACK_DIR/lib/owui.sh"
 FIX="$STACK_DIR/tests/fixtures/catalog.tsv"
 
+test_owui_calls_go_through_the_portal() {
+  printf 'OPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"
+  portal_curl_auth() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$TMP/calls"; printf 200; }
+  assert_eq "$(_owui_get /api/v1/x "$TMP/o")" 200
+  assert_eq "$(_owui_post /api/v1/y '{}' "$TMP/o")" 200
+  assert_eq "$(cat "$TMP/calls")" "$(printf 'sk-o|chat|/api/v1/x\nsk-o|chat|/api/v1/y')"
+}
+
 _fixtures() {
   CATALOG="$FIX"; PRICES="$STACK_DIR/tests/fixtures/prices.tsv"; DISPLAY_CATALOG="$STACK_DIR/tests/fixtures/display.tsv"
 }
@@ -16,7 +24,7 @@ _need_python() { command -v python3 >/dev/null 2>&1 || { echo "python3 not on ho
 # $TMP/posts as "PATH BODY" and answer ${POST_CODE:-200} with ${POST_BODY:-{\}}. `dc exec -T open-webui
 # python3 …` runs the local python3.
 _stub_owui() {
-  printf 'OPENWEBUI_PORT=8082\nOPENWEBUI_API_KEY=sk-o\n' >> "$ENV_FILE"
+  printf 'OPENWEBUI_API_KEY=sk-o\n' >> "$ENV_FILE"
   _owui_get() { local r; r="$(get_reply "$1")"; printf '%s' "${r#* }" > "$2"; printf '%s' "${r%% *}"; }
   _owui_post() { printf '%s %s\n' "$1" "$2" >> "$TMP/posts"; printf '%s' "${POST_BODY:-{\}}" > "$3"; printf '%s' "${POST_CODE:-200}"; }
   dc() { shift 3; "$@"; }
@@ -397,7 +405,7 @@ test_db_admin_failure_reports_step() {
 }
 
 test_setup_litellm_admin_turns_env_login_off_once() {
-  printf 'LITELLM_UI_PASSWORD=Bn9-0123456789ab\n' > "$ENV_FILE"
+  printf 'LITELLM_UI_PASSWORD=Bn9-0123456789ab\nOPENWEBUI_ADMIN_EMAIL=me@x.io\n' > "$ENV_FILE"
   ensure_litellm_db_admin() { echo "admin with $(get_env LITELLM_UI_PASSWORD)" >> "$TMP/calls"; }
   render_config() { echo "render $(get_env LITELLM_DB_ADMIN_READY)" >> "$TMP/calls"; }
   run_phase() { echo "restart" >> "$TMP/calls"; }
@@ -406,6 +414,7 @@ test_setup_litellm_admin_turns_env_login_off_once() {
   : > "$TMP/calls"
   setup_litellm_admin 2>/dev/null
   assert_eq "$(cat "$TMP/calls")" "admin with Bn9-0123456789ab"   # no second restart
+  assert_eq "$(get_env LITELLM_UI_USER)" "me@x.io"                 # what the portal's Home shows
 }
 
 test_setup_litellm_admin_failure_keeps_env_login() {
