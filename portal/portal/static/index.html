@@ -2,13 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>bedrock-now</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/app-touch-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="bedrock-now">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#e3e8ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141c25" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="/static/login.css">
 <link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/mobile.css">
 <script src="/static/app.js" defer></script>
+<script src="/static/mobile.js" defer></script>
 </head>
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
@@ -25,9 +35,24 @@
     <li><button type="button" class="tab" data-tab="files">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>Files</button>
       <a class="popout" data-app="files" target="_blank" rel="noopener" title="Open Files in its own window" aria-label="Open Files in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
+    <li class="more-item"><button type="button" class="more-btn" id="more-btn" aria-haspopup="dialog" aria-controls="more-sheet" aria-expanded="false">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14v8H3zM7 16h6M10 13v3"/></svg>Desktop</button></li>
   </ul>
   <form method="post" action="/logout" class="logout"><button type="submit">Sign out</button></form>
 </nav>
+
+<div id="more-sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="more-title" hidden>
+  <div class="sheet-panel">
+    <h2 id="more-title">Desktop site</h2>
+    <p class="note">Admin and Files are made for a big screen, so on a phone they open in a new tab. They ask for their own sign-in: copy it from the bottom of Home.</p>
+    <ul class="sheet-links">
+      <li><a class="sheet-link" data-app="admin" target="_blank" rel="noopener">Admin <span>LiteLLM: keys, budgets, logs</span></a></li>
+      <li><a class="sheet-link" data-app="files" target="_blank" rel="noopener">Files <span>RustFS: stored uploads</span></a></li>
+    </ul>
+    <form method="post" action="/logout" class="sheet-logout"><button type="submit">Sign out</button></form>
+    <button type="button" class="sheet-close" id="more-close">Close</button>
+  </div>
+</div>
 
 <main class="stage">
   <section id="home" class="home" aria-labelledby="home-title">
@@ -36,6 +61,8 @@
       <p class="updated"><span id="updated">Loading…</span> <button type="button" id="refresh" class="quiet">Refresh</button></p>
     </header>
     <p id="load-error" class="banner" hidden></p>
+    <!-- Filled by the update notice (bedrock-now update available / admin actions); empty and hidden otherwise. -->
+    <div id="update-notice" class="update-notice" aria-live="polite" hidden></div>
 
     <section id="update-card" class="update-card" aria-labelledby="update-title" hidden>
       <div class="update-head">
@@ -81,6 +108,9 @@
           <button type="button" class="chip" data-filter="bedrock" aria-pressed="false">Bedrock</button>
           <button type="button" class="chip" data-filter="free" aria-pressed="false">OpenRouter free</button>
           <button type="button" class="chip" data-filter="paid" aria-pressed="false">OpenRouter paid</button>
+        </div>
+        <div id="status-filter" class="chips">
+          <button type="button" class="chip" id="enabled-only" aria-pressed="false">Enabled only</button>
         </div>
         <div class="table-wrap">
           <table>

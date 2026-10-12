@@ -27,6 +27,7 @@ function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) {
 
 function showTab(tab) {
   if (tab !== "home" && !Object.prototype.hasOwnProperty.call(APPS, tab)) tab = "home";  // not "constructor" etc.
+  if (window.bnMobile) tab = window.bnMobile.allowTab(tab);  // phones: Home and Chat only (mobile.js)
   for (const b of document.querySelectorAll(".tab")) {
     if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }
@@ -40,6 +41,7 @@ function showTab(tab) {
   remember(tab);
   if (location.hash !== `#${tab}`) history.replaceState(null, "", `#${tab}`);
   if (tab === "home") refresh();
+  document.dispatchEvent(new CustomEvent("bn:tab", { detail: tab }));
 }
 
 // --- formatting ---
@@ -454,5 +456,5 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#home").hidden) refresh(); });
   window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
   loadLogins();
-  showTab(location.hash.slice(1) || recalled() || "home");
+  showTab(location.hash.slice(1) || recalled() || (window.bnMobile ? window.bnMobile.defaultTab() : "home"));
 });

@@ -1,0 +1,138 @@
+/* Phones (< 768 px): bottom tab bar, compact Home, full-height Chat. Tablets (768-1099 px): icon rail.
+   Loaded after app.css; tokens come from login.css. Everything here is layout: no new colours. */
+
+/* Pieces that exist only on some screens. */
+.tabs .more-item, .health-line { display: none; }
+.sheet[hidden] { display: none; }
+
+/* Models: "Enabled only" chip (every screen). */
+#status-filter { margin-top: -4px; }
+.only-enabled tbody tr:has(.status-off) { display: none; }
+
+/* iOS dictation tip above Chat (iPhone and iPad). */
+.voice-hint { position: absolute; inset: 0 0 auto 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  min-height: var(--hint-h); padding: 0 4px 0 max(14px, env(safe-area-inset-left)); font-size: 13.5px; line-height: 1.3;
+  background: var(--sidebar); border-bottom: 1px solid var(--line); color: var(--ink); }
+.voice-hint span { flex: 1; }
+.hint-close { flex: none; width: 44px; height: 44px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 15px; }
+.hint-close:hover { color: var(--ink); }
+:root { --hint-h: 44px; }
+.frames.hint-on iframe[data-app="chat"] { top: var(--hint-h); height: calc(100% - var(--hint-h)); }
+
+/* Touch screens: every control at least 44 px tall. */
+@media (pointer: coarse) {
+  .chip, .copy, .quiet, .logout button { min-height: 44px; }
+  .chip, .quiet { padding-inline: 14px; }
+  .popout { width: 44px; height: 44px; }
+  .tab { min-height: 44px; }
+}
+
+/* ---------- Tablets: the sidebar becomes an icon rail ---------- */
+@media (min-width: 768px) and (max-width: 1099.98px) {
+  /* Same keyboard-aware height as on phones (an iPad's keyboard would otherwise cover Chat's input). */
+  body.shell { position: fixed; left: 0; right: 0; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
+    grid-template-columns: 76px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .stage { height: 100%; }
+  .sidebar { padding: max(16px, env(safe-area-inset-top)) 8px max(14px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); align-items: stretch; }
+  .sidebar .brand { justify-content: center; padding: 0; }
+  .sidebar .brand span, .popout { display: none; }
+  .tabs { gap: 6px; }
+  .tab { justify-content: center; gap: 0; min-height: 48px; padding: 0; font-size: 0; }
+  .tab svg { width: 22px; height: 22px; }
+  .tab[aria-current="page"] { box-shadow: inset 3px 0 0 var(--accent); }
+  .logout button { padding: 8px 4px; font-size: 12px; text-align: center; line-height: 1.2; }
+}
+
+/* ---------- Phones and tablets: the models table becomes a card list ---------- */
+@media (max-width: 1099.98px) {
+  .table-wrap { overflow: visible; margin: 0; }
+  .models table, .models tbody { display: block; }
+  .models thead { display: none; }
+  .models tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name status" "prov kind price" "why why why";
+    gap: 3px 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .models tbody tr:last-child { border-bottom: 0; }
+  .models td { display: block; padding: 0; border: 0; }
+  .models td.name { grid-area: name; white-space: normal; overflow-wrap: anywhere; font-family: var(--sans); font-size: 15px; font-weight: 500; line-height: 1.35; }
+  .models td.provider { grid-area: prov; font-size: 13px; }
+  .models td:nth-child(3) { grid-area: kind; color: var(--muted); font-size: 13px; }
+  .models td:nth-child(4) { grid-area: status; align-self: start; justify-self: end; font-size: 12.5px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid currentColor; white-space: nowrap; }
+  .models td.price { grid-area: price; text-align: right; white-space: normal; font-size: 13px; }
+  .models td.why { grid-area: why; font-size: 12.5px; }
+  .models td.why:empty { display: none; }
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 767.98px) {
+  /* The shell is exactly the visible viewport (mobile.js sets --app-h from visualViewport), so the on-screen
+     keyboard shrinks Chat instead of covering its input. Falls back to the dynamic viewport height. */
+  html, body.shell { overscroll-behavior: none; }
+  body.shell { position: fixed; left: 0; right: 0; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .stage { grid-row: 1; height: auto; min-height: 0; }
+
+  .sidebar { grid-row: 2; flex-direction: row; gap: 0; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .sidebar .brand, .sidebar > .logout, .popout { display: none; }
+  .tabs { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+  .tabs li:has(> [data-tab="admin"]), .tabs li:has(> [data-tab="files"]) { display: none; }
+  .tabs li { border-radius: 0; }
+  .tabs .more-item { display: flex; }
+  .tab, .more-btn { flex: 1; flex-direction: column; justify-content: center; gap: 3px; min-height: 56px; padding: 6px 4px 4px;
+    border: 0; border-radius: 0; background: none; color: var(--muted); font-size: 11.5px; font-weight: 500; text-align: center; }
+  .tab svg, .more-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .more-btn { display: flex; align-items: center; }
+  .tab[aria-current="page"] { background: none; color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+  .more-btn[aria-expanded="true"] { color: var(--ink); }
+  .kb-open .sidebar { display: none; }
+
+  /* Home, compact: spend, then health, then models as cards, then sign-ins. Claude Code stays on the desktop. */
+  .home { padding: max(18px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+  .home-head h1 { font-size: 24px; }
+  .grid { display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; }
+  .col { display: contents; }
+  .col > section { padding: 16px; border-radius: 12px; }
+  .spend { order: 1; } .services { order: 2; } .models { order: 3; } .logins { order: 4; }
+  .claude { display: none; }
+  .figure { font-size: 38px; }
+  .total { margin-bottom: 14px; }
+  .note { font-size: 12.5px; }
+
+  .services h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .services { padding: 0; }
+  .health-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; padding: 0 16px; border: 0;
+    background: none; color: var(--ink); text-align: left; font-weight: 500; border-radius: 12px; }
+  .health-line .health-text { flex: 1; }
+  .health-line.down .dot { background: var(--bad); }
+  .health-line .chev { width: 8px; height: 8px; border: solid var(--muted); border-width: 0 1.6px 1.6px 0; transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
+  .health-line[aria-expanded="true"] .chev { transform: rotate(-135deg) translateY(-2px); }
+  .services:not(.expanded) #services { display: none; }
+  .services.expanded #services { padding: 0 16px 10px; }
+  .svc-list li { grid-template-columns: 12px minmax(0, 1fr); }
+  .svc-list li:first-child { border-top: 1px solid var(--line); padding-top: 8px; }
+  .svc-detail { grid-column: 2; text-align: left; }
+
+  .chips { gap: 8px; }
+
+  .toast { left: 16px; right: 16px; bottom: calc(72px + env(safe-area-inset-bottom)); text-align: center; }
+
+  /* Desktop sheet. */
+  .sheet { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-end; background: color-mix(in srgb, #000 40%, transparent); }
+  .sheet-panel { width: 100%; padding: 22px max(18px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+    background: var(--surface); border-radius: 16px 16px 0 0; border-top: 1px solid var(--line); transform: translateY(16px); opacity: 0; transition: transform .18s ease-out, opacity .18s; }
+  .sheet.open .sheet-panel { transform: none; opacity: 1; }
+  .sheet h2 { margin: 0; font-size: 18px; font-weight: 600; }
+  .sheet .note { margin: 6px 0 14px; }
+  .sheet-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .sheet-link { display: flex; flex-direction: column; justify-content: center; min-height: 56px; padding: 8px 14px; border: 1px solid var(--line);
+    border-radius: 10px; color: var(--ink); text-decoration: none; font-weight: 600; }
+  .sheet-link span { font-weight: 400; font-size: 13px; color: var(--muted); }
+  .sheet-logout { margin: 14px 0 0; }
+  .sheet-logout button, .sheet-close { width: 100%; min-height: 48px; border-radius: 10px; font-weight: 500; }
+  .sheet-logout button { border: 1px solid var(--line); background: none; color: var(--bad); }
+  .sheet-close { margin-top: 8px; border: 0; background: var(--bg); color: var(--ink); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-panel, .health-line .chev { transition: none; }
+}

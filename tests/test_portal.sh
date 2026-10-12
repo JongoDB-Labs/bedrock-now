@@ -142,6 +142,16 @@ test_compose_portal_state_and_caddy_hardening() {
   assert_contains "$(cat "$STACK_DIR/caddy/Caddyfile")" "max_size 16KB"
 }
 
+test_caddy_web_app_files_are_public_before_login() {
+  # Browsers fetch the manifest, its icons and the service worker without the session cookie.
+  local line; line="$(grep '@public path' "$STACK_DIR/caddy/Caddyfile")"
+  assert_contains "$line" " /manifest.webmanifest"
+  assert_contains "$line" " /sw.js"
+  assert_contains "$line" " /icons/app-*"
+  # ...but never the provider logos or anything else under /icons/ or /static/ beyond the login page's own files.
+  case "$line" in *" /icons/*"*|*" /static/*"*) echo "public paths too broad: $line" >&2; return 1 ;; esac
+}
+
 test_check_port_allows_80_only_for_the_portal() {
   (check_port PORTAL_PORT 80) || return 1
   if (check_port LITELLM_PORT 80) 2>/dev/null; then return 1; fi

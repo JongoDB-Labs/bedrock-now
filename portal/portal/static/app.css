@@ -139,13 +139,5 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 @media (max-width: 960px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
 }
-@media (max-width: 640px) {
-  body.shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .sidebar { flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
-  .sidebar .brand span, .popout { display: none; }
-  .tabs { display: flex; }
-  .logout { margin: 0 0 0 auto; }
-  .stage { height: calc(100vh - 52px); }
-  .figure { font-size: 36px; }
-}
+/* Phones and tablets: mobile.css. */
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }

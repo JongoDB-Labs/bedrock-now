@@ -85,6 +85,27 @@ is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup 
 password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
+### Using it on your phone
+
+The portal is a web app you can put on your home screen. The stack only listens on this computer by default,
+so a phone needs remote access (HTTPS) turned on first; a tablet or a small browser window works the same way.
+
+- **Install it:** on an iPhone or iPad, open the portal in Safari, tap **Share → Add to Home Screen**. On
+  Android, open it in Chrome and tap **⋮ → Install app** (Chrome offers this over HTTPS only; over plain
+  http it can still add a shortcut). It opens full screen with the bedrock-now icon, like any other app.
+- **Phone layout:** a tab bar at the bottom with **Home** and **Chat**; the phone opens on Chat and then
+  remembers the tab you used last. Home is compact: total spend and each key's budget bar, one health line
+  (tap it for every service), the update notice when there is one, and the models as cards with an
+  **Enabled only** filter (on by default on a phone). Chat fills the screen and shrinks above the keyboard, so
+  the message box stays visible.
+- **Admin and Files** are desktop apps: on a phone they sit under **Desktop** in the tab bar and open in a new
+  browser tab (they still ask for their own sign-in, copied from the bottom of Home). **Sign out** is there too.
+- **Tablets** get the sidebar as a row of icons.
+- **Dictation on iPhone and iPad:** use the 🎤 on the keyboard. It works in any text box, runs on the device,
+  and does not need Open WebUI's microphone button (Chat shows this tip once; ✕ hides it for good).
+- **Offline:** nothing from your account is stored on the phone. If the computer is asleep or out of reach,
+  the app shows "Can't reach bedrock-now" with a **Try again** button.
+
 ### Chat (Open WebUI)
 
 - **Models and tiers:** the picker shows friendly names with a price tier, e.g. `Claude Sonnet 5.5 · $$`

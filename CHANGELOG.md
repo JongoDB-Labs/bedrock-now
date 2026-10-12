@@ -100,6 +100,20 @@ All notable changes to bedrock-now are documented here. The format follows
   `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
   `.env` alone decides (one warning per command when your shell's key differs).
 
+- **The portal works on phones and installs as an app.** A web app manifest, home-screen icons (drawn from the
+  logo by `python -m portal.appicons`, no image tools needed) and Apple touch icon; "Add to Home Screen" on
+  iOS and "Install app" in Android Chrome (HTTPS). The manifest, `/icons/app-*` and `/sw.js` are public
+  (Caddy and the portal), like the login page. The service worker caches nothing: it only shows a "Can't
+  reach bedrock-now" page when the network is down; `/api/*` and everything else pass straight through.
+- **Phone layout (under 768 px):** bottom tab bar with Home and Chat (phones open on Chat, then the last tab);
+  Admin, Files and Sign out under **Desktop**, opening in a new tab. Compact Home: spend and budget bars, a
+  one-line health summary that expands, an `#update-notice` slot, models as cards with an **Enabled only**
+  filter, sign-ins. Chat fills the screen and follows the on-screen keyboard (visualViewport), with
+  safe-area insets for notched phones. On iPhone and iPad, Chat shows a dismissible tip to use the keyboard's
+  dictation.
+- **Tablets (768-1099 px):** the sidebar becomes an icon rail; models show as cards.
+- Touch targets of at least 44 px on touch screens; reduced motion and light/dark respected throughout.
+
 ## [0.2.1] - 2026-10-12
 
 ### Changed

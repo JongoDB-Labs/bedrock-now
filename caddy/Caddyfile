@@ -51,8 +51,9 @@ http://{$PORTAL_HOST} {
 		request_body /api/admin/* {
 			max_size 4KB
 		}
-		# The login page and what it needs are public; everything else requires a session.
-		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg
+		# The login page and what it needs are public; everything else requires a session. So are the web app
+		# manifest, its home-screen icons and the service worker: browsers fetch them without the cookie.
+		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-*
 		reverse_proxy @public portal:8000
 		import portal_auth
 		reverse_proxy portal:8000

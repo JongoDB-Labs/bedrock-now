@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, icons, prices, summary, updates
+from . import admin, appicons, icons, prices, summary, updates
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -240,6 +240,21 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
+    # Installable web app (Add to Home Screen). Public, like the login page: browsers fetch the manifest and its
+    # icons without the session cookie. Nothing here is per-user.
+    async def manifest(request: Request) -> Response:
+        return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json",
+                            headers={"Cache-Control": "no-cache"})
+
+    async def service_worker(request: Request) -> Response:
+        return FileResponse(STATIC / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    async def app_icon(request: Request) -> Response:
+        name = f"app-{request.path_params['rest']}.png"
+        if name not in appicons.FILES:
+            return PlainTextResponse("not found", status_code=404)
+        return FileResponse(STATIC / "icons" / name, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
     async def icon(request: Request) -> Response:
         """A provider logo from catalog/icons for Home's model table (behind the login at Caddy, like Home)."""
         f = icons.file(settings.catalog_dir, request.path_params["path"])
@@ -279,6 +294,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),
             Route("/favicon.svg", favicon),
+            Route("/manifest.webmanifest", manifest),
+            Route("/sw.js", service_worker),
+            Route("/icons/app-{rest}.png", app_icon),  # before the catalog logos: app-* names are ours
             Route("/icons/{path:path}", icon),
             Mount("/static", StaticFiles(directory=STATIC), name="static"),
         ],
