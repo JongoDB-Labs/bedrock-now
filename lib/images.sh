@@ -135,6 +135,13 @@ $2
 EOF
 }
 
+# _present_only < plan -> the plan lines whose image still exists (Docker's containerd image store drops an
+# untagged build by itself, so a recorded ID may simply be gone)
+_present_only() {
+  local ids; ids="$(image_sizes | cut -f1)"
+  I="$ids" awk -F'\t' 'BEGIN { n = split(ENVIRON["I"], a, "\n"); for (i = 1; i <= n; i++) have[a[i]] = 1 } ($1 in have)'
+}
+
 # images_remove PLAN — removes each image by ID (never forced: an image that something else still tags or
 # uses stays) and prints "freed N (labels)". Sets CLEAN_SUMMARY. Writes
 # .state/images/last-clean (freed_bytes=, summary=, at=) for the host helper.
@@ -144,6 +151,8 @@ images_remove() {
   while IFS='	' read -r id ref; do
     [ -n "$id" ] || continue
     b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"
+    # Not listed = already gone (Docker's containerd image store drops an untagged build by itself).
+    [ -n "$b" ] || continue
     if docker image rm "$id" >/dev/null 2>&1; then
       freed=$((freed + ${b:-0})); labels="$labels, $(image_label "$ref")"
     else
@@ -176,7 +185,7 @@ images_after_update() {
   now="$(project_refs | snapshot_refs)"
   keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/before.tsv")"
   cand="$(cat "$d/previous.tsv" 2>/dev/null; project_dangling | sed 's/$/	/')"
-  plan="$(cleanup_plan "$keep" "$cand" "$(_protected)")"
+  plan="$(cleanup_plan "$keep" "$cand" "$(_protected)" | _present_only)"
   [ ! -f "$d/before.tsv" ] || mv "$d/before.tsv" "$d/previous.tsv"
   printf '%s\n' "$now" > "$d/current.tsv"
   images_remove "$plan"
@@ -190,7 +199,7 @@ clean_plan() {
   now="$(project_refs | snapshot_refs)"
   keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/previous.tsv" "$d/before.tsv")"
   cand="$(cat "$d/current.tsv" 2>/dev/null; project_named_images; project_dangling | sed 's/$/	/')"
-  cleanup_plan "$keep" "$cand" "$(_protected)"
+  cleanup_plan "$keep" "$cand" "$(_protected)" | _present_only
 }
 
 # cmd_clean — ./stack clean: lists what it would remove, asks, removes. --yes skips the question.

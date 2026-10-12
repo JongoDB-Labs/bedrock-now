@@ -156,6 +156,17 @@ test_an_image_docker_still_needs_is_kept_and_said() {
   assert_contains "$(cat "$TMP/err")" "1 image(s) kept because Docker still needs them"
 }
 
+test_images_that_are_already_gone_are_not_reported() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  # containerd image store: the old portal build vanished when it lost its last tag
+  awk -F'\t' '$1 != "P1"' "$TMP/imgs" > "$TMP/imgs.n"; mv "$TMP/imgs.n" "$TMP/imgs"
+  _fake_update 3 L3 P3 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "freed 1.7 GB (old litellm 1)"
+  assert_not_contains "$(cat "$TMP/err")" "portal"
+  assert_not_contains "$(cat "$TMP/dcalls")" "rm P1"
+}
+
 test_cleanup_plan_is_pure_set_arithmetic() {
   plan="$(cleanup_plan "$(printf 'a\nb')" "$(printf 'a\tx:1\nc\tx:2\nc\tx:3\nd\t\ne\t')" "e")"
   assert_eq "$plan" "$(printf 'c\tx:2\nd\t')"

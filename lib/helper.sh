@@ -99,6 +99,7 @@ helper_install() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   [ -x "$STACK_DIR/bin/bedrock-now-helper" ] || die "bin/bedrock-now-helper is missing or not executable"
   mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"
+  touch "$(helper_dir)/helper.log" && chmod 600 "$(helper_dir)/helper.log"   # launchd/systemd output
   ensure_portal_dirs
   uid="$(id -u)"
   case "$(_helper_os)" in
@@ -145,9 +146,10 @@ helper_uninstall() {
 }
 
 helper_status_text() {
-  local beat age now
+  local beat age now where
   now="$(date +%s)"
-  if helper_installed; then printf 'Update helper: installed (%s)\n' "$(case "$(_helper_os)" in Darwin) helper_plist ;; *) helper_unit_file ;; esac)"
+  if [ "$(_helper_os)" = Darwin ]; then where="$(helper_plist)"; else where="$(helper_unit_file)"; fi
+  if helper_installed; then printf 'Update helper: installed (%s)\n' "$where"
   else printf 'Update helper: not installed (./stack helper install)\n'; fi
   beat="$(sed -n 's/.*"heartbeat": \([0-9]*\).*/\1/p' "$(helper_beat_file)" 2>/dev/null | head -n 1)"
   if [ -n "$beat" ]; then age=$((now - beat)); printf '  last seen %ss ago%s\n' "$age" "$([ "$age" -le 30 ] && echo ' (running)' || echo ' (not running?)')"; fi
@@ -309,7 +311,9 @@ helper_run_job() {
     return 0
   fi
   case "$action" in
-    update) helper_write_status "done" "Updated to $JOB_VERSION${JOB_FREED:+ · freed $(fmt_bytes "$JOB_FREED")}" ;;
+    update)
+      if [ "${JOB_FREED:-0}" -gt 0 ]; then helper_write_status "done" "Updated to $JOB_VERSION · freed $(fmt_bytes "$JOB_FREED")"
+      else helper_write_status "done" "Updated to $JOB_VERSION"; fi ;;
     rollback) helper_write_status "done" "Rolled back to $JOB_VERSION" ;;
     clean) helper_write_status "done" "${summary:-Cleaned up}" ;;
   esac

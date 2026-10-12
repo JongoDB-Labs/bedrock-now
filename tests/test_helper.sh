@@ -224,3 +224,29 @@ test_dispatcher_and_uninstall_know_the_helper() {
   assert_contains "$(sed -n '/^cmd_uninstall() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "helper_uninstall"
   if (cmd_helper bogus) 2>/dev/null; then return 1; fi
 }
+
+test_update_without_freed_space_says_just_the_version() {
+  _checkout; _req update
+  last_clean_zero() { printf 'freed_bytes=0\nsummary=nothing to free\nat=%s\n' "$(date +%s)" > "$STATE_DIR/images/last-clean"; }
+  # the fake ./stack reports 3.1 GB freed; then one that frees nothing must not say "freed 0 B"
+  helper_poll_once 2>/dev/null
+  assert_contains "$(_status)" '"message": "Updated to v0.3.0 · freed 3.1 GB"'
+  last_clean_zero; sed -i.bak '/last-clean/d' "$STACK_DIR/stack"; rm -f "$STACK_DIR/stack.bak"
+  git -C "$STACK_DIR" commit -qam "frees nothing"
+  _req update 0 ffffffffffffffffffffffffffffffff
+  helper_poll_once 2>/dev/null
+  assert_contains "$(_status)" '"message": "Updated to v0.3.0-1-g'
+  assert_not_contains "$(_status)" "freed 0"
+}
+
+test_helper_status_text_shows_install_and_last_job() {
+  _checkout; _stub_services; HELPER_OS=Darwin
+  out="$(helper_status_text)"
+  assert_contains "$out" "not installed (./stack helper install)"
+  helper_install 2>/dev/null; helper_heartbeat; JOB_ID=x; JOB_ACTION=clean; helper_write_status "done" "nothing to free"
+  out="$(helper_status_text)"
+  assert_contains "$out" "installed ($TMP/LaunchAgents/io.bedrock-now.helper.bn-t.plist)"
+  assert_contains "$out" "(running)"
+  assert_contains "$out" "last job: clean — done: nothing to free"
+  assert_eq "$(ls -l "$(helper_dir)/helper.log" | cut -c1-10)" "-rw-------"
+}
