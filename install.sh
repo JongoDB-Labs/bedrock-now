@@ -13,6 +13,14 @@ say()  { printf '==> %s\n' "$*" >&2; }
 fail() { printf 'xx  %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 has_tty() { { : > /dev/tty; } 2>/dev/null; }
+start_setup() { exec ./setup.sh "$@"; }
+
+# ec2_role_available — run inside the new checkout: an EC2 Linux host (firmware markers, never macOS) whose IMDSv2
+# names an IAM role, per the checkout's own lib/host.sh (older releases don't have it: no).
+ec2_role_available() {
+  [ -f lib/host.sh ] || return 1
+  STACK_DIR="$PWD" bash -c '. lib/common.sh && . lib/host.sh && instance_role_name >/dev/null' 2>/dev/null
+}
 
 prereq_hint() { # prereq_hint TOOL OS(uname -s) -> how to get it
   case "$1:$2" in
@@ -89,10 +97,13 @@ main() {
   cd "$dir"
   if has_tty; then
     say "starting setup (./setup.sh $*)"
-    exec ./setup.sh "$@" < /dev/tty
+    start_setup "$@" < /dev/tty
   elif [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
     say "no terminal; AWS credentials found in the environment — running ./setup.sh --yes"
-    exec ./setup.sh --yes "$@"
+    start_setup --yes "$@"
+  elif ec2_role_available; then
+    say "no terminal; this EC2 instance has an IAM role — running ./setup.sh --yes (it uses the role; no keys stored)"
+    start_setup --yes "$@"
   fi
   say "no terminal to ask for your AWS key. Next, run:"
   printf '\n    cd %s && ./setup.sh\n\n' "$qdir"

@@ -61,13 +61,15 @@ built in). Over Tailscale, mosh's UDP ports need no firewall changes.
 A sleeping Mac answers no SSH. While you're away, run:
 
 ```bash
+cd ~/bedrock-now               # your checkout
 ./stack serve                  # brings the stack up and keeps the Mac awake until Ctrl-C
 ./stack serve --background     # the same without a terminal; ./stack serve --stop ends it
 ```
 
 It holds `caffeinate -i -s`: no idle sleep, and no system sleep **on AC power** (macOS ignores `-s` on
-battery; `serve` warns). It also reminds you to turn on Docker Desktop's *Start Docker Desktop when you sign
-in* so the stack comes back after a restart (it only reads Docker Desktop's settings, never changes them).
+battery; `serve` warns). If Docker Desktop's *Start Docker Desktop when you sign in* is switched off, it reminds
+you to turn it on so the stack comes back after a restart (it only reads Docker Desktop's settings, never changes
+them). `--background` remembers the wake lock's pid and start time, so `--stop` never kills another process.
 
 **Lid closed:** a MacBook sleeps when you close the lid, whatever `caffeinate` holds, unless it's in
 closed-display ("clamshell") mode: on power **and** connected to an external display (plus keyboard/mouse).
@@ -81,8 +83,9 @@ the Mac awake to run a one-click Update from Home, and `serve` provides that. If
 is running when you start `serve`, it doesn't start the stack in the middle of it (the update does that) and
 only keeps the Mac awake. The helper itself never prevents sleep.
 
-On Linux, `./stack serve` holds a `systemd-inhibit` sleep lock when available (for laptops); servers don't
-sleep, so there is nothing to do there.
+On Linux, `./stack serve` only acts on a laptop (a machine with a battery): it holds a `systemd-inhibit` sleep
+lock until Ctrl-C, and says so if the inhibitor can't be taken (or `systemd-inhibit` is missing). Without a
+battery it only notes that servers don't sleep. `--background` is macOS-only; on a Linux laptop run `serve` in tmux.
 
 ## Why not Claude Code's Remote Control?
 

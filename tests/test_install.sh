@@ -95,6 +95,27 @@ test_main_bad_ref_explains_recovery() {
   assert_contains "$out" "git -C $TMP/inst checkout <ref>"
 }
 
+test_main_without_tty_on_ec2_with_a_role_runs_setup_yes() {
+  out="$( (unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+    ec2_role_available() { return 0; }; start_setup() { echo "SETUP $*"; }
+    BEDROCK_NOW_REF="" _installer) 2>&1)"
+  assert_contains "$out" "SETUP --yes"
+  assert_contains "$out" "IAM role"
+}
+
+test_main_without_tty_off_ec2_does_not_run_setup() {
+  out="$( (unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+    ec2_role_available() { return 1; }; start_setup() { echo "SETUP $*"; }
+    BEDROCK_NOW_REF="" _installer) 2>&1)"
+  assert_not_contains "$out" "SETUP"
+  assert_contains "$out" "./setup.sh"
+}
+
+test_ec2_role_available_needs_the_checkouts_host_lib() {
+  cd "$TMP" || return 1
+  if ec2_role_available; then return 1; fi   # no lib/host.sh here (e.g. an older release was checked out)
+}
+
 test_installer_documents_repo_override() {
   assert_contains "$(sed -n 1,12p "$STACK_DIR/install.sh")" "BEDROCK_NOW_REPO"
 }

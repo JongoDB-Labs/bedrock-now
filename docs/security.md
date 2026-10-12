@@ -5,8 +5,11 @@ Back to the [README](../README.md#security-model).
 ## What stays local
 
 - Every host port binds to `127.0.0.1`. All containers share one private Docker network.
-- AWS credentials reach only the `litellm` container (and throwaway `aws-cli` containers during setup). They
-  are never passed on a command line. Every secret lives in `.env` (mode 600, never committed).
+- With an access key, AWS credentials reach only the `litellm` container (and throwaway `aws-cli` containers
+  during setup). They are never passed on a command line. With an EC2 instance role (`AWS_AUTH=instance-role`)
+  no key exists, but every container on the VM can fetch the role's temporary credentials from the metadata
+  service (hop limit 2); `docs/cloud-vm.md` › *Keeping the role's credentials to LiteLLM* shows how to firewall
+  that. The role is only ever used on a machine whose firmware says EC2. Every secret lives in `.env` (mode 600, never committed).
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
   `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
 - LiteLLM uses its **bundled** price map (no runtime fetch from GitHub); our prices override it. LiteLLM's

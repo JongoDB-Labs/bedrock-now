@@ -45,12 +45,15 @@ Create a role for EC2 (trusted entity: `ec2.amazonaws.com`) named `bedrock-now`,
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": [
-        "arn:aws:bedrock:us-east-1::foundation-model/*",
-        "arn:aws:bedrock:us-east-2::foundation-model/*",
-        "arn:aws:bedrock:us-west-2::foundation-model/*",
-        "arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.*",
-        "arn:aws:bedrock:us-west-2:111122223333:inference-profile/us.*"
+        "arn:aws:bedrock:us-*::foundation-model/*",
+        "arn:aws:bedrock:us-*:111122223333:inference-profile/us.*"
       ]
+    },
+    {
+      "Sid": "RerankModels",
+      "Effect": "Allow",
+      "Action": "bedrock:Rerank",
+      "Resource": "*"
     },
     {
       "Sid": "ListModelsOptional",
@@ -62,12 +65,23 @@ Create a role for EC2 (trusted entity: `ec2.amazonaws.com`) named `bedrock-now`,
 }
 ```
 
-- The `us.` **inference profiles** are what the catalog calls for most models; a profile routes each request to
-  one of the US regions listed in its definition, so the role needs the foundation-model ARNs in those regions
-  too. `bedrock:InvokeModelWithResponseStream` is required for streaming chat and Claude Code.
-- `arn:aws:bedrock:us-west-2:…` is there for the models only offered in `us-west-2` (the Stability image models)
-  and for a per-model region in `catalog/models.tsv`. Drop the regions you don't use.
-- `bedrock:ListFoundationModels` is optional and has no resource-level scoping (hence `"*"`).
+- `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` (streaming chat and Claude Code) are the
+  core. Most catalog models are called through the `us.` **cross-region inference profiles**; a profile
+  forwards each request to a foundation model in one of several US regions, so the role needs both the profile
+  ARN and the foundation-model ARNs in **every** US region the profile can route to — hence `us-*` for both.
+  To see where a profile routes:
+  ```bash
+  aws bedrock get-inference-profile --region us-east-1 \
+    --inference-profile-identifier us.anthropic.claude-haiku-5-5 --query 'models[].modelArn'
+  ```
+- `bedrock:Rerank` is for Open WebUI's document reranking (Cohere/Amazon rerank models); it has no
+  resource-level scoping, so it needs `"*"` (the reranker model itself is covered by `bedrock:InvokeModel`).
+- `bedrock:ListFoundationModels` is optional and also has no resource-level scoping.
+- **Tighter, optional:** to allow foundation models *only* when reached through your `us.` profiles, add
+  `"Condition": {"StringLike": {"bedrock:InferenceProfileArn": "arn:aws:bedrock:us-*:111122223333:inference-profile/us.*"}}`
+  to a copy of the first statement that lists only the profile-routed models, and keep the directly called ones
+  (embeddings such as `cohere.embed-v4:0` and `amazon.titan-embed-text-v2:0`, Stability in `us-west-2`; see the
+  `litellm_model` column of `catalog/models.tsv`) in an unconditioned statement with their exact ARNs.
 - **AWS Marketplace:** third-party models (anything not made by Amazon, e.g. Anthropic, Meta, Mistral) need a
   one-time Marketplace subscription per account. An admin enables them in the Bedrock console; then the role
   above is enough. If you'd rather let the first call subscribe, the role also needs
@@ -75,6 +89,8 @@ Create a role for EC2 (trusted entity: `ec2.amazonaws.com`) named `bedrock-now`,
   `./stack models` names models that are blocked this way (*no Marketplace access*).
 - For the first login without SSH or open ports, also attach the AWS managed policy
   **`AmazonSSMManagedInstanceCore`** (Systems Manager Session Manager; the agent is preinstalled on AL2023).
+- With an **Elastic IP**, you can also add `"Condition": {"IpAddress": {"aws:SourceIp": "<elastic-ip>/32"}}` to
+  each statement: the role's credentials then don't work from anywhere else, even if they leak.
 
 ### Asking your AWS admin for the role
 
@@ -85,10 +101,11 @@ Create a role for EC2 (trusted entity: `ec2.amazonaws.com`) named `bedrock-now`,
 > can use an instance role, so no long-lived keys are stored anywhere. Could you please:
 >
 > 1. **Create an EC2 role** (or instance profile) named `bedrock-now` with the inline policy in
->    https://github.com/JongoDB-Labs/bedrock-now/blob/main/docs/cloud-vm.md#1-the-iam-role
->    (`bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on US foundation models and our `us.`
->    inference profiles; optional `bedrock:ListFoundationModels`), plus `AmazonSSMManagedInstanceCore` for
->    Session Manager access.
+>    https://github.com/JongoDB-Labs/bedrock-now/blob/main/docs/cloud-vm.md#1-the-iam-role:
+>    `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on US foundation models
+>    (`arn:aws:bedrock:us-*::foundation-model/*`) and our `us.` inference profiles
+>    (`arn:aws:bedrock:us-*:<account>:inference-profile/us.*`), `bedrock:Rerank` (resource `*`), optional
+>    `bedrock:ListFoundationModels` — plus the managed policy `AmazonSSMManagedInstanceCore` for Session Manager.
 > 2. **Enable model access / the Marketplace subscription** for the models I need (`<model>` …) in `us-east-1`.
 > 3. Let me **launch an instance with that role**, or attach it to `<instance-id>` for me.
 >
@@ -116,7 +133,7 @@ aws ec2 run-instances --region us-east-1 \
 
 ### IMDSv2 hop limit 2 (important)
 
-LiteLLM and setup's `aws-cli` check run in containers. Their requests to the instance metadata service pass one
+LiteLLM and setup's `aws-cli` checks run in containers. Their requests to the instance metadata service pass one
 extra network hop (Docker's bridge), so with a hop limit of **1** they get no credentials ("Unable to locate
 credentials"). Amazon Linux 2023 AMIs default to 2; other AMIs often use 1. Check or fix it any time:
 
@@ -127,7 +144,9 @@ aws ec2 modify-instance-metadata-options --instance-id i-0123456789abcdef0 \
   --http-tokens required --http-put-response-hop-limit 2 --http-endpoint enabled
 ```
 
-Setup prints this command (with your instance ID) when the role doesn't work from a container.
+Setup prints this command (with your instance ID) when the role doesn't work from a container. Hop limit 2
+also means **every** container on the VM can reach the role's credentials; see
+[Keeping the role's credentials to LiteLLM](#keeping-the-roles-credentials-to-litellm).
 
 ## 3. Log in and install Docker
 
@@ -139,48 +158,71 @@ sudo dnf install -y docker git openssl
 sudo systemctl enable --now docker
 sudo usermod -aG docker ec2-user
 
-# Compose v2 plugin (not packaged for AL2023)
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
-  -o /usr/local/lib/docker/cli-plugins/docker-compose
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+# Docker Compose v2 and buildx plugins (not packaged for AL2023): pinned versions, checked against their sha256
+case "$(uname -m)" in
+  aarch64) BX_ARCH=arm64
+           COMPOSE_SHA=d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137
+           BUILDX_SHA=e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2 ;;
+  x86_64)  BX_ARCH=amd64
+           COMPOSE_SHA=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
+           BUILDX_SHA=9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b ;;
+esac
+curl -fsSLo /tmp/docker-compose \
+  "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-$(uname -m)"
+curl -fsSLo /tmp/docker-buildx \
+  "https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.linux-$BX_ARCH"
+echo "$COMPOSE_SHA  /tmp/docker-compose" | sha256sum -c -
+echo "$BUILDX_SHA  /tmp/docker-buildx" | sha256sum -c -
+sudo install -D -m 755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+sudo install -D -m 755 /tmp/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
 
 # 2 GB of swap: 4 GB of RAM is enough, swap absorbs the first-start peaks
 sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 && sudo chmod 600 /swapfile
 sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap defaults 0 0' | sudo tee -a /etc/fstab
 
 sudo su - ec2-user     # a fresh login picks up the docker group
-docker compose version
+docker compose version && docker buildx version
 ```
 
-Setup warns if the Docker Engine is older than 28 (older engines can let other machines on the same LAN reach
-ports published on `127.0.0.1`). On EC2 the security group without inbound rules drops such traffic at the
-network interface, so the warning is informational there; update Docker when AL2023 ships a newer package.
+Compose builds the portal and shared-mcp images on the first setup, which needs the buildx plugin; on a
+`t4g.medium` that build takes a few minutes. Setup warns if the Docker Engine is older than 28 (older engines can
+let other machines on the same LAN reach ports published on `127.0.0.1`). On EC2 the security group without
+inbound rules drops such traffic at the network interface, so the warning is informational there; update Docker
+when AL2023 ships a newer package.
 
 ## 4. Install bedrock-now
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash
+cd ~/bedrock-now
 ```
 
-Setup finds the instance role and asks:
+Setup looks for an instance role **only on EC2**: on Linux whose firmware identifies the machine as an EC2
+instance (never on macOS, and never on a network that merely answers `169.254.169.254`). When it finds one and
+no access key is configured, it asks:
 
 ```
-This machine has an AWS IAM role (bedrock-now). Use it instead of an access key (nothing stored in .env)? [Y/n]
+This EC2 instance has an AWS IAM role (bedrock-now). Use it instead of an access key (nothing stored in .env)? [Y/n]
 ```
 
-Answer yes (the default; `--yes` accepts it too). Setup verifies the role from a container
-(`sts get-caller-identity`), writes `AWS_AUTH=instance-role` to `.env` and **no** access key, and continues as
-usual: probe, keys, smoke test. Exported `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or a key already in
-`.env`, take precedence; the role is only offered when no key is configured.
+Answer yes (the default). Setup then checks, before writing anything, that a **container** gets this role's
+credentials (`sts get-caller-identity`, the ARN must name this role) and that the role may **use Bedrock** (a free,
+deliberately invalid request to the catalog's Haiku model, then the embedding models: an "invalid input" answer
+means authorized). It shows the AWS account and role ARN and asks you to confirm; then it writes
+`AWS_AUTH=instance-role` to `.env`, removes the access-key lines and continues as usual (probe, keys, smoke test).
+With `--yes`, or when the one-liner runs without a terminal (e.g. from EC2 user data), the role is accepted
+without the questions — still only on an EC2 host. Exported `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or a key
+already in `.env`, take precedence; the role is only offered when no key is configured.
 
 Later:
 
 - `./stack rotate-aws` explains there's nothing to rotate (AWS rotates role credentials).
-- `./stack rotate-aws --use-keys` switches to an access key; `./stack rotate-aws --use-instance-role` switches
-  an existing key install to the role (verified first; the key lines are removed from `.env`, deactivate the old
-  key in IAM afterwards).
-- `./stack update` keeps the role mode.
+- `./stack rotate-aws --use-keys` switches to an access key (verified before `.env` changes).
+- `./stack rotate-aws --use-instance-role` switches a key install to the role: the role and its Bedrock access
+  are checked first, the old key ID is printed, then the key lines are removed and LiteLLM restarts (if it
+  doesn't come up, the key lines are put back). Deactivate the old key in IAM afterwards.
+- `./stack update` keeps the role mode. `./stack up` refuses role mode on a machine that isn't an EC2 instance,
+  and key mode without a key.
 
 ## 5. Reach it
 
@@ -191,11 +233,78 @@ itself and see [docs/phone-claude-code.md](phone-claude-code.md):
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --ssh      # --ssh: Tailscale SSH, no SSH keys or port 22 to manage
-./stack ssh-info
+cd ~/bedrock-now && ./stack ssh-info
 ```
 
-Servers don't sleep, so `./stack serve` has nothing to hold on Linux; the stack comes back after a reboot on
+Servers don't sleep, so `./stack serve` has nothing to hold on a VM; the stack comes back after a reboot on
 its own (Docker's restart policy, with `docker.service` enabled as above).
+
+## Keeping the role's credentials to LiteLLM
+
+With a key, only the LiteLLM container receives AWS credentials. With the instance role and hop limit 2,
+**every container on the VM can ask IMDS for the role's credentials**: Open WebUI, the portal, shared-mcp, RustFS,
+Postgres, Caddy, a remote-access sidecar, and anything you `docker run` yourself. The role only allows Bedrock
+calls, so the worst case is Bedrock spend outside LiteLLM's budgets by a compromised container — but it is a
+wider reach than key mode. Two optional hardening steps:
+
+**1. Allow IMDS only for LiteLLM (Linux firewall; needs sudo).** Docker passes container traffic through the
+`DOCKER-USER` iptables chain, so a rule there can drop container requests to `169.254.169.254` except LiteLLM's.
+Docker's default `bridge` network stays allowed: that is where setup's and `./stack models --recheck`'s throwaway
+`aws-cli` containers run (the stack's own services are on the Compose network, not there). LiteLLM's address
+changes when its container is recreated (`./stack up`, `update`), so a timer refreshes the rule every minute.
+Save as `/usr/local/sbin/bedrock-now-imds-guard` (mode 755; set `PROJECT` if you use another
+`COMPOSE_PROJECT_NAME`):
+
+```sh
+#!/bin/sh
+# Containers may reach EC2's metadata service (169.254.169.254) only from LiteLLM and Docker's default bridge.
+set -eu
+PROJECT=bedrock-now
+cid="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=litellm)"
+ip=''
+[ -z "$cid" ] || ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" | awk '{ print $1 }')"
+bridge="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Subnet}}')"
+iptables -N BN-IMDS 2>/dev/null || true
+iptables -F BN-IMDS
+[ -z "$ip" ] || iptables -A BN-IMDS -s "$ip" -j RETURN
+iptables -A BN-IMDS -s "$bridge" -j RETURN
+iptables -A BN-IMDS -j DROP
+iptables -C DOCKER-USER -d 169.254.169.254/32 -j BN-IMDS 2>/dev/null ||
+  iptables -I DOCKER-USER -d 169.254.169.254/32 -j BN-IMDS
+```
+
+and run it from systemd:
+
+```bash
+sudo dnf install -y iptables-nft
+sudo tee /etc/systemd/system/bedrock-now-imds-guard.service >/dev/null <<'EOF'
+[Unit]
+Description=bedrock-now: only LiteLLM may reach the EC2 metadata service
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bedrock-now-imds-guard
+EOF
+sudo tee /etc/systemd/system/bedrock-now-imds-guard.timer >/dev/null <<'EOF'
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now bedrock-now-imds-guard.timer
+```
+
+Check: `docker compose exec open-webui python -c "import urllib.request as u; u.urlopen('http://169.254.169.254/', timeout=3)"`
+(from `~/bedrock-now`) now times out, while `./stack test` still passes. After LiteLLM is recreated it may wait up
+to a minute for the timer (or run the script by hand). There is deliberately no `./stack` command for this: it
+changes the host firewall as root, so it stays a recipe you read and install yourself. We don't pin a fixed
+Compose subnet for LiteLLM instead, because a fixed subnet would collide with a second copy or an existing
+network.
+
+**2. Bind the credentials to this VM.** With an Elastic IP, the `aws:SourceIp` condition from
+[the role](#1-the-iam-role) makes leaked credentials useless anywhere else.
 
 ## Data residency
 
@@ -220,19 +329,22 @@ on your Mac; `./stack costs` shows it.
 
 ## Other VPS providers (Hetzner, DigitalOcean, …)
 
-The same recipe works with an **IAM user access key** (there is no instance role outside AWS): an arm64 or x86
-VM with 4 GB+ RAM and 30 GB+ disk, Docker Engine 28+ with the Compose plugin from
-[Docker's repository](https://docs.docker.com/engine/install/), the provider's firewall with **no inbound
-rules** except what you need to reach the box the first time (close SSH again once Tailscale is up), then the
-one-line install and your key when setup asks. Use a region near the US Bedrock regions for latency; your
-prompts still go to Bedrock's US regions as above.
+The same recipe works with an **IAM user access key** (there is no instance role outside AWS, and setup never
+asks a metadata service there): an arm64 or x86 VM with 4 GB+ RAM and 30 GB+ disk, Docker Engine 28+ with the
+Compose and buildx plugins from [Docker's repository](https://docs.docker.com/engine/install/), the provider's
+firewall with **no inbound rules** except what you need to reach the box the first time (close SSH again once
+Tailscale is up), then the one-line install and your key when setup asks. Use a region near the US Bedrock
+regions for latency; your prompts still go to Bedrock's US regions as above.
 
 ## What to check on a real EC2 instance
 
-The role detection is unit-tested with stubs; after your first install, confirm:
+The role detection is unit-tested with stubs; after your first install, from `~/bedrock-now`, confirm:
 
-1. `./stack setup` offered the role and printed `authenticated as arn:aws:sts::…:assumed-role/bedrock-now/i-…`.
-2. `grep -c AWS_ACCESS_KEY_ID .env` prints `0`, and `grep AWS_AUTH .env` shows `AWS_AUTH=instance-role`.
-3. `docker compose exec litellm env | grep AWS_` shows only `AWS_REGION_NAME` (no keys).
-4. `./stack test` passes (LiteLLM reached Bedrock with the role's credentials).
-5. With the hop limit set to 1, `./stack setup` stops with the hop-limit command above; set it back to 2.
+1. The first `./stack setup` built the portal and shared-mcp images (buildx) without errors.
+2. Setup offered the role, printed `Bedrock access confirmed with the role` and showed
+   `arn:aws:sts::<account>:assumed-role/bedrock-now/i-…` with your account ID.
+3. `grep -c AWS_ACCESS_KEY_ID .env` prints `0`, and `grep AWS_AUTH .env` shows `AWS_AUTH=instance-role`.
+4. `docker compose exec litellm env | grep AWS_` shows only `AWS_REGION_NAME` (no keys).
+5. `./stack test` passes (LiteLLM reached Bedrock with the role's credentials).
+6. With the hop limit set to 1, `./stack setup` stops with the hop-limit command above; set it back to 2.
+7. If you installed the IMDS guard: the `open-webui` check above times out and `./stack test` still passes.

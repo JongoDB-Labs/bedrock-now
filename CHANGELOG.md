@@ -52,29 +52,41 @@ All notable changes to bedrock-now are documented here. The format follows
   owner's pid; a lock whose process is gone or is no longer ./stack is moved aside and taken over).
 - `UPDATE_REQUIRE_SIGNED_TAGS=true` in `.env`: `./stack update` only checks out release tags that
   `git verify-tag` accepts (docs/security.md › Code provenance).
-- **Cloud VM with an EC2 IAM role, no stored AWS keys.** On EC2, when no access key is configured, setup finds
-  the instance role (IMDSv2, 1 s timeouts, so other machines lose about a second) and offers to use it
-  (default yes): it checks the role from an `aws-cli` container, writes `AWS_AUTH=instance-role` and removes the
-  key lines from `.env`. LiteLLM then gets its credentials from the instance profile through boto3's default
-  chain. `./stack rotate-aws` understands the mode (`--use-keys` / `--use-instance-role` switch between the
-  two). [docs/cloud-vm.md](docs/cloud-vm.md): a `t4g.medium` arm64 / Amazon Linux 2023 recipe with no inbound
-  ports, a least-privilege role policy, the IMDSv2 hop limit 2 that containers need, Docker on AL2023, data
-  residency, costs (~$31/month before Bedrock) and a request template for your AWS admin. All pinned images
-  are published for arm64.
+- **Cloud VM with an EC2 IAM role, no stored AWS keys.** Only on an EC2 host — Linux whose firmware says EC2
+  (DMI asset tag / vendor / UUID; never macOS, so a network answering `169.254.169.254` can't plant credentials)
+  — and only when no access key is configured, setup asks IMDSv2 (1 s timeouts) for the instance role and offers
+  to use it (default yes). Before writing anything it checks from an `aws-cli` container that the credentials
+  are this role's (`sts get-caller-identity`) and that the role may use Bedrock (a free, deliberately invalid
+  invoke on the catalog's Haiku model, then the embedding models), shows the account and role ARN and asks
+  (`--yes` accepts). Then it writes `AWS_AUTH=instance-role` and removes the key lines from `.env`; LiteLLM gets
+  the role's credentials through boto3's default chain. `./stack rotate-aws` understands the mode:
+  `--use-keys` (the key is verified before role mode ends) and `--use-instance-role` (role and Bedrock access
+  checked first, the old key ID printed, the key lines restored if LiteLLM doesn't come up). `./stack up`
+  refuses role mode off EC2 and key mode without a key. The one-line installer runs `setup --yes` without a
+  terminal on an EC2 host with a role. [docs/cloud-vm.md](docs/cloud-vm.md): a `t4g.medium` arm64 / Amazon
+  Linux 2023 recipe with no inbound ports, a least-privilege role policy (US foundation models and `us.`
+  inference profiles, `bedrock:Rerank`), the IMDSv2 hop limit 2 that containers need, pinned and
+  checksum-verified Compose and buildx plugins, an optional firewall recipe that keeps the role's credentials
+  to LiteLLM (with hop limit 2 every container could fetch them), data residency, costs (~$31/month before
+  Bedrock) and a request template for your AWS admin. All pinned images are published for arm64.
 - **`./stack serve`** starts the stack and keeps the Mac awake (`caffeinate -i -s`) until Ctrl-C, printing the
-  portal URL (and the remote URL when remote access is on); it warns on battery power. `--background` holds the
-  wake lock without a terminal and `--stop` ends it. While an update/rollback/clean holds `.state/lock` (from a
-  terminal or the update helper) it only keeps the machine awake and leaves starting the stack to that. On Linux it holds a `systemd-inhibit` lock when available.
-  On macOS, setup and `serve` say how to turn on Docker Desktop's "Start when you sign in" when it's off (they
-  only read Docker Desktop's settings).
+  portal URL (and the remote URL when remote access is configured); it warns on battery power. `--background`
+  holds the wake lock without a terminal and `--stop` ends it (the pid file keeps the process's start time, so a
+  reused pid is never killed). While an update/rollback/clean holds `.state/lock` (from a terminal or the update
+  helper) it only keeps the machine awake and leaves starting the stack to that. On a Linux laptop it holds a
+  `systemd-inhibit` lock (and says so when it can't); on a server it only notes that servers don't sleep. On
+  macOS, setup and `serve` say how to turn on Docker Desktop's "Start when you sign in" when it is explicitly
+  off (they only read Docker Desktop's settings).
 - **`./stack ssh-info`** and [docs/phone-claude-code.md](docs/phone-claude-code.md): Claude Code from your
-  phone over SSH + tmux (the machine's Tailscale name, the SSH command, iOS/Android apps, mosh, Tailscale SSH).
-  No web terminal; Claude Code's Remote Control doesn't work with Bedrock.
+  phone over SSH + tmux (the machine's Tailscale name, the SSH command, iOS/Android apps, mosh, Tailscale SSH;
+  on EC2 without Tailscale it points to Tailscale or Session Manager). No web terminal; Claude Code's Remote
+  Control doesn't work with Bedrock.
 
 ### Changed
 
 - `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
-  `./stack` keeps AWS credentials exported in your shell out of Docker Compose, so `.env` alone decides.
+  `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
+  `.env` alone decides (with one warning when your shell's key differs).
 
 ## [0.2.1] - 2026-10-12
 

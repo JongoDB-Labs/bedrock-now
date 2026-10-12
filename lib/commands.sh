@@ -243,6 +243,8 @@ setup_aws_creds() {
   _reject_temporary_creds "$id"
   region="$(ask "AWS region" "${region:-$(get_env AWS_REGION_NAME)}")"; region="${region:-us-east-1}"
   valid_region "$region" || die "invalid AWS region: '$region' (expected something like us-east-1)"
+  # Leaving the instance role: the key is proven first, so a bad key never ends role mode (lib/host.sh).
+  ! uses_instance_role || verify_key_leaving_role "$id" "$secret" "$region"
   set_env AWS_ACCESS_KEY_ID "$id"; set_env AWS_SECRET_ACCESS_KEY "$secret"; set_env AWS_REGION_NAME "$region"
   unset_env AWS_AUTH
   docker pull -q "$AWS_CLI_IMAGE" >/dev/null || die "could not pull $AWS_CLI_IMAGE (network/Docker Hub?)"
@@ -728,6 +730,7 @@ offer_symlink() {
 cmd_up() {
   local repriced=0 restart=0 before
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_dirs; write_version_file   # lib/version.sh

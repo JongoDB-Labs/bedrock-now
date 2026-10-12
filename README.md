@@ -136,7 +136,7 @@ both devices makes this work from anywhere without open ports. `./stack ssh-info
 for this machine (its Tailscale name, the SSH command, apps, mosh). There is deliberately no web terminal, and
 Claude Code's Remote Control doesn't work with Bedrock or a custom API URL. A sleeping Mac answers no SSH:
 `./stack serve` keeps the stack up and the Mac awake (on AC power, lid open) until Ctrl-C (`--background`
-without a terminal). Step by step, incl. the lid-closed caveats: [docs/phone-claude-code.md](docs/phone-claude-code.md).
+without a terminal; on Linux only laptops get a sleep inhibitor). Step by step, incl. the lid-closed caveats: [docs/phone-claude-code.md](docs/phone-claude-code.md).
 
 ### Shared files and knowledge (MCP)
 
@@ -270,8 +270,8 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 ## Run it on a cloud VM
 
 An always-on VM saves keeping a laptop awake. On **EC2**, give the instance an **IAM role** with Bedrock access
-and setup offers to use it instead of an access key (default yes; `AWS_AUTH=instance-role` in `.env`, no keys
-stored; AWS rotates the role's credentials). A `t4g.medium` (2 vCPU, 4 GB, arm64; every image runs on arm64)
+and setup offers to use it instead of an access key (only on an EC2 host; it proves the role can use Bedrock and
+shows the account first; `AWS_AUTH=instance-role` in `.env`, no keys stored; AWS rotates the role's credentials). A `t4g.medium` (2 vCPU, 4 GB, arm64; every image runs on arm64)
 with Amazon Linux 2023, a 30–40 GB gp3 disk and a security group with **no inbound rules** costs about
 $31/month in `us-east-1` before Bedrock usage; you reach it over Tailscale. The recipe — least-privilege role
 policy, IMDSv2 hop limit 2 (containers need it to reach the role), Docker on AL2023, data residency, costs and a
@@ -422,7 +422,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   `SameSite=Strict` session cookie before every request. Open WebUI trusts a sign-in header that only Caddy
   can set; the apps may be framed only by the portal.
 - Every host port binds to `127.0.0.1`. AWS credentials reach only the LiteLLM container and never appear on a
-  command line; all secrets live in `.env` (mode 600). On EC2 with an IAM role there are no AWS keys at all.
+  command line; all secrets live in `.env` (mode 600). On EC2 with an IAM role there are no AWS keys at all, but
+  every container on the VM can fetch the role's temporary credentials from the metadata service unless you
+  firewall it ([docs/cloud-vm.md](docs/cloud-vm.md#keeping-the-roles-credentials-to-litellm)).
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
 - The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
   request that the portal writes after you re-enter the password, within its own rate limits. It is off for

@@ -148,8 +148,10 @@ to deactivate the old key.
 
 **EC2 instance role** (`AWS_AUTH=instance-role` in `.env`, see [cloud-vm.md](cloud-vm.md)): there is no key to
 rotate, so `./stack rotate-aws` only says so. `./stack rotate-aws --use-keys` switches to an access key (same
-flow as above); `./stack rotate-aws --use-instance-role` switches a key install to the machine's role, after
-checking from a container that the role works, and removes the key lines from `.env`.
+flow as above; role mode ends only once the key is verified); `./stack rotate-aws --use-instance-role` switches a
+key install to the machine's role (EC2 only): it checks from a container that the credentials are this role's and
+that it may use Bedrock, shows the account (and asks, in a terminal), prints the old key ID, then removes the key
+lines from `.env` and restarts LiteLLM — putting the key lines back if LiteLLM doesn't come up.
 
 ## Claude Code wrapper details
 
