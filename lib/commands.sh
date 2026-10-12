@@ -245,6 +245,7 @@ setup_secrets() {
   ensure_env SHARED_MCP_TOKEN "$(gen_hex 32)"
   ensure_env BUDGET_CLAUDE_CODE 200
   ensure_env BUDGET_OPENWEBUI 50
+  ensure_env BUDGET_SETUP 5
   ensure_env LITELLM_STORE_PROMPTS false
   local email src def
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"
@@ -340,6 +341,8 @@ setup_bringup_and_probe() {
   run_phase "Postgres + RustFS" "postgres rustfs" _up_data_services
   warn "LiteLLM restarts while probing models; active claude-bedrock/Open WebUI requests may fail for ~1 min"
   run_phase "LiteLLM (full catalog, for probing)" litellm dc up -d --no-deps --force-recreate --wait litellm
+  # Probe and smoke-test spend is booked on its own key, so ./stack costs shows what setup itself cost.
+  ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env BUDGET_SETUP)"
   log "probing which models your AWS key can use (chat/embedding/rerank: 1-token requests, < \$0.01 total; images: free check)"
   probe_models "$en.new" "$STACK_DIR/litellm/probe-results.tsv"
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
@@ -447,7 +450,7 @@ _enabled_or_all() { # -> path of enabled-models.txt, or "" (= whole catalog) if 
 }
 
 cmd_costs() {
-  local en name _ mregion cr age j reset label envk alias
+  local en name _ mregion cr age j reset label envk alias tmp total
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   en="$(_enabled_or_all)"
   printf 'Bedrock on-demand prices (USD) as of %s — https://aws.amazon.com/bedrock/pricing/\n' "$(prices_as_of)"
@@ -461,8 +464,8 @@ cmd_costs() {
     printf '  %-20s %s\n' "$name" "$label"
   done 3< <(catalog_rows)
   printf '\nSpend this budget period (monthly budget per key; each resets on the date shown)\n'
-  for alias in claude-code open-webui; do
-    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; *) envk=LITELLM_KEY_OPENWEBUI ;; esac
+  for alias in claude-code open-webui setup; do
+    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; *) envk=LITELLM_KEY_SETUP ;; esac
     if [ -z "$(get_env "$envk")" ]; then printf '  %-12s no key yet — run ./stack setup\n' "$alias"; continue; fi
     if ! j="$(key_info "$(get_env "$envk")")" || ! label="$(printf '%s' "$j" | spend_text)"; then
       printf '  %-12s unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n' "$alias"; continue
@@ -470,8 +473,14 @@ cmd_costs() {
     reset="$(printf '%s' "$j" | json_get budget_reset_at | cut -c1-10)"
     printf '  %-12s %s%s\n' "$alias" "$label" "${reset:+   (resets $reset)}"
   done
+  # /global/spend sums LiteLLM's spend log over the last 30 days: every key, including master-key calls.
+  tmp="$(mktemp)"; total=''
+  [ "$(litellm_api GET /global/spend "" "$tmp")" = 200 ] && total="$(json_num spend < "$tmp")"
+  rm -f "$tmp"
+  if [ -n "$total" ]; then printf '  Total (all keys, last 30 days): %s\n' "$(usd "$total")"
+  else printf '  Total (all keys, last 30 days): unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n'; fi
   printf '\nBreakdown by model and day: http://127.0.0.1:%s/ui → Usage (login: admin / LITELLM_UI_PASSWORD in .env)\n' "$(get_env LITELLM_PORT)"
-  printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI in .env, then ./stack setup\n'
+  printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   age="$(prices_age_days)"
   if [ -z "$age" ]; then warn "catalog/prices.tsv has no '# as_of:' date — prices may be stale"
   elif [ "$age" -gt 90 ]; then warn "prices are $age days old — check https://aws.amazon.com/bedrock/pricing/ and update catalog/prices.tsv"; fi
@@ -685,29 +694,41 @@ _skip() { printf '  skip  %s (%s)\n' "$1" "$2"; }
 # Every probe below is `|| true` inside its substitution: under set -e/pipefail a transport error or a
 # grep without match must turn into a FAIL line, not silently end the test run.
 cmd_test() {
-  local fails=0 tmp lp op mp code haiku opus
+  local fails=0 tmp lp op mp code haiku opus sk alias envk k
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   tmp="$(mktemp)"; lp="$(get_env LITELLM_PORT)"; op="$(get_env OPENWEBUI_PORT)"; mp="$(get_env SHARED_MCP_PORT)"
   haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"; opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"
+  sk="$(get_env LITELLM_KEY_SETUP)"
 
   code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$lp/health/liveliness" || true)"
   _check "litellm alive" "$code" 200
-  if [ -n "$haiku" ]; then
-    code="$(curl_auth "$(get_env LITELLM_KEY_CLAUDE_CODE)" -s -m 120 -o "$tmp" -w '%{http_code}' -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+  # Free: every virtual key is checked with /key/info. Paid (~$0.0001): the calls below use the setup key only.
+  for alias in claude-code open-webui setup; do
+    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; *) envk=LITELLM_KEY_SETUP ;; esac
+    k="$(get_env "$envk")"
+    if [ -n "$k" ]; then code="$(litellm_key_status "$k")"; else code=missing; fi
+    _check "LiteLLM key '$alias' is valid" "$code" 200
+  done
+  if [ -n "$haiku" ] && [ -n "$sk" ]; then
+    code="$(curl_auth "$sk" -s -m 120 -o "$tmp" -w '%{http_code}' -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
       -d "{\"model\":\"$haiku\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" "http://127.0.0.1:$lp/v1/messages" || true)"
-    _check "anthropic /v1/messages via claude-code key ($haiku)" "$code" 200
-    code="$(curl_auth "$(get_env LITELLM_KEY_CLAUDE_CODE)" -s -m 120 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+    _check "anthropic /v1/messages ($haiku)" "$code" 200
+    code="$(curl_auth "$sk" -s -m 120 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
       -d "{\"model\":\"$haiku\",\"max_tokens\":5,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" "http://127.0.0.1:$lp/v1/messages" || true)"
     _check "anthropic streaming" "$code" 200
-  else
+  elif [ -z "$haiku" ]; then
     _skip "anthropic /v1/messages" "no Claude model enabled"
-  fi
-  if [ -n "$(get_env OWUI_EMBED_MODEL)" ]; then
-    code="$(curl_auth "$(get_env LITELLM_KEY_OPENWEBUI)" -s -m 120 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-      -d "{\"model\":\"$(get_env OWUI_EMBED_MODEL)\",\"input\":\"ping\"}" "http://127.0.0.1:$lp/v1/embeddings" || true)"
-    _check "embeddings via open-webui key" "$code" 200
   else
+    _skip "anthropic /v1/messages" "no setup key — run ./stack setup"
+  fi
+  if [ -n "$(get_env OWUI_EMBED_MODEL)" ] && [ -n "$sk" ]; then
+    code="$(curl_auth "$sk" -s -m 120 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+      -d "{\"model\":\"$(get_env OWUI_EMBED_MODEL)\",\"input\":\"ping\"}" "http://127.0.0.1:$lp/v1/embeddings" || true)"
+    _check "embeddings ($(get_env OWUI_EMBED_MODEL))" "$code" 200
+  elif [ -z "$(get_env OWUI_EMBED_MODEL)" ]; then
     _skip "embeddings" "no embedding model enabled"
+  else
+    _skip "embeddings" "no setup key — run ./stack setup"
   fi
   code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$op/health" || true)"
   _check "open-webui health" "$code" 200
@@ -787,7 +808,7 @@ _backup_named() {
 _restore_key_trio() {
   local k v n=0
   [ -f "$1/.env" ] || { warn "the backup has no .env — run ./stack setup --yes after the restore to recreate the keys"; return 0; }
-  for k in LITELLM_KEY_CLAUDE_CODE LITELLM_KEY_OPENWEBUI OPENWEBUI_API_KEY; do
+  for k in LITELLM_KEY_CLAUDE_CODE LITELLM_KEY_OPENWEBUI LITELLM_KEY_SETUP OPENWEBUI_API_KEY; do
     v="$(ENV_FILE="$1/.env" get_env "$k")"
     if [ -z "$v" ]; then
       warn "$k is missing from the backup's .env — run ./stack setup --yes after the restore to create a new one"; continue

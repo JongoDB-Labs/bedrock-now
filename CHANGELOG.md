@@ -10,6 +10,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - `./stack models` prints the model table from the last check without calling Bedrock; `--recheck` re-probes.
   Results are saved to `litellm/probe-results.tsv`.
+- A third LiteLLM virtual key, `setup` (`BUDGET_SETUP`, default $5), pays for the model probe and the paid
+  `./stack test` calls. `./stack test` checks the other keys with free `/key/info` calls.
+- `./stack costs` lists the `setup` key and a total across all keys (last 30 days, from `/global/spend`).
 
 ### Changed
 

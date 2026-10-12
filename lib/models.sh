@@ -197,28 +197,37 @@ classify_probe() {
 
 # --- live probing (needs the stack's LiteLLM up; aws_cli lives in lib/commands.sh) ---
 
-litellm_api() { # litellm_api METHOD PATH [JSON] [OUTFILE] -> prints HTTP status (000 on transport error)
+litellm_api() { # litellm_api METHOD PATH [JSON] [OUTFILE] -> HTTP status, called with the master key (admin API)
+  litellm_call "$(get_env LITELLM_MASTER_KEY)" "$@"
+}
+
+litellm_call() { # litellm_call KEY METHOD PATH [JSON] [OUTFILE] -> prints HTTP status (000 on transport error)
   # The JSON body goes through a mode-600 temp file, never argv (it can carry virtual keys);
   # stdin is taken by curl_auth's -K -. curl -w already prints 000 on transport errors.
-  local method="$1" path="$2" data="${3:-}" out="${4:-/dev/null}" body='' extra=()
+  local key="$1" method="$2" path="$3" data="${4:-}" out="${5:-/dev/null}" body='' extra=()
   if [ -n "$data" ]; then
     body="$(mktemp)"; chmod 600 "$body"; printf '%s' "$data" > "$body"
     extra=(-H 'Content-Type: application/json' --data-binary "@$body")
   fi
-  curl_auth "$(get_env LITELLM_MASTER_KEY)" -sS -m 120 -X "$method" -o "$out" -w '%{http_code}' \
+  curl_auth "$key" -sS -m 120 -X "$method" -o "$out" -w '%{http_code}' \
     ${extra[@]+"${extra[@]}"} "http://127.0.0.1:$(get_env LITELLM_PORT)$path" 2>/dev/null || true
   [ -z "$body" ] || rm -f "$body"
 }
+
+# setup_key -> the 'setup' virtual key (probe + ./stack test spend is booked there); the master key until
+# setup has created it.
+setup_key() { local k; k="$(get_env LITELLM_KEY_SETUP)"; printf '%s\n' "${k:-$(get_env LITELLM_MASTER_KEY)}"; }
 
 litellm_key_status() { # litellm_key_status KEY -> HTTP status of /key/info called WITH that key (000 = no response)
   curl_auth "$1" -sS -m 30 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(get_env LITELLM_PORT)/key/info" 2>/dev/null || true
 }
 
-probe_litellm() { # probe_litellm MODE NAME OUTFILE -> HTTP status
+probe_litellm() { # probe_litellm MODE NAME OUTFILE -> HTTP status (spend goes to the setup key)
+  local k; k="$(setup_key)"
   case "$1" in
-    chat) litellm_api POST /v1/chat/completions "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" "$3" ;;
-    embedding) litellm_api POST /v1/embeddings "{\"model\":\"$2\",\"input\":\"hi\"}" "$3" ;;
-    rerank) litellm_api POST /v1/rerank "{\"model\":\"$2\",\"query\":\"hi\",\"documents\":[\"hi\"]}" "$3" ;;
+    chat) litellm_call "$k" POST /v1/chat/completions "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" "$3" ;;
+    embedding) litellm_call "$k" POST /v1/embeddings "{\"model\":\"$2\",\"input\":\"hi\"}" "$3" ;;
+    rerank) litellm_call "$k" POST /v1/rerank "{\"model\":\"$2\",\"query\":\"hi\",\"documents\":[\"hi\"]}" "$3" ;;
     *) echo 000 ;;
   esac
 }
