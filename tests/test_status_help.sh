@@ -2,6 +2,8 @@
 # shellcheck disable=SC2016  # literal $ in expected strings
 # Task A4: compact status, cost-aware help, claude-bedrock --help, budget wording, summary command.
 . "$STACK_DIR/lib/commands.sh"
+# Never touch real Docker images from these tests (lib/images.sh is covered by tests/test_images.sh).
+images_snapshot_before() { :; }; images_after_update() { :; }; disk_line() { echo "Disk: (stub)"; }
 
 _ports_env() { printf 'LITELLM_PORT=4000\nPORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\nSHARED_MCP_PORT=8765\n' > "$ENV_FILE"; }
 

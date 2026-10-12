@@ -23,7 +23,9 @@ Usage: ./stack <command> [--yes]
   backup       Databases + buckets + .env → backups/<timestamp>/
   restore DIR  Restore from a backup directory (then runs test: ~$0.0001 Bedrock)
   update       Backup, new code (git), pinned images, re-run setup (< $0.01 Bedrock)
-               --to <tag|branch> picks a version; local changes are never discarded
+               --to <tag|branch> picks a version; local changes are never discarded;
+               keeps one previous version of each image and removes older ones
+  clean        Remove this project's old images (lists them first; keeps one previous version)
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
   openrouter   Optional OpenRouter models: status | set | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
@@ -793,6 +795,7 @@ cmd_status() {
     printf '\n  Open %s (one login: PORTAL_PASSWORD in .env)   LiteLLM API: http://127.0.0.1:%s\n' "$(portal_url)" "$(get_env LITELLM_PORT)"
     printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
   fi
+  printf '  %s   (./stack clean frees old images)\n' "$(disk_line)"
 }
 
 _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
@@ -1110,6 +1113,8 @@ cmd_update() {
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
     hint="the code was updated; to go back: $(_rollback_cmd "$from" "${BEDROCK_NOW_UPDATE_BRANCH:-}") && ./stack restore $backup"
   fi
+  # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
+  images_snapshot_before "$from"
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
   dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
   log "update: 4/4 setup (non-interactive; keeps .env, keys and AWS creds)"
@@ -1120,6 +1125,8 @@ cmd_update() {
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
+  # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
+  images_after_update || warn "could not clean up old images — ./stack clean tries again"
 }
 
 cmd_rotate_aws() {
@@ -1166,3 +1173,5 @@ cmd_uninstall() {
 
 # Optional OpenRouter provider (setup step, ./stack openrouter, costs/models/summary sections).
 . "$STACK_DIR/lib/openrouter.sh"
+# Image cleanup and disk usage (./stack update, ./stack clean, ./stack status).
+. "$STACK_DIR/lib/images.sh"

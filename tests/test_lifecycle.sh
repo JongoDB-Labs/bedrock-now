@@ -2,6 +2,8 @@
 # shellcheck disable=SC2010  # ls | grep -c over our own temp files (plain names)
 # Task 13: backup / restore / update / rotate-aws / uninstall — Docker and AWS are stubbed.
 . "$STACK_DIR/lib/commands.sh"
+# Never touch real Docker images from these tests (lib/images.sh is covered by tests/test_images.sh).
+images_snapshot_before() { :; }; images_after_update() { :; }; disk_line() { echo "Disk: (stub)"; }
 
 _stub_dc() { # logs every dc call; pg_dump prints a fake dump unless PG_FAIL=1
   dc() {

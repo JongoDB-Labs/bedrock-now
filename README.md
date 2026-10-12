@@ -276,7 +276,7 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 |---|---|---|
 | `./stack setup` | First-time or repeat setup: AWS key, ports, model probe, keys | < $0.01 |
 | `./stack up` / `down` | Start / stop (data is kept) | none |
-| `./stack status` | Services, health and URLs | none |
+| `./stack status` | Services, health, URLs and the disk this install uses (images, data, backups) | none |
 | `./stack open` | The portal in its own browser window | none |
 | `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
@@ -286,6 +286,7 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 | `./stack backup` | Databases + buckets + `.env` → `backups/<timestamp>/` | none |
 | `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
 | `./stack update [--to <tag\|branch>]` | Backup, new code, pinned images, setup | < $0.01 |
+| `./stack clean [--yes]` | Remove this install's old images (lists them first; keeps one previous version) | none |
 | `./stack rotate-aws` | Replace the AWS key (verified first), then test | ~$0.0001 |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
@@ -306,6 +307,14 @@ The update runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5
 `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run by the new code. Local
 changes to tracked files stop the update before anything happens; they are never discarded. If a later step
 fails, the message shows exactly how to go back (`git … && ./stack restore <backup>`).
+
+**Disk space:** an update keeps **one** previous version of every image it replaces (so going back needs no
+download) and removes the version before that, then says what it freed, e.g. `freed 3.1 GB (old litellm
+1.104.0, open-webui v0.11.2-slim)`. It only removes images this install used, never one that any container
+(of any project) or another bedrock-now folder still needs, and never runs a global `docker … prune`. Its own
+leftover builds (untagged images Compose labelled with this project) go too. `./stack clean` does the same on
+demand: it lists what it would remove and asks first (`--yes` skips the question). `./stack status` shows how
+much disk the images, data volumes and backups take. Backups are unchanged: the newest 5 automatic ones are kept.
 
 **Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (setup removes
 `OPENWEBUI_PORT` and `RUSTFS_CONSOLE_PORT` from `.env`), so the old address such as `http://127.0.0.1:8080`

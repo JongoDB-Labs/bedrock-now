@@ -33,7 +33,7 @@ case "$cmd" in
   down | logs | costs | models)   # stop or read: check, but don't claim the project
     [ ! -f "$ENV_FILE" ] || guard_project --no-claim
     "cmd_${cmd}" "$@" ;;
-  up | test | backup | restore | update)
+  up | test | backup | restore | update | clean)
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;

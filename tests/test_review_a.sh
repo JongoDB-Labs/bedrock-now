@@ -2,6 +2,8 @@
 # shellcheck disable=SC2034  # PRICES/CATALOG are read by sourced lib functions
 # Batch A review fixes.
 . "$STACK_DIR/lib/commands.sh"
+# Never touch real Docker images from these tests (lib/images.sh is covered by tests/test_images.sh).
+images_snapshot_before() { :; }; images_after_update() { :; }; disk_line() { echo "Disk: (stub)"; }
 PRICES="$STACK_DIR/tests/fixtures/prices.tsv"
 ESC="$(printf '\033')"
 

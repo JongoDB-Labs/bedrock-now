@@ -6,6 +6,18 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Precise image cleanup.** `./stack update` records the images this install uses before it changes anything,
+  keeps **one** previous version of each image it replaces (so going back needs no download; local builds keep
+  theirs as `<project>/portal:previous` and `<project>/shared-mcp:previous`) and, once the new version runs,
+  removes the version before that plus this project's own untagged builds, e.g. `freed 3.1 GB (old litellm
+  1.104.0, open-webui v0.11.2-slim)`. Never an image that any container (any project) uses or that another
+  bedrock-now folder's `compose.yaml` names; never forced; no global `docker … prune`.
+- `./stack clean [--yes]`: the same cleanup on demand. Lists what it would remove (with sizes), then asks.
+- `./stack status` shows the disk this install uses: images in use (plus the previous version kept for
+  rollback), data volumes and backups.
+
 ## [0.2.1] - 2026-10-12
 
 ### Changed

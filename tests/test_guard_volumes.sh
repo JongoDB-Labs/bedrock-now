@@ -4,6 +4,8 @@
 # dirty-tree check and rollback hint. Docker is stubbed: $OWNERS = container working_dirs, $VOLS = data volumes,
 # owner markers live in $TMP/markers/<volume name> (content = io.bedrock-now.dir).
 . "$STACK_DIR/lib/commands.sh"
+# Never touch real Docker images from these tests (lib/images.sh is covered by tests/test_images.sh).
+images_snapshot_before() { :; }; images_after_update() { :; }; disk_line() { echo "Disk: (stub)"; }
 . "$STACK_DIR/lib/guard.sh"
 GV_ROOT="$STACK_DIR"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
@@ -269,7 +271,7 @@ test_read_only_and_stop_commands_do_not_claim() {   # M1
   [ ! -f "$TMP/dcalls" ] || { echo "--no-claim must not claim" >&2; return 1; }
   d="$(sed -n '/^case "\$cmd" in/,/^esac/p' "$GV_ROOT/stack")"
   assert_contains "$(printf '%s\n' "$d" | grep -A1 'down | logs | costs | models)')" 'guard_project --no-claim'
-  up="$(printf '%s\n' "$d" | grep -A1 '  up | test | backup | restore | update)')"
+  up="$(printf '%s\n' "$d" | grep -A1 '  up | test | backup | restore | update | clean)')"
   assert_contains "$up" 'guard_project'
   assert_not_contains "$up" '--no-claim'
 }
