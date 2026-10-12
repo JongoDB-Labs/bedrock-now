@@ -12,6 +12,7 @@ _stub_docker() {
   docker() {
     local a last; for a in "$@"; do last="$a"; done
     case "$*" in
+      "image inspect --format {{join .RepoTags \" \"}} "*) _refs_of "$last" | tr '\n' ' ' ;;
       "image inspect --format {{.Id}} "*) awk -F'\t' -v r="$last" '$2 == r { print $1; f = 1; exit } END { exit !f }' "$TMP/imgs" ;;
       "tag "*)
         local id; id="$(awk -F'\t' -v r="$2" '$2 == r { print $1; exit }' "$TMP/imgs")"; [ -n "$id" ] || return 1
@@ -153,7 +154,7 @@ test_an_image_docker_still_needs_is_kept_and_said() {
   _store L1 my/own:copy 1.7GB   # someone else tagged it too: never forced
   _fake_update 3 L3 P3 2> "$TMP/err"
   assert_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "L1"
-  assert_contains "$(cat "$TMP/err")" "1 image(s) kept because Docker still needs them"
+  assert_contains "$(cat "$TMP/err")" "kept litellm 1 (also named my/own:copy)"
 }
 
 test_images_that_are_already_gone_are_not_reported() {
@@ -241,6 +242,29 @@ test_update_snapshots_before_images_and_cleans_only_after_setup_succeeded() {
 
 test_no_global_prune_anywhere() {
   assert_eq "$(grep -nE 'system prune|image prune|builder prune|buildx prune|volume prune|rmi -f|image rm -f|image rm --force' "$T_ROOT"/lib/*.sh "$T_ROOT/stack" || true)" ""
+}
+
+test_disk_line_is_cached_for_five_minutes() {   # M4
+  disk_line() { echo "Disk: call $(date +%s%N)"; echo x >> "$TMP/n"; }
+  a="$(disk_line_cached)"; b="$(disk_line_cached)"
+  assert_eq "$(wc -l < "$TMP/n" | tr -d ' ')" 1
+  assert_contains "$b" "(as of 0 min ago; --disk refreshes)"
+  disk_line_cached --fresh > /dev/null
+  assert_eq "$(wc -l < "$TMP/n" | tr -d ' ')" 2
+  printf '%s\nDisk: old\n' $(( $(date +%s) - 400 )) > "$STATE_DIR/disk.cache"
+  disk_line_cached > /dev/null
+  assert_eq "$(wc -l < "$TMP/n" | tr -d ' ')" 3
+  [ -n "$a" ] || return 1
+}
+
+test_other_checkout_markers_must_be_absolute_paths() {   # M3
+  _setup
+  mkdir -p "$TMP/rel"; printf 'services:\n  x:\n    image: ghcr.io/berriai/litellm:1\n' > "$TMP/rel/compose.yaml"
+  OTHER_DIRS="$(printf 'rel\n../rel')"
+  ( cd "$TMP" && images_of_other_checkouts ) > "$TMP/out"
+  assert_eq "$(cat "$TMP/out")" ""
+  OTHER_DIRS="$TMP/rel"
+  assert_eq "$(images_of_other_checkouts)" "L1"
 }
 
 test_dispatcher_guards_clean_like_update() {

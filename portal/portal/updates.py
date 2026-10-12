@@ -36,6 +36,8 @@ MAX_JSON = 1024 * 1024
 MAX_COMPOSE = 256 * 1024
 MAX_NOTES = 20000
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+TOTAL_TIMEOUT_S = 30.0  # one whole check (both downloads), whatever the server does
+MAX_STATE = 256 * 1024  # files read from disk (ours, ./stack's)
 DAILY = 24 * 3600
 RETRY_AFTER_ERROR = 3600
 RELEASE_TAG = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
@@ -94,7 +96,7 @@ def newer(latest: str, installed: str) -> bool | None:
 
 def _read_json(path: Path) -> dict:
     try:
-        if path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_STATE:
             return {}
         d = json.loads(path.read_text(encoding="utf-8"))
         return d if isinstance(d, dict) else {}
@@ -107,8 +109,10 @@ def installed(paths: Paths) -> dict:
     d = _read_json(paths.version)
     v = d.get("version") if isinstance(d.get("version"), str) else ""
     imgs = [i for i in d.get("images") or [] if isinstance(i, str) and IMAGE_REF.fullmatch(i)]
+    br = d.get("branch") if isinstance(d.get("branch"), str) else ""
     return {"version": v if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", v or "") else "", "images": imgs,
-            "commit": d.get("commit") if isinstance(d.get("commit"), str) else ""}
+            "commit": d.get("commit") if isinstance(d.get("commit"), str) else "",
+            "branch": br if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", br or "") else ""}
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -131,14 +135,18 @@ async def _get(client: httpx.AsyncClient, url: str, cap: int, headers: dict | No
         raise CheckError("refusing a non-https URL")
     host = httpx.URL(url).host
     try:
-        async with client.stream("GET", url, headers={"User-Agent": "bedrock-now-update-check", **(headers or {})},
-                                 timeout=TIMEOUT, follow_redirects=False) as r:
+        # identity only: the size cap counts the bytes on the wire, so no decompression bomb gets past it
+        hdrs = {"User-Agent": "bedrock-now-update-check", **(headers or {}), "Accept-Encoding": "identity"}
+        async with client.stream("GET", url, headers=hdrs, timeout=TIMEOUT, follow_redirects=False) as r:
             if r.status_code == 304:
                 return 304, b"", dict(r.headers)
             if r.status_code != 200:
                 raise CheckError(f"{host} answered HTTP {r.status_code}")
+            enc = (r.headers.get("content-encoding") or "identity").strip().lower()
+            if enc != "identity":
+                raise CheckError(f"{host}: unexpected content encoding {enc}")
             body = bytearray()
-            async for chunk in r.aiter_bytes():
+            async for chunk in r.aiter_bytes():  # identity: nothing is decompressed
                 body += chunk
                 if len(body) > cap:
                     raise CheckError(f"{host}: answer larger than {cap // 1024} KB")
@@ -180,8 +188,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def check(client: httpx.AsyncClient, paths: Paths) -> dict:
-    """One check. Never raises: errors are recorded next to the last good answer."""
+async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = TOTAL_TIMEOUT_S) -> dict:
+    """One check, at most TOTAL_TIMEOUT_S in all. Never raises: errors are recorded next to the last good answer."""
+    try:
+        return await asyncio.wait_for(_check(client, paths), total_timeout)
+    except asyncio.TimeoutError:
+        rec = _read_json(paths.json)
+        rec["checked_at"] = _now_iso()
+        rec["error"] = f"no answer within {int(total_timeout)} s"
+        rec["error_at"] = rec["checked_at"]
+        save(paths, rec)
+        return rec
+
+
+async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
     prev = _read_json(paths.json)
     rec = dict(prev)
     rec["checked_at"] = _now_iso()
@@ -264,7 +284,8 @@ async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = 
 def status(paths: Paths, enabled: bool) -> dict:
     """The update card's data."""
     inst = installed(paths)
-    out = {"enabled": enabled, "installed": inst["version"] or None, "latest": None, "available": False,
+    out = {"enabled": enabled, "installed": inst["version"] or None, "branch": inst["branch"] or None,
+           "latest": None, "available": False,
            "checked_at": None, "error": None, "command": "./stack update"}
     if not enabled:
         return out

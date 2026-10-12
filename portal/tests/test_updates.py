@@ -216,3 +216,45 @@ def test_home_renders_release_notes_without_html_parsing():
     assert "function renderNotes" in js and "https:\\/\\/" in js  # links: https only
     html = (Path(__file__).parent.parent / "portal" / "static" / "index.html").read_text()
     assert 'id="update-card"' in html and 'id="copy-update"' in html
+
+
+def test_only_identity_encoding_is_accepted(paths):
+    write_version(paths)
+    seen = []
+
+    def gz(request):
+        seen.append(request.headers.get("accept-encoding"))
+        return httpx.Response(200, content=b"\x1f\x8b...", headers={"content-encoding": "gzip"})
+    rec = run_check(paths, gz)
+    # refused either by our check or (MockTransport reads eagerly) by httpx; never decompressed into an answer
+    assert "unexpected content encoding gzip" in rec["error"] or "DecodingError" in rec["error"]
+    assert rec.get("tag") is None
+    assert seen == ["identity"]
+
+
+def test_a_slow_server_hits_the_total_timeout(paths):
+    write_version(paths)
+
+    async def slow(request):
+        await asyncio.sleep(5)
+        return httpx.Response(200, json=release())
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as c:
+            return await updates.check(c, paths, total_timeout=0.2)
+    rec = asyncio.run(go())
+    assert "no answer within" in rec["error"]
+
+
+def test_oversized_state_files_are_ignored(paths):
+    paths.version.write_text('{"version": "v0.2.1", "pad": "' + "x" * (updates.MAX_STATE + 10) + '"}')
+    assert updates.installed(paths)["version"] == ""
+
+
+def test_status_names_a_branch_install(paths):
+    paths.version.write_text(json.dumps({"version": "v0.2.1-3-gabcdef0", "branch": "main", "images": []}))
+    run_check(paths, GitHub())
+    st = updates.status(paths, True)
+    assert st["branch"] == "main" and st["available"] is True
+    paths.version.write_text(json.dumps({"version": "v0.2.1", "branch": "bad branch;rm", "images": []}))
+    assert updates.status(paths, True)["branch"] is None

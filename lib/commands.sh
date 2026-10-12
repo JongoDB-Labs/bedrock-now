@@ -10,7 +10,8 @@ Usage: ./stack <command> [--yes]
 
   setup        First-time (or repeat) setup: AWS creds, ports, model probe, keys (< $0.01 Bedrock)
   up | down    Start / stop the stack
-  status       Services, health and URLs (the portal: one login for every browser UI)
+  status       Services, health, URLs and disk use (the portal: one login for every browser UI)
+               --disk measures disk use now (otherwise reused for 5 minutes)
   open         The portal in its own browser window (setup and up open it too;
                BEDROCK_NOW_NO_OPEN=1 turns that off)
   logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
@@ -316,6 +317,7 @@ setup_secrets() {
 
 cmd_setup() {
   check_prereqs
+  [ ! -f "$ENV_FILE" ] || stack_lock setup
   [ -f "$ENV_FILE" ] || { cp "$STACK_DIR/.env.example" "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
   # Never share a Compose project (or its volumes) with another checkout. On a first setup the name may still
   # come from the shell, so check that name before persist_project_name saves it.
@@ -789,8 +791,10 @@ status_table() {
   [ -z "$row" ] || warn "bucket setup (rustfs-init) exited with code $row — see ./stack logs rustfs-init"
 }
 
+# shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_status() {
-  local ps upd O_RED O_GRN O_YEL O_OFF
+  local ps upd fresh='' O_RED O_GRN O_YEL O_OFF
+  case "${1:-}" in '') ;; --disk) fresh=--fresh ;; *) die "usage: ./stack status [--disk]   (--disk: measure disk use now)" ;; esac
   out_colors
   check_docker_daemon   # a stopped daemon would otherwise look like "not created" everywhere
   ps="$(dc ps -a --format '{{.Service}}	{{.State}}	{{.Health}}	{{.ExitCode}}' 2>/dev/null || true)"
@@ -801,7 +805,7 @@ cmd_status() {
     printf '\n  Open %s (one login: PORTAL_PASSWORD in .env)   LiteLLM API: http://127.0.0.1:%s\n' "$(portal_url)" "$(get_env LITELLM_PORT)"
     printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
   fi
-  printf '  %s   (./stack clean frees old images)\n' "$(disk_line)"
+  printf '  %s   (./stack clean frees old images)\n' "$(disk_line_cached $fresh)"
   if upd="$(update_available)"; then
     printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
   fi
@@ -985,6 +989,7 @@ cmd_restore() {
   [ -n "$dir" ] && [ -f "$dir/litellm.dump" ] && [ -f "$dir/openwebui.dump" ] ||
     die "usage: ./stack restore backups/<timestamp>   (a directory written by ./stack backup)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first (on a new machine: copy the backup's .env to ./.env, run ./stack setup, then restore)"
+  stack_lock restore
   dir="$(cd "$dir" && pwd)"
   if [ -f "$dir/.env" ]; then
     for k in LITELLM_SALT_KEY WEBUI_SECRET_KEY LITELLM_MASTER_KEY; do
@@ -1055,6 +1060,10 @@ _rollback_cmd() {
   else printf 'git -C %q checkout %s' "$STACK_DIR" "$1"; fi
 }
 
+# _signed_tags_required — UPDATE_REQUIRE_SIGNED_TAGS=true in .env: ./stack update only checks out a release tag
+# whose signature git verify-tag accepts (trusted keys: docs/security.md#code-provenance)
+_signed_tags_required() { [ "$(get_env UPDATE_REQUIRE_SIGNED_TAGS)" = true ]; }
+
 # update_checkout [REF] — moves this checkout to newer code; sets CODE_CHANGED=1 when HEAD moved.
 #   on a branch: git pull --ff-only;  on a tag / detached HEAD (install.sh): the newest release tag, never
 #   older than HEAD;  REF given (--to): exactly that tag/branch/commit. Local changes to tracked files stop it.
@@ -1068,6 +1077,8 @@ update_checkout() {
   branch="$(_git symbolic-ref -q --short HEAD || true)"
   if [ -n "$to" ]; then
     target="$to"
+  elif [ -n "$branch" ] && _signed_tags_required; then
+    die "UPDATE_REQUIRE_SIGNED_TAGS=true: a branch cannot be verified — use ./stack update --to <signed tag> (the code was not changed)"
   elif [ -n "$branch" ]; then
     _git pull --quiet --ff-only || die "could not fast-forward branch $branch (it has diverged from origin) — the code was not changed; merge it yourself or use ./stack update --to <tag>"
     if [ "$(_git rev-parse HEAD)" = "$before" ]; then log "branch $branch is already up to date"
@@ -1078,6 +1089,13 @@ update_checkout() {
     [ -n "$target" ] || die "no release tags found on origin — use ./stack update --to main"
     _git merge-base --is-ancestor HEAD "$target" ||
       die "your checkout is ahead of $target — use ./stack update --to <ref> (the code was not changed)"
+  fi
+  if _signed_tags_required; then
+    _git rev-parse -q --verify "refs/tags/$target" >/dev/null ||
+      die "UPDATE_REQUIRE_SIGNED_TAGS=true: '$target' is not a tag — the code was not changed"
+    _git verify-tag "$target" >/dev/null 2>&1 ||
+      die "UPDATE_REQUIRE_SIGNED_TAGS=true: the signature of tag $target could not be verified (git verify-tag $target; docs/security.md#code-provenance) — the code was not changed"
+    log "tag $target: signature verified"
   fi
   _git -c advice.detachedHead=false checkout --quiet "$target" ||
     die "could not check out '$target' (see git's message above) — the code was not changed"
@@ -1093,7 +1111,7 @@ update_checkout() {
 # The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir, the previous commit and branch, so a later failure
 # can tell you exactly how to go back.
 cmd_update() {
-  local to='' backup from='' branch='' hint yes=()
+  local to='' backup from='' branch='' hint moved=0 yes=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) [ -n "${2:-}" ] || die "usage: ./stack update [--to <tag|branch>]"; to="$2"; shift 2 ;;
@@ -1101,6 +1119,7 @@ cmd_update() {
     esac
   done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  stack_lock update   # lib/lock.sh: one update/rollback/clean/restore/setup at a time (kept across the re-exec)
   if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
     _require_clean_tree
     log "update: 1/4 backup"
@@ -1119,13 +1138,18 @@ cmd_update() {
     hint="your pre-update backup is $backup (./stack restore $backup)"
   else
     backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"; branch="${BEDROCK_NOW_UPDATE_BRANCH:-}"
+    moved=1
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
     hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
   fi
-  # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed.
-  update_record_write "$from" "$branch" "$backup"
-  # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
-  images_snapshot_before "$from"
+  # Only an update that moved the code is a new version: an update with nothing new keeps the rollback record
+  # and the previous version's images exactly as they are.
+  if [ "$moved" = 1 ]; then
+    # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed.
+    update_record_write "$from" "$branch" "$backup"
+    # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
+    images_snapshot_before "$from"
+  fi
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
   dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
   log "update: 4/4 setup (non-interactive; keeps .env, keys and AWS creds)"
@@ -1136,6 +1160,7 @@ cmd_update() {
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
+  [ "$moved" = 1 ] || { log "update: done (no new version; ./stack rollback still goes back to the version before the last real update)"; return 0; }
   update_record_done
   # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
   images_after_update || warn "could not clean up old images — ./stack clean tries again"
@@ -1185,6 +1210,8 @@ cmd_uninstall() {
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
 }
 
+# One update/rollback/clean/restore/setup at a time (.state/lock).
+. "$STACK_DIR/lib/lock.sh"
 # Optional OpenRouter provider (setup step, ./stack openrouter, costs/models/summary sections).
 . "$STACK_DIR/lib/openrouter.sh"
 # Image cleanup and disk usage (./stack update, ./stack clean, ./stack status).

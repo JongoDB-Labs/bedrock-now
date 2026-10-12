@@ -16,7 +16,8 @@ All notable changes to bedrock-now are documented here. The format follows
   bedrock-now folder's `compose.yaml` names; never forced; no global `docker … prune`.
 - `./stack clean [--yes]`: the same cleanup on demand. Lists what it would remove (with sizes), then asks.
 - `./stack status` shows the disk this install uses: images in use (plus the previous version kept for
-  rollback), data volumes and backups.
+  rollback), data volumes and backups. The figures are reused for 5 minutes; `./stack status --disk` measures
+  them again. An image that cannot be removed is named with the reason (another name for it, or in use).
 - **"Update available" card on Home.** The portal checks GitHub's public releases API once a day
   (unauthenticated, https only, ETag, 10 s timeout, 1 MB cap; nothing about your install is sent) and, when a
   newer release than the installed one (`.state/status/version.json`, written by `./stack setup` / `up`) is
@@ -41,7 +42,16 @@ All notable changes to bedrock-now are documented here. The format follows
   goes to `.state/status/helper-status.json`. Home shows it, reconnects across the portal's restart during an
   update, and ends with e.g. "Updated to v0.3.0 · freed 3.1 GB". Requests from remote access (`X-Portal-Remote`,
   set only by Caddy) are refused unless `REMOTE_ADMIN_ACTIONS=true`. Security checklist and threat model in
-  `docs/security.md`.
+  `docs/security.md`. The helper also has its own limits (60 s between jobs, 12 a day, one rollback per update),
+  so they hold even against a compromised portal container. It is restarted only after a clean exit, answers
+  "Busy" while a terminal command holds the new `.state/lock/`, and refuses to update a branch checkout unless
+  `BEDROCK_NOW_HELPER_ALLOW_BRANCH=1`. Request files are 640 so that, on Linux, you can read them through the
+  setgid folder's group. Under rootless Docker the portal's uid is read from `/etc/subuid` (or set
+  `HELPER_PORTAL_UID`).
+- **One `./stack update | rollback | clean | restore | setup` at a time** per checkout (`.state/lock/`, with the
+  owner's pid; a stale lock is taken over).
+- `UPDATE_REQUIRE_SIGNED_TAGS=true` in `.env`: `./stack update` only checks out release tags that
+  `git verify-tag` accepts (docs/security.md › Code provenance).
 
 ## [0.2.1] - 2026-10-12
 

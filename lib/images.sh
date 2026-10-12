@@ -90,11 +90,13 @@ images_used_by_containers() {
 # through their owner markers), so a stopped install never loses an image it will need at its next start
 images_of_other_checkouts() {
   local me d
-  me="$(_real_dir "$STACK_DIR")"
+  me="$(cd "$STACK_DIR" 2>/dev/null && pwd -P || printf '%s' "$STACK_DIR")"   # same as _real_dir (lib/guard.sh)
   docker volume ls --filter label=io.bedrock-now.dir --format '{{.Label "io.bedrock-now.dir"}}' 2>/dev/null | sort -u |
     while IFS= read -r d; do
-      [ -n "$d" ] && [ "$d" != "$me" ] && [ -f "$d/compose.yaml" ] || continue
-      sed -n 's/^[[:space:]]*image:[[:space:]]*\([^[:space:]#$]*\)[[:space:]]*$/\1/p' "$d/compose.yaml" | snapshot_refs | cut -f1
+      case "$d" in /*) ;; *) continue ;; esac   # labels are free text: only absolute paths
+      [ "$d" != "$me" ] && [ -f "$d/compose.yaml" ] && [ ! -L "$d/compose.yaml" ] || continue
+      head -c 262144 "$d/compose.yaml" 2>/dev/null |
+        sed -n 's/^[[:space:]]*image:[[:space:]]*\([^[:space:]#$]*\)[[:space:]]*$/\1/p' | snapshot_refs | cut -f1
     done
 }
 
@@ -146,7 +148,7 @@ _present_only() {
 # uses stays) and prints "freed N (labels)". Sets CLEAN_SUMMARY. Writes
 # .state/images/last-clean (freed_bytes=, summary=, at=) for the host helper.
 images_remove() {
-  local plan="$1" id ref sizes b freed=0 labels='' failed=0 d
+  local plan="$1" id ref sizes b freed=0 labels='' kept='' other d
   sizes="$(image_sizes)"
   while IFS='	' read -r id ref; do
     [ -n "$id" ] || continue
@@ -156,7 +158,10 @@ images_remove() {
     if docker image rm "$id" >/dev/null 2>&1; then
       freed=$((freed + ${b:-0})); labels="$labels, $(image_label "$ref")"
     else
-      failed=$((failed + 1))
+      # Never forced: say why it stays (another name for the same image, or something uses it)
+      other="$(docker image inspect --format '{{join .RepoTags " "}}' "$id" 2>/dev/null | tr ' ' '\n' | grep -vxF -- "$ref" | grep . | head -n 1)"
+      if [ -n "$other" ]; then kept="$kept, $(image_label "$ref") (also named $other)"
+      else kept="$kept, $(image_label "$ref") (still in use)"; fi
     fi
   done <<EOF
 $plan
@@ -168,7 +173,7 @@ EOF
   else
     CLEAN_SUMMARY="nothing to free"
   fi
-  [ "$failed" = 0 ] || CLEAN_SUMMARY="$CLEAN_SUMMARY; $failed image(s) kept because Docker still needs them"
+  [ -z "$kept" ] || CLEAN_SUMMARY="$CLEAN_SUMMARY; kept ${kept#, }"
   d="$(images_dir)"; mkdir -p "$d" 2>/dev/null || true
   printf 'freed_bytes=%s\nsummary=%s\nat=%s\n' "$freed" "$CLEAN_SUMMARY" "$(date +%s)" > "$d/last-clean" 2>/dev/null || true
   log "$CLEAN_SUMMARY"
@@ -208,6 +213,7 @@ cmd_clean() {
   local plan sizes total=0 id ref b
   [ $# -eq 0 ] || die "usage: ./stack clean [--yes]"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  stack_lock clean
   check_docker_daemon
   plan="$(clean_plan)"
   if [ -z "$plan" ]; then
@@ -264,6 +270,22 @@ backups_bytes() {
     n=$((n + 1)); k="$(du -sk "$d" 2>/dev/null | cut -f1)"; kb=$((kb + ${k:-0}))
   done
   printf '%s %s\n' "$((kb * 1024))" "$n"
+}
+
+# disk_line_cached [--fresh] -> disk_line, reused for 5 minutes (it takes a few seconds: docker system df -v)
+disk_line_cached() {
+  local f line at now
+  f="$STATE_DIR/disk.cache"; now="$(date +%s)"
+  if [ "${1:-}" != --fresh ] && [ -f "$f" ] && [ ! -L "$f" ]; then
+    at="$(head -n 1 "$f" | tr -cd '0-9')"; line="$(sed -n 2p "$f")"
+    if [ -n "$at" ] && [ -n "$line" ] && [ $((now - at)) -lt 300 ] && [ $((now - at)) -ge 0 ]; then
+      printf '%s (as of %s min ago; --disk refreshes)\n' "$line" "$(( (now - at) / 60 ))"; return 0
+    fi
+  fi
+  line="$(disk_line)"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  { printf '%s\n%s\n' "$now" "$line" > "$f.tmp" && mv "$f.tmp" "$f"; } 2>/dev/null || true
+  printf '%s\n' "$line"
 }
 
 # disk_line -> "Disk: images 3.4 GB (+1.2 GB previous version, for rollback) · data 310 MB · backups 1.1 GB (6)"

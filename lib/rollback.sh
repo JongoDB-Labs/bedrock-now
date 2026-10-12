@@ -45,9 +45,10 @@ _rollback_local_builds() {
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
-  local from branch fromv backup result at now_imgs d
+  local from branch fromv backup result at now_imgs d no_helper=0
   [ $# -eq 0 ] || die "usage: ./stack rollback [--yes]   (goes back to the version before the last ./stack update)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  stack_lock rollback
   from="$(_record_get from)"; branch="$(_record_get branch)"; fromv="$(_record_get from_version)"
   backup="$(_record_get backup)"; result="$(_record_get result)"; at="$(_record_get at)"
   [ -n "$from" ] && [ -n "$backup" ] || die "nothing to roll back: no ./stack update has been recorded in this checkout"
@@ -63,6 +64,11 @@ cmd_rollback() {
     "${fromv:-$from}" "$(git -C "$STACK_DIR" rev-parse --short "$from")" "$backup" \
     "${at:+ on $(date -r "$at" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$at" '+%Y-%m-%d %H:%M' 2>/dev/null)}"
   printf 'Chats, files and spend recorded since then are replaced (a backup of the current state is taken first).\n'
+  # The version rolled back to may predate the update helper: its unit would then start a script that is gone.
+  if declare -F helper_installed >/dev/null && helper_installed && ! git -C "$STACK_DIR" cat-file -e "$from:bin/bedrock-now-helper" 2>/dev/null; then
+    no_helper=1
+    warn "${fromv:-$from} has no update helper: it is uninstalled at the end of the rollback (./stack helper install after the next update)"
+  fi
   [ "${ASSUME_YES:-0}" = 1 ] || _have_tty || die "re-run with --yes to roll back non-interactively — nothing was changed"
   confirm "Roll back now?" || die "aborted — nothing was changed"
   d="$(images_dir)"; mkdir -p "$d"
@@ -78,7 +84,11 @@ cmd_rollback() {
   env BEDROCK_NOW_NO_OPEN=1 "$STACK_DIR/stack" up --yes ||
     die "the code and data are back, but ./stack up failed (see above) — run it again"
   _record_set result rolled-back
-  # The images of the version rolled back from are now the "previous version" (kept, not removed).
+  # The images of the version rolled back from are now the "previous version": kept until the next update
+  # replaces them as previous-previous (or ./stack clean, once they are no longer the previous version).
   printf '%s\n' "$now_imgs" > "$d/previous.tsv"; rm -f "$d/before.tsv"
+  project_refs | snapshot_refs > "$d/current.tsv" 2>/dev/null || true
   log "rolled back to ${fromv:-$from}. ./stack update goes forward again whenever you want."
+  # Last, because stopping the helper's unit may end this process when the helper runs the rollback.
+  [ "$no_helper" = 0 ] || helper_uninstall
 }

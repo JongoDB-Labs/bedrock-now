@@ -104,6 +104,7 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
         "running": hb is not None and 0 <= now - hb <= HEARTBEAT_MAX_AGE_S,
         "heartbeat_at": hb,
         "version": _str(beat.get("version"), 80),
+        "branch": _str(beat.get("branch"), 100),
         "rollback": {"available": rb.get("available") is True, "to": _str(rb.get("to"), 80),
                      "backup": _str(rb.get("backup"), 120)},
         "job": job,
@@ -130,7 +131,9 @@ def write_request(request_dir: Path, action: str, now: float | None = None) -> s
     try:
         with os.fdopen(fd, "w", encoding="ascii") as f:
             f.write(body)
-        os.chmod(tmp, 0o600)
+        # 0640: on Linux the folder is setgid to your group (PORTAL_GID), so the helper (you) can read it while
+        # the file belongs to the portal's uid; other users get nothing (the folder is 2770)
+        os.chmod(tmp, 0o640)
         os.replace(tmp, request_dir / f"req-{nonce}.json")
     except BaseException:
         try:

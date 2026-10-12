@@ -120,3 +120,29 @@ test_dispatcher_guards_rollback_and_help_lists_it() {
   assert_contains "$(cmd_help)" "rollback     Back to the version before the last update"
   if (cmd_rollback --bogus) 2>/dev/null; then return 1; fi
 }
+
+test_a_no_op_update_keeps_the_rollback_target_and_its_images() {   # I1
+  _fixture; _record; update_record_done
+  mkdir -p "$STATE_DIR/images"; printf 'OLD1\tghcr.io/berriai/litellm:1\n' > "$STATE_DIR/images/previous.tsv"
+  before="$(cat "$(update_record_file)")"
+  _backup_named() { LAST_BACKUP=backups/20261013-000000-auto; }; prune_auto_backups() { :; }
+  update_checkout() { CODE_CHANGED=0; }; dc() { :; }
+  images_snapshot_before() { echo snapshot >> "$TMP/img"; }; images_after_update() { echo after >> "$TMP/img"; }
+  ASSUME_YES=1 cmd_update 2> "$TMP/err"
+  assert_eq "$(cat "$(update_record_file)")" "$before"
+  [ ! -f "$TMP/img" ] || { echo "a no-op update must not rotate images: $(cat "$TMP/img")" >&2; return 1; }
+  assert_eq "$(cat "$STATE_DIR/images/previous.tsv")" "$(printf 'OLD1\tghcr.io/berriai/litellm:1')"
+  assert_contains "$(cat "$TMP/err")" "no new version"
+  # and the rollback still goes to the version before the real update, with its own backup
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
+  assert_contains "$(cat "$CALLS")" "old restore backups/20261012-000000-auto --yes"
+}
+
+test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4
+  _fixture; _record
+  helper_installed() { return 0; }; helper_uninstall() { echo UNINSTALL >> "$CALLS"; }
+  ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+  assert_eq "$(tail -n 1 "$CALLS")" "UNINSTALL"
+  assert_contains "$(cat "$TMP/err")" "has no update helper"
+}

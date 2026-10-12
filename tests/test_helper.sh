@@ -22,8 +22,10 @@ EOS
   printf '#!/bin/sh\n' > "$STACK_DIR/bin/bedrock-now-helper"; chmod +x "$STACK_DIR/bin/bedrock-now-helper"
   printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\n' > "$ENV_FILE"
   git init -q "$STACK_DIR"; git -C "$STACK_DIR" add stack; git -C "$STACK_DIR" commit -qm one; git -C "$STACK_DIR" tag v0.3.0
+  git -C "$STACK_DIR" checkout -q --detach   # a release install (on a branch, the helper refuses updates)
   mkdir -p "$STATE_DIR/images" "$(request_dir)" "$(helper_dir)"
   export CALLS="$TMP/calls" STATE_DIR HELPER_JOB_POLL_S=0
+  HELPER_MIN_INTERVAL_S=0   # the limits have their own tests
 }
 
 _req() { # _req ACTION [AGE_S] [NONCE] [FILE-NONCE] — a request file as the portal writes it
@@ -165,7 +167,8 @@ test_install_on_macos_writes_a_per_project_launch_agent() {
   f="$TMP/LaunchAgents/io.bedrock-now.helper.bn-t.plist"
   [ -f "$f" ] || return 1
   assert_contains "$(cat "$f")" "<string>/bin/bash</string><string>$STACK_DIR/bin/bedrock-now-helper</string><string>$STACK_DIR</string>"
-  assert_contains "$(cat "$f")" "<key>KeepAlive</key><true/>"
+  # restarted after a clean exit (the helper exits after each job), not after a crash
+  assert_contains "$(cat "$f")" "<key>KeepAlive</key><dict><key>SuccessfulExit</key><true/></dict>"
   assert_contains "$(cat "$TMP/svc")" "launchctl bootstrap gui/$(id -u) $f"
   helper_installed
   helper_uninstall 2>/dev/null
@@ -179,7 +182,9 @@ test_install_on_linux_writes_a_user_unit() {
   helper_install 2>/dev/null
   f="$TMP/systemd/bedrock-now-helper-bn-t.service"
   assert_contains "$(cat "$f")" "ExecStart=/bin/bash \"$STACK_DIR/bin/bedrock-now-helper\" \"$STACK_DIR\""
-  assert_contains "$(cat "$f")" "Restart=always"
+  assert_contains "$(cat "$f")" "Restart=on-success"
+  assert_contains "$(cat "$f")" "WorkingDirectory=$STACK_DIR
+"
   assert_contains "$(cat "$TMP/svc")" "systemctl --user enable --now bedrock-now-helper-bn-t.service"
   helper_uninstall 2>/dev/null
   [ ! -f "$f" ] || return 1
@@ -249,4 +254,115 @@ test_helper_status_text_shows_install_and_last_job() {
   assert_contains "$out" "(running)"
   assert_contains "$out" "last job: clean — done: nothing to free"
   assert_eq "$(ls -l "$(helper_dir)/helper.log" | cut -c1-10)" "-rw-------"
+}
+
+# --- security review fixes ---
+
+test_unreadable_request_is_refused_as_unreadable() {   # C1: never "larger than 512 bytes"
+  _checkout; _req clean
+  f="$(request_dir)/req-$NONCE.json"; chmod 000 "$f"
+  [ ! -r "$f" ] || { echo "running as root: cannot make it unreadable" >&2; return 77; }
+  out="$(_check "$f" || true)"
+  assert_contains "$out" "unreadable"
+  assert_not_contains "$out" "larger than"
+}
+
+test_portal_owned_request_on_linux_is_accepted_and_rootless_uid_is_derived() {   # C1
+  _checkout; _req clean; HELPER_OS=Linux
+  _file_uid() { echo 10102; }
+  assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "clean $NONCE"
+  printf '%s:231072:65536\n' "$(id -un)" > "$TMP/subuid"
+  export HELPER_SUBUID_FILE="$TMP/subuid"
+  _file_uid() { echo 241173; }   # 231072 + 10102 - 1: uid 10102 in the container under rootless Docker
+  assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "clean $NONCE"
+  printf 'HELPER_PORTAL_UID=5555\n' >> "$ENV_FILE"   # an explicit setting replaces the guesses
+  assert_contains "$(_check "$(request_dir)/req-$NONCE.json" || true)" "owned by uid 241173"
+}
+
+test_helper_limits_interval_daily_cap_and_one_rollback_per_update() {   # I2
+  _checkout; HELPER_MIN_INTERVAL_S=60 HELPER_MAX_PER_DAY=3
+  helper_limits clean
+  _helper_count clean
+  assert_contains "$(helper_limits clean 2>&1 || true)" "too soon"
+  now="$(date +%s)"
+  printf '%s clean\n%s clean\n%s clean\n' $((now - 4000)) $((now - 3000)) $((now - 2000)) > "$(helper_dir)/jobs"
+  assert_contains "$(helper_limits clean 2>&1 || true)" "limit of 3 actions a day"
+  printf '%s clean\n' $((now - 90000)) > "$(helper_dir)/jobs"   # older than a day: does not count
+  helper_limits clean
+  update_record_write "$(git -C "$STACK_DIR" rev-parse HEAD)" "" backups/b
+  : > "$(helper_dir)/jobs"; helper_limits rollback; _helper_count rollback
+  : > "$(helper_dir)/jobs"
+  assert_contains "$(helper_limits rollback 2>&1 || true)" "already rolled back once"
+  _req rollback; HELPER_MIN_INTERVAL_S=0
+  if helper_poll_once 2>/dev/null; then return 1; fi
+  assert_contains "$(_status)" "Request refused: this update was already rolled back once"
+  [ ! -f "$CALLS" ] || return 1
+}
+
+test_busy_lock_and_branch_checkouts_refuse_the_job() {   # I3, I6
+  _checkout
+  mkdir -p "$STATE_DIR/lock"; echo $$ > "$STATE_DIR/lock/pid"; echo update > "$STATE_DIR/lock/what"
+  _req clean; helper_poll_once 2>/dev/null
+  assert_contains "$(_status)" '"message": "Busy: ./stack update is running right now'
+  rm -rf "$STATE_DIR/lock"
+  git -C "$STACK_DIR" checkout -q -B main
+  _req update 0 ffffffffffffffffffffffffffffffff; helper_poll_once 2>/dev/null
+  assert_contains "$(_status)" "Refused: this checkout follows branch main"
+  [ ! -f "$CALLS" ] || return 1
+  printf 'BEDROCK_NOW_HELPER_ALLOW_BRANCH=1\n' >> "$ENV_FILE"
+  _req update 0 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; helper_poll_once 2>/dev/null
+  assert_eq "$(cat "$CALLS")" "update --yes"
+}
+
+test_a_refusal_never_hides_a_running_jobs_progress() {   # M2
+  _checkout; JOB_ID=x; JOB_ACTION=update; JOB_STARTED="$(date +%s)"
+  helper_write_status downloading "Downloading images"
+  _refuse "stale" 2>/dev/null
+  assert_contains "$(_status)" '"phase": "downloading"'
+  JOB_ID=x; helper_write_status "done" "Updated"
+  _refuse "stale" 2>/dev/null
+  assert_contains "$(_status)" "Request refused: stale"
+}
+
+test_helper_log_is_trimmed_in_place() {   # M2
+  _checkout; HELPER_LOG_MAX_BYTES=1000
+  head -c 300000 /dev/zero | tr '\0' 'x' > "$(helper_dir)/helper.log"
+  _rotate_log
+  assert_eq "$(wc -c < "$(helper_dir)/helper.log" | tr -d ' ')" 200000
+}
+
+test_portal_temp_files_and_junk_are_swept_but_requests_kept() {   # M11
+  _checkout; rq="$(request_dir)"
+  : > "$rq/.req-new.tmp"; : > "$rq/.req-old.tmp"; touch -t 202001010000 "$rq/.req-old.tmp"
+  : > "$rq/notes.txt"; mkdir "$rq/sub"; _req clean
+  _sweep_requests
+  assert_eq "$(ls -A "$rq" | tr '\n' ' ')" ".req-new.tmp req-$NONCE.json "
+}
+
+test_status_text_is_utf8_safe_when_cut() {   # M9
+  _checkout; JOB_ID=x; JOB_ACTION=clean
+  helper_write_status failed "$(printf 'é%.0s' $(seq 1 200))"   # 400 bytes: cut at 300 must not split a character
+  if command -v python3 >/dev/null 2>&1; then python3 -I -c 'import json,sys; json.loads(open(sys.argv[1], encoding="utf-8").read())' "$(helper_status_file)"; fi
+  assert_contains "$(_status)" "ééé"
+}
+
+test_linux_install_refuses_paths_a_unit_cannot_carry() {   # I5
+  _checkout; _stub_services; HELPER_OS=Linux
+  systemctl() { return 0; }
+  mkdir -p "$TMP/a\"b/bin"; cp "$STACK_DIR/bin/bedrock-now-helper" "$TMP/a\"b/bin/"
+  STACK_DIR="$TMP/a\"b"
+  if out="$( (helper_install) 2>&1)"; then return 1; fi
+  assert_contains "$out" "cannot carry safely"
+}
+
+test_unit_files_escape_specifiers_and_sanitize_path() {   # I5, M8
+  _checkout; STACK_DIR="$TMP/50% \$HOME dir"; mkdir -p "$STACK_DIR" "$TMP/ww"; chmod 777 "$TMP/ww"
+  PATH="$TMP/ww::relative/bin:/usr/bin:/bin" t="$(helper_unit_text)"
+  assert_contains "$t" "WorkingDirectory=$TMP/50%% \$HOME dir"
+  assert_contains "$t" "ExecStart=/bin/bash \"$TMP/50%% \$\$HOME dir/bin/bedrock-now-helper\""
+  p="$(PATH="$TMP/ww::relative/bin:/usr/bin:/bin" helper_path)"
+  assert_not_contains "$p" "$TMP/ww"
+  assert_not_contains "$p" "relative"
+  assert_not_contains "$p" "::"
+  assert_contains "$p" "/usr/bin"
 }

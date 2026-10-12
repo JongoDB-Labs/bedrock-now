@@ -281,7 +281,7 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 |---|---|---|
 | `./stack setup` | First-time or repeat setup: AWS key, ports, model probe, keys | < $0.01 |
 | `./stack up` / `down` | Start / stop (data is kept) | none |
-| `./stack status` | Services, health, URLs and the disk this install uses (images, data, backups) | none |
+| `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups; reused for 5 minutes, `--disk` measures now) | none |
 | `./stack open` | The portal in its own browser window | none |
 | `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
@@ -328,8 +328,13 @@ on macOS, a systemd user unit on Linux; setup offers it). Home then shows **Upda
 **Clean up old images**. Each asks for the portal password again, and Home shows the progress (it reconnects
 when the portal restarts during the update) and the result, e.g. "Updated to v0.3.0 · freed 3.1 GB". The
 portal itself still cannot run anything: it can only leave a request that the helper checks strictly. The
-helper then runs one of those three `./stack` commands. Details and the security checklist:
-[docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes it.
+helper then runs one of those three `./stack` commands, one at a time (a terminal `./stack update`, `rollback`,
+`clean`, `restore` or `setup` makes it answer "Busy"), with its own limits (one a minute, 12 a day). It does not
+update a checkout that follows a branch unless `BEDROCK_NOW_HELPER_ALLOW_BRANCH=1` is in `.env`. Details and the
+security checklist: [docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes
+it. An update that finds nothing new leaves the rollback target and the kept images alone.
+`UPDATE_REQUIRE_SIGNED_TAGS=true` makes `./stack update` accept only signed release tags
+([code provenance](docs/security.md#code-provenance)).
 
 **Disk space:** an update keeps **one** previous version of every image it replaces (so going back needs no
 download) and removes the version before that, then says what it freed, e.g. `freed 3.1 GB (old litellm
@@ -394,7 +399,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   command line; all secrets live in `.env` (mode 600).
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
 - The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
-  request that the portal writes after you re-enter the password; off for remote access by default.
+  request that the portal writes after you re-enter the password, within its own rate limits. It is off for
+  remote access by default. That default applies once a remote-access Caddy block marks such requests; until
+  then an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
 
 Details: [docs/security.md](docs/security.md).
 

@@ -76,7 +76,7 @@ def test_a_valid_request_writes_exactly_one_strict_file(make_client, dirs):
     assert re.fullmatch(r'\{"action":"(update|rollback|clean)","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}"\}', body)
     assert json.loads(body)["nonce"] == nonce
     assert abs(json.loads(body)["requested_at"] - time.time()) < 5
-    assert oct((rq / files[0]).stat().st_mode & 0o777) == "0o600"
+    assert oct((rq / files[0]).stat().st_mode & 0o777) == "0o640"  # group (your gid on Linux) reads it
 
 
 def test_needs_a_session(settings, dirs):

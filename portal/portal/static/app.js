@@ -266,8 +266,13 @@ const PHASES = {
   clean: [["cleaning", "Remove old images"], ["done", "Done"]],
 };
 const ACTION_TEXT = {
-  update: (a) => `Update to ${lastUpdate && lastUpdate.latest ? lastUpdate.latest : "the newest release"}: a backup first, then the new code and images; Chat, Admin and Files are down for a few minutes while the services restart. This page reconnects by itself.`,
-  rollback: (a) => `Go back to ${a.rollback.to || "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).`,
+  update: (a) => {
+    // A checkout on a branch (vX.Y.Z-N-g… versions) updates to whatever that branch has now, not to the release.
+    const onBranch = (a.branch || (lastUpdate && lastUpdate.branch)) && /-\d+-g[0-9a-f]+$/.test(a.version || "");
+    const target = onBranch ? `the tip of branch ${a.branch || lastUpdate.branch} (not a release)` : (lastUpdate && lastUpdate.latest ? lastUpdate.latest : "the newest release");
+    return `Update to ${target}: a backup first, then the new code and images; Chat, Admin and Files are down for a few minutes while the services restart. This page reconnects by itself.`;
+  },
+  rollback: (a) => `Go back to ${a.rollback.to ? (/-\d+-g[0-9a-f]+$/.test(a.rollback.to) ? `${a.rollback.to} (a commit after the release ${a.rollback.to.replace(/-\d+-g[0-9a-f]+$/, "")})` : a.rollback.to) : "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).`,
   clean: () => "Remove this install's old images. The ones in use and one previous version (for rollback) stay.",
 };
 let adminState = null, lastUpdate = null, adminTimer = null, pendingAction = null, reconnecting = false;

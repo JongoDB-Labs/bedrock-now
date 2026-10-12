@@ -14,6 +14,11 @@ HELPER_ACTIONS="update rollback clean"
 HELPER_MAX_AGE_S=120     # a request older than this is refused (the portal writes it the moment you confirm)
 HELPER_MAX_BYTES=512
 HELPER_POLL_S="${HELPER_POLL_S:-3}"
+# The helper's own limits (they hold even if the portal container itself is compromised; the portal's limits
+# only stop a hijacked browser session): jobs at least this far apart, at most this many a day.
+HELPER_MIN_INTERVAL_S="${HELPER_MIN_INTERVAL_S:-60}"
+HELPER_MAX_PER_DAY="${HELPER_MAX_PER_DAY:-12}"
+HELPER_LOG_MAX_BYTES=1000000
 
 request_dir()      { printf '%s/requests\n' "$STATE_DIR"; }
 helper_dir()       { printf '%s/helper\n' "$STATE_DIR"; }
@@ -45,9 +50,27 @@ helper_installed() {
 }
 
 _xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+# systemd unit values: specifiers (%) are escaped everywhere; ExecStart also expands $VARS, so $ is doubled there
 _sd_quote() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"; }
+_sd_exec_quote() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/\$/$$/g')"; }
 
-# helper_plist_text — the launchd agent: runs bin/bedrock-now-helper for this checkout, restarted if it exits
+# helper_path — the PATH the helper runs with (it needs docker and git): your PATH without empty, relative,
+# missing or world-writable entries, plus the system directories
+helper_path() {
+  local IFS=: d out=''
+  # shellcheck disable=SC2086  # split on ":" on purpose
+  for d in $PATH /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do
+    case "$d" in /*) ;; *) continue ;; esac
+    case "$d" in *[[:cntrl:]]*) continue ;; esac
+    [ -d "$d" ] || continue
+    [ -z "$(find "$d" -maxdepth 0 -perm -0002 2>/dev/null)" ] || continue
+    case ":$out:" in *":$d:"*) ;; *) out="${out:+$out:}$d" ;; esac
+  done
+  printf '%s\n' "$out"
+}
+
+# helper_plist_text — the launchd agent: runs bin/bedrock-now-helper for this checkout. It is restarted after a
+# clean exit (the helper exits after each job, so it reloads code an update changed) but not after a crash.
 helper_plist_text() {
   local bin="$STACK_DIR/bin/bedrock-now-helper" logf
   logf="$(helper_dir)/helper.log"
@@ -61,9 +84,9 @@ helper_plist_text() {
   <array><string>/bin/bash</string><string>$(_xml "$bin")</string><string>$(_xml "$STACK_DIR")</string></array>
   <key>WorkingDirectory</key><string>$(_xml "$STACK_DIR")</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>$(_xml "$PATH")</string></dict>
+  <dict><key>PATH</key><string>$(_xml "$(helper_path)")</string></dict>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><true/></dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Background</string>
   <key>Umask</key><integer>63</integer>
@@ -81,10 +104,10 @@ helper_unit_text() {
 Description=bedrock-now update helper ($(project_name)): one-click Update/Rollback/Clean from the portal
 
 [Service]
-ExecStart=/bin/bash $(_sd_quote "$STACK_DIR/bin/bedrock-now-helper") $(_sd_quote "$STACK_DIR")
-WorkingDirectory=$(_sd_quote "$STACK_DIR")
-Environment=$(_sd_quote "PATH=$PATH")
-Restart=always
+ExecStart=/bin/bash $(_sd_exec_quote "$STACK_DIR/bin/bedrock-now-helper") $(_sd_exec_quote "$STACK_DIR")
+WorkingDirectory=$(printf '%s' "$STACK_DIR" | sed 's/%/%%/g')
+Environment=$(_sd_quote "PATH=$(helper_path)")
+Restart=on-success
 RestartSec=5
 UMask=0077
 NoNewPrivileges=yes
@@ -113,6 +136,9 @@ helper_install() {
       if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
         die "no systemd user session here, so the helper cannot be installed as a service. You can run it yourself instead (it stops when you log out): nohup /bin/bash $STACK_DIR/bin/bedrock-now-helper $STACK_DIR >/dev/null 2>&1 &   — or keep using ./stack update in a terminal."
       fi
+      case "$STACK_DIR" in *'"'* | *\\* | *[[:cntrl:]]*)
+        die "the folder name $STACK_DIR has a quote, backslash or control character, which a systemd unit cannot carry safely — move the checkout to a plainer path" ;;
+      esac
       f="$(helper_unit_file)"; mkdir -p "${f%/*}"
       helper_unit_text > "$f.tmp" && chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
       systemctl --user daemon-reload && systemctl --user enable --now "$(helper_unit)" >/dev/null 2>&1 ||
@@ -178,21 +204,36 @@ offer_helper() {
 
 # --- the background job (bin/bedrock-now-helper) ---
 
-_json_str() { printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037' | cut -c1-300; }
+# _json_str TEXT -> safe inside a JSON string: no quotes, backslashes or control characters, at most 300 bytes
+# without cutting a UTF-8 character in half (iconv -c drops an incomplete one)
+_json_str() {
+  local t
+  t="$(printf '%s' "$1" | tr -d '"\\' | tr -d '\000-\037' | head -c 300 || true)"
+  printf '%s' "$t" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || printf '%s' "$t" | LC_ALL=C tr -cd '\040-\176'
+}
 _file_uid() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null; }
-_file_size() { wc -c < "$1" | tr -d ' '; }
 
-# _allowed_uids -> who may own a request file: you, and (Linux) the portal's container user, uid 10102 unless
-# HELPER_PORTAL_UID in .env says otherwise (rootless Docker maps it to a subordinate uid)
+# _allowed_uids -> who may own a request file: you, and (Linux) the portal's container user: uid 10102, or the
+# host uid rootless Docker maps it to (from /etc/subuid), or HELPER_PORTAL_UID in .env when that is set
 _allowed_uids() {
+  local u me f
   id -u
-  case "$(_helper_os)" in Darwin) ;; *) local u; u="$(get_env HELPER_PORTAL_UID)"; printf '%s\n' "${u:-10102}" ;; esac
+  case "$(_helper_os)" in Darwin) return 0 ;; esac
+  u="$(get_env HELPER_PORTAL_UID)"
+  case "$u" in '') ;; *[!0-9]*) ;; *) printf '%s\n' "$u"; return 0 ;; esac
+  echo 10102
+  me="$(id -un)"
+  f="${HELPER_SUBUID_FILE:-/etc/subuid}"
+  [ -f "$f" ] && [ -r "$f" ] && head -c 65536 "$f" | awk -F: -v n="$me" -v i="$(id -u)" '($1 == n || $1 == i) && $2 ~ /^[0-9]+$/ { print $2 + 10101; exit }'
+  return 0
 }
 
-# helper_check_request FILE -> prints "ACTION NONCE" for a valid request; else the reason on stderr, fails.
-# FILE must already be in the helper's private folder (moved there, so the portal cannot swap it afterwards).
+# helper_check_request FILE [NAME] -> prints "ACTION NONCE" for a valid request; else the reason on stderr, fails.
+# FILE must already be in the helper's private folder (moved there, so the portal cannot swap it afterwards). It is
+# opened once, with a bounded read, after the checks that keep that read from blocking (regular file, no symlink).
 helper_check_request() {
-  local f="$1" name="${2:-${1##*/}}" nonce body action ts n now uid ok=0 u
+  local f="$1" name="${2:-${1##*/}}" nonce body action ts n now uid ok=0 u nl='
+'
   case "$name" in req-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
   nonce="${name#req-}"; nonce="${nonce%.json}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
@@ -202,9 +243,13 @@ helper_check_request() {
   uid="$(_file_uid "$f")"
   for u in $(_allowed_uids); do [ "$uid" != "$u" ] || ok=1; done
   [ "$ok" = 1 ] || { echo "owned by uid $uid, not by you or the portal" >&2; return 1; }
-  [ "$(_file_size "$f")" -le "$HELPER_MAX_BYTES" ] || { echo "larger than $HELPER_MAX_BYTES bytes" >&2; return 1; }
-  [ "$(wc -l < "$f" | tr -d ' ')" -le 1 ] || { echo "more than one line" >&2; return 1; }
-  body="$(cat "$f")"
+  [ -r "$f" ] || { echo "unreadable (the portal writes requests readable by its group; see docs/security.md)" >&2; return 1; }
+  body="$(head -c $((HELPER_MAX_BYTES + 1)) "$f" 2>/dev/null && echo x)" || { echo "unreadable" >&2; return 1; }
+  body="${body%x}"
+  [ -n "$body" ] || { echo "empty or unreadable" >&2; return 1; }
+  [ "${#body}" -le "$HELPER_MAX_BYTES" ] || { echo "larger than $HELPER_MAX_BYTES bytes" >&2; return 1; }
+  body="${body%"$nl"}"
+  case "$body" in *"$nl"*) echo "more than one line" >&2; return 1 ;; esac
   printf '%s\n' "$body" | grep -Eq '^\{"action":"(update|rollback|clean)","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}"\}$' ||
     { echo "not a valid request" >&2; return 1; }
   action="$(printf '%s\n' "$body" | sed 's/^{"action":"\([a-z]*\)".*/\1/')"
@@ -226,6 +271,33 @@ _remember_nonce() {
   [ "$(wc -l < "$f" | tr -d ' ')" -le 1000 ] || { tail -n 1000 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 }
 
+# helper_limits ACTION — the helper's own rate limits (state in its private folder): fails with the reason.
+#   jobs at least HELPER_MIN_INTERVAL_S apart, at most HELPER_MAX_PER_DAY a day, one rollback per recorded update
+helper_limits() {
+  local f now last n at done_for
+  f="$(helper_dir)/jobs"; now="$(date +%s)"
+  if [ -f "$f" ]; then
+    last="$(tail -n 1 "$f" | cut -d' ' -f1 | tr -cd '0-9')"
+    if [ -n "$last" ] && [ $((now - last)) -lt "$HELPER_MIN_INTERVAL_S" ] && [ $((now - last)) -ge 0 ]; then
+      echo "too soon after the last action (the helper allows one every ${HELPER_MIN_INTERVAL_S}s)" >&2; return 1
+    fi
+    n="$(awk -v t=$((now - 86400)) '$1 + 0 >= t' "$f" | wc -l | tr -d ' ')"
+    [ "$n" -lt "$HELPER_MAX_PER_DAY" ] || { echo "the helper's limit of $HELPER_MAX_PER_DAY actions a day is reached" >&2; return 1; }
+  fi
+  if [ "$1" = rollback ]; then
+    at="$(_record_get at)"; done_for="$(head -c 20 "$(helper_dir)/rolled-back" 2>/dev/null | tr -cd '0-9' || true)"
+    [ -z "$at" ] || [ "$at" != "$done_for" ] || { echo "this update was already rolled back once by the helper" >&2; return 1; }
+  fi
+}
+
+# _helper_count ACTION — records a job start (for helper_limits); keeps a day and a bit
+_helper_count() {
+  local f now; f="$(helper_dir)/jobs"; now="$(date +%s)"
+  printf '%s %s\n' "$now" "$1" >> "$f"
+  awk -v t=$((now - 90000)) '$1 + 0 >= t' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  [ "$1" != rollback ] || _record_get at > "$(helper_dir)/rolled-back"
+}
+
 # Job state for helper_write_status
 JOB_ID=''; JOB_ACTION=''; JOB_STARTED=''; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''
 
@@ -240,15 +312,34 @@ helper_write_status() {
   chmod 644 "$tmp"; mv "$tmp" "$f"
 }
 
+# _status_in_progress -> 0 while the status file shows a job that has not finished (updated in the last 3 h)
+_status_in_progress() {
+  local f ph upd now
+  f="$(helper_status_file)"; [ -f "$f" ] || return 1
+  ph="$(head -c 4096 "$f" | sed -n 's/.*"phase": "\([a-z-]*\)".*/\1/p')"; upd="$(head -c 4096 "$f" | sed -n 's/.*"updated_at": \([0-9]*\).*/\1/p')"
+  now="$(date +%s)"
+  case "$ph" in '' | done | failed) return 1 ;; esac
+  [ -n "$upd" ] && [ $((now - upd)) -lt 10800 ]
+}
+
+# _refuse REASON — a refused request: logged, and shown on Home unless that would hide a job's progress
+_refuse() {
+  printf '%s refused a request: %s\n' "$(date '+%F %T')" "$1" >&2
+  _status_in_progress && return 0
+  JOB_ID=''; JOB_ACTION=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED="$JOB_STARTED"; JOB_FREED=''; JOB_VERSION=''
+  helper_write_status failed "Request refused: $1"
+}
+
 # helper_heartbeat — .state/status/helper.json: the portal offers the buttons only while this is fresh
 helper_heartbeat() {
-  local d tmp from res avail=false to='' bk=''
+  local d tmp from res avail=false to='' bk='' br
   d="$(status_dir)"; mkdir -p "$d"
   from="$(_record_get from)"; res="$(_record_get result)"
   if [ -n "$from" ] && [ "$res" != rolled-back ]; then avail=true; to="$(_record_get from_version)"; bk="$(_record_get backup)"; fi
+  br="$(git -C "$STACK_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
   tmp="$(mktemp "$d/.helper.XXXXXX")" || return 0
-  printf '{"heartbeat": %s, "pid": %s, "poll_s": %s, "version": "%s", "rollback": {"available": %s, "to": "%s", "backup": "%s"}}\n' \
-    "$(date +%s)" "$$" "$HELPER_POLL_S" "$(_json_str "$(installed_version)")" "$avail" "$(_json_str "$to")" "$(_json_str "$bk")" > "$tmp"
+  printf '{"heartbeat": %s, "pid": %s, "poll_s": %s, "version": "%s", "branch": "%s", "rollback": {"available": %s, "to": "%s", "backup": "%s"}}\n' \
+    "$(date +%s)" "$$" "$HELPER_POLL_S" "$(_json_str "$(installed_version)")" "$(_json_str "$br")" "$avail" "$(_json_str "$to")" "$(_json_str "$bk")" > "$tmp"
   chmod 644 "$tmp"; mv "$tmp" "$(helper_beat_file)"
 }
 
@@ -274,16 +365,32 @@ _last_error() {
   printf '%s\n' "$l"
 }
 
+# _job_refusal ACTION -> why this job must not start now (empty: go ahead)
+_job_refusal() {
+  local holder br
+  if [ -e "$STACK_DIR/.git" ] && [ -n "$(git -C "$STACK_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    echo "Refused: this checkout has local changes to tracked files. Commit or stash them, or run ./stack $1 in a terminal."; return 0
+  fi
+  holder="$(stack_lock_holder)"
+  if [ -n "$holder" ]; then echo "Busy: ./stack ${holder#* } is running right now. Try again when it has finished."; return 0; fi
+  if [ "$1" = update ]; then
+    br="$(git -C "$STACK_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    if [ -n "$br" ] && [ "$(get_env BEDROCK_NOW_HELPER_ALLOW_BRANCH)" != 1 ] && [ "${BEDROCK_NOW_HELPER_ALLOW_BRANCH:-0}" != 1 ]; then
+      echo "Refused: this checkout follows branch $br, so an update would install whatever that branch has now. Run ./stack update in a terminal, or set BEDROCK_NOW_HELPER_ALLOW_BRANCH=1 in .env."; return 0
+    fi
+  fi
+}
+
 # helper_run_job ACTION NONCE — runs ./stack ACTION --yes in this checkout and reports progress
 helper_run_job() {
-  local action="$1" logf pid rc=0 ph at freed summary
+  local action="$1" logf pid rc=0 ph at freed summary why
   JOB_ID="$2"; JOB_ACTION="$action"; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''
   helper_write_status queued "Starting $action"
-  if [ -e "$STACK_DIR/.git" ] && [ -n "$(git -C "$STACK_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-    JOB_FINISHED="$(date +%s)"
-    helper_write_status failed "Refused: this checkout has local changes to tracked files. Commit or stash them, or run ./stack $action in a terminal."
-    return 0
+  why="$(_job_refusal "$action")"
+  if [ -n "$why" ]; then
+    JOB_FINISHED="$(date +%s)"; helper_write_status failed "$why"; return 0
   fi
+  _helper_count "$action"
   logf="$(helper_dir)/last-$action.log"
   : > "$logf"; chmod 600 "$logf"
   case "$action" in
@@ -319,35 +426,66 @@ helper_run_job() {
   esac
 }
 
+# _sweep_requests — removes what is not a request in the request folder: the portal's temp files left by a
+# crash (.req-*.tmp, after a minute) and anything else that is not req-*.json
+_sweep_requests() {
+  local rq f
+  rq="$(request_dir)"
+  for f in "$rq"/.req-*.tmp; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    [ -z "$(find "$f" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue
+    rm -rf "$f"
+  done
+  for f in "$rq"/* "$rq"/.[!.]*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    case "${f##*/}" in req-*.json | .req-*.tmp) ;; *) rm -rf "$f" ;; esac
+  done
+}
+
 # helper_poll_once — handles the oldest request, if any: 0 when a job ran (the caller exits, so launchd/systemd
 # restart the helper with code an update may have changed), 1 otherwise
 helper_poll_once() {
-  local rq inbox name res reason
+  local rq inbox box name res reason
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
   mkdir -p "$inbox"; chmod 700 "$(helper_dir)" "$inbox"
+  _sweep_requests
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
-    # Moved (not copied) into the private folder first: a symlink stays a symlink, and nothing can swap it now.
-    mv -f "$f" "$inbox/$name" 2>/dev/null || { rm -f "$f"; continue; }
-    if res="$(helper_check_request "$inbox/$name" "$name" 2>"$inbox/.reason")"; then
-      rm -f "$inbox/$name" "$inbox/.reason"
-      _remember_nonce "${res#* }"
-      helper_run_job "${res%% *}" "${res#* }"
-      return 0
+    # Moved (not copied) into a fresh private folder first: a symlink stays a symlink, nothing can swap it now,
+    # and two requests with the same name never meet.
+    box="$(mktemp -d "$inbox/r.XXXXXX")" || return 1
+    mv -f "$f" "$box/$name" 2>/dev/null || { rm -rf "$box" "$f"; continue; }
+    if res="$(helper_check_request "$box/$name" "$name" 2>"$box/.reason")"; then
+      if reason="$(helper_limits "${res%% *}" 2>&1)"; then
+        rm -rf "$box"
+        _remember_nonce "${res#* }"
+        helper_run_job "${res%% *}" "${res#* }"
+        return 0
+      fi
+    else
+      reason="$(head -c 300 "$box/.reason" | head -n 1)"
     fi
-    reason="$(head -n 1 "$inbox/.reason")"; rm -f "$inbox/$name" "$inbox/.reason"
-    JOB_ID=''; JOB_ACTION=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED="$JOB_STARTED"; JOB_FREED=''; JOB_VERSION=''
-    helper_write_status failed "Request refused: $reason"
-    printf '%s refused a request: %s\n' "$(date '+%F %T')" "$reason" >&2
+    rm -rf "$box"
+    _refuse "$reason"
   done
   return 1
+}
+
+# _rotate_log — the launchd/systemd output file stays small (trimmed in place: the service keeps it open)
+_rotate_log() {
+  local f t; f="$(helper_dir)/helper.log"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  [ "$(wc -c < "$f" | tr -d ' ')" -gt "$HELPER_LOG_MAX_BYTES" ] || return 0
+  t="$(mktemp "$(helper_dir)/.log.XXXXXX")" || return 0
+  tail -c 200000 "$f" > "$t" && cat "$t" > "$f"; rm -f "$t"
 }
 
 # helper_main [--once] — the loop bin/bedrock-now-helper runs
 helper_main() {
   [ -f "$ENV_FILE" ] || die "$STACK_DIR is not set up (no .env)"
   mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"
+  _rotate_log
   while :; do
     helper_heartbeat
     if helper_poll_once; then helper_heartbeat; return 0; fi

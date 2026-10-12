@@ -150,3 +150,21 @@ test_checkout_failure_shows_git_error() {
   assert_contains "$out" "nope-ref"
   assert_contains "$out" "error:"
 }
+
+test_signed_tags_required_refuses_unsigned_tags_and_branches() {   # I6
+  _fixture; printf 'UPDATE_REQUIRE_SIGNED_TAGS=true\n' > "$ENV_FILE"
+  if out="$( (update_checkout "") 2>&1)"; then return 1; fi
+  assert_contains "$out" "the signature of tag v0.2.0 could not be verified"
+  assert_eq "$(git -C "$STACK_DIR" describe --tags --exact-match)" "v0.1.0"
+  if out="$( (update_checkout main) 2>&1)"; then return 1; fi
+  assert_contains "$out" "'main' is not a tag"
+  git -C "$STACK_DIR" checkout -q -B main v0.1.0
+  if out="$( (update_checkout "") 2>&1)"; then return 1; fi
+  assert_contains "$out" "a branch cannot be verified"
+  git -C "$STACK_DIR" checkout -q --detach v0.1.0
+  # a tag git verify-tag accepts goes through (a stub stands in for a real signature)
+  git() { if [ "${3:-}" = verify-tag ]; then return 0; fi; command git "$@"; }
+  update_checkout "" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "tag v0.2.0: signature verified"
+  assert_eq "$(command git -C "$STACK_DIR" describe --tags --exact-match)" "v0.2.0"
+}
