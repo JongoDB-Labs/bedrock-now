@@ -75,6 +75,7 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?run ./stack setup}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run ./stack setup}
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+      WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
     volumes:
       - ./litellm:/app/config:ro,z
     ports:

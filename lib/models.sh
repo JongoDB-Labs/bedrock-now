@@ -59,6 +59,18 @@ spend_text() {
   if [ -n "$max" ]; then printf '%s of %s\n' "$(usd "$spend")" "$(usd "$max")"; else printf '%s, no budget\n' "$(usd "$spend")"; fi
 }
 
+# budget_warning < /key/info JSON -> "⚠ 84% of monthly budget used" when spend is at least 80% of
+# max_budget (the soft budget setup sets); fails (prints nothing) below that or without a budget.
+budget_warning() {
+  local j spend max
+  j="$(cat)"; spend="$(printf '%s' "$j" | json_num spend)"; max="$(printf '%s' "$j" | json_num max_budget)"
+  [ -n "$spend" ] && [ -n "$max" ] || return 1
+  awk -v s="$spend" -v m="$max" 'BEGIN { if (m <= 0 || s < 0.8 * m) exit 1; printf "⚠ %d%% of monthly budget used\n", s * 100 / m }'
+}
+
+# soft_budget_of MAX_BUDGET -> 80% of it (LiteLLM's soft_budget: alert, never block), e.g. 200 -> 160
+soft_budget_of() { awk -v b="$1" 'BEGIN { s = sprintf("%.4f", b * 0.8); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'; }
+
 prices_as_of() { # -> YYYY-MM-DD from the "# as_of:" header line, or empty
   [ -r "$PRICES" ] || return 0
   tr -d '\r' < "$PRICES" | sed -n 's/^#[[:space:]]*as_of:[[:space:]]*\([0-9-]*\).*/\1/p' | head -n 1
@@ -106,11 +118,11 @@ first_enabled() { # first_enabled ENABLED_FILE PREF... -> first pref present, or
   return 0
 }
 
-# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) -> YAML on stdout
-# STORE_PROMPTS is anything-but-"true" = false. Dies on a bad region, a missing catalog, or
-# when no catalog model is enabled (LiteLLM would start with an empty model list).
+# render_litellm_config ENABLED_FILE REGION STORE_PROMPTS(true|false) [ALERTING(true|false)] -> YAML on stdout
+# STORE_PROMPTS is anything-but-"true" = false; ALERTING=true adds webhook budget alerts. Dies on a bad
+# region, a missing catalog, or when no catalog model is enabled (LiteLLM would start with an empty model list).
 render_litellm_config() {
-  local enabled="$1" region="$2" store="${3:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
+  local enabled="$1" region="$2" store="${3:-false}" alerting="${4:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
   local -a alias_list
   valid_region "$region" || die "invalid AWS region: '$region'"
   [ -r "$CATALOG" ] || die "catalog not found: $CATALOG"
@@ -149,6 +161,11 @@ general_settings:
   database_url: os.environ/DATABASE_URL
   store_prompts_in_spend_logs: $store
   maximum_spend_logs_retention_period: "90d"
+  proxy_batch_write_at: 1   # spend logs land within ~1-6 s (claude-bedrock's exit summary reads them)
+EOT
+  # Budget alerts (soft_budget = 80%, max_budget) go to WEBHOOK_URL, which compose fills from ALERT_WEBHOOK_URL.
+  [ "$alerting" != true ] || printf '  alerting: ["webhook"]\n  alert_types: ["budget_alerts"]\n'
+  cat <<EOT
 
 litellm_settings:
   drop_params: true

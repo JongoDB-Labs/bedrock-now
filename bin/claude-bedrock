@@ -12,6 +12,7 @@ STACK_DIR="$(cd -P "$(dirname "$src")/.." && pwd)"
 export STACK_DIR
 . "$STACK_DIR/lib/common.sh"
 . "$STACK_DIR/lib/models.sh"   # price_label / key_info / spend_text for the launch line
+. "$STACK_DIR/lib/session.sh"  # session id header + cost summary on exit
 
 # --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
 case "${1:-}" in
@@ -29,7 +30,7 @@ case "${1:-}" in
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)
   Model    $m
   Proxy    $p
-  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line; ANTHROPIC_* apply to this process only
+  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line and the session cost on exit
   Cost     $c
   Below    Claude Code's own help; every option works with claude-bedrock
 
@@ -70,6 +71,7 @@ if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
   line="bedrock · $ANTHROPIC_MODEL ($(price_label "$ANTHROPIC_MODEL"))"
   if info="$(key_info "$key" 2 1)" && spent="$(printf '%s' "$info" | spend_text)"; then
     line="$line · spent $spent this period"
+    if bw="$(printf '%s' "$info" | budget_warning)"; then line="$line · $bw"; fi
   fi
   printf '%s\n' "$line" >&2
 fi
@@ -89,5 +91,44 @@ case "${1:-}" in
   *) for c in $subcmds; do [ "$c" = "$1" ] && { add_mcp=0; break; }; done ;;
 esac
 [ "$add_mcp" = 1 ] && [ -f "$STATE_DIR/mcp.json" ] && mcp_args=(--mcp-config "$STATE_DIR/mcp.json")
+
+# Every request of this run carries a session id, so its cost can be looked up on exit (and found in
+# LiteLLM UI › Logs). Your own ANTHROPIC_CUSTOM_HEADERS are kept.
+session_id="$(session_new_id)"
+ANTHROPIC_CUSTOM_HEADERS="$(session_headers "$session_id" "${ANTHROPIC_CUSTOM_HEADERS:-}")"
+export ANTHROPIC_CUSTOM_HEADERS
+
 restore_caller_locale   # Claude Code and its shell tools get the user's locale, not our C locale
-exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+# Subcommands and CLAUDE_BEDROCK_QUIET=1 print no summary: hand the process straight to claude.
+if [ "$add_mcp" = 0 ] || [ "${CLAUDE_BEDROCK_QUIET:-0}" = 1 ]; then
+  exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+fi
+
+# claude runs as a child so the session cost can be printed after it exits. `<&0` keeps the terminal as its
+# stdin (an `&` job would otherwise get /dev/null); without job control it stays in our process group, i.e.
+# the terminal's foreground job. INT/TERM/HUP sent to this wrapper are passed on; claude's exit code is ours.
+claude "$@" ${mcp_args[@]+"${mcp_args[@]}"} <&0 &
+child=$!
+trap 'kill -INT "$child" 2>/dev/null || true' INT
+trap 'kill -TERM "$child" 2>/dev/null || true' TERM
+trap 'kill -HUP "$child" 2>/dev/null || true' HUP
+rc=0
+while :; do
+  if wait "$child"; then rc=0; else rc=$?; fi
+  kill -0 "$child" 2>/dev/null || break   # still running: `wait` was cut short by a forwarded signal
+done
+# If a signal arrived just as claude exited, its status has not been collected yet: collect it now.
+if wait "$child" 2>/dev/null; then rc=0; else r=$?; [ "$r" = 127 ] || rc=$r; fi
+t_exit="$(date +%s)"
+trap 'exit "$rc"' INT TERM HUP   # Ctrl-C while the summary is fetched: just leave
+
+export LC_ALL=C   # number formatting in the summary (claude has already exited)
+if [ -t 2 ]; then
+  trap 'printf "\n" >&2; exit "$rc"' INT TERM HUP
+  printf 'session: tallying cost…' >&2
+  summary="$(session_summary "$session_id" "$t_exit")"
+  printf '\r\033[K%s\n' "$summary" >&2
+else
+  session_summary "$session_id" "$t_exit" >&2
+fi
+exit "$rc"

@@ -93,12 +93,22 @@ and re-checks which models work.
 ```bash
 ./stack up | down          # start / stop (data is kept)
 ./stack status             # services, health + URLs
+./stack open               # the portal in its own browser window
 ./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp
 ./stack test               # end-to-end smoke test (~$0.0001, on the setup key)
 ./stack costs              # prices for your models + spend per key
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else (NO_COLOR=1 turns colours off)
 ```
+
+**The portal window.** `./stack open` opens the portal (`http://bedrock-now.localhost`, or with the port
+setup chose) as its own app window: the first of Google Chrome, Microsoft Edge, Brave and Chromium that is
+installed, started with `--app=<url>` and a separate browser profile for this copy (macOS:
+`~/Library/Application Support/bedrock-now`, Linux: `~/.local/share/bedrock-now`), so its logins don't mix
+with your everyday browser. Without any of them it uses your default browser (`open` / `xdg-open`); over
+SSH or on Linux without a display it only prints the URL. `./stack setup` and `./stack up` open it at the
+end when they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without
+a terminal never open a window.
 
 **Claude Code.** `claude-bedrock` is Claude Code pointed at this stack. It sets the env vars for its own process
 only, so plain `claude` stays exactly as it was. It takes the same arguments as `claude`.
@@ -108,7 +118,15 @@ only, so plain `claude` stays exactly as it was. It takes the same arguments as 
 - `claude-bedrock --help` starts with a short header about the wrapper (models, key, env vars, cost) and then
   shows Claude Code's own help. `--help` and `--version` print no cost line.
 - Each launch prints one cost line, which `CLAUDE_BEDROCK_QUIET=1` hides:
-  `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`
+  `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`.
+  From 80% of the key's monthly budget on, it ends with `· ⚠ 84% of monthly budget used`.
+- When Claude Code exits, the wrapper prints what **this session** cost:
+  `session: 14 requests · 420K tokens (38% cached) · $0.0384` ("cached" = the share of input tokens read from
+  the prompt cache). Every request of the session carries an `x-litellm-session-id: cb-<time>-<random>`
+  header (and the tag `claude-bedrock`), so you can also find it in the LiteLLM UI under Logs. LiteLLM writes
+  spend logs every few seconds, so the summary can take up to 6 s (`CLAUDE_BEDROCK_SUMMARY_WAIT` changes the
+  limit; Ctrl-C skips it). `CLAUDE_BEDROCK_QUIET=1` and subcommands (`claude-bedrock mcp list`, …) print no
+  summary. Your own `ANTHROPIC_CUSTOM_HEADERS` are kept, and claude's exit code is the wrapper's.
 - Claude Code warns that "claude.ai connectors are disabled". This is expected because the wrapper's auth token
   takes precedence over your claude.ai login.
 - `/mcp` shows the **`bedrock-shared`** server, which has these tools: `list_files`, `read_file`,
@@ -192,7 +210,7 @@ can cost dollars. Use Haiku or Sonnet for routine work.
 **Where to watch spend:**
 - `./stack costs` shows the prices for your enabled models, spend and budget per key, and the total across all
   keys for the last 30 days.
-- The `claude-bedrock` launch line shows spend this period.
+- The `claude-bedrock` launch line shows spend this period, and the exit line shows what the session cost.
 - The LiteLLM UI (http://127.0.0.1:4000/ui → **Usage**) breaks spend down by model and day.
 - In Open WebUI, each model's description in the picker shows its price.
 
@@ -201,6 +219,13 @@ can cost dollars. Use Haiku or Sonnet for routine work.
 probe and `./stack test` so you can see what setup itself costs. When a key reaches its budget, LiteLLM
 refuses requests on that key until the reset. To change a budget, edit `BUDGET_CLAUDE_CODE` /
 `BUDGET_OPENWEBUI` / `BUDGET_SETUP` in `.env` and run `./stack setup`. The reset date stays the same.
+
+**Budget alerts:** each key also gets a soft budget at **80%** of its monthly budget. It never blocks anything;
+from there on `./stack costs` and the `claude-bedrock` launch line show `⚠ N% of monthly budget used`. To
+also get a message, set `ALERT_WEBHOOK_URL` in `.env` to any URL that accepts a JSON POST (an n8n, Zapier or
+Make hook, for example) and run `./stack setup`. LiteLLM then posts a budget alert there when a key crosses
+its soft budget (`soft_budget_crossed`) and its full budget (`budget_crossed`). The payload is LiteLLM's own
+JSON, not Slack's message format.
 
 ## Bedrock only
 

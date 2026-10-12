@@ -6,6 +6,27 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Soft budgets: every LiteLLM key gets `soft_budget` = 80% of its monthly budget (existing keys are updated by
+  `./stack setup`). From 80% on, `./stack costs` and the `claude-bedrock` launch line show
+  `⚠ N% of monthly budget used`.
+- Optional budget alerts: with `ALERT_WEBHOOK_URL` in `.env`, LiteLLM posts a JSON alert to that URL when a
+  key crosses its soft budget and its full budget.
+- `claude-bedrock` prints the session's cost when Claude Code exits
+  (`session: 14 requests · 420K tokens (38% cached) · $0.0384`). Each request carries a per-launch
+  `x-litellm-session-id` and the tag `claude-bedrock`. Claude Code now runs as a child of the wrapper;
+  signals are passed on and its exit code is kept. `CLAUDE_BEDROCK_QUIET=1` hides the summary.
+- `./stack open` opens the portal in its own app window (Chrome, Edge, Brave or Chromium with `--app` and a
+  per-copy profile; otherwise the default browser; over SSH or without a display it prints the URL).
+  `./stack setup` and `./stack up` open it at the end when run in a terminal (`BEDROCK_NOW_NO_OPEN=1` turns
+  that off).
+
+### Changed
+
+- LiteLLM writes spend logs every 1–6 s instead of every 10–15 s (`proxy_batch_write_at: 1`), so spend shows
+  up almost immediately.
+
 ## [0.1.2] - 2026-10-12
 
 ### Fixed
