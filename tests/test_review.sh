@@ -107,7 +107,7 @@ test_costs_budget_wording() {
   STACK_DIR="$TMP"
   printf 'LITELLM_PORT=4000\n' > "$ENV_FILE"
   out="$(TODAY=2026-01-02 cmd_costs 2>&1)"
-  assert_contains "$out" "monthly budget; the reset date is shown per key"
+  assert_contains "$out" "monthly budget per key; each resets on the date shown"
 }
 
 # --- permissions, project name, docker checks ---

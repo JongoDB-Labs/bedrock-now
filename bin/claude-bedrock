@@ -13,6 +13,26 @@ export STACK_DIR
 . "$STACK_DIR/lib/common.sh"
 . "$STACK_DIR/lib/models.sh"   # price_label / key_info / spend_text for the launch line
 
+# --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
+case "${1:-}" in
+  -h | --help)
+    opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"
+    cat <<EOT
+claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)
+  Model    ${opus:-none} (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session
+  Proxy    LiteLLM on 127.0.0.1:$(get_env LITELLM_PORT), key 'claude-code' (monthly budget; ./stack costs)
+  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch cost line; ANTHROPIC_* apply to this process only
+  Cost     billed by Bedrock per token; ${opus:-opus}: $(price_label "${opus:-}")
+  Below    Claude Code's own help; every option works with claude-bedrock
+
+EOT
+    command -v claude >/dev/null 2>&1 || die "Claude Code (claude) is not installed"
+    restore_caller_locale; exec claude "$@" ;;
+  -v | --version)
+    command -v claude >/dev/null 2>&1 || die "Claude Code (claude) is not installed"
+    restore_caller_locale; exec claude "$@" ;;
+esac
+
 [ -f "$ENV_FILE" ] || die "stack not set up — run $STACK_DIR/stack setup"
 command -v claude >/dev/null 2>&1 || die "Claude Code (claude) is not installed"
 port="$(get_env LITELLM_PORT)"

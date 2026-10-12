@@ -5,19 +5,21 @@ cmd_help() {
   cat <<'EOF'
 Usage: ./stack <command> [--yes]
 
-  setup        First-time (or repeat) setup: AWS creds, ports, secrets, model probe, keys
+  setup        First-time (or repeat) setup: AWS creds, ports, model probe, keys (< $0.01 Bedrock)
   up | down    Start / stop the stack
-  status       Containers + URLs
+  status       Services, health and URLs
   logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp)
-  test         Smoke-test every service end to end
-  backup       Databases + buckets + .env → backups/<timestamp>/
-  restore DIR  Restore from a backup directory
-  update       Backup, pull pinned images, re-run setup, test
-  rotate-aws   Replace the AWS access key (e.g. after a scheduled rotation)
+  test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
-  models       Which models your AWS key can use (last check; --recheck re-probes)
+  models       Which models your AWS key can use (last check)
+               --recheck re-probes them (< $0.01 Bedrock)
+  backup       Databases + buckets + .env → backups/<timestamp>/
+  restore DIR  Restore from a backup directory (then runs test: ~$0.0001 Bedrock)
+  update       Backup, pull pinned images, re-run setup (< $0.01 Bedrock)
+  rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
   uninstall    Remove containers and ALL data volumes
 
+  Commands without a $ note make no Bedrock calls.
   --yes        Accept defaults (non-interactive). AWS creds can come from
                AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME.
   BEDROCK_NOW_VERBOSE=1 ./stack setup   shows the full docker compose output.
@@ -365,7 +367,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
         code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget}" "$tmp")"
         [ "$code" = 200 ] || warn "could not update the budget of LiteLLM key '$alias' (HTTP $code): $(head -c 300 "$tmp")"
         rm -f "$tmp"
-        log "kept existing LiteLLM key '$alias' (monthly budget \$$budget)"
+        log "kept existing LiteLLM key '$alias' (monthly budget \$$budget (resets on the date shown by ./stack costs))"
         return 0 ;;
       401 | 403 | 404) warn "LiteLLM key '$alias' in .env is no longer valid (HTTP $code) — creating a new one" ;;
       *) die "LiteLLM returned HTTP $code while checking key '$alias' — not creating a duplicate; see ./stack logs litellm" ;;
@@ -376,7 +378,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   [ "$code" = 200 ] || { head -c 500 "$tmp" >&2; rm -f "$tmp"; die "could not create LiteLLM key '$alias' (HTTP $code)"; }
   key="$(parse_virtual_key < "$tmp")" || { head -c 300 "$tmp" >&2; rm -f "$tmp"; die "unexpected /key/generate response for '$alias' (no sk- key found)"; }
   set_env "$envk" "$key"
-  log "created LiteLLM key '$alias' (monthly budget \$$budget; ./stack costs shows the reset date)"
+  log "created LiteLLM key '$alias' (monthly budget \$$budget (resets on the date shown by ./stack costs))"
   rm -f "$tmp"
 }
 
@@ -458,7 +460,7 @@ cmd_costs() {
     case "$mregion" in '' | -) ;; *) label="$label   [$mregion]" ;; esac
     printf '  %-20s %s\n' "$name" "$label"
   done 3< <(catalog_rows)
-  printf '\nSpend this budget period (monthly budget; the reset date is shown per key)\n'
+  printf '\nSpend this budget period (monthly budget per key; each resets on the date shown)\n'
   for alias in claude-code open-webui; do
     case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; *) envk=LITELLM_KEY_OPENWEBUI ;; esac
     if [ -z "$(get_env "$envk")" ]; then printf '  %-12s no key yet — run ./stack setup\n' "$alias"; continue; fi
@@ -548,7 +550,7 @@ sync_openwebui_models() {
 # Passwords are printed only on the very first setup (when the Open WebUI admin was just created);
 # afterwards the summary points at .env so re-runs and updates don't leave them in scrollback/logs.
 print_summary() {
-  local owui_login lite_login
+  local owui_login lite_login cb haiku
   if [ "${FIRST_SETUP:-0}" = 1 ]; then
     owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / $(get_env OPENWEBUI_ADMIN_PASSWORD) (initial password — shown once; also in .env)"
     lite_login="admin / $(get_env LITELLM_UI_PASSWORD)"
@@ -556,6 +558,7 @@ print_summary() {
     owui_login="$(get_env OPENWEBUI_ADMIN_EMAIL) / see OPENWEBUI_ADMIN_PASSWORD in .env"
     lite_login="admin / see LITELLM_UI_PASSWORD in .env"
   fi
+  cb="$(claude_bedrock_cmd)"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   cat <<SUMMARY
 
   ${C_GRN}bedrock-now is up.${C_OFF}
@@ -563,11 +566,27 @@ print_summary() {
   Open WebUI      http://127.0.0.1:$(get_env OPENWEBUI_PORT)   login: $owui_login
   LiteLLM admin   http://127.0.0.1:$(get_env LITELLM_PORT)/ui  login: $lite_login
   Object store    http://127.0.0.1:$(get_env RUSTFS_CONSOLE_PORT)   login: RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY in .env
-  Claude Code     claude-bedrock            (plain \`claude\` is unchanged)
+  Claude Code     $cb   (plain \`claude\` is unchanged)
+SUMMARY
+  [ -z "$haiku" ] || printf '  Try it          CLAUDE_BEDROCK_MODEL=%s %s -p "Say hello in five words"   (~$0.02)\n' "$haiku" "$cb"
+  cat <<SUMMARY
   Costs           ./stack costs             (Bedrock prices as of $(prices_as_of) + spend per key)
+  Models          ./stack models            (which models your AWS key can use)
 
   All credentials live in .env (mode 600).
 SUMMARY
+}
+
+# claude_bedrock_cmd -> "claude-bedrock" when that name on PATH runs this checkout's wrapper, else its
+# absolute path (shell-quoted), so the summary always shows a command that works as typed.
+claude_bedrock_cmd() {
+  local want="$STACK_DIR/bin/claude-bedrock" found
+  found="$(command -v claude-bedrock 2>/dev/null || true)"
+  if [ -n "$found" ] && { [ "$found" = "$want" ] || [ "$(readlink "$found" 2>/dev/null)" = "$want" ]; }; then
+    echo claude-bedrock
+  else
+    printf '%q\n' "$want"
+  fi
 }
 
 # --- Claude Code: MCP config for claude-bedrock + optional symlink ---
@@ -619,10 +638,43 @@ cmd_up() {
 }
 cmd_down()   { dc down; }
 cmd_logs()   { dc logs -f --tail=200 "$@"; }
+status_url() { # status_url SERVICE -> where to open it
+  case "$1" in
+    litellm) echo "http://127.0.0.1:$(get_env LITELLM_PORT)/ui" ;;
+    open-webui) echo "http://127.0.0.1:$(get_env OPENWEBUI_PORT)" ;;
+    rustfs) echo "http://127.0.0.1:$(get_env RUSTFS_CONSOLE_PORT)" ;;
+    shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
+    *) echo "- (internal only)" ;;
+  esac
+}
+
+# status_table < "service<TAB>state<TAB>health<TAB>exit code" lines (dc ps -a --format) -> SERVICE STATE HEALTH URL
+status_table() {
+  local ps s row state health sc hc
+  ps="$(cat)"
+  printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
+  for s in postgres rustfs litellm open-webui shared-mcp; do
+    row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "\t" $3; exit }')"
+    state="${row%%	*}"; health="${row#*	}"
+    [ -n "$row" ] || { state="not created"; health=''; }
+    [ -n "$health" ] || health='-'
+    sc="$C_RED"; [ "$state" = running ] && sc="$C_GRN"
+    case "$health" in healthy) hc="$C_GRN" ;; unhealthy) hc="$C_RED" ;; -) hc='' ;; *) hc="$C_YEL" ;; esac
+    printf '  %-11s %s%-12s%s %s%-10s%s %s\n' "$s" "$sc" "$state" "$C_OFF" "$hc" "$health" "$C_OFF" "$(status_url "$s")"
+  done
+  row="$(printf '%s\n' "$ps" | awk -F'\t' '$1 == "rustfs-init" && $4 != "" && $4 != "0" { print $4 }')"
+  [ -z "$row" ] || warn "bucket setup (rustfs-init) exited with code $row — see ./stack logs rustfs-init"
+}
+
 cmd_status() {
-  dc ps
-  printf '\n  Open WebUI http://127.0.0.1:%s | LiteLLM http://127.0.0.1:%s/ui | RustFS http://127.0.0.1:%s | MCP http://127.0.0.1:%s/mcp\n' \
-    "$(get_env OPENWEBUI_PORT)" "$(get_env LITELLM_PORT)" "$(get_env RUSTFS_CONSOLE_PORT)" "$(get_env SHARED_MCP_PORT)"
+  local ps
+  ps="$(dc ps -a --format '{{.Service}}	{{.State}}	{{.Health}}	{{.ExitCode}}' 2>/dev/null || true)"
+  printf '%s\n' "$ps" | status_table
+  if ! printf '%s\n' "$ps" | grep -q '	running	'; then
+    printf '\n  The stack is not running — start it with ./stack up\n'
+  else
+    printf '\n  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
+  fi
 }
 
 _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter

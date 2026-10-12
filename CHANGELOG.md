@@ -22,6 +22,13 @@ All notable changes to bedrock-now are documented here. The format follows
   defaults to Yes for a long-lived (AKIA…) key.
 - The model table fits 100 columns (MODEL, KIND, coloured STATUS, PRICE, short WHY) with one footnote per
   reason and its action. Marketplace and "no access to the model" denials map to one reason.
+- `./stack status` is a compact SERVICE / STATE / HEALTH / URL table instead of raw `docker compose ps`.
+- `./stack help` marks the commands that call Bedrock and what they cost; `claude-bedrock --help` starts with a
+  six-line header about the wrapper, and `--help`/`--version` no longer print the launch cost line or need
+  LiteLLM running.
+- Budgets are described the same way everywhere: monthly budget (resets on the date shown by `./stack costs`).
+- The setup summary shows a `claude-bedrock` command that works as typed (absolute path when the
+  `~/.local/bin` link is missing or not on PATH) and a "Try it" line with Haiku (~$0.02).
 
 ## [0.1.0] - 2026-10-12
 
