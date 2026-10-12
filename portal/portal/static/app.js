@@ -150,9 +150,42 @@ function renderModels(models, prices) {
   const bits = [];
   if (models.error) bits.push(models.error);
   else if (models.checked_at) bits.push(`Checked ${ago(models.checked_at)}; ./stack models --recheck checks again (< $0.01).`);
-  if (prices.as_of) bits.push(`Prices are Bedrock on-demand rates per 1M tokens as of ${prices.as_of}.`);
+  bits.push("Prices are Bedrock on-demand rates in USD per 1M tokens.");
   if (or) bits.push(`OpenRouter models (or/…) send prompts to openrouter.ai; prices as of ${ago(or.fetched_at)}. ./stack openrouter changes which ones are offered.`);
   $("#models-note").textContent = bits.join(" ");
+  renderPrices(prices);
+}
+
+const FIELD = { in: "input", out: "output", cache_read: "cache read", cache_write: "cache write", per_image: "per image", per_query: "per query" };
+
+function renderPrices(p) {
+  const bits = [];
+  if (p.source === "auto") {
+    bits.push(`Prices: LiteLLM's public price list, checked ${ago(p.fetched_at)}`);
+    if (p.crosscheck_error) bits.push(`AWS cross-check failed (${p.crosscheck_error})`);
+    else if (p.crosscheck_compared) {
+      const na = p.crosscheck_na && p.crosscheck_na.length ? `; no AWS data for ${p.crosscheck_na.join(", ")}` : "";
+      bits.push(`cross-checked against the AWS Price List (${p.crosscheck_compared} prices${na})`);
+    }
+  } else {
+    let why = "automatic updates are off (PRICE_UPDATES=false)";
+    if (p.updates_enabled) why = p.stale_auto ? "it is newer than the last automatic update" : "no automatic update has succeeded yet";
+    bits.push(`Prices: catalog/prices.tsv${p.as_of ? ` as of ${p.as_of}` : ""} (${why})`);
+  }
+  let text = bits.join("; ") + ".";
+  if (p.pending) text += " New prices reach LiteLLM at the next ./stack up or ./stack setup.";
+  if (p.error) text += ` Last update failed ${ago(p.error_at)}: ${p.error}. The last known prices stay in use.`;
+  $("#prices-note").textContent = text;
+
+  const list = $("#price-warnings"); list.replaceChildren();
+  for (const w of p.warnings || []) list.append(el("li", { class: "warn", text: `⚠ ${w}` }));
+  const recent = p.changed_at && (Date.now() - new Date(p.changed_at)) < 7 * 86400000;
+  if (recent) {
+    for (const c of (p.changed || []).slice(0, 8)) {
+      list.append(el("li", { text: `Changed ${ago(p.changed_at)}: ${c.name} ${FIELD[c.field] || c.field} $${c.old} → $${c.new}` }));
+    }
+  }
+  list.hidden = !list.children.length;
 }
 
 async function api(path) {

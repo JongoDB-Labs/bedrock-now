@@ -1,0 +1,203 @@
+{
+ "formatVersion": "v1.0",
+ "offerCode": "AmazonBedrockFoundationModels",
+ "version": "20261012084008",
+ "products": {
+  "J9QFZT8WAQABG9ZX": {
+   "sku": "J9QFZT8WAQABG9ZX",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_input_tokens_standard-Units",
+    "model": "Claude Opus 5.5",
+    "provider": "Anthropic",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  },
+  "E5RCDXA3KP96TBAZ": {
+   "sku": "E5RCDXA3KP96TBAZ",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_cache_read_tokens_standard-Units",
+    "model": "Claude Opus 5.5",
+    "provider": "Anthropic",
+    "regionCode": "us-east-1",
+    "inferenceType": "Prompt cache read input tokens"
+   }
+  },
+  "MZ2BXUDBPJ8RWDK2": {
+   "sku": "MZ2BXUDBPJ8RWDK2",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_search_units-Units",
+    "model": "Rerank 3.5",
+    "provider": "Cohere",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  },
+  "FCRGDQ596BG7EQKH": {
+   "sku": "FCRGDQ596BG7EQKH",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_output_tokens_standard-Units",
+    "model": "Claude Opus 5.5",
+    "provider": "Anthropic",
+    "regionCode": "us-east-1",
+    "inferenceType": "Output tokens"
+   }
+  },
+  "KVG5FBPDJPKF5TJY": {
+   "sku": "KVG5FBPDJPKF5TJY",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_input_tokens_global_standard-Units",
+    "model": "Claude Opus 5.5",
+    "provider": "Anthropic",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  },
+  "MWH4TD2A4D5CEBAP": {
+   "sku": "MWH4TD2A4D5CEBAP",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-MP:USE1_output_tokens_global_standard-Units",
+    "model": "Claude Opus 5.5",
+    "provider": "Anthropic",
+    "regionCode": "us-east-1",
+    "inferenceType": "Output tokens"
+   }
+  }
+ },
+ "terms": {
+  "OnDemand": {
+   "J9QFZT8WAQABG9ZX": {
+    "J9QFZT8WAQABG9ZX.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "J9QFZT8WAQABG9ZX",
+     "effectiveDate": "2026-09-01T00:00:00Z",
+     "priceDimensions": {
+      "J9QFZT8WAQABG9ZX.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "J9QFZT8WAQABG9ZX.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Input Tokens - Standard",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1M tokens",
+       "pricePerUnit": {
+        "USD": "4.4000000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "E5RCDXA3KP96TBAZ": {
+    "E5RCDXA3KP96TBAZ.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "E5RCDXA3KP96TBAZ",
+     "effectiveDate": "2026-09-01T00:00:00Z",
+     "priceDimensions": {
+      "E5RCDXA3KP96TBAZ.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "E5RCDXA3KP96TBAZ.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Cache Read Tokens - Standard",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1M tokens",
+       "pricePerUnit": {
+        "USD": "0.2200000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "MZ2BXUDBPJ8RWDK2": {
+    "MZ2BXUDBPJ8RWDK2.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "MZ2BXUDBPJ8RWDK2",
+     "effectiveDate": "2026-07-01T00:00:00Z",
+     "priceDimensions": {
+      "MZ2BXUDBPJ8RWDK2.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "MZ2BXUDBPJ8RWDK2.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Price per 1 search unit",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "Search Units",
+       "pricePerUnit": {
+        "USD": "0.0020000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "FCRGDQ596BG7EQKH": {
+    "FCRGDQ596BG7EQKH.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "FCRGDQ596BG7EQKH",
+     "effectiveDate": "2026-09-01T00:00:00Z",
+     "priceDimensions": {
+      "FCRGDQ596BG7EQKH.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "FCRGDQ596BG7EQKH.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Output Tokens - Standard",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1M tokens",
+       "pricePerUnit": {
+        "USD": "22.0000000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "KVG5FBPDJPKF5TJY": {
+    "KVG5FBPDJPKF5TJY.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "KVG5FBPDJPKF5TJY",
+     "effectiveDate": "2026-09-01T00:00:00Z",
+     "priceDimensions": {
+      "KVG5FBPDJPKF5TJY.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "KVG5FBPDJPKF5TJY.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Input Tokens - Standard, Global",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1M tokens",
+       "pricePerUnit": {
+        "USD": "4.0000000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "MWH4TD2A4D5CEBAP": {
+    "MWH4TD2A4D5CEBAP.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "MWH4TD2A4D5CEBAP",
+     "effectiveDate": "2026-09-01T00:00:00Z",
+     "priceDimensions": {
+      "MWH4TD2A4D5CEBAP.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "MWH4TD2A4D5CEBAP.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-east-1|Output Tokens - Standard, Global",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1M tokens",
+       "pricePerUnit": {
+        "USD": "20.0000000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   }
+  }
+ }
+}

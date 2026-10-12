@@ -27,6 +27,27 @@ All notable changes to bedrock-now are documented here. The format follows
   `./stack openrouter set|models|refresh|remove` and a `./stack up` that saw price changes also refresh
   Open WebUI's labels and cost-line prices.
 
+- Daily price updates: the portal fetches LiteLLM's public price list at start and every 24 h (ETag, 10 MB
+  cap after bounded gzip decompression, an overall deadline), maps the catalog's Bedrock ids (per-model region)
+  to per-token prices, cross-checks them with the public AWS Price List (`catalog/aws-price-map.tsv`) and writes
+  `litellm/prices/prices.auto.tsv` + `prices.meta.json` (its only writable bind mount besides `/state`).
+  Guards: vanished prices (absent, null, 0; a chat/embedding model without an input price) keep their last
+  value; where AWS has a price, only a new value within 2% of it is applied; without AWS data, jumps above 5x
+  are held back; more than 30% of known prices changing at once without AWS confirming the new values refuses
+  the whole update (checked after the AWS step, skipped on the first update; `./stack prices --accept` applies
+  it anyway, `./stack prices` checks now). Failures keep the
+  last known prices and record the error. `./stack` uses the update file, marked stale after 7 days and replaced
+  only by a newer `catalog/prices.tsv`. Setup runs the full update before rendering LiteLLM's config;
+  `./stack up` a quick one (`--no-crosscheck --timeout 20`; the last AWS prices still guard). Home,
+  `./stack costs` and `./stack models` (PRICE column) show the prices in use, their source, age, warnings and
+  "new prices apply at the next ./stack up"; the `claude-bedrock` launch line adds `new prices pending — run
+  ./stack up`. `PRICE_UPDATES=false` turns it off.
+- `./stack up` re-renders LiteLLM's config and, only when it changed, recreates a running LiteLLM once (before
+  the rest comes up; OpenRouter's refresh runs first and renders with the same prices, so LiteLLM restarts at
+  most once), then calls the `on_prices_changed` hook: the chat cost filter's prices (Bedrock and OpenRouter)
+  and Open WebUI's model descriptions/tiers, once per `./stack up` together with OpenRouter's label sync.
+- Linux: `./stack` keeps `PORTAL_GID` in `.env` (your group; 0 on rootless Docker, re-checked on every run) and
+  makes `litellm/prices/` setgid + group-writable; the portal still runs as its own user 10102 (owner of `/state`).
 - Caddy (2.11.7, pinned by version and digest) is the single way in for browsers: `http://bedrock-now.localhost`
   (the portal) with `chat.`, `admin.` and `files.` subdomains for Open WebUI, LiteLLM and RustFS. It listens on
   `127.0.0.1:80` when that port is free and Docker may bind it (not rootless Docker), else on 8800; URLs leave

@@ -14,5 +14,5 @@ def settings(tmp_path):
         litellm_master_key="sk-master",
         keys=(("claude-code", "Claude Code", "sk-cc"), ("open-webui", "Chat (Open WebUI)", "sk-ow"), ("setup", "Setup and tests", "")),
         litellm_ui_password="ui-pass", rustfs_access_key="bn-access", rustfs_secret_key="rustfs-secret",
-        litellm_dir=lit, catalog_dir=cat,
+        litellm_dir=lit, catalog_dir=cat, prices_dir=tmp_path / "prices",
     )

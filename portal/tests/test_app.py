@@ -202,3 +202,18 @@ def test_cookie_domain_follows_portal_host(settings):
     with TestClient(app, base_url="http://bn-dev.localhost:8800", follow_redirects=False) as c:
         r = c.post("/login", data={"password": "correct horse"}, headers={"Origin": "http://bn-dev.localhost:8800"})
         assert r.status_code == 303 and "domain=bn-dev.localhost" in r.headers["set-cookie"].lower()
+
+
+def test_price_update_task_runs_only_when_enabled(settings, monkeypatch):
+    from portal import prices
+    started = []
+
+    async def fake_loop(paths, region, **kw):
+        started.append((paths.prices_dir, region))
+
+    monkeypatch.setattr(prices, "daily_loop", fake_loop)
+    for enabled in (False, True):
+        app = create_app(replace(settings, price_updates=enabled, aws_region="eu-west-1"), transport=httpx.MockTransport(offline))
+        with TestClient(app, base_url="http://bedrock-now.localhost") as c:
+            assert c.get("/healthz").text == "ok"
+    assert started == [(settings.prices_dir, "eu-west-1")]

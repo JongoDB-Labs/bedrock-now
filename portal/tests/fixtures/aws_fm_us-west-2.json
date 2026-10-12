@@ -1,0 +1,75 @@
+{
+ "formatVersion": "v1.0",
+ "offerCode": "AmazonBedrockFoundationModels",
+ "version": "20261012084008",
+ "products": {
+  "F9HAE84RZCUJMMN3": {
+   "sku": "F9HAE84RZCUJMMN3",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USW2-MP:USW2_created_image-Units",
+    "model": "SD3.5LargeV1",
+    "provider": "Amazon",
+    "regionCode": "us-west-2",
+    "inferenceType": "Output image"
+   }
+  },
+  "7X8V4Z8QNC2FYURT": {
+   "sku": "7X8V4Z8QNC2FYURT",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USW2-MP:USW2_Created_image-Units",
+    "model": "SD3.5LargeV1",
+    "provider": "Amazon",
+    "regionCode": "us-west-2",
+    "inferenceType": "Output image"
+   }
+  }
+ },
+ "terms": {
+  "OnDemand": {
+   "F9HAE84RZCUJMMN3": {
+    "F9HAE84RZCUJMMN3.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "F9HAE84RZCUJMMN3",
+     "effectiveDate": "2026-07-01T00:00:00Z",
+     "priceDimensions": {
+      "F9HAE84RZCUJMMN3.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "F9HAE84RZCUJMMN3.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-west-2|Output image, SD3.5 Large",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "image",
+       "pricePerUnit": {
+        "USD": "0.0800000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "7X8V4Z8QNC2FYURT": {
+    "7X8V4Z8QNC2FYURT.4799GE89SK": {
+     "offerTermCode": "4799GE89SK",
+     "sku": "7X8V4Z8QNC2FYURT",
+     "effectiveDate": "2026-07-01T00:00:00Z",
+     "priceDimensions": {
+      "7X8V4Z8QNC2FYURT.4799GE89SK.6YS6EN2CT7": {
+       "rateCode": "7X8V4Z8QNC2FYURT.4799GE89SK.6YS6EN2CT7",
+       "description": "AWS Marketplace software usage|us-west-2|Output image, SD3.5 Large",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "image",
+       "pricePerUnit": {
+        "USD": "0.0800000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   }
+  }
+ }
+}

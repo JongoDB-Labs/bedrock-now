@@ -42,10 +42,23 @@ def test_read_models_adds_friendly_names_and_tiers(settings):
     assert summary.tier(0.5) == "$$" and summary.tier(3.0) == "$$$" and summary.tier(None) == ""
 
 
-def test_prices_as_of(settings):
-    assert summary.read_prices_as_of(settings.catalog_dir) is None
+def test_models_show_the_prices_in_use(settings):
+    from datetime import date
+    (settings.litellm_dir / "probe-results.tsv").write_text(PROBE)
+    (settings.catalog_dir / "prices.tsv").write_text("# as_of: 2026-10-01\nclaude-haiku-5-5\t0.11\t0.55\t-\t-\t-\t-\n")
+    settings.prices_dir.mkdir()
+    (settings.prices_dir / "prices.auto.tsv").write_text(
+        "# as_of: 2026-10-12\n# version: abc\nclaude-haiku-5-5\t3.3\t16.5\t-\t-\t-\t-\n")
+    prices = summary.price_update.effective_prices(summary.price_paths(settings), date(2026, 10, 13))
+    rows = summary.read_models(settings.litellm_dir, settings.catalog_dir, prices)["rows"]
+    assert rows[0]["price"] == "$3.30/$16.50 /1M" and rows[0]["tier"] == "$$$"   # the daily update, not the probe's
+    assert rows[1]["price"] == "$0.12 /1M"                                         # no price row: the saved one
+
+
+def test_prices_fall_back_to_catalog(settings):
     (settings.catalog_dir / "prices.tsv").write_text("# comment\n# as_of: 2026-10-12\nx\t1\n")
-    assert summary.read_prices_as_of(settings.catalog_dir) == "2026-10-12"
+    p = summary.price_update.status(summary.price_paths(settings), enabled=False)
+    assert p["source"] == "catalog" and p["as_of"] == "2026-10-12" and p["updates_enabled"] is False
 
 
 @respx.mock
@@ -82,6 +95,7 @@ def test_build_aggregates_upstreams(settings):
     assert keys["setup"]["error"].startswith("no key yet")
     assert d["spend"]["total_30d"] == 171.25
     assert len(d["models"]["rows"]) == 2
+    assert d["prices"]["source"] == "catalog" and d["prices"]["warnings"] == []
     assert "sk-" not in str(d)
 
 

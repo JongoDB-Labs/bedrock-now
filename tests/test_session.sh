@@ -230,3 +230,16 @@ test_wrapper_launch_line_warns_at_80_percent_of_budget() {
   STUB_KEYINFO='{"info":{"spend":100.0,"max_budget":200.0}}' _run_wrapper -p hi > /dev/null 2> "$TMP/err"
   assert_not_contains "$(head -n 1 "$TMP/err")" "⚠"
 }
+
+test_wrapper_launch_line_says_when_new_prices_are_pending() {
+  _wrapper_env
+  mkdir -p "$TMP/prices"
+  printf '# as_of: %s\n# version: abc123def456\nclaude-opus-5-5\t5\t25\t-\t-\t-\t-\n' "$(date -u +%Y-%m-%d)" > "$TMP/prices/prices.auto.tsv"
+  printf '# GENERATED\n# prices: catalog 2026-10-12\n' > "$TMP/config.yaml"
+  PRICES_DIR="$TMP/prices" LITELLM_CONFIG="$TMP/config.yaml" _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_contains "$(head -n 1 "$TMP/err")" 'claude-opus-5-5 ($5.00 in / $25.00 out per 1M tokens)'
+  assert_contains "$(head -n 1 "$TMP/err")" '· new prices pending — run ./stack up'
+  printf '# GENERATED\n# prices: auto abc123def456\n' > "$TMP/config.yaml"
+  PRICES_DIR="$TMP/prices" LITELLM_CONFIG="$TMP/config.yaml" _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_not_contains "$(head -n 1 "$TMP/err")" "pending"
+}

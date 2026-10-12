@@ -52,6 +52,9 @@ class Settings:
     shared_mcp_url: str = "http://shared-mcp:8000"
     litellm_dir: Path = Path("/data/litellm")
     catalog_dir: Path = Path("/data/catalog")
+    prices_dir: Path = Path("/data/prices")  # writable mount for the daily price update (its two files only)
+    aws_region: str = "us-east-1"
+    price_updates: bool = False  # from_env turns it on unless PRICE_UPDATES=false; off in tests (no network)
     claude_models: dict = field(default_factory=dict)
     state_dir: Path | None = None  # logout time survives restarts here (compose: the portal-state volume)
     openrouter_api_key: str = field(default="", repr=False)  # optional; only sent to openrouter.ai (portal/openrouter.py)
@@ -100,6 +103,9 @@ def from_env(env: dict | None = None) -> Settings:
         catalog_dir=Path(env.get("PORTAL_CATALOG_DIR", "/data/catalog")),
         state_dir=Path(env.get("PORTAL_STATE_DIR") or "/state"),
         openrouter_api_key=openrouter_key(env.get("OPENROUTER_API_KEY", "")),
+        prices_dir=Path(env.get("PORTAL_PRICES_DIR", "/data/prices")),
+        aws_region=env.get("AWS_REGION_NAME") or "us-east-1",
+        price_updates=(env.get("PRICE_UPDATES") or "true").strip().lower() not in ("false", "0", "no", "off"),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

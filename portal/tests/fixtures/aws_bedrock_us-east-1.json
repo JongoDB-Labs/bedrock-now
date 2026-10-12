@@ -1,0 +1,329 @@
+{
+ "formatVersion": "v1.0",
+ "offerCode": "AmazonBedrock",
+ "version": "20261010182242",
+ "products": {
+  "7THPQ5U22H2EVNHR": {
+   "sku": "7THPQ5U22H2EVNHR",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-global-priority",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens global priority"
+   }
+  },
+  "8QGFWSUU2NB5YMEK": {
+   "sku": "8QGFWSUU2NB5YMEK",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-output-tokens-standard",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Output tokens"
+   }
+  },
+  "UR9RMW2U5VXYZA7U": {
+   "sku": "UR9RMW2U5VXYZA7U",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-flex",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens flex"
+   }
+  },
+  "AUA23W5QGDYZAT2V": {
+   "sku": "AUA23W5QGDYZAT2V",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-priority",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens priority"
+   }
+  },
+  "UXAQXK8RBCYAGCBE": {
+   "sku": "UXAQXK8RBCYAGCBE",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-global-flex",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens global flex"
+   }
+  },
+  "TECAW432PAWRPAJB": {
+   "sku": "TECAW432PAWRPAJB",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-batch",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "input tokens batch"
+   }
+  },
+  "S3TXJ333WYTV2EVG": {
+   "sku": "S3TXJ333WYTV2EVG",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-standard",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  },
+  "U6JNA53276WGF62Q": {
+   "sku": "U6JNA53276WGF62Q",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-xai.grok-4.7-mantle-input-tokens-global-standard",
+    "model": "Grok 4.7",
+    "provider": "xAI",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens global"
+   }
+  },
+  "K8BWWBWG2N3QMH5R": {
+   "sku": "K8BWWBWG2N3QMH5R",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-TitanEmbeddingV2-Text-input-tokens-batch",
+    "titanModel": "TitanEmbeddingsV2-Text-input",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  },
+  "EDNQYEHQ3XQ8N7EY": {
+   "sku": "EDNQYEHQ3XQ8N7EY",
+   "productFamily": "Amazon Bedrock",
+   "attributes": {
+    "usagetype": "USE1-TitanEmbeddingV2-Text-input-tokens",
+    "titanModel": "TitanEmbeddingsV2-Text-input",
+    "regionCode": "us-east-1",
+    "inferenceType": "Input tokens"
+   }
+  }
+ },
+ "terms": {
+  "OnDemand": {
+   "7THPQ5U22H2EVNHR": {
+    "7THPQ5U22H2EVNHR.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "7THPQ5U22H2EVNHR",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "7THPQ5U22H2EVNHR.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "7THPQ5U22H2EVNHR.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.0035 per 1K token for xai.grok-4.7-mantle-input-tokens-global-priority in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0035000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "8QGFWSUU2NB5YMEK": {
+    "8QGFWSUU2NB5YMEK.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "8QGFWSUU2NB5YMEK",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "8QGFWSUU2NB5YMEK.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "8QGFWSUU2NB5YMEK.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.0066 per 1K token for xai.grok-4.7-mantle-output-tokens-standard in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0066000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "UR9RMW2U5VXYZA7U": {
+    "UR9RMW2U5VXYZA7U.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "UR9RMW2U5VXYZA7U",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "UR9RMW2U5VXYZA7U.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "UR9RMW2U5VXYZA7U.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.0011 per 1K token for xai.grok-4.7-mantle-input-tokens-flex in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0011000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "AUA23W5QGDYZAT2V": {
+    "AUA23W5QGDYZAT2V.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "AUA23W5QGDYZAT2V",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "AUA23W5QGDYZAT2V.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "AUA23W5QGDYZAT2V.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.00385 per 1K token for xai.grok-4.7-mantle-input-tokens-priority in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0038500000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "UXAQXK8RBCYAGCBE": {
+    "UXAQXK8RBCYAGCBE.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "UXAQXK8RBCYAGCBE",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "UXAQXK8RBCYAGCBE.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "UXAQXK8RBCYAGCBE.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.001 per 1K token for xai.grok-4.7-mantle-input-tokens-global-flex in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0010000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "TECAW432PAWRPAJB": {
+    "TECAW432PAWRPAJB.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "TECAW432PAWRPAJB",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "TECAW432PAWRPAJB.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "TECAW432PAWRPAJB.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.0011 per 1K token for xai.grok-4.7-mantle-input-tokens-batch in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0011000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "S3TXJ333WYTV2EVG": {
+    "S3TXJ333WYTV2EVG.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "S3TXJ333WYTV2EVG",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "S3TXJ333WYTV2EVG.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "S3TXJ333WYTV2EVG.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.0022 per 1K token for xai.grok-4.7-mantle-input-tokens-standard in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0022000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "U6JNA53276WGF62Q": {
+    "U6JNA53276WGF62Q.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "U6JNA53276WGF62Q",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "U6JNA53276WGF62Q.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "U6JNA53276WGF62Q.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.002 per 1K token for xai.grok-4.7-mantle-input-tokens-global-standard in US East (N. Virginia)",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0020000000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "K8BWWBWG2N3QMH5R": {
+    "K8BWWBWG2N3QMH5R.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "K8BWWBWG2N3QMH5R",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "K8BWWBWG2N3QMH5R.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "K8BWWBWG2N3QMH5R.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.00001 per 1K tokens for TitanEmbeddingV2-Text-input-tokens-batch in US East",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0000100000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   },
+   "EDNQYEHQ3XQ8N7EY": {
+    "EDNQYEHQ3XQ8N7EY.JRTCKXETXF": {
+     "offerTermCode": "JRTCKXETXF",
+     "sku": "EDNQYEHQ3XQ8N7EY",
+     "effectiveDate": "2026-10-01T00:00:00Z",
+     "priceDimensions": {
+      "EDNQYEHQ3XQ8N7EY.JRTCKXETXF.6YS6EN2CT7": {
+       "rateCode": "EDNQYEHQ3XQ8N7EY.JRTCKXETXF.6YS6EN2CT7",
+       "description": "$0.00002 per 1K tokens for TitanEmbeddingsV2-Text-input-tokens in US East",
+       "beginRange": "0",
+       "endRange": "Inf",
+       "unit": "1K tokens",
+       "pricePerUnit": {
+        "USD": "0.0000200000"
+       },
+       "appliesTo": []
+      }
+     },
+     "termAttributes": {}
+    }
+   }
+  }
+ }
+}

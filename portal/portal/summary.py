@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from . import openrouter
+from . import prices as price_update
 from .config import Settings
 
 TIMEOUT = httpx.Timeout(4.0, connect=2.0)
@@ -66,9 +67,11 @@ def _tsv_column(path: Path, col: int) -> dict:
     return out
 
 
-def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
+def read_models(litellm_dir: Path, catalog_dir: Path | None = None, prices: dict | None = None) -> dict:
     """litellm/probe-results.tsv (written by setup / ./stack models --recheck), with the friendly names
-    (catalog/display.tsv) and price tiers Open WebUI's picker shows."""
+    (catalog/display.tsv) and price tiers Open WebUI's picker shows. PRICES ({name: {field: Decimal}}, the
+    prices in use: daily update or catalog) replace the price saved at the last model check; without it,
+    catalog/prices.tsv gives the tiers."""
     path = litellm_dir / "probe-results.tsv"
     try:
         text = path.read_text(encoding="utf-8")
@@ -87,10 +90,15 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
             continue
         name, kind, verdict, reason, price, ts = f[:6]
         checked = checked or ts
-        try:
-            price_in = float(inputs[name]) if kind == "chat" and inputs.get(name) else None
-        except ValueError:
-            price_in = None
+        if prices is not None:
+            p = prices.get(name) or {}
+            price = price_update.price_short(p) or price
+            price_in = float(p["in"]) if kind == "chat" and p.get("in") is not None else None
+        else:
+            try:
+                price_in = float(inputs[name]) if kind == "chat" and inputs.get(name) else None
+            except ValueError:
+                price_in = None
         rows.append({
             "name": name, "kind": kind, "enabled": verdict == "ENABLED",
             "why": reason_code(reason), "reason": reason, "price": price,
@@ -100,15 +108,8 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None) -> dict:
     return {"checked_at": checked, "rows": rows, "error": None}
 
 
-def read_prices_as_of(catalog_dir: Path) -> str | None:
-    try:
-        for line in (catalog_dir / "prices.tsv").read_text(encoding="utf-8").splitlines():
-            m = re.match(r"#\s*as_of:\s*(\d{4}-\d{2}-\d{2})", line)
-            if m:
-                return m.group(1)
-    except OSError:
-        pass
-    return None
+def price_paths(s: Settings) -> price_update.Paths:
+    return price_update.Paths(catalog_dir=s.catalog_dir, prices_dir=s.prices_dir, litellm_dir=s.litellm_dir)
 
 
 async def _health(client: httpx.AsyncClient, url: str) -> tuple[bool, dict | None, str]:
@@ -187,7 +188,7 @@ async def spend(client: httpx.AsyncClient, s: Settings) -> dict:
 
 def models_with_openrouter(s: Settings) -> dict:
     """Bedrock probe results, plus the enabled OpenRouter models when a key is configured."""
-    models = read_models(s.litellm_dir, s.catalog_dir)
+    models = read_models(s.litellm_dir, s.catalog_dir, price_update.effective_prices(price_paths(s)))
     models["openrouter"] = None
     if s.openrouter_api_key:
         orm = openrouter.read_models(s.litellm_dir)
@@ -205,6 +206,6 @@ async def build(client: httpx.AsyncClient, s: Settings) -> dict:
         "services": svc,
         "spend": sp,
         "models": models_with_openrouter(s),
-        "prices": {"as_of": read_prices_as_of(s.catalog_dir), "source": "catalog/prices.tsv"},
+        "prices": price_update.status(price_paths(s), enabled=s.price_updates),
         "claude": {"command": "claude-bedrock", "models": s.claude_models},
     }

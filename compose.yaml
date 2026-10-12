@@ -72,7 +72,7 @@ services:
       UI_USERNAME: admin
       UI_PASSWORD: ${LITELLM_UI_PASSWORD:?run ./stack setup}
       STORE_MODEL_IN_DB: "False"
-      LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch from GitHub; catalog/prices.tsv sets prices
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch; the config carries our prices (lib/prices.sh)
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?run ./stack setup}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run ./stack setup}
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
@@ -191,6 +191,9 @@ services:
     build: { context: ./portal, target: runtime }
     image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/portal:local   # per project, like shared-mcp
     restart: unless-stopped
+    # User 10102 owns /state (portal-state). Linux: PORTAL_GID (set by ./stack) is your group, so the price
+    # update can write litellm/prices/ (setgid, group-writable); macOS needs no group.
+    user: "10102:${PORTAL_GID:-10102}"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -216,10 +219,15 @@ services:
       CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
       # Optional: Home asks openrouter.ai for the key's usage/credits server-side; never sent to the browser.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-    # Read-only: model check results (probe-results.tsv) and catalog prices for Home. No Docker socket.
-    # portal-state (/state) is the only writable mount besides /tmp: the logout time, so a restart keeps it.
+      # Daily price update from public price lists (no credentials); the region picks the regional AWS prices.
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+      PRICE_UPDATES: ${PRICE_UPDATES:-true}
+    # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home.
+    # Writable besides /tmp: portal-state (/state: the logout time, so a restart keeps it) and litellm/prices/
+    # (only prices.auto.tsv + prices.meta.json from the daily price update). No Docker socket.
     volumes:
       - ./litellm:/data/litellm:ro,z
+      - ./litellm/prices:/data/prices:rw,z
       - ./catalog:/data/catalog:ro,z
       - portal-state:/state
     logging: *logging

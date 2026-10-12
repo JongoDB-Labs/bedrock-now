@@ -16,6 +16,8 @@ Usage: ./stack <command> [--yes]
   logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
+  prices       Check Bedrock prices now (public price lists; daily anyway)
+               --accept applies a change the safety checks refused
   models       Which models your AWS key can use (last check)
                --recheck re-probes them (< $0.01 Bedrock)
   backup       Databases + buckets + .env → backups/<timestamp>/
@@ -398,6 +400,11 @@ _restore_litellm_config() {
 
 setup_bringup_and_probe() {
   local en="$STACK_DIR/litellm/enabled-models.txt"
+  # Today's prices before LiteLLM's config is rendered (lib/prices.sh; never fatal). The portal image runs the
+  # updater, so build it first: an image from before an update would not have it.
+  ensure_prices_dir
+  if dc build -q portal >/dev/null 2>&1; then refresh_prices 1
+  else warn "could not build the portal image yet — prices stay as they are (./stack logs portal after setup)"; fi
   log "rendering LiteLLM config with the full catalog for probing"
   on_exit _restore_litellm_config
   render_config ""
@@ -552,6 +559,8 @@ cmd_models() {
   [ "$bad" -eq 0 ] || warn "$f looks corrupt ($bad incomplete line(s) skipped) — run ./stack models --recheck"
   printf 'Model access for your AWS key, as checked %s (no Bedrock calls; ./stack models --recheck re-checks, < $0.01)\n\n' "${ts:-at the last setup}"
   awk -F'\t' '/^#/ || NF >= 6' "$f" | models_table
+  printf '\n  Prices: %s (the PRICE column shows them)\n' "$(prices_source_text)"
+  prices_notes
   openrouter_models_section
 }
 
@@ -567,6 +576,8 @@ cmd_costs() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   en="$(_enabled_or_all)"
   printf 'Bedrock on-demand prices (USD) as of %s — https://aws.amazon.com/bedrock/pricing/\n' "$(prices_as_of)"
+  printf '  Source: %s\n' "$(prices_source_text)"
+  prices_notes
   [ -n "$en" ] || printf '  (setup has not probed your AWS key yet, so this lists the whole catalog)\n'
   printf '  %-20s %s\n' MODEL PRICE
   while IFS=$'\t' read -r name _ _ _ mregion <&3; do
@@ -602,6 +613,7 @@ cmd_costs() {
   printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
   printf 'Alerts at 80%%: set ALERT_WEBHOOK_URL in .env, then ./stack setup (%s)\n' \
     "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo 'webhook set' || echo 'none set')"
+  [ "$PRICES_SOURCE" = catalog ] || return 0   # the daily update keeps them current (and says so above when it fails)
   age="$(prices_age_days)"
   if [ -z "$age" ]; then warn "catalog/prices.tsv has no '# as_of:' date — prices may be stale"
   elif [ "$age" -gt 90 ]; then warn "prices are $age days old — check https://aws.amazon.com/bedrock/pricing/ and update catalog/prices.tsv"; fi
@@ -694,14 +706,41 @@ offer_symlink() {
 # --- day-2 commands ---
 
 cmd_up() {
+  local repriced=0 restart=0
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   check_portal_host "$(portal_host)"
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_images "./stack up"
+  # Prices (lib/prices.sh): refresh if the last check is older than 12 h (fast: LiteLLM's list only, at most
+  # 20 s; the portal's daily run does the AWS cross-check). OpenRouter's hook comes next: when its models
+  # changed it re-renders (with these prices) and recreates LiteLLM itself, so reprice_litellm_config then finds
+  # nothing to change. Otherwise a running LiteLLM is recreated once here, before the rest comes up.
+  refresh_prices 12 --no-crosscheck --timeout 20
   openrouter_up_hook   # optional; refreshes OpenRouter models/prices when a key is set
+  if reprice_litellm_config; then
+    repriced=1
+    [ -z "$(dc ps -q --status running litellm 2>/dev/null)" ] || restart=1
+  fi
+  if [ "$restart" = 1 ]; then
+    log "restarting LiteLLM so it uses the new prices (~30 s; requests in flight may fail)"
+    run_phase "LiteLLM (new prices)" litellm dc up -d --no-deps --force-recreate --wait litellm
+  fi
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
-  # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup)
-  if portal_session_start; then sync_budget_banner; openrouter_after_up; else warn "could not sign in to the portal — budget banner not refreshed"; fi
+  # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup).
+  # The same session updates Open WebUI's prices once: after Bedrock price changes, on_prices_changed (cost
+  # filter, which also carries OpenRouter's prices, and model descriptions) plus OpenRouter's label sync if
+  # its models changed too; after OpenRouter changes alone, openrouter_after_up.
+  if portal_session_start; then
+    sync_budget_banner
+    if [ "$PRICES_CHANGED" = 1 ] || [ "$repriced" = 1 ]; then
+      on_prices_changed
+      [ "${OR_UP_CHANGED:-0}" != 1 ] || ! declare -F openrouter_sync_owui >/dev/null || openrouter_sync_owui || true
+    else
+      openrouter_after_up
+    fi
+  else
+    warn "could not sign in to the portal — budget banner and Open WebUI prices not refreshed"
+  fi
   portal_session_end
   cmd_status
   maybe_auto_open

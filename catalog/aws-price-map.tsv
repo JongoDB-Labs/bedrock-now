@@ -1,0 +1,45 @@
+# Cross-check map: catalog model name → rows of the AWS Price List bulk files (public, no credentials).
+# The portal's daily price update takes prices from LiteLLM's price list and compares them with these rows,
+# in each model's region (catalog/models.tsv column 5, else AWS_REGION_NAME). A gap of more than 2% is shown
+# as a warning on Home and in ./stack costs; nothing here ever changes a price.
+#
+# offer:     AmazonBedrock (third-party and Amazon models; units "1K tokens")
+#            AmazonBedrockFoundationModels (Marketplace models: Anthropic, Cohere, Stability; units "1M tokens")
+# provider:  the product's "provider" attribute ("-" = do not check)
+# model:     the product's "model" attribute (Amazon Titan products: "titanModel")
+# usagetype: the product's usagetype without its region prefix ("USE1-", "USE1-MP:USE1_") and "-Units" suffix.
+#            In-region "*_standard" is the price of the `us.` (Geo) inference profiles the catalog uses.
+# A model with field "-" has no rows in the AWS feed: its cross-check is "n/a".
+# TAB-separated.
+# name	field	offer	provider	model	usagetype
+claude-opus-5-5	in	AmazonBedrockFoundationModels	Anthropic	Claude Opus 5.5	input_tokens_standard
+claude-opus-5-5	out	AmazonBedrockFoundationModels	Anthropic	Claude Opus 5.5	output_tokens_standard
+claude-opus-5-5	cache_read	AmazonBedrockFoundationModels	Anthropic	Claude Opus 5.5	cache_read_tokens_standard
+claude-opus-5-5	cache_write	AmazonBedrockFoundationModels	Anthropic	Claude Opus 5.5	cache_write_tokens_standard
+claude-sonnet-5-5	in	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 5.5	input_tokens_standard
+claude-sonnet-5-5	out	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 5.5	output_tokens_standard
+claude-sonnet-5-5	cache_read	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 5.5	cache_read_tokens_standard
+claude-sonnet-5-5	cache_write	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 5.5	cache_write_tokens_standard
+claude-haiku-5-5	in	AmazonBedrockFoundationModels	Anthropic	Claude Haiku 5.5	input_tokens_standard
+claude-haiku-5-5	out	AmazonBedrockFoundationModels	Anthropic	Claude Haiku 5.5	output_tokens_standard
+claude-haiku-5-5	cache_read	AmazonBedrockFoundationModels	Anthropic	Claude Haiku 5.5	cache_read_tokens_standard
+claude-haiku-5-5	cache_write	AmazonBedrockFoundationModels	Anthropic	Claude Haiku 5.5	cache_write_tokens_standard
+claude-sonnet-4-5	in	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 4.5	InputTokenCount
+claude-sonnet-4-5	out	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 4.5	OutputTokenCount
+claude-sonnet-4-5	cache_read	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 4.5	CacheReadInputTokenCount
+claude-sonnet-4-5	cache_write	AmazonBedrockFoundationModels	Anthropic	Claude Sonnet 4.5	CacheWriteInputTokenCount
+gpt-6-sol	-	-	-	-	-
+gpt-6-luna	-	-	-	-	-
+grok-4-7	in	AmazonBedrock	xAI	Grok 4.7	xai.grok-4.7-mantle-input-tokens-standard
+grok-4-7	out	AmazonBedrock	xAI	Grok 4.7	xai.grok-4.7-mantle-output-tokens-standard
+grok-4-7	cache_read	AmazonBedrock	xAI	Grok 4.7	xai.grok-4.7-mantle-cache-read-tokens-standard
+llama-3-3-70b	in	AmazonBedrock	Meta	Llama 3.3 70B	Llama3-3-70B-input-tokens
+llama-3-3-70b	out	AmazonBedrock	Meta	Llama 3.3 70B	Llama3-3-70B-output-tokens
+mistral-large-3	in	AmazonBedrock	Mistral	Mistral Large 3	Mistral-Large-3-675b-Instruct-input-tokens
+mistral-large-3	out	AmazonBedrock	Mistral	Mistral Large 3	Mistral-Large-3-675b-Instruct-output-tokens
+cohere-embed-v4	in	AmazonBedrockFoundationModels	Cohere	Embed v4	InputTokenCount
+titan-embed-v2	in	AmazonBedrock	-	TitanEmbeddingsV2-Text-input	TitanEmbeddingV2-Text-input-tokens
+cohere-rerank-3-5	per_query	AmazonBedrockFoundationModels	Cohere	Rerank 3.5	search_units
+sd3-5-large	per_image	AmazonBedrockFoundationModels	Amazon	SD3.5LargeV1	created_image
+stable-image-ultra	per_image	AmazonBedrockFoundationModels	Stability AI	SI-Ultra-V1	created_image_stable_image_ultra
+stable-image-core	per_image	AmazonBedrockFoundationModels	Stability AI	SI-Core-V1	created_image_stable_image_core

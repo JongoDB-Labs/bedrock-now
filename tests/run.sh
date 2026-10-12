@@ -20,7 +20,7 @@ CHILD='
 TMP=$(mktemp -d)
 export STACK_DIR="$T_ROOT" ENV_FILE="$TMP/.env" STATE_DIR="$TMP/.state" BEDROCK_NOW_NO_OPEN=1
 ( set -euo pipefail
-  . lib/common.sh; . lib/ports.sh; . lib/portal.sh; . lib/models.sh; . tests/assert.sh
+  . lib/common.sh; . lib/ports.sh; . lib/portal.sh; . lib/models.sh; . lib/prices.sh; . tests/assert.sh
   . "$T_FILE"
   "$T_NAME" )
 rc=$?; rm -rf "$TMP"; exit $rc'

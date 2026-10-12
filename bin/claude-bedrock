@@ -12,6 +12,7 @@ STACK_DIR="$(cd -P "$(dirname "$src")/.." && pwd)"
 export STACK_DIR
 . "$STACK_DIR/lib/common.sh"
 . "$STACK_DIR/lib/models.sh"   # price_label / key_info / spend_text for the launch line
+. "$STACK_DIR/lib/prices.sh"; use_best_prices   # daily-updated prices while fresh, else catalog/prices.tsv
 . "$STACK_DIR/lib/session.sh"  # session id header + cost summary on exit
 
 # --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
@@ -73,6 +74,8 @@ if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
     line="$line · spent $spent this period"
     if bw="$(printf '%s' "$info" | budget_warning)"; then line="$line · $bw"; fi
   fi
+  # LiteLLM still bills the prices it started with (files only, no network)
+  if prices_pending; then line="$line · new prices pending — run ./stack up"; fi
   printf '%s\n' "$line" >&2
 fi
 

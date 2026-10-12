@@ -11,6 +11,8 @@ export STACK_DIR
 . "$STACK_DIR/lib/guard.sh"
 . "$STACK_DIR/lib/open.sh"
 . "$STACK_DIR/lib/owui.sh"
+. "$STACK_DIR/lib/prices.sh"
+use_best_prices   # PRICES: the daily-updated price file while fresh, else catalog/prices.tsv
 
 ASSUME_YES=0
 args=()
@@ -35,6 +37,7 @@ case "$cmd" in
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
+  prices) [ ! -f "$ENV_FILE" ] || guard_project; cmd_prices "$@" ;;   # runs the portal image: claims, like up
   open) cmd_open "$@" ;;
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
   help | -h | --help) cmd_help ;;

@@ -111,6 +111,7 @@ and re-checks which models work.
 ./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy
 ./stack test               # end-to-end smoke test, incl. the portal login and its refusals (~$0.0001, setup key)
 ./stack costs              # prices for your models + spend per key
+./stack prices [--accept]  # check prices now (they update daily); --accept applies a refused change
 ./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
 ./stack help               # everything else (NO_COLOR=1 turns colours off)
 ```
@@ -241,13 +242,14 @@ and run `./stack setup`. LiteLLM then answers to those names with the real model
 Open WebUI keeps them out of its picker.
 
 **Adding a model:** add a TAB-separated row to `catalog/models.tsv` (`name  mode  litellm_model  aliases
-region`, using `-` for none or the default), a row to `catalog/prices.tsv` and one to `catalog/display.tsv`,
-then run `./stack setup`. `tests/run.sh` checks that every model has a price and a display name.
+region`, using `-` for none or the default), a row to `catalog/prices.tsv`, one to `catalog/display.tsv`
+and its AWS Price List rows to `catalog/aws-price-map.tsv` (`-` if AWS lists none), then run `./stack setup`.
+`tests/run.sh` checks that every model has a price, a display name and a cross-check entry.
 
 ## What it costs
 
-You pay AWS Bedrock on-demand prices. Nothing else in the stack costs money. Prices are in USD from
-`catalog/prices.tsv`, **as of 2026-10-12**, source: https://aws.amazon.com/bedrock/pricing/ (OpenAI and xAI
+You pay AWS Bedrock on-demand prices. Nothing else in the stack costs money. Prices are in USD, updated daily
+(below); the fallback is `catalog/prices.tsv`, **as of 2026-10-12**, source: https://aws.amazon.com/bedrock/pricing/ (OpenAI and xAI
 prices come from their Bedrock model cards). These prices are for the **`us.` (US-only) inference profiles**
 the stack uses. AWS charges about **10% more** for them than for `global.` profiles, in exchange for keeping
 processing in the US. `us.` is the default.
@@ -271,6 +273,34 @@ processing in the US. `us.` is the default.
 | stable-image-core | | | | | $0.04 per image |
 
 Long-context tiers, 1-hour cache writes, batch and priority tiers are not modeled.
+
+**Daily price updates.** The table above is the fallback in `catalog/prices.tsv`. The portal checks prices at
+start and every 24 hours. `./stack setup` checks before it configures LiteLLM (skipped if the last check is
+under an hour old); `./stack up` does a quick check (LiteLLM's list only, at most 20 seconds, skipped if the last
+check is under 12 hours old, instant when offline).
+- Source: LiteLLM's public price list (`model_prices_and_context_window.json` on GitHub, keyed by the exact
+  Bedrock ids in `catalog/models.tsv`, region-specific entries first). Cross-check: the public AWS Price List
+  files for each model's region (`catalog/aws-price-map.tsv`; GPT-6 is not in the AWS feed, so it shows "n/a").
+  Only these public files are downloaded (10 MB cap after decompression, timeouts); no credentials are sent.
+- Guards, so a bad upstream file can't make prices vanish or jump: a price LiteLLM stops listing (absent, null
+  or 0) keeps its last value; where AWS has the price, a new value is used only if it is within 2% of AWS (if
+  the old one is, the old one stays); without AWS data, a jump of more than 5x is held back; and if more than
+  30% of the known prices would change at once without AWS listing the new values, the whole update is
+  refused (not on the very first update). Each of these is a warning on Home and in `./stack costs`, as is
+  any LiteLLM/AWS gap above 2%. A real repricing that AWS also lists passes; if you have checked a refused
+  one, `./stack prices --accept` applies LiteLLM's prices anyway, then `./stack up` hands them to LiteLLM.
+  `./stack prices` alone checks now instead of waiting for the daily run.
+- Results go to `litellm/prices/prices.auto.tsv` and `prices.meta.json` (not committed). `./stack` uses that
+  file; when it is 7 or more days old it is marked **stale** and is replaced by `catalog/prices.tsv` only if the
+  catalog is newer. A failed check keeps the last known prices and shows the error and when it happened.
+- LiteLLM reads prices only when it starts (no LiteLLM 1.105 API changes the cost of a config-file model at
+  runtime), so new prices reach it at the next `./stack up` (which restarts LiteLLM once, only when prices
+  changed) or `./stack setup`. Until then Home says so and the `claude-bedrock` launch line adds `new prices
+  pending — run ./stack up`. The chat cost filter and Open WebUI's model prices are updated at the same time.
+- Home, `./stack costs` and `./stack models` (its PRICE column) show the prices in use, where they come from and
+  how old they are. To turn the updates off, set `PRICE_UPDATES=false` in `.env` and run `./stack setup`.
+- Linux: `./stack` sets `PORTAL_GID` in `.env` to your group (group 0 on rootless Docker) and makes
+  `litellm/prices/` setgid and group-writable (2775); the portal keeps its own user, which owns `/state`.
 
 **Worked example:** a Claude Code session on Opus 5.5 that sends 1M new input tokens, 10M cache-read tokens and
 100K output tokens costs about $4.40 + $2.20 + $2.20 = **$8.80**. One SD3.5 image costs $0.08.
@@ -315,8 +345,9 @@ What the stack guarantees:
   are never passed on a command line.
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
   `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
-- LiteLLM uses its **bundled** price map (no runtime fetch from GitHub). Our `catalog/prices.tsv` overrides it.
-  Its breached-password check (a haveibeenpwned.com lookup) is off.
+- LiteLLM uses its **bundled** price map (no runtime fetch from GitHub). Our prices (the daily update, else
+  `catalog/prices.tsv`) override it. The daily update downloads two public price lists (see "What it costs");
+  `PRICE_UPDATES=false` turns that off. LiteLLM's breached-password check (a haveibeenpwned.com lookup) is off.
 - LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
   `LITELLM_STORE_PROMPTS=true` in `.env` and run `./stack setup`. Spend logs are kept for 90 days (LiteLLM's built-in cleanup job, `maximum_spend_logs_retention_period`).
 

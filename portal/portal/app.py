@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import html
 import logging
 from contextlib import asynccontextmanager
@@ -15,7 +17,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import summary
+from . import prices, summary
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -171,7 +173,16 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def lifespan(app: Starlette):
         async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
             app.state.http = client
-            yield
+            # Daily price update (public price lists only; no credentials). Never blocks start-up or requests.
+            task = asyncio.create_task(prices.daily_loop(summary.price_paths(settings), settings.aws_region)) \
+                if settings.price_updates else None
+            try:
+                yield
+            finally:
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
 
     app = Starlette(
         routes=[
