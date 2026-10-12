@@ -91,7 +91,14 @@ or_models_tsv() {
 or_classify() {
   # Control characters go first, with tr: mawk (Debian's default awk) has no [[:cntrl:]] class.
   tr -d '\001-\010\013-\037\177' | awk -F'\t' -v OFS='\t' '
-    function num(v) { return v ~ /^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/ }
+    # A price: plain decimal, or e-notation with |exponent| <= 30 (dec() pads zeros, so a huge exponent would
+    # hang it; no real per-token price is anywhere near 1e-30). Anything else is invalid → model left out.
+    function num(v,  x) {
+      if (v !~ /^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/) return 0
+      x = match(v, /[eE]/); if (!x) return 1
+      x = substr(v, x + 1); sub(/^[-+]/, "", x); sub(/^0+/, "", x)
+      return length(x) <= 2 && x + 0 <= 30
+    }
     # dec: e-notation → plain decimal by moving the point in the digit string (exact; no float rounding)
     function dec(v,  m, e, x, ip, fp, dg, pt, s, i) {
       if (v !~ /[eE]/) return v
@@ -225,7 +232,8 @@ openrouter_cost_prices_entries() {
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
 # "---existing---" line, then GET /api/v1/models/base JSON. stdout: "IMPORT <json>" lines (POST
 # /api/v1/models/import bodies, ≤100 models each: new entries and changed ones as complete objects),
-# "DELETE <id>" lines (our or/ entries that are no longer offered) and one "UNCHANGED <n>" line.
+# 'DELETE {"id": …}' lines (our or/ entries that are no longer offered; the JSON is the POST body for
+# /api/v1/models/model/delete, posted as it is) and one "UNCHANGED <n>" line.
 # Our entries carry meta.bedrock_now="openrouter"; only those are ever deleted. A user's own name (anything
 # not ending in " · OpenRouter"), extra tags, icon, params, knowledge and access grants are kept.
 # shellcheck disable=SC2016  # Python source, not shell
@@ -271,7 +279,7 @@ for m in existing:
         continue
     mid, meta = str(m.get("id") or ""), m.get("meta") if isinstance(m.get("meta"), dict) else {}
     if mid.startswith("or/") and meta.get("bedrock_now") == "openrouter" and mid not in wanted:
-        print("DELETE " + mid)
+        print("DELETE " + json.dumps({"id": mid}))
 print("UNCHANGED %d" % unchanged)'
 
 # openrouter_sync_owui — names ("… · OpenRouter"), tags (OpenRouter + Free/Paid + vendor) and price descriptions
@@ -298,7 +306,7 @@ openrouter_sync_owui() {
         code="$(_owui_post /api/v1/models/import "${line#IMPORT }" "$tmp")"
         if [ "$code" = 200 ]; then n_imp=$((n_imp + $(printf '%s' "$line" | grep -o '"id": "or/' | wc -l))); else bad=$((bad + 1)); fi ;;
       "DELETE "*)
-        code="$(_owui_post /api/v1/models/model/delete "{\"id\":\"${line#DELETE }\"}" "$tmp")"
+        code="$(_owui_post /api/v1/models/model/delete "${line#DELETE }" "$tmp")"
         if [ "$code" = 200 ]; then n_del=$((n_del + 1)); else bad=$((bad + 1)); fi ;;
       "UNCHANGED "*) unchanged="${line#UNCHANGED }" ;;
     esac
@@ -478,14 +486,15 @@ openrouter_summary_line() {
 
 # _or_env_key_wanted -> 0 if setup may adopt the OPENROUTER_API_KEY from the shell: interactively only after a
 # "y"; non-interactively (--yes) only with BEDROCK_NOW_OPENROUTER_FROM_ENV=1.
+# Asked once: after the first interactive setup (.state/openrouter-asked) it is not asked again.
 _or_env_key_wanted() {
-  if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+  if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty && [ ! -e "$STATE_DIR/openrouter-asked" ]; then
     case "$(ask "found OPENROUTER_API_KEY in your environment — use it for bedrock-now (prompts to or/… models go to openrouter.ai)? [y/N]" "n")" in
       [Yy]*) return 0 ;; *) return 1 ;;
     esac
   fi
   [ "${BEDROCK_NOW_OPENROUTER_FROM_ENV:-0}" = 1 ] && return 0
-  log "OPENROUTER_API_KEY in your environment is ignored (OpenRouter is opt-in: ./stack openrouter set, or BEDROCK_NOW_OPENROUTER_FROM_ENV=1)"
+  log "OPENROUTER_API_KEY in your environment is ignored (OpenRouter is opt-in: ./stack openrouter set uses it, or BEDROCK_NOW_OPENROUTER_FROM_ENV=1)"
   return 1
 }
 
@@ -529,8 +538,22 @@ openrouter_up_hook() {
   [ -z "$(dc ps -q litellm 2>/dev/null)" ] || dc up -d --no-deps --force-recreate litellm >/dev/null 2>&1 || warn "could not restart LiteLLM with the new OpenRouter models"
 }
 
+# _or_owui_refresh — inside a portal session: Open WebUI labels for the OpenRouter models, then the cost
+# filter's prices (so the per-answer cost line follows set/models/refresh/up). Never fatal.
+_or_owui_refresh() {
+  openrouter_sync_owui || true
+  ! declare -F owui_install_cost_filter >/dev/null || owui_install_cost_filter || true
+}
+
 # openrouter_after_up — ./stack up, inside its portal session: relabel Open WebUI when the hook saw changes.
-openrouter_after_up() { [ "${OR_UP_CHANGED:-0}" != 1 ] || openrouter_sync_owui || true; }
+openrouter_after_up() { [ "${OR_UP_CHANGED:-0}" != 1 ] || _or_owui_refresh; }
+
+# _or_owui_only — Open WebUI labels and cost-filter prices without restarting anything, when the stack runs.
+_or_owui_only() {
+  [ -n "$(get_env LITELLM_MASTER_KEY)" ] && [ -n "$(dc ps -q open-webui 2>/dev/null)" ] || return 0
+  if portal_session_start; then _or_owui_refresh; else warn "could not sign in to the portal — Open WebUI labels not checked"; fi
+  portal_session_end
+}
 
 # _or_apply — after the key or the model set changed: re-render, recreate LiteLLM and the portal (their
 # OPENROUTER_API_KEY changed) and label the models in Open WebUI. Before the first setup, nothing to apply.
@@ -543,7 +566,7 @@ _or_apply() {
   run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
   run_phase "Portal" portal dc up -d --no-deps --wait portal
   portal_session_or_die
-  openrouter_sync_owui
+  _or_owui_refresh
   portal_session_end
 }
 
@@ -583,7 +606,8 @@ cmd_openrouter() {
       openrouter_enabled || die "no OpenRouter key — ./stack openrouter set adds one"
       openrouter_refresh
       log "OpenRouter: $(or_counts) (list as of $(or_fetched_at))"
-      if [ "$OR_CHANGED" = 1 ]; then _or_apply; else log "no model or price changes"; fi ;;
+      # Unchanged prices still re-check Open WebUI (labels, cost line): a retry after a failed sync.
+      if [ "$OR_CHANGED" = 1 ]; then _or_apply; else log "no model or price changes — checking Open WebUI labels and prices"; _or_owui_only; fi ;;
     list)
       openrouter_enabled || die "no OpenRouter key — ./stack openrouter set adds one"
       [ -s "$(or_cache_tsv)" ] || die "no model list yet — ./stack openrouter refresh"

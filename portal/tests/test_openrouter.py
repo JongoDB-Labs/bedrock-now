@@ -104,6 +104,15 @@ def test_account_rejected_and_unreachable():
     assert run(openrouter.account, KEY)["error"] == "openrouter.ai did not answer (ConnectError)"
 
 
+def test_malformed_key_is_off_and_never_sent():
+    s = from_env({"PORTAL_PASSWORD": "p", "PORTAL_SECRET": "s" * 32, "OPENROUTER_API_KEY": 'sk-or "x"\nEvil: 1'})
+    assert s.openrouter_api_key == ""
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.get(url__regex=r".*").respond(200, json=KEY_INFO)
+        assert run(openrouter.account, "sk-or-v1-a b") == {"enabled": False}
+        assert not route.called
+
+
 def test_settings_reads_key_but_never_prints_it():
     s = from_env({"PORTAL_PASSWORD": "p", "PORTAL_SECRET": "s" * 32, "OPENROUTER_API_KEY": KEY})
     assert s.openrouter_api_key == KEY and KEY not in repr(s)

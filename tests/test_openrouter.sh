@@ -86,6 +86,15 @@ test_classify_enotation_is_exact() {
   assert_eq "$out" "$(printf '0.0000000125\t300\t0.0000000012345678901234567\t1.25')"
 }
 
+test_classify_rejects_huge_exponents_fast() {
+  # dec() pads zeros: an unbounded exponent (1e-99999) once took minutes. |exponent| > 30 = invalid price.
+  start="$(date +%s)"
+  out="$(printf 'a/huge\tn\t1\t1e-99999\t0\t\t\ttext\t1\na/big\tn\t1\t1e+400\t0\t\t\ttext\t1\na/ok\tn\t1\t1e-30\t0\t1e-31\t\ttext\t1\n' | or_classify)"
+  [ $(($(date +%s) - start)) -le 2 ]
+  assert_eq "$(printf '%s\n' "$out" | _ids)" "a/ok "
+  assert_eq "$(printf '%s' "$out" | cut -f4,6)" "$(printf '0.000000000000000000000000000001\t')"   # bad cache price → dropped
+}
+
 test_select_modes() {
   assert_eq "$(_rows | or_select free 1000 | _ids)" "google/gemma-4-31b-it:free inclusionai/ling-3.1-flash nvidia/nemotron-3-super-120b-a12b:free openrouter/free "
   assert_eq "$(_rows | or_select paid 1000 | _ids)" "anthropic/claude-haiku-5.5 google/gemma-4-31b-it meta-llama/llama-3.3-70b-instruct "
@@ -238,7 +247,7 @@ test_owui_sync_batches_creates_updates_and_deletes() {
 m = json.load(sys.stdin)["models"]; d = m[0]
 print(len(m), d["name"], d["params"], d["meta"]["description"][:20], [t["name"] for t in d["meta"]["tags"]])')" \
     "1 My Llama {'temperature': 0.2} OpenRouter · \$0.22 i ['OpenRouter', 'Paid', 'Meta', 'mine']"
-  assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id":"or/old/model"}'
+  assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id": "or/old/model"}'
   assert_not_contains "$(cat "$TMP/owui")" "or/user/own"
   [ -e "$STATE_DIR/openrouter-owui-synced" ]
 }
@@ -266,7 +275,7 @@ test_owui_sync_after_remove_cleans_up_only_with_marker() {
   [ ! -e "$TMP/owui" ]                       # never synced → nothing to clean, no request
   mkdir -p "$STATE_DIR"; : > "$STATE_DIR/openrouter-owui-synced"
   openrouter_sync_owui 2>/dev/null
-  assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id":"or/a/b"}'
+  assert_contains "$(cat "$TMP/owui")" 'POST /api/v1/models/model/delete {"id": "or/a/b"}'
   [ ! -e "$STATE_DIR/openrouter-owui-synced" ]
 }
 
@@ -356,7 +365,7 @@ test_up_hook_and_after_up() {
   printf 'big\tchat\tbedrock/x.big\t-\t-\n' > "$TMP/cat.tsv"
   dc() { echo "dc $*" >> "$TMP/dc"; case "$1" in ps) echo abc123 ;; esac; }
   render_config() { :; }
-  openrouter_sync_owui() { echo SYNC >> "$TMP/dc"; }
+  openrouter_sync_owui() { echo SYNC >> "$TMP/dc"; }; owui_install_cost_filter() { echo COST >> "$TMP/dc"; }
   # Same models as the cache → nothing to restart or relabel.
   openrouter_up_hook 2>/dev/null; openrouter_after_up
   [ ! -e "$TMP/dc" ]
@@ -364,7 +373,49 @@ test_up_hook_and_after_up() {
   touch -t 202001010000 "$TMP/litellm/openrouter-models.tsv"
   sed 's/"prompt":"0.00000022"/"prompt":"0.00000023"/' "$FIXJ" > "$TMP/changed.json"
   CURL_BODY="$TMP/changed.json" openrouter_up_hook 2>/dev/null; openrouter_after_up
-  assert_eq "$(tr '\n' ';' < "$TMP/dc")" "dc ps -q litellm;dc up -d --no-deps --force-recreate litellm;SYNC;"
+  assert_eq "$(tr '\n' ';' < "$TMP/dc")" "dc ps -q litellm;dc up -d --no-deps --force-recreate litellm;SYNC;COST;"
+}
+
+test_apply_relabels_and_updates_cost_filter() {
+  _with_cache 'LITELLM_MASTER_KEY=sk-m
+'
+  : > "$TMP/litellm/config.yaml"
+  render_config() { echo RENDER >> "$TMP/seq"; }
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  run_phase() { echo "PHASE $1" >> "$TMP/seq"; }
+  portal_session_or_die() { :; }; portal_session_end() { :; }
+  openrouter_sync_owui() { echo SYNC >> "$TMP/seq"; }; owui_install_cost_filter() { echo COST >> "$TMP/seq"; }
+  _or_apply 2>/dev/null
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "RENDER;PHASE LiteLLM;PHASE Portal;SYNC;COST;"
+}
+
+test_refresh_without_changes_still_checks_open_webui() {
+  _with_cache 'LITELLM_MASTER_KEY=sk-m
+'
+  _stub_curl
+  # same list as the cache → no change
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  portal_session_start() { :; }; portal_session_end() { :; }
+  _or_apply() { echo APPLY >> "$TMP/seq"; }
+  openrouter_sync_owui() { echo SYNC >> "$TMP/seq"; }; owui_install_cost_filter() { echo COST >> "$TMP/seq"; }
+  cmd_openrouter refresh 2>/dev/null
+  cmd_openrouter refresh 2>/dev/null
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "SYNC;COST;SYNC;COST;"
+}
+
+test_setup_does_not_reask_about_env_key() {
+  STACK_DIR="$TMP"; : > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _have_tty() { return 0; }
+  ask() { echo ASKED >> "$TMP/asked"; echo y; }
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/openrouter-asked"
+  out="$(OPENROUTER_API_KEY=sk-or-v1-shell setup_openrouter 2>&1)"
+  [ ! -e "$TMP/asked" ]
+  assert_contains "$out" "./stack openrouter set uses it"
+  assert_eq "$(get_env OPENROUTER_API_KEY)" ""
+  rm -f "$STATE_DIR/openrouter-asked"
+  OPENROUTER_API_KEY=sk-or-v1-shell setup_openrouter 2>/dev/null   # first time: asked, "y" adopts it
+  assert_eq "$(cat "$TMP/asked")" ASKED
+  assert_eq "$(get_env OPENROUTER_API_KEY)" "sk-or-v1-shell"
 }
 
 test_refresh_failure_keeps_last_cache() {

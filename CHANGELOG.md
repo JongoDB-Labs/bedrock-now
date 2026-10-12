@@ -23,7 +23,9 @@ All notable changes to bedrock-now are documented here. The format follows
   usage, limit and free-model requests (credits with a management key). The model list is cached in
   `litellm/openrouter-models.{tsv,json}`, fetched at setup and `./stack openrouter refresh`, and by
   `./stack up` when older than 12 hours. The key is never on a command line or sent to the browser; curl
-  calls to openrouter.ai are https-only.
+  calls to openrouter.ai are https-only, and a malformed key (CLI or portal) is treated as no key.
+  `./stack openrouter set|models|refresh|remove` and a `./stack up` that saw price changes also refresh
+  Open WebUI's labels and cost-line prices.
 
 - Caddy (2.11.7, pinned by version and digest) is the single way in for browsers: `http://bedrock-now.localhost`
   (the portal) with `chat.`, `admin.` and `files.` subdomains for Open WebUI, LiteLLM and RustFS. It listens on

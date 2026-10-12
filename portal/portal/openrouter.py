@@ -12,6 +12,8 @@ from pathlib import Path
 
 import httpx
 
+from .config import valid_openrouter_key as valid_key
+
 API = "https://openrouter.ai/api/v1"
 TIMEOUT = httpx.Timeout(6.0, connect=3.0)
 CACHE_SECONDS = 300
@@ -71,7 +73,7 @@ async def _get(client: httpx.AsyncClient, key: str, path: str) -> tuple[int, dic
 async def account(client: httpx.AsyncClient, key: str, now: float | None = None) -> dict:
     """Usage, limit and free-model requests of the key (GET /key) plus credits (GET /credits, which needs a
     management key: a normal key gets 403 and Home links to the credits page instead)."""
-    if not key:
+    if not valid_key(key):  # same charset rule as lib/openrouter.sh valid_or_key: anything else is never sent
         return {"enabled": False}
     now = time.monotonic() if now is None else now
     hit = _cache.get(key)

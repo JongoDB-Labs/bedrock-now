@@ -381,7 +381,10 @@ API).
   OpenRouter calls. Not modelled (OpenRouter bills them, LiteLLM's numbers leave them out): long-context price
   tiers (`overrides`), `input_cache_write_1h`, `internal_reasoning`, `web_search`, `audio`, `image` and any
   other per-request fee. The model list and prices are fetched at setup and by `./stack openrouter refresh`;
-  `./stack up` fetches only when the list is more than 12 hours old (it starts fine offline). `./stack costs`,
+  `./stack up` fetches only when the list is more than 12 hours old (it starts fine offline). Whenever the
+  models or prices change (and on every `./stack openrouter refresh`), Open WebUI's labels and its
+  per-answer cost prices are updated too. A model whose price OpenRouter lists in a form bedrock-now can't
+  read (e.g. an absurd exponent) is left out. `./stack costs`,
   `./stack openrouter status` and Home also show the key's own usage, its limit and today's free-model
   requests. The account's credit balance needs an OpenRouter *management* key, so with a normal key they link
   to https://openrouter.ai/settings/credits instead.

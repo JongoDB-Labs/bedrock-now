@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Same rule as valid_or_key in lib/openrouter.sh: a key with anything else is treated as "no key" and never sent.
+_OPENROUTER_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def valid_openrouter_key(key: str) -> bool:
+    return bool(key) and _OPENROUTER_KEY.fullmatch(key) is not None
+
+
+def openrouter_key(key: str) -> str:
+    return key if valid_openrouter_key(key) else ""
 
 # Subdomains of PORTAL_HOST that the portal fronts (Caddy routes them; see caddy/Caddyfile).
 APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
@@ -87,7 +99,7 @@ def from_env(env: dict | None = None) -> Settings:
         litellm_dir=Path(env.get("PORTAL_LITELLM_DIR", "/data/litellm")),
         catalog_dir=Path(env.get("PORTAL_CATALOG_DIR", "/data/catalog")),
         state_dir=Path(env.get("PORTAL_STATE_DIR") or "/state"),
-        openrouter_api_key=env.get("OPENROUTER_API_KEY", ""),
+        openrouter_api_key=openrouter_key(env.get("OPENROUTER_API_KEY", "")),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),
