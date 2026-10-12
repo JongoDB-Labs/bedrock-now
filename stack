@@ -8,6 +8,7 @@ export STACK_DIR
 . "$STACK_DIR/lib/portal.sh"
 . "$STACK_DIR/lib/models.sh"
 . "$STACK_DIR/lib/commands.sh"
+. "$STACK_DIR/lib/guard.sh"
 
 ASSUME_YES=0
 args=()
@@ -19,10 +20,16 @@ set -- ${args[@]+"${args[@]}"}
 
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 # Every command that touches this checkout's Compose project first checks that no other checkout owns it
-# (setup runs the same check itself, after it has settled the project name).
+# (setup runs the same check itself, after it has settled the project name; status only warns, so you can
+# still look; uninstall checks even without .env, lists what it deletes, and releases the project afterwards).
 case "$cmd" in
   setup) cmd_setup "$@" ;;
-  up | down | status | logs | test | costs | models | backup | restore | update | uninstall)
+  status) [ ! -f "$ENV_FILE" ] || guard_project --warn; cmd_status "$@" ;;
+  uninstall) guard_uninstall; cmd_uninstall "$@"; release_project ;;
+  down | logs | costs | models)   # stop or read: check, but don't claim the project
+    [ ! -f "$ENV_FILE" ] || guard_project --no-claim
+    "cmd_${cmd}" "$@" ;;
+  up | test | backup | restore | update)
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
