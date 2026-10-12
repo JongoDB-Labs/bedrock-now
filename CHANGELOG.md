@@ -12,6 +12,9 @@ All notable changes to bedrock-now are documented here. The format follows
   compose output; on failure they show the last output and service log lines plus a `./stack logs` hint.
   `BEDROCK_NOW_VERBOSE=1` restores the full compose output. Missing images are announced (with size) and
   downloaded up front with progress.
+- Setup announces its decisions: each moved port in one line (`port 8080 is in use → using 8083 for Open WebUI`),
+  the Open WebUI admin email and where it came from. The "use the AWS key from your environment?" prompt
+  defaults to Yes for a long-lived (AKIA…) key.
 
 ## [0.1.0] - 2026-10-12
 

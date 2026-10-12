@@ -20,7 +20,7 @@ test_setup_creds_interactive_ignores_env_unless_confirmed() {
   ask() { echo "$1" >> "$TMP/prompts"; case "$1" in *"use it?"*) echo n ;; *"Keep the AWS key"*) echo y ;; *region*) echo us-east-1 ;; *) echo WRONG ;; esac; }
   AWS_ACCESS_KEY_ID=AKIAENVVALUE99 AWS_SECRET_ACCESS_KEY=envsecret setup_aws_creds 2>/dev/null
   assert_eq "$(cat "$TMP/aws")" "AKIAFILE|filesecret"
-  assert_contains "$(cat "$TMP/prompts")" "found AWS_ACCESS_KEY_ID=AKIAENVV… in your environment — use it? [y/N]"
+  assert_contains "$(cat "$TMP/prompts")" "found AWS_ACCESS_KEY_ID=AKIAENVV… in your environment — use it? [Y/n]"
   assert_not_contains "$(cat "$TMP/prompts")" "AKIAENVVALUE99"
   : > "$TMP/prompts"
   ask() { case "$1" in *"use it?"*) echo y ;; *region*) echo us-east-1 ;; *) echo WRONG ;; esac; }

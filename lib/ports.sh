@@ -28,19 +28,26 @@ check_port() {
   { [ "$2" -ge 1024 ] && [ "$2" -le 65535 ]; } || die "port $2 for $1 is out of range (1024-65535)"
 }
 
+svc_label() { # svc_label COMPOSE_SERVICE -> name used in messages
+  case "$1" in
+    litellm) echo LiteLLM ;; open-webui) echo "Open WebUI" ;; rustfs) echo "the RustFS console" ;;
+    shared-mcp) echo "the shared MCP server" ;; *) echo "$1" ;;
+  esac
+}
+
 # resolve_port ENV_KEY DEFAULT SERVICE CONTAINER_PORT
 # Keeps the current/default port unless something *other than our own stack* holds it, or another
 # *_PORT key in .env already claims it; then proposes the next free one (Enter accepts; --yes
-# accepts silently).
+# accepts silently). A moved port is announced in one line: "port 8080 is in use → using 8083 for …".
 resolve_port() {
-  local key="$1" def="$2" svc="$3" cport="$4" cur sugg ans why
+  local key="$1" def="$2" svc="$3" cport="$4" cur sugg ans why short
   cur="$(get_env "$key")"; cur="${cur:-$def}"
   check_port "$key" "$cur"
   why=''
   if port_taken_by_other "$key" "$cur"; then
-    why="port $cur ($key) is already assigned to another service in $ENV_FILE"
+    why="port $cur ($key) is already assigned to another service in $ENV_FILE"; short="already assigned to another service in .env"
   elif port_in_use "$cur" && ! dc port "$svc" "$cport" 2>/dev/null | grep -q ":$cur\$"; then
-    why="port $cur ($key) is already in use on this machine"
+    why="port $cur ($key) is already in use on this machine"; short="in use"
   fi
   if [ -n "$why" ]; then
     sugg=$((cur + 1))
@@ -48,13 +55,15 @@ resolve_port() {
       sugg=$((sugg + 1))
       [ "$sugg" -lt $((cur + 100)) ] && [ "$sugg" -le 65535 ] || die "no free port near $cur for $key"
     done
-    warn "$why"
+    # Interactive runs explain before asking; the one-line decision below is printed either way.
+    if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then warn "$why"; fi
     ans="$(ask "  Port to use for $key" "$sugg")"
     check_port "$key" "$ans"
     if [ "$ans" != "$sugg" ]; then
       if port_in_use "$ans"; then die "port $ans is also in use"; fi
       if port_taken_by_other "$key" "$ans"; then die "port $ans is already assigned to another service"; fi
     fi
+    warn "port $cur is $short → using $ans for $(svc_label "$svc") ($key)"
     cur="$ans"
   fi
   set_env "$key" "$cur"

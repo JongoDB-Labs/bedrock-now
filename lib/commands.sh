@@ -186,7 +186,10 @@ _reject_temporary_creds() {
 _env_aws_creds_chosen() {
   [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || return 1
   if [ "${ASSUME_YES:-0}" = 1 ] || ! _have_tty; then return 0; fi
-  case "$(ask "found AWS_ACCESS_KEY_ID=$(printf '%s' "$AWS_ACCESS_KEY_ID" | cut -c1-8)… in your environment — use it? [y/N]" "n")" in
+  # Default Yes only for a long-lived IAM user key (AKIA…, no session token); temporary ones are refused later.
+  local yn="[y/N]" def=n
+  case "$AWS_ACCESS_KEY_ID" in AKIA*) [ -n "${AWS_SESSION_TOKEN:-}" ] || { yn="[Y/n]"; def=y; } ;; esac
+  case "$(ask "found AWS_ACCESS_KEY_ID=$(printf '%s' "$AWS_ACCESS_KEY_ID" | cut -c1-8)… in your environment — use it? $yn" "$def")" in
     [Yy]*) return 0 ;; *) return 1 ;;
   esac
 }
@@ -240,10 +243,19 @@ setup_secrets() {
   ensure_env BUDGET_CLAUDE_CODE 200
   ensure_env BUDGET_OPENWEBUI 50
   ensure_env LITELLM_STORE_PROMPTS false
-  if [ -z "$(get_env OPENWEBUI_ADMIN_EMAIL)" ]; then
-    local email; email="$(ask "Open WebUI admin email" "$(git config user.email 2>/dev/null || echo admin@bedrock-now.local)")"
+  local email src def
+  email="$(get_env OPENWEBUI_ADMIN_EMAIL)"
+  if [ -n "$email" ]; then
+    src="from OPENWEBUI_ADMIN_EMAIL in .env"
+  else
+    def="$(git config user.email 2>/dev/null || true)"
+    if [ -n "$def" ]; then src="from git config"; else def=admin@bedrock-now.local; src="default"; fi
+    email="$(ask "Open WebUI admin email" "$def")"
+    [ "$email" = "$def" ] || src="entered"
     case "$email" in *@*.*) set_env OPENWEBUI_ADMIN_EMAIL "$email" ;; *) die "invalid email: $email" ;; esac
+    src="$src; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup"
   fi
+  log "Open WebUI admin: $email ($src)"
 }
 
 cmd_setup() {
