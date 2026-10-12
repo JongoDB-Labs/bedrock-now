@@ -73,8 +73,10 @@ services:
       UI_PASSWORD: ${LITELLM_UI_PASSWORD:?run ./stack setup}
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch; the config carries our prices (lib/prices.sh)
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?run ./stack setup}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run ./stack setup}
+      # An access key from .env, passed only when set (no value here = taken from .env, else left out). Without
+      # one (AWS_AUTH=instance-role on EC2) boto3 finds the instance role through IMDS (hop limit 2; docs/cloud-vm.md).
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
       WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
       # Optional; blank = no OpenRouter models are rendered (lib/openrouter.sh).

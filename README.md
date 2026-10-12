@@ -14,7 +14,8 @@ Install it with one command; nothing listens beyond `127.0.0.1`.
 - macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux)
 - `git`, `curl`, `openssl` (macOS's built-in bash 3.2 is fine)
 - An **AWS access key ID and secret** for an IAM user with Bedrock access (long-lived `AKIA…` key; see
-  [Asking your AWS admin for model access](#asking-your-aws-admin-for-model-access))
+  [Asking your AWS admin for model access](#asking-your-aws-admin-for-model-access)), or, on an EC2 VM, an
+  **IAM role** instead (no keys stored; see [Run it on a cloud VM](#run-it-on-a-cloud-vm))
 - Optional: **Claude Code** (`claude`), for `claude-bedrock`
 
 **Install** with the one-liner:
@@ -38,7 +39,9 @@ and starts setup. It never overwrites an existing folder: for an existing checko
 
 **What happens.** Setup asks for your AWS key (the secret is hidden), region (default `us-east-1`) and an admin
 email (default: your `git config user.email`). Exported `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are offered
-first; temporary credentials (`ASIA…`, `AWS_SESSION_TOKEN`) are refused because they expire. Then it:
+first; temporary credentials (`ASIA…`, `AWS_SESSION_TOKEN`) are refused because they expire. On an EC2 instance
+with an IAM role and no key configured, setup offers the role instead and stores no key
+([Run it on a cloud VM](#run-it-on-a-cloud-vm)). Then it:
 
 1. verifies the key with AWS, picks free ports and the portal address, and generates every secret into `.env`
    (mode 600, never committed), including the portal password;
@@ -124,6 +127,16 @@ plain `claude` stays exactly as it was, and it takes the same arguments.
   precedence over your claude.ai login.
 
 More details (session headers, signals, `--help`): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
+
+### Claude Code from your phone
+
+SSH into the machine from a phone SSH app (Blink or Termius on iOS, Termius or JuiceSSH on Android), start
+`tmux new -A -s claude` and run `claude-bedrock` in it; a dropped connection then loses nothing. Tailscale on
+both devices makes this work from anywhere without open ports. `./stack ssh-info` prints the exact commands
+for this machine (its Tailscale name, the SSH command, apps, mosh). There is deliberately no web terminal, and
+Claude Code's Remote Control doesn't work with Bedrock or a custom API URL. A sleeping Mac answers no SSH:
+`./stack serve` keeps the stack up and the Mac awake (on AC power, lid open) until Ctrl-C (`--background`
+without a terminal). Step by step, incl. the lid-closed caveats: [docs/phone-claude-code.md](docs/phone-claude-code.md).
 
 ### Shared files and knowledge (MCP)
 
@@ -254,6 +267,17 @@ for vendors without one). Their prices go into LiteLLM, so spend, budgets, `./st
 **Privacy:** a prompt to an `or/…` model goes to OpenRouter and the model's provider, and some free models may
 log or train on your prompts; keep confidential work on Bedrock. Details: [docs/openrouter.md](docs/openrouter.md).
 
+## Run it on a cloud VM
+
+An always-on VM saves keeping a laptop awake. On **EC2**, give the instance an **IAM role** with Bedrock access
+and setup offers to use it instead of an access key (default yes; `AWS_AUTH=instance-role` in `.env`, no keys
+stored; AWS rotates the role's credentials). A `t4g.medium` (2 vCPU, 4 GB, arm64; every image runs on arm64)
+with Amazon Linux 2023, a 30–40 GB gp3 disk and a security group with **no inbound rules** costs about
+$31/month in `us-east-1` before Bedrock usage; you reach it over Tailscale. The recipe — least-privilege role
+policy, IMDSv2 hop limit 2 (containers need it to reach the role), Docker on AL2023, data residency, costs and a
+request template for your AWS admin — is in [docs/cloud-vm.md](docs/cloud-vm.md). Other providers (Hetzner,
+DigitalOcean, …) work the same way with an access key.
+
 ## Bedrock by default: what leaves your machine
 
 - **AWS:** model calls go to Bedrock (chat, embeddings, rerank, images) through LiteLLM; setup also checks your
@@ -294,7 +318,9 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 | `./stack clean [--yes]` | Remove this install's old images (lists them first; keeps one previous version) | none |
 | `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
 | `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
-| `./stack rotate-aws` | Replace the AWS key (verified first), then test | ~$0.0001 |
+| `./stack rotate-aws [--use-keys \| --use-instance-role]` | Replace the AWS key (verified first), then test; the flags switch between an EC2 IAM role and a key | ~$0.0001 |
+| `./stack serve [--background \| --stop]` | Start the stack and keep the Mac awake until Ctrl-C (prints the URLs) | none |
+| `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
 | `./stack help` | All of the above | none |
@@ -396,7 +422,7 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   `SameSite=Strict` session cookie before every request. Open WebUI trusts a sign-in header that only Caddy
   can set; the apps may be framed only by the portal.
 - Every host port binds to `127.0.0.1`. AWS credentials reach only the LiteLLM container and never appear on a
-  command line; all secrets live in `.env` (mode 600).
+  command line; all secrets live in `.env` (mode 600). On EC2 with an IAM role there are no AWS keys at all.
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
 - The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
   request that the portal writes after you re-enter the password, within its own rate limits. It is off for

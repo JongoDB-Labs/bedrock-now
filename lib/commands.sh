@@ -30,6 +30,10 @@ Usage: ./stack <command> [--yes]
   rollback     Back to the version before the last update: code, data (its backup) and images
   helper       Optional one-click Update / Rollback / Clean on Home: install | uninstall | status
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
+               --use-instance-role / --use-keys switch between an EC2 IAM role and a key
+  serve        Keep the stack up and this Mac awake until Ctrl-C (caffeinate; prints the URLs)
+               --background holds it without a terminal, --stop ends that
+  ssh-info     How to use claude-bedrock from your phone over SSH (Tailscale name, apps, tmux)
   openrouter   Optional OpenRouter models: status | set | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
   uninstall    Remove containers and ALL data volumes
@@ -186,8 +190,13 @@ persist_project_name() {
 
 # aws_cli ARGS... — runs aws-cli in a throwaway container with creds from .env (never on argv).
 # AWS_REGION_OVERRIDE=<region> calls a different region than .env's AWS_REGION_NAME (per-model regions).
+# AWS_AUTH=instance-role (lib/host.sh): no creds at all, the container uses the EC2 instance role via IMDS.
 aws_cli() {
-  aws_run "$(get_env AWS_ACCESS_KEY_ID)" "$(get_env AWS_SECRET_ACCESS_KEY)" "${AWS_REGION_OVERRIDE:-$(get_env AWS_REGION_NAME)}" "$@"
+  if uses_instance_role; then
+    aws_run_role "${AWS_REGION_OVERRIDE:-$(get_env AWS_REGION_NAME)}" "$@"
+  else
+    aws_run "$(get_env AWS_ACCESS_KEY_ID)" "$(get_env AWS_SECRET_ACCESS_KEY)" "${AWS_REGION_OVERRIDE:-$(get_env AWS_REGION_NAME)}" "$@"
+  fi
 }
 
 # aws_run KEY_ID SECRET REGION ARGS... — same, with explicit creds (handed to docker via -e NAME, not argv).
@@ -219,6 +228,7 @@ _env_aws_creds_chosen() {
 
 setup_aws_creds() {
   local id='' secret='' region arn errf
+  setup_instance_role && return 0   # EC2 with an IAM role and no key configured: no keys at all (lib/host.sh)
   region="${AWS_REGION_NAME:-${AWS_REGION:-}}"
   if _env_aws_creds_chosen; then
     id="$AWS_ACCESS_KEY_ID"; secret="$AWS_SECRET_ACCESS_KEY"
@@ -229,11 +239,12 @@ setup_aws_creds() {
   [ -n "$id" ] || id="$(ask "AWS access key ID" "")"
   [ -n "$secret" ] || [ -z "$id" ] || ! _have_tty || [ "${ASSUME_YES:-0}" = 1 ] || secret="$(ask_secret "AWS secret access key (hidden)")"
   [ -n "$id" ] && [ -n "$secret" ] ||
-    die "AWS credentials are required (non-interactive: export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or run ./setup.sh in a terminal)"
+    die "AWS credentials are required (non-interactive: export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or run ./setup.sh in a terminal; on EC2, attach an IAM role instead — docs/cloud-vm.md)"
   _reject_temporary_creds "$id"
   region="$(ask "AWS region" "${region:-$(get_env AWS_REGION_NAME)}")"; region="${region:-us-east-1}"
   valid_region "$region" || die "invalid AWS region: '$region' (expected something like us-east-1)"
   set_env AWS_ACCESS_KEY_ID "$id"; set_env AWS_SECRET_ACCESS_KEY "$secret"; set_env AWS_REGION_NAME "$region"
+  unset_env AWS_AUTH
   docker pull -q "$AWS_CLI_IMAGE" >/dev/null || die "could not pull $AWS_CLI_IMAGE (network/Docker Hub?)"
   log "verifying AWS credentials…"
   errf="$(mktemp)"
@@ -339,6 +350,7 @@ cmd_setup() {
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
   print_summary
+  [ "$(host_os)" != Darwin ] || docker_autostart_hint   # lib/host.sh: read-only check, never edits settings
   maybe_auto_open
 }
 
@@ -1170,6 +1182,12 @@ cmd_update() {
 cmd_rotate_aws() {
   local id secret region arn errf old
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  case "${1:-}" in   # instance-role mode: lib/host.sh
+    '') if uses_instance_role; then instance_role_rotate_info; return 0; fi ;;
+    --use-keys) ;;
+    --use-instance-role) rotate_to_instance_role; return 0 ;;
+    *) die "unknown option: $1 (./stack rotate-aws [--use-keys | --use-instance-role])" ;;
+  esac
   id=''; secret=''
   if _env_aws_creds_chosen; then   # env creds: always non-interactively, only on "y" interactively
     id="$AWS_ACCESS_KEY_ID"; secret="$AWS_SECRET_ACCESS_KEY"
@@ -1192,11 +1210,12 @@ cmd_rotate_aws() {
   fi
   rm -f "$errf"
   log "new key authenticated as $arn"
-  set_env AWS_ACCESS_KEY_ID "$id"; set_env AWS_SECRET_ACCESS_KEY "$secret"
+  set_env AWS_ACCESS_KEY_ID "$id"; set_env AWS_SECRET_ACCESS_KEY "$secret"; unset_env AWS_AUTH
   log "restarting LiteLLM with the new key…"
   dc up -d --wait litellm   # env changed → the container is recreated with the new key
   cmd_test
-  log "rotated. Remember to deactivate the old key ($old) in IAM, or ask your AWS admin to."
+  if [ -n "$old" ]; then log "rotated. Remember to deactivate the old key ($old) in IAM, or ask your AWS admin to."
+  else log "now using the access key $(printf '%s' "$id" | cut -c1-8)… instead of the instance role."; fi
 }
 
 cmd_uninstall() {
@@ -1222,3 +1241,5 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/rollback.sh"
 # The optional host helper (one-click Update / Rollback / Clean from the portal): ./stack helper.
 . "$STACK_DIR/lib/helper.sh"
+# EC2 instance role, ./stack serve (keep the Mac awake), ./stack ssh-info.
+. "$STACK_DIR/lib/host.sh"

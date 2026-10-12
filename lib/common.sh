@@ -190,7 +190,8 @@ dc() {
   # Compose lets shell variables beat --env-file: OpenRouter is opt-in via .env only, so an OPENROUTER_* in
   # your shell never switches it on (or keeps it on after ./stack openrouter remove).
   # (A subshell, not `env -u`: same effect on docker's environment, and tests can still stub docker.)
-  ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS
+  # The same for AWS credentials: .env decides (a key, or none with AWS_AUTH=instance-role), never the shell.
+  ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@" )
 }
 

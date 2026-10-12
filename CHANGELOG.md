@@ -52,6 +52,29 @@ All notable changes to bedrock-now are documented here. The format follows
   owner's pid; a lock whose process is gone or is no longer ./stack is moved aside and taken over).
 - `UPDATE_REQUIRE_SIGNED_TAGS=true` in `.env`: `./stack update` only checks out release tags that
   `git verify-tag` accepts (docs/security.md › Code provenance).
+- **Cloud VM with an EC2 IAM role, no stored AWS keys.** On EC2, when no access key is configured, setup finds
+  the instance role (IMDSv2, 1 s timeouts, so other machines lose about a second) and offers to use it
+  (default yes): it checks the role from an `aws-cli` container, writes `AWS_AUTH=instance-role` and removes the
+  key lines from `.env`. LiteLLM then gets its credentials from the instance profile through boto3's default
+  chain. `./stack rotate-aws` understands the mode (`--use-keys` / `--use-instance-role` switch between the
+  two). [docs/cloud-vm.md](docs/cloud-vm.md): a `t4g.medium` arm64 / Amazon Linux 2023 recipe with no inbound
+  ports, a least-privilege role policy, the IMDSv2 hop limit 2 that containers need, Docker on AL2023, data
+  residency, costs (~$31/month before Bedrock) and a request template for your AWS admin. All pinned images
+  are published for arm64.
+- **`./stack serve`** starts the stack and keeps the Mac awake (`caffeinate -i -s`) until Ctrl-C, printing the
+  portal URL (and the remote URL when remote access is on); it warns on battery power. `--background` holds the
+  wake lock without a terminal and `--stop` ends it. While an update/rollback/clean holds `.state/lock` (from a
+  terminal or the update helper) it only keeps the machine awake and leaves starting the stack to that. On Linux it holds a `systemd-inhibit` lock when available.
+  On macOS, setup and `serve` say how to turn on Docker Desktop's "Start when you sign in" when it's off (they
+  only read Docker Desktop's settings).
+- **`./stack ssh-info`** and [docs/phone-claude-code.md](docs/phone-claude-code.md): Claude Code from your
+  phone over SSH + tmux (the machine's Tailscale name, the SSH command, iOS/Android apps, mosh, Tailscale SSH).
+  No web terminal; Claude Code's Remote Control doesn't work with Bedrock.
+
+### Changed
+
+- `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
+  `./stack` keeps AWS credentials exported in your shell out of Docker Compose, so `.env` alone decides.
 
 ## [0.2.1] - 2026-10-12
 

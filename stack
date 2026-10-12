@@ -40,6 +40,8 @@ case "$cmd" in
   prices) [ ! -f "$ENV_FILE" ] || guard_project; cmd_prices "$@" ;;   # runs the portal image: claims, like up
   helper) [ ! -f "$ENV_FILE" ] || guard_project --no-claim; cmd_helper "$@" ;;   # no Compose changes
   open) cmd_open "$@" ;;
+  serve) [ ! -f "$ENV_FILE" ] || guard_project; cmd_serve "$@" ;;   # runs up: claims, like up
+  ssh-info) cmd_ssh_info "$@" ;;
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;

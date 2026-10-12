@@ -146,6 +146,11 @@ paste the new key ID and secret. The secret is hidden while you type (non-intera
 changes; temporary `ASIA…` keys are refused. The command restarts LiteLLM, runs the smoke test and reminds you
 to deactivate the old key.
 
+**EC2 instance role** (`AWS_AUTH=instance-role` in `.env`, see [cloud-vm.md](cloud-vm.md)): there is no key to
+rotate, so `./stack rotate-aws` only says so. `./stack rotate-aws --use-keys` switches to an access key (same
+flow as above); `./stack rotate-aws --use-instance-role` switches a key install to the machine's role, after
+checking from a container that the role works, and removes the key lines from `.env`.
+
 ## Claude Code wrapper details
 
 - `claude-bedrock --help` starts with a short header about the wrapper (models, key, env vars, cost) and then
