@@ -41,6 +41,7 @@ class Settings:
     litellm_dir: Path = Path("/data/litellm")
     catalog_dir: Path = Path("/data/catalog")
     claude_models: dict = field(default_factory=dict)
+    state_dir: Path | None = None  # logout time survives restarts here (compose: the portal-state volume)
 
     def origin(self, sub: str | None = None) -> str:
         """http://[sub.]host[:port] — ':80' left out, exactly as browsers send it in Origin."""
@@ -84,6 +85,7 @@ def from_env(env: dict | None = None) -> Settings:
         shared_mcp_url=env.get("SHARED_MCP_URL", "http://shared-mcp:8000"),
         litellm_dir=Path(env.get("PORTAL_LITELLM_DIR", "/data/litellm")),
         catalog_dir=Path(env.get("PORTAL_CATALOG_DIR", "/data/catalog")),
+        state_dir=Path(env.get("PORTAL_STATE_DIR") or "/state"),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

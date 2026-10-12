@@ -24,7 +24,7 @@ function remember(tab) { try { localStorage.setItem("bn.tab", tab); } catch (_) 
 function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) { return null; } }
 
 function showTab(tab) {
-  if (tab !== "home" && !APPS[tab]) tab = "home";
+  if (tab !== "home" && !Object.prototype.hasOwnProperty.call(APPS, tab)) tab = "home";  // not "constructor" etc.
   for (const b of document.querySelectorAll(".tab")) {
     if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }

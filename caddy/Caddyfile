@@ -41,6 +41,10 @@ http://{$PORTAL_HOST} {
 		request_header -X-Portal-User
 		# Caddy's own check endpoint is internal; browsers never need it.
 		respond /auth/verify 404
+		# The login form is a password and a next= URL; a larger body is refused before it reaches the portal.
+		request_body /login {
+			max_size 16KB
+		}
 		# The login page and what it needs are public; everything else requires a session.
 		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg
 		reverse_proxy @public portal:8000

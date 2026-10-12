@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import math
+import os
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from .config import APPS, Settings
+
+log = logging.getLogger("portal")
 
 COOKIE = "bn_session"
 MAX_AGE = 30 * 24 * 3600  # 30 days
@@ -28,14 +33,51 @@ class Sessions:
 
     A token carries a fingerprint of the current password, so changing PORTAL_PASSWORD (or PORTAL_SECRET)
     logs every browser out. Logging out revokes every session issued before that moment (there is only
-    one user); that revocation lives in memory, while the 30-day expiry is enforced by the signature.
+    one user); the 30-day expiry is enforced by the signature. The revocation time is kept in state_file
+    (the portal-state volume), so a restart does not bring revoked sessions back. A missing file revokes
+    nothing; an unreadable one counts as "revoked just now" (log in again) rather than reviving anything.
     """
 
-    def __init__(self, secret: str, password: str, clock=time.time):
+    def __init__(self, secret: str, password: str, clock=time.time, state_file: Path | None = None):
         self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.session")
         self._fp = hmac.new(secret.encode(), password.encode(), hashlib.sha256).hexdigest()[:32]
         self._clock = clock
-        self.not_before = 0.0
+        self._state = state_file
+        self.not_before = self._load()
+
+    def _load(self) -> float:
+        if self._state is None:
+            return 0.0
+        now = self._clock()
+        try:
+            raw = self._state.read_text(encoding="ascii")
+        except FileNotFoundError:
+            return 0.0
+        except (OSError, UnicodeDecodeError) as e:
+            log.warning("cannot read %s (%s) — every earlier session counts as logged out", self._state, e)
+            return now
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or value < 0:
+            log.warning("%s is corrupt — every earlier session counts as logged out", self._state)
+            return now
+        return min(value, now)  # a clock set back must not lock the user out until the old time
+
+    def _save(self) -> None:
+        if self._state is None:
+            return
+        tmp = self._state.with_name(f".{self._state.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(repr(self.not_before), encoding="ascii")
+            os.replace(tmp, self._state)
+        except OSError as e:
+            log.warning("cannot save the logout time to %s (%s) — a portal restart would undo this logout", self._state, e)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def issue(self) -> str:
         return self._ser.dumps({"v": 1, "fp": self._fp, "iat": self._clock()})
@@ -56,6 +98,7 @@ class Sessions:
 
     def revoke_all(self) -> None:
         self.not_before = self._clock()
+        self._save()
 
 
 class LoginThrottle:

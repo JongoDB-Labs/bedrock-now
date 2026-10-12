@@ -113,6 +113,46 @@ def test_logout_revokes_sessions(client):
     assert client.get("/auth/verify").status_code == 401
 
 
+def _app_client(settings):
+    return TestClient(create_app(settings, transport=httpx.MockTransport(offline)),
+                      base_url="http://bedrock-now.localhost", follow_redirects=False)
+
+
+def test_logout_survives_a_portal_restart(settings, tmp_path):
+    s = replace(settings, state_dir=tmp_path / "state")
+    (tmp_path / "state").mkdir()
+    with _app_client(s) as c:
+        login(c)
+        token = c.cookies.get(COOKIE)
+        assert c.post("/logout", headers=ORIGIN).status_code == 303
+    with _app_client(s) as c:  # a new process: the container restarted
+        c.cookies.set(COOKIE, token, domain="bedrock-now.localhost")
+        assert c.get("/auth/verify").status_code == 401
+        login(c)
+        assert c.get("/auth/verify").status_code == 200
+
+
+FORM = {**ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}
+
+
+def test_login_refuses_oversized_body(client):
+    r = client.post("/login", content=b"password=" + b"a" * 9000, headers=FORM)
+    assert r.status_code == 413
+
+
+def test_login_refuses_body_without_content_length(client):
+    def chunked():
+        yield b"password=correct+horse"
+    r = client.post("/login", content=chunked(), headers=FORM)
+    assert r.status_code == 411
+    assert COOKIE not in r.cookies
+
+
+def test_login_refuses_malformed_content_length(client):
+    r = client.post("/login", content=b"password=correct+horse", headers={**FORM, "Content-Length": "+22"})
+    assert r.status_code == 411
+
+
 def test_index_requires_session(client):
     r = client.get("/")
     assert r.status_code == 302 and r.headers["location"] == "http://bedrock-now.localhost/login"

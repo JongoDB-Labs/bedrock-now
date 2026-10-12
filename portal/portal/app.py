@@ -51,7 +51,8 @@ def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: 
 
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
-    sessions = Sessions(settings.secret, settings.password)
+    state_file = settings.state_dir / "logout-not-before" if settings.state_dir else None
+    sessions = Sessions(settings.secret, settings.password, state_file=state_file)
     throttle = LoginThrottle()
 
     def authed(request: Request) -> bool:
@@ -99,9 +100,17 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def login_post(request: Request) -> Response:
         if not same_origin(request.headers, settings):
             return _no_store(PlainTextResponse("cross-site login refused", status_code=403))
-        body = await request.body()
-        if len(body) > MAX_FORM:
-            return PlainTextResponse("form too large", status_code=413)
+        # Refuse before reading: a body must declare its length, and a small one (Caddy caps it too).
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii():
+            return _no_store(PlainTextResponse("Content-Length required", status_code=411))
+        if int(length) > MAX_FORM:
+            return _no_store(PlainTextResponse("form too large", status_code=413))
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_FORM:
+                return _no_store(PlainTextResponse("form too large", status_code=413))
         form = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
         nxt = safe_next((form.get("next") or [""])[0], settings)
         wait = throttle.retry_after()

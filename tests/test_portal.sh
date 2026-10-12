@@ -36,8 +36,110 @@ test_setup_portal_host_derives_keeps_and_validates() {
   assert_eq "$(get_env PORTAL_HOST)" "mine.localhost"
   set_env PORTAL_HOST 'Bad_Host'
   if (setup_portal_host) 2>/dev/null; then echo "should die" >&2; return 1; fi
-  set_env PORTAL_HOST example.test
-  assert_contains "$(setup_portal_host 2>&1)" "does not end in .localhost"
+}
+
+test_public_portal_host_needs_explicit_opt_in() {
+  printf 'PORTAL_HOST=example.test\n' > "$ENV_FILE"
+  if out="$(setup_portal_host 2>&1)"; then echo "should refuse a non-.localhost host" >&2; return 1; fi
+  assert_contains "$out" "does not end in .localhost"
+  assert_contains "$out" "BEDROCK_NOW_ALLOW_PUBLIC_HOST=1"
+  assert_contains "$out" "Secure"
+  out="$(BEDROCK_NOW_ALLOW_PUBLIC_HOST=1 setup_portal_host 2>&1)" || return 1
+  assert_contains "$out" "resolve to 127.0.0.1"
+  set_env BEDROCK_NOW_ALLOW_PUBLIC_HOST 1   # the opt-in may also live in .env
+  setup_portal_host 2>/dev/null || return 1
+}
+
+test_migrate_direct_ports_drops_only_the_old_keys() {
+  printf 'LITELLM_PORT=4000\nOPENWEBUI_PORT=8082\nRUSTFS_CONSOLE_PORT=9001\nPORTAL_PORT=80\n' > "$ENV_FILE"
+  out="$(migrate_direct_ports 2>&1)"
+  assert_contains "$out" "removed OPENWEBUI_PORT RUSTFS_CONSOLE_PORT from .env"
+  assert_eq "$(cat "$ENV_FILE")" "$(printf 'LITELLM_PORT=4000\nPORTAL_PORT=80')"
+  assert_eq "$(migrate_direct_ports 2>&1)" ""   # second run: nothing to do, nothing said
+}
+
+# --- cmd_up keeps PORTAL_ORIGIN in sync with hand-edited PORTAL_HOST / PORTAL_PORT ---
+
+_stub_up() {
+  ensure_images() { :; }; run_phase() { :; }; sync_budget_banner() { :; }; cmd_status() { :; }; maybe_auto_open() { :; }
+  portal_login() { echo 303; }
+}
+
+test_up_rewrites_portal_origin() {
+  printf 'PORTAL_HOST=mine.localhost\nPORTAL_PORT=8900\nPORTAL_ORIGIN=http://bedrock-now.localhost\n' > "$ENV_FILE"
+  _stub_up
+  cmd_up 2>/dev/null
+  assert_eq "$(get_env PORTAL_ORIGIN)" "http://mine.localhost:8900"
+}
+
+test_up_refuses_a_public_host_edited_into_env() {
+  printf 'PORTAL_HOST=example.test\nPORTAL_PORT=80\n' > "$ENV_FILE"
+  _stub_up
+  if (cmd_up) 2>/dev/null; then echo "cmd_up should refuse" >&2; return 1; fi
+}
+
+# --- portal session files never linger in .state/ ---
+
+_jars() { find "$STATE_DIR" -name 'portal-session.*' 2>/dev/null | wc -l | tr -d ' '; }
+
+test_failed_portal_login_leaves_no_session_file() {
+  portal_login() { echo 401; }
+  if (portal_session_or_die) 2>/dev/null; then echo "should die" >&2; return 1; fi
+  assert_eq "$(_jars)" 0
+}
+
+test_session_file_is_removed_when_setup_dies() {
+  portal_login() { echo 303; }
+  local rc=0
+  ( portal_session_or_die; [ -f "$PORTAL_JAR" ] || exit 3; die "ensure_openwebui_api_key failed" ) 2>/dev/null || rc=$?
+  assert_eq "$rc" 1
+  assert_eq "$(_jars)" 0
+}
+
+test_session_cleanup_composes_with_other_exit_hooks() {
+  portal_login() { echo 303; }
+  _hook_a() { echo a >> "$TMP/hooks"; }
+  ( on_exit _hook_a; portal_session_start; trap -p EXIT > "$TMP/trap"; exit 0 )
+  assert_eq "$(cat "$TMP/hooks")" a
+  assert_eq "$(_jars)" 0
+  # a hook taken off again does not run; the others still do
+  : > "$TMP/hooks"
+  ( on_exit _hook_a; portal_session_start; off_exit _hook_a; exit 0 )
+  assert_eq "$(cat "$TMP/hooks")" ""
+  assert_eq "$(_jars)" 0
+}
+
+test_session_file_is_removed_on_sigterm() {
+  portal_login() { echo 303; }
+  local rc=0
+  # sh's parent is the subshell (bash 3.2 has no $BASHPID): it is killed while the session is open.
+  # shellcheck disable=SC2016
+  ( portal_session_start; [ "$(_jars)" = 1 ] || exit 3; sh -c 'kill -TERM $PPID'; sleep 5; exit 4 ) 2>/dev/null || rc=$?
+  assert_eq "$rc" 143
+  assert_eq "$(_jars)" 0
+}
+
+test_stale_session_files_are_cleared() {
+  mkdir -p "$STATE_DIR"
+  : > "$STATE_DIR/portal-session.OLD123"; touch -t 202001010000 "$STATE_DIR/portal-session.OLD123"
+  : > "$STATE_DIR/portal-session.NEW123"   # another run in progress right now: left alone
+  portal_login() { echo 303; }
+  ( portal_session_start; portal_session_end )
+  [ ! -e "$STATE_DIR/portal-session.OLD123" ] || { echo "stale jar kept" >&2; return 1; }
+  [ -e "$STATE_DIR/portal-session.NEW123" ] || { echo "a fresh jar of another run was deleted" >&2; return 1; }
+}
+
+# --- static hardening of compose.yaml / Caddyfile ---
+
+test_compose_portal_state_and_caddy_hardening() {
+  local c; c="$(cat "$STACK_DIR/compose.yaml")"
+  assert_contains "$c" "      - portal-state:/state"
+  assert_contains "$c" "  portal-state:"
+  assert_contains "$c" '"/data:uid=65534,gid=65534,mode=0700"'
+  assert_contains "$c" '"/config:uid=65534,gid=65534,mode=0700"'
+  assert_contains "$c" "portal: { condition: service_healthy }"
+  assert_contains "$(cat "$STACK_DIR/caddy/Caddyfile")" "request_body /login {"
+  assert_contains "$(cat "$STACK_DIR/caddy/Caddyfile")" "max_size 16KB"
 }
 
 test_check_port_allows_80_only_for_the_portal() {
@@ -151,4 +253,14 @@ test_test_portal_flags_a_frameable_app() {
   out="$(_test_portal; echo "fails=$fails")"
   assert_contains "$out" "FAIL  admin. loads, framable only by the portal"
   assert_contains "$out" "fails=3"
+}
+
+test_exit_trap_is_gone_once_every_hook_is_off() {
+  portal_login() { echo 303; }
+  _hook_b() { :; }
+  on_exit _hook_b; portal_session_start
+  portal_session_end
+  assert_contains "$(trap -p EXIT)" "_run_exit_hooks"
+  off_exit _hook_b
+  assert_eq "$(trap -p EXIT)" ""
 }

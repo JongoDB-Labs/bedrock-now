@@ -11,6 +11,8 @@ from .config import ConfigError, from_env
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO (the Home page polls LiteLLM, Open WebUI, RustFS); keep only problems.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         settings = from_env()
     except ConfigError as e:

@@ -396,7 +396,7 @@ _restore_litellm_config() {
 setup_bringup_and_probe() {
   local en="$STACK_DIR/litellm/enabled-models.txt"
   log "rendering LiteLLM config with the full catalog for probing"
-  trap _restore_litellm_config EXIT
+  on_exit _restore_litellm_config
   render_config ""
   ensure_images
   run_phase "Postgres + RustFS" "postgres rustfs" _up_data_services
@@ -409,7 +409,7 @@ setup_bringup_and_probe() {
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
   mv "$en.new" "$en"
   render_config "$en"
-  trap - EXIT
+  off_exit _restore_litellm_config
   choose_defaults
   run_phase "LiteLLM ($(wc -l < "$en" | tr -d ' ') models)" litellm dc up -d --no-deps --force-recreate --wait litellm
 }
@@ -443,8 +443,10 @@ up_portal() {
 
 # portal_session_or_die — a portal session for setup's Open WebUI calls (they go through Caddy like a browser).
 portal_session_or_die() {
-  portal_session_start ||
+  portal_session_start || {
+    portal_session_end
     die "could not sign in to the portal at $(portal_url) (HTTP ${PORTAL_LOGIN_CODE:-?}) — see ./stack logs portal and ./stack logs caddy"
+  }
 }
 
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
@@ -686,6 +688,8 @@ offer_symlink() {
 
 cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  check_portal_host "$(portal_host)"
+  save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_images "./stack up"
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup)
@@ -879,7 +883,7 @@ _backup_named() {
   [ -f "$ENV_FILE" ] || die "nothing to back up — run ./stack setup first"
   dir="$STACK_DIR/backups/$(date +%Y%m%d-%H%M%S)${1:+-$1}"; tmp="$dir.partial"
   mkdir -p "$tmp"; chmod 700 "$STACK_DIR/backups" "$tmp"
-  _BACKUP_PARTIAL="$tmp"; trap _cleanup_partial_backup EXIT
+  _BACKUP_PARTIAL="$tmp"; on_exit _cleanup_partial_backup
   _data_services_up
   for db in litellm openwebui; do
     if ! dc exec -T postgres pg_dump -U postgres -Fc "$db" > "$tmp/$db.dump"; then
@@ -892,7 +896,7 @@ _backup_named() {
   cp "$ENV_FILE" "$tmp/.env"   # encrypted DB fields need the same secrets
   chmod -R go-rwx "$tmp"       # dumps hold chats, hashed keys and encrypted credentials
   mv "$tmp" "$dir"
-  _BACKUP_PARTIAL=''; trap - EXIT
+  _BACKUP_PARTIAL=''; off_exit _cleanup_partial_backup
   LAST_BACKUP="${dir#"$STACK_DIR"/}"
   log "backup written to ${dir#"$STACK_DIR"/} ($(du -sh "$dir" 2>/dev/null | cut -f1 | tr -d ' ')) — databases, buckets and a copy of .env (contains secrets; keep it private)"
 }

@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 # The exact shape footer() writes. strip_footer() removes every occurrence anywhere in a message (after
 # "continue response" an old footer sits in the middle) and footer_cost() reads the last one; change all
 # three together.
+#
+# Known limit: after "Continue response" the message's usage covers only the continuation, so the new footer
+# (and the chat total built from it) prices only that part; the earlier part's cost is dropped with its old
+# footer, a small undercount. ./stack costs (LiteLLM's spend log) stays exact.
 _COST = r"(?:\$[0-9][0-9,]*\.[0-9]+|<\$0\.0001)"
 _TOKENS = r"[0-9,]+ in(?: \([0-9,]+ cached\))? / [0-9,]+ out · "
 _FOOTER_RE = re.compile(r"[ \t]*\n*[ \t]*<sub>(?:≈ " + _COST + " · )?" + _TOKENS + r"[^<\n]*</sub>(?:[ \t]*(?=\n|\Z))?")

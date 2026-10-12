@@ -119,3 +119,66 @@ def test_from_env_litellm_ui_user_follows_setup():
     base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "z" * 40}
     assert from_env(base).litellm_ui_user == "admin"
     assert from_env({**base, "LITELLM_UI_USER": "me@example.com"}).litellm_ui_user == "me@example.com"
+
+
+# --- logout survives a restart (Sessions state file) ---
+
+def test_revocation_survives_a_restart(tmp_path):
+    now = [100.0]
+    state = tmp_path / "not-before"
+    s = Sessions(SECRET, "pw", clock=lambda: now[0], state_file=state)
+    old = s.issue()
+    now[0] = 101.0
+    s.revoke_all()
+    assert float(state.read_text()) == 101.0
+    assert [p.name for p in tmp_path.iterdir()] == ["not-before"]  # tmp + rename: nothing left over
+    now[0] = 102.0
+    fresh = s.issue()
+    restarted = Sessions(SECRET, "pw", clock=lambda: now[0], state_file=state)
+    assert not restarted.valid(old)
+    assert restarted.valid(fresh)
+
+
+def test_missing_state_file_revokes_nothing(tmp_path):
+    s = Sessions(SECRET, "pw", state_file=tmp_path / "not-before")
+    assert s.not_before == 0.0
+    assert s.valid(s.issue())
+
+
+@pytest.mark.parametrize("content", ["garbage", "", "nan", "inf", "-5", "9" * 400])
+def test_corrupt_state_file_fails_closed(tmp_path, content):
+    """Unreadable state: sessions issued before this start count as revoked (log in again), never revived."""
+    now = [100.0]
+    state = tmp_path / "not-before"
+    state.write_text(content)
+    s = Sessions(SECRET, "pw", clock=lambda: now[0], state_file=state)
+    assert s.not_before == 100.0
+    now[0] = 100.5
+    assert s.valid(s.issue())
+
+
+def test_future_state_file_is_clamped_to_now(tmp_path):
+    """A timestamp in the future (clock set back) must not lock the user out until then."""
+    state = tmp_path / "not-before"
+    state.write_text("5000.0")
+    now = [100.0]
+    s = Sessions(SECRET, "pw", clock=lambda: now[0], state_file=state)
+    assert s.not_before == 100.0
+    now[0] = 100.5
+    assert s.valid(s.issue())
+
+
+def test_unwritable_state_still_revokes_in_memory(tmp_path):
+    blocker = tmp_path / "file"; blocker.write_text("")
+    now = [100.0]
+    s = Sessions(SECRET, "pw", clock=lambda: now[0], state_file=blocker / "not-before")  # parent is a file
+    old = s.issue()
+    now[0] = 101.0
+    s.revoke_all()  # logs, does not raise
+    assert not s.valid(old)
+
+
+def test_from_env_state_dir():
+    base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "z" * 40}
+    assert str(from_env(base).state_dir) == "/state"
+    assert from_env({**base, "PORTAL_STATE_DIR": "/elsewhere"}).state_dir.name == "elsewhere"

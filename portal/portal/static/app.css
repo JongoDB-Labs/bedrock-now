@@ -82,6 +82,7 @@ td.why { color: var(--muted); }
 .toast.show { opacity: 1; transform: none; }
 
 #models-note, .logins .note { margin: 0 0 14px; }
+.logins .logins-list + .note { margin: 14px 0 0; }
 @media (max-width: 960px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
 }

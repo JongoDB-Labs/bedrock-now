@@ -194,6 +194,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     tmpfs: [/tmp]
     environment:
+      PORTAL_STATE_DIR: /state
       # Not :? — ./stack update pulls images before setup has created these; the portal refuses to start without them.
       PORTAL_PASSWORD: ${PORTAL_PASSWORD:-}
       PORTAL_SECRET: ${PORTAL_SECRET:-}
@@ -212,9 +213,11 @@ services:
       CLAUDE_BEDROCK_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
       CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
     # Read-only: model check results (probe-results.tsv) and catalog prices for Home. No Docker socket.
+    # portal-state (/state) is the only writable mount besides /tmp: the logout time, so a restart keeps it.
     volumes:
       - ./litellm:/data/litellm:ro,z
       - ./catalog:/data/catalog:ro,z
+      - portal-state:/state
     logging: *logging
 
   # The only way in for browsers: http://${PORTAL_HOST} and its chat./admin./files. subdomains (caddy/Caddyfile).
@@ -226,11 +229,13 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]   # the image's caddy binary carries this file capability; exec fails without it
     security_opt: ["no-new-privileges:true"]
-    tmpfs: [/data, /config]
+    # Owned by the unprivileged user: Caddy creates /data/caddy and /config/caddy at start.
+    tmpfs: ["/data:uid=65534,gid=65534,mode=0700", "/config:uid=65534,gid=65534,mode=0700"]
     environment:
       PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
       PORTAL_ORIGIN: ${PORTAL_ORIGIN:-http://bedrock-now.localhost}   # written by setup: http://HOST[:PORT]
-    depends_on: [portal]
+    depends_on:
+      portal: { condition: service_healthy }   # forward_auth needs it; avoids 502s on the first requests
     # Directory mount, so a Caddyfile replaced by git (new inode) is seen after a restart.
     volumes:
       - ./caddy:/etc/caddy:ro,z
@@ -247,3 +252,4 @@ volumes:
   pgdata:
   s3data:
   owui:
+  portal-state:

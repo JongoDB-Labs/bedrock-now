@@ -15,6 +15,8 @@ RUN python -m pytest -q tests
 
 FROM base AS runtime
 RUN useradd --system --uid 10102 portal
+# /state: the portal-state volume (the logout time). A new named volume copies this owner and mode.
+RUN mkdir /state && chown portal:portal /state && chmod 700 /state
 USER portal
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 \

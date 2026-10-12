@@ -19,7 +19,10 @@ Everything you open in a browser sits behind **one portal with one password**:
 The portal uses port 80 when it is free (so the URLs carry no port); otherwise setup picks 8800 and says so,
 e.g. `port 80 is in use → using 8800 for the portal (PORTAL_PORT): http://bedrock-now.localhost:8800`.
 `./stack status` always prints the real URLs (a SERVICE / STATE / HEALTH / URL table). Setup moves other
-ports the same way when something else uses them.
+ports the same way when something else uses them. You may edit `PORTAL_HOST` / `PORTAL_PORT` in `.env`;
+`./stack up` picks the change up. A `PORTAL_HOST` that does not end in `.localhost` is refused unless you also
+set `BEDROCK_NOW_ALLOW_PUBLIC_HOST=1`: the portal is plain HTTP, so its session cookie is not `Secure` and goes
+to that name and all its subdomains; only use a name that resolves to this computer alone.
 
 ```
  you (browser) ─► Caddy :80 ──── asks the portal: valid session? (forward_auth)
@@ -180,6 +183,8 @@ What setup configures in Open WebUI (re-applied on every `./stack setup`; your o
   chat's, from the same prices as `./stack costs` (cached tokens at the cache price). It comes from the
   "Bedrock cost" filter (Admin Panel → Functions), which also strips these lines before the chat goes back to
   the model, so they never cost tokens. An answer without token usage (e.g. a stopped one) gets no line.
+  After **Continue response** the line prices only the continued part, so the chat total runs slightly low;
+  `./stack costs` is always exact.
   Setup installs the filter switched on for all models once; after that it only updates the filter's code
   and its `prices_json` valve, so switching it off or changing its other valves sticks. Custom models built
   on a Bedrock model are priced like their base model.
@@ -317,7 +322,10 @@ valid for 30 days; it is never passed on to the apps. Open WebUI signs you in fr
 that only Caddy sets, after the portal confirmed the session; any `X-Portal-User` a client sends is deleted
 first, and Open WebUI publishes no port, so the header can't be forged. The login form only accepts a POST
 from the portal itself, sends you back only to a portal address (no open redirect), compares the password in
-constant time and slows down after five wrong attempts. Chat, Admin and Files may be framed only by the
+constant time and slows down after five wrong attempts; a login body over 8 KB is refused (Caddy caps it at
+16 KB before it reaches the portal). **Sign out** on Home ends every session, and that survives a restart of
+the portal: the time of the last sign-out is kept in the small `portal-state` volume (the portal's only
+writable storage besides `/tmp`). Chat, Admin and Files may be framed only by the
 portal (`Content-Security-Policy: frame-ancestors <portal>`); the portal can't be framed at all. Host names
 other than the four answer 404.
 

@@ -91,9 +91,30 @@ All notable changes to bedrock-now are documented here. The format follows
 - Framing: Chat, Admin and Files send `Content-Security-Policy: frame-ancestors <portal origin>` (LiteLLM's
   `X-Frame-Options: DENY` / `frame-ancestors 'none'` are replaced, not just removed, so no other site can
   frame the admin UI); the portal itself refuses framing.
+- Signing out survives a portal restart: the sign-out time is written atomically to the new `portal-state`
+  volume (`/state`, the portal's only writable mount besides `/tmp`) and read back at start. A missing file
+  revokes nothing; an unreadable or corrupt one counts as "signed out just now" (sign in again) rather than
+  reviving old sessions.
+- `/login` refuses a body without `Content-Length` (411) or over 8 KB (413) before reading it, and Caddy caps
+  `/login` bodies at 16 KB.
+- A `PORTAL_HOST` that does not end in `.localhost` is refused (setup and `./stack up`) unless
+  `BEDROCK_NOW_ALLOW_PUBLIC_HOST=1` is set: the session cookie is not `Secure` (plain HTTP) and is scoped to
+  that name and all its subdomains.
+- The portal session file that `./stack setup`, `up`, `test` and `models --recheck` use is deleted however
+  the command ends (error, Ctrl-C, kill); files left by a hard-killed run are removed after an hour.
 
 ### Fixed
 
+- Caddy's `/data` and `/config` tmpfs are owned by its unprivileged user, so it no longer logs
+  `mkdir /data/caddy: permission denied` at start. Caddy waits for a healthy portal before it starts.
+- `./stack up` rewrites `PORTAL_ORIGIN` from `PORTAL_HOST` / `PORTAL_PORT`, so editing either in `.env` keeps
+  the apps framable by the portal.
+- The portal no longer logs every internal HTTP request it makes (httpx at WARNING).
+- The Home tab check ignores names inherited from `Object.prototype` (`#constructor`).
+- Home notes that the LiteLLM sign-in shown is the one setup created; a password changed in LiteLLM's UI is
+  not reflected.
+- The cost line after **Continue response** prices only the continued part (documented; `./stack costs` is
+  exact).
 - A stopped install keeps its Compose project name. Before, once one checkout ran `./stack down`, another
   set-up checkout with the same name could start on its data volumes (wrong database password) or delete them
   with `./stack uninstall`. The first checkout that starts or changes a project (`setup`, `up`, `update`,

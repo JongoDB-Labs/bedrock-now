@@ -39,11 +39,19 @@ save_portal_origin() { set_env PORTAL_ORIGIN "$(portal_url)"; }
 setup_portal_host() {
   local h; h="$(get_env PORTAL_HOST)"
   if [ -z "$h" ]; then h="$(default_portal_host "$(project_name)")"; set_env PORTAL_HOST "$h"; fi
+  check_portal_host "$h"
+}
+
+# check_portal_host HOST — dies unless HOST is a valid name under .localhost, or BEDROCK_NOW_ALLOW_PUBLIC_HOST=1
+# (environment or .env) allows another name. The portal is plain HTTP on 127.0.0.1: its session cookie is not
+# Secure and goes to HOST and all its subdomains, which is only safe for a name nobody else can serve.
+check_portal_host() {
+  local h="$1"
   valid_hostname "$h" || die "PORTAL_HOST=$h in .env is not a valid host name (lowercase letters, digits, dots and dashes, e.g. bedrock-now.localhost)"
-  case "$h" in
-    *.localhost) ;;
-    *) warn "PORTAL_HOST=$h does not end in .localhost — make sure $h and chat./admin./files.$h resolve to 127.0.0.1 (e.g. in /etc/hosts)" ;;
-  esac
+  case "$h" in *.localhost) return 0 ;; esac
+  [ "${BEDROCK_NOW_ALLOW_PUBLIC_HOST:-$(get_env BEDROCK_NOW_ALLOW_PUBLIC_HOST)}" = 1 ] ||
+    die "PORTAL_HOST=$h does not end in .localhost. The portal is plain HTTP, so its session cookie has no Secure flag and is sent to $h and every *.$h — a name anything else can answer for could collect it. Use a name ending in .localhost (e.g. bedrock-now.localhost), or set BEDROCK_NOW_ALLOW_PUBLIC_HOST=1 in .env if $h is yours and resolves only to this machine."
+  warn "PORTAL_HOST=$h does not end in .localhost (allowed by BEDROCK_NOW_ALLOW_PUBLIC_HOST=1) — make sure $h and chat./admin./files.$h resolve to 127.0.0.1 (e.g. in /etc/hosts); the session cookie is not Secure (plain HTTP)"
 }
 
 # _port80_usable -> 0 if the portal can publish 127.0.0.1:80: not rootless Docker (it cannot bind ports
@@ -110,10 +118,14 @@ portal_login() {
 }
 
 # portal_session_start — logs in and sets PORTAL_JAR (a mode-600 file in .state/); returns 1 if login failed
-# (PORTAL_LOGIN_CODE has the HTTP status). portal_session_end deletes the jar.
+# (PORTAL_LOGIN_CODE has the HTTP status). portal_session_end deletes the jar; an EXIT hook does it too when the
+# run ends early (die, Ctrl-C). Jars older than an hour are leftovers of runs killed hard (kill -9) and go first;
+# younger ones may belong to another ./stack command running right now.
 portal_session_start() {
   mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
   portal_session_end
+  find "$STATE_DIR" -maxdepth 1 -name 'portal-session.*' -type f -mmin +60 -exec rm -f {} + 2>/dev/null || true
+  on_exit portal_session_end
   PORTAL_JAR="$(mktemp "$STATE_DIR/portal-session.XXXXXX")" || die "cannot create a temp file in $STATE_DIR"
   chmod 600 "$PORTAL_JAR"
   PORTAL_LOGIN_CODE="$(portal_login "$PORTAL_JAR")"
@@ -122,4 +134,5 @@ portal_session_start() {
 portal_session_end() {
   [ -z "${PORTAL_JAR:-}" ] || rm -f "$PORTAL_JAR"
   PORTAL_JAR=''
+  off_exit portal_session_end
 }

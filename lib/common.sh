@@ -49,6 +49,21 @@ _cleanup_on_signal() {
   trap "rm -f $q; trap - TERM; kill -TERM \$\$" TERM
 }
 
+# on_exit FUNC / off_exit FUNC — cleanups that must run however the script ends (die, error, Ctrl-C, kill).
+# Several can be active at once (the LiteLLM config restore during setup's probe, the portal session file,
+# a partial backup), so they share one EXIT trap instead of replacing each other's.
+_EXIT_HOOKS=' '
+_run_exit_hooks() { local h; for h in $_EXIT_HOOKS; do "$h" || true; done; }
+on_exit() {
+  case "$_EXIT_HOOKS" in *" $1 "*) ;; *) _EXIT_HOOKS="$_EXIT_HOOKS$1 " ;; esac
+  trap _run_exit_hooks EXIT
+}
+# The trap itself goes once no hook is left: bash 3.2 can report status 0 from an EXIT trap after a fatal error.
+off_exit() {
+  _EXIT_HOOKS="${_EXIT_HOOKS/ $1 / }"
+  [ "$_EXIT_HOOKS" != ' ' ] || trap - EXIT
+}
+
 log()  { printf '%s==>%s %s\n' "$C_GRN" "$C_OFF" "$*" >&2; }
 warn() { printf '%s!!%s  %s\n' "$C_YEL" "$C_OFF" "$*" >&2; }
 die()  { printf '%sxx%s  %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
