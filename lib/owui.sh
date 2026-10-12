@@ -24,17 +24,34 @@ display_name() { local d; d="$(display_field "$1" 2)"; printf '%s\n' "${d:-$1}";
 
 ICONS_DIR="${ICONS_DIR:-$STACK_DIR/catalog/icons}"
 
-# icon_url NAME -> the picker icon for NAME: a catalog/icons/<key>.svg as an inline data: URI (no network
-# needed), a data:/http(s)/absolute URL as written, or nothing.
+# icon_url NAME -> the picker icon for NAME: a catalog/icons/<key>.png as an inline data:image/png URI (no
+# network needed), a data:/http(s)/absolute URL as written, or nothing. PNG, not SVG: Open WebUI only keeps
+# png/jpeg/gif/webp data URIs (an SVG one is silently stored as no icon). Each PNG is rendered from the SVG
+# source next to it (128x128, kept small); after editing an SVG, from catalog/icons run:
+#   docker run --rm -v "$PWD:/i" alpine:3.20 sh -c 'apk add -q rsvg-convert optipng font-dejavu &&
+#     for f in /i/*.svg; do rsvg-convert -w 128 -h 128 "$f" -o "${f%.svg}.png" && optipng -quiet -o7 -strip all "${f%.svg}.png"; done'
 icon_url() {
   local v; v="$(display_field "$1" 3)"
   case "$v" in
     '') ;;
     data:* | http://* | https://* | /*) printf '%s\n' "$v" ;;
     *[!a-z0-9_-]*) ;;
-    *) [ -r "$ICONS_DIR/$v.svg" ] && printf 'data:image/svg+xml;base64,%s\n' "$(openssl base64 -A < "$ICONS_DIR/$v.svg")" ;;
+    *) [ -r "$ICONS_DIR/$v.png" ] && printf 'data:image/png;base64,%s\n' "$(openssl base64 -A < "$ICONS_DIR/$v.png")" ;;
   esac
   return 0
+}
+
+# owui_our_icon_hashes -> the sha256 of every data: URI bedrock-now sends or used to send for catalog/icons
+# (the PNGs, and the SVG ones of older versions), space-separated: how owui_merge_model tells our icons
+# from one the user picked.
+owui_our_icon_hashes() {
+  local f mime out=''
+  for f in "$ICONS_DIR"/*.png "$ICONS_DIR"/*.svg; do
+    [ -r "$f" ] || continue
+    case "$f" in *.png) mime=image/png ;; *) mime=image/svg+xml ;; esac
+    out="$out $(printf 'data:%s;base64,%s' "$mime" "$(openssl base64 -A < "$f")" | openssl dgst -sha256 | awk '{print $NF}')"
+  done
+  printf '%s\n' "${out# }"
 }
 
 # model_tier NAME -> "$" (< $0.50), "$$" (< $3.00) or "$$$" by input price per 1M tokens; empty without one.
@@ -99,26 +116,23 @@ owui_model_json() {
     "$1" "$2" "$3" "$4" "$extra"
 }
 
-# owui_merge_model NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN ICON_URL < model JSON (GET /api/v1/models/model)
+# owui_merge_model NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN ICON_URL [OUR_ICON_HASHES] < model JSON (GET /api/v1/models/model)
 # -> the updated JSON, or nothing when it is already up to date. User customisations survive:
 #   - name changes only while it is still one we generated (the id, DISPLAY, or "DISPLAY · <tier>");
 #   - user tags are kept, but ours (tier, "Bedrock", the display.tsv tags) are re-added every setup;
-#   - the icon changes only while it is unset, Open WebUI's default, or one of ours (catalog/icons SVGs
-#     carry id="bedrock-now-icon");
+#   - the icon changes only while it is unset, Open WebUI's default, or one of ours: a data: URI whose
+#     sha256 is in OUR_ICON_HASHES (owui_our_icon_hashes: current PNGs and legacy SVGs);
 #   - hidden is set only when the user never chose (an unhidden helper model stays visible);
 #   - params, capabilities, knowledge, system prompt and access grants are untouched.
 # Known leftovers: after a display_name change in catalog/display.tsv the old generated name no longer
 # matches, so it stays until renamed by hand; a vendor tag removed from display.tsv stays as a user tag.
 owui_merge_model() {
   # shellcheck disable=SC2016  # Python source, not shell
-  _owui_py 'import base64, json, sys
+  _owui_py 'import hashlib, json, sys
 name, display, desc, tags, hidden, icon = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5] == "true", sys.argv[6]
+our_icons = set(sys.argv[7].split()) if len(sys.argv) > 7 else set()
 def our_icon(url):
-    p = "data:image/svg+xml;base64,"
-    try:
-        return url.startswith(p) and b"bedrock-now-icon" in base64.b64decode(url[len(p):])
-    except Exception:
-        return False
+    return url.startswith("data:") and hashlib.sha256(url.encode()).hexdigest() in our_icons
 d = json.load(sys.stdin)
 before = json.dumps(d, sort_keys=True)
 meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
@@ -140,13 +154,13 @@ if json.dumps(d, sort_keys=True) != before:
 }
 
 # owui_upsert_model ID NAME DISPLAY DESCRIPTION TAGS_JSON HIDDEN [ICON_URL] -> 0 when Open WebUI is up to
-# date. On failure OWUI_ERR says why.
+# date. On failure OWUI_ERR says why. OWUI_OUR_ICONS (owui_our_icon_hashes) says which icons are ours.
 owui_upsert_model() {
   local tmp code body
   tmp="$(mktemp)"
   code="$(_owui_get "/api/v1/models/model?id=$1" "$tmp")"
   if [ "$code" = 200 ]; then
-    if ! body="$(owui_merge_model "$2" "$3" "$4" "$5" "$6" "${7:-}" < "$tmp" 2>/dev/null)"; then
+    if ! body="$(owui_merge_model "$2" "$3" "$4" "$5" "$6" "${7:-}" "${OWUI_OUR_ICONS:-}" < "$tmp" 2>/dev/null)"; then
       OWUI_ERR="could not edit its existing settings safely, so they were left untouched"; rm -f "$tmp"; return 1
     fi
     [ -n "$body" ] || { rm -f "$tmp"; return 0; }
@@ -163,10 +177,11 @@ owui_upsert_model() {
 # tier/vendor tags for every enabled chat model; embedding, rerank and image models (and aliases) are
 # hidden from the picker but stay callable (meta.hidden, never is_active:false). Never fatal.
 sync_openwebui_models() {
-  local en name mode aliases a desc hidden ok=0 bad=0 OWUI_ERR=''
+  local en name mode aliases a desc hidden ok=0 bad=0 OWUI_ERR='' OWUI_OUR_ICONS
   local -a alias_list
   en="$(_enabled_or_all)"
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || { warn "no Open WebUI API key — skipping model names and prices"; return 0; }
+  OWUI_OUR_ICONS="$(owui_our_icon_hashes)"
   while IFS=$'\t' read -r name mode _ aliases _ <&3; do
     is_enabled "$name" "$en" || continue
     desc="AWS Bedrock · $(price_label "$name")"

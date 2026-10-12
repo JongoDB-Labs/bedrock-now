@@ -50,7 +50,8 @@ All notable changes to bedrock-now are documented here. The format follows
   "continue response"). Setup enables the filter once and afterwards only updates its code and prices, so an
   admin's switches stick; custom models are priced like their base model.
 - Friendly model names with price tiers in Open WebUI's picker (`Claude Sonnet 5.5 · $$`) from the new
-  `catalog/display.tsv`, plus tier/vendor tags and small offline vendor icons (`catalog/icons/`). Embedding, rerank and image models are hidden from the picker
+  `catalog/display.tsv`, plus tier/vendor tags and small offline vendor icons (`catalog/icons/`: SVG sources sent as 128×128 PNG
+  data URIs, since Open WebUI drops SVG icons; setup also replaces icons from earlier versions). Embedding, rerank and image models are hidden from the picker
   (still usable). Names, icons and visibility you set yourself are kept. The portal's Home model table shows
   the same names and tiers.
 - Open WebUI defaults: Sonnet 5.5 (or 4.5, or Haiku 5.5) as the default chat model; Haiku 5.5 for chat titles,

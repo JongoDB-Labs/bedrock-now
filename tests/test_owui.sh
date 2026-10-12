@@ -458,15 +458,18 @@ test_upgrade_litellm_password() {
 
 # --- icons ---
 
-test_icon_url_inlines_svg_files_offline() {
-  printf '# n\td\ti\tt\nbig\tBig\tanthropic\t-\nurl\tU\thttps://example.test/i.png\t-\nbad\tB\t../x\t-\nnone\tN\t-\t-\n' > "$TMP/d.tsv"
+# Open WebUI v0.12 (utils/validate.py validate_image_url) keeps only png/jpeg/gif/webp data URIs: an SVG one
+# is stored as no icon, so icon_url must send the PNG renders.
+test_icon_url_inlines_png_files_offline() {
+  printf '# n\td\ti\tt\nbig\tBig\tanthropic\t-\nurl\tU\thttps://example.test/i.png\t-\nbad\tB\t../x\t-\nnone\tN\t-\t-\nmiss\tM\tnosuch\t-\n' > "$TMP/d.tsv"
   DISPLAY_CATALOG="$TMP/d.tsv"
   out="$(icon_url big)"
-  case "$out" in data:image/svg+xml\;base64,*) ;; *) echo "not a data URI: $out" >&2; return 1 ;; esac
-  assert_contains "$(printf '%s' "${out#data:image/svg+xml;base64,}" | openssl base64 -d -A)" 'id="bedrock-now-icon"'
+  case "$out" in data:image/png\;base64,*) ;; *) echo "not a PNG data URI: ${out:0:40}" >&2; return 1 ;; esac
+  assert_eq "$(printf '%s' "${out#data:image/png;base64,}" | openssl base64 -d -A | od -An -tx1 -N8 | tr -d ' \n')" "89504e470d0a1a0a"
   assert_eq "$(icon_url url)" "https://example.test/i.png"
   assert_eq "$(icon_url bad)" ""
   assert_eq "$(icon_url none)" ""
+  assert_eq "$(icon_url miss)" ""
 }
 
 test_every_real_catalog_icon_exists_and_is_local() {
@@ -475,20 +478,66 @@ test_every_real_catalog_icon_exists_and_is_local() {
   assert_eq "$(grep -ho 'https\?://[^"]*' "$STACK_DIR"/catalog/icons/*.svg | sort -u)" "http://www.w3.org/2000/svg"
 }
 
-test_owui_create_payload_carries_icon() {
-  assert_contains "$(owui_model_json big B d '[]' false 'data:image/svg+xml;base64,AAA')" '"tags":[],"profile_image_url":"data:image/svg+xml;base64,AAA"}'
+test_every_icon_svg_has_a_small_128px_png_render() {
+  local f png
+  for f in "$STACK_DIR"/catalog/icons/*.svg; do
+    png="${f%.svg}.png"
+    [ -r "$png" ] || { echo "no PNG for $f" >&2; return 1; }
+    # PNG signature + IHDR width/height 128x128
+    assert_eq "$(od -An -tx1 -N8 "$png" | tr -d ' \n')" "89504e470d0a1a0a"
+    assert_eq "$(od -An -tx1 -j16 -N8 "$png" | tr -d ' \n')" "0000008000000080"
+    [ "$(wc -c < "$png")" -lt 6144 ] || { echo "$png is over 6 KB" >&2; return 1; }
+  done
 }
 
-test_owui_merge_sets_icon_but_respects_a_users_own() {
+test_owui_create_payload_carries_icon() {
+  assert_contains "$(owui_model_json big B d '[]' false 'data:image/png;base64,AAA')" '"tags":[],"profile_image_url":"data:image/png;base64,AAA"}'
+}
+
+test_owui_our_icon_hashes_cover_png_and_legacy_svg_uris() {
+  ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR"
+  printf 'png-bytes' > "$ICONS_DIR/a.png"; printf '<svg id="x"/>' > "$ICONS_DIR/a.svg"
+  png_uri="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/a.png")"
+  svg_uri="data:image/svg+xml;base64,$(openssl base64 -A < "$ICONS_DIR/a.svg")"
+  hashes="$(owui_our_icon_hashes)"
+  assert_contains " $hashes " " $(printf '%s' "$png_uri" | openssl dgst -sha256 | awk '{print $NF}') "
+  assert_contains " $hashes " " $(printf '%s' "$svg_uri" | openssl dgst -sha256 | awk '{print $NF}') "
+  assert_eq "$(printf '%s\n' "$hashes" | wc -w | tr -d ' ')" "2"
+  ICONS_DIR="$TMP/none"; assert_eq "$(owui_our_icon_hashes)" ""
+}
+
+test_owui_merge_upgrades_our_icons_but_keeps_a_users_own() {
   _need_python || return 77
   _stub_owui
-  ours="data:image/svg+xml;base64,$(printf '<svg id="bedrock-now-icon"/>' | openssl base64 -A)"
-  newer="data:image/svg+xml;base64,$(printf '<svg id="bedrock-now-icon" v="2"/>' | openssl base64 -A)"
-  for cur in '' '"profile_image_url":"/static/favicon.png",' "\"profile_image_url\":\"$ours\","; do
-    out="$(printf '{"id":"big","name":"B","meta":{%s"description":"d","tags":[]}}' "$cur" | owui_merge_model B B d '[]' false "$newer")"
+  ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR"
+  printf 'old-png' > "$ICONS_DIR/old.png"; printf '<svg id="bedrock-now-icon"/>' > "$ICONS_DIR/old.svg"
+  ours_png="data:image/png;base64,$(openssl base64 -A < "$ICONS_DIR/old.png")"
+  ours_svg="data:image/svg+xml;base64,$(openssl base64 -A < "$ICONS_DIR/old.svg")"
+  hashes="$(owui_our_icon_hashes)"
+  newer='data:image/png;base64,TkVXLVBORw=='
+  # unset, empty, Open WebUI's default, our PNG, our legacy SVG -> replaced with the new icon
+  for cur in '' '"profile_image_url":null,' '"profile_image_url":"",' '"profile_image_url":"/static/favicon.png",' \
+      "\"profile_image_url\":\"$ours_png\"," "\"profile_image_url\":\"$ours_svg\","; do
+    out="$(printf '{"id":"big","name":"B","meta":{%s"description":"d","tags":[]}}' "$cur" | owui_merge_model B B d '[]' false "$newer" "$hashes")"
     assert_contains "$out" "\"profile_image_url\": \"$newer\""
   done
-  mine='data:image/png;base64,iVBORw0KGgo='
-  out="$(printf '{"id":"big","name":"B","meta":{"profile_image_url":"%s","description":"d","tags":[]}}' "$mine" | owui_merge_model B B d '[]' false "$newer")"
-  assert_eq "$out" ""   # nothing to change: the user's icon stays
+  # a user's own icons (a PNG, a URL, an SVG without being one of ours) -> untouched
+  for mine in 'data:image/png;base64,iVBORw0KGgo=' 'https://example.test/me.png' \
+      "data:image/svg+xml;base64,$(printf '<svg id="bedrock-now-icon" v="mine"/>' | openssl base64 -A)"; do
+    out="$(printf '{"id":"big","name":"B","meta":{"profile_image_url":"%s","description":"d","tags":[]}}' "$mine" | owui_merge_model B B d '[]' false "$newer" "$hashes")"
+    assert_eq "$out" ""   # nothing to change
+  done
+  # without the hash list (older callers) only unset/default icons are filled in
+  out="$(printf '{"id":"big","name":"B","meta":{"profile_image_url":"%s","description":"d","tags":[]}}' "$ours_png" | owui_merge_model B B d '[]' false "$newer")"
+  assert_eq "$out" ""
+}
+
+test_sync_sends_our_icon_hashes_to_the_merge() {
+  _need_python || return 77
+  ICONS_DIR="$TMP/icons"; mkdir -p "$ICONS_DIR"; printf 'p' > "$ICONS_DIR/k.png"
+  OWUI_OUR_ICONS="$(owui_our_icon_hashes)"
+  owui_merge_model() { printf '%s\n' "$7" > "$TMP/hashes"; }
+  _owui_get() { printf '{}' > "$2"; printf 200; }
+  owui_upsert_model id N D desc '[]' false 'data:image/png;base64,AA' || return 1
+  assert_eq "$(cat "$TMP/hashes")" "$OWUI_OUR_ICONS"
 }

@@ -213,7 +213,8 @@ capability stays off. If you have access and something doesn't work, please repo
 ### Model names and tiers
 
 `catalog/display.tsv` maps each model to the name Open WebUI shows (`claude-sonnet-5-5` → `Claude Sonnet 5.5`),
-an icon (an SVG in `catalog/icons/`, sent inline so it works offline) and extra tags. Chat models get a price tier from their **input** price per 1M tokens:
+an icon (`catalog/icons/<key>.svg`, sent inline as its 128×128 PNG render `<key>.png` so it works offline;
+Open WebUI only accepts PNG/JPEG/GIF/WebP icons, and `lib/owui.sh` shows how to re-render the PNGs) and extra tags. Chat models get a price tier from their **input** price per 1M tokens:
 `$` under $0.50 (Haiku 5.5, GPT-6 Luna), `$$` under $3.00 (Sonnet 5.5, GPT-6 Sol, Grok, Llama, Mistral),
 `$$$` from $3.00 (Opus 5.5, Sonnet 4.5). Input price alone keeps the tiers simple; on Bedrock output costs
 about 4-5x input for most models here, so the order is mostly the same. API clients keep using the plain ids.
