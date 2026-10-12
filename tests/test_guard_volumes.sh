@@ -222,6 +222,29 @@ test_failed_create_rechecks_the_owner() {   # I1
   guard_project   # Docker error, nobody else owns it: not fatal
 }
 
+test_claim_replaces_only_the_record_the_guard_judged() {   # final review 1
+  _mk_install "$TMP/c"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=bedrock-now_pgdata; _stub_docker
+  me="$(_real_dir "$STACK_DIR")"; c="$(_real_dir "$TMP/c")"
+  _mark bedrock-now "$TMP/c"   # the guard saw a stale record ($TMP/gone); C replaced it before our claim
+  if out="$( (claim_project bedrock-now "$me" "$TMP/gone") 2>&1)"; then echo "should refuse" >&2; return 1; fi
+  assert_contains "$out" "project 'bedrock-now' was just claimed by the bedrock-now install in $c"
+  assert_contains "$out" "Nothing was changed"
+  assert_eq "$(_marker bedrock-now)" "$c"
+  [ ! -f "$TMP/dcalls" ] || { echo "touched the marker: $(cat "$TMP/dcalls")" >&2; return 1; }
+  rm -rf "$TMP/c"   # now C's record really is the stale one the guard judged: replaced
+  claim_project bedrock-now "$me" "$c"
+  assert_eq "$(_marker bedrock-now)" "$me"
+}
+
+test_claim_lost_to_a_record_of_a_missing_folder_is_worded_neutrally() {   # final review 2a
+  STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
+  WANT=bedrock-now OWNERS='' VOLS=''; _stub_docker; RACE_DIR="$TMP/nowhere"
+  if out="$( (guard_project) 2>&1)"; then echo "should refuse" >&2; return 1; fi
+  assert_contains "$out" "was just claimed by a record pointing to $TMP/nowhere, which no longer exists"
+  assert_not_contains "$out" "containers started from"
+}
+
 test_own_containers_win_over_another_folders_marker() {   # I1: interleaved first setups
   _mk_install "$TMP/a"; STACK_DIR="$TMP/b"; mkdir -p "$STACK_DIR"; printf 'POSTGRES_PASSWORD=mine\n' > "$ENV_FILE"
   WANT=bedrock-now OWNERS="$TMP/b" VOLS=bedrock-now_pgdata; _stub_docker; _mark bedrock-now "$TMP/a"
@@ -235,7 +258,7 @@ test_set_up_checkout_hint_covers_a_moved_or_copied_folder() {   # I2
   if out="$( (guard_project) 2>&1)"; then return 1; fi
   a="$(_real_dir "$TMP/a")"
   assert_contains "$out" "If this folder replaces $a (you moved or copied it with its .env)"
-  assert_contains "$out" "delete $a and re-run here — the data is kept"
+  assert_contains "$out" "move $a aside (e.g. rename it) or delete it — it holds its own backups/ and .env — and re-run here; the data volumes are kept"
   assert_contains "$out" "remove it with its data"
 }
 

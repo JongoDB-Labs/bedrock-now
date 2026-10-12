@@ -37,7 +37,7 @@ _guard_where() { # _guard_where DIR -> how to name what lives in DIR
 # Containers from another folder always count. The owner marker counts while the project has data volumes, unless
 # its folder no longer exists (moved or deleted checkout: stale), or this checkout's own containers exist (it runs
 # the stack, so it wins — e.g. after two first setups interleaved).
-_other_owner() {
+_other_owner() { # _other_owner NAME ME [RECORDED] — RECORDED: the owner marker as already read ("" = none)
   local name="$1" me="$2" d mine=0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
@@ -47,7 +47,7 @@ $(_project_container_dirs "$name")
 EOF
   [ "$mine" = 0 ] || return 0
   [ -n "$(_project_volumes "$name")" ] || return 0
-  d="$(_project_owner "$name")"
+  if [ $# -ge 3 ]; then d="$3"; else d="$(_project_owner "$name")"; fi
   [ -n "$d" ] && [ -e "$d" ] && [ "$(_real_dir "$d")" != "$me" ] && printf '%s\n' "$d"
   return 0
 }
@@ -62,7 +62,7 @@ _guard_advice() {
     return 0
   fi
   [ ! -d "$d" ] || [ -e "$d/.env" ] || ! _is_bedrock_now_dir "$d" ||
-    printf "That folder has no .env any more, but its install still owns the data volumes. If it is gone for good, delete the folder %s and re-run. " "$d"
+    printf "That folder has no .env any more, but its install still owns the data volumes. If it is gone for good, move the folder %s aside (e.g. rename it) or delete it, and re-run. " "$d"
   if [ -z "$(get_env POSTGRES_PASSWORD)" ]; then
     if _is_bedrock_now_dir "$d"; then
       printf 'Either use that install (cd %s), remove it (cd %s && ./stack uninstall), or give this copy its own name: COMPOSE_PROJECT_NAME=%s-2 ./setup.sh.' "$d" "$d" "$name"
@@ -70,7 +70,7 @@ _guard_advice() {
       printf 'Stop that project (cd %s && docker compose down), or give this copy its own name: COMPOSE_PROJECT_NAME=%s-2 ./setup.sh.' "$d" "$name"
     fi
   elif _is_bedrock_now_dir "$d"; then
-    printf "This checkout (%s) is set up for project '%s' too, so both would use one database and one set of containers. If this folder replaces %s (you moved or copied it with its .env), stop the stack there (cd %s && ./stack down), delete %s and re-run here — the data is kept. Otherwise keep only one: use that install (cd %s), or remove it with its data (cd %s && ./stack uninstall) and run ./stack setup here. A second copy side by side needs its own fresh checkout (see README: Running a second copy)." \
+    printf "This checkout (%s) is set up for project '%s' too, so both would use one database and one set of containers. If this folder replaces %s (you moved or copied it with its .env), stop the stack there (cd %s && ./stack down), move %s aside (e.g. rename it) or delete it — it holds its own backups/ and .env — and re-run here; the data volumes are kept. Otherwise keep only one: use that install (cd %s), or remove it with its data (cd %s && ./stack uninstall) and run ./stack setup here. A second copy side by side needs its own fresh checkout (see README: Running a second copy)." \
       "$(_real_dir "$STACK_DIR")" "$name" "$d" "$d" "$d" "$d" "$d"
   else
     printf "This checkout is set up for project '%s' already, so it cannot be renamed. Stop that project first (cd %s && docker compose down)." "$name" "$d"
@@ -83,13 +83,14 @@ _guard_advice() {
 # free it records this checkout as the owner (commands that start or change the stack).
 #   --no-claim  check only (down, logs, costs, models);  --warn  print the problem and go on (./stack status)
 guard_project() {
-  local mode=claim name me d vols msg=''
+  local mode=claim name me d vols seen msg=''
   case "${1:-}" in --warn) mode=warn; shift ;; --no-claim) mode=check; shift ;; esac
   name="${1:-}"
   docker info >/dev/null 2>&1 || return 0   # commands that need Docker report a stopped daemon themselves
   [ -n "$name" ] || name="$(project_name)"
   me="$(_real_dir "$STACK_DIR")"
-  d="$(_other_owner "$name" "$me")"
+  seen="$(_project_owner "$name")"   # the record this decision is based on; claim_project replaces only that one
+  d="$(_other_owner "$name" "$me" "$seen")"
   if [ -n "$d" ]; then
     msg="project '$name' is already used by $(_guard_where "$d"). $(_guard_advice "$name" "$d")"
   elif [ -z "$(get_env POSTGRES_PASSWORD)" ]; then
@@ -101,21 +102,27 @@ guard_project() {
     [ "$mode" != warn ] || { warn "$msg"; return 0; }
     die "$msg Nothing was changed."
   fi
-  [ "$mode" != claim ] || claim_project "$name" "$me"
+  [ "$mode" != claim ] || claim_project "$name" "$me" "$seen"
 }
 
-# claim_project NAME DIR — (re)writes the owner marker for DIR unless it already names DIR; the guard has already
-# decided that any other recorded owner is stale or loses to this checkout's own containers. Dies when another
-# checkout claimed the project in the meantime. A Docker error that leaves no marker is not fatal.
+# claim_project NAME DIR SEEN — (re)writes the owner marker for DIR unless it already names DIR. SEEN is the record
+# the guard judged (stale, or losing to this checkout's own containers); only that one is ever replaced. Dies when
+# another checkout claimed the project in the meantime. A Docker error that leaves no marker is not fatal.
 claim_project() {
-  local name="$1" me="$2" m owner
+  local name="$1" me="$2" seen="${3:-}" m owner
   m="$(owner_marker "$name")"; owner="$(_project_owner "$name")"
   [ "$owner" != "$me" ] || return 0
+  [ -z "$owner" ] || [ "$owner" = "$seen" ] || _claim_lost "$name" "$owner"
   [ -z "$owner" ] || docker volume rm "$m" >/dev/null 2>&1 || true   # labels can't change: replace the marker
   docker volume create --label "io.bedrock-now.dir=$me" --label "io.bedrock-now.project=$name" "$m" >/dev/null 2>&1 || true
   owner="$(_project_owner "$name")"
-  [ -z "$owner" ] || [ "$owner" = "$me" ] ||
-    die "project '$name' was just claimed by $(_guard_where "$owner") (it ran a command at the same moment). $(_guard_advice "$name" "$owner") Nothing was changed."
+  [ -z "$owner" ] || [ "$owner" = "$me" ] || _claim_lost "$name" "$owner"
+}
+_claim_lost() { # _claim_lost NAME OWNER — another checkout's record appeared while this one was claiming
+  if [ -e "$2" ]; then
+    die "project '$1' was just claimed by $(_guard_where "$2") (it ran a command at the same moment). $(_guard_advice "$1" "$2") Nothing was changed."
+  fi
+  die "project '$1' was just claimed by a record pointing to $2, which no longer exists (another checkout ran a command at the same moment). Re-run the command. Nothing was changed."
 }
 
 # guard_uninstall — before ./stack uninstall (with or without .env): lists the data volumes it will delete and

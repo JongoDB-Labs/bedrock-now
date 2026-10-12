@@ -16,12 +16,14 @@ All notable changes to bedrock-now are documented here. The format follows
   still has data. Existing volumes are claimed by the first checkout that starts or changes the stack after the
   upgrade. Of two simultaneous claims exactly one wins; the other stops with "was just claimed by …". A checkout
   whose own containers run the project always wins. A record is replaced only when its folder no longer exists
-  (moved or deleted checkout); a folder without `.env` keeps its claim, and the message explains it. The data
+  (moved or deleted checkout), and only if it is still the record the guard checked, never one another
+  checkout just wrote; a folder without `.env` keeps its claim, and the message explains it. The data
   volumes are not labelled: Compose would offer to recreate them, deleting the data, whenever a volume label
   changes.
 - If the clashing install's containers come from a folder that no longer exists, the message suggests
   `docker compose -p <project> down` instead of `cd` into it. A set-up checkout that replaces another folder
-  (moved or copied with its `.env`) is told to stop and delete the old folder; the data is kept.
+  (moved or copied with its `.env`) is told to stop the old folder's stack and move that folder aside or delete
+  it (it holds its own `backups/` and `.env`); the data volumes are kept.
 - `./stack uninstall` lists the data volumes it will delete, refuses when they belong to another folder (also
   without a `.env`), and removes the ownership record afterwards.
 - Clash messages only suggest `COMPOSE_PROJECT_NAME=<name>-2 ./setup.sh` on a first setup, where it works. A
