@@ -292,6 +292,8 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 | `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
 | `./stack update [--to <tag\|branch>]` | Backup, new code, pinned images, setup | < $0.01 |
 | `./stack clean [--yes]` | Remove this install's old images (lists them first; keeps one previous version) | none |
+| `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
+| `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
 | `./stack rotate-aws` | Replace the AWS key (verified first), then test | ~$0.0001 |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
@@ -316,7 +318,18 @@ The update runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5
 (an install from a release tag moves to the newest release, never an older one; a branch gets
 `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run by the new code. Local
 changes to tracked files stop the update before anything happens; they are never discarded. If a later step
-fails, the message shows exactly how to go back (`git … && ./stack restore <backup>`).
+fails, or the new version misbehaves, **`./stack rollback`** goes back: it checks out the code from before the
+update, restores the update's own pre-update backup (taking a backup of the current state first) and starts the
+previous images, which are still on disk. It also works when the update failed half-way. The failure message
+also shows the manual way (`git … && ./stack restore <backup>`).
+
+**One click, optional:** `./stack helper install` adds a small background job under your user (a launchd agent
+on macOS, a systemd user unit on Linux; setup offers it). Home then shows **Update now**, **Roll back** and
+**Clean up old images**. Each asks for the portal password again, and Home shows the progress (it reconnects
+when the portal restarts during the update) and the result, e.g. "Updated to v0.3.0 · freed 3.1 GB". The
+portal itself still cannot run anything: it can only leave a request that the helper checks strictly. The
+helper then runs one of those three `./stack` commands. Details and the security checklist:
+[docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes it.
 
 **Disk space:** an update keeps **one** previous version of every image it replaces (so going back needs no
 download) and removes the version before that, then says what it freed, e.g. `freed 3.1 GB (old litellm
@@ -380,6 +393,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - Every host port binds to `127.0.0.1`. AWS credentials reach only the LiteLLM container and never appear on a
   command line; all secrets live in `.env` (mode 600).
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
+- The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
+  request that the portal writes after you re-enter the password; off for remote access by default.
 
 Details: [docs/security.md](docs/security.md).
 
@@ -388,6 +403,7 @@ Details: [docs/security.md](docs/security.md).
 ```
 stack, setup.sh, install.sh   the CLI, setup and the one-line installer
 bin/claude-bedrock            Claude Code wrapper
+bin/bedrock-now-helper        the optional update helper (./stack helper install)
 compose.yaml                  all services (images pinned)
 caddy/Caddyfile               the reverse proxy (no secrets)
 portal/                       login + Home service (Python; tests: docker build --target test portal)

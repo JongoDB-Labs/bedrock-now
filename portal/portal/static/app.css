@@ -110,6 +110,32 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 .notes-body h4, .notes-body h5 { margin: 10px 0 4px; font-size: 14px; }
 .notes-body p, .notes-body ul { margin: 4px 0 8px; }
 .notes-body code { font-family: var(--mono); font-size: 12.5px; }
+/* One-click actions (host helper): buttons, progress card, password dialog. */
+.action { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 5px 12px; font-size: 14px; }
+.action.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.action:disabled { opacity: 0.5; cursor: not-allowed; }
+.cmdline .action { margin-left: 8px; }
+.maint-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.job { max-width: 1180px; margin-top: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 22px; }
+.job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.job-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.job-steps { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 8px; padding: 0; font-size: 14px; color: var(--muted); }
+.job-steps li::before { content: "○ "; }
+.job-steps li.ok { color: var(--ok); }
+.job-steps li.ok::before { content: "● "; }
+.job-steps li.now { color: var(--ink); font-weight: 600; }
+.job-steps li.now::before { content: "◐ "; }
+.job-message { margin: 4px 0 0; font-size: 15px; }
+.job-message.good { color: var(--ok); font-weight: 500; }
+.job-message.bad { color: var(--bad); }
+.confirm { border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; max-width: min(460px, calc(100vw - 32px)); background: var(--surface); color: var(--ink); }
+.confirm::backdrop { background: rgb(0 0 0 / 0.35); }
+.confirm h2 { margin: 0 0 8px; font-size: 18px; }
+.confirm p { font-size: 14px; }
+.confirm label { display: block; font-size: 13px; color: var(--muted); margin-top: 12px; }
+.confirm input { width: 100%; margin-top: 4px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+.confirm .error { color: var(--bad); }
+.confirm-buttons { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0 0; }
 @media (max-width: 960px) {
   .grid { grid-template-columns: minmax(0, 1fr); }
 }

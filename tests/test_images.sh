@@ -234,5 +234,5 @@ test_no_global_prune_anywhere() {
 
 test_dispatcher_guards_clean_like_update() {
   d="$(sed -n '/^case "\$cmd" in/,/^esac/p' "$T_ROOT/stack")"
-  assert_contains "$(printf '%s\n' "$d" | grep -A1 'update | clean)')" 'guard_project'
+  assert_contains "$(printf '%s\n' "$d" | grep -A1 'update | clean | rollback)')" 'guard_project'
 }

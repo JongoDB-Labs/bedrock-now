@@ -235,17 +235,20 @@ services:
       PRICE_UPDATES: ${PRICE_UPDATES:-true}
       # Daily check for a newer bedrock-now release (GitHub's public releases API; nothing about you is sent).
       UPDATE_CHECK: ${UPDATE_CHECK:-true}
+      # One-click Update/Rollback/Clean from a remote (non-localhost) browser: off unless set to true.
+      REMOTE_ADMIN_ACTIONS: ${REMOTE_ADMIN_ACTIONS:-false}
     # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home, and
     # .state/status (the installed version, written by ./stack). Writable besides /tmp: portal-state (/state:
     # the logout time, so a restart keeps it), litellm/prices/ (only prices.auto.tsv + prices.meta.json from the
-    # daily price update) and .state/update-check (only the release check's latest.json + latest.txt).
-    # No Docker socket.
+    # daily price update), .state/update-check (only the release check's latest.json + latest.txt) and
+    # .state/requests (only req-<nonce>.json files for the optional host helper, lib/helper.sh). No Docker socket.
     volumes:
       - ./litellm:/data/litellm:ro,z
       - ./litellm/prices:/data/prices:rw,z
       - ./catalog:/data/catalog:ro,z
       - ./.state/status:/data/status:ro,z
       - ./.state/update-check:/data/update-check:rw,z
+      - ./.state/requests:/data/requests:rw,z
       - portal-state:/state
     logging: *logging
 

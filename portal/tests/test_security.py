@@ -18,7 +18,7 @@ def test_session_round_trip_and_tamper():
     s = Sessions(SECRET, "pw")
     tok = s.issue()
     assert s.valid(tok)
-    assert not s.valid(tok[:-2] + ("A" if tok[-1] != "A" else "B") + tok[-1])
+    assert not s.valid(tok[:-2] + ("A" if tok[-2] != "A" else "B") + tok[-1])  # always a different char
     assert not s.valid("")
     assert not s.valid(None)
     assert not Sessions("y" * 40, "pw").valid(tok)  # other secret

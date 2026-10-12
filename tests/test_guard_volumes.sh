@@ -271,7 +271,7 @@ test_read_only_and_stop_commands_do_not_claim() {   # M1
   [ ! -f "$TMP/dcalls" ] || { echo "--no-claim must not claim" >&2; return 1; }
   d="$(sed -n '/^case "\$cmd" in/,/^esac/p' "$GV_ROOT/stack")"
   assert_contains "$(printf '%s\n' "$d" | grep -A1 'down | logs | costs | models)')" 'guard_project --no-claim'
-  up="$(printf '%s\n' "$d" | grep -A1 '  up | test | backup | restore | update | clean)')"
+  up="$(printf '%s\n' "$d" | grep -A1 '  up | test | backup | restore | update | clean | rollback)')"
   assert_contains "$up" 'guard_project'
   assert_not_contains "$up" '--no-claim'
 }

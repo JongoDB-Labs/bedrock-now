@@ -26,6 +26,8 @@ Usage: ./stack <command> [--yes]
                --to <tag|branch> picks a version; local changes are never discarded;
                keeps one previous version of each image and removes older ones
   clean        Remove this project's old images (lists them first; keeps one previous version)
+  rollback     Back to the version before the last update: code, data (its backup) and images
+  helper       Optional one-click Update / Rollback / Clean on Home: install | uninstall | status
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
   openrouter   Optional OpenRouter models: status | set | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
@@ -333,6 +335,7 @@ cmd_setup() {
   write_mcp_config
   cmd_test
   offer_symlink
+  offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
   print_summary
   maybe_auto_open
 }
@@ -1115,10 +1118,12 @@ cmd_update() {
     fi
     hint="your pre-update backup is $backup (./stack restore $backup)"
   else
-    backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"
+    backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"; branch="${BEDROCK_NOW_UPDATE_BRANCH:-}"
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
-    hint="the code was updated; to go back: $(_rollback_cmd "$from" "${BEDROCK_NOW_UPDATE_BRANCH:-}") && ./stack restore $backup"
+    hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
   fi
+  # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed.
+  update_record_write "$from" "$branch" "$backup"
   # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
   images_snapshot_before "$from"
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
@@ -1131,8 +1136,10 @@ cmd_update() {
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
+  update_record_done
   # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
   images_after_update || warn "could not clean up old images — ./stack clean tries again"
+  [ -z "$from" ] || log "updated to $(installed_version). Something wrong? ./stack rollback goes back (code, data and images)"
 }
 
 cmd_rotate_aws() {
@@ -1173,6 +1180,7 @@ cmd_uninstall() {
   [ "$(ask "Type 'bedrock-now' to confirm" "")" = bedrock-now ] || die "aborted — nothing was removed"
   if confirm "Take a backup first?"; then cmd_backup; fi
   dc down -v --remove-orphans
+  ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
 }
@@ -1183,3 +1191,7 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/images.sh"
 # Installed version, the portal's release check, and the .state folders the portal mounts.
 . "$STACK_DIR/lib/version.sh"
+# ./stack rollback (back to the version before the last update).
+. "$STACK_DIR/lib/rollback.sh"
+# The optional host helper (one-click Update / Rollback / Clean from the portal): ./stack helper.
+. "$STACK_DIR/lib/helper.sh"

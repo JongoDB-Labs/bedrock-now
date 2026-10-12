@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,7 +18,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import icons, prices, summary, updates
+from . import admin, icons, prices, summary, updates
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -55,7 +56,8 @@ def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     state_file = settings.state_dir / "logout-not-before" if settings.state_dir else None
     sessions = Sessions(settings.secret, settings.password, state_file=state_file)
-    throttle = LoginThrottle()
+    throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
+    admin_rate = admin.RateLimit()
 
     def authed(request: Request) -> bool:
         return sessions.valid(request.cookies.get(COOKIE))
@@ -166,6 +168,75 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                       "password": settings.rustfs_secret_key},
         }))
 
+    def admin_allowed(request: Request) -> bool:
+        return not admin.is_remote(request) or admin.remote_allowed(settings)
+
+    async def api_admin_status(request: Request) -> Response:
+        """The helper's heartbeat and the last job's progress (Home polls this, also across a portal restart)."""
+        if (deny := api_guard(request)) is not None:
+            return deny
+        st = admin.helper_state(settings.status_dir)
+        st.update({"allowed": admin_allowed(request), "remote": admin.is_remote(request),
+                   "in_progress": admin.job_in_progress(st), "actions": list(admin.ACTIONS)})
+        return _no_store(JSONResponse(st))
+
+    async def api_admin_request(request: Request) -> Response:
+        """POST {"action": "update"|"rollback"|"clean", "password": "…"} → 202: a request for the host helper."""
+        def err(status: int, msg: str, retry: int = 0) -> Response:
+            r = JSONResponse({"error": msg}, status_code=status)
+            if retry:
+                r.headers["Retry-After"] = str(retry)
+            return _no_store(r)
+
+        if (deny := api_guard(request)) is not None:
+            return deny
+        if not same_origin(request.headers, settings):
+            return err(403, "cross-site request refused")
+        if not admin_allowed(request):
+            return err(403, "Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env).")
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii():
+            return err(411, "Content-Length required")
+        if int(length) > admin.MAX_BODY:
+            return err(413, "request too large")
+        body = await request.body()
+        if len(body) > admin.MAX_BODY:
+            return err(413, "request too large")
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return err(400, "not JSON")
+        action = data.get("action") if isinstance(data, dict) else None
+        password = data.get("password") if isinstance(data, dict) else None
+        if action not in admin.ACTIONS:
+            return err(400, "unknown action")
+        if admin.fresh_auth_required(request, settings, action):
+            if wait := throttle.retry_after():
+                return err(429, f"Too many wrong passwords. Try again in {wait} s.", wait)
+            if not isinstance(password, str) or not password_ok(password, settings.password):
+                throttle.failure()
+                log.warning("admin action %s: wrong password (%d in a row)", action, throttle.failures)
+                return err(403, "That password is not right (PORTAL_PASSWORD in .env).")
+            throttle.success()
+        st = admin.helper_state(settings.status_dir)
+        if not st["running"]:
+            return err(503, "The update helper is not running. Install it with ./stack helper install, or run ./stack "
+                            f"{action} in a terminal.")
+        if admin.job_in_progress(st):
+            return err(409, "Another action is still running.")
+        if action == "rollback" and not st["rollback"]["available"]:
+            return err(409, "There is no update to roll back.")
+        if wait := admin_rate.retry_after():
+            return err(429, f"Please wait {wait} s before the next action.", wait)
+        try:
+            nonce = admin.write_request(settings.request_dir, action)
+        except OSError as e:
+            log.warning("cannot write the %s request to %s (%s)", action, settings.request_dir, e)
+            return err(500, "Could not hand the request to the helper (see ./stack logs portal).")
+        admin_rate.hit()
+        log.warning("admin action requested: %s%s", action, " (remote)" if admin.is_remote(request) else "")
+        return _no_store(JSONResponse({"id": nonce, "action": action}, status_code=202))
+
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
@@ -205,6 +276,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/", index),
             Route("/api/summary", api_summary),
             Route("/api/logins", api_logins),
+            Route("/api/admin/status", api_admin_status, methods=["GET"]),
+            Route("/api/admin/request", api_admin_request, methods=["POST"]),
             Route("/favicon.svg", favicon),
             Route("/icons/{path:path}", icon),
             Mount("/static", StaticFiles(directory=STATIC), name="static"),

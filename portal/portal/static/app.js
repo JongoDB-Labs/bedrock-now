@@ -259,6 +259,119 @@ function renderUpdate(u) {
   $("#update-cmd").textContent = u.command || "./stack update";
 }
 
+// --- one-click Update / Rollback / Clean through the host helper (see /api/admin/*) ---
+const PHASES = {
+  update: [["backing-up", "Backup"], ["downloading", "Download"], ["restarting", "Restart and check"], ["done", "Done"]],
+  rollback: [["restoring", "Restore code and data"], ["restarting", "Restart"], ["done", "Done"]],
+  clean: [["cleaning", "Remove old images"], ["done", "Done"]],
+};
+const ACTION_TEXT = {
+  update: (a) => `Update to ${lastUpdate && lastUpdate.latest ? lastUpdate.latest : "the newest release"}: a backup first, then the new code and images; Chat, Admin and Files are down for a few minutes while the services restart. This page reconnects by itself.`,
+  rollback: (a) => `Go back to ${a.rollback.to || "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).`,
+  clean: () => "Remove this install's old images. The ones in use and one previous version (for rollback) stay.",
+};
+let adminState = null, lastUpdate = null, adminTimer = null, pendingAction = null, reconnecting = false;
+
+function fmtBytes(b) { return b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${b || 0} B`; }
+
+function renderAdmin(a) {
+  adminState = a;
+  const usable = a.running && a.allowed;
+  $("#maint").hidden = !a.running;
+  $("#maint-state").textContent = !a.allowed ? "Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env)."
+    : `The update helper is running on this computer${a.version ? ` (installed version ${a.version})` : ""}.`;
+  for (const b of document.querySelectorAll("button.action[data-action]")) b.disabled = !usable || a.in_progress;
+  const rb = $("#rollback-now");
+  rb.hidden = !(a.rollback && a.rollback.available);
+  rb.textContent = a.rollback && a.rollback.to ? `Roll back to ${a.rollback.to}` : "Roll back";
+  $("#update-now").hidden = !usable;
+  $("#update-hint").textContent = usable ? "Or click Update now: the update helper runs it for you (asks for the portal password)."
+    : "Run it in your bedrock-now folder. (./stack helper install adds a one-click button here.)";
+  renderJob(a.job, a.in_progress);
+}
+
+function dismissed(id) { try { return localStorage.getItem("bn.job.dismissed") === id; } catch (_) { return false; } }
+
+function renderJob(job, inProgress) {
+  const box = $("#job");
+  const recent = job && job.finished_at && (Date.now() / 1000 - job.finished_at) < 86400;
+  box.hidden = !job || !job.phase || (!inProgress && (!recent || dismissed(job.id || String(job.finished_at))));
+  if (box.hidden) return;
+  const steps = PHASES[job.action] || [];
+  const at = steps.findIndex(([p]) => p === job.phase);
+  $("#job-title").textContent = `${{ update: "Update", rollback: "Rollback", clean: "Clean-up" }[job.action] || "Request"}${job.phase === "failed" ? " failed" : job.phase === "done" ? " finished" : " in progress"}`;
+  const list = $("#job-steps"); list.replaceChildren();
+  steps.forEach(([p, label], i) => {
+    const state = job.phase === "failed" ? (i < Math.max(at, 0) ? "ok" : "") : i < at || job.phase === "done" ? "ok" : i === at ? "now" : "";
+    list.append(el("li", { class: state, text: label }));
+  });
+  list.hidden = !steps.length;
+  let msg = job.message || "";
+  if (job.phase === "done" && job.action === "update" && job.version && !msg) msg = `Updated to ${job.version}`;
+  $("#job-message").textContent = msg;
+  $("#job-message").className = `job-message ${job.phase === "failed" ? "bad" : job.phase === "done" ? "good" : ""}`;
+  let note = "";
+  if (reconnecting) note = "The portal is restarting as part of the update — reconnecting…";
+  else if (inProgress) note = `Started ${job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : ""}. You can leave this page; it is carried out on your computer.`;
+  else if (job.phase === "done" && job.action !== "clean") note = "Reload this page to use the new version of Home.";
+  $("#job-note").textContent = note;
+  $("#job-dismiss").hidden = inProgress;
+}
+
+async function pollAdmin() {
+  clearTimeout(adminTimer);
+  try {
+    const a = await api("/api/admin/status");
+    reconnecting = false;
+    renderAdmin(a);
+    adminTimer = setTimeout(pollAdmin, a.in_progress ? 2500 : REFRESH_MS);
+  } catch (e) {
+    if (e.message === "signed out") return;
+    // The portal restarts during an update: keep asking, show where things stood.
+    reconnecting = !!(adminState && adminState.in_progress);
+    if (adminState) renderJob(adminState.job, adminState.in_progress);
+    adminTimer = setTimeout(pollAdmin, 3000);
+  }
+}
+
+function openConfirm(action) {
+  if (!adminState) return;
+  pendingAction = action;
+  $("#confirm-title").textContent = { update: "Update now?", rollback: "Roll back?", clean: "Clean up old images?" }[action];
+  $("#confirm-text").textContent = ACTION_TEXT[action](adminState);
+  $("#confirm-error").hidden = true;
+  $("#confirm-password").value = "";
+  $("#confirm-ok").textContent = { update: "Update", rollback: "Roll back", clean: "Clean up" }[action];
+  $("#confirm").showModal();
+  $("#confirm-password").focus();
+}
+
+async function submitConfirm(ev) {
+  ev.preventDefault();
+  const pw = $("#confirm-password").value;
+  if (!pw || !pendingAction) return;
+  $("#confirm-ok").disabled = true;
+  try {
+    const r = await fetch("/api/admin/request", {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: pendingAction, password: pw }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 401) { location.assign("/login"); return; }
+    if (!r.ok) { const e = $("#confirm-error"); e.textContent = d.error || `HTTP ${r.status}`; e.hidden = false; return; }
+    $("#confirm-password").value = "";
+    $("#confirm").close();
+    toast("Request sent to the update helper");
+    if (adminState) { adminState.in_progress = true; adminState.job = { action: pendingAction, phase: "queued", message: "Waiting for the update helper…", started_at: Math.floor(Date.now() / 1000) }; renderAdmin(adminState); }
+    setTimeout(pollAdmin, 1500);
+  } catch (e) {
+    const er = $("#confirm-error"); er.textContent = `Could not reach the portal (${e.message}).`; er.hidden = false;
+  } finally {
+    $("#confirm-ok").disabled = false;
+  }
+}
+
 async function api(path) {
   const r = await fetch(path, { headers: API_HEADERS, credentials: "same-origin", cache: "no-store" });
   if (r.status === 401) { location.assign("/login"); throw new Error("signed out"); }
@@ -271,7 +384,7 @@ async function refresh() {
   try {
     const d = await api("/api/summary");
     renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices);
-    renderUpdate(d.update);
+    renderUpdate(d.update); lastUpdate = d.update;
     lastSummary = d;
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;
     $("#load-error").hidden = true;
@@ -317,6 +430,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   $("#copy-claude").addEventListener("click", () => copy($("#claude-cmd").textContent, "the command"));
   $("#copy-update").addEventListener("click", () => copy($("#update-cmd").textContent, "the command"));
+  for (const b of document.querySelectorAll("button.action[data-action]")) b.addEventListener("click", () => openConfirm(b.dataset.action));
+  $("#confirm-form").addEventListener("submit", submitConfirm);
+  $("#confirm-cancel").addEventListener("click", () => { $("#confirm-password").value = ""; $("#confirm").close(); });
+  $("#job-dismiss").addEventListener("click", () => {
+    const j = adminState && adminState.job;
+    if (j) { try { localStorage.setItem("bn.job.dismissed", j.id || String(j.finished_at)); } catch (_) { /* fine */ } }
+    $("#job").hidden = true;
+  });
+  pollAdmin();
   for (const b of document.querySelectorAll(".copy[data-login]")) {
     b.addEventListener("click", async () => {
       if (!logins) await loadLogins();

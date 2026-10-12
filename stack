@@ -33,11 +33,12 @@ case "$cmd" in
   down | logs | costs | models)   # stop or read: check, but don't claim the project
     [ ! -f "$ENV_FILE" ] || guard_project --no-claim
     "cmd_${cmd}" "$@" ;;
-  up | test | backup | restore | update | clean)
+  up | test | backup | restore | update | clean | rollback)
     [ ! -f "$ENV_FILE" ] || guard_project
     "cmd_${cmd}" "$@" ;;
   rotate-aws) [ ! -f "$ENV_FILE" ] || guard_project; cmd_rotate_aws "$@" ;;
   prices) [ ! -f "$ENV_FILE" ] || guard_project; cmd_prices "$@" ;;   # runs the portal image: claims, like up
+  helper) [ ! -f "$ENV_FILE" ] || guard_project --no-claim; cmd_helper "$@" ;;   # no Compose changes
   open) cmd_open "$@" ;;
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
   help | -h | --help) cmd_help ;;

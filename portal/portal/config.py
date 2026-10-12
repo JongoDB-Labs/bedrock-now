@@ -62,6 +62,9 @@ class Settings:
     update_check: bool = False  # from_env turns it on unless UPDATE_CHECK=false; off in tests (no network)
     update_dir: Path = Path("/data/update-check")
     status_dir: Path = Path("/data/status")
+    # One-click actions through the host helper (portal/admin.py): the only folder they write is request_dir.
+    request_dir: Path = Path("/data/requests")
+    remote_admin_actions: bool = False  # REMOTE_ADMIN_ACTIONS=true allows them from remote (non-localhost) access
 
     def origin(self, sub: str | None = None) -> str:
         """http://[sub.]host[:port] — ':80' left out, exactly as browsers send it in Origin."""
@@ -113,6 +116,8 @@ def from_env(env: dict | None = None) -> Settings:
         update_check=(env.get("UPDATE_CHECK") or "true").strip().lower() not in ("false", "0", "no", "off"),
         update_dir=Path(env.get("PORTAL_UPDATE_DIR", "/data/update-check")),
         status_dir=Path(env.get("PORTAL_STATUS_DIR", "/data/status")),
+        request_dir=Path(env.get("PORTAL_REQUEST_DIR", "/data/requests")),
+        remote_admin_actions=(env.get("REMOTE_ADMIN_ACTIONS") or "false").strip().lower() in ("true", "1", "yes", "on"),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

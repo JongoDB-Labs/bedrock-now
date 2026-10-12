@@ -49,8 +49,16 @@
       </details>
       <h3 class="update-sub">What happens</h3>
       <ol id="update-steps" class="update-steps"></ol>
-      <p class="cmdline"><code id="update-cmd">./stack update</code> <button type="button" class="copy" id="copy-update">Copy</button></p>
+      <p class="cmdline"><code id="update-cmd">./stack update</code> <button type="button" class="copy" id="copy-update">Copy</button>
+        <button type="button" class="action primary" id="update-now" data-action="update" hidden>Update now</button></p>
       <p class="note" id="update-hint">Run it in your bedrock-now folder.</p>
+    </section>
+
+    <section id="job" class="job" aria-live="polite" hidden>
+      <div class="job-head"><h2 id="job-title">Update</h2> <button type="button" class="quiet" id="job-dismiss" hidden>Dismiss</button></div>
+      <ol id="job-steps" class="job-steps"></ol>
+      <p id="job-message" class="job-message"></p>
+      <p id="job-note" class="note"></p>
     </section>
 
     <div class="grid">
@@ -98,6 +106,16 @@
         <p class="note">These are the passwords setup created. If you changed the LiteLLM password in its own UI, this still shows the initial one.</p>
       </section>
 
+      <section class="maint" id="maint" aria-labelledby="maint-title" hidden>
+        <h2 id="maint-title">Maintenance</h2>
+        <p class="note" id="maint-state"></p>
+        <p class="maint-actions">
+          <button type="button" class="action" data-action="clean" id="clean-now">Clean up old images</button>
+          <button type="button" class="action" data-action="rollback" id="rollback-now" hidden>Roll back</button>
+        </p>
+        <p class="note">Each action asks for the portal password and is carried out on this computer by the update helper (<code>./stack helper status</code>).</p>
+      </section>
+
       <section class="claude" aria-labelledby="claude-title">
         <h2 id="claude-title">Claude Code in your terminal</h2>
         <p class="cmdline"><code id="claude-cmd">claude-bedrock</code> <button type="button" class="copy" id="copy-claude">Copy</button></p>
@@ -107,6 +125,17 @@
     </div>
   </section>
   <div id="frames" class="frames"></div>
+  <dialog id="confirm" class="confirm" aria-labelledby="confirm-title">
+    <form id="confirm-form" method="dialog">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-text"></p>
+      <label for="confirm-password">Portal password</label>
+      <input id="confirm-password" type="password" autocomplete="current-password" required>
+      <p id="confirm-error" class="error" role="alert" hidden></p>
+      <p class="confirm-buttons"><button type="button" class="quiet" id="confirm-cancel">Cancel</button>
+        <button type="submit" class="action primary" id="confirm-ok">Confirm</button></p>
+    </form>
+  </dialog>
   <p id="toast" class="toast" role="status" aria-live="polite"></p>
 </main>
 </body>

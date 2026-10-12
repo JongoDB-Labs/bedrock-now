@@ -361,9 +361,10 @@ test_compose_portal_writes_only_the_prices_dir() {
   assert_contains "$portal" '- ./catalog:/data/catalog:ro,z'
   assert_contains "$portal" 'read_only: true'
   assert_contains "$portal" 'user: "10102:${PORTAL_GID:-10102}"'
-  # The only writable host folders: prices, the release check's answer (lib/version.sh)
+  # The only writable host folders: prices, the release check's answer (lib/version.sh) and requests for the
+  # optional host helper (lib/helper.sh)
   assert_eq "$(printf '%s\n' "$portal" | grep ':rw' | sed 's/^ *//' | tr '\n' '|')" \
-    "- ./litellm/prices:/data/prices:rw,z|- ./.state/update-check:/data/update-check:rw,z|"
+    "- ./litellm/prices:/data/prices:rw,z|- ./.state/update-check:/data/update-check:rw,z|- ./.state/requests:/data/requests:rw,z|"
   assert_not_contains "$portal" 'docker.sock'
   assert_contains "$(cat "$REAL_ROOT/.env.example")" "PRICE_UPDATES=true"
 }

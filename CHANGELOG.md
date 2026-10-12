@@ -25,6 +25,23 @@ All notable changes to bedrock-now are documented here. The format follows
   and a copyable `./stack update`. `./stack status` and the `claude-bedrock` launch line mention it too, from
   the cached answer (no network). `UPDATE_CHECK=false` in `.env` turns it off. The portal's only new writable
   folder is `.state/update-check/`.
+- **`./stack rollback`**: back to the version before the last `./stack update`. It restores the code (branch
+  users stay on their branch), the update's own pre-update backup (a backup of the current state is taken
+  first) and the previous images, which the cleanup kept, so nothing is downloaded. It works after an update
+  that failed half-way, because `./stack update` records what it needs before 3/4 images. It asks first
+  (`--yes` skips) and refuses when the checkout has local changes.
+- **Optional update helper with one-click Update / Rollback / Clean on Home**: `./stack helper
+  install|uninstall|status` (setup offers it; `--yes` installs it only with `BEDROCK_NOW_HELPER=1`). A user-level
+  launchd agent (macOS) or systemd user unit (Linux), one per project, outside Docker. The portal (still
+  read-only, no Docker socket) only writes `.state/requests/req-<nonce>.json` after a valid session,
+  `X-Requested-With`, a same-origin check and the portal password typed again (shared lock-out with the
+  login), rate-limited to one request per 30 s and 6 an hour. The helper moves each request into its private
+  folder and checks it strictly: allowlisted action, fresh, single-use nonce, owner, no symlink, size cap. It
+  refuses when the checkout has local changes, then runs only `./stack update|rollback|clean --yes`. Progress
+  goes to `.state/status/helper-status.json`. Home shows it, reconnects across the portal's restart during an
+  update, and ends with e.g. "Updated to v0.3.0 · freed 3.1 GB". Requests from remote access (`X-Portal-Remote`,
+  set only by Caddy) are refused unless `REMOTE_ADMIN_ACTIONS=true`. Security checklist and threat model in
+  `docs/security.md`.
 
 ## [0.2.1] - 2026-10-12
 

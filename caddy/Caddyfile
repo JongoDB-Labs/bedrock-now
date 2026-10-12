@@ -39,11 +39,17 @@
 http://{$PORTAL_HOST} {
 	route {
 		request_header -X-Portal-User
+		# Only a remote-access site block (not part of this file yet) may mark a request as remote; a client never can.
+		request_header -X-Portal-Remote
 		# Caddy's own check endpoint is internal; browsers never need it.
 		respond /auth/verify 404
 		# The login form is a password and a next= URL; a larger body is refused before it reaches the portal.
 		request_body /login {
 			max_size 16KB
+		}
+		# One-click Update/Rollback/Clean: a tiny JSON body (action + password).
+		request_body /api/admin/* {
+			max_size 4KB
 		}
 		# The login page and what it needs are public; everything else requires a session.
 		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg
