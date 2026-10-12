@@ -243,3 +243,17 @@ test_wrapper_launch_line_says_when_new_prices_are_pending() {
   PRICES_DIR="$TMP/prices" LITELLM_CONFIG="$TMP/config.yaml" _run_wrapper -p hi > /dev/null 2> "$TMP/err"
   assert_not_contains "$(head -n 1 "$TMP/err")" "pending"
 }
+
+test_wrapper_launch_line_mentions_an_available_update_without_network() {
+  _wrapper_env
+  . "$STACK_DIR/lib/version.sh"
+  _semver "$(installed_version)" >/dev/null || { echo "this checkout has no release tag" >&2; return 77; }
+  mkdir -p "$STATE_DIR/update-check"; printf 'latest=v99.0.0\nchecked_at=1\n' > "$STATE_DIR/update-check/latest.txt"
+  export STUB_CURLLOG="$TMP/curls"
+  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_contains "$(head -n 1 "$TMP/err")" "· v99.0.0 available (./stack update)"
+  assert_not_contains "$(cat "$TMP/curls")" "github"
+  printf 'UPDATE_CHECK=false\n' >> "$ENV_FILE"
+  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_not_contains "$(head -n 1 "$TMP/err")" "available"
+}

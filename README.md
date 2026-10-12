@@ -266,6 +266,11 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 - **Price lists:** the daily price update downloads LiteLLM's public price list from GitHub
   (`raw.githubusercontent.com`) and the public AWS Price List (`pricing.us-east-1.amazonaws.com`). No
   credentials are sent; `PRICE_UPDATES=false` turns it off.
+- **Update check:** once a day the portal asks GitHub's public releases API (`api.github.com`) for the latest
+  bedrock-now release and, only when it is newer than yours, fetches that release's `compose.yaml` from
+  `raw.githubusercontent.com` to estimate the download. Unauthenticated, https only; nothing about your
+  install is sent (GitHub sees your IP address, as for any download). `UPDATE_CHECK=false` in `.env` turns it
+  off (then run `./stack up`).
 - **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;
   `claude-bedrock` turns off Claude Code's non-essential traffic; LiteLLM stores no prompt or response text.
   `./stack update` and image pulls contact GitHub and the image registries only when you run them.
@@ -301,6 +306,11 @@ log or train on your prompts; keep confidential work on Bedrock. Details: [docs/
 ./stack update                 # newest release
 ./stack update --to main       # or any tag / branch
 ```
+
+When a newer release is out, Home shows an **update card** with its release notes, what the update will do
+(backup, roughly how much it downloads, a few minutes of downtime) and the command to copy; `./stack status`
+and the `claude-bedrock` launch line mention it too (they read the portal's last check; no network of their
+own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
 
 The update runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept), **2/4** the code
 (an install from a release tag moves to the newest release, never an older one; a branch gets

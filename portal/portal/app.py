@@ -17,7 +17,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import icons, prices, summary
+from . import icons, prices, summary, updates
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -181,12 +181,16 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
             app.state.http = client
             # Daily price update (public price lists only; no credentials). Never blocks start-up or requests.
-            task = asyncio.create_task(prices.daily_loop(summary.price_paths(settings), settings.aws_region)) \
-                if settings.price_updates else None
+            tasks = []
+            if settings.price_updates:
+                tasks.append(asyncio.create_task(prices.daily_loop(summary.price_paths(settings), settings.aws_region)))
+            # Daily release check (GitHub's public releases API; nothing about this install is sent).
+            if settings.update_check:
+                tasks.append(asyncio.create_task(updates.daily_loop(summary.update_paths(settings), transport)))
             try:
                 yield
             finally:
-                if task is not None:
+                for task in tasks:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task

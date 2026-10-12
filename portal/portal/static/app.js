@@ -8,6 +8,7 @@ const REFRESH_MS = 30000;
 let logins = null;
 let timer = null;
 let lastSummary = null;
+let lastNotes = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const appUrl = (app) => `${location.protocol}//${app}.${location.host}${APPS[app]}`;
@@ -190,6 +191,74 @@ function renderPrices(p) {
   list.hidden = !list.children.length;
 }
 
+// --- update card (release notes: a tiny, safe subset of Markdown, built with DOM nodes; never parsed as HTML) ---
+function inline(text) {
+  // **bold**, `code`, [label](https://…) — everything else stays plain text.
+  const frag = document.createDocumentFragment();
+  const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\))/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) frag.append(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith("**")) frag.append(el("strong", { text: t.slice(2, -2) }));
+    else if (t.startsWith("`")) frag.append(el("code", { text: t.slice(1, -1) }));
+    else {
+      const label = t.slice(1, t.indexOf("]("));
+      const href = t.slice(t.indexOf("](") + 2, -1);
+      if (/^https:\/\/[^\s"'<>]+$/.test(href)) frag.append(el("a", { href, target: "_blank", rel: "noopener noreferrer", text: label }));
+      else frag.append(label);
+    }
+    last = m.index + t.length;
+  }
+  if (last < text.length) frag.append(text.slice(last));
+  return frag;
+}
+
+function renderNotes(md) {
+  // Headings, "- " lists (wrapped continuation lines included) and paragraphs; inline() for the text.
+  const box = $("#update-notes"); box.replaceChildren();
+  let list = null, item = null, para = [];
+  const endItem = () => { if (item) { list.append(el("li", {}, inline(item.join(" ")))); item = null; } };
+  const flush = () => { endItem(); if (para.length) { box.append(el("p", {}, inline(para.join(" ")))); para = []; } };
+  for (const raw of String(md || "").replace(/\r/g, "").split("\n").slice(0, 400)) {
+    const line = raw.trimEnd();
+    const h = /^(#{1,6})\s+(.*)$/.exec(line), li = /^\s*[-*+]\s+(.*)$/.exec(line);
+    if (h) { flush(); list = null; box.append(el(h[1].length <= 2 ? "h4" : "h5", { text: h[2].replace(/[*`]/g, "") })); }
+    else if (li) { flush(); if (!list) { list = el("ul"); box.append(list); } item = [li[1]]; }
+    else if (!line.trim()) { flush(); list = null; }
+    else if (item && /^\s/.test(line)) item.push(line.trim());
+    else { endItem(); list = null; para.push(line.trim()); }
+  }
+  flush();
+  if (!box.children.length) box.append(el("p", { class: "note", text: "No release notes." }));
+}
+
+function gb(mb) { return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`; }
+
+function renderUpdate(u) {
+  const card = $("#update-card");
+  card.hidden = !(u && u.available);
+  if (card.hidden) return;
+  $("#update-title").textContent = `${u.latest} available`;
+  const bits = [`You have ${u.installed}.`];
+  if (u.published_at) bits.push(`Released ${day(u.published_at)}.`);
+  if (u.checked_at) bits.push(`Checked ${ago(u.checked_at)}.`);
+  $("#update-meta").textContent = bits.join(" ");
+  if (lastNotes !== u.notes) { renderNotes(u.notes); lastNotes = u.notes; }
+  const link = $("#update-link");
+  if (u.url && /^https:\/\/github\.com\//.test(u.url)) { link.href = u.url; link.hidden = false; } else link.hidden = true;
+  const e = u.estimate || {};
+  let dl = "a few hundred MB of images, roughly";
+  if (e.download_mb === 0) dl = "no new images, only small local rebuilds";
+  else if (e.download_mb) dl = `about ${gb(e.download_mb)} of new images${e.images && e.images.length ? ` (${e.images.map((i) => i.split("/").pop()).join(", ")})` : ""}${e.rough ? ", roughly" : ""}`;
+  const steps = $("#update-steps"); steps.replaceChildren(
+    el("li", { text: "A backup of your data first (backups/…-auto; the newest 5 are kept)." }),
+    el("li", { text: `New code and ${dl} download while everything keeps running.` }),
+    el("li", { text: `About ${e.downtime_min || 3} minutes of downtime while setup restarts the services and checks them (< $0.01 Bedrock).` }),
+    el("li", { text: "The previous version's images stay, so going back needs no download." }));
+  $("#update-cmd").textContent = u.command || "./stack update";
+}
+
 async function api(path) {
   const r = await fetch(path, { headers: API_HEADERS, credentials: "same-origin", cache: "no-store" });
   if (r.status === 401) { location.assign("/login"); throw new Error("signed out"); }
@@ -202,6 +271,7 @@ async function refresh() {
   try {
     const d = await api("/api/summary");
     renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices);
+    renderUpdate(d.update);
     lastSummary = d;
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;
     $("#load-error").hidden = true;
@@ -246,6 +316,7 @@ document.addEventListener("DOMContentLoaded", () => {
     b.addEventListener("click", () => { modelFilter = b.dataset.filter; if (lastSummary) renderModels(lastSummary.models, lastSummary.prices); });
   }
   $("#copy-claude").addEventListener("click", () => copy($("#claude-cmd").textContent, "the command"));
+  $("#copy-update").addEventListener("click", () => copy($("#update-cmd").textContent, "the command"));
   for (const b of document.querySelectorAll(".copy[data-login]")) {
     b.addEventListener("click", async () => {
       if (!logins) await loadLogins();

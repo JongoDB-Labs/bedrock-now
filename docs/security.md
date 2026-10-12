@@ -14,6 +14,9 @@ Back to the [README](../README.md#security-model).
 - LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
   `LITELLM_STORE_PROMPTS=true` in `.env` and run `./stack setup`. Spend logs are kept for 90 days (LiteLLM's
   built-in cleanup job, `maximum_spend_logs_retention_period`).
+- The portal's daily update check asks GitHub's public releases API for the latest release (unauthenticated,
+  https only, no redirects followed, answers capped at 1 MB, release notes shown as plain text). It sends
+  nothing about your install; `UPDATE_CHECK=false` turns it off.
 - `claude-bedrock` sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so Bedrock sessions send no telemetry,
   error reports or update checks. Plain `claude` is not affected and follows Claude Code's own settings.
 
@@ -32,8 +35,8 @@ session you get the login page.
   redirect), compares the password in constant time and slows down after five wrong attempts; a login body
   over 8 KB is refused (Caddy caps it at 16 KB before it reaches the portal).
 - **Sign out** on Home ends every session, and that survives a restart of the portal: the time of the last
-  sign-out is kept in the small `portal-state` volume (the portal's only writable storage besides `/tmp` and
-  the price files in `litellm/prices/`).
+  sign-out is kept in the small `portal-state` volume (the portal's only writable storage besides `/tmp`, the
+  price files in `litellm/prices/` and the update check's answer in `.state/update-check/`).
 - Chat, Admin and Files may be framed only by the portal (`Content-Security-Policy: frame-ancestors
   <portal>`); the portal can't be framed at all. Host names other than the four answer 404.
 - The LiteLLM and RustFS sign-ins shown on Home come from the portal's API with copy buttons; the values never

@@ -322,6 +322,7 @@ cmd_setup() {
   persist_project_name   # a mismatching shell project name stops setup before any change
   chmod 600 "$ENV_FILE"
   mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+  ensure_portal_dirs; write_version_file   # lib/version.sh: what the portal mounts, and the installed version
   fix_bind_mount_perms
   setup_aws_creds
   setup_ports
@@ -712,6 +713,7 @@ cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   check_portal_host "$(portal_host)"
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
+  ensure_portal_dirs; write_version_file   # lib/version.sh
   ensure_images "./stack up"
   # Prices (lib/prices.sh): refresh if the last check is older than 12 h (fast: LiteLLM's list only, at most
   # 20 s; the portal's daily run does the AWS cross-check). OpenRouter's hook comes next: when its models
@@ -785,7 +787,8 @@ status_table() {
 }
 
 cmd_status() {
-  local ps
+  local ps upd O_RED O_GRN O_YEL O_OFF
+  out_colors
   check_docker_daemon   # a stopped daemon would otherwise look like "not created" everywhere
   ps="$(dc ps -a --format '{{.Service}}	{{.State}}	{{.Health}}	{{.ExitCode}}' 2>/dev/null || true)"
   printf '%s\n' "$ps" | status_table
@@ -796,6 +799,9 @@ cmd_status() {
     printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
   fi
   printf '  %s   (./stack clean frees old images)\n' "$(disk_line)"
+  if upd="$(update_available)"; then
+    printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
+  fi
 }
 
 _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
@@ -1175,3 +1181,5 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/openrouter.sh"
 # Image cleanup and disk usage (./stack update, ./stack clean, ./stack status).
 . "$STACK_DIR/lib/images.sh"
+# Installed version, the portal's release check, and the .state folders the portal mounts.
+. "$STACK_DIR/lib/version.sh"

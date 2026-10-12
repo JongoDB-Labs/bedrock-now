@@ -17,6 +17,14 @@ All notable changes to bedrock-now are documented here. The format follows
 - `./stack clean [--yes]`: the same cleanup on demand. Lists what it would remove (with sizes), then asks.
 - `./stack status` shows the disk this install uses: images in use (plus the previous version kept for
   rollback), data volumes and backups.
+- **"Update available" card on Home.** The portal checks GitHub's public releases API once a day
+  (unauthenticated, https only, ETag, 10 s timeout, 1 MB cap; nothing about your install is sent) and, when a
+  newer release than the installed one (`.state/status/version.json`, written by `./stack setup` / `up`) is
+  out, shows its release notes (a small Markdown subset rendered as plain DOM text), what the update will do
+  (backup, the images it downloads, estimated from the new release's `compose.yaml`, ~3 minutes of downtime)
+  and a copyable `./stack update`. `./stack status` and the `claude-bedrock` launch line mention it too, from
+  the cached answer (no network). `UPDATE_CHECK=false` in `.env` turns it off. The portal's only new writable
+  folder is `.state/update-check/`.
 
 ## [0.2.1] - 2026-10-12
 

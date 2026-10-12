@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-from . import icons, openrouter
+from . import icons, openrouter, updates
 from . import prices as price_update
 from .config import Settings
 
@@ -107,6 +107,10 @@ def read_models(litellm_dir: Path, catalog_dir: Path | None = None, prices: dict
             "provider": "Bedrock", "access": "bedrock", "icon": icons.bedrock(catalog_dir, logos.get(name)),
         })
     return {"checked_at": checked, "rows": rows, "error": None}
+
+
+def update_paths(s: Settings) -> updates.Paths:
+    return updates.Paths(update_dir=s.update_dir, status_dir=s.status_dir)
 
 
 def price_paths(s: Settings) -> price_update.Paths:
@@ -209,4 +213,5 @@ async def build(client: httpx.AsyncClient, s: Settings) -> dict:
         "models": models_with_openrouter(s),
         "prices": price_update.status(price_paths(s), enabled=s.price_updates),
         "claude": {"command": "claude-bedrock", "models": s.claude_models},
+        "update": updates.status(update_paths(s), s.update_check),
     }

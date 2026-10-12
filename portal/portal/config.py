@@ -58,6 +58,10 @@ class Settings:
     claude_models: dict = field(default_factory=dict)
     state_dir: Path | None = None  # logout time survives restarts here (compose: the portal-state volume)
     openrouter_api_key: str = field(default="", repr=False)  # optional; only sent to openrouter.ai (portal/openrouter.py)
+    # Daily release check (portal/updates.py): writes only update_dir; reads status_dir (written by ./stack).
+    update_check: bool = False  # from_env turns it on unless UPDATE_CHECK=false; off in tests (no network)
+    update_dir: Path = Path("/data/update-check")
+    status_dir: Path = Path("/data/status")
 
     def origin(self, sub: str | None = None) -> str:
         """http://[sub.]host[:port] — ':80' left out, exactly as browsers send it in Origin."""
@@ -106,6 +110,9 @@ def from_env(env: dict | None = None) -> Settings:
         prices_dir=Path(env.get("PORTAL_PRICES_DIR", "/data/prices")),
         aws_region=env.get("AWS_REGION_NAME") or "us-east-1",
         price_updates=(env.get("PRICE_UPDATES") or "true").strip().lower() not in ("false", "0", "no", "off"),
+        update_check=(env.get("UPDATE_CHECK") or "true").strip().lower() not in ("false", "0", "no", "off"),
+        update_dir=Path(env.get("PORTAL_UPDATE_DIR", "/data/update-check")),
+        status_dir=Path(env.get("PORTAL_STATUS_DIR", "/data/status")),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

@@ -233,13 +233,19 @@ services:
       # Daily price update from public price lists (no credentials); the region picks the regional AWS prices.
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
       PRICE_UPDATES: ${PRICE_UPDATES:-true}
-    # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home.
-    # Writable besides /tmp: portal-state (/state: the logout time, so a restart keeps it) and litellm/prices/
-    # (only prices.auto.tsv + prices.meta.json from the daily price update). No Docker socket.
+      # Daily check for a newer bedrock-now release (GitHub's public releases API; nothing about you is sent).
+      UPDATE_CHECK: ${UPDATE_CHECK:-true}
+    # Read-only: model check results (probe-results.tsv), the rendered config and the catalog for Home, and
+    # .state/status (the installed version, written by ./stack). Writable besides /tmp: portal-state (/state:
+    # the logout time, so a restart keeps it), litellm/prices/ (only prices.auto.tsv + prices.meta.json from the
+    # daily price update) and .state/update-check (only the release check's latest.json + latest.txt).
+    # No Docker socket.
     volumes:
       - ./litellm:/data/litellm:ro,z
       - ./litellm/prices:/data/prices:rw,z
       - ./catalog:/data/catalog:ro,z
+      - ./.state/status:/data/status:ro,z
+      - ./.state/update-check:/data/update-check:rw,z
       - portal-state:/state
     logging: *logging
 

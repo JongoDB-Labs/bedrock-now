@@ -37,6 +37,22 @@
     </header>
     <p id="load-error" class="banner" hidden></p>
 
+    <section id="update-card" class="update-card" aria-labelledby="update-title" hidden>
+      <div class="update-head">
+        <h2 id="update-title">Update available</h2>
+        <p class="note" id="update-meta"></p>
+      </div>
+      <details class="update-notes">
+        <summary>Release notes</summary>
+        <div id="update-notes" class="notes-body"></div>
+        <p class="note"><a id="update-link" target="_blank" rel="noopener noreferrer">On GitHub</a></p>
+      </details>
+      <h3 class="update-sub">What happens</h3>
+      <ol id="update-steps" class="update-steps"></ol>
+      <p class="cmdline"><code id="update-cmd">./stack update</code> <button type="button" class="copy" id="copy-update">Copy</button></p>
+      <p class="note" id="update-hint">Run it in your bedrock-now folder.</p>
+    </section>
+
     <div class="grid">
       <div class="col">
       <section class="spend" aria-labelledby="spend-title">
