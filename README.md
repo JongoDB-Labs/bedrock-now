@@ -165,6 +165,20 @@ posts its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Sl
 A single Claude Code prompt is several requests with a large cached context: a small task on Haiku costs
 about $0.04, a long interactive Opus session can cost dollars. Use Haiku or Sonnet for routine work.
 
+**Why Open WebUI adds tokens.** Open WebUI v0.12 lets the model call its built-in tools (search your knowledge
+bases, chat history and notes, calendar, automations, skills, task lists, the time, …) and sends the
+definitions of all of them, about 40 tools, with every chat request: a one-sentence question cost ~9,800 input
+tokens instead of ~25. bedrock-now turns those always-on categories off for every model
+(`DEFAULT_MODEL_METADATA` → `builtinTools` in `compose.yaml`), so a short question now costs about what it
+costs through the API. Still on, and sent only while you switch the feature on in a chat: memory, image
+generation, code interpreter and web search (off in this stack). Files you attach and knowledge bases you add
+with `#` still work (Open WebUI retrieves the relevant passages and adds them to the prompt). One thing needs a
+manual step: a custom model (Workspace → Models) with knowledge attached reads it through the Knowledge tool,
+so tick **Builtin Tools → Knowledge** in that model's settings (its own Builtin Tools settings replace the
+defaults: untick what it doesn't need). What remains is normal: later answers carry the earlier messages of
+the chat, plus any system prompt you set; titles, tags and follow-up suggestions are separate small requests
+on Haiku.
+
 ## Models & access
 
 The probe decides what you get. Only an explicit "no" from AWS (not subscribed, access denied, wrong region)

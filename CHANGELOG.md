@@ -183,6 +183,13 @@ Upgrading from v0.1.x: run `./stack update`, then open the portal URL it prints 
   not render `<sub>`. It is now one line of Markdown in italics. Answers with the old line still have it
   stripped before the chat goes back to the model and still count towards the chat total; `./stack setup`
   installs the new filter (version 3).
+- A one-sentence question in Chat cost ~9,800 input tokens: Open WebUI v0.12 sends the definitions of ~40
+  built-in tools (knowledge bases, chat history, notes, calendar, automations, skills, tasks, time, …) with
+  every request from the browser. Those categories are now off by default (`DEFAULT_MODEL_METADATA` →
+  `builtinTools`), so the same question costs ~25 input tokens, as through the API. Memory, image generation,
+  code interpreter and web search tools are still offered while you switch them on in a chat; attached files
+  and `#` knowledge still use retrieval. A custom model with attached knowledge needs **Builtin Tools →
+  Knowledge** ticked in its settings (README › Costs & budgets).
 - A stopped install keeps its Compose project name. Before, once one checkout ran `./stack down`, another
   set-up checkout with the same name could start on its data volumes (wrong database password) or delete them
   with `./stack uninstall`. The first checkout that starts or changes a project (`setup`, `up`, `update`,
