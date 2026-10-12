@@ -1,74 +1,29 @@
 # bedrock-now
 
-bedrock-now gives you a private, single-user AI workbench on your own Mac or Linux box. Every model call goes to
-**AWS Bedrock** under your team's AWS access key (and, only if you add an OpenRouter key, the `or/…` models go
-to OpenRouter; see [Optional: OpenRouter](#optional-openrouter)). Install it with one command. Nothing listens
-beyond `127.0.0.1`.
+bedrock-now is a private, single-user AI workbench for your own Mac or Linux machine: a chat app, Claude Code
+and a shared file store, with every model call billed to **AWS Bedrock** under your team's AWS access key. You
+get modern models without sending your work to a consumer AI service, and you see what every answer costs.
+Install it with one command; nothing listens beyond `127.0.0.1`.
 
-Everything you open in a browser sits behind **one portal with one password**:
+![bedrock-now portal](docs/img/portal-home.png)
 
-| What | Where | Login |
-|---|---|---|
-| **Portal**: Home (health, spend and budgets, model access) with tabs for the three apps below | http://bedrock-now.localhost | `PORTAL_PASSWORD` in `.env` (setup prints it once) |
-| **Chat** (Open WebUI): chat, documents/RAG, images (if enabled) | http://chat.bedrock-now.localhost | signed in automatically by the portal |
-| **Admin** (LiteLLM): keys, spend, budgets, logs | http://admin.bedrock-now.localhost/ui | portal, then LiteLLM's own sign-in (copy it from Home) |
-| **Files** (RustFS console): the shared object store (S3) | http://files.bedrock-now.localhost | portal, then RustFS's own sign-in (copy it from Home) |
-| **LiteLLM API**: OpenAI/Anthropic-compatible, for tools | http://127.0.0.1:4000 | virtual keys in `.env` |
-| **shared-mcp**: shared files and knowledge search for Claude Code | http://127.0.0.1:8765/mcp | bearer token, wired up for you |
-| **`claude-bedrock`**: Claude Code, billed to Bedrock | your terminal | none |
+## Quickstart
 
-`*.localhost` names point at your own computer in every current browser, so there is nothing to configure.
-The portal uses port 80 when it is free (so the URLs carry no port); otherwise setup picks 8800 and says so,
-e.g. `port 80 is in use → using 8800 for the portal (PORTAL_PORT): http://bedrock-now.localhost:8800`.
-`./stack status` always prints the real URLs (a SERVICE / STATE / HEALTH / URL table). Setup moves other
-ports the same way when something else uses them. You may edit `PORTAL_HOST` / `PORTAL_PORT` in `.env`;
-`./stack up` picks the change up. A `PORTAL_HOST` that does not end in `.localhost` is refused unless you also
-set `BEDROCK_NOW_ALLOW_PUBLIC_HOST=1`: the portal is plain HTTP, so its session cookie is not `Secure` and goes
-to that name and all its subdomains; only use a name that resolves to this computer alone.
+**Prerequisites**
 
-```
- you (browser) ─► Caddy :80 ──── asks the portal: valid session? (forward_auth)
-                  127.0.0.1  ├─ bedrock-now.localhost ─────► portal (login, Home)
-                             ├─ chat.  ─► Open WebUI ──┐            ┌────────────────────────┐
-                             ├─ admin. ─► LiteLLM UI   ├─► LiteLLM ─┼─► AWS Bedrock           │
-                             └─ files. ─► RustFS       │  (only     │   (us-east-1; images    │
- you (terminal) ─► claude-bedrock ── models ───────────┘   holder of│    us-west-2)           │
-        │                                                  AWS creds)└────────────────────────┘
-        │ MCP tools (127.0.0.1:8765)                         │
-        ▼                                                    │ keys, budgets, spend
-   shared-mcp ──── search / ingest ─► Open WebUI             ▼
-        └──────── files ──────────► RustFS ◄── uploads    Postgres + pgvector (DBs: litellm, openwebui)
-          all containers on one private Docker network; host ports bind to 127.0.0.1 only
-```
-
-## Prerequisites
-
-- macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine + Compose v2** (Linux)
-  - Linux: use Docker Engine **28 or newer**. Older engines can let other machines on your local network
-    reach ports published on `127.0.0.1`; setup warns if it sees one. Your user must be in the `docker`
-    group (setup says so if the daemon refuses you).
-  - Rootless Docker and SELinux hosts (Fedora/RHEL) work: bind mounts carry the `z` label and backups adapt
-    their file ownership. These setups are less tested; please report problems.
+- macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux)
 - `git`, `curl`, `openssl` (macOS's built-in bash 3.2 is fine)
-- An **AWS access key ID and secret** for an IAM user with Bedrock access (see
-  *Asking your AWS admin for model access*)
+- An **AWS access key ID and secret** for an IAM user with Bedrock access (long-lived `AKIA…` key; see
+  [Asking your AWS admin for model access](#asking-your-aws-admin-for-model-access))
 - Optional: **Claude Code** (`claude`), for `claude-bedrock`
 
-## Install
+**Install** with the one-liner:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JongoDB-Labs/bedrock-now/main/install.sh | bash
 ```
 
-The installer checks the prerequisites (Docker with Compose v2 and a running daemon, git, curl, openssl) and
-says how to install anything missing. It tells you what it will do, clones the latest release into
-`~/bedrock-now` (`BEDROCK_NOW_DIR=/path` for another folder, `BEDROCK_NOW_REF=main` for the newest code) and
-starts setup. It never overwrites an existing folder: for an existing bedrock-now checkout it changes nothing
-and tells you to run `./stack update`. Arguments go to setup: `… | bash -s -- --yes`. Without a terminal it runs
-`./setup.sh --yes` only when `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are exported, otherwise it prints
-the command to run next.
-
-Prefer to inspect first?
+or inspect first:
 
 ```bash
 git clone https://github.com/JongoDB-Labs/bedrock-now && cd bedrock-now
@@ -76,495 +31,163 @@ less install.sh setup.sh      # optional
 ./setup.sh
 ```
 
-Setup asks for your AWS key (the secret is hidden while you type), region (default `us-east-1`) and an admin
-email (default: your `git config user.email`; setup prints which address it used and where it came from). If
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are already exported in your shell, setup asks before using them
-(default Yes for a long-lived `AKIA…` key; `--yes` and non-interactive runs use them directly). Temporary credentials (`ASIA…` keys or
-`AWS_SESSION_TOKEN`) are refused because they expire; use a long-lived IAM user key. It then:
+The installer checks the prerequisites and says how to install anything missing, clones the latest release
+into `~/bedrock-now` (`BEDROCK_NOW_DIR=/path` for another folder, `BEDROCK_NOW_REF=main` for the newest code)
+and starts setup. It never overwrites an existing folder: for an existing checkout it tells you to run
+`./stack update`. Arguments go to setup (`… | bash -s -- --yes`).
+
+**What happens.** Setup asks for your AWS key (the secret is hidden), region (default `us-east-1`) and an admin
+email (default: your `git config user.email`). Exported `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are offered
+first; temporary credentials (`ASIA…`, `AWS_SESSION_TOKEN`) are refused because they expire. Then it:
+
 1. verifies the key with AWS, picks free ports and the portal address, and generates every secret into `.env`
    (mode 600, never committed), including the portal password;
-2. starts the stack and **probes every model** in `catalog/models.tsv` with your key: a real 1-token request
-   for chat, embedding and rerank models (< $0.01 in total, booked on the `setup` key) and a free check for image
-   models. It prints a table of ENABLED/DISABLED with the price and a short reason for each model, and saves
-   it for `./stack models`;
-3. creates LiteLLM virtual keys with budgets, wires Open WebUI to LiteLLM and runs a smoke test (~$0.0001);
-4. offers to link `claude-bedrock` into `~/.local/bin` (interactive runs only; `--yes` never creates or
-   replaces that link, and a link to a different checkout is replaced only after you answer `y`). It never
-   edits your shell rc files or `~/.claude`.
+2. starts the stack and **probes every model** with a 1-token request (< $0.01 in total) to see which ones
+   your key can use, and prints a table of ENABLED/DISABLED models with prices and reasons;
+3. creates LiteLLM keys with monthly budgets, configures Open WebUI and runs a smoke test;
+4. offers to link `claude-bedrock` into `~/.local/bin` (interactive runs only). It never edits your shell rc
+   files or `~/.claude`.
 
-Setup prints one line per phase (`==> LiteLLM ready (16s)`); on a first run it announces and downloads the
-images first (a few GB). If a service fails to start, it shows the last log lines and the `./stack logs`
-command to run. `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output.
+At the end it prints the portal address and, the first time only, its password (always in `.env` as
+`PORTAL_PASSWORD`), and, when run in a terminal, opens the portal in its own browser window.
 
-The first setup prints the portal address and password once. Later runs only point you to `PORTAL_PASSWORD`
-in `.env`. The LiteLLM and RustFS sign-ins are on the portal's Home page, with copy buttons.
+**What it takes:** about 5 GB of Docker images (downloaded once, announced first), 5–15 minutes on the first
+run depending on your connection (about 2 minutes after that), and under $0.05 of Bedrock usage to try it
+(the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04).
 
-You don't edit anything by hand. `./stack setup` is safe to re-run at any time. It keeps your keys and data
-and re-checks which models work.
+**Stop or remove:** `./stack down` stops everything and keeps your data; `./stack up` starts it again.
+`./stack uninstall` removes the containers and **all data volumes** (it keeps `.env` and `backups/`); then
+delete the folder.
 
-## Daily use
+`./stack setup` is safe to re-run at any time: it keeps your keys and data and re-checks which models work.
 
-```bash
-./stack up | down          # start / stop (data is kept)
-./stack status             # services, health + URLs
-./stack open               # the portal in its own browser window
-./stack logs [service]     # litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy
-./stack test               # end-to-end smoke test, incl. the portal login and its refusals (~$0.0001, setup key)
-./stack costs              # prices for your models + spend per key
-./stack prices [--accept]  # check prices now (they update daily); --accept applies a refused change
-./stack models             # which models your AWS key can use (from the last check; --recheck re-probes)
-./stack help               # everything else (NO_COLOR=1 turns colours off)
-```
+## Using it
 
-**The portal.** Open http://bedrock-now.localhost (or the URL `./stack status` shows) and sign in with
-`PORTAL_PASSWORD` from `.env`. You stay signed in for 30 days; **Sign out** at the bottom of the sidebar ends
-every session at once. The sidebar switches between:
-- **Home**: whether each service is up, spend per key against its monthly budget (amber from 80%, red at
-  100%) and the 30-day total, the models your AWS key can use with prices and reasons, the LiteLLM and RustFS
-  sign-ins (copy buttons; the values never appear in the page source), and the `claude-bedrock` command.
-  It refreshes every 30 seconds and makes no Bedrock calls.
-- **Chat**, **Admin**, **Files**: the apps themselves, each kept open while you switch tabs. The arrow next to
-  a tab opens that app in its own browser tab (same login).
+### The portal: one login for everything
 
-To change the password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`; every browser is signed out.
+Open http://bedrock-now.localhost (or the URL `./stack status` prints) and sign in with `PORTAL_PASSWORD`.
+`*.localhost` names point at your own computer in every current browser, so there is nothing to configure. You
+stay signed in for 30 days; **Sign out** at the bottom of the sidebar ends every session at once. `./stack
+open` opens the portal as its own app window.
 
-**The portal window.** `./stack open` opens the portal (the URL `./stack status` shows) as its own app
-window: the first of Google Chrome, Microsoft Edge, Brave and Chromium that is
-installed, started with `--app=<url>` and a separate browser profile for this copy (macOS:
-`~/Library/Application Support/bedrock-now`, Linux: `~/.local/share/bedrock-now`; a second copy uses
-`bedrock-now-<project>`), so its logins don't mix
-with your everyday browser. On macOS it looks in `/Applications` and `~/Applications` first, then asks
-Spotlight by bundle id (`mdfind`, read-only) for browsers installed elsewhere; on Linux the browser is started detached (`nohup setsid`), and if it fails at
-once the default browser is used. Without any of them it uses your default browser (`open` / `xdg-open`); over
-SSH or on Linux without a display it only prints the URL. `./stack setup` and `./stack up` open it at the
-end when they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without
-a terminal never open a window.
+| Tab | What it is | Sign-in |
+|---|---|---|
+| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command. Refreshes every 30 s; makes no Bedrock calls. | the portal |
+| **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
+| **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | LiteLLM's own sign-in (copy it from Home) |
+| **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | RustFS's own sign-in (copy it from Home) |
 
-**Claude Code.** `claude-bedrock` is Claude Code pointed at this stack. It sets the env vars for its own process
-only, so plain `claude` stays exactly as it was. It takes the same arguments as `claude`.
-- Model slots: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks and
-  subagents) = `claude-haiku-5-5`. To use a cheaper main model for a session, run
-  `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`.
-- `claude-bedrock --help` starts with a short header about the wrapper (models, key, env vars, cost) and then
-  shows Claude Code's own help. `--help` and `--version` print no cost line.
-- Each launch prints one cost line, which `CLAUDE_BEDROCK_QUIET=1` hides:
-  `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`.
-  From 80% of the key's monthly budget on, it ends with `· ⚠ 84% of monthly budget used`.
-- When Claude Code exits, the wrapper prints what **this session** cost:
-  `session: 14 requests · 420K tokens (38% cached) · $0.0384` ("cached" = the share of input tokens read from
-  the prompt cache). Every request of the session carries an `x-litellm-session-id: cb-<time>-<random>`
-  header (and the tag `claude-bedrock`), so you can also find it in the LiteLLM UI under Logs. LiteLLM writes
-  spend logs every few seconds, so the summary can take up to 6 s (`CLAUDE_BEDROCK_SUMMARY_WAIT` changes the
-  limit; Ctrl-C skips it). The summary is printed only when stderr is a terminal, so scripts and pipelines
-  get none (`CLAUDE_BEDROCK_SUMMARY=1` forces it). `CLAUDE_BEDROCK_QUIET=1` and subcommands
-  (`claude-bedrock mcp list`, …) print no summary either; then the wrapper simply `exec`s claude. Otherwise
-  claude runs as an ordinary foreground child: Ctrl-C, Ctrl-Z and closing the terminal reach it as usual, its
-  exit code is the wrapper's, and if it was killed by Ctrl-C or TERM the wrapper ends with the same signal.
-  Your own `ANTHROPIC_CUSTOM_HEADERS` are kept.
-- Claude Code warns that "claude.ai connectors are disabled". This is expected because the wrapper's auth token
-  takes precedence over your claude.ai login.
-- `/mcp` shows the **`bedrock-shared`** server, which has these tools: `list_files`, `read_file`,
-  `write_file(path, content, ingest_to=…)`, `list_knowledge_bases` and `search_knowledge`. Example prompt:
-  *"write `reports/summary.md` to the shared store and ingest it into knowledge base `Claude Code`"*. The file
-  then shows up in the RustFS console (bucket `shared`) and in Open WebUI as a knowledge base.
+Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. If port 80
+is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
+password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can use the LiteLLM API at
+`http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
-**Open WebUI.** Use Workspace → Knowledge to create a knowledge base and upload documents. In a chat, type `#`
-to attach a knowledge base. Claude Code's `search_knowledge` searches the same index. The image button appears
-only if an image model is enabled for your key.
+### Chat (Open WebUI)
 
-What setup configures in Open WebUI (re-applied on every `./stack setup`; your own changes win where noted):
-- **Model picker:** friendly names with a price tier, e.g. `Claude Sonnet 5.5 · $$`, a small vendor icon,
-  the exact price in the description, and tags (`$$`, `Bedrock`, vendor). Embedding, rerank and image models
-  are hidden from the picker (they still work for documents and images). A name, icon or visibility you set
-  yourself is kept, and so are tags you add; setup's own tags (tier, `Bedrock`, vendor) are put back on every
-  run. See [Model names and tiers](#model-names-and-tiers).
-- **Default model:** `claude-sonnet-5-5` (else `claude-sonnet-4-5`, else `claude-haiku-5-5`) for anyone who
-  hasn't picked their own. Chat titles, tags and follow-up suggestions are generated by `claude-haiku-5-5`
-  (the default model if Haiku isn't enabled).
-- **Cost under every answer:** a small line like
-  `≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈ $0.0412`: this answer's cost and the whole
-  chat's, from the same prices as `./stack costs` (cached tokens at the cache price). It comes from the
-  "Bedrock cost" filter (Admin Panel → Functions), which also strips these lines before the chat goes back to
-  the model, so they never cost tokens. With OpenRouter on, `or/…` models get the line too, priced from
-  OpenRouter's per-token prices (an estimate; see *Optional: OpenRouter* for what it leaves out). An answer
-  without token usage (e.g. a stopped one) gets no line.
-  After **Continue response** the line prices only the continued part, so the chat total runs slightly low;
-  `./stack costs` is always exact.
-  Setup installs the filter switched on for all models once; after that it only updates the filter's code
-  and its `prices_json` valve, so switching it off or changing its other valves sticks. Custom models built
-  on a Bedrock model are priced like their base model.
+- **Models and tiers:** the picker shows friendly names with a price tier, e.g. `Claude Sonnet 5.5 · $$`
+  (`$` under $0.50, `$$` under $3.00, `$$$` from $3.00 per 1M input tokens), a vendor icon, the exact price in
+  the description and tags (`Bedrock`, vendor, tier). Embedding, rerank and image models are hidden from the
+  picker but still work. Your own renames, icons and tags are kept.
+- **Defaults:** `claude-sonnet-5-5` (else `claude-sonnet-4-5`, else `claude-haiku-5-5`) for anyone who hasn't
+  picked their own; chat titles, tags and follow-ups are generated by the cheaper `claude-haiku-5-5`.
+- **Cost under every answer:** a small line like `≈ $0.0069 · 1,240 in / 380 out · Claude Sonnet 5.5 · chat ≈
+  $0.0412` shows this answer's cost and the whole chat's, from the same prices as `./stack costs`. It comes
+  from the "Bedrock cost" filter (Admin Panel → Functions), which strips these lines before the chat goes back
+  to the model, so they never cost tokens. After **Continue response** the line prices only the continued
+  part; `./stack costs` is always exact.
 - **Budget banner:** while the `open-webui` or `claude-code` key is at 80% or more of its monthly budget, a
-  banner says so (red at 100%). Setup and `./stack up` refresh it.
-- **Start page:** four prompt cards (summarize a document, explain code, draft an email, compare two options);
-  no changelog popup or update toast.
-- **Voice:** the microphone uses your browser's speech recognition and read-aloud uses your system's voices
-  (see [Bedrock only](#bedrock-only) for what that means for privacy).
+  banner says so (red at 100%).
+- **Knowledge:** Workspace → Knowledge to create a knowledge base and upload documents; type `#` in a chat to
+  attach one.
+- **Voice:** the microphone uses your **browser's** speech recognition and read-aloud uses your system's
+  voices. Bedrock has no speech-to-text model, so this runs outside the stack: Chrome and Edge send dictated
+  audio to Google or Microsoft (Safari can work on-device). If that's not acceptable, don't use the
+  microphone button.
 
-## Models
+Settings changed in Open WebUI's admin panel revert at restart by design: `.env` and setup own the
+configuration.
+
+### Claude Code: `claude-bedrock`
+
+`claude-bedrock` is Claude Code pointed at this stack. It sets the environment for its own process only, so
+plain `claude` stays exactly as it was, and it takes the same arguments.
+
+- Models: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks, subagents) =
+  `claude-haiku-5-5`. For a cheaper session: `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`.
+- Each launch prints one line (hide it with `CLAUDE_BEDROCK_QUIET=1`):
+  `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`,
+  with `· ⚠ 84% of monthly budget used` from 80% on.
+- When Claude Code exits, it prints what **this session** cost:
+  `session: 14 requests · 420K tokens (38% cached) · $0.0384` (only on a terminal; `CLAUDE_BEDROCK_SUMMARY=1`
+  forces it).
+- Claude Code warns that "claude.ai connectors are disabled". That is expected: the wrapper's auth token takes
+  precedence over your claude.ai login.
+
+More details (session headers, signals, `--help`): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
+
+### Shared files and knowledge (MCP)
+
+In `claude-bedrock`, `/mcp` shows the **`bedrock-shared`** server with the tools `list_files`, `read_file`,
+`write_file(path, content, ingest_to=…)`, `list_knowledge_bases` and `search_knowledge`. Example prompt:
+*"write `reports/summary.md` to the shared store and ingest it into knowledge base `Claude Code`"*. The file
+then shows up in the **Files** tab (bucket `shared`) and in Chat as a knowledge base, and `search_knowledge`
+searches the same index as Chat's `#`.
+
+## Costs & budgets
+
+You pay AWS Bedrock on-demand prices (USD, for the `us.` US-only inference profiles); nothing else in the
+stack costs money. Full price table, worked examples and the update rules: [docs/prices.md](docs/prices.md).
+
+**Prices update daily.** The portal fetches LiteLLM's public price list at start and every 24 hours and
+cross-checks it with the public AWS Price List; `./stack setup` and `./stack up` check too. Guards keep a bad
+upstream file from making prices vanish or jump; a refused change shows as a warning on Home and in `./stack
+costs`. `./stack prices` checks now, `./stack prices --accept` applies a change the guards refused, and new
+prices reach LiteLLM at the next `./stack up` (Home and the `claude-bedrock` line say `new prices pending` until
+then). The fallback is `catalog/prices.tsv`; `PRICE_UPDATES=false` in `.env` turns updates off.
+
+**Budgets.** Setup creates three LiteLLM keys, each with a monthly budget: `claude-code` **$200**,
+`open-webui` **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused
+until the reset date shown by `./stack costs`. To change one, edit `BUDGET_CLAUDE_CODE` / `BUDGET_OPENWEBUI` /
+`BUDGET_SETUP` in `.env` and run `./stack setup`.
+
+**Alerts.** Each key has a soft budget at **80%**: it never blocks, but `./stack costs`, Home and the
+`claude-bedrock` launch line warn from there on. To also get a message, set `ALERT_WEBHOOK_URL` in `.env` to any
+URL that accepts a JSON POST (an n8n, Zapier or Make hook, for example) and run `./stack setup`. LiteLLM then
+posts its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Slack's message format.
+
+**Where to see spend:**
+- `./stack costs`: prices for your enabled models, spend and budget per key, the 30-day total.
+- **Home**: spend per key against its budget (amber from 80%, red at 100%) and the 30-day total.
+- **Admin** tab → Usage: spend by model and day.
+- **Chat**: the cost under every answer and the chat total; each model's price in the picker.
+- `claude-bedrock`: spend this period at launch, the session's cost at exit.
+
+A single Claude Code prompt is several requests with a large cached context: a small task on Haiku costs
+about $0.04, a long interactive Opus session can cost dollars. Use Haiku or Sonnet for routine work.
+
+## Models & access
 
 The probe decides what you get. Only an explicit "no" from AWS (not subscribed, access denied, wrong region)
-disables a model. Anything else keeps it and shows why. `./stack models` shows the last result (MODEL, KIND,
-STATUS, PRICE, WHY, with one footnote per reason); after your AWS admin changes your access, run
-`./stack models --recheck` (1-token requests, < $0.01) or `./stack setup`.
+disables a model; anything else keeps it and shows why. `./stack models` shows the last result (MODEL, KIND,
+STATUS, PRICE, WHY); after your AWS admin changes your access, run `./stack models --recheck` (< $0.01) or
+`./stack setup`.
 
-| Model | Use | Notes |
-|---|---|---|
-| `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-sonnet-4-5` | chat, Claude Code | `us.` inference profiles |
-| `gpt-6-sol`, `gpt-6-luna`, `grok-4-7`, `llama-3-3-70b`, `mistral-large-3` | chat | |
-| `titan-embed-v2`, `cohere-embed-v4` | document embeddings for Open WebUI knowledge/RAG | Cohere is preferred when enabled; otherwise Titan |
-| `cohere-rerank-3-5` | reranking in Open WebUI's knowledge search | when enabled, hybrid search + rerank is turned on |
-| `sd3-5-large`, `stable-image-ultra`, `stable-image-core` | image generation in Open WebUI | called in **us-west-2** (the only region that has them); the best enabled one is used (SD3.5 Large, then Ultra, then Core) |
-
-Cohere Embed/Rerank and the Stability image models are **auto-enabled when your key has access** (the probe
-decides). They are **not yet verified end to end**, because they need an AWS Marketplace subscription that
-our test key did not have. Without that access the probe reports AWS Marketplace `AccessDenied` and the
-capability stays off. If you have access and something doesn't work, please report it.
-
-### Model names and tiers
-
-`catalog/display.tsv` maps each model to the name Open WebUI shows (`claude-sonnet-5-5` → `Claude Sonnet 5.5`),
-an icon (`catalog/icons/<key>.svg`, sent inline as its 128×128 PNG render `<key>.png` so it works offline;
-Open WebUI only accepts PNG/JPEG/GIF/WebP icons, and `lib/owui.sh` shows how to re-render the PNGs) and extra tags. Chat models get a price tier from their **input** price per 1M tokens:
-`$` under $0.50 (Haiku 5.5, GPT-6 Luna), `$$` under $3.00 (Sonnet 5.5, GPT-6 Sol, Grok, Llama, Mistral),
-`$$$` from $3.00 (Opus 5.5, Sonnet 4.5). Input price alone keeps the tiers simple; on Bedrock output costs
-about 4-5x input for most models here, so the order is mostly the same. API clients keep using the plain ids.
-
-### Model aliases
-
-The catalog ships without aliases. If a tool still sends an old model name, give it an alias: put a comma
-list in the `aliases` column of `catalog/models.tsv`, e.g.
-
-```
-claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	claude-opus,claude-3-opus-20240229	-
-```
-
-and run `./stack setup`. LiteLLM then answers to those names with the real model (same price and key), and
-Open WebUI keeps them out of its picker.
-
-**Adding a model:** add a TAB-separated row to `catalog/models.tsv` (`name  mode  litellm_model  aliases
-region`, using `-` for none or the default), a row to `catalog/prices.tsv`, one to `catalog/display.tsv`
-and its AWS Price List rows to `catalog/aws-price-map.tsv` (`-` if AWS lists none), then run `./stack setup`.
-`tests/run.sh` checks that every model has a price, a display name and a cross-check entry.
-
-## What it costs
-
-You pay AWS Bedrock on-demand prices. Nothing else in the stack costs money. Prices are in USD, updated daily
-(below); the fallback is `catalog/prices.tsv`, **as of 2026-10-12**, source: https://aws.amazon.com/bedrock/pricing/ (OpenAI and xAI
-prices come from their Bedrock model cards). These prices are for the **`us.` (US-only) inference profiles**
-the stack uses. AWS charges about **10% more** for them than for `global.` profiles, in exchange for keeping
-processing in the US. `us.` is the default.
-
-| Model | Input / 1M tok | Output / 1M tok | Cache read / 1M | Cache write / 1M | Other |
-|---|---|---|---|---|---|
-| claude-opus-5-5 | $4.40 | $22.00 | $0.22 | $5.50 | |
-| claude-sonnet-5-5 | $2.20 | $11.00 | $0.11 | $2.75 | |
-| claude-haiku-5-5 | $0.11 | $0.55 | $0.011 | $0.1375 | |
-| claude-sonnet-4-5 | $3.30 | $16.50 | $0.33 | $4.125 | |
-| gpt-6-sol | $2.20 | $11.00 | $0.22 | $2.75 | |
-| gpt-6-luna | $0.11 | $0.55 | $0.011 | $0.1375 | |
-| grok-4-7 | $2.20 | $6.60 | $0.55 | | |
-| llama-3-3-70b | $0.72 | $0.72 | | | |
-| mistral-large-3 | $0.50 | $1.50 | | | |
-| cohere-embed-v4 | $0.12 | | | | |
-| titan-embed-v2 | $0.02 | | | | |
-| cohere-rerank-3-5 | | | | | $2.00 per 1K queries |
-| sd3-5-large | | | | | $0.08 per image |
-| stable-image-ultra | | | | | $0.14 per image |
-| stable-image-core | | | | | $0.04 per image |
-
-Long-context tiers, 1-hour cache writes, batch and priority tiers are not modeled.
-
-**Daily price updates.** The table above is the fallback in `catalog/prices.tsv`. The portal checks prices at
-start and every 24 hours. `./stack setup` checks before it configures LiteLLM (skipped if the last check is
-under an hour old); `./stack up` does a quick check (LiteLLM's list only, at most 20 seconds, skipped if the last
-check is under 12 hours old, instant when offline).
-- Source: LiteLLM's public price list (`model_prices_and_context_window.json` on GitHub, keyed by the exact
-  Bedrock ids in `catalog/models.tsv`, region-specific entries first). Cross-check: the public AWS Price List
-  files for each model's region (`catalog/aws-price-map.tsv`; GPT-6 is not in the AWS feed, so it shows "n/a").
-  Only these public files are downloaded (10 MB cap after decompression, timeouts); no credentials are sent.
-- Guards, so a bad upstream file can't make prices vanish or jump: a price LiteLLM stops listing (absent, null
-  or 0) keeps its last value; where AWS has the price, a new value is used only if it is within 2% of AWS (if
-  the old one is, the old one stays); without AWS data, a jump of more than 5x is held back; and if more than
-  30% of the known prices would change at once without AWS listing the new values, the whole update is
-  refused (not on the very first update). Each of these is a warning on Home and in `./stack costs`, as is
-  any LiteLLM/AWS gap above 2%. A real repricing that AWS also lists passes; if you have checked a refused
-  one, `./stack prices --accept` applies LiteLLM's prices anyway, then `./stack up` hands them to LiteLLM.
-  `./stack prices` alone checks now instead of waiting for the daily run.
-- Results go to `litellm/prices/prices.auto.tsv` and `prices.meta.json` (not committed). `./stack` uses that
-  file; when it is 7 or more days old it is marked **stale** and is replaced by `catalog/prices.tsv` only if the
-  catalog is newer. A failed check keeps the last known prices and shows the error and when it happened.
-- LiteLLM reads prices only when it starts (no LiteLLM 1.105 API changes the cost of a config-file model at
-  runtime), so new prices reach it at the next `./stack up` (which restarts LiteLLM once, only when prices
-  changed) or `./stack setup`. Until then Home says so and the `claude-bedrock` launch line adds `new prices
-  pending — run ./stack up`. The chat cost filter and Open WebUI's model prices are updated at the same time.
-- Home, `./stack costs` and `./stack models` (its PRICE column) show the prices in use, where they come from and
-  how old they are. To turn the updates off, set `PRICE_UPDATES=false` in `.env` and run `./stack setup`.
-- Linux: `./stack` sets `PORTAL_GID` in `.env` to your group (group 0 on rootless Docker) and makes
-  `litellm/prices/` setgid and group-writable (2775); the portal keeps its own user, which owns `/state`.
-
-**Worked example:** a Claude Code session on Opus 5.5 that sends 1M new input tokens, 10M cache-read tokens and
-100K output tokens costs about $4.40 + $2.20 + $2.20 = **$8.80**. One SD3.5 image costs $0.08.
-
-**Real-world note:** a single Claude Code prompt is *not* one request. Even `claude-bedrock -p "…"` makes
-about 5–13 requests (the main model plus haiku background calls), and each carries a large cached context
-(tens of thousands of tokens: system prompt, tools, files). In our testing, a small tool-using task
-on Haiku cost about $0.04, and a one-word answer from Opus cost about $0.19. A long interactive Opus session
-can cost dollars. Use Haiku or Sonnet for routine work.
-
-**Where to watch spend:**
-- `./stack costs` shows the prices for your enabled models, spend and budget per key, and the total across all
-  keys for the last 30 days.
-- The `claude-bedrock` launch line shows spend this period, and the exit line shows what the session cost.
-- The portal's Home page shows spend per key against its budget and the 30-day total.
-- The LiteLLM UI (portal → **Admin** → **Usage**) breaks spend down by model and day.
-- In Open WebUI, every answer shows its cost and the chat's running total, and each model's description in
-  the picker shows its price.
-
-**Budgets:** setup creates three LiteLLM virtual keys, each with a monthly budget (resets on the date shown by
-`./stack costs`): `claude-code` **$200**, `open-webui` **$50**, and `setup` **$5**, which pays for the model
-probe and `./stack test` so you can see what setup itself costs. When a key reaches its budget, LiteLLM
-refuses requests on that key until the reset. To change a budget, edit `BUDGET_CLAUDE_CODE` /
-`BUDGET_OPENWEBUI` / `BUDGET_SETUP` in `.env` and run `./stack setup`. The reset date stays the same.
-
-**Budget alerts:** each key also gets a soft budget at **80%** of its monthly budget. It never blocks anything;
-from there on `./stack costs` and the `claude-bedrock` launch line show `⚠ N% of monthly budget used`. To
-also get a message, set `ALERT_WEBHOOK_URL` in `.env` to any URL that accepts a JSON POST (an n8n, Zapier or
-Make hook, for example) and run `./stack setup`. LiteLLM then posts a budget alert there when a key crosses
-its soft budget (`soft_budget_crossed`) and its full budget (`budget_crossed`). The payload is LiteLLM's own
-JSON, not Slack's message format.
-
-## Bedrock only
-
-What the stack guarantees:
-- **Bedrock by default; OpenRouter only if you add a key.** Every model call (chat, embeddings, rerank,
-  images) goes **LiteLLM → AWS Bedrock**. There are no local models and no fallbacks. If no Bedrock model is
-  enabled for a capability, that capability is off and setup tells you why. The one exception is opt-in: with
-  an `OPENROUTER_API_KEY` in `.env`, the chat models named `or/…` go **LiteLLM → OpenRouter** (see
-  [Optional: OpenRouter](#optional-openrouter)). Without a key, nothing contacts openrouter.ai.
-- AWS credentials reach only the `litellm` container (and throwaway `aws-cli` containers during setup). They
-  are never passed on a command line.
-- Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
-  `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
-- LiteLLM uses its **bundled** price map (no runtime fetch from GitHub). Our prices (the daily update, else
-  `catalog/prices.tsv`) override it. The daily update downloads two public price lists (see "What it costs");
-  `PRICE_UPDATES=false` turns that off. LiteLLM's breached-password check (a haveibeenpwned.com lookup) is off.
-- LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
-  `LITELLM_STORE_PROMPTS=true` in `.env` and run `./stack setup`. Spend logs are kept for 90 days (LiteLLM's built-in cleanup job, `maximum_spend_logs_retention_period`).
-
-**How the single login works.** Caddy is the only thing that publishes a browser UI, on `127.0.0.1` only.
-Before every request to any of the four host names it asks the portal whether the `bn_session` cookie is
-valid (Caddy `forward_auth`). Without a session you get the login page. The cookie is signed with
-`PORTAL_SECRET`, `HttpOnly`, `SameSite=Strict`, scoped to `bedrock-now.localhost` and its subdomains, and
-valid for 30 days; it is never passed on to the apps. Open WebUI signs you in from an `X-Portal-User` header
-that only Caddy sets, after the portal confirmed the session; any `X-Portal-User` a client sends is deleted
-first, and Open WebUI publishes no port, so the header can't be forged. The login form only accepts a POST
-from the portal itself, sends you back only to a portal address (no open redirect), compares the password in
-constant time and slows down after five wrong attempts; a login body over 8 KB is refused (Caddy caps it at
-16 KB before it reaches the portal). **Sign out** on Home ends every session, and that survives a restart of
-the portal: the time of the last sign-out is kept in the small `portal-state` volume (the portal's only
-writable storage besides `/tmp`). Chat, Admin and Files may be framed only by the
-portal (`Content-Security-Policy: frame-ancestors <portal>`); the portal can't be framed at all. Host names
-other than the four answer 404.
-
-What it does not cover:
-- **Audio.** Bedrock has no speech-to-text model, and the slim Open WebUI image has no local Whisper, so
-  setup sets Open WebUI's microphone to the browser's **Web Speech API** and read-aloud to your system's
-  voices. Both run **outside the stack**: Chrome and Edge send dictated audio to Google or Microsoft for
-  recognition (Safari can work on-device). If that's not acceptable, don't use the microphone button.
-- **Claude Code's own traffic.** `claude-bedrock` sends model calls to LiteLLM and sets
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so Bedrock sessions send no telemetry, error reports or update
-  checks. Plain `claude` is not affected and follows Claude Code's own settings.
-
-## Optional: OpenRouter
-
-[OpenRouter](https://openrouter.ai) is one API in front of hundreds of models from many providers (Llama,
-Gemma, Mistral, DeepSeek, Qwen, GPT, Gemini and more). Some of them are **free** (ids ending in `:free`, with
-daily request limits); the rest are **paid** from credits you buy at OpenRouter. bedrock-now can add them next
-to your Bedrock models. It is off unless you give it a key, and all it needs is the key (no email, no account
-API).
-
-- **Turn it on:** an interactive setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden
-  input). Later, or without a terminal: `./stack openrouter set` (asks, or reads `OPENROUTER_API_KEY` from
-  the environment). The key is checked with OpenRouter first (`GET /api/v1/key`); a rejected key is not
-  stored. Create keys at https://openrouter.ai/settings/keys; a per-key credit limit there caps what it can
-  spend.
-- **Only `.env` counts.** An `OPENROUTER_API_KEY` that happens to be in your shell never turns OpenRouter on
-  by itself: `./stack` strips `OPENROUTER_*` from what Docker Compose sees, an interactive setup asks
-  `found OPENROUTER_API_KEY in your environment — use it for bedrock-now? [y/N]`, and `setup --yes` uses it
-  only with `BEDROCK_NOW_OPENROUTER_FROM_ENV=1`. `./stack update` ignores it, so a removed key stays removed.
-- **Turn it off:** `./stack openrouter remove` deletes the key from `.env` and the cached model list,
-  restarts LiteLLM with Bedrock only and removes the OpenRouter entries it created in Open WebUI.
-- **Pick models:** `./stack openrouter models free` (only free models), `paid`, `all` (default), or a comma
-  list of ids: `./stack openrouter models meta-llama/llama-3.3-70b-instruct,google/gemma-4-31b-it:free`.
-  Stored as `OPENROUTER_MODELS` in `.env`. Only models that answer in text are offered (no image/audio
-  generation). Always left out: OpenRouter's variable-priced routers (price `-1`) and `:batch` variants
-  (they run only through OpenRouter's asynchronous batch API). Left out of `all`/`free`/`paid` unless
-  `OPENROUTER_INCLUDE_ALIASES=true`: the `~vendor/…-latest` aliases, which point at another listed model (a
-  comma list may still name one). `OPENROUTER_MAX_MODELS` (default 1000; the newest are kept) is a safety
-  cap; today about 440 models qualify.
-- **Where they show up:** in LiteLLM as `or/<openrouter id>` (for example
-  `or/meta-llama/llama-3.3-70b-instruct`), so they never clash with Bedrock names, and any LiteLLM key can call
-  them through the LiteLLM API. In Chat they are named like `Llama 3.3 70B Instruct · OpenRouter` and tagged
-  `OpenRouter`, `Free` or `Paid` and the vendor, with the price in the description (your own renames and tags
-  are kept). Home lists them with a provider column and Bedrock / free / paid filters.
-- **Prices and spend:** OpenRouter's per-token `prompt`, `completion`, `input_cache_read` and
-  `input_cache_write` prices go into LiteLLM's config, so spend per key, budgets and `./stack costs` include
-  OpenRouter calls. Not modelled (OpenRouter bills them, LiteLLM's numbers leave them out): long-context price
-  tiers (`overrides`), `input_cache_write_1h`, `internal_reasoning`, `web_search`, `audio`, `image` and any
-  other per-request fee. The model list and prices are fetched at setup and by `./stack openrouter refresh`;
-  `./stack up` fetches only when the list is more than 12 hours old (it starts fine offline). Whenever the
-  models or prices change (and on every `./stack openrouter refresh`), Open WebUI's labels and its
-  per-answer cost prices are updated too. A model whose price OpenRouter lists in a form bedrock-now can't
-  read (e.g. an absurd exponent) is left out. `./stack costs`,
-  `./stack openrouter status` and Home also show the key's own usage, its limit and today's free-model
-  requests. The account's credit balance needs an OpenRouter *management* key, so with a normal key they link
-  to https://openrouter.ai/settings/credits instead.
-- `./stack openrouter list` prints every enabled model with tier, price and context length.
-
-**Privacy.** A prompt to an `or/…` model leaves your machine and goes to OpenRouter and from there to the
-model's provider. Each provider has its own logging and training policy, and **some free models may log or
-train on your prompts**. Read [OpenRouter's provider logging policy](https://openrouter.ai/docs/guides/privacy/provider-logging)
-and [privacy policy](https://openrouter.ai/privacy), and set which providers may see your data in your
-OpenRouter [privacy settings](https://openrouter.ai/settings/privacy). Keep confidential work on Bedrock
-models. The key itself stays in `.env` (mode 600) and reaches only the LiteLLM and portal containers; curl
-gets it on stdin (never on a command line), and the portal calls OpenRouter server-side, so the key never
-reaches a browser.
-
-## Backup, restore, update, keys
-
-```bash
-./stack backup                     # → backups/<timestamp>/ (both databases, both buckets, a copy of .env)
-./stack restore backups/<ts>       # replaces ALL current data (offers a backup of the current state first)
-./stack update                     # backup (…-auto) → new code (git) → pull pinned images → setup --yes → test
-./stack rotate-aws                 # new AWS key: verified with AWS first, .env changed only if valid
-./stack openrouter set|remove      # optional OpenRouter key: checked with OpenRouter first (see above)
-./stack uninstall                  # removes containers and ALL data volumes (keeps .env and backups/)
-```
-
-**Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (`OPENWEBUI_PORT`,
-`RUSTFS_CONSOLE_PORT`; setup removes them from `.env`). After `./stack update`, the old Open WebUI address
-(e.g. http://127.0.0.1:8080) stops working: open the portal URL that the update prints, sign in with the
-new `PORTAL_PASSWORD` (printed once, also in `.env`) and use the **Chat** tab. Your chats, knowledge bases
-and files are unchanged. Bookmarks to the LiteLLM UI on `127.0.0.1:4000/ui` still work, but the portal's Admin
-tab is the supported way in.
-
-`./stack update` runs four steps: **1/4** a backup with the current code, **2/4** the code: an install from a
-release tag (the one-line installer) moves to the newest release tag, never a pre-release and never an older
-version than you have, and says so (`updating v0.1.1 → v0.1.2`); a checkout on a branch gets
-`git pull --ff-only`; **3/4** the pinned images; **4/4** setup and the smoke test, run by the new code.
-`./stack update --to <tag|branch>` picks a specific version (also older ones). Local changes to tracked files
-stop the update before anything happens (no backup is taken or pruned); they are never discarded. If a step
-after the code update fails, the message shows how to go back exactly: `git -C <dir> checkout <previous commit>
-&& ./stack restore <backup>` for a release-tag install, or `git -C <dir> switch -C <branch> <previous commit> &&
-./stack restore <backup>` if you were on a branch (you stay on it).
-
-Backups contain secrets (a copy of `.env`) and your chats, so keep them private.
-
-Restore also puts the backup's LiteLLM virtual keys and Open WebUI API key back into `.env` (the restored
-databases only know those keys), then recreates Open WebUI and shared-mcp and runs the smoke test. If the
-backup's `.env` lacks one of them, restore says so; run `./stack setup --yes` afterwards to create a new one.
-
-**Automatic backups:** `./stack update` names its backups `backups/<ts>-auto/` and keeps only the newest 5 of
-those. Backups you make with `./stack backup` are never deleted; remove old ones yourself.
-
-**Restoring on a new machine:**
-1. Install the prerequisites, clone this repo and copy your `backups/<ts>/` directory into `backups/`.
-2. Run `cp backups/<ts>/.env .env`. The same secrets (`LITELLM_SALT_KEY`, `WEBUI_SECRET_KEY`, …) are needed to
-   decrypt stored credentials and sessions.
-3. Run `./setup.sh`. Answer "yes" to keeping the AWS key in `.env`. Ports may change if they are busy.
-4. Run `./stack restore backups/<ts>`. It restores the data and the matching keys; `claude-bedrock` and Open
-   WebUI keep working without further steps.
-
-**Rotating the AWS key** (rotate long-lived keys regularly, e.g. every 90 days): run `./stack rotate-aws` and paste the new key ID and
-secret. The secret is hidden while you type (non-interactively, export `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY` and add `--yes`). The new key is verified with AWS before `.env` changes; temporary
-`ASIA…` keys are refused. The command restarts LiteLLM, runs the smoke test and reminds you
-to deactivate the old key.
-
-**Supply chain:** every image version is pinned in `compose.yaml`. LiteLLM is pinned to **1.105.0**. Never use
-LiteLLM **1.82.7 or 1.82.8**: those releases were compromised. Update only with `./stack update`.
-
-## Running a second copy
-
-Each checkout needs its own Docker Compose project name (default `bedrock-now`). Two checkouts with the same
-name would share containers and data volumes, so every `./stack` command refuses when another folder already
-uses the name (`project 'bedrock-now' is already used by the bedrock-now install in <dir>…`), and a first setup
-refuses when data volumes of that name already exist. Nothing is changed in either case. `./stack status` only
-prints the warning and still shows its table.
-
-A stopped install keeps its name too: the first checkout that starts or changes a project (`setup`, `up`,
-`update`, `restore`, `test`, `backup`, `rotate-aws`) records itself in a small, empty Docker volume
-`<project>_bedrock-now-owner` (label `io.bedrock-now.dir`), so another folder can't start on, or
-`./stack uninstall`, its data while it is down. `down`, `logs`, `status`, `costs` and `models` only check.
-This also covers volumes created before the record existed: the first checkout to start or change the stack
-after upgrading claims them. If two checkouts claim at the same moment, one wins and the other stops with
-"was just claimed by …". `./stack uninstall` lists the volumes it will delete and removes the record. A
-record whose folder no longer exists (you moved or deleted the checkout) is replaced. A folder that still
-exists keeps its claim even without a `.env`; if that install is gone, move the folder aside (e.g. rename it)
-or delete it. A claim only ever replaces the record it found stale, never one another checkout just wrote; if
-the newer record points to a folder that no longer exists, the message says so and you simply re-run. The data volumes
-themselves are not labelled, because Compose would offer to recreate them (deleting the data) when a label
-changes.
-
-If the message says a **checkout that is already set up** clashes with another install, that checkout can't
-take a new name (its `.env` belongs to the project). If this folder replaces the other one (you moved or
-copied it with its `.env`), stop the stack there (`./stack down`), move the old folder aside (e.g. rename
-it) or delete it, and re-run here. It holds its own `backups/` and `.env`, so look before you delete it; the
-data volumes are kept either way. Otherwise keep only one of the two: use the other install, or remove it together with its data
-(`./stack uninstall` there) and run `./stack setup` here. A second copy needs its own fresh checkout. If the
-containers come from a folder that no longer exists, remove them with `docker compose -p <project> down`
-(the data volumes are kept).
-
-To try a branch or a fresh clone next to your main stack, give it its own name:
-
-```bash
-git clone https://github.com/JongoDB-Labs/bedrock-now bedrock-now-test && cd bedrock-now-test
-COMPOSE_PROJECT_NAME=bn-test ./setup.sh
-```
-
-Setup stores the name in that copy's `.env` on its **first** run, so every later `./stack …` command in that
-folder targets the `bn-test` containers, volumes and shared-mcp image, never the main stack's. The name is
-fixed from then on: a `COMPOSE_PROJECT_NAME` left over in your shell never repoints a checkout (`./stack
-setup` refuses and changes nothing; other commands ignore it with a warning). You don't need to set it again
-for later commands in the copy. The copy's portal gets its own host name, `<name>.localhost` (here
-`http://bn-test.localhost`, with `chat.`, `admin.` and `files.` in front for the apps; `PORTAL_HOST` in `.env`),
-so the two stacks never share browser cookies. Ports move automatically because
-the main stack holds the defaults. `--yes` never touches your `~/.local/bin/claude-bedrock` link; run
-`bin/claude-bedrock` from the copy's folder instead. Remove the copy with `./stack uninstall` inside it.
-
-## Troubleshooting
-
-| Symptom | Fix |
+| Model | Use |
 |---|---|
-| A model shows **DISABLED: no Marketplace access**, **no model access** or **access denied** | Your AWS account or IAM user can't use it. Ask your AWS admin (see *Asking your AWS admin for model access*), then run `./stack models --recheck`. |
-| "no models are usable with this AWS key" | Same as above: the key has no Bedrock model access, or the region is wrong. |
-| A URL from this README doesn't work | Setup moved a port because something else used it (port 80 taken, or rootless Docker, which can't use it → the portal is on 8800). See `./stack status` or `PORTAL_PORT` / `*_PORT` in `.env`. |
-| `http://bedrock-now.localhost` doesn't resolve | Use a current Chrome, Edge, Firefox or Safari; they resolve `*.localhost` themselves. Command-line tools may not: `curl --resolve bedrock-now.localhost:80:127.0.0.1 http://bedrock-now.localhost/login`. |
-| The portal shows its login page again after you clicked a link to it on another site | Expected with `SameSite=Strict`: such a visit arrives without the session cookie. Type or bookmark the URL, or sign in again. |
-| Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`. After five wrong tries the login waits a few seconds (up to five minutes) before it accepts another. |
-| The old Open WebUI address (`127.0.0.1:8080`/`8082`) stopped working after an update | By design: browsers reach every app through the portal now. Open the URL from `./stack status`. |
-| A setting changed in the Open WebUI admin UI reverts after a restart | This is by design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration, so re-running setup always gives a known state. |
-| `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in `~/.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper's environment. Remove those keys, or move them to a project-level setting you don't use with `claude-bedrock`. |
-| `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
-| Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
-| "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
-| "project '…' is already used by the bedrock-now install in …" | Another folder owns this project name (running, or stopped with its data volumes). If this folder replaces it (you moved or copied it with its `.env`), run `./stack down` there, move that folder aside (e.g. rename it) or delete it (it holds its own `backups/` and `.env`), and re-run here; the data volumes are kept. Otherwise use that install, or remove it with its data (`./stack uninstall` there). Only a checkout that was never set up can take another name: `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. See *Running a second copy*. |
-| "… containers started from …, a folder that no longer exists" | Remove them with `docker compose -p <project> down` (the data volumes are kept), then re-run. |
-| "project '…' was just claimed by …" | Another checkout ran a command at the same moment and now owns the project. Fix it as for "already used by the bedrock-now install". If it says "a record pointing to …, which no longer exists", just re-run. |
-| "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this Compose project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
-| "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
-| Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD`, run `./stack setup` so the portal picks it up. |
-| Speech-to-text error in Open WebUI | Your browser has no speech recognition (e.g. Firefox). See *Bedrock only → Audio*. |
-| Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Delete the `LITELLM_DB_ADMIN_READY=true` line from `.env` and run `./stack setup`: it sets the admin's password back to `LITELLM_UI_PASSWORD`. Editing `LITELLM_UI_PASSWORD` alone does nothing once the admin exists; change the password in the LiteLLM UI, or do both steps. |
-| LiteLLM UI login fails with `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (the portal's Home page shows both); the shared `admin` login is switched off. |
-| A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup` to see all compose output. |
-| Anything else | Run `./stack status` and `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
+| `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-sonnet-4-5` | chat, Claude Code |
+| `gpt-6-sol`, `gpt-6-luna`, `grok-4-7`, `llama-3-3-70b`, `mistral-large-3` | chat |
+| `titan-embed-v2`, `cohere-embed-v4` | document embeddings (Cohere preferred when enabled) |
+| `cohere-rerank-3-5` | reranking for knowledge search (turns hybrid search on) |
+| `sd3-5-large`, `stable-image-ultra`, `stable-image-core` | images in Chat (called in **us-west-2**) |
 
-## Asking your AWS admin for model access
+Cohere and the Stability image models need an AWS Marketplace subscription and are enabled automatically when
+your key has access; they are **not yet verified end to end**, so please report problems.
 
-If the probe shows models as **DISABLED**, send your AWS admin a request like this one. List only the models
-your probe table (`./stack models`) reports as *no Marketplace access*, *no model access* or *access denied*, with the Bedrock IDs
-from `catalog/models.tsv`.
+### Asking your AWS admin for model access
+
+If models show as **DISABLED**, send your AWS admin a request like this, listing the models `./stack models`
+reports as *no Marketplace access*, *no model access* or *access denied*, with the Bedrock IDs from
+`catalog/models.tsv`:
 
 > Subject: Bedrock model access for bedrock-now
 >
@@ -584,17 +207,161 @@ from `catalog/models.tsv`.
 >
 > Thanks!
 
-After access changes, run `./stack models --recheck` (or `./stack setup`) to re-probe the models.
+Then run `./stack models --recheck`.
+
+### Model aliases
+
+The catalog ships without aliases. If a tool still sends an old model name, put a comma list in the `aliases`
+column of `catalog/models.tsv` and run `./stack setup`:
+
+```
+claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	claude-opus,claude-3-opus-20240229	-
+```
+
+LiteLLM then answers to those names with the real model (same price and key), and Chat keeps them out of its
+picker. To add a model, see [docs/advanced.md](docs/advanced.md#adding-a-model).
+
+## Optional: OpenRouter
+
+[OpenRouter](https://openrouter.ai) offers hundreds of models from many providers, some free. bedrock-now can
+add them next to your Bedrock models as `or/<id>`; it is **off unless you give it a key**.
+
+```bash
+./stack openrouter set                 # add a key (checked with OpenRouter first; stored in .env)
+./stack openrouter models free         # or: paid | all | a comma list of ids
+./stack openrouter status | list | refresh
+./stack openrouter remove              # back to Bedrock only
+```
+
+Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
+**Privacy:** a prompt to an `or/…` model goes to OpenRouter and the model's provider, and some free models may
+log or train on your prompts; keep confidential work on Bedrock. Details: [docs/openrouter.md](docs/openrouter.md).
+
+## Bedrock by default: what leaves your machine
+
+- **AWS:** model calls go to Bedrock (chat, embeddings, rerank, images) through LiteLLM; setup also checks your
+  key with AWS STS. There are no local models and no fallbacks; if no Bedrock model is enabled for a
+  capability, it is off and setup says why.
+- **OpenRouter, only if you add a key:** the `or/…` models go to OpenRouter. Without a key nothing contacts
+  openrouter.ai.
+- **Browser speech, only if you use it:** the microphone and read-aloud use your browser's and system's speech
+  services (see [Chat](#chat-open-webui)).
+- **Price lists:** the daily price update downloads LiteLLM's public price list from GitHub
+  (`raw.githubusercontent.com`) and the public AWS Price List (`pricing.us-east-1.amazonaws.com`). No
+  credentials are sent; `PRICE_UPDATES=false` turns it off.
+- **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;
+  `claude-bedrock` turns off Claude Code's non-essential traffic; LiteLLM stores no prompt or response text.
+  `./stack update` and image pulls contact GitHub and the image registries only when you run them.
+
+## Commands
+
+| Command | What it does | Bedrock cost |
+|---|---|---|
+| `./stack setup` | First-time or repeat setup: AWS key, ports, model probe, keys | < $0.01 |
+| `./stack up` / `down` | Start / stop (data is kept) | none |
+| `./stack status` | Services, health and URLs | none |
+| `./stack open` | The portal in its own browser window | none |
+| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
+| `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
+| `./stack costs` | Prices for your enabled models + spend per key | none |
+| `./stack prices [--accept]` | Check prices now; `--accept` applies a refused change | none |
+| `./stack models [--recheck]` | Which models your key can use; `--recheck` re-probes | `--recheck`: < $0.01 |
+| `./stack backup` | Databases + buckets + `.env` → `backups/<timestamp>/` | none |
+| `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
+| `./stack update [--to <tag\|branch>]` | Backup, new code, pinned images, setup | < $0.01 |
+| `./stack rotate-aws` | Replace the AWS key (verified first), then test | ~$0.0001 |
+| `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
+| `./stack uninstall` | Remove containers and ALL data volumes | none |
+| `./stack help` | All of the above | none |
+
+`--yes` accepts defaults (non-interactive; AWS credentials can then come from `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME`). `NO_COLOR=1` turns colours off.
+
+## Updating
+
+```bash
+./stack update                 # newest release
+./stack update --to main       # or any tag / branch
+```
+
+The update runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept), **2/4** the code
+(an install from a release tag moves to the newest release, never an older one; a branch gets
+`git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run by the new code. Local
+changes to tracked files stop the update before anything happens; they are never discarded. If a later step
+fails, the message shows exactly how to go back (`git … && ./stack restore <backup>`).
+
+**Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (setup removes
+`OPENWEBUI_PORT` and `RUSTFS_CONSOLE_PORT` from `.env`), so the old address such as `http://127.0.0.1:8080`
+stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSWORD` from `.env` and use the
+**Chat** tab. Your chats, knowledge bases, files and spend history are unchanged.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| A model shows **DISABLED** (no Marketplace access, no model access, access denied), or "no models are usable with this AWS key" | Your AWS account or IAM user can't use it, or the region is wrong. Ask your AWS admin (see [above](#asking-your-aws-admin-for-model-access)), then run `./stack models --recheck`. |
+| A URL from this README doesn't work | Setup moved a port because something else used it (port 80 taken, or rootless Docker → the portal is on 8800). See `./stack status` or `PORTAL_PORT` / `*_PORT` in `.env`. |
+| `http://bedrock-now.localhost` doesn't resolve | Use a current Chrome, Edge, Firefox or Safari; they resolve `*.localhost` themselves. Command-line tools may not: `curl --resolve bedrock-now.localhost:80:127.0.0.1 http://bedrock-now.localhost/login`. |
+| The portal shows its login page after you followed a link to it from another site | Expected with `SameSite=Strict`: such a visit arrives without the session cookie. Type or bookmark the URL. |
+| Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`. After five wrong tries the login waits a few seconds (up to five minutes). |
+| The old Open WebUI address (`127.0.0.1:8080`/`8082`) stopped working after an update | By design: browsers reach every app through the portal now. Open the URL from `./stack status`. |
+| A setting changed in Open WebUI's admin UI reverts after a restart | By design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration. |
+| `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in `~/.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper. Remove those keys, or move them to a project-level setting you don't use with `claude-bedrock`. |
+| `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
+| "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
+| Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
+| "project '…' is already used by the bedrock-now install in …" | Another folder owns this project name. If this folder replaces it (moved or copied with its `.env`), run `./stack down` there, move that folder aside or delete it (it holds its own `backups/` and `.env`), and re-run here. Otherwise use that install, or remove it with `./stack uninstall` there. A checkout that was never set up can take another name: `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. See [docs/advanced.md](docs/advanced.md#running-a-second-copy). |
+| "… containers started from …, a folder that no longer exists" | Remove them with `docker compose -p <project> down` (the data volumes are kept), then re-run. |
+| "project '…' was just claimed by …" | Another checkout ran a command at the same moment and now owns the project; fix it as for "already used". If it says "a record pointing to …, which no longer exists", just re-run. |
+| "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
+| "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
+| Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD`, run `./stack setup`. |
+| Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox). |
+| LiteLLM UI login fails with `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (Home shows both); the shared `admin` login is off. |
+| Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Delete the `LITELLM_DB_ADMIN_READY=true` line from `.env` and run `./stack setup`: it resets the admin's password to `LITELLM_UI_PASSWORD`. Editing `LITELLM_UI_PASSWORD` alone does nothing once the admin exists. |
+| Home warns about prices (refused change, stale, LiteLLM/AWS gap) | See [docs/prices.md](docs/prices.md#guards). After checking a refused change: `./stack prices --accept`, then `./stack up`. |
+| A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup`. |
+| Anything else | `./stack status` and `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
+
+## Advanced
+
+- **A second copy** (to try a branch next to your main stack): clone into another folder and run
+  `COMPOSE_PROJECT_NAME=bn-test ./setup.sh`. It gets its own containers, data, ports and portal name
+  (`http://bn-test.localhost`). See [docs/advanced.md](docs/advanced.md#running-a-second-copy).
+- **Linux, SELinux, rootless Docker:** supported (Docker Engine 28+; your user in the `docker` group; rootless
+  puts the portal on 8800). See [docs/advanced.md](docs/advanced.md#linux-selinux-and-rootless-docker).
+- **A non-`.localhost` portal name** is refused unless you set `BEDROCK_NOW_ALLOW_PUBLIC_HOST=1`: the portal is
+  plain HTTP. See [docs/advanced.md](docs/advanced.md#portal-host-name-port-and-the-public-host-opt-in).
+- **Verbose output:** `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output.
+- **Backups, restore on a new machine, AWS key rotation, adding models, the portal window:**
+  [docs/advanced.md](docs/advanced.md).
+
+## Security model
+
+- One way in for browsers: Caddy on `127.0.0.1`, which asks the portal to check a signed, `HttpOnly`,
+  `SameSite=Strict` session cookie before every request. Open WebUI trusts a sign-in header that only Caddy
+  can set; the apps may be framed only by the portal.
+- Every host port binds to `127.0.0.1`. AWS credentials reach only the LiteLLM container and never appear on a
+  command line; all secrets live in `.env` (mode 600).
+- Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
+
+Details: [docs/security.md](docs/security.md).
 
 ## Repo layout
 
-`stack` (CLI) · `setup.sh` · `bin/claude-bedrock` · `compose.yaml` · `caddy/Caddyfile` (reverse proxy; no
-secrets) · `portal/` (Python login + Home service; its pytest suite runs in the Docker `test` stage:
-`docker build --target test portal`) · `catalog/models.tsv`, `catalog/prices.tsv`, `catalog/display.tsv`,
-`catalog/icons/` · `lib/*.sh` (bash 3.2-compatible; `lib/owui.sh` = Open WebUI setup and the LiteLLM admin) ·
-`shared-mcp/` (Python MCP server, with its own pytest suite) · `owui/functions/` (the Open WebUI cost filter;
-tests: `docker run --rm -v "$PWD/owui:/w" -w /w python:3.12-slim sh -c 'pip install -q pytest pydantic && python -m pytest -q tests'`) ·
-`tests/run.sh` (shell tests).
+```
+stack, setup.sh, install.sh   the CLI, setup and the one-line installer
+bin/claude-bedrock            Claude Code wrapper
+compose.yaml                  all services (images pinned)
+caddy/Caddyfile               the reverse proxy (no secrets)
+portal/                       login + Home service (Python; tests: docker build --target test portal)
+shared-mcp/                   MCP server for shared files and knowledge (Python; tests: docker build --target test shared-mcp)
+owui/functions/               the Open WebUI cost filter (tests in owui/tests)
+catalog/                      models, prices, display names, icons, AWS price map
+lib/*.sh                      the shell code (bash 3.2-compatible)
+tests/run.sh                  shell tests
+docs/                         longer reference pages
+```
 
 ## License
 

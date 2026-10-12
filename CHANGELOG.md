@@ -6,6 +6,24 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-12
+
+One portal with one login for everything, and cost you can see everywhere. Highlights:
+
+- **Portal + single login:** Home (health, spend and budgets, model access, prices) with Chat (Open WebUI),
+  Admin (LiteLLM) and Files (RustFS) tabs behind one password, served by Caddy at
+  `http://bedrock-now.localhost`. Open WebUI and the RustFS console no longer publish their own ports.
+- **Costs:** a cost line under every chat answer, the session's cost when `claude-bedrock` exits, soft budgets
+  at 80% with optional webhook alerts, a budget banner in Chat, and prices updated daily from LiteLLM's public
+  list, cross-checked with the AWS Price List.
+- **Chat experience:** friendly model names with price tiers and vendor icons, hidden helper models, sensible
+  defaults (Sonnet for chat, Haiku for titles), browser speech for voice.
+- **Optional OpenRouter** models next to Bedrock (off without a key).
+- `./stack open`, safer second copies (project ownership guard), and a rewritten README with reference pages
+  in `docs/`.
+
+Upgrading from v0.1.x: run `./stack update`, then open the portal URL it prints (README › Updating).
+
 ### Added
 
 - Optional OpenRouter provider (off without a key; README › Optional: OpenRouter). An interactive setup asks
@@ -106,6 +124,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Changed
 
+- README restructured for newcomers (Quickstart, Using it, Costs & budgets, Models & access, what leaves
+  your machine, a commands table); long reference material moved to `docs/prices.md`, `docs/openrouter.md`,
+  `docs/advanced.md` and `docs/security.md`.
 - **Open WebUI and the RustFS console no longer publish ports.** After `./stack update` from v0.1.x, the old
   Open WebUI address (`http://127.0.0.1:8080`, or the port setup chose) stops working: use the portal URL
   that setup prints (Chat tab). Setup removes `OPENWEBUI_PORT` and `RUSTFS_CONSOLE_PORT` from `.env`. The
@@ -145,6 +166,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- `./stack up` re-syncs Bedrock model descriptions and tiers in Open WebUI when OpenRouter re-rendered
+  LiteLLM's config with prices the portal's daily job had already updated (before, only OpenRouter's labels
+  were refreshed in that case).
 - Caddy's `/data` and `/config` tmpfs are owned by its unprivileged user, so it no longer logs
   `mkdir /data/caddy: permission denied` at start. Caddy waits for a healthy portal before it starts.
 - `./stack up` rewrites `PORTAL_ORIGIN` from `PORTAL_HOST` / `PORTAL_PORT`, so editing either in `.env` keeps
@@ -259,7 +283,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.1.0
