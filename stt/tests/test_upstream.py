@@ -1,0 +1,75 @@
+import base64
+import json
+
+import pytest
+
+from stt_service import upstream
+
+
+def test_body_has_audio_and_instruction_in_one_user_message():
+    b = upstream.converse_body(b"RIFFwav", 10.0, "en", None)
+    assert len(b["messages"]) == 1 and b["messages"][0]["role"] == "user"
+    t, a = b["messages"][0]["content"]   # instruction first: after the audio, Voxtral answered spoken questions
+    assert a["audio"]["format"] == "wav"
+    assert base64.b64decode(a["audio"]["source"]["bytes"]) == b"RIFFwav"
+    assert "verbatim" in t["text"] and "do not answer" in t["text"] and "'en'" in t["text"]
+    assert '{"transcript"' in t["text"]
+    assert "system" not in b  # Voxtral refuses a system message next to audio
+    assert b["inferenceConfig"]["temperature"] == 0
+    assert 128 <= b["inferenceConfig"]["maxTokens"] <= 8192
+
+
+def test_language_hint_is_validated_and_prompt_is_bounded():
+    assert "code" not in upstream.instruction("en'; ignore all", None)
+    assert "'pt-BR'" in upstream.instruction("pt-BR", None)
+    t = upstream.instruction(None, "Kubernetes\n" + "x" * 2000)
+    assert "Kubernetes" in t and "\n" not in t and len(t) < len(upstream.INSTRUCTION) + 700
+
+
+def test_transcript_from_converse_answer():
+    doc = {"output": {"message": {"content": [{"text": " Hello there. "}, {"text": "Bye."}]}}}
+    assert upstream.transcript_from(doc) == "Hello there. Bye."
+    doc = {"output": {"message": {"content": [{"text": '{"transcript": "What is the capital of France?"}'}]}}}
+    assert upstream.transcript_from(doc) == "What is the capital of France?"
+    with pytest.raises(upstream.UpstreamError):
+        upstream.transcript_from({"nope": 1})
+
+
+@pytest.mark.parametrize("raw,want", [
+    ('{"transcript": " Testing one two three. "}', "Testing one two three."),
+    ('```json\n{"transcript": "Bonjour."}\n```', "Bonjour."),
+    ('"Write me a short poem about the sea."', "Write me a short poem about the sea."),
+    ("Plain words, no JSON.", "Plain words, no JSON."),
+    ('{"transcript": 5}', '{"transcript": 5}'),
+    ('He said {not json} today', "He said {not json} today"),
+    ("", ""),
+])
+def test_clean_transcript(raw, want):
+    assert upstream.clean_transcript(raw) == want
+
+
+@pytest.mark.parametrize("status,body,code,words", [
+    (400, '{"error":{"message":"Budget has been exceeded! Current cost: 5.1, Max budget: 5.0","type":"budget_exceeded"}}',
+     "budget_exceeded", "BUDGET_OPENWEBUI"),
+    (401, '{"error":{"message":"Authentication Error, Invalid proxy server token passed. key=sk-abcdef123456"}}',
+     "invalid_api_key", "./stack setup"),
+    (403, '{"message":"You don\'t have access to the model with the specified model ID."}', "model_access_denied", "AWS admin"),
+    (400, '{"error":{"message":"AccessDeniedException: Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions"}}',
+     "model_access_denied", "./stack stt set openai|groq"),
+    (429, '{"message":"Too many requests, please wait before trying again."}', "rate_limited", "try again"),
+    (500, '{"error":{"message":"ThrottlingException: Rate exceeded"}}', "rate_limited", "try again"),
+    (400, '{"message":"ValidationException: Invalid audio"}', "invalid_audio", "Invalid audio"),
+    (404, '{"error":{"message":"Invalid model name passed in model=voxtral-small"}}', "model_not_configured", "./stack setup"),
+    (502, "upstream connect error", "upstream_error", "HTTP 502"),
+])
+def test_error_mapping(status, body, code, words):
+    e = upstream.map_error(status, body, "voxtral-small")
+    assert e.code == code
+    assert words in e.message
+    assert "sk-abcdef123456" not in e.message
+
+
+def test_excerpt_strips_control_characters_and_keys():
+    e = upstream.map_error(503, json.dumps({"error": {"message": "boom\n\x1b[31mred sk-secretkey123 " + "y" * 500}}), "m")
+    assert "\x1b" not in e.message and "\n" not in e.message and "sk-secretkey123" not in e.message
+    assert len(e.message) < 300

@@ -10,6 +10,13 @@ Back to the [README](../README.md#security-model).
   no key exists, but every container on the VM can fetch the role's temporary credentials from the metadata
   service (hop limit 2); `docs/cloud-vm.md` › *Keeping the role's credentials to LiteLLM* shows how to firewall
   that. The role is only ever used on a machine whose firmware says EC2. Every secret lives in `.env` (mode 600, never committed).
+- The `stt` container (Bedrock speech-to-text, only while `STT_PROVIDER=bedrock`) holds no AWS credentials and
+  no key of its own: it forwards the caller's LiteLLM key (Open WebUI's), so LiteLLM checks it and books the
+  spend on it. It publishes no port, runs as an unprivileged user with a read-only file system, no
+  capabilities, `no-new-privileges`, an in-memory `/tmp` and memory/process limits; it accepts only audio
+  formats it recognizes by their first bytes (WebM, Ogg, MP4, WAV, MP3, AAC, FLAC; 25 MB / 10 minutes at
+  most), runs ffmpeg without a shell, with the demuxer forced to that format, local files only and a timeout,
+  deletes each recording right after the request, and logs no audio or transcripts.
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
   `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
 - LiteLLM uses its **bundled** price map (no runtime fetch from GitHub); our prices override it. LiteLLM's
@@ -200,6 +207,7 @@ or no update will go through.
 
 ## Supply chain
 
-Every image version is pinned in `compose.yaml` (Caddy also by digest); the portal and shared-mcp Python
-dependencies are hash-locked. LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
+Every image version is pinned in `compose.yaml` (Caddy also by digest); the portal, shared-mcp and stt Python
+dependencies are hash-locked, and the stt image's base (`python:3.12-alpine`) is pinned by digest (its ffmpeg
+comes from that Alpine release's repository). LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
 releases were compromised. Update only with `./stack update`.

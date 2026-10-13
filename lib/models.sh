@@ -153,8 +153,9 @@ render_litellm_config() {
       valid_region "$r" || die "invalid AWS region '$r' for model $name in $CATALOG (column 5; use - for the default region)"
       region_yaml="\"$r\""
     fi
+    # stt (Mistral Voxtral) is a chat model to LiteLLM: the stt container calls it through the Bedrock pass-through.
     printf '  - model_name: "%s"\n    litellm_params:\n      model: "%s"\n      aws_region_name: %s\n    model_info:\n      mode: "%s"\n' \
-      "$name" "$(printf '%s' "$model" | sed "s/{region}/$r/g")" "$region_yaml" "$mode"
+      "$name" "$(printf '%s' "$model" | sed "s/{region}/$r/g")" "$region_yaml" "$([ "$mode" = stt ] && echo chat || echo "$mode")"
     _cost_yaml "$name"
     if [ "$aliases" != "-" ] && [ -n "$aliases" ]; then
       IFS=, read -r -a alias_list <<< "$aliases"
@@ -263,7 +264,9 @@ litellm_key_status() { # litellm_key_status KEY -> HTTP status of /key/info call
 probe_litellm() { # probe_litellm MODE NAME OUTFILE -> HTTP status (spend goes to the setup key)
   local k; k="$(setup_key)"
   case "$1" in
-    chat) litellm_call "$k" POST /v1/chat/completions "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" "$3" ;;
+    # stt: Voxtral answers text too; a real 1-token request proves invoke access (a free invalid-body check
+    # says "authorized" even for a Marketplace model the account cannot use).
+    chat | stt) litellm_call "$k" POST /v1/chat/completions "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" "$3" ;;
     embedding) litellm_call "$k" POST /v1/embeddings "{\"model\":\"$2\",\"input\":\"hi\"}" "$3" ;;
     rerank) litellm_call "$k" POST /v1/rerank "{\"model\":\"$2\",\"query\":\"hi\",\"documents\":[\"hi\"]}" "$3" ;;
     *) echo 000 ;;

@@ -159,10 +159,11 @@ services:
       # AUDIO_STT_ENGINE (no per-user STT default, so turning server speech-to-text on reaches every user).
       DEFAULT_INTERFACE_SETTINGS: '{"showChangelog":false,"showUpdateToast":false,"audio":{"tts":{"engine":""}}}'
       # Speech-to-text: "web" = the browser's Web Speech API (the slim image has no local Whisper; Call is then
-      # unavailable). Opt-in "openai" (OWUI_STT_ENGINE, set by ./stack stt): OpenAI or Groq through LiteLLM's
-      # "stt" model with Open WebUI's own key, so it counts on that key's budget (lib/stt.sh).
+      # unavailable). "openai" (OWUI_STT_ENGINE, set by ./stack setup / ./stack stt) = an OpenAI-compatible server
+      # called with Open WebUI's own key, so it counts on that key's budget (lib/stt.sh): the stt container for
+      # Bedrock Voxtral (OWUI_STT_BASE_URL), else LiteLLM's "stt" model (OpenAI or Groq).
       AUDIO_STT_ENGINE: ${OWUI_STT_ENGINE:-web}
-      AUDIO_STT_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      AUDIO_STT_OPENAI_API_BASE_URL: ${OWUI_STT_BASE_URL:-http://litellm:4000/v1}
       AUDIO_STT_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
       AUDIO_STT_MODEL: stt
       AUDIO_TTS_ENGINE: ""                                   # "" = browser voices (Call reads answers with them too)
@@ -211,6 +212,28 @@ services:
       rustfs-init: { condition: service_completed_successfully }
     logging: *logging
 
+  # Bedrock speech-to-text (lib/stt.sh; only with STT_PROVIDER=bedrock: ./stack adds --profile stt). Open WebUI posts
+  # recordings here; ffmpeg converts them and Mistral Voxtral transcribes them through LiteLLM's Bedrock
+  # pass-through with the caller's own key. No AWS credentials, no key of its own, no published port.
+  stt:
+    build: { context: ./stt, target: runtime }
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/stt:local   # per project, like portal
+    profiles: ["stt"]
+    restart: unless-stopped
+    user: "10103:10103"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=160m,mode=1777"]   # uploads and ffmpeg's work files (25 MB in, ~19 MB WAV out per request)
+    mem_limit: 768m
+    pids_limit: 64
+    environment:
+      LITELLM_URL: http://litellm:4000
+      STT_BEDROCK_MODEL: ${STT_BEDROCK_MODEL:-voxtral-small}
+    depends_on:
+      litellm: { condition: service_healthy }
+    logging: *logging
+
   # Login, Home dashboard, and the auth check Caddy asks before every request (/auth/verify).
   portal:
     build: { context: ./portal, target: runtime }
@@ -248,6 +271,11 @@ services:
       CLAUDE_BEDROCK_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
       CLAUDE_BEDROCK_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
       CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
+      # Voice on Home: which speech-to-text is on (lib/stt.sh keeps these in step; no key is passed).
+      STT_ENGINE: ${OWUI_STT_ENGINE:-web}
+      STT_PROVIDER: ${STT_PROVIDER:-}
+      STT_MODEL: ${STT_MODEL:-}
+      STT_BEDROCK_MODEL: ${STT_BEDROCK_MODEL:-}
       # Optional: Home asks openrouter.ai for the key's usage/credits server-side; never sent to the browser.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # Daily price update from public price lists (no credentials); the region picks the regional AWS prices.

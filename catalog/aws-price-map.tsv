@@ -37,6 +37,10 @@ llama-3-3-70b	in	AmazonBedrock	Meta	Llama 3.3 70B	Llama3-3-70B-input-tokens
 llama-3-3-70b	out	AmazonBedrock	Meta	Llama 3.3 70B	Llama3-3-70B-output-tokens
 mistral-large-3	in	AmazonBedrock	Mistral	Mistral Large 3	Mistral-Large-3-675b-Instruct-input-tokens
 mistral-large-3	out	AmazonBedrock	Mistral	Mistral Large 3	Mistral-Large-3-675b-Instruct-output-tokens
+voxtral-small	in	AmazonBedrock	Mistral	Voxtral Small 1.0	Voxtral-Mini-24B-2507-input-tokens
+voxtral-small	out	AmazonBedrock	Mistral	Voxtral Small 1.0	Voxtral-Mini-24B-2507-output-tokens
+voxtral-mini	in	AmazonBedrock	Mistral	Voxtral Mini 1.0	Voxtral-Mini-3B-2507-input-tokens
+voxtral-mini	out	AmazonBedrock	Mistral	Voxtral Mini 1.0	Voxtral-Mini-3B-2507-output-tokens
 cohere-embed-v4	in	AmazonBedrockFoundationModels	Cohere	Embed v4	InputTokenCount
 titan-embed-v2	in	AmazonBedrock	-	TitanEmbeddingsV2-Text-input	TitanEmbeddingV2-Text-input-tokens
 cohere-rerank-3-5	per_query	AmazonBedrockFoundationModels	Cohere	Rerank 3.5	search_units

@@ -151,12 +151,11 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   banner says so (red at 100%).
 - **Knowledge:** Workspace → Knowledge to create a knowledge base and upload documents; type `#` in a chat to
   attach one.
-- **Voice:** read-aloud uses your system's voices. Unless you turn on
-  [server speech-to-text](#optional-voice-calls-speech-to-text), the microphone uses your **browser's** speech
-  recognition: Bedrock has no speech-to-text model, so this runs outside the stack, and Chrome and Edge send
-  dictated audio to Google or Microsoft (Safari can work on-device). If that's not acceptable, don't use the
-  microphone button. Voice **calls** (the sound-wave button) work only with server speech-to-text on; then
-  the microphone uses it too.
+- **Voice:** read-aloud uses your system's voices. The microphone and voice **calls** (the sound-wave button)
+  use [server speech-to-text](#voice-speech-to-text): Mistral Voxtral on Bedrock, on by default when your AWS
+  key can use it. Without server speech-to-text (`./stack stt remove`, or Voxtral not available) the microphone
+  uses your **browser's** speech recognition — Chrome and Edge send dictated audio to Google or Microsoft
+  (Safari can work on-device) — and Call is unavailable.
 
 Settings changed in Open WebUI's admin panel revert at restart by design: `.env` and setup own the
 configuration.
@@ -348,40 +347,47 @@ policy, IMDSv2 hop limit 2 (containers need it to reach the role), Docker on AL2
 request template for your AWS admin — is in [docs/cloud-vm.md](docs/cloud-vm.md). Other providers (Hetzner,
 DigitalOcean, …) work the same way with an access key.
 
-## Optional: voice calls (speech-to-text)
+## Voice: speech-to-text
 
-Open WebUI's **Call** button needs server speech-to-text, which Bedrock does not have; by default it says
-*"Call feature is not supported when using Web STT engine"*. As a documented exception to Bedrock-only, you
-can add an **OpenAI** or **Groq** key for speech-to-text; it is **off unless you do**.
+Open WebUI's microphone and **Call** button need server speech-to-text (without it Call says *"Call feature is
+not supported when using Web STT engine"*). bedrock-now uses **Mistral Voxtral on Bedrock** for it: no extra
+key, and your recorded speech stays in your AWS account. Setup turns it on by default when its model check
+finds Voxtral usable with your AWS key, and says so in one line (an interactive setup asks once: Bedrock,
+OpenAI, Groq or browser only).
 
 ```bash
-./stack stt set openai                 # or: groq; asks for the key (checked first; stored in .env)
-./stack stt set openai gpt-4o-transcribe   # another model
 ./stack stt status
-./stack stt remove                     # back to browser speech (no Call)
+./stack stt set bedrock                # Mistral Voxtral Small (default); `set bedrock mini` = cheaper, less reliable
+./stack stt set openai                 # or: groq; outside Bedrock, asks for the key (checked first; stored in .env)
+./stack stt remove                     # browser speech only (no Call); setup won't turn it back on
 ```
 
-Setup also asks once. Prices: OpenAI `gpt-4o-mini-transcribe` $0.003 per minute of audio (default),
-Groq `whisper-large-v3-turbo` $0.0007 per minute. Transcriptions go through LiteLLM with Open WebUI's key, so
-they count on the `open-webui` budget and in Home's and `./stack costs`' spend (not in Chat's per-answer
-cost line). Groq bills at least 10 s per request and a call sends each utterance separately, so Groq's bill
-can be 2–5× what LiteLLM records (still about $0.0001 per utterance); OpenAI bills the actual length. With it on, the microphone uses it too, so dictation also works in Firefox and in installed or
-home-screen web apps; answers in a call are read aloud by your browser's voices.
-**Privacy:** your recorded speech goes to OpenAI or Groq. Details, and why Bedrock's Voxtral models are not an
-option yet: [docs/voice.md](docs/voice.md).
+A small `stt` container converts the browser's recording (WebM/Opus or MP4/AAC) with ffmpeg to WAV and asks
+Voxtral for a verbatim transcript through LiteLLM with Open WebUI's own key, so it counts on the `open-webui`
+budget and in Home's and `./stack costs`' spend (not in Chat's per-answer cost line). Bedrock bills Voxtral per
+token; that works out to an **estimated ~$0.00014 per minute of audio** (~$0.008 per hour) for Voxtral Small.
+With it on, dictation also works in Firefox and in installed or home-screen web apps; answers in a call are
+read aloud by your browser's voices.
+
+The alternatives are an opt-in exception to Bedrock-only: OpenAI `gpt-4o-mini-transcribe` ($0.003 per minute)
+or Groq `whisper-large-v3-turbo` ($0.0007 per minute; Groq bills at least 10 s per request, so its bill can be
+2–5× what LiteLLM records). Your recorded speech then goes to OpenAI or Groq. Details, limits and
+troubleshooting: [docs/voice.md](docs/voice.md).
 
 ## Bedrock by default: what leaves your machine
 
-- **AWS:** model calls go to Bedrock (chat, embeddings, rerank, images) through LiteLLM; setup also checks your
-  key with AWS STS. There are no local models and no fallbacks; if no Bedrock model is enabled for a
+- **AWS:** model calls go to Bedrock (chat, embeddings, rerank, images, speech-to-text) through LiteLLM; setup
+  also checks your key with AWS STS. There are no local models and no fallbacks; if no Bedrock model is enabled for a
   capability, it is off and setup says why.
 - **OpenRouter, only if you add a key:** the `or/…` models go to OpenRouter. Without a key nothing contacts
   openrouter.ai.
-- **Browser speech, only if you use it:** the microphone and read-aloud use your browser's and system's speech
-  services (see [Chat](#chat-open-webui)).
-- **Speech-to-text, only if you add a key:** with `./stack stt set`, audio from the microphone and voice
-  calls goes to OpenAI (`api.openai.com`) or Groq (`api.groq.com`) instead of the browser's speech service.
-  Without a key nothing contacts them.
+- **Your voice:** with Bedrock speech-to-text (the default when Voxtral is usable), audio from the microphone
+  and voice calls goes only to Bedrock in your AWS account, through the local `stt` container and LiteLLM.
+  Read-aloud uses your system's voices. Without server speech-to-text, the microphone uses your browser's
+  speech service (see [Chat](#chat-open-webui)).
+- **Speech-to-text, only if you add a key:** with `./stack stt set openai|groq`, audio from the microphone and
+  voice calls goes to OpenAI (`api.openai.com`) or Groq (`api.groq.com`) instead. Without a key nothing
+  contacts them.
 - **Price lists:** the daily price update downloads LiteLLM's public price list from GitHub
   (`raw.githubusercontent.com`) and the public AWS Price List (`pricing.us-east-1.amazonaws.com`). No
   credentials are sent; `PRICE_UPDATES=false` turns it off.
@@ -418,7 +424,7 @@ option yet: [docs/voice.md](docs/voice.md).
 | `./stack serve [--background \| --stop]` | Start the stack and keep the Mac awake until Ctrl-C (prints the URLs) | none |
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
-| `./stack stt …` | Optional speech-to-text for voice calls (OpenAI or Groq): `status`, `set`, `remove` | none |
+| `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
 | `./stack help` | All of the above; `./stack <command> --help` shows one | none |
@@ -494,8 +500,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
 | "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
 | Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD`, run `./stack setup`. |
-| Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#optional-voice-calls-speech-to-text) works there. |
-| "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#optional-voice-calls-speech-to-text): `./stack stt set openai` (or `groq`). |
+| Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#voice-speech-to-text) works there: `./stack stt set bedrock`. |
+| "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#voice-speech-to-text): `./stack stt set bedrock` (no key; `./stack stt status` says why it is off), or `openai` / `groq`. |
+| "Error transcribing chunk: External: …" | The message after it says what failed (budget, model access, throttling, a too-long recording); see [docs/voice.md](docs/voice.md#troubleshooting). |
 | LiteLLM UI login fails with `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (Home shows both); the shared `admin` login is off. |
 | Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Delete the `LITELLM_DB_ADMIN_READY=true` line from `.env` and run `./stack setup`: it resets the admin's password to `LITELLM_UI_PASSWORD`. Editing `LITELLM_UI_PASSWORD` alone does nothing once the admin exists. |
 | Home warns about prices (refused change, stale, LiteLLM/AWS gap) | See [docs/prices.md](docs/prices.md#guards). After checking a refused change: `./stack prices --accept`, then `./stack up`. |

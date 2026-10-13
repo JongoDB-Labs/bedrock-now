@@ -166,6 +166,19 @@ function renderModels(models, prices) {
   renderPrices(prices);
 }
 
+// Which speech-to-text the microphone and Call use (Bedrock Voxtral: an estimated price per minute).
+function renderVoice(v) {
+  const box = $("#voice-note");
+  if (!v) { box.hidden = true; return; }
+  box.hidden = false;
+  if (!v.on) {
+    box.textContent = "Voice: browser speech recognition (Call is unavailable). ./stack stt set bedrock turns on Bedrock speech-to-text (no extra key).";
+    return;
+  }
+  const price = v.per_minute != null ? ` (~$${v.per_minute.toPrecision(2)} per minute of audio${v.estimated ? ", estimated" : ""})` : "";
+  box.textContent = `Voice: ${v.label}${price} — audio goes to ${v.where}; spend counts on the Open WebUI key. ./stack stt status for details.`;
+}
+
 const FIELD = { in: "input", out: "output", cache_read: "cache read", cache_write: "cache write", per_image: "per image", per_query: "per query" };
 
 function renderPrices(p) {
@@ -396,7 +409,7 @@ async function refresh() {
   clearTimeout(timer);
   try {
     const d = await api("/api/summary");
-    renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices);
+    renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices); renderVoice(d.voice);
     renderUpdate(d.update); lastUpdate = d.update;
     lastSummary = d;
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;

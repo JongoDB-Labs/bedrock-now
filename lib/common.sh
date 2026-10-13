@@ -203,7 +203,10 @@ dc() {
   # (./stack warns once per command when your shell's key differs: warn_shell_aws_ignored in lib/host.sh).
   local f=() o
   for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
+  # Bedrock speech-to-text: its container is in the "stt" profile (lib/stt.sh), so down/ps/logs include it too.
+  if [ "${_STT_PROFILE:-}" = 1 ] || [ "$(get_env STT_PROVIDER)" = bedrock ]; then f+=(--profile stt); fi
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
+      OWUI_STT_BASE_URL STT_BEDROCK_MODEL COMPOSE_PROFILES \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )

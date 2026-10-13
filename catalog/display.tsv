@@ -15,6 +15,8 @@ gpt-6-luna	GPT-6 Luna	openai	OpenAI
 grok-4-7	Grok 4.7	grok	xAI
 llama-3-3-70b	Llama 3.3 70B	meta-color	Meta
 mistral-large-3	Mistral Large 3	mistral-color	Mistral
+voxtral-small	Mistral Voxtral Small (speech to text)	mistral-color	Mistral
+voxtral-mini	Mistral Voxtral Mini (speech to text)	mistral-color	Mistral
 cohere-embed-v4	Cohere Embed v4	cohere-color	Cohere
 titan-embed-v2	Titan Text Embeddings v2	aws-color	Amazon
 cohere-rerank-3-5	Cohere Rerank 3.5	cohere-color	Cohere

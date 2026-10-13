@@ -34,10 +34,10 @@ _rollback_checkout() {
   else git -C "$STACK_DIR" -c advice.detachedHead=false checkout --quiet "$1"; fi
 }
 
-# _rollback_local_builds — the previous portal/shared-mcp builds (<project>/<name>:previous) become :local again
+# _rollback_local_builds — the previous portal/shared-mcp/stt builds (<project>/<name>:previous) become :local again
 _rollback_local_builds() {
   local p n; p="$(project_name)"
-  for n in portal shared-mcp; do
+  for n in portal shared-mcp stt; do
     docker image inspect "$p/$n:previous" >/dev/null 2>&1 || continue
     docker tag "$p/$n:previous" "$p/$n:local" >/dev/null 2>&1 || warn "could not restore the previous $n build — it will be rebuilt"
   done

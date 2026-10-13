@@ -7,7 +7,7 @@
 #   before.tsv    the images in use when the running update started (written before 3/4 images)
 #   previous.tsv  the images of the version before the current one: KEPT, so ./stack rollback is instant
 # After a successful update, before.tsv becomes previous.tsv and the old previous.tsv (previous-previous) is
-# removed. Locally built images (<project>/portal:local, <project>/shared-mcp:local) keep their previous build
+# removed. Locally built images (<project>/portal:local, <project>/shared-mcp:local, <project>/stt:local) keep their previous build
 # as <project>/<name>:previous.
 
 images_dir() { printf '%s/images\n' "$STATE_DIR"; }

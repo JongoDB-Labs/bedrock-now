@@ -145,7 +145,40 @@ async def services(client: httpx.AsyncClient, s: Settings) -> list[dict]:
         {"id": "rustfs", "name": "RustFS", "role": "file storage", "ok": rust[0], "detail": "ready" if rust[0] else rust[2]},
         {"id": "shared-mcp", "name": "Shared MCP", "role": "files for Claude Code", "ok": mcp[0], "detail": "ready" if mcp[0] else mcp[2]},
     ]
+    if voice_on(s) and s.stt_provider == "bedrock":
+        stt = await _health(client, f"{s.stt_url}/healthz")
+        out.append({"id": "stt", "name": "Speech-to-text", "role": "voice (Bedrock Voxtral)", "ok": stt[0],
+                    "detail": "ready" if stt[0] else stt[2]})
     return out
+
+
+# Mirrors lib/stt.sh: Voxtral's audio counts ~12.5 input tokens per second, plus ~200 output tokens per minute.
+STT_EST_IN_TOKENS_PER_MIN = 750
+STT_EST_OUT_TOKENS_PER_MIN = 200
+STT_LABELS = {"voxtral-small": "Mistral Voxtral Small", "voxtral-mini": "Mistral Voxtral Mini"}
+STT_PROVIDERS = {"openai": ("OpenAI", "api.openai.com"), "groq": ("Groq", "api.groq.com")}
+
+
+def voice_on(s: Settings) -> bool:
+    return s.stt_engine == "openai" and s.stt_provider in ("bedrock", *STT_PROVIDERS)
+
+
+def voice(s: Settings, prices: dict | None) -> dict:
+    """Which speech-to-text Open WebUI's microphone and Call use (no key is ever part of this)."""
+    if not voice_on(s):
+        return {"on": False, "provider": "browser", "label": "browser speech recognition", "per_minute": None,
+                "estimated": False, "where": "your browser"}
+    if s.stt_provider == "bedrock":
+        model = s.stt_model or "voxtral-small"
+        p = (prices or {}).get(model) or {}
+        per_min = None
+        if p.get("in") is not None and p.get("out") is not None:
+            per_min = float((STT_EST_IN_TOKENS_PER_MIN * p["in"] + STT_EST_OUT_TOKENS_PER_MIN * p["out"]) / 1_000_000)
+        return {"on": True, "provider": "bedrock", "label": f"Bedrock {STT_LABELS.get(model, model)}",
+                "per_minute": per_min, "estimated": True, "where": "your AWS account"}
+    name, host = STT_PROVIDERS[s.stt_provider]
+    return {"on": True, "provider": s.stt_provider, "label": f"{name} {s.stt_model}".strip(), "per_minute": None,
+            "estimated": False, "where": host}
 
 
 def _num(v):
@@ -211,6 +244,7 @@ async def build(client: httpx.AsyncClient, s: Settings) -> dict:
         "services": svc,
         "spend": sp,
         "models": models_with_openrouter(s),
+        "voice": voice(s, price_update.effective_prices(price_paths(s))),
         "prices": price_update.status(price_paths(s), enabled=s.price_updates),
         "claude": {"command": "claude-bedrock", "models": s.claude_models},
         "update": updates.status(update_paths(s), s.update_check),

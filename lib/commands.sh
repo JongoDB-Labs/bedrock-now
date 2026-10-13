@@ -3,6 +3,8 @@
 
 # Long-running services, in the order ./stack status lists them.
 STACK_SERVICES="caddy portal open-webui litellm rustfs shared-mcp postgres"
+# stack_services -> the stack's own services plus the optional ones .env turns on (stt: Bedrock speech-to-text)
+stack_services() { printf '%s%s\n' "$STACK_SERVICES" "$(stt_services | sed 's/^/ /')"; }
 
 cmd_help() {
   cat <<'EOF'
@@ -15,7 +17,7 @@ Usage: ./stack <command> [--yes]
   open         The installed bedrock-now app, else the portal in your browser, where
                "Install app" installs it (setup and up open it too; BEDROCK_NOW_NO_OPEN=1
                turns that off)
-  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
+  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy, stt)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
   prices       Check Bedrock prices now (public price lists; daily anyway)
@@ -40,8 +42,9 @@ Usage: ./stack <command> [--yes]
   ssh-info     How to use claude-bedrock from your phone over SSH (Tailscale name, apps, tmux)
   openrouter   Optional OpenRouter models: status | set | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
-  stt          Optional speech-to-text for voice calls (OpenAI or Groq, outside Bedrock):
-               status | set openai|groq [model] | remove   (see README)
+  stt          Speech-to-text for the microphone and voice calls: Bedrock (Mistral Voxtral, no key;
+               on by default when your AWS key can use it) or OpenAI/Groq (outside Bedrock):
+               status | set bedrock [small|mini] | set openai|groq [model] | remove   (see docs/voice.md)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   uninstall    Remove containers and ALL data volumes
@@ -176,7 +179,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local | */portal:local | */caddy-dns:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
@@ -386,6 +389,7 @@ cmd_setup() {
   setup_openrouter   # optional; lib/openrouter.sh
   setup_stt          # optional; lib/stt.sh
   setup_bringup_and_probe
+  stt_after_probe    # lib/stt.sh: Bedrock speech-to-text on by default when Voxtral is usable
   setup_keys_and_ui
   write_mcp_config
   cmd_test
@@ -477,7 +481,7 @@ setup_bringup_and_probe() {
   run_phase "LiteLLM (full catalog, for probing)" litellm dc up -d --no-deps --force-recreate --wait litellm
   # Probe and smoke-test spend is booked on its own key, so ./stack costs shows what setup itself cost.
   ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env BUDGET_SETUP)"
-  log "probing which models your AWS key can use (chat/embedding/rerank: 1-token requests, < \$0.01 total; images: free check)"
+  log "probing which models your AWS key can use (chat/embedding/rerank/speech-to-text: 1-token requests, < \$0.01 total; images: free check)"
   probe_models "$en.new" "$STACK_DIR/litellm/probe-results.tsv"
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
   mv "$en.new" "$en"
@@ -581,6 +585,7 @@ setup_keys_and_ui() {
   ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env BUDGET_CLAUDE_CODE)"
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
   setup_litellm_admin
+  stt_service_up   # lib/stt.sh: the stt container (Bedrock speech-to-text), before Open WebUI sends audio to it
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   up_portal
   portal_session_or_die
@@ -602,10 +607,13 @@ models_recheck() {
   [ -f "$ENV_FILE" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
   check_prereqs
   setup_bringup_and_probe
+  stt_after_probe   # lib/stt.sh: Voxtral may have become usable (or not)
+  stt_service_up
   run_phase "Open WebUI + shared-mcp + portal" "open-webui shared-mcp portal" dc up -d --wait open-webui shared-mcp portal
   portal_session_or_die
   sync_openwebui_models
   openrouter_sync_owui   # optional; lib/openrouter.sh
+  stt_sync_owui          # lib/stt.sh
   owui_install_cost_filter
   portal_session_end
 }
@@ -775,6 +783,8 @@ offer_symlink() {
 
 cmd_up() {
   local repriced=0 restart=0 before
+  local extra; extra="$(stt_services)"
+  local STACK_SERVICES="$STACK_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
@@ -802,6 +812,7 @@ cmd_up() {
     log "restarting LiteLLM so it uses the new prices (~30 s; requests in flight may fail)"
     run_phase "LiteLLM (new prices)" litellm dc up -d --no-deps --force-recreate --wait litellm
   fi
+  stt_before_up   # lib/stt.sh: removes a stt container left from Bedrock speech-to-text
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
   # shellcheck disable=SC2086  # word-split the service list on purpose
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
@@ -844,6 +855,8 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
 # status_table < "service<TAB>state<TAB>health<TAB>exit code" lines (dc ps -a --format) -> SERVICE STATE HEALTH URL
 status_table() {
   local ps s row state health sc hc O_RED O_GRN O_YEL O_OFF
+  local extra; extra="$(stt_services)"
+  local STACK_SERVICES="$STACK_SERVICES${extra:+ $extra}"
   out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
@@ -1097,8 +1110,8 @@ cmd_restore() {
   # .env may have changed: recreate the containers that read these keys, then start everything else.
   remote_net_preflight
   dc up -d --wait --force-recreate open-webui shared-mcp
-  # shellcheck disable=SC2086  # word-split the service list on purpose
-  dc up -d --wait $STACK_SERVICES
+  # shellcheck disable=SC2046  # word-split the service list on purpose
+  dc up -d --wait $(stack_services)
   remote_up_hook
   log "restored ${dir##*/}; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
   cmd_test

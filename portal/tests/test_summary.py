@@ -109,3 +109,49 @@ def test_null_global_spend_is_zero(settings):
             return await summary.spend(c, settings)
 
     assert anyio.run(run)["total_30d"] == 0.0
+
+
+def test_voice_off_is_browser_speech(settings):
+    v = summary.voice(settings, {})
+    assert v["on"] is False and v["provider"] == "browser"
+
+
+def test_voice_bedrock_shows_an_estimated_price_per_minute(settings):
+    from dataclasses import replace
+    from decimal import Decimal
+    s = replace(settings, stt_engine="openai", stt_provider="bedrock", stt_model="voxtral-small")
+    v = summary.voice(s, {"voxtral-small": {"in": Decimal("0.10"), "out": Decimal("0.30")}})
+    assert v["on"] and v["label"] == "Bedrock Mistral Voxtral Small" and v["estimated"]
+    assert abs(v["per_minute"] - 0.000135) < 1e-9          # 750 in + 200 out tokens per minute, like lib/stt.sh
+    assert v["where"] == "your AWS account"
+    # a configured provider whose engine is not on (e.g. Voxtral not usable) is still browser speech
+    assert summary.voice(replace(s, stt_engine="web"), {})["on"] is False
+    o = summary.voice(replace(s, stt_provider="openai", stt_model="gpt-4o-mini-transcribe"), {})
+    assert o["label"] == "OpenAI gpt-4o-mini-transcribe" and o["where"] == "api.openai.com" and o["per_minute"] is None
+
+
+@respx.mock
+def test_services_include_the_stt_container_with_bedrock(settings):
+    from dataclasses import replace
+    for url, code in (("http://litellm:4000/health/readiness", 200), ("http://open-webui:8080/health", 200),
+                      ("http://rustfs:9000/health", 200), ("http://shared-mcp:8000/healthz", 200)):
+        respx.get(url).respond(code, json={"db": "connected"})
+    respx.get("http://stt:8000/healthz").respond(200, json={"ok": True})
+    s = replace(settings, stt_engine="openai", stt_provider="bedrock")
+
+    async def run(st):
+        async with httpx.AsyncClient() as c:
+            return await summary.services(c, st)
+
+    ids = [x["id"] for x in anyio.run(run, s)]
+    assert ids[-1] == "stt"
+    assert "stt" not in [x["id"] for x in anyio.run(run, settings)]
+
+
+def test_settings_read_voice_from_env():
+    from portal.config import from_env
+    base = {"PORTAL_PASSWORD": "p", "PORTAL_SECRET": "s" * 40}
+    s = from_env({**base, "STT_ENGINE": "openai", "STT_PROVIDER": "bedrock", "STT_MODEL": "whisper-1", "STT_BEDROCK_MODEL": "voxtral-mini"})
+    assert (s.stt_engine, s.stt_provider, s.stt_model) == ("openai", "bedrock", "voxtral-mini")
+    s = from_env({**base, "STT_PROVIDER": "groq", "STT_MODEL": "whisper-large-v3"})
+    assert (s.stt_engine, s.stt_model) == ("web", "whisper-large-v3")

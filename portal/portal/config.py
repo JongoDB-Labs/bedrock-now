@@ -83,6 +83,11 @@ class Settings:
     # login page of a second copy names its own .env. Blank: the generic wording.
     env_file: str = ""
     project: str = ""
+    # Voice on Home (lib/stt.sh): Open WebUI's engine ("web" = browser speech), the provider and its model.
+    stt_engine: str = "web"
+    stt_provider: str = ""
+    stt_model: str = ""
+    stt_url: str = "http://stt:8000"
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -169,6 +174,10 @@ def from_env(env: dict | None = None) -> Settings:
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),
         project=(env.get("PORTAL_PROJECT") or "").strip(),
+        stt_engine=(env.get("STT_ENGINE") or "web").strip().lower(),
+        stt_provider=(env.get("STT_PROVIDER") or "").strip().lower(),
+        stt_model=((env.get("STT_BEDROCK_MODEL") if (env.get("STT_PROVIDER") or "").strip().lower() == "bedrock"
+                    else env.get("STT_MODEL")) or "").strip(),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

@@ -8,6 +8,28 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
+- **Bedrock speech-to-text, on by default** (Mistral Voxtral; `./stack stt set bedrock [small|mini]`). The
+  microphone and Open WebUI's voice Call now work with no third-party key, and your recorded speech stays in
+  your AWS account. A new small `stt` container (Python + ffmpeg on Alpine, pinned by digest, hash-locked
+  dependencies; compose profile `stt`, only while `STT_PROVIDER=bedrock`) takes the browser's recording
+  (WebM/Opus, MP4/AAC, Ogg, WAV, MP3, FLAC — recognized by its first bytes; 25 MB / 10 min at most), converts
+  it to 16 kHz WAV and asks Voxtral Small for a verbatim transcript through LiteLLM's Bedrock pass-through with
+  Open WebUI's own key, so the spend lands on the `open-webui` key and its budget applies. It holds no AWS
+  credentials or key of its own, publishes no port, runs read-only and unprivileged with memory/process
+  limits, keeps nothing and logs no audio or transcripts; LiteLLM and Bedrock errors (budget, model access,
+  throttling) reach Chat as clear "Error transcribing chunk: …" messages. Voxtral Small and Mini join the
+  catalog as `stt` models (checked by setup with a real 1-token request, hidden from the model picker, priced
+  per token: $0.10/$0.30 and $0.04/$0.04 per 1M); the price per minute of audio is an **estimate**
+  (~$0.00014/min for Small, from ~12.5 audio tokens per second measured on Bedrock), labelled as such in
+  `./stack stt status`, `./stack costs`, the setup summary and on Home (new *Voice* line; the `stt` container
+  also appears in Home's service list and `./stack status`). Setup turns it on when Voxtral is usable and you
+  never chose otherwise, in one line ("Voice: Bedrock speech-to-text on (…) — ./stack stt remove to use
+  browser speech"); the interactive question now offers 1) Bedrock (default) 2) OpenAI 3) Groq 4) browser
+  only, and the choice is remembered (`.state/stt-choice`; `./stack stt remove` counts as one). **Upgrading:**
+  an install that never answered the voice question (for example set up with `--yes`) gets Bedrock
+  speech-to-text at its next `./stack update`/`setup`; one that answered it (OpenAI, Groq or none) keeps its
+  answer — `./stack stt set bedrock` switches. If Voxtral stops being usable, setup turns it off with the
+  reason and turns it back on once your AWS admin enables it. See docs/voice.md.
 - **Optional speech-to-text for voice calls** (`./stack stt set openai|groq [model]`, `status`, `remove`; setup
   asks once). Open WebUI's Call button needs server speech-to-text, which Bedrock does not have; this is an
   opt-in, documented exception to Bedrock-only: your recorded speech goes to OpenAI (`gpt-4o-mini-transcribe`,
@@ -15,11 +37,11 @@ All notable changes to bedrock-now are documented here. The format follows
   `stt` with Open WebUI's own key, so it counts on the `open-webui` budget and in Home's and `./stack costs`'
   spend. The key is checked with the provider first, stored in `.env` (600) and passed to LiteLLM only; shell
   `STT_*` variables are ignored unless you opt in. With it on, the microphone uses it too (dictation then works
-  in Firefox and installed/home-screen apps); calls read answers with the browser's voices. Off (the default),
+  in Firefox and installed/home-screen apps); calls read answers with the browser's voices. Without a key,
   nothing changes. `STT_*` edited by hand in `.env` take effect at `./stack up`; restricted OpenAI keys that
   cannot list models are accepted with a note. Groq bills at least 10 s per request, so for Groq the recorded
-  spend is approximate (its bill can be 2–5× higher, still about $0.0001 per utterance). See docs/voice.md,
-  which also explains why Bedrock's Mistral Voxtral models are not an option yet.
+  spend is approximate (its bill can be 2–5× higher, still about $0.0001 per utterance). See docs/voice.md
+  (Bedrock speech-to-text, above, is now the default).
 - **Remote access over HTTPS through Tailscale** (`./stack remote status | enable tailscale | enable domain HOST
   | disable | test`; setup asks once, default: this computer only). A `tailscale/tailscale` sidecar (v1.102.5,
   pinned by digest, userspace networking, no capabilities, its login in the `tailscale-state` volume) hosts four

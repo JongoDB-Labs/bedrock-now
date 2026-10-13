@@ -9,7 +9,7 @@ catalog/aws-price-map.tsv. Output (the only files this module writes, in PRICES_
   prices.meta.json  fetched_at, source, etag, changed, held, crosscheck, aws_prices, error, ...
 
 Guards (a bad upstream file must never make prices vanish or jump):
-  - a price LiteLLM no longer lists is kept at its last value; a chat/embedding model without an input price
+  - a price LiteLLM no longer lists is kept at its last value; a chat/embedding/stt model without an input price
     counts as not listed (its whole last row is kept)
   - where AWS has the price, a new value is applied only if it is within 2% of AWS; if not, but the old value
     is, the old value is kept; where AWS has no price, a jump of more than 5x is kept out
@@ -64,7 +64,7 @@ META_JSON = "prices.meta.json"
 
 FIELDS = ("in", "out", "cache_read", "cache_write", "per_image", "per_query")
 TOKEN_FIELDS = frozenset(("in", "out", "cache_read", "cache_write"))
-NEEDS_INPUT_PRICE = frozenset(("chat", "embedding"))
+NEEDS_INPUT_PRICE = frozenset(("chat", "embedding", "stt"))
 LITELLM_KEYS = {
     "in": "input_cost_per_token",
     "out": "output_cost_per_token",
