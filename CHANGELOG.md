@@ -47,8 +47,9 @@ All notable changes to bedrock-now are documented here. The format follows
   under its own Compose project (`bne2e[-…]` only), host name and free ports (never ports 80/4000/8765), touches
   Docker only once the project is known to be its own (`tests/test_e2e_harness.sh` proves it),
   runs setup non-interactively with an AWS key taken only from `--aws-env FILE` (AWS_* lines) or the environment,
-  and checks every page, portal route, Caddy rule, shared-mcp tool, the LiteLLM endpoints the stack uses and the
-  safe `./stack` commands, in a Playwright 1.55 Chromium container pinned by digest (hash-pinned Python deps).
+  and checks every page, portal route, Caddy rule, shared-mcp tool, the LiteLLM endpoints the stack uses, Bedrock
+  speech-to-text (Call, a real transcription, the stt container's isolation, off/on again) and the safe `./stack`
+  commands, in a Playwright 1.55 Chromium container pinned by digest (hash-pinned Python deps).
   Credentials are read from the throwaway `.env` mounted read-only, never printed; logs are redacted and
   screenshots mask sign-ins. A full run costs about half a cent of Bedrock (small per-key budgets cap it; the
   run fails at $0.10), leaves `~/.local/bin/claude-bedrock` untouched (link and file checked), writes a summary table and JUnit XML, and removes only what

@@ -32,7 +32,8 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Chat: model picker | e2e `browser/chat-loads-models` | Each enabled chat model: "<Name> · $/$$/$$$", description "AWS Bedrock · $X in / $Y out per 1M tokens", PNG logo; embedding/rerank/image models hidden; default = `OWUI_DEFAULT_MODEL`. |
 | Chat: streamed answer + cost footer | e2e `browser/chat-streamed-answer` | Cheapest Haiku answers a short prompt; partial states seen while streaming (socket.io WebSocket); footer `≈ $… · N in / M out · Model · chat ≈ $…`; the task model titles the chat (title ≠ "New Chat"). |
 | Chat: file upload + RAG | e2e `browser/chat-file-upload-rag`, `browser/files-rustfs-console-pages` | A `.txt` is uploaded and processed (Open WebUI's process status "completed": embedded with Titan/Cohere via LiteLLM); Haiku answers with the codeword from it; the file is in RustFS's `openwebui` bucket (seen in the console). |
-| Chat: Call (voice) without STT | e2e `browser/chat-voice-call-without-stt` | Toast "Call feature is not supported when using Web STT engine". With `./stack stt set …`: manual (needs a microphone). |
+| Chat: Call (voice) | e2e `browser/chat-voice-call` (+ `@stt-off`, `@stt-on-again`) | With Bedrock speech-to-text (the default after setup): Call opens ("Listening…", End call) with a fake microphone and no Web-STT error. With it removed: "Call feature is not supported when using Web STT engine". |
+| Chat: Call keeps the screen awake | e2e `browser/chat-voice-call-wake-lock` (**known issue 1**) | Open WebUI may hold a screen wake lock during a Call in the Chat tab. |
 | Chat: microphone dictation | manual | Browser speech recognition (Chrome); iOS keyboard dictation tip on iPhone/iPad. |
 | Chat: web search | n/a | Off (`ENABLE_WEB_SEARCH=false`): no search toggle. |
 | Chat: image generation | manual (only when an image model is enabled) | `OWUI_ENABLE_IMAGES=true` and the image button works. |
@@ -108,7 +109,8 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `rollback` with nothing recorded | e2e `cli/rollback-nothing` | Exit 1 "nothing to roll back". |
 | `clean --dry-run` | e2e `cli/clean-dry-run`, `cli/clean-dry-run-removes-nothing` | Prints its plan (or "nothing to clean") and exits 0; the machine's image list is the same before and after. `clean` itself (which images it picks): unit (`tests/test_images.sh`). |
 | `helper status` | e2e `cli/helper-status` | "not installed", exit 0. `helper install/uninstall`: manual (launchd/systemd user unit). |
-| `stt status` | e2e `cli/stt-status` | "browser (Web Speech)". `stt set openai|groq|bedrock`, `remove`: manual (provider key). |
+| `stt status` | e2e `cli/stt-status`, `cli/stt-status-off`, `cli/stt-status-on-again` | "on — Bedrock Mistral Voxtral Small · ~$… per minute of audio, estimated" after setup; "browser (Web Speech)" after `stt remove`. |
+| `stt remove`, `stt set bedrock` | e2e `cli/stt-remove`, `cli/stt-set-bedrock` + the voice checks after each | Off: browser speech, Call shows the Web-STT message; on again: Call and transcription work. `stt set openai|groq`: manual (provider key). |
 | `remote status` | e2e `cli/remote-status` | "Remote access: off" and the local URL. `remote enable/disable/test`: manual (Tailscale). |
 | `openrouter status` | e2e `cli/openrouter-status` | Off. `set/remove/refresh/list/models`: manual (OpenRouter key). |
 | `rotate-aws` | e2e `cli/rotate-aws-same-key` | Same key re-verified, LiteLLM restarted, smoke test passes. `--use-instance-role`: manual (EC2). |
@@ -149,7 +151,17 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `/v1/rerank` | e2e `litellm/embeddings-and-rerank` (when enabled) | Cohere Rerank orders documents. |
 | `/key/info` | e2e `litellm/key-info-budgets` | Alias, `max_budget` = `BUDGET_*`, soft budget 80%, 30-day duration. |
 | `/global/spend` | e2e `litellm/key-info-budgets`, `spend/spend-guard` | Master key only. |
-| `/v1/audio/transcriptions` (`stt` model) | manual (`./stack stt set …`) | — |
+| `/v1/audio/transcriptions` (`stt` model, OpenAI/Groq) | manual (`./stack stt set openai|groq`, provider key) | — |
+
+## 7b. Voice: Bedrock speech-to-text (the `stt` container)
+
+| Item | How | Expected |
+|---|---|---|
+| On by default | e2e `voice/bedrock-stt-on-after-setup`, `cli/stt-status` | Setup `--yes` turns Bedrock speech-to-text on when the Voxtral check passed (`STT_PROVIDER=bedrock`, Open WebUI engine `openai` via `caddy:8090`). |
+| Home voice line | e2e `browser/home-voice-line` (+ `@stt-off`, `@stt-on-again`) | "Voice: Bedrock Mistral Voxtral Small (~$… per minute of audio, estimated) — audio goes to your AWS account …"; off: "Voice: browser speech recognition (Call is unavailable) …". The stt container is a 6th service on Home and in `/api/summary`. |
+| Transcription | e2e `browser/stt-transcription` (+ `@stt-on-again`) | A committed spoken WebM clip (`tests/e2e/browser/fixtures/speech.webm`, espeak-ng: `make-speech.sh`) posted to Open WebUI's `/api/v1/audio/transcriptions` comes back as its text ("hello world, this is the … voice test"); ~$0.00005. |
+| Isolation | e2e `voice/stt-isolation` | From the stt container: LiteLLM reachable; Open WebUI, the portal, Postgres, RustFS and the internet (IP and DNS) not; Caddy `:8090` answers `/healthz` 200 and `/v1/audio/transcriptions` (405 to a GET) and 404 to anything else. From Open WebUI: `caddy:8090/healthz` 200, `stt:8000` not resolvable. (The stt container can open Caddy's main `:8080` listener, where every site still requires the portal login — noted, not a failure.) |
+| `./stack test` voice checks | e2e `cli/test` | stt `/healthz`, Open WebUI → `caddy:8090/healthz`, a 1 s tone transcribed. |
 
 ## 8. Safety of the suite itself
 
@@ -158,10 +170,10 @@ Rules marked *unit* are proven by `tests/test_e2e_harness.sh` (part of `tests/ru
 | Rule | How |
 |---|---|
 | Only project names `bne2e` / `bne2e-<suffix>` (anything else could be a real install: teardown deletes volumes by name); host `<project>.localhost`; free ports, never 80/443/3000/3009/4000/8080/8081/8090/8765/8800 | `run.sh` · unit |
-| Ownership before any Docker change: the project must be free, or every container's folder (compared with `pwd -P`, read line by line, spaces allowed) and the owner marker must be this suite's checkout — or a folder under `tests/e2e/work/` that no longer exists (a killed run). Otherwise the run stops and teardown touches nothing in Docker. | `lib.sh claim_project` · unit |
+| Ownership before any Docker change: the project must be free, or every container's folder (compared with `pwd -P`, read line by line, spaces allowed) and the owner marker must be this suite's checkout — or a folder under `tests/e2e/work/` that no longer exists (a killed run). Otherwise — or when a Docker query fails — the run stops and teardown touches nothing in Docker. | `lib.sh claim_project` · unit |
 | `--teardown` runs the same ownership check, and refuses a checkout folder without the suite's marker | `lib.sh teardown_only` · unit |
 | `--reuse` only with the marker, `.env` naming the project, the owner marker naming this checkout, and every service running and healthy | `lib.sh reuse_check` · unit |
-| Teardown: `docker compose -p <project> down -v --remove-orphans`, its owner volume, `<project>/…` images by exact name, the runner container; the checkout folder only when it carries the marker; never a prune. Runs on every exit (also Ctrl-C/TERM/HUP); a run killed with -9 is cleaned up by the next one | `lib.sh teardown` · unit |
+| Teardown: `docker compose -p <project> down -v --remove-orphans`, its owner volume, `<project>/…` images by exact name, the runner container; the checkout folder only when it carries the marker and no other project's containers were started from it; never a prune. Runs on every exit (also Ctrl-C/TERM/HUP); a run killed with -9 is cleaned up by the next one | `lib.sh teardown` · unit |
 | AWS key only from `--aws-env` (AWS_* lines; `export`, quotes and CR line ends accepted) or the environment; never printed or on a command line; every `.env` secret redacted from every log (also when the run fails); secrets and S3 signatures / token= / key= parameters redacted from network logs; screenshots mask the sign-ins and RustFS's access key | `run.sh`, `lib.sh redact`, `common.redact` · unit |
 | `./stack` runs with a clean environment (proxies kept) and no controlling terminal (`notty`), so nothing can prompt | `notty` · unit |
 | `~/.local/bin/claude-bedrock` unchanged: the link and a checksum of the file it points to | e2e `safety/claude-bedrock-link-untouched` |
@@ -172,7 +184,14 @@ Rules marked *unit* are proven by `tests/test_e2e_harness.sh` (part of `tests/ru
 ## Known issues
 
 Product bugs found by the suite are listed in `tests/e2e/known-issues.tsv` (their checks report XFAIL until fixed).
-None are open.
+
+1. **A Call in the Chat tab cannot keep the screen awake** (e2e `browser/chat-voice-call-wake-lock`, XFAIL).
+   - Reproduce: Bedrock speech-to-text on, portal → Chat → Voice mode (Call). Chromium logs
+     `Permissions policy violation: screen-wake-lock is not allowed in this document.`
+   - Cause: the portal creates the app frames with `allow: "clipboard-read; clipboard-write; microphone"`
+     (`portal/portal/static/app.js:44`), so Open WebUI's wake-lock request inside the frame is refused; a phone or
+     laptop may lock its screen during a call. The pop-out window (no frame) is not affected.
+   - Suggested fix: add `screen-wake-lock` to that allow list (and keep the test-suite check as it is).
 
 Fixed after the suite found them:
 

@@ -20,7 +20,7 @@
 #   --skip-cli-mutating   skip backup/restore, down/up, rotate-aws, update and rollback (the slow part)
 #   --deep-update    also a real update to a new (local) commit and a rollback from it (two more setups)
 #   --no-claude      skip the claude-bedrock check
-#   --only PARTS     run only these parts (comma list of cli, browser, claude, mutating; default all of them).
+#   --only PARTS     run only these parts (comma list of cli, browser, voice, claude, mutating; default all).
 #                    Setup, the spend guard and the claude-bedrock link check always run.
 #
 # Never touches the default install: only project names bne2e[-…] are accepted, and teardown touches Docker only
@@ -40,7 +40,7 @@ BUDGETS="BUDGET_CLAUDE_CODE=0.04 BUDGET_OPENWEBUI=0.04 BUDGET_SETUP=0.02"
 NOTTY="$HERE/notty"
 
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
-SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,claude,mutating"
+SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,mutating"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
     --skip-cli-mutating) SKIP_MUTATING=1; shift ;;
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
-    --only) ONLY="${2:?--only needs a list (cli,browser,claude,mutating)}"; shift 2 ;;
+    --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
   esac
@@ -65,7 +65,7 @@ done
 . "$ROOT/lib/ports.sh"   # port_in_use (lsof → ss → /dev/tcp), the same check ./stack uses
 
 for part in $(printf '%s' "$ONLY" | tr ',' ' '); do
-  case "$part" in cli | browser | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, claude, mutating)" >&2; exit 2 ;; esac
+  case "$part" in cli | browser | voice | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, voice, claude, mutating)" >&2; exit 2 ;; esac
 done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
@@ -231,7 +231,8 @@ if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
     else record cli clean-dry-run-removes-nothing FAIL 0 "images changed during clean --dry-run"; fi
   else record cli clean-dry-run SKIP 0 "no clean --dry-run on this branch"; fi
   cli helper-status 0 'Update helper: not installed' helper status
-  cli stt-status 0 'Speech-to-text: browser \(Web Speech\)' stt status
+  # setup --yes turns Bedrock speech-to-text on when Voxtral's check succeeded (the throwaway's key can use it)
+  cli stt-status 0 'Speech-to-text: on — Bedrock Mistral Voxtral Small.*estimated' stt status
   cli remote-status 0 'Remote access: off' remote status
   cli openrouter-status 0 'OpenRouter: off' openrouter status
   cli serve-stop 0 'is not running' serve --stop
@@ -257,15 +258,80 @@ if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
 fi
 
 # --- 3. the browser suite (Playwright container) ---
-if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
-  say "browser suite (Playwright container)"
-  t0="$(now)"; "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE"; rc=$?
+# browser_run LABEL [FILTER [TAG]] — the suite (or the checks matching FILTER; their results named id@TAG), then a
+# runner check: a crash, a non-zero exit or fewer results than selected checks is a FAIL
+browser_run() {
+  local label="$1" filter="${2:-}" tag="${3:-}" t0 rc got want
+  t0="$(now)"; E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
   if [ "$rc" != 0 ] || [ "$got" = 0 ] || [ "$got" != "$want" ]; then
-    record browser runner FAIL "$(( $(now) - t0 ))" "browser suite exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
-  else record browser runner PASS "$(( $(now) - t0 ))" "$got checks reported"; fi
+    record browser "runner${tag:+@$tag}" FAIL "$(( $(now) - t0 ))" "$label: exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
+  else record browser "runner${tag:+@$tag}" PASS "$(( $(now) - t0 ))" "$label: $got checks reported"; fi
+}
+if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
+  say "browser suite (Playwright container)"
+  browser_run "full suite"
+fi
+
+# --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---
+# stt_probe — inside the stt container (its own Python): what it can reach. Prints "name<TAB>result" lines.
+stt_probe() {
+  docker exec -i "$1" python3 - <<'PY'
+import http.client, socket
+def tcp(host, port):
+    try:
+        socket.create_connection((host, port), 4).close(); return "open"
+    except Exception as e:
+        return "closed (%s)" % type(e).__name__
+def get(path, host="caddy:8090"):
+    try:
+        c = http.client.HTTPConnection(host.split(":")[0], int(host.split(":")[1]), timeout=6)
+        c.request("GET", path); return str(c.getresponse().status)
+    except Exception as e:
+        return "error (%s)" % type(e).__name__
+for name, h, p in (("open-webui", "open-webui", 8080), ("portal", "portal", 8000), ("litellm", "litellm", 4000),
+                   ("internet-ip", "1.1.1.1", 443), ("internet-dns", "example.com", 443), ("postgres", "postgres", 5432),
+                   ("rustfs", "rustfs", 9000)):
+    print("%s\t%s" % (name, tcp(h, p)))
+for path in ("/healthz", "/v1/audio/transcriptions", "/v1/models", "/", "/api/v1/auths/"):
+    print("caddy8090%s\t%s" % (path, get(path)))
+PY
+}
+if ! part_on voice; then record voice voice SKIP 0 "--only $ONLY"
+elif [ "$(get_env STT_PROVIDER)" != bedrock ]; then
+  record voice bedrock-stt-on-after-setup FAIL 0 "setup did not turn Bedrock speech-to-text on (STT_PROVIDER=$(get_env STT_PROVIDER)) — see $LOGS/cli-setup.log"
+else
+  say "voice: speech-to-text isolation and off/on round trip"
+  record voice bedrock-stt-on-after-setup PASS 0 "STT_PROVIDER=bedrock, Open WebUI engine $(get_env OWUI_STT_ENGINE)"
+  t0="$(now)"
+  sttc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=stt)"
+  owc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=open-webui)"
+  if [ -z "$sttc" ] || [ -z "$owc" ]; then record voice stt-isolation FAIL 0 "no running stt / open-webui container"
+  else
+    probe="$(stt_probe "$sttc" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/voice-stt-isolation.log"
+    bad=''
+    for k in open-webui portal internet-ip internet-dns postgres rustfs; do
+      printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k:$(printf '%s\n' "$probe" | awk -F'\t' -v k="$k" '$1 == k { print $2 }')"
+    done
+    printf '%s\n' "$probe" | grep -q '^litellm	open' || bad="$bad litellm-not-reachable"
+    for kv in /healthz=200 /v1/audio/transcriptions=405 /v1/models=404 /=404 /api/v1/auths/=404; do
+      printf '%s\n' "$probe" | grep -q "^caddy8090${kv%%=*}	${kv#*=}\$" || bad="$bad caddy:8090${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="caddy8090${kv%%=*}" '$1 == k { print $2 }')"
+    done
+    # Open WebUI reaches it only through Caddy's :8090 (it is not on the stt network)
+    ow="$(docker exec "$owc" sh -c 'curl -s -m 5 -o /dev/null -w "%{http_code}" http://caddy:8090/healthz; echo " $(curl -s -m 3 -o /dev/null -w "%{http_code}" http://stt:8000/healthz || echo unreachable)"' 2>&1)"
+    case "$ow" in "200 unreachable"* | "200 000"*) ;; *) bad="$bad open-webui-path:$ow" ;; esac
+    if [ -z "$bad" ]; then
+      record voice stt-isolation PASS "$(( $(now) - t0 ))" "stt reaches only LiteLLM (+ Caddy); no Open WebUI, portal, Postgres, RustFS or internet; Caddy :8090 serves only /healthz and /v1/audio/transcriptions; Open WebUI → caddy:8090 only"
+    else record voice stt-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/voice-stt-isolation.log)"; fi
+  fi
+  cli stt-remove 0 'speech-to-text removed' stt remove
+  cli stt-status-off 0 'Speech-to-text: browser \(Web Speech\)' stt status
+  browser_run "speech-to-text off" 'browser/(home-voice-line|chat-voice-call|stt-transcription)$' stt-off
+  cli stt-set-bedrock 0 'Voxtral' stt set bedrock
+  cli stt-status-on-again 0 'Speech-to-text: on — Bedrock Mistral Voxtral Small.*estimated' stt status
+  browser_run "speech-to-text on again" 'browser/(home-voice-line|chat-voice-call|stt-transcription)$' stt-on-again
 fi
 
 # --- 4. claude-bedrock (the throwaway's wrapper, never the ~/.local/bin link) ---
@@ -335,8 +401,8 @@ else
 fi
 
 # --- 6. spend guard (this run's spend; restores put LiteLLM's spend log back, so it is summed around them) ---
-spend="$(spend_total)"
-if [ -z "$spend" ]; then record spend spend-guard FAIL 0 "LiteLLM /global/spend did not answer"
+spend="$(spend_total 2> "$LOGS/spend.err")"
+if [ -z "$spend" ]; then record spend spend-guard FAIL 0 "LiteLLM /global/spend did not answer ($(cat "$LOGS/spend.err" 2>/dev/null)) — this run's spend is unknown"
 elif spend_ok "$spend" "$SPEND_LIMIT"; then record spend spend-guard PASS 0 "Bedrock spend of this run \$$spend < \$$SPEND_LIMIT"
 else record spend spend-guard FAIL 0 "Bedrock spend of this run \$$spend >= \$$SPEND_LIMIT"; fi
 printf 'Bedrock spend of this run (LiteLLM /global/spend, summed around restores): $%s\n' "${spend:-unknown}" > "$OUT/spend.txt"

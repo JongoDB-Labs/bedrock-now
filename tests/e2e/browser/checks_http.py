@@ -162,11 +162,12 @@ def api_routes(ctx):
     r = http("GET", None, "/api/summary", API, cookie=s)
     expect(r.status == 200, f"/api/summary {r.status}")
     d = r.json()
-    for k in ("services", "spend", "models", "prices", "claude", "update", "apps", "remote", "portal"):
+    for k in ("services", "spend", "models", "prices", "claude", "update", "apps", "remote", "portal", "voice"):
         expect(k in d, f"summary lacks {k}")
     down = [x["name"] for x in d["services"] if not x["ok"]]
     expect(not down, f"services down: {down}")
-    expect(len(d["services"]) == 5, f"{len(d['services'])} services")
+    bedrock_stt = d["voice"]["on"] and d["voice"]["provider"] == "bedrock"
+    expect(len(d["services"]) == 5 + bedrock_stt, f"{len(d['services'])} services (Bedrock speech-to-text {bedrock_stt})")
     expect({k["alias"] for k in d["spend"]["keys"]} == {"claude-code", "open-webui", "setup"}, "spend keys")
     expect(all(k["error"] is None and k["max_budget"] for k in d["spend"]["keys"]), f"key errors: {d['spend']['keys']}")
     expect(d["spend"]["total_error"] is None, f"total: {d['spend']['total_error']}")
@@ -191,7 +192,7 @@ def api_routes(ctx):
     expect(r.status == 200 and st["allowed"] is True and st["remote"] is False and set(st["actions"]) == {"update", "rollback", "clean"},
            f"/api/admin/status {r.status} {st}")
     enabled = sum(1 for m in rows if m["enabled"])
-    return f"summary (5 services up, 3 keys, {enabled}/{len(rows)} models enabled, no secrets), logins, admin/status; unknown app icon 404"
+    return f"summary ({len(d['services'])} services up, 3 keys, {enabled}/{len(rows)} models enabled, no secrets), logins, admin/status; unknown app icon 404"
 
 
 @check("http", "api-admin-request-guards")

@@ -162,9 +162,13 @@ def home(ctx):
     login(page)
     page.locator("#updated", has_text="Updated").wait_for(timeout=30000)
     page.wait_for_selector("#services li")
+    summary = page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")
+    want_svc = len(summary["services"])   # 5, plus the speech-to-text container while Bedrock speech-to-text is on
+    expect(want_svc == 5 + (1 if summary["voice"]["on"] and summary["voice"]["provider"] == "bedrock" else 0),
+           f"/api/summary lists {want_svc} services")
     up = page.locator("#services li.up").count()
     total = page.locator("#services li").count()
-    expect(total == 5 and up == 5, f"services {up}/{total} up: {page.inner_text('#services')}")
+    expect(total == want_svc and up == want_svc, f"services {up}/{total} up: {page.inner_text('#services')}")
     expect(page.locator("#meters li.meter").count() == 3, "three spend meters")
     meters = page.inner_text("#meters")
     for label in ("Claude Code", "Open WebUI", "Setup"):
@@ -173,7 +177,6 @@ def home(ctx):
     expect(re.match(r"^(\$\d|<\$0\.0001)", tot), f"total {tot!r}")
     # The model table against the portal's own data (names, prices and statuses come from the catalog and the
     # model check, so nothing is hard-coded here): one row per model, every name, every price, logos.
-    summary = page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")
     want_rows = summary["models"]["rows"]
     rows = page.locator("#models tr")
     expect(rows.count() == len(want_rows), f"{rows.count()} model rows, the portal knows {len(want_rows)}")
@@ -212,7 +215,7 @@ def home(ctx):
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return (f"5/5 services, 3 meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
+    return (f"{want_svc}/{want_svc} services, 3 meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
             "4 Copy buttons")
 
 
@@ -339,7 +342,8 @@ def chat_models(ctx):
     r = owui_api(f, "/api/models")
     expect(r["status"] == 200, f"/api/models {r['status']}")
     models = {m["id"]: m for m in json.loads(r["body"])["data"]}
-    enabled = [m for m in ctx.enabled_models()]
+    rows = {m["name"]: m for m in ctx.enabled_rows()}
+    enabled = list(rows)
     default_icon = f.evaluate("""async () => { const r = await fetch('/static/favicon.png'); return (await r.arrayBuffer()).byteLength; }""")
     bad = []
     for mid in enabled:
@@ -348,8 +352,7 @@ def chat_models(ctx):
             bad.append(f"{mid} missing")
             continue
         meta = (m.get("info") or {}).get("meta") or {}
-        kind_chat = not any(k in mid for k in ("embed", "rerank", "sd3", "stable-image"))
-        if kind_chat:
+        if rows[mid].get("kind") == "chat":
             if not re.search(r" · \${1,3}$", m["name"]):
                 bad.append(f"{mid} name {m['name']!r}")
             if not re.search(r"\$[0-9.]+ in / \$[0-9.]+ out per 1M tokens", meta.get("description") or ""):
@@ -476,22 +479,6 @@ def chat_rag(ctx):
     rec.save()
     expect(not probs, f"errors: {probs}")
     return f"uploaded a .txt (processed: embedded with {ENV['OWUI_EMBED_MODEL']}), {model} answered {code}"
-
-
-@check("browser", "chat-voice-call-without-stt")
-def chat_call(ctx):
-    need("open-webui")
-    if ENV.get("OWUI_STT_ENGINE") or ENV.get("STT_PROVIDER"):
-        raise Skip("server speech-to-text is on: Call is available")
-    page, rec = ctx.page("chat-call")
-    login(page)
-    fl, f = chat_frame(page)
-    fl.locator("button[aria-label='Voice mode']").click()
-    toast = fl.locator("text=Call feature is not supported when using Web STT engine")
-    toast.first.wait_for(timeout=10000)
-    shot(page, "10-chat-call-message")
-    rec.save()
-    return "Call → 'Call feature is not supported when using Web STT engine' (README troubleshooting row)"
 
 
 # --- Admin (LiteLLM UI) ---

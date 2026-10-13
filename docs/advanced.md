@@ -235,9 +235,12 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   the throwaway `.env`, mounted read-only. Every log is redacted (all `.env` secrets → `***`, also when the run
   fails), screenshots mask the sign-ins and RustFS's access key, and network logs hold no bodies, presigned
   signatures or token/key parameters.
+- **Voice:** Bedrock speech-to-text (on by default) is checked end to end: the Call button, a committed spoken
+  clip transcribed through Open WebUI, the stt container's isolation (from inside it), and `./stack stt remove` /
+  `stt set bedrock` with the browser checks after each.
 - **Cost:** about half a cent per full run (measured: $0.005 with `--deep-update`): two short Haiku chats, one
-  file question, a few embeddings and `/v1/messages` calls, setup's probe (twice more with `--deep-update`) and one
-  `claude-bedrock -p`. The throwaway's keys get budgets of $0.04 / $0.04 / $0.02, so LiteLLM refuses anything
+  file question, a few embeddings and `/v1/messages` calls, two short transcriptions, setup's probe (twice more
+  with `--deep-update`) and one `claude-bedrock -p`. The throwaway's keys get budgets of $0.04 / $0.04 / $0.02, so LiteLLM refuses anything
   beyond, and the run fails if its own spend (summed around restores, which roll LiteLLM's spend log back) reaches
   $0.10.
 - **Output** (`--out DIR`, default `tests/e2e/out/`, gitignored, private): `results-final.tsv`, `junit.xml`,
@@ -247,7 +250,7 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   suite's marker, its project in `.env`, the owner marker naming this checkout and every service running and
   healthy), `--teardown` removes it. A run killed with `kill -9` leaves the project behind; the next run removes
   those leftovers first (only when they are the suite's own). `--only cli,mutating` (any of `cli`, `browser`,
-  `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws,
+  `voice`, `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws,
   update and rollback.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.

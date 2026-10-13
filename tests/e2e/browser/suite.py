@@ -11,6 +11,7 @@ from playwright.sync_api import sync_playwright
 import checks_api  # noqa: F401 — registers checks
 import checks_browser  # noqa: F401
 import checks_http  # noqa: F401
+import checks_voice  # noqa: F401
 from common import CHECKS, HOST, RESULTS, TARGET_IP, portal_login, run_all
 from checks_browser import Recorder
 
@@ -41,11 +42,15 @@ class Ctx:
     def reset_session(self):
         self._session = None
 
-    def enabled_models(self) -> list[str]:
+    def enabled_rows(self) -> list[dict]:
+        """The enabled models as the portal reports them ({name, kind, display, …}; kind: chat/embed/rerank/image/stt)."""
         import json
         from common import http
         r = http("GET", None, "/api/summary", {"X-Requested-With": "bedrock-now"}, cookie=self.session())
-        return [m["name"] for m in json.loads(r.body)["models"]["rows"] if m["enabled"]]
+        return [m for m in json.loads(r.body)["models"]["rows"] if m["enabled"]]
+
+    def enabled_models(self) -> list[str]:
+        return [m["name"] for m in self.enabled_rows()]
 
     def page(self, name: str, device: str = "desktop"):
         """A new browser context (no cookies) and page with a Recorder attached."""
@@ -69,7 +74,9 @@ def main() -> int:
     print(f"bedrock-now e2e: http://{HOST} via {TARGET_IP}, {len(CHECKS)} checks", flush=True)
     with sync_playwright() as p:
         # *.localhost always means loopback in Chromium: point the throwaway's names at the host instead.
-        browser = p.chromium.launch(args=[f"--host-resolver-rules=MAP {HOST} {TARGET_IP}, MAP *.{HOST} {TARGET_IP}"])
+        # A fake microphone (Chromium's test tone, no prompt) so Open WebUI's Call can start without a device.
+        browser = p.chromium.launch(args=[f"--host-resolver-rules=MAP {HOST} {TARGET_IP}, MAP *.{HOST} {TARGET_IP}",
+                                          "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
         fails = run_all(Ctx(browser))
         browser.close()
     print(f"done: {fails} failed", flush=True)

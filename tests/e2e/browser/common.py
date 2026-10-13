@@ -166,8 +166,12 @@ def check(suite: str, cid: str):
     return deco
 
 
+TAG = os.environ.get("E2E_TAG", "")   # a repeated browser run (e.g. after ./stack stt remove) names its results id@TAG
+
+
 def _record(suite: str, cid: str, status: str, secs: float, msg: str) -> None:
     msg = redact(msg).replace("\t", " ").replace("\n", " ")[:400]
+    cid = f"{cid}@{TAG}" if TAG else cid
     with RESULTS.open("a", encoding="utf-8") as f:
         f.write(f"{suite}\t{cid}\t{status}\t{int(secs)}\t{msg}\n")
     print(f"  {status:<5} {suite}/{cid}: {msg}", flush=True)

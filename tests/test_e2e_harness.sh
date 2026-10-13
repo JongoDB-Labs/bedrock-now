@@ -9,9 +9,13 @@ _fake_docker() {
   PROJECT=bne2e; OUT="$TMP/out"; LOGS="$OUT/logs"; RESULTS="$OUT/results.tsv"; mkdir -p "$LOGS"
   STACK="${STACK:-$ROOT/tests/e2e/work/bne2e}"
   FAKE_DIRS="${FAKE_DIRS:-}"; FAKE_OWNER="${FAKE_OWNER:-}"; FAKE_VOLS="${FAKE_VOLS:-}"; FAKE_PS="${FAKE_PS:-}"
+  FAKE_USERS="${FAKE_USERS:-}"; FAKE_FAIL="${FAKE_FAIL:-}"
   docker() {
     printf 'docker %s\n' "$*" >> "$TMP/docker"
+    case "$FAKE_FAIL" in ?*) case "$*" in "$FAKE_FAIL"*) return 1 ;; esac ;; esac
     case "$*" in
+      "volume ls -q") [ -z "$FAKE_OWNER" ] || echo "bne2e_bedrock-now-owner"; echo "unrelated_volume" ;;
+      "ps -a --filter label=com.docker.compose.project.working_dir="*) [ -z "$FAKE_USERS" ] || printf '%s\n' "$FAKE_USERS" ;;
       "ps -a --filter label=com.docker.compose.project=bne2e --format {{.Label \"com.docker.compose.project.working_dir\"}}")
         [ -z "$FAKE_DIRS" ] || printf '%s\n' "$FAKE_DIRS" ;;
       "volume inspect --format"*bedrock-now-owner) [ -n "$FAKE_OWNER" ] || return 1; printf '%s\n' "$FAKE_OWNER" ;;
@@ -39,6 +43,44 @@ test_e2e_foreign_project_is_refused_without_a_single_docker_change() {
   assert_contains "$out" "nothing was changed"
   assert_contains "$out" "Docker left untouched"
   assert_eq "$(_mutating_calls)" ""
+}
+
+test_e2e_docker_errors_fail_closed() {
+  FAKE_FAIL="ps -a"; _fake_docker
+  project_ownership; assert_eq "$OWN_STATE" foreign; assert_contains "$OWN_WHY" "Docker did not answer"
+  FAKE_FAIL="volume ls"; project_ownership; assert_eq "$OWN_STATE" foreign
+  FAKE_FAIL="volume inspect"; FAKE_OWNER="$STACK"; project_ownership; assert_eq "$OWN_STATE" foreign
+  assert_contains "$OWN_WHY" "owner marker"
+  if (claim_project) 2>/dev/null; then return 1; fi
+  assert_eq "$(_mutating_calls)" ""
+}
+
+test_e2e_a_marked_folder_another_project_uses_is_kept() {
+  _fake_docker; mkdir -p "$STACK"; : > "$STACK/.bedrock-now-e2e"; FAKE_DIRS="$STACK"
+  FAKE_USERS="$(printf 'bne2e\nbne2e-other')"
+  (teardown_only) 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "containers of project(s) bne2e-other were started from it"
+  [ -d "$STACK" ] || { echo "folder deleted" >&2; return 1; }
+  # and when Docker cannot say which projects use it, it is kept too
+  FAKE_USERS=''; FAKE_FAIL="ps -a --filter label=com.docker.compose.project.working_dir"
+  OWNED=1 teardown 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "Docker cannot tell"
+  [ -d "$STACK" ] || return 1
+  FAKE_FAIL=''; OWNED=1 teardown 2>/dev/null
+  [ ! -e "$STACK" ] || { echo "folder kept although only bne2e uses it" >&2; return 1; }
+}
+
+test_e2e_unanswered_spend_is_an_error_not_zero() {
+  _fake_docker
+  spend_now() { echo "${FAKE_SPEND:-}"; }
+  FAKE_SPEND=0.0010; spend_start; FAKE_SPEND=0.0030; spend_cut; FAKE_SPEND=0.0005; spend_resume   # a restore
+  FAKE_SPEND=0.0015
+  assert_eq "$(spend_total)" "0.0030"
+  FAKE_SPEND=''
+  if out="$(spend_total 2>&1)"; then echo "an unanswered reading gave $out" >&2; return 1; fi
+  assert_contains "$out" "unanswered"
+  FAKE_SPEND=''; SPEND_ERR=''; spend_start; FAKE_SPEND=0.001
+  if spend_total >/dev/null 2>&1; then return 1; fi
 }
 
 test_e2e_volumes_of_unknown_origin_are_foreign() {

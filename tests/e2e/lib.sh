@@ -95,15 +95,24 @@ redact_outputs() {
 # --- ownership: is project $PROJECT this suite's own? ---
 # project_ownership -> sets OWN_STATE (none | ours | foreign) and OWN_WHY. Ours: every container was started from
 # $STACK (or from a folder under $ROOT/tests/e2e/work/ that no longer exists — a killed earlier run), and the owner
-# marker, if any, names such a folder too. Data volumes without either record are of unknown origin: foreign.
-# Never changes anything.
+# marker, if any, names such a folder too. Data volumes without either record are of unknown origin: foreign. A
+# Docker query that fails counts as foreign too (fail closed: nothing is torn down on a guess). Never changes anything.
 project_ownership() {
-  local me work d dirs owner vols any=0
+  local me work d dirs owner='' vols marker any=0
   OWN_STATE=none; OWN_WHY=''
   me="$(real_dir "$STACK")"; work="$(real_dir "$ROOT/tests/e2e/work")"
-  dirs="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | sort -u)"
-  owner="$(docker volume inspect --format '{{index .Labels "io.bedrock-now.dir"}}' "${PROJECT}_bedrock-now-owner" 2>/dev/null || true)"
-  vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)"
+  if ! dirs="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.project.working_dir"}}')" ||
+     ! vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")" ||
+     ! marker="$(docker volume ls -q)"; then
+    OWN_STATE=foreign; OWN_WHY="Docker did not answer (docker ps / docker volume ls failed), so project $PROJECT's owner is unknown"
+    return 0
+  fi
+  marker="$(printf '%s\n' "$marker" | grep -xF "${PROJECT}_bedrock-now-owner" || true)"
+  if [ -n "$marker" ] && ! owner="$(docker volume inspect --format '{{index .Labels "io.bedrock-now.dir"}}' "${PROJECT}_bedrock-now-owner")"; then
+    OWN_STATE=foreign; OWN_WHY="cannot read the owner marker of project $PROJECT"
+    return 0
+  fi
+  dirs="$(printf '%s\n' "$dirs" | sort -u)"
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     any=1
@@ -134,8 +143,20 @@ claim_project() {
 }
 
 # teardown — only this project's own things, by exact name, and only once claim_project said it is ours
+# folder_users_other_than_project -> the Compose projects other than $PROJECT with containers started from $STACK
+# (fails when Docker does not answer)
+folder_users_other_than_project() {
+  local d out all=''
+  for d in "$STACK" "$(real_dir "$STACK")"; do
+    out="$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$d" --format '{{.Label "com.docker.compose.project"}}')" || return 1
+    all="$all
+$out"
+  done
+  printf '%s\n' "$all" | awk -v p="$PROJECT" 'NF && $0 != p && !s[$0]++ { printf "%s%s", (n++ ? " " : ""), $0 }'
+}
+
 teardown() {
-  local img id left
+  local img id left others
   if [ "$OWNED" != 1 ]; then
     warn "teardown: project $PROJECT is not known to be this suite's own — Docker left untouched"
   else
@@ -143,7 +164,7 @@ teardown() {
     docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose -p $PROJECT down failed"
     docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
-               "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local"; do
+               "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous"; do
       docker image rm "$img" >/dev/null 2>&1 || true
     done
     for id in $(docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null); do
@@ -151,8 +172,13 @@ teardown() {
     done
     docker rm -f "$PROJECT-playwright" >/dev/null 2>&1 || true
   fi
-  # Only a folder this suite created (it carries the marker) is ever deleted.
-  if [ -f "$STACK/.bedrock-now-e2e" ]; then chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK" || warn "could not delete $STACK"
+  # Only a folder this suite created (it carries the marker) is ever deleted — and not while containers of another
+  # project were started from it (or Docker cannot say).
+  if [ -f "$STACK/.bedrock-now-e2e" ] && ! others="$(folder_users_other_than_project)"; then
+    warn "not deleting $STACK: Docker cannot tell which projects use it"
+  elif [ -f "$STACK/.bedrock-now-e2e" ] && [ -n "$others" ]; then
+    warn "not deleting $STACK: containers of project(s) $others were started from it"
+  elif [ -f "$STACK/.bedrock-now-e2e" ]; then chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK" || warn "could not delete $STACK"
   elif [ -d "$STACK" ] && [ -z "$(ls -A "$STACK" 2>/dev/null)" ]; then rmdir "$STACK"
   elif [ -e "$STACK" ]; then warn "not deleting $STACK: it was not created by this suite (no .bedrock-now-e2e marker)"; fi
   [ "$OWNED" = 1 ] || return 0
@@ -213,7 +239,7 @@ perm_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 
 # --- spend: LiteLLM's /global/spend. A restore puts the spend log back to the backup's, so the run's spend is
 # summed piecewise: spend_cut before such a step, spend_resume after it. ---
-SPEND_ACC=0; SPEND_MARK=''
+SPEND_ACC=0; SPEND_MARK=''; SPEND_ERR=''
 spend_now() {
   local lp mk
   lp="$(get_env LITELLM_PORT)"
@@ -222,8 +248,14 @@ spend_now() {
   printf 'header = "Authorization: Bearer %s"\n' "$mk" | curl -sS -m 20 -K - "http://127.0.0.1:$lp/global/spend" 2>/dev/null |
     sed -n 's/.*"spend"[[:space:]]*:[[:space:]]*\([0-9.eE+-]*\).*/\1/p' | head -n 1
 }
-spend_start() { SPEND_MARK="$(spend_now)"; SPEND_MARK="${SPEND_MARK:-0}"; }
-spend_cut() { local s; s="$(spend_now)"; SPEND_ACC="$(awk -v a="$SPEND_ACC" -v s="${s:-0}" -v m="${SPEND_MARK:-0}" 'BEGIN { d = s - m; if (d < 0) d = 0; printf "%.6f", a + d }')"; }
-spend_resume() { SPEND_MARK="$(spend_now)"; SPEND_MARK="${SPEND_MARK:-0}"; }
-spend_total() { spend_cut; spend_resume; printf '%.4f\n' "$SPEND_ACC"; }
+# Every reading must answer: a missed one sets SPEND_ERR, and spend_total then prints nothing (the guard FAILs).
+_spend_read() { local s; s="$(spend_now)"; case "$s" in '' | *[!0-9.eE+-]*) return 1 ;; esac; printf '%s\n' "$s"; }
+spend_start() { SPEND_MARK="$(_spend_read)" || SPEND_ERR="${SPEND_ERR:+$SPEND_ERR, }start"; }
+spend_cut() {
+  local s
+  s="$(_spend_read)" || { SPEND_ERR="${SPEND_ERR:+$SPEND_ERR, }before a restore or at the end"; return 0; }
+  SPEND_ACC="$(awk -v a="$SPEND_ACC" -v s="$s" -v m="${SPEND_MARK:-0}" 'BEGIN { d = s - m; if (d < 0) d = 0; printf "%.6f", a + d }')"
+}
+spend_resume() { SPEND_MARK="$(_spend_read)" || SPEND_ERR="${SPEND_ERR:+$SPEND_ERR, }after a restore"; }
+spend_total() { spend_cut; [ -z "$SPEND_ERR" ] || { printf 'unanswered: %s\n' "$SPEND_ERR" >&2; return 1; }; printf '%.4f\n' "$SPEND_ACC"; }
 spend_ok() { awk -v s="${1:-0}" -v l="$2" 'BEGIN { exit !(s + 0 < l + 0) }'; }

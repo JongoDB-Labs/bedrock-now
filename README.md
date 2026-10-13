@@ -530,8 +530,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - **End-to-end suite** (opt-in, run by hand; not part of `tests/run.sh` or CI): `tests/e2e/run.sh --aws-env FILE`
   builds a throwaway copy of this checkout under its own project (`bne2e.localhost`, free ports — never your
   install's), runs setup non-interactively, drives every page in a pinned Playwright Chromium container (login,
-  Home, Chat with a streamed answer and a file question, Admin, the RustFS console's upload/download/delete,
-  phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs the safe `./stack`
+  Home, Chat with a streamed answer and a file question, voice calls and speech-to-text, Admin, the RustFS
+  console's upload/download/delete, phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs the safe `./stack`
   commands (backup/restore, down/up, update, rollback) and `claude-bedrock -p`, then removes everything it
   created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is printed);
   results as a table and JUnit XML in `tests/e2e/out/`. What is covered, and what stays manual:

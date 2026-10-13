@@ -1,2 +1,3 @@
 # Known product bugs: a check listed here that fails is reported as XFAIL (expected), not as a suite failure.
 # check-id<TAB>reason (see tests/e2e/INVENTORY.md "Known issues" for reproduction, evidence and suggested fix)
+chat-voice-call-wake-lock	Open WebUI asks for a screen wake lock during a Call, but the portal frames Chat with allow="clipboard-read; clipboard-write; microphone" only, so Chromium refuses it ("Permissions policy violation: screen-wake-lock is not allowed in this document") and a phone/laptop screen may sleep mid-call in the Chat tab. Fix: add screen-wake-lock to the iframe allow list in portal/portal/static/app.js:44.
