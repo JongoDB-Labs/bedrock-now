@@ -15,9 +15,11 @@ Back to the [README](../README.md#security-model).
   spend on it. Its only network is an **internal** Docker network (`stt`) shared with LiteLLM and Caddy: no
   internet access and no published port. Open WebUI and the portal reach it only through Caddy's internal
   `:8090` site (not published; it removes `X-Portal-*` and cookies and passes two paths), a one-way hop: the
-  stt container cannot reach Open WebUI (see the next point) or the portal. On Linux, a container on an
-  internal network can still reach the host through the network's gateway address, so services on your
-  computer that listen on `0.0.0.0` are reachable from it (Docker Desktop on macOS has no such path). It runs as an unprivileged user with
+  stt container cannot reach Open WebUI (see the next point) or the portal directly. It can reach Caddy's main
+  listener, where it is treated like a browser on this computer: every site there needs a portal session, and
+  the identity headers it might send are removed. On Linux, a container on an internal network can still reach
+  the host through the network's gateway address, so services on your computer that listen on `0.0.0.0` are
+  reachable from it (Docker Desktop on macOS has no such path). It runs as an unprivileged user with
   a read-only file system, no capabilities, `no-new-privileges`, an in-memory `/tmp` and memory/process
   limits, three requests at a time; upload limits count the bytes actually received (25 MB; other form fields
   64 KB). It accepts only audio formats it recognizes by their first bytes (WebM, Ogg, MP4, WAV, MP3, AAC,
