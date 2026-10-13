@@ -216,25 +216,38 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
 
 - **Isolation:** a `git clone` of the checkout plus your uncommitted changes, committed locally, in
   `tests/e2e/work/<project>` (`--work DIR`; keep it out of temporary folders, Docker bind-mounts files from it);
-  Compose project `bne2e` (`--project NAME`; `bedrock-now` is refused), portal `http://bne2e.localhost:<port>`,
-  free ports found with `lsof` (never 80, 443, 3000, 3009, 4000, 8080, 8081, 8090, 8765 or 8800). Setup runs with `--yes` and a clean environment; it never links `~/.local/bin/claude-bedrock`
-  (checked before and after) or installs the helper.
+  Compose project `bne2e` or `bne2e-<suffix>` (`--project`; no other name is accepted), portal
+  `http://bne2e.localhost:<port>`, free ports (never 80, 443, 3000, 3009, 4000, 8080, 8081, 8090, 8765 or 8800).
+  `./stack` runs with a clean environment (proxy settings kept) and without a terminal (`tests/e2e/notty`, so
+  nothing can stop at a prompt). Setup never links `~/.local/bin/claude-bedrock` (the link and its file are
+  checked before and after) and never installs the helper.
+- **Ownership:** nothing in Docker is touched until the project is known to be the suite's own: free, or started
+  from its checkout (or from a folder under `tests/e2e/work/` that no longer exists, i.e. a killed run). Otherwise
+  the run stops and tears nothing down; `--teardown` makes the same check. `tests/test_e2e_harness.sh` (in
+  `tests/run.sh`) proves these rules with a stubbed docker.
 - **Browser:** `mcr.microsoft.com/playwright/python:v1.55.0-noble`, pinned by digest, plus
   `tests/e2e/requirements.txt` (hash-pinned). The `*.bne2e.localhost` names point at the host
-  (`host-gateway` on Docker Desktop, the host network on Linux) with Chromium `--host-resolver-rules`.
+  (`host-gateway` on Docker Desktop; the host network on Linux, where the container runs as you) with Chromium
+  `--host-resolver-rules`. Checks that drive the Open WebUI, LiteLLM or RustFS UIs skip, saying so, when
+  compose.yaml pins another version than the one their selectors were written for.
 - **Credentials:** the AWS key is read from `--aws-env` (only `AWS_*` lines) or the environment and handed to
   `./stack setup` through its environment. The browser suite reads the portal, LiteLLM and RustFS sign-ins from
-  the throwaway `.env`, mounted read-only. Every log is redacted (all `.env` secrets → `***`), screenshots mask
-  the sign-ins, and network logs hold no bodies or presigned signatures.
-- **Cost:** two short Haiku chats, one file question, a few embeddings, setup's probe (twice more with
-  `--deep-update`) and one `claude-bedrock -p`: a few cents at most; the run fails if LiteLLM's total reaches $0.10.
-- **Output** (`--out DIR`, default `tests/e2e/out/`, gitignored): `results-final.tsv`, `junit.xml`, `logs/` (each
-  command), `browser/shots/`, `browser/net/` (requests ≥ 400, failed requests, console errors per check),
-  `spend.txt`.
-- **Iterating:** `--keep` leaves the throwaway running, `--reuse` runs again against it (no setup; refused unless
-  every service is healthy), `--teardown` removes it. A run that was killed before its teardown leaves the project
-  behind; the next run removes those leftovers first (only when they are the suite's own). `--only cli,mutating`
-  (any of `cli`, `browser`, `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips
-  backup/restore, down/up, rotate-aws, update and rollback.
+  the throwaway `.env`, mounted read-only. Every log is redacted (all `.env` secrets → `***`, also when the run
+  fails), screenshots mask the sign-ins and RustFS's access key, and network logs hold no bodies, presigned
+  signatures or token/key parameters.
+- **Cost:** about half a cent per full run (measured: $0.005 with `--deep-update`): two short Haiku chats, one
+  file question, a few embeddings and `/v1/messages` calls, setup's probe (twice more with `--deep-update`) and one
+  `claude-bedrock -p`. The throwaway's keys get budgets of $0.04 / $0.04 / $0.02, so LiteLLM refuses anything
+  beyond, and the run fails if its own spend (summed around restores, which roll LiteLLM's spend log back) reaches
+  $0.10.
+- **Output** (`--out DIR`, default `tests/e2e/out/`, gitignored, private): `results-final.tsv`, `junit.xml`,
+  `logs/` (each command), `browser/shots/`, `browser/net/` (requests ≥ 400, failed requests, console errors per
+  check), `spend.txt`.
+- **Iterating:** `--keep` leaves the throwaway running, `--reuse` runs again against it (no setup; only with the
+  suite's marker, its project in `.env`, the owner marker naming this checkout and every service running and
+  healthy), `--teardown` removes it. A run killed with `kill -9` leaves the project behind; the next run removes
+  those leftovers first (only when they are the suite's own). `--only cli,mutating` (any of `cli`, `browser`,
+  `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws,
+  update and rollback.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.

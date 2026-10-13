@@ -533,7 +533,7 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   Home, Chat with a streamed answer and a file question, Admin, the RustFS console's upload/download/delete,
   phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs the safe `./stack`
   commands (backup/restore, down/up, update, rollback) and `claude-bedrock -p`, then removes everything it
-  created. About 10-15 minutes and under a cent of Bedrock (the run fails at $0.10; the total is printed);
+  created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is printed);
   results as a table and JUnit XML in `tests/e2e/out/`. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).

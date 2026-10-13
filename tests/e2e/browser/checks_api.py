@@ -72,6 +72,7 @@ def key_info(ctx):
 
 @check("litellm", "chat-completions-and-messages")
 def completions(ctx):
+    """OpenAI-style /v1/chat/completions (Open WebUI's path) and Anthropic-style /v1/messages (claude-bedrock's)."""
     m = chat_model()
     r = lite("POST", "/v1/chat/completions", key=ENV["LITELLM_KEY_SETUP"], timeout=120,
              body={"model": m, "max_tokens": 5, "messages": [{"role": "user", "content": "Say: ok"}]})
@@ -82,7 +83,15 @@ def completions(ctx):
     r = lite("POST", "/v1/chat/completions", key=ENV["LITELLM_KEY_SETUP"], timeout=120,
              body={"model": m, "max_tokens": 5, "stream": True, "messages": [{"role": "user", "content": "Say: ok"}]})
     expect(r.status == 200 and r.text.count("data: ") >= 2 and "[DONE]" in r.text, f"streaming {r.status}")
-    return f"{m}: chat/completions + streaming (SSE chunks)"
+    h = {"Content-Type": "application/json", "Authorization": f"Bearer {ENV['LITELLM_KEY_SETUP']}", "anthropic-version": "2023-06-01"}
+    r = http("POST", None, "/v1/messages", h, json.dumps({"model": m, "max_tokens": 5, "messages": [{"role": "user", "content": "Say: ok"}]}),
+             port=LITELLM_PORT, host_header=f"127.0.0.1:{LITELLM_PORT}", timeout=120)
+    expect(r.status == 200 and r.json().get("type") == "message" and r.json().get("content"), f"/v1/messages {r.status} {r.text[:200]}")
+    r = http("POST", None, "/v1/messages", h, json.dumps({"model": m, "max_tokens": 5, "stream": True,
+                                                          "messages": [{"role": "user", "content": "Say: ok"}]}),
+             port=LITELLM_PORT, host_header=f"127.0.0.1:{LITELLM_PORT}", timeout=120)
+    expect(r.status == 200 and "event: message_stop" in r.text, f"/v1/messages streaming {r.status} {r.text[:200]}")
+    return f"{m}: chat/completions (+ SSE stream) and Anthropic /v1/messages (+ stream)"
 
 
 @check("litellm", "embeddings-and-rerank")

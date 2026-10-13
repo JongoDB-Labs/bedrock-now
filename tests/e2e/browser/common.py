@@ -35,6 +35,11 @@ PORT = int(os.environ["E2E_PORT"])
 LITELLM_PORT = int(os.environ["E2E_LITELLM_PORT"])
 MCP_PORT = int(os.environ["E2E_MCP_PORT"])
 FILTER = os.environ.get("E2E_FILTER", "")
+# The app versions the app-specific selectors were written against (compose.yaml pins them; browser.sh passes the
+# pinned tags). Checks that drive these UIs skip, saying why, on any other version instead of failing obscurely.
+TESTED_WITH = {"open-webui": "v0.12.0-slim", "litellm": "1.105.0", "rustfs": "1.0.1"}
+PINNED = {"open-webui": os.environ.get("E2E_OWUI_TAG", ""), "litellm": os.environ.get("E2E_LITELLM_TAG", ""),
+          "rustfs": os.environ.get("E2E_RUSTFS_TAG", "")}
 # Where the *.HOST names and 127.0.0.1-published ports are reachable from this container.
 TARGET_IP = socket.gethostbyname(HOST)
 # Published-only-on-127.0.0.1 ports (LiteLLM API, shared-mcp): same address as the portal from here.
@@ -42,8 +47,10 @@ API_IP = TARGET_IP
 
 SECRET_KEYS = re.compile(r"(PASSWORD|SECRET|KEY|TOKEN|SALT)")
 SECRETS = sorted({v for k, v in ENV.items() if SECRET_KEYS.search(k) and len(v) >= 8}, key=len, reverse=True)
-# S3 presigned URLs carry the access key and a signature in the query string.
+# S3 presigned URLs carry the access key and a signature in the query string; hand-off links and some APIs a token
+# or key (t=, token=, key=, …): their values never reach a log.
 _AMZ = re.compile(r"(X-Amz-(?:Credential|Signature|Security-Token)=)[^&\s\"']+", re.I)
+_QS = re.compile(r"([?&](?:t|token|access_token|id_token|key|api_key|apikey|secret|password|code|sig|signature)=)[^&#\s\"']+", re.I)
 
 
 def redact(text) -> str:
@@ -51,7 +58,7 @@ def redact(text) -> str:
     for v in SECRETS:
         if v in s:
             s = s.replace(v, "***")
-    return _AMZ.sub(r"\1***", s)
+    return _QS.sub(r"\1***", _AMZ.sub(r"\1***", s))
 
 
 def origin(sub: str | None = None) -> str:
@@ -123,9 +130,11 @@ class Skip(Exception):
     pass
 
 
-class XFail(Exception):
-    """A product bug this suite knows about (listed in known-issues.tsv): raised only for documentation; the
-    report turns a FAIL of a listed check into XFAIL, so checks simply assert the intended behaviour."""
+def need(app: str) -> None:
+    """Skip the calling check when compose.yaml pins another version of APP than the selectors were written for."""
+    if PINNED.get(app) != TESTED_WITH[app]:
+        raise Skip(f"{app} is pinned at {PINNED.get(app) or '?'}; this check's selectors were written for "
+                   f"{TESTED_WITH[app]} — update tests/e2e/browser for it")
 
 
 CHECKS: list[tuple[str, str, object]] = []
@@ -148,9 +157,9 @@ def _record(suite: str, cid: str, status: str, secs: float, msg: str) -> None:
 
 def run_all(ctx) -> int:
     fails = 0
-    for suite, cid, fn in CHECKS:
-        if FILTER and not re.search(FILTER, f"{suite}/{cid}"):
-            continue
+    selected = [c for c in CHECKS if not FILTER or re.search(FILTER, f"{c[0]}/{c[1]}")]
+    (OUT / "expected.txt").write_text(f"{len(selected)}\n", encoding="ascii")   # run.sh: every check must report
+    for suite, cid, fn in selected:
         t0 = time.time()
         try:
             msg = fn(ctx) or "ok"

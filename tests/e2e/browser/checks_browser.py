@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, origin, redact
+from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, need, origin, redact
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
@@ -81,10 +81,11 @@ class Recorder:
         return [e for e in self.events if e["t"] == "resp" and re.search(pattern, e["url"])]
 
 
-def shot(page, name: str, mask=()):
+def shot(page, name: str, mask=(), mask_locators=()):
     path = SHOTS / f"{name}.png"
     try:
-        page.screenshot(path=str(path), mask=[page.locator(m) for m in list(mask) + CRED_MASK], animations="disabled")
+        page.screenshot(path=str(path), mask=[page.locator(m) for m in list(mask) + CRED_MASK] + list(mask_locators),
+                        animations="disabled")
     except Exception:  # noqa: BLE001 — a screenshot never fails a check
         pass
     return f"shots/{name}.png"
@@ -142,7 +143,7 @@ def login_page(ctx):
 
 @check("browser", "next-redirect-after-login")
 def next_redirect(ctx):
-    page, rec = ctx.page("next-redirect", fresh=True)
+    page, rec = ctx.page("next-redirect")
     page.goto(origin("chat") + "/")          # not signed in: Caddy → portal login with next=chat…
     page.wait_for_url(re.compile(r"/login\?next="))
     expect("next=http%3A%2F%2Fchat." in page.url, f"login URL {page.url}")
@@ -170,29 +171,49 @@ def home(ctx):
         expect(label.lower() in meters.lower(), f"meter {label} missing: {meters[:200]}")
     tot = page.inner_text("#total")
     expect(re.match(r"^(\$\d|<\$0\.0001)", tot), f"total {tot!r}")
+    # The model table against the portal's own data (names, prices and statuses come from the catalog and the
+    # model check, so nothing is hard-coded here): one row per model, every name, every price, logos.
+    summary = page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")
+    want_rows = summary["models"]["rows"]
     rows = page.locator("#models tr")
-    expect(rows.count() >= 5, f"{rows.count()} model rows")
+    expect(rows.count() == len(want_rows), f"{rows.count()} model rows, the portal knows {len(want_rows)}")
     text = page.inner_text("#models")
-    for want in ("Claude Haiku 5.5", "Claude Sonnet 5.5", "Titan Text Embeddings v2"):
-        expect(want in text, f"model table lacks {want}")
-    expect(re.search(r"\$0\.11", text), "Haiku price missing from the table")
+    missing = [m["display"] for m in want_rows if m["display"] not in text]
+    expect(not missing, f"model table lacks {missing}")
+    noprice = [m["display"] for m in want_rows if m["enabled"] and m.get("price") and m["price"] not in text]
+    expect(not noprice, f"prices missing for {noprice}")
     expect(page.locator("#models img").count() > 0, "no provider icons")
+    enabled = sum(1 for m in want_rows if m["enabled"])
+    page.click("#enabled-only")
+    page.locator("#enabled-only[aria-pressed=true]").wait_for()
+    vis = page.locator("#models tr:visible").count()
+    expect(vis == enabled, f"Enabled only shows {vis} rows, {enabled} models are enabled")
+    page.click("#enabled-only")
     creds = page.eval_on_selector_all(".cred", "els => els.map(e => e.textContent)")
     expect(creds == [ENV["LITELLM_UI_USER"], ENV["RUSTFS_ACCESS_KEY"]], "sign-ins do not show the .env users")
     expect(page.inner_text("#claude-cmd") == "claude-bedrock", "claude command")
     expect(page.locator("#update-card").is_hidden(), "update card visible without an update")
-    # Copy buttons put the secret on the clipboard (granted), never into the page text.
+    # The four Copy buttons put each sign-in on the clipboard (granted); the passwords are never in the page.
     page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
-    page.click("button.copy[data-login=files][data-field=password]")
-    page.wait_for_timeout(300)
-    clip = page.evaluate("navigator.clipboard.readText()")
-    expect(clip == ENV["RUSTFS_SECRET_KEY"], "Copy secret key did not copy RUSTFS_SECRET_KEY")
-    expect(ENV["RUSTFS_SECRET_KEY"] not in page.content(), "the secret key is in the page")
+    for login_, field, key in (("admin", "username", "LITELLM_UI_USER"), ("admin", "password", "LITELLM_UI_PASSWORD"),
+                               ("files", "username", "RUSTFS_ACCESS_KEY"), ("files", "password", "RUSTFS_SECRET_KEY")):
+        page.evaluate("navigator.clipboard.writeText('')")
+        page.click(f"button.copy[data-login={login_}][data-field={field}]")
+        clip, t0 = "", time.time()
+        while time.time() - t0 < 5 and not clip:
+            clip = page.evaluate("navigator.clipboard.readText()")
+            if not clip:
+                page.wait_for_timeout(100)
+        expect(clip == ENV[key], f"Copy {login_} {field} did not copy {key}")
+    page.evaluate("navigator.clipboard.writeText('')")
+    html = page.content()
+    expect(ENV["RUSTFS_SECRET_KEY"] not in html and ENV["LITELLM_UI_PASSWORD"] not in html, "a password is in the page")
     shot(page, "03-home")
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"5/5 services, 3 meters, total {tot}, {rows.count()} models with names/prices/icons, sign-ins + copy"
+    return (f"5/5 services, 3 meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
+            "4 Copy buttons")
 
 
 def _write_json(path: Path, data: dict):
@@ -253,9 +274,7 @@ def update_card(ctx):
         beat.unlink()
         _write_json(up, {"tag": "v0.0.1", "checked_at": now, "error": "e2e: GitHub did not answer", "error_at": now})
         page.click("#refresh")
-        page.wait_for_selector("#update-card[hidden]", state="attached", timeout=15000)
-        page.wait_for_timeout(500)
-        expect(page.locator("#update-card").is_hidden(), "card shown for an older release / an error")
+        page.locator("#update-card").wait_for(state="hidden", timeout=15000)
         states.append("hidden on error/older")
     finally:
         if beat.exists():
@@ -312,6 +331,7 @@ def owui_api(frame, path: str, method="GET", body=None):
 
 @check("browser", "chat-loads-models")
 def chat_models(ctx):
+    need("open-webui")
     page, rec = ctx.page("chat-models")
     login(page)
     fl, f = chat_frame(page)
@@ -358,6 +378,7 @@ def _last_answer(f):
 
 @check("browser", "chat-streamed-answer")
 def chat_send(ctx):
+    need("open-webui")
     model = ENV.get("CLAUDE_BEDROCK_HAIKU_MODEL") or ENV.get("OWUI_TASK_MODEL")
     if not model:
         raise Skip("no Haiku model enabled")
@@ -390,15 +411,27 @@ def chat_send(ctx):
     lens = sorted(set(f.evaluate("window.__bnLens")))
     expect(len(lens) >= 3, f"answer arrived in one piece: no streaming observed (partial lengths {lens})")
     expect(any(e["t"] == "ws" for e in rec.events), "no WebSocket (socket.io) connection")
+    # the task model (OWUI_TASK_MODEL) titles the new chat
+    cid = re.search(r"/c/([0-9a-f-]{36})", f.url)
+    expect(cid, f"no chat id in {f.url}")
+    title, t0 = "", time.time()
+    while time.time() - t0 < 45:
+        r = owui_api(f, f"/api/v1/chats/{cid.group(1)}")
+        title = json.loads(r["body"]).get("title", "") if r["status"] == 200 else ""
+        if title and title != "New Chat":
+            break
+        page.wait_for_timeout(500)
+    expect(title and title != "New Chat", f"chat not titled by the task model (title {title!r})")
     shot(page, "08-chat-answer")
     probs = rec.problems(allow=[r"No token found in localStorage"])
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"{model}: streamed in {len(lens)} growing steps, footer {m.group(0)[:70]}"
+    return f"{model}: streamed in {len(lens)} growing steps, footer {m.group(0)[:70]}, titled {title[:30]!r}"
 
 
 @check("browser", "chat-file-upload-rag")
 def chat_rag(ctx):
+    need("open-webui")
     model = ENV.get("CLAUDE_BEDROCK_HAIKU_MODEL") or ENV.get("OWUI_TASK_MODEL")
     if not ENV.get("OWUI_EMBED_MODEL") or not model:
         raise Skip("no embedding or Haiku model enabled")
@@ -410,14 +443,23 @@ def chat_rag(ctx):
            "Nothing else in this file matters.\n").encode()
     fl.locator("input[type=file]:not(#camera-input)").first.set_input_files(
         files=[{"name": "e2e-codeword.txt", "mimeType": "text/plain", "buffer": doc}])
-    # the upload is embedded (Bedrock embeddings via LiteLLM) before it can be sent
+    # the upload is stored (RustFS) and embedded (Bedrock embeddings via LiteLLM) before it can be asked about
     fl.locator("text=e2e-codeword.txt").first.wait_for(timeout=30000)
-    t0 = time.time()
-    while time.time() - t0 < 60:
-        uploads = [e for e in rec.responses(r"/api/v1/files/") if e["method"] == "POST"]
-        if uploads and f.evaluate("() => !document.querySelector('[aria-label*=\"Uploading\"], .animate-spin')"):
-            break
-        page.wait_for_timeout(500)
+    fid, status, t0 = None, "", time.time()
+    while time.time() - t0 < 90 and status != "completed":
+        if fid is None:
+            r = owui_api(f, "/api/v1/files/")
+            items = json.loads(r["body"]) if r["status"] == 200 else []
+            items = items.get("items", []) if isinstance(items, dict) else items
+            fid = next((i["id"] for i in items if (i.get("filename") or i.get("meta", {}).get("name")) == "e2e-codeword.txt"), None)
+        if fid:
+            r = owui_api(f, f"/api/v1/files/{fid}/process/status")
+            status = json.loads(r["body"]).get("status", "") if r["status"] == 200 else ""
+            expect(status != "failed", f"processing the upload failed: {r['body'][:200]}")
+        if status != "completed":
+            page.wait_for_timeout(500)
+    expect(status == "completed", f"upload not processed within 90 s (file {fid}, status {status!r})")
+    ctx.rag_file = fid
     fl.locator("#chat-input").click()
     fl.locator("#chat-input").press_sequentially("What is the secret codeword in the attached file? Reply with the codeword only.")
     fl.locator("#chat-input").press("Enter")
@@ -428,15 +470,17 @@ def chat_rag(ctx):
             break
         page.wait_for_timeout(250)
     shot(page, "09-chat-rag")
+    expect("≈" in final, f"no complete answer within 120 s ({final[:120]!r})")
     expect(code in final, f"answer {final[:160]!r} lacks {code}")
     probs = rec.problems(allow=[r"No token found in localStorage"])
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"uploaded a .txt (embedded with {ENV['OWUI_EMBED_MODEL']}), {model} answered {code}"
+    return f"uploaded a .txt (processed: embedded with {ENV['OWUI_EMBED_MODEL']}), {model} answered {code}"
 
 
 @check("browser", "chat-voice-call-without-stt")
 def chat_call(ctx):
+    need("open-webui")
     if ENV.get("OWUI_STT_ENGINE") or ENV.get("STT_PROVIDER"):
         raise Skip("server speech-to-text is on: Call is available")
     page, rec = ctx.page("chat-call")
@@ -454,6 +498,7 @@ def chat_call(ctx):
 
 @check("browser", "admin-litellm-ui")
 def admin_ui(ctx):
+    need("litellm")
     page, rec = ctx.page("admin")
     login(page)
     page.click(".tab[data-tab=admin]")
@@ -471,8 +516,13 @@ def admin_ui(ctx):
     body = f.inner_text("body")
     for alias, budget in (("claude-code", ENV["BUDGET_CLAUDE_CODE"]), ("open-webui", ENV["BUDGET_OPENWEBUI"]),
                           ("setup", ENV["BUDGET_SETUP"])):
-        expect(alias in body, f"key {alias} not listed")
-        expect(re.search(rf"of \${re.escape(budget)}\b", body), f"budget ${budget} not shown")
+        i = body.find(alias)
+        expect(i >= 0, f"key {alias} not listed")
+        m = re.search(r"of \$([0-9][0-9,]*(?:\.[0-9]+)?)", body[i:i + 400])   # "… $0.0004 of $50" in its row
+        shown = m.group(1).replace(",", "") if m else ""
+        # LiteLLM's key table shows budgets in whole dollars (the throwaway's $0.04 reads "$0"): compare at that precision
+        ok = bool(shown) and (abs(float(shown) - float(budget)) < 1e-9 if "." in shown else abs(float(shown) - float(budget)) < 1)
+        expect(ok, f"{alias}: budget shown {shown or 'nowhere'}, want {budget}")
     shot(page, "12-admin-keys")
     probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch"])
     rec.save()
@@ -483,6 +533,12 @@ def admin_ui(ctx):
 # --- Files (RustFS console) ---
 
 RUSTFS_FILE = f"e2e-probe-{int(time.time())}.txt"
+
+
+def rshot(page, scope, name: str):
+    """A screenshot of the RustFS console with its sign-in hidden: the console shows the access key (user menu) and
+    the login form holds both keys — both are masked."""
+    return shot(page, name, mask_locators=[scope.get_by_text(ENV["RUSTFS_ACCESS_KEY"]), scope.locator("input")])
 RUSTFS_BODY = b"hello from the bedrock-now e2e suite (rustfs console)"
 
 
@@ -500,13 +556,13 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
     try:
         scope.locator("text=Create Bucket").first.wait_for(timeout=30000)
     except Exception:
-        shot(page, f"{label}-login-failed")
+        rshot(page, scope, f"{label}-login-failed")
         raise AssertionError(f"[{where}] no bucket list after login (see shots/{label}-login-failed.png)")
     steps.append("login")
     expect(scope.locator("tr", has_text="openwebui").count() and scope.locator("tr", has_text="shared").count(),
            f"[{where}] buckets openwebui/shared not listed")
     steps.append("buckets")
-    shot(page, f"{label}-buckets")
+    rshot(page, scope, f"{label}-buckets")
     scope.get_by_text("shared", exact=True).first.click()
     scope.locator("text=Upload File/Folder").first.wait_for(timeout=20000)
     steps.append("open bucket")
@@ -521,7 +577,7 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
     expect(puts and puts[-1]["status"] == 200, f"[{where}] upload PUT: {puts}")
     steps.append("upload")
     page.keyboard.press("Escape")
-    shot(page, f"{label}-uploaded")
+    rshot(page, scope, f"{label}-uploaded")
     scope.get_by_label(f"Actions: {RUSTFS_FILE}").click()
     with page.expect_download(timeout=30000) as dl:
         scope.get_by_role("menuitem", name="Download").click()
@@ -549,6 +605,7 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
 
 
 def _rustfs_check(ctx, name: str, in_frame: bool):
+    need("rustfs")
     page, rec = ctx.page(name)
     login(page)
     if in_frame:
@@ -567,7 +624,7 @@ def _rustfs_check(ctx, name: str, in_frame: bool):
         steps = rustfs_flow(page, scope, rec, name, where)
     finally:
         rec.save()
-        shot(page, f"{name}-end")
+        rshot(page, scope, f"{name}-end")
     # Every request to the files host must have worked: no CORS, Host or signature errors, no 4xx/5xx.
     probs = rec.problems(host_filter="files.", allow=[
         r"401 GET .*/rustfs/admin/v3/.*",  # the console probes its session before login
@@ -595,7 +652,8 @@ RUSTFS_PAGES = ("browser", "table-catalog", "access-keys", "policies", "users", 
 @check("browser", "files-rustfs-console-pages")
 def files_pages(ctx):
     """After signing in to the console (Files tab): every page of its sidebar, and browsing the openwebui bucket
-    (the files Open WebUI stored, e.g. the RAG upload) down to an object's preview."""
+    (the files Open WebUI stored, e.g. the RAG upload) down to an object's details."""
+    need("rustfs")
     page, rec = ctx.page("files-pages")
     login(page)
     page.click(".tab[data-tab=files]")
@@ -613,24 +671,34 @@ def files_pages(ctx):
             continue
         rec.mark(f"page {name}")
         link.first.click()
-        page.wait_for_timeout(1500)
-        if len(fl.locator("#main-content").inner_text().strip()) < 20:
-            empty.append(f"{name}: empty")
+        # the page is there once the frame shows its URL and its main area has content
+        f, n, t0 = frame_of(page, "files"), 0, time.time()
+        while time.time() - t0 < 20:
+            f = frame_of(page, "files")
+            n = len(fl.locator("#main-content").inner_text().strip()) if f.url.rstrip("/").endswith("/" + name) else 0
+            if n >= 20:
+                break
+            page.wait_for_timeout(200)
+        if n < 20:
+            empty.append(f"{name}: empty or not reached")
         visited += 1
-    shot(page, "files-pages-last")
-    fl.locator(f"a[href$='/rustfs/console/browser/']").first.click()
+    rshot(page, fl, "files-pages-last")
+    fl.locator("a[href$='/rustfs/console/browser/']").first.click()
     fl.get_by_text("openwebui", exact=True).first.click()
     fl.locator("text=Upload File/Folder").first.wait_for(timeout=20000)
-    page.wait_for_timeout(1500)
     rows = fl.locator("tbody tr")
-    detail = f"openwebui bucket: {rows.count()} row(s)"
-    first = fl.locator("tbody tr button.text-primary").first
-    if first.count():
-        name = first.inner_text().strip()
-        first.click()   # a folder opens, a file previews
-        page.wait_for_timeout(2000)
-        detail += f", opened {name[:40]!r}"
-    shot(page, "files-openwebui-bucket")
+    detail = "openwebui bucket"
+    if getattr(ctx, "rag_file", None):   # the chat upload of chat-file-upload-rag is stored here
+        row = fl.locator("tbody tr", has_text="e2e-codeword.txt")
+        row.first.wait_for(timeout=20000)
+        detail += ": holds the chat upload e2e-codeword.txt"
+        row.first.locator("button.text-primary").first.click()
+        fl.locator("text=Object Details").first.wait_for(timeout=20000)
+        detail += ", object details open"
+    else:
+        rows.first.wait_for(timeout=20000)
+        detail += f": {rows.count()} row(s)"
+    rshot(page, fl, "files-openwebui-bucket")
     rec.save()
     # Rebalance / Pool Decommission ask /rustfs/admin/v3/rebalance/status, which a single-pool RustFS answers 404
     # (the pages then say "Unsupported"): upstream behaviour, not a bedrock-now problem.
@@ -669,7 +737,7 @@ def phone(ctx):
     page.locator(".health-line", has_text="services running").wait_for(timeout=30000)
     shot(page, "14-phone-home")
     page.evaluate("location.hash = '#admin'")  # a bookmarked #admin on a phone: Chat instead
-    page.wait_for_timeout(500)
+    page.locator(".tab[data-tab=chat][aria-current=page]").wait_for(timeout=10000)
     expect(page.locator("iframe[data-app=admin]").count() == 0, "Admin frame opened on a phone")
     expect(page.locator(".tab[data-tab=chat]").get_attribute("aria-current") == "page", "#admin did not fall back to Chat")
     rec.save()

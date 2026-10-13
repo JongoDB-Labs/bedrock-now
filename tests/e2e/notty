@@ -1,0 +1,29 @@
+#!/usr/bin/env perl
+# notty [--timeout SECS] CMD [ARGS...] — runs CMD in a new session, so it has no controlling terminal: nothing it
+# runs can prompt on /dev/tty, even when tests/e2e/run.sh itself runs in a terminal (./stack asks there otherwise).
+# INT/TERM/HUP are passed on to CMD's whole process group; with --timeout the group is ended after SECS seconds
+# (exit 124). Otherwise exits with CMD's status (128+N when signal N ended it). Perl: on macOS and Linux alike.
+use strict;
+use warnings;
+use POSIX ();
+
+my $timeout = 0;
+if (@ARGV >= 2 && $ARGV[0] eq '--timeout') { shift @ARGV; $timeout = shift @ARGV; }
+die "usage: notty [--timeout SECS] CMD [ARGS...]\n" unless @ARGV;
+
+my $pid = fork();
+die "notty: fork: $!\n" unless defined $pid;
+if ($pid == 0) {
+  POSIX::setsid() or die "notty: setsid: $!\n";
+  exec { $ARGV[0] } @ARGV or die "notty: cannot run $ARGV[0]: $!\n";
+}
+my $timed_out = 0;
+for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { kill $sig, -$pid; }; }
+$SIG{ALRM} = sub { $timed_out = 1; kill 'TERM', -$pid; };
+alarm $timeout if $timeout > 0;
+my $r;
+do { $r = waitpid($pid, 0); } while ($r == -1 && $!{EINTR});
+my $status = $?;
+alarm 0;
+if ($timed_out) { kill 'TERM', -$pid; exit 124; }
+exit($status & 127 ? 128 + ($status & 127) : $status >> 8);

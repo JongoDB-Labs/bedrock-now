@@ -184,12 +184,14 @@ def api_routes(ctx):
            and lg["files"]["password"] == ENV["RUSTFS_SECRET_KEY"] and lg["admin"]["password"] == ENV["LITELLM_UI_PASSWORD"],
            "/api/logins does not return the .env sign-ins")
     expect(r.header("cache-control") == "no-store", "/api/logins is cacheable")
+    r = http("GET", None, "/icons/app-bogus.png", cookie=s)   # only the listed app icons exist
+    expect(r.status == 404, f"/icons/app-bogus.png with a session: {r.status}")
     r = http("GET", None, "/api/admin/status", API, cookie=s)
     st = r.json()
     expect(r.status == 200 and st["allowed"] is True and st["remote"] is False and set(st["actions"]) == {"update", "rollback", "clean"},
            f"/api/admin/status {r.status} {st}")
     enabled = sum(1 for m in rows if m["enabled"])
-    return f"summary (5 services up, 3 keys, {enabled}/{len(rows)} models enabled, no secrets), logins, admin/status"
+    return f"summary (5 services up, 3 keys, {enabled}/{len(rows)} models enabled, no secrets), logins, admin/status; unknown app icon 404"
 
 
 @check("http", "api-admin-request-guards")

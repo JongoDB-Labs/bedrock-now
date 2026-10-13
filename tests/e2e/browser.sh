@@ -3,35 +3,41 @@
 # Called by tests/e2e/run.sh: browser.sh STACK_DIR OUT_DIR PROJECT PW_IMAGE [CHECK_FILTER]
 # The container gets the throwaway .env read-only (the suite reads its credentials from there; they are never
 # passed on a command line or printed), and the three .state folders the portal reads, for the fake update /
-# helper states. The *.PROJECT.localhost names point at the host: Linux uses the host network; Docker Desktop
-# (macOS/Windows) maps them to host-gateway, where Docker Desktop forwards to the published 127.0.0.1 ports.
+# helper states. The *.PROJECT.localhost names point at the host: Linux uses the host network (and runs the
+# container as you, so files it writes stay yours); Docker Desktop (macOS/Windows) maps them to host-gateway, where
+# it forwards to the published 127.0.0.1 ports. Exits non-zero when the suite could not run to its end.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 stack="$1"; out="$2"; project="$3"; pw_image="$4"; filter="${5:-}"
 host="$project.localhost"
 image="$project/e2e-playwright:local"
 mkdir -p "$out/browser"
-: > "$out/browser/results.tsv"
+: > "$out/browser/results.tsv"; rm -f "$out/browser/expected.txt"
 
 if ! docker build -q --build-arg PW_IMAGE="$pw_image" -t "$image" "$here" > "$out/browser/build.log" 2>&1; then
   printf 'browser\tbuild-runner\tFAIL\t0\tdocker build of the Playwright runner failed (%s)\n' "$out/browser/build.log" >> "$out/browser/results.tsv"
   exit 1
 fi
 
-get() { awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$stack/.env"; }
-net=()
+get() { K="$1" awk 'index($0, ENVIRON["K"] "=") == 1 { v = substr($0, length(ENVIRON["K"]) + 2) } END { printf "%s", v }' "$stack/.env"; }
+# image_tag NAME -> the tag compose.yaml pins for an image whose name ends in NAME (the suite's selectors were
+# written against these versions; checks that need them skip clearly on others)
+image_tag() { sed -n "s|^[[:space:]]*image:[[:space:]]*[^[:space:]]*$1:\\([^@[:space:]]*\\).*|\\1|p" "$stack/compose.yaml" | head -n 1; }
+
+opts=()
 if [ "$(uname -s)" = Linux ]; then
-  net=(--network host); target=127.0.0.1
+  opts=(--network host --user "$(id -u):$(id -g)" -e HOME=/tmp); target=127.0.0.1
 else
   target="host-gateway"
 fi
-for h in "$host" "chat.$host" "admin.$host" "files.$host"; do net+=(--add-host "$h:$target"); done
-[ "$target" = 127.0.0.1 ] || net+=(--add-host "host.docker.internal:host-gateway")
+for h in "$host" "chat.$host" "admin.$host" "files.$host"; do opts+=(--add-host "$h:$target"); done
 
 docker rm -f "$project-playwright" >/dev/null 2>&1 || true
-docker run --rm --name "$project-playwright" --init --ipc=host --shm-size=1g "${net[@]}" \
+docker run --rm --name "$project-playwright" --init --shm-size=1g "${opts[@]}" \
   -e E2E_HOST="$host" -e E2E_PORT="$(get PORTAL_PORT)" -e E2E_LITELLM_PORT="$(get LITELLM_PORT)" \
   -e E2E_MCP_PORT="$(get SHARED_MCP_PORT)" -e E2E_FILTER="$filter" -e E2E_OS="$(uname -s)" \
+  -e E2E_OWUI_TAG="$(image_tag open-webui/open-webui)" -e E2E_LITELLM_TAG="$(image_tag berriai/litellm)" \
+  -e E2E_RUSTFS_TAG="$(image_tag rustfs/rustfs)" \
   -v "$stack/.env:/run/e2e/env:ro" \
   -v "$here/browser:/suite:ro" \
   -v "$out/browser:/out" \

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Opt-in end-to-end suite (run by hand; not part of tests/run.sh or CI). Builds a THROWAWAY bedrock-now stack from
 # this checkout under its own Compose project and ports, drives every page in a pinned Playwright container, runs
-# the safe ./stack subcommands against it, then removes it again. Costs real Bedrock money (well under $0.10;
-# the total is printed and checked at the end).
+# the safe ./stack subcommands against it, then removes it again. Costs real Bedrock money: about half a cent per
+# full run (measured; every key of the throwaway has a budget of a few cents, and the run fails at $0.10).
 #
 #   tests/e2e/run.sh --aws-env FILE   AWS_* keys from FILE (only those lines are read; values are never printed)
 #   tests/e2e/run.sh                  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME from the environment
@@ -12,21 +12,22 @@
 #   --work DIR       where the throwaway checkout lives while the stack runs (default tests/e2e/work/PROJECT,
 #                    gitignored). Keep it out of temporary folders: Docker bind-mounts files from it, and a
 #                    cleaned-up /tmp would break a kept stack.
-#   --project NAME   Compose project of the throwaway (default bne2e; never "bedrock-now"); its host is NAME.localhost
+#   --project NAME   Compose project of the throwaway: bne2e (default) or bne2e-<suffix>; its host is NAME.localhost
 #   --aws-env FILE   where the AWS key comes from (copies only AWS_* lines)
 #   --keep           leave the throwaway running afterwards (tear it down later with --teardown)
 #   --reuse          reuse a throwaway kept by an earlier --keep run (skips staging and setup)
-#   --teardown       only remove a kept throwaway, then exit
+#   --teardown       only remove a kept throwaway (refused unless it is this suite's own), then exit
 #   --skip-cli-mutating   skip backup/restore, down/up, rotate-aws, update and rollback (the slow part)
 #   --deep-update    also a real update to a new (local) commit and a rollback from it (two more setups)
 #   --no-claude      skip the claude-bedrock check
 #   --only PARTS     run only these parts (comma list of cli, browser, claude, mutating; default all of them).
 #                    Setup, the spend guard and the claude-bedrock link check always run.
 #
-# Never touches the default install: refuses the project name bedrock-now, never uses ports 80/4000/8765 (or the
-# other ports listed in AVOID_PORTS), never changes ~/.local/bin/claude-bedrock (checked before and after), never
-# prunes anything (it removes only its own containers, volumes and <project>/… images, by exact name).
+# Never touches the default install: only project names bne2e[-…] are accepted, and teardown touches Docker only
+# after the project was found to be this suite's own (or free); ports 80/4000/8765 (and the others in AVOID_PORTS)
+# are never used; ~/.local/bin/claude-bedrock is checked before and after (link and file); nothing is pruned.
 set -uo pipefail
+umask 077   # logs, results and screenshots are private; the throwaway checkout itself is cloned with umask 022
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -34,6 +35,9 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 PW_IMAGE="mcr.microsoft.com/playwright/python:v1.55.0-noble@sha256:640d578aae63cfb632461d1b0aecb01414e4e020864ac3dd45a868dc0eff3078"
 AVOID_PORTS=" 80 443 3000 3009 4000 8080 8081 8090 8765 8800 "
 SPEND_LIMIT="0.10"
+# The throwaway's monthly budgets (USD): LiteLLM itself refuses requests beyond them during the run.
+BUDGETS="BUDGET_CLAUDE_CODE=0.04 BUDGET_OPENWEBUI=0.04 BUDGET_SETUP=0.02"
+NOTTY="$HERE/notty"
 
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
 SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,claude,mutating"
@@ -55,216 +59,68 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# shellcheck source=tests/e2e/lib.sh
+. "$HERE/lib.sh"
+# shellcheck source=lib/ports.sh
+. "$ROOT/lib/ports.sh"   # port_in_use (lsof → ss → /dev/tcp), the same check ./stack uses
+
 for part in $(printf '%s' "$ONLY" | tr ',' ' '); do
   case "$part" in cli | browser | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, claude, mutating)" >&2; exit 2 ;; esac
 done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
-
-case "$PROJECT" in bedrock-now | '') echo "refusing project name '$PROJECT': that is the default install" >&2; exit 2 ;; esac
-case "$PROJECT" in [a-z0-9]*) case "$PROJECT" in *[!a-z0-9-]*) echo "project: lowercase letters, digits, - only" >&2; exit 2 ;; esac ;;
-  *) echo "project must start with a lowercase letter or digit" >&2; exit 2 ;; esac
+valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
 
 mkdir -p "$OUT" || exit 2
-OUT="$(cd "$OUT" && pwd)"
+OUT="$(cd "$OUT" && pwd -P)"
 WORK="${WORK:-$ROOT/tests/e2e/work/$PROJECT}"
 mkdir -p "$(dirname "$WORK")" || exit 2
-STACK="$(cd "$(dirname "$WORK")" && pwd)/$(basename "$WORK")"   # the throwaway checkout (.env, .state/, backups/; deleted at teardown)
+STACK="$(cd "$(dirname "$WORK")" && pwd -P)/$(basename "$WORK")"   # the throwaway checkout (.env, .state/, backups/)
 LOGS="$OUT/logs"; RESULTS="$OUT/results.tsv"
 HOST="$PROJECT.localhost"
 
-say()  { printf '\033[1m==>\033[0m %s\n' "$*" >&2; }
-warn() { printf '!!  %s\n' "$*" >&2; }
-die()  { printf 'xx  %s\n' "$*" >&2; exit 1; }
+command -v docker >/dev/null || die "docker is required"
+docker info >/dev/null 2>&1 || die "the Docker daemon is not running"
 
-# --- results: one TSV line per check (suite, id, status PASS|FAIL|SKIP, seconds, message) ---
-record() { # record SUITE ID STATUS SECONDS MESSAGE
-  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$(printf '%s' "$5" | tr '\t\n' '  ' | cut -c1-400)" >> "$RESULTS"
-  case "$3" in PASS) printf '  ok    %s\n' "$2" >&2 ;; SKIP) printf '  skip  %s (%s)\n' "$2" "$5" >&2 ;;
-    *) printf '  FAIL  %s: %s\n' "$2" "$5" >&2 ;; esac
-}
+if [ "$TEARDOWN_ONLY" = 1 ]; then teardown_only; exit 0; fi
 
-# --- the throwaway's environment: nothing from this shell leaks into ./stack except what is listed here ---
-KEEP_VARS=" PATH HOME USER LOGNAME TMPDIR DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY "
-# clean_env [EXTRA...] — in a subshell: unexports every variable except KEEP_VARS and EXTRA (values stay in the
-# environment, never on a command line), then sets the throwaway's fixed ones.
-clean_env() {
-  local v keep="$KEEP_VARS $* "
-  for v in $(compgen -e); do case "$keep" in *" $v "*) ;; *) unset "$v" 2>/dev/null || true ;; esac; done
-  export SHELL=/bin/bash TERM=dumb NO_COLOR=1 BEDROCK_NOW_NO_OPEN=1 LANG=C
-}
+command -v git >/dev/null || die "git is required"
+command -v perl >/dev/null || die "perl is required (tests/e2e/notty runs ./stack without a terminal)"
+if [ -n "$AWS_ENV_FILE" ]; then
+  [ -r "$AWS_ENV_FILE" ] || die "cannot read --aws-env $AWS_ENV_FILE"
+  load_aws_file "$AWS_ENV_FILE"
+fi
+[ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] ||
+  die "no AWS key: pass --aws-env FILE or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
 
-# load_aws — AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME into this process only (never printed,
-# never on a command line): from --aws-env FILE (only AWS_* lines) or from the environment.
-AWS_OK=0
-load_aws() {
-  local k v line
-  if [ -n "$AWS_ENV_FILE" ]; then
-    [ -r "$AWS_ENV_FILE" ] || die "cannot read --aws-env $AWS_ENV_FILE"
-    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION_NAME AWS_REGION
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in AWS_ACCESS_KEY_ID=* | AWS_SECRET_ACCESS_KEY=* | AWS_REGION_NAME=* | AWS_REGION=*) ;; *) continue ;; esac
-      k="${line%%=*}"; v="${line#*=}"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-      [ -n "$v" ] || continue
-      export "$k=$v"
-    done < "$AWS_ENV_FILE"
-  fi
-  [ -n "${AWS_REGION_NAME:-}" ] || [ -z "${AWS_REGION:-}" ] || export AWS_REGION_NAME="$AWS_REGION"
-  [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] && AWS_OK=1
-  [ "$AWS_OK" = 1 ] || die "no AWS key: pass --aws-env FILE or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
-  return 0
-}
+LINK_BEFORE="$(link_state)"
+mkdir -p "$LOGS"; : > "$RESULTS"
+START_TS="$(now)"
 
-# st [--aws] ARGS... — the throwaway's ./stack with a clean environment, run in its folder (ST_CWD=DIR: from DIR
-# instead); stdin is /dev/null.
+# st [--aws] ARGS... — the throwaway's ./stack with a clean environment and no controlling terminal (notty), run in
+# its folder (ST_CWD=DIR: from DIR instead; ST_TIMEOUT=SECS: ended after SECS); stdin is /dev/null.
 st() {
   # Never let a command default to the bedrock-now project: the throwaway .env must name ours.
   [ "$(get_env COMPOSE_PROJECT_NAME)" = "$PROJECT" ] || { echo "xx  throwaway .env does not name project $PROJECT" >&2; return 99; }
+  local cwd="${ST_CWD:-$STACK}" timeout=()   # read before clean_env, which unexports them with everything else
+  [ -z "${ST_TIMEOUT:-}" ] || timeout=(--timeout "$ST_TIMEOUT")
   if [ "${1:-}" = --aws ]; then
     shift
     ( export AWS_REGION_NAME="${AWS_REGION_NAME:-us-east-1}" COMPOSE_PROJECT_NAME="$PROJECT"
       clean_env AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION_NAME COMPOSE_PROJECT_NAME
-      cd "$STACK" && exec "$STACK/stack" "$@" </dev/null )
+      cd "$cwd" && exec "$NOTTY" ${timeout[@]+"${timeout[@]}"} "$STACK/stack" "$@" </dev/null )
   else
-    # The folder is read before clean_env, which unexports ST_CWD with everything else.
-    local cwd="${ST_CWD:-$STACK}"
-    ( clean_env; cd "$cwd" && exec "$STACK/stack" "$@" </dev/null )
+    ( clean_env; cd "$cwd" && exec "$NOTTY" ${timeout[@]+"${timeout[@]}"} "$STACK/stack" "$@" </dev/null )
   fi
 }
-
-# redact FILE — replaces every secret of the throwaway .env (and the AWS key) in FILE with ***
-redact() {
-  local f="$1" t
-  [ -f "$f" ] || return 0
-  t="$(mktemp "$f.XXXXXX")" || return 0
-  AWSK="${AWS_ACCESS_KEY_ID:-}" AWSS="${AWS_SECRET_ACCESS_KEY:-}" awk '
-    BEGIN { if (length(ENVIRON["AWSK"]) >= 8) s[++n] = ENVIRON["AWSK"]; if (length(ENVIRON["AWSS"]) >= 8) s[++n] = ENVIRON["AWSS"] }
-    NR == FNR { i = index($0, "="); k = substr($0, 1, i - 1); v = substr($0, i + 1)
-                if (i > 1 && k ~ /(PASSWORD|SECRET|KEY|TOKEN|SALT)/ && length(v) >= 8) s[++n] = v; next }
-    { for (j = 1; j <= n; j++) while ((p = index($0, s[j])) > 0) $0 = substr($0, 1, p - 1) "***" substr($0, p + length(s[j])); print }
-  ' "$STACK/.env" "$f" > "$t" 2>/dev/null && mv "$t" "$f" || rm -f "$t"
-}
-
-# get_env KEY — a value from the throwaway .env (for non-secret keys only: ports, host, model names)
-get_env() { awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$STACK/.env" 2>/dev/null; }
-set_env() { # set_env KEY VALUE (non-secret values only; the throwaway .env)
-  local t; t="$(mktemp "$STACK/.env.XXXXXX")"
-  K="$1" V="$2" awk 'index($0, ENVIRON["K"] "=") == 1 { if (!d) print ENVIRON["K"] "=" ENVIRON["V"]; d = 1; next } { print }
-    END { if (!d) print ENVIRON["K"] "=" ENVIRON["V"] }' "$STACK/.env" > "$t" && chmod 600 "$t" && mv "$t" "$STACK/.env"
-}
-
-# --- teardown: only this project's own things, by exact name ---
-teardown() {
-  say "teardown: project $PROJECT"
-  docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose -p $PROJECT down failed"
-  docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
-  local img id
-  for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
-             "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local"; do
-    docker image rm "$img" >/dev/null 2>&1 || true
-  done
-  for id in $(docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null); do
-    docker image rm "$id" >/dev/null 2>&1 || true
-  done
-  docker rm -f "$PROJECT-playwright" >/dev/null 2>&1 || true
-  # Only a folder this suite created (it carries the marker) is ever deleted.
-  if [ -f "$STACK/.bedrock-now-e2e" ]; then chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK" || warn "could not delete $STACK"
-  elif [ -d "$STACK" ] && [ -z "$(ls -A "$STACK" 2>/dev/null)" ]; then rmdir "$STACK"
-  elif [ -e "$STACK" ]; then warn "not deleting $STACK: it was not created by this suite (no .bedrock-now-e2e marker)"; fi
-  local left
-  left="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT"; docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")"
-  if [ -z "$left" ] && [ ! -e "$STACK" ]; then say "teardown complete: no containers, volumes or checkout of $PROJECT left"
-  else warn "teardown left something behind: $left $( [ -e "$STACK" ] && echo "$STACK")"; fi
-}
-
-if [ "$TEARDOWN_ONLY" = 1 ]; then teardown; exit 0; fi
-
-# --- preflight ---
-command -v docker >/dev/null || die "docker is required"
-docker info >/dev/null 2>&1 || die "the Docker daemon is not running"
-command -v git >/dev/null || die "git is required"
-command -v lsof >/dev/null || die "lsof is required (free-port detection)"
-load_aws
-
-LINK="$HOME/.local/bin/claude-bedrock"
-link_state() { if [ -L "$LINK" ]; then printf 'symlink -> %s\n' "$(readlink "$LINK")"; elif [ -e "$LINK" ]; then echo "file"; else echo "absent"; fi; }
-LINK_BEFORE="$(link_state)"
-
-: > "$RESULTS"; mkdir -p "$LOGS"
-START_TS="$(date +%s)"
-# Teardown however the run ends (also Ctrl-C / a closed terminal / kill); only kill -9 skips it, and the next run
-# then removes the leftovers first (stale_check).
-if [ "$KEEP" = 0 ]; then
-  trap 'teardown' EXIT
-  trap 'warn "interrupted"; exit 130' INT TERM HUP
-fi
-
-# stale_check — the project's containers/volumes from an earlier run that never tore down (killed, or its checkout
-# deleted under it) are removed first, but only when they are this suite's own: started from $STACK, or recorded
-# for it by the owner marker, or from a folder that no longer exists. Anything else stops the run.
-stale_check() {
-  local dirs owner d
-  dirs="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u)"
-  owner="$(docker volume inspect --format '{{index .Labels "io.bedrock-now.dir"}}' "${PROJECT}_bedrock-now-owner" 2>/dev/null || true)"
-  if [ -z "$dirs$owner" ] && ! docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" | grep -q .; then return 0; fi
-  for d in $dirs $owner; do
-    [ "$d" = "$STACK" ] || [ ! -e "$d" ] || case "$d" in */tests/e2e/work/*) ;; *)
-      die "project $PROJECT belongs to $d, not to this suite — pick another --project (nothing was changed)" ;; esac
-  done
-  [ -n "$dirs$owner" ] || die "project $PROJECT has data volumes of unknown origin — pick another --project (nothing was changed)"
-  warn "project $PROJECT has leftovers of an earlier run that did not tear down ($dirs$owner) — removing them first"
-  teardown
-}
-
-port_free() { ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1 && case "$AVOID_PORTS" in *" $1 "*) return 1 ;; esac; }
-free_port() { # free_port START -> the first free port from START (skipping AVOID_PORTS and ports already chosen)
-  local p="$1"
-  while ! port_free "$p" || case " ${CHOSEN:-} " in *" $p "*) true ;; *) false ;; esac; do p=$((p + 1)); done
-  CHOSEN="${CHOSEN:-} $p"; printf '%s\n' "$p"
-}
-
-# --- 1. the throwaway checkout: HEAD plus this working tree's uncommitted changes, committed locally ---
-stage() {
-  say "staging the throwaway checkout in $STACK"
-  stale_check
-  if [ -e "$STACK" ]; then
-    [ -f "$STACK/.bedrock-now-e2e" ] || [ -z "$(ls -A "$STACK" 2>/dev/null)" ] ||
-      die "$STACK exists and was not created by this suite — pick another --work (nothing was changed)"
-    chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK"
-  fi
-  git clone --quiet --no-hardlinks "$ROOT" "$STACK" || die "git clone failed"
-  : > "$STACK/.bedrock-now-e2e"   # marks the folder as the suite's own (teardown deletes only such a folder)
-  printf '/.bedrock-now-e2e\n' >> "$STACK/.git/info/exclude"
-  ( cd "$ROOT" && git diff HEAD --binary ) | git -C "$STACK" apply --whitespace=nowarn 2>/dev/null || true
-  ( cd "$ROOT" && git ls-files --others --exclude-standard -z ) | while IFS= read -r -d '' f; do
-    case "$f" in tests/e2e/out/* | tests/e2e/work/*) continue ;; esac
-    mkdir -p "$STACK/$(dirname "$f")" && cp -p "$ROOT/$f" "$STACK/$f"
-  done
-  git -C "$STACK" add -A
-  git -C "$STACK" -c user.name=bedrock-now-e2e -c user.email=e2e@example.invalid commit -q -m "e2e: working tree" --allow-empty
-  # Seed .env: names and ports for this throwaway (setup keeps what is set). The portal password is generated
-  # here and marked as shown, so setup's summary never prints it.
-  cp "$STACK/.env.example" "$STACK/.env"; chmod 600 "$STACK/.env"
-  local pp lp mp
-  pp="$(free_port 18480)"; lp="$(free_port 14480)"; mp="$(free_port 18865)"
-  set_env COMPOSE_PROJECT_NAME "$PROJECT"; set_env PORTAL_HOST "$HOST"; set_env PORTAL_PORT "$pp"; set_env LITELLM_PORT "$lp"; set_env SHARED_MCP_PORT "$mp"
-  set_env OPENWEBUI_ADMIN_EMAIL "e2e-admin@example.com"
-  set_env PORTAL_PASSWORD "$(openssl rand -hex 10)"
-  mkdir -p "$STACK/.state" && chmod 700 "$STACK/.state" && : > "$STACK/.state/portal-password-shown"
-  say "throwaway: project $PROJECT, http://$HOST:$pp  (LiteLLM 127.0.0.1:$lp, shared-mcp 127.0.0.1:$mp)"
-}
-
-# timed ID SUITE CMD... — runs CMD (output to $LOGS/ID.log, redacted), records PASS/FAIL by exit status
-now() { date +%s; }
 
 # cli ID EXPECT_RC PATTERN [--aws] ARGS... — ./stack ARGS; PASS when the exit status is EXPECT_RC ("any" = any)
 # and the (redacted) output matches the extended regex PATTERN ("" = anything).
 cli() {
-  local id="$1" want="$2" pat="$3" t0 rc log msg
+  local id="$1" want="$2" pat="$3" t0 rc log
   shift 3
   log="$LOGS/cli-$id.log"; t0="$(now)"
   st "$@" > "$log" 2>&1; rc=$?
   redact "$log"
-  msg="exit $rc"
   if [ "$want" != any ] && [ "$rc" != "$want" ]; then
     record cli "$id" FAIL "$(( $(now) - t0 ))" "exit $rc (want $want): $(grep -E 'xx|FAIL|!!' "$log" | tail -n 2 | tr '\n' ' ')"
     return 1
@@ -273,36 +129,77 @@ cli() {
     record cli "$id" FAIL "$(( $(now) - t0 ))" "output lacks /$pat/ (exit $rc; log $log)"
     return 1
   fi
-  record cli "$id" PASS "$(( $(now) - t0 ))" "$msg"
+  record cli "$id" PASS "$(( $(now) - t0 ))" "exit $rc"
 }
 
-# follow_logs ID SERVICE — ./stack logs SVC follows forever: read 6 s of it, then stop it
+# follow_logs ID SERVICE — ./stack logs SVC follows forever: read 6 s of it (notty --timeout ends the whole group)
 follow_logs() {
-  local id="$1" svc="$2" log pid t0
+  local id="$1" svc="$2" log t0
   log="$LOGS/cli-$id.log"; t0="$(now)"
-  ( set -m; st logs "$svc" > "$log" 2>&1 & pid=$!; sleep 6; kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ) 2>/dev/null
+  ST_TIMEOUT=6 st logs "$svc" > "$log" 2>&1
   redact "$log"
   if [ -s "$log" ] && grep -q "$svc" "$log"; then record cli "$id" PASS "$(( $(now) - t0 ))" "$(wc -l < "$log" | tr -d ' ') lines"
   else record cli "$id" FAIL "$(( $(now) - t0 ))" "no log lines for $svc"; fi
 }
 
-# spend_now -> LiteLLM's 30-day spend of every key (master key via curl -K stdin, never argv)
-spend_now() {
-  local lp mk
-  lp="$(get_env LITELLM_PORT)"
-  mk="$(awk 'index($0, "LITELLM_MASTER_KEY=") == 1 { v = substr($0, 20) } END { printf "%s", v }' "$STACK/.env")"
-  printf 'header = "Authorization: Bearer %s"\n' "$mk" | curl -sS -m 20 -K - "http://127.0.0.1:$lp/global/spend" 2>/dev/null |
-    sed -n 's/.*"spend"[[:space:]]*:[[:space:]]*\([0-9.eE+-]*\).*/\1/p' | head -n 1
+# finish — whatever ends the run: logs redacted, and the throwaway removed unless --keep (Docker only once it is
+# known to be ours: claim_project / reuse_check set OWNED=1)
+finish() {
+  local rc=$?
+  trap - EXIT INT TERM HUP
+  redact_outputs
+  if [ "$KEEP" = 0 ]; then teardown; fi
+  exit "$rc"
 }
-spend_ok() { awk -v s="${1:-0}" -v l="$2" 'BEGIN { exit !(s + 0 < l + 0) }'; }
+trap finish EXIT
+trap 'warn "interrupted"; exit 130' INT TERM HUP
+
+# --- 1. the throwaway checkout: HEAD plus this working tree's uncommitted changes, committed locally ---
+stage() {
+  local f pp lp mp kv
+  say "staging the throwaway checkout in $STACK"
+  claim_project   # dies on a foreign project before anything is touched; OWNED=1 from here on
+  [ "$OWN_STATE" != ours ] || { warn "project $PROJECT: $OWN_WHY — removing those leftovers first"; teardown; }
+  if [ -e "$STACK" ]; then
+    [ -f "$STACK/.bedrock-now-e2e" ] || [ -z "$(ls -A "$STACK" 2>/dev/null)" ] ||
+      die "$STACK exists and was not created by this suite — pick another --work (nothing was changed)"
+    chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK"
+  fi
+  # A normal checkout's permissions (umask 022): containers read some of these files as other users.
+  ( umask 022; git clone --quiet --no-hardlinks "$ROOT" "$STACK" ) || die "git clone failed"
+  : > "$STACK/.bedrock-now-e2e"   # marks the folder as the suite's own (teardown deletes only such a folder)
+  printf '/.bedrock-now-e2e\n' >> "$STACK/.git/info/exclude"
+  if ! (cd "$ROOT" && git diff --quiet HEAD); then
+    ( cd "$ROOT" && git diff HEAD --binary ) | ( umask 022; git -C "$STACK" apply --whitespace=nowarn ) ||
+      die "the uncommitted changes of $ROOT do not apply to a clean clone of HEAD — commit or stash them first"
+  fi
+  ( cd "$ROOT" && git ls-files --others --exclude-standard -z ) | while IFS= read -r -d '' f; do
+    case "$f" in tests/e2e/out/* | tests/e2e/work/*) continue ;; esac
+    ( umask 022; mkdir -p "$STACK/$(dirname "$f")" && cp -p "$ROOT/$f" "$STACK/$f" ) || exit 1
+  done || die "could not copy the untracked files into $STACK"
+  git -C "$STACK" add -A
+  git -C "$STACK" -c user.name=bedrock-now-e2e -c user.email=e2e@example.invalid commit -q -m "e2e: working tree" --allow-empty
+  # Seed .env: names, ports and small budgets for this throwaway (setup keeps what is set). The portal password is
+  # generated here and marked as shown, so setup's summary never prints it.
+  cp "$STACK/.env.example" "$STACK/.env"; chmod 600 "$STACK/.env"
+  pick_port pp 18480; pick_port lp 14480; pick_port mp 18865
+  set_env COMPOSE_PROJECT_NAME "$PROJECT"; set_env PORTAL_HOST "$HOST"; set_env PORTAL_PORT "$pp"
+  set_env LITELLM_PORT "$lp"; set_env SHARED_MCP_PORT "$mp"
+  set_env OPENWEBUI_ADMIN_EMAIL "e2e-admin@example.com"
+  for kv in $BUDGETS; do set_env "${kv%%=*}" "${kv#*=}"; done
+  set_env PORTAL_PASSWORD "$(openssl rand -hex 10)"
+  ( umask 022; mkdir -p "$STACK/.state/update-check" )
+  chmod 700 "$STACK/.state"; : > "$STACK/.state/portal-password-shown"
+  # The portal's daily release check counts as done: no GitHub call during the run, and nothing races the update
+  # card's own (fake) latest.json. Its age decides the next check (24 h), so the portal never asks GitHub here.
+  printf '{"checked_at": "%s", "error": null}\n' "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" > "$STACK/.state/update-check/latest.json"
+  chmod 644 "$STACK/.state/update-check/latest.json"
+  say "throwaway: project $PROJECT, http://$HOST:$pp  (LiteLLM 127.0.0.1:$lp, shared-mcp 127.0.0.1:$mp)"
+}
 
 # ======================================================================================================
 if [ "$REUSE" = 1 ]; then
-  [ -f "$STACK/.env" ] || die "--reuse: no kept throwaway in $STACK"
-  # A half-dead kept stack (Docker restarted, a service crashed) must not be reused: every service healthy first.
-  bad="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.service"}} {{.State}} {{.Status}}' |
-    awk '$1 != "rustfs-init" && ($2 != "running" || $0 ~ /unhealthy|starting/)')"
-  [ -z "$bad" ] || die "--reuse: the kept throwaway is not healthy ($bad) — tests/e2e/run.sh --teardown, then a full run"
+  reuse_check   # marker, .env project, owner marker = $STACK, every service running and healthy; OWNED=1
   say "reusing the throwaway in $STACK"
 else
   stage
@@ -310,75 +207,84 @@ else
   cli setup 0 'bedrock-now is up' --aws setup --yes || {
     tail -n 40 "$LOGS/cli-setup.log" >&2; die "setup failed — see $LOGS/cli-setup.log (redacted)"; }
 fi
-[ -z "$(get_env PORTAL_PASSWORD)" ] && die "the throwaway .env has no PORTAL_PASSWORD"
-PP="$(get_env PORTAL_PORT)"; LP="$(get_env LITELLM_PORT)"; MP="$(get_env SHARED_MCP_PORT)"
-for p in "$PP" "$LP" "$MP"; do case "$AVOID_PORTS" in *" $p "*) die "throwaway uses a reserved port ($p)";; esac; done
+[ -n "$(get_env PORTAL_PASSWORD)" ] || die "the throwaway .env has no PORTAL_PASSWORD"
+for k in PORTAL_PORT LITELLM_PORT SHARED_MCP_PORT; do
+  case "$AVOID_PORTS" in *" $(get_env "$k") "*) die "throwaway uses a reserved port ($k=$(get_env "$k"))" ;; esac
+done
+spend_start   # with --reuse: only this run's spend is counted
 
 # --- 2. read-only CLI checks ---
 if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
-say "CLI: read-only commands"
-cli help 0 'Usage: ./stack' help
-cli unknown-command 1 'unknown command' bogus-command
-cli status 0 'portal +running +healthy' status
-cli status-disk 0 'Disk: images' status --disk
-cli costs 0 'Spend this budget period' costs
-cli models 0 'Model access for your AWS key' models
-cli test 0 'all checks passed' test
-for s in portal caddy litellm; do follow_logs "logs-$s" "$s"; done
-if st clean --help 2>&1 | grep -q -- '--dry-run'; then cli clean-dry-run 0 '' clean --dry-run
-else cli clean 0 'nothing to clean|Would remove|freed' clean --yes; fi
-cli helper-status 0 'Update helper: not installed' helper status
-cli stt-status 0 'Speech-to-text' stt status
-cli remote-status any '[Rr]emote' remote status
-cli openrouter-status 0 'OpenRouter' openrouter status
-cli serve-stop any '' serve --stop
-cli ssh-info any 'claude-bedrock|ssh' ssh-info
-if st help 2>&1 | grep -qE '^  password'; then
-  cli password 0 'PORTAL_PASSWORD in .*\.env' password
-  # --show prints only to a terminal: here (no terminal) it must refuse and the raw output must not hold the password
-  t0="$(now)"; raw="$(st password --show 2>&1)"; rc=$?
-  if [ "$rc" != 0 ] && ! printf '%s' "$raw" | grep -qF -- "$(get_env PORTAL_PASSWORD)"; then
-    record cli password-show-no-tty PASS "$(( $(now) - t0 ))" "refused without a terminal (exit $rc), password not printed"
-  else record cli password-show-no-tty FAIL "$(( $(now) - t0 ))" "exit $rc; password printed without a terminal?"; fi
-else record cli password SKIP 0 "no ./stack password on this branch"; fi
-# --help for every command (never runs the command itself)
-t0="$(now)"; bad=''
-for c in $(st help 2>/dev/null | awk '/^  [a-z]/ { print $1 }'); do
-  out="$(st "$c" --help 2>&1)" && printf '%s' "$out" | grep -q "Usage: ./stack $c" || bad="$bad $c"
-done
-if [ -z "$bad" ]; then record cli help-every-command PASS "$(( $(now) - t0 ))" "every ./stack <command> --help prints its usage"
-else record cli help-every-command FAIL "$(( $(now) - t0 ))" "no usage from --help:$bad"; fi
-cli uninstall-abort 1 'aborted' uninstall --yes
-case "$(uname -s)" in Darwin) record cli open SKIP 0 "opens a GUI browser window on macOS (no headless mode)" ;;
-  *) record cli open SKIP 0 "opens a browser window (no headless mode)" ;; esac
+  say "CLI: read-only commands"
+  cli help 0 'Usage: ./stack' help
+  cli unknown-command 1 'unknown command' bogus-command
+  cli status 0 'portal +running +healthy' status
+  cli status-disk 0 'Disk: images' status --disk
+  cli costs 0 'Spend this budget period' costs
+  cli models 0 'Model access for your AWS key' models
+  cli test 0 'all checks passed' test
+  for s in portal caddy litellm; do follow_logs "logs-$s" "$s"; done
+  imgs_before="$(docker image ls -q --no-trunc | sort)"
+  if st clean --help 2>&1 | grep -q -- '--dry-run'; then
+    cli clean-dry-run 0 'nothing to clean|Would remove' clean --dry-run
+    if [ "$(docker image ls -q --no-trunc | sort)" = "$imgs_before" ]; then record cli clean-dry-run-removes-nothing PASS 0 "image list unchanged"
+    else record cli clean-dry-run-removes-nothing FAIL 0 "images changed during clean --dry-run"; fi
+  else record cli clean-dry-run SKIP 0 "no clean --dry-run on this branch"; fi
+  cli helper-status 0 'Update helper: not installed' helper status
+  cli stt-status 0 'Speech-to-text: browser \(Web Speech\)' stt status
+  cli remote-status 0 'Remote access: off' remote status
+  cli openrouter-status 0 'OpenRouter: off' openrouter status
+  cli serve-stop 0 'is not running' serve --stop
+  cli ssh-info 0 'Claude Code \(claude-bedrock\) from your phone' ssh-info
+  if st help 2>&1 | grep -qE '^  password'; then
+    cli password 0 'PORTAL_PASSWORD in .*\.env' password
+    # --show prints only to a terminal: here (none) it must refuse, and the output must not hold the password
+    t0="$(now)"; raw="$(st password --show 2>&1)"; rc=$?
+    if [ "$rc" != 0 ] && ! env_has PORTAL_PASSWORD "$raw"; then
+      record cli password-show-no-tty PASS "$(( $(now) - t0 ))" "refused without a terminal (exit $rc), password not printed"
+    else record cli password-show-no-tty FAIL "$(( $(now) - t0 ))" "exit $rc; password printed without a terminal?"; fi
+    unset raw
+  else record cli password SKIP 0 "no ./stack password on this branch"; fi
+  # --help for every command (never runs the command itself)
+  t0="$(now)"; bad=''
+  for c in $(st help 2>/dev/null | awk '/^  [a-z]/ { print $1 }') down; do
+    out="$(st "$c" --help 2>&1)" && printf '%s' "$out" | grep -q "Usage: ./stack $c" || bad="$bad $c"
+  done
+  if [ -z "$bad" ]; then record cli help-every-command PASS "$(( $(now) - t0 ))" "every ./stack <command> --help prints its usage"
+  else record cli help-every-command FAIL "$(( $(now) - t0 ))" "no usage from --help:$bad"; fi
+  cli uninstall-abort 1 'aborted — nothing was removed' uninstall --yes
+  record cli open SKIP 0 "opens a GUI browser window (no headless mode)"
 fi
 
 # --- 3. the browser suite (Playwright container) ---
 if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
   say "browser suite (Playwright container)"
-  "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" || warn "the browser suite exited with an error (see $OUT/browser/run.log)"
+  t0="$(now)"; "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE"; rc=$?
+  got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
+  want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
-  [ -f "$OUT/browser/run.log" ] && redact "$OUT/browser/run.log"
+  if [ "$rc" != 0 ] || [ "$got" = 0 ] || [ "$got" != "$want" ]; then
+    record browser runner FAIL "$(( $(now) - t0 ))" "browser suite exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
+  else record browser runner PASS "$(( $(now) - t0 ))" "$got checks reported"; fi
 fi
 
 # --- 4. claude-bedrock (the throwaway's wrapper, never the ~/.local/bin link) ---
 if ! part_on claude; then record claude claude-bedrock SKIP 0 "--only $ONLY"
 elif [ "$NO_CLAUDE" = 1 ]; then record claude claude-bedrock SKIP 0 "--no-claude"
 elif ! command -v claude >/dev/null 2>&1; then record claude claude-bedrock SKIP 0 "Claude Code (claude) is not installed"
-elif ! spend_ok "$(spend_now)" 0.07; then record claude claude-bedrock SKIP 0 "spend guard: already near \$$SPEND_LIMIT"
 else
   say "claude-bedrock -p (Haiku, one short prompt)"
   t0="$(now)"; log="$LOGS/claude-bedrock.log"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
-  mkdir -p "$OUT/claude-config"
-  # Its own CLAUDE_CONFIG_DIR: the run leaves your ~/.claude (history, settings) alone.
+  # Its own CLAUDE_CONFIG_DIR and an empty working folder: your ~/.claude and this checkout's files stay out of it.
+  mkdir -p "$OUT/claude-config" "$OUT/claude-cwd"
   ( export CLAUDE_CONFIG_DIR="$OUT/claude-config" CLAUDE_BEDROCK_MODEL="$haiku" CLAUDE_BEDROCK_SUMMARY=1
     clean_env CLAUDE_CONFIG_DIR CLAUDE_BEDROCK_MODEL CLAUDE_BEDROCK_SUMMARY
-    exec "$STACK/bin/claude-bedrock" -p "Reply with exactly the word: ok" --max-turns 1 ) > "$log" 2>&1 </dev/null; rc=$?
+    cd "$OUT/claude-cwd" && exec "$NOTTY" "$STACK/bin/claude-bedrock" -p "Reply with exactly the word: ok" --max-turns 1 ) > "$log" 2>&1 </dev/null; rc=$?
   redact "$log"
   if [ "$rc" = 0 ] && grep -qiE '^ok\.?$' "$log" && grep -q '^bedrock · ' "$log"; then
     record claude claude-bedrock PASS "$(( $(now) - t0 ))" "answered ok via $haiku; cost line shown"
   else record claude claude-bedrock FAIL "$(( $(now) - t0 ))" "exit $rc: $(tail -n 3 "$log" | tr '\n' ' ')"; fi
-  t0="$(now)"; out="$( (clean_env; exec "$STACK/bin/claude-bedrock" --help) 2>&1 </dev/null)"
+  t0="$(now)"; out="$( (clean_env; cd "$OUT/claude-cwd" && exec "$NOTTY" "$STACK/bin/claude-bedrock" --help) 2>&1 </dev/null)"
   if printf '%s' "$out" | grep -q 'claude-bedrock: Claude Code on AWS Bedrock via bedrock-now'; then
     record claude claude-bedrock-help PASS "$(( $(now) - t0 ))" "wrapper header + claude --help"
   else record claude claude-bedrock-help FAIL "$(( $(now) - t0 ))" "no wrapper header"; fi
@@ -392,17 +298,25 @@ else
   cli backup 0 'backup written to backups/' backup
   bk=''
   for d in "$STACK"/backups/2*; do case "$d" in *-auto | *.partial) ;; *) [ -d "$d" ] && bk="$d" ;; esac; done
-  if [ -n "$bk" ] && [ -f "$bk/litellm.dump" ] && [ -f "$bk/openwebui.dump" ] && [ -f "$bk/.env" ]; then
-    record cli backup-contents PASS 0 "litellm.dump openwebui.dump s3/ .env (mode $(stat -f %Lp "$bk" 2>/dev/null || stat -c %a "$bk"))"
+  miss=''
+  if [ -n "$bk" ]; then
+    for f in litellm.dump openwebui.dump .env s3/openwebui s3/shared; do [ -e "$bk/$f" ] || miss="$miss $f"; done
+    for f in litellm.dump openwebui.dump; do [ -s "$bk/$f" ] || miss="$miss $f(empty)"; done
+    [ "$(perm_of "$bk")" = 700 ] || miss="$miss mode-$(perm_of "$bk")"
+  fi
+  if [ -n "$bk" ] && [ -z "$miss" ]; then
+    record cli backup-contents PASS 0 "litellm.dump openwebui.dump s3/openwebui s3/shared .env, mode 700"
+    spend_cut
     cli restore 0 'all checks passed' restore "backups/${bk##*/}" --yes
-    # The path ./stack itself prints ("./stack restore backups/<ts>") and ./stack rollback passes on is relative to
-    # the checkout: it must work from another folder too (e.g. ~/bedrock-now/stack rollback run from $HOME).
+    # The path ./stack prints ("./stack restore backups/<ts>") and ./stack rollback passes on is relative to the
+    # checkout: it must work from another folder too (e.g. ~/bedrock-now/stack restore run from $HOME).
     ST_CWD=/ cli restore-from-another-folder 0 'all checks passed' restore "backups/${bk##*/}" --yes
-  else record cli backup-contents FAIL 0 "no complete backup directory"; fi
+    spend_resume
+  else record cli backup-contents FAIL 0 "no complete backup directory (${bk:-none}; missing:${miss:- all})"; fi
   cli down 0 '' down
   cli status-after-down 0 'not running|not created|exited' status
   cli up 0 'portal +running +healthy' up --yes
-  cli rotate-aws-same-key 0 'all checks passed' --aws rotate-aws
+  cli rotate-aws-same-key 0 'all checks passed' --aws rotate-aws --yes
   head="$(git -C "$STACK" rev-parse HEAD)"
   cli update-same-version 0 'already on|no new version' update --to "$head" --yes
   cli rollback-nothing 1 'nothing to roll back' rollback --yes
@@ -411,26 +325,29 @@ else
     next="$(git -C "$STACK" rev-parse HEAD)"; git -C "$STACK" -c advice.detachedHead=false checkout -q "$head"
     cli update-to-next 0 'updated to' update --to "$next" --yes
     # from another folder: rollback hands restore an absolute backup path
+    spend_cut
     ST_CWD=/ cli rollback-from-another-folder 0 'rolled back to' rollback --yes
-    [ "$(git -C "$STACK" rev-parse HEAD)" = "$head" ] && record cli rollback-code PASS 0 "HEAD back at ${head%"${head#???????}"}" ||
-      record cli rollback-code FAIL 0 "HEAD is $(git -C "$STACK" rev-parse --short HEAD), want ${head%"${head#???????}"}"
+    spend_resume
+    if [ "$(git -C "$STACK" rev-parse HEAD)" = "$head" ]; then record cli rollback-code PASS 0 "HEAD back at $(git -C "$STACK" rev-parse --short HEAD)"
+    else record cli rollback-code FAIL 0 "HEAD is $(git -C "$STACK" rev-parse --short HEAD), want ${head:0:7}"; fi
   fi
   cli test-after-mutating 0 'all checks passed' test
 fi
 
-# --- 6. spend guard ---
-spend="$(spend_now)"; [ -z "$spend" ] || spend="$(awk -v s="$spend" 'BEGIN { printf "%.4f", s }')"
+# --- 6. spend guard (this run's spend; restores put LiteLLM's spend log back, so it is summed around them) ---
+spend="$(spend_total)"
 if [ -z "$spend" ]; then record spend spend-guard FAIL 0 "LiteLLM /global/spend did not answer"
-elif spend_ok "$spend" "$SPEND_LIMIT"; then record spend spend-guard PASS 0 "total Bedrock spend \$$spend < \$$SPEND_LIMIT"
-else record spend spend-guard FAIL 0 "total Bedrock spend \$$spend >= \$$SPEND_LIMIT"; fi
-printf 'Bedrock spend of this run (LiteLLM /global/spend): $%s\n' "${spend:-unknown}" > "$OUT/spend.txt"
+elif spend_ok "$spend" "$SPEND_LIMIT"; then record spend spend-guard PASS 0 "Bedrock spend of this run \$$spend < \$$SPEND_LIMIT"
+else record spend spend-guard FAIL 0 "Bedrock spend of this run \$$spend >= \$$SPEND_LIMIT"; fi
+printf 'Bedrock spend of this run (LiteLLM /global/spend, summed around restores): $%s\n' "${spend:-unknown}" > "$OUT/spend.txt"
 
-# --- 7. the default install's claude-bedrock link is untouched ---
+# --- 7. the default install's claude-bedrock link (and the file it points to) is untouched ---
 LINK_AFTER="$(link_state)"
 if [ "$LINK_AFTER" = "$LINK_BEFORE" ]; then record safety claude-bedrock-link-untouched PASS 0 "$LINK_AFTER"
 else record safety claude-bedrock-link-untouched FAIL 0 "before: $LINK_BEFORE, after: $LINK_AFTER"; fi
 
 # --- 8. report ---
+redact_outputs
 if [ "$KEEP" = 1 ]; then say "kept the throwaway (tests/e2e/run.sh --teardown --project $PROJECT removes it)"
-else trap - EXIT; teardown; fi
+else trap - EXIT INT TERM HUP; teardown; fi
 "$HERE/report.sh" "$RESULTS" "$HERE/known-issues.tsv" "$OUT" "$(( $(now) - START_TS ))" "${spend:-unknown}"

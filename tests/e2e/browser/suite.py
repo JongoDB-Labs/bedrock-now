@@ -30,6 +30,7 @@ class Ctx:
         self.browser = browser
         self._session = None
         self._contexts = []
+        self.rag_file = None   # set by chat-file-upload-rag: the upload files-rustfs-console-pages looks for
 
     # raw-HTTP session cookie (checks_http)
     def session(self) -> str:
@@ -46,7 +47,7 @@ class Ctx:
         r = http("GET", None, "/api/summary", {"X-Requested-With": "bedrock-now"}, cookie=self.session())
         return [m["name"] for m in json.loads(r.body)["models"]["rows"] if m["enabled"]]
 
-    def page(self, name: str, device: str = "desktop", fresh: bool = True):
+    def page(self, name: str, device: str = "desktop"):
         """A new browser context (no cookies) and page with a Recorder attached."""
         for c in self._contexts:
             try:

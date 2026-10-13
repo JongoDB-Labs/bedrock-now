@@ -3,13 +3,15 @@
 # report.sh RESULTS.tsv KNOWN_ISSUES.tsv OUT_DIR SECONDS SPEND
 # RESULTS: suite<TAB>id<TAB>PASS|FAIL|SKIP<TAB>seconds<TAB>message. KNOWN_ISSUES: id<TAB>reason (# comments):
 # a listed check that fails counts as XFAIL (a known product bug, not a suite failure); one that passes is XPASS
-# (the bug is fixed: drop the line). Exit status: 1 if any check FAILed, else 0.
+# (the bug is fixed: drop the line). Exit status: 1 if any check FAILed or there are no results at all, else 0.
 set -uo pipefail
 results="$1"; known="$2"; out="$3"; secs="$4"; spend="$5"
+[ -s "$results" ] || { printf 'xx  no results in %s — the run did not get as far as its first check\n' "$results" >&2; exit 1; }
+[ -f "$known" ] || known=/dev/null
 
 final="$out/results-final.tsv"
 awk -F'\t' -v OFS='\t' '
-  NR == FNR { if ($0 !~ /^#/ && NF >= 2) why[$1] = $2; next }
+  FILENAME == ARGV[1] { if ($0 !~ /^#/ && NF >= 2) why[$1] = $2; next }
   NF >= 3 {
     st = $3; msg = $5
     if ($2 in why) { if (st == "FAIL") { st = "XFAIL"; msg = "known issue: " why[$2] " | " msg } else if (st == "PASS") { st = "XPASS"; msg = "listed as a known issue but passed: " why[$2] } }
@@ -31,7 +33,8 @@ printf 'Details: %s (logs in %s/logs, screenshots and network logs in %s/browser
 # JUnit: one <testsuite> per suite; XFAIL = skipped with a message (known bug), FAIL = failure.
 awk -F'\t' -v secs="$secs" '
   function x(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s); return s }
-  { n[$1]++; if ($3 == "FAIL") f[$1]++; if ($3 == "SKIP" || $3 == "XFAIL") s[$1]++; row[NR] = $0; order[$1] = order[$1] ? order[$1] : ++k; name[k] = $1 }
+  { n[$1]++; if ($3 == "FAIL") f[$1]++; if ($3 == "SKIP" || $3 == "XFAIL") s[$1]++; row[NR] = $0
+    if (!($1 in order)) { order[$1] = ++k; name[k] = $1 } }
   END {
     print "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     printf "<testsuites name=\"bedrock-now-e2e\" time=\"%s\">\n", secs
