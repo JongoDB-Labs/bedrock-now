@@ -151,7 +151,8 @@ rotate, so `./stack rotate-aws` only says so. `./stack rotate-aws --use-keys` sw
 flow as above; role mode ends only once the key is verified); `./stack rotate-aws --use-instance-role` switches a
 key install to the machine's role (EC2 only): it checks from a container that the credentials are this role's and
 that it may use Bedrock, shows the account (and asks, in a terminal), prints the old key ID, then removes the key
-lines from `.env` and restarts LiteLLM — putting the key lines back if LiteLLM doesn't come up.
+lines from `.env` and restarts LiteLLM — putting the previous settings back (and restarting LiteLLM with them) if LiteLLM doesn't come up or the smoke
+test fails.
 
 ## Claude Code wrapper details
 

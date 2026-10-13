@@ -4,6 +4,7 @@
 . "$STACK_DIR/lib/commands.sh"
 
 ACCT=123456789012
+export BEDROCK_NOW_TESTING=1   # honours BEDROCK_NOW_TEST_SYSFS / BEDROCK_NOW_TEST_IMDS_URL below
 
 # --- stubs ------------------------------------------------------------------------------------------------------
 
@@ -97,6 +98,15 @@ test_imds_url_override_only_via_test_variable() {
   rm -f "$TMP/curl"
   BEDROCK_NOW_TEST_IMDS_URL=http://127.0.0.1:9 instance_role_name >/dev/null
   assert_contains "$(cat "$TMP/curl")" "http://127.0.0.1:9/latest/api/token"
+}
+
+test_test_overrides_need_bedrock_now_testing() {
+  _imds_ec2 bedrock-now
+  # outside the test suite, the fake sysfs and IMDS URL are ignored: real /sys (no EC2 markers here) decides
+  BEDROCK_NOW_TESTING='' BEDROCK_NOW_TEST_IMDS_URL=http://127.0.0.1:9 _imds_url > "$TMP/url"
+  assert_eq "$(cat "$TMP/url")" "http://169.254.169.254"
+  assert_eq "$(BEDROCK_NOW_TESTING='' _sysfs)" "/sys"
+  assert_eq "$(_sysfs)" "$TMP/sys"
 }
 
 # --- IMDS -------------------------------------------------------------------------------------------------------
@@ -324,16 +334,42 @@ test_compose_aws_keys_are_optional_for_litellm() {
   assert_eq "$(grep -cE '^      AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY):[[:space:]]*(#.*)?$' "$STACK_DIR/compose.yaml")" "2"
 }
 
-test_dc_keeps_shell_aws_settings_out_of_compose_and_warns_once() {
+test_dc_keeps_shell_aws_settings_out_of_compose() {
   printf 'AWS_ACCESS_KEY_ID=AKIAENV\n' > "$ENV_FILE"
   docker() { printf '%s|%s|%s|%s\n' "${AWS_ACCESS_KEY_ID-unset}" "${AWS_SECRET_ACCESS_KEY-unset}" "${AWS_SESSION_TOKEN-unset}" "${AWS_REGION_NAME-unset}" > "$TMP/env"; }
   export AWS_ACCESS_KEY_ID=AKIASHELL AWS_SECRET_ACCESS_KEY=s AWS_SESSION_TOKEN=t AWS_REGION_NAME=eu-west-1
-  dc ps 2> "$TMP/err"; dc ps 2>> "$TMP/err"
+  out="$(dc ps 2>&1)"
   assert_eq "$(cat "$TMP/env")" "unset|unset|unset|unset"
-  assert_eq "$(grep -c 'AWS_ACCESS_KEY_ID in your shell is ignored' "$TMP/err")" "1"
-  rm -f "$TMP/err"; AWS_ACCESS_KEY_ID=AKIAENV; _DC_AWS_WARNED=''
-  dc ps 2> "$TMP/err"
-  assert_eq "$(cat "$TMP/err")" ""   # same key as .env: nothing to warn about
+  assert_eq "$out" ""   # the warning comes once per command from ./stack, not from every dc call
+}
+
+test_shell_aws_warning_only_when_the_key_differs() {
+  printf 'AWS_ACCESS_KEY_ID=AKIAENV\n' > "$ENV_FILE"
+  assert_eq "$( (unset AWS_ACCESS_KEY_ID; warn_shell_aws_ignored) 2>&1)" ""
+  assert_eq "$( (AWS_ACCESS_KEY_ID=AKIAENV warn_shell_aws_ignored) 2>&1)" ""
+  assert_contains "$( (AWS_ACCESS_KEY_ID=AKIASHELL warn_shell_aws_ignored) 2>&1)" "AWS_ACCESS_KEY_ID in your shell is ignored"
+  printf 'AWS_AUTH=instance-role\n' > "$ENV_FILE"
+  assert_contains "$( (AWS_ACCESS_KEY_ID=AKIASHELL warn_shell_aws_ignored) 2>&1)" "instance role"
+}
+
+test_stack_warns_about_shell_aws_once_per_command() {
+  local s; s="$(cat "$STACK_DIR/stack")"
+  assert_contains "$s" "warn_shell_aws_ignored"
+  # not for the commands that use exported keys on purpose
+  assert_contains "$(grep -n 'warn_shell_aws_ignored' "$STACK_DIR/stack")" "setup | rotate-aws"
+}
+
+# --- remote URL (remote access stores its mode and host in .env) ------------------------------------------------
+
+test_remote_url_from_env_only_when_remote_mode_is_on() {
+  : > "$ENV_FILE"; assert_eq "$(remote_url)" ""
+  printf 'REMOTE_MODE=tailscale\n' > "$ENV_FILE"; assert_eq "$(remote_url)" ""              # no host yet
+  printf 'REMOTE_MODE=off\nREMOTE_HOST=box.tail1234.ts.net\n' > "$ENV_FILE"; assert_eq "$(remote_url)" ""
+  printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=box.tail1234.ts.net\n' > "$ENV_FILE"
+  assert_eq "$(remote_url)" "https://box.tail1234.ts.net"
+  printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=https://box.tail1234.ts.net/\n' > "$ENV_FILE"
+  assert_eq "$(remote_url)" "https://box.tail1234.ts.net/"
+  printf 'REMOTE_MODE=tailscale\nREMOTE_HOST=bad host\n' > "$ENV_FILE"; assert_eq "$(remote_url)" ""
 }
 
 # --- rotate-aws -------------------------------------------------------------------------------------------------
@@ -386,12 +422,39 @@ test_rotate_aws_use_instance_role_verifies_then_removes_keys() {
 test_rotate_aws_use_instance_role_restores_keys_when_litellm_fails() {
   printf 'AWS_ACCESS_KEY_ID=AKIAOLD\nAWS_SECRET_ACCESS_KEY=old\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
   _imds_ec2 bedrock-now; _stub_docker_role
-  dc() { return 1; }; cmd_test() { :; }
+  # first `dc up` (with the role) fails; the second one recreates LiteLLM with the restored key
+  dc() { printf '%s|%s\n' "$*" "$(get_env AWS_ACCESS_KEY_ID)" >> "$TMP/calls"; [ -n "$(get_env AWS_ACCESS_KEY_ID)" ]; }
+  cmd_test() { echo test >> "$TMP/calls"; }
   if out="$( (ASSUME_YES=1 cmd_rotate_aws --use-instance-role) 2>&1)"; then return 1; fi
   assert_eq "$(get_env AWS_ACCESS_KEY_ID)" "AKIAOLD"
   assert_eq "$(get_env AWS_SECRET_ACCESS_KEY)" "old"
   assert_eq "$(get_env AWS_AUTH)" ""
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "up -d --wait litellm|;up -d --wait litellm|AKIAOLD;"
   assert_contains "$out" "restored"
+  assert_contains "$out" "did not come up"
+}
+
+test_rotate_aws_use_instance_role_restores_keys_when_smoke_test_fails() {
+  printf 'AWS_ACCESS_KEY_ID=AKIAOLD\nAWS_SECRET_ACCESS_KEY=old\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
+  _imds_ec2 bedrock-now; _stub_docker_role
+  dc() { printf '%s|%s\n' "$*" "$(get_env AWS_ACCESS_KEY_ID)" >> "$TMP/calls"; }
+  cmd_test() { echo test >> "$TMP/calls"; die "1 check(s) failed"; }   # dies like the real one
+  if out="$( (ASSUME_YES=1 cmd_rotate_aws --use-instance-role) 2>&1)"; then return 1; fi
+  assert_eq "$(get_env AWS_ACCESS_KEY_ID)" "AKIAOLD"
+  assert_eq "$(get_env AWS_SECRET_ACCESS_KEY)" "old"
+  assert_eq "$(get_env AWS_AUTH)" ""
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "up -d --wait litellm|;test;up -d --wait litellm|AKIAOLD;"
+  assert_contains "$out" "smoke test failed"
+  assert_contains "$out" "restored"
+}
+
+test_rotate_aws_use_instance_role_rerun_in_role_mode_restores_role_mode() {
+  printf 'AWS_AUTH=instance-role\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"; cp "$ENV_FILE" "$TMP/before"
+  _imds_ec2 bedrock-now; _stub_docker_role
+  dc() { echo "dc $*" >> "$TMP/calls"; }; cmd_test() { die "1 check(s) failed"; }
+  if out="$( (ASSUME_YES=1 cmd_rotate_aws --use-instance-role) 2>&1)"; then return 1; fi
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"   # AWS_AUTH=instance-role restored, not removed
+  assert_eq "$(grep -c 'dc up -d --wait litellm' "$TMP/calls")" "2"
 }
 
 test_rotate_aws_use_instance_role_without_bedrock_access_changes_nothing() {

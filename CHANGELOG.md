@@ -61,16 +61,16 @@ All notable changes to bedrock-now are documented here. The format follows
   (`--yes` accepts). Then it writes `AWS_AUTH=instance-role` and removes the key lines from `.env`; LiteLLM gets
   the role's credentials through boto3's default chain. `./stack rotate-aws` understands the mode:
   `--use-keys` (the key is verified before role mode ends) and `--use-instance-role` (role and Bedrock access
-  checked first, the old key ID printed, the key lines restored if LiteLLM doesn't come up). `./stack up`
+  checked first, the old key ID printed, the previous settings restored and LiteLLM restarted with them if it doesn't come up or the smoke test fails). `./stack up`
   refuses role mode off EC2 and key mode without a key. The one-line installer runs `setup --yes` without a
   terminal on an EC2 host with a role. [docs/cloud-vm.md](docs/cloud-vm.md): a `t4g.medium` arm64 / Amazon
   Linux 2023 recipe with no inbound ports, a least-privilege role policy (US foundation models and `us.`
   inference profiles, `bedrock:Rerank`), the IMDSv2 hop limit 2 that containers need, pinned and
-  checksum-verified Compose and buildx plugins, an optional firewall recipe that keeps the role's credentials
+  checksum-verified Compose and buildx plugins, an optional firewall recipe (rebuilt on every container start, IPv4 and IPv6) that keeps the role's credentials
   to LiteLLM (with hop limit 2 every container could fetch them), data residency, costs (~$31/month before
   Bedrock) and a request template for your AWS admin. All pinned images are published for arm64.
 - **`./stack serve`** starts the stack and keeps the Mac awake (`caffeinate -i -s`) until Ctrl-C, printing the
-  portal URL (and the remote URL when remote access is configured); it warns on battery power. `--background`
+  portal URL (and the remote URL when remote access is configured: REMOTE_MODE + REMOTE_HOST in .env); it warns on battery power. `--background`
   holds the wake lock without a terminal and `--stop` ends it (the pid file keeps the process's start time, so a
   reused pid is never killed). While an update/rollback/clean holds `.state/lock` (from a terminal or the update
   helper) it only keeps the machine awake and leaves starting the stack to that. On a Linux laptop it holds a
@@ -86,7 +86,7 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
   `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
-  `.env` alone decides (with one warning when your shell's key differs).
+  `.env` alone decides (one warning per command when your shell's key differs).
 
 ## [0.2.1] - 2026-10-12
 

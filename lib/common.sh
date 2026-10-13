@@ -190,11 +190,8 @@ dc() {
   # Compose lets shell variables beat --env-file: OpenRouter is opt-in via .env only, so an OPENROUTER_* in
   # your shell never switches it on (or keeps it on after ./stack openrouter remove).
   # (A subshell, not `env -u`: same effect on docker's environment, and tests can still stub docker.)
-  # The same for AWS: .env decides the key (or none, with AWS_AUTH=instance-role) and the region, never the shell.
-  if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -z "${_DC_AWS_WARNED:-}" ] && [ "$AWS_ACCESS_KEY_ID" != "$(get_env AWS_ACCESS_KEY_ID)" ]; then
-    warn "AWS_ACCESS_KEY_ID in your shell is ignored: the stack uses the AWS settings in .env (./stack rotate-aws changes them)"
-    _DC_AWS_WARNED=1
-  fi
+  # The same for AWS: .env decides the key (or none, with AWS_AUTH=instance-role) and the region, never the shell
+  # (./stack warns once per command when your shell's key differs: warn_shell_aws_ignored in lib/host.sh).
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
     COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" --env-file "$ENV_FILE" "$@" )

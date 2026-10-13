@@ -23,6 +23,8 @@ export ASSUME_YES
 set -- ${args[@]+"${args[@]}"}
 
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
+# Once per command: an exported AWS key that isn't .env's is ignored (setup / rotate-aws use it on purpose).
+case "$cmd" in setup | rotate-aws | help | -h | --help) ;; *) [ ! -f "$ENV_FILE" ] || warn_shell_aws_ignored ;; esac
 # Every command that touches this checkout's Compose project first checks that no other checkout owns it
 # (setup runs the same check itself, after it has settled the project name; status only warns, so you can
 # still look; uninstall checks even without .env, lists what it deletes, and releases the project afterwards).

@@ -90,7 +90,9 @@ Create a role for EC2 (trusted entity: `ec2.amazonaws.com`) named `bedrock-now`,
 - For the first login without SSH or open ports, also attach the AWS managed policy
   **`AmazonSSMManagedInstanceCore`** (Systems Manager Session Manager; the agent is preinstalled on AL2023).
 - With an **Elastic IP**, you can also add `"Condition": {"IpAddress": {"aws:SourceIp": "<elastic-ip>/32"}}` to
-  each statement: the role's credentials then don't work from anywhere else, even if they leak.
+  each statement: the role's credentials then don't work from anywhere else, even if they leak. **Verify it on
+  your instance** (`./stack test` must still pass), and note it only fits Bedrock over the public internet: behind
+  a VPC interface endpoint, use `aws:SourceVpce` instead.
 
 ### Asking your AWS admin for the role
 
@@ -220,7 +222,8 @@ Later:
 - `./stack rotate-aws --use-keys` switches to an access key (verified before `.env` changes).
 - `./stack rotate-aws --use-instance-role` switches a key install to the role: the role and its Bedrock access
   are checked first, the old key ID is printed, then the key lines are removed and LiteLLM restarts (if it
-  doesn't come up, the key lines are put back). Deactivate the old key in IAM afterwards.
+  doesn't come up or the smoke test fails, the previous settings are put back and LiteLLM restarted with
+  them). Deactivate the old key in IAM afterwards.
 - `./stack update` keeps the role mode. `./stack up` refuses role mode on a machine that isn't an EC2 instance,
   and key mode without a key.
 
@@ -248,63 +251,109 @@ calls, so the worst case is Bedrock spend outside LiteLLM's budgets by a comprom
 wider reach than key mode. Two optional hardening steps:
 
 **1. Allow IMDS only for LiteLLM (Linux firewall; needs sudo).** Docker passes container traffic through the
-`DOCKER-USER` iptables chain, so a rule there can drop container requests to `169.254.169.254` except LiteLLM's.
-Docker's default `bridge` network stays allowed: that is where setup's and `./stack models --recheck`'s throwaway
-`aws-cli` containers run (the stack's own services are on the Compose network, not there). LiteLLM's address
-changes when its container is recreated (`./stack up`, `update`), so a timer refreshes the rule every minute.
-Save as `/usr/local/sbin/bedrock-now-imds-guard` (mode 755; set `PROJECT` if you use another
-`COMPOSE_PROJECT_NAME`):
+`DOCKER-USER` iptables chain, so a rule there can drop container requests to the metadata service except
+LiteLLM's. Docker's default `bridge` network stays allowed: that is where setup's and `./stack models --recheck`'s
+throwaway `aws-cli` containers run (the stack's own services are on the Compose network, not there).
+
+LiteLLM's address changes whenever its container is recreated (`./stack up`, `update`, `rotate-aws`), so the rule
+is rebuilt **on every container start** (a `docker events` listener), with a 5-minute timer as a backstop. Each
+run builds a complete new chain, points `DOCKER-USER` at it and only then removes the old one, so there is never a
+moment without a rule. EC2 also offers IMDS over IPv6 (`fd00:ec2::254`) when the instance has
+`HttpProtocolIpv6=enabled`; the script covers it with `ip6tables` when Docker manages an IPv6 `DOCKER-USER` chain.
+If you don't need IPv6 IMDS, keep it disabled (the default). Save as `/usr/local/sbin/bedrock-now-imds-guard`
+(mode 755; set `PROJECT` if you use another `COMPOSE_PROJECT_NAME`):
 
 ```sh
 #!/bin/sh
-# Containers may reach EC2's metadata service (169.254.169.254) only from LiteLLM and Docker's default bridge.
+# Containers may reach EC2's metadata service only from LiteLLM and Docker's default bridge (aws-cli checks).
 set -eu
 PROJECT=bedrock-now
 cid="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=litellm)"
-ip=''
-[ -z "$cid" ] || ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" | awk '{ print $1 }')"
-bridge="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Subnet}}')"
-iptables -N BN-IMDS 2>/dev/null || true
-iptables -F BN-IMDS
-[ -z "$ip" ] || iptables -A BN-IMDS -s "$ip" -j RETURN
-iptables -A BN-IMDS -s "$bridge" -j RETURN
-iptables -A BN-IMDS -j DROP
-iptables -C DOCKER-USER -d 169.254.169.254/32 -j BN-IMDS 2>/dev/null ||
-  iptables -I DOCKER-USER -d 169.254.169.254/32 -j BN-IMDS
+v4='' v6=''
+if [ -n "$cid" ]; then
+  v4="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" | awk '{ print $1 }')"
+  v6="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}} {{end}}' "$cid" | awk '{ print $1 }')"
+fi
+bridge4="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | tr ' ' '\n' | grep -v : | head -n 1 || true)"
+bridge6="$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | tr ' ' '\n' | grep : | head -n 1 || true)"
+
+# apply IPTABLES DEST ALLOWED... — new chain, jump to it, then drop the previous chain(s)
+apply() {
+  ipt="$1"; dst="$2"; shift 2
+  new="BN-IMDS-$(date +%s)-$$"
+  "$ipt" -N "$new"
+  for src in "$@"; do [ -z "$src" ] || "$ipt" -A "$new" -s "$src" -j RETURN; done
+  "$ipt" -A "$new" -j DROP
+  "$ipt" -I DOCKER-USER -d "$dst" -j "$new"
+  for old in $("$ipt" -S DOCKER-USER | grep -o 'BN-IMDS-[0-9-]*' | grep -vx "$new" || true); do
+    "$ipt" -D DOCKER-USER -d "$dst" -j "$old" 2>/dev/null || true
+    "$ipt" -F "$old"; "$ipt" -X "$old"
+  done
+}
+apply iptables 169.254.169.254/32 "$v4" "$bridge4"
+if ip6tables -S DOCKER-USER >/dev/null 2>&1; then apply ip6tables fd00:ec2::254/128 "$v6" "$bridge6"; fi
 ```
 
-and run it from systemd:
+and run it from systemd — a long-running listener plus a timer:
 
 ```bash
 sudo dnf install -y iptables-nft
 sudo tee /etc/systemd/system/bedrock-now-imds-guard.service >/dev/null <<'EOF'
 [Unit]
-Description=bedrock-now: only LiteLLM may reach the EC2 metadata service
+Description=bedrock-now: only LiteLLM may reach the EC2 metadata service (on every container start)
 After=docker.service
 Requires=docker.service
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/bedrock-now-imds-guard
+ExecStart=/bin/sh -c 'docker events --filter type=container --filter event=start --format "{{.ID}}" | while read -r _; do /usr/local/sbin/bedrock-now-imds-guard; done'
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo tee /etc/systemd/system/bedrock-now-imds-guard-refresh.service >/dev/null <<'EOF'
+[Unit]
+Description=bedrock-now: refresh the metadata-service rule (backstop)
+After=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/bedrock-now-imds-guard
 EOF
-sudo tee /etc/systemd/system/bedrock-now-imds-guard.timer >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/bedrock-now-imds-guard-refresh.timer >/dev/null <<'EOF'
 [Timer]
-OnBootSec=20s
-OnUnitActiveSec=1min
+OnBootSec=1min
+OnUnitActiveSec=5min
 [Install]
 WantedBy=timers.target
 EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now bedrock-now-imds-guard.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now bedrock-now-imds-guard.service bedrock-now-imds-guard-refresh.timer
 ```
 
-Check: `docker compose exec open-webui python -c "import urllib.request as u; u.urlopen('http://169.254.169.254/', timeout=3)"`
-(from `~/bedrock-now`) now times out, while `./stack test` still passes. After LiteLLM is recreated it may wait up
-to a minute for the timer (or run the script by hand). There is deliberately no `./stack` command for this: it
-changes the host firewall as root, so it stays a recipe you read and install yourself. We don't pin a fixed
-Compose subnet for LiteLLM instead, because a fixed subnet would collide with a second copy or an existing
-network.
+**Check it** (from `~/bedrock-now`). Ask for an IMDSv2 token — the first step of every credential lookup — from
+another container and from LiteLLM:
+
+```bash
+docker compose exec open-webui python -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds': '60'}), timeout=3).status)"
+docker compose exec litellm python -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds': '60'}), timeout=3).status)"
+```
+
+With the guard, the first one fails with a **timeout** (the packet is dropped) and the second prints `200`.
+Without it, both print `200`. (A plain `GET /` without a token is no test: IMDSv2 answers it with HTTP 401 either
+way.) `./stack test` must still pass.
+
+Limits: between a container start and the rule rebuild (a fraction of a second) the previous rule applies, so a
+container that starts at the same moment and receives LiteLLM's old address could briefly pass. There is
+deliberately no `./stack` command for this: it changes the host firewall as root, so it stays a recipe you read and
+install yourself. We don't pin a fixed Compose subnet for LiteLLM instead, because a fixed subnet would collide with
+a second copy or an existing network.
 
 **2. Bind the credentials to this VM.** With an Elastic IP, the `aws:SourceIp` condition from
-[the role](#1-the-iam-role) makes leaked credentials useless anywhere else.
+[the role](#1-the-iam-role) makes leaked credentials useless anywhere else. **Verify it on your instance** before
+relying on it: after adding the condition, `./stack test` must still pass. It only works while Bedrock is reached
+over the public internet; with a VPC interface endpoint for Bedrock, requests carry no public source IP and the
+condition would block everything — use `aws:SourceVpce` (your endpoint's ID) instead.
 
 ## Data residency
 
@@ -347,4 +396,5 @@ The role detection is unit-tested with stubs; after your first install, from `~/
 4. `docker compose exec litellm env | grep AWS_` shows only `AWS_REGION_NAME` (no keys).
 5. `./stack test` passes (LiteLLM reached Bedrock with the role's credentials).
 6. With the hop limit set to 1, `./stack setup` stops with the hop-limit command above; set it back to 2.
-7. If you installed the IMDS guard: the `open-webui` check above times out and `./stack test` still passes.
+7. If you installed the IMDS guard: the token request from `open-webui` times out, LiteLLM's prints `200`, and
+   `./stack test` still passes — also right after `./stack up` recreates LiteLLM.

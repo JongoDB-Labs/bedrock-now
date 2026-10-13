@@ -8,9 +8,16 @@
 host_os() { uname -s; }   # overridable in tests
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-# Tests point these at fakes; nothing else can (a stray IMDS_URL in the shell is ignored on purpose).
-_sysfs() { printf '%s\n' "${BEDROCK_NOW_TEST_SYSFS:-/sys}"; }
-_imds_url() { printf '%s\n' "${BEDROCK_NOW_TEST_IMDS_URL:-http://169.254.169.254}"; }
+# Only the test suite (BEDROCK_NOW_TESTING=1) can point these at fakes; a stray variable in a user's shell
+# never changes where credentials come from.
+_sysfs() {
+  if [ "${BEDROCK_NOW_TESTING:-}" = 1 ] && [ -n "${BEDROCK_NOW_TEST_SYSFS:-}" ]; then printf '%s\n' "$BEDROCK_NOW_TEST_SYSFS"
+  else printf '/sys\n'; fi
+}
+_imds_url() {
+  if [ "${BEDROCK_NOW_TESTING:-}" = 1 ] && [ -n "${BEDROCK_NOW_TEST_IMDS_URL:-}" ]; then printf '%s\n' "$BEDROCK_NOW_TEST_IMDS_URL"
+  else printf 'http://169.254.169.254\n'; fi
+}
 
 # --- AWS credentials from the EC2 instance role ---------------------------------------------------------------
 
@@ -181,10 +188,22 @@ verify_key_leaving_role() {
   rm -f "$errf"
 }
 
+# _restore_aws_settings AUTH KEY_ID SECRET WHY — put the AWS settings back as they were (AUTH "" = key mode),
+# recreate LiteLLM with them and die with WHY.
+_restore_aws_settings() {
+  if [ -n "$1" ]; then set_env AWS_AUTH "$1"; else unset_env AWS_AUTH; fi
+  if [ -n "$2" ]; then set_env AWS_ACCESS_KEY_ID "$2"; set_env AWS_SECRET_ACCESS_KEY "$3"
+  else unset_env AWS_ACCESS_KEY_ID; unset_env AWS_SECRET_ACCESS_KEY; fi
+  if dc up -d --wait litellm; then
+    die "$4 — restored the previous AWS settings in .env and restarted LiteLLM with them (./stack logs litellm shows what went wrong)"
+  fi
+  die "$4 — restored the previous AWS settings in .env, but LiteLLM did not come up with them either (./stack logs litellm; ./stack up retries)"
+}
+
 # rotate_to_instance_role — ./stack rotate-aws --use-instance-role: role identity and Bedrock access are proven
-# before .env changes; if LiteLLM then fails to start, the key lines are put back.
+# before .env changes; if LiteLLM then doesn't start or the smoke test fails, the previous settings come back.
 rotate_to_instance_role() {
-  local role region arn old_id old_secret note=".env was NOT changed"
+  local role region arn old_auth old_id old_secret note=".env was NOT changed"
   role="$(instance_role_name)" ||
     die "no IAM role found on this machine (an EC2 instance profile, via IMDSv2) — attach one first (docs/cloud-vm.md). $note"
   region="$(get_env AWS_REGION_NAME)"; region="${region:-us-east-1}"
@@ -192,16 +211,13 @@ rotate_to_instance_role() {
   arn="$(_verify_role "$region" "$note" "$role")" || exit 1
   _prove_bedrock "$region" "$note" || exit 1
   _confirm_role_identity "$arn" || die "not switched — $note"
-  old_id="$(get_env AWS_ACCESS_KEY_ID)"; old_secret="$(get_env AWS_SECRET_ACCESS_KEY)"
+  old_auth="$(get_env AWS_AUTH)"; old_id="$(get_env AWS_ACCESS_KEY_ID)"; old_secret="$(get_env AWS_SECRET_ACCESS_KEY)"
   [ -z "$old_id" ] || log "the old key $old_id stays valid in IAM until you deactivate it (or ask your AWS admin to)"
   set_env AWS_AUTH instance-role; unset_env AWS_ACCESS_KEY_ID; unset_env AWS_SECRET_ACCESS_KEY
   log "restarting LiteLLM with the instance role…"
-  if ! dc up -d --wait litellm; then   # env changed → the container is recreated without keys
-    unset_env AWS_AUTH
-    if [ -n "$old_id" ]; then set_env AWS_ACCESS_KEY_ID "$old_id"; set_env AWS_SECRET_ACCESS_KEY "$old_secret"; fi
-    die "LiteLLM did not come up with the instance role — restored the previous AWS settings in .env (./stack up starts it with them; ./stack logs litellm shows why)"
-  fi
-  cmd_test
+  dc up -d --wait litellm ||   # env changed → the container is recreated without keys
+    _restore_aws_settings "$old_auth" "$old_id" "$old_secret" "LiteLLM did not come up with the instance role"
+  ( cmd_test ) || _restore_aws_settings "$old_auth" "$old_id" "$old_secret" "the smoke test failed with the instance role"
   if [ -n "$old_id" ]; then log "switched to the instance role. The old key ($old_id) is no longer in .env — deactivate it in IAM."
   else log "switched to the instance role."; fi
 }
@@ -209,6 +225,27 @@ rotate_to_instance_role() {
 instance_role_rotate_info() {
   log "this install uses the machine's AWS IAM role (AWS_AUTH=instance-role in .env): there is no key to rotate — AWS rotates the role's temporary credentials itself."
   log "to use an access key instead: ./stack rotate-aws --use-keys"
+}
+
+# warn_shell_aws_ignored — once per ./stack command: an exported key that isn't .env's is not used (dc() keeps
+# shell AWS settings out of Compose). Not for setup / rotate-aws, which use exported keys on purpose.
+warn_shell_aws_ignored() {
+  [ -n "${AWS_ACCESS_KEY_ID:-}" ] || return 0
+  if uses_instance_role; then
+    warn "AWS_ACCESS_KEY_ID in your shell is ignored: this install uses the machine's instance role (.env)"
+  elif [ "$AWS_ACCESS_KEY_ID" != "$(get_env AWS_ACCESS_KEY_ID)" ]; then
+    warn "AWS_ACCESS_KEY_ID in your shell is ignored: the stack uses the AWS key in .env (./stack rotate-aws changes it)"
+  fi
+}
+
+# remote_url -> the remote portal URL when remote access is on (REMOTE_MODE set and not off, REMOTE_HOST in .env);
+# nothing otherwise.
+remote_url() {
+  local mode host
+  mode="$(get_env REMOTE_MODE)"; host="$(get_env REMOTE_HOST)"
+  case "$mode" in '' | off | false | none | 0 | no) return 0 ;; esac
+  case "$host" in '' | *[!A-Za-z0-9.:/_-]*) return 0 ;; esac
+  case "$host" in http://* | https://*) printf '%s\n' "$host" ;; *) printf 'https://%s\n' "$host" ;; esac
 }
 
 # aws_auth_check — before ./stack up: role mode only on an EC2 host; key mode needs a key in .env.
@@ -272,7 +309,7 @@ docker_autostart_hint() {
 serve_urls() {
   local r=''
   log "portal: $(portal_url)"
-  if declare -F remote_url >/dev/null; then r="$(remote_url 2>/dev/null || true)"; fi
+  r="$(remote_url 2>/dev/null || true)"
   [ -z "$r" ] || log "remote: $r"
 }
 
