@@ -31,6 +31,16 @@ portal_url() {
   if [ "$p" = 80 ]; then printf 'http://%s\n' "$h"; else printf 'http://%s:%s\n' "$h" "$p"; fi
 }
 
+# portal_app_name -> the installed web app's name: "bedrock-now" for the default address, else
+# "bedrock-now (<project>[, port N])" (no ":" or "/": the name becomes a file name). Same rule as app_name in portal/portal/webapp.py (the manifest).
+portal_app_name() {
+  local h p label=""
+  h="$(portal_host)"; p="$(portal_port)"
+  [ "$h" = "$DEFAULT_PORTAL_HOST" ] || label="${h%.localhost}"
+  if [ "$p" != 80 ]; then if [ -n "$label" ]; then label="$label, port $p"; else label="port $p"; fi; fi
+  if [ -n "$label" ]; then printf 'bedrock-now (%s)\n' "$label"; else echo bedrock-now; fi
+}
+
 # save_portal_origin — PORTAL_ORIGIN (= portal_url) in .env, for Caddy's frame-ancestors; rewritten whenever
 # the host or port is decided.
 save_portal_origin() { set_env PORTAL_ORIGIN "$(portal_url)"; }

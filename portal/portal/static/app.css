@@ -141,3 +141,17 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 }
 /* Phones and tablets: mobile.css. */
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+
+/* Install app (install.js shows these only when the browser can install the portal). */
+.install-btn { margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--ink); font-weight: 500; text-align: left; }
+.install-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.install-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.install-btn:not([hidden]) ~ .logout { margin-top: -12px; }
+.install-note { max-width: 1180px; margin-top: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.install-note img { flex: none; border-radius: 9px; }
+.install-note > div { flex: 1 1 320px; }
+.install-note h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.install-note .note { margin-top: 2px; }
+.install-actions { display: flex; gap: 8px; margin: 0; }

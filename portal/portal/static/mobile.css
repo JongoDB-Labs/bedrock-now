@@ -41,7 +41,9 @@
   .tab { justify-content: center; gap: 0; min-height: 48px; padding: 0; font-size: 0; }
   .tab svg { width: 22px; height: 22px; }
   .tab[aria-current="page"] { box-shadow: inset 3px 0 0 var(--accent); }
-  .logout button { padding: 8px 4px; font-size: 12px; text-align: center; line-height: 1.2; }
+  .logout button { padding: 8px 2px; font-size: 11.5px; text-align: center; line-height: 1.2; white-space: nowrap; }
+  .install-btn { justify-content: center; gap: 0; min-height: 44px; padding: 0; font-size: 0; }
+  .install-btn svg { width: 22px; height: 22px; }
 }
 
 /* ---------- Phones and tablets: the models table becomes a card list ---------- */
@@ -74,7 +76,7 @@
 
   .sidebar { grid-row: 2; flex-direction: row; gap: 0; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
-  .sidebar .brand, .sidebar > .logout, .popout { display: none; }
+  .sidebar .brand, .sidebar > .logout, .sidebar > .install-btn, .popout { display: none; }
   .tabs { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
   .tabs li:has(> [data-tab="admin"]), .tabs li:has(> [data-tab="files"]) { display: none; }
   .tabs li { border-radius: 0; }
@@ -125,7 +127,7 @@
 
   .toast { left: 16px; right: 16px; bottom: calc(72px + env(safe-area-inset-bottom)); text-align: center; }
 
-  /* Desktop sheet. */
+  /* More sheet. */
   .sheet { position: fixed; inset: 0; z-index: 10; display: flex; align-items: flex-end; background: color-mix(in srgb, #000 40%, transparent); }
   .sheet-panel { width: 100%; padding: 22px max(18px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
     background: var(--surface); border-radius: 16px 16px 0 0; border-top: 1px solid var(--line); transform: translateY(16px); opacity: 0; transition: transform .18s ease-out, opacity .18s; }

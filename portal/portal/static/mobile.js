@@ -1,4 +1,4 @@
-// Phones and tablets: the bottom tab bar's "Desktop" sheet, keyboard-aware height for Chat, the iOS dictation tip,
+// Phones and tablets: the bottom tab bar's "More" sheet, keyboard-aware height for Chat, the iOS dictation tip,
 // Home's compact health line and status chips, and the service worker that makes the portal installable.
 // Loaded after app.js (both deferred); app.js asks window.bnMobile which tab a phone may show and which comes first.
 "use strict";
@@ -19,7 +19,7 @@
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
   window.bnMobile = {
-    // Admin and Files are desktop apps: on a phone they open from the Desktop sheet in a new tab instead.
+    // Admin and Files are desktop apps: on a phone they open from the More sheet in a new tab instead.
     allowTab: (tab) => (PHONE.matches && DESKTOP_ONLY.has(tab) ? "chat" : tab),
     defaultTab: () => (PHONE.matches ? "chat" : "home"),
   };
@@ -30,6 +30,8 @@
   function fit() {
     const root = document.documentElement;
     if (!vv) return;
+    // Pinch-zoomed: the visual viewport is a magnified part of the page, not the space the keyboard leaves.
+    if (Math.abs(vv.scale - 1) > 0.01) return;
     fullHeight = Math.max(fullHeight, window.innerHeight, vv.height);
     root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
     root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
@@ -40,9 +42,12 @@
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", fit);
     window.addEventListener("orientationchange", () => { fullHeight = 0; setTimeout(fit, 300); });
+    // A desktop window made shorter: no keyboard is involved (visual and layout viewport agree), so forget the
+    // old tallest height instead of reading the difference as an open keyboard.
+    window.addEventListener("resize", () => { if (Math.round(vv.height) === window.innerHeight) { fullHeight = 0; fit(); } });
   }
 
-  // --- the Desktop sheet (phones): Admin and Files in a new tab, and Sign out.
+  // --- the More sheet (phones): Admin and Files in a new tab, and Sign out.
   function sheet() {
     const box = $("#more-sheet"), btn = $("#more-btn");
     if (!box || !btn) return;
@@ -123,21 +128,39 @@
       let c = btn.querySelector(".count"); if (!c) { c = el("span", { class: "count" }); btn.append(c); }
       c.textContent = String(body.querySelectorAll(".status-on").length);
     };
-    btn.addEventListener("click", () => set(btn.getAttribute("aria-pressed") !== "true"));
-    new MutationObserver(count).observe(body, { childList: true });
+    // When the chips together leave no row: say so, and how to get rows back.
+    const empty = el("p", { class: "note models-empty", role: "status", hidden: "" });
+    section.querySelector(".table-wrap").after(empty);
+    let rendered = false;
+    const checkEmpty = () => {
+      const on = section.classList.contains("only-enabled");
+      const visible = [...body.rows].filter((r) => !on || r.querySelector(".status-on")).length;
+      empty.hidden = !rendered || visible > 0;
+      empty.textContent = on ? "No enabled models match this filter. Turn off Enabled only to see the rest."
+        : "No models match this filter.";
+    };
+    btn.addEventListener("click", () => { set(btn.getAttribute("aria-pressed") !== "true"); checkEmpty(); });
+    new MutationObserver(() => { rendered = true; count(); checkEmpty(); }).observe(body, { childList: true });
     set(PHONE.matches); count();
   }
 
   // --- Update card and Maintenance on a phone: the one-click buttons only when this device may use them
   // (remote access has them off unless REMOTE_ADMIN_ACTIONS=true; the API answers 403 anyway).
-  document.addEventListener("bn:admin", (e) => {
-    const a = e.detail || {};
+  let lastAdmin = null;
+  document.addEventListener("bn:admin", (e) => { lastAdmin = e.detail || {}; phoneWording(lastAdmin); });
+  function phoneWording(a) {
     const usable = Boolean(a.running && a.allowed);
     document.body.classList.toggle("admin-off", !usable);
     if (!PHONE.matches || usable) return;
     const where = "on the computer running bedrock-now";
     if (a.running) $("#maint-state").textContent = `Update, Rollback and Clean are off on this device: use a desktop browser ${where}.`;
     $("#update-hint").textContent = `To update, run ./stack update ${where}, or use Home in a desktop browser there.`;
+  }
+  // Rotating or resizing across the phone width: app.js redraws the desktop wording, then this adds the phone's.
+  PHONE.addEventListener("change", () => {
+    if (!lastAdmin) return;
+    if (PHONE.matches) phoneWording(lastAdmin);
+    else if (typeof renderAdmin === "function") renderAdmin(lastAdmin);
   });
 
   document.addEventListener("bn:tab", (e) => {
@@ -147,8 +170,19 @@
   });
 
   document.addEventListener("DOMContentLoaded", () => {
-    // Icon rail on tablets: the label is hidden, so the tooltip carries it.
-    for (const b of document.querySelectorAll(".tab")) b.title = b.textContent.trim();
+    // Icon rail on tablets: the label is hidden, so the tooltip carries it (elsewhere the label is visible).
+    const TABLET = window.matchMedia("(min-width: 768px) and (max-width: 1099.98px)");
+    const titles = () => {
+      for (const b of document.querySelectorAll(".tab")) {
+        if (TABLET.matches) b.title = b.textContent.trim(); else b.removeAttribute("title");
+      }
+    };
+    titles(); TABLET.addEventListener("change", titles);
+    // From an iPhone/iPad Home Screen app, Admin and Files open in Safari, which has its own cookies.
+    if (isIOS() && navigator.standalone) {
+      const n = $("#more-sheet .note");
+      if (n) n.textContent += " From this Home Screen app they open in Safari, which asks for the portal password once.";
+    }
     sheet(); healthLine(); statusFilter(); fit();
     const hint = voiceHint();
     if (hint) { hint.hidden = current !== "chat"; $("#frames").classList.toggle("hint-on", current === "chat"); }

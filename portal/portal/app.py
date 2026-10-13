@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, appicons, icons, prices, summary, updates
+from . import admin, appicons, icons, prices, summary, updates, webapp
 from .config import Settings
 from .security import COOKIE, MAX_AGE, LoginThrottle, Sessions, password_ok, safe_next, same_origin
 
@@ -240,20 +240,24 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
-    # Installable web app (Add to Home Screen). Public, like the login page: browsers fetch the manifest and its
-    # icons without the session cookie. Nothing here is per-user.
+    # Installable web app (Chrome "Install app", Add to Home Screen). Public, like the login page: browsers fetch
+    # the manifest and its icons without the session cookie. Nothing here is per-user.
+    manifest_body = json.dumps(webapp.manifest(settings), indent=1)
+
     async def manifest(request: Request) -> Response:
-        return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json",
-                            headers={"Cache-Control": "no-cache"})
+        return _security_headers(Response(manifest_body, media_type="application/manifest+json",
+                                          headers={"Cache-Control": "no-cache"}), settings)
 
     async def service_worker(request: Request) -> Response:
-        return FileResponse(STATIC / "sw.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+        return _security_headers(FileResponse(STATIC / "sw.js", media_type="text/javascript",
+                                              headers={"Cache-Control": "no-cache"}), settings)
 
     async def app_icon(request: Request) -> Response:
         name = f"app-{request.path_params['rest']}.png"
         if name not in appicons.FILES:
             return PlainTextResponse("not found", status_code=404)
-        return FileResponse(STATIC / "icons" / name, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return _security_headers(FileResponse(STATIC / "icons" / name, media_type="image/png",
+                                              headers={"Cache-Control": "public, max-age=86400"}), settings)
 
     async def icon(request: Request) -> Response:
         """A provider logo from catalog/icons for Home's model table (behind the login at Caddy, like Home)."""

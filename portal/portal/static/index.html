@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>bedrock-now</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/app-32.png" type="image/png" sizes="32x32">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/app-touch-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -19,6 +20,7 @@
 <link rel="stylesheet" href="/static/mobile.css">
 <script src="/static/app.js" defer></script>
 <script src="/static/mobile.js" defer></script>
+<script src="/static/install.js" defer></script>
 </head>
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
@@ -36,8 +38,10 @@
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>Files</button>
       <a class="popout" data-app="files" target="_blank" rel="noopener" title="Open Files in its own window" aria-label="Open Files in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
     <li class="more-item"><button type="button" class="more-btn" id="more-btn" aria-haspopup="dialog" aria-controls="more-sheet" aria-expanded="false">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14v8H3zM7 16h6M10 13v3"/></svg>Desktop</button></li>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg>More</button></li>
   </ul>
+  <button type="button" class="install-btn" data-install title="Install bedrock-now as an app" hidden>
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m-4-4 4 4 4-4M4 14v2h12v-2"/></svg>Install app</button>
   <form method="post" action="/logout" class="logout"><button type="submit">Sign out</button></form>
 </nav>
 
@@ -61,6 +65,15 @@
       <p class="updated"><span id="updated">Loading…</span> <button type="button" id="refresh" class="quiet">Refresh</button></p>
     </header>
     <p id="load-error" class="banner" hidden></p>
+    <section id="install-note" class="install-note" aria-labelledby="install-title" hidden>
+      <img src="/icons/app-48.png" alt="" width="40" height="40">
+      <div>
+        <h2 id="install-title">Install bedrock-now as an app</h2>
+        <p class="note">Its own window and Dock or taskbar icon, in Cmd-Tab and Alt-Tab, and it stays put when minimized. Chat's microphone keeps working.</p>
+      </div>
+      <p class="install-actions"><button type="button" class="action primary" data-install hidden>Install app</button>
+        <button type="button" class="quiet" id="install-later">Not now</button></p>
+    </section>
 
     <section id="update-card" class="update-card" aria-labelledby="update-title" hidden>
       <div class="update-head">

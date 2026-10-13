@@ -71,7 +71,8 @@ delete the folder.
 Open http://bedrock-now.localhost (or the URL `./stack status` prints) and sign in with `PORTAL_PASSWORD`.
 `*.localhost` names point at your own computer in every current browser, so there is nothing to configure. You
 stay signed in for 30 days; **Sign out** at the bottom of the sidebar ends every session at once. `./stack
-open` opens the portal as its own app window.
+open` opens it: the installed app if you have installed it (see [Desktop app](#desktop-app)), otherwise a tab in
+your browser.
 
 | Tab | What it is | Sign-in |
 |---|---|---|
@@ -84,6 +85,30 @@ Each app stays open while you switch tabs; the arrow next to a tab opens it in i
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
 password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
+
+### Desktop app
+
+Install the portal as an app and it gets its own window, its own icon in the Dock (macOS) or taskbar, a place
+in Cmd-Tab / Alt-Tab, and it stays put when you minimize it. It is the same portal (same sign-in, Chat's
+microphone keeps working), kept by your browser.
+
+- **Install:** open the portal in Google Chrome or Microsoft Edge (`./stack open` does this) and click
+  **Install app** at the bottom of the sidebar, or on Home. The button only shows when the browser can install
+  it; otherwise use **⋮ → Cast, save and share → Install page as app** (Chrome) or **⋯ → Apps → Install this
+  site as an app** (Edge). On macOS the app lands in `~/Applications/Chrome Apps.localized/` (Edge:
+  `Edge Apps.localized`); keep it in the Dock with right-click → **Options → Keep in Dock**. On Linux it is
+  added to your applications menu. Safari on macOS: **File → Add to Dock**.
+- **Open it:** from the Dock, Launchpad, Spotlight or the applications menu, or with `./stack open`, which
+  opens the installed app when it finds one and otherwise the portal as a tab in your everyday browser profile
+  (with a one-time tip on how to install it). The app's **Chat** and **Home** shortcuts are on its Dock icon's
+  right-click menu.
+- **Several copies:** each portal address is its own app: `bedrock-now` for the default one, `bedrock-now
+  (bn-dev)` for a copy with `COMPOSE_PROJECT_NAME=bn-dev`, `bedrock-now (port 8800)` when the portal is not on
+  port 80. If you rename the app in the install dialog, `./stack open` will not find it (it opens a tab).
+- **Uninstall:** in the app, **⋮ → Uninstall bedrock-now** (or chrome://apps → right-click → **Remove from
+  Chrome**; Edge: edge://apps). Your data is in the stack, not in the app.
+- `BEDROCK_NOW_OPEN_MODE=window ./stack open` brings back the old separate window (Chrome `--app` with its own
+  browser profile); it has no Dock icon of its own.
 
 ### Using it on your phone
 
@@ -98,7 +123,7 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   (tap it for every service), the update card when there is one, and the models as cards with an
   **Enabled only** filter (on by default on a phone). Chat fills the screen and shrinks above the keyboard, so
   the message box stays visible.
-- **Admin and Files** are desktop apps: on a phone they sit under **Desktop** in the tab bar and open in a new
+- **Admin and Files** are desktop apps: on a phone they sit under **More** in the tab bar and open in a new
   browser tab (they still ask for their own sign-in, copied from the bottom of Home). **Sign out** is there too.
   Update, Rollback and Clean are off from a phone unless `REMOTE_ADMIN_ACTIONS=true`; Home then says to use a
   desktop browser on the computer running bedrock-now.
@@ -356,7 +381,7 @@ option yet: [docs/voice.md](docs/voice.md).
 | `./stack setup` | First-time or repeat setup: AWS key, ports, model probe, keys | < $0.01 |
 | `./stack up` / `down` | Start / stop (data is kept) | none |
 | `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups; reused for 5 minutes, `--disk` measures now) | none |
-| `./stack open` | The portal in its own browser window | none |
+| `./stack open` | The installed bedrock-now app, else the portal in a browser tab | none |
 | `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
 | `./stack costs` | Prices for your enabled models + spend per key | none |

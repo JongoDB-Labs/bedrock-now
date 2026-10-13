@@ -144,12 +144,25 @@ test_compose_portal_state_and_caddy_hardening() {
 
 test_caddy_web_app_files_are_public_before_login() {
   # Browsers fetch the manifest, its icons and the service worker without the session cookie.
-  local line; line="$(grep '@public path' "$STACK_DIR/caddy/Caddyfile")"
+  local f="$STACK_DIR/caddy/Caddyfile" line
+  line="$(grep '@public path' "$f")"
   assert_contains "$line" " /manifest.webmanifest"
   assert_contains "$line" " /sw.js"
   assert_contains "$line" " /icons/app-*"
   # ...but never the provider logos or anything else under /icons/ or /static/ beyond the login page's own files.
   case "$line" in *" /icons/*"*|*" /static/*"*) echo "public paths too broad: $line" >&2; return 1 ;; esac
+}
+
+test_caddy_public_paths_have_one_definition_in_a_snippet() {
+  # A second portal site block (remote access) must import the same list, never copy it.
+  local f="$STACK_DIR/caddy/Caddyfile"
+  assert_eq "$(grep -c '@public' "$f" | tr -d ' ')" "$(( $(grep -c 'reverse_proxy @public' "$f") + 1 ))"
+  assert_eq "$(grep -c '@public path' "$f" | tr -d ' ')" 1
+  assert_eq "$(sed -n '/^(public_paths) {/,/^}/p' "$f" | grep -c '@public path')" 1
+  # every site block that serves @public imports the snippet first
+  awk '/^http:\/\// { blk = $0; imp = 0 } /import public_paths/ { imp = 1 }
+       /reverse_proxy @public/ && !imp { print "no import public_paths before @public in " blk; bad = 1 }
+       END { exit bad }' "$f"
 }
 
 test_check_port_allows_80_only_for_the_portal() {

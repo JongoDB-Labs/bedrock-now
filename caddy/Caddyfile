@@ -36,6 +36,13 @@
 	header_down Content-Security-Policy "frame-ancestors {$PORTAL_ORIGIN}"
 }
 
+# The portal paths reachable without a session: the login page and what it needs, and the installable web app's
+# manifest, icons and service worker (browsers fetch those without the cookie). Every portal site block (this one,
+# and a remote-access block later) imports this one list, so they can never drift apart.
+(public_paths) {
+	@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-*
+}
+
 http://{$PORTAL_HOST} {
 	route {
 		request_header -X-Portal-User
@@ -51,9 +58,8 @@ http://{$PORTAL_HOST} {
 		request_body /api/admin/* {
 			max_size 4KB
 		}
-		# The login page and what it needs are public; everything else requires a session. So are the web app
-		# manifest, its home-screen icons and the service worker: browsers fetch them without the cookie.
-		@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-*
+		# The public paths (snippet above) need no session; everything else does.
+		import public_paths
 		reverse_proxy @public portal:8000
 		import portal_auth
 		reverse_proxy portal:8000

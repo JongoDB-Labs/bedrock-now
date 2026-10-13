@@ -100,19 +100,38 @@ All notable changes to bedrock-now are documented here. The format follows
   `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
   `.env` alone decides (one warning per command when your shell's key differs).
 
-- **The portal works on phones and installs as an app.** A web app manifest, home-screen icons (drawn from the
-  logo by `python -m portal.appicons`, no image tools needed) and Apple touch icon; "Add to Home Screen" on
-  iOS and "Install app" in Android Chrome (HTTPS). The manifest, `/icons/app-*` and `/sw.js` are public
-  (Caddy and the portal), like the login page. The service worker caches nothing: it only shows a "Can't
-  reach bedrock-now" page when the network is down; `/api/*` and everything else pass straight through.
+- **Desktop app.** Chrome and Edge can install the portal as a real app: its own window, Dock or taskbar icon,
+  Cmd-Tab entry, and it stays put when minimized (Chat's microphone keeps working). An **Install app** button
+  (sidebar, and a note on Home with **Not now**) appears when the browser offers it and disappears once
+  installed or inside the app. The manifest has an `id`, `launch_handler: focus-existing` (the Dock icon brings
+  the open window forward), **Chat** and **Home** shortcuts, and a name per portal address: `bedrock-now`, or
+  `bedrock-now (bn-dev)` / `(port 8800)` for other copies. README › Desktop app covers install and uninstall.
+- **`./stack open` opens the installed app** (macOS `~/Applications/<Browser> Apps.localized/`, Linux the
+  browser's `.desktop` entry); otherwise the portal as a tab in your everyday browser profile, with a one-time
+  tip about Install app. The separate `--app` window with its own profile (no Dock icon of its own) is gone
+  unless `BEDROCK_NOW_OPEN_MODE=window`. `portal/e2e/install/run.sh` checks install and `./stack open` end to
+  end in a throwaway container.
+- **New app icon:** three slabs of bedrock, the top one lifted, light pouring out of the seam. macOS-style
+  squircle with the 824 px safe area, maskable, Apple touch and monochrome variants, and a simplified mark for
+  16-48 px, which is also the sidebar logo and favicon. `python -m portal.appicons` writes the SVGs;
+  `portal/render-icons.sh` renders the PNGs (rsvg-convert + optipng in a pinned Alpine container) and the tests
+  fail if a PNG is older than its SVG.
+- **The portal works on phones and installs as an app.** A web app manifest, home-screen icons and Apple touch
+  icon; "Add to Home Screen" on iOS and "Install app" in Android Chrome (HTTPS). The manifest, `/icons/app-*`
+  and `/sw.js` are public (one `(public_paths)` snippet in the Caddyfile, and the portal), like the login
+  page, with the portal's security headers. The service worker caches nothing: it only shows a "Can't reach
+  bedrock-now" page when the network is down; `/api/*` and everything else pass straight through.
 - **Phone layout (under 768 px):** bottom tab bar with Home and Chat (phones open on Chat, then the last tab);
-  Admin, Files and Sign out under **Desktop**, opening in a new tab. Compact Home: spend and budget bars, a
+  Admin, Files and Sign out under **More**, opening in a new tab. Compact Home: spend and budget bars, a
   one-line health summary that expands, the update card without the desktop-only parts (one-click buttons only
-  when allowed for this device), models as cards with an **Enabled only**
-  filter, sign-ins. Chat fills the screen and follows the on-screen keyboard (visualViewport), with
-  safe-area insets for notched phones. On iPhone and iPad, Chat shows a dismissible tip to use the keyboard's
+  when allowed for this device; the wording follows rotation), models as cards with an **Enabled only**
+  filter (it says so when the filters leave no model), sign-ins. From an iPhone/iPad Home Screen app the More
+  sheet says Admin and Files open in Safari, which asks for the portal password once. Chat fills the screen and follows the on-screen keyboard (visualViewport), with
+  safe-area insets for notched phones (not while pinch-zoomed; a shorter desktop window is not mistaken for an
+  open keyboard). On iPhone and iPad, Chat shows a dismissible tip to use the keyboard's
   dictation.
-- **Tablets (768-1099 px):** the sidebar becomes an icon rail; models show as cards.
+- **Tablets (768-1099 px):** the sidebar becomes an icon rail (tab names as tooltips there only); models show
+  as cards.
 - Touch targets of at least 44 px on touch screens; reduced motion and light/dark respected throughout.
 
 ## [0.2.1] - 2026-10-12

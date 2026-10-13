@@ -1,10 +1,12 @@
 # shellcheck shell=bash
-# Task E1: ./stack open (Chrome-family --app window) and auto-open after setup / up.
+# ./stack open: the installed web app, else a tab in the everyday browser (BEDROCK_NOW_OPEN_MODE=window: the old
+# separate --app window), and auto-open after setup / up.
 . "$STACK_DIR/lib/commands.sh"
 . "$STACK_DIR/lib/open.sh"
 
-_mac() { open_os() { echo Darwin; }; unset SSH_CONNECTION SSH_TTY; }
-_linux() { open_os() { echo Linux; }; unset SSH_CONNECTION SSH_TTY; }
+_mac() { open_os() { echo Darwin; }; unset SSH_CONNECTION SSH_TTY; HOME="$TMP/home"; }
+_linux() { open_os() { echo Linux; }; unset SSH_CONNECTION SSH_TTY XDG_DATA_HOME; HOME="$TMP/home"; }
+_window() { export BEDROCK_NOW_OPEN_MODE=window; }
 
 test_portal_url_defaults_and_overrides() {
   : > "$ENV_FILE"
@@ -21,7 +23,7 @@ test_portal_url_has_one_definition() { # ./stack open and the portal/status code
 }
 
 test_profile_dir_is_per_project() {
-  HOME="$TMP/home"; : > "$ENV_FILE"; _mac
+  HOME="$TMP/home"; : > "$ENV_FILE"; _mac; _window
   assert_eq "$(open_profile_dir)" "$TMP/home/Library/Application Support/bedrock-now"
   printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
   assert_eq "$(open_profile_dir)" "$TMP/home/Library/Application Support/bedrock-now-bn-dev"
@@ -58,8 +60,8 @@ test_linux_chain_uses_first_installed_binary() {
   assert_eq "$(PATH="$TMP/bin" open_choose_browser)" "none"
 }
 
-test_cmd_open_mac_launches_app_window() {
-  HOME="$TMP/home"; : > "$ENV_FILE"; _mac
+test_cmd_open_window_mode_mac_launches_app_window() {
+  HOME="$TMP/home"; : > "$ENV_FILE"; _mac; _window
   open_choose_browser() { echo "app:Microsoft Edge"; }
   open() { printf '%s\n' "$@" > "$TMP/args"; }
   cmd_open 2> "$TMP/err"
@@ -67,8 +69,8 @@ test_cmd_open_mac_launches_app_window() {
   assert_contains "$(cat "$TMP/err")" "opening http://bedrock-now.localhost in Microsoft Edge"
 }
 
-test_cmd_open_linux_launches_binary_detached() {
-  HOME="$TMP/home"; printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2; unset XDG_DATA_HOME
+test_cmd_open_window_mode_linux_launches_binary_detached() {
+  HOME="$TMP/home"; printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; _window; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2; unset XDG_DATA_HOME
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$TMP" > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
   cmd_open 2>/dev/null
@@ -77,8 +79,8 @@ test_cmd_open_linux_launches_binary_detached() {
   [ -d "$TMP/home/.local/share/bedrock-now" ] || { echo "profile dir not created" >&2; return 1; }
 }
 
-test_cmd_open_linux_browser_that_fails_at_once_falls_back() {
-  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.3; HOME="$TMP/home"
+test_cmd_open_window_mode_linux_browser_that_fails_at_once_falls_back() {
+  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; _window; export DISPLAY=:0 OPEN_CHECK_DELAY=0.3; HOME="$TMP/home"
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
   out="$(PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>&1)"   # no xdg-open in $TMP/bin; /usr/bin has none on macOS
@@ -113,8 +115,8 @@ test_mac_spotlight_lookup_is_read_only_and_follows_the_chain() {
   assert_not_contains "$(grep -v '^[[:space:]]*#' "$STACK_DIR/lib/open.sh")" "open -R"   # reveals in Finder
 }
 
-test_cmd_open_mac_launches_spotlight_found_browser_by_bundle_id() {
-  HOME="$TMP/home"; : > "$ENV_FILE"; _mac
+test_cmd_open_window_mode_mac_launches_spotlight_found_browser_by_bundle_id() {
+  HOME="$TMP/home"; : > "$ENV_FILE"; _mac; _window
   open_choose_browser() { echo "bundle:com.brave.Browser"; }
   open() { printf '%s\n' "$@" > "$TMP/args"; }
   cmd_open 2>/dev/null
@@ -161,4 +163,101 @@ test_setup_and_up_end_with_auto_open_and_open_is_wired() {
   assert_eq "$(sed -n '/^cmd_up() {/,/^}/p' "$STACK_DIR/lib/commands.sh" | tail -n 2 | head -n 1)" "  maybe_auto_open"
   assert_contains "$(cat "$STACK_DIR/stack")" "open) cmd_open"
   assert_contains "$(cmd_help)" "  open "
+}
+
+# --- the installed web app ---
+
+test_portal_app_name_matches_the_manifest_rule() {
+  # Same table as portal/tests/test_pwa.py (app_name): the installed app is found by this name.
+  : > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now"
+  printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (bn-dev)"
+  printf 'COMPOSE_PROJECT_NAME=bn-dev\nPORTAL_PORT=8800\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (bn-dev, port 8800)"
+  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (port 8800)"
+  printf 'PORTAL_HOST=ai.example.com\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (ai.example.com)"
+}
+
+test_installed_app_mac_is_found_by_name_in_any_browser_apps_folder() {
+  : > "$ENV_FILE"; _mac
+  if open_installed_app >/dev/null; then echo "found an app that is not there" >&2; return 1; fi
+  mkdir -p "$HOME/Applications/Chrome Apps.localized/bedrock-now (bn-dev).app"
+  if open_installed_app >/dev/null; then echo "took bn-dev's app for the default project's" >&2; return 1; fi
+  mkdir -p "$HOME/Applications/Edge Apps.localized/bedrock-now.app"
+  assert_eq "$(open_installed_app)" "$HOME/Applications/Edge Apps.localized/bedrock-now.app"
+  printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
+  assert_eq "$(open_installed_app)" "$HOME/Applications/Chrome Apps.localized/bedrock-now (bn-dev).app"
+}
+
+test_installed_app_linux_is_the_browser_desktop_entry_with_that_name() {
+  : > "$ENV_FILE"; _linux
+  local d="$HOME/.local/share/applications"; mkdir -p "$d"
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=/bin/true\n' > "$d/my-notes.desktop"   # not a browser's: ignored
+  printf '[Desktop Entry]\nName=bedrock-now (bn-dev)\nExec=x\n' > "$d/chrome-aaa-Default.desktop"
+  if open_installed_app >/dev/null; then echo "wrong entry accepted" >&2; return 1; fi
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=/opt/google/chrome/google-chrome --profile-directory=Default --app-id=bbb %%U\n' \
+    > "$d/chrome-bbb-Default.desktop"
+  assert_eq "$(open_installed_app)" "$d/chrome-bbb-Default.desktop"
+  assert_eq "$(_desktop_exec "$d/chrome-bbb-Default.desktop")" "/opt/google/chrome/google-chrome --profile-directory=Default --app-id=bbb"
+  export XDG_DATA_HOME="$TMP/xdg"; mkdir -p "$XDG_DATA_HOME/applications"
+  if open_installed_app >/dev/null; then echo "XDG_DATA_HOME not used" >&2; return 1; fi
+}
+
+test_cmd_open_mac_prefers_the_installed_app() {
+  : > "$ENV_FILE"; _mac
+  mkdir -p "$HOME/Applications/Chrome Apps.localized/bedrock-now.app"
+  open() { printf '%s\n' "$@" > "$TMP/args"; }
+  open_choose_browser() { echo "CHOSE" > "$TMP/chose"; echo "app:Google Chrome"; }
+  out="$(cmd_open 2>&1)"
+  assert_eq "$(tr '\n' '|' < "$TMP/args")" "-a|$HOME/Applications/Chrome Apps.localized/bedrock-now.app|"
+  assert_contains "$out" "opening the installed bedrock-now app"
+  [ ! -f "$TMP/chose" ] || { echo "looked for a browser although the app is installed" >&2; return 1; }
+}
+
+test_cmd_open_mac_without_app_opens_a_tab_in_the_everyday_profile_and_tips_once() {
+  : > "$ENV_FILE"; _mac
+  open_choose_browser() { echo "app:Google Chrome"; }
+  open() { printf '%s\n' "$@" > "$TMP/args"; }
+  out="$(cmd_open 2>&1)"
+  assert_eq "$(tr '\n' '|' < "$TMP/args")" "-a|Google Chrome|http://bedrock-now.localhost|"   # no -n, --app or --user-data-dir
+  assert_contains "$out" "Install app"
+  assert_not_contains "$(cmd_open 2>&1)" "Install app"   # the tip is shown once
+  open_choose_browser() { echo "bundle:com.brave.Browser"; }
+  cmd_open 2>/dev/null
+  assert_eq "$(tr '\n' '|' < "$TMP/args")" "-b|com.brave.Browser|http://bedrock-now.localhost|"
+}
+
+test_cmd_open_linux_launches_the_installed_app() {
+  : > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2
+  local d="$HOME/.local/share/applications"; mkdir -p "$d" "$TMP/bin"
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=%s/bin/fakechrome --app-id=bbb %%U\n' "$TMP" > "$d/chrome-bbb-Default.desktop"
+  printf '#!/bin/sh\necho "$*" > "%s/ran"\n' "$TMP" > "$TMP/bin/fakechrome"; chmod +x "$TMP/bin/fakechrome"
+  # without gtk-launch: its Exec line, field codes dropped
+  PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
+  i=0; while [ ! -s "$TMP/ran" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  assert_eq "$(cat "$TMP/ran")" "--app-id=bbb"
+  # with gtk-launch: by desktop id
+  printf '#!/bin/sh\necho "GTK $*" > "%s/ran"\n' "$TMP" > "$TMP/bin/gtk-launch"; chmod +x "$TMP/bin/gtk-launch"
+  PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
+  i=0; while ! grep -q GTK "$TMP/ran" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  assert_eq "$(cat "$TMP/ran")" "GTK chrome-bbb-Default"
+}
+
+test_cmd_open_linux_without_app_opens_a_tab() {
+  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2
+  mkdir -p "$TMP/bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$TMP" > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
+  open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
+  cmd_open 2>/dev/null
+  i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  assert_eq "$(tr '\n' '|' < "$TMP/args")" "http://bedrock-now.localhost:8800|"
+}
+
+test_window_mode_ignores_the_installed_app_and_profile_dirs_only_in_window_mode() {
+  : > "$ENV_FILE"; _mac; _window
+  mkdir -p "$HOME/Applications/Chrome Apps.localized/bedrock-now.app"
+  open_choose_browser() { echo "app:Google Chrome"; }
+  open() { printf '%s\n' "$@" > "$TMP/args"; }
+  cmd_open 2>/dev/null
+  assert_contains "$(tr '\n' '|' < "$TMP/args")" "-na|Google Chrome|--args|--app=http://bedrock-now.localhost|"
+  # --user-data-dir (a separate profile) appears only in the window-mode launcher
+  assert_eq "$(grep -c -- '--user-data-dir' "$STACK_DIR/lib/open.sh")" 3
+  assert_eq "$(sed -n '/^_open_window() {/,/^}/p' "$STACK_DIR/lib/open.sh" | grep -c -- '--user-data-dir')" 3
 }

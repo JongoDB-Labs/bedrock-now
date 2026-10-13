@@ -12,8 +12,9 @@ Usage: ./stack <command> [--yes]
   up | down    Start / stop the stack
   status       Services, health, URLs and disk use (the portal: one login for every browser UI)
                --disk measures disk use now (otherwise reused for 5 minutes)
-  open         The portal in its own browser window (setup and up open it too;
-               BEDROCK_NOW_NO_OPEN=1 turns that off)
+  open         The installed bedrock-now app, else the portal in your browser, where
+               "Install app" installs it (setup and up open it too; BEDROCK_NOW_NO_OPEN=1
+               turns that off)
   logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key

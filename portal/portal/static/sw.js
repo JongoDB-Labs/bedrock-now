@@ -3,6 +3,12 @@
 // Page loads go to the network as usual; only when the network is unreachable does it answer with a short
 // built-in "can't reach bedrock-now" page instead of the browser's error. Every other request (API calls,
 // scripts, icons) is not touched. Chat, Admin and Files live on other origins and never pass through here.
+//
+// Retiring it: deleting this file is not enough (browsers keep running an installed worker while /sw.js fails).
+// Serve this instead for a few releases, so every installed copy removes itself:
+//   self.addEventListener("install", () => self.skipWaiting());
+//   self.addEventListener("activate", (e) => e.waitUntil(self.registration.unregister()));
+// and drop the register() call in mobile.js.
 "use strict";
 
 const OFFLINE = `<!doctype html><html lang="en"><head><meta charset="utf-8">

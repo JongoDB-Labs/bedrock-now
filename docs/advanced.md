@@ -78,16 +78,32 @@ does not end in `.localhost` is refused unless you also set `BEDROCK_NOW_ALLOW_P
 plain HTTP, so its session cookie is not `Secure` and goes to that name and all its subdomains. Only use a name
 that resolves to this computer alone.
 
-## The portal window (`./stack open`)
+## Opening the portal (`./stack open`)
 
-`./stack open` opens the portal as its own app window: the first of Google Chrome, Microsoft Edge, Brave and
-Chromium that is installed, started with `--app=<url>` and a separate browser profile for this copy (macOS:
-`~/Library/Application Support/bedrock-now`, Linux: `~/.local/share/bedrock-now`; a second copy uses
-`bedrock-now-<project>`), so its logins don't mix with your everyday browser. On macOS it looks in
-`/Applications` and `~/Applications` first, then asks Spotlight by bundle id (`mdfind`, read-only) for browsers
-installed elsewhere. Without any of them it uses your default browser (`open` / `xdg-open`); over SSH it only
-prints the URL. `./stack setup` and `./stack up` open it at the end when they run in a terminal.
-`BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without a terminal never open a window.
+`./stack open` first looks for the installed web app of this portal, by the name its manifest gives
+(`bedrock-now`, or `bedrock-now (<project>)` / `(port N)` for other addresses; `portal_app_name` in
+`lib/portal.sh` and `app_name` in `portal/portal/webapp.py` share the rule):
+
+- macOS: `~/Applications/<Browser> Apps.localized/<name>.app` (Chrome: `Chrome Apps.localized`), opened with
+  `open -a`.
+- Linux: the browser's `~/.local/share/applications/{chrome,msedge,brave,chromium}-*.desktop` with
+  `Name=<name>` (`$XDG_DATA_HOME` if set), started with `gtk-launch`, or its `Exec=` line without it.
+
+Without an installed app it opens the portal as a tab in your everyday browser profile (the one that can
+install it), the first of Google Chrome, Microsoft Edge, Brave and Chromium, and prints a one-time tip about
+**Install app**. On macOS it looks in `/Applications` and `~/Applications` first, then asks Spotlight by bundle
+id (`mdfind`, read-only) for browsers installed elsewhere. Without any of them it uses your default browser
+(`open` / `xdg-open`); over SSH it only prints the URL. `./stack setup` and `./stack up` open it at the end when
+they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without a terminal never
+open a window.
+
+`BEDROCK_NOW_OPEN_MODE=window` keeps the earlier behaviour: a Chrome-family window started with `--app=<url>`
+and a separate browser profile per copy (macOS: `~/Library/Application Support/bedrock-now`, Linux:
+`~/.local/share/bedrock-now`; a second copy uses `bedrock-now-<project>`). It shares no logins with your
+everyday browser, but has no Dock icon of its own and cannot be installed.
+
+`portal/e2e/install/run.sh` checks the whole flow in a throwaway container (Chromium on a virtual display):
+installable, the Install button, a real install, and `./stack open` opening the app.
 
 ## Verbose output
 
