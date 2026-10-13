@@ -63,6 +63,7 @@ test_migrate_direct_ports_drops_only_the_old_keys() {
 _stub_up() {
   ensure_images() { :; }; run_phase() { :; }; sync_budget_banner() { :; }; cmd_status() { :; }; maybe_auto_open() { :; }
   portal_login() { echo 303; }; aws_auth_check() { :; }   # (tested in test_host.sh)
+  dc() { :; }; refresh_prices() { :; }   # never the real Compose project (it may be a live install)
 }
 
 test_up_rewrites_portal_origin() {

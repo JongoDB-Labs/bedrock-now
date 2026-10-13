@@ -73,7 +73,7 @@ def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: 
                 where: str = "") -> HTMLResponse:
     page = (STATIC / "login.html").read_text(encoding="utf-8")
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
-    hint = f"<code>{html.escape(where)}</code>" if where else "the <code>.env</code> file of your bedrock-now folder"
+    hint = f"<code>{html.escape(where)}</code>" if where else html.escape(GENERIC_WHERE).replace(".env", "<code>.env</code>", 1)
     page = page.replace("{{next}}", html.escape(next_url, quote=True)).replace("{{error}}", err)
     page = page.replace("{{where}}", hint)
     resp = HTMLResponse(page, status_code=status)

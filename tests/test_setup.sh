@@ -174,7 +174,7 @@ test_spend_text() {
 test_cmd_costs_lists_enabled_models_spend_and_age_warning() {
   PRICES="$STACK_DIR/tests/fixtures/prices.tsv"; CATALOG="$FIX"; STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"
   printf 'big\nimg\n' > "$TMP/litellm/enabled-models.txt"
-  printf 'LITELLM_PORT=4000\nLITELLM_KEY_CLAUDE_CODE=sk-a\nLITELLM_KEY_OPENWEBUI=sk-b\n' > "$ENV_FILE"
+  printf 'LITELLM_PORT=9\nLITELLM_KEY_CLAUDE_CODE=sk-a\nLITELLM_KEY_OPENWEBUI=sk-b\n' > "$ENV_FILE"   # 9: closed
   key_info() { if [ "$1" = sk-a ]; then printf '{"info":{"spend":12.4,"max_budget":200.0,"budget_reset_at":"2026-11-03T00:00:00+00:00"}}'; else return 22; fi; }
   out="$(TODAY=2026-10-12 cmd_costs 2>&1)"
   assert_contains "$out" "as of 2026-01-01"
@@ -188,7 +188,7 @@ test_cmd_costs_lists_enabled_models_spend_and_age_warning() {
 
 test_cmd_costs_without_probe_lists_whole_catalog() {
   PRICES="$STACK_DIR/tests/fixtures/prices.tsv"; CATALOG="$FIX"; STACK_DIR="$TMP"
-  printf 'LITELLM_PORT=4000\n' > "$ENV_FILE"
+  printf 'LITELLM_PORT=9\n' > "$ENV_FILE"   # closed port: never a live LiteLLM
   out="$(TODAY=2026-01-02 cmd_costs 2>&1)"
   assert_contains "$out" "whole catalog"
   assert_contains "$out" "small"

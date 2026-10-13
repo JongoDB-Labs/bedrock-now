@@ -1,0 +1,7 @@
+#!/bin/sh
+# Test shim (tests/run.sh puts tests/shims first on PATH): docker, aws and tailscale never run for real in tests.
+# A test that needs one stubs it as a shell function; reaching this file is a bug, logged for the suite to fail.
+n="${0##*/}"
+printf 'real %s called by test %s: %s\n' "$n" "${T_NAME:-?}" "$*" >> "${BN_SHIM_LOG:-/dev/null}"
+echo "real $n called by test" >&2
+exit 97

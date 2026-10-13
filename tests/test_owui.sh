@@ -390,6 +390,9 @@ test_db_admin_session_key_drop_ignores_odd_tokens() {
   litellm_drop_session_key x
   litellm_drop_session_key ""
   litellm_drop_session_key "h.$(printf '{"key":"sk-a\\"},{x"}' | openssl base64 -A | tr '/+' '_-' | tr -d '=').s"
+  _tok() { printf 'h.%s.s' "$(printf '{"key":"%s"}' "$1" | openssl base64 -A | tr '/+' '_-' | tr -d '=')"; }
+  printf 'LITELLM_MASTER_KEY=sk-master1\nLITELLM_KEY_CLAUDE_CODE=sk-cc1\nLITELLM_KEY_OPENWEBUI=sk-ow1\nLITELLM_KEY_SETUP=sk-set1\n' >> "$ENV_FILE"
+  for k in sk-master1 sk-cc1 sk-ow1 sk-set1; do litellm_drop_session_key "$(_tok "$k")"; done
   assert_eq "$(cat "$TMP/calls")" ""
 }
 

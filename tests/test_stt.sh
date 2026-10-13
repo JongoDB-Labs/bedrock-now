@@ -141,7 +141,9 @@ test_compose_selects_engine_and_keeps_key_in_litellm() {
 }
 
 test_compose_engine_interpolation() {
-  if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then echo "no docker compose" >&2; return 77; fi
+  # Only `docker compose config` (renders the file; no daemon, no containers) may use the real docker.
+  [ -n "${BN_REAL_DOCKER:-}" ] && "$BN_REAL_DOCKER" compose version >/dev/null 2>&1 || { echo "no docker compose" >&2; return 77; }
+  docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
   # every :? variable, so compose can render the file
   printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nAWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=s\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\nLITELLM_KEY_OPENWEBUI=sk-ow\n' > "$ENV_FILE"
   _env() { STT_API_KEY=sk-shell-should-not-win OWUI_STT_ENGINE=openai dc config --format json 2>/dev/null; }
@@ -376,6 +378,7 @@ test_apply_before_setup_or_when_stopped() {
 test_owui_entry_is_hidden_with_price() {
   printf 'STT_PROVIDER=groq\nSTT_API_KEY=%s\nOPENWEBUI_API_KEY=sk-o\n' "$GKEY" > "$ENV_FILE"
   owui_upsert_model() { printf '%s|' "$@" >> "$TMP/up"; }
+  _owui_post() { echo "$1" >> "$TMP/posts"; echo 200; }   # never a real (possibly live) Open WebUI
   stt_sync_owui 2>/dev/null
   out="$(cat "$TMP/up")"
   assert_contains "$out" "stt|Speech to text|Speech to text|"
@@ -385,6 +388,7 @@ test_owui_entry_is_hidden_with_price() {
   : > "$TMP/up"; printf 'OPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"
   stt_sync_owui
   assert_eq "$(cat "$TMP/up")" ""
+  assert_eq "$(cat "$TMP/posts")" "/api/v1/models/model/delete"   # the entry it had added goes
 }
 
 # --- prices, costs, summary ---

@@ -24,11 +24,43 @@ with `./stack uninstall` inside it. Each copy has its own `PORTAL_PASSWORD`: its
 `.env` and project (`It is PORTAL_PASSWORD in ~/bedrock-now-test/.env (project bn-test).`; on this computer only,
 never to a remote visitor), and `./stack password` in a folder says the same.
 
+### How copies are kept apart
+
+Two checkouts with the same project name would share containers and data volumes, so every `./stack` command
+refuses when another folder already uses the name (`project 'bedrock-now' is already used by the bedrock-now
+install in <dir>…`), and a first setup refuses when data volumes of that name already exist. Nothing is changed
+in either case. `./stack status` only prints the warning and still shows its table.
+
+A stopped install keeps its name too: the first checkout that starts or changes a project (`setup`, `up`,
+`update`, `restore`, `test`, `backup`, `rotate-aws`) records itself in a small, empty Docker volume
+`<project>_bedrock-now-owner` (label `io.bedrock-now.dir`), so another folder can't start on, or
+`./stack uninstall`, its data while it is down. `down`, `logs`, `status`, `costs` and `models` only check.
+This also covers volumes created before the record existed: the first checkout to start or change the stack
+after upgrading claims them. If two checkouts claim at the same moment, one wins and the other stops with
+"was just claimed by …". `./stack uninstall` lists the volumes it will delete and removes the record.
+
+A record whose folder no longer exists (you moved or deleted the checkout) is replaced. A folder that still
+exists keeps its claim even without a `.env`; if that install is gone, move the folder aside (e.g. rename it)
+or delete it. A claim only ever replaces the record it found stale, never one another checkout just wrote; if
+the newer record points to a folder that no longer exists, the message says so and you simply re-run. The data
+volumes themselves are not labelled, because Compose would offer to recreate them (deleting the data) when a
+label changes.
+
+If the message says a **checkout that is already set up** clashes with another install, that checkout can't
+take a new name (its `.env` belongs to the project). If this folder replaces the other one (you moved or
+copied it with its `.env`), stop the stack there (`./stack down`), move the old folder aside (e.g. rename it)
+or delete it, and re-run here. It holds its own `backups/` and `.env`, so look before you delete it; the data
+volumes are kept either way. Otherwise keep only one of the two: use the other install, or remove it together
+with its data (`./stack uninstall` there) and run `./stack setup` here. A second copy needs its own fresh
+checkout. If the containers come from a folder that no longer exists, remove them with
+`docker compose -p <project> down` (the data volumes are kept).
+
 ## Exit codes
 
 `./stack` commands exit 0 on success and non-zero on an error (with an `xx` line saying why). Informational
-ones exit 0 whatever they report: `./stack helper status` (installed or not; nothing depends on the helper),
-`./stack <command> --help` and `./stack clean --dry-run`. `./stack test` exits non-zero when a check fails.
+ones exit 0 whatever they report: `./stack helper status` (installed or not; nothing depends on the helper)
+and `./stack clean --dry-run`. `--help` (or `-h`) exits 0 for a known command, wherever it is on the line
+(`./stack stt set openai --help`), and runs nothing. `./stack test` exits non-zero when a check fails.
 `./stack password --show` refuses (non-zero) when stdout is not a terminal, so the password never lands in a log.
 
 ## Linux, SELinux and rootless Docker

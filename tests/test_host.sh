@@ -272,7 +272,7 @@ test_setup_switching_from_role_to_a_bad_key_keeps_role_mode() {
   printf 'AWS_AUTH=instance-role\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"; cp "$ENV_FILE" "$TMP/before"
   _imds_ec2 bedrock-now; _interactive "Keep using"
   aws_run() { echo "An error occurred (InvalidClientTokenId)" >&2; return 254; }
-  aws_cli() { echo "aws_cli must not be used to verify the new key" >&2; return 1; }
+  aws_cli() { echo "aws_cli must not be used to verify the new key" >&2; return 1; }; docker() { :; }
   if out="$( (AWS_ACCESS_KEY_ID=AKIANEW AWS_SECRET_ACCESS_KEY=bad setup_aws_creds) 2>&1)"; then return 1; fi
   assert_contains "$out" "InvalidClientTokenId"
   assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"   # AWS_AUTH stays until a new key is verified

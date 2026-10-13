@@ -12,7 +12,7 @@ _stack() {
 }
 
 test_every_subcommand_accepts_help() {
-  local c out
+  local c h out
   for c in setup up down status open logs test costs prices models backup restore update clean rollback helper \
            remote rotate-aws serve ssh-info openrouter stt password uninstall; do
     for h in -h --help; do
@@ -32,6 +32,20 @@ test_subcommand_help_shows_its_own_section_only() {
   assert_contains "$out" "Start / stop"
 }
 
+test_help_anywhere_on_the_line_runs_nothing() {
+  # a later --help must not install, store a setting or restore: help, exit 0, nothing written
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bntest-help\n' > "$ENV_FILE"
+  local before c; before="$(cat "$ENV_FILE")"
+  for c in "helper install --help" "stt set openai --help" "stt set openai -h" "restore X --help" \
+           "remote enable tailscale --help" "openrouter set --help" "update --to v1 --help" "clean --yes --help"; do
+    # shellcheck disable=SC2086  # word-split on purpose
+    out="$(HOME="$TMP/home" _stack $c </dev/null 2>&1)" || { printf './stack %s failed:\n%s\n' "$c" "$out" >&2; return 1; }
+    assert_contains "$out" "./stack ${c%% *}"
+  done
+  assert_eq "$(cat "$ENV_FILE")" "$before"
+  [ ! -e "$TMP/home" ] && [ ! -e "$STATE_DIR" ]
+}
+
 test_unknown_command_with_help_still_fails() {
   if _stack bogus --help >/dev/null 2>&1; then return 1; fi
 }
@@ -45,6 +59,7 @@ test_help_needs_no_env_and_touches_nothing() {
 # --- where the password lives ---
 
 test_env_file_display_shortens_home() {
+  local HOME
   HOME="$TMP/home"; ENV_FILE="$TMP/home/code/bn dev/.env"
   assert_eq "$(env_file_display)" "~/code/bn dev/.env"
   ENV_FILE="/opt/bn/.env"

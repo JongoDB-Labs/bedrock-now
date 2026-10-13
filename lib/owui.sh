@@ -438,6 +438,10 @@ _litellm_login() {
 litellm_drop_session_key() {
   local key; key="$(jwt_claim "$1" key 2>/dev/null || true)"
   case "$key" in sk-*) case "$key" in *[!A-Za-z0-9_-]*) return 0 ;; esac ;; *) return 0 ;; esac
+  local k   # never one of the stack's own keys, whatever a token claims
+  for k in LITELLM_MASTER_KEY LITELLM_KEY_CLAUDE_CODE LITELLM_KEY_OPENWEBUI LITELLM_KEY_SETUP; do
+    [ "$key" != "$(get_env "$k")" ] || return 0
+  done
   litellm_api POST /key/delete "{\"keys\":[\"$key\"]}" >/dev/null || true
 }
 

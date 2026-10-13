@@ -113,7 +113,7 @@ test_costs_budget_wording() {
   # shellcheck disable=SC2034  # PRICES and CATALOG are read by cmd_costs
   PRICES="$STACK_DIR/tests/fixtures/prices.tsv" CATALOG="$STACK_DIR/tests/fixtures/catalog.tsv"
   STACK_DIR="$TMP"
-  printf 'LITELLM_PORT=4000\n' > "$ENV_FILE"
+  printf 'LITELLM_PORT=9\n' > "$ENV_FILE"   # closed port: never a live LiteLLM
   out="$(TODAY=2026-01-02 cmd_costs 2>&1)"
   assert_contains "$out" "monthly budget per key; each resets on the date shown"
 }

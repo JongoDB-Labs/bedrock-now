@@ -329,6 +329,7 @@ test_cmd_costs_names_the_price_source() {
   _setup; _auto 2026-10-10 '# warning: big input: LiteLLM $5 vs AWS $4.4 per 1M tokens (13.6% apart)
 '
   TODAY=2026-10-12; export TODAY; use_best_prices
+  printf 'LITELLM_PORT=9\n' >> "$ENV_FILE"   # closed port: never a live LiteLLM
   out="$(cmd_costs 2>&1)"
   assert_contains "$out" "Source: LiteLLM's public price list, checked 2 days ago"
   assert_contains "$out" "⚠ big input"

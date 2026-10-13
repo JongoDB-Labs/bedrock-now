@@ -1,0 +1,13 @@
+#!/bin/sh
+# Test shim: real curl, except towards this computer (127.0.0.1, *.localhost), where a live bedrock-now may
+# listen. Only the closed port 9 is allowed there; anything else is refused, logged, and fails the suite.
+for a in "$@"; do
+  case "$a" in
+    *:9/* | *:9 | *:9:127.0.0.1) ;;   # the closed port 9 (a URL, an Origin header or --resolve)
+    *127.0.0.1* | *localhost*)
+      printf 'real curl to this computer called by test %s: %s\n' "${T_NAME:-?}" "$*" >> "${BN_SHIM_LOG:-/dev/null}"
+      echo "real curl to this computer called by test" >&2
+      exit 97 ;;
+  esac
+done
+exec "${BN_REAL_CURL:?}" "$@"

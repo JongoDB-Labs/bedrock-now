@@ -156,8 +156,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - `./stack password [--show]`: where the portal password is (this folder's `.env` and project); `--show` prints
   it, only to a terminal.
-- `./stack <command> -h|--help` for every command: that command's part of `./stack help`, exit 0, nothing
-  checked or changed.
+- `-h` / `--help` for every command, anywhere on the line (`./stack stt set openai --help`): that command's
+  part of `./stack help`, exit 0, nothing checked or changed.
 - `./stack clean --dry-run`: lists what `clean` would remove and removes nothing.
 
 ### Changed
@@ -179,6 +179,10 @@ All notable changes to bedrock-now are documented here. The format follows
   to the 32 px icon.
 - `./stack helper status` exited 1 when the helper was not installed; it is informational and exits 0.
 - `./stack serve --help` (and other commands' `--help`) exited 1.
+- Tests: the suite can no longer reach a real Docker or a live install. `tests/run.sh` puts shims first on
+  `PATH` (docker, aws and tailscale refuse; curl refuses this computer except the closed port 9) and fails when
+  any test called one. Several tests did: a `./stack up` test ran the portal image in project `bedrock-now`, an
+  Open WebUI test posted to `chat.bedrock-now.localhost`, and the costs tests read `127.0.0.1:4000`.
 
 ## [0.2.1] - 2026-10-12
 

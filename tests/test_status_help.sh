@@ -31,7 +31,7 @@ test_status_table_flags_failed_bucket_setup() {
 
 test_cmd_status_uses_compact_table_not_raw_ps() {
   _ports_env
-  dc() { echo "dc $*" >> "$TMP/calls"; printf 'litellm\trunning\thealthy\t0\n'; }
+  dc() { echo "dc $*" >> "$TMP/calls"; printf 'litellm\trunning\thealthy\t0\n'; }; docker() { :; }
   out="$(cmd_status 2>&1)"
   assert_contains "$(cat "$TMP/calls")" "ps -a --format"
   assert_contains "$out" "./stack logs <service>"
@@ -40,7 +40,7 @@ test_cmd_status_uses_compact_table_not_raw_ps() {
 
 test_cmd_status_hints_up_when_nothing_runs() {
   _ports_env
-  dc() { :; }
+  dc() { :; }; docker() { :; }
   assert_contains "$(cmd_status 2>&1)" "./stack up"
 }
 
