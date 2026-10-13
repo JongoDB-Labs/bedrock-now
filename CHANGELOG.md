@@ -44,13 +44,14 @@ All notable changes to bedrock-now are documented here. The format follows
   stops being usable, setup turns it off with the reason and turns it back on once your AWS admin enables it. See
   docs/voice.md.
 - **End-to-end test suite** (`tests/e2e/run.sh`, opt-in, run by hand). It stages a throwaway copy of the checkout
-  under its own Compose project, host name and free ports (never project `bedrock-now` or ports 80/4000/8765),
+  under its own Compose project (`bne2e[-…]` only), host name and free ports (never ports 80/4000/8765), touches
+  Docker only once the project is known to be its own (`tests/test_e2e_harness.sh` proves it),
   runs setup non-interactively with an AWS key taken only from `--aws-env FILE` (AWS_* lines) or the environment,
   and checks every page, portal route, Caddy rule, shared-mcp tool, the LiteLLM endpoints the stack uses and the
   safe `./stack` commands, in a Playwright 1.55 Chromium container pinned by digest (hash-pinned Python deps).
   Credentials are read from the throwaway `.env` mounted read-only, never printed; logs are redacted and
-  screenshots mask sign-ins. It keeps Bedrock spend under $0.10 (checked and printed), leaves
-  `~/.local/bin/claude-bedrock` untouched (checked), writes a summary table and JUnit XML, and removes only what
+  screenshots mask sign-ins. A full run costs about half a cent of Bedrock (small per-key budgets cap it; the
+  run fails at $0.10), leaves `~/.local/bin/claude-bedrock` untouched (link and file checked), writes a summary table and JUnit XML, and removes only what
   it created (no prune). `tests/e2e/INVENTORY.md` lists everything there is to test and how.
 - **Optional speech-to-text for voice calls** (`./stack stt set openai|groq [model]`, `status`, `remove`; setup
   asks once). Open WebUI's Call button needs server speech-to-text, which Bedrock does not have; this is an
@@ -221,9 +222,13 @@ All notable changes to bedrock-now are documented here. The format follows
   against the current folder instead of the checkout, so `~/bedrock-now/stack restore backups/<ts>` run from
   elsewhere stopped with the usage message, and a rollback run from elsewhere put the code back but not the data
   ("the code is back at …, but restoring backups/…-auto failed"). A relative path that is not found in the
-  current folder is now looked up in the checkout, and rollback hands restore an absolute path (which also works
-  when the version it goes back to still has the old restore). The one-click helper was not affected. Found by the
-  new end-to-end suite.
+  current folder is now looked up in the checkout (a path that names a backup in both places is refused as
+  ambiguous), and restore names the absolute path it restores. Rollback hands restore an absolute path (which
+  also works when the version it goes back to still has the old restore) and refuses `..` in its record. The
+  one-click helper was not affected. Found by the new end-to-end suite.
+- **`./stack restore` checks the backup before it stops or drops anything:** both bucket folders must be there and
+  each database dump must be readable by `pg_restore --list` with at least one entry. A damaged or empty backup
+  used to get as far as `DROP DATABASE`.
 - Every setup and update left one more unnamed key under LiteLLM's Virtual Keys: the admin sign-in check
   (`/v2/login`) creates a session key each time. Setup now deletes the session keys of its own logins.
 - `/favicon.ico` answered 401 before login (browsers ask for it by themselves); it is public now and redirects

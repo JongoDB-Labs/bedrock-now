@@ -108,6 +108,14 @@ test_rollback_refuses_local_changes_and_needs_yes_without_a_terminal() {
   [ ! -f "$CALLS" ] || return 1
 }
 
+test_rollback_refuses_a_backup_path_with_dot_dot() {
+  _fixture; update_record_write "$OLD" "" "backups/../../etc"
+  if out="$( (ASSUME_YES=1 cmd_rollback) 2>&1)"; then return 1; fi
+  assert_contains "$out" "contains '..'"
+  assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$(git -C "$STACK_DIR" rev-parse v0.3.0)"
+  [ ! -f "$CALLS" ] || return 1
+}
+
 test_rollback_failure_in_restore_says_where_things_stand() {
   _fixture; _record
   if out="$( (FAKE_RC=3 ASSUME_YES=1 cmd_rollback) 2>&1)"; then return 1; fi

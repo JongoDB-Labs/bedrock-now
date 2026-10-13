@@ -1069,25 +1069,48 @@ _restore_key_trio() {
   log "restored the backup's keys (LiteLLM virtual keys, Open WebUI API key) into .env ($n changed)"
 }
 
-# backup_dir_arg DIR -> the backup directory DIR names: as given when it holds both dumps (relative to the current
-# folder or absolute), else, for a relative DIR, the same path inside this checkout — every message says
-# "./stack restore backups/<ts>" and ./stack can be run from any folder (e.g. ~/bedrock-now/stack restore …).
+# _is_backup DIR -> 0 when DIR holds both database dumps ./stack backup writes
+_is_backup() { [ -f "$1/litellm.dump" ] && [ -f "$1/openwebui.dump" ]; }
+
+# backup_dir_arg DIR -> the backup DIR names, as an absolute path: an absolute DIR as given; a relative one from the
+# current folder, or else inside this checkout — every message says "./stack restore backups/<ts>" and ./stack can
+# be run from any folder (e.g. ~/bedrock-now/stack restore …). Dies when a relative DIR is a backup in both places
+# and they are different folders. Prints DIR unchanged when it is no backup at all (the caller prints its usage).
 backup_dir_arg() {
-  local d="$1"
+  local d="$1" here='' there=''
   case "$d" in '' | /*) printf '%s\n' "$d"; return 0 ;; esac
-  if [ ! -f "$d/litellm.dump" ] && [ -f "$STACK_DIR/$d/litellm.dump" ]; then d="$STACK_DIR/$d"; fi
-  printf '%s\n' "$d"
+  if _is_backup "$d"; then here="$(cd "$d" && pwd -P)"; fi
+  if _is_backup "$STACK_DIR/$d"; then there="$(cd "$STACK_DIR/$d" && pwd -P)"; fi
+  [ -z "$here" ] || [ -z "$there" ] || [ "$here" = "$there" ] ||
+    die "ambiguous backup path '$d': it is $here (from this folder) and also $there (in this checkout) — pass an absolute path. Nothing was changed."
+  printf '%s\n' "${here:-${there:-$d}}"
+}
+
+# _validate_backup DIR — before anything is stopped or dropped: both bucket folders are there, and each dump is an
+# archive pg_restore (inside the postgres container) can list, with at least one entry. A damaged or empty backup
+# must never get as far as DROP DATABASE.
+_validate_backup() {
+  local dir="$1" b db n
+  for b in openwebui shared; do
+    [ -d "$dir/s3/$b" ] || die "$dir has no s3/$b folder, so it is not a complete ./stack backup — nothing was changed"
+  done
+  for db in litellm openwebui; do
+    n="$(dc exec -T postgres pg_restore --list < "$dir/$db.dump" 2>/dev/null | grep -c '^[0-9]' || true)"
+    [ "${n:-0}" -gt 0 ] ||
+      die "$dir/$db.dump is not a readable database dump (pg_restore --list finds nothing in it) — nothing was changed"
+  done
 }
 
 cmd_restore() {
   local dir db k hint
-  dir="$(backup_dir_arg "${1:-}")"
+  dir="$(backup_dir_arg "${1:-}")" || exit 1
   case "${dir%/}" in *.partial) die "${dir%/} is an incomplete backup (it failed or is still being written) — pick a complete one from backups/" ;; esac
-  [ -n "$dir" ] && [ -f "$dir/litellm.dump" ] && [ -f "$dir/openwebui.dump" ] ||
+  [ -n "$dir" ] && _is_backup "$dir" ||
     die "usage: ./stack restore backups/<timestamp>   (a directory written by ./stack backup)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first (on a new machine: copy the backup's .env to ./.env, run ./stack setup, then restore)"
   stack_lock restore
-  dir="$(cd "$dir" && pwd)"
+  dir="$(cd "$dir" && pwd -P)"
+  log "backup to restore: $dir"
   if [ -f "$dir/.env" ]; then
     for k in LITELLM_SALT_KEY WEBUI_SECRET_KEY LITELLM_MASTER_KEY; do
       [ "$(ENV_FILE="$dir/.env" get_env "$k")" = "$(get_env "$k")" ] ||
@@ -1096,8 +1119,10 @@ cmd_restore() {
   fi
   [ "${ASSUME_YES:-0}" = 1 ] || _have_tty ||
     die "restore replaces all data; re-run with --yes to do it non-interactively — nothing was changed"
-  warn "restore REPLACES all current chats, knowledge bases, files, LiteLLM keys and spend history with ${dir##*/}"
-  confirm "Restore ${dir##*/} now?" || die "aborted — nothing was changed"
+  _data_services_up
+  _validate_backup "$dir"
+  warn "restore REPLACES all current chats, knowledge bases, files, LiteLLM keys and spend history with $dir"
+  confirm "Restore $dir now?" || die "aborted — nothing was changed"
   if confirm "Take a backup of the current state first?"; then
     cmd_backup
     hint="your pre-restore state is in $LAST_BACKUP — run ./stack restore $LAST_BACKUP"
@@ -1127,7 +1152,7 @@ cmd_restore() {
   # shellcheck disable=SC2046  # word-split the service list on purpose
   dc up -d --wait $(stack_services)
   remote_up_hook
-  log "restored ${dir##*/}; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
+  log "restored $dir; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
   cmd_test
 }
 

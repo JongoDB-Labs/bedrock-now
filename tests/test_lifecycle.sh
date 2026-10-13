@@ -10,6 +10,7 @@ _stub_dc() { # logs every dc call; pg_dump prints a fake dump unless PG_FAIL=1
     echo "dc $*" >> "$TMP/calls"
     case "$*" in
       *pg_dump*) [ "${PG_FAIL:-0}" = 1 ] && { echo "pg_dump: connection refused" >&2; return 1; }; local args="$*"; printf 'PGDMP-%s' "${args##* }" ;;
+      *"pg_restore --list"*) cat > /dev/null; [ "${LIST_EMPTY:-0}" = 1 ] || echo "1; 0 0 ENCODING - ENCODING" ;;
       *pg_restore*) cat > "$TMP/restored.$(echo "$*" | sed 's/.* -d \([a-z]*\).*/\1/')" ;;
     esac
     return 0
@@ -51,30 +52,62 @@ test_restore_requires_a_backup_dir() {
   assert_contains "$out" "usage"
 }
 
+_mk_dumps() { local d; for d in "$@"; do mkdir -p "$d/s3/openwebui" "$d/s3/shared"; printf 'L' > "$d/litellm.dump"; printf 'O' > "$d/openwebui.dump"; done; }
+
 test_restore_finds_a_relative_backup_in_the_checkout_from_any_folder() {
-  STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260202-000000"
-  for d in "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260202-000000"; do
-    printf 'L' > "$d/litellm.dump"; printf 'O' > "$d/openwebui.dump"
-  done
-  # from another folder: the path every message prints (backups/<ts>) is the checkout's
-  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260101-000000)" "$STACK_DIR/backups/20260101-000000"
-  # a backup that really is relative to the current folder still wins; absolute paths are kept
-  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260202-000000)" "backups/20260202-000000"
+  STACK_DIR="$TMP/stack"; _mk_dumps "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260202-000000"
+  real="$(cd "$STACK_DIR" && pwd -P)"; other="$(cd "$TMP/elsewhere" && pwd -P)"
+  # from another folder: the path every message prints (backups/<ts>) is the checkout's (always an absolute path)
+  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260101-000000)" "$real/backups/20260101-000000"
+  # only relative to the current folder: that one; absolute paths are kept
+  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260202-000000)" "$other/backups/20260202-000000"
   assert_eq "$(cd / && backup_dir_arg "$TMP/elsewhere/backups/20260202-000000")" "$TMP/elsewhere/backups/20260202-000000"
+  # from inside the checkout: the same folder both ways, not ambiguous
+  assert_eq "$(cd "$STACK_DIR" && backup_dir_arg backups/20260101-000000)" "$real/backups/20260101-000000"
   # nowhere: unchanged, so restore still prints its usage
   assert_eq "$(cd / && backup_dir_arg backups/nope)" "backups/nope"
   printf 'LITELLM_SALT_KEY=a\nWEBUI_SECRET_KEY=b\nSHARED_MCP_PORT=8765\nSHARED_MCP_TOKEN=t0k\n' > "$ENV_FILE"; _stub_dc
   confirm() { case "$1" in *"backup of the current state"*) return 1 ;; *) return 0 ;; esac; }
   cmd_test() { echo "TESTED" >> "$TMP/calls"; }; ASSUME_YES=1
   (cd / && cmd_restore backups/20260101-000000) 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/calls")" "s3 $STACK_DIR/backups/20260101-000000 ro"
+  assert_contains "$(cat "$TMP/calls")" "s3 $real/backups/20260101-000000 ro"
   assert_contains "$(cat "$TMP/calls")" "TESTED"
+  assert_contains "$(cat "$TMP/err")" "backup to restore: $real/backups/20260101-000000"
+  assert_contains "$(cat "$TMP/err")" "spend history with $real/backups/20260101-000000"
   if out="$( (cd / && cmd_restore backups/nope) 2>&1)"; then return 1; fi
   assert_contains "$out" "usage: ./stack restore backups/<timestamp>"
 }
 
+test_restore_refuses_a_relative_path_that_names_two_backups() {
+  STACK_DIR="$TMP/stack"; _mk_dumps "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260101-000000"
+  printf 'X=1\n' > "$ENV_FILE"; _stub_dc; ASSUME_YES=1
+  if out="$( (cd "$TMP/elsewhere" && cmd_restore backups/20260101-000000) 2>&1)"; then return 1; fi
+  assert_contains "$out" "ambiguous backup path 'backups/20260101-000000'"
+  assert_contains "$out" "pass an absolute path"
+  assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+  # a folder whose dumps are incomplete is no backup: not ambiguous, the checkout's is used
+  rm "$TMP/elsewhere/backups/20260101-000000/openwebui.dump"
+  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260101-000000)" "$(cd "$STACK_DIR" && pwd -P)/backups/20260101-000000"
+}
+
+test_restore_validates_the_backup_before_stopping_anything() {
+  printf 'X=1\n' > "$ENV_FILE"; _mk_backup 'X=1\n'; _stub_dc; ASSUME_YES=1
+  # an empty / unreadable dump: refused before stop / DROP DATABASE
+  LIST_EMPTY=1
+  if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
+  assert_contains "$out" "litellm.dump is not a readable database dump"
+  assert_contains "$(cat "$TMP/calls")" "pg_restore --list"
+  assert_not_contains "$(cat "$TMP/calls")" "dc stop"
+  assert_not_contains "$(cat "$TMP/calls")" "DROP DATABASE"
+  # a missing bucket folder: refused too, before any dump is even read
+  LIST_EMPTY=0; : > "$TMP/calls"; rmdir "$B/s3/shared"
+  if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
+  assert_contains "$out" "has no s3/shared folder"
+  assert_not_contains "$(cat "$TMP/calls")" "dc stop"
+}
+
 _mk_backup() {
-  mkdir -p "$TMP/b/20260101-000000"; B="$TMP/b/20260101-000000"
+  mkdir -p "$TMP/b/20260101-000000/s3/openwebui" "$TMP/b/20260101-000000/s3/shared"; B="$TMP/b/20260101-000000"
   printf 'L' > "$B/litellm.dump"; printf 'O' > "$B/openwebui.dump"; printf "$1" > "$B/.env"
 }
 
@@ -84,7 +117,10 @@ test_restore_aborts_when_not_confirmed() {
   if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
   assert_contains "$out" "LITELLM_SALT_KEY differs"
   assert_contains "$out" "nothing was changed"
-  assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+  # only read: postgres/rustfs started (if stopped) and the dumps listed — nothing stopped, dropped or restored
+  assert_not_contains "$(cat "$TMP/calls" 2>/dev/null)" "dc stop"
+  assert_not_contains "$(cat "$TMP/calls" 2>/dev/null)" "DROP DATABASE"
+  assert_not_contains "$(cat "$TMP/calls" 2>/dev/null)" "-d litellm"
 }
 
 test_restore_recreates_dbs_syncs_buckets_and_tests() {
@@ -98,7 +134,7 @@ test_restore_recreates_dbs_syncs_buckets_and_tests() {
   assert_contains "$c" 'CREATE DATABASE "litellm"'
   assert_eq "$(cat "$TMP/restored.litellm")" "L"
   assert_eq "$(cat "$TMP/restored.openwebui")" "O"
-  assert_contains "$c" "s3 $B ro"
+  assert_contains "$c" "s3 $(cd "$B" && pwd -P) ro"   # the resolved (physical) path
   assert_contains "$c" "dc up -d --wait"
   assert_contains "$c" "TESTED"
   assert_not_contains "$(cat "$TMP/err")" "differs"
@@ -193,7 +229,7 @@ test_restore_rejects_partial_backup() {
 test_restore_failure_names_pre_restore_backup() {
   printf 'X=1\n' > "$ENV_FILE"; _mk_backup 'X=1\n'; _stub_dc; ASSUME_YES=1
   cmd_backup() { LAST_BACKUP=backups/20261012-000001; }
-  dc() { echo "dc $*" >> "$TMP/calls"; case "$*" in *pg_restore*) cat >/dev/null; return 1 ;; esac; }
+  dc() { echo "dc $*" >> "$TMP/calls"; case "$*" in *"pg_restore --list"*) cat >/dev/null; echo "1; x" ;; *pg_restore*) cat >/dev/null; return 1 ;; esac; }
   if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
   assert_contains "$out" "your pre-restore state is in backups/20261012-000001 — run ./stack restore backups/20261012-000001"
   assert_not_contains "$out" "./stack up"
@@ -202,7 +238,7 @@ test_restore_failure_names_pre_restore_backup() {
 test_restore_failure_without_pre_backup_says_so() {
   printf 'X=1\n' > "$ENV_FILE"; _mk_backup 'X=1\n'; _stub_dc; ASSUME_YES=1
   confirm() { case "$1" in *"backup of the current state"*) return 1 ;; *) return 0 ;; esac; }
-  dc() { echo "dc $*" >> "$TMP/calls"; case "$*" in *pg_restore*) cat >/dev/null; return 1 ;; esac; }
+  dc() { echo "dc $*" >> "$TMP/calls"; case "$*" in *"pg_restore --list"*) cat >/dev/null; echo "1; x" ;; *pg_restore*) cat >/dev/null; return 1 ;; esac; }
   if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
   assert_contains "$out" "no pre-restore backup was taken"
 }

@@ -54,6 +54,7 @@ cmd_rollback() {
   [ -n "$from" ] && [ -n "$backup" ] || die "nothing to roll back: no ./stack update has been recorded in this checkout"
   [ "$result" != rolled-back ] || die "the last update was already rolled back (to ${fromv:-$from}) — nothing was changed"
   case "$from" in *[!0-9a-f]* | '') die "the update record is damaged ($(update_record_file)) — nothing was changed" ;; esac
+  case "$backup" in *..*) die "the update record's backup path contains '..' ($backup) — nothing was changed" ;; esac
   case "$backup" in backups/*) ;; *) die "the update record names no backup in backups/ — nothing was changed" ;; esac
   [ -f "$STACK_DIR/$backup/litellm.dump" ] && [ -f "$STACK_DIR/$backup/openwebui.dump" ] ||
     die "the pre-update backup $backup is missing or incomplete — nothing was changed"
