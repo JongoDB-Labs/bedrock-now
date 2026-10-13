@@ -151,14 +151,29 @@ def test_committed_svgs_match_the_generator():
         assert path.read_text() == appicons.svg(kind) + "\n", f"{path.name} is stale: run python -m portal.appicons"
 
 
-def test_committed_pngs_were_rendered_from_the_current_svgs():
-    recorded = {}
+def test_committed_pngs_are_the_ones_rendered_from_the_current_svgs():
+    # render-icons.sh records the renderer, each SVG it read and each PNG it wrote.
+    recorded, renderer = {}, ""
     for line in (STATIC / "icons" / "SOURCES").read_text().splitlines():
+        if line.startswith("# "):
+            renderer += line
+            continue
         digest, name = line.split()
         recorded[name] = digest
-    for _, src in appicons.FILES.values():
-        assert recorded.get(src) == hashlib.sha256((STATIC / src).read_bytes()).hexdigest(), \
-            f"PNGs from {src} are stale: run portal/render-icons.sh"
+    assert "rsvg-convert version" in renderer and "optipng" in renderer.lower()
+    sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
+    for name, (_, src) in appicons.FILES.items():
+        assert recorded.get(src) == sha(STATIC / src), f"PNGs from {src} are stale: run portal/render-icons.sh"
+        assert recorded.get(f"icons/{name}") == sha(STATIC / "icons" / name), f"{name} was changed after rendering"
+    assert set(recorded) == {f"icons/{n}" for n in appicons.FILES} | {src for _, src in appicons.FILES.values()}
+
+
+def test_manifest_icon_urls_carry_the_file_version(client):
+    # ?v=<hash of the PNG>: a new icon reaches installed apps instead of a cached old one.
+    m = client.get("/manifest.webmanifest").json()
+    for icon in m["icons"]:
+        path, _, v = icon["src"].partition("?v=")
+        assert v == hashlib.sha256((STATIC / path.lstrip("/")).read_bytes()).hexdigest()[:10], icon["src"]
 
 
 def test_logo_and_favicon_are_the_same_mark(client):

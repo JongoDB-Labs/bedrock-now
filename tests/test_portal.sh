@@ -148,9 +148,17 @@ test_caddy_web_app_files_are_public_before_login() {
   line="$(grep '@public path' "$f")"
   assert_contains "$line" " /manifest.webmanifest"
   assert_contains "$line" " /sw.js"
-  assert_contains "$line" " /icons/app-*"
-  # ...but never the provider logos or anything else under /icons/ or /static/ beyond the login page's own files.
-  case "$line" in *" /icons/*"*|*" /static/*"*) echo "public paths too broad: $line" >&2; return 1 ;; esac
+  # Exactly the icon files the portal serves (portal/appicons.py FILES), each by name: no wildcard, so nothing
+  # else that ever lands under /icons/ (the provider logos) is public.
+  local names n
+  names="$(sed -n 's/^ *"\(app-[a-z0-9-]*\.png\)": (.*/\1/p' "$STACK_DIR/portal/portal/appicons.py")"
+  [ "$(printf '%s\n' "$names" | wc -l | tr -d ' ')" -ge 10 ] || { echo "icon list not found in appicons.py" >&2; return 1; }
+  for n in $names; do assert_contains "$line " " /icons/$n "; done
+  assert_eq "$(printf '%s\n' "$line" | tr ' ' '\n' | grep -c '^/icons/')" "$(printf '%s\n' "$names" | wc -l | tr -d ' ')"
+  # ...and never a wildcard, the provider logos or anything else under /icons/ or /static/ beyond the login page's
+  # own files.
+  case "$line" in *"*"*) echo "public paths use a wildcard: $line" >&2; return 1 ;; esac
+  case "$line" in *" /icons/"[!a]*|*" /static/"[!l]*) echo "public paths too broad: $line" >&2; return 1 ;; esac
 }
 
 test_caddy_public_paths_have_one_definition_in_a_snippet() {

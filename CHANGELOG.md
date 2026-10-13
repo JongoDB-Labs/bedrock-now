@@ -93,13 +93,6 @@ All notable changes to bedrock-now are documented here. The format follows
   phone over SSH + tmux (the machine's Tailscale name, the SSH command, iOS/Android apps, mosh, Tailscale SSH;
   on EC2 without Tailscale it points to Tailscale or Session Manager). No web terminal; Claude Code's Remote
   Control doesn't work with Bedrock.
-
-### Changed
-
-- `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
-  `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
-  `.env` alone decides (one warning per command when your shell's key differs).
-
 - **Desktop app.** Chrome and Edge can install the portal as a real app: its own window, Dock or taskbar icon,
   Cmd-Tab entry, and it stays put when minimized (Chat's microphone keeps working). An **Install app** button
   (sidebar, and a note on Home with **Not now**) appears when the browser offers it and disappears once
@@ -107,15 +100,17 @@ All notable changes to bedrock-now are documented here. The format follows
   the open window forward), **Chat** and **Home** shortcuts, and a name per portal address: `bedrock-now`, or
   `bedrock-now (bn-dev)` / `(port 8800)` for other copies. README › Desktop app covers install and uninstall.
 - **`./stack open` opens the installed app** (macOS `~/Applications/<Browser> Apps.localized/`, Linux the
-  browser's `.desktop` entry); otherwise the portal as a tab in your everyday browser profile, with a one-time
-  tip about Install app. The separate `--app` window with its own profile (no Dock icon of its own) is gone
-  unless `BEDROCK_NOW_OPEN_MODE=window`. `portal/e2e/install/run.sh` checks install and `./stack open` end to
-  end in a throwaway container.
+  browser's `.desktop` entry, Flatpak browsers included, started with `gio launch` / `gtk-launch` or its
+  `Exec=` words without any shell); otherwise the portal as a tab in your everyday browser profile, with a
+  one-time tip naming that browser's Install menu. The separate `--app` window with its own profile (no Dock
+  icon of its own) is gone unless `BEDROCK_NOW_OPEN_MODE=window`. `portal/e2e/install/run.sh` (opt-in) checks
+  install and `./stack open` end to end in a throwaway container.
 - **New app icon:** three slabs of bedrock, the top one lifted, light pouring out of the seam. macOS-style
   squircle with the 824 px safe area, maskable, Apple touch and monochrome variants, and a simplified mark for
   16-48 px, which is also the sidebar logo and favicon. `python -m portal.appicons` writes the SVGs;
   `portal/render-icons.sh` renders the PNGs (rsvg-convert + optipng in a pinned Alpine container) and the tests
-  fail if a PNG is older than its SVG.
+  fail if a PNG no longer matches its SVG or the recorded render (`static/icons/SOURCES`). Manifest icon URLs
+  carry `?v=<hash>`; Caddy makes exactly these PNGs public, by name.
 - **The portal works on phones and installs as an app.** A web app manifest, home-screen icons and Apple touch
   icon; "Add to Home Screen" on iOS and "Install app" in Android Chrome (HTTPS). The manifest, `/icons/app-*`
   and `/sw.js` are public (one `(public_paths)` snippet in the Caddyfile, and the portal), like the login
@@ -133,6 +128,12 @@ All notable changes to bedrock-now are documented here. The format follows
 - **Tablets (768-1099 px):** the sidebar becomes an icon rail (tab names as tooltips there only); models show
   as cards.
 - Touch targets of at least 44 px on touch screens; reduced motion and light/dark respected throughout.
+
+### Changed
+
+- `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
+  `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
+  `.env` alone decides (one warning per command when your shell's key differs).
 
 ## [0.2.1] - 2026-10-12
 

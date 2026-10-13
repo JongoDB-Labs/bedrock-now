@@ -1,4 +1,5 @@
-"""End-to-end check of "Install app", entirely inside one throwaway container (run.sh): the real portal on
+"""Opt-in end-to-end check of "Install app" (run.sh by hand; not in tests/run.sh or CI), entirely inside one
+throwaway container: the real portal on
 http://bedrock-now.localhost:8000, Chromium on a virtual display with a throwaway profile, driven over CDP.
 
   1. Chrome finds the portal installable (Page.getInstallabilityErrors) from the login page and from Home.
@@ -76,7 +77,7 @@ tab = Page(pages()[0])
 tab("Page.enable"); tab("Runtime.enable")
 tab("Page.addScriptToEvaluateOnNewDocument", source="window.__bip = 0; addEventListener('beforeinstallprompt', () => __bip++)")
 
-r = {}
+r = {"chromium": subprocess.run(["chromium", "--version"], capture_output=True, text=True).stdout.strip()}
 tab("Page.navigate", url=f"{ORIGIN}/login"); time.sleep(2)
 r["login: installability errors"] = tab("Page.getInstallabilityErrors").get("installabilityErrors")
 r["login: manifest errors"] = tab("Page.getAppManifest").get("errors")

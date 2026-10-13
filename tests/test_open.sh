@@ -190,15 +190,21 @@ test_installed_app_mac_is_found_by_name_in_any_browser_apps_folder() {
 test_installed_app_linux_is_the_browser_desktop_entry_with_that_name() {
   : > "$ENV_FILE"; _linux
   local d="$HOME/.local/share/applications"; mkdir -p "$d"
-  printf '[Desktop Entry]\nName=bedrock-now\nExec=/bin/true\n' > "$d/my-notes.desktop"   # not a browser's: ignored
-  printf '[Desktop Entry]\nName=bedrock-now (bn-dev)\nExec=x\n' > "$d/chrome-aaa-Default.desktop"
-  if open_installed_app >/dev/null; then echo "wrong entry accepted" >&2; return 1; fi
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=/bin/true --app-id=x\n' > "$d/my-notes.desktop"   # not a browser's: ignored
+  printf '[Desktop Entry]\nName=bedrock-now (bn-dev)\nExec=c --app-id=a\n' > "$d/chrome-aaa-Default.desktop"
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=/usr/bin/google-chrome\n' > "$d/chrome-ccc-Default.desktop"  # no --app-id
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=c --app-id=l\n' > "$TMP/elsewhere.desktop"
+  ln -s "$TMP/elsewhere.desktop" "$d/chrome-lll-Default.desktop"                                        # a symlink
+  if open_installed_app >/dev/null; then echo "wrong entry accepted: $(open_installed_app)" >&2; return 1; fi
   printf '[Desktop Entry]\nName=bedrock-now\nExec=/opt/google/chrome/google-chrome --profile-directory=Default --app-id=bbb %%U\n' \
     > "$d/chrome-bbb-Default.desktop"
   assert_eq "$(open_installed_app)" "$d/chrome-bbb-Default.desktop"
-  assert_eq "$(_desktop_exec "$d/chrome-bbb-Default.desktop")" "/opt/google/chrome/google-chrome --profile-directory=Default --app-id=bbb"
   export XDG_DATA_HOME="$TMP/xdg"; mkdir -p "$XDG_DATA_HOME/applications"
   if open_installed_app >/dev/null; then echo "XDG_DATA_HOME not used" >&2; return 1; fi
+  # Flatpak Chrome / Edge name their entries <flatpak id>.flextop.<browser>-<app id>-<profile>.desktop
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=/usr/bin/flatpak run --command=chrome com.google.Chrome --app-id=fff\n' \
+    > "$XDG_DATA_HOME/applications/com.google.Chrome.flextop.chrome-fff-Default.desktop"
+  assert_eq "$(open_installed_app)" "$XDG_DATA_HOME/applications/com.google.Chrome.flextop.chrome-fff-Default.desktop"
 }
 
 test_cmd_open_mac_prefers_the_installed_app() {
@@ -228,17 +234,41 @@ test_cmd_open_mac_without_app_opens_a_tab_in_the_everyday_profile_and_tips_once(
 test_cmd_open_linux_launches_the_installed_app() {
   : > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2
   local d="$HOME/.local/share/applications"; mkdir -p "$d" "$TMP/bin"
-  printf '[Desktop Entry]\nName=bedrock-now\nExec=%s/bin/fakechrome --app-id=bbb %%U\n' "$TMP" > "$d/chrome-bbb-Default.desktop"
+  printf '[Desktop Entry]\nName=bedrock-now\nExec=%s/bin/fakechrome --app-id=bbb --x=100%%%% %%U\n' "$TMP" > "$d/chrome-bbb-Default.desktop"
   printf '#!/bin/sh\necho "$*" > "%s/ran"\n' "$TMP" > "$TMP/bin/fakechrome"; chmod +x "$TMP/bin/fakechrome"
-  # without gtk-launch: its Exec line, field codes dropped
+  # neither gio nor gtk-launch: its Exec line as argv, field codes dropped, %% -> %
   PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
   i=0; while [ ! -s "$TMP/ran" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
-  assert_eq "$(cat "$TMP/ran")" "--app-id=bbb"
-  # with gtk-launch: by desktop id
+  assert_eq "$(cat "$TMP/ran")" "--app-id=bbb --x=100%"
+  # gtk-launch: by desktop id
   printf '#!/bin/sh\necho "GTK $*" > "%s/ran"\n' "$TMP" > "$TMP/bin/gtk-launch"; chmod +x "$TMP/bin/gtk-launch"
   PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
   i=0; while ! grep -q GTK "$TMP/ran" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(cat "$TMP/ran")" "GTK chrome-bbb-Default"
+  # gio first: by file
+  printf '#!/bin/sh\necho "GIO $*" > "%s/ran"\n' "$TMP" > "$TMP/bin/gio"; chmod +x "$TMP/bin/gio"
+  PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
+  i=0; while ! grep -q GIO "$TMP/ran" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  assert_eq "$(cat "$TMP/ran")" "GIO launch $d/chrome-bbb-Default.desktop"
+}
+
+test_desktop_exec_never_runs_a_shell() {
+  : > "$ENV_FILE"; _linux; export DISPLAY=:0 OPEN_CHECK_DELAY=0.2
+  local d="$HOME/.local/share/applications" bad; mkdir -p "$d" "$TMP/bin"
+  export TMP   # a shell that ran the Exec line would see $TMP and create $TMP/pwned
+  printf '#!/bin/sh\necho "$*" > "%s/ran"\n' "$TMP" > "$TMP/bin/fakechrome"; chmod +x "$TMP/bin/fakechrome"
+  printf '#!/bin/sh\n' > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"   # the browser-tab fallback
+  for bad in '; touch $TMP/pwned' '$(touch $TMP/pwned)' '`touch $TMP/pwned`' '| touch $TMP/pwned' '&& touch $TMP/pwned' \
+             '> $TMP/pwned' '"x" y' "'x'" '\\x' '(x)' '<x' '& x'; do
+    printf '[Desktop Entry]\nName=bedrock-now\nExec=%s/bin/fakechrome --app-id=bbb %s\n' "$TMP" "$bad" > "$d/chrome-bbb-Default.desktop"
+    rm -f "$TMP/ran"
+    out="$(PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>&1)"
+    sleep 0.3
+    [ ! -e "$TMP/pwned" ] || { echo "Exec ran through a shell: $bad" >&2; return 1; }
+    [ ! -e "$TMP/ran" ] || { echo "Exec with shell syntax was launched: $bad" >&2; return 1; }
+    assert_contains "$out" "did not start"
+  done
+  if _desktop_argv "$d/chrome-bbb-Default.desktop" >/dev/null; then echo "_desktop_argv accepted shell syntax" >&2; return 1; fi
 }
 
 test_cmd_open_linux_without_app_opens_a_tab() {
@@ -260,4 +290,29 @@ test_window_mode_ignores_the_installed_app_and_profile_dirs_only_in_window_mode(
   # --user-data-dir (a separate profile) appears only in the window-mode launcher
   assert_eq "$(grep -c -- '--user-data-dir' "$STACK_DIR/lib/open.sh")" 3
   assert_eq "$(sed -n '/^_open_window() {/,/^}/p' "$STACK_DIR/lib/open.sh" | grep -c -- '--user-data-dir')" 3
+}
+
+test_install_tip_names_the_menu_of_the_browser_used() {
+  : > "$ENV_FILE"
+  out="$(_install_tip "app:Google Chrome" 2>&1)"
+  assert_contains "$out" "Install app"; assert_contains "$out" "Cast, save and share → Install page as app"
+  rm -f "$STATE_DIR/open-install-tip-shown"
+  out="$(_install_tip "app:Microsoft Edge" 2>&1)"
+  assert_contains "$out" "Apps → Install this site as an app"; assert_not_contains "$out" "Cast, save"
+  rm -f "$STATE_DIR/open-install-tip-shown"
+  out="$(_install_tip "bundle:com.microsoft.edgemac" 2>&1)"
+  assert_contains "$out" "Apps → Install this site as an app"
+  rm -f "$STATE_DIR/open-install-tip-shown"
+  out="$(_install_tip "default:open" 2>&1)"
+  assert_contains "$out" "Chrome or Edge"; assert_contains "$out" "Safari: File → Add to Dock"
+  assert_eq "$(_install_tip "app:Google Chrome" 2>&1)" ""   # once
+}
+
+test_cmd_open_mac_falls_back_to_the_default_browser_when_the_chosen_one_fails() {
+  : > "$ENV_FILE"; _mac
+  open_choose_browser() { echo "app:Google Chrome"; }
+  open() { [ "$1" != -a ] || return 1; echo "OPEN $*" > "$TMP/args"; }
+  out="$(cmd_open 2>&1)"
+  assert_eq "$(cat "$TMP/args")" "OPEN http://bedrock-now.localhost"
+  assert_contains "$out" "default browser"
 }

@@ -7,6 +7,9 @@ lib/portal.sh's portal_app_name gives the same name, so `./stack open` can find 
 
 from __future__ import annotations
 
+import hashlib
+
+from .appicons import ICON_DIR
 from .config import Settings
 
 DEFAULT_HOST = "bedrock-now.localhost"
@@ -22,8 +25,10 @@ def app_name(host: str, port: int = 80) -> str:
 
 
 def _icon(size: int, purpose: str = "any") -> dict:
-    kind = "" if purpose == "any" else f"{purpose}-"
-    return {"src": f"/icons/app-{kind}{size}.png", "sizes": f"{size}x{size}", "type": "image/png", "purpose": purpose}
+    name = f"app-{'' if purpose == 'any' else purpose + '-'}{size}.png"
+    # ?v=<content hash>: browsers and installed apps refetch an icon when it changes (the files are cached a day).
+    v = hashlib.sha256((ICON_DIR / name).read_bytes()).hexdigest()[:10]
+    return {"src": f"/icons/{name}?v={v}", "sizes": f"{size}x{size}", "type": "image/png", "purpose": purpose}
 
 
 def manifest(s: Settings) -> dict:

@@ -38,9 +38,10 @@
 
 # The portal paths reachable without a session: the login page and what it needs, and the installable web app's
 # manifest, icons and service worker (browsers fetch those without the cookie). Every portal site block (this one,
-# and a remote-access block later) imports this one list, so they can never drift apart.
+# and a remote-access block later) imports this one list, so they can never drift apart. The icons are named one
+# by one (portal/portal/appicons.py FILES; tests/test_portal.sh keeps the two equal): no wildcard under /icons/.
 (public_paths) {
-	@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-*
+	@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-16.png /icons/app-32.png /icons/app-48.png /icons/app-192.png /icons/app-512.png /icons/app-1024.png /icons/app-maskable-192.png /icons/app-maskable-512.png /icons/app-monochrome-512.png /icons/app-touch-180.png
 }
 
 http://{$PORTAL_HOST} {

@@ -86,14 +86,19 @@ that resolves to this computer alone.
 
 - macOS: `~/Applications/<Browser> Apps.localized/<name>.app` (Chrome: `Chrome Apps.localized`), opened with
   `open -a`.
-- Linux: the browser's `~/.local/share/applications/{chrome,msedge,brave,chromium}-*.desktop` with
-  `Name=<name>` (`$XDG_DATA_HOME` if set), started with `gtk-launch`, or its `Exec=` line without it.
+- Linux: the browser's `~/.local/share/applications/{chrome,msedge,brave,chromium}-*.desktop` (Flatpak
+  browsers: `*.flextop.chrome-*` and so on) with `Name=<name>` and an `Exec=` that has `--app-id=`
+  (`$XDG_DATA_HOME` if set; symlinked entries are ignored). It is started with `gio launch`, else
+  `gtk-launch`, else its `Exec=` line run directly as a list of words: field codes (`%U`) dropped, `%%` made
+  `%`, never through a shell, and refused if it holds quotes, `$`, backticks, `;`, `|`, `&`, `<`, `>`,
+  parentheses or a backslash.
 
 Without an installed app it opens the portal as a tab in your everyday browser profile (the one that can
 install it), the first of Google Chrome, Microsoft Edge, Brave and Chromium, and prints a one-time tip about
-**Install app**. On macOS it looks in `/Applications` and `~/Applications` first, then asks Spotlight by bundle
-id (`mdfind`, read-only) for browsers installed elsewhere. Without any of them it uses your default browser
-(`open` / `xdg-open`); over SSH it only prints the URL. `./stack setup` and `./stack up` open it at the end when
+**Install app** that names that browser's own menu. On macOS it looks in `/Applications` and `~/Applications`
+first, then asks Spotlight by bundle id (`mdfind`, read-only) for browsers installed elsewhere. Without any of
+them, or if the one found fails to start, it uses your default browser (`open` / `xdg-open`); over SSH it only
+prints the URL. `./stack setup` and `./stack up` open it at the end when
 they run in a terminal. `BEDROCK_NOW_NO_OPEN=1` turns that off; scripts and `--yes` runs without a terminal never
 open a window.
 
@@ -102,8 +107,14 @@ and a separate browser profile per copy (macOS: `~/Library/Application Support/b
 `~/.local/share/bedrock-now`; a second copy uses `bedrock-now-<project>`). It shares no logins with your
 everyday browser, but has no Dock icon of its own and cannot be installed.
 
-`portal/e2e/install/run.sh` checks the whole flow in a throwaway container (Chromium on a virtual display):
-installable, the Install button, a real install, and `./stack open` opening the app.
+`portal/e2e/install/run.sh` (opt-in, run by hand; not part of `tests/run.sh`) checks the whole flow in a
+throwaway container (Debian's Chromium on a virtual display; it prints the version): installable, the Install
+button, a real install, and `./stack open` opening the app.
+
+The app icons are drawn by `portal/portal/appicons.py` (`python -m portal.appicons` writes the SVGs) and
+rendered by `portal/render-icons.sh` (rsvg-convert and optipng in a digest-pinned Alpine container). It records
+the tool versions and the sha256 of every SVG and PNG in `static/icons/SOURCES`; the portal tests fail if a
+PNG no longer matches. Caddy makes exactly those PNGs public, by name.
 
 ## Verbose output
 

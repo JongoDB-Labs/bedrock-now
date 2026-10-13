@@ -34,7 +34,9 @@
     if (installed()) { deferred = null; show(false); }
   };
   mark();
-  matchMedia("(display-mode: standalone)").addEventListener("change", mark);
+  const standalone = matchMedia("(display-mode: standalone)");
+  if (standalone.addEventListener) standalone.addEventListener("change", mark);
+  else if (standalone.addListener) standalone.addListener(mark);   // Safari before 14
 
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();             // no mini-infobar: our own button asks instead

@@ -2,9 +2,10 @@
 out of the seam ("now").
 
 Pure Python, deterministic, nothing downloaded: `python -m portal.appicons` writes the SVG sources
-(static/brand/*.svg and static/logo.svg, which is also the favicon). `portal/scripts/render-icons.sh` then renders
-the PNGs in static/icons/ from them with rsvg-convert in a pinned container and records which sources it rendered
-(static/icons/SOURCES), so a test can tell when a PNG is stale.
+(static/brand/*.svg and static/logo.svg, which is also the favicon). `portal/render-icons.sh` (in the repo's
+portal/ folder) then renders the PNGs in static/icons/ from them with rsvg-convert and optipng in an Alpine
+container, and records the renderer versions and the sha256 of every SVG it read and PNG it wrote in
+static/icons/SOURCES, so the tests can tell when a PNG is stale or was edited by hand.
 
 Geometry is on a 1024 grid around the centre of the mark; each kind places and scales it:
   icon      macOS-style squircle (824 px body, transparent margin): the master, and the PWA "any" icons
