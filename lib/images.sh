@@ -139,14 +139,23 @@ image_sizes() {
   done
 }
 
-# image_label REF -> what a person calls it: "litellm 1.105.0", "portal (previous build)", "old build"
+# image_label REF [NAMES] -> what a person calls it: "litellm 1.105.0", "portal (unused build)", "unused build".
+# A local build (REF <project>/<name>:local or :previous, or none) is "(previous build)" only while NAMES (the image's
+# names now: docker image inspect) still include its :previous name; without it, it is an unused leftover.
 image_label() {
-  local ref="$1" name tag
-  [ -n "$ref" ] || { echo "old build"; return 0; }
+  local ref="$1" names="${2:-}" name tag
+  [ -n "$ref" ] || { echo "unused build"; return 0; }
   ref="${ref%%@*}"; name="${ref%:*}"; tag="${ref##*:}"; [ "$tag" != "$ref" ] || tag=''
-  name="${name##*/}"
-  case "$tag" in previous | local) printf '%s (previous build)\n' "$name" ;; '') printf '%s\n' "$name" ;; *) printf '%s %s\n' "$name" "$tag" ;; esac
+  case "$tag" in
+    previous | local)
+      case " $names " in *" ${name}:previous "*) printf '%s (previous build)\n' "${name##*/}" ;; *) printf '%s (unused build)\n' "${name##*/}" ;; esac ;;
+    '') printf '%s\n' "${name##*/}" ;;
+    *) printf '%s %s\n' "${name##*/}" "$tag" ;;
+  esac
 }
+
+# _names ID -> the image's names now, space-separated ("" for an untagged one)
+_names() { docker image inspect --format '{{join .RepoTags " "}}' "$1" 2>/dev/null || true; }
 
 # cleanup_plan KEEP_IDS CANDIDATES PROTECTED_IDS -> "ID<TAB>REF" lines to remove: candidates ("ID<TAB>REF",
 # REF may be empty) that are neither kept nor protected (used by a container / another checkout). Pure.
@@ -169,20 +178,21 @@ _present_only() {
 # uses stays) and prints "old images: freed N (labels)" or "old images: nothing to free". Sets CLEAN_SUMMARY.
 # Writes .state/images/last-clean (freed_bytes=, summary=, at=) for the host helper.
 images_remove() {
-  local plan="$1" id ref sizes b freed=0 labels='' kept='' other d
+  local plan="$1" id ref sizes b freed=0 labels='' kept='' other d names
   sizes="$(image_sizes)"
   while IFS='	' read -r id ref; do
     [ -n "$id" ] || continue
     b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"
     # Not listed = already gone (removed meanwhile). image_sizes lists untagged images too (-a).
     [ -n "$b" ] || continue
+    names="$(_names "$id")"
     if docker image rm "$id" >/dev/null 2>&1; then
-      freed=$((freed + ${b:-0})); labels="$labels, $(image_label "$ref")"
+      freed=$((freed + ${b:-0})); labels="$labels, $(image_label "$ref" "$names")"
     else
       # Never forced: say why it stays (another name for the same image, or something uses it)
       other="$(docker image inspect --format '{{join .RepoTags " "}}' "$id" 2>/dev/null | tr ' ' '\n' | grep -vxF -- "$ref" | grep . | head -n 1)"
-      if [ -n "$other" ]; then kept="$kept, $(image_label "$ref") (also named $other)"
-      else kept="$kept, $(image_label "$ref") (still in use)"; fi
+      if [ -n "$other" ]; then kept="$kept, $(image_label "$ref" "$names") (also named $other)"
+      else kept="$kept, $(image_label "$ref" "$names") (still in use)"; fi
     fi
   done <<EOF
 $plan
@@ -267,7 +277,7 @@ cmd_clean() {
   printf 'Would remove these images of this project (none is in use; the previous version is kept):\n'
   while IFS='	' read -r id ref; do
     b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"; total=$((total + ${b:-0}))
-    printf '  %-40s %s  %s\n' "$(image_label "$ref")" "$(fmt_bytes "${b:-0}")" "${id#sha256:}" | cut -c1-100
+    printf '  %-40s %s  %s\n' "$(image_label "$ref" "$(_names "$id")")" "$(fmt_bytes "${b:-0}")" "${id#sha256:}" | cut -c1-100
   done <<EOF
 $plan
 EOF

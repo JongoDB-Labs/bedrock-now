@@ -251,6 +251,19 @@ test_update_with_signed_tags_required_and_nothing_new() {
   assert_contains "$out" "is not a tag"
 }
 
+test_update_failures_say_how_to_finish_or_go_back() {
+  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack 3   # its setup fails
+  dc() { return "${FAKE_PULL_RC:-0}"; }
+  _run() { (fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update) 2>&1; }
+  if out="$(FAKE_PULL_RC=1 _run)"; then return 1; fi
+  assert_contains "$out" "image pull failed or was stopped (network/registry?) — ./stack update finishes it, or ./stack rollback goes back"
+  assert_contains "$out" "(by hand: git -C $STACK_DIR checkout abc123 && ./stack restore backups/b)"
+  if out="$(FAKE_PULL_RC=130 _run)"; then return 1; fi   # Ctrl-C: Compose ends with 128 + the signal
+  assert_contains "$out" "update stopped during 3/4 images — ./stack update finishes it, or ./stack rollback goes back"
+  if out="$(_run)"; then return 1; fi
+  assert_contains "$out" "update: setup failed (see the messages above) — ./stack update finishes it, or ./stack rollback goes back"
+}
+
 # --- "nothing new" needs a successful setup on this very commit (.state/update/setup-commit) ---
 
 test_update_without_a_successful_setup_on_this_code_runs_every_step() {
@@ -291,6 +304,9 @@ test_setup_records_its_commit_when_it_succeeds_so_the_next_update_is_a_no_op() {
   (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # right after: nothing to update
   assert_contains "$(cat "$TMP/err")" "nothing to update"
   assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+  # a later setup that fails (e.g. ./stack update --force on the same code) leaves no record: every step next time
+  if (FAKE_TEST_FAIL=1 cmd_setup) > /dev/null 2>&1; then return 1; fi
+  [ ! -e "$(setup_commit_file)" ] || { echo "a failed setup kept the record of the one before" >&2; return 1; }
   # the setup at the end of an update is that same cmd_setup, run by ./stack setup --yes
   assert_contains "$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")" '"$STACK_DIR/stack" setup --yes'
   assert_contains "$(sed -n '/^cmd_setup() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "record_setup_commit"

@@ -9,8 +9,8 @@
 
 update_record_file() { printf '%s/update/last.env\n' "$STATE_DIR"; }
 
-# .state/update/setup-commit: the commit the last successful ./stack setup ran on (also the one at the end of
-# ./stack update, --force included). ./stack update calls "nothing new" only while it is HEAD: after an upgrade
+# .state/update/setup-commit: the commit the last ./stack setup ran on, if it succeeded (also the one at the end of
+# ./stack update, --force included; a setup removes it when it starts). ./stack update calls "nothing new" only while it is HEAD: after an upgrade
 # from a version that did not write it, a git pull or checkout by hand, a half-failed update or a rollback (whose
 # older version's ./stack up does not run setup), the next update runs every step.
 setup_commit_file() { printf '%s/update/setup-commit\n' "$STATE_DIR"; }
@@ -21,6 +21,7 @@ record_setup_commit() {
   f="$(setup_commit_file)"; mkdir -p "${f%/*}" 2>/dev/null && chmod 700 "${f%/*}" 2>/dev/null || return 0
   printf '%s\n' "$c" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || true
 }
+forget_setup_commit() { rm -f "$(setup_commit_file)" 2>/dev/null || true; }
 setup_ran_on_head() {
   [ -e "$STACK_DIR/.git" ] && [ -f "$(setup_commit_file)" ] &&
     [ "$(head -c 64 "$(setup_commit_file)" 2>/dev/null)" = "$(git -C "$STACK_DIR" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" ]

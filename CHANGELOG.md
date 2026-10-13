@@ -209,9 +209,9 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Changed
 
 - **`./stack update` with nothing new stops right away.** When the target (the newest release, your branch's
-  origin, or `--to`) is the commit already checked out and the last successful setup ran on that very commit
-  (`.state/update/setup-commit`, written at the end of every successful `./stack setup`, including the one an
-  update runs), it prints `already on v0.3.0 — nothing to update (./stack update --force re-runs setup)` and exits
+  origin, or `--to`) is the commit already checked out and the last setup succeeded on that very commit
+  (`.state/update/setup-commit`: removed when a `./stack setup` starts, written when it succeeds, including the
+  setup an update runs), it prints `already on v0.3.0 — nothing to update (./stack update --force re-runs setup)` and exits
   0: no backup, no setup, no model probe, no LiteLLM restart (that took ~150 s and ~$0.0004). Without that record —
   the first update from an older version, a `git pull` or checkout by hand, a rollback (the older version's
   `./stack up` runs no setup) — it runs every step. So does a `BEDROCK_NOW_CODE_UPDATED=1` it cannot trust (an
@@ -235,7 +235,12 @@ All notable changes to bedrock-now are documented here. The format follows
   restore and up, so going back to v0.2.1 is quiet too. `BEDROCK_NOW_VERBOSE=1` (or your own
   `COMPOSE_PROGRESS`) shows them.
 - The image cleanup after an update says `old images: nothing to free` (or `old images: freed …`) instead of a
-  bare `nothing to free`.
+  bare `nothing to free`. A local build that lost its name (a leftover of an earlier update or a rollback) is
+  called an "unused build" (`freed 526 MB (old portal (unused build), …)`); "(previous build)" now means only a
+  build that still carries its `:previous` name, so the cleanup no longer reads as if the rollback images went.
+- When `./stack update` stops after the code moved, its message starts with the way on: `image pull failed or
+  was stopped (network/registry?) — ./stack update finishes it, or ./stack rollback goes back (by hand: …)`
+  (`update stopped during 3/4 images — …` after Ctrl-C), and the same after a failed setup.
 - The Docker Desktop "Start when you sign in" reminder after setup (and so after every update) appears at most
   once a week (`.state/docker-autostart-hint`, a time stamp; anything else in it counts as never shown).
   `./stack serve` still reminds every time.

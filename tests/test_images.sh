@@ -119,7 +119,8 @@ test_second_update_removes_the_previous_previous_version_and_reports_it() {
   imgs="$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')"
   assert_eq "$imgs" "C1 L2 L3 P2 P3 "
   assert_contains "$(cat "$TMP/imgs")" "P2	bn-t/portal:previous"
-  assert_contains "$(cat "$TMP/err")" "freed 1.9 GB (old litellm 1, portal (previous build))"
+  # P1 lost its :previous name to P2 (the kept previous build): it is an unused build now, not "the previous build"
+  assert_contains "$(cat "$TMP/err")" "freed 1.9 GB (old litellm 1, portal (unused build))"
   assert_eq "$(sed -n 's/^freed_bytes=//p' "$STATE_DIR/images/last-clean")" 1913000000
   assert_not_contains "$(cat "$TMP/dcalls")" "GLOBAL PRUNE"
   assert_not_contains "$(cat "$TMP/dcalls")" "rm C1"
@@ -148,7 +149,7 @@ test_only_this_projects_dangling_builds_are_removed() {
   assert_not_contains "$ids" "D1"
   assert_contains "$ids" "D2"
   assert_contains "$ids" "D3"
-  assert_contains "$(cat "$TMP/err")" "freed 200 MB (old old build)"
+  assert_contains "$(cat "$TMP/err")" "freed 200 MB (old unused build)"
 }
 
 test_untagged_leftovers_are_found_although_image_ls_hides_them() {
@@ -235,6 +236,21 @@ test_cleanup_removes_nothing_when_it_cannot_tell_what_is_in_use() {
   assert_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "D2"
 }
 
+test_labels_say_unused_build_unless_it_still_is_the_previous_build() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  docker tag bn-t/portal:previous bn-t/portal:local   # rollback: P2 (recorded as portal:local) loses its name
+  _store X1 bn-t/portal:previous 210MB bn-t            # and a :previous build nothing records any more
+  printf 'P2\tbn-t/portal:local\n' > "$STATE_DIR/images/current.tsv"
+  : > "$STATE_DIR/images/previous.tsv"
+  out="$(cmd_clean --dry-run 2>&1 </dev/null)"
+  assert_contains "$out" "portal (unused build)"
+  assert_contains "$out" "portal (previous build)"
+  ASSUME_YES=1 cmd_clean > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "portal (previous build)"
+  assert_contains "$(cat "$TMP/err")" "portal (unused build)"
+}
+
 test_an_image_docker_still_needs_is_kept_and_said() {
   _setup
   _fake_update 2 L2 P2 2>/dev/null
@@ -268,7 +284,7 @@ test_clean_lists_first_then_removes_with_yes() {
   out="$(ASSUME_YES=1 cmd_clean 2> "$TMP/err")"
   assert_contains "$out" "Would remove"
   assert_contains "$out" "shared-mcp old"
-  assert_contains "$out" "old build"
+  assert_contains "$out" "unused build"
   assert_contains "$out" "about 500 MB in all"
   assert_contains "$(cat "$TMP/err")" "freed 500 MB"
   ids="$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')"
@@ -292,7 +308,7 @@ test_clean_dry_run_lists_and_removes_nothing() {
   before="$(cat "$TMP/imgs")"; rm -f "$STATE_DIR/images/last-clean" "$TMP/dcalls"
   out="$(ASSUME_YES=1 cmd_clean --dry-run 2>&1)"
   assert_contains "$out" "Would remove"
-  assert_contains "$out" "old build"
+  assert_contains "$out" "unused build"
   assert_contains "$out" "dry run: nothing was removed"
   assert_eq "$(cat "$TMP/imgs")" "$before"
   assert_not_contains "$(cat "$TMP/dcalls" 2>/dev/null)" "rm "

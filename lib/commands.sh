@@ -380,6 +380,7 @@ setup_secrets() {
 cmd_setup() {
   check_prereqs
   [ ! -f "$ENV_FILE" ] || stack_lock setup
+  forget_setup_commit   # lib/rollback.sh: written again only if this setup succeeds
   [ -f "$ENV_FILE" ] || { cp "$STACK_DIR/.env.example" "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
   # Never share a Compose project (or its volumes) with another checkout. On a first setup the name may still
   # come from the shell, so check that name before persist_project_name saves it.
@@ -1332,7 +1333,7 @@ cmd_update() {
     finishing=1; moved=1
     from="$(_record_get from)"; branch="$(_record_get branch)"; backup="$(_record_get backup)"
     log "update: the last update (from $(_record_get from_version)) did not finish — finishing it; no new backup: ./stack rollback still goes back with $backup"
-    hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
+    hint="./stack update finishes it, or ./stack rollback goes back (by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
     if [ -n "$to" ]; then
       log "update: 2/4 code (git)"
       update_checkout "$to"
@@ -1360,14 +1361,14 @@ cmd_update() {
       exec env -u BEDROCK_NOW_UPDATE_FINISHING BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" \
         BEDROCK_NOW_UPDATE_FROM="$from" BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
     fi
-    hint="your pre-update backup is $backup (./stack restore $backup)"
+    hint="./stack update runs it again; your pre-update backup is $backup (./stack restore $backup)"
   else
     backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"; branch="${BEDROCK_NOW_UPDATE_BRANCH:-}"
     moved=1
     # finishing an unfinished update (set by the exec above): only while the record says so
     [ "${BEDROCK_NOW_UPDATE_FINISHING:-0}" != 1 ] || [ "$(_record_get result)" != running ] || finishing=1
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
-    hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
+    hint="./stack update finishes it, or ./stack rollback goes back (by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
   fi
   # Only an update that moved the code is a new version: an update with nothing new keeps the rollback record
   # and the previous version's images exactly as they are. Finishing an update: its record and snapshot stand.
@@ -1381,7 +1382,10 @@ cmd_update() {
     images_snapshot_before "$from"   # stopped before it: setup has not run, so :local is still the old build
   fi
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
-  dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
+  dc pull --ignore-buildable || {
+    [ "$?" -lt 128 ] || die "update stopped during 3/4 images — $hint"   # Ctrl-C: Compose ends with 128 + the signal
+    die "image pull failed or was stopped (network/registry?) — $hint"
+  }
   log "update: 4/4 setup (non-interactive; keeps .env, keys and AWS creds)"
   # Separate process (keeps set -e working inside setup); AWS creds and the optional OpenRouter settings come
   # from .env, never from this shell (a removed OpenRouter key stays removed).
