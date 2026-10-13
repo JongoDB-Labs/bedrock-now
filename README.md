@@ -447,8 +447,8 @@ own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
 
 The update first asks git whether there is anything new. If not, it says so (`already on v0.3.0 — nothing to
 update`) and stops: no backup, no restart, no Bedrock calls. `./stack update --force` runs every step anyway. If
-the last update moved the code but did not finish (its image pull or setup failed), the next `./stack update`
-finishes it, keeping that update's backup and rollback point.
+the last update moved the code but did not finish (its image pull or setup failed, or it was stopped), the next
+`./stack update` finishes it, keeping that update's backup and rollback point.
 Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run

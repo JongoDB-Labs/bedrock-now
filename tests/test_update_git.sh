@@ -96,7 +96,7 @@ test_cmd_update_reexec_skips_backup_and_checkout() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack
   update_checkout() { echo CHECKOUT >> "$TMP/calls"; }
   _backup_named() { echo BACKUP >> "$TMP/calls"; }; prune_auto_backups() { :; }; dc() { echo "dc $*" >> "$TMP/calls"; }
-  BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2> "$TMP/err"
+  fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2> "$TMP/err"
   assert_eq "$(tr '\n' ';' < "$TMP/calls")" "dc pull --ignore-buildable;STACK setup --yes done=unset backup=unset from=unset;"
   assert_contains "$(cat "$TMP/err")" "update: 3/4 images"
   assert_contains "$(cat "$TMP/err")" "update: 4/4 setup"
@@ -105,7 +105,7 @@ test_cmd_update_reexec_skips_backup_and_checkout() {
 test_cmd_update_failure_after_code_change_explains_rollback() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack 3
   dc() { :; }
-  if out="$( (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update) 2>&1)"; then return 1; fi
+  if out="$( (fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update) 2>&1)"; then return 1; fi
   assert_contains "$out" "git -C $STACK_DIR checkout abc123 && ./stack restore backups/b"
 }
 
@@ -197,11 +197,13 @@ test_update_with_nothing_new_stops_before_backup_and_setup() {
 test_update_with_something_new_still_backs_up_first() {
   _fixture; _noop_stubs   # on v0.1.0: v0.2.0 is newer
   update_checkout() { echo "CHECKOUT ${1:-}" >> "$TMP/calls"; CODE_CHANGED=1; }
-  # subshells: it re-executes ./stack, which keeps the lock (the fake one does not release it: removed by hand)
+  # subshells: it re-executes ./stack, which keeps the lock (the fake one does not release it: removed by hand), and
+  # the update record it writes before the exec (the fake checkout moved nothing: removed, the next case is a new one)
   (ASSUME_YES=1 cmd_update) 2>/dev/null; rm -rf "$STATE_DIR/lock"
   assert_eq "$(head -n 4 "$TMP/calls" | tr '\n' ';')" "BACKUP;PRUNE;CHECKOUT ;STACK update --yes done=1 backup=backups/b from=$(git -C "$STACK_DIR" rev-parse "v0.1.0^{commit}");"
+  rm -f "$(update_record_file)"
   : > "$TMP/calls"; git -C "$STACK_DIR" checkout -q main; git -C "$STACK_DIR" reset -q --hard v0.2.0   # a branch behind origin
-  (ASSUME_YES=1 cmd_update) 2>/dev/null; rm -rf "$STATE_DIR/lock"
+  (ASSUME_YES=1 cmd_update) 2>/dev/null; rm -rf "$STATE_DIR/lock"; rm -f "$(update_record_file)"
   assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
   : > "$TMP/calls"; git -C "$STACK_DIR" checkout -q --detach v0.2.0   # --to a branch from a tag: a change of mode
   (ASSUME_YES=1 cmd_update --to main) 2>/dev/null
@@ -287,7 +289,7 @@ test_update_to_a_new_version_ends_with_whats_new_and_a_no_op_does_not() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack; dc() { :; }
   update_record_write() { :; }; update_record_done() { :; }
   update_whats_new() { echo "WHATS NEW"; }
-  out="$(BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2>/dev/null)"
+  out="$(fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2>/dev/null)"
   assert_eq "$out" "WHATS NEW"
   _backup_named() { LAST_BACKUP=backups/b; }; prune_auto_backups() { :; }
   out="$(cmd_update --force 2>/dev/null)"

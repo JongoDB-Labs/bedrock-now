@@ -215,8 +215,10 @@ All notable changes to bedrock-now are documented here. The format follows
   "Already up to date (v0.3.0): nothing to update" instead of "Updated to"; Home then shows no step list and no
   reload hint. `--to` refuses an empty or option-like value (`--to --force`).
 - **Re-running `./stack update` after one that failed half-way finishes it.** When the last update moved the code
-  but its image pull or setup failed (or it was stopped), the next `./stack update` says so and runs 3/4 images and
-  4/4 setup for the code already checked out, then records the update as done and cleans up as usual. It takes no
+  but did not finish (its image pull or setup failed, or it was stopped at any point after the checkout: the update
+  is recorded right after it), the next `./stack update` says so and runs 3/4 images and 4/4 setup for the code
+  already checked out (taking the image snapshot first if it had not got that far), then records the update as
+  done and cleans up as usual. It takes no
   new backup and keeps the update record, so `./stack rollback` still goes back to the version and backup from
   before that update; `--to <ref>` moves the code on first (e.g. to a fix) with the same rollback point. Before, it
   ran setup but left the update unfinished (and, with the check for nothing new, would have stopped there).

@@ -18,6 +18,10 @@ _record_set() { local f; f="$(update_record_file)"; [ -f "$f" ] || return 0; ENV
 update_record_write() {
   local f tmp from="$1" branch="$2" backup="$3" v
   [ -n "$from" ] && [ -n "$backup" ] || return 0
+  # The same update again (the new code after the exec; the old code already wrote it): that record stands.
+  if [ "$(_record_get result)" = running ] && [ "$(_record_get from)" = "$from" ] && [ "$(_record_get backup)" = "$backup" ]; then
+    return 0
+  fi
   f="$(update_record_file)"; mkdir -p "${f%/*}" && chmod 700 "${f%/*}"
   v="$(git -C "$STACK_DIR" describe --tags --always "$from" 2>/dev/null || printf '%s' "$from")"
   tmp="$(mktemp "$f.XXXXXX")" || return 0

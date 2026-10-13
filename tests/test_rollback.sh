@@ -40,8 +40,9 @@ test_update_records_what_rollback_needs_before_images_change() {
   assert_contains "$(cat "$f")" "to_version=v0.3.0"
   body="$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")"
   # recorded before 3/4 images, marked done only after setup
+  # (also right after the checkout, before the exec: a stop in between is then an unfinished update)
   assert_contains "$(printf '%s\n' "$body" | grep -n 'update_record_write\|update: 3/4\|update_record_done' | cut -d: -f2- | tr -d ' ' | tr '\n' '|')" \
-    'update_record_write"$from""$branch""$backup"|log"update:3/4images(pullingtheversionspinnedincompose.yaml)"|update_record_done|'
+    'update_record_write"$from""$branch""$backup"|update_record_write"$from""$branch""$backup"|log"update:3/4images(pullingtheversionspinnedincompose.yaml)"|update_record_done|'
 }
 
 test_rollback_restores_code_data_and_local_builds() {
@@ -206,6 +207,7 @@ _finish_stubs() { # logs every step ./stack update takes; the fixture's ./stack 
 
 test_rerunning_an_unfinished_update_finishes_it() {
   _fixture; _record; _finish_stubs   # result=running, HEAD already at v0.3.0 (the newest release)
+  mkdir -p "$STATE_DIR/images"; : > "$STATE_DIR/images/before.tsv"   # it stopped in setup: its snapshot exists
   before="$(cat "$(update_record_file)")"
   ASSUME_YES=1 cmd_update > /dev/null 2> "$TMP/err"
   # no new backup (it would be of the half-updated state) and no new snapshot: rollback keeps its target
@@ -241,12 +243,85 @@ test_finishing_with_to_moves_on_and_keeps_the_rollback_point() {
   assert_eq "$(cat "$CALLS.update")" "new update --yes finishing=1 from=$OLD backup=backups/20261012-000000-auto"
   # the new code then finishes without recording or snapshotting again
   : > "$TMP/steps"; : > "$CALLS.update"; before="$(cat "$(update_record_file)")"
-  BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_FROM="$OLD" \
+  mkdir -p "$STATE_DIR/images"; : > "$STATE_DIR/images/before.tsv"
+  fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_FROM="$OLD" \
     BEDROCK_NOW_UPDATE_BACKUP=backups/20261012-000000-auto cmd_update > /dev/null 2>&1
   assert_eq "$(tr '\n' ';' < "$TMP/steps")" "dc pull;AFTER;"
   assert_contains "$(cat "$(update_record_file)")" "result=done"
   assert_contains "$(cat "$(update_record_file)")" "$(printf '%s\n' "$before" | grep '^at=')"
   assert_eq "$(cat "$CALLS.update")" "new setup --yes finishing=unset from= backup="   # never passed on to setup
+}
+
+_newer_release() { # origin gets v0.4.0 (its ./stack logs as "newest"); the checkout knows it
+  _write_stack "$TMP/origin" newest; git -C "$TMP/origin" commit -qam three; git -C "$TMP/origin" tag v0.4.0
+  git -C "$STACK_DIR" fetch -q --tags; NEW="$(git -C "$STACK_DIR" rev-parse HEAD)"   # v0.3.0, now the "old" version
+}
+_real_backups() { # _backup_named that writes a complete backup each time
+  n=0
+  _backup_named() {
+    n=$((n + 1)); LAST_BACKUP="backups/20261013-00000$n-auto"; echo "BACKUP $LAST_BACKUP" >> "$TMP/steps"
+    mkdir -p "$STACK_DIR/$LAST_BACKUP"; : > "$STACK_DIR/$LAST_BACKUP/litellm.dump"; : > "$STACK_DIR/$LAST_BACKUP/openwebui.dump"
+  }
+}
+
+test_an_update_stopped_right_after_the_checkout_is_finished_and_rolls_back_right() {
+  # The previous real update (v0.2.1 → v0.3.0) is done. The next one checks out v0.4.0 and is stopped before the new
+  # code records anything (simulated: the re-executed ./stack exits at once).
+  _fixture; _record; update_record_done; _newer_release; _finish_stubs; _real_backups
+  update_checkout() { git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.4.0; CODE_CHANGED=1; }
+  (FAKE_RC=1 ASSUME_YES=1 cmd_update) > /dev/null 2>&1 || true; rm -rf "$STATE_DIR/lock"
+  r="$(cat "$(update_record_file)")"
+  assert_contains "$r" "from=$NEW"
+  assert_contains "$r" "backup=backups/20261013-000001-auto"
+  assert_contains "$r" "result=running"
+  # the next plain update finishes it (no new backup), instead of "nothing to update"
+  : > "$TMP/steps"; : > "$CALLS"
+  ASSUME_YES=1 cmd_update > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "did not finish — finishing it"
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "SNAPSHOT;dc pull;AFTER;"
+  assert_eq "$(cat "$CALLS")" "newest setup --yes"
+  # and rollback goes back to v0.3.0 with that update's own backup
+  : > "$CALLS"
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$NEW"
+  assert_eq "$(head -n 1 "$CALLS")" "new restore $STACK_DIR/backups/20261013-000001-auto --yes"
+}
+
+test_finishing_takes_the_snapshot_an_unfinished_update_did_not_get_to() {
+  _fixture; _record; _finish_stubs   # no before.tsv: it stopped before 3/4 (setup never ran: :local is the old build)
+  images_snapshot_before() { echo "SNAPSHOT $1" >> "$TMP/steps"; }
+  ASSUME_YES=1 cmd_update > /dev/null 2>&1
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "SNAPSHOT $OLD;dc pull;AFTER;"
+}
+
+test_re_exec_variables_from_the_environment_are_not_trusted() {
+  # Set in the shell (not by ./stack update's own exec): a normal update runs, with backup, record and snapshot.
+  _fixture; _record; update_record_done; _newer_release; _finish_stubs; _real_backups
+  update_checkout() { git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.4.0; CODE_CHANGED=1; }
+  (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 ASSUME_YES=1 cmd_update) > /dev/null 2> "$TMP/err"
+  rm -rf "$STATE_DIR/lock"
+  assert_contains "$(cat "$TMP/err")" "BEDROCK_NOW_CODE_UPDATED=1 in the environment is ignored"
+  assert_eq "$(head -n 1 "$TMP/steps")" "BACKUP backups/20261013-000001-auto"
+  assert_contains "$(cat "$(update_record_file)")" "from=$NEW"
+  assert_eq "$(cat "$CALLS.update")" "newest update --yes finishing=unset from=$NEW backup=backups/20261013-000001-auto"
+  # the new code, really exec'd: BEDROCK_NOW_UPDATE_FINISHING counts only for a record that says running
+  : > "$TMP/steps"; _record_set result "done"
+  fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_FROM="$NEW" \
+    BEDROCK_NOW_UPDATE_BACKUP=backups/20261013-000001-auto cmd_update > /dev/null 2>&1
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "SNAPSHOT;dc pull;AFTER;"
+  assert_contains "$(cat "$(update_record_file)")" "result=done"
+}
+
+test_the_re_exec_from_a_version_without_the_lock_is_trusted() {
+  # v0.2.1 (no lock) execs the new code with BEDROCK_NOW_CODE_UPDATED=1: a real commit other than HEAD and its fresh
+  # pre-update backup make it count
+  _fixture; _finish_stubs
+  BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FROM="$OLD" BEDROCK_NOW_UPDATE_BACKUP=backups/20261012-000000-auto \
+    BEDROCK_NOW_UPDATE_BRANCH='' ASSUME_YES=1 cmd_update > /dev/null 2> "$TMP/err"
+  assert_not_contains "$(cat "$TMP/err")" "is ignored"
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "SNAPSHOT;dc pull;AFTER;"
+  assert_contains "$(cat "$(update_record_file)")" "from=$OLD"
+  assert_contains "$(cat "$(update_record_file)")" "result=done"
 }
 
 test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4

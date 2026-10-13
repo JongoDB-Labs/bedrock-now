@@ -199,9 +199,9 @@ test_update_passes_the_branch_to_the_new_code() {
 test_rollback_hint_keeps_branch_users_on_their_branch() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
   printf '#!/bin/sh\nexit 3\n' > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"; dc() { :; }
-  if out="$( (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 BEDROCK_NOW_UPDATE_BRANCH=main cmd_update) 2>&1)"; then return 1; fi
+  if out="$( (fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 BEDROCK_NOW_UPDATE_BRANCH=main cmd_update) 2>&1)"; then return 1; fi
   assert_contains "$out" "git -C $STACK_DIR switch -C main abc123 && ./stack restore backups/b"
-  if out="$( (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 BEDROCK_NOW_UPDATE_BRANCH='' cmd_update) 2>&1)"; then return 1; fi
+  if out="$( (fake_reexec; BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 BEDROCK_NOW_UPDATE_BRANCH='' cmd_update) 2>&1)"; then return 1; fi
   assert_contains "$out" "git -C $STACK_DIR checkout abc123 && ./stack restore backups/b"
 }
 

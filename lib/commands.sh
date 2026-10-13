@@ -1280,6 +1280,24 @@ update_checkout() {
   CODE_CHANGED=1
 }
 
+# _update_reexec_genuine — BEDROCK_NOW_CODE_UPDATED=1 counts only in the process ./stack update exec'd itself into
+# (exec keeps the pid): it holds the update lock (BEDROCK_NOW_LOCK_HELD = $$). A version from before the lock (v0.2.1
+# and older) passes no lock: then the commit it came from must be a real one other than HEAD, with its complete
+# pre-update backup from the last hour.
+_update_reexec_genuine() {
+  local from="${BEDROCK_NOW_UPDATE_FROM:-}" b="${BEDROCK_NOW_UPDATE_BACKUP:-}"
+  [ "${BEDROCK_NOW_CODE_UPDATED:-0}" = 1 ] || return 1
+  if [ -n "${BEDROCK_NOW_LOCK_HELD:-}" ]; then
+    [ "$BEDROCK_NOW_LOCK_HELD" = "$$" ] && [ "$(head -c 20 "$(lock_dir)/pid" 2>/dev/null)" = "$$" ]
+    return
+  fi
+  case "$from" in '' | *[!0-9a-f]*) return 1 ;; esac
+  case "$b" in *..* | *[[:space:]]*) return 1 ;; backups/?*-auto) ;; *) return 1 ;; esac
+  [ -e "$STACK_DIR/.git" ] && _git cat-file -e "$from^{commit}" 2>/dev/null || return 1
+  [ "$(_git rev-parse HEAD)" != "$(_git rev-parse "$from^{commit}")" ] || return 1
+  _is_backup "$STACK_DIR/$b" && [ -n "$(find "$STACK_DIR/$b" -maxdepth 0 -mmin -60 2>/dev/null)" ]
+}
+
 # ./stack update: 1/4 backup (current code) → 2/4 code → [re-exec new code] → 3/4 images → 4/4 setup.
 # The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir, the previous commit and branch, so a later failure
 # can tell you exactly how to go back. Nothing new (update_nothing_new): it says so and stops before the backup
@@ -1287,8 +1305,9 @@ update_checkout() {
 # An update that moved the code but did not finish (update_unfinished: pull or setup failed, or it was stopped) is
 # finished first: images and setup, with no new backup or snapshot, so ./stack rollback keeps going back to the
 # version and backup it recorded (--to moves the code on first, e.g. to a fix; BEDROCK_NOW_UPDATE_FINISHING=1).
+# The record is written right after the checkout, before the exec, so a stop at any point after it counts as such.
 cmd_update() {
-  local to='' backup from='' branch='' hint moved=0 force=0 finishing=0 yes=() usage="usage: ./stack update [--to <tag|branch>] [--force]"
+  local to='' backup from='' branch='' hint moved=0 force=0 finishing=0 reexec=0 yes=() usage="usage: ./stack update [--to <tag|branch>] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) case "${2:-}" in '' | -*) die "$usage" ;; esac; to="$2"; shift 2 ;;
@@ -1297,9 +1316,13 @@ cmd_update() {
     esac
   done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" = 1 ]; then   # before stack_lock, which would take the lock as ours
+    if _update_reexec_genuine; then reexec=1
+    else warn "BEDROCK_NOW_CODE_UPDATED=1 in the environment is ignored (./stack update sets it only for itself)"; fi
+  fi
   stack_lock update   # lib/lock.sh: one update/rollback/clean/restore/setup at a time (kept across the re-exec)
   [ "${ASSUME_YES:-0}" != 1 ] || yes=(--yes)
-  if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ] && update_unfinished; then
+  if [ "$reexec" = 0 ] && update_unfinished; then
     _require_clean_tree
     finishing=1; moved=1
     from="$(_record_get from)"; branch="$(_record_get branch)"; backup="$(_record_get backup)"
@@ -1312,7 +1335,7 @@ cmd_update() {
         exec env BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" \
           BEDROCK_NOW_UPDATE_FROM="$from" BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
     fi
-  elif [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
+  elif [ "$reexec" = 0 ]; then
     _require_clean_tree
     if [ "$force" = 0 ] && update_nothing_new "$to"; then
       log "already on $(installed_version) — nothing to update (./stack update --force re-runs setup)"
@@ -1326,24 +1349,31 @@ cmd_update() {
     log "update: 2/4 code (git)"
     update_checkout "$to"
     if [ "$CODE_CHANGED" = 1 ]; then
+      # What ./stack rollback needs, now that the code moved: a stop before the new code runs is an unfinished update.
+      update_record_write "$from" "$branch" "$backup"
       # Continue in a fresh process so images and setup run with the NEW scripts.
-      exec env BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" BEDROCK_NOW_UPDATE_FROM="$from" \
-        BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
+      exec env -u BEDROCK_NOW_UPDATE_FINISHING BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" \
+        BEDROCK_NOW_UPDATE_FROM="$from" BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
     fi
     hint="your pre-update backup is $backup (./stack restore $backup)"
   else
     backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"; branch="${BEDROCK_NOW_UPDATE_BRANCH:-}"
-    moved=1; [ "${BEDROCK_NOW_UPDATE_FINISHING:-0}" != 1 ] || finishing=1
+    moved=1
+    # finishing an unfinished update (set by the exec above): only while the record says so
+    [ "${BEDROCK_NOW_UPDATE_FINISHING:-0}" != 1 ] || [ "$(_record_get result)" != running ] || finishing=1
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
     hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
   fi
   # Only an update that moved the code is a new version: an update with nothing new keeps the rollback record
   # and the previous version's images exactly as they are. Finishing an update: its record and snapshot stand.
   if [ "$moved" = 1 ] && [ "$finishing" = 0 ]; then
-    # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed.
+    # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed (already
+    # written by this version before the exec; an older version's ./stack update did not).
     update_record_write "$from" "$branch" "$backup"
     # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
     images_snapshot_before "$from"
+  elif [ "$finishing" = 1 ] && [ ! -f "$(images_dir)/before.tsv" ]; then
+    images_snapshot_before "$from"   # stopped before it: setup has not run, so :local is still the old build
   fi
   log "update: 3/4 images (pulling the versions pinned in compose.yaml)"
   dc pull --ignore-buildable || die "image pull failed (network/registry?) — $hint"
