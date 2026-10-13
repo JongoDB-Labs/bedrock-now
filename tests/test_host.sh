@@ -536,6 +536,24 @@ test_docker_autostart_hint_only_on_explicit_false() {
   assert_eq "$(docker_autostart_hint 2>&1)" ""
 }
 
+test_docker_autostart_hint_after_setup_at_most_once_a_week() {
+  HOME="$TMP/home"; d="$TMP/home/Library/Group Containers/group.com.docker"; mkdir -p "$d"
+  printf '{"AutoStart": false}\n' > "$d/settings-store.json"
+  assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop when you sign in"
+  assert_eq "$(docker_autostart_hint_weekly 2>&1)" ""                         # shown: not again for 7 days
+  printf '%s\n' $(( $(date +%s) - 8 * 86400 )) > "$STATE_DIR/docker-autostart-hint"
+  assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop"   # a week later: once more
+  printf '%s\n' $(( $(date +%s) + 86400 )) > "$STATE_DIR/docker-autostart-hint"
+  assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop"   # a date in the future: shown
+  printf '{"AutoStart": true}\n' > "$d/settings-store.json"; rm -f "$STATE_DIR/docker-autostart-hint"
+  assert_eq "$(docker_autostart_hint_weekly 2>&1)" ""
+  [ ! -e "$STATE_DIR/docker-autostart-hint" ] || { echo "recorded a hint that was not shown" >&2; return 1; }
+  # setup (and so every update) uses the weekly one; ./stack serve, which is about staying up, always reminds
+  assert_contains "$(sed -n '/^cmd_setup() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "docker_autostart_hint_weekly"
+  assert_contains "$(sed -n '/^_serve_mac() {/,/^}/p' "$T_ROOT/lib/host.sh")" "  docker_autostart_hint
+"
+}
+
 test_serve_background_records_pid_and_start_and_stop_kills_it() {
   _serve_stubs; host_os() { echo Darwin; }
   spawn_detached() { echo "spawn $*" >> "$TMP/calls"; echo 4242; }

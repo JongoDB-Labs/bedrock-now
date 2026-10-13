@@ -103,7 +103,7 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `prices` | manual | Fetches public price lists; `--accept` applies a refused change. |
 | `backup` | e2e `cli/backup`, `cli/backup-contents` | `backups/<ts>/` with both dumps, `s3/`, `.env`, mode 700. |
 | `restore DIR --yes` | e2e `cli/restore` · unit (`tests/test_lifecycle.sh`) | Checks the backup first (both bucket folders; each dump listable by `pg_restore --list`) and stops nothing if it is damaged; takes a pre-restore backup, restores, then the smoke test passes. A relative DIR that is a backup both from the current folder and in the checkout (different folders) is refused as ambiguous. |
-| `update --to <same commit>` | e2e `cli/update-same-version` | Backup, "already on", pull, setup; "no new version". |
+| `update --to <same commit>` | e2e `cli/update-same-version` · unit (`tests/test_update_git.sh`) | "already on … — nothing to update", exit 0, before any backup (`--force`: backup, pull, setup; "no new version"). |
 | `update --to <newer commit>` + `rollback` | e2e `cli/update-to-next`, `cli/rollback-from-another-folder`, `cli/rollback-code` (`--deep-update`) | Update records the rollback; rollback restores code (HEAD back), data and images. |
 | `restore` from another folder | e2e `cli/restore-from-another-folder` | `<checkout>/stack restore backups/<ts>` run from any folder restores the checkout's backup (as does `rollback`, which passes an absolute path). |
 | `rollback` with nothing recorded | e2e `cli/rollback-nothing` | Exit 1 "nothing to roll back". |

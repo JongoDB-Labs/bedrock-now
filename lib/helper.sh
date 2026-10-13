@@ -417,7 +417,7 @@ helper_run_job() {
   done
   wait "$pid" || rc=$?
   JOB_FINISHED="$(date +%s)"; JOB_VERSION="$(installed_version)"
-  at="$(sed -n 's/^at=//p' "$STATE_DIR/images/last-clean" 2>/dev/null)"
+  at="$(sed -n 's/^at=//p' "$STATE_DIR/images/last-clean" 2>/dev/null || true)"   # none yet (e.g. nothing to update)
   if [ -n "$at" ] && [ "$at" -ge "$JOB_STARTED" ]; then
     freed="$(sed -n 's/^freed_bytes=//p' "$STATE_DIR/images/last-clean")"; summary="$(sed -n 's/^summary=//p' "$STATE_DIR/images/last-clean")"
     case "$freed" in '' | *[!0-9]*) freed='' ;; esac
@@ -429,7 +429,9 @@ helper_run_job() {
   fi
   case "$action" in
     update)
-      if [ "${JOB_FREED:-0}" -gt 0 ]; then helper_write_status "done" "Updated to $JOB_VERSION · freed $(fmt_bytes "$JOB_FREED")"
+      # nothing new: ./stack update said so and stopped before the backup (exit 0)
+      if grep -q -- '— nothing to update' "$logf" 2>/dev/null; then helper_write_status "done" "Already up to date ($JOB_VERSION): nothing to update"
+      elif [ "${JOB_FREED:-0}" -gt 0 ]; then helper_write_status "done" "Updated to $JOB_VERSION · freed $(fmt_bytes "$JOB_FREED")"
       else helper_write_status "done" "Updated to $JOB_VERSION"; fi ;;
     rollback) helper_write_status "done" "Rolled back to $JOB_VERSION" ;;
     clean) helper_write_status "done" "${summary:-Cleaned up}" ;;

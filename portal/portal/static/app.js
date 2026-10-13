@@ -339,7 +339,8 @@ function renderJob(job, inProgress) {
   let note = "";
   if (reconnecting) note = "The portal is restarting as part of the update — reconnecting…";
   else if (inProgress) note = `Started ${job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : ""}. You can leave this page; it is carried out on your computer.`;
-  else if (job.phase === "done" && job.action !== "clean") note = "Reload this page to use the new version of Home.";
+  // "Already up to date (…)": the helper's update found nothing new, so Home did not change either
+  else if (job.phase === "done" && job.action !== "clean" && !msg.startsWith("Already up to date")) note = "Reload this page to use the new version of Home.";
   $("#job-note").textContent = note;
   $("#job-dismiss").hidden = inProgress;
 }

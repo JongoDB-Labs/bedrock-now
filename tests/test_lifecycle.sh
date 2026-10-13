@@ -149,6 +149,32 @@ test_restore_recreates_dbs_syncs_buckets_and_tests() {
   assert_contains "$(cat "$TMP/err")" "no pre-restore backup"
 }
 
+test_restore_hides_composes_container_progress_lines() {
+  printf 'SHARED_MCP_PORT=8765\nSHARED_MCP_TOKEN=t0k\n' > "$ENV_FILE"; _mk_backup ''; _stub_dc
+  eval "_logged_$(declare -f dc)"   # dc as stubbed, plus the COMPOSE_PROGRESS each call runs with
+  dc() { echo "dc $* progress=${COMPOSE_PROGRESS:-unset}" >> "$TMP/progress"; _logged_dc "$@"; }
+  confirm() { case "$1" in *"backup of the current state"*) return 1 ;; *) return 0 ;; esac; }
+  cmd_test() { :; }; ASSUME_YES=1
+  ( cmd_restore "$B" ) 2> "$TMP/err"
+  p="$(cat "$TMP/progress")"
+  assert_contains "$p" "dc stop open-webui litellm shared-mcp progress=quiet"
+  assert_contains "$p" "dc up -d --wait --force-recreate open-webui shared-mcp progress=quiet"
+  assert_contains "$(cat "$TMP/err")" "starting the services again"
+  : > "$TMP/progress"
+  ( BEDROCK_NOW_VERBOSE=1 cmd_restore "$B" ) 2>/dev/null   # verbose: Compose's own output, as before
+  assert_contains "$(cat "$TMP/progress")" "dc stop open-webui litellm shared-mcp progress=unset"
+  : > "$TMP/progress"
+  ( COMPOSE_PROGRESS=plain cmd_restore "$B" ) 2>/dev/null   # your own choice is kept
+  assert_contains "$(cat "$TMP/progress")" "dc stop open-webui litellm shared-mcp progress=plain"
+}
+
+test_dc_passes_compose_progress_on_to_compose() {
+  # what rollback relies on for the restored version's restore (v0.1.0-v0.2.1's dc() does not strip it either)
+  printf 'X=1\n' > "$ENV_FILE"
+  docker() { echo "progress=${COMPOSE_PROGRESS:-unset}"; }
+  assert_eq "$(COMPOSE_PROGRESS=quiet dc ps)" "progress=quiet"
+}
+
 test_rotate_aws_rejected_key_leaves_env_untouched() {
   printf 'AWS_ACCESS_KEY_ID=AKIAOLD\nAWS_SECRET_ACCESS_KEY=oldsecret\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
   before="$(cat "$ENV_FILE")"; _stub_dc
@@ -302,6 +328,22 @@ test_prune_auto_backups_keeps_newest_n_auto_only() {
   prune_auto_backups 2 2> "$TMP/err"
   assert_eq "$(ls "$STACK_DIR/backups" | tr '\n' ' ')" "20260101-000000 20260103-000001-auto 20260104-000001-auto 20260105-000001-auto.partial "
   assert_contains "$(cat "$TMP/err")" "removed 2 old automatic backup(s)"
+}
+
+test_prune_auto_backups_never_removes_the_backup_rollback_needs() {
+  STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR/backups" "$STATE_DIR/update"
+  for d in 20260101-000001-auto 20260102-000001-auto 20260103-000001-auto 20260104-000001-auto; do
+    mkdir -p "$STACK_DIR/backups/$d"
+  done
+  printf 'from=abc\nbackup=backups/20260101-000001-auto\nresult=done\n' > "$STATE_DIR/update/last.env"
+  prune_auto_backups 2 2> "$TMP/err"
+  assert_eq "$(ls "$STACK_DIR/backups" | tr '\n' ' ')" "20260101-000001-auto 20260103-000001-auto 20260104-000001-auto "
+  assert_contains "$(cat "$TMP/err")" "removed 1 old automatic backup(s)"
+  assert_contains "$(cat "$TMP/err")" "the one ./stack rollback needs"
+  # one of the newest: it counts as one of them
+  printf 'from=abc\nbackup=backups/20260104-000001-auto/\nresult=running\n' > "$STATE_DIR/update/last.env"
+  prune_auto_backups 2 2>/dev/null
+  assert_eq "$(ls "$STACK_DIR/backups" | tr '\n' ' ')" "20260103-000001-auto 20260104-000001-auto "
 }
 
 test_backup_named_suffix() {

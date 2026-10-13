@@ -407,7 +407,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 |---|---|---|
 | `./stack setup` | First-time or repeat setup: AWS key, ports, model probe, keys | < $0.01 |
 | `./stack up` / `down` | Start / stop (data is kept) | none |
-| `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups; reused for 5 minutes, `--disk` measures now) | none |
+| `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups, and old images `./stack clean` would remove, if any; reused for 5 minutes, `--disk` measures now) | none |
 | `./stack open` | The installed bedrock-now app, else the portal in a browser tab | none |
 | `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
@@ -416,7 +416,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack models [--recheck]` | Which models your key can use; `--recheck` re-probes | `--recheck`: < $0.01 |
 | `./stack backup` | Databases + buckets + `.env` → `backups/<timestamp>/` | none |
 | `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
-| `./stack update [--to <tag\|branch>]` | Backup, new code, pinned images, setup | < $0.01 |
+| `./stack update [--to <tag\|branch>] [--force]` | Backup, new code, pinned images, setup; with nothing new it says so and stops (`--force` runs setup anyway) | < $0.01 (nothing new: none) |
 | `./stack clean [--dry-run] [--yes]` | Remove this install's old images (lists them first; keeps one previous version); `--dry-run` only lists them | none |
 | `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
 | `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
@@ -445,14 +445,18 @@ When a newer release is out, Home shows an **update card** with its release note
 and the `claude-bedrock` launch line mention it too (they read the portal's last check; no network of their
 own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
 
-The update runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept), **2/4** the code
-(an install from a release tag moves to the newest release, never an older one; a branch gets
-`git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run by the new code. Local
-changes to tracked files stop the update before anything happens; they are never discarded. If a later step
-fails, or the new version misbehaves, **`./stack rollback`** goes back: it checks out the code from before the
-update, restores the update's own pre-update backup (taking a backup of the current state first) and starts the
-previous images, which are still on disk. It also works when the update failed half-way. The failure message
-also shows the manual way (`git … && ./stack restore <backup>`).
+The update first asks git whether there is anything new. If not, it says so (`already on v0.3.0 — nothing to
+update`) and stops: no backup, no restart, no Bedrock calls. `./stack update --force` runs every step anyway.
+Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one
+`./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
+older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
+by the new code. It ends with a short "What's new": voice, remote access and the one-click helper (with the
+command that turns each on) and the release notes. Local changes to tracked files stop the update before
+anything happens; they are never discarded. If a later step fails, or the new version misbehaves,
+**`./stack rollback`** goes back: it checks out the code from before the update, restores the update's own
+pre-update backup (taking a backup of the current state first) and starts the previous images, which are still on
+disk. It also works when the update failed half-way. The failure message also shows the manual way
+(`git … && ./stack restore <backup>`).
 
 **One click, optional:** `./stack helper install` adds a small background job under your user (a launchd agent
 on macOS, a systemd user unit on Linux; setup offers it). Home then shows **Update now**, **Roll back** and
@@ -463,7 +467,8 @@ helper then runs one of those three `./stack` commands, one at a time (a termina
 `clean`, `restore` or `setup` makes it answer "Busy"), with its own limits (one a minute, 12 a day). It does not
 update a checkout that follows a branch unless `BEDROCK_NOW_HELPER_ALLOW_BRANCH=1` is in `.env`. Details and the
 security checklist: [docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes
-it. An update that finds nothing new leaves the rollback target and the kept images alone.
+it. An update that finds nothing new ends as "Already up to date"; neither it nor `--force` touches the rollback
+target or the kept images.
 `UPDATE_REQUIRE_SIGNED_TAGS=true` makes `./stack update` accept only signed release tags
 ([code provenance](docs/security.md#code-provenance)).
 
@@ -473,7 +478,9 @@ download) and removes the version before that, then says what it freed, e.g. `fr
 (of any project) or another bedrock-now folder still needs, and never runs a global `docker … prune`. Its own
 leftover builds (untagged images Compose labelled with this project) go too. `./stack clean` does the same on
 demand: it lists what it would remove and asks first (`--yes` skips the question). `./stack status` shows how
-much disk the images, data volumes and backups take. Backups are unchanged: the newest 5 automatic ones are kept.
+much disk the images, data volumes and backups take, and how much `./stack clean` would free when there is
+something to free. Backups are unchanged: the newest 5 automatic ones are kept, and the one `./stack rollback`
+restores is never pruned, however old.
 
 **Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (setup removes
 `OPENWEBUI_PORT` and `RUSTFS_CONSOLE_PORT` from `.env`), so the old address such as `http://127.0.0.1:8080`
@@ -519,7 +526,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   puts the portal on 8800). See [docs/advanced.md](docs/advanced.md#linux-selinux-and-rootless-docker).
 - **A non-`.localhost` portal name** is refused unless you set `BEDROCK_NOW_ALLOW_PUBLIC_HOST=1`: the portal is
   plain HTTP. See [docs/advanced.md](docs/advanced.md#portal-host-name-port-and-the-public-host-opt-in).
-- **Verbose output:** `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output.
+- **Verbose output:** `BEDROCK_NOW_VERBOSE=1 ./stack setup` shows the full docker compose output (also for
+  `restore` and `rollback`, which otherwise leave out Compose's per-container "Waiting / Healthy" lines).
 - **Backups, restore on a new machine, AWS key rotation, adding models, the portal window:**
   [docs/advanced.md](docs/advanced.md).
 

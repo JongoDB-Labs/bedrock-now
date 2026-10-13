@@ -285,17 +285,34 @@ serve_stop() {
 
 on_battery() { pmset -g batt 2>/dev/null | head -n 1 | grep -q "Battery Power"; }
 
-# docker_autostart_hint — macOS: Docker Desktop's "Start when you sign in", read (never edited) from its settings
-# (settings-store.json "AutoStart"; older versions: settings.json "autoStart"). Warns only on an explicit false.
-docker_autostart_hint() {
+# docker_autostart_off — macOS: 0 when Docker Desktop's "Start when you sign in" is explicitly off, read (never
+# edited) from its settings (settings-store.json "AutoStart"; older versions: settings.json "autoStart")
+docker_autostart_off() {
   local d="$HOME/Library/Group Containers/group.com.docker" f v=''
   for f in "$d/settings-store.json:AutoStart" "$d/settings.json:autoStart"; do
     [ -f "${f%:*}" ] || continue
     v="$(grep -Eo "\"${f##*:}\"[[:space:]]*:[[:space:]]*(true|false)" "${f%:*}" 2>/dev/null | head -n 1 | sed 's/.*://; s/[[:space:]]//g' || true)"
     [ -z "$v" ] || break
   done
-  [ "$v" = false ] || return 0
+  [ "$v" = false ]
+}
+
+# docker_autostart_hint — warns while "Start when you sign in" is off (./stack serve: every time)
+docker_autostart_hint() {
+  docker_autostart_off || return 0
   warn "Docker Desktop doesn't start by itself: turn on Docker Desktop › Settings › General › \"Start Docker Desktop when you sign in to your computer\", so bedrock-now comes back after a restart"
+}
+
+# docker_autostart_hint_weekly — the same after setup (and so after every update), at most once in 7 days:
+# .state/docker-autostart-hint holds when it was last shown (a date in the future counts as never)
+docker_autostart_hint_weekly() {
+  local f="$STATE_DIR/docker-autostart-hint" at now
+  now="$(date +%s)"
+  at="$(head -c 20 "$f" 2>/dev/null | tr -cd '0-9' || true)"
+  if [ -n "$at" ] && [ $((now - at)) -ge 0 ] && [ $((now - at)) -lt 604800 ]; then return 0; fi
+  docker_autostart_off || return 0
+  docker_autostart_hint
+  { mkdir -p "$STATE_DIR" && printf '%s\n' "$now" > "$f"; } 2>/dev/null || true
 }
 
 serve_urls() {

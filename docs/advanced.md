@@ -162,8 +162,9 @@ every model has a price, a display name and a cross-check entry.
 ```
 
 Backups contain secrets (a copy of `.env`) and your chats, so keep them private. `./stack update` names its
-backups `backups/<ts>-auto/` and keeps only the newest 5 of those. Backups you make with `./stack backup` are
-never deleted; remove old ones yourself.
+backups `backups/<ts>-auto/` and keeps only the newest 5 of those, plus the one `./stack rollback` would restore
+(named in `.state/update/last.env`), however old. Backups you make with `./stack backup` are never deleted;
+remove old ones yourself.
 
 Restore also puts the backup's LiteLLM virtual keys and Open WebUI API key back into `.env` (the restored
 databases only know those keys), then recreates Open WebUI and shared-mcp and runs the smoke test. If the

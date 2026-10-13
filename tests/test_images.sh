@@ -2,6 +2,7 @@
 # lib/images.sh: precise cleanup after ./stack update, ./stack clean and the disk line of ./stack status.
 # Docker is stubbed with a tiny image store in $TMP/imgs ("ID<TAB>REF<TAB>SIZE<TAB>COMPOSE-PROJECT-LABEL",
 # REF "<none>" for an untagged image), container images in $CTR_IMAGES, other checkouts in $OTHER_DIRS.
+# Like Docker 29 (containerd image store), `docker image ls` leaves untagged images out unless -a is given.
 . "$STACK_DIR/lib/commands.sh"
 
 _store() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" >> "$TMP/imgs"; }   # _store ID REF SIZE [LABEL]
@@ -30,7 +31,9 @@ _stub_docker() {
       "volume ls --filter label=io.bedrock-now.dir "*) [ -z "${OTHER_DIRS:-}" ] || printf '%s\n' "$OTHER_DIRS" ;;
       "image ls -q --no-trunc --filter dangling=true --filter label=com.docker.compose.project="*)
         awk -F'\t' -v p="${last#label=com.docker.compose.project=}" '$2 == "<none>" && $4 == p { print $1 }' "$TMP/imgs" ;;
-      "image ls --no-trunc --format {{.ID}}	{{.Size}}") awk -F'\t' '!s[$1]++ { print $1 "\t" $3 }' "$TMP/imgs" ;;
+      # Docker 29 (containerd image store): without -a the list leaves untagged images out ("dangling=true" still finds them)
+      "image ls --no-trunc --format {{.ID}}	{{.Size}}") awk -F'\t' '$2 != "<none>" && !s[$1]++ { print $1 "\t" $3 }' "$TMP/imgs" ;;
+      "image ls -a --no-trunc --format {{.ID}}	{{.Size}}") awk -F'\t' '!s[$1]++ { print $1 "\t" $3 }' "$TMP/imgs" ;;
       "image ls --no-trunc --format {{.ID}}	{{.Repository}}:{{.Tag}} --filter reference="*)
         local pre="${last#reference=}"; pre="${pre%\*}"
         awk -F'\t' -v p="$pre" 'index($2, p) == 1 { print $1 "\t" $2 }' "$TMP/imgs" ;;
@@ -104,7 +107,7 @@ test_first_update_keeps_the_previous_version_and_removes_nothing() {
   _fake_update 2 L2 P2 2> "$TMP/err"
   assert_contains "$(cat "$TMP/imgs")" "L1	ghcr.io/berriai/litellm:1"
   assert_contains "$(cat "$TMP/imgs")" "P1	bn-t/portal:previous"
-  assert_contains "$(cat "$TMP/err")" "nothing to free"
+  assert_contains "$(cat "$TMP/err")" "==> old images: nothing to free"   # not a bare "nothing to free"
   assert_eq "$(cut -f1 "$STATE_DIR/images/previous.tsv" | sort | tr '\n' ' ')" "C1 L1 P1 "
   [ ! -f "$STATE_DIR/images/before.tsv" ] || { echo "before.tsv must become previous.tsv" >&2; return 1; }
 }
@@ -148,6 +151,47 @@ test_only_this_projects_dangling_builds_are_removed() {
   assert_contains "$(cat "$TMP/err")" "freed 200 MB (old old build)"
 }
 
+test_untagged_leftovers_are_found_although_image_ls_hides_them() {
+  # Docker 29 lists untagged images only with -a. A rollback leaves the builds it re-tags away from untagged,
+  # labelled with this project: ./stack clean must see them (it said "nothing to clean" with 4 of them there).
+  _setup
+  _store U1 '<none>' 214MB bn-t; _store U2 '<none>' 250MB bn-t; _store U3 '<none>' 280MB bn-t; _store U4 '<none>' 312MB bn-t
+  out="$(cmd_clean --dry-run 2>&1 </dev/null)"
+  assert_not_contains "$out" "nothing to clean"
+  assert_contains "$out" "about 1.1 GB in all"
+  ASSUME_YES=1 cmd_clean > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "freed 1.1 GB"
+  assert_eq "$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')" "C1 L1 P1 "
+}
+
+test_untagged_leftovers_of_a_rollback_go_with_the_next_update() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  docker tag bn-t/portal:previous bn-t/portal:local   # what ./stack rollback does: P2 loses its name
+  printf 'L2\tghcr.io/berriai/litellm:2\n' > "$STATE_DIR/images/previous.tsv"   # (its record names only L2)
+  _compose 1
+  _fake_update 3 L3 P3 2> "$TMP/err"
+  assert_not_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "P2"
+  assert_contains "$(cat "$TMP/err")" "old images: freed"
+}
+
+test_listing_every_image_never_widens_what_is_removed() {
+  _setup
+  _store D1 '<none>' 200MB bn-t            # this project's unused leftover: the only image to go
+  _store D2 '<none>' 200MB other-project   # another project's untagged build
+  _store D3 '<none>' 200MB ''              # untagged without a Compose label (e.g. an intermediate image)
+  _store D4 '<none>' 200MB bn-t            # this project's, but a container still uses it
+  _store O1 other/app:1 100MB other-project
+  CTR_IMAGES=D4
+  assert_eq "$(clean_plan | cut -f1 | tr '\n' ' ')" "D1 "
+  ASSUME_YES=1 cmd_clean > /dev/null 2>&1
+  _fake_update 2 L2 P2 2>/dev/null
+  ids="$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')"
+  assert_eq "$ids" "C1 D2 D3 D4 L1 L2 O1 P1 P2 "
+  assert_eq "$(grep -c '^rm ' "$TMP/dcalls")" 1
+  assert_contains "$(cat "$TMP/dcalls")" "rm D1"
+}
+
 test_an_image_docker_still_needs_is_kept_and_said() {
   _setup
   _fake_update 2 L2 P2 2>/dev/null
@@ -160,7 +204,7 @@ test_an_image_docker_still_needs_is_kept_and_said() {
 test_images_that_are_already_gone_are_not_reported() {
   _setup
   _fake_update 2 L2 P2 2>/dev/null
-  # containerd image store: the old portal build vanished when it lost its last tag
+  # the old portal build was removed meanwhile (by hand, or by another tool)
   awk -F'\t' '$1 != "P1"' "$TMP/imgs" > "$TMP/imgs.n"; mv "$TMP/imgs.n" "$TMP/imgs"
   _fake_update 3 L3 P3 2> "$TMP/err"
   assert_contains "$(cat "$TMP/err")" "freed 1.7 GB (old litellm 1)"
@@ -245,6 +289,25 @@ test_disk_line_counts_project_images_volumes_and_backups() {
   assert_contains "$line" "images 2.1 GB (+1.9 GB previous version, for rollback)"   # L2+P2+C1 / L1+P1
   assert_contains "$line" "data volumes 310 MB"
   assert_contains "$line" "(1)"
+}
+
+test_disk_line_mentions_clean_only_when_there_is_something_to_clean() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  assert_not_contains "$(disk_line)" "./stack clean"   # the current and one previous version only
+  _store D1 '<none>' 200MB bn-t
+  eval "_counted_$(declare -f docker)"   # counts the full image listings (about a second each on a busy machine)
+  docker() { case "$*" in "image ls -a "*) echo x >> "$TMP/listings" ;; esac; _counted_docker "$@"; }
+  assert_contains "$(disk_line)" " · old images 200 MB (./stack clean removes them)"
+  assert_eq "$(wc -l < "$TMP/listings" | tr -d ' ')" 1
+}
+
+test_removing_images_refreshes_the_cached_disk_line() {
+  _setup; _store D1 '<none>' 200MB bn-t
+  disk_line_cached > /dev/null
+  [ -f "$STATE_DIR/disk.cache" ] || return 1
+  ASSUME_YES=1 cmd_clean > /dev/null 2>&1
+  [ ! -e "$STATE_DIR/disk.cache" ] || { echo "the cached disk line still offers ./stack clean" >&2; return 1; }
 }
 
 test_update_snapshots_before_images_and_cleans_only_after_setup_succeeded() {

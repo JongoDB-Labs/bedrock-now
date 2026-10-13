@@ -168,3 +168,120 @@ test_signed_tags_required_refuses_unsigned_tags_and_branches() {   # I6
   assert_contains "$(cat "$TMP/err")" "tag v0.2.0: signature verified"
   assert_eq "$(command git -C "$STACK_DIR" describe --tags --exact-match)" "v0.2.0"
 }
+
+# --- an update with nothing new stops before the backup (--force runs everything, as before) ---
+
+_noop_stubs() { # logs what ./stack update would do; the real git decides whether there is anything new
+  printf 'X=1\n' > "$ENV_FILE"; _fake_stack
+  _backup_named() { LAST_BACKUP=backups/b; echo BACKUP >> "$TMP/calls"; }
+  prune_auto_backups() { echo PRUNE >> "$TMP/calls"; }
+  dc() { echo "dc $1" >> "$TMP/calls"; }
+}
+
+test_update_with_nothing_new_stops_before_backup_and_setup() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs   # the newest release
+  (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # subshells: a real update would re-execute ./stack
+  assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+  assert_contains "$(cat "$TMP/err")" "already on v0.2.0 — nothing to update (./stack update --force re-runs setup)"
+  assert_not_contains "$(cat "$TMP/err")" "update: 1/4"
+  # the same commit by --to, and a branch that is up to date with origin
+  (ASSUME_YES=1 cmd_update --to v0.2.0) 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "nothing to update"
+  git -C "$STACK_DIR" checkout -q main
+  (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1
+  (ASSUME_YES=1 cmd_update --to main) 2>> "$TMP/err" || return 1
+  assert_eq "$(grep -c 'nothing to update' "$TMP/err")" 2
+  assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+}
+
+test_update_with_something_new_still_backs_up_first() {
+  _fixture; _noop_stubs   # on v0.1.0: v0.2.0 is newer
+  update_checkout() { echo "CHECKOUT ${1:-}" >> "$TMP/calls"; CODE_CHANGED=1; }
+  # subshells: it re-executes ./stack, which keeps the lock (the fake one does not release it: removed by hand)
+  (ASSUME_YES=1 cmd_update) 2>/dev/null; rm -rf "$STATE_DIR/lock"
+  assert_eq "$(head -n 4 "$TMP/calls" | tr '\n' ';')" "BACKUP;PRUNE;CHECKOUT ;STACK update --yes done=1 backup=backups/b from=$(git -C "$STACK_DIR" rev-parse "v0.1.0^{commit}");"
+  : > "$TMP/calls"; git -C "$STACK_DIR" checkout -q main; git -C "$STACK_DIR" reset -q --hard v0.2.0   # a branch behind origin
+  (ASSUME_YES=1 cmd_update) 2>/dev/null; rm -rf "$STATE_DIR/lock"
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+  : > "$TMP/calls"; git -C "$STACK_DIR" checkout -q --detach v0.2.0   # --to a branch from a tag: a change of mode
+  (ASSUME_YES=1 cmd_update --to main) 2>/dev/null
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+}
+
+test_update_force_reruns_setup_when_nothing_is_new() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs
+  (ASSUME_YES=1 cmd_update --force) 2> "$TMP/err" || return 1
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "BACKUP;PRUNE;dc pull;STACK setup --yes done=unset backup=unset from=unset;"
+  assert_contains "$(cat "$TMP/err")" "already on v0.2.0"
+  assert_contains "$(cat "$TMP/err")" "no new version"
+  if out="$( (cmd_update --bogus) 2>&1)"; then return 1; fi
+  assert_contains "$out" "usage: ./stack update [--to <tag|branch>] [--force]"
+}
+
+test_update_cannot_tell_so_it_runs_as_before() {
+  # no network / no origin: the code step decides (and says why it stops), as before
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs
+  git -C "$STACK_DIR" remote set-url origin "$TMP/gone"
+  if out="$( (ASSUME_YES=1 cmd_update) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not fetch updates from origin"
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+}
+
+test_update_with_signed_tags_required_and_nothing_new() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs
+  printf 'UPDATE_REQUIRE_SIGNED_TAGS=true\n' > "$ENV_FILE"
+  (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # already on the newest release: nothing to verify
+  assert_contains "$(cat "$TMP/err")" "nothing to update"
+  git -C "$STACK_DIR" checkout -q main   # up to date, but a branch cannot be verified: refused, as before
+  if out="$( (ASSUME_YES=1 cmd_update) 2>&1)"; then return 1; fi
+  assert_contains "$out" "a branch cannot be verified"
+  git -C "$STACK_DIR" checkout -q --detach v0.2.0
+  if out="$( (ASSUME_YES=1 cmd_update --to "$(git -C "$STACK_DIR" rev-parse HEAD)") 2>&1)"; then return 1; fi
+  assert_contains "$out" "is not a tag"
+}
+
+test_update_fetches_once() {
+  _fixture; _noop_stubs
+  git() { case "$*" in *" fetch "*) echo FETCH >> "$TMP/fetches" ;; esac; command git "$@"; }
+  (ASSUME_YES=1 cmd_update) 2>/dev/null   # on v0.1.0: moves to v0.2.0 and re-executes ./stack
+  assert_eq "$(cat "$TMP/fetches")" "FETCH"
+  assert_eq "$(command git -C "$STACK_DIR" describe --tags --exact-match)" "v0.2.0"
+  assert_contains "$(cat "$TMP/calls")" "STACK update --yes done=1"
+}
+
+# --- after an update to a new version: a short "What's new" pointer ---
+
+test_whats_new_points_at_voice_remote_helper_and_the_release_notes() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0
+  printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"
+  stt_enabled() { return 0; }; helper_installed() { return 1; }
+  out="$(update_whats_new)"
+  assert_contains "$out" "What's new in v0.2.0"
+  assert_contains "$out" "Voice: Bedrock speech-to-text is on (./stack stt status)"
+  assert_contains "$out" "Remote access: off — ./stack remote enable tailscale (docs/remote.md)"
+  assert_contains "$out" "One-click updates from Home: ./stack helper install"
+  assert_contains "$out" "Release notes: https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.2.0"
+  [ "$(printf '%s\n' "$out" | grep -c .)" -le 5 ] || { echo "too long: $out" >&2; return 1; }
+  # a branch (no release tag), remote on, helper installed, voice off
+  git -C "$STACK_DIR" checkout -q main
+  printf 'REMOTE_MODE=tailscale\n' > "$ENV_FILE"
+  stt_enabled() { return 1; }; helper_installed() { return 0; }
+  out="$(update_whats_new)"
+  assert_not_contains "$out" "releases/tag"
+  assert_not_contains "$out" "Remote access"
+  assert_not_contains "$out" "helper install"
+  assert_contains "$out" "Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)"
+  printf 'STT_PROVIDER=openai\n' > "$ENV_FILE"; stt_enabled() { return 0; }
+  assert_contains "$(update_whats_new)" "Voice: OpenAI speech-to-text is on (./stack stt status)"
+}
+
+test_update_to_a_new_version_ends_with_whats_new_and_a_no_op_does_not() {
+  printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack; dc() { :; }
+  update_record_write() { :; }; update_record_done() { :; }
+  update_whats_new() { echo "WHATS NEW"; }
+  out="$(BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP=backups/b BEDROCK_NOW_UPDATE_FROM=abc123 cmd_update 2>/dev/null)"
+  assert_eq "$out" "WHATS NEW"
+  _backup_named() { LAST_BACKUP=backups/b; }; prune_auto_backups() { :; }
+  out="$(cmd_update --force 2>/dev/null)"
+  assert_eq "$out" ""
+}

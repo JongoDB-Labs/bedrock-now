@@ -11,7 +11,8 @@ _checkout() { # a clean git checkout with a fake ./stack that logs its arguments
 #!/bin/sh
 echo "$*" >> "$CALLS"
 case "$1" in
-  update) echo "==> update: 1/4 backup"; echo "==> update: 2/4 code (git)"; echo "==> update: 3/4 images"; echo "==> update: 4/4 setup"
+  update) [ -z "${FAKE_NOOP:-}" ] || { echo "==> already on v0.3.0 — nothing to update (./stack update --force re-runs setup)"; exit 0; }
+    echo "==> update: 1/4 backup"; echo "==> update: 2/4 code (git)"; echo "==> update: 3/4 images"; echo "==> update: 4/4 setup"
     printf 'freed_bytes=3100000000\nsummary=freed 3.1 GB (old litellm 1)\nat=%s\n' "$(date +%s)" > "$STATE_DIR/images/last-clean" ;;
   clean) printf 'freed_bytes=500000000\nsummary=freed 500 MB (old old build)\nat=%s\n' "$(date +%s)" > "$STATE_DIR/images/last-clean" ;;
 esac
@@ -104,6 +105,17 @@ test_update_job_reports_phases_version_and_freed() {
   assert_eq "$(_phase_of "$TMP/log")" "$(printf 'downloading\tDownloading images')"
   printf 'rollback: 2/3 data\n' > "$TMP/log"
   assert_eq "$(_phase_of "$TMP/log" | cut -f1)" "restoring"
+}
+
+test_update_with_nothing_new_is_done_and_says_so() {
+  # ./stack update exits 0 without a backup or setup when nothing is new: done, not failed, and not "Updated to"
+  _checkout; _req update
+  FAKE_NOOP=1 helper_poll_once 2>/dev/null
+  assert_eq "$(cat "$CALLS")" "update --yes"
+  s="$(_status)"
+  assert_contains "$s" '"phase": "done", "message": "Already up to date (v0.3.0): nothing to update"'
+  assert_not_contains "$s" "Updated to"
+  assert_contains "$s" '"freed_bytes": null'
 }
 
 test_failed_job_reports_the_error_and_the_way_back() {

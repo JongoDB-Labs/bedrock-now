@@ -30,7 +30,8 @@ Usage: ./stack <command> [--yes]
   restore DIR  Restore from a backup directory (then runs test: ~$0.0001 Bedrock)
   update       Backup, new code (git), pinned images, re-run setup (< $0.01 Bedrock)
                --to <tag|branch> picks a version; local changes are never discarded;
-               keeps one previous version of each image and removes older ones
+               keeps one previous version of each image and removes older ones;
+               nothing new: says so and stops (--force re-runs setup anyway)
   clean        Remove this project's old images (lists them first; keeps one previous version)
                --dry-run only lists them
   rollback     Back to the version before the last update: code, data (its backup) and images
@@ -121,6 +122,12 @@ fmt_elapsed() { # fmt_elapsed SECONDS -> "16s" / "2m05s"
 phase_line() { printf '%s ready (%s)\n' "$1" "$(fmt_elapsed "$2")"; }   # phase_line LABEL SECONDS
 _now() { date +%s; }
 is_verbose() { [ "${BEDROCK_NOW_VERBOSE:-0}" = 1 ]; }
+
+# quiet_compose — for the rest of this command, Compose leaves out its per-container progress lines ("Container x
+# Waiting", "… Healthy": dozens per restore) and still prints its errors. BEDROCK_NOW_VERBOSE=1 shows them, and a
+# COMPOSE_PROGRESS of your own is kept. compose_quiet_env -> the same as an env(1) argument, for child processes.
+quiet_compose() { is_verbose || export COMPOSE_PROGRESS="${COMPOSE_PROGRESS:-quiet}"; }
+compose_quiet_env() { is_verbose || printf 'COMPOSE_PROGRESS=%s\n' "${COMPOSE_PROGRESS:-quiet}"; }
 
 # _failed_services SVCS... -> the ones that are not running, or are unhealthy/still starting (all if none match)
 _failed_services() {
@@ -399,7 +406,7 @@ cmd_setup() {
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
   if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_up_hook; fi
   print_summary
-  [ "$(host_os)" != Darwin ] || docker_autostart_hint   # lib/host.sh: read-only check, never edits settings
+  [ "$(host_os)" != Darwin ] || docker_autostart_hint_weekly   # lib/host.sh: read-only check, at most weekly
   maybe_auto_open
 }
 
@@ -890,7 +897,7 @@ cmd_status() {
     printf '  Logs: ./stack logs <service>   Costs: ./stack costs   Models: ./stack models\n'
     ! remote_on || printf '  Remote: %s   (./stack remote status)\n' "$(remote_url || true)"
   fi
-  printf '  %s   (./stack clean frees old images)\n' "$(disk_line_cached $fresh)"
+  printf '  %s\n' "$(disk_line_cached $fresh)"   # names ./stack clean when it would free something
   if upd="$(update_available)"; then
     printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
   fi
@@ -1112,6 +1119,7 @@ cmd_restore() {
     die "usage: ./stack restore backups/<timestamp>   (a directory written by ./stack backup)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first (on a new machine: copy the backup's .env to ./.env, run ./stack setup, then restore)"
   stack_lock restore
+  quiet_compose
   dir="$(cd "$dir" && pwd -P)"
   log "backup to restore: $dir"
   if [ -f "$dir/.env" ]; then
@@ -1134,6 +1142,7 @@ cmd_restore() {
     hint="no pre-restore backup was taken (you declined it), so fix the cause and re-run ./stack restore ${dir#"$STACK_DIR"/}"
   fi
   _data_services_up
+  log "stopping Open WebUI, LiteLLM and shared-mcp while the databases are replaced"
   dc stop open-webui litellm shared-mcp
   for db in litellm openwebui; do
     dc exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
@@ -1151,6 +1160,7 @@ cmd_restore() {
   write_mcp_config
   # .env may have changed: recreate the containers that read these keys, then start everything else.
   remote_net_preflight
+  log "starting the services again (waits until each one is healthy)"
   dc up -d --wait --force-recreate open-webui shared-mcp
   # shellcheck disable=SC2046  # word-split the service list on purpose
   dc up -d --wait $(stack_services)
@@ -1159,15 +1169,19 @@ cmd_restore() {
   cmd_test
 }
 
-# prune_auto_backups KEEP — keeps the newest KEEP backups/*-auto directories (made by ./stack update);
-# manual backups and incomplete (*.partial) ones are never touched.
+# prune_auto_backups KEEP — keeps the newest KEEP backups/*-auto directories (made by ./stack update) and, however
+# old, the one the update record names (what ./stack rollback restores, lib/rollback.sh); manual backups and
+# incomplete (*.partial) ones are never touched.
 prune_auto_backups() {
-  local keep="$1" d i=0 removed=0 all=()
+  local keep="$1" d i=0 removed=0 all=() rec
+  rec="$(_record_get backup)"; rec="${rec%/}"
   for d in "$STACK_DIR"/backups/*-auto; do [ -d "$d" ] && all+=("$d"); done   # glob order = oldest first
   while [ $((${#all[@]} - i)) -gt "$keep" ]; do
-    rm -rf "${all[$i]}"; removed=$((removed + 1)); i=$((i + 1))
+    [ -n "$rec" ] && [ "${all[$i]}" = "$STACK_DIR/$rec" ] || { rm -rf "${all[$i]}"; removed=$((removed + 1)); }
+    i=$((i + 1))
   done
-  [ "$removed" -eq 0 ] || log "removed $removed old automatic backup(s); ./stack update keeps the newest $keep (manual backups are never pruned)"
+  [ "$removed" -eq 0 ] ||
+    log "removed $removed old automatic backup(s); ./stack update keeps the newest $keep and the one ./stack rollback needs (manual backups are never pruned)"
 }
 
 # newest_release_tag GIT_DIR -> newest vX.Y.Z tag, pre-releases (anything with "-") excluded.
@@ -1192,6 +1206,36 @@ _rollback_cmd() {
 # whose signature git verify-tag accepts (trusted keys: docs/security.md#code-provenance)
 _signed_tags_required() { [ "$(get_env UPDATE_REQUIRE_SIGNED_TAGS)" = true ]; }
 
+# update_nothing_new [REF] -> 0 when ./stack update would leave the code exactly as it is (fetches first): HEAD is
+# already the target update_checkout would pick, in the same state (a branch up to date with its origin branch, or
+# a detached HEAD at the tag/commit). Whatever it cannot tell (no git, no network, an unknown ref, a branch that
+# follows another remote, a switch between a branch and a tag) counts as something to do: update_checkout decides.
+update_nothing_new() {
+  local to="${1:-}" head branch up target
+  [ -e "$STACK_DIR/.git" ] || return 1
+  _git fetch --quiet --tags origin 2>/dev/null || return 1
+  _UPDATE_FETCHED=1   # update_checkout does not fetch a second time
+  head="$(_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
+  branch="$(_git symbolic-ref -q --short HEAD || true)"
+  if [ -n "$branch" ]; then
+    # on a branch: git pull --ff-only (--to the same branch: checkout, then the same pull)
+    [ -z "$to" ] || [ "$to" = "$branch" ] || return 1
+    ! _signed_tags_required || return 1   # a branch cannot be verified: update_checkout refuses it and says why
+    [ "$(_git config "branch.$branch.remote" 2>/dev/null || true)" = origin ] || return 1
+    up="$(_git rev-parse -q --verify "$branch@{upstream}^{commit}" 2>/dev/null)" || return 1
+    _git merge-base --is-ancestor "$up" "$head"   # nothing to fast-forward
+    return
+  fi
+  if [ -n "$to" ]; then
+    ! _git show-ref -q --verify "refs/heads/$to" || return 1   # a local branch: checkout would attach HEAD to it
+    ! _signed_tags_required || return 1   # update_checkout checks that it is a signed tag
+    target="$to"
+  else
+    target="$(newest_release_tag "$STACK_DIR")"; [ -n "$target" ] || return 1
+  fi
+  [ "$(_git rev-parse -q --verify "$target^{commit}" 2>/dev/null)" = "$head" ]
+}
+
 # update_checkout [REF] — moves this checkout to newer code; sets CODE_CHANGED=1 when HEAD moved.
 #   on a branch: git pull --ff-only;  on a tag / detached HEAD (install.sh): the newest release tag, never
 #   older than HEAD;  REF given (--to): exactly that tag/branch/commit. Local changes to tracked files stop it.
@@ -1201,7 +1245,8 @@ update_checkout() {
   if [ ! -e "$STACK_DIR/.git" ]; then warn "$STACK_DIR is not a git checkout — skipping the code update (images and setup still run)"; return 0; fi
   _require_clean_tree
   before="$(_git rev-parse HEAD)"; cur="$(_git describe --tags --always 2>/dev/null || echo "$before")"
-  _git fetch --quiet --tags origin || die "could not fetch updates from origin (network?) — the code was not changed"
+  [ "${_UPDATE_FETCHED:-0}" = 1 ] ||
+    _git fetch --quiet --tags origin || die "could not fetch updates from origin (network?) — the code was not changed"
   branch="$(_git symbolic-ref -q --short HEAD || true)"
   if [ -n "$to" ]; then
     target="$to"
@@ -1237,19 +1282,25 @@ update_checkout() {
 
 # ./stack update: 1/4 backup (current code) → 2/4 code → [re-exec new code] → 3/4 images → 4/4 setup.
 # The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir, the previous commit and branch, so a later failure
-# can tell you exactly how to go back.
+# can tell you exactly how to go back. Nothing new (update_nothing_new): it says so and stops before the backup
+# (exit 0); --force runs every step anyway (re-runs setup: model probe, LiteLLM restart, smoke test).
 cmd_update() {
-  local to='' backup from='' branch='' hint moved=0 yes=()
+  local to='' backup from='' branch='' hint moved=0 force=0 yes=() usage="usage: ./stack update [--to <tag|branch>] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) [ -n "${2:-}" ] || die "usage: ./stack update [--to <tag|branch>]"; to="$2"; shift 2 ;;
-      *) die "usage: ./stack update [--to <tag|branch>]" ;;
+      --to) [ -n "${2:-}" ] || die "$usage"; to="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "$usage" ;;
     esac
   done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   stack_lock update   # lib/lock.sh: one update/rollback/clean/restore/setup at a time (kept across the re-exec)
   if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
     _require_clean_tree
+    if [ "$force" = 0 ] && update_nothing_new "$to"; then
+      log "already on $(installed_version) — nothing to update (./stack update --force re-runs setup)"
+      return 0
+    fi
     log "update: 1/4 backup"
     _backup_named auto
     prune_auto_backups 5
@@ -1294,6 +1345,21 @@ cmd_update() {
   # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
   images_after_update || warn "could not clean up old images — ./stack clean tries again"
   [ -z "$from" ] || log "updated to $(installed_version). Something wrong? ./stack rollback goes back (code, data and images)"
+  update_whats_new
+}
+
+# update_whats_new — after an update to a new version, at most 5 lines: voice, remote access and the one-click
+# helper (each with the command that changes it, the last two only while off) and the release notes of a tag
+update_whats_new() {
+  local tag
+  printf "\nWhat's new in %s:\n" "$(installed_version)"
+  if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
+  else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
+  remote_on || printf '  Remote access: off — ./stack remote enable tailscale (docs/remote.md)\n'
+  helper_installed || printf '  One-click updates from Home: ./stack helper install\n'
+  tag="$( [ ! -e "$STACK_DIR/.git" ] || _git describe --tags --exact-match HEAD 2>/dev/null || true)"
+  case "$tag" in v[0-9]*) case "$tag" in *[!A-Za-z0-9._-]*) ;; *) printf '  Release notes: %s/tag/%s\n' "$BEDROCK_NOW_RELEASES_URL" "$tag" ;; esac ;; esac
+  return 0
 }
 
 cmd_rotate_aws() {

@@ -208,6 +208,25 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Changed
 
+- **`./stack update` with nothing new stops right away.** When the target (the newest release, your branch's
+  origin, or `--to`) is the commit already checked out, it prints `already on v0.3.0 — nothing to update
+  (./stack update --force re-runs setup)` and exits 0: no backup, no setup, no model probe, no LiteLLM restart
+  (that took ~150 s and ~$0.0004). `--force` runs every step as before. The one-click helper ends such an update as
+  "Already up to date (v0.3.0): nothing to update" instead of "Updated to", and Home no longer asks for a reload.
+- **After an update to a new version**, `./stack update` ends with a short "What's new" pointer (at most 5 lines):
+  voice (on, or how to turn on Bedrock speech-to-text), remote access and the one-click helper while they are off
+  (with the command that turns each on), and the release notes link when the new version is a release tag.
+- **`./stack restore` and `./stack rollback` are quiet.** They no longer print Compose's ~85 per-container
+  "Container … Waiting / Healthy" lines (`COMPOSE_PROGRESS=quiet`; Compose's errors still show); restore says
+  instead when it stops and starts the services. Rollback passes the setting on to the restored version's own
+  restore and up, so going back to v0.2.1 is quiet too. `BEDROCK_NOW_VERBOSE=1` (or your own
+  `COMPOSE_PROGRESS`) shows them.
+- The image cleanup after an update says `old images: nothing to free` (or `old images: freed …`) instead of a
+  bare `nothing to free`.
+- The Docker Desktop "Start when you sign in" reminder after setup (and so after every update) appears at most
+  once a week (`.state/docker-autostart-hint`). `./stack serve` still reminds every time.
+- `./stack status` mentions `./stack clean` only when it would free something, with the size (`· old images
+  600 MB (./stack clean removes them)`), instead of always appending "(./stack clean frees old images)".
 - The portal's wrong-password message and "Forgot it?" hint name this install's `.env` (`~` for your home) and
   Compose project, e.g. `It is PORTAL_PASSWORD in ~/bn-dev/.env (project bn-dev).`, so a second copy's password
   is looked up in the right folder. Remote visitors get the generic wording.
@@ -219,6 +238,17 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **Old local builds were never cleaned up on Docker 29.** Its `docker image ls` leaves untagged images out
+  unless `-a` is given, so the cleanup after `./stack update` and `./stack clean` took this project's untagged
+  leftovers (the builds `./stack rollback` re-tags away from, and every previous build once it lost its
+  `:previous` name) for already gone: `./stack clean --dry-run` said "nothing to clean" next to four of them
+  (214–312 MB each). The size lookup now lists every image; what may be removed is still only the recorded
+  previous-version images, this project's own named images and the untagged builds Compose labelled with this
+  project, never one any container uses or another project's.
+- **Repeated updates could delete the backup `./stack rollback` needs.** Each `./stack update` keeps the newest
+  5 automatic backups; the pre-update backup the update record names was not protected, so after a real update
+  five more runs (e.g. ones that found nothing new) removed it and rollback stopped with "the pre-update backup …
+  is missing". That backup is now kept however old.
 - **A voice Call in the portal's Chat tab keeps the screen awake.** The portal framed the apps without
   `screen-wake-lock`, so the browser refused Open WebUI's wake-lock request and a phone or laptop could lock its
   screen mid-call (the pop-out window was not affected). Found by the new end-to-end suite.

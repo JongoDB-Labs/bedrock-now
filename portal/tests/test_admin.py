@@ -218,3 +218,13 @@ def test_the_request_folder_is_the_only_new_place_written(make_client, dirs, tmp
     assert ask(c).status_code == 202
     new = {p for p in tmp_path.rglob("*")} - before
     assert all(p.parent == rq for p in new), new
+
+
+def test_home_does_not_ask_for_a_reload_after_an_update_that_found_nothing_new():
+    """The helper ends a no-op update with "Already up to date (vX): nothing to update" (lib/helper.sh): no new Home."""
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    js = (root / "portal" / "static" / "app.js").read_text()
+    helper = (root.parent / "lib" / "helper.sh").read_text()
+    assert '"Already up to date ($JOB_VERSION): nothing to update"' in helper
+    assert '!msg.startsWith("Already up to date")) note = "Reload this page' in js

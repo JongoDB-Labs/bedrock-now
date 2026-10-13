@@ -19,8 +19,9 @@ _fixture() { # origin v0.2.1 -> v0.3.0; STACK_DIR = a clone updated to v0.3.0, i
   docker() { echo "docker $*" >> "$TMP/docker"; case "$1 $2" in "image inspect") return 0 ;; esac; return 0; }
   project_refs() { :; }; snapshot_refs() { printf 'L2\tghcr.io/berriai/litellm:2\n'; }
 }
-_write_stack() { # a ./stack that says which version ran which command
-  printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\nexit ${FAKE_RC:-0}\n' "$2" > "$1/stack"; chmod +x "$1/stack"
+_write_stack() { # a ./stack that says which version ran which command (and, in $CALLS.env, with which COMPOSE_PROGRESS)
+  printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\necho "%s $* progress=${COMPOSE_PROGRESS:-unset}" >> "$CALLS.env"\nexit ${FAKE_RC:-0}\n' "$2" "$2" > "$1/stack"
+  chmod +x "$1/stack"
 }
 _record() { update_record_write "$OLD" "${1:-}" backups/20261012-000000-auto; }
 
@@ -57,6 +58,20 @@ test_rollback_restores_code_data_and_local_builds() {
   assert_contains "$(cat "$TMP/err")" "rolled back to v0.2.1"
   if out="$( (ASSUME_YES=1 cmd_rollback) 2>&1)"; then return 1; fi
   assert_contains "$out" "already rolled back"
+}
+
+test_rollback_hides_composes_container_progress_lines() {
+  # The old version's restore and up run in their own processes (their code cannot change): COMPOSE_PROGRESS=quiet
+  # in their environment hides Compose's ~85 "Container … Waiting / Healthy" lines (errors still show).
+  _fixture; _record; update_record_done
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(tr '\n' '|' < "$CALLS.env")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes progress=quiet|old up --yes progress=quiet|"
+}
+
+test_rollback_shows_composes_output_when_verbose() {
+  _fixture; _record; update_record_done
+  BEDROCK_NOW_VERBOSE=1 ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(tr '\n' '|' < "$CALLS.env")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes progress=unset|old up --yes progress=unset|"
 }
 
 test_rollback_works_after_an_update_that_failed_half_way() {
@@ -137,12 +152,35 @@ test_a_no_op_update_keeps_the_rollback_target_and_its_images() {   # I1
   _backup_named() { LAST_BACKUP=backups/20261013-000000-auto; }; prune_auto_backups() { :; }
   update_checkout() { CODE_CHANGED=0; }; dc() { :; }
   images_snapshot_before() { echo snapshot >> "$TMP/img"; }; images_after_update() { echo after >> "$TMP/img"; }
+  # nothing new (already on the newest release): stops before the backup
   ASSUME_YES=1 cmd_update 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "already on v0.3.0 — nothing to update"
+  assert_eq "$(cat "$(update_record_file)")" "$before"
+  # --force runs every step, still without touching the rollback target
+  ASSUME_YES=1 cmd_update --force 2> "$TMP/err"
   assert_eq "$(cat "$(update_record_file)")" "$before"
   [ ! -f "$TMP/img" ] || { echo "a no-op update must not rotate images: $(cat "$TMP/img")" >&2; return 1; }
   assert_eq "$(cat "$STATE_DIR/images/previous.tsv")" "$(printf 'OLD1\tghcr.io/berriai/litellm:1')"
   assert_contains "$(cat "$TMP/err")" "no new version"
   # and the rollback still goes to the version before the real update, with its own backup
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
+  assert_contains "$(cat "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
+}
+
+test_repeated_updates_with_nothing_new_keep_the_rollback_backup() {
+  # After a real update, ./stack update --force (or an older version's "nothing new" update) takes a backup each
+  # time and keeps the newest 5: the backup the update record names must survive, or rollback has nothing to restore.
+  _fixture; _record; update_record_done
+  n=0
+  _backup_named() {
+    n=$((n + 1)); LAST_BACKUP="backups/20261013-00000$n-auto"
+    mkdir -p "$STACK_DIR/$LAST_BACKUP"; : > "$STACK_DIR/$LAST_BACKUP/litellm.dump"; : > "$STACK_DIR/$LAST_BACKUP/openwebui.dump"
+  }
+  update_checkout() { CODE_CHANGED=0; }; dc() { :; }
+  for i in 1 2 3 4 5 6; do ASSUME_YES=1 cmd_update --force 2>/dev/null || return 1; done
+  [ -d "$STACK_DIR/backups/20261012-000000-auto" ] || { echo "the rollback backup was pruned" >&2; return 1; }
+  assert_eq "$(ls -d "$STACK_DIR"/backups/*-auto | wc -l | tr -d ' ')" 6   # the newest 5 + the one rollback needs
   ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
   assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
   assert_contains "$(cat "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"

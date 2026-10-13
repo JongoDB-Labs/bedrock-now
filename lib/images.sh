@@ -110,10 +110,14 @@ project_named_images() {
   docker image ls --no-trunc --format '{{.ID}}	{{.Repository}}:{{.Tag}}' --filter "reference=$(project_name)/*" 2>/dev/null || true
 }
 
-# image_sizes -> "ID<TAB>BYTES" for every local image
+# image_sizes -> "ID<TAB>BYTES" for every local image, untagged ones included: Docker 29 (containerd image store)
+# leaves them out of `docker image ls` without -a. Only a lookup table: what is removed comes from the snapshots,
+# this project's named images and its labelled untagged builds (cleanup_plan), never from this list.
 image_sizes() {
   local id size
-  docker image ls --no-trunc --format '{{.ID}}	{{.Size}}' 2>/dev/null | while IFS='	' read -r id size; do
+  # disk_line lists them once for all of its parts (_IMAGE_SIZES, local there)
+  if [ -n "${_IMAGE_SIZES:-}" ]; then printf '%s\n' "$_IMAGE_SIZES"; return 0; fi
+  docker image ls -a --no-trunc --format '{{.ID}}	{{.Size}}' 2>/dev/null | while IFS='	' read -r id size; do
     printf '%s\t%s\n' "$id" "$(_bytes "$size")"
   done
 }
@@ -137,23 +141,23 @@ $2
 EOF
 }
 
-# _present_only < plan -> the plan lines whose image still exists (Docker's containerd image store drops an
-# untagged build by itself, so a recorded ID may simply be gone)
+# _present_only < plan -> the plan lines whose image still exists (a recorded ID may have been removed meanwhile,
+# by hand or by another tool)
 _present_only() {
   local ids; ids="$(image_sizes | cut -f1)"
   I="$ids" awk -F'\t' 'BEGIN { n = split(ENVIRON["I"], a, "\n"); for (i = 1; i <= n; i++) have[a[i]] = 1 } ($1 in have)'
 }
 
 # images_remove PLAN — removes each image by ID (never forced: an image that something else still tags or
-# uses stays) and prints "freed N (labels)". Sets CLEAN_SUMMARY. Writes
-# .state/images/last-clean (freed_bytes=, summary=, at=) for the host helper.
+# uses stays) and prints "old images: freed N (labels)" or "old images: nothing to free". Sets CLEAN_SUMMARY.
+# Writes .state/images/last-clean (freed_bytes=, summary=, at=) for the host helper.
 images_remove() {
   local plan="$1" id ref sizes b freed=0 labels='' kept='' other d
   sizes="$(image_sizes)"
   while IFS='	' read -r id ref; do
     [ -n "$id" ] || continue
     b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"
-    # Not listed = already gone (Docker's containerd image store drops an untagged build by itself).
+    # Not listed = already gone (removed meanwhile). image_sizes lists untagged images too (-a).
     [ -n "$b" ] || continue
     if docker image rm "$id" >/dev/null 2>&1; then
       freed=$((freed + ${b:-0})); labels="$labels, $(image_label "$ref")"
@@ -176,7 +180,8 @@ EOF
   [ -z "$kept" ] || CLEAN_SUMMARY="$CLEAN_SUMMARY; kept ${kept#, }"
   d="$(images_dir)"; mkdir -p "$d" 2>/dev/null || true
   printf 'freed_bytes=%s\nsummary=%s\nat=%s\n' "$freed" "$CLEAN_SUMMARY" "$(date +%s)" > "$d/last-clean" 2>/dev/null || true
-  log "$CLEAN_SUMMARY"
+  rm -f "$STATE_DIR/disk.cache"   # ./stack status measures again (its "old images … ./stack clean" part changed)
+  log "old images: $CLEAN_SUMMARY"
 }
 
 # _protected -> IDs that must never be removed (used by any container, or named by another checkout)
@@ -290,11 +295,25 @@ disk_line_cached() {
   printf '%s\n' "$line"
 }
 
-# disk_line -> "Disk: images 3.4 GB (+1.2 GB previous version, for rollback) · data 310 MB · backups 1.1 GB (6)"
+# clean_plan_bytes -> bytes ./stack clean would free now (0 when nothing)
+clean_plan_bytes() {
+  local plan
+  plan="$(clean_plan)"; [ -n "$plan" ] || { echo 0; return 0; }
+  P="$plan" awk -F'\t' 'BEGIN { n = split(ENVIRON["P"], a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, "\t"); if (f[1] != "") want[f[1]] = 1 } }
+    ($1 in want) { t += $2; delete want[$1] } END { printf "%.0f\n", t }' <<EOF
+$(image_sizes)
+EOF
+}
+
+# disk_line -> "Disk: images 3.4 GB (+1.2 GB previous version, for rollback) · data 310 MB · backups 1.1 GB (6)",
+# plus " · old images 600 MB (./stack clean removes them)" when ./stack clean would free something
 disk_line() {
-  local img vol bk
-  img="$(project_image_bytes)"; vol="$(project_volume_bytes)"; bk="$(backups_bytes)"
+  local img vol bk old _IMAGE_SIZES
+  _IMAGE_SIZES="$(image_sizes)"
+  img="$(project_image_bytes)"; vol="$(project_volume_bytes)"; bk="$(backups_bytes)"; old="$(clean_plan_bytes)"
   printf 'Disk: images %s' "$(fmt_bytes "${img% *}")"
   [ "${img#* }" = 0 ] || printf ' (+%s previous version, for rollback)' "$(fmt_bytes "${img#* }")"
-  printf ' · data volumes %s · backups %s (%s)\n' "$(fmt_bytes "${vol:-0}")" "$(fmt_bytes "${bk% *}")" "${bk#* }"
+  printf ' · data volumes %s · backups %s (%s)' "$(fmt_bytes "${vol:-0}")" "$(fmt_bytes "${bk% *}")" "${bk#* }"
+  [ "${old:-0}" = 0 ] || printf ' · old images %s (./stack clean removes them)' "$(fmt_bytes "$old")"
+  printf '\n'
 }

@@ -38,6 +38,14 @@ test_cmd_status_uses_compact_table_not_raw_ps() {
   assert_not_contains "$out" "CONTAINER ID"
 }
 
+test_cmd_status_offers_clean_only_through_the_disk_line() {
+  _ports_env
+  dc() { printf 'litellm\trunning\thealthy\t0\n'; }; docker() { :; }
+  assert_not_contains "$(cmd_status 2>&1)" "./stack clean"   # the disk line (stubbed) says when there is something
+  disk_line() { echo "Disk: images 1 GB · old images 200 MB (./stack clean removes them)"; }
+  assert_contains "$(cmd_status --disk 2>&1)" "old images 200 MB (./stack clean removes them)"
+}
+
 test_cmd_status_hints_up_when_nothing_runs() {
   _ports_env
   dc() { :; }; docker() { :; }
