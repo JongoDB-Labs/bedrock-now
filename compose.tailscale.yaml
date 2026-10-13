@@ -3,8 +3,9 @@
 # joins your tailnet over outbound connections (userspace networking: no /dev/net/tun, no capabilities) and
 # forwards to Caddy's internal remote listener as described in tailscale/serve.json (written by ./stack).
 #
-# The sidecar sits alone with Caddy on the small "remote" network. Caddy accepts its remote listeners (8081, 8443)
-# only from that subnet and trusts X-Forwarded-* only from it, so no other container can pose as the sidecar.
+# The sidecar sits alone with Caddy on the small "remote" network, at a fixed address. Caddy accepts its remote
+# listeners (8081, 8443) only from that address and trusts X-Forwarded-* only from it, so no other container, and
+# no process on the host (which reaches the network through its gateway), can pose as the sidecar.
 # Its default, 10.255.255.248/29, lies outside Docker's default address pools (172.17-31.x, 192.168.x), which
 # Compose draws the other networks from; REMOTE_SUBNET in .env changes it if it collides with one of yours (a
 # /29 is enough: the gateway, Caddy and the sidecar).
@@ -37,7 +38,11 @@ services:
       - tailscale-state:/var/lib/tailscale
       - ./tailscale:/config:ro,z
     tmpfs: [/tmp, /var/run/tailscale]
-    networks: [remote]
+    networks:
+      remote:
+        # Fixed: Caddy's remote listeners accept this one address (REMOTE_SIDECAR_IP, the subnet's last host,
+        # written by ./stack from REMOTE_SUBNET) — not the network's gateway, through which host processes come.
+        ipv4_address: ${REMOTE_SIDECAR_IP:-10.255.255.254}
     depends_on: [caddy]
     healthcheck:
       # tailscaled is alive (answers on its socket); whether it is logged in: ./stack remote status

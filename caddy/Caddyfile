@@ -7,8 +7,9 @@
 #                                           signs S3 requests with it)
 # The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
 # Every host first deletes any client-supplied X-Portal-User (and the rest of local_request), then asks the portal
-# (forward_auth) whether the bn_session cookie is valid; only the portal's answer can set X-Portal-User. Directives inside `route` run in
-# the order written (outside it, Caddy would run request_header AFTER forward_auth).
+# (forward_auth) whether the bn_session cookie is valid; only the portal's answer can set X-Portal-User.
+# Directives inside `route` run in the order written (outside it, Caddy would run request_header AFTER
+# forward_auth).
 # The three apps may be framed by the portal ({$PORTAL_ORIGIN}, e.g. http://bedrock-now.localhost:8800) and
 # nothing else; the portal itself refuses all framing (its own CSP: frame-ancestors 'none').
 # Remote access (./stack remote, docs/remote.md) adds a second site from remote-{$REMOTE_MODE}.caddy, imported at
@@ -21,10 +22,10 @@
 	# Unprivileged listener inside the container; compose publishes it on 127.0.0.1:${PORTAL_PORT}.
 	http_port 8080
 	# The Tailscale remote listener (remote-tailscale.caddy) is never published and answers only the sidecar's
-	# network (REMOTE_SUBNET, compose.tailscale.yaml). Trusting the sidecar's X-Forwarded-Proto: https keeps the
-	# apps' own redirects and links on https.
+	# fixed address (REMOTE_SIDECAR_IP, compose.tailscale.yaml). Trusting the sidecar's X-Forwarded-Proto: https
+	# keeps the apps' own redirects and links on https.
 	servers :8081 {
-		trusted_proxies static {$REMOTE_SUBNET}
+		trusted_proxies static {$REMOTE_SIDECAR_IP}/32
 	}
 }
 

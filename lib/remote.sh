@@ -61,11 +61,88 @@ valid_ts_tag() { case "$1" in tag:[a-z0-9]*) case "${1#tag:}" in *[!a-z0-9-]*) r
 # valid_tailnet NAME -> 0 for a MagicDNS suffix like tail1234.ts.net
 valid_tailnet() { valid_hostname "$1" && case "$1" in ?*.ts.net) return 0 ;; esac; return 1; }
 
-# valid_cidr NET -> 0 for an IPv4 network like 10.255.255.248/29 (REMOTE_SUBNET)
+# --- the sidecar's own Docker network (REMOTE_SUBNET; compose.tailscale.yaml) ---
+
+REMOTE_SUBNET_DEFAULT="10.255.255.248/29"
+
+# valid_cidr NET -> 0 for an IPv4 network /24../29 with no host bits set (10.255.255.248/29 yes, …249/29 no)
 valid_cidr() {
   case "$1" in *[!0-9./]* | */*/* | */ | /*) return 1 ;; */*) ;; *) return 1 ;; esac
-  printf '%s' "${1%/*}" | awk -F. -v b="${1#*/}" 'NF == 4 && b != "" && b + 0 <= 30 && b + 0 >= 8 {
-    for (i = 1; i <= 4; i++) if ($i == "" || $i + 0 > 255) exit 1; exit 0 } { exit 1 }'
+  printf '%s' "${1%/*}" | awk -F. -v b="${1#*/}" 'NF == 4 && b ~ /^[0-9]+$/ && b + 0 >= 24 && b + 0 <= 29 {
+    for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) exit 1
+    size = 2 ^ (32 - b); if (($4 + 0) % size != 0) exit 1; exit 0 } { exit 1 }'
+}
+
+# remote_subnet -> REMOTE_SUBNET from .env, or the default
+remote_subnet() { local s; s="$(get_env REMOTE_SUBNET)"; printf '%s\n' "${s:-$REMOTE_SUBNET_DEFAULT}"; }
+
+# remote_sidecar_ip NET -> the sidecar's fixed address: the subnet's last usable host (…254 for the default). Docker
+# hands out addresses from the bottom (gateway first, then Caddy), so the top one never collides — and the gateway,
+# through which host processes reach the network on Linux, is not it: Caddy trusts exactly this one address.
+remote_sidecar_ip() {
+  printf '%s' "${1%/*}" | awk -F. -v b="${1#*/}" '{ last = $4 + 2 ^ (32 - b) - 2; printf "%d.%d.%d.%d\n", $1, $2, $3, last }'
+}
+
+# cidr_overlap A B -> 0 when two IPv4 networks overlap
+cidr_overlap() {
+  awk -v a="$1" -v b="$2" 'function lo(n,  p, q) { split(n, p, "/"); split(p[1], q, ".")
+      return ((q[1] * 256 + q[2]) * 256 + q[3]) * 256 + q[4] }
+    function hi(n,  p) { split(n, p, "/"); return lo(n) + 2 ^ (32 - p[2]) - 1 }
+    BEGIN { exit !(lo(a) <= hi(b) && lo(b) <= hi(a)) }'
+}
+
+# _docker_network_subnets -> "name subnet…" per Docker network (empty when Docker does not answer)
+_docker_network_subnets() {
+  local ids
+  ids="$(docker network ls -q 2>/dev/null || true)"
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086  # one argument per network id
+  docker network inspect --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' $ids 2>/dev/null || true
+}
+
+# remote_net_ok -> 0 when REMOTE_SUBNET is valid and no other Docker network uses an overlapping range (this
+# project's own remote network excepted); otherwise prints why, with the fix
+remote_net_ok() {
+  local net own name subs s
+  net="$(remote_subnet)"
+  valid_cidr "$net" || { printf 'REMOTE_SUBNET=%s in .env is not an IPv4 network from /24 to /29 without host bits (e.g. %s)\n' "$net" "$REMOTE_SUBNET_DEFAULT"; return 1; }
+  own="$(project_name)_remote"
+  while read -r name subs; do
+    [ -n "$name" ] && [ "$name" != "$own" ] || continue
+    for s in $subs; do
+      case "$s" in *:*) continue ;; esac   # IPv6
+      if cidr_overlap "$net" "$s"; then
+        printf 'REMOTE_SUBNET %s overlaps Docker network %s (%s) — set REMOTE_SUBNET in .env to a free /29, e.g. 10.254.254.248/29\n' "$net" "$name" "$s"
+        return 1
+      fi
+    done
+  done <<EOF
+$(_docker_network_subnets)
+EOF
+  return 0
+}
+
+# remote_ensure_proxy_secret — PORTAL_PROXY_SECRET of at least 32 characters (the portal ignores a shorter one,
+# which would leave remote access unusable): generated when missing or too short
+remote_ensure_proxy_secret() {
+  local v; v="$(get_env PORTAL_PROXY_SECRET)"
+  [ "${#v}" -ge 32 ] || set_env PORTAL_PROXY_SECRET "$(gen_hex 32)"
+}
+
+# remote_net_preflight — before ./stack up / setup start containers with remote access on: keeps REMOTE_SIDECAR_IP
+# in line with REMOTE_SUBNET; if the network cannot be used, warns and leaves remote access out of THIS run
+# (REMOTE_DEGRADED=1: no overlay, no sidecar) so the local portal still comes up.
+REMOTE_DEGRADED="${REMOTE_DEGRADED:-0}"
+remote_net_preflight() {
+  local why
+  remote_on || return 0
+  if ! why="$(remote_net_ok)"; then
+    warn "$why"
+    warn "remote access is left out of this run (the local portal is not affected); fix it, then ./stack up"
+    REMOTE_DEGRADED=1
+    return 0
+  fi
+  [ "$(get_env REMOTE_SIDECAR_IP)" = "$(remote_sidecar_ip "$(remote_subnet)")" ] || set_env REMOTE_SIDECAR_IP "$(remote_sidecar_ip "$(remote_subnet)")"
 }
 
 # valid_login LOGIN -> 0 for a Tailscale login name (you@example.com, you@github, …): no spaces, quotes or $
@@ -345,17 +422,17 @@ remote_ask_login() {
 
 # remote_enable MODE [HOST]
 remote_enable() {
-  local mode="$1" host="${2:-}" key token st suffix tag ip ts_oauth
+  local mode="$1" host="${2:-}" key token st suffix tag ip ts_oauth why
   [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_SECRET)" ] || die "run ./stack setup first"
   stack_lock remote   # lib/lock.sh (already ours when setup calls this)
   check_prereqs
   [ "$mode" != domain ] || check_remote_domain "$host"
   tag="$(ts_tag)"; valid_ts_tag "$tag" || die "TS_TAG=$tag in .env is not a tag (e.g. tag:bedrock-now)"
   valid_ts_label "$(ts_base)" || die "TS_SERVICE=$(ts_base) is not a valid Service name (lowercase letters, digits, dashes; at most 57)"
-  [ -z "$(get_env REMOTE_SUBNET)" ] || valid_cidr "$(get_env REMOTE_SUBNET)" ||
-    die "REMOTE_SUBNET=$(get_env REMOTE_SUBNET) in .env is not an IPv4 network (e.g. 10.255.255.248/29)"
+  why="$(remote_net_ok)" || die "$why"
+  set_env REMOTE_SIDECAR_IP "$(remote_sidecar_ip "$(remote_subnet)")"
   remote_ask_login
-  ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # Caddy → portal: only Caddy may mark requests remote
+  remote_ensure_proxy_secret   # Caddy → portal: only Caddy may mark requests remote
   if [ "$mode" = domain ]; then
     token="$(_remote_secret CLOUDFLARE_API_TOKEN "Cloudflare API token (Zone:Read + DNS:Edit, for the zone of $host only; hidden)")"
     [ -n "$token" ] || die "domain mode needs CLOUDFLARE_API_TOKEN (a Cloudflare API token with Zone → Zone → Read and Zone → DNS → Edit, limited to that one zone) — see docs/remote.md"
@@ -568,6 +645,7 @@ REMOTE_UP_WAIT="${REMOTE_UP_WAIT:-20}"
 remote_up_hook() {
   local mode st; mode="$(remote_mode)"
   [ "$mode" != off ] || return 0
+  [ "$REMOTE_DEGRADED" != 1 ] || return 0   # remote_net_preflight already said why
   if [ "$mode" = tailscale ] && valid_tailnet "$(get_env TS_TAILNET)"; then write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
   elif [ "$mode" = domain ]; then write_ts_serve_config domain; fi
   dc up -d --no-deps tailscale >/dev/null 2>&1 || { warn "could not start the Tailscale sidecar — remote access is down (./stack logs tailscale); the local portal is fine"; return 0; }

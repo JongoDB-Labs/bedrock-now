@@ -203,6 +203,7 @@ dc() {
 # compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)
 # adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin.
 compose_overlays() {
+  [ "${REMOTE_DEGRADED:-0}" != 1 ] || return 0   # remote network unusable this run (lib/remote.sh remote_net_preflight)
   case "$(get_env REMOTE_MODE)" in
     tailscale) echo compose.tailscale.yaml ;;
     domain) echo compose.tailscale.yaml compose.domain.yaml ;;

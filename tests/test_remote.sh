@@ -10,6 +10,7 @@ TN=tail1234.ts.net
 _stubs() {
   export TS_SERVE_DIR="$TMP/tailscale" ASSUME_YES=1
   check_prereqs() { :; }
+  docker() { :; }   # no other Docker networks (remote_net_ok)
   run_phase() { shift 2; "$@"; }
   dc() { echo "dc $*" >> "$TMP/dc"; case "$*" in *"cat /state/remote-identity"*) cat "$TMP/identity" 2>/dev/null ;; esac; return 0; }
   _ts() {
@@ -57,8 +58,9 @@ test_validators() {
   for t in ts.net tail.example.com Tail.ts.net ''; do if valid_tailnet "$t"; then echo "tailnet '$t'" >&2; return 1; fi; done
   valid_login me@example.com && valid_login me@github && valid_login a.b+c@x.io || return 1
   for l in '' me 'me @x' '@x' 'x@' 'a"b@c' 'a$b@c'; do if valid_login "$l"; then echo "login '$l'" >&2; return 1; fi; done
-  valid_cidr 10.255.255.248/29 && valid_cidr 10.99.0.0/24 || return 1
-  for c in '' 172.31.255.248 172.31.255/29 300.1.1.1/29 1.2.3.4/33 1.2.3.4/ 'a.b.c.d/29' 1.2.3.4/29/1; do
+  valid_cidr 10.255.255.248/29 && valid_cidr 10.99.0.0/24 && valid_cidr 192.0.2.16/28 || return 1
+  for c in '' 172.31.255.248 172.31.255/29 300.1.1.1/29 1.2.3.4/33 1.2.3.4/ 'a.b.c.d/29' 1.2.3.4/29/1 \
+           10.255.255.249/29 10.0.0.0/16 10.0.0.0/30 10.99.0.1/24 10.0.0.0/8; do
     if valid_cidr "$c"; then echo "cidr '$c'" >&2; return 1; fi
   done
   valid_ts_tag tag:bedrock-now || return 1
@@ -306,7 +308,7 @@ test_caddy_local_blocks_delete_the_remote_marker() {
   done
   assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
   assert_contains "$(awk '/^\(drop_session_cookie\)/,/^}/' "$f")" "header_up -X-Portal-Proxy"   # never to the apps
-  assert_contains "$(cat "$f")" 'trusted_proxies static {$REMOTE_SUBNET}'
+  assert_contains "$(cat "$f")" 'trusted_proxies static {$REMOTE_SIDECAR_IP}/32'
   if grep -q 'private_ranges' "$f"; then echo "trusts all private ranges" >&2; return 1; fi
   if grep -q 'request_header X-Portal-Remote 1' "$f"; then echo "local site sets the marker" >&2; return 1; fi
   assert_contains "$(cat "$f")" 'import remote-{$REMOTE_MODE}.caddy'
@@ -322,7 +324,7 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     [ -n "$del" ] && [ -n "$set" ] && [ "$del" -lt "$set" ] || { echo "$m: marker not deleted before set" >&2; return 1; }
     assert_contains "$snippet" "request_header -X-Portal-User"
     # only the sidecar's network, checked first
-    assert_eq "$(printf '%s\n' "$snippet" | sed -n 2,3p | tr -d '\t')" "$(printf '@not_sidecar not remote_ip {$REMOTE_SUBNET}\nabort @not_sidecar')"
+    assert_eq "$(printf '%s\n' "$snippet" | sed -n 2,3p | tr -d '\t')" "$(printf '@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32\nabort @not_sidecar')"
     assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
     # every remote site block uses the snippet; the catch-all aborts other callers too
     assert_eq "$(grep -c 'import remote_request' "$f")" 4
@@ -350,14 +352,15 @@ test_remote_listener_is_never_published() {
 test_sidecar_is_isolated_and_hardened() {
   f="$(cat "$STACK_DIR/compose.tailscale.yaml")"
   assert_contains "$f" 'subnet: ${REMOTE_SUBNET:-10.255.255.248/29}'
-  assert_contains "$f" "networks: [remote]"
+  assert_contains "$f" 'ipv4_address: ${REMOTE_SIDECAR_IP:-10.255.255.254}'
   assert_contains "$f" "networks: [default, remote]"
   assert_contains "$f" "read_only: true"
   assert_contains "$f" "mem_limit:"
   assert_contains "$f" "pids_limit:"
   assert_not_contains "$f" "TS_LOCAL_ADDR_PORT:"
   assert_not_contains "$f" "TS_ENABLE_HEALTH_CHECK:"
-  assert_contains "$(cat "$STACK_DIR/compose.yaml")" 'REMOTE_SUBNET: ${REMOTE_SUBNET:-10.255.255.248/29}'
+  assert_contains "$(cat "$STACK_DIR/compose.yaml")" 'REMOTE_SIDECAR_IP: ${REMOTE_SIDECAR_IP:-10.255.255.254}'
+  assert_not_contains "$(cat "$STACK_DIR/caddy/"*)" 'REMOTE_SUBNET}'
   assert_not_contains "$(cat "$STACK_DIR/compose.yaml")" "WEBUI_AUTH_COOKIE_SECURE"
 }
 
@@ -365,4 +368,67 @@ test_tailscale_image_is_pinned_by_digest() {
   assert_contains "$(grep 'image: tailscale/tailscale' "$STACK_DIR/compose.tailscale.yaml")" "@sha256:"
   grep -q '^FROM caddy:.*@sha256:' "$STACK_DIR/caddy/Dockerfile" || return 1
   grep -q 'caddy-dns/cloudflare@v' "$STACK_DIR/caddy/Dockerfile" || return 1
+}
+
+test_sidecar_gets_the_last_host_of_the_subnet_not_the_gateway() {
+  assert_eq "$(remote_sidecar_ip 10.255.255.248/29)" 10.255.255.254
+  assert_eq "$(remote_sidecar_ip 10.99.0.0/24)" 10.99.0.254
+  assert_eq "$(remote_sidecar_ip 192.0.2.16/28)" 192.0.2.30
+}
+
+test_cidr_overlap() {
+  cidr_overlap 10.255.255.248/29 10.0.0.0/8 || return 1
+  cidr_overlap 172.31.0.0/16 172.31.255.248/29 || return 1
+  if cidr_overlap 10.255.255.248/29 10.255.255.240/29; then return 1; fi
+  if cidr_overlap 10.255.255.248/29 172.17.0.0/16; then return 1; fi
+}
+
+test_remote_net_ok_names_the_colliding_network() {
+  printf 'COMPOSE_PROJECT_NAME=bn\n' > "$ENV_FILE"
+  docker() {
+    case "$1" in
+      network) case "$2" in ls) printf 'a\nb\nc\n' ;;
+               inspect) printf 'bridge 172.17.0.0/16 \nbn_remote 10.255.255.248/29 \ncorp_vpn 10.0.0.0/8 fd00::/64 \n' ;; esac ;;
+    esac
+  }
+  out="$(remote_net_ok)" && { echo "should collide" >&2; return 1; }
+  assert_contains "$out" "overlaps Docker network corp_vpn (10.0.0.0/8)"
+  assert_contains "$out" "REMOTE_SUBNET in .env"
+  set_env REMOTE_SUBNET 10.254.254.248/29
+  docker() { case "$2" in ls) echo a ;; inspect) printf 'bridge 172.17.0.0/16 \nbn_remote 10.255.255.248/29 \n' ;; esac; }
+  remote_net_ok || return 1   # its own old network does not count
+  set_env REMOTE_SUBNET 10.254.254.249/29
+  assert_contains "$(remote_net_ok)" "without host bits"
+}
+
+test_bad_remote_network_leaves_remote_out_but_keeps_the_stack() {
+  _stubs
+  printf 'REMOTE_MODE=tailscale\nREMOTE_SUBNET=10.0.0.0/30\n' >> "$ENV_FILE"
+  out="$(remote_net_preflight 2>&1; echo "degraded=$REMOTE_DEGRADED overlays=[$(compose_overlays)]")"
+  assert_contains "$out" "not an IPv4 network from /24 to /29"
+  assert_contains "$out" "local portal is not affected"
+  assert_contains "$out" "degraded=1 overlays=[]"
+  REMOTE_DEGRADED=1; : > "$TMP/dc"
+  assert_eq "$(remote_up_hook 2>&1)" ""
+  assert_eq "$(cat "$TMP/dc")" ""   # no sidecar this run
+}
+
+test_preflight_keeps_the_sidecar_ip_in_line() {
+  _stubs
+  printf 'REMOTE_MODE=tailscale\nREMOTE_SUBNET=10.99.0.0/24\n' >> "$ENV_FILE"
+  remote_net_preflight 2>/dev/null
+  assert_eq "$(get_env REMOTE_SIDECAR_IP) $REMOTE_DEGRADED" "10.99.0.254 0"
+}
+
+test_proxy_secret_is_regenerated_when_missing_or_short() {
+  : > "$ENV_FILE"
+  remote_ensure_proxy_secret
+  first="$(get_env PORTAL_PROXY_SECRET)"
+  assert_eq "${#first}" 64
+  remote_ensure_proxy_secret
+  assert_eq "$(get_env PORTAL_PROXY_SECRET)" "$first"   # kept
+  set_env PORTAL_PROXY_SECRET short
+  remote_ensure_proxy_secret
+  v="$(get_env PORTAL_PROXY_SECRET)"; assert_eq "${#v}" 64
+  grep -q 'remote_ensure_proxy_secret; remote_net_preflight' "$STACK_DIR/lib/commands.sh" || { echo "cmd_up must ensure both" >&2; return 1; }
 }

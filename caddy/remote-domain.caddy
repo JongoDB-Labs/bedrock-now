@@ -1,15 +1,15 @@
 # Remote site, own-domain mode (./stack remote enable domain HOST; imported by Caddyfile).
 # DNS: HOST and *.HOST point at the tailscale sidecar's 100.x address, which forwards TCP 443 untouched to this
-# listener, caddy:8443 (NOT published on the host; it answers only the sidecar's network, REMOTE_SUBNET). Caddy
-# terminates TLS with Let's Encrypt certificates for HOST and *.HOST, obtained by DNS-01 through the Cloudflare API
-# (caddy/Dockerfile builds the plugin in), so no port is ever opened to the internet and the app names stay out
-# of certificate-transparency logs.
+# listener, caddy:8443 (NOT published on the host; it answers only the sidecar's address, REMOTE_SIDECAR_IP).
+# Caddy terminates TLS with Let's Encrypt certificates for HOST and *.HOST, obtained by DNS-01 through the
+# Cloudflare API (caddy/Dockerfile builds the plugin in), so no port is ever opened to the internet and the app
+# names stay out of certificate-transparency logs.
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
 # Tailscale cannot see inside this TLS, so it passes no identity: access is the tailnet grant plus the password.
 
 (remote_request) {
-	@not_sidecar not remote_ip {$REMOTE_SUBNET}
+	@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32
 	abort @not_sidecar
 	request_header -X-Portal-User
 	request_header -X-Portal-Proxy
@@ -85,7 +85,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		}
 	}
 
-	@other_caller not remote_ip {$REMOTE_SUBNET}
+	@other_caller not remote_ip {$REMOTE_SIDECAR_IP}/32
 	abort @other_caller
 	respond "unknown host" 404
 }

@@ -305,8 +305,8 @@ services:
       REMOTE_ADMIN_HOST: ${REMOTE_ADMIN_HOST:-admin.remote.invalid}
       REMOTE_FILES_HOST: ${REMOTE_FILES_HOST:-files.remote.invalid}
       REMOTE_ORIGIN: ${REMOTE_ORIGIN:-https://remote.invalid}
-      # Only the sidecar's network may use the remote listeners (compose.tailscale.yaml: the "remote" network).
-      REMOTE_SUBNET: ${REMOTE_SUBNET:-10.255.255.248/29}
+      # Only the sidecar's fixed address may use the remote listeners (compose.tailscale.yaml).
+      REMOTE_SIDECAR_IP: ${REMOTE_SIDECAR_IP:-10.255.255.254}
       PORTAL_PROXY_SECRET: ${PORTAL_PROXY_SECRET:-}
     depends_on:
       portal: { condition: service_healthy }   # forward_auth needs it; avoids 502s on the first requests

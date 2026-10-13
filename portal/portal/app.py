@@ -83,6 +83,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     admin_rate = admin.RateLimit()
 
     handoff = Handoff(settings.secret, sessions.fingerprint)
+    if settings.remote_on() and len(settings.proxy_secret) < 32:
+        # Without Caddy's proxy secret no request can count as remote: remote access would show local behaviour.
+        log.warning("remote access is on but PORTAL_PROXY_SECRET is missing or shorter than 32 characters — remote "
+                    "requests are treated as local and remote sign-in will not work; run ./stack up (it generates one)")
     identity_file = settings.state_dir / "remote-identity" if settings.state_dir else None
     identity_seen = {"kind": None}
 
@@ -396,10 +400,11 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
 
     # Installable web app (Chrome "Install app", Add to Home Screen). Public, like the login page: browsers fetch
     # the manifest and its icons without the session cookie. Nothing here is per-user.
-    manifest_body = json.dumps(webapp.manifest(settings), indent=1)
+    # The remote site (./stack remote) is another origin, so another installed app with its own name.
+    manifest_body = {rem: json.dumps(webapp.manifest(settings, rem), indent=1) for rem in (False, True)}
 
     async def manifest(request: Request) -> Response:
-        return _security_headers(Response(manifest_body, media_type="application/manifest+json",
+        return _security_headers(Response(manifest_body[remote(request)], media_type="application/manifest+json",
                                           headers={"Cache-Control": "no-cache"}), settings)
 
     async def service_worker(request: Request) -> Response:

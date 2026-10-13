@@ -168,9 +168,20 @@ test_caddy_public_paths_have_one_definition_in_a_snippet() {
   assert_eq "$(grep -c '@public path' "$f" | tr -d ' ')" 1
   assert_eq "$(sed -n '/^(public_paths) {/,/^}/p' "$f" | grep -c '@public path')" 1
   # every site block that serves @public imports the snippet first
-  awk '/^http:\/\// { blk = $0; imp = 0 } /import public_paths/ { imp = 1 }
+  awk '/^http:\/\// || /^\(/ { blk = $0; imp = 0 } /import public_paths/ { imp = 1 }
        /reverse_proxy @public/ && !imp { print "no import public_paths before @public in " blk; bad = 1 }
        END { exit bad }' "$f"
+  # every portal site block — the local one and the remote ones (caddy/remote-*.caddy) — goes through
+  # (portal_routes), which imports the list; the remote files never define or serve @public themselves
+  assert_contains "$(sed -n '/^(portal_routes) {/,/^}/p' "$f")" "import public_paths"
+  assert_contains "$(sed -n '/^http:\/\/{\$PORTAL_HOST} {/,/^}/p' "$f")" "import portal_routes"
+  local r
+  for r in "$STACK_DIR"/caddy/remote-tailscale.caddy "$STACK_DIR"/caddy/remote-domain.caddy; do
+    assert_eq "$(grep -c '@public' "$r" | tr -d ' ')" 0
+    assert_eq "$(grep -c 'import portal_routes' "$r" | tr -d ' ')" 1
+  done
+  assert_contains "$(sed -n '/^http:\/\/{\$REMOTE_HOST}:8081 {/,/^}/p' "$STACK_DIR/caddy/remote-tailscale.caddy")" "import portal_routes"
+  assert_contains "$(sed -n '/@portal host {\$REMOTE_HOST}/,/^	}/p' "$STACK_DIR/caddy/remote-domain.caddy")" "import portal_routes"
 }
 
 test_check_port_allows_80_only_for_the_portal() {

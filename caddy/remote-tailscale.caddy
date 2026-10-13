@@ -1,10 +1,10 @@
 # Remote site, Tailscale Services mode (./stack remote enable tailscale; imported by Caddyfile).
 # The tailscale sidecar terminates HTTPS for svc:<name>[-chat|-admin|-files] and proxies plain HTTP to this
-# listener, caddy:8081. It is NOT published on the host, and it answers only the sidecar's network
-# (REMOTE_SUBNET: the "remote" network in compose.tailscale.yaml, where only the sidecar and Caddy live); any
-# other container that tries is cut off. Host stays <service>.<tailnet>.ts.net; the sidecar deletes client-sent
-# Tailscale-User-* headers and adds Tailscale-User-Login for devices signed in as a user, which the portal checks
-# against TAILSCALE_ALLOWED_LOGIN.
+# listener, caddy:8081. It is NOT published on the host, and it answers only the sidecar's fixed address
+# (REMOTE_SIDECAR_IP on the "remote" network of compose.tailscale.yaml, where only the sidecar and Caddy live);
+# any other caller — another container, or a host process through the network's gateway — is cut off. Host
+# stays <service>.<tailnet>.ts.net; the sidecar deletes client-sent Tailscale-User-* headers and adds
+# Tailscale-User-Login for devices signed in as a user, which the portal checks against TAILSCALE_ALLOWED_LOGIN.
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
 # Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
@@ -12,7 +12,7 @@
 # hand-off).
 
 (remote_request) {
-	@not_sidecar not remote_ip {$REMOTE_SUBNET}
+	@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32
 	abort @not_sidecar
 	request_header -X-Portal-User
 	request_header -X-Portal-Remote
@@ -82,7 +82,7 @@ http://{$REMOTE_FILES_HOST}:8081 {
 }
 
 http://:8081 {
-	@not_sidecar not remote_ip {$REMOTE_SUBNET}
+	@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32
 	abort @not_sidecar
 	respond "unknown host" 404
 }

@@ -398,3 +398,35 @@ def test_home_gets_the_app_urls_of_its_site(rclient):
     assert "frame-src 'self' " in r.headers["content-security-policy"]   # the hand-off redirect inside frames
     r = rclient.get("/api/logins", headers={**REMOTE, "X-Requested-With": "bedrock-now", "Cookie": f"{REMOTE_COOKIE}={tok}"})
     assert r.json()["admin"]["url"] == f"https://bn-admin.{TN}/ui/"
+
+
+# --- the installable web app on the remote site ---
+
+def test_remote_app_name_rule():
+    from portal import webapp
+    assert webapp.app_name("bedrock-now.localhost", 80, remote=True) == "bedrock-now (remote)"
+    assert webapp.app_name("bn-dev.localhost", 8800, remote=True) == "bedrock-now (bn-dev, remote)"   # port: local only
+    assert webapp.app_name("bn-dev.localhost", 8800) == "bedrock-now (bn-dev, port 8800)"
+
+
+def test_manifest_sw_and_icons_are_public_on_the_remote_site(rclient):
+    r = rclient.get("/manifest.webmanifest", headers=REMOTE)
+    assert r.status_code == 200
+    m = r.json()
+    assert m["name"] == "bedrock-now (remote)" and m["short_name"] == "remote"
+    assert m["start_url"] == "/" and m["scope"] == "/"
+    local = rclient.get("/manifest.webmanifest").json()
+    assert local["name"] == "bedrock-now"
+    assert rclient.get("/sw.js", headers=REMOTE).status_code == 200
+    icon = m["icons"][0]["src"]
+    assert rclient.get(icon, headers=REMOTE).status_code == 200
+
+
+def test_startup_warns_when_remote_is_on_without_a_proxy_secret(rs, caplog):
+    with caplog.at_level("WARNING", logger="portal"):
+        create_app(replace(rs, proxy_secret="short"), transport=httpx.MockTransport(offline))
+    assert "PORTAL_PROXY_SECRET is missing or shorter than 32" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="portal"):
+        create_app(rs, transport=httpx.MockTransport(offline))
+    assert "PORTAL_PROXY_SECRET" not in caplog.text

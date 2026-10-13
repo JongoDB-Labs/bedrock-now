@@ -29,7 +29,8 @@ All notable changes to bedrock-now are documented here. The format follows
   are bound to it) **and** the portal password. The command prints the one-time admin-console steps and a
   policy snippet (tag owner, auto-approvers, a grant to port 443) with your names; the auth key leaves `.env` once
   the sidecar is logged in (and the container is recreated without it). The sidecar shares a dedicated /29
-  Docker network (`REMOTE_SUBNET`) with Caddy alone; Caddy's remote listeners refuse every other caller, and a
+  Docker network (`REMOTE_SUBNET`, checked for overlaps; if unusable, that run starts without remote access) with
+  Caddy alone, at a fixed address; Caddy's remote listeners refuse every other caller (gateway included), and a
   random `PORTAL_PROXY_SECRET` proves to the portal that a request came through Caddy. `./stack up`/`restore`
   never wait for the sidecar. `./stack remote test` checks what it can from the computer (including that other
   containers and foreign logins are refused) and prints a checklist for your phone. Details: [docs/remote.md](docs/remote.md).
@@ -42,6 +43,8 @@ All notable changes to bedrock-now are documented here. The format follows
   single-use, host-bound hand-off token), origins, login redirects and app addresses (Home reads them from
   `<meta name="bn-apps">`); `./stack status`, the setup summary and `/api/summary` show the remote address.
   The apps' host names are configurable (`CHAT_HOST`, `ADMIN_HOST`, `FILES_HOST`; default unchanged).
+  The remote address is its own installable app ("bedrock-now (remote)"; manifest, icons and service worker are
+  public there too, through the same `(public_paths)` list as the local site).
 - **Precise image cleanup.** `./stack update` records the images this install uses before it changes anything,
   keeps **one** previous version of each image it replaces (so going back needs no download; local builds keep
   theirs as `<project>/portal:previous` and `<project>/shared-mcp:previous`) and, once the new version runs,

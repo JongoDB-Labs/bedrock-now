@@ -316,7 +316,7 @@ setup_secrets() {
   ensure_env RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"
   ensure_env RUSTFS_SECRET_KEY "$(gen_hex 24)"
   ensure_env SHARED_MCP_TOKEN "$(gen_hex 32)"
-  ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # Caddy → portal: proves a request came through Caddy
+  remote_ensure_proxy_secret   # Caddy → portal: proves a request came through Caddy (lib/remote.sh)
   ensure_env BUDGET_CLAUDE_CODE 200
   ensure_env BUDGET_OPENWEBUI 50
   ensure_env BUDGET_SETUP 5
@@ -352,6 +352,7 @@ cmd_setup() {
   setup_aws_creds
   setup_ports
   setup_remote_choice   # lib/remote.sh: asks once — this computer only (default), or your devices too
+  remote_net_preflight  # remote access on: its Docker network usable? else this run goes on without it
   setup_secrets
   setup_openrouter   # optional; lib/openrouter.sh
   setup_stt          # optional; lib/stt.sh
@@ -747,6 +748,7 @@ cmd_up() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
+  if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_dirs; write_version_file   # lib/version.sh
   ensure_images "./stack up"
@@ -770,7 +772,6 @@ cmd_up() {
     log "restarting LiteLLM so it uses the new prices (~30 s; requests in flight may fail)"
     run_phase "LiteLLM (new prices)" litellm dc up -d --no-deps --force-recreate --wait litellm
   fi
-  ! remote_on || ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # installs that enabled remote access before setup made it
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
   # shellcheck disable=SC2086  # word-split the service list on purpose
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
@@ -1064,6 +1065,7 @@ cmd_restore() {
   _restore_key_trio "$dir"
   write_mcp_config
   # .env may have changed: recreate the containers that read these keys, then start everything else.
+  remote_net_preflight
   dc up -d --wait --force-recreate open-webui shared-mcp
   # shellcheck disable=SC2086  # word-split the service list on purpose
   dc up -d --wait $STACK_SERVICES

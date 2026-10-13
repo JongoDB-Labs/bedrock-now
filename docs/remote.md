@@ -25,7 +25,7 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
                              │  Tailscale-User-Login + X-Forwarded-Proto: https
                              ▼
                      caddy:8081 (remote listener, NOT published on the host; answers only the
-                             │  sidecar's own small network, REMOTE_SUBNET)
+                             │  sidecar's fixed address on its own small network)
                              │  sets X-Portal-Remote: 1 and X-Portal-Proxy (after deleting client copies)
                              │  forward_auth → portal: this host's own cookie + Tailscale login check
                              │  (no cookie on an app host yet → one-time hand-off from the portal host)
@@ -37,8 +37,11 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   tailnet as its own machine, `bedrock-now-node`, with **outbound** connections only. It needs no
   `/dev/net/tun` and no capabilities (`cap_drop: ALL`), runs read-only with memory and process limits, and
   its login lives in the `tailscale-state` volume. It shares a small Docker network of its own (`remote`,
-  `REMOTE_SUBNET`, default `10.255.255.248/29` — outside Docker's default pools; set another /29 in `.env` if
-  it collides) with Caddy only.
+  `REMOTE_SUBNET`, default `10.255.255.248/29` — outside Docker's default pools) with Caddy only, at a fixed
+  address: the subnet's last host (`REMOTE_SIDECAR_IP`, `10.255.255.254`; `./stack` derives it). If you set
+  `REMOTE_SUBNET`, use a /24 to /29 without host bits. `./stack up`/`setup` check it and look for Docker
+  networks it overlaps; if it is unusable they say so and start the stack **without** remote access for that
+  run, so the local portal never goes down because of it.
 - `./stack up`, `setup` and `restore` never wait for it: the stack comes up first, then the sidecar is
   started and given a few seconds; if it is not logged in you get a warning and the local portal works as
   always. `./stack remote status` shows the login state.
@@ -48,8 +51,9 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   listener. Containerboot advertises them at start (`TS_EXPERIMENTAL_SERVICE_AUTO_ADVERTISEMENT`, default since
   Tailscale v1.96).
 - Caddy's remote site (`caddy/remote-tailscale.caddy`) listens on port 8081 **inside** Docker only, and
-  cuts off every caller outside `REMOTE_SUBNET` — so no other container can pose as the sidecar — and trusts
-  `X-Forwarded-*` only from there. It marks requests with `X-Portal-Remote: 1`; the local site deletes that
+  cuts off every caller except the sidecar's fixed address — not another container, and not a process on the
+  host, which on Linux reaches the network through its gateway (another address of the same subnet) — and
+  trusts `X-Forwarded-*` only from that address. It marks requests with `X-Portal-Remote: 1`; the local site deletes that
   header and any `Tailscale-User-*` header a client sends.
 - Caddy also adds `X-Portal-Proxy: <PORTAL_PROXY_SECRET>` (a random secret in `.env`; client copies are
   deleted, the apps never receive it). The portal believes `X-Portal-Remote` and `Tailscale-User-Login` only
@@ -68,6 +72,10 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   frames as well (tested in Chromium and WebKit: the four names are one "site", so `SameSite=Strict` holds).
   Tokens also carry the password fingerprint and are refused after a portal restart. If a browser refuses the
   app host's cookie, the portal stops after four hand-offs a minute and says so instead of looping.
+- **Install it on your phone.** The remote address is installable like the local one (Android/desktop
+  Chrome and Edge: *Install app*; iPhone/iPad Safari: *Share → Add to Home Screen*). Being another origin it is
+  another app, named **bedrock-now (remote)** (a second copy: *bedrock-now (bn-dev, remote)*). Its manifest,
+  icons and service worker are public on the remote site through the same `(public_paths)` list as locally.
 - One-click Update / Rollback / Clean stay off for remote requests unless you set `REMOTE_ADMIN_ACTIONS=true`
   ([security](security.md#the-update-helper)).
 
@@ -223,5 +231,6 @@ and Open WebUI. The sidecar's login stays in the `tailscale-state` volume for a 
 | "sign-in link has expired or was already used" | reload the page (the hand-off token lives 60 s and works once) |
 | "keeps refusing the sign-in cookie" | the browser blocks cookies for that app's name (private mode, a strict blocker) — allow them |
 | `./stack up` warns the sidecar is not logged in | `./stack remote status`; re-run `./stack remote enable …` with a new auth key |
-| Docker: "Pool overlaps with other one" | set `REMOTE_SUBNET` in `.env` to a free /29 (e.g. `10.254.254.248/29`) |
+| "REMOTE_SUBNET … overlaps Docker network …" (or Docker: "Pool overlaps") | set `REMOTE_SUBNET` in `.env` to a free /29 (e.g. `10.254.254.248/29`), then `./stack up` |
+| `./stack logs portal`: "PORTAL_PROXY_SECRET is missing" | `./stack up` generates it (remote requests count as local until then) |
 | Login page loops | the device's clock; a stale cookie — sign out on Home, or clear site data |
