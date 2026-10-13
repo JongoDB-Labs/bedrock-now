@@ -148,6 +148,7 @@ valid_region() { case "$1" in '' | *[![:lower:][:digit:]-]*) return 1 ;; esac; }
 
 # --- prompts (respect ASSUME_YES=1 for --yes / non-interactive) ---
 _have_tty() { { : > /dev/tty; } 2>/dev/null; }
+_stdout_tty() { [ -t 1 ]; }   # stdout is a terminal (not a pipe or a log file)
 ask() { # ask "Prompt" "default" -> answer on stdout
   local ans=''
   if [ "${ASSUME_YES:-0}" = 1 ] || ! _have_tty; then printf '%s\n' "${2:-}"; return; fi
@@ -179,6 +180,14 @@ DEFAULT_PROJECT=bedrock-now   # = `name:` in compose.yaml
 # second copy), else the default. A shell COMPOSE_PROJECT_NAME never repoints an existing checkout.
 project_name() { local p; p="$(get_env COMPOSE_PROJECT_NAME)"; printf '%s\n' "${p:-$DEFAULT_PROJECT}"; }
 
+# env_file_display -> this checkout's .env as a person would type it: $HOME shortened to ~ (the portal's login
+# page names it, so a second copy's password is looked up in the right folder)
+env_file_display() {
+  local h="${HOME%/}" f="$ENV_FILE"
+  if [ -n "$h" ]; then case "$f" in "$h"/*) f="~${f#"$h"}" ;; esac; fi
+  printf '%s\n' "$f"
+}
+
 # dc ARGS... — docker compose for this checkout. -p and the COMPOSE_PROJECT_NAME seen by compose's own
 # interpolation are both forced to project_name, so a stray shell value is ignored (with one warning).
 dc() {
@@ -196,7 +205,7 @@ dc() {
   for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
-    COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
+    BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }
 

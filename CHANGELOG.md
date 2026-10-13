@@ -154,11 +154,31 @@ All notable changes to bedrock-now are documented here. The format follows
   as cards.
 - Touch targets of at least 44 px on touch screens; reduced motion and light/dark respected throughout.
 
+- `./stack password [--show]`: where the portal password is (this folder's `.env` and project); `--show` prints
+  it, only to a terminal.
+- `./stack <command> -h|--help` for every command: that command's part of `./stack help`, exit 0, nothing
+  checked or changed.
+- `./stack clean --dry-run`: lists what `clean` would remove and removes nothing.
+
 ### Changed
 
+- The portal's wrong-password message and "Forgot it?" hint name this install's `.env` (`~` for your home) and
+  Compose project, e.g. `It is PORTAL_PASSWORD in ~/bn-dev/.env (project bn-dev).`, so a second copy's password
+  is looked up in the right folder. Remote visitors get the generic wording.
+- Setup prints the new portal password only when stdout is a terminal; piped or logged (CI, scripts), it prints
+  where the password is instead and shows it at the next run in a terminal.
 - `compose.yaml`: LiteLLM's AWS key variables are optional (passed only when `.env` sets them), and
   `./stack` keeps the AWS credentials and `AWS_REGION_NAME` exported in your shell out of Docker Compose, so
   `.env` alone decides (one warning per command when your shell's key differs).
+
+### Fixed
+
+- Every setup and update left one more unnamed key under LiteLLM's Virtual Keys: the admin sign-in check
+  (`/v2/login`) creates a session key each time. Setup now deletes the session keys of its own logins.
+- `/favicon.ico` answered 401 before login (browsers ask for it by themselves); it is public now and redirects
+  to the 32 px icon.
+- `./stack helper status` exited 1 when the helper was not installed; it is informational and exits 0.
+- `./stack serve --help` (and other commands' `--help`) exited 1.
 
 ## [0.2.1] - 2026-10-12
 

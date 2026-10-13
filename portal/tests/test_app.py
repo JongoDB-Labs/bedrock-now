@@ -230,3 +230,45 @@ def test_price_update_task_runs_only_when_enabled(settings, monkeypatch):
         with TestClient(app, base_url="http://bedrock-now.localhost") as c:
             assert c.get("/healthz").text == "ok"
     assert started == [(settings.prices_dir, "eu-west-1")]
+
+
+# --- where the password lives (PORTAL_ENV_FILE / PORTAL_PROJECT, passed by ./stack at compose time) ---
+
+def _where_client(settings, **kw):
+    return TestClient(create_app(replace(settings, **kw), transport=httpx.MockTransport(offline)),
+                      base_url="http://bedrock-now.localhost", follow_redirects=False)
+
+
+def test_wrong_password_names_this_install(settings):
+    with _where_client(settings, env_file="~/code/bn-dev/.env", project="bn-dev") as c:
+        r = login(c, password="nope")
+        assert r.status_code == 401
+        assert "It is PORTAL_PASSWORD in ~/code/bn-dev/.env (project bn-dev)." in r.text
+        assert "~/code/bn-dev/.env" in c.get("/login").text   # the "Forgot it?" hint too
+
+
+def test_install_location_is_escaped(settings):
+    with _where_client(settings, env_file="~/<b>x</b>/.env", project="p") as c:
+        r = login(c, password="nope")
+        assert "<b>x</b>" not in r.text and "&lt;b&gt;x&lt;/b&gt;" in r.text
+
+
+def test_wrong_password_falls_back_without_a_location(client):
+    r = login(client, password="nope")
+    assert "It is PORTAL_PASSWORD in the .env file of your bedrock-now folder." in r.text
+    assert "{{" not in client.get("/login").text
+
+
+def test_from_env_reads_the_install_location():
+    from portal.config import from_env
+    s = from_env({"PORTAL_PASSWORD": "p", "PORTAL_SECRET": "s" * 32, "PORTAL_ENV_FILE": " ~/bn/.env ", "PORTAL_PROJECT": "bn-dev"})
+    assert (s.env_file, s.project) == ("~/bn/.env", "bn-dev")
+    assert s.password_where() == "~/bn/.env (project bn-dev)"
+    s = from_env({"PORTAL_PASSWORD": "p", "PORTAL_SECRET": "s" * 32})
+    assert s.password_where() == ""
+
+
+def test_favicon_ico_is_public_and_points_at_the_png(client):
+    r = client.get("/favicon.ico")
+    assert r.status_code == 301 and r.headers["location"] == "/icons/app-32.png"
+    assert client.get(r.headers["location"]).status_code == 200

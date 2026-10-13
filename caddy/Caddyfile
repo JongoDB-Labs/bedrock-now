@@ -68,7 +68,7 @@
 # drift apart. The icons are named one by one (portal/portal/appicons.py FILES; tests/test_portal.sh keeps the two
 # equal): no wildcard under /icons/.
 (public_paths) {
-	@public path /login /healthz /favicon.svg /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-16.png /icons/app-32.png /icons/app-48.png /icons/app-192.png /icons/app-512.png /icons/app-1024.png /icons/app-maskable-192.png /icons/app-maskable-512.png /icons/app-monochrome-512.png /icons/app-touch-180.png
+	@public path /login /healthz /favicon.svg /favicon.ico /static/login.css /static/logo.svg /manifest.webmanifest /sw.js /icons/app-16.png /icons/app-32.png /icons/app-48.png /icons/app-192.png /icons/app-512.png /icons/app-1024.png /icons/app-maskable-192.png /icons/app-maskable-512.png /icons/app-monochrome-512.png /icons/app-touch-180.png
 }
 
 # The portal's routes, shared by the local site below and the remote site (remote-*.caddy).

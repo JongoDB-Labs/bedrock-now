@@ -233,6 +233,9 @@ services:
       PORTAL_PROXY_SECRET: ${PORTAL_PROXY_SECRET:-}
       PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
       PORTAL_PORT: ${PORTAL_PORT:-80}
+      # Where the password lives, for the login page (set by ./stack; blank = the generic wording).
+      PORTAL_ENV_FILE: ${BEDROCK_NOW_ENV_DISPLAY:-}
+      PORTAL_PROJECT: ${COMPOSE_PROJECT_NAME:-}
       PORTAL_USER_EMAIL: ${OPENWEBUI_ADMIN_EMAIL:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
       LITELLM_KEY_CLAUDE_CODE: ${LITELLM_KEY_CLAUDE_CODE:-}

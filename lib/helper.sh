@@ -185,7 +185,8 @@ helper_status_text() {
   if [ "$(_helper_os)" = Darwin ]; then where="$(helper_plist)"; else where="$(helper_unit_file)"; fi
   if helper_installed; then printf 'Update helper: installed (%s)\n' "$where"
   else printf 'Update helper: not installed (./stack helper install)\n'; fi
-  beat="$(sed -n 's/.*"heartbeat": \([0-9]*\).*/\1/p' "$(helper_beat_file)" 2>/dev/null | head -n 1)"
+  # informational: no heartbeat file yet is not an error (exit 0; see docs/advanced.md)
+  beat="$(sed -n 's/.*"heartbeat": \([0-9]*\).*/\1/p' "$(helper_beat_file)" 2>/dev/null | head -n 1 || true)"
   if [ -n "$beat" ]; then age=$((now - beat)); printf '  last seen %ss ago%s\n' "$age" "$([ "$age" -le 30 ] && echo ' (running)' || echo ' (not running?)')"; fi
   [ ! -f "$(helper_status_file)" ] || printf '  last job: %s\n' "$(sed -n 's/.*"action": "\([a-z]*\)".*"phase": "\([a-z-]*\)".*"message": "\([^"]*\)".*/\1 — \2: \3/p' "$(helper_status_file)" | head -n 1)"
 }

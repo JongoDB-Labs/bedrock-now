@@ -256,6 +256,14 @@ test_helper_status_text_shows_install_and_last_job() {
   assert_eq "$(ls -l "$(helper_dir)/helper.log" | cut -c1-10)" "-rw-------"
 }
 
+test_helper_status_is_informational_when_not_installed() {
+  # exit 0 even with no heartbeat, status file or install (a plain `set -e` caller must not stop)
+  _checkout; _stub_services; HELPER_OS=Darwin
+  rm -rf "$(status_dir)"
+  cmd_helper status > "$TMP/out"
+  assert_contains "$(cat "$TMP/out")" "not installed"
+}
+
 # --- security review fixes ---
 
 test_unreadable_request_is_refused_as_unreadable() {   # C1: never "larger than 512 bytes"

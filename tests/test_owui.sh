@@ -348,7 +348,7 @@ _stub_litellm() {
   _litellm_login() {
     printf 'login %s\n' "$1" >> "$TMP/calls"
     case "$2" in
-      "${GOOD_PW:-none}") echo '{"token":"x"}' > "$3"; echo 200 ;;
+      "${GOOD_PW:-none}") printf '{"token":"h.%s.s"}' "$(printf '{"key":"sk-check"}' | openssl base64 -A | tr '/+' '_-' | tr -d '=')" > "$3"; echo 200 ;;
       Tmp-9*) printf '{"token":"h.%s.s"}' "$(printf '{"key":"sk-session"}' | openssl base64 -A | tr '/+' '_-' | tr -d '=')" > "$3"; echo 200 ;;
       *) echo '{"detail":"bad"}' > "$3"; echo 401 ;;
     esac
@@ -372,7 +372,25 @@ test_db_admin_four_call_flow() {
 test_db_admin_is_a_no_op_when_login_works() {
   _stub_litellm
   GOOD_PW=Bn9-0123456789ab ensure_litellm_db_admin
-  assert_eq "$(cat "$TMP/calls")" "login me@x.io"
+  # the check's login creates a LiteLLM session key: deleted right away, so updates don't pile up tokens
+  assert_eq "$(cat "$TMP/calls")" "$(printf 'login me@x.io\nPOST /key/delete {"keys":["sk-check"]}')"
+}
+
+test_db_admin_deletes_the_session_key_of_its_temporary_login() {
+  _stub_litellm
+  ensure_litellm_db_admin 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" 'POST /key/delete {"keys":["sk-session"]}'
+  # after the password change, not before (that call needs the key)
+  a="$(grep -n '/user/password/change' "$TMP/calls" | cut -d: -f1)"; b="$(grep -n '/key/delete' "$TMP/calls" | cut -d: -f1)"
+  [ "$a" -lt "$b" ]
+}
+
+test_db_admin_session_key_drop_ignores_odd_tokens() {
+  _stub_litellm
+  litellm_drop_session_key x
+  litellm_drop_session_key ""
+  litellm_drop_session_key "h.$(printf '{"key":"sk-a\\"},{x"}' | openssl base64 -A | tr '/+' '_-' | tr -d '=').s"
+  assert_eq "$(cat "$TMP/calls")" ""
 }
 
 test_db_admin_existing_user_email_is_reused() {

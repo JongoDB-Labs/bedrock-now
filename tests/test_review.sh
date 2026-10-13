@@ -85,17 +85,18 @@ test_symlink_created_interactively_by_default() {
 
 test_summary_hides_passwords_after_first_setup() {
   printf 'OPENWEBUI_ADMIN_PASSWORD=owuipw123\nLITELLM_UI_PASSWORD=litepw456\nPORTAL_PASSWORD=portalpw789\nOPENWEBUI_ADMIN_EMAIL=a@b.c\n' > "$ENV_FILE"
+  _stdout_tty() { return 0; }   # a terminal (tests/test_cli_polish.sh: a log never gets it)
   out="$(print_summary 2>&1)"
   assert_contains "$out" "portalpw789"
   assert_not_contains "$out" "owuipw123"; assert_not_contains "$out" "litepw456"
   out="$(print_summary 2>&1)"
   for pw in owuipw123 litepw456 portalpw789; do assert_not_contains "$out" "$pw"; done
-  assert_contains "$out" "PORTAL_PASSWORD in .env"
+  assert_contains "$out" "PORTAL_PASSWORD in "
 }
 
 test_new_portal_password_is_shown_even_after_a_failed_run() {
   printf 'OPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=x\n' > "$ENV_FILE"
-  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/portal-password-shown"
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/portal-password-shown"; _stdout_tty() { return 0; }
   setup_secrets 2>/dev/null          # generates it; the run then "fails" before its summary
   assert_contains "$(print_summary 2>&1)" "$(get_env PORTAL_PASSWORD)"
 }

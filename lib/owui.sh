@@ -432,6 +432,15 @@ _litellm_login() {
   rm -f "$body"; printf '%s\n' "$code"
 }
 
+# litellm_drop_session_key TOKEN (from a /v2/login response) — every /v2/login makes LiteLLM store a new,
+# unnamed session key (a row under Virtual Keys); setup's logins are only checks, so their keys are deleted right away instead of piling up on each setup/update.
+# Never fatal: a key left behind expires on its own.
+litellm_drop_session_key() {
+  local key; key="$(jwt_claim "$1" key 2>/dev/null || true)"
+  case "$key" in sk-*) case "$key" in *[!A-Za-z0-9_-]*) return 0 ;; esac ;; *) return 0 ;; esac
+  litellm_api POST /key/delete "{\"keys\":[\"$key\"]}" >/dev/null || true
+}
+
 # ensure_litellm_db_admin -> 0 when a LiteLLM database admin (login: OPENWEBUI_ADMIN_EMAIL /
 # LITELLM_UI_PASSWORD) exists. First time: create the user, set a temporary password, log in with it and
 # change it to LITELLM_UI_PASSWORD (which clears LiteLLM's "change your password" flag). If the admin
@@ -439,7 +448,7 @@ _litellm_login() {
 ensure_litellm_db_admin() {
   local email pw tmp code temp token key body
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"; pw="$(get_env LITELLM_UI_PASSWORD)"; tmp="$(mktemp)"
-  if [ "$(_litellm_login "$email" "$pw" "$tmp")" = 200 ]; then rm -f "$tmp"; return 0; fi
+  if [ "$(_litellm_login "$email" "$pw" "$tmp")" = 200 ]; then litellm_drop_session_key "$(json_get token < "$tmp")"; rm -f "$tmp"; return 0; fi
   code="$(litellm_api GET "/user/info?user_id=$LITELLM_DB_ADMIN_ID" "" "$tmp")"
   if [ "$code" = 200 ] && [ "$(get_env LITELLM_DB_ADMIN_READY)" = true ]; then
     rm -f "$tmp"
@@ -462,6 +471,7 @@ ensure_litellm_db_admin() {
   [ -n "$key" ] || { LITELLM_ADMIN_ERR="the login token carried no session key"; rm -f "$tmp"; return 1; }
   body="$(T="$temp" P="$pw" awk "$_JSON_ESC"' BEGIN { printf "{\"current_password\":\"%s\",\"new_password\":\"%s\"}", esc(ENVIRON["T"]), esc(ENVIRON["P"]) }')"
   code="$(litellm_call "$key" POST /user/password/change "$body" "$tmp")"
+  litellm_drop_session_key "$token"   # after the change: that call needs the key
   [ "$code" = 200 ] || { LITELLM_ADMIN_ERR="setting LITELLM_UI_PASSWORD failed (HTTP $code): $(head -c 200 "$tmp")"; rm -f "$tmp"; return 1; }
   rm -f "$tmp"
   log "created LiteLLM admin $email (password: LITELLM_UI_PASSWORD in .env)"

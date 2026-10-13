@@ -28,6 +28,7 @@ Usage: ./stack <command> [--yes]
                --to <tag|branch> picks a version; local changes are never discarded;
                keeps one previous version of each image and removes older ones
   clean        Remove this project's old images (lists them first; keeps one previous version)
+               --dry-run only lists them
   rollback     Back to the version before the last update: code, data (its backup) and images
   helper       Optional one-click Update / Rollback / Clean on Home: install | uninstall | status
   remote       The portal from your phone/laptop over HTTPS (Tailscale): status | enable tailscale
@@ -41,14 +42,42 @@ Usage: ./stack <command> [--yes]
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
   stt          Optional speech-to-text for voice calls (OpenAI or Groq, outside Bedrock):
                status | set openai|groq [model] | remove   (see README)
+  password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
+               --show prints it (only to a terminal)
   uninstall    Remove containers and ALL data volumes
 
-  Commands without a $ note make no Bedrock calls.
+  Commands without a $ note make no Bedrock calls.  ./stack <command> --help shows one command.
   --yes        Accept defaults (non-interactive). AWS creds can come from
                AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME.
   BEDROCK_NOW_VERBOSE=1 ./stack setup   shows the full docker compose output.
   NO_COLOR=1   turns colours off.
 EOF
+}
+
+# cmd_help_for COMMAND -> that command's lines of ./stack help (fails for an unknown command)
+cmd_help_for() {
+  local sect
+  sect="$(cmd_help | C="$1" awk '
+    /^  [a-z]/ { lab = substr($0, 3); sub(/   .*/, "", lab); n = split(lab, w, /[ |]+/); on = 0
+                 for (i = 1; i <= n; i++) if (w[i] == ENVIRON["C"]) on = 1
+                 if (on) print; next }
+    on && /^               / { print; next }
+    { on = 0 }')"
+  [ -n "$sect" ] || return 1
+  printf 'Usage: ./stack %s [options] [--yes]\n\n%s\n' "$1" "$sect"
+}
+
+# cmd_password — ./stack password: where the portal password is; --show prints it, only to a terminal
+cmd_password() {
+  case "${1:-}" in '' | --show) ;; *) die "usage: ./stack password [--show]" ;; esac
+  [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_PASSWORD)" ] || die "no portal password yet — run ./stack setup"
+  if [ "${1:-}" = --show ]; then
+    _stdout_tty || die "not printing the password: stdout is not a terminal (it is PORTAL_PASSWORD in $(env_file_display))"
+    printf '%s\n' "$(get_env PORTAL_PASSWORD)"
+    return 0
+  fi
+  printf 'The portal password is PORTAL_PASSWORD in %s (project %s).\n' "$(env_file_display)" "$(project_name)"
+  printf 'Print it: ./stack password --show   Change it: edit .env, then ./stack setup\n'
 }
 
 check_prereqs() {
@@ -663,11 +692,12 @@ cmd_costs() {
 print_summary() {
   local login cb haiku O_RED O_GRN O_YEL O_OFF
   out_colors
-  if [ ! -e "$STATE_DIR/portal-password-shown" ] && [ -n "$(get_env PORTAL_PASSWORD)" ]; then
+  # Shown once, and only to a terminal: a CI or script log never captures it (and it stays unshown until then).
+  if [ ! -e "$STATE_DIR/portal-password-shown" ] && [ -n "$(get_env PORTAL_PASSWORD)" ] && _stdout_tty; then
     login="password $(get_env PORTAL_PASSWORD)   (shown once; also PORTAL_PASSWORD in .env)"
     mkdir -p "$STATE_DIR" && : > "$STATE_DIR/portal-password-shown"
   else
-    login="password: PORTAL_PASSWORD in .env"
+    login="password: PORTAL_PASSWORD in $(env_file_display)   (./stack password --show)"
   fi
   cb="$(claude_bedrock_cmd)"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   cat <<SUMMARY

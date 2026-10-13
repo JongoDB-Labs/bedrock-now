@@ -83,7 +83,8 @@ your browser.
 
 Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. If port 80
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
-password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can use the LiteLLM API at
+password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Setup prints the password once, and only
+in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
 ### Desktop app
@@ -409,7 +410,7 @@ option yet: [docs/voice.md](docs/voice.md).
 | `./stack backup` | Databases + buckets + `.env` → `backups/<timestamp>/` | none |
 | `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
 | `./stack update [--to <tag\|branch>]` | Backup, new code, pinned images, setup | < $0.01 |
-| `./stack clean [--yes]` | Remove this install's old images (lists them first; keeps one previous version) | none |
+| `./stack clean [--dry-run] [--yes]` | Remove this install's old images (lists them first; keeps one previous version); `--dry-run` only lists them | none |
 | `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
 | `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
 | `./stack remote status\|enable tailscale\|enable domain HOST\|disable\|test` | Optional: the portal from your phone/laptop over HTTPS through Tailscale ([docs/remote.md](docs/remote.md)) | none |
@@ -418,8 +419,9 @@ option yet: [docs/voice.md](docs/voice.md).
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Optional speech-to-text for voice calls (OpenAI or Groq): `status`, `set`, `remove` | none |
+| `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
-| `./stack help` | All of the above | none |
+| `./stack help` | All of the above; `./stack <command> --help` shows one | none |
 
 `--yes` accepts defaults (non-interactive; AWS credentials can then come from `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME`). `NO_COLOR=1` turns colours off.
@@ -479,7 +481,7 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | A URL from this README doesn't work | Setup moved a port because something else used it (port 80 taken, or rootless Docker → the portal is on 8800). See `./stack status` or `PORTAL_PORT` / `*_PORT` in `.env`. |
 | `http://bedrock-now.localhost` doesn't resolve | Use a current Chrome, Edge, Firefox or Safari; they resolve `*.localhost` themselves. Command-line tools may not: `curl --resolve bedrock-now.localhost:80:127.0.0.1 http://bedrock-now.localhost/login`. |
 | The portal shows its login page after you followed a link to it from another site | Expected with `SameSite=Strict`: such a visit arrives without the session cookie. Type or bookmark the URL. |
-| Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`. After five wrong tries the login waits a few seconds (up to five minutes). |
+| Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`: `./stack password` says which file (the login page names it too, with the Compose project, so a second copy is not mixed up), `./stack password --show` prints it. After five wrong tries the login waits a few seconds (up to five minutes). |
 | The old Open WebUI address (`127.0.0.1:8080`/`8082`) stopped working after an update | By design: browsers reach every app through the portal now. Open the URL from `./stack status`. |
 | A setting changed in Open WebUI's admin UI reverts after a restart | By design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration. |
 | `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in `~/.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper. Remove those keys, or move them to a project-level setting you don't use with `claude-bedrock`. |

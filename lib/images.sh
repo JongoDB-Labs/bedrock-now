@@ -207,18 +207,19 @@ clean_plan() {
   cleanup_plan "$keep" "$cand" "$(_protected)" | _present_only
 }
 
-# cmd_clean — ./stack clean: lists what it would remove, asks, removes. --yes skips the question.
+# cmd_clean — ./stack clean: lists what it would remove, asks, removes. --yes skips the question; --dry-run
+# only lists (no lock, no removal, no last-clean record).
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_clean() {
-  local plan sizes total=0 id ref b
-  [ $# -eq 0 ] || die "usage: ./stack clean [--yes]"
+  local plan sizes total=0 id ref b dry=0
+  case "$#:${1:-}" in 0:) ;; 1:--dry-run) dry=1 ;; *) die "usage: ./stack clean [--dry-run] [--yes]" ;; esac
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  stack_lock clean
+  [ "$dry" = 1 ] || stack_lock clean
   check_docker_daemon
   plan="$(clean_plan)"
   if [ -z "$plan" ]; then
     log "nothing to clean: only the images in use and one previous version (for ./stack rollback) are here"
-    images_remove ""
+    [ "$dry" = 1 ] || images_remove ""
     return 0
   fi
   sizes="$(image_sizes)"
@@ -230,6 +231,7 @@ cmd_clean() {
 $plan
 EOF
   printf '  about %s in all\n' "$(fmt_bytes "$total")"
+  if [ "$dry" = 1 ]; then log "dry run: nothing was removed (./stack clean removes them)"; return 0; fi
   [ "${ASSUME_YES:-0}" = 1 ] || _have_tty || die "re-run with --yes to remove them non-interactively — nothing was removed"
   confirm "Remove them?" || die "aborted — nothing was removed"
   images_remove "$plan"

@@ -198,6 +198,27 @@ test_clean_without_tty_or_yes_removes_nothing() {
   assert_contains "$(cat "$TMP/imgs")" "D1"
 }
 
+test_clean_dry_run_lists_and_removes_nothing() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  _store D1 '<none>' 200MB bn-t
+  before="$(cat "$TMP/imgs")"; rm -f "$STATE_DIR/images/last-clean" "$TMP/dcalls"
+  out="$(ASSUME_YES=1 cmd_clean --dry-run 2>&1)"
+  assert_contains "$out" "Would remove"
+  assert_contains "$out" "old build"
+  assert_contains "$out" "dry run: nothing was removed"
+  assert_eq "$(cat "$TMP/imgs")" "$before"
+  assert_not_contains "$(cat "$TMP/dcalls" 2>/dev/null)" "rm "
+  [ ! -e "$STATE_DIR/images/last-clean" ]
+}
+
+test_clean_dry_run_with_nothing_to_do() {
+  _setup
+  out="$(cmd_clean --dry-run 2>&1 </dev/null)"
+  assert_contains "$out" "nothing to clean"
+  [ ! -e "$STATE_DIR/images/last-clean" ]
+}
+
 test_clean_with_nothing_to_do_says_so() {
   _setup
   out="$(ASSUME_YES=1 cmd_clean 2>&1)"
@@ -212,7 +233,7 @@ test_clean_needs_setup_and_takes_no_arguments() {
   assert_contains "$out" "./stack setup"
   printf 'X=1\n' > "$ENV_FILE"
   if out="$( (cmd_clean --force) 2>&1)"; then return 1; fi
-  assert_contains "$out" "usage: ./stack clean"
+  assert_contains "$out" "usage: ./stack clean [--dry-run] [--yes]"
 }
 
 test_disk_line_counts_project_images_volumes_and_backups() {

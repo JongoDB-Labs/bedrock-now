@@ -79,6 +79,16 @@ class Settings:
     # Caddy adds X-Portal-Proxy: <this> to everything it forwards; without it X-Portal-Remote and
     # Tailscale-User-Login are ignored (they could only come from another container calling portal:8000 directly).
     proxy_secret: str = field(default="", repr=False)
+    # Where PORTAL_PASSWORD lives (./stack passes the .env path, ~ for $HOME, and the Compose project), so the
+    # login page of a second copy names its own .env. Blank: the generic wording.
+    env_file: str = ""
+    project: str = ""
+
+    def password_where(self) -> str:
+        """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
+        if not self.env_file:
+            return ""
+        return f"{self.env_file} (project {self.project})" if self.project else self.env_file
 
     def remote_on(self) -> bool:
         return self.remote_mode in REMOTE_MODES and bool(self.remote_host)
@@ -157,6 +167,8 @@ def from_env(env: dict | None = None) -> Settings:
         remote_app_hosts={sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()},
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
+        env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),
+        project=(env.get("PORTAL_PROJECT") or "").strip(),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

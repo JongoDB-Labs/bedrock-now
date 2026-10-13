@@ -430,3 +430,10 @@ def test_startup_warns_when_remote_is_on_without_a_proxy_secret(rs, caplog):
     with caplog.at_level("WARNING", logger="portal"):
         create_app(rs, transport=httpx.MockTransport(offline))
     assert "PORTAL_PROXY_SECRET" not in caplog.text
+
+
+def test_remote_login_page_does_not_reveal_the_install_folder(rs):
+    with _client(replace(rs, env_file="~/code/bn/.env", project="bn")) as c:
+        r = c.post("/login", data={"password": "nope", "next": ""}, headers={"Origin": R_ORIGIN, **REMOTE})
+        assert r.status_code == 401 and "~/code/bn" not in r.text and "PORTAL_PASSWORD" in r.text
+        assert "~/code/bn" not in c.get("/login", headers=REMOTE).text

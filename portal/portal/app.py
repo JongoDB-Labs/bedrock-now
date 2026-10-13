@@ -66,10 +66,16 @@ HANDOFF_LOOP_COOKIE = "__Host-bn_handoffs_"   # + the app (chat/admin/files): on
 HANDOFF_LOOP_MAX = 4   # hand-offs to one app host within a minute before the portal stops and explains
 
 
-def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: int = 0) -> HTMLResponse:
+GENERIC_WHERE = "the .env file of your bedrock-now folder"
+
+
+def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: int = 0,
+                where: str = "") -> HTMLResponse:
     page = (STATIC / "login.html").read_text(encoding="utf-8")
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
+    hint = f"<code>{html.escape(where)}</code>" if where else "the <code>.env</code> file of your bedrock-now folder"
     page = page.replace("{{next}}", html.escape(next_url, quote=True)).replace("{{error}}", err)
+    page = page.replace("{{where}}", hint)
     resp = HTMLResponse(page, status_code=status)
     if retry_after:
         resp.headers["Retry-After"] = str(retry_after)
@@ -95,6 +101,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     # from the portal host to each app host by the hand-off below), told apart by Caddy's X-Portal-Remote marker.
     def remote(request: Request) -> bool:
         return is_remote(request.headers, settings)
+
+    def password_where(request: Request) -> str:
+        """The install's .env for the login page: local requests only (no folder names to remote visitors)."""
+        return "" if remote(request) else settings.password_where()
 
     def session_claims(request: Request) -> dict | None:
         return sessions.claims(request.cookies.get(cookie_params(settings, remote(request))["key"]),
@@ -174,7 +184,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         nxt = safe_next(request.query_params.get("next"), settings)
         if authed(request):
             return _no_store(RedirectResponse(nxt, status_code=303))
-        return _security_headers(_login_page(nxt), settings)
+        return _security_headers(_login_page(nxt, where=password_where(request)), settings)
 
     async def login_post(request: Request) -> Response:
         if not same_origin(request.headers, settings):
@@ -196,12 +206,15 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         nxt = safe_next((form.get("next") or [""])[0], settings)
         wait = throttle.retry_after()
         if wait:
-            return _security_headers(_login_page(nxt, f"Too many wrong passwords. Try again in {wait} s.", 429, wait), settings)
+            return _security_headers(_login_page(nxt, f"Too many wrong passwords. Try again in {wait} s.", 429, wait,
+                                                 where=password_where(request)), settings)
         if not password_ok((form.get("password") or [""])[0], settings.password):
             throttle.failure()
             log.warning("portal login failed (%d in a row)", throttle.failures)
+            where = password_where(request)
             return _security_headers(_login_page(
-                nxt, "That password is not right. It is PORTAL_PASSWORD in the .env file of your bedrock-now folder.", 401), settings)
+                nxt, f"That password is not right. It is PORTAL_PASSWORD in {where or GENERIC_WHERE}.", 401,
+                where=where), settings)
         throttle.success()
         resp = RedirectResponse(nxt, status_code=303)
         set_session(resp, remote(request), session_login(request.headers, settings))
@@ -398,6 +411,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
+    async def favicon_ico(request: Request) -> Response:
+        # Browsers ask for /favicon.ico by themselves, before any login: the 32 px PNG (Safari has no SVG favicons).
+        return RedirectResponse("/icons/app-32.png", status_code=301)
+
     # Installable web app (Chrome "Install app", Add to Home Screen). Public, like the login page: browsers fetch
     # the manifest and its icons without the session cookie. Nothing here is per-user.
     # The remote site (./stack remote) is another origin, so another installed app with its own name.
@@ -459,6 +476,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),
             Route("/favicon.svg", favicon),
+            Route("/favicon.ico", favicon_ico),
             Route("/manifest.webmanifest", manifest),
             Route("/sw.js", service_worker),
             Route("/icons/app-{rest}.png", app_icon),  # before the catalog logos: app-* names are ours
