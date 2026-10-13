@@ -233,6 +233,8 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   `spend.txt`.
 - **Iterating:** `--keep` leaves the throwaway running, `--reuse` runs again against it (no setup; refused unless
   every service is healthy), `--teardown` removes it. A run that was killed before its teardown leaves the project
-  behind; the next run removes those leftovers first (only when they are the suite's own). `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws, update and rollback.
+  behind; the next run removes those leftovers first (only when they are the suite's own). `--only cli,mutating`
+  (any of `cli`, `browser`, `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips
+  backup/restore, down/up, rotate-aws, update and rollback.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.

@@ -1069,8 +1069,19 @@ _restore_key_trio() {
   log "restored the backup's keys (LiteLLM virtual keys, Open WebUI API key) into .env ($n changed)"
 }
 
+# backup_dir_arg DIR -> the backup directory DIR names: as given when it holds both dumps (relative to the current
+# folder or absolute), else, for a relative DIR, the same path inside this checkout — every message says
+# "./stack restore backups/<ts>" and ./stack can be run from any folder (e.g. ~/bedrock-now/stack restore …).
+backup_dir_arg() {
+  local d="$1"
+  case "$d" in '' | /*) printf '%s\n' "$d"; return 0 ;; esac
+  if [ ! -f "$d/litellm.dump" ] && [ -f "$STACK_DIR/$d/litellm.dump" ]; then d="$STACK_DIR/$d"; fi
+  printf '%s\n' "$d"
+}
+
 cmd_restore() {
-  local dir="${1:-}" db k hint
+  local dir db k hint
+  dir="$(backup_dir_arg "${1:-}")"
   case "${dir%/}" in *.partial) die "${dir%/} is an incomplete backup (it failed or is still being written) — pick a complete one from backups/" ;; esac
   [ -n "$dir" ] && [ -f "$dir/litellm.dump" ] && [ -f "$dir/openwebui.dump" ] ||
     die "usage: ./stack restore backups/<timestamp>   (a directory written by ./stack backup)"

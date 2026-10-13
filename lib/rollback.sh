@@ -83,7 +83,8 @@ cmd_rollback() {
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"
   # The restored scripts do the rest, in fresh processes; their messages say how to retry if something fails.
-  env BEDROCK_NOW_NO_OPEN=1 "$STACK_DIR/stack" restore "$backup" --yes ||
+  # An absolute path: the restored code may be a version whose restore resolves it against the current folder.
+  env BEDROCK_NOW_NO_OPEN=1 "$STACK_DIR/stack" restore "$STACK_DIR/$backup" --yes ||
     die "the code is back at ${fromv:-$from}, but restoring $backup failed (see above) — fix the cause and run ./stack restore $backup"
   log "rollback: 3/3 start (./stack up with the restored code)"
   env BEDROCK_NOW_NO_OPEN=1 "$STACK_DIR/stack" up --yes ||

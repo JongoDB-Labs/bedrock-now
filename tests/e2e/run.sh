@@ -20,6 +20,8 @@
 #   --skip-cli-mutating   skip backup/restore, down/up, rotate-aws, update and rollback (the slow part)
 #   --deep-update    also a real update to a new (local) commit and a rollback from it (two more setups)
 #   --no-claude      skip the claude-bedrock check
+#   --only PARTS     run only these parts (comma list of cli, browser, claude, mutating; default all of them).
+#                    Setup, the spend guard and the claude-bedrock link check always run.
 #
 # Never touches the default install: refuses the project name bedrock-now, never uses ports 80/4000/8765 (or the
 # other ports listed in AVOID_PORTS), never changes ~/.local/bin/claude-bedrock (checked before and after), never
@@ -34,7 +36,7 @@ AVOID_PORTS=" 80 443 3000 3009 4000 8080 8081 8090 8765 8800 "
 SPEND_LIMIT="0.10"
 
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
-SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0
+SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,claude,mutating"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -47,10 +49,16 @@ while [ $# -gt 0 ]; do
     --skip-cli-mutating) SKIP_MUTATING=1; shift ;;
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
-    -h | --help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --only) ONLY="${2:?--only needs a list (cli,browser,claude,mutating)}"; shift 2 ;;
+    -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
   esac
 done
+
+for part in $(printf '%s' "$ONLY" | tr ',' ' '); do
+  case "$part" in cli | browser | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, claude, mutating)" >&2; exit 2 ;; esac
+done
+part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
 
 case "$PROJECT" in bedrock-now | '') echo "refusing project name '$PROJECT': that is the default install" >&2; exit 2 ;; esac
 case "$PROJECT" in [a-z0-9]*) case "$PROJECT" in *[!a-z0-9-]*) echo "project: lowercase letters, digits, - only" >&2; exit 2 ;; esac ;;
@@ -307,6 +315,7 @@ PP="$(get_env PORTAL_PORT)"; LP="$(get_env LITELLM_PORT)"; MP="$(get_env SHARED_
 for p in "$PP" "$LP" "$MP"; do case "$AVOID_PORTS" in *" $p "*) die "throwaway uses a reserved port ($p)";; esac; done
 
 # --- 2. read-only CLI checks ---
+if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
 say "CLI: read-only commands"
 cli help 0 'Usage: ./stack' help
 cli unknown-command 1 'unknown command' bogus-command
@@ -342,15 +351,19 @@ else record cli help-every-command FAIL "$(( $(now) - t0 ))" "no usage from --he
 cli uninstall-abort 1 'aborted' uninstall --yes
 case "$(uname -s)" in Darwin) record cli open SKIP 0 "opens a GUI browser window on macOS (no headless mode)" ;;
   *) record cli open SKIP 0 "opens a browser window (no headless mode)" ;; esac
+fi
 
 # --- 3. the browser suite (Playwright container) ---
-say "browser suite (Playwright container)"
-"$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" || warn "the browser suite exited with an error (see $OUT/browser/run.log)"
-[ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
-[ -f "$OUT/browser/run.log" ] && redact "$OUT/browser/run.log"
+if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
+  say "browser suite (Playwright container)"
+  "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" || warn "the browser suite exited with an error (see $OUT/browser/run.log)"
+  [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
+  [ -f "$OUT/browser/run.log" ] && redact "$OUT/browser/run.log"
+fi
 
 # --- 4. claude-bedrock (the throwaway's wrapper, never the ~/.local/bin link) ---
-if [ "$NO_CLAUDE" = 1 ]; then record claude claude-bedrock SKIP 0 "--no-claude"
+if ! part_on claude; then record claude claude-bedrock SKIP 0 "--only $ONLY"
+elif [ "$NO_CLAUDE" = 1 ]; then record claude claude-bedrock SKIP 0 "--no-claude"
 elif ! command -v claude >/dev/null 2>&1; then record claude claude-bedrock SKIP 0 "Claude Code (claude) is not installed"
 elif ! spend_ok "$(spend_now)" 0.07; then record claude claude-bedrock SKIP 0 "spend guard: already near \$$SPEND_LIMIT"
 else
@@ -372,8 +385,8 @@ else
 fi
 
 # --- 5. CLI commands that change the throwaway (backup/restore, down/up, rotate-aws, update, rollback) ---
-if [ "$SKIP_MUTATING" = 1 ]; then
-  record cli mutating SKIP 0 "--skip-cli-mutating"
+if [ "$SKIP_MUTATING" = 1 ] || ! part_on mutating; then
+  record cli mutating SKIP 0 "--skip-cli-mutating / --only $ONLY"
 else
   say "CLI: commands that change the stack"
   cli backup 0 'backup written to backups/' backup
@@ -397,7 +410,8 @@ else
     git -C "$STACK" -c user.name=bedrock-now-e2e -c user.email=e2e@example.invalid commit -q --allow-empty -m "e2e: next version"
     next="$(git -C "$STACK" rev-parse HEAD)"; git -C "$STACK" -c advice.detachedHead=false checkout -q "$head"
     cli update-to-next 0 'updated to' update --to "$next" --yes
-    cli rollback 0 'rolled back to' rollback --yes
+    # from another folder: rollback hands restore an absolute backup path
+    ST_CWD=/ cli rollback-from-another-folder 0 'rolled back to' rollback --yes
     [ "$(git -C "$STACK" rev-parse HEAD)" = "$head" ] && record cli rollback-code PASS 0 "HEAD back at ${head%"${head#???????}"}" ||
       record cli rollback-code FAIL 0 "HEAD is $(git -C "$STACK" rev-parse --short HEAD), want ${head%"${head#???????}"}"
   fi

@@ -103,8 +103,8 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `backup` | e2e `cli/backup`, `cli/backup-contents` | `backups/<ts>/` with both dumps, `s3/`, `.env`, mode 700. |
 | `restore DIR --yes` | e2e `cli/restore` | Takes a pre-restore backup, restores, then the smoke test passes. |
 | `update --to <same commit>` | e2e `cli/update-same-version` | Backup, "already on", pull, setup; "no new version". |
-| `update --to <newer commit>` + `rollback` | e2e `cli/update-to-next`, `cli/rollback`, `cli/rollback-code` (`--deep-update`) | Update records the rollback; rollback restores code (HEAD back), data and images. |
-| `restore` from another folder | e2e `cli/restore-from-another-folder` (known issue 1) | Same as from the checkout. |
+| `update --to <newer commit>` + `rollback` | e2e `cli/update-to-next`, `cli/rollback-from-another-folder`, `cli/rollback-code` (`--deep-update`) | Update records the rollback; rollback restores code (HEAD back), data and images. |
+| `restore` from another folder | e2e `cli/restore-from-another-folder` | `<checkout>/stack restore backups/<ts>` run from any folder restores the checkout's backup (as does `rollback`, which passes an absolute path). |
 | `rollback` with nothing recorded | e2e `cli/rollback-nothing` | Exit 1 "nothing to roll back". |
 | `clean --dry-run` / `clean` | e2e `cli/clean-dry-run` | Lists what it would remove (only this project's unused images); never prunes. |
 | `helper status` | e2e `cli/helper-status` | "not installed", exit 0. `helper install/uninstall`: manual (launchd/systemd user unit). |
@@ -164,17 +164,15 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 ## Known issues
 
 Product bugs found by the suite are listed in `tests/e2e/known-issues.tsv` (their checks report XFAIL until fixed).
+None are open.
 
-1. **`./stack restore` / `./stack rollback` from another folder** (e2e `cli/restore-from-another-folder`).
-   - Reproduce: `cd ~ && ~/bedrock-now/stack backup && ~/bedrock-now/stack restore backups/<ts> --yes` → exit 1,
-     `usage: ./stack restore backups/<timestamp>`. The same happens inside `./stack rollback` run from another
-     folder: it passes `backups/<ts>-auto` on, so the rollback stops with *"the code is back at …, but restoring
-     backups/…-auto failed"* — code rolled back, data not restored.
-   - Cause: `cmd_restore` (lib/commands.sh, the `[ -f "$dir/litellm.dump" ]` test and `cd "$dir"`) resolves DIR
-     against the current folder, while every message (`./stack restore backups/…`) and `lib/rollback.sh:81` give a
-     path relative to the checkout. The update helper is not affected (it `cd`s into the checkout).
-   - Fix: in `cmd_restore`, when DIR is relative and not found, try `$STACK_DIR/DIR`; and/or pass
-     `"$STACK_DIR/$backup"` in `lib/rollback.sh:81`.
+Fixed after the suite found them:
+
+1. **`./stack restore` / `./stack rollback` from another folder** (e2e `cli/restore-from-another-folder`): the backup
+   path (`backups/<ts>`, as every message prints it) was resolved against the current folder, so
+   `cd ~ && ~/bedrock-now/stack restore backups/<ts>` printed the usage message, and a rollback run from another
+   folder rolled the code back but not the data. `cmd_restore` now falls back to the checkout's `backups/`
+   (`backup_dir_arg`, lib/commands.sh) and `./stack rollback` passes an absolute path (lib/rollback.sh).
 
 Upstream behaviours the suite tolerates on purpose (not bedrock-now bugs):
 

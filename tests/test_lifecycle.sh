@@ -51,6 +51,28 @@ test_restore_requires_a_backup_dir() {
   assert_contains "$out" "usage"
 }
 
+test_restore_finds_a_relative_backup_in_the_checkout_from_any_folder() {
+  STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260202-000000"
+  for d in "$STACK_DIR/backups/20260101-000000" "$TMP/elsewhere/backups/20260202-000000"; do
+    printf 'L' > "$d/litellm.dump"; printf 'O' > "$d/openwebui.dump"
+  done
+  # from another folder: the path every message prints (backups/<ts>) is the checkout's
+  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260101-000000)" "$STACK_DIR/backups/20260101-000000"
+  # a backup that really is relative to the current folder still wins; absolute paths are kept
+  assert_eq "$(cd "$TMP/elsewhere" && backup_dir_arg backups/20260202-000000)" "backups/20260202-000000"
+  assert_eq "$(cd / && backup_dir_arg "$TMP/elsewhere/backups/20260202-000000")" "$TMP/elsewhere/backups/20260202-000000"
+  # nowhere: unchanged, so restore still prints its usage
+  assert_eq "$(cd / && backup_dir_arg backups/nope)" "backups/nope"
+  printf 'LITELLM_SALT_KEY=a\nWEBUI_SECRET_KEY=b\nSHARED_MCP_PORT=8765\nSHARED_MCP_TOKEN=t0k\n' > "$ENV_FILE"; _stub_dc
+  confirm() { case "$1" in *"backup of the current state"*) return 1 ;; *) return 0 ;; esac; }
+  cmd_test() { echo "TESTED" >> "$TMP/calls"; }; ASSUME_YES=1
+  (cd / && cmd_restore backups/20260101-000000) 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/calls")" "s3 $STACK_DIR/backups/20260101-000000 ro"
+  assert_contains "$(cat "$TMP/calls")" "TESTED"
+  if out="$( (cd / && cmd_restore backups/nope) 2>&1)"; then return 1; fi
+  assert_contains "$out" "usage: ./stack restore backups/<timestamp>"
+}
+
 _mk_backup() {
   mkdir -p "$TMP/b/20260101-000000"; B="$TMP/b/20260101-000000"
   printf 'L' > "$B/litellm.dump"; printf 'O' > "$B/openwebui.dump"; printf "$1" > "$B/.env"

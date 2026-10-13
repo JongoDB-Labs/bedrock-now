@@ -217,6 +217,13 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **`./stack restore backups/<ts>` and `./stack rollback` work from any folder.** The backup path was resolved
+  against the current folder instead of the checkout, so `~/bedrock-now/stack restore backups/<ts>` run from
+  elsewhere stopped with the usage message, and a rollback run from elsewhere put the code back but not the data
+  ("the code is back at …, but restoring backups/…-auto failed"). A relative path that is not found in the
+  current folder is now looked up in the checkout, and rollback hands restore an absolute path (which also works
+  when the version it goes back to still has the old restore). The one-click helper was not affected. Found by the
+  new end-to-end suite.
 - Every setup and update left one more unnamed key under LiteLLM's Virtual Keys: the admin sign-in check
   (`/v2/login`) creates a session key each time. Setup now deletes the session keys of its own logins.
 - `/favicon.ico` answered 401 before login (browsers ask for it by themselves); it is public now and redirects

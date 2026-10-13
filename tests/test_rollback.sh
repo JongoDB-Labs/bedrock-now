@@ -46,7 +46,8 @@ test_rollback_restores_code_data_and_local_builds() {
   ASSUME_YES=1 cmd_rollback > "$TMP/out" 2> "$TMP/err"
   assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
   # the OLD code restores the backup and starts the stack
-  assert_eq "$(tr '\n' '|' < "$CALLS")" "old restore backups/20261012-000000-auto --yes|old up --yes|"
+  # (an absolute backup path: the old code's restore may resolve a relative one against the current folder)
+  assert_eq "$(tr '\n' '|' < "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes|old up --yes|"
   assert_contains "$(cat "$TMP/docker")" "docker tag bn-t/portal:previous bn-t/portal:local"
   assert_contains "$(cat "$TMP/docker")" "docker tag bn-t/shared-mcp:previous bn-t/shared-mcp:local"
   assert_contains "$(cat "$(update_record_file)")" "result=rolled-back"
@@ -136,7 +137,7 @@ test_a_no_op_update_keeps_the_rollback_target_and_its_images() {   # I1
   # and the rollback still goes to the version before the real update, with its own backup
   ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
   assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
-  assert_contains "$(cat "$CALLS")" "old restore backups/20261012-000000-auto --yes"
+  assert_contains "$(cat "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
 }
 
 test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4
