@@ -110,17 +110,27 @@ stt_sync_env() {
   elif [ -n "$(get_env OWUI_STT_ENGINE)" ] || grep -q '^OWUI_STT_ENGINE=' "$ENV_FILE" 2>/dev/null; then unset_env OWUI_STT_ENGINE; fi
 }
 
-# stt_validate_key PROVIDER KEY -> 0 if the provider accepts KEY (GET /models: free); otherwise STT_ERR says why
+# stt_validate_key PROVIDER KEY -> 0 if the provider accepts KEY (GET /models: free); otherwise STT_ERR says why.
+# A 403 that is about permissions/scopes (an OpenAI restricted key without "Models: Read") is accepted: the key
+# authenticated, it just may not list models. STT_NOTE then says so; transcription is tested on first use.
 stt_validate_key() {
-  local tmp code host
-  STT_ERR=''; host="$(stt_host "$1")"
+  local tmp code host body
+  STT_ERR=''; STT_NOTE=''; host="$(stt_host "$1")"
   valid_stt_key "$2" || { STT_ERR="that does not look like a $(stt_provider_label "$1") API key (letters, digits, - and _ only)"; return 1; }
   tmp="$(mktemp)"
   code="$(curl_auth "$2" --proto '=https' -sS --connect-timeout 10 -m 20 -o "$tmp" -w '%{http_code}' "$(stt_api_base "$1")/models" 2>/dev/null || true)"
+  body="$(head -c 2000 "$tmp" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
   rm -f "$tmp"
   case "$code" in
     200) return 0 ;;
-    401 | 403) STT_ERR="$(stt_provider_label "$1") rejected the key (HTTP $code) — create one at $(stt_keys_url "$1")" ;;
+    403)
+      case "$body" in
+        *"missing scope"* | *"insufficient permission"* | *"restricted api key"* | *permission*scope* | *scope*permission*)
+          STT_NOTE="this $(stt_provider_label "$1") key cannot list models (a restricted key) — accepted; it needs access to audio transcription, which is tested on first use"
+          return 0 ;;
+      esac
+      STT_ERR="$(stt_provider_label "$1") rejected the key (HTTP $code) — create one at $(stt_keys_url "$1")" ;;
+    401) STT_ERR="$(stt_provider_label "$1") rejected the key (HTTP $code) — create one at $(stt_keys_url "$1")" ;;
     000 | '') STT_ERR="could not reach $host to check the key (network?)" ;;
     *) STT_ERR="$host answered HTTP $code while checking the key" ;;
   esac
@@ -130,6 +140,7 @@ stt_validate_key() {
 # _stt_store PROVIDER KEY [MODEL] -> 0 when the key was accepted and saved (STT_ERR otherwise)
 _stt_store() {
   stt_validate_key "$1" "$2" || return 1
+  [ -z "$STT_NOTE" ] || warn "$STT_NOTE"
   set_env STT_PROVIDER "$1"; set_env STT_API_KEY "$2"
   if [ -n "${3:-}" ]; then set_env STT_MODEL "$3"; else unset_env STT_MODEL; fi
   stt_sync_env
@@ -183,18 +194,48 @@ setup_stt() {
 }
 
 # stt_sync_owui — the "stt" model must not show up as a chat model: a hidden Open WebUI entry (like the
-# embedding models), with the provider and price as its description. Needs a portal session. Never fatal.
+# embedding models), with the provider and price as its description. When speech-to-text is off, the entry we
+# created (.state/stt-owui-entry) is deleted. Needs a portal session. Never fatal.
 stt_sync_owui() {
-  local OWUI_ERR=''
-  stt_enabled || return 0
+  local OWUI_ERR='' tmp code entry="$STATE_DIR/stt-owui-entry"
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || return 0
+  if ! stt_enabled; then
+    [ -e "$entry" ] || { rm -f "$STATE_DIR/stt-owui-pending"; return 0; }
+    tmp="$(mktemp)"; code="$(_owui_post /api/v1/models/model/delete '{"id":"stt"}' "$tmp")"; rm -f "$tmp"
+    case "$code" in
+      200 | 404) rm -f "$entry" "$STATE_DIR/stt-owui-pending" ;;
+      *) warn "Open WebUI: could not remove the speech-to-text model entry (HTTP $code) — ./stack up retries"
+         mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-pending" ;;
+    esac
+    return 0
+  fi
   if owui_upsert_model stt "Speech to text" "Speech to text" "$(stt_describe) · voice input and calls" '[{"name":"Speech to text"}]' true
-  then rm -f "$STATE_DIR/stt-owui-pending"
+  then mkdir -p "$STATE_DIR"; : > "$entry"; rm -f "$STATE_DIR/stt-owui-pending"
   else warn "Open WebUI: could not hide the speech-to-text model ($OWUI_ERR) — it may show in the model picker; ./stack stt set retries"; fi
 }
 
 # stt_after_up — ./stack up, inside its portal session: the sync ./stack stt could not do while the stack was stopped
 stt_after_up() { [ ! -e "$STATE_DIR/stt-owui-pending" ] || stt_sync_owui || true; }
+
+# stt_up_hook — ./stack up, before compose: STT_* edited by hand in .env take effect. Keeps OWUI_STT_ENGINE in
+# step and, when the rendered LiteLLM config does not match (stt entry missing, stale or left over), re-renders
+# it and returns 0 (the caller then recreates a running LiteLLM); 1 = nothing changed.
+stt_up_hook() {
+  local cfg="$STACK_DIR/litellm/config.yaml" cur want
+  [ -f "$cfg" ] || return 1
+  stt_sync_env
+  cur="$(cat "$cfg")"
+  if stt_enabled; then
+    want="$(stt_yaml)"
+    case "$cur" in *"$want"*) return 1 ;; esac
+  else
+    case "$cur" in *'model_name: "stt"'*) ;; *) return 1 ;; esac
+  fi
+  render_config "$(_enabled_or_all)"
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-pending"
+  log "speech-to-text settings in .env changed — LiteLLM config updated"
+  return 0
+}
 
 # _stt_apply — after set/remove: re-render, recreate LiteLLM (new model, new STT_API_KEY) and Open WebUI (new
 # engine), hide the model and restore the budget banner (Open WebUI keeps it in memory only).
@@ -204,7 +245,7 @@ _stt_apply() {
   fi
   render_config "$(_enabled_or_all)"
   if [ -z "$(dc ps -q litellm 2>/dev/null)" ]; then
-    ! stt_enabled || { mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-pending"; }
+    mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-pending"   # hide (or remove) the Open WebUI entry at ./stack up
     log "saved — the stack is stopped; ./stack up applies it"; return 0
   fi
   run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
@@ -222,11 +263,13 @@ cmd_stt() {
     set)
       # An explicit command: here STT_PROVIDER / STT_API_KEY / STT_MODEL from the environment are the documented
       # non-interactive input.
+      stack_lock stt   # lib/lock.sh: not while an update/setup/restore changes the stack
       p="${2:-${STT_PROVIDER:-}}"; m="${3:-${STT_MODEL:-}}"
       [ -n "$p" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && p="$(ask "Speech-to-text provider (openai/groq)" "openai")"; } || true
       valid_stt_provider "$p" || die "usage: ./stack stt set openai|groq [model] — the provider must be openai or groq"
       [ -z "$m" ] || stt_row "$p" "$m" >/dev/null || die "'$m' is not a $(stt_provider_label "$p") speech-to-text model: $(stt_models_of "$p")"
       key="${STT_API_KEY:-}"
+      [ -z "$key" ] || log "using STT_API_KEY from your environment"
       [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(ask_secret "$(stt_provider_label "$p") API key (hidden)")"; } ||
         die "no key: export STT_API_KEY or run this in a terminal"
       [ -n "$key" ] || die "no key entered — nothing changed"
@@ -236,6 +279,7 @@ cmd_stt() {
       _stt_apply ;;
     remove)
       [ -n "$(stt_provider)$(get_env STT_API_KEY)$(get_env STT_MODEL)" ] || { log "speech-to-text is not set — nothing to remove"; return 0; }
+      stack_lock stt
       p="$(stt_provider)"
       unset_env STT_PROVIDER; unset_env STT_API_KEY; unset_env STT_MODEL
       stt_sync_env

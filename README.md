@@ -102,11 +102,12 @@ password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Tools can us
   banner says so (red at 100%).
 - **Knowledge:** Workspace → Knowledge to create a knowledge base and upload documents; type `#` in a chat to
   attach one.
-- **Voice:** the microphone uses your **browser's** speech recognition and read-aloud uses your system's
-  voices. Bedrock has no speech-to-text model, so this runs outside the stack: Chrome and Edge send dictated
-  audio to Google or Microsoft (Safari can work on-device). If that's not acceptable, don't use the
-  microphone button. Voice **calls** (the sound-wave button) need a speech-to-text service: see
-  [Optional: voice calls](#optional-voice-calls-speech-to-text).
+- **Voice:** read-aloud uses your system's voices. Unless you turn on
+  [server speech-to-text](#optional-voice-calls-speech-to-text), the microphone uses your **browser's** speech
+  recognition: Bedrock has no speech-to-text model, so this runs outside the stack, and Chrome and Edge send
+  dictated audio to Google or Microsoft (Safari can work on-device). If that's not acceptable, don't use the
+  microphone button. Voice **calls** (the sound-wave button) work only with server speech-to-text on; then
+  the microphone uses it too.
 
 Settings changed in Open WebUI's admin panel revert at restart by design: `.env` and setup own the
 configuration.
@@ -295,7 +296,8 @@ can add an **OpenAI** or **Groq** key for speech-to-text; it is **off unless you
 Setup also asks once. Prices: OpenAI `gpt-4o-mini-transcribe` $0.003 per minute of audio (default),
 Groq `whisper-large-v3-turbo` $0.0007 per minute. Transcriptions go through LiteLLM with Open WebUI's key, so
 they count on the `open-webui` budget and in Home's and `./stack costs`' spend (not in Chat's per-answer
-cost line). With it on, the microphone uses it too, so dictation also works in Firefox and in installed or
+cost line). Groq bills at least 10 s per request and a call sends each utterance separately, so Groq's bill
+can be 2–5× what LiteLLM records (still about $0.0001 per utterance); OpenAI bills the actual length. With it on, the microphone uses it too, so dictation also works in Firefox and in installed or
 home-screen web apps; answers in a call are read aloud by your browser's voices.
 **Privacy:** your recorded speech goes to OpenAI or Groq. Details, and why Bedrock's Voxtral models are not an
 option yet: [docs/voice.md](docs/voice.md).

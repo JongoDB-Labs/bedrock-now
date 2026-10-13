@@ -751,6 +751,8 @@ cmd_up() {
   before="$(config_prices_line)"
   openrouter_up_hook   # optional; refreshes OpenRouter models/prices when a key is set
   [ "$(config_prices_line)" = "$before" ] || repriced=1
+  # lib/stt.sh: STT_* edited by hand in .env — re-renders, and a running LiteLLM must pick the change up
+  if stt_up_hook && [ -n "$(dc ps -q --status running litellm 2>/dev/null)" ]; then restart=1; fi
   if reprice_litellm_config; then
     repriced=1
     [ -z "$(dc ps -q --status running litellm 2>/dev/null)" ] || restart=1

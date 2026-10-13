@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2016  # expected output holds literal $ prices
+# shellcheck disable=SC2016,SC2329  # literal $ prices in expected output; stubs are called by the code under test
 # Optional server speech-to-text (lib/stt.sh): Open WebUI's voice Call needs it. Off by default; on, a "stt"
 # model in LiteLLM sends audio to OpenAI or Groq with the key from .env, and Open WebUI uses LiteLLM for STT.
 . "$STACK_DIR/lib/commands.sh"   # also sources lib/stt.sh
@@ -435,4 +435,112 @@ test_env_example_documents_stt() {
   assert_contains "$e" "STT_PROVIDER="
   assert_contains "$e" "STT_API_KEY="
   assert_contains "$e" "STT_MODEL="
+}
+
+# --- review follow-ups ---
+
+test_validate_key_403_scope_is_accepted_with_a_note() {
+  _stub_curl_auth
+  CODE=403 BODY='{"error":{"message":"You have insufficient permissions for this operation. Missing scopes: api.model.read. Check that ... if you are using a restricted API key, that it has the necessary scopes."}}' \
+    stt_validate_key openai "$OKEY"
+  assert_contains "$STT_NOTE" "cannot list models"
+  assert_contains "$STT_NOTE" "first use"
+  # any other 403 is still a rejection
+  if CODE=403 BODY='{"error":{"message":"Country, region, or territory not supported"}}' stt_validate_key openai "$OKEY"; then return 1; fi
+  assert_contains "$STT_ERR" "rejected the key (HTTP 403)"
+  assert_eq "$STT_NOTE" ""
+  # and a plain 200 has no note
+  stt_validate_key openai "$OKEY"
+  assert_eq "$STT_NOTE" ""
+}
+
+test_cmd_set_with_scoped_key_says_so_and_stores() {
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth
+  _stt_apply() { :; }
+  out="$(CODE=403 BODY='{"error":{"message":"Missing scopes: api.model.read"}}' STT_API_KEY="$OKEY" cmd_stt set openai 2>&1)"
+  assert_contains "$out" "cannot list models"
+  assert_eq "$(get_env STT_API_KEY)" "$OKEY"
+}
+
+test_cmd_set_logs_a_key_from_the_environment() {
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth
+  _stt_apply() { :; }
+  out="$(STT_API_KEY="$OKEY" cmd_stt set openai 2>&1)"
+  assert_contains "$out" "using STT_API_KEY from your environment"
+  assert_not_contains "$out" "$OKEY"
+}
+
+test_cmd_set_and_remove_take_the_stack_lock() {
+  body="$(sed -n '/^cmd_stt() {/,/^}/p' "$STACK_DIR/lib/stt.sh")"
+  assert_eq "$(printf '%s\n' "$body" | grep -c 'stack_lock stt')" 2
+  # a running update holds the lock: nothing changes
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth
+  stack_lock_holder() { echo "4242 update"; }
+  mkdir -p "$STATE_DIR/lock"
+  if out="$( (STT_API_KEY="$OKEY" cmd_stt set openai) 2>&1)"; then return 1; fi
+  assert_contains "$out" "another ./stack update is running"
+  assert_eq "$(cat "$ENV_FILE")" "X=1"
+}
+
+test_remove_deletes_only_our_owui_entry() {
+  printf 'STT_PROVIDER=openai\nSTT_API_KEY=%s\nOPENWEBUI_API_KEY=sk-o\n' "$OKEY" > "$ENV_FILE"
+  owui_upsert_model() { echo UPSERT >> "$TMP/seq"; }
+  _owui_post() { echo "POST $1 $2" >> "$TMP/seq"; echo 200; }
+  stt_sync_owui
+  [ -e "$STATE_DIR/stt-owui-entry" ]
+  # off: our entry (marker) is deleted once
+  printf 'OPENWEBUI_API_KEY=sk-o\n' > "$ENV_FILE"
+  stt_sync_owui; stt_sync_owui
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" 'UPSERT;POST /api/v1/models/model/delete {"id":"stt"};'
+  [ ! -e "$STATE_DIR/stt-owui-entry" ]
+}
+
+test_apply_after_remove_cleans_up_open_webui() {
+  STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; : > "$TMP/litellm/config.yaml"
+  printf 'LITELLM_MASTER_KEY=sk-m\n' > "$ENV_FILE"
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-entry"
+  render_config() { :; }; run_phase() { :; }
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  portal_session_or_die() { :; }; portal_session_end() { :; }; sync_budget_banner() { :; }
+  stt_sync_owui() { echo SYNC >> "$TMP/seq"; }
+  _stt_apply 2>/dev/null
+  assert_eq "$(cat "$TMP/seq")" SYNC
+  # stopped: ./stack up does it later
+  dc() { :; }; : > "$TMP/seq"
+  _stt_apply 2>/dev/null
+  [ -e "$STATE_DIR/stt-owui-pending" ]
+}
+
+test_up_hook_rerenders_after_hand_edits() {
+  STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"
+  printf 'model_list:\n  - model_name: "big"\n' > "$TMP/litellm/config.yaml"
+  printf 'STT_PROVIDER=openai\nSTT_API_KEY=%s\n' "$OKEY" > "$ENV_FILE"
+  render_config() { echo RENDER >> "$TMP/seq"; stt_yaml >> "$TMP/litellm/config.yaml"; }
+  stt_up_hook 2>/dev/null
+  assert_eq "$(cat "$TMP/seq")" RENDER
+  assert_eq "$(get_env OWUI_STT_ENGINE)" openai
+  [ -e "$STATE_DIR/stt-owui-pending" ]
+  # in step: nothing to do
+  if stt_up_hook 2>/dev/null; then return 1; fi
+  assert_eq "$(cat "$TMP/seq")" RENDER
+  # turned off by hand: re-rendered without it, engine back to web
+  printf 'X=1\n' > "$ENV_FILE"
+  render_config() { echo RENDER2 >> "$TMP/seq"; printf 'model_list:\n' > "$TMP/litellm/config.yaml"; }
+  stt_up_hook 2>/dev/null
+  assert_contains "$(cat "$TMP/seq")" RENDER2
+  assert_eq "$(get_env OWUI_STT_ENGINE)" ""
+  # no config yet (before the first setup): nothing
+  rm -f "$TMP/litellm/config.yaml"
+  if stt_up_hook 2>/dev/null; then return 1; fi
+  assert_contains "$(sed -n '/^cmd_up() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "stt_up_hook"
+}
+
+test_docs_mention_groq_minimum_and_scoped_keys() {
+  v="$(cat "$STACK_DIR/docs/voice.md")"
+  assert_contains "$v" "at least 10 seconds"
+  assert_contains "$v" "Restricted OpenAI keys"
+  assert_contains "$v" "twice"
+  assert_contains "$v" "mistral.voxtral-small-24b-2507"
+  r="$(cat "$STACK_DIR/README.md")"
+  assert_contains "$r" "Groq bills at least 10 s"
 }

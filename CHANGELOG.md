@@ -16,7 +16,10 @@ All notable changes to bedrock-now are documented here. The format follows
   spend. The key is checked with the provider first, stored in `.env` (600) and passed to LiteLLM only; shell
   `STT_*` variables are ignored unless you opt in. With it on, the microphone uses it too (dictation then works
   in Firefox and installed/home-screen apps); calls read answers with the browser's voices. Off (the default),
-  nothing changes. See docs/voice.md.
+  nothing changes. `STT_*` edited by hand in `.env` take effect at `./stack up`; restricted OpenAI keys that
+  cannot list models are accepted with a note. Groq bills at least 10 s per request, so for Groq the recorded
+  spend is approximate (its bill can be 2–5× higher, still about $0.0001 per utterance). See docs/voice.md,
+  which also explains why Bedrock's Mistral Voxtral models are not an option yet.
 - **Precise image cleanup.** `./stack update` records the images this install uses before it changes anything,
   keeps **one** previous version of each image it replaces (so going back needs no download; local builds keep
   theirs as `<project>/portal:previous` and `<project>/shared-mcp:previous`) and, once the new version runs,

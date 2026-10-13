@@ -19,7 +19,11 @@ if you use it).
 - **Later:** `./stack stt set openai` or `./stack stt set groq` (asks for the key, or reads `STT_API_KEY`
   from the environment). Pick another model with `./stack stt set openai gpt-4o-transcribe`. The key is
   checked with the provider first (`GET /v1/models`, free); a rejected key is not stored. `./stack stt status`
-  shows what is on; `./stack stt remove` goes back to browser speech.
+  shows what is on; `./stack stt remove` goes back to browser speech (and removes the hidden `stt` entry from
+  Open WebUI).
+- **Restricted OpenAI keys** (project keys with limited permissions) need write access to the **audio**
+  endpoints (`/v1/audio/transcriptions`); *Models: Read* is optional. Without it the check answers HTTP 403
+  "missing scopes": bedrock-now then accepts the key with a note, and transcription is tested on first use.
 - **Without a terminal:** `STT_PROVIDER=openai STT_API_KEY=… ./stack stt set`, or at setup
   `BEDROCK_NOW_STT_FROM_ENV=1 STT_PROVIDER=… STT_API_KEY=… ./stack setup --yes`.
 - **Only `.env` counts.** `STT_*` variables that happen to be in your shell never turn it on: `./stack`
@@ -41,8 +45,12 @@ if you use it).
 | groq | `whisper-large-v3` | $0.0018 ($0.11 per hour) |
 
 These are LiteLLM's prices for these models (the price map in the pinned LiteLLM image, which matches the
-providers' price pages). Groq bills at least 10 seconds per request, so many very short utterances cost a
-little more than LiteLLM records.
+providers' price pages).
+
+**Groq bills at least 10 seconds per request.** A call sends each utterance separately (typically 2–4 seconds),
+so Groq's bill can be 2–5× what LiteLLM records (about $0.0001 per utterance instead of $0.00003). For Groq the
+spend in `./stack costs` and the `open-webui` budget are therefore approximate; the totals are still tiny
+(an hour of talking stays well under $0.25). OpenAI bills the actual length.
 
 ## How it works
 
@@ -87,8 +95,8 @@ LiteLLM 1.105 and Open WebUI v0.12 slim:
 
 A Bedrock option would need a small converter in the stack (browser audio → WAV/MP3, then Voxtral Small
 through LiteLLM's Bedrock pass-through, which does record spend on the calling key). Until then, OpenAI and
-Groq are the choices. If you want Voxtral later, ask your AWS admin to enable Mistral Voxtral Small in
-Bedrock model access.
+Groq are the choices. If you want Voxtral later, make sure your AWS account (and any organization SCPs or IAM
+policies) allow invoking `mistral.voxtral-small-24b-2507` in your region.
 
 ## Troubleshooting
 
@@ -96,5 +104,8 @@ Bedrock model access.
   keeps them. Settings → Audio → Speech-to-Text Engine → *Default*.
 - **Call starts but nothing is transcribed:** check `./stack stt status` and `./stack logs litellm` (a
   rejected or out-of-credit key shows there). `./stack stt set …` replaces the key.
+- **A failed transcription shows up twice** in `./stack logs litellm` and the LiteLLM UI: Open WebUI retries
+  a failed transcription once (without a language hint). Only successful transcriptions are billed.
+- **Edited `STT_*` in `.env` by hand:** `./stack up` (or `./stack setup`) applies it.
 - **Call asks for the microphone and fails:** browsers allow the microphone only on `https://` or
   `localhost` origins; `http://*.localhost` (the default portal) works.
