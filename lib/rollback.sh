@@ -28,6 +28,17 @@ update_record_write() {
 # update_record_done — after a successful update
 update_record_done() { _record_set result "done"; _record_set to_version "$(installed_version)"; }
 
+# update_unfinished -> 0 when the last ./stack update moved the code but never finished (result=running and HEAD is
+# no longer the commit it started from): its image pull or setup failed, or it was stopped. ./stack update finishes it.
+update_unfinished() {
+  local from head
+  [ "$(_record_get result)" = running ] || return 1
+  from="$(_record_get from)"; case "$from" in '' | *[!0-9a-f]*) return 1 ;; esac
+  [ -e "$STACK_DIR/.git" ] || return 1
+  head="$(git -C "$STACK_DIR" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
+  [ "$head" != "$(git -C "$STACK_DIR" rev-parse -q --verify "$from^{commit}" 2>/dev/null || echo "$from")" ]
+}
+
 # _rollback_checkout FROM BRANCH — the code as it was before the update (branch users stay on their branch)
 _rollback_checkout() {
   if [ -n "$2" ]; then git -C "$STACK_DIR" switch --quiet -C "$2" "$1"

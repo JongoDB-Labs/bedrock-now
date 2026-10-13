@@ -1284,18 +1284,35 @@ update_checkout() {
 # The re-exec gets BEDROCK_NOW_CODE_UPDATED=1, the backup dir, the previous commit and branch, so a later failure
 # can tell you exactly how to go back. Nothing new (update_nothing_new): it says so and stops before the backup
 # (exit 0); --force runs every step anyway (re-runs setup: model probe, LiteLLM restart, smoke test).
+# An update that moved the code but did not finish (update_unfinished: pull or setup failed, or it was stopped) is
+# finished first: images and setup, with no new backup or snapshot, so ./stack rollback keeps going back to the
+# version and backup it recorded (--to moves the code on first, e.g. to a fix; BEDROCK_NOW_UPDATE_FINISHING=1).
 cmd_update() {
-  local to='' backup from='' branch='' hint moved=0 force=0 yes=() usage="usage: ./stack update [--to <tag|branch>] [--force]"
+  local to='' backup from='' branch='' hint moved=0 force=0 finishing=0 yes=() usage="usage: ./stack update [--to <tag|branch>] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) [ -n "${2:-}" ] || die "$usage"; to="$2"; shift 2 ;;
+      --to) case "${2:-}" in '' | -*) die "$usage" ;; esac; to="$2"; shift 2 ;;
       --force) force=1; shift ;;
       *) die "$usage" ;;
     esac
   done
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   stack_lock update   # lib/lock.sh: one update/rollback/clean/restore/setup at a time (kept across the re-exec)
-  if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
+  [ "${ASSUME_YES:-0}" != 1 ] || yes=(--yes)
+  if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ] && update_unfinished; then
+    _require_clean_tree
+    finishing=1; moved=1
+    from="$(_record_get from)"; branch="$(_record_get branch)"; backup="$(_record_get backup)"
+    log "update: the last update (from $(_record_get from_version)) did not finish — finishing it; no new backup: ./stack rollback still goes back with $backup"
+    hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
+    if [ -n "$to" ]; then
+      log "update: 2/4 code (git)"
+      update_checkout "$to"
+      [ "$CODE_CHANGED" != 1 ] ||
+        exec env BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" \
+          BEDROCK_NOW_UPDATE_FROM="$from" BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
+    fi
+  elif [ "${BEDROCK_NOW_CODE_UPDATED:-0}" != 1 ]; then
     _require_clean_tree
     if [ "$force" = 0 ] && update_nothing_new "$to"; then
       log "already on $(installed_version) — nothing to update (./stack update --force re-runs setup)"
@@ -1310,20 +1327,19 @@ cmd_update() {
     update_checkout "$to"
     if [ "$CODE_CHANGED" = 1 ]; then
       # Continue in a fresh process so images and setup run with the NEW scripts.
-      [ "${ASSUME_YES:-0}" != 1 ] || yes=(--yes)
       exec env BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_BACKUP="$backup" BEDROCK_NOW_UPDATE_FROM="$from" \
         BEDROCK_NOW_UPDATE_BRANCH="$branch" "$STACK_DIR/stack" update ${yes[@]+"${yes[@]}"}
     fi
     hint="your pre-update backup is $backup (./stack restore $backup)"
   else
     backup="${BEDROCK_NOW_UPDATE_BACKUP:-}"; from="${BEDROCK_NOW_UPDATE_FROM:-}"; branch="${BEDROCK_NOW_UPDATE_BRANCH:-}"
-    moved=1
+    moved=1; [ "${BEDROCK_NOW_UPDATE_FINISHING:-0}" != 1 ] || finishing=1
     log "update: 1/4 backup and 2/4 code done (backup: ${backup:-none})"
     hint="the code was updated; to go back: ./stack rollback (or by hand: $(_rollback_cmd "$from" "$branch") && ./stack restore $backup)"
   fi
   # Only an update that moved the code is a new version: an update with nothing new keeps the rollback record
-  # and the previous version's images exactly as they are.
-  if [ "$moved" = 1 ]; then
+  # and the previous version's images exactly as they are. Finishing an update: its record and snapshot stand.
+  if [ "$moved" = 1 ] && [ "$finishing" = 0 ]; then
     # What ./stack rollback needs (lib/rollback.sh), recorded before anything but the code has changed.
     update_record_write "$from" "$branch" "$backup"
     # The images in use now (the old version's): kept after the update as the one previous version (lib/images.sh).
@@ -1338,6 +1354,7 @@ cmd_update() {
     -u OPENROUTER_API_KEY -u OPENROUTER_MODELS -u OPENROUTER_MAX_MODELS -u BEDROCK_NOW_OPENROUTER_FROM_ENV \
     -u STT_PROVIDER -u STT_API_KEY -u STT_MODEL -u BEDROCK_NOW_STT_FROM_ENV \
     -u COMPOSE_PROJECT_NAME -u BEDROCK_NOW_CODE_UPDATED -u BEDROCK_NOW_UPDATE_BACKUP -u BEDROCK_NOW_UPDATE_FROM -u BEDROCK_NOW_UPDATE_BRANCH \
+    -u BEDROCK_NOW_UPDATE_FINISHING \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
   [ "$moved" = 1 ] || { log "update: done (no new version; ./stack rollback still goes back to the version before the last real update)"; return 0; }

@@ -446,7 +446,9 @@ and the `claude-bedrock` launch line mention it too (they read the portal's last
 own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
 
 The update first asks git whether there is anything new. If not, it says so (`already on v0.3.0 — nothing to
-update`) and stops: no backup, no restart, no Bedrock calls. `./stack update --force` runs every step anyway.
+update`) and stops: no backup, no restart, no Bedrock calls. `./stack update --force` runs every step anyway. If
+the last update moved the code but did not finish (its image pull or setup failed), the next `./stack update`
+finishes it, keeping that update's backup and rollback point.
 Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
@@ -476,10 +478,11 @@ target or the kept images.
 download) and removes the version before that, then says what it freed, e.g. `freed 3.1 GB (old litellm
 1.104.0, open-webui v0.11.2-slim)`. It only removes images this install used, never one that any container
 (of any project) or another bedrock-now folder still needs, and never runs a global `docker … prune`. Its own
-leftover builds (untagged images Compose labelled with this project) go too. `./stack clean` does the same on
-demand: it lists what it would remove and asks first (`--yes` skips the question). `./stack status` shows how
-much disk the images, data volumes and backups take, and how much `./stack clean` would free when there is
-something to free. Backups are unchanged: the newest 5 automatic ones are kept, and the one `./stack rollback`
+leftover builds (untagged images Compose labelled with this project) go too; a current `<project>/…:local` build
+never does, even when its container is stopped. If Docker cannot list what is in use, nothing is removed.
+`./stack clean` does the same on demand: it lists what it would remove and asks first (`--yes` skips the
+question). `./stack status` shows how much disk the images, data volumes and backups take, and how much
+`./stack clean` would free when there is something to free. Backups are unchanged: the newest 5 automatic ones are kept, and the one `./stack rollback`
 restores is never pruned, however old.
 
 **Updating from v0.1.x:** Open WebUI and the RustFS console no longer have their own ports (setup removes

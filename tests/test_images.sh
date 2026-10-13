@@ -192,6 +192,49 @@ test_listing_every_image_never_widens_what_is_removed() {
   assert_contains "$(cat "$TMP/dcalls")" "rm D1"
 }
 
+test_current_local_builds_are_never_offered() {
+  # :local is always some service's current build. After ./stack down no container protects it: caddy-dns (the
+  # own-domain overlay's xcaddy build, a networked rebuild) and stt (off, or not in this version's compose.yaml)
+  # must still never be removed or shown as "(previous build)".
+  _setup
+  printf 'services:\n  caddy:\n    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/caddy-dns:local\n' > "$STACK_DIR/compose.domain.yaml"
+  _store CD1 bn-t/caddy-dns:local 120MB bn-t
+  _store S1 bn-t/stt:local 150MB bn-t
+  _store X1 bn-t/shared-mcp:old 300MB bn-t
+  mkdir -p "$STATE_DIR/images"; printf 'CD1\tbn-t/caddy-dns:local\n' > "$STATE_DIR/images/current.tsv"   # recorded once
+  assert_eq "$(clean_plan | cut -f1 | tr '\n' ' ')" "X1 "
+  out="$(ASSUME_YES=1 cmd_clean 2>&1)"
+  assert_not_contains "$out" "previous build"
+  assert_eq "$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')" "C1 CD1 L1 P1 S1 "
+  _fake_update 2 L2 P2 2>/dev/null   # the overlay's build stays through an update's cleanup too
+  assert_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "CD1"
+}
+
+test_cleanup_removes_nothing_when_it_cannot_tell_what_is_in_use() {
+  _setup
+  _fake_update 2 L2 P2 2>/dev/null
+  _store D1 '<none>' 200MB bn-t
+  eval "_ok_$(declare -f docker)"
+  docker() { case "$*" in "ps -aq --no-trunc") return 1 ;; esac; _ok_docker "$@"; }   # e.g. the daemon went away
+  if out="$( (ASSUME_YES=1 cmd_clean) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not list the images in use"
+  assert_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "D1"
+  assert_not_contains "$(disk_line)" "./stack clean"
+  # an update's cleanup: nothing removed, and the version it replaced stays recorded with the one before it
+  _fake_update 3 L3 P3 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "could not list the images in use"
+  assert_eq "$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')" "C1 D1 L1 L2 L3 P1 P2 P3 "
+  assert_eq "$(cut -f1 "$STATE_DIR/images/previous.tsv" | sort -u | tr '\n' ' ')" "C1 L1 L2 P1 P2 "
+  docker() { _ok_docker "$@"; }   # the next update removes both older versions
+  _fake_update 4 L4 P4 2> "$TMP/err"
+  assert_eq "$(cut -f1 "$TMP/imgs" | sort -u | tr '\n' ' ')" "C1 L3 L4 P3 P4 "
+  # the same when the other checkouts cannot be listed
+  docker() { case "$*" in "volume ls "*) return 1 ;; esac; _ok_docker "$@"; }
+  _store D2 '<none>' 200MB bn-t
+  if (ASSUME_YES=1 cmd_clean) > /dev/null 2>&1; then return 1; fi
+  assert_contains "$(cut -f1 "$TMP/imgs" | tr '\n' ' ')" "D2"
+}
+
 test_an_image_docker_still_needs_is_kept_and_said() {
   _setup
   _fake_update 2 L2 P2 2>/dev/null

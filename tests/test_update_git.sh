@@ -216,6 +216,14 @@ test_update_force_reruns_setup_when_nothing_is_new() {
   assert_contains "$(cat "$TMP/err")" "no new version"
   if out="$( (cmd_update --bogus) 2>&1)"; then return 1; fi
   assert_contains "$out" "usage: ./stack update [--to <tag|branch>] [--force]"
+  : > "$TMP/calls"
+  for bad in "--to --force" "--to -x" "--to"; do
+    # shellcheck disable=SC2086  # split on purpose
+    if out="$( (cmd_update $bad) 2>&1)"; then echo "accepted: $bad" >&2; return 1; fi
+    assert_contains "$out" "usage: ./stack update" || return 1
+  done
+  if out="$( (cmd_update --to '') 2>&1)"; then return 1; fi
+  assert_eq "$(cat "$TMP/calls")" ""   # refused before anything ran
 }
 
 test_update_cannot_tell_so_it_runs_as_before() {

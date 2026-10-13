@@ -19,8 +19,10 @@ _fixture() { # origin v0.2.1 -> v0.3.0; STACK_DIR = a clone updated to v0.3.0, i
   docker() { echo "docker $*" >> "$TMP/docker"; case "$1 $2" in "image inspect") return 0 ;; esac; return 0; }
   project_refs() { :; }; snapshot_refs() { printf 'L2\tghcr.io/berriai/litellm:2\n'; }
 }
-_write_stack() { # a ./stack that says which version ran which command (and, in $CALLS.env, with which COMPOSE_PROGRESS)
-  printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\necho "%s $* progress=${COMPOSE_PROGRESS:-unset}" >> "$CALLS.env"\nexit ${FAKE_RC:-0}\n' "$2" "$2" > "$1/stack"
+_write_stack() { # a ./stack that says which version ran which command (and, in $CALLS.env, with which environment)
+  printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\necho "%s $* progress=${COMPOSE_PROGRESS:-unset}" >> "$CALLS.env"\n' "$2" "$2" > "$1/stack"
+  printf 'echo "%s $* finishing=${BEDROCK_NOW_UPDATE_FINISHING:-unset} from=${BEDROCK_NOW_UPDATE_FROM:-} backup=${BEDROCK_NOW_UPDATE_BACKUP:-}" >> "$CALLS.update"\n' "$2" >> "$1/stack"
+  printf 'exit ${FAKE_RC:-0}\n' >> "$1/stack"
   chmod +x "$1/stack"
 }
 _record() { update_record_write "$OLD" "${1:-}" backups/20261012-000000-auto; }
@@ -72,6 +74,12 @@ test_rollback_shows_composes_output_when_verbose() {
   _fixture; _record; update_record_done
   BEDROCK_NOW_VERBOSE=1 ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
   assert_eq "$(tr '\n' '|' < "$CALLS.env")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes progress=unset|old up --yes progress=unset|"
+}
+
+test_rollback_keeps_your_own_compose_progress() {
+  _fixture; _record; update_record_done
+  COMPOSE_PROGRESS=plain ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_eq "$(tr '\n' '|' < "$CALLS.env")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes progress=plain|old up --yes progress=plain|"
 }
 
 test_rollback_works_after_an_update_that_failed_half_way() {
@@ -184,6 +192,61 @@ test_repeated_updates_with_nothing_new_keep_the_rollback_backup() {
   ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
   assert_eq "$(git -C "$STACK_DIR" rev-parse HEAD)" "$OLD"
   assert_contains "$(cat "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
+}
+
+# --- an update that moved the code but did not finish (pull or setup failed, or it was stopped) ---
+
+_finish_stubs() { # logs every step ./stack update takes; the fixture's ./stack (the new version) logs setup
+  _backup_named() { echo BACKUP >> "$TMP/steps"; LAST_BACKUP=backups/20261013-000000-auto; }
+  prune_auto_backups() { echo PRUNE >> "$TMP/steps"; }
+  update_checkout() { echo "CHECKOUT ${1:-}" >> "$TMP/steps"; CODE_CHANGED=0; }
+  dc() { echo "dc $1" >> "$TMP/steps"; }
+  images_snapshot_before() { echo SNAPSHOT >> "$TMP/steps"; }; images_after_update() { echo AFTER >> "$TMP/steps"; }
+}
+
+test_rerunning_an_unfinished_update_finishes_it() {
+  _fixture; _record; _finish_stubs   # result=running, HEAD already at v0.3.0 (the newest release)
+  before="$(cat "$(update_record_file)")"
+  ASSUME_YES=1 cmd_update > /dev/null 2> "$TMP/err"
+  # no new backup (it would be of the half-updated state) and no new snapshot: rollback keeps its target
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "dc pull;AFTER;"
+  assert_eq "$(cat "$CALLS")" "new setup --yes"
+  assert_contains "$(cat "$TMP/err")" "the last update (from v0.2.1) did not finish — finishing it"
+  assert_contains "$(cat "$TMP/err")" "backups/20261012-000000-auto"
+  assert_not_contains "$(cat "$TMP/err")" "nothing to update"
+  r="$(cat "$(update_record_file)")"
+  assert_contains "$r" "result=done"
+  assert_contains "$r" "to_version=v0.3.0"
+  assert_eq "$(printf '%s\n' "$r" | grep -v '^result=\|^to_version=')" "$(printf '%s\n' "$before" | grep -v '^result=')"
+  # finished: the next run has nothing to do
+  : > "$TMP/steps"; : > "$CALLS"
+  ASSUME_YES=1 cmd_update 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "nothing to update"
+  assert_eq "$(cat "$TMP/steps")" ""
+}
+
+test_an_unfinished_update_that_fails_again_stays_unfinished() {
+  _fixture; _record; _finish_stubs
+  if out="$( (FAKE_RC=3 ASSUME_YES=1 cmd_update) 2>&1)"; then return 1; fi
+  assert_contains "$out" "./stack rollback"
+  assert_contains "$(cat "$(update_record_file)")" "result=running"
+  assert_not_contains "$(cat "$TMP/steps")" "BACKUP"
+}
+
+test_finishing_with_to_moves_on_and_keeps_the_rollback_point() {
+  _fixture; _record; _finish_stubs
+  update_checkout() { echo "CHECKOUT ${1:-}" >> "$TMP/steps"; CODE_CHANGED=1; }   # e.g. a fix pushed meanwhile
+  (ASSUME_YES=1 cmd_update --to main) 2>/dev/null; rm -rf "$STATE_DIR/lock"   # re-executes ./stack
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "CHECKOUT main;"
+  assert_eq "$(cat "$CALLS.update")" "new update --yes finishing=1 from=$OLD backup=backups/20261012-000000-auto"
+  # the new code then finishes without recording or snapshotting again
+  : > "$TMP/steps"; : > "$CALLS.update"; before="$(cat "$(update_record_file)")"
+  BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FINISHING=1 BEDROCK_NOW_UPDATE_FROM="$OLD" \
+    BEDROCK_NOW_UPDATE_BACKUP=backups/20261012-000000-auto cmd_update > /dev/null 2>&1
+  assert_eq "$(tr '\n' ';' < "$TMP/steps")" "dc pull;AFTER;"
+  assert_contains "$(cat "$(update_record_file)")" "result=done"
+  assert_contains "$(cat "$(update_record_file)")" "$(printf '%s\n' "$before" | grep '^at=')"
+  assert_eq "$(cat "$CALLS.update")" "new setup --yes finishing=unset from= backup="   # never passed on to setup
 }
 
 test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4

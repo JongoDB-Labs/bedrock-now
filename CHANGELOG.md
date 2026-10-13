@@ -212,7 +212,14 @@ All notable changes to bedrock-now are documented here. The format follows
   origin, or `--to`) is the commit already checked out, it prints `already on v0.3.0 — nothing to update
   (./stack update --force re-runs setup)` and exits 0: no backup, no setup, no model probe, no LiteLLM restart
   (that took ~150 s and ~$0.0004). `--force` runs every step as before. The one-click helper ends such an update as
-  "Already up to date (v0.3.0): nothing to update" instead of "Updated to", and Home no longer asks for a reload.
+  "Already up to date (v0.3.0): nothing to update" instead of "Updated to"; Home then shows no step list and no
+  reload hint. `--to` refuses an empty or option-like value (`--to --force`).
+- **Re-running `./stack update` after one that failed half-way finishes it.** When the last update moved the code
+  but its image pull or setup failed (or it was stopped), the next `./stack update` says so and runs 3/4 images and
+  4/4 setup for the code already checked out, then records the update as done and cleans up as usual. It takes no
+  new backup and keeps the update record, so `./stack rollback` still goes back to the version and backup from
+  before that update; `--to <ref>` moves the code on first (e.g. to a fix) with the same rollback point. Before, it
+  ran setup but left the update unfinished (and, with the check for nothing new, would have stopped there).
 - **After an update to a new version**, `./stack update` ends with a short "What's new" pointer (at most 5 lines):
   voice (on, or how to turn on Bedrock speech-to-text), remote access and the one-click helper while they are off
   (with the command that turns each on), and the release notes link when the new version is a release tag.
@@ -224,7 +231,8 @@ All notable changes to bedrock-now are documented here. The format follows
 - The image cleanup after an update says `old images: nothing to free` (or `old images: freed …`) instead of a
   bare `nothing to free`.
 - The Docker Desktop "Start when you sign in" reminder after setup (and so after every update) appears at most
-  once a week (`.state/docker-autostart-hint`). `./stack serve` still reminds every time.
+  once a week (`.state/docker-autostart-hint`, a time stamp; anything else in it counts as never shown).
+  `./stack serve` still reminds every time.
 - `./stack status` mentions `./stack clean` only when it would free something, with the size (`· old images
   600 MB (./stack clean removes them)`), instead of always appending "(./stack clean frees old images)".
 - The portal's wrong-password message and "Forgot it?" hint name this install's `.env` (`~` for your home) and
@@ -245,6 +253,14 @@ All notable changes to bedrock-now are documented here. The format follows
   (214–312 MB each). The size lookup now lists every image; what may be removed is still only the recorded
   previous-version images, this project's own named images and the untagged builds Compose labelled with this
   project, never one any container uses or another project's.
+- **`./stack clean` (and the size `./stack status` offers) no longer includes current builds.** After `./stack down`
+  no container protects `<project>/caddy-dns:local` (own-domain mode's Caddy, rebuilt with a download) or
+  `<project>/stt:local`, so clean offered them as "(previous build)". A `:local` name is never a candidate now, and
+  the images the compose overlays (`compose.*.yaml`) name are kept like those of `compose.yaml`.
+- **The image cleanup removes nothing when Docker cannot say what is in use.** A failing `docker ps` or
+  `docker volume ls` used to count as "nothing in use". Now `./stack clean` stops with a message, `./stack status`
+  offers nothing, and the cleanup after an update keeps both older versions recorded, so the next update removes
+  them.
 - **Repeated updates could delete the backup `./stack rollback` needs.** Each `./stack update` keeps the newest
   5 automatic backups; the pre-update backup the update record names was not protected, so after a real update
   five more runs (e.g. ones that found nothing new) removed it and rollback stopped with "the pre-update backup …

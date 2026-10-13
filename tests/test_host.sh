@@ -545,6 +545,10 @@ test_docker_autostart_hint_after_setup_at_most_once_a_week() {
   assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop"   # a week later: once more
   printf '%s\n' $(( $(date +%s) + 86400 )) > "$STATE_DIR/docker-autostart-hint"
   assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop"   # a date in the future: shown
+  printf '0%s\n' "$(date +%s)" > "$STATE_DIR/docker-autostart-hint"            # a leading zero is no octal number
+  assert_eq "$(docker_autostart_hint_weekly 2>&1)" ""
+  printf '12x34\n' > "$STATE_DIR/docker-autostart-hint"                         # not a time stamp: shown
+  assert_contains "$(docker_autostart_hint_weekly 2>&1)" "Start Docker Desktop"
   printf '{"AutoStart": true}\n' > "$d/settings-store.json"; rm -f "$STATE_DIR/docker-autostart-hint"
   assert_eq "$(docker_autostart_hint_weekly 2>&1)" ""
   [ ! -e "$STATE_DIR/docker-autostart-hint" ] || { echo "recorded a hint that was not shown" >&2; return 1; }

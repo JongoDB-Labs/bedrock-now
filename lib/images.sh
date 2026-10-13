@@ -77,21 +77,28 @@ EOF
 # _ids FILE... -> the IDs (first column) of snapshot files that exist
 _ids() { local f; for f in "$@"; do [ -f "$f" ] && cut -f1 "$f"; done; return 0; }
 
-# images_used_by_containers -> IDs of the images of every container on this machine (any project, any state)
+# images_used_by_containers -> IDs of the images of every container on this machine (any project, any state).
+# Fails (nothing may be removed then) when Docker cannot say: docker ps fails, or docker inspect twice (a container
+# that goes away between the two calls makes one attempt fail).
 images_used_by_containers() {
-  local ids
-  ids="$(docker ps -aq --no-trunc 2>/dev/null || true)"
-  [ -n "$ids" ] || return 0
-  # shellcheck disable=SC2086  # one argument per container id
-  docker inspect --format '{{.Image}}' $ids 2>/dev/null || true
+  local ids out _
+  for _ in 1 2; do
+    ids="$(docker ps -aq --no-trunc 2>/dev/null)" || return 1
+    [ -n "$ids" ] || return 0
+    # shellcheck disable=SC2086  # one argument per container id
+    if out="$(docker inspect --format '{{.Image}}' $ids 2>/dev/null)"; then printf '%s\n' "$out"; return 0; fi
+  done
+  return 1
 }
 
 # images_of_other_checkouts -> IDs of the images other bedrock-now checkouts' compose.yaml files name (found
 # through their owner markers), so a stopped install never loses an image it will need at its next start
 images_of_other_checkouts() {
-  local me d
+  local me d dirs
   me="$(cd "$STACK_DIR" 2>/dev/null && pwd -P || printf '%s' "$STACK_DIR")"   # same as _real_dir (lib/guard.sh)
-  docker volume ls --filter label=io.bedrock-now.dir --format '{{.Label "io.bedrock-now.dir"}}' 2>/dev/null | sort -u |
+  dirs="$(docker volume ls --filter label=io.bedrock-now.dir --format '{{.Label "io.bedrock-now.dir"}}' 2>/dev/null)" ||
+    return 1   # cannot tell: nothing may be removed
+  printf '%s\n' "$dirs" | sort -u |
     while IFS= read -r d; do
       case "$d" in /*) ;; *) continue ;; esac   # labels are free text: only absolute paths
       [ "$d" != "$me" ] && [ -f "$d/compose.yaml" ] && [ ! -L "$d/compose.yaml" ] || continue
@@ -105,9 +112,19 @@ project_dangling() {
   docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$(project_name)" 2>/dev/null | sort -u
 }
 
-# project_named_images -> "ID<TAB>REF" of the images named after this project (<project>/portal:…, …)
+# project_named_images -> "ID<TAB>REF" of the images named after this project (<project>/portal:…, …), except the
+# :local ones: that name is always some service's current build (also the overlays' caddy-dns, or stt while off)
 project_named_images() {
-  docker image ls --no-trunc --format '{{.ID}}	{{.Repository}}:{{.Tag}}' --filter "reference=$(project_name)/*" 2>/dev/null || true
+  docker image ls --no-trunc --format '{{.ID}}	{{.Repository}}:{{.Tag}}' --filter "reference=$(project_name)/*" 2>/dev/null |
+    awk -F'\t' '$2 !~ /:local$/' || true
+}
+
+# overlay_refs -> the images the compose overlays in this checkout name (compose.<name>.yaml: remote access, own
+# domain), whether or not they are on: kept like the ones compose.yaml names
+overlay_refs() {
+  local f
+  for f in "$STACK_DIR"/compose.*.yaml; do [ -f "$f" ] && compose_refs < "$f"; done
+  return 0
 }
 
 # image_sizes -> "ID<TAB>BYTES" for every local image, untagged ones included: Docker 29 (containerd image store)
@@ -184,18 +201,36 @@ EOF
   log "old images: $CLEAN_SUMMARY"
 }
 
-# _protected -> IDs that must never be removed (used by any container, or named by another checkout)
-_protected() { { images_used_by_containers; images_of_other_checkouts; } | sort -u; }
+# _protected -> IDs that must never be removed (used by any container, or named by another checkout). Fails when
+# Docker cannot list them: the callers then remove nothing.
+_protected() {
+  local used other
+  used="$(images_used_by_containers)" || return 1
+  other="$(images_of_other_checkouts)" || return 1
+  printf '%s\n%s\n' "$used" "$other" | sort -u
+}
+_PROTECTED_FAILED="could not list the images in use (docker ps or docker volume ls failed)"
 
 # images_after_update — after a successful update: the images it replaced become previous.tsv (kept for
 # rollback); the previous-previous ones and this project's dangling builds are removed. Never fatal.
 images_after_update() {
-  local d now keep cand plan
+  local d now keep cand plan prot
   d="$(images_dir)"; mkdir -p "$d" 2>/dev/null || return 0
   now="$(project_refs | snapshot_refs)"
-  keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/before.tsv")"
+  keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/before.tsv"; overlay_refs | snapshot_refs | cut -f1)"
+  if ! prot="$(_protected)"; then
+    # Remove nothing. The version just replaced and the one before it both stay recorded as previous, so the next
+    # update removes the older one (./stack clean keeps both meanwhile).
+    if [ -f "$d/before.tsv" ]; then
+      cat "$d/before.tsv" "$d/previous.tsv" 2>/dev/null | sort -u > "$d/previous.tsv.new" && mv "$d/previous.tsv.new" "$d/previous.tsv"
+      rm -f "$d/before.tsv"
+    fi
+    printf '%s\n' "$now" > "$d/current.tsv"
+    warn "old images: $_PROTECTED_FAILED — none was removed; the next ./stack update tries again"
+    return 0
+  fi
   cand="$(cat "$d/previous.tsv" 2>/dev/null; project_dangling | sed 's/$/	/')"
-  plan="$(cleanup_plan "$keep" "$cand" "$(_protected)" | _present_only)"
+  plan="$(cleanup_plan "$keep" "$cand" "$prot" | _present_only)"
   [ ! -f "$d/before.tsv" ] || mv "$d/before.tsv" "$d/previous.tsv"
   printf '%s\n' "$now" > "$d/current.tsv"
   images_remove "$plan"
@@ -204,12 +239,13 @@ images_after_update() {
 # clean_plan -> what ./stack clean would remove: this project's dangling builds, its own named images and the
 # images recorded by an earlier update that are no longer the current or the one previous version
 clean_plan() {
-  local d now keep cand
+  local d now keep cand prot
   d="$(images_dir)"
+  prot="$(_protected)" || return 1
   now="$(project_refs | snapshot_refs)"
-  keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/previous.tsv" "$d/before.tsv")"
+  keep="$(printf '%s\n' "$now" | cut -f1; _ids "$d/previous.tsv" "$d/before.tsv"; overlay_refs | snapshot_refs | cut -f1)"
   cand="$(cat "$d/current.tsv" 2>/dev/null; project_named_images; project_dangling | sed 's/$/	/')"
-  cleanup_plan "$keep" "$cand" "$(_protected)" | _present_only
+  cleanup_plan "$keep" "$cand" "$prot" | _present_only
 }
 
 # cmd_clean — ./stack clean: lists what it would remove, asks, removes. --yes skips the question; --dry-run
@@ -221,7 +257,7 @@ cmd_clean() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   [ "$dry" = 1 ] || stack_lock clean
   check_docker_daemon
-  plan="$(clean_plan)"
+  plan="$(clean_plan)" || die "$_PROTECTED_FAILED — nothing was removed; try again"
   if [ -z "$plan" ]; then
     log "nothing to clean: only the images in use and one previous version (for ./stack rollback) are here"
     [ "$dry" = 1 ] || images_remove ""
@@ -298,7 +334,7 @@ disk_line_cached() {
 # clean_plan_bytes -> bytes ./stack clean would free now (0 when nothing)
 clean_plan_bytes() {
   local plan
-  plan="$(clean_plan)"; [ -n "$plan" ] || { echo 0; return 0; }
+  plan="$(clean_plan)" && [ -n "$plan" ] || { echo 0; return 0; }   # unknown counts as nothing to offer
   P="$plan" awk -F'\t' 'BEGIN { n = split(ENVIRON["P"], a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, "\t"); if (f[1] != "") want[f[1]] = 1 } }
     ($1 in want) { t += $2; delete want[$1] } END { printf "%.0f\n", t }' <<EOF
 $(image_sizes)

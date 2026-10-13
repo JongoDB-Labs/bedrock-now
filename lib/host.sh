@@ -308,7 +308,8 @@ docker_autostart_hint() {
 docker_autostart_hint_weekly() {
   local f="$STATE_DIR/docker-autostart-hint" at now
   now="$(date +%s)"
-  at="$(head -c 20 "$f" 2>/dev/null | tr -cd '0-9' || true)"
+  at="$(head -n 1 "$f" 2>/dev/null | head -c 15 || true)"
+  case "$at" in '' | *[!0-9]*) at='' ;; *) at=$((10#$at)) ;; esac   # digits only; a leading 0 is not octal
   if [ -n "$at" ] && [ $((now - at)) -ge 0 ] && [ $((now - at)) -lt 604800 ]; then return 0; fi
   docker_autostart_off || return 0
   docker_autostart_hint

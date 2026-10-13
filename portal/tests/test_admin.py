@@ -225,7 +225,9 @@ def test_the_request_folder_is_the_only_new_place_written(make_client, dirs, tmp
 NOTHING_NEW_PREFIX = "Already up to date"
 
 
-def test_home_does_not_ask_for_a_reload_after_an_update_that_found_nothing_new():
+def test_home_shows_no_steps_and_no_reload_after_an_update_that_found_nothing_new():
     from pathlib import Path
     js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
-    assert f'!msg.startsWith("{NOTHING_NEW_PREFIX}")) note = "Reload this page' in js
+    assert f'const nothingNew = job.phase === "done" && msg.startsWith("{NOTHING_NEW_PREFIX}");' in js
+    assert "list.hidden = !steps.length || nothingNew;" in js  # no step ran: no ticked-off step list
+    assert '!nothingNew) note = "Reload this page' in js
