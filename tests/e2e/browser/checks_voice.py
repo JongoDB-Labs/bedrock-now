@@ -60,7 +60,7 @@ def chat_call(ctx):
     expect(not fl.locator(f"text={WEB_STT}").count(), "the Web-STT error was shown although speech-to-text is on")
     shot(page, "10-chat-call-open")
     fl.locator("button[aria-label='End call']").click()
-    # The portal's frame does not allow screen-wake-lock (checked by chat-voice-call-wake-lock); anything else counts.
+    # A blocked screen wake lock is reported by chat-voice-call-wake-lock alone; anything else counts here.
     probs = rec.problems(allow=[r"No token found in localStorage", r"Permissions policy violation: screen-wake-lock"])
     rec.save()
     expect(not probs, f"errors: {probs}")
@@ -83,7 +83,7 @@ def chat_call_wake_lock(ctx):
     fl.locator("button[aria-label='End call']").click()
     blocked = [e["text"] for e in rec.events if e["t"] == "console" and "screen-wake-lock" in e["text"]]
     rec.save()
-    expect(not blocked, f"{blocked[0]} — the portal's iframe allow list lacks screen-wake-lock")
+    expect(not blocked, f"{blocked[:1]} — the portal's iframe allow list lacks screen-wake-lock")
     return "Call in the portal frame may hold a screen wake lock"
 
 
