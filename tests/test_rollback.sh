@@ -172,7 +172,7 @@ test_rollback_to_a_version_without_bedrock_speech_to_text_removes_it() {   # rev
   [ ! -e "$STATE_DIR/stt-service" ]
   assert_eq "$(cat "$STATE_DIR/stt-choice")" bedrock   # ./stack update turns it back on
   assert_contains "$(cat "$TMP/err")" "has no Bedrock speech-to-text"
-  assert_eq "$(head -n 1 "$CALLS")" "old restore backups/20261012-000000-auto --yes"
+  assert_eq "$(head -n 1 "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
 }
 
 test_a_failed_rollback_checkout_leaves_speech_to_text_alone() {

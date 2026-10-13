@@ -10,6 +10,7 @@ _stub_dc() { # logs every dc call; pg_dump prints a fake dump unless PG_FAIL=1
     echo "dc $*" >> "$TMP/calls"
     case "$*" in
       *pg_dump*) [ "${PG_FAIL:-0}" = 1 ] && { echo "pg_dump: connection refused" >&2; return 1; }; local args="$*"; printf 'PGDMP-%s' "${args##* }" ;;
+      *"exec -T postgres true") [ "${PG_EXEC_FAIL:-0}" != 1 ] || return 1 ;;
       *"pg_restore --list"*) cat > /dev/null; [ "${LIST_EMPTY:-0}" = 1 ] || echo "1; 0 0 ENCODING - ENCODING" ;;
       *pg_restore*) cat > "$TMP/restored.$(echo "$*" | sed 's/.* -d \([a-z]*\).*/\1/')" ;;
     esac
@@ -99,6 +100,13 @@ test_restore_validates_the_backup_before_stopping_anything() {
   assert_contains "$(cat "$TMP/calls")" "pg_restore --list"
   assert_not_contains "$(cat "$TMP/calls")" "dc stop"
   assert_not_contains "$(cat "$TMP/calls")" "DROP DATABASE"
+  # postgres not usable: said so, not blamed on the dump
+  LIST_EMPTY=0; : > "$TMP/calls"; PG_EXEC_FAIL=1
+  if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi
+  assert_contains "$out" "cannot run commands in the postgres container"
+  assert_not_contains "$out" "not a readable database dump"
+  assert_not_contains "$(cat "$TMP/calls")" "dc stop"
+  PG_EXEC_FAIL=0
   # a missing bucket folder: refused too, before any dump is even read
   LIST_EMPTY=0; : > "$TMP/calls"; rmdir "$B/s3/shared"
   if out="$( (cmd_restore "$B") 2>&1)"; then return 1; fi

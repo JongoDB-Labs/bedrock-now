@@ -1094,6 +1094,9 @@ _validate_backup() {
   for b in openwebui shared; do
     [ -d "$dir/s3/$b" ] || die "$dir has no s3/$b folder, so it is not a complete ./stack backup — nothing was changed"
   done
+  # First that commands run in the postgres container at all: a failing exec must not read as an unreadable dump.
+  dc exec -T postgres true </dev/null >/dev/null 2>&1 ||
+    die "cannot run commands in the postgres container (./stack status; ./stack logs postgres) — nothing was changed"
   for db in litellm openwebui; do
     n="$(dc exec -T postgres pg_restore --list < "$dir/$db.dump" 2>/dev/null | grep -c '^[0-9]' || true)"
     [ "${n:-0}" -gt 0 ] ||
