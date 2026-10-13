@@ -411,8 +411,10 @@ def chat_send(ctx):
     expect("40" in final, f"answer {final[:120]!r}")
     m = re.search(r"≈ (<?\$[0-9.,]+) · ([0-9,]+) in / ([0-9,]+) out · ([^·]+) · chat ≈", final)
     expect(m, f"no cost footer in {final[-160:]!r}")
+    # Open WebUI batches screen updates, so a fast model may show a single partial answer before the whole one:
+    # one shorter length before the longest is enough to prove streaming.
     lens = sorted(set(f.evaluate("window.__bnLens")))
-    expect(len(lens) >= 3, f"answer arrived in one piece: no streaming observed (partial lengths {lens})")
+    expect(len(lens) >= 2, f"answer arrived in one piece: no streaming observed (partial lengths {lens})")
     expect(any(e["t"] == "ws" for e in rec.events), "no WebSocket (socket.io) connection")
     # the task model (OWUI_TASK_MODEL) titles the new chat
     cid = re.search(r"/c/([0-9a-f-]{36})", f.url)
