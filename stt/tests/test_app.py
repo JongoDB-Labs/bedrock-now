@@ -261,3 +261,28 @@ def test_answer_cut_at_max_tokens_keeps_the_words(fake_ffmpeg):
     with client() as c:
         r = post(c)
     assert r.json() == {"text": "one two three four"}
+
+
+def test_a_slow_upload_times_out_and_frees_its_slot(fake_ffmpeg):
+    app = stt_app.create_app(stt_app.Settings(read_timeout=0.2, max_parallel=1))
+    sent = []
+
+    async def receive():
+        await asyncio.sleep(5)   # a sender that never finishes
+        return {"type": "http.request", "body": b"", "more_body": True}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/audio/transcriptions", "raw_path": b"/v1/audio/transcriptions",
+             "query_string": b"", "root_path": "", "scheme": "http", "server": ("stt", 8000), "client": ("x", 1),
+             "http_version": "1.1", "headers": [(b"authorization", b"Bearer sk-openwebui-key"),
+                                                (b"content-type", b"multipart/form-data; boundary=BNSTT")]}
+
+    async def run():
+        await asyncio.wait_for(app(scope, receive, send), 3)
+
+    asyncio.run(run())
+    assert sent[0]["status"] == 408
+    assert b"upload_timeout" in b"".join(m.get("body", b"") for m in sent)
+    assert fake_ffmpeg == []

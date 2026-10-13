@@ -141,7 +141,7 @@ def test_services_include_the_stt_container_with_bedrock(settings):
     for url, code in (("http://litellm:4000/health/readiness", 200), ("http://open-webui:8080/health", 200),
                       ("http://rustfs:9000/health", 200), ("http://shared-mcp:8000/healthz", 200)):
         respx.get(url).respond(code, json={"db": "connected"})
-    respx.get("http://stt:8000/healthz").respond(200, json={"ok": True})
+    respx.get("http://caddy:8090/healthz").respond(200, json={"ok": True})
     s = replace(settings, stt_engine="openai", stt_provider="bedrock")
 
     async def run(st):

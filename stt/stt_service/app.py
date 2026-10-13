@@ -5,7 +5,8 @@ converted in a temporary directory that is removed right away, and neither audio
 (only sizes, durations and status codes).
 
 Limits are enforced on the bytes actually received (chunked uploads have no Content-Length), every non-file
-form field is capped at 64 KB, and at most max_parallel requests are read, converted and transcribed at once.
+form field is capped at 64 KB, and at most max_parallel requests are read, converted and transcribed at once;
+reading an upload may take read_timeout (30 s) at most, so a slow sender cannot hold a slot.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ class Settings:
     max_seconds: int = 600
     ffmpeg_timeout: float = 60.0
     upstream_timeout: float = 120.0
+    read_timeout: float = 30.0            # the whole upload: a slow sender cannot hold one of the slots longer
     max_parallel: int = 3                 # compose sizes /tmp (192 MB) and memory (768 MB) for this many
     workdir: str | None = None
 
@@ -133,8 +135,14 @@ def create_app(settings: Settings, client: httpx.AsyncClient | None = None) -> S
 
     async def _transcribe(request: Request, auth: str) -> Response:
         t0 = time.monotonic()
+
+        async def read_form():
+            return await request.form(max_files=1, max_fields=16, max_part_size=MAX_FIELD)
+
         try:
-            form = await request.form(max_files=1, max_fields=16, max_part_size=MAX_FIELD)
+            form = await asyncio.wait_for(read_form(), settings.read_timeout)
+        except asyncio.TimeoutError:
+            return error(408, "upload_timeout", f"the upload took longer than {int(settings.read_timeout)} s")
         except BodyTooLarge:
             return error(413, "file_too_large", too_large)
         except (MultiPartException, HTTPException) as e:   # Starlette turns MultiPartException into a 400

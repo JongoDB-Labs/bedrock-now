@@ -45,7 +45,7 @@ _rollback_local_builds() {
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
-  local from branch fromv backup result at now_imgs d no_helper=0
+  local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0
   [ $# -eq 0 ] || die "usage: ./stack rollback [--yes]   (goes back to the version before the last ./stack update)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   stack_lock rollback
@@ -74,9 +74,12 @@ cmd_rollback() {
   d="$(images_dir)"; mkdir -p "$d"
   now_imgs="$(project_refs | snapshot_refs)"
   log "rollback: 1/3 code ($(installed_version) → ${fromv:-$from})"
-  # A version from before Bedrock speech-to-text has no stt service: remove it while this code still knows it.
-  git -C "$STACK_DIR" cat-file -e "$from:stt/Dockerfile" 2>/dev/null || ! declare -F stt_rollback_cleanup >/dev/null || stt_rollback_cleanup
   _rollback_checkout "$from" "$branch" || die "could not check out $from — nothing else was changed"
+  # A version from before Bedrock speech-to-text has no stt service: its container and settings go (lib/stt.sh).
+  no_stt=0
+  if ! git -C "$STACK_DIR" cat-file -e "$from:stt/Dockerfile" 2>/dev/null && declare -F stt_rollback_cleanup >/dev/null; then
+    no_stt=1; stt_rollback_cleanup
+  fi
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"
   # The restored scripts do the rest, in fresh processes; their messages say how to retry if something fails.
@@ -85,6 +88,7 @@ cmd_rollback() {
   log "rollback: 3/3 start (./stack up with the restored code)"
   env BEDROCK_NOW_NO_OPEN=1 "$STACK_DIR/stack" up --yes ||
     die "the code and data are back, but ./stack up failed (see above) — run it again"
+  [ "$no_stt" = 0 ] || stt_rollback_network_cleanup
   _record_set result rolled-back
   # The images of the version rolled back from are now the "previous version": kept until the next update
   # replaces them as previous-previous (or ./stack clean, once they are no longer the previous version).

@@ -149,18 +149,30 @@ test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4
 
 test_rollback_to_a_version_without_bedrock_speech_to_text_removes_it() {   # review I5
   _fixture; _record
-  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\nSTT_MODEL=voxtral-mini\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://stt:8000/v1\nSTT_BEDROCK_MODEL=voxtral-mini\n' > "$ENV_FILE"
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\nSTT_MODEL=voxtral-mini\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://caddy:8090/v1\nSTT_BEDROCK_MODEL=voxtral-mini\n' > "$ENV_FILE"
   mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; echo bedrock > "$STATE_DIR/stt-choice"
+  docker() { echo "docker $*" >> "$TMP/docker"; case "$1" in ps) echo c0ffee ;; esac; return 0; }
   ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/docker")" "--profile stt"
-  assert_contains "$(cat "$TMP/docker")" "rm -sf stt"
+  # by its Compose labels (the old compose file no longer knows the service), after the checkout
+  assert_contains "$(cat "$TMP/docker")" "docker ps -aq --filter label=com.docker.compose.project=bn-t --filter label=com.docker.compose.service=stt"
+  assert_contains "$(cat "$TMP/docker")" "docker rm -f c0ffee"
+  # its network, once the old version's ./stack up has moved the containers off it
+  assert_eq "$(tail -n 1 "$TMP/docker")" "docker network rm bn-t_stt"
   e="$(cat "$ENV_FILE")"
   for v in STT_PROVIDER STT_MODEL OWUI_STT_ENGINE OWUI_STT_BASE_URL STT_BEDROCK_MODEL; do assert_not_contains "$e" "$v=" || return 1; done
   [ ! -e "$STATE_DIR/stt-service" ]
   assert_eq "$(cat "$STATE_DIR/stt-choice")" bedrock   # ./stack update turns it back on
   assert_contains "$(cat "$TMP/err")" "has no Bedrock speech-to-text"
-  # before the old code runs its restore
   assert_eq "$(head -n 1 "$CALLS")" "old restore backups/20261012-000000-auto --yes"
+}
+
+test_a_failed_rollback_checkout_leaves_speech_to_text_alone() {
+  _fixture; _record
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\n' > "$ENV_FILE"; : > "$TMP/docker"
+  _rollback_checkout() { return 1; }
+  if (ASSUME_YES=1 cmd_rollback) > /dev/null 2>&1; then return 1; fi
+  assert_contains "$(cat "$ENV_FILE")" "STT_PROVIDER=bedrock"
+  assert_not_contains "$(cat "$TMP/docker")" "stt"
 }
 
 test_rollback_to_a_version_with_speech_to_text_keeps_it() {

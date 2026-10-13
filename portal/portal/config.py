@@ -87,7 +87,7 @@ class Settings:
     stt_engine: str = "web"
     stt_provider: str = ""
     stt_model: str = ""
-    stt_url: str = "http://stt:8000"
+    stt_url: str = "http://caddy:8090"   # Caddy's internal speech-to-text site (no network is shared with stt)
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""

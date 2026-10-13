@@ -87,7 +87,7 @@ services:
       - ./litellm:/app/config:ro,z
     ports:
       - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
-    networks: [default, stt]   # stt: the speech-to-text container's only network (no internet)
+    networks: [default, stt]   # stt: the speech-to-text container's only network (no internet access)
     depends_on:
       postgres: { condition: service_healthy }
     healthcheck:
@@ -162,7 +162,8 @@ services:
       # Speech-to-text: "web" = the browser's Web Speech API (the slim image has no local Whisper; Call is then
       # unavailable). "openai" (OWUI_STT_ENGINE, set by ./stack setup / ./stack stt) = an OpenAI-compatible server
       # called with Open WebUI's own key, so it counts on that key's budget (lib/stt.sh): the stt container for
-      # Bedrock Voxtral (OWUI_STT_BASE_URL), else LiteLLM's "stt" model (OpenAI or Groq).
+      # Bedrock Voxtral, through Caddy's internal :8090 site (OWUI_STT_BASE_URL; Open WebUI shares no network with
+      # stt), else LiteLLM's "stt" model (OpenAI or Groq).
       AUDIO_STT_ENGINE: ${OWUI_STT_ENGINE:-web}
       AUDIO_STT_OPENAI_API_BASE_URL: ${OWUI_STT_BASE_URL:-http://litellm:4000/v1}
       AUDIO_STT_OPENAI_API_KEY: ${LITELLM_KEY_OPENWEBUI:-}
@@ -182,7 +183,6 @@ services:
       WEBUI_URL: ${REMOTE_CHAT_HOST:+https://${REMOTE_CHAT_HOST:-}}
     volumes:
       - owui:/app/backend/data
-    networks: [default, stt]
     depends_on:
       postgres: { condition: service_healthy }
       litellm: { condition: service_healthy }
@@ -215,8 +215,9 @@ services:
     logging: *logging
 
   # Bedrock speech-to-text (lib/stt.sh; only with STT_PROVIDER=bedrock: ./stack adds --profile stt). Open WebUI posts
-  # recordings here; ffmpeg converts them and Mistral Voxtral transcribes them through LiteLLM's Bedrock
-  # pass-through with the caller's own key. No AWS credentials, no key of its own, no published port.
+  # recordings here (through Caddy's internal :8090 site); ffmpeg converts them and Mistral Voxtral transcribes
+  # them through LiteLLM's Bedrock pass-through with the caller's own key. No AWS credentials, no key of its own,
+  # no published port.
   stt:
     build: { context: ./stt, target: runtime }
     image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/stt:local   # per project, like portal
@@ -230,7 +231,9 @@ services:
     tmpfs: ["/tmp:size=192m,mode=1777"]
     mem_limit: 768m
     pids_limit: 64
-    # Only the internal "stt" network (LiteLLM, Open WebUI, the portal): no route to the internet or the host.
+    # Only the internal "stt" network, with LiteLLM and Caddy: no internet access, and no way to reach Open WebUI
+    # (which trusts X-Portal-User from its peers) or the portal. Open WebUI and the portal reach it through Caddy's
+    # internal :8090 site, which strips X-Portal-* — a one-way hop.
     networks: [stt]
     environment:
       LITELLM_URL: http://litellm:4000
@@ -313,7 +316,6 @@ services:
       - ./.state/update-check:/data/update-check:rw,z
       - ./.state/requests:/data/requests:rw,z
       - portal-state:/state
-    networks: [default, stt]   # stt: Home's health check of the speech-to-text container
     logging: *logging
 
   # The only way in for browsers: http://${PORTAL_HOST} and its chat./admin./files. subdomains (caddy/Caddyfile).
@@ -351,7 +353,8 @@ services:
     volumes:
       - ./caddy:/etc/caddy:ro,z
     ports:
-      - "127.0.0.1:${PORTAL_PORT:-80}:8080"
+      - "127.0.0.1:${PORTAL_PORT:-80}:8080"   # only 8080: the internal :8090 site (speech-to-text) is not published
+    networks: [default, stt]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/caddy-health"]
       interval: 10s
@@ -361,8 +364,7 @@ services:
 
 networks:
   default:
-  # Speech-to-text (lib/stt.sh): internal, so the stt container cannot reach anything but LiteLLM, Open WebUI
-  # and the portal.
+  # Speech-to-text (lib/stt.sh): internal (no internet access); its members are stt, LiteLLM and Caddy only.
   stt:
     internal: true
 

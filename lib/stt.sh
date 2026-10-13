@@ -207,7 +207,7 @@ stt_sync_env() {
   stt_key_problem
   if stt_enabled; then
     engine=openai
-    if [ "$(stt_provider)" = bedrock ]; then base=http://stt:8000/v1; model="$(stt_model)"; fi
+    if [ "$(stt_provider)" = bedrock ]; then base=http://caddy:8090/v1; model="$(stt_model)"; fi
   fi
   _stt_env_follow OWUI_STT_ENGINE "$engine"
   _stt_env_follow OWUI_STT_BASE_URL "$base"
@@ -383,23 +383,21 @@ stt_after_probe() {
 stt_services() { [ "$(stt_provider)" != bedrock ] || echo stt; }
 
 # The stt image installs ffmpeg from its Alpine release's repository. Docker's build cache would keep that layer
-# forever, so an image older than this many days is rebuilt without the cache (setup, ./stack update): ffmpeg's
-# security fixes for that Alpine release arrive at the next update after they are published.
-STT_IMAGE_MAX_AGE_DAYS=14
+# forever, so the build passes the ISO week as APK_REFRESH (stt/Dockerfile): the ffmpeg layer is reinstalled once
+# a week at most (setup, ./stack update), with Alpine's latest ffmpeg security fixes. The week of the last good
+# build is kept in .state/stt-apk-week: when a new week's build fails (offline, repository down), the previous
+# week's value is used again — Docker's cached layer, no network — and a warning says so.
+stt_apk_week() { date -u +%G-%V; }
 
-# _stt_image_age_days -> days since the local stt image was built, or nothing (no image yet / unknown)
-_stt_image_age_days() {
-  local created c n
-  created="$(docker image inspect --format '{{.Created}}' "$(project_name)/stt:local" 2>/dev/null | cut -c1-10)" || return 0
-  c="$(date_to_epoch "$created" 2>/dev/null)" || return 0
-  n="$(date_to_epoch "$(date -u +%Y-%m-%d)")" || return 0
-  echo $(((n - c) / 86400))
-}
-
-# _stt_build — the stt image; without the cache when it is older than STT_IMAGE_MAX_AGE_DAYS (fresh ffmpeg)
 _stt_build() {
-  local age; age="$(_stt_image_age_days)"
-  if [ -n "$age" ] && [ "$age" -gt "$STT_IMAGE_MAX_AGE_DAYS" ]; then dc build -q --no-cache stt; else dc build -q stt; fi
+  local week prev; week="$(stt_apk_week)"; prev="$(cat "$STATE_DIR/stt-apk-week" 2>/dev/null || true)"
+  case "$prev" in *[!0-9-]* | '') prev='' ;; esac
+  if dc build -q --build-arg "APK_REFRESH=$week" stt; then
+    mkdir -p "$STATE_DIR"; printf '%s\n' "$week" > "$STATE_DIR/stt-apk-week"; return 0
+  fi
+  [ -n "$prev" ] && [ "$prev" != "$week" ] || return 1
+  warn "could not refresh ffmpeg in the stt image (offline?) — building it with last refresh's packages ($prev)"
+  dc build -q --build-arg "APK_REFRESH=$prev" stt
 }
 
 _stt_build_profiled() { _STT_PROFILE=1 _stt_build; }   # before .env says bedrock (./stack stt set bedrock)
@@ -418,13 +416,28 @@ stt_service_up() {
 # build or start never stops setup or keeps Open WebUI down: speech-to-text falls back to the browser (Open WebUI
 # is started after this with the engine back on "web"), with one warning; the next setup tries again.
 stt_setup_service() {
+  local out start
   if [ "$(stt_provider)" != bedrock ]; then stt_service_down; return 0; fi
-  if (run_phase "Speech-to-text (Bedrock Voxtral)" stt _stt_build_and_up); then rm -f "$STATE_DIR/stt-start-failed"; return 0; fi
+  out="$(mktemp)"; start="$(_now)"
+  if _stt_build_and_up > "$out" 2>&1; then
+    rm -f "$out" "$STATE_DIR/stt-start-failed"
+    log "$(phase_line "Speech-to-text (Bedrock Voxtral)" $(($(_now) - start)))"
+    return 0
+  fi
+  warn "Voice: the speech-to-text container did not start. Its last messages:"
+  { tail -n 15 "$out"; dc logs --no-color --tail 15 stt 2>&1 || true; } | sed 's/^/    /' >&2
+  rm -f "$out"
+  _stt_fall_back_to_browser
+  warn "Voice: the microphone uses your browser for now — setup goes on; the next ./stack setup tries Bedrock speech-to-text again (or ./stack stt set bedrock)"
+}
+
+# _stt_fall_back_to_browser — Bedrock speech-to-text off after a failure (container, ./stack test): .env back to
+# browser speech, the container removed, and a mark so that the next setup says it tries again.
+_stt_fall_back_to_browser() {
   unset_env STT_PROVIDER; unset_env STT_MODEL
   stt_sync_env
   mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-start-failed"
   stt_service_down
-  warn "Voice: the speech-to-text container did not start — the microphone uses your browser for now (setup continues; the next ./stack setup tries again, or ./stack stt set bedrock; ./stack logs stt)"
 }
 
 # stt_service_down — removes the stt container left from Bedrock speech-to-text (its profile is off by then, so
@@ -443,21 +456,27 @@ stt_before_up() {
   if [ "$(stt_provider)" = bedrock ]; then mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; else stt_service_down; fi
 }
 
-# stt_rollback_cleanup — ./stack rollback to a version from before Bedrock speech-to-text (no stt/ in it): its
-# compose file has no stt service, so the container is removed now, while this code still knows it, and the
-# settings only this version understands leave .env (Open WebUI is recreated by the rollback's restore with the
-# browser engine). The recorded choice stays: ./stack update turns it back on.
+# stt_rollback_cleanup — ./stack rollback, right after it checked out a version from before Bedrock speech-to-text
+# (no stt/ in it): that version's compose file has no stt service, so the container is removed by its Compose
+# labels, and the settings only this version understands leave .env (Open WebUI is recreated by the rollback's
+# restore with the browser engine). The recorded choice stays: ./stack update turns it back on.
 stt_rollback_cleanup() {
-  if [ -e "$STATE_DIR/stt-service" ] || [ "$(stt_provider)" = bedrock ]; then
-    _STT_PROFILE=1 dc rm -sf stt >/dev/null 2>&1 || warn "could not remove the stt container — remove it with: docker rm -f $(project_name)-stt-1"
-  fi
+  local p ids
+  p="$(project_name)"
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$p" --filter "label=com.docker.compose.service=stt" 2>/dev/null || true)"
+  # shellcheck disable=SC2086  # one id per word
+  [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || warn "could not remove the stt container — remove it with: docker rm -f $p-stt-1"
   rm -f "$STATE_DIR/stt-service" "$STATE_DIR/stt-start-failed"
   if [ "$(stt_provider)" = bedrock ]; then
     unset_env STT_PROVIDER; unset_env STT_MODEL; unset_env OWUI_STT_ENGINE
-    log "speech-to-text: that version has no Bedrock speech-to-text — the microphone uses your browser (./stack update brings it back)"
+    log "speech-to-text: the version you rolled back to has no Bedrock speech-to-text — the microphone uses your browser (./stack update brings it back)"
   fi
   unset_env OWUI_STT_BASE_URL; unset_env STT_BEDROCK_MODEL
 }
+
+# stt_rollback_network_cleanup — after that rollback's ./stack up (its containers left the network): the stt
+# network this version created. Never fatal.
+stt_rollback_network_cleanup() { docker network rm "$(project_name)_stt" >/dev/null 2>&1 || true; }
 
 # stt_sync_owui — the "stt" model (openai/groq) must not show up as a chat model: a hidden Open WebUI entry (like
 # the embedding models), with the provider and price as its description. Otherwise (off, or Bedrock, whose Voxtral
@@ -523,12 +542,34 @@ _stt_apply() {
   # it only if its environment changed (a new STT_API_KEY). Bedrock Small <-> Mini changes neither.
   if [ "$(cat "$cfg")" != "$before" ]; then run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
   else run_phase "LiteLLM" litellm dc up -d --no-deps --wait litellm; fi
-  stt_service_up
+  if ! (stt_service_up); then
+    [ -n "${STT_PREVIOUS:-}" ] || die "the stt container did not start — see above"
+    _stt_restore_previous
+    die "the stt container did not start (see above) — your previous speech-to-text setting is back: $(if stt_enabled; then stt_describe; else echo 'browser speech'; fi)"
+  fi
   run_phase "Open WebUI" open-webui dc up -d --no-deps --wait open-webui
   portal_session_or_die
   stt_sync_owui
   sync_budget_banner
   portal_session_end
+}
+
+# _stt_restore_previous — ./stack stt set bedrock whose container did not start: .env and the recorded choice as
+# they were before (STT_PREVIOUS = provider|key|model|choice), applied again; the stt container removed.
+_stt_restore_previous() {
+  local p k m c cfg="$STACK_DIR/litellm/config.yaml" before
+  IFS='|' read -r p k m c <<< "$STT_PREVIOUS"
+  if [ -n "$p" ]; then set_env STT_PROVIDER "$p"; else unset_env STT_PROVIDER; fi
+  if [ -n "$k" ]; then set_env STT_API_KEY "$k"; else unset_env STT_API_KEY; fi
+  if [ -n "$m" ]; then set_env STT_MODEL "$m"; else unset_env STT_MODEL; fi
+  case "$c" in bedrock | openai | groq | browser) stt_set_choice "$c" ;; *) rm -f "$STATE_DIR/stt-choice" ;; esac
+  stt_sync_env
+  _STT_PROFILE=1 dc rm -sf stt >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/stt-service"
+  before="$(cat "$cfg")"; render_config "$(_enabled_or_all)"
+  if [ "$(cat "$cfg")" != "$before" ]; then dc up -d --no-deps --force-recreate --wait litellm >/dev/null 2>&1 || true
+  else dc up -d --no-deps --wait litellm >/dev/null 2>&1 || true; fi
+  dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies the previous setting"
 }
 
 _stt_on_message() {
@@ -542,7 +583,7 @@ _stt_on_message() {
 }
 
 cmd_stt() {
-  local p m key url
+  local p m key url STT_PREVIOUS=''   # STT_PREVIOUS: what _stt_apply restores if set bedrock's container fails
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   case "${1:-status}" in
     set)
@@ -561,6 +602,7 @@ cmd_stt() {
         if [ -n "$(get_env LITELLM_MASTER_KEY)" ] && [ -n "$(dc ps -q litellm 2>/dev/null)" ]; then
           (run_phase "Speech-to-text image" stt _stt_build_profiled) || die "could not build the stt container — nothing changed (./stack stt status)"
         fi
+        STT_PREVIOUS="$(get_env STT_PROVIDER)|$(get_env STT_API_KEY)|$(get_env STT_MODEL)|$(stt_choice)"
         _stt_store_bedrock "$m"
         stt_set_choice bedrock
         _stt_on_message
@@ -628,14 +670,29 @@ except Exception as e:
 # tone goes through the whole path (stt -> LiteLLM -> Bedrock Voxtral) with the setup key (~$0.00005). Uses the
 # caller's _check/_skip and its fails counter.
 stt_test_checks() {
-  local out sk
+  local health tone='' sk label choice
   [ "$(stt_provider)" = bedrock ] && stt_enabled || return 0
-  out="$(dc exec -T stt python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=10).status)' 2>/dev/null || true)"
-  _check "speech-to-text health (stt container)" "$out" 200
+  label="speech-to-text, 1 s tone (Bedrock $(stt_model_label "$(stt_model)"))"
+  health="$(dc exec -T stt python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=10).status)' 2>/dev/null || true)"
   sk="$(get_env LITELLM_KEY_SETUP)"
+  if [ "$health" = 200 ] && [ -n "$sk" ]; then
+    tone="$(printf '%s\n' "$sk" | dc exec -T stt python -c "$STT_TEST_PY" 2>/dev/null || true)"
+  fi
+  case "$health:$tone" in 200:429*) _check "speech-to-text health (stt container)" 200 200
+    _skip "$label" "Bedrock is throttling right now — not checked"; return 0 ;; esac
+  choice="$(stt_choice)"
+  if { [ "$health" != 200 ] || { [ -n "$sk" ] && [ "$tone" != 200 ]; }; } && { [ -z "$choice" ] || [ "$choice" = legacy ]; }; then
+    # On by default, not chosen: a broken voice path must not fail setup or an update. Back to browser speech.
+    warn "Voice: the speech-to-text check failed (${tone:-health: ${health:-no answer}}) — it was on by default, so the microphone goes back to browser speech; the next ./stack setup tries again (./stack stt set bedrock turns it on now)"
+    _stt_fall_back_to_browser
+    dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies browser speech"
+    _skip "speech-to-text (Bedrock Voxtral)" "turned off, see the warning above"
+    return 0
+  fi
+  _check "speech-to-text health (stt container)" "$health" 200
   if [ -z "$sk" ]; then _skip "speech-to-text (Bedrock Voxtral)" "no setup key — run ./stack setup"; return 0; fi
-  out="$(printf '%s\n' "$sk" | dc exec -T stt python -c "$STT_TEST_PY" 2>/dev/null || true)"
-  _check "speech-to-text, 1 s tone (Bedrock $(stt_model_label "$(stt_model)"))" "$out" 200
+  [ "$health" = 200 ] || return 0
+  _check "$label" "$tone" 200
 }
 
 # stt_costs_section — ./stack costs: one line either way

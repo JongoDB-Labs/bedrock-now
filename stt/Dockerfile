@@ -2,10 +2,13 @@
 # that Alpine release's repository (8.1.x for Alpine 3.24).
 FROM python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4 AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN apk add --no-cache "ffmpeg~8.1"
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore --require-hashes -r requirements.txt
+# ./stack passes the ISO week (lib/stt.sh _stt_build): a new value invalidates Docker's cache from here on, so
+# the ffmpeg layer is reinstalled at most weekly and picks up Alpine's security fixes; the pip layer above stays.
+ARG APK_REFRESH=unset
+RUN apk add --no-cache "ffmpeg~8.1"
 COPY stt_service ./stt_service
 # A checkout made under umask 077 has 0600 files; the runtime user (uid 10103) must still read them.
 RUN chmod -R a+rX /app

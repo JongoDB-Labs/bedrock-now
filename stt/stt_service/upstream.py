@@ -69,6 +69,17 @@ def transcript_from(doc: object) -> str:
 _PREFIX = re.compile(r'^\s*(?:```(?:json)?\s*)?\{\s*"transcript"\s*:\s*"')
 
 
+def _unescape(rest: str) -> str:
+    """The inside of a JSON string that was cut off: decoded as JSON when possible (\\", \\n, \\u00e9 …)."""
+    rest = re.sub(r'\\u[0-9a-fA-F]{0,3}$', "", rest)   # an escape cut in half
+    if rest.endswith("\\") and not rest.endswith("\\\\"):
+        rest = rest[:-1]
+    try:
+        return json.loads('"' + rest + '"')
+    except ValueError:
+        return rest.replace('\\"', '"').replace("\\n", " ")
+
+
 def clean_transcript(text: str, cut: bool = False) -> str:
     """{"transcript": "…"} (also inside a ```json fence) -> the words; plain text is kept, minus wrapping quotes.
     cut: the answer stopped at maxTokens, so the JSON never closed — the words after the opening are kept."""
@@ -82,7 +93,7 @@ def clean_transcript(text: str, cut: bool = False) -> str:
             pass
     m = _PREFIX.match(text)
     if cut and m:
-        return text[m.end():].replace('\\"', '"').strip()
+        return _unescape(text[m.end():]).strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
     return text

@@ -17,14 +17,16 @@ All notable changes to bedrock-now are documented here. The format follows
   refuses request bodies above ~4 MB, which WAV reaches after ~85 s; 10 minutes of this MP3 are 3.2 MB) and
   asks Voxtral Small for a verbatim transcript through LiteLLM's Bedrock pass-through with Open WebUI's own key,
   so the spend lands on the `open-webui` key and its budget applies. The instruction comes before the audio and
-  asks for JSON: with a plain "transcribe this", Voxtral answered spoken questions instead. The container sits
-  alone on an internal Docker network with LiteLLM, Open WebUI and the portal (no internet), holds no AWS
+  asks for JSON: with a plain "transcribe this", Voxtral answered spoken questions instead. The container's
+  only network is an internal one with LiteLLM and Caddy (no internet access); Open WebUI and the portal reach
+  it through Caddy's unpublished `:8090` site, so it cannot reach them (Open WebUI trusts `X-Portal-User` from
+  its peers). It holds no AWS
   credentials or key of its own, publishes no port, runs read-only and unprivileged with memory/process
   limits and three requests at a time, gives ffmpeg only the demuxer it sniffed, local files and the audio
   decoders recordings need (and kills it on timeout or a cancelled request), keeps nothing and logs no audio
   or transcripts; LiteLLM and Bedrock errors (budget, model access, throttling, a full `/tmp`) reach Chat as
-  clear "Error transcribing chunk: …" messages. Setup rebuilds its image without the cache when it is over 14
-  days old (ffmpeg fixes from Alpine). Voxtral Small and Mini join the catalog as `stt` models (checked by
+  clear "Error transcribing chunk: …" messages. Its build reinstalls ffmpeg at most weekly (an ISO-week build
+  argument), picking up Alpine's fixes at setup / `./stack update`. Voxtral Small and Mini join the catalog as `stt` models (checked by
   setup with a real 1-token request, hidden from the model picker, priced per token: $0.10/$0.30 and
   $0.04/$0.04 per 1M); the price per minute of audio is an **estimate** (~$0.00014/min of continuous speech
   for Small, from 375 audio tokens per started 30 s measured on Bedrock; a call's short utterances cost about

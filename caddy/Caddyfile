@@ -131,6 +131,30 @@ http://{$FILES_HOST} {
 	}
 }
 
+# Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
+# through this site, so stt itself shares no network with Open WebUI — which trusts X-Portal-User from any peer —
+# or the portal: a one-way hop. Port 8090 is not published (compose.yaml publishes 8080 only); it answers on
+# Caddy's container networks. Nothing that only Caddy, the portal or the sidecar may set is passed on, and no
+# portal secret is added (unlike local_request). Two paths only; recordings are limited to 26 MB here too.
+http://:8090 {
+	route {
+		request_header -X-Portal-User
+		request_header -X-Portal-Remote
+		request_header -X-Portal-Proxy
+		request_header -Tailscale-User-Login
+		request_header -Tailscale-User-Name
+		request_header -Tailscale-User-Profile-Pic
+		request_header -Tailscale-Headers-Info
+		request_header -Cookie
+		request_body {
+			max_size 26MB
+		}
+		@stt path /v1/audio/transcriptions /healthz
+		reverse_proxy @stt stt:8000
+		respond 404
+	}
+}
+
 # Any other Host (a typo, or a DNS-rebinding page pointing its own name at 127.0.0.1) gets nothing.
 http:// {
 	respond /caddy-health 200

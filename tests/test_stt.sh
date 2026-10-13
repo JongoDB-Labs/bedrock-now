@@ -627,15 +627,15 @@ test_sync_env_points_open_webui_at_the_stt_container() {
   _probed voxtral-small voxtral-mini
   printf 'STT_PROVIDER=bedrock\nSTT_MODEL=voxtral-mini\n' > "$ENV_FILE"
   stt_sync_env
-  assert_eq "$(get_env OWUI_STT_ENGINE)|$(get_env OWUI_STT_BASE_URL)|$(get_env STT_BEDROCK_MODEL)" "openai|http://stt:8000/v1|voxtral-mini"
+  assert_eq "$(get_env OWUI_STT_ENGINE)|$(get_env OWUI_STT_BASE_URL)|$(get_env STT_BEDROCK_MODEL)" "openai|http://caddy:8090/v1|voxtral-mini"
   # switching to OpenAI: back to LiteLLM's "stt" model (compose's default base URL)
-  printf 'STT_PROVIDER=openai\nSTT_API_KEY=%s\nOWUI_STT_BASE_URL=http://stt:8000/v1\nSTT_BEDROCK_MODEL=voxtral-mini\n' "$OKEY" > "$ENV_FILE"
+  printf 'STT_PROVIDER=openai\nSTT_API_KEY=%s\nOWUI_STT_BASE_URL=http://caddy:8090/v1\nSTT_BEDROCK_MODEL=voxtral-mini\n' "$OKEY" > "$ENV_FILE"
   stt_sync_env
   assert_eq "$(get_env OWUI_STT_ENGINE)" openai
   assert_not_contains "$(cat "$ENV_FILE")" "OWUI_STT_BASE_URL"
   assert_not_contains "$(cat "$ENV_FILE")" "STT_BEDROCK_MODEL"
   # off: all three gone
-  printf 'STT_PROVIDER=bedrock\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://stt:8000/v1\n' > "$ENV_FILE"
+  printf 'STT_PROVIDER=bedrock\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://caddy:8090/v1\n' > "$ENV_FILE"
   _probed
   stt_sync_env 2>/dev/null
   assert_not_contains "$(cat "$ENV_FILE")" "OWUI_STT"
@@ -660,7 +660,7 @@ test_cmd_set_bedrock_needs_no_key_then_status_and_remove() {
   assert_contains "$out" "Bedrock Mistral Voxtral Mini"
   assert_contains "$out" "stays in your AWS account"
   assert_eq "$(get_env STT_PROVIDER)|$(get_env STT_MODEL)|$(get_env STT_API_KEY)" "bedrock|voxtral-mini|"   # the old key is gone
-  assert_eq "$(get_env OWUI_STT_BASE_URL)" http://stt:8000/v1
+  assert_eq "$(get_env OWUI_STT_BASE_URL)" http://caddy:8090/v1
   assert_eq "$(cat "$STATE_DIR/stt-choice")" bedrock
   [ ! -e "$TMP/calls" ]   # nothing sent anywhere
   st="$(cmd_stt status)"
@@ -738,7 +738,7 @@ test_upgrade_without_a_choice_gets_bedrock() {
 
 test_after_probe_turns_bedrock_off_when_voxtral_is_gone_and_keeps_the_choice() {
   _probed
-  printf 'STT_PROVIDER=bedrock\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://stt:8000/v1\n' > "$ENV_FILE"; stt_set_choice bedrock
+  printf 'STT_PROVIDER=bedrock\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://caddy:8090/v1\n' > "$ENV_FILE"; stt_set_choice bedrock
   out="$(stt_after_probe 2>&1)"
   assert_contains "$out" "Bedrock speech-to-text is off"
   assert_contains "$out" "AWS Marketplace"
@@ -817,17 +817,18 @@ test_compose_stt_service_is_locked_down() {
   assert_not_contains "$s" "ports:"
   assert_not_contains "$s" "AWS_"
   assert_not_contains "$s" "KEY"
-  # only the internal "stt" network: no egress (shared with LiteLLM, Open WebUI and the portal's health check)
+  # only the internal "stt" network: no internet access; shared with LiteLLM and Caddy only
   assert_contains "$s" "    networks: [stt]"
   c="$(cat "$STACK_DIR/compose.yaml")"
   assert_contains "$c" "networks:
   default:"
   assert_contains "$(sed -n '/^networks:/,/^volumes:/p' "$STACK_DIR/compose.yaml")" "  stt:
     internal: true"
-  for svc in litellm open-webui portal; do
+  for svc in litellm caddy; do
     assert_contains "$(sed -n "/^  $svc:/,/^  [a-z-]*:\$/p" "$STACK_DIR/compose.yaml" | sed '1d;$d')" "networks: [default, stt]" || { echo "$svc" >&2; return 1; }
   done
-  for svc in postgres rustfs shared-mcp caddy; do
+  # Open WebUI trusts X-Portal-User from its peers: it and the portal never share a network with stt
+  for svc in open-webui portal postgres rustfs shared-mcp; do
     assert_not_contains "$(sed -n "/^  $svc:/,/^  [a-z-]*:\$/p" "$STACK_DIR/compose.yaml" | sed '1d;$d')" "stt]" || { echo "$svc" >&2; return 1; }
   done
   assert_contains "$s" "/tmp:size=192m"
@@ -860,12 +861,12 @@ test_stack_services_include_stt_only_for_bedrock() {
 }
 
 test_stt_container_is_started_and_removed() {
-  _stt_image_age_days() { echo 1; }
+  stt_apk_week() { echo 2026-42; }
   dc() { echo "dc $*" >> "$TMP/seq"; case "$*" in "ps -aq stt") echo abc ;; esac; }
   run_phase() { echo "phase $1" >> "$TMP/seq"; "${@:3}"; }
   printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"
   stt_service_up
-  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "phase Speech-to-text (Bedrock Voxtral);dc build -q stt;dc up -d --no-deps --wait stt;"
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "phase Speech-to-text (Bedrock Voxtral);dc build -q --build-arg APK_REFRESH=2026-42 stt;dc up -d --no-deps --wait stt;"
   [ -e "$STATE_DIR/stt-service" ]
   # off: removed once (never a docker call when no stt container was ever started)
   : > "$TMP/seq"; printf 'X=1\n' > "$ENV_FILE"
@@ -935,11 +936,14 @@ test_setup_falls_back_to_browser_when_the_container_does_not_start() {
   _probed voxtral-small
   printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"; stt_sync_env
   assert_eq "$(get_env OWUI_STT_ENGINE)" openai
-  run_phase() { echo "PHASE $1" >> "$TMP/seq"; return 1; }
-  dc() { echo "dc $*" >> "$TMP/seq"; }
+  _stt_build_and_up() { echo "build failed: apk fetch error" ; : > "$STATE_DIR/stt-service"; return 1; }
+  dc() { echo "dc $*" >> "$TMP/seq"; case "$1" in logs) echo "stt log line" ;; esac; }
   out="$(stt_setup_service 2>&1)"   # returns normally: setup goes on and starts Open WebUI next
   assert_contains "$out" "did not start"
-  assert_contains "$out" "next ./stack setup tries again"
+  assert_contains "$out" "build failed: apk fetch error"   # the build output and the container's log, right here…
+  assert_contains "$out" "stt log line"
+  assert_not_contains "$out" "./stack logs stt"            # …not a pointer to a container that is removed
+  assert_contains "$out" "next ./stack setup tries Bedrock speech-to-text again"
   assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)$(get_env OWUI_STT_BASE_URL)" ""   # Open WebUI: browser engine
   [ -e "$STATE_DIR/stt-start-failed" ]
   # ./stack up does not retry (nothing chosen in .env); the next setup does, with one line
@@ -949,7 +953,7 @@ test_setup_falls_back_to_browser_when_the_container_does_not_start() {
   assert_eq "$(get_env STT_PROVIDER)" bedrock
   [ ! -e "$STATE_DIR/stt-start-failed" ]
   # a successful start clears the mark
-  : > "$STATE_DIR/stt-start-failed"; run_phase() { return 0; }
+  : > "$STATE_DIR/stt-start-failed"; _stt_build_and_up() { :; }; _now() { echo 0; }
   stt_setup_service 2>/dev/null
   [ ! -e "$STATE_DIR/stt-start-failed" ]
 }
@@ -989,14 +993,31 @@ test_stack_test_checks_bedrock_speech_to_text() {
   assert_contains "$(cat "$TMP/stdin")" "sk-setupkey123"      # the key goes on stdin…
   assert_not_contains "$(cat "$TMP/argv")" "sk-setupkey123"   # …never on a command line
   assert_contains "$(cat "$TMP/argv")" "dc exec -T stt python -c"
-  # a failure is counted
-  dc() { cat > /dev/null; echo "403 Bedrock refused voxtral-small"; }
+  # chosen explicitly: a failure is counted
+  stt_set_choice bedrock
+  dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "403 Bedrock refused voxtral-small" ;; esac; }
   fails=0; out="$(stt_test_checks; echo "fails=$fails")"
   assert_contains "$out" "FAIL  speech-to-text, 1 s tone"
-  assert_contains "$out" "fails=2"
+  assert_contains "$out" "fails=1"
+  # throttled: not checked, not a failure
+  dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "429 Bedrock is throttling" ;; esac; }
+  fails=0; out="$(stt_test_checks; echo "fails=$fails")"
+  assert_contains "$out" "skip  speech-to-text, 1 s tone"
+  assert_contains "$out" "fails=0"
+  # on by default (no choice): a failure turns it off instead of failing setup or an update
+  rm -f "$STATE_DIR/stt-choice"
+  dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; *) cat > /dev/null 2>&1; echo "403 Bedrock refused voxtral-small" ;; esac; }
+  : > "$STATE_DIR/stt-service"
+  fails=0; out="$(stt_test_checks 2>&1; echo "fails=$fails")"
+  assert_contains "$out" "goes back to browser speech"
+  assert_contains "$out" "fails=0"
+  assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)" ""
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait open-webui"
+  [ -e "$STATE_DIR/stt-start-failed" ]
   # off: nothing
   printf 'X=1\n' > "$ENV_FILE"; : > "$TMP/argv"
   assert_eq "$(stt_test_checks)" ""
+  assert_eq "$(cat "$TMP/argv")" ""
 }
 
 test_stt_test_script_is_valid_python() {
@@ -1033,13 +1054,66 @@ test_shell_bedrock_does_not_override_a_recorded_choice() {
   assert_eq "$(stt_choice)" browser
 }
 
-test_old_stt_image_is_rebuilt_without_the_cache() {
+test_ffmpeg_layer_is_refreshed_weekly_and_offline_builds_still_work() {   # review R2
+  stt_apk_week() { echo 2026-42; }
   dc() { echo "dc $*" >> "$TMP/seq"; }
-  _stt_image_age_days() { echo 20; }
   _stt_build
-  _stt_image_age_days() { echo 3; }
-  _stt_build
-  _stt_image_age_days() { :; }   # no image yet
-  _stt_build
-  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "dc build -q --no-cache stt;dc build -q stt;dc build -q stt;"
+  assert_eq "$(cat "$TMP/seq")" "dc build -q --build-arg APK_REFRESH=2026-42 stt"
+  assert_eq "$(cat "$STATE_DIR/stt-apk-week")" 2026-42
+  # a new week, offline: the new value fails, the last good one (Docker's cached layer) is used, with a warning
+  : > "$TMP/seq"; stt_apk_week() { echo 2026-43; }
+  dc() { echo "dc $*" >> "$TMP/seq"; case "$*" in *2026-43*) return 1 ;; esac; }
+  out="$(_stt_build 2>&1)"
+  assert_contains "$out" "could not refresh ffmpeg"
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "dc build -q --build-arg APK_REFRESH=2026-43 stt;dc build -q --build-arg APK_REFRESH=2026-42 stt;"
+  assert_eq "$(cat "$STATE_DIR/stt-apk-week")" 2026-42
+  # no earlier good build: the failure is reported to the caller
+  rm -f "$STATE_DIR/stt-apk-week"
+  if _stt_build 2>/dev/null; then return 1; fi
+  # the Dockerfile uses it right before the apk layer, after the pip layer
+  d="$(cat "$T_ROOT/stt/Dockerfile")"
+  case "$d" in *"RUN pip install"*"ARG APK_REFRESH"*"RUN apk add"*) ;; *) echo "ARG APK_REFRESH placement" >&2; return 1 ;; esac
+  assert_contains "$(grep '^stt_apk_week()' "$T_ROOT/lib/stt.sh")" "date -u +%G-%V"   # the ISO week
+}
+
+test_open_webui_reaches_stt_only_through_caddys_internal_site() {   # review R1
+  printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"; STACK_DIR="$TMP"
+  stt_sync_env
+  assert_eq "$(get_env OWUI_STT_BASE_URL)" http://caddy:8090/v1
+  site="$(sed -n '/^http:\/\/:8090 {/,/^}/p' "$T_ROOT/caddy/Caddyfile")"
+  assert_contains "$site" "reverse_proxy @stt stt:8000"
+  assert_contains "$site" "@stt path /v1/audio/transcriptions /healthz"
+  for h in X-Portal-User X-Portal-Remote X-Portal-Proxy Tailscale-User-Login Cookie; do
+    assert_contains "$site" "request_header -$h" || return 1
+  done
+  assert_not_contains "$site" "PORTAL_PROXY_SECRET"   # the portal's secret never goes to stt
+  assert_not_contains "$site" "import local_request"
+  # not published: compose maps only Caddy's 8080
+  assert_not_contains "$(cat "$T_ROOT/compose.yaml" "$T_ROOT/compose.tailscale.yaml" "$T_ROOT/compose.domain.yaml")" ":8090\""
+  assert_eq "$(cat "$T_ROOT/compose.yaml" "$T_ROOT/compose.tailscale.yaml" "$T_ROOT/compose.domain.yaml" | grep -cE '^[[:space:]]*- "[^"]*8090' || true)" 0
+}
+
+test_stt_set_bedrock_restores_the_previous_setting_when_the_container_fails() {   # review R5
+  _probed voxtral-small
+  mkdir -p "$TMP/litellm"; : > "$TMP/litellm/config.yaml"
+  printf 'LITELLM_MASTER_KEY=sk-m\nSTT_PROVIDER=openai\nSTT_API_KEY=%s\nSTT_MODEL=whisper-1\n' "$OKEY" > "$ENV_FILE"; stt_set_choice openai
+  stt_sync_env
+  dc() { echo "dc $*" >> "$TMP/seq"; case "$1" in ps) echo abc ;; esac; }
+  run_phase() { case "$1" in "Speech-to-text (Bedrock Voxtral)") return 1 ;; esac; "${@:3}"; }
+  render_config() { echo RENDER >> "$TMP/seq"; }
+  _stt_build_profiled() { :; }
+  if out="$( (cmd_stt set bedrock) 2>&1)"; then return 1; fi
+  assert_contains "$out" "the stt container did not start"
+  assert_contains "$out" "your previous speech-to-text setting is back: OpenAI whisper-1"
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env STT_API_KEY)|$(get_env STT_MODEL)" "openai|$OKEY|whisper-1"
+  assert_eq "$(get_env OWUI_STT_ENGINE)|$(get_env OWUI_STT_BASE_URL)" "openai|"
+  assert_eq "$(stt_choice)" openai
+  assert_contains "$(cat "$TMP/seq")" "dc rm -sf stt"
+  assert_contains "$(cat "$TMP/seq")" "dc up -d --no-deps --wait open-webui"
+  # from browser speech: back to it, and no choice is invented
+  printf 'LITELLM_MASTER_KEY=sk-m\n' > "$ENV_FILE"; rm -f "$STATE_DIR/stt-choice"
+  if out="$( (cmd_stt set bedrock) 2>&1)"; then return 1; fi
+  assert_contains "$out" "is back: browser speech"
+  assert_eq "$(get_env STT_PROVIDER)" ""
+  [ ! -e "$STATE_DIR/stt-choice" ]
 }

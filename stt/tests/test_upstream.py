@@ -61,6 +61,9 @@ def test_clean_transcript(raw, want):
 def test_cut_answer_keeps_the_words_after_the_json_opening():
     assert upstream.clean_transcript('{"transcript": "one two \\"three\\" four', cut=True) == 'one two "three" four'
     assert upstream.clean_transcript('```json\n{"transcript": "one two', cut=True) == "one two"
+    assert upstream.clean_transcript('{"transcript": "caf\\u00e9 \\u00f', cut=True) == "café"     # half an escape dropped
+    assert upstream.clean_transcript('{"transcript": "line\\none\\', cut=True) == "line\none"
+    assert upstream.clean_transcript('{"transcript": "tab\\x bad', cut=True) == "tab\\x bad"       # not JSON: kept
     # not cut: an unclosed JSON is left as it is
     assert upstream.clean_transcript('{"transcript": "one two') == '{"transcript": "one two'
     doc = {"output": {"message": {"content": [{"text": '{"transcript": "a b'}]}}, "stopReason": "max_tokens"}

@@ -12,17 +12,27 @@ Back to the [README](../README.md#security-model).
   that. The role is only ever used on a machine whose firmware says EC2. Every secret lives in `.env` (mode 600, never committed).
 - The `stt` container (Bedrock speech-to-text, only while `STT_PROVIDER=bedrock`) holds no AWS credentials and
   no key of its own: it forwards the caller's LiteLLM key (Open WebUI's), so LiteLLM checks it and books the
-  spend on it. Its only network is an **internal** Docker network (`stt`) shared with LiteLLM, Open WebUI and
-  the portal: no route to the internet or the host, and no published port. It runs as an unprivileged user with
+  spend on it. Its only network is an **internal** Docker network (`stt`) shared with LiteLLM and Caddy: no
+  internet access and no published port. Open WebUI and the portal reach it only through Caddy's internal
+  `:8090` site (not published; it removes `X-Portal-*` and cookies and passes two paths), a one-way hop: the
+  stt container cannot reach Open WebUI (see the next point) or the portal. On Linux, a container on an
+  internal network can still reach the host through the network's gateway address, so services on your
+  computer that listen on `0.0.0.0` are reachable from it (Docker Desktop on macOS has no such path). It runs as an unprivileged user with
   a read-only file system, no capabilities, `no-new-privileges`, an in-memory `/tmp` and memory/process
   limits, three requests at a time; upload limits count the bytes actually received (25 MB; other form fields
   64 KB). It accepts only audio formats it recognizes by their first bytes (WebM, Ogg, MP4, WAV, MP3, AAC,
   FLAC; 10 minutes at most) and runs ffmpeg without a shell, with the demuxer forced to that format, local
   files only (`-protocol_whitelist file`), only the audio decoders recordings need (`-codec_whitelist`), and a
   timeout (ffmpeg is also killed when a request is cancelled). Each recording is deleted right after the
-  request; no audio or transcripts are logged. ffmpeg comes from Alpine's repository: setup rebuilds the image
-  without Docker's cache when it is more than 14 days old, so Alpine's ffmpeg security fixes arrive with the
-  next `./stack update`.
+  request; no audio or transcripts are logged. ffmpeg comes from Alpine's repository: the image build passes
+  the ISO week (`APK_REFRESH`), so the ffmpeg layer is reinstalled at most weekly at setup / `./stack update`,
+  with Alpine's security fixes; offline, the previous week's layer is reused.
+- **Open WebUI trusts `X-Portal-User` from any container that can reach it** (that is how the portal's login
+  reaches it, `WEBUI_AUTH_TRUSTED_EMAIL_HEADER`): whoever can send it a request on its network can act as any
+  user, including the admin. Browsers only reach it through Caddy, which deletes a client-sent header and sets
+  it only for a valid portal session. The containers that share its network (`default`) are Caddy, the portal,
+  LiteLLM, Postgres, RustFS and shared-mcp — all part of the stack. The stt container (ffmpeg parsing untrusted
+  audio) and the Tailscale sidecar do not.
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
   `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
 - LiteLLM uses its **bundled** price map (no runtime fetch from GitHub); our prices override it. LiteLLM's

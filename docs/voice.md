@@ -48,13 +48,13 @@ it: `./stack models --recheck`, then `./stack stt set bedrock` (or just `./stack
 ## How Bedrock speech-to-text works
 
 ```
-browser ──(webm/opus or mp4/aac)──▶ Open WebUI ──▶ stt container ──(16 kHz MP3)──▶ LiteLLM ──▶ Bedrock (Voxtral)
-                         Open WebUI's own LiteLLM key, forwarded ──────────────────▲ spend + budget
+browser ─(webm/opus, mp4/aac)─▶ Open WebUI ─▶ Caddy :8090 ─▶ stt container ─(16 kHz MP3)─▶ LiteLLM ─▶ Bedrock
+                    Open WebUI's own LiteLLM key, forwarded ──────────────────────────────▲ spend + budget
 ```
 
 - Open WebUI's speech-to-text engine becomes `openai` (its OpenAI-compatible engine), pointed at the small
-  **`stt` container** (`AUDIO_STT_OPENAI_API_BASE_URL=http://stt:8000/v1`, model `stt`) with Open WebUI's own
-  LiteLLM key.
+  **`stt` container** through Caddy's internal site (`AUDIO_STT_OPENAI_API_BASE_URL=http://caddy:8090/v1`,
+  model `stt`) with Open WebUI's own LiteLLM key.
 - The stt container checks the recording's format from its first bytes (WebM, Ogg, MP4/M4A, WAV, MP3, AAC or
   FLAC; anything else is refused), converts it with **ffmpeg** to 16 kHz mono MP3 at 32 kbit/s, and sends it to
   **Mistral Voxtral** through **LiteLLM's Bedrock pass-through** (`/bedrock/model/voxtral-small/converse`),
@@ -93,10 +93,14 @@ browser ──(webm/opus or mp4/aac)──▶ Open WebUI ──▶ stt container
 
 With Bedrock speech-to-text, your recordings go only to **your own AWS account**: the stt container converts
 them in a temporary directory in memory that is deleted right after the request, and LiteLLM sends them to
-Bedrock in your region. The container sits alone on an **internal** Docker network shared only with LiteLLM,
-Open WebUI and the portal: it has no route to the internet or your computer, and publishes no port. It holds no
-AWS credentials and no key of its own, keeps nothing, and logs only sizes, durations and status codes — never
-audio or transcripts. LiteLLM does not store the audio either (prompt logging stays off unless you turned on
+Bedrock in your region. The container's only network is an **internal** Docker network shared with LiteLLM
+and Caddy, so it has **no internet access** and publishes no port. Open WebUI and the portal do not share a
+network with it: they reach it through Caddy's internal `:8090` site (not published), so a compromised stt
+container could not talk to Open WebUI or the portal directly. (On Linux, containers on an internal network can
+still reach the host through the network's gateway address: a service on your computer that listens on
+`0.0.0.0` is reachable from the stt container. Docker Desktop on macOS does not have that path.) The container
+holds no AWS credentials and no key of its own, keeps nothing, and logs only sizes, durations and status codes
+— never audio or transcripts. LiteLLM does not store the audio either (prompt logging stays off unless you turned on
 `LITELLM_STORE_PROMPTS`).
 
 ### Limits
@@ -117,16 +121,18 @@ audio or transcripts. LiteLLM does not store the audio either (prompt logging st
 
 The stt image is `python:3.12-alpine` pinned by digest; ffmpeg comes from that Alpine release's package
 repository (8.1.x for Alpine 3.24). bedrock-now releases move the base digest. Between releases, setup (and so
-`./stack update`) rebuilds the stt image **without Docker's cache** when it is more than 14 days old, which
-installs the newest ffmpeg 8.1.x security fix Alpine has published.
+`./stack update`) builds the image with the current ISO week as a build argument (`APK_REFRESH`, right before
+the ffmpeg layer): once a week at most, Docker reinstalls ffmpeg — the newest 8.1.x security fix Alpine has
+published — and keeps the Python layer. When that fails (offline, repository down), setup says so and builds
+with the last week that worked, from Docker's cache; voice keeps working.
 
 ### Prices (estimated)
 
 Bedrock bills Voxtral **per token**, like a chat model: Voxtral Small $0.10 per 1M input / $0.30 per 1M output
 tokens, Voxtral Mini $0.04 / $0.04 (us-east-1; the AWS Price List agrees). The audio counts as input tokens —
-in our measurements **375 tokens for every started 30 seconds** (12.5 per second: a 5 s clip cost one
-30-second block, 37 s and 55 s two, 60 s and 85 s three, 3 minutes six, 10 minutes twenty), plus ~60 tokens for
-the instruction —
+in our measurements **375 tokens per 30-second block** (12.5 per second: a 5 s clip cost one block, 37 s and
+55 s two, 85 s three, 3 minutes six, 10 minutes twenty — a clip of exactly 60 s also cost three, as the audio's
+encoding padding pushes a whole minute just past the second block), plus ~60 tokens for the instruction —
 and a minute of speech is about 200 output tokens. So for continuous speech (dictation):
 
 - Voxtral Small: ~750 × $0.10/1M + ~200 × $0.30/1M ≈ **$0.00014 per minute** (~$0.008 per hour);
