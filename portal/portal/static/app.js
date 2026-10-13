@@ -41,7 +41,7 @@ function showTab(tab) {
   if (tab !== "home" && !$(`#frames iframe[data-app="${tab}"]`)) {
     // Created on first visit and kept, so switching tabs never reloads an app.
     $("#frames").append(el("iframe", { src: appUrl(tab), "data-app": tab, title: tab[0].toUpperCase() + tab.slice(1),
-      allow: "clipboard-read; clipboard-write; microphone" }));
+      allow: "clipboard-read; clipboard-write; microphone; screen-wake-lock" }));
   }
   remember(tab);
   if (location.hash !== `#${tab}`) history.replaceState(null, "", `#${tab}`);

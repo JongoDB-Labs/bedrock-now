@@ -218,6 +218,14 @@ def test_home_renders_release_notes_without_html_parsing():
     assert 'id="update-card"' in html and 'id="copy-update"' in html
 
 
+def test_app_frames_may_keep_the_screen_awake_during_a_call():
+    import re
+    from pathlib import Path
+    js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
+    allow = re.search(r'allow: "([^"]*)"', js).group(1).split("; ")
+    assert {"microphone", "screen-wake-lock"} <= set(allow)
+
+
 def test_only_identity_encoding_is_accepted(paths):
     write_version(paths)
     seen = []

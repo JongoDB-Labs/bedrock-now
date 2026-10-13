@@ -219,6 +219,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **A voice Call in the portal's Chat tab keeps the screen awake.** The portal framed the apps without
+  `screen-wake-lock`, so the browser refused Open WebUI's wake-lock request and a phone or laptop could lock its
+  screen mid-call (the pop-out window was not affected). Found by the new end-to-end suite.
 - **`./stack restore backups/<ts>` and `./stack rollback` work from any folder.** The backup path was resolved
   against the current folder instead of the checkout, so `~/bedrock-now/stack restore backups/<ts>` run from
   elsewhere stopped with the usage message, and a rollback run from elsewhere put the code back but not the data

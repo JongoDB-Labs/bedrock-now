@@ -33,7 +33,7 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Chat: streamed answer + cost footer | e2e `browser/chat-streamed-answer` | Cheapest Haiku answers a short prompt; partial states seen while streaming (socket.io WebSocket); footer `≈ $… · N in / M out · Model · chat ≈ $…`; the task model titles the chat (title ≠ "New Chat"). |
 | Chat: file upload + RAG | e2e `browser/chat-file-upload-rag`, `browser/files-rustfs-console-pages` | A `.txt` is uploaded and processed (Open WebUI's process status "completed": embedded with Titan/Cohere via LiteLLM); Haiku answers with the codeword from it; the file is in RustFS's `openwebui` bucket (seen in the console). |
 | Chat: Call (voice) | e2e `browser/chat-voice-call` (+ `@stt-off`, `@stt-on-again`) | With Bedrock speech-to-text (the default after setup): Call opens ("Listening…", End call) with a fake microphone and no Web-STT error. With it removed: "Call feature is not supported when using Web STT engine". |
-| Chat: Call keeps the screen awake | e2e `browser/chat-voice-call-wake-lock` (**known issue 1**) | Open WebUI may hold a screen wake lock during a Call in the Chat tab. |
+| Chat: Call keeps the screen awake | e2e `browser/chat-voice-call-wake-lock` | Open WebUI may hold a screen wake lock during a Call in the Chat tab (the frame allows `screen-wake-lock`). |
 | Chat: microphone dictation | manual | Browser speech recognition (Chrome); iOS keyboard dictation tip on iPhone/iPad. |
 | Chat: web search | n/a | Off (`ENABLE_WEB_SEARCH=false`): no search toggle. |
 | Chat: image generation | manual (only when an image model is enabled) | `OWUI_ENABLE_IMAGES=true` and the image button works. |
@@ -185,13 +185,7 @@ Rules marked *unit* are proven by `tests/test_e2e_harness.sh` (part of `tests/ru
 
 Product bugs found by the suite are listed in `tests/e2e/known-issues.tsv` (their checks report XFAIL until fixed).
 
-1. **A Call in the Chat tab cannot keep the screen awake** (e2e `browser/chat-voice-call-wake-lock`, XFAIL).
-   - Reproduce: Bedrock speech-to-text on, portal → Chat → Voice mode (Call). Chromium logs
-     `Permissions policy violation: screen-wake-lock is not allowed in this document.`
-   - Cause: the portal creates the app frames with `allow: "clipboard-read; clipboard-write; microphone"`
-     (`portal/portal/static/app.js:44`), so Open WebUI's wake-lock request inside the frame is refused; a phone or
-     laptop may lock its screen during a call. The pop-out window (no frame) is not affected.
-   - Suggested fix: add `screen-wake-lock` to that allow list (and keep the test-suite check as it is).
+None open.
 
 Fixed after the suite found them:
 
@@ -201,6 +195,10 @@ Fixed after the suite found them:
    rollback run from another folder rolled the code back but not the data. `cmd_restore` now also looks in the
    checkout (and refuses a path that names two different backups), works with the absolute path, checks the
    backup before stopping anything, and `./stack rollback` passes an absolute path and refuses `..` in its record.
+2. **A Call in the Chat tab could not keep the screen awake** (e2e `browser/chat-voice-call-wake-lock`): the portal
+   framed the apps with `allow: "clipboard-read; clipboard-write; microphone"`, so Chromium refused Open WebUI's
+   wake-lock request (`Permissions policy violation: screen-wake-lock is not allowed in this document.`) and a
+   phone or laptop could lock its screen mid-call. The frames now also allow `screen-wake-lock`.
 
 Upstream behaviours the suite tolerates on purpose (not bedrock-now bugs):
 
