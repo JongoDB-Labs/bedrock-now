@@ -12,11 +12,17 @@ Back to the [README](../README.md#security-model).
   that. The role is only ever used on a machine whose firmware says EC2. Every secret lives in `.env` (mode 600, never committed).
 - The `stt` container (Bedrock speech-to-text, only while `STT_PROVIDER=bedrock`) holds no AWS credentials and
   no key of its own: it forwards the caller's LiteLLM key (Open WebUI's), so LiteLLM checks it and books the
-  spend on it. It publishes no port, runs as an unprivileged user with a read-only file system, no
-  capabilities, `no-new-privileges`, an in-memory `/tmp` and memory/process limits; it accepts only audio
-  formats it recognizes by their first bytes (WebM, Ogg, MP4, WAV, MP3, AAC, FLAC; 25 MB / 10 minutes at
-  most), runs ffmpeg without a shell, with the demuxer forced to that format, local files only and a timeout,
-  deletes each recording right after the request, and logs no audio or transcripts.
+  spend on it. Its only network is an **internal** Docker network (`stt`) shared with LiteLLM, Open WebUI and
+  the portal: no route to the internet or the host, and no published port. It runs as an unprivileged user with
+  a read-only file system, no capabilities, `no-new-privileges`, an in-memory `/tmp` and memory/process
+  limits, three requests at a time; upload limits count the bytes actually received (25 MB; other form fields
+  64 KB). It accepts only audio formats it recognizes by their first bytes (WebM, Ogg, MP4, WAV, MP3, AAC,
+  FLAC; 10 minutes at most) and runs ffmpeg without a shell, with the demuxer forced to that format, local
+  files only (`-protocol_whitelist file`), only the audio decoders recordings need (`-codec_whitelist`), and a
+  timeout (ffmpeg is also killed when a request is cancelled). Each recording is deleted right after the
+  request; no audio or transcripts are logged. ffmpeg comes from Alpine's repository: setup rebuilds the image
+  without Docker's cache when it is more than 14 days old, so Alpine's ffmpeg security fixes arrive with the
+  next `./stack update`.
 - Open WebUI's only model connection is LiteLLM. Ollama, web search and community sharing are off.
   `OFFLINE_MODE` is on (no Hugging Face downloads, no update check) and telemetry is off.
 - LiteLLM uses its **bundled** price map (no runtime fetch from GitHub); our prices override it. LiteLLM's

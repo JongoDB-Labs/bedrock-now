@@ -362,10 +362,11 @@ OpenAI, Groq or browser only).
 ./stack stt remove                     # browser speech only (no Call); setup won't turn it back on
 ```
 
-A small `stt` container converts the browser's recording (WebM/Opus or MP4/AAC) with ffmpeg to WAV and asks
-Voxtral for a verbatim transcript through LiteLLM with Open WebUI's own key, so it counts on the `open-webui`
-budget and in Home's and `./stack costs`' spend (not in Chat's per-answer cost line). Bedrock bills Voxtral per
-token; that works out to an **estimated ~$0.00014 per minute of audio** (~$0.008 per hour) for Voxtral Small.
+A small `stt` container (on an internal network, no internet) converts the browser's recording (WebM/Opus or
+MP4/AAC) with ffmpeg to MP3 and asks Voxtral for a verbatim transcript through LiteLLM with Open WebUI's own
+key, so it counts on the `open-webui` budget and in Home's and `./stack costs`' spend (not in Chat's per-answer
+cost line). Bedrock bills Voxtral per token; that works out to an **estimated ~$0.00014 per minute** of
+continuous speech (~$0.008 per hour) for Voxtral Small; each short utterance in a call costs about $0.00005.
 With it on, dictation also works in Firefox and in installed or home-screen web apps; answers in a call are
 read aloud by your browser's voices.
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -17,14 +18,14 @@ OK = {"output": {"message": {"role": "assistant", "content": [{"text": '{"transc
 
 @pytest.fixture
 def fake_ffmpeg(monkeypatch):
-    """Skips ffmpeg: returns a 1 s 16 kHz WAV for any input (the real conversion is tested in test_audio)."""
+    """Skips ffmpeg: returns 1 s of 32 kbit/s "MP3" for any input (the real conversion is tested in test_audio)."""
     seen = []
 
-    async def to_wav(data, fmt, max_seconds, timeout, workdir=None):
+    async def to_mp3(data, fmt, max_seconds, timeout, workdir=None):
         seen.append(fmt)
-        return make_wav(1.0)
+        return b"\xff\xf3" + b"\x00" * 3998
 
-    monkeypatch.setattr(audio, "to_wav", to_wav)
+    monkeypatch.setattr(audio, "to_mp3", to_mp3)
     return seen
 
 
@@ -52,7 +53,7 @@ def test_transcribes_with_the_callers_key(fake_ffmpeg):
     req = route.calls.last.request
     assert req.headers["authorization"] == "Bearer sk-openwebui-key"   # forwarded as-is: spend lands on that key
     body = json.loads(req.content)
-    assert body["messages"][0]["content"][1]["audio"]["format"] == "wav"
+    assert body["messages"][0]["content"][1]["audio"]["format"] == "mp3"
     assert "'en'" in body["messages"][0]["content"][0]["text"]
     assert fake_ffmpeg == ["wav"]
 
@@ -109,7 +110,7 @@ def test_missing_file_and_wrong_content_type():
 @respx.mock
 def test_upstream_errors_become_openai_style_errors(fake_ffmpeg):
     respx.post(URL).mock(return_value=httpx.Response(
-        400, json={"error": {"message": "Budget has been exceeded! Current cost: 5.2, Max budget: 5.0", "type": "budget_exceeded"}}))
+        400, json={"error": {"message": "Budget has been exceeded! Key=sk-...wxyz Current cost: 5.2, Max budget: 5.0", "type": "budget_exceeded"}}))
     with client() as c:
         r = post(c)
     assert r.status_code == 429
@@ -133,6 +134,10 @@ def test_settings_from_env():
         stt_app.from_env({"STT_BEDROCK_MODEL": "../../admin"})
     with pytest.raises(stt_app.ConfigError):
         stt_app.from_env({"LITELLM_URL": "file:///etc"})
+    for bad in ("..", "a..b", ".hidden", "-x", "x/y", "x" * 200, "voxtral small"):
+        with pytest.raises(stt_app.ConfigError):
+            stt_app.from_env({"STT_BEDROCK_MODEL": bad})
+    assert stt_app.from_env({"STT_BEDROCK_MODEL": "us.mistral.voxtral-small-24b-2507:0"}).model.startswith("us.")
 
 
 @needs_ffmpeg
@@ -144,6 +149,115 @@ def test_end_to_end_with_real_ffmpeg(tmp_path):
     assert r.status_code == 200
     sent = json.loads(route.calls.last.request.content)["messages"][0]["content"][1]["audio"]["source"]["bytes"]
     import base64
-    wav = base64.b64decode(sent)
-    assert int.from_bytes(wav[24:28], "little") == 16000
+    mp3 = base64.b64decode(sent)
+    assert mp3[:2] == b"\xff\xf3"   # MPEG-2 layer III: 16 kHz
     assert list(tmp_path.iterdir()) == []   # temp files are gone
+
+
+# --- upload limits: enforced on the bytes received ---
+
+def _multipart(file_bytes: bytes, extra: dict | None = None, boundary: str = "BNSTT") -> bytes:
+    parts = []
+    for k, v in (extra or {}).items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.webm"\r\n'
+                 'Content-Type: audio/webm\r\n\r\n'.encode() + file_bytes + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts)
+
+
+def test_chunked_upload_past_the_limit_is_a_413(fake_ffmpeg):
+    body = _multipart(b"\x1a\x45\xdf\xa3" + b"\x00" * (3 * 1024 * 1024))
+
+    def chunks():   # a generator: httpx sends Transfer-Encoding: chunked, no Content-Length
+        for i in range(0, len(body), 64 * 1024):
+            yield body[i:i + 64 * 1024]
+
+    with client(max_bytes=1024 * 1024) as c:
+        r = c.post("/v1/audio/transcriptions", headers={**AUTH, "Content-Type": "multipart/form-data; boundary=BNSTT"},
+                   content=chunks())
+    assert r.status_code == 413 and r.json()["error"]["code"] == "file_too_large"
+    assert fake_ffmpeg == []
+
+
+def test_content_length_over_the_limit_is_refused_before_reading(fake_ffmpeg):
+    body = _multipart(b"\x1a\x45\xdf\xa3" + b"\x00" * (2 * 1024 * 1024 + 10))
+    with client(max_bytes=1024 * 1024) as c:
+        r = c.post("/v1/audio/transcriptions", headers={**AUTH, "Content-Type": "multipart/form-data; boundary=BNSTT"},
+                   content=body)
+    assert r.status_code == 413 and fake_ffmpeg == []
+
+
+def test_body_longer_than_its_content_length_is_still_counted(fake_ffmpeg):
+    """A client that claims a small Content-Length but keeps sending: the receive wrapper counts real bytes."""
+    app = stt_app.create_app(stt_app.Settings(max_bytes=1024 * 1024))
+    body = _multipart(b"\x1a\x45\xdf\xa3" + b"\x00" * (3 * 1024 * 1024))
+    pieces = [body[i:i + 65536] for i in range(0, len(body), 65536)]
+    sent = []
+
+    async def receive():
+        if pieces:
+            return {"type": "http.request", "body": pieces.pop(0), "more_body": bool(pieces)}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/audio/transcriptions", "raw_path": b"/v1/audio/transcriptions",
+             "query_string": b"", "root_path": "", "scheme": "http", "server": ("stt", 8000), "client": ("x", 1),
+             "http_version": "1.1", "headers": [(b"authorization", b"Bearer sk-openwebui-key"), (b"content-length", b"1000"),
+                                                (b"content-type", b"multipart/form-data; boundary=BNSTT")]}
+    asyncio.run(app(scope, receive, send))
+    assert sent[0]["status"] == 413
+    assert len(pieces) > 0   # stopped reading early
+    assert fake_ffmpeg == []
+
+
+def test_a_huge_text_field_is_refused(fake_ffmpeg):
+    with client() as c:
+        r = post(c, prompt="word " * 40000)   # 200 KB
+    assert r.status_code == 413 and r.json()["error"]["code"] == "field_too_large"
+    assert fake_ffmpeg == []
+
+
+def test_requests_are_processed_at_most_max_parallel_at_a_time(monkeypatch):
+    active, peak = 0, 0
+
+    async def to_mp3(data, fmt, max_seconds, timeout, workdir=None):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return b"\xff\xf3" + b"\x00" * 3998
+
+    async def transcribe(*a, **k):
+        nonlocal active, peak
+        active += 1   # the upstream call counts too: one gate covers conversion and Bedrock
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return "ok"
+
+    monkeypatch.setattr(audio, "to_mp3", to_mp3)
+    monkeypatch.setattr(stt_app.upstream, "transcribe", transcribe)
+    app = stt_app.create_app(stt_app.Settings(max_parallel=2), client=httpx.AsyncClient())
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://stt") as c:
+            rs = await asyncio.gather(*(c.post("/v1/audio/transcriptions", headers=AUTH,
+                                               files={"file": ("a.wav", b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav")})
+                                        for _ in range(6)))
+        return [r.status_code for r in rs]
+
+    assert asyncio.run(run()) == [200] * 6
+    assert peak <= 2
+
+
+@respx.mock
+def test_answer_cut_at_max_tokens_keeps_the_words(fake_ffmpeg):
+    cut = {"output": {"message": {"content": [{"text": '{"transcript": "one two three four'}]}}, "stopReason": "max_tokens"}
+    respx.post(URL).mock(return_value=httpx.Response(200, json=cut))
+    with client() as c:
+        r = post(c)
+    assert r.json() == {"text": "one two three four"}

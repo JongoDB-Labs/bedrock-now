@@ -45,8 +45,9 @@ bedrock	voxtral-small	voxtral-small	-	tokens
 bedrock	voxtral-mini	voxtral-mini	-	tokens'
 
 # Bedrock bills Voxtral per token (catalog/prices.tsv). Measured on Bedrock (us-east-1, 2026-10): the audio counts
-# as ~12.5 input tokens per second (a 5 s clip: 392 input tokens, a 37 s clip: 767) plus the instruction; a minute
-# of ordinary speech is ~150-200 words (~200 output tokens). Per-minute labels are therefore estimates.
+# as 375 input tokens per started 30 seconds (12.5 per second; 5 s: one block, 37 s: two, 10 min: twenty) plus ~60
+# for the instruction; a minute of ordinary speech is ~150-200 words (~200 output tokens). Per-minute labels are
+# therefore estimates for continuous speech; a call's short utterances each pay a full block (~$0.00005 each).
 STT_EST_IN_TOKENS_PER_MIN=750
 STT_EST_OUT_TOKENS_PER_MIN=200
 
@@ -91,6 +92,9 @@ stt_model() {
 # stt_model_ready MODEL -> 0 when the last model check found that Bedrock model usable (before the first check:
 # assumed usable). stt_model_reason MODEL -> the check's reason when it is not.
 stt_model_ready() { is_enabled "$1" "$(_enabled_or_all)"; }
+# stt_model_ok MODEL -> 0 only when the model check's real request succeeded (reason "ok"); "kept" verdicts
+# (throttled, timeout, budget…) do not turn Bedrock speech-to-text on by default.
+stt_model_ok() { stt_model_ready "$1" && [ "$(stt_model_reason "$1")" = ok ]; }
 stt_model_reason() {
   local f="$STACK_DIR/litellm/probe-results.tsv" r=''
   [ ! -r "$f" ] || r="$(M="$1" awk -F'\t' '$1 == ENVIRON["M"] { print $4; exit }' "$f")"
@@ -142,6 +146,14 @@ stt_bedrock_per_minute() {
   [ -n "$in" ] || { in="$(PRICES="$(prices_catalog)" price_field "$1" in)"; out="$(PRICES="$(prices_catalog)" price_field "$1" out)"; }
   awk -v i="${in:-0}" -v o="${out:-0}" -v ti="$STT_EST_IN_TOKENS_PER_MIN" -v to="$STT_EST_OUT_TOKENS_PER_MIN" \
     'BEGIN { printf "%.8f\n", (ti * i + to * o) / 1000000 }'
+}
+
+# stt_bedrock_per_utterance MODEL -> estimated USD for one short request: one 30-second block (375 tokens) plus
+# the instruction (~60), and a short answer (~15 tokens)
+stt_bedrock_per_utterance() {
+  local in out; in="$(price_field "$1" in)"; out="$(price_field "$1" out)"
+  [ -n "$in" ] || { in="$(PRICES="$(prices_catalog)" price_field "$1" in)"; out="$(PRICES="$(prices_catalog)" price_field "$1" out)"; }
+  _stt_cut "$(awk -v i="${in:-0}" -v o="${out:-0}" 'BEGIN { printf "%.8f", (435 * i + 15 * o) / 1000000 }')" 5
 }
 
 # stt_price_label PROVIDER MODEL -> "$0.003 per minute of audio ($0.18 per hour)";
@@ -274,14 +286,16 @@ _stt_ask_choice() { # -> bedrock|openai|groq|browser|unknown
 }
 
 # setup_stt — setup step, before the model check. Settings already in .env are kept. Otherwise: STT_PROVIDER=bedrock
-# from the shell is taken as the choice (no key, nothing leaves AWS); STT_PROVIDER + STT_API_KEY for openai/groq
+# from the shell is taken as the choice when none is recorded (no key, nothing leaves AWS); an install that answered
+# the older question is offered Bedrock once (interactive only); STT_PROVIDER + STT_API_KEY for openai/groq
 # are adopted only after asking (or with BEDROCK_NOW_STT_FROM_ENV=1 when non-interactive); and an interactive setup
 # asks once: Bedrock (default), OpenAI, Groq (key, hidden) or browser only. Bedrock itself is switched on after the
 # model check (stt_after_probe). Never fatal: a rejected key means browser speech, with a warning.
 setup_stt() {
-  local p='' key='' model='' marker="$STATE_DIR/stt-asked" choice
+  local p='' key='' model='' marker="$STATE_DIR/stt-asked" choice=''
   if [ -z "$(stt_provider)$(get_env STT_API_KEY)" ]; then
-    if [ "${STT_PROVIDER:-}" = bedrock ]; then
+    choice="$(stt_choice)"
+    if [ "${STT_PROVIDER:-}" = bedrock ] && [ -z "$choice" ]; then   # a recorded choice wins over the shell
       stt_set_choice bedrock
       if [ -n "${STT_MODEL:-}" ] && model="$(stt_bedrock_model_arg "$STT_MODEL")"; then set_env STT_MODEL "$model"; fi
       model=''
@@ -290,7 +304,15 @@ setup_stt() {
       if valid_stt_provider "$STT_PROVIDER"; then
         if _stt_env_wanted "$STT_PROVIDER"; then p="$STT_PROVIDER"; key="$STT_API_KEY"; model="${STT_MODEL:-}"; fi
       else warn "STT_PROVIDER=$STT_PROVIDER in your environment is not bedrock, openai or groq — ignored"; fi
-    elif [ -z "$(stt_choice)" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+    elif [ "$choice" = legacy ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+      # Answered the older question (OpenAI/Groq/none, before Bedrock speech-to-text existed): offered once.
+      log "Voice: speech-to-text can now run on Bedrock (Mistral Voxtral): no extra key, your audio stays in your AWS account ($(_stt_short_price bedrock voxtral-small))."
+      if confirm "Turn on Bedrock speech-to-text for the microphone and voice calls?"; then
+        stt_set_choice bedrock; log "Bedrock speech-to-text: turned on after the model check, if your AWS key can use Mistral Voxtral"
+      else
+        stt_set_choice browser; log "kept browser speech (./stack stt set bedrock turns it on later)"
+      fi
+    elif [ -z "$choice" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
       choice="$(_stt_ask_choice)"
       case "$choice" in
         bedrock) stt_set_choice bedrock; log "Bedrock speech-to-text: turned on after the model check, if your AWS key can use Mistral Voxtral" ;;
@@ -319,7 +341,8 @@ _stt_unusable_warning() {
 # stt_after_probe — setup step after the model check (it knows which Voxtral models your AWS key can use):
 #  - Bedrock chosen but its model is not usable: the other Voxtral model if it is, else off with one warning
 #    (the choice is kept, so a later setup turns it on once your AWS admin enables the model);
-#  - nothing configured and no choice ever made (or Bedrock chosen in this setup): on, with one line.
+#  - nothing configured and no choice ever made: on, with one line, if the check's real request succeeded
+#    (reason "ok"); Bedrock chosen (setup question, STT_PROVIDER=bedrock): on if the model is enabled.
 stt_after_probe() {
   local p m alt choice
   p="$(stt_provider)"; choice="$(stt_choice)"
@@ -338,8 +361,11 @@ stt_after_probe() {
   elif [ -z "$p$(get_env STT_API_KEY)" ]; then
     case "$choice" in
       '' | bedrock)
+        if [ -e "$STATE_DIR/stt-start-failed" ]; then
+          log "Voice: trying Bedrock speech-to-text again (its container did not start last time)"; rm -f "$STATE_DIR/stt-start-failed"
+        fi
         for m in voxtral-small voxtral-mini; do
-          stt_model_ready "$m" || continue
+          if [ "$choice" = bedrock ]; then stt_model_ready "$m" || continue; else stt_model_ok "$m" || continue; fi
           _stt_store_bedrock "$m"
           log "Voice: Bedrock speech-to-text on ($(stt_model_label "$m"), $(_stt_short_price bedrock "$m")) — ./stack stt remove to use browser speech"
           break
@@ -356,13 +382,49 @@ stt_after_probe() {
 # stt_services -> the compose services speech-to-text adds to the stack's own ("stt" while Bedrock is chosen)
 stt_services() { [ "$(stt_provider)" != bedrock ] || echo stt; }
 
+# The stt image installs ffmpeg from its Alpine release's repository. Docker's build cache would keep that layer
+# forever, so an image older than this many days is rebuilt without the cache (setup, ./stack update): ffmpeg's
+# security fixes for that Alpine release arrive at the next update after they are published.
+STT_IMAGE_MAX_AGE_DAYS=14
+
+# _stt_image_age_days -> days since the local stt image was built, or nothing (no image yet / unknown)
+_stt_image_age_days() {
+  local created c n
+  created="$(docker image inspect --format '{{.Created}}' "$(project_name)/stt:local" 2>/dev/null | cut -c1-10)" || return 0
+  c="$(date_to_epoch "$created" 2>/dev/null)" || return 0
+  n="$(date_to_epoch "$(date -u +%Y-%m-%d)")" || return 0
+  echo $(((n - c) / 86400))
+}
+
+# _stt_build — the stt image; without the cache when it is older than STT_IMAGE_MAX_AGE_DAYS (fresh ffmpeg)
+_stt_build() {
+  local age; age="$(_stt_image_age_days)"
+  if [ -n "$age" ] && [ "$age" -gt "$STT_IMAGE_MAX_AGE_DAYS" ]; then dc build -q --no-cache stt; else dc build -q stt; fi
+}
+
+_stt_build_profiled() { _STT_PROFILE=1 _stt_build; }   # before .env says bedrock (./stack stt set bedrock)
+
 # .state/stt-service: a stt container may exist (written before it is started), so turning Bedrock off removes it.
-_stt_build_and_up() { mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; dc build -q stt && dc up -d --no-deps --wait stt; }
+_stt_build_and_up() { mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; _stt_build && dc up -d --no-deps --wait stt; }
 
 # stt_service_up — Bedrock on: build (new code after an update) and start the stt container. Off: stt_service_down.
+# For ./stack stt set (an explicit command): a failure stops it.
 stt_service_up() {
   if [ "$(stt_provider)" = bedrock ]; then run_phase "Speech-to-text (Bedrock Voxtral)" stt _stt_build_and_up
   else stt_service_down; fi
+}
+
+# stt_setup_service — setup / ./stack models --recheck: like stt_service_up, but a stt container that does not
+# build or start never stops setup or keeps Open WebUI down: speech-to-text falls back to the browser (Open WebUI
+# is started after this with the engine back on "web"), with one warning; the next setup tries again.
+stt_setup_service() {
+  if [ "$(stt_provider)" != bedrock ]; then stt_service_down; return 0; fi
+  if (run_phase "Speech-to-text (Bedrock Voxtral)" stt _stt_build_and_up); then rm -f "$STATE_DIR/stt-start-failed"; return 0; fi
+  unset_env STT_PROVIDER; unset_env STT_MODEL
+  stt_sync_env
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-start-failed"
+  stt_service_down
+  warn "Voice: the speech-to-text container did not start — the microphone uses your browser for now (setup continues; the next ./stack setup tries again, or ./stack stt set bedrock; ./stack logs stt)"
 }
 
 # stt_service_down — removes the stt container left from Bedrock speech-to-text (its profile is off by then, so
@@ -379,6 +441,22 @@ stt_service_down() {
 # stt_before_up — ./stack up, before compose starts the services (stt included while Bedrock is chosen)
 stt_before_up() {
   if [ "$(stt_provider)" = bedrock ]; then mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; else stt_service_down; fi
+}
+
+# stt_rollback_cleanup — ./stack rollback to a version from before Bedrock speech-to-text (no stt/ in it): its
+# compose file has no stt service, so the container is removed now, while this code still knows it, and the
+# settings only this version understands leave .env (Open WebUI is recreated by the rollback's restore with the
+# browser engine). The recorded choice stays: ./stack update turns it back on.
+stt_rollback_cleanup() {
+  if [ -e "$STATE_DIR/stt-service" ] || [ "$(stt_provider)" = bedrock ]; then
+    _STT_PROFILE=1 dc rm -sf stt >/dev/null 2>&1 || warn "could not remove the stt container — remove it with: docker rm -f $(project_name)-stt-1"
+  fi
+  rm -f "$STATE_DIR/stt-service" "$STATE_DIR/stt-start-failed"
+  if [ "$(stt_provider)" = bedrock ]; then
+    unset_env STT_PROVIDER; unset_env STT_MODEL; unset_env OWUI_STT_ENGINE
+    log "speech-to-text: that version has no Bedrock speech-to-text — the microphone uses your browser (./stack update brings it back)"
+  fi
+  unset_env OWUI_STT_BASE_URL; unset_env STT_BEDROCK_MODEL
 }
 
 # stt_sync_owui — the "stt" model (openai/groq) must not show up as a chat model: a hidden Open WebUI entry (like
@@ -433,13 +511,18 @@ _stt_apply() {
   if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$STACK_DIR/litellm/config.yaml" ]; then
     log "saved — ./stack setup applies it"; return 0
   fi
+  local cfg="$STACK_DIR/litellm/config.yaml" before
+  before="$(cat "$cfg")"
   render_config "$(_enabled_or_all)"
   if [ -z "$(dc ps -q litellm 2>/dev/null)" ]; then
     mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-owui-pending"   # hide (or remove) the Open WebUI entry at ./stack up
     [ "$(stt_provider)" = bedrock ] || stt_service_down
     log "saved — the stack is stopped; ./stack up applies it"; return 0
   fi
-  run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
+  # A changed config needs a new container (compose does not see a mounted file change); otherwise compose recreates
+  # it only if its environment changed (a new STT_API_KEY). Bedrock Small <-> Mini changes neither.
+  if [ "$(cat "$cfg")" != "$before" ]; then run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
+  else run_phase "LiteLLM" litellm dc up -d --no-deps --wait litellm; fi
   stt_service_up
   run_phase "Open WebUI" open-webui dc up -d --no-deps --wait open-webui
   portal_session_or_die
@@ -474,6 +557,10 @@ cmd_stt() {
         else m="$(stt_bedrock_model_arg "$m")" || die "'${3:-${STT_MODEL:-}}' is not a Bedrock speech-to-text model: small (voxtral-small) or mini (voxtral-mini)"; fi
         stt_model_ready "$m" ||
           die "$(stt_model_label "$m") is not usable with your AWS key ($(stt_model_reason "$m")) — nothing changed; ./stack models --recheck after your AWS admin enables it"
+        # Build first, while nothing has changed: a failed build leaves the current speech-to-text as it is.
+        if [ -n "$(get_env LITELLM_MASTER_KEY)" ] && [ -n "$(dc ps -q litellm 2>/dev/null)" ]; then
+          (run_phase "Speech-to-text image" stt _stt_build_profiled) || die "could not build the stt container — nothing changed (./stack stt status)"
+        fi
         _stt_store_bedrock "$m"
         stt_set_choice bedrock
         _stt_on_message
@@ -508,13 +595,47 @@ cmd_stt() {
       if [ "$(stt_provider)" = bedrock ]; then
         printf '  your speech (microphone and Call) stays in your AWS account (Bedrock%s); spend counts on the open-webui key (./stack costs)\n' \
           "$(r="$(get_env AWS_REGION_NAME)"; [ -z "$r" ] || printf ', %s' "$r")"
-        printf '  the price is an estimate: Bedrock bills Voxtral per token (~%s audio tokens per minute of speech)\n' "$STT_EST_IN_TOKENS_PER_MIN"
+        printf '  the price is an estimate for continuous speech: Bedrock bills Voxtral per token (~%s audio tokens per minute);\n' "$STT_EST_IN_TOKENS_PER_MIN"
+        printf '  each short utterance in a call pays a 30-second block: ~$%s each (docs/voice.md › Prices)\n' "$(stt_bedrock_per_utterance "$(stt_model)")"
       else
         printf '  your speech (microphone and Call) goes to %s; spend counts on the open-webui key (./stack costs)\n' "$(stt_host "$(stt_provider)")"
       fi
       printf '  answers in Call are read aloud by your browser'"'"'s voices (no server text-to-speech)\n' ;;
     *) die "usage: ./stack stt [status|set bedrock [small|mini]|set openai|groq [model]|remove]" ;;
   esac
+}
+
+# The 1-second-tone check run inside the stt container (python there; no port is published). The key arrives on
+# stdin, never on a command line. Prints the HTTP status (and Bedrock's message when it is not 200).
+STT_TEST_PY='import io, json, math, struct, sys, urllib.error, urllib.request, wave
+key = sys.stdin.readline().strip()
+buf = io.BytesIO()
+with wave.open(buf, "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+    w.writeframes(b"".join(struct.pack("<h", int(6000 * math.sin(i * 0.12))) for i in range(16000)))
+b = "stacktest"
+body = (f"--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"t.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode() + buf.getvalue() + f"\r\n--{b}--\r\n".encode()
+req = urllib.request.Request("http://127.0.0.1:8000/v1/audio/transcriptions", data=body,
+                             headers={"Authorization": "Bearer " + key, "Content-Type": "multipart/form-data; boundary=" + b})
+try:
+    print(urllib.request.urlopen(req, timeout=120).status)
+except urllib.error.HTTPError as e:
+    print(e.code, (json.load(e).get("error") or {}).get("message", "")[:160])
+except Exception as e:
+    print("000", type(e).__name__)'
+
+# stt_test_checks — ./stack test while Bedrock speech-to-text is on: the container answers /healthz, and a 1-second
+# tone goes through the whole path (stt -> LiteLLM -> Bedrock Voxtral) with the setup key (~$0.00005). Uses the
+# caller's _check/_skip and its fails counter.
+stt_test_checks() {
+  local out sk
+  [ "$(stt_provider)" = bedrock ] && stt_enabled || return 0
+  out="$(dc exec -T stt python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=10).status)' 2>/dev/null || true)"
+  _check "speech-to-text health (stt container)" "$out" 200
+  sk="$(get_env LITELLM_KEY_SETUP)"
+  if [ -z "$sk" ]; then _skip "speech-to-text (Bedrock Voxtral)" "no setup key — run ./stack setup"; return 0; fi
+  out="$(printf '%s\n' "$sk" | dc exec -T stt python -c "$STT_TEST_PY" 2>/dev/null || true)"
+  _check "speech-to-text, 1 s tone (Bedrock $(stt_model_label "$(stt_model)"))" "$out" 200
 }
 
 # stt_costs_section — ./stack costs: one line either way

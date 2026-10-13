@@ -74,6 +74,8 @@ cmd_rollback() {
   d="$(images_dir)"; mkdir -p "$d"
   now_imgs="$(project_refs | snapshot_refs)"
   log "rollback: 1/3 code ($(installed_version) → ${fromv:-$from})"
+  # A version from before Bedrock speech-to-text has no stt service: remove it while this code still knows it.
+  git -C "$STACK_DIR" cat-file -e "$from:stt/Dockerfile" 2>/dev/null || ! declare -F stt_rollback_cleanup >/dev/null || stt_rollback_cleanup
   _rollback_checkout "$from" "$branch" || die "could not check out $from — nothing else was changed"
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"

@@ -87,6 +87,7 @@ services:
       - ./litellm:/app/config:ro,z
     ports:
       - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    networks: [default, stt]   # stt: the speech-to-text container's only network (no internet)
     depends_on:
       postgres: { condition: service_healthy }
     healthcheck:
@@ -181,6 +182,7 @@ services:
       WEBUI_URL: ${REMOTE_CHAT_HOST:+https://${REMOTE_CHAT_HOST:-}}
     volumes:
       - owui:/app/backend/data
+    networks: [default, stt]
     depends_on:
       postgres: { condition: service_healthy }
       litellm: { condition: service_healthy }
@@ -224,9 +226,12 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:size=160m,mode=1777"]   # uploads and ffmpeg's work files (25 MB in, ~19 MB WAV out per request)
+    # Uploads and ffmpeg's work files: per request up to 25 MB spooled + 25 MB input + 2.4 MB MP3; three at a time.
+    tmpfs: ["/tmp:size=192m,mode=1777"]
     mem_limit: 768m
     pids_limit: 64
+    # Only the internal "stt" network (LiteLLM, Open WebUI, the portal): no route to the internet or the host.
+    networks: [stt]
     environment:
       LITELLM_URL: http://litellm:4000
       STT_BEDROCK_MODEL: ${STT_BEDROCK_MODEL:-voxtral-small}
@@ -308,6 +313,7 @@ services:
       - ./.state/update-check:/data/update-check:rw,z
       - ./.state/requests:/data/requests:rw,z
       - portal-state:/state
+    networks: [default, stt]   # stt: Home's health check of the speech-to-text container
     logging: *logging
 
   # The only way in for browsers: http://${PORTAL_HOST} and its chat./admin./files. subdomains (caddy/Caddyfile).
@@ -352,6 +358,13 @@ services:
       timeout: 5s
       retries: 6
     logging: *logging
+
+networks:
+  default:
+  # Speech-to-text (lib/stt.sh): internal, so the stt container cannot reach anything but LiteLLM, Open WebUI
+  # and the portal.
+  stt:
+    internal: true
 
 volumes:
   pgdata:

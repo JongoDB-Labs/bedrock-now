@@ -353,13 +353,17 @@ test_cmd_set_asks_for_key_hidden() {
 test_apply_rerenders_recreates_and_hides_the_model() {
   STACK_DIR="$TMP"; mkdir -p "$TMP/litellm"; : > "$TMP/litellm/config.yaml"
   printf 'LITELLM_MASTER_KEY=sk-m\nSTT_PROVIDER=openai\nSTT_API_KEY=%s\n' "$OKEY" > "$ENV_FILE"
-  render_config() { echo RENDER >> "$TMP/seq"; }
+  render_config() { echo RENDER >> "$TMP/seq"; echo "new" >> "$TMP/litellm/config.yaml"; }
   dc() { case "$1" in ps) echo abc ;; esac; }
   run_phase() { echo "PHASE $1 ${*:3}" >> "$TMP/seq"; }
   portal_session_or_die() { :; }; portal_session_end() { :; }
   stt_sync_owui() { echo HIDE >> "$TMP/seq"; }; sync_budget_banner() { echo BANNER >> "$TMP/seq"; }
   _stt_apply 2>/dev/null
   assert_eq "$(tr '\n' ';' < "$TMP/seq")" "RENDER;PHASE LiteLLM dc up -d --no-deps --force-recreate --wait litellm;PHASE Open WebUI dc up -d --no-deps --wait open-webui;HIDE;BANNER;"
+  # config unchanged (e.g. Bedrock Small <-> Mini): LiteLLM is not force-recreated (compose recreates it only for a new key)
+  : > "$TMP/seq"; render_config() { echo RENDER >> "$TMP/seq"; }
+  _stt_apply 2>/dev/null
+  assert_eq "$(sed -n 2p "$TMP/seq")" "PHASE LiteLLM dc up -d --no-deps --wait litellm"
 }
 
 test_apply_before_setup_or_when_stopped() {
@@ -813,7 +817,20 @@ test_compose_stt_service_is_locked_down() {
   assert_not_contains "$s" "ports:"
   assert_not_contains "$s" "AWS_"
   assert_not_contains "$s" "KEY"
-  assert_not_contains "$s" "networks:"
+  # only the internal "stt" network: no egress (shared with LiteLLM, Open WebUI and the portal's health check)
+  assert_contains "$s" "    networks: [stt]"
+  c="$(cat "$STACK_DIR/compose.yaml")"
+  assert_contains "$c" "networks:
+  default:"
+  assert_contains "$(sed -n '/^networks:/,/^volumes:/p' "$STACK_DIR/compose.yaml")" "  stt:
+    internal: true"
+  for svc in litellm open-webui portal; do
+    assert_contains "$(sed -n "/^  $svc:/,/^  [a-z-]*:\$/p" "$STACK_DIR/compose.yaml" | sed '1d;$d')" "networks: [default, stt]" || { echo "$svc" >&2; return 1; }
+  done
+  for svc in postgres rustfs shared-mcp caddy; do
+    assert_not_contains "$(sed -n "/^  $svc:/,/^  [a-z-]*:\$/p" "$STACK_DIR/compose.yaml" | sed '1d;$d')" "stt]" || { echo "$svc" >&2; return 1; }
+  done
+  assert_contains "$s" "/tmp:size=192m"
   assert_contains "$(cat "$STACK_DIR/stt/Dockerfile")" "python:3.12-alpine@sha256:"
   assert_contains "$(cat "$STACK_DIR/stt/Dockerfile")" "--require-hashes"
   assert_contains "$(cat "$STACK_DIR/stt/Dockerfile")" "USER stt"
@@ -843,6 +860,7 @@ test_stack_services_include_stt_only_for_bedrock() {
 }
 
 test_stt_container_is_started_and_removed() {
+  _stt_image_age_days() { echo 1; }
   dc() { echo "dc $*" >> "$TMP/seq"; case "$*" in "ps -aq stt") echo abc ;; esac; }
   run_phase() { echo "phase $1" >> "$TMP/seq"; "${@:3}"; }
   printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"
@@ -889,10 +907,139 @@ test_setup_and_recheck_run_the_bedrock_steps_in_order() {
   body="$(sed -n '/^cmd_setup() {/,/^}/p' "$STACK_DIR/lib/commands.sh" | tr -d ' ')"
   case "$body" in *setup_stt*setup_bringup_and_probe*stt_after_probe*setup_keys_and_ui*) ;; *) echo "setup order" >&2; return 1 ;; esac
   keys="$(sed -n '/^setup_keys_and_ui() {/,/^}/p' "$STACK_DIR/lib/commands.sh" | tr -d ' ')"
-  case "$keys" in *stt_service_up*'run_phase"OpenWebUI"'*) ;; *) echo "stt container before Open WebUI" >&2; return 1 ;; esac
+  case "$keys" in *stt_setup_service*'run_phase"OpenWebUI"'*) ;; *) echo "stt container before Open WebUI" >&2; return 1 ;; esac
   rc="$(sed -n '/^models_recheck() {/,/^}/p' "$STACK_DIR/lib/commands.sh")"
   assert_contains "$rc" "stt_after_probe"
-  assert_contains "$rc" "stt_service_up"
+  assert_contains "$rc" "stt_setup_service"
+  assert_contains "$(sed -n '/^cmd_test() {/,/^}/p' "$STACK_DIR/lib/commands.sh")" "stt_test_checks"
   assert_contains "$(sed -n '/^cmd_up() {/,/^}/p' "$STACK_DIR/lib/commands.sh")" "stt_before_up"
   assert_contains "$(cmd_help)" "set bedrock [small|mini]"
+}
+
+# --- review fixes ---
+
+test_default_on_needs_a_probe_that_really_succeeded() {
+  _probed voxtral-small voxtral-mini
+  # enabled, but only "kept" (throttled): no default
+  sed -i.bak 's/^\(voxtral-[a-z]*\)\tstt\tENABLED\tok/\1\tstt\tENABLED\tthrottled right now — kept; it should work shortly/' "$TMP/litellm/probe-results.tsv"
+  printf 'X=1\n' > "$ENV_FILE"
+  stt_after_probe 2>/dev/null
+  assert_eq "$(get_env STT_PROVIDER)" ""
+  # chosen explicitly: enabled is enough
+  stt_set_choice bedrock
+  stt_after_probe 2>/dev/null
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+}
+
+test_setup_falls_back_to_browser_when_the_container_does_not_start() {
+  _probed voxtral-small
+  printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"; stt_sync_env
+  assert_eq "$(get_env OWUI_STT_ENGINE)" openai
+  run_phase() { echo "PHASE $1" >> "$TMP/seq"; return 1; }
+  dc() { echo "dc $*" >> "$TMP/seq"; }
+  out="$(stt_setup_service 2>&1)"   # returns normally: setup goes on and starts Open WebUI next
+  assert_contains "$out" "did not start"
+  assert_contains "$out" "next ./stack setup tries again"
+  assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)$(get_env OWUI_STT_BASE_URL)" ""   # Open WebUI: browser engine
+  [ -e "$STATE_DIR/stt-start-failed" ]
+  # ./stack up does not retry (nothing chosen in .env); the next setup does, with one line
+  assert_eq "$(stt_services)" ""
+  out="$(stt_after_probe 2>&1)"
+  assert_contains "$out" "trying Bedrock speech-to-text again"
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+  [ ! -e "$STATE_DIR/stt-start-failed" ]
+  # a successful start clears the mark
+  : > "$STATE_DIR/stt-start-failed"; run_phase() { return 0; }
+  stt_setup_service 2>/dev/null
+  [ ! -e "$STATE_DIR/stt-start-failed" ]
+}
+
+test_stt_set_bedrock_builds_first_and_changes_nothing_when_that_fails() {
+  _probed voxtral-small
+  mkdir -p "$TMP/litellm"; : > "$TMP/litellm/config.yaml"
+  printf 'LITELLM_MASTER_KEY=sk-m\nSTT_PROVIDER=openai\nSTT_API_KEY=%s\n' "$OKEY" > "$ENV_FILE"
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  run_phase() { echo "PHASE $1" >> "$TMP/seq"; return 1; }
+  _stt_apply() { echo APPLY >> "$TMP/seq"; }
+  if out="$( (cmd_stt set bedrock) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not build the stt container — nothing changed"
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env STT_API_KEY)" "openai|$OKEY"
+  assert_eq "$(cat "$TMP/seq")" "PHASE Speech-to-text image"
+}
+
+test_status_after_up_lists_stt_once() {
+  printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"
+  _as_cmd_up() {   # cmd_up keeps a local STACK_SERVICES with stt, then calls cmd_status -> status_table
+    local extra; extra="$(stt_services)"
+    local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"
+    printf 'stt\trunning\thealthy\t0\n' | status_table
+  }
+  assert_eq "$(_as_cmd_up | grep -c '^  stt ')" 1
+  assert_eq "$(stack_services)" "$STACK_BASE_SERVICES stt"
+}
+
+test_stack_test_checks_bedrock_speech_to_text() {
+  _probed voxtral-small
+  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"
+  dc() { echo "dc $*" | cut -c1-60 >> "$TMP/argv"; cat >> "$TMP/stdin"; echo 200; }
+  fails=0
+  out="$(stt_test_checks)"
+  assert_contains "$out" "ok    speech-to-text health (stt container)"
+  assert_contains "$out" "ok    speech-to-text, 1 s tone (Bedrock Mistral Voxtral Small)"
+  assert_contains "$(cat "$TMP/stdin")" "sk-setupkey123"      # the key goes on stdin…
+  assert_not_contains "$(cat "$TMP/argv")" "sk-setupkey123"   # …never on a command line
+  assert_contains "$(cat "$TMP/argv")" "dc exec -T stt python -c"
+  # a failure is counted
+  dc() { cat > /dev/null; echo "403 Bedrock refused voxtral-small"; }
+  fails=0; out="$(stt_test_checks; echo "fails=$fails")"
+  assert_contains "$out" "FAIL  speech-to-text, 1 s tone"
+  assert_contains "$out" "fails=2"
+  # off: nothing
+  printf 'X=1\n' > "$ENV_FILE"; : > "$TMP/argv"
+  assert_eq "$(stt_test_checks)" ""
+}
+
+test_stt_test_script_is_valid_python() {
+  command -v python3 >/dev/null || return 77
+  printf '%s\n' "$STT_TEST_PY" > "$TMP/t.py"
+  python3 -m py_compile "$TMP/t.py"
+  # no single quote: it is passed inside a single-quoted shell string
+  assert_not_contains "$STT_TEST_PY" "'"
+}
+
+test_legacy_install_is_offered_bedrock_once() {
+  STACK_DIR="$TMP"; : > "$ENV_FILE"; mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-asked"
+  _have_tty() { return 0; }
+  ask() { echo "ASK $1" >> "$TMP/asked"; echo y; }
+  out="$(setup_stt 2>&1)"
+  assert_contains "$out" "can now run on Bedrock"
+  assert_eq "$(stt_choice)" bedrock
+  : > "$TMP/asked"; setup_stt 2>/dev/null
+  assert_eq "$(cat "$TMP/asked")" ""   # once
+  # declined: browser, remembered
+  rm -f "$STATE_DIR/stt-choice"; ask() { echo n; }
+  setup_stt 2>/dev/null
+  assert_eq "$(stt_choice)" browser
+  # non-interactive: unchanged
+  rm -f "$STATE_DIR/stt-choice"; ask() { echo ASKED >> "$TMP/asked2"; echo y; }
+  ASSUME_YES=1 setup_stt 2>/dev/null
+  assert_eq "$(stt_choice)" legacy
+  [ ! -e "$TMP/asked2" ]
+}
+
+test_shell_bedrock_does_not_override_a_recorded_choice() {
+  STACK_DIR="$TMP"; : > "$ENV_FILE"; stt_set_choice browser
+  ASSUME_YES=1 STT_PROVIDER=bedrock setup_stt 2>/dev/null
+  assert_eq "$(stt_choice)" browser
+}
+
+test_old_stt_image_is_rebuilt_without_the_cache() {
+  dc() { echo "dc $*" >> "$TMP/seq"; }
+  _stt_image_age_days() { echo 20; }
+  _stt_build
+  _stt_image_age_days() { echo 3; }
+  _stt_build
+  _stt_image_age_days() { :; }   # no image yet
+  _stt_build
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "dc build -q --no-cache stt;dc build -q stt;dc build -q stt;"
 }

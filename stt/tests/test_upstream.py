@@ -7,16 +7,22 @@ from stt_service import upstream
 
 
 def test_body_has_audio_and_instruction_in_one_user_message():
-    b = upstream.converse_body(b"RIFFwav", 10.0, "en", None)
+    b = upstream.converse_body(b"\xff\xf3mp3", 10.0, "en", None)
     assert len(b["messages"]) == 1 and b["messages"][0]["role"] == "user"
     t, a = b["messages"][0]["content"]   # instruction first: after the audio, Voxtral answered spoken questions
-    assert a["audio"]["format"] == "wav"
-    assert base64.b64decode(a["audio"]["source"]["bytes"]) == b"RIFFwav"
+    assert a["audio"]["format"] == "mp3"
+    assert base64.b64decode(a["audio"]["source"]["bytes"]) == b"\xff\xf3mp3"
     assert "verbatim" in t["text"] and "do not answer" in t["text"] and "'en'" in t["text"]
     assert '{"transcript"' in t["text"]
     assert "system" not in b  # Voxtral refuses a system message next to audio
     assert b["inferenceConfig"]["temperature"] == 0
-    assert 128 <= b["inferenceConfig"]["maxTokens"] <= 8192
+    assert b["inferenceConfig"]["maxTokens"] == 64 + 150
+
+
+def test_max_tokens_follow_the_length():
+    assert upstream.max_tokens(2) == 94           # a short utterance: a runaway answer stops early
+    assert upstream.max_tokens(60) == 964         # ~15 tokens per second, 3x fast speech
+    assert upstream.max_tokens(600) == 8192       # capped
 
 
 def test_language_hint_is_validated_and_prompt_is_bounded():
@@ -24,6 +30,9 @@ def test_language_hint_is_validated_and_prompt_is_bounded():
     assert "'pt-BR'" in upstream.instruction("pt-BR", None)
     t = upstream.instruction(None, "Kubernetes\n" + "x" * 2000)
     assert "Kubernetes" in t and "\n" not in t and len(t) < len(upstream.INSTRUCTION) + 700
+    # a huge prompt is cut before it is split (bounded work and memory)
+    t = upstream.instruction(None, "a " * 5_000_000)
+    assert len(t) < len(upstream.INSTRUCTION) + 700
 
 
 def test_transcript_from_converse_answer():
@@ -43,14 +52,28 @@ def test_transcript_from_converse_answer():
     ('{"transcript": 5}', '{"transcript": 5}'),
     ('He said {not json} today', "He said {not json} today"),
     ("", ""),
+    ('{"transcript": "A {b} c"} trailing words', "A {b} c"),
 ])
 def test_clean_transcript(raw, want):
     assert upstream.clean_transcript(raw) == want
 
 
+def test_cut_answer_keeps_the_words_after_the_json_opening():
+    assert upstream.clean_transcript('{"transcript": "one two \\"three\\" four', cut=True) == 'one two "three" four'
+    assert upstream.clean_transcript('```json\n{"transcript": "one two', cut=True) == "one two"
+    # not cut: an unclosed JSON is left as it is
+    assert upstream.clean_transcript('{"transcript": "one two') == '{"transcript": "one two'
+    doc = {"output": {"message": {"content": [{"text": '{"transcript": "a b'}]}}, "stopReason": "max_tokens"}
+    assert upstream.transcript_from(doc) == "a b"
+
+
 @pytest.mark.parametrize("status,body,code,words", [
-    (400, '{"error":{"message":"Budget has been exceeded! Current cost: 5.1, Max budget: 5.0","type":"budget_exceeded"}}',
+    (400, '{"error":{"message":"Budget has been exceeded! Key=sk-...abcd Current cost: 5.1, Max budget: 5.0","type":"budget_exceeded"}}',
      "budget_exceeded", "BUDGET_OPENWEBUI"),
+    (400, '{"error":{"message":"Budget has been exceeded! Team=t1 Current cost: 5.1, Max budget: 5.0","type":"budget_exceeded"}}',
+     "budget_exceeded", "Team=t1"),
+    (400, '{"detail":{"error":"validation_error: Failed to buffer the request body: length limit exceeded"}}',
+     "audio_too_long", "too long"),
     (401, '{"error":{"message":"Authentication Error, Invalid proxy server token passed. key=sk-abcdef123456"}}',
      "invalid_api_key", "./stack setup"),
     (403, '{"message":"You don\'t have access to the model with the specified model ID."}', "model_access_denied", "AWS admin"),

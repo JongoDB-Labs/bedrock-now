@@ -3,7 +3,7 @@
 POST {litellm}/bedrock/model/<model>/converse with the caller's Authorization header: LiteLLM checks that key,
 signs the request with the stack's AWS credentials and books the spend on the key (its budget applies).
 Voxtral is a chat model: it gets the instruction and then the audio in ONE user message (it refuses a system
-message next to audio), temperature 0, and answers {"transcript": "..."}.
+message next to audio), temperature 0, and answers {"transcript": "..."}. The audio is the MP3 audio.py makes.
 """
 
 from __future__ import annotations
@@ -35,19 +35,24 @@ def instruction(language: str | None, prompt: str | None) -> str:
     if language and LANG_RE.match(language):
         text += f" The speaker most likely uses the language with code '{language}'."
     if prompt:
-        hint = " ".join(prompt.split())[:MAX_PROMPT]
+        hint = " ".join(prompt[:MAX_PROMPT * 4].split())[:MAX_PROMPT]   # cut before splitting: bounded work
         text += f" Spelling hints for names and terms that may occur (never output them unless spoken): {hint}"
     return text
 
 
-def converse_body(wav: bytes, seconds: float, language: str | None = None, prompt: str | None = None) -> dict:
+def max_tokens(seconds: float) -> int:
+    """Speech is ~3-5 tokens per second; the cap stops a runaway answer (Voxtral once repeated a 60 s clip until
+    8192 tokens) without cutting fast speech."""
+    return int(min(8192, 64 + seconds * 15))
+
+
+def converse_body(mp3: bytes, seconds: float, language: str | None = None, prompt: str | None = None) -> dict:
     return {
         "messages": [{"role": "user", "content": [
             {"text": instruction(language, prompt)},
-            {"audio": {"format": "wav", "source": {"bytes": base64.b64encode(wav).decode("ascii")}}},
+            {"audio": {"format": "mp3", "source": {"bytes": base64.b64encode(mp3).decode("ascii")}}},
         ]}],
-        # speech is ~3-4 tokens per second; the cap only stops a runaway answer
-        "inferenceConfig": {"temperature": 0, "maxTokens": int(min(8192, 128 + seconds * 10))},
+        "inferenceConfig": {"temperature": 0, "maxTokens": max_tokens(seconds)},
     }
 
 
@@ -57,19 +62,27 @@ def transcript_from(doc: object) -> str:
     except (KeyError, TypeError):
         raise UpstreamError(502, "bad_upstream_response", "Bedrock answered without a transcript")
     texts = [p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
-    return clean_transcript(" ".join(t.strip() for t in texts).strip())
+    cut = isinstance(doc, dict) and doc.get("stopReason") == "max_tokens"
+    return clean_transcript(" ".join(t.strip() for t in texts).strip(), cut)
 
 
-def clean_transcript(text: str) -> str:
-    """{"transcript": "…"} (also inside a ```json fence) -> the words; plain text is kept, minus wrapping quotes."""
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
+_PREFIX = re.compile(r'^\s*(?:```(?:json)?\s*)?\{\s*"transcript"\s*:\s*"')
+
+
+def clean_transcript(text: str, cut: bool = False) -> str:
+    """{"transcript": "…"} (also inside a ```json fence) -> the words; plain text is kept, minus wrapping quotes.
+    cut: the answer stopped at maxTokens, so the JSON never closed — the words after the opening are kept."""
+    start = text.find("{")
+    if start != -1:
         try:
-            doc = json.loads(text[start:end + 1])
+            doc, _ = json.JSONDecoder().raw_decode(text, start)
             if isinstance(doc, dict) and isinstance(doc.get("transcript"), str):
                 return doc["transcript"].strip()
         except ValueError:
             pass
+    m = _PREFIX.match(text)
+    if cut and m:
+        return text[m.end():].replace('\\"', '"').strip()
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1].strip()
     return text
@@ -98,9 +111,15 @@ def map_error(status: int, body: str, model: str) -> UpstreamError:
     """LiteLLM/Bedrock failure -> a clear, actionable message (shown by Open WebUI after "Error transcribing chunk:")."""
     low = body.lower()
     if "budget" in low and "exceed" in low:
+        if "key=" in low:   # LiteLLM names the budget: "Key=…" (BUDGET_OPENWEBUI), else a team's, user's, tag's…
+            return UpstreamError(429, "budget_exceeded",
+                                 "speech-to-text stopped: the Open WebUI key is over its monthly budget "
+                                 "(./stack costs shows it; raise BUDGET_OPENWEBUI in .env and run ./stack setup)")
         return UpstreamError(429, "budget_exceeded",
-                             "speech-to-text stopped: the Open WebUI key is over its monthly budget "
-                             "(./stack costs shows it; raise BUDGET_OPENWEBUI in .env and run ./stack setup)")
+                             f"speech-to-text stopped: LiteLLM says a budget is used up ({_excerpt(body)}) — "
+                             "./stack costs and the LiteLLM UI show the spend")
+    if "length limit exceeded" in low or status == 413:
+        return UpstreamError(413, "audio_too_long", "the recording is too long for one Bedrock request — send a shorter one")
     if status == 401 or "authentication error" in low or "invalid proxy server token" in low:
         return UpstreamError(401, "invalid_api_key",
                              "LiteLLM rejected the key Open WebUI sent for speech-to-text — run ./stack setup")

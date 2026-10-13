@@ -124,6 +124,11 @@ def test_voice_bedrock_shows_an_estimated_price_per_minute(settings):
     assert v["on"] and v["label"] == "Bedrock Mistral Voxtral Small" and v["estimated"]
     assert abs(v["per_minute"] - 0.000135) < 1e-9          # 750 in + 200 out tokens per minute, like lib/stt.sh
     assert v["where"] == "your AWS account"
+    # not in the prices in use (an automatic file from before Voxtral): the catalog's price, like ./stack
+    (settings.catalog_dir / "prices.tsv").write_text("# as_of: 2026-10-12\nvoxtral-small\t0.10\t0.30\t-\t-\t-\t-\n")
+    assert abs(summary.voice(s, {"other": {}})["per_minute"] - 0.000135) < 1e-9
+    (settings.catalog_dir / "prices.tsv").write_text("# as_of: 2026-10-12\n")
+    assert summary.voice(s, {})["per_minute"] is None
     # a configured provider whose engine is not on (e.g. Voxtral not usable) is still browser speech
     assert summary.voice(replace(s, stt_engine="web"), {})["on"] is False
     o = summary.voice(replace(s, stt_provider="openai", stt_model="gpt-4o-mini-transcribe"), {})

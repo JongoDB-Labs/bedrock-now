@@ -1,19 +1,26 @@
-"""Audio intake: sniff the container format from its first bytes, convert with ffmpeg to 16 kHz mono WAV.
+"""Audio intake: sniff the container format from its first bytes, convert with ffmpeg to 16 kHz mono MP3.
+
+Why MP3: Bedrock refuses a Converse request body above ~4 MB ("Failed to buffer the request body: length limit
+exceeded"; measured 2026-10: 3.6 MB passed, 4.1 MB failed). 16 kHz 16-bit WAV reaches that after ~85 s of audio,
+so a longer dictation would fail. Constant-bitrate MP3 at 32 kbit/s (4000 bytes per second) carries 10 minutes
+in 2.4 MB (3.2 MB as base64), and Voxtral transcribed a 10-minute MP3 completely.
 
 ffmpeg runs without a shell (argv list), reads only local files (-protocol_whitelist file) with the demuxer
-forced to the sniffed format (no playlists or other formats that could reference something else), and is
-killed after a timeout. Inputs and outputs live in a per-request temporary directory that is always removed.
+forced to the sniffed format (no playlists or other formats that could reference something else) and only
+the audio decoders browsers' recordings need (-codec_whitelist), and is killed after a timeout or when the
+request is cancelled. Inputs and outputs live in a per-request temporary directory that is always removed.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
-import struct
 import tempfile
 
 SAMPLE_RATE = 16000
-BYTES_PER_SECOND = SAMPLE_RATE * 2  # mono, 16-bit
+MP3_BITRATE = 32000
+MP3_BYTES_PER_SECOND = MP3_BITRATE // 8  # CBR, MPEG-2 layer III at 16 kHz: 144-byte frames of 36 ms, no padding
 
 # sniffed name -> ffmpeg demuxer
 DEMUXERS = {
@@ -25,6 +32,8 @@ DEMUXERS = {
     "aac": "aac",        # raw ADTS AAC
     "flac": "flac",
 }
+# The decoders those containers need, nothing else (video, subtitle and exotic audio decoders stay unreachable).
+DECODERS = "opus,vorbis,aac,mp3float,mp3,flac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8"
 
 
 class AudioError(Exception):
@@ -58,27 +67,22 @@ def sniff(head: bytes) -> str | None:
 
 
 def ffmpeg_argv(src: str, dst: str, fmt: str, max_seconds: int) -> list[str]:
-    """The exact ffmpeg command: forced demuxer, local files only, at most max_seconds + 1 of output."""
+    """The exact ffmpeg command: forced demuxer and decoders, local files only, at most max_seconds + 1 of output."""
     return [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-protocol_whitelist", "file",
+        "-protocol_whitelist", "file", "-codec_whitelist", DECODERS,
         "-f", DEMUXERS[fmt], "-i", src,
         "-t", str(max_seconds + 1),
         "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
-        "-ac", "1", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le",
-        "-threads", "1", "-f", "wav", "-y", dst,
+        "-ac", "1", "-ar", str(SAMPLE_RATE),
+        "-c:a", "libmp3lame", "-b:a", str(MP3_BITRATE), "-write_xing", "0", "-id3v2_version", "0",
+        "-threads", "1", "-f", "mp3", "-y", dst,
     ]
 
 
-def wav_seconds(wav: bytes) -> float:
-    """Duration of a PCM WAV from its data chunk size (falls back to the whole file)."""
-    pos, size = 12, len(wav)
-    while pos + 8 <= size:
-        cid, clen = wav[pos:pos + 4], struct.unpack("<I", wav[pos + 4:pos + 8])[0]
-        if cid == b"data":
-            return min(clen, size - pos - 8) / BYTES_PER_SECOND
-        pos += 8 + clen + (clen & 1)
-    return max(size - 44, 0) / BYTES_PER_SECOND
+def mp3_seconds(mp3: bytes) -> float:
+    """Duration of the constant-bitrate MP3 ffmpeg_argv writes (no ID3 tag, no Xing header)."""
+    return len(mp3) / MP3_BYTES_PER_SECOND
 
 
 async def _run(argv: list[str], timeout: float) -> tuple[int, bytes]:
@@ -86,32 +90,43 @@ async def _run(argv: list[str], timeout: float) -> tuple[int, bytes]:
         *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
     try:
         _, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+    except BaseException:  # timeout, or the request was cancelled (client gone): never leave ffmpeg running
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
         raise
     return proc.returncode or 0, err or b""
 
 
-async def to_wav(data: bytes, fmt: str, max_seconds: int, timeout: float, workdir: str | None = None) -> bytes:
-    """data (sniffed as fmt) -> 16 kHz mono 16-bit WAV bytes. Raises AudioError."""
-    with tempfile.TemporaryDirectory(prefix="stt-", dir=workdir) as d:
-        src, dst = os.path.join(d, "in.bin"), os.path.join(d, "out.wav")
-        with open(src, "wb") as f:
-            f.write(data)
-        try:
-            rc, err = await _run(ffmpeg_argv(src, dst, fmt, max_seconds), timeout)
-        except asyncio.TimeoutError:
-            raise AudioError(413, "audio_too_long", f"converting the audio took longer than {int(timeout)} s — send a shorter recording")
-        except FileNotFoundError:
-            raise AudioError(500, "ffmpeg_missing", "ffmpeg is not installed in the stt container")
-        if rc != 0 or not os.path.exists(dst):
-            raise AudioError(400, "invalid_audio", f"could not read the {fmt} audio (the recording may be empty or damaged)")
-        with open(dst, "rb") as f:
-            wav = f.read()
-    seconds = wav_seconds(wav)
-    if seconds > max_seconds:
+def _no_room(e: OSError) -> AudioError:
+    if e.errno in (errno.ENOSPC, errno.EAGAIN, errno.ENOMEM, errno.EDQUOT):
+        return AudioError(503, "server_busy", "the speech-to-text service has no room for the recording right now — try again in a moment")
+    return AudioError(503, "server_error", f"the speech-to-text service could not store the recording ({e.strerror or e})")
+
+
+async def to_mp3(data: bytes, fmt: str, max_seconds: int, timeout: float, workdir: str | None = None) -> bytes:
+    """data (sniffed as fmt) -> 16 kHz mono 32 kbit/s MP3 bytes. Raises AudioError."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="stt-", dir=workdir) as d:
+            src, dst = os.path.join(d, "in.bin"), os.path.join(d, "out.mp3")
+            with open(src, "wb") as f:
+                f.write(data)
+            try:
+                rc, _err = await _run(ffmpeg_argv(src, dst, fmt, max_seconds), timeout)
+            except asyncio.TimeoutError:
+                raise AudioError(504, "conversion_timeout",
+                                 f"converting the audio took longer than {int(timeout)} s — try a shorter recording")
+            except FileNotFoundError:
+                raise AudioError(500, "ffmpeg_missing", "ffmpeg is not installed in the stt container")
+            if rc != 0 or not os.path.exists(dst):
+                raise AudioError(400, "invalid_audio", f"could not read the {fmt} audio (the recording may be empty or damaged)")
+            with open(dst, "rb") as f:
+                mp3 = f.read()
+    except OSError as e:
+        raise _no_room(e)
+    seconds = mp3_seconds(mp3)
+    if seconds > max_seconds + 0.5:   # ffmpeg stops at max + 1 s; the encoder adds a few ms to any recording
         raise AudioError(413, "audio_too_long", f"the recording is longer than {max_seconds // 60} minutes — send a shorter one")
     if seconds < 0.1:
         raise AudioError(400, "audio_too_short", "the recording contains no audio")
-    return wav
+    return mp3

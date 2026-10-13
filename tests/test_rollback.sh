@@ -146,3 +146,33 @@ test_rollback_to_a_version_without_the_helper_uninstalls_it_last() {   # I4
   assert_eq "$(tail -n 1 "$CALLS")" "UNINSTALL"
   assert_contains "$(cat "$TMP/err")" "has no update helper"
 }
+
+test_rollback_to_a_version_without_bedrock_speech_to_text_removes_it() {   # review I5
+  _fixture; _record
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\nSTT_MODEL=voxtral-mini\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://stt:8000/v1\nSTT_BEDROCK_MODEL=voxtral-mini\n' > "$ENV_FILE"
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"; echo bedrock > "$STATE_DIR/stt-choice"
+  ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/docker")" "--profile stt"
+  assert_contains "$(cat "$TMP/docker")" "rm -sf stt"
+  e="$(cat "$ENV_FILE")"
+  for v in STT_PROVIDER STT_MODEL OWUI_STT_ENGINE OWUI_STT_BASE_URL STT_BEDROCK_MODEL; do assert_not_contains "$e" "$v=" || return 1; done
+  [ ! -e "$STATE_DIR/stt-service" ]
+  assert_eq "$(cat "$STATE_DIR/stt-choice")" bedrock   # ./stack update turns it back on
+  assert_contains "$(cat "$TMP/err")" "has no Bedrock speech-to-text"
+  # before the old code runs its restore
+  assert_eq "$(head -n 1 "$CALLS")" "old restore backups/20261012-000000-auto --yes"
+}
+
+test_rollback_to_a_version_with_speech_to_text_keeps_it() {
+  _fixture
+  mkdir -p "$TMP/origin/stt"; : > "$TMP/origin/stt/Dockerfile"; git -C "$TMP/origin" add stt; git -C "$TMP/origin" commit -qm stt
+  git -C "$TMP/origin" tag v0.3.1; git -C "$STACK_DIR" fetch -q --tags
+  OLD="$(git -C "$TMP/origin" rev-parse v0.3.1)"
+  _write_stack "$TMP/origin" newer; git -C "$TMP/origin" commit -qam three; git -C "$TMP/origin" tag v0.3.2
+  git -C "$STACK_DIR" fetch -q --tags; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.3.2
+  _record
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\n' > "$ENV_FILE"
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_contains "$(cat "$ENV_FILE")" "STT_PROVIDER=bedrock"
+  assert_not_contains "$(cat "$TMP/docker" 2>/dev/null)" "rm -sf stt"
+}

@@ -2,9 +2,11 @@
 # ./stack subcommands.
 
 # Long-running services, in the order ./stack status lists them.
-STACK_SERVICES="caddy portal open-webui litellm rustfs shared-mcp postgres"
-# stack_services -> the stack's own services plus the optional ones .env turns on (stt: Bedrock speech-to-text)
-stack_services() { printf '%s%s\n' "$STACK_SERVICES" "$(stt_services | sed 's/^/ /')"; }
+STACK_BASE_SERVICES="caddy portal open-webui litellm rustfs shared-mcp postgres"
+STACK_SERVICES="$STACK_BASE_SERVICES"
+# stack_services -> the stack's own services plus the optional ones .env turns on (stt: Bedrock speech-to-text).
+# Built from STACK_BASE_SERVICES: callers keep a local STACK_SERVICES, which must not be extended twice.
+stack_services() { local extra; extra="$(stt_services)"; printf '%s\n' "$STACK_BASE_SERVICES${extra:+ $extra}"; }
 
 cmd_help() {
   cat <<'EOF'
@@ -585,7 +587,7 @@ setup_keys_and_ui() {
   ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env BUDGET_CLAUDE_CODE)"
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
   setup_litellm_admin
-  stt_service_up   # lib/stt.sh: the stt container (Bedrock speech-to-text), before Open WebUI sends audio to it
+  stt_setup_service   # lib/stt.sh: the stt container (Bedrock speech-to-text) before Open WebUI; never fatal
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   up_portal
   portal_session_or_die
@@ -608,7 +610,7 @@ models_recheck() {
   check_prereqs
   setup_bringup_and_probe
   stt_after_probe   # lib/stt.sh: Voxtral may have become usable (or not)
-  stt_service_up
+  stt_setup_service
   run_phase "Open WebUI + shared-mcp + portal" "open-webui shared-mcp portal" dc up -d --wait open-webui shared-mcp portal
   portal_session_or_die
   sync_openwebui_models
@@ -784,7 +786,7 @@ offer_symlink() {
 cmd_up() {
   local repriced=0 restart=0 before
   local extra; extra="$(stt_services)"
-  local STACK_SERVICES="$STACK_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
+  local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
@@ -856,7 +858,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
 status_table() {
   local ps s row state health sc hc O_RED O_GRN O_YEL O_OFF
   local extra; extra="$(stt_services)"
-  local STACK_SERVICES="$STACK_SERVICES${extra:+ $extra}"
+  local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"
   out_colors
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
@@ -993,6 +995,7 @@ cmd_test() {
   code="$(curl_auth "$(get_env SHARED_MCP_TOKEN)" -s -m 30 -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "http://127.0.0.1:$mp/mcp" 2>/dev/null | grep -o '"search_knowledge"' | head -n1 || true)"
   _check "shared-mcp lists tools" "$code" '"search_knowledge"'
+  stt_test_checks   # lib/stt.sh: Bedrock speech-to-text, when on (~$0.00005)
   rm -f "$tmp"
   [ "$fails" -eq 0 ] || die "$fails check(s) failed — see ./stack logs"
   log "all checks passed"

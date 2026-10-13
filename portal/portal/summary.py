@@ -171,9 +171,16 @@ def voice(s: Settings, prices: dict | None) -> dict:
     if s.stt_provider == "bedrock":
         model = s.stt_model or "voxtral-small"
         p = (prices or {}).get(model) or {}
+        pin, pout = p.get("in"), p.get("out")
+        if pin is None or pout is None:   # an automatic price file from before Voxtral: the catalog's (like ./stack)
+            try:
+                pin = float(_tsv_column(s.catalog_dir / "prices.tsv", 1).get(model) or "x")
+                pout = float(_tsv_column(s.catalog_dir / "prices.tsv", 2).get(model) or "x")
+            except ValueError:
+                pin = pout = None
         per_min = None
-        if p.get("in") is not None and p.get("out") is not None:
-            per_min = float((STT_EST_IN_TOKENS_PER_MIN * p["in"] + STT_EST_OUT_TOKENS_PER_MIN * p["out"]) / 1_000_000)
+        if pin is not None and pout is not None:
+            per_min = float((STT_EST_IN_TOKENS_PER_MIN * float(pin) + STT_EST_OUT_TOKENS_PER_MIN * float(pout)) / 1_000_000)
         return {"on": True, "provider": "bedrock", "label": f"Bedrock {STT_LABELS.get(model, model)}",
                 "per_minute": per_min, "estimated": True, "where": "your AWS account"}
     name, host = STT_PROVIDERS[s.stt_provider]

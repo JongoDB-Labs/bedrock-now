@@ -15,7 +15,10 @@ def make_wav(seconds: float = 1.0, rate: int = 16000, tone: bool = True) -> byte
         w.setsampwidth(2)
         w.setframerate(rate)
         n = int(seconds * rate)
-        w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i * 0.05)) if tone else 0) for i in range(n)))
+        if tone:
+            w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i * 0.05))) for i in range(n)))
+        else:
+            w.writeframes(b"\x00\x00" * n)
     return buf.getvalue()
 
 
