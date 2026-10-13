@@ -118,6 +118,12 @@ test_update_with_nothing_new_is_done_and_says_so() {
   assert_contains "$s" '"freed_bytes": null'
 }
 
+test_home_recognizes_the_nothing_new_message() {
+  # Home leaves out "Reload this page…" for this prefix (portal/tests/test_admin.py checks app.js on its own)
+  assert_contains "$(cat "$T_ROOT/lib/helper.sh")" '"Already up to date ($JOB_VERSION): nothing to update"'
+  assert_contains "$(cat "$T_ROOT/portal/portal/static/app.js")" '!msg.startsWith("Already up to date")) note = "Reload this page'
+}
+
 test_failed_job_reports_the_error_and_the_way_back() {
   _checkout; _req update
   FAKE_FAIL=1 helper_poll_once 2>/dev/null
