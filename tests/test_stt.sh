@@ -364,6 +364,10 @@ test_apply_rerenders_recreates_and_hides_the_model() {
   : > "$TMP/seq"; render_config() { echo RENDER >> "$TMP/seq"; }
   _stt_apply 2>/dev/null
   assert_eq "$(sed -n 2p "$TMP/seq")" "PHASE LiteLLM dc up -d --no-deps --wait litellm"
+  # Home reads the voice setting from the portal's environment: compose recreates it when that changed
+  dc() { echo "dc $*" >> "$TMP/dcs"; case "$1" in ps) echo abc ;; esac; }
+  _stt_apply 2>/dev/null
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait portal"
 }
 
 test_apply_before_setup_or_when_stopped() {
@@ -989,22 +993,32 @@ test_stack_test_checks_bedrock_speech_to_text() {
   fails=0
   out="$(stt_test_checks)"
   assert_contains "$out" "ok    speech-to-text health (stt container)"
-  assert_contains "$out" "ok    speech-to-text, 1 s tone (Bedrock Mistral Voxtral Small)"
+  assert_contains "$out" "ok    speech-to-text reachable from Open WebUI (Caddy :8090)"
+  assert_contains "$out" "ok    speech-to-text, 1 s tone through Caddy (Bedrock Mistral Voxtral Small)"
   assert_contains "$(cat "$TMP/stdin")" "sk-setupkey123"      # the key goes on stdin…
   assert_not_contains "$(cat "$TMP/argv")" "sk-setupkey123"   # …never on a command line
   assert_contains "$(cat "$TMP/argv")" "dc exec -T stt python -c"
+  # the tone goes the way Open WebUI's recordings go: from the open-webui container, through Caddy's :8090 site
+  assert_contains "$(cat "$TMP/argv")" "dc exec -T open-webui python3 -c import io, json"
+  assert_contains "$STT_TEST_PY" "http://caddy:8090/v1/audio/transcriptions"
   # chosen explicitly: a failure is counted
   stt_set_choice bedrock
   dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "403 Bedrock refused voxtral-small" ;; esac; }
   fails=0; out="$(stt_test_checks; echo "fails=$fails")"
   assert_contains "$out" "FAIL  speech-to-text, 1 s tone"
   assert_contains "$out" "fails=1"
+  # Caddy's hop broken (e.g. an old Caddyfile): counted, and the tone is not sent
+  dc() { case "$*" in *caddy:8090/healthz*) echo 502 ;; *healthz*) echo 200 ;; *) echo TONE >> "$TMP/tone"; echo 200 ;; esac; }
+  fails=0; out="$(stt_test_checks; echo "fails=$fails")"
+  assert_contains "$out" "FAIL  speech-to-text reachable from Open WebUI"
+  assert_contains "$out" "fails=1"
+  [ ! -e "$TMP/tone" ]
   # throttled: not checked, not a failure
   dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "429 Bedrock is throttling" ;; esac; }
   fails=0; out="$(stt_test_checks; echo "fails=$fails")"
   assert_contains "$out" "skip  speech-to-text, 1 s tone"
   assert_contains "$out" "fails=0"
-  # on by default (no choice): a failure turns it off instead of failing setup or an update
+  # on by default (no choice): a failure turns it off instead of failing setup or an update; Home follows
   rm -f "$STATE_DIR/stt-choice"
   dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; *) cat > /dev/null 2>&1; echo "403 Bedrock refused voxtral-small" ;; esac; }
   : > "$STATE_DIR/stt-service"
@@ -1013,6 +1027,7 @@ test_stack_test_checks_bedrock_speech_to_text() {
   assert_contains "$out" "fails=0"
   assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)" ""
   assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait open-webui"
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait portal"
   [ -e "$STATE_DIR/stt-start-failed" ]
   # off: nothing
   printf 'X=1\n' > "$ENV_FILE"; : > "$TMP/argv"
@@ -1110,6 +1125,7 @@ test_stt_set_bedrock_restores_the_previous_setting_when_the_container_fails() { 
   assert_eq "$(stt_choice)" openai
   assert_contains "$(cat "$TMP/seq")" "dc rm -sf stt"
   assert_contains "$(cat "$TMP/seq")" "dc up -d --no-deps --wait open-webui"
+  assert_contains "$(cat "$TMP/seq")" "dc up -d --no-deps --wait portal"
   # from browser speech: back to it, and no choice is invented
   printf 'LITELLM_MASTER_KEY=sk-m\n' > "$ENV_FILE"; rm -f "$STATE_DIR/stt-choice"
   if out="$( (cmd_stt set bedrock) 2>&1)"; then return 1; fi

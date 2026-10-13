@@ -79,8 +79,10 @@ browser ─(webm/opus, mp4/aac)─▶ Open WebUI ─▶ Caddy :8090 ─▶ stt c
   a real 1-token request (well under $0.0001), they are hidden from Open WebUI's model picker, and
   `./stack models` and Home list them. Setup turns Bedrock speech-to-text on by default only when that request
   really succeeded (not when the check merely kept the model, e.g. while throttled).
-- `./stack test` checks the stt container and sends a 1-second tone through the whole path (~$0.00005, on the
-  setup key).
+- `./stack test` checks the stt container, checks that Open WebUI reaches it through Caddy, and sends a
+  1-second tone from the open-webui container the way recordings go (~$0.00005, on the setup key). If that
+  fails while Bedrock speech-to-text is on by default (not chosen), it goes back to browser speech instead of
+  failing setup or an update.
 - With server speech-to-text on, the **microphone button uses it too**, not the browser. That also makes
   dictation work where the browser has no speech recognition: Firefox, and installed web apps / iOS
   home-screen apps.

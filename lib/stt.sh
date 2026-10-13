@@ -548,6 +548,7 @@ _stt_apply() {
     die "the stt container did not start (see above) — your previous speech-to-text setting is back: $(if stt_enabled; then stt_describe; else echo 'browser speech'; fi)"
   fi
   run_phase "Open WebUI" open-webui dc up -d --no-deps --wait open-webui
+  _stt_refresh_portal
   portal_session_or_die
   stt_sync_owui
   sync_budget_banner
@@ -570,7 +571,12 @@ _stt_restore_previous() {
   if [ "$(cat "$cfg")" != "$before" ]; then dc up -d --no-deps --force-recreate --wait litellm >/dev/null 2>&1 || true
   else dc up -d --no-deps --wait litellm >/dev/null 2>&1 || true; fi
   dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies the previous setting"
+  _stt_refresh_portal
 }
+
+# _stt_refresh_portal — Home reads which speech-to-text is on from its environment (STT_ENGINE, STT_PROVIDER,
+# STT_MODEL, STT_BEDROCK_MODEL) at start: compose recreates the portal only when those changed. Never fatal.
+_stt_refresh_portal() { dc up -d --no-deps --wait portal >/dev/null 2>&1 || warn "could not restart the portal — Home shows the new voice setting after ./stack up"; }
 
 _stt_on_message() {
   local p; p="$(stt_provider)"
@@ -647,8 +653,9 @@ cmd_stt() {
   esac
 }
 
-# The 1-second-tone check run inside the stt container (python there; no port is published). The key arrives on
-# stdin, never on a command line. Prints the HTTP status (and Bedrock's message when it is not 200).
+# The 1-second-tone check, run inside the open-webui container (it has Python) against the very URL Open WebUI
+# uses: Caddy's internal site -> stt -> LiteLLM -> Bedrock. The key arrives on stdin, never on a command line.
+# Prints the HTTP status (and the error message when it is not 200).
 STT_TEST_PY='import io, json, math, struct, sys, urllib.error, urllib.request, wave
 key = sys.stdin.readline().strip()
 buf = io.BytesIO()
@@ -657,7 +664,7 @@ with wave.open(buf, "wb") as w:
     w.writeframes(b"".join(struct.pack("<h", int(6000 * math.sin(i * 0.12))) for i in range(16000)))
 b = "stacktest"
 body = (f"--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"t.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode() + buf.getvalue() + f"\r\n--{b}--\r\n".encode()
-req = urllib.request.Request("http://127.0.0.1:8000/v1/audio/transcriptions", data=body,
+req = urllib.request.Request("http://caddy:8090/v1/audio/transcriptions", data=body,
                              headers={"Authorization": "Bearer " + key, "Content-Type": "multipart/form-data; boundary=" + b})
 try:
     print(urllib.request.urlopen(req, timeout=120).status)
@@ -667,31 +674,38 @@ except Exception as e:
     print("000", type(e).__name__)'
 
 # stt_test_checks — ./stack test while Bedrock speech-to-text is on: the container answers /healthz, and a 1-second
-# tone goes through the whole path (stt -> LiteLLM -> Bedrock Voxtral) with the setup key (~$0.00005). Uses the
-# caller's _check/_skip and its fails counter.
+# tone goes the way Open WebUI's recordings go (open-webui -> Caddy :8090 -> stt -> LiteLLM -> Bedrock Voxtral)
+# with the setup key (~$0.00005). Uses the caller's _check/_skip and its fails counter.
 stt_test_checks() {
-  local health tone='' sk label choice
+  local health hop tone='' sk label choice ok=1
   [ "$(stt_provider)" = bedrock ] && stt_enabled || return 0
-  label="speech-to-text, 1 s tone (Bedrock $(stt_model_label "$(stt_model)"))"
+  label="speech-to-text, 1 s tone through Caddy (Bedrock $(stt_model_label "$(stt_model)"))"
   health="$(dc exec -T stt python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=10).status)' 2>/dev/null || true)"
+  # Open WebUI's own way in (Caddy's internal :8090 site), free
+  hop="$(dc exec -T open-webui python3 -c 'import urllib.request; print(urllib.request.urlopen("http://caddy:8090/healthz", timeout=10).status)' 2>/dev/null || true)"
   sk="$(get_env LITELLM_KEY_SETUP)"
-  if [ "$health" = 200 ] && [ -n "$sk" ]; then
-    tone="$(printf '%s\n' "$sk" | dc exec -T stt python -c "$STT_TEST_PY" 2>/dev/null || true)"
+  if [ "$health" = 200 ] && [ "$hop" = 200 ] && [ -n "$sk" ]; then
+    tone="$(printf '%s\n' "$sk" | dc exec -T open-webui python3 -c "$STT_TEST_PY" 2>/dev/null || true)"
   fi
-  case "$health:$tone" in 200:429*) _check "speech-to-text health (stt container)" 200 200
+  case "$health:$hop:$tone" in 200:200:429*)
+    _check "speech-to-text health (stt container)" 200 200; _check "speech-to-text reachable from Open WebUI (Caddy :8090)" 200 200
     _skip "$label" "Bedrock is throttling right now — not checked"; return 0 ;; esac
+  [ "$health" = 200 ] && [ "$hop" = 200 ] || ok=0
+  [ -z "$sk" ] || [ "$tone" = 200 ] || ok=0
   choice="$(stt_choice)"
-  if { [ "$health" != 200 ] || { [ -n "$sk" ] && [ "$tone" != 200 ]; }; } && { [ -z "$choice" ] || [ "$choice" = legacy ]; }; then
+  if [ "$ok" = 0 ] && { [ -z "$choice" ] || [ "$choice" = legacy ]; }; then
     # On by default, not chosen: a broken voice path must not fail setup or an update. Back to browser speech.
-    warn "Voice: the speech-to-text check failed (${tone:-health: ${health:-no answer}}) — it was on by default, so the microphone goes back to browser speech; the next ./stack setup tries again (./stack stt set bedrock turns it on now)"
+    warn "Voice: the speech-to-text check failed (${tone:-health: ${health:-no answer}, through Caddy: ${hop:-no answer}}) — it was on by default, so the microphone goes back to browser speech; the next ./stack setup tries again (./stack stt set bedrock turns it on now)"
     _stt_fall_back_to_browser
     dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies browser speech"
+    _stt_refresh_portal
     _skip "speech-to-text (Bedrock Voxtral)" "turned off, see the warning above"
     return 0
   fi
   _check "speech-to-text health (stt container)" "$health" 200
+  _check "speech-to-text reachable from Open WebUI (Caddy :8090)" "$hop" 200
   if [ -z "$sk" ]; then _skip "speech-to-text (Bedrock Voxtral)" "no setup key — run ./stack setup"; return 0; fi
-  [ "$health" = 200 ] || return 0
+  [ "$health" = 200 ] && [ "$hop" = 200 ] || return 0
   _check "$label" "$tone" 200
 }
 

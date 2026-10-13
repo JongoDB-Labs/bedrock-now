@@ -9,41 +9,39 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Added
 
 - **Bedrock speech-to-text, on by default** (Mistral Voxtral; `./stack stt set bedrock [small|mini]`). The
-  microphone and Open WebUI's voice Call now work with no third-party key, and your recorded speech stays in
-  your AWS account. A new small `stt` container (Python + ffmpeg on Alpine, pinned by digest, hash-locked
-  dependencies; compose profile `stt`, only while `STT_PROVIDER=bedrock`) takes the browser's recording
-  (WebM/Opus, MP4/AAC, Ogg, WAV, MP3, FLAC — recognized by its first bytes; 25 MB / 10 min at most, counted on
-  the bytes received, also for chunked uploads; other form fields 64 KB), converts it to 16 kHz MP3 (Bedrock
-  refuses request bodies above ~4 MB, which WAV reaches after ~85 s; 10 minutes of this MP3 are 3.2 MB) and
-  asks Voxtral Small for a verbatim transcript through LiteLLM's Bedrock pass-through with Open WebUI's own key,
-  so the spend lands on the `open-webui` key and its budget applies. The instruction comes before the audio and
-  asks for JSON: with a plain "transcribe this", Voxtral answered spoken questions instead. The container's
-  only network is an internal one with LiteLLM and Caddy (no internet access); Open WebUI and the portal reach
-  it through Caddy's unpublished `:8090` site, so it cannot reach them (Open WebUI trusts `X-Portal-User` from
-  its peers). It holds no AWS
-  credentials or key of its own, publishes no port, runs read-only and unprivileged with memory/process
-  limits and three requests at a time, gives ffmpeg only the demuxer it sniffed, local files and the audio
-  decoders recordings need (and kills it on timeout or a cancelled request), keeps nothing and logs no audio
-  or transcripts; LiteLLM and Bedrock errors (budget, model access, throttling, a full `/tmp`) reach Chat as
-  clear "Error transcribing chunk: …" messages. Its build reinstalls ffmpeg at most weekly (an ISO-week build
-  argument), picking up Alpine's fixes at setup / `./stack update`. Voxtral Small and Mini join the catalog as `stt` models (checked by
-  setup with a real 1-token request, hidden from the model picker, priced per token: $0.10/$0.30 and
-  $0.04/$0.04 per 1M); the price per minute of audio is an **estimate** (~$0.00014/min of continuous speech
-  for Small, from 375 audio tokens per started 30 s measured on Bedrock; a call's short utterances cost about
-  $0.00005 each), labelled as such in `./stack stt status`, `./stack costs`, the setup summary and on Home
-  (new *Voice* line; the `stt` container also appears in Home's service list and `./stack status`).
-  `./stack test` checks it with a 1-second tone (~$0.00005). Setup turns it on when Voxtral's check really
-  succeeded and you never chose otherwise, in one line ("Voice: Bedrock speech-to-text on (…) — ./stack stt
-  remove to use browser speech"); if its container does not start, setup goes on with browser speech and
-  tries again next time. The interactive question now offers 1) Bedrock (default) 2) OpenAI 3) Groq
-  4) browser only, and the choice is remembered (`.state/stt-choice`; `./stack stt remove` counts as one).
-  `./stack rollback` to an older version removes the container and goes back to browser speech.
-  **Upgrading:** an install that never answered the voice question (for example set up with `--yes`) gets
-  Bedrock speech-to-text at its next `./stack update`/`setup` — **including one that ran `./stack stt remove`
-  before this version**, which left no record: run `./stack stt remove` again afterwards to keep browser
-  speech. One that answered the question (OpenAI, Groq or none) keeps its answer; an interactive
-  `./stack setup` offers it Bedrock once, and `./stack stt set bedrock` switches any time. If Voxtral stops
-  being usable, setup turns it off with the reason and turns it back on once your AWS admin enables it. See
+  microphone and Open WebUI's voice Call now work with no third-party key, and your recorded speech stays in your
+  AWS account. A new small `stt` container (Python + ffmpeg on Alpine, pinned by digest, hash-locked dependencies;
+  compose profile `stt`, only while `STT_PROVIDER=bedrock`) takes the browser's recording (WebM/Opus, MP4/AAC, Ogg,
+  WAV, MP3, FLAC — recognized by its first bytes; 25 MB / 10 min at most, counted on the bytes received, also for
+  chunked uploads; other form fields 64 KB), converts it to 16 kHz MP3 (Bedrock refuses request bodies above ~4 MB,
+  which WAV reaches after ~85 s; 10 minutes of this MP3 are 3.2 MB) and asks Voxtral Small for a verbatim
+  transcript through LiteLLM's Bedrock pass-through with Open WebUI's own key, so the spend lands on the
+  `open-webui` key and its budget applies. The instruction comes before the audio and asks for JSON: with a plain
+  "transcribe this", Voxtral answered spoken questions instead. The container's only network is an internal one
+  with LiteLLM and Caddy (no internet access); Open WebUI and the portal reach it through Caddy's unpublished
+  `:8090` site, so it cannot reach them (Open WebUI trusts `X-Portal-User` from its peers). It holds no AWS
+  credentials or key of its own, publishes no port, runs read-only and unprivileged with memory/process limits and
+  three requests at a time, gives ffmpeg only the demuxer it sniffed, local files and the audio decoders recordings
+  need (and kills it on timeout or a cancelled request), keeps nothing and logs no audio or transcripts; LiteLLM
+  and Bedrock errors (budget, model access, throttling, a full `/tmp`) reach Chat as clear "Error transcribing
+  chunk: …" messages. Its build reinstalls ffmpeg at most weekly (an ISO-week build argument), picking up Alpine's
+  fixes at setup / `./stack update`. Voxtral Small and Mini join the catalog as `stt` models (checked by setup with
+  a real 1-token request, hidden from the model picker, priced per token: $0.10/$0.30 and $0.04/$0.04 per 1M); the
+  price per minute of audio is an **estimate** (~$0.00014/min of continuous speech for Small, from 375 audio tokens
+  per started 30 s measured on Bedrock; a call's short utterances cost about $0.00005 each), labelled as such in
+  `./stack stt status`, `./stack costs`, the setup summary and on Home (new *Voice* line; the `stt` container also
+  appears in Home's service list and `./stack status`). `./stack test` checks it with a 1-second tone sent from
+  Open WebUI through Caddy (~$0.00005). Setup turns it on when Voxtral's check really succeeded and you never chose
+  otherwise, in one line ("Voice: Bedrock speech-to-text on (…) — ./stack stt remove to use browser speech"); if
+  its container does not start, setup goes on with browser speech and tries again next time. The interactive
+  question now offers 1) Bedrock (default) 2) OpenAI 3) Groq 4) browser only, and the choice is remembered
+  (`.state/stt-choice`; `./stack stt remove` counts as one). `./stack rollback` to an older version removes the
+  container and goes back to browser speech. **Upgrading:** an install that never answered the voice question (for
+  example set up with `--yes`) gets Bedrock speech-to-text at its next `./stack update`/`setup` — **including one
+  that ran `./stack stt remove` before this version**, which left no record: run `./stack stt remove` again
+  afterwards to keep browser speech. One that answered the question (OpenAI, Groq or none) keeps its answer; an
+  interactive `./stack setup` offers it Bedrock once, and `./stack stt set bedrock` switches any time. If Voxtral
+  stops being usable, setup turns it off with the reason and turns it back on once your AWS admin enables it. See
   docs/voice.md.
 - **Optional speech-to-text for voice calls** (`./stack stt set openai|groq [model]`, `status`, `remove`; setup
   asks once). Open WebUI's Call button needs server speech-to-text, which Bedrock does not have; this is an
