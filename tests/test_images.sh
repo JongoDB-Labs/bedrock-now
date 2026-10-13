@@ -384,6 +384,16 @@ test_disk_line_is_cached_for_five_minutes() {   # M4
   [ -n "$a" ] || return 1
 }
 
+test_disk_line_cache_time_must_be_a_plain_number() {
+  disk_line() { echo "Disk: measured"; echo x >> "$TMP/n"; }
+  mkdir -p "$STATE_DIR"
+  printf '0%s\nDisk: cached\n' "$(date +%s)" > "$STATE_DIR/disk.cache"   # a leading 0 is not an octal number
+  assert_eq "$(disk_line_cached 2>&1)" "Disk: cached (as of 0 min ago; --disk refreshes)"
+  printf 'x%s\nDisk: cached\n' "$(date +%s)" > "$STATE_DIR/disk.cache"   # not a time stamp: measured again
+  assert_eq "$(disk_line_cached 2>&1)" "Disk: measured"
+  assert_eq "$(wc -l < "$TMP/n" | tr -d ' ')" 1
+}
+
 test_other_checkout_markers_must_be_absolute_paths() {   # M3
   _setup
   mkdir -p "$TMP/rel"; printf 'services:\n  x:\n    image: ghcr.io/berriai/litellm:1\n' > "$TMP/rel/compose.yaml"

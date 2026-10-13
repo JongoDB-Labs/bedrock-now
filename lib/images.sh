@@ -320,7 +320,8 @@ disk_line_cached() {
   local f line at now
   f="$STATE_DIR/disk.cache"; now="$(date +%s)"
   if [ "${1:-}" != --fresh ] && [ -f "$f" ] && [ ! -L "$f" ]; then
-    at="$(head -n 1 "$f" | tr -cd '0-9')"; line="$(sed -n 2p "$f")"
+    at="$(head -n 1 "$f" | head -c 15)"; line="$(sed -n 2p "$f")"
+    case "$at" in '' | *[!0-9]*) at='' ;; *) at=$((10#$at)) ;; esac   # digits only; a leading 0 is not octal
     if [ -n "$at" ] && [ -n "$line" ] && [ $((now - at)) -lt 300 ] && [ $((now - at)) -ge 0 ]; then
       printf '%s (as of %s min ago; --disk refreshes)\n' "$line" "$(( (now - at) / 60 ))"; return 0
     fi
