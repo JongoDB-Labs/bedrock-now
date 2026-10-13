@@ -105,10 +105,18 @@ class Sessions:
         if not hmac.compare_digest(str(data.get("fp", "")), self._fp):
             return None
         bound = data.get("u")
-        if bound is not None and (not isinstance(bound, str) or login is None
-                                  or not hmac.compare_digest(bound.encode(), login.encode())):
+        if bound is None and login is None:
+            return data
+        # A login is required (remote, TAILSCALE_ALLOWED_LOGIN): only a session bound to exactly that login counts;
+        # a session bound to a login never counts without it.
+        if not isinstance(bound, str) or login is None or not hmac.compare_digest(bound.encode(), login.encode()):
             return None
         return data
+
+    @property
+    def fingerprint(self) -> str:
+        """Changes with PORTAL_PASSWORD / PORTAL_SECRET (hand-off tokens carry it too)."""
+        return self._fp
 
     def valid(self, token: str | None, login: str | None = None) -> bool:
         return self.claims(token, login) is not None
@@ -195,10 +203,19 @@ REMOTE_COOKIE = "__Host-bn_session"
 TAILSCALE_LOGIN_HEADER = "tailscale-user-login"
 
 
+def from_proxy(headers, settings: Settings) -> bool:
+    """The request came through Caddy: it carries X-Portal-Proxy = PORTAL_PROXY_SECRET (Caddy deletes client copies
+    and adds it on every site; the apps never receive it). Nothing that skips Caddy (another container calling
+    portal:8000) can set it, so only such requests may speak for the remote site or a Tailscale login."""
+    given = headers.get("x-portal-proxy") or ""
+    return len(settings.proxy_secret) >= 32 and hmac.compare_digest(given.encode(), settings.proxy_secret.encode())
+
+
 def is_remote(headers, settings: Settings) -> bool:
     """A request through the remote site: Caddy deletes any client-sent X-Portal-Remote everywhere and sets "1"
-    only on the remote site blocks (caddy/remote-*.caddy). Ignored while remote access is off."""
-    return settings.remote_on() and headers.get("x-portal-remote") == "1"
+    only on the remote site blocks (caddy/remote-*.caddy), which answer only the Tailscale sidecar's network.
+    Ignored while remote access is off, and without Caddy's proxy secret."""
+    return settings.remote_on() and headers.get("x-portal-remote") == "1" and from_proxy(headers, settings)
 
 
 def cookie_params(settings: Settings, remote: bool) -> dict:
@@ -249,19 +266,22 @@ class Handoff:
     browser to https://<app host>/.bn/callback?t=…; Caddy forwards that path to /auth/callback, which redeems it
     (right host, not expired, never used before) and sets that host's own host-only cookie with the portal
     session's start time, so the portal's expiry and Sign out (not_before) govern it too. Used nonces are kept in
-    memory until they expire; a portal restart forgets them, but by then every issued token has expired anyway
-    (TTL), as tokens carry their own expiry."""
+    memory until they expire. A restart forgets them, so tokens minted before this process started are refused;
+    tokens also carry the password fingerprint, so a changed PORTAL_PASSWORD voids them at once."""
 
     TTL = 60
 
-    def __init__(self, secret: str, clock=time.time):
+    def __init__(self, secret: str, fingerprint: str, clock=time.time):
         self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.handoff")
+        self._fp = fingerprint
         self._clock = clock
+        self._born = clock()
         self._used: dict[str, float] = {}
 
     def issue(self, aud: str, iat: float, login: str | None) -> str:
-        return self._ser.dumps({"aud": aud, "iat": iat, "u": login or "", "n": secrets.token_hex(16),
-                                "exp": self._clock() + self.TTL})
+        now = self._clock()
+        return self._ser.dumps({"aud": aud, "iat": iat, "u": login or "", "n": secrets.token_hex(16), "fp": self._fp,
+                                "m": now, "exp": now + self.TTL})
 
     def redeem(self, token: str | None, aud: str) -> dict | None:
         if not token or len(token) > 2048:
@@ -279,6 +299,11 @@ class Handoff:
         if not isinstance(nonce, str) or not isinstance(iat, (int, float)) or not isinstance(data.get("u"), str):
             return None
         if not isinstance(data.get("aud"), str) or not hmac.compare_digest(data["aud"].encode(), aud.encode()):
+            return None
+        if not isinstance(data.get("fp"), str) or not hmac.compare_digest(data["fp"].encode(), self._fp.encode()):
+            return None
+        minted = data.get("m")
+        if not isinstance(minted, (int, float)) or minted < self._born:   # from before a restart: nonces forgotten
             return None
         for n in [n for n, t in self._used.items() if t < now]:
             del self._used[n]

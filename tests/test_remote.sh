@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2016,SC2034,SC2329  # literal ${...} in Caddy patterns; stubs and knobs read by the libs
 # Remote access (./stack remote; lib/remote.sh): host names, serve config, policy snippet, enable/disable with
 # docker and tailscale stubbed, setup's question, status/summary lines, and the Caddy files' invariants.
 . "$STACK_DIR/lib/commands.sh"
@@ -56,6 +57,10 @@ test_validators() {
   for t in ts.net tail.example.com Tail.ts.net ''; do if valid_tailnet "$t"; then echo "tailnet '$t'" >&2; return 1; fi; done
   valid_login me@example.com && valid_login me@github && valid_login a.b+c@x.io || return 1
   for l in '' me 'me @x' '@x' 'x@' 'a"b@c' 'a$b@c'; do if valid_login "$l"; then echo "login '$l'" >&2; return 1; fi; done
+  valid_cidr 10.255.255.248/29 && valid_cidr 10.99.0.0/24 || return 1
+  for c in '' 172.31.255.248 172.31.255/29 300.1.1.1/29 1.2.3.4/33 1.2.3.4/ 'a.b.c.d/29' 1.2.3.4/29/1; do
+    if valid_cidr "$c"; then echo "cidr '$c'" >&2; return 1; fi
+  done
   valid_ts_tag tag:bedrock-now || return 1
   for t in bedrock-now tag: tag:Upper 'tag:a b'; do if valid_ts_tag "$t"; then echo "tag '$t'" >&2; return 1; fi; done
   valid_ts_authkey tskey-auth-kAbC123CNTRL-xyz && valid_ts_authkey 'tskey-client-k1-s2?ephemeral=false&preauthorized=true' || return 1
@@ -148,13 +153,48 @@ test_enable_tailscale_end_to_end_with_stubs() {
   assert_eq "$(get_env TS_TAILNET)" "$TN"
   assert_eq "$(get_env REMOTE_HOST)" "bedrock-now.$TN"
   assert_eq "$(get_env TAILSCALE_ALLOWED_LOGIN)" "me@example.com"
-  assert_eq "$(get_env OWUI_COOKIE_SECURE)" true
-  assert_eq "$(grep -c '^TS_AUTHKEY=' "$ENV_FILE")" 0   # gone once logged in
+  assert_eq "$(grep -c '^TS_AUTHKEY=' "$ENV_FILE")" 0   # gone once logged in …
+  assert_contains "$(cat "$TMP/dc")" "up -d --no-deps --force-recreate tailscale"   # … and from the container
+  assert_eq "$(get_env PORTAL_PROXY_SECRET | wc -c | tr -d " ")" 64
   assert_eq "$(cat "$TS_SERVE_DIR/serve.json")" "$(ts_serve_config tailscale "$TN")"
   assert_contains "$(cat "$TMP/dc")" "dc up -d tailscale"
+  assert_contains "$out" "allow-all"
+  assert_not_contains "$out" "TAILSCALE_ALLOWED_LOGIN is blank"
+  assert_not_contains "$out" "OAuth client secret: it can create"
   assert_contains "$(cat "$TMP/dc")" "--force-recreate caddy"
   assert_contains "$out" "admin/services"
   assert_contains "$out" "./stack remote test"
+}
+
+test_enable_warns_about_oauth_secrets_and_a_blank_login() {
+  _stubs
+  remote_status() { :; }
+  out="$(TS_AUTHKEY=tskey-client-k-s TAILSCALE_ALLOWED_LOGIN='' remote_enable tailscale 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "revoke or rotate it"
+  assert_contains "$out" "TAILSCALE_ALLOWED_LOGIN is blank"
+  assert_contains "$(remote_identity_text)" "!! password only"
+}
+
+test_up_hook_never_waits_long_for_the_sidecar() {
+  _stubs
+  REMOTE_UP_WAIT=2
+  assert_eq "$(remote_up_hook 2>&1)" ""   # off: nothing at all
+  printf 'REMOTE_MODE=tailscale
+TS_TAILNET=%s
+TAILSCALE_ALLOWED_LOGIN=me@example.com
+' "$TN" >> "$ENV_FILE"
+  printf '{"BackendState":"NeedsLogin"}\n' > "$TMP/ts-status"
+  out="$(remote_up_hook 2>&1)" || return 1   # a logged-out sidecar never fails ./stack up
+  assert_contains "$out" "not logged in yet"
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --no-deps tailscale"
+  assert_not_contains "$(cat "$TMP/dc")" "--wait"
+}
+
+test_up_waits_only_for_the_stack_services() {
+  grep -q 'dc up -d --wait \$STACK_SERVICES$' "$STACK_DIR/lib/commands.sh" || { echo "cmd_up must not wait on every service" >&2; return 1; }
+  assert_eq "$(grep -c 'run_phase "bedrock-now" "\$STACK_SERVICES" dc up -d --wait \$STACK_SERVICES' "$STACK_DIR/lib/commands.sh")" 1
+  assert_eq "$(grep -c '^  remote_up_hook$' "$STACK_DIR/lib/commands.sh")" 2   # up and restore
+  assert_not_contains "$STACK_SERVICES" tailscale
 }
 
 test_enable_without_login_explains_and_fails() {
@@ -186,9 +226,11 @@ test_enable_domain_needs_a_token_and_prints_dns() {
 
 test_disable_goes_back_to_local_only() {
   _stubs
-  printf 'REMOTE_MODE=tailscale\nOWUI_COOKIE_SECURE=true\nTS_AUTHKEY=tskey-auth-x\n' >> "$ENV_FILE"
+  printf 'REMOTE_MODE=tailscale\nTS_AUTHKEY=tskey-auth-x\n' >> "$ENV_FILE"
+  remote_hosts_tailscale "$TN"
   out="$(remote_disable 2>&1)"
-  assert_eq "$(remote_mode) $(get_env OWUI_COOKIE_SECURE)" "off false"
+  assert_eq "$(remote_mode)" off
+  assert_eq "[$(get_env REMOTE_HOST)][$(get_env REMOTE_CHAT_HOST)][$(get_env REMOTE_ORIGIN)]" "[][][]"   # WEBUI_URL empties too
   assert_eq "$(grep -c '^TS_AUTHKEY=' "$ENV_FILE")" 0
   assert_contains "$(cat "$TMP/dc")" "rm -sf tailscale"
   assert_contains "$out" "tailscale-state"
@@ -198,7 +240,7 @@ test_disable_goes_back_to_local_only() {
 test_identity_text() {
   _stubs
   printf 'REMOTE_MODE=tailscale\n' >> "$ENV_FILE"
-  assert_contains "$(remote_identity_text)" "password only (no TAILSCALE_ALLOWED_LOGIN"
+  assert_contains "$(remote_identity_text)" "TAILSCALE_ALLOWED_LOGIN is blank"
   set_env TAILSCALE_ALLOWED_LOGIN me@example.com
   assert_contains "$(remote_identity_text)" "no remote request seen yet"
   echo "present since 2026-10-12 10:00 UTC" > "$TMP/identity"
@@ -257,7 +299,15 @@ test_caddy_local_blocks_delete_the_remote_marker() {
   f="$STACK_DIR/caddy/Caddyfile"
   sites="$(grep -c '^http://{\$[A-Z_]*}' "$f")"
   assert_eq "$sites" 4
-  assert_eq "$(grep -c 'request_header -X-Portal-Remote' "$f")" 4
+  assert_eq "$(grep -c 'import local_request' "$f")" 4
+  snippet="$(awk '/^\(local_request\)/,/^}/' "$f")"
+  for h in X-Portal-User X-Portal-Remote X-Portal-Proxy Tailscale-User-Login Tailscale-User-Name Tailscale-User-Profile-Pic; do
+    assert_contains "$snippet" "request_header -$h"
+  done
+  assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
+  assert_contains "$(awk '/^\(drop_session_cookie\)/,/^}/' "$f")" "header_up -X-Portal-Proxy"   # never to the apps
+  assert_contains "$(cat "$f")" 'trusted_proxies static {$REMOTE_SUBNET}'
+  if grep -q 'private_ranges' "$f"; then echo "trusts all private ranges" >&2; return 1; fi
   if grep -q 'request_header X-Portal-Remote 1' "$f"; then echo "local site sets the marker" >&2; return 1; fi
   assert_contains "$(cat "$f")" 'import remote-{$REMOTE_MODE}.caddy'
   for m in off tailscale domain; do [ -f "$STACK_DIR/caddy/remote-$m.caddy" ] || return 1; done
@@ -271,8 +321,16 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     set="$(printf '%s\n' "$snippet" | grep -n 'request_header X-Portal-Remote 1' | cut -d: -f1)"
     [ -n "$del" ] && [ -n "$set" ] && [ "$del" -lt "$set" ] || { echo "$m: marker not deleted before set" >&2; return 1; }
     assert_contains "$snippet" "request_header -X-Portal-User"
-    # every remote site block uses the snippet
+    # only the sidecar's network, checked first
+    assert_eq "$(printf '%s\n' "$snippet" | sed -n 2,3p | tr -d '\t')" "$(printf '@not_sidecar not remote_ip {$REMOTE_SUBNET}\nabort @not_sidecar')"
+    assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
+    # every remote site block uses the snippet; the catch-all aborts other callers too
     assert_eq "$(grep -c 'import remote_request' "$f")" 4
+    assert_eq "$(grep -c 'abort @' "$f")" 2
+    up="$(awk '/^\(remote_upstream\)/,/^}/' "$f")"
+    assert_contains "$up" 'header_down Set-Cookie "^(.*)$" "$1; Secure"'
+    assert_contains "$up" "header_up -X-Portal-Proxy"
+    assert_eq "$(grep -c 'import remote_upstream' "$f")" 3
   done
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" "request_header -Tailscale-User-Login"
   for m in tailscale domain; do assert_eq "$(grep -c "import handoff_callback" "$STACK_DIR/caddy/remote-$m.caddy")" 3; done
@@ -287,6 +345,20 @@ test_remote_cookie_name_matches_portal_and_caddy() {
 test_remote_listener_is_never_published() {
   assert_not_contains "$(cat "$STACK_DIR/compose.yaml" "$STACK_DIR/compose.tailscale.yaml" "$STACK_DIR/compose.domain.yaml")" ":8081"
   assert_not_contains "$(cat "$STACK_DIR/compose.tailscale.yaml" "$STACK_DIR/compose.domain.yaml")" "ports:"
+}
+
+test_sidecar_is_isolated_and_hardened() {
+  f="$(cat "$STACK_DIR/compose.tailscale.yaml")"
+  assert_contains "$f" 'subnet: ${REMOTE_SUBNET:-10.255.255.248/29}'
+  assert_contains "$f" "networks: [remote]"
+  assert_contains "$f" "networks: [default, remote]"
+  assert_contains "$f" "read_only: true"
+  assert_contains "$f" "mem_limit:"
+  assert_contains "$f" "pids_limit:"
+  assert_not_contains "$f" "TS_LOCAL_ADDR_PORT:"
+  assert_not_contains "$f" "TS_ENABLE_HEALTH_CHECK:"
+  assert_contains "$(cat "$STACK_DIR/compose.yaml")" 'REMOTE_SUBNET: ${REMOTE_SUBNET:-10.255.255.248/29}'
+  assert_not_contains "$(cat "$STACK_DIR/compose.yaml")" "WEBUI_AUTH_COOKIE_SECURE"
 }
 
 test_tailscale_image_is_pinned_by_digest() {

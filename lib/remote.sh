@@ -61,6 +61,13 @@ valid_ts_tag() { case "$1" in tag:[a-z0-9]*) case "${1#tag:}" in *[!a-z0-9-]*) r
 # valid_tailnet NAME -> 0 for a MagicDNS suffix like tail1234.ts.net
 valid_tailnet() { valid_hostname "$1" && case "$1" in ?*.ts.net) return 0 ;; esac; return 1; }
 
+# valid_cidr NET -> 0 for an IPv4 network like 10.255.255.248/29 (REMOTE_SUBNET)
+valid_cidr() {
+  case "$1" in *[!0-9./]* | */*/* | */ | /*) return 1 ;; */*) ;; *) return 1 ;; esac
+  printf '%s' "${1%/*}" | awk -F. -v b="${1#*/}" 'NF == 4 && b != "" && b + 0 <= 30 && b + 0 >= 8 {
+    for (i = 1; i <= 4; i++) if ($i == "" || $i + 0 > 255) exit 1; exit 0 } { exit 1 }'
+}
+
 # valid_login LOGIN -> 0 for a Tailscale login name (you@example.com, you@github, …): no spaces, quotes or $
 valid_login() {
   case "$1" in '' | *[!A-Za-z0-9@._+-]* | @* | *@) return 1 ;; *@*) return 0 ;; esac
@@ -247,10 +254,14 @@ One-time steps in the Tailscale admin console (https://login.tailscale.com/admin
 
 $(ts_policy_snippet "$mode")
 
-  3. Keys (https://login.tailscale.com/admin/settings/keys): generate an auth key — not reusable, not
-     ephemeral, pre-approved, Tags: $tag. (Or an OAuth client with the auth_keys scope and tag $tag;
-     ./stack adds ?ephemeral=false to its secret.) ./stack remote enable asks for it (hidden) and removes it
-     from .env once the sidecar is logged in; the login itself lives in the tailscale-state volume.
+     This grant is the ONLY access to bedrock-now only if your policy has no allow-all rule. A new tailnet's
+     default policy lets every device reach every other on every port ("src": ["*"], "dst": ["*"]) — remove or
+     narrow that rule, or the snippet adds access without limiting it.
+  3. Keys (https://login.tailscale.com/admin/settings/keys): generate a one-off auth key — not reusable, not
+     ephemeral, pre-approved, Tags: $tag, short expiry. ./stack remote enable asks for it (hidden), and once
+     the sidecar is logged in removes it from .env and recreates the container, so it is gone from docker
+     inspect too; the login itself lives in the tailscale-state volume. (An OAuth client secret also works —
+     ./stack adds ?ephemeral=false — but it can mint further keys: revoke or rotate it after enrolment.)
 EOF
   if [ "$mode" = tailscale ]; then
     cat <<EOF
@@ -334,17 +345,20 @@ remote_ask_login() {
 
 # remote_enable MODE [HOST]
 remote_enable() {
-  local mode="$1" host="${2:-}" key token st suffix tag ip
+  local mode="$1" host="${2:-}" key token st suffix tag ip ts_oauth
   [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_SECRET)" ] || die "run ./stack setup first"
   stack_lock remote   # lib/lock.sh (already ours when setup calls this)
   check_prereqs
   [ "$mode" != domain ] || check_remote_domain "$host"
   tag="$(ts_tag)"; valid_ts_tag "$tag" || die "TS_TAG=$tag in .env is not a tag (e.g. tag:bedrock-now)"
   valid_ts_label "$(ts_base)" || die "TS_SERVICE=$(ts_base) is not a valid Service name (lowercase letters, digits, dashes; at most 57)"
+  [ -z "$(get_env REMOTE_SUBNET)" ] || valid_cidr "$(get_env REMOTE_SUBNET)" ||
+    die "REMOTE_SUBNET=$(get_env REMOTE_SUBNET) in .env is not an IPv4 network (e.g. 10.255.255.248/29)"
   remote_ask_login
+  ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # Caddy → portal: only Caddy may mark requests remote
   if [ "$mode" = domain ]; then
-    token="$(_remote_secret CLOUDFLARE_API_TOKEN "Cloudflare API token (Zone.DNS edit for the zone of $host; hidden)")"
-    [ -n "$token" ] || die "domain mode needs CLOUDFLARE_API_TOKEN (a Cloudflare API token with Zone → DNS → Edit) — see docs/remote.md"
+    token="$(_remote_secret CLOUDFLARE_API_TOKEN "Cloudflare API token (Zone:Read + DNS:Edit, for the zone of $host only; hidden)")"
+    [ -n "$token" ] || die "domain mode needs CLOUDFLARE_API_TOKEN (a Cloudflare API token with Zone → Zone → Read and Zone → DNS → Edit, limited to that one zone) — see docs/remote.md"
     set_env CLOUDFLARE_API_TOKEN "$token"
   fi
   key="$(_remote_secret TS_AUTHKEY "Tailscale auth key (tskey-auth-… or OAuth tskey-client-…; hidden; blank if the sidecar is already logged in)")"
@@ -367,7 +381,14 @@ remote_enable() {
     ts_admin_steps "$mode" >&2
     die "no Tailscale login — check the auth key (step 3 above; ./stack logs tailscale), then re-run ./stack remote enable $mode${host:+ $host}. Remote access stays configured but unreachable until then; ./stack remote disable undoes it."
   fi
-  unset_env TS_AUTHKEY   # logged in; the node key lives in the tailscale-state volume
+  if [ -n "$(get_env TS_AUTHKEY)" ]; then
+    # Logged in: the node key lives in the tailscale-state volume. Drop the auth key from .env AND from the
+    # container's environment (docker inspect), by recreating it without one.
+    case "$(get_env TS_AUTHKEY)" in tskey-client-*) ts_oauth=1 ;; *) ts_oauth=0 ;; esac
+    unset_env TS_AUTHKEY
+    run_phase "Tailscale sidecar (without the auth key)" tailscale dc up -d --no-deps --force-recreate tailscale
+    [ "$ts_oauth" = 0 ] || warn "you enrolled with an OAuth client secret: it can create more auth keys — revoke or rotate it in the admin console (Settings → OAuth clients) now that the sidecar is logged in"
+  fi
   if [ "$mode" = tailscale ]; then
     suffix="$(_ts status --json | ts_dns_suffix)"
     suffix="${suffix%.}"
@@ -377,7 +398,6 @@ remote_enable() {
     remote_hosts_tailscale "$suffix"
     write_ts_serve_config tailscale "$suffix"
   fi
-  set_env OWUI_COOKIE_SECURE true
   remote_restart_front
   remote_status
   printf '\n'; ts_admin_steps "$mode"
@@ -387,7 +407,14 @@ remote_enable() {
     remote_dns_records "$ip"
     printf '\nCaddy asks Let'"'"'s Encrypt for the certificates in the background (DNS-01, a minute or two):\n./stack logs caddy\n'
   fi
+  remote_login_warning
   printf '\nThen: ./stack remote test\n'
+}
+
+# remote_login_warning — Tailscale mode without TAILSCALE_ALLOWED_LOGIN: say loudly what that means
+remote_login_warning() {
+  [ "$(remote_mode)" = tailscale ] && [ -z "$(get_env TAILSCALE_ALLOWED_LOGIN)" ] || return 0
+  warn "TAILSCALE_ALLOWED_LOGIN is blank: ANY device your tailnet policy lets reach the Services gets the login page, and the portal password is the only thing left — set your login (./stack remote enable tailscale asks for it) unless you really want that"
 }
 
 # remote_restart_front — portal, Open WebUI and Caddy read the remote settings at start
@@ -405,12 +432,12 @@ remote_disable() {
   check_prereqs
   dc rm -sf tailscale >/dev/null 2>&1 || true   # still with the overlay: compose knows the service
   set_env REMOTE_MODE off
-  set_env OWUI_COOKIE_SECURE false
+  remote_set_hosts "" "" "" ""   # also empties Open WebUI's WEBUI_URL (derived from REMOTE_CHAT_HOST)
   unset_env TS_AUTHKEY
   remote_restart_front
   log "remote access is off; the portal is only on $(portal_url) again"
   log "the sidecar's login is kept (volume tailscale-state) for a later ./stack remote enable; to forget it: remove the device $(ts_node_name) in the Tailscale admin console and run docker volume rm $(project_name)_tailscale-state"
-  [ "$mode" != domain ] || log "you can delete the DNS records for $(get_env REMOTE_HOST) and *.$(get_env REMOTE_HOST)"
+  [ "$mode" != domain ] || log "you can delete the two DNS records for your remote name and its wildcard, and revoke the Cloudflare token (CLOUDFLARE_API_TOKEN in .env)"
 }
 
 # remote_identity_text -> how remote requests are tied to your Tailscale login (for status)
@@ -422,7 +449,7 @@ remote_identity_text() {
     return 0
   fi
   if [ -z "$login" ]; then
-    echo "password only (no TAILSCALE_ALLOWED_LOGIN: anyone your tailnet grant lets in sees the login page)"
+    echo "!! password only — TAILSCALE_ALLOWED_LOGIN is blank, so any device your tailnet policy lets in gets the login page"
     return 0
   fi
   seen="$(dc exec -T portal cat /state/remote-identity 2>/dev/null | head -n 1 | tr -d '\r' || true)"
@@ -466,20 +493,24 @@ remote_status() {
 # _yes_if_contains TEXT NEEDLE -> yes / no
 _yes_if_contains() { case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac; }
 
-# _caddy_remote_get HOST PATH -> "status|location" of GET http://HOST:8081PATH from inside the caddy container
-# (the remote listener is not published on the host; only the sidecar can reach it)
+# _caddy_remote_get FROM HOST PATH [HEADER] -> "status|location" of GET http://caddy:8081PATH (Host: HOST) sent
+# from inside the FROM container: tailscale = where the sidecar's requests come from; caddy = any other container
+# (Caddy's own 127.0.0.1 is outside REMOTE_SUBNET). "000|" when the connection was cut off.
 _caddy_remote_get() {
-  local out code loc
-  out="$(dc exec -T caddy wget -S -O /dev/null -T 10 --header "Host: $1" --header "Accept: text/html" "http://127.0.0.1:8081$2" 2>&1 || true)"
+  local from="$1" out code loc url=http://caddy:8081
+  [ "$from" != caddy ] || url=http://127.0.0.1:8081
+  out="$(dc exec -T "$from" wget -S -O /dev/null -T 10 --header "Host: $2" --header "Accept: text/html" \
+    ${4:+--header "$4"} "$url$3" 2>&1 || true)"
   code="$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')"
   loc="$(printf '%s\n' "$out" | awk 'tolower($1) == "location:" { print $2; exit }' | tr -d '\r')"
-  printf '%s|%s\n' "$code" "$loc"
+  printf '%s|%s\n' "${code:-000}" "$loc"
 }
 
 remote_test() {
-  local mode fails=0 want got sj st h
+  local mode fails=0 want got sj st h login id
   mode="$(remote_mode)"
   [ "$mode" != off ] || die "remote access is off — ./stack remote enable tailscale first"
+  remote_login_warning
   printf 'Checks from this computer:\n'
   sj="$(_ts status --json || true)"; st="$(printf '%s' "$sj" | ts_backend_state)"
   _check "sidecar logged in" "$st" Running
@@ -493,10 +524,26 @@ remote_test() {
       _check "sidecar serves $h" "$(_yes_if_contains "$got" "\"$h\"")" yes
     done
     h="$(get_env REMOTE_HOST)"
-    _check "Caddy: remote login page ($h)" "$(_caddy_remote_get "$h" /login | cut -d'|' -f1)" 200
-    got="$(_caddy_remote_get "$(get_env REMOTE_CHAT_HOST)" /)"
-    _check "Caddy: remote chat without a session → remote login" "${got%%\?*}" "302|https://$h/login"
-    _check "Caddy: unknown remote host refused" "$(_caddy_remote_get nope.invalid / | cut -d'|' -f1)" 404
+    login="$(get_env TAILSCALE_ALLOWED_LOGIN)"
+    id="${login:+Tailscale-User-Login: $login}"
+    _check "remote login page via the sidecar's network ($h)" "$(_caddy_remote_get tailscale "$h" /login "$id" | cut -d'|' -f1)" 200
+    got="$(_caddy_remote_get tailscale "$(get_env REMOTE_CHAT_HOST)" / "$id")"
+    _check "remote chat without a session → hand-off on the portal host" "${got%%\?*}" "302|https://$h/auth/handoff"
+    _check "unknown remote host refused" "$(_caddy_remote_get tailscale nope.invalid / | cut -d'|' -f1)" 404
+    _check "remote listener refuses other containers" "$(_caddy_remote_get caddy "$h" /login | cut -d'|' -f1)" 000
+    if [ -n "$login" ]; then
+      _check "no Tailscale login → refused" "$(_caddy_remote_get tailscale "$h" /login | cut -d'|' -f1)" 403
+      _check "another Tailscale login → refused" \
+        "$(_caddy_remote_get tailscale "$h" /login "Tailscale-User-Login: someone-else@example.invalid" | cut -d'|' -f1)" 403
+    else
+      _skip "Tailscale login check" "TAILSCALE_ALLOWED_LOGIN is blank"
+    fi
+  else
+    h="$(get_env REMOTE_HOST)"
+    got="$(dc exec -T caddy find /data/caddy/certificates -name '*.crt' 2>/dev/null || true)"
+    _check "certificate for $h" "$(_yes_if_contains "$got" "/$h.crt")" yes
+    _check "wildcard certificate for *.$h" "$(_yes_if_contains "$got" "/wildcard_.$h.crt")" yes
+    _check "sidecar forwards 443 to Caddy" "$(_yes_if_contains "$(_ts serve status --json || true)" 'caddy:8443')" yes
   fi
   cat <<EOF
 
@@ -514,13 +561,19 @@ EOF
 
 # --- hooks used by setup / up / status / summary ---
 
-# remote_setup_hook — end of ./stack setup: keep the sidecar and its serve config in line with .env
-remote_setup_hook() {
-  local mode; mode="$(remote_mode)"
+# remote_up_hook — after ./stack up / setup / restore brought up the stack itself: the serve config in line with
+# .env, then the sidecar started WITHOUT waiting for it (the stack never depends on Tailscale being reachable);
+# a short look whether it logged in, and a warning if not (details: ./stack remote status).
+REMOTE_UP_WAIT="${REMOTE_UP_WAIT:-20}"
+remote_up_hook() {
+  local mode st; mode="$(remote_mode)"
   [ "$mode" != off ] || return 0
   if [ "$mode" = tailscale ] && valid_tailnet "$(get_env TS_TAILNET)"; then write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
   elif [ "$mode" = domain ]; then write_ts_serve_config domain; fi
-  run_phase "Tailscale sidecar" tailscale dc up -d tailscale
+  dc up -d --no-deps tailscale >/dev/null 2>&1 || { warn "could not start the Tailscale sidecar — remote access is down (./stack logs tailscale); the local portal is fine"; return 0; }
+  if st="$(ts_wait_running "$REMOTE_UP_WAIT")"; then log "remote access: $(remote_url)"
+  else warn "the Tailscale sidecar is not logged in yet (state: $st) — remote access is down until it is (./stack remote status); the local portal is fine"; fi
+  remote_login_warning
 }
 
 # setup_remote_choice — setup asks once (REMOTE_MODE blank in .env, as .env.example has it): this computer only (default), or your

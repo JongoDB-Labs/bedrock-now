@@ -1,24 +1,36 @@
 # Remote site, own-domain mode (./stack remote enable domain HOST; imported by Caddyfile).
 # DNS: HOST and *.HOST point at the tailscale sidecar's 100.x address, which forwards TCP 443 untouched to this
-# listener, caddy:8443 (NOT published on the host). Caddy terminates TLS with Let's Encrypt certificates for
-# HOST and *.HOST, obtained by DNS-01 through the Cloudflare API (caddy/Dockerfile builds the plugin in), so no
-# port is ever opened to the internet and the app names stay out of certificate-transparency logs.
+# listener, caddy:8443 (NOT published on the host; it answers only the sidecar's network, REMOTE_SUBNET). Caddy
+# terminates TLS with Let's Encrypt certificates for HOST and *.HOST, obtained by DNS-01 through the Cloudflare API
+# (caddy/Dockerfile builds the plugin in), so no port is ever opened to the internet and the app names stay out
+# of certificate-transparency logs.
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
 # Tailscale cannot see inside this TLS, so it passes no identity: access is the tailnet grant plus the password.
 
 (remote_request) {
+	@not_sidecar not remote_ip {$REMOTE_SUBNET}
+	abort @not_sidecar
 	request_header -X-Portal-User
+	request_header -X-Portal-Proxy
 	# A client could send these itself here (Tailscale does not proxy HTTP in this mode).
 	request_header -Tailscale-User-Login
 	request_header -Tailscale-User-Name
 	request_header -Tailscale-User-Profile-Pic
+	request_header -Tailscale-Headers-Info
 	request_header -X-Portal-Remote
 	request_header X-Portal-Remote 1
+	request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}
 }
 
-(drop_remote_session_cookie) {
+# Towards the apps: no portal cookie, no proxy secret; only the remote portal may frame them; and their cookies
+# (set over plain http inside the stack, so without Secure) get Secure on this https site.
+(remote_upstream) {
 	header_up Cookie "__Host-bn_session=[^;]*;?\s*" ""
+	header_up -X-Portal-Proxy
+	header_down -X-Frame-Options
+	header_down Content-Security-Policy "frame-ancestors {$REMOTE_ORIGIN}"
+	header_down Set-Cookie "^(.*)$" "$1; Secure"
 }
 
 # The hand-off callback (portal/portal/app.py auth_callback): each app host gets its own host-only session cookie
@@ -29,11 +41,6 @@
 	reverse_proxy @bn_callback portal:8000 {
 		rewrite /auth/callback?{query}
 	}
-}
-
-(frame_by_remote_portal_only) {
-	header_down -X-Frame-Options
-	header_down Content-Security-Policy "frame-ancestors {$REMOTE_ORIGIN}"
 }
 
 https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
@@ -54,8 +61,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import handoff_callback
 		import portal_auth
 		reverse_proxy open-webui:8080 {
-			import drop_remote_session_cookie
-			import frame_by_remote_portal_only
+			import remote_upstream
 		}
 	}
 
@@ -65,8 +71,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import handoff_callback
 		import portal_auth
 		reverse_proxy litellm:4000 {
-			import drop_remote_session_cookie
-			import frame_by_remote_portal_only
+			import remote_upstream
 		}
 	}
 
@@ -76,10 +81,11 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import handoff_callback
 		import portal_auth
 		reverse_proxy rustfs:9001 {
-			import drop_remote_session_cookie
-			import frame_by_remote_portal_only
+			import remote_upstream
 		}
 	}
 
+	@other_caller not remote_ip {$REMOTE_SUBNET}
+	abort @other_caller
 	respond "unknown host" 404
 }

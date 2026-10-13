@@ -75,7 +75,10 @@ class Settings:
     remote_mode: str = ""
     remote_host: str = ""
     remote_app_hosts: dict = field(default_factory=dict)  # {"chat": host, "admin": host, "files": host}
-    tailscale_allowed_login: str = ""  # tailscale mode: Tailscale-User-Login, when present, must be this login
+    tailscale_allowed_login: str = ""  # tailscale mode: every remote request must carry this Tailscale-User-Login
+    # Caddy adds X-Portal-Proxy: <this> to everything it forwards; without it X-Portal-Remote and
+    # Tailscale-User-Login are ignored (they could only come from another container calling portal:8000 directly).
+    proxy_secret: str = field(default="", repr=False)
 
     def remote_on(self) -> bool:
         return self.remote_mode in REMOTE_MODES and bool(self.remote_host)
@@ -153,6 +156,7 @@ def from_env(env: dict | None = None) -> Settings:
         remote_host=(env.get("REMOTE_HOST") or "").strip().lower(),
         remote_app_hosts={sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()},
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
+        proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         claude_models={
             "opus": env.get("CLAUDE_BEDROCK_OPUS_MODEL", ""),
             "sonnet": env.get("CLAUDE_BEDROCK_SONNET_MODEL", ""),

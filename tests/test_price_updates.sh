@@ -289,10 +289,10 @@ test_cmd_up_refreshes_before_rendering_and_restarts_litellm() {
   DC_PS=abc123
   cmd_up 2>/dev/null
   # prices, then OpenRouter (renders with them), then one LiteLLM restart before the rest comes up
-  assert_eq "$(tr '\n' '|' < "$TMP/calls")" "refresh 12 --no-crosscheck --timeout 20|or-hook|reprice|dc ps -q --status running litellm|phase dc up -d --no-deps --force-recreate --wait litellm|phase dc up -d --wait|session|banner|hook|"
+  assert_eq "$(tr '\n' '|' < "$TMP/calls")" "refresh 12 --no-crosscheck --timeout 20|or-hook|reprice|dc ps -q --status running litellm|phase dc up -d --no-deps --force-recreate --wait litellm|phase dc up -d --wait caddy portal open-webui litellm rustfs shared-mcp postgres|session|banner|hook|"
   : > "$TMP/calls"; DC_PS=''; reprice_litellm_config() { return 1; }; refresh_prices() { PRICES_CHANGED=0; }
   cmd_up 2>/dev/null
-  assert_eq "$(tr '\n' '|' < "$TMP/calls")" "or-hook|phase dc up -d --wait|session|banner|or-after-up changed=0|"
+  assert_eq "$(tr '\n' '|' < "$TMP/calls")" "or-hook|phase dc up -d --wait caddy portal open-webui litellm rustfs shared-mcp postgres|session|banner|or-after-up changed=0|"
 }
 
 test_cmd_up_updates_open_webui_prices_once() {

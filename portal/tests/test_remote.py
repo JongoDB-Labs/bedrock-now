@@ -23,8 +23,11 @@ PORTAL = f"bn.{TN}"
 CHAT = f"bn-chat.{TN}"
 R_ORIGIN = f"https://{PORTAL}"
 ME = {"Tailscale-User-Login": "me@example.com"}
-REMOTE = {"X-Portal-Remote": "1", **ME}   # what Caddy + the sidecar send for the allowed user
-RL = {"x-portal-remote": "1"}  # plain dicts (the pure functions) are case-sensitive; Starlette headers are not
+PROXY = "p" * 64   # PORTAL_PROXY_SECRET: Caddy adds X-Portal-Proxy to everything it forwards
+VIA_CADDY = {"X-Portal-Remote": "1", "X-Portal-Proxy": PROXY}   # Caddy's remote site, no Tailscale login
+REMOTE = {**VIA_CADDY, **ME}   # what Caddy + the sidecar send for the allowed user
+# plain dicts (the pure functions) are case-sensitive; Starlette headers are not
+RL = {"x-portal-remote": "1", "x-portal-proxy": PROXY}
 
 
 def offline(request):
@@ -35,7 +38,7 @@ def offline(request):
 def rs(settings):
     return replace(settings, state_dir=settings.litellm_dir.parent, remote_mode="tailscale", remote_host=PORTAL,
                    remote_app_hosts={"chat": CHAT, "admin": f"bn-admin.{TN}", "files": f"bn-files.{TN}"},
-                   tailscale_allowed_login="me@example.com")
+                   tailscale_allowed_login="me@example.com", proxy_secret=PROXY)
 
 
 def _client(s, base=R_ORIGIN):
@@ -150,16 +153,16 @@ def test_identity_check_requires_the_allowed_login(rs):
 
 def test_foreign_or_missing_tailscale_login_is_refused_everywhere(rclient):
     for bad in ({"Tailscale-User-Login": "other@example.com"}, {"Tailscale-User-Login": ""}):
-        h = {"X-Portal-Remote": "1", **bad}
+        h = {**VIA_CADDY, **bad}
         assert rclient.get("/login", headers=h).status_code == 403
         assert rclient.post("/login", data={"password": "correct horse"}, headers={"Origin": R_ORIGIN, **h}).status_code == 403
         assert rclient.get("/auth/verify", headers=h).status_code == 403
-    assert rclient.get("/login", headers={"X-Portal-Remote": "1"}).status_code == 403
+    assert rclient.get("/login", headers=VIA_CADDY).status_code == 403
 
 
 def test_identity_presence_is_recorded_for_status(rclient, rs):
     f = rs.state_dir / "remote-identity"
-    rclient.get("/login", headers={"X-Portal-Remote": "1"})
+    rclient.get("/login", headers=VIA_CADDY)
     assert f.read_text().startswith("absent since ")
     rclient.get("/login", headers=REMOTE)
     assert f.read_text().startswith("present since ")
@@ -312,14 +315,73 @@ def test_sign_out_revokes_app_host_cookies_and_pending_tokens(rclient):
 
 def test_handoff_tokens_expire():
     now = [1000.0]
-    h = Handoff(SECRET, clock=lambda: now[0])
+    h = Handoff(SECRET, "fp", clock=lambda: now[0])
     t = h.issue(CHAT, 999.0, None)
     now[0] += Handoff.TTL + 1
     assert h.redeem(t, CHAT) is None
     t = h.issue(CHAT, 999.0, None)
     assert h.redeem(t, CHAT)["iat"] == 999.0
     assert h.redeem("garbage", CHAT) is None
-    assert Handoff("o" * 64).redeem(h.issue(CHAT, 1.0, None), CHAT) is None   # another secret
+    assert Handoff("o" * 64, "fp").redeem(h.issue(CHAT, 1.0, None), CHAT) is None   # another secret
+
+
+def test_handoff_tokens_die_with_a_new_password_or_a_restart():
+    now = [1000.0]
+    clock = lambda: now[0]  # noqa: E731
+    h = Handoff(SECRET, "fp-old", clock=clock)
+    t = h.issue(CHAT, 999.0, None)
+    assert Handoff(SECRET, "fp-new", clock=clock).redeem(t, CHAT) is None   # PORTAL_PASSWORD changed
+    now[0] += 1
+    assert Handoff(SECRET, "fp-old", clock=clock).redeem(t, CHAT) is None   # minted before this process started
+    assert h.redeem(t, CHAT) is not None                                     # the same process: fine
+
+
+def test_proxy_secret_gates_every_remote_claim(rs):
+    assert is_remote(RL, rs)
+    assert not is_remote({"x-portal-remote": "1"}, rs)                                  # not through Caddy
+    assert not is_remote({"x-portal-remote": "1", "x-portal-proxy": "nope"}, rs)
+    assert not is_remote(RL, replace(rs, proxy_secret=""))                              # no secret configured
+    assert not is_remote({"x-portal-remote": "1", "x-portal-proxy": "s"}, replace(rs, proxy_secret="s"))  # too short
+
+
+def test_a_container_skipping_caddy_cannot_pose_as_remote(rclient):
+    # X-Portal-Remote + Tailscale-User-Login straight to portal:8000, without Caddy's secret: treated as local
+    forged = {"X-Portal-Remote": "1", "Tailscale-User-Login": "other@example.com"}
+    r = rclient.get("/login", headers=forged)
+    assert r.status_code == 200
+    r = rclient.post("/login", data={"password": "correct horse"},
+                     headers={**forged, "Origin": "http://bedrock-now.localhost"})
+    assert r.headers["set-cookie"].startswith(f"{COOKIE}=")   # the local cookie, not a remote session
+
+
+def test_unbound_session_does_not_count_when_a_login_is_required(rclient, rs):
+    s = Sessions(SECRET, "correct horse")
+    unbound = s.issue()
+    assert rclient.get("/auth/verify", headers={**REMOTE, "Cookie": f"{REMOTE_COOKIE}={unbound}"}).status_code == 401
+    bound = s.issue(login="me@example.com")
+    assert rclient.get("/auth/verify", headers={**REMOTE, "Cookie": f"{REMOTE_COOKIE}={bound}"}).status_code == 200
+
+
+def test_handoff_loop_guard_stops_and_explains(rclient):
+    tok = portal_token(rclient)
+    count = None
+    for i in range(4):
+        jar = f"{REMOTE_COOKIE}={tok}" + (f"; __Host-bn_handoffs_chat={count}" if count else "")
+        r = handoff(rclient, tok, headers={"Cookie": jar})
+        assert r.status_code == 302
+        count = r.headers["set-cookie"].split(";")[0].split("=", 1)[1]
+        assert count == str(i + 1)
+        assert "max-age=60" in r.headers["set-cookie"].lower()
+    jar = f"{REMOTE_COOKIE}={tok}; __Host-bn_handoffs_chat={count}"
+    r = handoff(rclient, tok, headers={"Cookie": jar})   # the browser kept coming back without the app cookie
+    assert r.status_code == 409 and "refusing the sign-in cookie" in r.text
+    assert handoff(rclient, tok, to=f"https://bn-admin.{TN}", nxt="/", headers={"Cookie": jar}).status_code == 302
+
+
+def test_callback_errors_are_a_page_with_a_way_back(rclient):
+    r = rclient.get("/auth/callback?t=expired&next=/", headers={**REMOTE, "Host": CHAT})
+    assert r.status_code == 400 and "text/html" in r.headers["content-type"]
+    assert f'href=\'{R_ORIGIN}/\'' in r.text and "Referrer-Policy" in r.headers
 
 
 # --- Home on the remote site ---

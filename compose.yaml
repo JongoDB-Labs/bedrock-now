@@ -175,9 +175,8 @@ services:
       # Login comes from the portal: Caddy deletes any client-sent X-Portal-User and sets it only for a valid
       # portal session. Safe only because Open WebUI publishes no port (reachable through Caddy alone).
       WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-Portal-User
-      # Remote access (./stack remote): its "token" cookie Secure (https), and links built for the remote name.
-      # Local-only installs: false and empty, Open WebUI's own defaults.
-      WEBUI_AUTH_COOKIE_SECURE: ${OWUI_COOKIE_SECURE:-false}
+      # Remote access (./stack remote): links built for the remote name (empty = Open WebUI's default). Its cookies
+      # stay non-Secure here (the local site is http); Caddy's remote site marks them Secure on the way out.
       WEBUI_URL: ${REMOTE_CHAT_HOST:+https://${REMOTE_CHAT_HOST:-}}
     volumes:
       - owui:/app/backend/data
@@ -229,6 +228,9 @@ services:
       # Not :? — ./stack update pulls images before setup has created these; the portal refuses to start without them.
       PORTAL_PASSWORD: ${PORTAL_PASSWORD:-}
       PORTAL_SECRET: ${PORTAL_SECRET:-}
+      # Caddy sends it on every request it forwards; without it the portal ignores X-Portal-Remote and
+      # Tailscale-User-Login (they could only come from another container talking to portal:8000 directly).
+      PORTAL_PROXY_SECRET: ${PORTAL_PROXY_SECRET:-}
       PORTAL_HOST: ${PORTAL_HOST:-bedrock-now.localhost}
       PORTAL_PORT: ${PORTAL_PORT:-80}
       PORTAL_USER_EMAIL: ${OPENWEBUI_ADMIN_EMAIL:-}
@@ -303,6 +305,9 @@ services:
       REMOTE_ADMIN_HOST: ${REMOTE_ADMIN_HOST:-admin.remote.invalid}
       REMOTE_FILES_HOST: ${REMOTE_FILES_HOST:-files.remote.invalid}
       REMOTE_ORIGIN: ${REMOTE_ORIGIN:-https://remote.invalid}
+      # Only the sidecar's network may use the remote listeners (compose.tailscale.yaml: the "remote" network).
+      REMOTE_SUBNET: ${REMOTE_SUBNET:-10.255.255.248/29}
+      PORTAL_PROXY_SECRET: ${PORTAL_PROXY_SECRET:-}
     depends_on:
       portal: { condition: service_healthy }   # forward_auth needs it; avoids 502s on the first requests
     # Directory mount, so a Caddyfile replaced by git (new inode) is seen after a restart.

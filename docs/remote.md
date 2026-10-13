@@ -24,8 +24,9 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
                              │  terminates TLS, deletes client Tailscale-User-* headers, adds
                              │  Tailscale-User-Login + X-Forwarded-Proto: https
                              ▼
-                     caddy:8081 (remote listener, NOT published on the host)
-                             │  sets X-Portal-Remote: 1 (after deleting any client copy)
+                     caddy:8081 (remote listener, NOT published on the host; answers only the
+                             │  sidecar's own small network, REMOTE_SUBNET)
+                             │  sets X-Portal-Remote: 1 and X-Portal-Proxy (after deleting client copies)
                              │  forward_auth → portal: this host's own cookie + Tailscale login check
                              │  (no cookie on an app host yet → one-time hand-off from the portal host)
                              ▼
@@ -34,19 +35,30 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
 
 - A `tailscale/tailscale` container (`compose.tailscale.yaml`, pinned by version and digest) joins your
   tailnet as its own machine, `bedrock-now-node`, with **outbound** connections only. It needs no
-  `/dev/net/tun` and no capabilities (`cap_drop: ALL`); its login lives in the `tailscale-state` volume.
+  `/dev/net/tun` and no capabilities (`cap_drop: ALL`), runs read-only with memory and process limits, and
+  its login lives in the `tailscale-state` volume. It shares a small Docker network of its own (`remote`,
+  `REMOTE_SUBNET`, default `10.255.255.248/29` — outside Docker's default pools; set another /29 in `.env` if
+  it collides) with Caddy only.
+- `./stack up`, `setup` and `restore` never wait for it: the stack comes up first, then the sidecar is
+  started and given a few seconds; if it is not logged in you get a warning and the local portal works as
+  always. `./stack remote status` shows the login state.
 - It hosts four [Tailscale Services](https://tailscale.com/kb/1552/tailscale-services), one per app, because
   Open WebUI and LiteLLM both use a host-only cookie called `token` and must stay on different host names. The
   serve config (`tailscale/serve.json`, written by `./stack`) maps `svc:<name>` HTTPS 443 to Caddy's internal
   listener. Containerboot advertises them at start (`TS_EXPERIMENTAL_SERVICE_AUTO_ADVERTISEMENT`, default since
   Tailscale v1.96).
-- Caddy's remote site (`caddy/remote-tailscale.caddy`) listens on port 8081 **inside** the Docker network
-  only; nothing on your machine or LAN can reach it. It marks requests with `X-Portal-Remote: 1`, which the
-  local site always deletes.
+- Caddy's remote site (`caddy/remote-tailscale.caddy`) listens on port 8081 **inside** Docker only, and
+  cuts off every caller outside `REMOTE_SUBNET` — so no other container can pose as the sidecar — and trusts
+  `X-Forwarded-*` only from there. It marks requests with `X-Portal-Remote: 1`; the local site deletes that
+  header and any `Tailscale-User-*` header a client sends.
+- Caddy also adds `X-Portal-Proxy: <PORTAL_PROXY_SECRET>` (a random secret in `.env`; client copies are
+  deleted, the apps never receive it). The portal believes `X-Portal-Remote` and `Tailscale-User-Login` only
+  together with it, so a container that talks to `portal:8000` directly cannot claim to be remote.
 - The portal then uses **host-only** session cookies, `__Host-bn_session` (`Secure`, `HttpOnly`,
   `SameSite=Strict`, `Path=/`, no `Domain` — the `__Host-` prefix makes the browser enforce that), the remote
-  origin for its CSRF check and redirects, and `https://…` app addresses on Home. Open WebUI's own cookie
-  becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`).
+  origin for its CSRF check and redirects, and `https://…` app addresses on Home. The apps' own cookies
+  (Open WebUI's and LiteLLM's `token`, …) get `Secure` added by Caddy on the remote site only; locally (plain
+  http) they stay as they are.
 - **Hand-off.** Each app host gets its own cookie, never a shared one: an app host without a cookie sends the
   browser to `https://<portal>/auth/handoff?to=<app>&next=…`; the portal (signed in) mints a token that is
   signed, valid for 60 seconds, usable once, and only for that one host, and redirects to
@@ -54,6 +66,8 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   the host's own cookie with the portal session's start time — so it expires with the portal session and
   **Sign out** (or a changed password) ends it too. `next` stays on the same host. This works inside Home's
   frames as well (tested in Chromium and WebKit: the four names are one "site", so `SameSite=Strict` holds).
+  Tokens also carry the password fingerprint and are refused after a portal restart. If a browser refuses the
+  app host's cookie, the portal stops after four hand-offs a minute and says so instead of looping.
 - One-click Update / Rollback / Clean stay off for remote requests unless you set `REMOTE_ADMIN_ACTIONS=true`
   ([security](security.md#the-update-helper)).
 
@@ -65,16 +79,23 @@ Services). Setup asks for your login (`TAILSCALE_ALLOWED_LOGIN`); the portal the
 request without the header, or with another login, is refused (403) — on the login page, at sign-in and on
 every app request. Sessions (and hand-off tokens) are bound to that login. **Tagged** devices (servers, not
 people) never get the header from Tailscale, so they cannot use the portal remotely while a login is set;
-leave `TAILSCALE_ALLOWED_LOGIN` blank to allow them (password only). `./stack remote status` shows what the
+leave `TAILSCALE_ALLOWED_LOGIN` blank to allow them (password only — `enable`, `status` and `test` then warn
+loudly, because any device your policy lets in gets the login page). `./stack remote status` shows what the
 portal last saw ("Identity"). This has been checked against Tailscale's source, not yet end to end on a real
 tailnet: `./stack remote test`'s checklist covers it.
 
 ### Cookies stay on their own host
 
 All four names live under `<tailnet>.ts.net`, next to every other machine of your tailnet. A cookie scoped to
-that domain would be sent to all of them, so none is: every cookie is host-only (`__Host-`), each app host gets
-its own through the hand-off, and Caddy never forwards them to the apps. Own-domain mode works the same way
-(nothing is scoped to `bedrock.example.com` either).
+that domain would be sent to all of them, so none is: every session cookie is host-only (`__Host-`), each app
+host gets its own through the hand-off, and Caddy never forwards them to the apps. Own-domain mode works the
+same way (nothing is scoped to `bedrock.example.com` either).
+
+The reverse direction, **cookie tossing**, is limited too: another machine under the same parent (or, in
+own-domain mode, any host you run under your domain) could set cookies scoped to the parent that browsers would
+then send to bedrock-now. It cannot forge or overwrite the `__Host-` session cookies (browsers refuse that
+prefix with a `Domain`), but it could plant other cookies the apps read (for example Open WebUI's `token`). Only
+run machines you trust under the same tailnet or parent domain, or give bedrock-now a dedicated subdomain.
 
 ## Tailscale mode, step by step
 
@@ -90,7 +111,10 @@ Requirements (checked against Tailscale's documentation, October 2026):
 `./stack remote enable tailscale` prints these steps with your names filled in:
 
 1. **DNS** page: MagicDNS on, HTTPS Certificates on.
-2. **Access controls**: merge this into the policy file (with your login):
+2. **Access controls**: merge this into the policy file (with your login). It is least privilege only if
+   your policy has **no allow-all rule**: a new tailnet's default policy lets every device reach every other on
+   every port (`"src": ["*"], "dst": ["*"]` in `grants`, or `"action": "accept"` with `*` in `acls`). Remove or
+   narrow that rule, or this snippet adds access without limiting anything.
 
    ```json
    "tagOwners": { "tag:bedrock-now": ["autogroup:admin"] },
@@ -109,14 +133,19 @@ Requirements (checked against Tailscale's documentation, October 2026):
    ]
    ```
 
-3. **Keys**: an auth key that is not reusable, not ephemeral, pre-approved, with tag `tag:bedrock-now`. (Or an
-   OAuth client with the `auth_keys` scope and that tag; `./stack` appends `?ephemeral=false` to its secret.)
+3. **Keys**: a **one-off** auth key — not reusable, not ephemeral, pre-approved, tag `tag:bedrock-now`, short
+   expiry. (An OAuth client with the `auth_keys` scope and that tag also works — `./stack` appends
+   `?ephemeral=false` to its secret — but it can mint further keys at any time: revoke or rotate it once the
+   sidecar is enrolled; `enable` reminds you.)
 4. **Services**: *Advertise → Define a Service* four times — `bedrock-now`, `bedrock-now-chat`,
    `bedrock-now-admin`, `bedrock-now-files` — each with port `tcp:443`.
-5. Then run `./stack remote enable tailscale`, paste the key (hidden) and your login. The key is removed from
-   `.env` as soon as the sidecar has logged in.
-6. `./stack remote test` checks what can be checked from the computer (sidecar logged in and tagged, serve
-   config, Services served, Caddy's remote routes) and prints a checklist for your phone.
+5. Then run `./stack remote enable tailscale`, paste the key (hidden) and your login. As soon as the sidecar
+   has logged in, the key is removed from `.env` and the container is recreated without it, so it does not
+   linger in `docker inspect` either.
+6. `./stack remote test` checks what can be checked from the computer — sidecar logged in and tagged, serve
+   config, Services served, Caddy's remote routes as seen from the sidecar's network, that other containers are
+   cut off, and that requests without (or with another) Tailscale login are refused — and prints a checklist
+   for your phone.
 
 A second copy of bedrock-now (another `COMPOSE_PROJECT_NAME`) uses `bedrock-now-<project>` names, so both can be
 in one tailnet. `TS_SERVICE`, `TS_HOSTNAME` and `TS_TAG` in `.env` override the names.
@@ -141,8 +170,14 @@ in one tailnet. `TS_SERVICE`, `TS_HOSTNAME` and `TS_TAG` in `.env` override the 
   through the **DNS-01** challenge, so no port is opened and the app names stay out of certificate-transparency
   logs. That needs a Caddy build with a DNS plugin: `caddy/Dockerfile` builds one (xcaddy, pinned versions)
   only when this mode is on, and its certificates are kept in the `caddy-data` volume (Let's Encrypt rate
-  limits). **Cloudflare** is built in: create an API token with *Zone → DNS → Edit* for the zone; the command
-  asks for it (hidden) and stores it as `CLOUDFLARE_API_TOKEN` in `.env` (only the Caddy container receives it).
+  limits). **Cloudflare** is built in. Create an API token (My Profile → API Tokens → Create Custom Token)
+  with exactly the permissions the plugin needs (caddy-dns/cloudflare v0.2.4 README): **Zone → Zone → Read**
+  and **Zone → DNS → Edit**, and under *Zone Resources* include **only that one zone** (not "All zones"). Better
+  still, delegate a dedicated subzone (say `bn.example.com`) to Cloudflare and scope the token to it. The
+  command asks for the token (hidden) and stores it as `CLOUDFLARE_API_TOKEN` in `.env`; only the Caddy
+  container receives it. **If it leaks**, whoever holds it can change every DNS record of that zone (redirect
+  your mail or web, obtain certificates for your names) until you revoke it — which is why it should be
+  limited to one, ideally dedicated, zone.
   Another provider: change `DNS_PLUGIN` in `caddy/Dockerfile` to its [caddy-dns](https://github.com/caddy-dns)
   module at a pinned version, the `dns` line in `caddy/remote-domain.caddy`, and the token variable in
   `compose.domain.yaml`.
@@ -170,8 +205,8 @@ does not automate this; know the trade-offs first:
 
 ## Turning it off
 
-`./stack remote disable` stops the sidecar, removes the remote site from Caddy and the portal, and makes Open
-WebUI's cookie non-`Secure` again. The sidecar's login stays in the `tailscale-state` volume for a later
+`./stack remote disable` stops the sidecar, removes the remote site (and its names) from Caddy, the portal
+and Open WebUI. The sidecar's login stays in the `tailscale-state` volume for a later
 `enable`. To forget it completely: remove the machine in the admin console and
 `docker volume rm <project>_tailscale-state`; delete the Services and DNS records you no longer need.
 
@@ -186,4 +221,7 @@ WebUI's cookie non-`Secure` again. The sidecar's login stays in the `tailscale-s
 | Certificate warning | HTTPS Certificates enabled (DNS page); own domain: `./stack logs caddy` (DNS-01) |
 | "not shared with your Tailscale login" | you are signed in to Tailscale as someone else than `TAILSCALE_ALLOWED_LOGIN`, or the device is tagged (no login header) |
 | "sign-in link has expired or was already used" | reload the page (the hand-off token lives 60 s and works once) |
+| "keeps refusing the sign-in cookie" | the browser blocks cookies for that app's name (private mode, a strict blocker) — allow them |
+| `./stack up` warns the sidecar is not logged in | `./stack remote status`; re-run `./stack remote enable …` with a new auth key |
+| Docker: "Pool overlaps with other one" | set `REMOTE_SUBNET` in `.env` to a free /29 (e.g. `10.254.254.248/29`) |
 | Login page loops | the device's clock; a stale cookie — sign out on Home, or clear site data |

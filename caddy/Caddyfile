@@ -6,8 +6,8 @@
 #   {$FILES_HOST}    RustFS console         (default files.PORTAL_HOST; Host passed through unchanged: the console
 #                                           signs S3 requests with it)
 # The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
-# Every host first deletes any client-supplied X-Portal-User, then asks the portal (forward_auth) whether the
-# bn_session cookie is valid; only the portal's answer can set X-Portal-User. Directives inside `route` run in
+# Every host first deletes any client-supplied X-Portal-User (and the rest of local_request), then asks the portal
+# (forward_auth) whether the bn_session cookie is valid; only the portal's answer can set X-Portal-User. Directives inside `route` run in
 # the order written (outside it, Caddy would run request_header AFTER forward_auth).
 # The three apps may be framed by the portal ({$PORTAL_ORIGIN}, e.g. http://bedrock-now.localhost:8800) and
 # nothing else; the portal itself refuses all framing (its own CSP: frame-ancestors 'none').
@@ -20,11 +20,25 @@
 	persist_config off
 	# Unprivileged listener inside the container; compose publishes it on 127.0.0.1:${PORTAL_PORT}.
 	http_port 8080
-	# The Tailscale remote listener (remote-tailscale.caddy) is never published; only the sidecar reaches it.
-	# Trusting the sidecar's X-Forwarded-Proto: https keeps the apps' own redirects and links on https.
+	# The Tailscale remote listener (remote-tailscale.caddy) is never published and answers only the sidecar's
+	# network (REMOTE_SUBNET, compose.tailscale.yaml). Trusting the sidecar's X-Forwarded-Proto: https keeps the
+	# apps' own redirects and links on https.
 	servers :8081 {
-		trusted_proxies static private_ranges
+		trusted_proxies static {$REMOTE_SUBNET}
 	}
+}
+
+# Every local request: delete what only Caddy, the portal or the Tailscale sidecar may set, then add the shared
+# secret that tells the portal this request came through Caddy (PORTAL_PROXY_SECRET; the apps never see it).
+(local_request) {
+	request_header -X-Portal-User
+	request_header -X-Portal-Remote
+	request_header -X-Portal-Proxy
+	request_header -Tailscale-User-Login
+	request_header -Tailscale-User-Name
+	request_header -Tailscale-User-Profile-Pic
+	request_header -Tailscale-Headers-Info
+	request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}
 }
 
 (portal_auth) {
@@ -37,6 +51,7 @@
 # The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it.
 (drop_session_cookie) {
 	header_up Cookie "bn_session=[^;]*;?\s*" ""
+	header_up -X-Portal-Proxy
 }
 
 # Replaces whatever framing policy the app sends (LiteLLM: X-Frame-Options DENY + CSP frame-ancestors 'none';
@@ -76,16 +91,14 @@
 
 http://{$PORTAL_HOST} {
 	route {
-		request_header -X-Portal-User
-		request_header -X-Portal-Remote
+		import local_request
 		import portal_routes
 	}
 }
 
 http://{$CHAT_HOST} {
 	route {
-		request_header -X-Portal-User
-		request_header -X-Portal-Remote
+		import local_request
 		import portal_auth
 		reverse_proxy open-webui:8080 {
 			import drop_session_cookie
@@ -96,8 +109,7 @@ http://{$CHAT_HOST} {
 
 http://{$ADMIN_HOST} {
 	route {
-		request_header -X-Portal-User
-		request_header -X-Portal-Remote
+		import local_request
 		import portal_auth
 		reverse_proxy litellm:4000 {
 			import drop_session_cookie
@@ -109,8 +121,7 @@ http://{$ADMIN_HOST} {
 
 http://{$FILES_HOST} {
 	route {
-		request_header -X-Portal-User
-		request_header -X-Portal-Remote
+		import local_request
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import drop_session_cookie

@@ -51,6 +51,21 @@ def _no_store(resp: Response) -> Response:
     return resp
 
 
+def _error_page(message: str, status: int, link: str, link_text: str) -> HTMLResponse:
+    """A small page for the hand-off's dead ends (no script, no external resources)."""
+    page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+            "<title>bedrock-now</title><body style='font-family:system-ui;max-width:32rem;margin:3rem auto;padding:0 1rem'>"
+            f"<h1 style='font-size:1.2rem'>Could not sign you in here</h1><p>{html.escape(message)}</p>"
+            f"<p><a href='{html.escape(link, quote=True)}'>{html.escape(link_text)}</a></p>")
+    resp = HTMLResponse(page, status_code=status)
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return _no_store(resp)
+
+
+HANDOFF_LOOP_COOKIE = "__Host-bn_handoffs_"   # + the app (chat/admin/files): one counter per app host
+HANDOFF_LOOP_MAX = 4   # hand-offs to one app host within a minute before the portal stops and explains
+
+
 def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: int = 0) -> HTMLResponse:
     page = (STATIC / "login.html").read_text(encoding="utf-8")
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
@@ -67,7 +82,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
     admin_rate = admin.RateLimit()
 
-    handoff = Handoff(settings.secret)
+    handoff = Handoff(settings.secret, sessions.fingerprint)
     identity_file = settings.state_dir / "remote-identity" if settings.state_dir else None
     identity_seen = {"kind": None}
 
@@ -218,9 +233,19 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if host not in remote_app_hosts():
             return _no_store(PlainTextResponse("unknown app address", status_code=400))
         nxt = _same_host_path(request.query_params.get("next", ""), host)
+        # Loop guard: if the app host keeps coming back without a cookie (the browser refuses it), stop and say so.
+        loop_cookie = HANDOFF_LOOP_COOKIE + next(sub for sub, h in settings.remote_app_hosts.items() if h == host)
+        raw = request.cookies.get(loop_cookie, "0")
+        count = int(raw) if raw.isdigit() and len(raw) < 4 else 0
+        if count >= HANDOFF_LOOP_MAX:
+            return _error_page(f"Your browser keeps refusing the sign-in cookie for {host}. Allow cookies for this "
+                               "site (private browsing and strict blockers can refuse them), then try again in a minute.",
+                               409, settings.origin(remote=True) + "/", "Back to Home")
         token = handoff.issue(host, claims["iat"], session_login(request.headers, settings))
         resp = RedirectResponse(f"https://{host}/.bn/callback?t={quote(token, safe='')}&next={quote(nxt, safe='')}",
                                 status_code=302)
+        resp.set_cookie(loop_cookie, str(count + 1), max_age=60, path="/", httponly=True, samesite="strict",
+                        secure=True)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
 
@@ -235,8 +260,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         data = handoff.redeem(request.query_params.get("t"), host)
         login = session_login(request.headers, settings)
         if data is None or (data["u"] or None) != login:
-            return _no_store(PlainTextResponse("This sign-in link has expired or was already used — reload the page.",
-                                               status_code=400))
+            return _error_page("This sign-in link has expired or was already used. Open the page again from Home.",
+                               400, settings.origin(remote=True) + "/", "Back to Home")
         cookie = sessions.issue(data["iat"], login)
         if not sessions.valid(cookie, login):   # signed out (or expired) since the token was issued
             return _no_store(login_redirect("/", True))

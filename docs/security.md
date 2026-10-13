@@ -50,10 +50,17 @@ session you get the login page.
 Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](remote.md)). What changes:
 
 - **Still nothing published.** A `tailscale/tailscale` container (pinned by digest, userspace networking,
-  `cap_drop: ALL`, `no-new-privileges`) connects outbound to your tailnet and terminates HTTPS for four Tailscale
-  Services. It forwards to Caddy's remote listener on port 8081, which exists only inside the Docker network.
-  Own-domain mode forwards raw TCP 443 to Caddy's TLS listener (8443), also internal. The auth key is removed from
-  `.env` once the sidecar is logged in.
+  `cap_drop: ALL`, `no-new-privileges`, read-only, memory and process limits, no health/metrics listener)
+  connects outbound to your tailnet and terminates HTTPS for four Tailscale Services. It forwards to Caddy's
+  remote listener on port 8081; own-domain mode forwards raw TCP 443 to Caddy's TLS listener (8443). Neither is
+  published, and both answer only the sidecar: the sidecar shares a dedicated Docker network (`remote`,
+  `REMOTE_SUBNET`, default `10.255.255.248/29`) with Caddy alone, and Caddy cuts off every caller outside that
+  subnet (`abort`) and trusts `X-Forwarded-*` only from it. The auth key is removed from `.env` once the sidecar
+  is logged in, and the container is recreated so it is gone from `docker inspect` too.
+- **Only Caddy can speak for the remote site.** Caddy deletes client-sent `X-Portal-Proxy`, `X-Portal-Remote`
+  and `Tailscale-User-*` headers on every site and adds `X-Portal-Proxy: <PORTAL_PROXY_SECRET>` (random, in
+  `.env`; stripped before the apps). The portal honours `X-Portal-Remote` and `Tailscale-User-Login` only with
+  that secret, so another container calling `portal:8000` directly is treated as local.
 - **A separate site.** Remote site blocks delete any client-sent `X-Portal-User` and `X-Portal-Remote`, then set
   `X-Portal-Remote: 1`; the local blocks always delete it. The portal uses that marker to pick the remote
   cookie, the remote origin for its CSRF check and login redirects (https on the remote names only), and the
@@ -72,10 +79,19 @@ Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](
   `Tailscale-User-Login` for devices signed in as a user (also on Services traffic, per its source). With
   `TAILSCALE_ALLOWED_LOGIN` set, the portal requires it: a remote request without it or with another login is
   refused (login page, sign-in, hand-off and every app request), and remote sessions are bound to it. Tagged
-  devices get no header and are therefore refused; `./stack remote status` says what it saw. In own-domain mode
-  TLS ends at Caddy, so the header cannot exist (Caddy deletes client copies): the tailnet grant and the password
-  are the gates, and there is no login binding.
-- Open WebUI's `token` cookie becomes `Secure` (`WEBUI_AUTH_COOKIE_SECURE=true`) while remote access is on.
+  devices get no header and are therefore refused; `./stack remote status` says what it saw. Left blank, the
+  password is the only gate for any device your tailnet policy admits (`enable`, `status`, `test` warn). In
+  own-domain mode TLS ends at Caddy, so the header cannot exist (Caddy deletes client copies): the tailnet grant
+  and the password are the gates, and there is no login binding.
+- **Your tailnet policy decides who connects.** The printed grant limits access only if the policy has no
+  allow-all rule (a new tailnet's default allows everything); remove or narrow it.
+- **Hand-off tokens** also carry the password fingerprint (a new `PORTAL_PASSWORD` voids them) and are refused
+  if minted before the portal last started (their nonces are kept in memory). A browser that keeps refusing an
+  app host's cookie gets an explanation after four hand-offs a minute instead of a redirect loop.
+- **App cookies.** Open WebUI keeps `WEBUI_AUTH_COOKIE_SECURE=false` (the local site is http); Caddy appends
+  `Secure` to every cookie the apps set on the remote https site.
+- **Own-domain token.** `CLOUDFLARE_API_TOKEN` should have Zone:Read + DNS:Edit for one zone only (ideally a
+  dedicated subzone): a leaked token can rewrite that zone's DNS until revoked. See docs/remote.md.
 
 ## The update helper
 

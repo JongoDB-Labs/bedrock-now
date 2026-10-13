@@ -316,6 +316,7 @@ setup_secrets() {
   ensure_env RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"
   ensure_env RUSTFS_SECRET_KEY "$(gen_hex 24)"
   ensure_env SHARED_MCP_TOKEN "$(gen_hex 32)"
+  ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # Caddy → portal: proves a request came through Caddy
   ensure_env BUDGET_CLAUDE_CODE 200
   ensure_env BUDGET_OPENWEBUI 50
   ensure_env BUDGET_SETUP 5
@@ -360,7 +361,7 @@ cmd_setup() {
   cmd_test
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
-  if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_setup_hook; fi
+  if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_up_hook; fi
   print_summary
   [ "$(host_os)" != Darwin ] || docker_autostart_hint   # lib/host.sh: read-only check, never edits settings
   maybe_auto_open
@@ -769,7 +770,11 @@ cmd_up() {
     log "restarting LiteLLM so it uses the new prices (~30 s; requests in flight may fail)"
     run_phase "LiteLLM (new prices)" litellm dc up -d --no-deps --force-recreate --wait litellm
   fi
-  run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait
+  ! remote_on || ensure_env PORTAL_PROXY_SECRET "$(gen_hex 32)"   # installs that enabled remote access before setup made it
+  # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
+  # shellcheck disable=SC2086  # word-split the service list on purpose
+  run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
+  remote_up_hook
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup).
   # The same session updates Open WebUI's prices once: after Bedrock price changes, on_prices_changed (cost
   # filter, which also carries OpenRouter's prices, and model descriptions) plus OpenRouter's label sync if
@@ -1060,7 +1065,9 @@ cmd_restore() {
   write_mcp_config
   # .env may have changed: recreate the containers that read these keys, then start everything else.
   dc up -d --wait --force-recreate open-webui shared-mcp
-  dc up -d --wait
+  # shellcheck disable=SC2086  # word-split the service list on purpose
+  dc up -d --wait $STACK_SERVICES
+  remote_up_hook
   log "restored ${dir##*/}; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
   cmd_test
 }
