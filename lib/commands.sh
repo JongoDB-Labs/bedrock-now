@@ -405,6 +405,7 @@ cmd_setup() {
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
   if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_up_hook; fi
+  record_setup_commit   # lib/rollback.sh: ./stack update calls "nothing new" only for this commit
   print_summary
   [ "$(host_os)" != Darwin ] || docker_autostart_hint_weekly   # lib/host.sh: read-only check, at most weekly
   maybe_auto_open
@@ -1206,13 +1207,14 @@ _rollback_cmd() {
 # whose signature git verify-tag accepts (trusted keys: docs/security.md#code-provenance)
 _signed_tags_required() { [ "$(get_env UPDATE_REQUIRE_SIGNED_TAGS)" = true ]; }
 
-# update_nothing_new [REF] -> 0 when ./stack update would leave the code exactly as it is (fetches first): HEAD is
-# already the target update_checkout would pick, in the same state (a branch up to date with its origin branch, or
-# a detached HEAD at the tag/commit). Whatever it cannot tell (no git, no network, an unknown ref, a branch that
+# update_nothing_new [REF] -> 0 when ./stack update would leave the code exactly as it is (fetches first): the last
+# successful setup ran on HEAD (setup_ran_on_head, lib/rollback.sh), and HEAD is already the target update_checkout
+# would pick, in the same state (a branch up to date with its origin branch, or a detached HEAD at the tag/commit). Whatever it cannot tell (no git, no network, an unknown ref, a branch that
 # follows another remote, a switch between a branch and a tag) counts as something to do: update_checkout decides.
 update_nothing_new() {
   local to="${1:-}" head branch up target
   [ -e "$STACK_DIR/.git" ] || return 1
+  setup_ran_on_head || return 1   # the last successful setup ran on other code (or none is recorded): every step
   _git fetch --quiet --tags origin 2>/dev/null || return 1
   _UPDATE_FETCHED=1   # update_checkout does not fetch a second time
   head="$(_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
@@ -1318,7 +1320,10 @@ cmd_update() {
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   if [ "${BEDROCK_NOW_CODE_UPDATED:-0}" = 1 ]; then   # before stack_lock, which would take the lock as ours
     if _update_reexec_genuine; then reexec=1
-    else warn "BEDROCK_NOW_CODE_UPDATED=1 in the environment is ignored (./stack update sets it only for itself)"; fi
+    else   # e.g. v0.1.1 or a stale v0.2.1 hand-over: the code may have moved, so nothing is skipped
+      warn "BEDROCK_NOW_CODE_UPDATED=1 in the environment is ignored (./stack update sets it only for itself) — running every step"
+      force=1
+    fi
   fi
   stack_lock update   # lib/lock.sh: one update/rollback/clean/restore/setup at a time (kept across the re-exec)
   [ "${ASSUME_YES:-0}" != 1 ] || yes=(--yes)

@@ -445,8 +445,10 @@ When a newer release is out, Home shows an **update card** with its release note
 and the `claude-bedrock` launch line mention it too (they read the portal's last check; no network of their
 own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
 
-The update first asks git whether there is anything new. If not, it says so (`already on v0.3.0 — nothing to
-update`) and stops: no backup, no restart, no Bedrock calls. `./stack update --force` runs every step anyway. If
+The update first asks git whether there is anything new. If not, and the last successful setup ran on exactly
+this code, it says so (`already on v0.3.0 — nothing to update`) and stops: no backup, no restart, no Bedrock
+calls. After a `git pull` or checkout by hand, an upgrade from an older version or a rollback, it runs every step
+once. `./stack update --force` always runs every step. If
 the last update moved the code but did not finish (its image pull or setup failed, or it was stopped), the next
 `./stack update` finishes it, keeping that update's backup and rollback point.
 Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one

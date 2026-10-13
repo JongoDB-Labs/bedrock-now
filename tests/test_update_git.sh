@@ -180,6 +180,7 @@ _noop_stubs() { # logs what ./stack update would do; the real git decides whethe
 
 test_update_with_nothing_new_stops_before_backup_and_setup() {
   _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs   # the newest release
+  record_setup_commit   # setup succeeded on this code
   (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # subshells: a real update would re-execute ./stack
   assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
   assert_contains "$(cat "$TMP/err")" "already on v0.2.0 — nothing to update (./stack update --force re-runs setup)"
@@ -187,7 +188,7 @@ test_update_with_nothing_new_stops_before_backup_and_setup() {
   # the same commit by --to, and a branch that is up to date with origin
   (ASSUME_YES=1 cmd_update --to v0.2.0) 2> "$TMP/err" || return 1
   assert_contains "$(cat "$TMP/err")" "nothing to update"
-  git -C "$STACK_DIR" checkout -q main
+  git -C "$STACK_DIR" checkout -q main; record_setup_commit
   (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1
   (ASSUME_YES=1 cmd_update --to main) 2>> "$TMP/err" || return 1
   assert_eq "$(grep -c 'nothing to update' "$TMP/err")" 2
@@ -238,7 +239,7 @@ test_update_cannot_tell_so_it_runs_as_before() {
 }
 
 test_update_with_signed_tags_required_and_nothing_new() {
-  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs; record_setup_commit
   printf 'UPDATE_REQUIRE_SIGNED_TAGS=true\n' > "$ENV_FILE"
   (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # already on the newest release: nothing to verify
   assert_contains "$(cat "$TMP/err")" "nothing to update"
@@ -248,6 +249,67 @@ test_update_with_signed_tags_required_and_nothing_new() {
   git -C "$STACK_DIR" checkout -q --detach v0.2.0
   if out="$( (ASSUME_YES=1 cmd_update --to "$(git -C "$STACK_DIR" rev-parse HEAD)") 2>&1)"; then return 1; fi
   assert_contains "$out" "is not a tag"
+}
+
+# --- "nothing new" needs a successful setup on this very commit (.state/update/setup-commit) ---
+
+test_update_without_a_successful_setup_on_this_code_runs_every_step() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs   # the newest release
+  # no record of a setup on it: an upgrade from a version without the record, or a checkout by hand
+  (ASSUME_YES=1 cmd_update) 2>/dev/null || return 1
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+  assert_contains "$(cat "$TMP/calls")" "STACK setup --yes"
+  # setup last succeeded on v0.1.0, then `git pull` / `git checkout v0.2.0` by hand (v0.1.0's documented way)
+  : > "$TMP/calls"; mkdir -p "$STATE_DIR/update"; git -C "$STACK_DIR" rev-parse "v0.1.0^{commit}" > "$(setup_commit_file)"
+  (ASSUME_YES=1 cmd_update) 2>/dev/null || return 1
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+  # setup succeeded on exactly this commit: nothing to do
+  : > "$TMP/calls"; record_setup_commit
+  (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1
+  assert_eq "$(cat "$TMP/calls")" ""
+  assert_contains "$(cat "$TMP/err")" "nothing to update"
+}
+
+_setup_stubs() { # every step of cmd_setup stubbed: only its own order and the record are real
+  local f
+  for f in check_prereqs guard_project persist_project_name ensure_portal_dirs write_version_file fix_bind_mount_perms \
+    setup_aws_creds setup_ports setup_remote_choice remote_net_preflight setup_secrets setup_openrouter setup_stt \
+    setup_bringup_and_probe stt_after_probe setup_keys_and_ui write_mcp_config offer_symlink offer_helper \
+    remote_up_hook print_summary docker_autostart_hint_weekly maybe_auto_open; do
+    eval "$f() { :; }"
+  done
+  cmd_test() { [ -z "${FAKE_TEST_FAIL:-}" ] || die "1 check(s) failed"; }
+  SETUP_REMOTE_MODE=''
+}
+
+test_setup_records_its_commit_when_it_succeeds_so_the_next_update_is_a_no_op() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs; _setup_stubs
+  if (FAKE_TEST_FAIL=1 cmd_setup) > /dev/null 2>&1; then return 1; fi
+  [ ! -e "$(setup_commit_file)" ] || { echo "a failed setup recorded its commit" >&2; return 1; }
+  cmd_setup > /dev/null 2>&1
+  assert_eq "$(cat "$(setup_commit_file)")" "$(git -C "$STACK_DIR" rev-parse HEAD)"
+  (ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1   # right after: nothing to update
+  assert_contains "$(cat "$TMP/err")" "nothing to update"
+  assert_eq "$(cat "$TMP/calls" 2>/dev/null)" ""
+  # the setup at the end of an update is that same cmd_setup, run by ./stack setup --yes
+  assert_contains "$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")" '"$STACK_DIR/stack" setup --yes'
+  assert_contains "$(sed -n '/^cmd_setup() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "record_setup_commit"
+}
+
+test_an_untrusted_re_exec_runs_every_step() {
+  _fixture; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.2.0; _noop_stubs; record_setup_commit
+  # v0.1.1 checks out the new code itself and execs it with BEDROCK_NOW_CODE_UPDATED=1 alone
+  (BEDROCK_NOW_CODE_UPDATED=1 ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "is ignored (./stack update sets it only for itself) — running every step"
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "BACKUP;PRUNE;dc pull;STACK setup --yes done=unset backup=unset from=unset;"
+  # v0.2.1's way, but its backup is older than an hour (e.g. a fetch that hung)
+  : > "$TMP/calls"; b=backups/20260101-000000-auto; mkdir -p "$STACK_DIR/$b"; : > "$STACK_DIR/$b/litellm.dump"; : > "$STACK_DIR/$b/openwebui.dump"
+  touch -t 202601010000 "$STACK_DIR/$b"
+  (BEDROCK_NOW_CODE_UPDATED=1 BEDROCK_NOW_UPDATE_FROM="$(git -C "$STACK_DIR" rev-parse "v0.1.0^{commit}")" BEDROCK_NOW_UPDATE_BACKUP="$b" \
+    ASSUME_YES=1 cmd_update) 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "running every step"
+  assert_eq "$(head -n 1 "$TMP/calls")" "BACKUP"
+  assert_contains "$(cat "$TMP/calls")" "dc pull"
 }
 
 test_update_fetches_once() {

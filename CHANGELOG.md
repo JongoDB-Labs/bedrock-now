@@ -209,9 +209,13 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Changed
 
 - **`./stack update` with nothing new stops right away.** When the target (the newest release, your branch's
-  origin, or `--to`) is the commit already checked out, it prints `already on v0.3.0 — nothing to update
-  (./stack update --force re-runs setup)` and exits 0: no backup, no setup, no model probe, no LiteLLM restart
-  (that took ~150 s and ~$0.0004). `--force` runs every step as before. The one-click helper ends such an update as
+  origin, or `--to`) is the commit already checked out and the last successful setup ran on that very commit
+  (`.state/update/setup-commit`, written at the end of every successful `./stack setup`, including the one an
+  update runs), it prints `already on v0.3.0 — nothing to update (./stack update --force re-runs setup)` and exits
+  0: no backup, no setup, no model probe, no LiteLLM restart (that took ~150 s and ~$0.0004). Without that record —
+  the first update from an older version, a `git pull` or checkout by hand, a rollback (the older version's
+  `./stack up` runs no setup) — it runs every step. So does a `BEDROCK_NOW_CODE_UPDATED=1` it cannot trust (an
+  older version's own hand-over, or one set in the shell), with a warning. `--force` runs every step as before. The one-click helper ends such an update as
   "Already up to date (v0.3.0): nothing to update" instead of "Updated to"; Home then shows no step list and no
   reload hint. `--to` refuses an empty or option-like value (`--to --force`).
 - **Re-running `./stack update` after one that failed half-way finishes it.** When the last update moved the code

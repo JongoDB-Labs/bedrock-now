@@ -22,6 +22,8 @@ _fixture() { # origin v0.2.1 -> v0.3.0; STACK_DIR = a clone updated to v0.3.0, i
 _write_stack() { # a ./stack that says which version ran which command (and, in $CALLS.env, with which environment)
   printf '#!/bin/sh\necho "%s $*" >> "$CALLS"\necho "%s $* progress=${COMPOSE_PROGRESS:-unset}" >> "$CALLS.env"\n' "$2" "$2" > "$1/stack"
   printf 'echo "%s $* finishing=${BEDROCK_NOW_UPDATE_FINISHING:-unset} from=${BEDROCK_NOW_UPDATE_FROM:-} backup=${BEDROCK_NOW_UPDATE_BACKUP:-}" >> "$CALLS.update"\n' "$2" >> "$1/stack"
+  # like the real setup: a successful one records the commit it ran on (.state/update/setup-commit)
+  printf '[ "$1" != setup ] || [ "${FAKE_RC:-0}" != 0 ] || { mkdir -p "$STATE_DIR/update"; git -C "$(dirname "$0")" rev-parse HEAD > "$STATE_DIR/update/setup-commit"; }\n' >> "$1/stack"
   printf 'exit ${FAKE_RC:-0}\n' >> "$1/stack"
   chmod +x "$1/stack"
 }
@@ -155,7 +157,7 @@ test_dispatcher_guards_rollback_and_help_lists_it() {
 }
 
 test_a_no_op_update_keeps_the_rollback_target_and_its_images() {   # I1
-  _fixture; _record; update_record_done
+  _fixture; _record; update_record_done; record_setup_commit
   mkdir -p "$STATE_DIR/images"; printf 'OLD1\tghcr.io/berriai/litellm:1\n' > "$STATE_DIR/images/previous.tsv"
   before="$(cat "$(update_record_file)")"
   _backup_named() { LAST_BACKUP=backups/20261013-000000-auto; }; prune_auto_backups() { :; }
