@@ -90,13 +90,31 @@ class Resp:
         return json.loads(self.body)
 
 
+def _connect(ip: str, port: int, timeout: float) -> httpclient.HTTPConnection:
+    """A connected HTTPConnection. Only the TCP connect is retried, 3 × 10 s (Docker Desktop's host-gateway
+    forwarding once left a connect hanging for 30 s in a full run): nothing has been sent yet, so a retry never
+    repeats a request."""
+    last = None
+    for attempt in range(3):
+        conn = httpclient.HTTPConnection(ip, port, timeout=min(timeout, 10))
+        try:
+            conn.connect()
+            conn.sock.settimeout(timeout)
+            return conn
+        except (TimeoutError, ConnectionRefusedError, ConnectionResetError, OSError) as e:
+            last = e
+            conn.close()
+            time.sleep(1 + attempt)
+    raise last
+
+
 def http(method: str, sub: str | None, path: str, headers: dict | None = None, body: bytes | str | None = None,
          cookie: str | None = None, port: int | None = None, host_header: str | None = None, ip: str | None = None,
          timeout: float = 30) -> Resp:
     """One raw HTTP request to Caddy (or another published port) with exactly the headers given (no redirects,
     no cookie jar): Host is <sub>.HOST:PORT unless host_header says otherwise."""
     p = port or PORT
-    conn = httpclient.HTTPConnection(ip or TARGET_IP, p, timeout=timeout)
+    conn = _connect(ip or TARGET_IP, p, timeout)
     h = {"Host": host_header or f"{host_of(sub)}:{p}", "Connection": "close"}
     if cookie:
         h["Cookie"] = cookie
