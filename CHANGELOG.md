@@ -43,6 +43,15 @@ All notable changes to bedrock-now are documented here. The format follows
   interactive `./stack setup` offers it Bedrock once, and `./stack stt set bedrock` switches any time. If Voxtral
   stops being usable, setup turns it off with the reason and turns it back on once your AWS admin enables it. See
   docs/voice.md.
+- **End-to-end test suite** (`tests/e2e/run.sh`, opt-in, run by hand). It stages a throwaway copy of the checkout
+  under its own Compose project, host name and free ports (never project `bedrock-now` or ports 80/4000/8765),
+  runs setup non-interactively with an AWS key taken only from `--aws-env FILE` (AWS_* lines) or the environment,
+  and checks every page, portal route, Caddy rule, shared-mcp tool, the LiteLLM endpoints the stack uses and the
+  safe `./stack` commands, in a Playwright 1.55 Chromium container pinned by digest (hash-pinned Python deps).
+  Credentials are read from the throwaway `.env` mounted read-only, never printed; logs are redacted and
+  screenshots mask sign-ins. It keeps Bedrock spend under $0.10 (checked and printed), leaves
+  `~/.local/bin/claude-bedrock` untouched (checked), writes a summary table and JUnit XML, and removes only what
+  it created (no prune). `tests/e2e/INVENTORY.md` lists everything there is to test and how.
 - **Optional speech-to-text for voice calls** (`./stack stt set openai|groq [model]`, `status`, `remove`; setup
   asks once). Open WebUI's Call button needs server speech-to-text, which Bedrock does not have; this is an
   opt-in, documented exception to Bedrock-only: your recorded speech goes to OpenAI (`gpt-4o-mini-transcribe`,

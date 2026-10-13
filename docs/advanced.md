@@ -204,3 +204,35 @@ test fails.
   simply `exec`s claude. Otherwise claude runs as an ordinary foreground child: Ctrl-C, Ctrl-Z and closing
   the terminal reach it as usual, its exit code is the wrapper's, and if it was killed by Ctrl-C or TERM the
   wrapper ends with the same signal.
+
+## End-to-end tests
+
+`tests/e2e/run.sh` (opt-in; not part of `tests/run.sh` or CI) tests a real stack built from this checkout and
+removes it afterwards. What it covers and what stays manual: [tests/e2e/INVENTORY.md](../tests/e2e/INVENTORY.md).
+
+```
+tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+```
+
+- **Isolation:** a `git clone` of the checkout plus your uncommitted changes, committed locally, in
+  `tests/e2e/work/<project>` (`--work DIR`; keep it out of temporary folders, Docker bind-mounts files from it);
+  Compose project `bne2e` (`--project NAME`; `bedrock-now` is refused), portal `http://bne2e.localhost:<port>`,
+  free ports found with `lsof` (never 80, 443, 3000, 3009, 4000, 8080, 8081, 8090, 8765 or 8800). Setup runs with `--yes` and a clean environment; it never links `~/.local/bin/claude-bedrock`
+  (checked before and after) or installs the helper.
+- **Browser:** `mcr.microsoft.com/playwright/python:v1.55.0-noble`, pinned by digest, plus
+  `tests/e2e/requirements.txt` (hash-pinned). The `*.bne2e.localhost` names point at the host
+  (`host-gateway` on Docker Desktop, the host network on Linux) with Chromium `--host-resolver-rules`.
+- **Credentials:** the AWS key is read from `--aws-env` (only `AWS_*` lines) or the environment and handed to
+  `./stack setup` through its environment. The browser suite reads the portal, LiteLLM and RustFS sign-ins from
+  the throwaway `.env`, mounted read-only. Every log is redacted (all `.env` secrets → `***`), screenshots mask
+  the sign-ins, and network logs hold no bodies or presigned signatures.
+- **Cost:** two short Haiku chats, one file question, a few embeddings, setup's probe (twice more with
+  `--deep-update`) and one `claude-bedrock -p`: a few cents at most; the run fails if LiteLLM's total reaches $0.10.
+- **Output** (`--out DIR`, default `tests/e2e/out/`, gitignored): `results-final.tsv`, `junit.xml`, `logs/` (each
+  command), `browser/shots/`, `browser/net/` (requests ≥ 400, failed requests, console errors per check),
+  `spend.txt`.
+- **Iterating:** `--keep` leaves the throwaway running, `--reuse` runs again against it (no setup; refused unless
+  every service is healthy), `--teardown` removes it. A run that was killed before its teardown leaves the project
+  behind; the next run removes those leftovers first (only when they are the suite's own). `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws, update and rollback.
+- **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
+  reported as XFAIL, one that passes as XPASS.

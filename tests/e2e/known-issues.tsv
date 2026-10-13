@@ -1,0 +1,3 @@
+# Known product bugs: a check listed here that fails is reported as XFAIL (expected), not as a suite failure.
+# check-id<TAB>reason (see tests/e2e/INVENTORY.md "Known issues" for reproduction, evidence and suggested fix)
+restore-from-another-folder	./stack restore (and ./stack rollback, which calls it with backups/<ts>-auto) resolves the backup path against the current folder, not the checkout: run from another folder it fails with the usage message; rollback then leaves the code rolled back but the data not restored. Fix: lib/commands.sh cmd_restore (line ~1059) resolve a relative DIR against $STACK_DIR when it is not found, and/or lib/rollback.sh:81 pass "$STACK_DIR/$backup".

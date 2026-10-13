@@ -523,6 +523,21 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - **Backups, restore on a new machine, AWS key rotation, adding models, the portal window:**
   [docs/advanced.md](docs/advanced.md).
 
+## Testing
+
+- **Unit tests** (no Docker, no AWS): `/bin/bash tests/run.sh` (bash 3.2), plus the Python tests in
+  `portal/tests`, `shared-mcp/tests` and `owui/tests`.
+- **End-to-end suite** (opt-in, run by hand; not part of `tests/run.sh` or CI): `tests/e2e/run.sh --aws-env FILE`
+  builds a throwaway copy of this checkout under its own project (`bne2e.localhost`, free ports — never your
+  install's), runs setup non-interactively, drives every page in a pinned Playwright Chromium container (login,
+  Home, Chat with a streamed answer and a file question, Admin, the RustFS console's upload/download/delete,
+  phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs the safe `./stack`
+  commands (backup/restore, down/up, update, rollback) and `claude-bedrock -p`, then removes everything it
+  created. About 10-15 minutes and under a cent of Bedrock (the run fails at $0.10; the total is printed);
+  results as a table and JUnit XML in `tests/e2e/out/`. What is covered, and what stays manual:
+  [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
+  [docs/advanced.md](docs/advanced.md#end-to-end-tests).
+
 ## Security model
 
 - One way in for browsers: Caddy on `127.0.0.1`, which asks the portal to check a signed, `HttpOnly`,
@@ -561,6 +576,7 @@ owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map
 lib/*.sh                      the shell code (bash 3.2-compatible)
 tests/run.sh                  shell tests
+tests/e2e/                    opt-in end-to-end suite (throwaway stack + Playwright; INVENTORY.md)
 docs/                         longer reference pages
 ```
 
