@@ -124,3 +124,32 @@ login	0	bad	me
 login	0	bad	@github
 login	0	bad	me@
 login	0	bad
+days	0	ok	
+days	0	ok	1
+days	0	ok	30
+days	0	ok	90
+days	0	bad	0
+days	0	bad	91
+days	0	bad	07
+days	0	bad	1.5
+pct	0	ok	
+pct	0	ok	50
+pct	0	ok	80
+pct	0	ok	99
+pct	0	bad	49
+pct	0	bad	100
+pct	0	bad	8
+keep	0	ok	
+keep	0	ok	1
+keep	0	ok	60
+keep	0	bad	0
+keep	0	bad	61
+model_pin	0	ok	
+model_pin	0	ok	claude-sonnet-5-5
+model_pin	0	bad	Claude Sonnet
+model_pin	0	bad	or/meta-llama/x
+models_list	0	ok	
+models_list	0	ok	claude-opus-5-5
+models_list	0	ok	claude-opus-5-5,mistral-large-3
+models_list	0	bad	claude-opus-5-5,
+models_list	0	bad	a b

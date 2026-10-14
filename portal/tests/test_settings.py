@@ -58,10 +58,15 @@ KEYS = [
     row("STT_API_KEY", "voice", "h", "local", "stt_key", "stt", set=False),
     row("STT_MODEL", "voice", "-", "edit", "stt_model", "stt", value=""),
     row("PORTAL_SECRET", "account", "h", "ro", "-", "-", hint="…1234", cli="edit .env, then ./stack up"),
-    row("SHARED_MCP_TOKEN", "files", "h", "ro", "-", "-", hint="…cdef"),
+    row("SHARED_MCP_TOKEN", "files", "h", "regen", "-", "mcp", hint="…cdef"),
+    row("RUSTFS_ACCESS_KEY", "files", "s", "regen", "-", "rustfs", value="bn-abc123"),
+    row("CHAT_DEFAULT_MODEL", "aws", "-", "edit", "model_pin", "pins", value=""),
+    row("MODELS_HIDDEN", "aws", "-", "edit", "models_list", "owui-models", value=""),
+    row("PORTAL_SESSION_DAYS", "account", "-", "edit", "days", "portal", value=""),
 ]
 CHOICES = {"stt_models": {"bedrock": ["voxtral-small", "voxtral-mini"], "openai": ["gpt-4o-mini-transcribe"], "groq": []},
-           "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm", "open-webui"]}
+           "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm", "open-webui"],
+           "chat_models": [["claude-haiku-5-5", "Claude Haiku 5.5"], ["mistral-large-3", "Mistral Large 3"]]}
 
 
 def write_snapshot(stdir, keys=KEYS, base=BASE, **extra):
@@ -533,3 +538,75 @@ def test_capability_file_must_be_recent(dirs):
     assert st.capability(sd) == {"settings": False, "diagnostics": []}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
     assert st.capability(sd) == {"settings": True, "diagnostics": ["test"]}
+
+
+# --- Part 2: regenerate, pins, the backup list, the session length, the alert threshold ---
+
+def test_regenerate_writes_regen_lines_and_never_a_value(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    r = c.post("/api/settings/apply", content=json.dumps({"password": "correct horse", "base": BASE, "set": {},
+                                                           "regen": ["RUSTFS_ACCESS_KEY"]}), headers=H)
+    assert r.status_code == 202, r.text
+    body = next(rq.iterdir()).read_text()
+    assert "\nregen RUSTFS_ACCESS_KEY\nend\n" in body and "\nset " not in body
+    assert r.json()["keys"] == ["RUSTFS_ACCESS_KEY"]
+    for bad in (["PORTAL_SECRET"], ["RUSTFS_ACCESS_KEY", "RUSTFS_ACCESS_KEY"], "SHARED_MCP_TOKEN"):
+        assert c.post("/api/settings/apply", content=json.dumps({"password": "correct horse", "base": BASE, "set": {}, "regen": bad}),
+                      headers=H).status_code == 400
+    # a regen key never takes a value of the browser's choosing
+    r = apply(c, {"RUSTFS_ACCESS_KEY": "bn-mine"})
+    assert r.status_code == 400 and "regenerated" in r.json()["fields"]["RUSTFS_ACCESS_KEY"]
+
+
+def test_pins_and_hidden_models_must_be_enabled_chat_models(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    assert "CHAT_DEFAULT_MODEL" in apply(c, {"CHAT_DEFAULT_MODEL": "titan-embed-v2"}).json()["fields"]
+    assert "MODELS_HIDDEN" in apply(c, {"MODELS_HIDDEN": "claude-haiku-5-5,nope"}).json()["fields"]
+    assert apply(c, {"CHAT_DEFAULT_MODEL": "mistral-large-3"}).status_code == 202
+
+
+def test_backup_list_is_sanitized(make, dirs):
+    sd, _ = dirs
+    (sd / "backups.json").write_text(json.dumps({"written_at": 1, "nightly": {"on": True, "hour": 4, "keep": 3}, "backups": [
+        {"name": "20261001-120000", "kind": "manual", "bytes": 1024, "at": 1790000000, "rollback": False},
+        {"name": "../../etc", "kind": "manual"}, {"name": "x", "kind": "weird", "bytes": "big", "rollback": "yes"}]}))
+    b = st.backups(sd)
+    assert [x["name"] for x in b["backups"]] == ["20261001-120000", "x"]
+    assert b["backups"][1] == {"name": "x", "kind": "manual", "bytes": None, "at": None, "rollback": False}
+    assert b["nightly"] == {"on": True, "hour": 4, "keep": 3}
+    write_snapshot(sd)
+    assert make().get("/api/settings", headers=API).json()["backups"]["backups"][0]["name"] == "20261001-120000"
+
+
+def test_session_length_follows_portal_session_days(settings, dirs):
+    assert from_env({"PORTAL_PASSWORD_HASH": PASSWORD_HASH, "PORTAL_SECRET": "z" * 40, "PORTAL_SESSION_DAYS": "7"}).session_days == 7
+    for bad in ("0", "91", "x", ""):
+        assert from_env({"PORTAL_PASSWORD_HASH": PASSWORD_HASH, "PORTAL_SECRET": "z" * 40, "PORTAL_SESSION_DAYS": bad}).session_days == 30
+    now = [1_000_000.0]
+    long = Sessions(SECRET, PASSWORD_HASH, clock=lambda: now[0])
+    tok = long.issue()
+    now[0] += 3 * 86400
+    assert long.valid(tok)
+    assert not Sessions(SECRET, PASSWORD_HASH, clock=lambda: now[0], max_age=2 * 86400).valid(tok)   # shorter: ends at once
+    sd, rq = dirs
+    c = TestClient(create_app(replace(settings, status_dir=sd, request_dir=rq, session_days=7), transport=httpx.MockTransport(offline)),
+                   base_url="http://bedrock-now.localhost", follow_redirects=False)
+    assert "signed in for 7 days" in c.get("/login").text
+    r = c.post("/login", data={"password": "correct horse"}, headers=ORIGIN)
+    assert f"Max-Age={7 * 86400}" in r.headers["set-cookie"]
+
+
+def test_alert_threshold_reaches_home(settings, dirs):
+    sd, rq = dirs
+    assert from_env({"PORTAL_PASSWORD_HASH": PASSWORD_HASH, "PORTAL_SECRET": "z" * 40, "BUDGET_ALERT_PCT": "90"}).alert_pct == 90
+    assert from_env({"PORTAL_PASSWORD_HASH": PASSWORD_HASH, "PORTAL_SECRET": "z" * 40, "BUDGET_ALERT_PCT": "40"}).alert_pct == 80
+    with TestClient(create_app(replace(settings, status_dir=sd, request_dir=rq, alert_pct=90), transport=httpx.MockTransport(offline)),
+                    base_url="http://bedrock-now.localhost", follow_redirects=False) as c:
+        c.post("/login", data={"password": "correct horse"}, headers=ORIGIN)
+        assert c.get("/api/summary", headers=API).json()["spend"]["alert_pct"] == 90
+    js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
+    assert "pct >= alert" in js and "pct >= 80" not in js

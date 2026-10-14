@@ -39,8 +39,9 @@ test_every_env_key_is_in_the_settings_table_once() {
   assert_eq "$missing" ""
   dup="$(settings_rows | cut -f1 | sort | uniq -d)"
   assert_eq "$dup" ""
-  # (this repo's .env.example keys + 3 that only setup writes = the 85 of the inventory, + the portal password hash)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 86
+  # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
+  # model pins, hidden models, nightly backups with their hour and how many to keep)
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 97
 }
 
 test_table_columns_are_valid() {
@@ -48,7 +49,8 @@ test_table_columns_are_valid() {
   bad="$(settings_rows | awk -F'\t' '
     $2 !~ /^(account|aws|budgets|voice|openrouter|files|updates|remote|advanced)$/ { print $1 " group" }
     $3 !~ /^(-|s|k|u|h|S)$/ { print $1 " secret" }
-    $4 !~ /^(edit|local|on-only|widen-local|companion|ro|derived)$/ { print $1 " policy" }
+    $4 !~ /^(edit|local|on-only|widen-local|companion|regen|ro|derived)$/ { print $1 " policy" }
+    $4 == "regen" && $5 != "-" { print $1 " regen has no validator" }
     $4 ~ /^(edit|local|on-only|widen-local|companion)$/ && $5 == "-" { print $1 " no validator" }
     $4 ~ /^(ro|derived)$/ && $5 != "-" { print $1 " validator on a read-only key" }
     $7 == "" || $8 == "" || $9 == "" { print $1 " text" }
@@ -165,7 +167,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 87; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 98; assert d["last_change"] is None' "$f"
   fi
 }
 
@@ -746,4 +748,194 @@ test_refusals_are_reported_under_the_request_id() {
   if settings_poll_once 2>/dev/null; then return 1; fi
   assert_contains "$(cat "$(helper_status_file)")" '"id": "11111111111111111111111111111111", "action": "settings", "phase": "failed"'
   assert_eq "$(_name_nonce cfg-abc.req)" ""
+}
+
+# --- Part 2: regenerate, pins, the alert threshold, nightly backups, the backup list, hidden models ---
+
+test_regenerate_rustfs_pair_restarts_every_holder_and_checks_it() {
+  _env; _in_checkout; _stub_stack
+  set_env_batch RUSTFS_ACCESS_KEY bn-old123 RUSTFS_SECRET_KEY oldsecret0123456789
+  _rustfs_pair_works() { echo "s3 check" >> "$TMP/calls"; }
+  printf 'regen RUSTFS_ACCESS_KEY\n' | _apply 2> "$TMP/err"
+  case "$(get_env RUSTFS_ACCESS_KEY)" in bn-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) echo "access key: $(get_env RUSTFS_ACCESS_KEY)" >&2; return 1 ;; esac
+  local sk; sk="$(get_env RUSTFS_SECRET_KEY)"
+  [ "${#sk}" = 48 ] && [ "$sk" != oldsecret0123456789 ]
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --wait rustfs open-webui shared-mcp portal"
+  assert_contains "$(cat "$TMP/calls")" "s3 check"
+  assert_contains "$(tail -n 1 "$(settings_audit_file)")" "keys=RUSTFS_ACCESS_KEY,RUSTFS_SECRET_KEY"
+  assert_not_contains "$(cat "$TMP/err" "$(settings_audit_file)")" "$(get_env RUSTFS_SECRET_KEY)"
+}
+
+test_regenerate_rollback_keeps_the_old_pair() {
+  _env; _in_checkout; _stub_stack
+  set_env_batch RUSTFS_ACCESS_KEY bn-old123 RUSTFS_SECRET_KEY oldsecret0123456789
+  _rustfs_pair_works() { return 1; }
+  if out="$( (printf 'regen RUSTFS_SECRET_KEY\n' | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "the file store does not accept the new key pair — previous settings restored"
+  assert_eq "$(get_env RUSTFS_ACCESS_KEY)/$(get_env RUSTFS_SECRET_KEY)" "bn-old123/oldsecret0123456789"
+}
+
+test_regenerate_mcp_token_rewrites_the_client_config() {
+  _env; _in_checkout; _stub_stack
+  set_env SHARED_MCP_PORT 8765
+  _mcp_token_works() { echo "mcp check" >> "$TMP/calls"; }
+  printf 'regen SHARED_MCP_TOKEN\n' | _apply 2> "$TMP/err"
+  local t; t="$(get_env SHARED_MCP_TOKEN)"
+  [ "${#t}" = 64 ] && [ "$t" != mcp0123456789abcdef ]
+  assert_contains "$(cat "$STATE_DIR/mcp.json")" "Bearer $t"
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait shared-mcp portal"
+  assert_contains "$(cat "$TMP/err")" "need the new token"
+}
+
+test_regen_keys_take_no_value_and_nothing_else_regenerates() {
+  _env; _in_checkout; _stub_stack
+  if out="$( (_lines RUSTFS_ACCESS_KEY=bn-chosen | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "can only be regenerated"
+  if out="$( (printf 'regen PORTAL_PASSWORD\n' | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "cannot be regenerated"
+  # the helper: regen lines only for regen keys
+  _checkout
+  _cfg_req 0 local 'correct horse battery' "$NONCE" 'regen PORTAL_SECRET'
+  if settings_poll_once 2>/dev/null; then return 1; fi
+  assert_contains "$(cat "$(helper_status_file)")" "PORTAL_SECRET cannot be regenerated"
+  _cfg_req 0 local 'correct horse battery' 22222222222222222222222222222222 'regen SHARED_MCP_TOKEN'
+  settings_poll_once 2>/dev/null
+  assert_eq "$(cat "$TMP/stdin")" "regen SHARED_MCP_TOKEN"
+}
+
+test_choose_defaults_respects_pins_and_warns_about_a_disabled_one() {
+  _env; _in_checkout
+  printf 'claude-opus-5-5\nclaude-sonnet-5-5\nclaude-haiku-5-5\ntitan-embed-v2\nmistral-large-3\n' > "$STACK_DIR/litellm/enabled-models.txt"
+  set_env_batch CLAUDE_MODEL_OPUS claude-sonnet-5-5 CHAT_DEFAULT_MODEL mistral-large-3 CHAT_TASK_MODEL gpt-oss-120b CLAUDE_MODEL_HAIKU titan-embed-v2
+  choose_defaults 2> "$TMP/err"
+  assert_eq "$(get_env CLAUDE_BEDROCK_OPUS_MODEL)" claude-sonnet-5-5         # pinned
+  assert_eq "$(get_env CLAUDE_BEDROCK_SONNET_MODEL)" claude-sonnet-5-5       # automatic
+  assert_eq "$(get_env OWUI_DEFAULT_MODEL)" mistral-large-3                   # pinned
+  assert_eq "$(get_env OWUI_TASK_MODEL)" claude-haiku-5-5                     # pin not enabled: automatic
+  assert_eq "$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)" claude-haiku-5-5          # an embedding model is no chat pin
+  assert_contains "$(cat "$TMP/err")" "CHAT_TASK_MODEL=gpt-oss-120b is not a chat model your AWS key can use now"
+  assert_contains "$(cat "$TMP/err")" "CLAUDE_MODEL_HAIKU=titan-embed-v2 is not a chat model"
+}
+
+test_pins_and_hidden_models_must_be_enabled_chat_models() {
+  _env; _in_checkout; _stub_stack
+  printf 'claude-opus-5-5\nclaude-haiku-5-5\ntitan-embed-v2\n' > "$STACK_DIR/litellm/enabled-models.txt"
+  if out="$( (_lines CHAT_DEFAULT_MODEL=titan-embed-v2 | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "is not a chat model your AWS key can use"
+  if out="$( (_lines MODELS_HIDDEN=claude-opus-5-5,nope-1 | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "MODELS_HIDDEN: nope-1 is not a chat model"
+  _lines CHAT_DEFAULT_MODEL=claude-haiku-5-5 | _apply 2>/dev/null
+  assert_eq "$(get_env OWUI_DEFAULT_MODEL)" claude-haiku-5-5
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait open-webui portal"
+}
+
+test_hidden_models_apply_in_open_webui() {
+  _env; _in_checkout; _stub_stack
+  owui_apply_hidden() { echo "hidden $(get_env MODELS_HIDDEN)" >> "$TMP/calls"; }
+  _lines MODELS_HIDDEN=claude-opus-5-5 | _apply 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "hidden claude-opus-5-5"
+  assert_not_contains "$(cat "$TMP/calls")" "dc up"   # no restart
+}
+
+test_hidden_merge_marks_only_its_own_models() {
+  command -v python3 >/dev/null 2>&1 || { echo "no python3" >&2; return 77; }
+  _owui_py() { local s="$1"; shift; python3 -I -c "$s" "$@"; }
+  local out
+  out="$(printf '{"id":"m","meta":{"tags":[]}}' | owui_hidden_merge true)"
+  assert_contains "$out" '"hidden": true'; assert_contains "$out" '"bedrock_now_hidden": true'
+  assert_eq "$(printf '{"id":"m","meta":{"hidden":true,"bedrock_now_hidden":true}}' | owui_hidden_merge true)" ""   # unchanged
+  out="$(printf '{"id":"m","meta":{"hidden":true,"bedrock_now_hidden":true}}' | owui_hidden_merge false)"
+  assert_contains "$out" '"hidden": false'; assert_not_contains "$out" 'bedrock_now_hidden'
+  assert_eq "$(printf '{"id":"m","meta":{"hidden":true}}' | owui_hidden_merge false)" ""   # hidden by you in Chat: stays
+}
+
+test_alert_threshold_follows_budget_alert_pct() {
+  _env
+  assert_eq "$(alert_pct)" 80
+  assert_eq "$(soft_budget_of 200)" 160
+  set_env BUDGET_ALERT_PCT 90
+  assert_eq "$(alert_pct)" 90
+  assert_eq "$(soft_budget_of 200)" 180
+  assert_eq "$(printf '{"spend": 17, "max_budget": 20}' | budget_warning || true)" ""            # 85% < 90%
+  assert_eq "$(printf '{"spend": 19, "max_budget": 20}' | budget_warning)" "⚠ 95% of monthly budget used"
+  assert_eq "$(printf 'open-webui\t17\t20\t\n' | budget_banner_json 1)" "[]"
+  assert_contains "$(printf 'open-webui\t19\t20\t\n' | budget_banner_json 1)" '"type":"warning"'
+  set_env BUDGET_ALERT_PCT 120; assert_eq "$(alert_pct)" 80                                     # nonsense: 80
+}
+
+test_alert_threshold_change_resets_every_soft_budget() {
+  _env; _in_checkout; _stub_stack
+  set_env_batch LITELLM_KEY_CLAUDE_CODE sk-cc0123456789 LITELLM_KEY_OPENWEBUI sk-ow0123456789
+  _lines BUDGET_ALERT_PCT=90 | _apply 2>/dev/null
+  assert_eq "$(grep -c '^key ' "$TMP/calls")" 3
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait portal"
+}
+
+test_backup_decision() {
+  local w=1000000
+  assert_eq "$(backup_decision off 2 2 $w '' '' '')" off
+  assert_eq "$(backup_decision on 2 1 $w '' '' '')" wait
+  assert_eq "$(backup_decision on 2 5 $w '' '' '')" wait
+  assert_eq "$(backup_decision on 2 4 $w '' '' '')" run          # 02:00-05:00 includes 04:xx
+  assert_eq "$(backup_decision on 23 1 $w '' '' '')" run         # across midnight
+  assert_eq "$(backup_decision on 2 3 $w $w '' '')" done          # this window had its backup
+  assert_eq "$(backup_decision on 2 3 $w 999 '' '')" run          # an earlier window's
+  assert_eq "$(backup_decision on 2 3 $w '' $((w + 60)) '')" update   # an automatic update tonight backed up
+  assert_eq "$(backup_decision on 2 3 $w '' $((w - 86400)) '')" run   # last night's update does not count
+  assert_eq "$(backup_decision on 2 3 $w '' '' lock)" busy
+}
+
+test_nightly_backup_runs_once_per_window() {
+  _checkout
+  set_env_batch BACKUP_NIGHTLY on BACKUP_HOUR 2
+  _backup_clock() { echo "${CLOCK:-1000000} 3 $((3 * 3600 + ${CLOCK:-1000000} - 1000000))"; }   # 03:00 local at 1000000
+  helper_run_diag() { echo "diag $1" >> "$TMP/diag"; }
+  CLOCK=1000000 backup_nightly_tick
+  CLOCK=1000600 backup_nightly_tick                                   # same window: nothing
+  assert_eq "$(cat "$TMP/diag")" "diag backup-nightly"
+  assert_eq "$(cat "$(backup_last_file)")" "$((1000000 - 3600))"     # the window started at 02:00
+  set_env BACKUP_NIGHTLY off; rm -f "$(backup_last_file)"
+  backup_nightly_tick
+  assert_eq "$(wc -l < "$TMP/diag" | tr -d ' ')" 1
+}
+
+_mkbk() { mkdir -p "$STACK_DIR/backups/$1"; printf L > "$STACK_DIR/backups/$1/litellm.dump"; printf O > "$STACK_DIR/backups/$1/openwebui.dump"; }
+
+test_prune_nightly_keeps_the_newest_and_the_rollback_one() {
+  _env; _in_checkout
+  for t in 20261001-020000 20261002-020000 20261003-020000 20261004-020000; do _mkbk "$t-nightly"; done
+  _mkbk 20261001-120000; _mkbk 20261001-130000-auto
+  update_record_write abc "" backups/20261001-020000-nightly
+  prune_nightly_backups 2 2>/dev/null
+  assert_eq "$(ls "$STACK_DIR/backups" | tr '\n' ' ')" "20261001-020000-nightly 20261001-120000 20261001-130000-auto 20261003-020000-nightly 20261004-020000-nightly "
+}
+
+test_backup_list_has_names_kinds_and_the_rollback_one() {
+  _env; _in_checkout
+  _mkbk 20261001-120000; _mkbk 20261002-020000-nightly; _mkbk 20261003-130000-auto
+  mkdir -p "$STACK_DIR/backups/20261004-000000.partial"
+  printf 'secret-inside' > "$STACK_DIR/backups/20261001-120000/.env"
+  update_record_write abc "" backups/20261003-130000-auto
+  set_env BACKUP_NIGHTLY on
+  write_backups_json
+  local j; j="$(cat "$(status_dir)/backups.json")"
+  assert_contains "$j" '"nightly": {"on": true, "hour": 2, "keep": 7}'
+  assert_contains "$j" '{"name": "20261001-120000", "kind": "manual", "bytes": '
+  assert_contains "$j" '"name": "20261002-020000-nightly", "kind": "nightly"'
+  assert_contains "$j" '"name": "20261003-130000-auto", "kind": "auto", "bytes": '
+  assert_contains "$j" '"rollback": true}'
+  assert_not_contains "$j" partial; assert_not_contains "$j" secret-inside
+  assert_eq "$(ls -l "$(status_dir)/backups.json" | cut -c1-10)" "-rw-r--r--"
+  if command -v python3 >/dev/null 2>&1; then python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d["backups"]) == 3 and all(isinstance(b["at"], int) for b in d["backups"])' "$(status_dir)/backups.json"; fi
+}
+
+test_backup_nightly_command_names_and_prunes() {
+  _env
+  _backup_named() { echo "named $1" >> "$TMP/calls"; }
+  prune_nightly_backups() { echo "prune $1" >> "$TMP/calls"; }
+  write_backups_json() { echo list >> "$TMP/calls"; }
+  set_env BACKUP_KEEP 3
+  cmd_backup --nightly
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "named nightly;prune 3;list;"
+  if (cmd_backup --weekly) 2>/dev/null; then return 1; fi
 }

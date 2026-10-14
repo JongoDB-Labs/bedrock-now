@@ -90,7 +90,9 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   `lib/settings.sh`; one table of cases tests both) and allows one change every 5 seconds, 30 an hour.
 - **The request.** For an allowed change the portal writes `.state/requests/cfg-<nonce>.req`: at most 8 KB of
   ASCII lines (`bedrock-now-settings 1`, `nonce`, `requested_at`, `base`, `origin local|remote`, `auth`,
-  then `set KEY BASE64` for 1-20 keys, `end`), mode 640, renamed into place. Diagnostics are
+  then `set KEY BASE64` or `regen KEY` for 1-20 keys, `end`), mode 640, renamed into place. `regen` asks for a new
+  random value that `./stack` makes itself (the RustFS key pair, the shared MCP token): those keys never take a
+  value from a request. Diagnostics are
   `act-<nonce>.json` with one action from a fixed list (check-aws, models-recheck, backup, test, report,
   restart of litellm, open-webui, shared-mcp, stt, rustfs or caddy), in the strict format of the update requests.
 - **The helper checks everything again.** It moves the file into its private inbox, refuses symlinks, other
@@ -132,6 +134,12 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   that holds the owner email (what a bare `.env` edit creates), and reset the Admin password from `.env` with the
   master key, or warn.
 
+- **Nightly backups** (`BACKUP_NIGHTLY=on`) are run by the helper itself, in its loop, like automatic updates: once
+  per night in the three hours from `BACKUP_HOUR` (this computer's clock), `./stack backup --nightly`, which keeps
+  the newest `BACKUP_KEEP` of the `-nightly` backups and never removes yours, the update backups or the one a
+  rollback needs. Skipped on a night an automatic update made its own backup. The backup list Settings shows
+  (`.state/status/backups.json`) holds names, kinds, sizes and dates only, never anything inside a backup.
+
 **What a compromised portal container can still do.** It already holds the LiteLLM master key, the RustFS root
 pair, the LiteLLM keys and the MCP token, and it sits on the network next to Open WebUI (which trusts the sign-in
 header from its peers): it can act as admin of LiteLLM, RustFS and Chat and spend Bedrock money within the
@@ -141,7 +149,8 @@ AWS key, the Cloudflare token or the speech-to-text and OpenRouter keys. With yo
 it could make any change a local session may make, including pointing the AWS key, the OpenRouter or
 speech-to-text key or the alert webhook at its own accounts, or changing your passwords; each such change is
 in the audit log and on Home. It cannot run anything but `./stack config apply` and the listed diagnostics, cannot
-change hosts, ports, the helper's own switches or the internal secrets, and cannot restore a backup.
+change hosts, ports, the helper's own switches or the internal secrets (beyond asking for a new random RustFS pair
+or MCP token, which it would not learn), and cannot restore a backup.
 
 ## Remote access
 

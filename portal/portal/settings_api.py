@@ -135,7 +135,7 @@ def routes(ctx: Ctx) -> list[Route]:
             "helper": {"running": state["running"], "heartbeat_at": state["heartbeat_at"], "settings": cap["settings"],
                        "diagnostics": cap["diagnostics"], "in_progress": admin.job_in_progress(state), "job": state["job"]},
             "here": {"remote": rem, "allowed": allowed(request)},
-            "apps": s.app_urls(ctx.remote(request)), "user": s.user_email,
+            "apps": s.app_urls(ctx.remote(request)), "user": s.user_email, "backups": st.backups(s.status_dir),
             "remote": {"on": s.remote_on(), "mode": s.remote_mode if s.remote_on() else "off",
                        "url": s.origin(remote=True) if s.remote_on() else ""},
         }))
@@ -146,7 +146,7 @@ def routes(ctx: Ctx) -> list[Route]:
         for k, v in values.items():
             row = rows.get(k)
             if row is None or row["policy"] not in st.EDITABLE:
-                fields[k] = f"is read-only here: {row.get('cli') if row else 'not a bedrock-now setting'}"
+                fields[k] = st.policy_error(row, v, local) if row else "is not a bedrock-now setting"
                 continue
             e = st.policy_error(row, v, local) or st.validate(row["validator"], v, snap["remote_on"])
             if e:
@@ -164,6 +164,12 @@ def routes(ctx: Ctx) -> list[Route]:
             fields["OPENWEBUI_ADMIN_EMAIL"] = "is the owner email you have now"
         if "TAILSCALE_ALLOWED_LOGIN" in values and values["TAILSCALE_ALLOWED_LOGIN"] == "":
             fields["TAILSCALE_ALLOWED_LOGIN"] = "cannot be made blank here"
+        chat = {m[0] for m in snap["choices"]["chat_models"]}
+        for k in ("CHAT_DEFAULT_MODEL", "CHAT_TASK_MODEL", "CLAUDE_MODEL_OPUS", "CLAUDE_MODEL_SONNET", "CLAUDE_MODEL_HAIKU"):
+            if values.get(k) and values[k] not in chat:
+                fields[k] = "is not a chat model your AWS key can use"
+        if values.get("MODELS_HIDDEN") and not set(values["MODELS_HIDDEN"].split(",")) <= chat:
+            fields["MODELS_HIDDEN"] = "lists a model your AWS key cannot use"
         if {"STT_PROVIDER", "STT_API_KEY", "STT_MODEL"} & set(values):
             p, model = eff("STT_PROVIDER"), eff("STT_MODEL")
             models = snap["choices"]["stt_models"].get(p, [])
@@ -187,8 +193,11 @@ def routes(ctx: Ctx) -> list[Route]:
             return err(409, "Settings are not available yet: run ./stack up once.")
         if data.get("base") != snap["base"]:
             return err(409, "Settings changed on disk since you opened the page — reload it.")
-        values = data.get("set")
-        if not isinstance(values, dict) or not values or len(values) > st.MAX_KEYS - 1:
+        values = data.get("set") if data.get("set") is not None else {}
+        regen = data.get("regen") or []
+        if not isinstance(regen, list) or any(k not in st.REGEN for k in regen) or len(set(regen)) != len(regen):
+            return err(400, "only RUSTFS_ACCESS_KEY and SHARED_MCP_TOKEN can be regenerated")
+        if not isinstance(values, dict) or not (values or regen) or len(values) + len(regen) > st.MAX_KEYS - 1:
             return err(400, f"between 1 and {st.MAX_KEYS - 1} settings at a time")
         if any(not isinstance(k, str) or not st.NAME.fullmatch(k) or not isinstance(v, str) for k, v in values.items()):
             return err(400, "settings are names and text values")
@@ -206,14 +215,14 @@ def routes(ctx: Ctx) -> list[Route]:
             new_hash = await asyncio.to_thread(hash_password, values["PORTAL_PASSWORD"])
             values["PORTAL_PASSWORD_HASH"] = new_hash
         try:
-            nonce = st.write_request(s.request_dir, snap["base"], local, password, values)
+            nonce = st.write_request(s.request_dir, snap["base"], local, password, values, regen=tuple(regen))
         except ValueError:
             return err(413, "These settings do not fit in one change: save them in smaller groups.")
         except OSError as e:
             log.warning("cannot write a settings request to %s (%s)", s.request_dir, e)
             return err(500, "Could not hand the change to the helper (see ./stack logs portal).")
         apply_rate.hit()
-        keys = [k for k in values if k != "PORTAL_PASSWORD_HASH"]
+        keys = [k for k in values if k != "PORTAL_PASSWORD_HASH"] + list(regen)
         log.warning("settings change requested: %s%s", ", ".join(keys), "" if local else " (remote)")
         resp = _no_store(JSONResponse({"id": nonce, "keys": keys}, status_code=202))
         if new_hash:

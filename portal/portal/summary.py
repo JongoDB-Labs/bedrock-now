@@ -232,7 +232,7 @@ async def spend(client: httpx.AsyncClient, s: Settings) -> dict:
             error = f"LiteLLM answered HTTP {r.status_code}"
     except (httpx.HTTPError, ValueError) as e:
         error = f"LiteLLM did not answer ({type(e).__name__})"
-    return {"keys": list(rows), "total_30d": total, "total_error": error}
+    return {"keys": list(rows), "total_30d": total, "total_error": error, "alert_pct": s.alert_pct}
 
 
 def models_with_openrouter(s: Settings) -> dict:

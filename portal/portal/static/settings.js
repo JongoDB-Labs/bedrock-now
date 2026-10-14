@@ -17,19 +17,26 @@
     ["advanced", "Advanced", "Every other setting, read-only here: why, and the command that changes it."],
   ];
   const CARD_KEYS = {
-    account: ["PORTAL_PASSWORD", "OPENWEBUI_ADMIN_EMAIL", "LITELLM_UI_USER", "LITELLM_UI_PASSWORD", "LITELLM_STORE_PROMPTS"],
-    aws: ["AWS_ACCESS_KEY_ID", "AWS_REGION_NAME", "AWS_AUTH", "CLAUDE_BEDROCK_OPUS_MODEL", "CLAUDE_BEDROCK_SONNET_MODEL",
-      "CLAUDE_BEDROCK_HAIKU_MODEL", "OWUI_DEFAULT_MODEL", "OWUI_TASK_MODEL"],
-    budgets: ["BUDGET_CLAUDE_CODE", "BUDGET_OPENWEBUI", "BUDGET_SETUP", "ALERT_WEBHOOK_URL"],
+    account: ["PORTAL_PASSWORD", "OPENWEBUI_ADMIN_EMAIL", "LITELLM_UI_USER", "LITELLM_UI_PASSWORD", "PORTAL_SESSION_DAYS",
+      "LITELLM_STORE_PROMPTS"],
+    aws: ["AWS_ACCESS_KEY_ID", "AWS_REGION_NAME", "AWS_AUTH", "CHAT_DEFAULT_MODEL", "CHAT_TASK_MODEL", "CLAUDE_MODEL_OPUS",
+      "CLAUDE_MODEL_SONNET", "CLAUDE_MODEL_HAIKU", "MODELS_HIDDEN"],
+    budgets: ["BUDGET_CLAUDE_CODE", "BUDGET_OPENWEBUI", "BUDGET_SETUP", "BUDGET_ALERT_PCT", "ALERT_WEBHOOK_URL"],
     voice: ["STT_PROVIDER"],
     openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MODELS", "OPENROUTER_MAX_MODELS", "OPENROUTER_INCLUDE_ALIASES"],
     files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
-    updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS"],
+    updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
     remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN"],
   };
   // shown with another key's row (a pair, or a part of a larger form)
   const WITH = { AWS_SECRET_ACCESS_KEY: "AWS_ACCESS_KEY_ID", STT_API_KEY: "STT_PROVIDER", STT_MODEL: "STT_PROVIDER",
-    AUTO_UPDATE_HOUR: "AUTO_UPDATE", PORTAL_PASSWORD_HASH: "PORTAL_PASSWORD" };
+    AUTO_UPDATE_HOUR: "AUTO_UPDATE", PORTAL_PASSWORD_HASH: "PORTAL_PASSWORD", BACKUP_HOUR: "BACKUP_NIGHTLY",
+    BACKUP_KEEP: "BACKUP_NIGHTLY", OWUI_DEFAULT_MODEL: "CHAT_DEFAULT_MODEL", OWUI_TASK_MODEL: "CHAT_TASK_MODEL",
+    CLAUDE_BEDROCK_OPUS_MODEL: "CLAUDE_MODEL_OPUS", CLAUDE_BEDROCK_SONNET_MODEL: "CLAUDE_MODEL_SONNET",
+    CLAUDE_BEDROCK_HAIKU_MODEL: "CLAUDE_MODEL_HAIKU" };
+  // a pin and the setting setup derives from it (shown in the pin's row)
+  const PIN_OF = { CHAT_DEFAULT_MODEL: "OWUI_DEFAULT_MODEL", CHAT_TASK_MODEL: "OWUI_TASK_MODEL", CLAUDE_MODEL_OPUS: "CLAUDE_BEDROCK_OPUS_MODEL",
+    CLAUDE_MODEL_SONNET: "CLAUDE_BEDROCK_SONNET_MODEL", CLAUDE_MODEL_HAIKU: "CLAUDE_BEDROCK_HAIKU_MODEL" };
   const BUDGET_KEY = { BUDGET_CLAUDE_CODE: ["claude-code", "LITELLM_KEY_CLAUDE_CODE"], BUDGET_OPENWEBUI: ["open-webui", "LITELLM_KEY_OPENWEBUI"],
     BUDGET_SETUP: ["setup", "LITELLM_KEY_SETUP"] };
   const REVEALABLE = new Set(["LITELLM_UI_PASSWORD", "RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE",
@@ -196,6 +203,21 @@
     if (REVEALABLE.has(k.key) && k.set) actions.append(revealButton(k.key, "Reveal"));
     if (BUDGET_KEY[k.key] && keys[BUDGET_KEY[k.key][1]] && keys[BUDGET_KEY[k.key][1]].set) actions.append(revealButton(BUDGET_KEY[k.key][1], "Copy key"));
     if (k.key === "AWS_ACCESS_KEY_ID") actions.append(actionButton("check-aws", "Check (free)"));
+    if (PIN_OF[k.key]) {
+      const d = keys[PIN_OF[k.key]];
+      main.querySelector(".set-value").textContent = shown(k) === "blank" || !k.set ? `automatic: ${modelName(d ? shown(d) : "")}` : `pinned: ${modelName(shown(k))}`;
+    }
+    if (k.key === "MODELS_HIDDEN") main.querySelector(".set-value").textContent = k.value ? k.value.split(",").map(modelName).join(", ") : "none";
+    if (k.policy === "regen") {
+      const b = el("button", { type: "button", class: "action", text: "Regenerate" });
+      b.disabled = !canChange();
+      b.addEventListener("click", () => askPassword({ kind: "apply", values: {}, regen: [k.key], keys: [k.key] },
+        `Regenerate ${k.key === "SHARED_MCP_TOKEN" ? "the MCP token" : "the Files key pair"}?`, k.note, "Regenerate",
+        k.key === "SHARED_MCP_TOKEN" ? ["SHARED_MCP_TOKEN"] : ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY"]));
+      actions.append(b);
+      if (!canChange()) r.append(cliLine(k));
+      return r;
+    }
     if (!editable(k)) { r.append(cliLine(k)); return r; }
     if (localOnlyHere(k, "true") && k.policy === "local") {
       r.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your data elsewhere." }));
@@ -205,7 +227,11 @@
     const v = shown(k);
     if (["bool", "on_off", "true_blank"].includes(k.validator)) {
       actions.append(toggle(k, v));
-      if (k.key === "AUTO_UPDATE" && keys.AUTO_UPDATE_HOUR) actions.append(hourSelect(keys.AUTO_UPDATE_HOUR));
+      if (k.key === "AUTO_UPDATE" && keys.AUTO_UPDATE_HOUR) actions.append(hourSelect(keys.AUTO_UPDATE_HOUR, 3, "Change the nightly window?"));
+      if (k.key === "BACKUP_NIGHTLY") {
+        if (keys.BACKUP_HOUR) actions.append(hourSelect(keys.BACKUP_HOUR, 2, "Change the nightly backup window?"));
+        if (keys.BACKUP_KEEP) actions.append(keepSelect(keys.BACKUP_KEEP));
+      }
     } else {
       const b = el("button", { type: "button", class: "action", text: k.set || ("value" in k && k.value) ? "Change" : "Set" });
       b.disabled = !canChange();
@@ -232,8 +258,26 @@
     return wrap;
   }
 
-  function hourSelect(hk) {
-    const cur = "value" in hk && /^\d+$/.test(hk.value) ? Number(hk.value) : 3;
+  function modelName(id) {
+    const m = ((data.snapshot && data.snapshot.choices.chat_models) || []).find((x) => x[0] === id);
+    return m ? m[1] : id || "none";
+  }
+
+  function keepSelect(kk) {
+    const cur = "value" in kk && /^\d+$/.test(kk.value) ? Number(kk.value) : 7;
+    const sel = el("select", { "aria-label": "Nightly backups kept" });
+    for (const n of [1, 2, 3, 5, 7, 10, 14, 21, 30, 45, 60]) {
+      const o = el("option", { value: String(n), text: `keep ${n}` });
+      if (n === cur) o.selected = true;
+      sel.append(o);
+    }
+    sel.disabled = !canChange();
+    sel.addEventListener("change", () => confirmApply({ BACKUP_KEEP: sel.value }, "Change how many nightly backups are kept?", kk.note, ["BACKUP_KEEP"]));
+    return sel;
+  }
+
+  function hourSelect(hk, def, title) {
+    const cur = "value" in hk && /^\d+$/.test(hk.value) ? Number(hk.value) : def;
     const sel = el("select", { "aria-label": "Nightly window (this computer's time)" });
     for (let h = 0; h < 24; h++) {
       const o = el("option", { value: String(h), text: `${pad2(h)}:00–${pad2((h + 3) % 24)}:00` });
@@ -241,7 +285,7 @@
       sel.append(o);
     }
     sel.disabled = !canChange();
-    sel.addEventListener("change", () => confirmApply({ AUTO_UPDATE_HOUR: sel.value }, "Change the nightly window?", hk.note, ["AUTO_UPDATE_HOUR"]));
+    sel.addEventListener("change", () => confirmApply({ [hk.key]: sel.value }, title, hk.note, [hk.key]));
     return sel;
   }
 
@@ -287,6 +331,26 @@
     } else if (k.validator === "budget") {
       form.append(...field(id, "Monthly budget in USD", "text", { inputmode: "decimal", value: v, maxlength: "12" }));
       collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });
+    } else if (k.validator === "model_pin") {
+      const sel = el("select", { id });
+      sel.append(el("option", { value: "", text: "automatic (setup picks one)" }));
+      for (const [m, name] of data.snapshot.choices.chat_models) {
+        const o = el("option", { value: m, text: `${name} (${m})` });
+        if (m === v) o.selected = true;
+        sel.append(o);
+      }
+      form.append(el("label", { for: id, text: "Model" }), sel);
+      collect = () => ({ [k.key]: sel.value });
+    } else if (k.validator === "models_list") {
+      const chosen = new Set((v || "").split(",").filter(Boolean));
+      const box = el("fieldset", { class: "set-radios" }, el("legend", { text: "Leave out of Chat's model picker" }));
+      for (const [m, name] of data.snapshot.choices.chat_models) {
+        const cb = el("input", { type: "checkbox", id: `${id}-${m}`, value: m });
+        if (chosen.has(m)) cb.checked = true;
+        box.append(el("label", { for: `${id}-${m}`, class: "set-radio" }, cb, " ", name));
+      }
+      form.append(box, el("p", { class: "note", text: "Hidden models stay usable through the API and Claude Code: this only tidies the picker." }));
+      collect = () => ({ [k.key]: [...box.querySelectorAll("input:checked")].map((c) => c.value).join(",") });
     } else if (k.validator === "hour") {
       collect = () => ({ [k.key]: $(`#${id}`, form).value });
     } else if (k.validator === "or_key" || k.validator === "stt_key") {
@@ -426,12 +490,28 @@
     return r;
   }
 
+  function fmtBytes(b) { return b == null ? "" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`; }
+
   function backupRow() {
-    const r = el("div", { class: "set-row" },
-      el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Backups" })),
-        el("p", { class: "note set-note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>/, readable only by you). It takes seconds and no service stops." }),
-        el("p", { class: "note set-note", text: "Restoring stays in the terminal (./stack restore backups/<time>): it replaces every chat, key and file with an older state, so it asks twice and should never be one click away from a browser." })));
-    r.append(el("div", { class: "set-actions" }, actionButton("backup", "Back up now")));
+    const main = el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Backups" })),
+      el("p", { class: "note set-note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>/, readable only by you). It takes seconds and no service stops." }),
+      el("p", { class: "note set-note", text: "Restoring stays in the terminal (./stack restore backups/<time>): it replaces every chat, key and file with an older state, so it asks twice and should never be one click away from a browser." }));
+    const r = el("div", { class: "set-row" }, main, el("div", { class: "set-actions" }, actionButton("backup", "Back up now")));
+    const list = (data.backups && data.backups.backups) || [];
+    if (list.length) {
+      const KIND = { manual: "yours", auto: "before an update", nightly: "nightly" };
+      const tbody = el("tbody");
+      for (const b of list.slice().reverse()) {
+        tbody.append(el("tr", {}, el("td", { class: "set-bk-name", text: b.name }),
+          el("td", { text: KIND[b.kind] || b.kind }), el("td", { class: "set-bk-size", text: fmtBytes(b.bytes) }),
+          el("td", { text: b.at ? new Date(b.at * 1000).toLocaleString() : "" }),
+          el("td", { text: b.rollback ? "needed for Roll back" : "" })));
+      }
+      main.append(el("div", { class: "set-backups" }, el("table", {},
+        el("thead", {}, el("tr", {}, ...["Backup", "Kind", "Size", "Made", ""].map((h) => el("th", { scope: "col", text: h })))), tbody)));
+    } else {
+      main.append(el("p", { class: "note set-note", text: "No backups yet." }));
+    }
     return r;
   }
 
@@ -571,7 +651,7 @@
     ok.disabled = true;
     try {
       let r, d;
-      if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values });
+      if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values, regen: what.regen || [] });
       else if (what.kind === "reveal") [r, d] = await post("/api/settings/reveal", { password: pw, key: what.key });
       else if (what.kind === "action") [r, d] = await post("/api/settings/action", { password: pw, action: what.action });
       else [r, d] = await post("/api/settings/signout-others", { password: pw });
@@ -590,7 +670,7 @@
       if (what.kind === "signout") { toast("Every other device is signed out"); return; }
       if (what.form) what.form.remove();
       const label = what.kind === "action" ? what.action : "settings";
-      watch({ id: d.id, kind: label, keys: d.keys, password: what.values && "PORTAL_PASSWORD" in what.values, at: Date.now() });
+      watch({ id: d.id, kind: label, keys: d.keys, password: Boolean(what.values && "PORTAL_PASSWORD" in what.values), at: Date.now() });
       toast("Sent to the update helper");
     } catch (e) {
       if (e.message === "signed out") return;

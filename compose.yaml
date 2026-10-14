@@ -293,6 +293,9 @@ services:
       STT_BEDROCK_MODEL: ${STT_BEDROCK_MODEL:-}
       # Optional: Home asks openrouter.ai for the key's usage/credits server-side; never sent to the browser.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # PORTAL_SESSION_DAYS: how long a sign-in lasts; BUDGET_ALERT_PCT: where the budget meters on Home turn amber
+      PORTAL_SESSION_DAYS: ${PORTAL_SESSION_DAYS:-30}
+      BUDGET_ALERT_PCT: ${BUDGET_ALERT_PCT:-80}
       # Daily price update from public price lists (no credentials); the region picks the regional AWS prices.
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
       PRICE_UPDATES: ${PRICE_UPDATES:-true}

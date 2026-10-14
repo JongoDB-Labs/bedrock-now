@@ -27,6 +27,7 @@ Usage: ./stack <command> [--yes]
   models       Which models your AWS key can use (last check)
                --recheck re-probes them (< $0.01 Bedrock)
   backup       Databases + buckets + .env → backups/<timestamp>/
+               --nightly: the update helper's nightly backup (BACKUP_NIGHTLY; keeps BACKUP_KEEP)
   restore DIR  Restore from a backup directory (then runs test: ~$0.0001 Bedrock)
   update       Backup, new code (git), pinned images, re-run setup (< $0.01 Bedrock)
                --to <tag|branch> picks a version; local changes are never discarded;
@@ -55,7 +56,7 @@ Usage: ./stack <command> [--yes]
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
                list | get KEY | set KEY [KEY…] (asks; hidden for secrets) | apply --stdin
-               | check-aws (free) | report
+               | check-aws (free) | report | regenerate rustfs|mcp-token
   restart      Restart one service: litellm | open-webui | shared-mcp | stt | rustfs | caddy
   uninstall    Remove containers and ALL data volumes
 
@@ -448,17 +449,30 @@ parse_virtual_key() { # parse_virtual_key < /key/generate JSON -> the sk-… key
   case "$k" in sk-?*) printf '%s\n' "$k" ;; *) return 1 ;; esac
 }
 
-choose_defaults() { # derive model choices from litellm/enabled-models.txt
-  local en="$STACK_DIR/litellm/enabled-models.txt" m
-  set_env CLAUDE_BEDROCK_OPUS_MODEL "$(first_enabled "$en" claude-opus-5-5 claude-sonnet-5-5 claude-sonnet-4-5)"
-  set_env CLAUDE_BEDROCK_SONNET_MODEL "$(first_enabled "$en" claude-sonnet-5-5 claude-sonnet-4-5)"
-  set_env CLAUDE_BEDROCK_HAIKU_MODEL "$(first_enabled "$en" claude-haiku-5-5 claude-sonnet-4-5)"
+# _pinned PIN_KEY EN -> the model PIN_KEY in .env pins (Settings, ./stack config set) while it is an enabled chat
+# model; nothing when unpinned; a warning when the pinned one is no longer enabled (the automatic choice is used)
+_pinned() {
+  local p; p="$(get_env "$1")"
+  [ -n "$p" ] || return 0
+  if grep -qxF "$p" "$2" 2>/dev/null && catalog_rows | P="$p" awk -F'\t' '$1 == ENVIRON["P"] && $2 == "chat" { f = 1 } END { exit !f }'; then
+    printf '%s\n' "$p"
+  else
+    warn "$1=$p is not a chat model your AWS key can use now — using the automatic choice (Settings → AWS & models)"
+  fi
+  return 0
+}
+
+choose_defaults() { # derive model choices from litellm/enabled-models.txt (pins in .env win while enabled)
+  local en="$STACK_DIR/litellm/enabled-models.txt" m p
+  p="$(_pinned CLAUDE_MODEL_OPUS "$en")"; set_env CLAUDE_BEDROCK_OPUS_MODEL "${p:-$(first_enabled "$en" claude-opus-5-5 claude-sonnet-5-5 claude-sonnet-4-5)}"
+  p="$(_pinned CLAUDE_MODEL_SONNET "$en")"; set_env CLAUDE_BEDROCK_SONNET_MODEL "${p:-$(first_enabled "$en" claude-sonnet-5-5 claude-sonnet-4-5)}"
+  p="$(_pinned CLAUDE_MODEL_HAIKU "$en")"; set_env CLAUDE_BEDROCK_HAIKU_MODEL "${p:-$(first_enabled "$en" claude-haiku-5-5 claude-sonnet-4-5)}"
   [ -n "$(get_env CLAUDE_BEDROCK_OPUS_MODEL)" ] || warn "no Claude model is usable with this key — claude-bedrock will not work"
 
   # Open WebUI: default chat model, and the cheap model for titles/tags/follow-up suggestions.
   m="$(first_enabled "$en" claude-sonnet-5-5 claude-sonnet-4-5 claude-haiku-5-5)"
-  set_env OWUI_DEFAULT_MODEL "$m"
-  set_env OWUI_TASK_MODEL "$(first_enabled "$en" claude-haiku-5-5)"
+  p="$(_pinned CHAT_DEFAULT_MODEL "$en")"; set_env OWUI_DEFAULT_MODEL "${p:-$m}"
+  p="$(_pinned CHAT_TASK_MODEL "$en")"; set_env OWUI_TASK_MODEL "${p:-$(first_enabled "$en" claude-haiku-5-5)}"
   [ -n "$(get_env OWUI_TASK_MODEL)" ] || set_env OWUI_TASK_MODEL "$m"
 
   # Bedrock-only rule: never let Open WebUI fall back to a local (Hugging Face-downloaded) embedder.
@@ -548,7 +562,7 @@ portal_session_or_die() {
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   local envk="$1" alias="$2" budget="$3" cur tmp code key soft
   valid_budget "$budget" || die "budget for $alias must be a number of USD, got '$budget' (see BUDGET_* in .env)"
-  soft="$(soft_budget_of "$budget")"   # 80%: LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
+  soft="$(soft_budget_of "$budget")"   # BUDGET_ALERT_PCT (80%): LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
   cur="$(get_env "$envk")"
   if [ -n "$cur" ]; then
     # /key/info with the key itself as bearer (keeps the key out of URLs/argv).
@@ -703,8 +717,8 @@ cmd_costs() {
   openrouter_costs_section
   stt_costs_section
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
-  printf 'Budgets: BUDGET_CLAUDE_CODE / BUDGET_OPENWEBUI / BUDGET_SETUP in .env, then ./stack setup\n'
-  printf 'Alerts at 80%%: set ALERT_WEBHOOK_URL in .env, then ./stack setup (%s)\n' \
+  printf 'Budgets: Settings in the portal, or ./stack config set BUDGET_CLAUDE_CODE (BUDGET_OPENWEBUI, BUDGET_SETUP)\n'
+  printf 'Alerts at %s%%: Settings → Budgets & alerts, or ./stack config set ALERT_WEBHOOK_URL (%s)\n' "$(alert_pct)" \
     "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo 'webhook set' || echo 'none set')"
   [ "$PRICES_SOURCE" = catalog ] || return 0   # the daily update keeps them current (and says so above when it fails)
   age="$(prices_age_days)"
@@ -1047,8 +1061,13 @@ _cleanup_partial_backup() { [ -z "$_BACKUP_PARTIAL" ] || rm -rf "$_BACKUP_PARTIA
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_backup() {
-  [ $# -eq 0 ] || die "usage: ./stack backup   (takes no arguments; writes backups/<timestamp>/)"
-  _backup_named ""
+  case "${1:-}" in
+    '') [ $# -eq 0 ] || die "usage: ./stack backup [--nightly]"; _backup_named "" ;;
+    # the update helper's nightly backup (BACKUP_NIGHTLY=on): backups/<timestamp>-nightly/, the newest BACKUP_KEEP kept
+    --nightly) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named nightly; prune_nightly_backups "$(backup_keep)" ;;
+    *) die "usage: ./stack backup [--nightly]   (writes backups/<timestamp>/)" ;;
+  esac
+  write_backups_json   # lib/settings.sh: the list Settings shows
 }
 
 # _backup_named SUFFIX — writes backups/<ts>[-SUFFIX]/ and sets LAST_BACKUP (backups/<ts>…) for callers
@@ -1198,6 +1217,7 @@ prune_auto_backups() {
   done
   [ "$removed" -eq 0 ] ||
     log "removed $removed old automatic backup(s); ./stack update keeps the newest $keep and the one ./stack rollback needs (manual backups are never pruned)"
+  write_backups_json
 }
 
 # newest_release_tag GIT_DIR -> newest vX.Y.Z tag, pre-releases (anything with "-") excluded.

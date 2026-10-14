@@ -162,6 +162,28 @@ _sv_login() {
     { SV_ERR="must be a Tailscale login in lowercase (you@example.com or you@github)"; return 1; }
 }
 _sv_pw_hash() { valid_pw_hash "$1" || { SV_ERR="is not a password hash this version accepts"; return 1; }; }
+_sv_days() { case "$1" in '' | [1-9] | [1-8][0-9] | 90) return 0 ;; esac; SV_ERR="must be a whole number of days from 1 to 90 (blank = 30)"; return 1; }
+_sv_pct() { case "$1" in '' | [5-9][0-9]) return 0 ;; esac; SV_ERR="must be a percentage from 50 to 99 (blank = 80)"; return 1; }
+_sv_keep() { case "$1" in '' | [1-9] | [1-5][0-9] | 60) return 0 ;; esac; SV_ERR="must be a whole number from 1 to 60 (blank = 7)"; return 1; }
+_sv_model_pin() {
+  case "$1" in '') return 0 ;; *[!a-z0-9.-]*) ;; *) [ "${#1}" -le 64 ] && return 0 ;; esac
+  SV_ERR="must be one of the models your key can use (blank = automatic)"; return 1
+}
+_sv_models_list() {
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | grep -Eq '^[a-z0-9.-]+(,[a-z0-9.-]+)*$' && [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] ||
+    { SV_ERR="must be a comma list of model names"; return 1; }
+}
+
+# settings_chat_models -> the chat models the last model check enabled (all of the catalog's before the first)
+settings_chat_models() {
+  local en name mode
+  en="$(_enabled_or_all)"
+  while IFS=$'\t' read -r name mode _ <&3; do
+    [ "$mode" = chat ] && is_enabled "$name" "$en" && printf '%s\n' "$name"
+  done 3< <(catalog_rows)
+  return 0
+}
 
 # setting_validate KEY VALUE -> 0, or 1 with SV_ERR ("KEY …"): the key's own validator
 setting_validate() {
@@ -182,6 +204,7 @@ setting_allowed() {
     edit) return 0 ;;
     companion) return 0 ;;   # checked with its key (settings_check_batch)
     local) [ "$3" = local ] && return 0; SV_ERR="$1 can only be changed from the computer running bedrock-now" ;;
+    regen) SV_ERR="$1 can only be regenerated (a new random value made by ./stack): $(setting_field "$1" 9)" ;;
     on-only) [ "$2" = true ] && return 0; SV_ERR="$1 can only be turned on here (turning it off is a terminal step: edit .env)" ;;
     widen-local) { [ "$2" != true ] || [ "$3" = local ]; } && return 0; SV_ERR="$1 can only be turned on from the computer running bedrock-now" ;;
     '') SV_ERR="$1 is not a bedrock-now setting" ;;
@@ -199,6 +222,18 @@ cfg_put() {   # cfg_put KEY VALUE
   printf -v "CFG_NEW_$1" '%s' "$2"
 }
 cfg_new() { local n="CFG_NEW_$1"; printf '%s' "${!n-}"; }
+# cfg_regen KEY — a new random value for a key whose policy is regen (the RustFS pair always together)
+CFG_REGEN=' '
+cfg_regen() {
+  case "$1" in
+    RUSTFS_ACCESS_KEY | RUSTFS_SECRET_KEY)
+      cfg_has RUSTFS_ACCESS_KEY || { cfg_put RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"; cfg_put RUSTFS_SECRET_KEY "$(gen_hex 24)"; }
+      CFG_REGEN="$CFG_REGEN RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY " ;;
+    SHARED_MCP_TOKEN) cfg_has SHARED_MCP_TOKEN || cfg_put SHARED_MCP_TOKEN "$(gen_hex 32)"; CFG_REGEN="$CFG_REGEN SHARED_MCP_TOKEN " ;;
+    *) die "$1 cannot be regenerated" ;;
+  esac
+}
+cfg_regenerated() { case "$CFG_REGEN" in *" $1 "*) return 0 ;; esac; return 1; }
 cfg_old() { local n="CFG_OLD_$1"; printf '%s' "${!n-}"; }
 cfg_has() { case " $CFG_ORDER " in *" $1 "*) return 0 ;; esac; return 1; }
 # cfg_effective KEY -> the new value when the change sets KEY, else .env's
@@ -207,12 +242,17 @@ cfg_effective() { if cfg_has "$1"; then cfg_new "$1"; else get_env "$1"; fi; }
 # settings_check_batch ORIGIN — every key and value (validators, policy, keys that only go together); dies with
 # the first problem (no value in any message)
 settings_check_batch() {
-  local origin="$1" k n=0 p
+  local origin="$1" k n=0 p chat
   SV_REMOTE_ON=0; [ "$(get_env REMOTE_MODE)" != tailscale ] && [ "$(get_env REMOTE_MODE)" != domain ] || SV_REMOTE_ON=1
   for k in $CFG_ORDER; do
     n=$((n + 1))
     case "$k" in *[!A-Z0-9_]*) die "not a setting name" ;; esac
     setting_known "$k" || die "$k is not a bedrock-now setting"
+    if [ "$(setting_field "$k" 4)" = regen ]; then
+      cfg_regenerated "$k" || { setting_allowed "$k" x "$origin"; die "$SV_ERR"; }
+      continue
+    fi
+    cfg_regenerated "$k" && die "$k cannot be regenerated"
     setting_allowed "$k" "$(cfg_new "$k")" "$origin" || die "$SV_ERR"
     setting_validate "$k" "$(cfg_new "$k")" || die "$SV_ERR"
   done
@@ -233,6 +273,16 @@ settings_check_batch() {
   fi
   if cfg_has OPENWEBUI_ADMIN_EMAIL; then
     [ "$(cfg_new OPENWEBUI_ADMIN_EMAIL)" != "$(get_env OPENWEBUI_ADMIN_EMAIL)" ] || die "that is the owner email you have now"
+  fi
+  chat="$(settings_chat_models)"
+  for k in CHAT_DEFAULT_MODEL CHAT_TASK_MODEL CLAUDE_MODEL_OPUS CLAUDE_MODEL_SONNET CLAUDE_MODEL_HAIKU; do
+    cfg_has "$k" && [ -n "$(cfg_new "$k")" ] || continue
+    printf '%s\n' "$chat" | grep -qxF "$(cfg_new "$k")" || die "$k: $(cfg_new "$k") is not a chat model your AWS key can use (./stack models)"
+  done
+  if cfg_has MODELS_HIDDEN; then
+    for p in $(cfg_new MODELS_HIDDEN | tr ',' ' '); do
+      printf '%s\n' "$chat" | grep -qxF "$p" || die "MODELS_HIDDEN: $p is not a chat model your AWS key can use (./stack models)"
+    done
   fi
   if cfg_has TAILSCALE_ALLOWED_LOGIN && [ -z "$(cfg_new TAILSCALE_ALLOWED_LOGIN)" ]; then
     die "TAILSCALE_ALLOWED_LOGIN cannot be made blank here (that would let anyone in your tailnet try the password)"
@@ -304,8 +354,15 @@ _settings_choices() {
     done
     out="$out]"
   done
-  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s]}\n' "$out" "$ready" \
-    "$(for s in $RESTART_SERVICES; do printf '"%s",' "$s"; done | sed 's/,$//')"
+  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s]}\n' "$out" "$ready" \
+    "$(for s in $RESTART_SERVICES; do printf '"%s",' "$s"; done | sed 's/,$//')" \
+    "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')"
+}
+
+# _settings_display NAME -> its friendly name from catalog/display.tsv (the name itself without one); no quotes
+_settings_display() {
+  local d; d="$(tr -d '\r' < "$STACK_DIR/catalog/display.tsv" 2>/dev/null | N="$1" awk -F'\t' '!/^#/ && $1 == ENVIRON["N"] && $2 != "-" { print $2; exit }')"
+  printf '%s\n' "${d:-$1}" | tr -d '"\\'
 }
 
 # settings_snapshot_write — .state/status/settings.json for the portal: settings.tsv with each key's value (plain
@@ -445,7 +502,10 @@ config_apply_stdin() {
     n=$((n + 1)); [ "$n" -le "$SETTINGS_MAX_KEYS" ] || die "at most $SETTINGS_MAX_KEYS settings in one change"
     case "$line" in
       'set '*) k="${line#set }"; b="${k#* }"; k="${k%% *}" ;;
-      *) die "line $n: expected: set KEY BASE64" ;;
+      'regen '*) k="${line#regen }"; case "$k" in '' | *[!A-Z0-9_]*) die "line $n: not a setting name" ;; esac
+                 [ "$(setting_field "$k" 4)" = regen ] || die "$k cannot be regenerated"
+                 cfg_regen "$k"; continue ;;
+      *) die "line $n: expected: set KEY BASE64 or regen KEY" ;;
     esac
     case "$k" in '' | *[!A-Z0-9_]*) die "line $n: not a setting name" ;; esac
     case "$b" in *[!A-Za-z0-9+/=]*) die "line $n ($k): the value is not base64" ;; esac
@@ -468,7 +528,12 @@ cmd_config() {
            guard_project; config_apply_stdin "$@" ;;
     check-aws) [ -f "$ENV_FILE" ] || die "run ./stack setup first"; config_check_aws ;;
     report) [ -f "$ENV_FILE" ] || die "run ./stack setup first"; config_report ;;
-    *) die "usage: ./stack config [list] | get KEY | set KEY [KEY…] | apply --stdin | check-aws | report" ;;
+    regenerate)
+      [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+      case "${1:-}" in rustfs) cfg_regen RUSTFS_ACCESS_KEY ;; mcp-token) cfg_regen SHARED_MCP_TOKEN ;;
+        *) die "usage: ./stack config regenerate rustfs | mcp-token" ;; esac
+      guard_project; config_apply local cli '' ;;
+    *) die "usage: ./stack config [list] | get KEY | set KEY [KEY…] | apply --stdin | check-aws | report | regenerate rustfs|mcp-token" ;;
   esac
 }
 
@@ -639,23 +704,33 @@ _cfg_post() {
   if _cfg_on litellm-cfg || _cfg_on openrouter; then
     if _cfg_render_litellm; then run_phase "LiteLLM (new settings)" litellm dc up -d --no-deps --force-recreate --wait litellm; fi
   fi
+  if _cfg_on rustfs; then   # every holder of the pair at once; rustfs-init (a dependency) runs again with it
+    run_phase "Files (new sign-in)" "rustfs open-webui shared-mcp portal" dc up -d --wait rustfs open-webui shared-mcp portal
+  fi
+  if _cfg_on mcp; then write_mcp_config; svc="$svc shared-mcp"; fi
+  if _cfg_on pins; then
+    [ ! -s "$STACK_DIR/litellm/enabled-models.txt" ] || choose_defaults
+    svc="$svc open-webui"
+  fi
   if _cfg_on aws || _cfg_on litellm-pw; then svc="$svc litellm"; fi
   if _cfg_on email; then svc="$svc open-webui"; fi
-  if _cfg_on portal || _cfg_on portal-pw || _cfg_on email || _cfg_on litellm-pw || _cfg_on openrouter; then svc="$svc portal"; fi
+  if _cfg_on portal || _cfg_on portal-pw || _cfg_on email || _cfg_on litellm-pw || _cfg_on openrouter || _cfg_on mcp || _cfg_on pins || _cfg_on alert-pct; then svc="$svc portal"; fi
+  svc="$(printf '%s\n' $svc | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
   # shellcheck disable=SC2086  # word-split the service list on purpose
   [ -z "$svc" ] || run_phase "Restart:$svc" "${svc# }" dc up -d --no-deps --wait $svc
-  if _cfg_on budget; then
+  if _cfg_on budget || _cfg_on alert-pct; then
     for k in BUDGET_CLAUDE_CODE BUDGET_OPENWEBUI BUDGET_SETUP; do
-      cfg_has "$k" || continue
+      cfg_has "$k" || _cfg_on alert-pct || continue   # a new alert threshold: every key's soft budget
       case "$k" in BUDGET_CLAUDE_CODE) ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env "$k")" ;;
         BUDGET_OPENWEBUI) ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env "$k")" ;;
         *) ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env "$k")" ;; esac
     done
   fi
-  if _cfg_on budget || _cfg_on email || _cfg_on openrouter; then
+  if _cfg_on budget || _cfg_on email || _cfg_on openrouter || _cfg_on rustfs || _cfg_on pins || _cfg_on alert-pct || _cfg_on owui-models; then
     portal_session_start || die "could not sign in to the portal after the restart (HTTP ${PORTAL_LOGIN_CODE:-?})"
     if _cfg_on email; then _owui_drop_strays "$(cfg_old OPENWEBUI_ADMIN_EMAIL)" || true; fi
     if _cfg_on openrouter; then _or_owui_refresh; fi
+    if _cfg_on owui-models; then owui_apply_hidden; fi
     sync_budget_banner
     portal_session_end
   fi
@@ -680,7 +755,24 @@ _cfg_verify() {
     owner_signin_check "$CFG_OWUI_OWNER" || die "Chat does not sign you in as the owner with the new email ($OWNER_ERR)"
   fi
   portal_session_end
+  if _cfg_on rustfs; then _rustfs_pair_works || die "the file store does not accept the new key pair"; fi
+  if _cfg_on mcp; then _mcp_token_works || die "shared-mcp does not accept the new token"; fi
   if _cfg_on aws; then cmd_test; fi
+}
+
+# _rustfs_pair_works — both buckets list with the key pair in .env (an aws-cli job on the stack's network)
+_rustfs_pair_works() {
+  local d rc=0
+  d="$(mktemp -d)"
+  s3_job "$d" ro 'S3="aws --endpoint-url http://rustfs:9000"; $S3 s3 ls s3://openwebui >/dev/null && $S3 s3 ls s3://shared >/dev/null' >/dev/null 2>&1 || rc=1
+  rmdir "$d" 2>/dev/null || true
+  return "$rc"
+}
+
+# _mcp_token_works — shared-mcp lists its tools with SHARED_MCP_TOKEN from .env
+_mcp_token_works() {
+  curl_auth "$(get_env SHARED_MCP_TOKEN)" -s -m 30 -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" 2>/dev/null | grep -q '"search_knowledge"'
 }
 
 # _cfg_rollback WHAT WHY — old values back in .env, pre-steps reversed, restarted with them; then dies
@@ -716,6 +808,7 @@ _cfg_done() {
   settings_snapshot_write
   log "saved: $(printf '%s\n' $CFG_ORDER | grep -vx PORTAL_PASSWORD_HASH | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
   if _cfg_on portal-pw; then log "the portal password changed: every browser and device signs in again (the one that changed it stays signed in)"; fi
+  if _cfg_on mcp; then log "running claude-bedrock sessions and other MCP clients need the new token (.state/mcp.json; claude-bedrock reads it at its next start)"; fi
   if _cfg_on aws && [ -n "$(cfg_old AWS_ACCESS_KEY_ID)" ]; then log "remember to deactivate the old key ($(_settings_mask AWS_ACCESS_KEY_ID "$(cfg_old AWS_ACCESS_KEY_ID)")) in IAM, or ask your AWS admin to"; fi
   return 0
 }
@@ -904,6 +997,57 @@ settings_pending_check() {
   warn "a settings change ($(ENV_FILE="$f" get_env keys)) did not finish — .env keeps what it had then; checking the Chat and Admin sign-ins against it"
   rm -f "$f"
   SETTINGS_RECONCILE_NEEDED=1
+}
+
+# --- backups: the nightly ones and the list Settings shows ---
+
+backup_keep() { local k; k="$(get_env BACKUP_KEEP)"; case "$k" in [1-9] | [1-5][0-9] | 60) echo "$k" ;; *) echo 7 ;; esac; }
+backup_hour() { local h; h="$(get_env BACKUP_HOUR)"; case "$h" in [0-9] | 1[0-9] | 2[0-3]) echo "$h" ;; *) echo 2 ;; esac; }
+
+# prune_nightly_backups KEEP — keeps the newest KEEP backups/*-nightly (never one the update record names); manual,
+# update (-auto) and incomplete backups are never touched
+prune_nightly_backups() {
+  local keep="$1" d i=0 removed=0 all=() rec
+  rec="$(_record_get backup)"; rec="${rec%/}"
+  for d in "$STACK_DIR"/backups/*-nightly; do [ -d "$d" ] && all+=("$d"); done   # glob order = oldest first
+  while [ $((${#all[@]} - i)) -gt "$keep" ]; do
+    [ -n "$rec" ] && [ "${all[$i]}" = "$STACK_DIR/$rec" ] || { rm -rf "${all[$i]}"; removed=$((removed + 1)); }
+    i=$((i + 1))
+  done
+  [ "$removed" -eq 0 ] || log "removed $removed old nightly backup(s) (BACKUP_KEEP=$keep)"
+}
+
+# _backup_epoch NAME -> the epoch of a backups/<YYYYmmdd-HHMMSS>[-suffix] name (this computer's time), or null
+_backup_epoch() {
+  local t; t="$(printf '%s' "$1" | cut -c1-15)"
+  case "$t" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) echo null; return 0 ;; esac
+  date -j -f '%Y%m%d-%H%M%S' "$t" +%s 2>/dev/null ||
+    date -d "$(printf '%s-%s-%s %s:%s:%s' "${t:0:4}" "${t:4:2}" "${t:6:2}" "${t:9:2}" "${t:11:2}" "${t:13:2}")" +%s 2>/dev/null || echo null
+}
+
+# write_backups_json — .state/status/backups.json for Settings: each complete backup's name, kind (manual, auto =
+# before an update, nightly), size, time, and whether ./stack rollback needs it; never what is inside
+write_backups_json() {
+  local d tmp b name kind kb rec rb sep=''
+  [ -f "$ENV_FILE" ] || return 0
+  d="$(status_dir)"; mkdir -p "$d" 2>/dev/null || return 0
+  rec="$(_record_get backup)"; rec="${rec%/}"
+  tmp="$(mktemp "$d/.backups.XXXXXX")" || return 0
+  {
+    printf '{"written_at": %s, "nightly": {"on": %s, "hour": %s, "keep": %s}, "backups": [' "$(date +%s)" \
+      "$([ "$(get_env BACKUP_NIGHTLY)" = on ] && echo true || echo false)" "$(backup_hour)" "$(backup_keep)"
+    for b in "$STACK_DIR"/backups/*; do
+      [ -d "$b" ] && _is_backup "$b" || continue
+      name="${b##*/}"
+      case "$name" in *.partial | *[!A-Za-z0-9._-]*) continue ;; *-auto) kind=auto ;; *-nightly) kind=nightly ;; *) kind=manual ;; esac
+      kb="$(du -sk "$b" 2>/dev/null | cut -f1)"; case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
+      rb=false; [ "backups/$name" != "$rec" ] || rb=true
+      printf '%s{"name": "%s", "kind": "%s", "bytes": %s, "at": %s, "rollback": %s}' "$sep" "$name" "$kind" "$((kb * 1024))" "$(_backup_epoch "$name")" "$rb"
+      sep=', '
+    done
+    printf ']}\n'
+  } > "$tmp" || { rm -f "$tmp"; return 0; }
+  chmod 644 "$tmp"; mv "$tmp" "$d/backups.json"
 }
 
 # --- diagnostics ---

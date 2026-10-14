@@ -68,8 +68,11 @@ class Sessions:
     nothing; an unreadable one counts as "revoked just now" (log in again) rather than reviving anything.
     """
 
-    def __init__(self, secret: str, credential: str, clock=time.time, state_file: Path | None = None):
-        """credential: PORTAL_PASSWORD_HASH (a new hash means a new password: every session ends)."""
+    def __init__(self, secret: str, credential: str, clock=time.time, state_file: Path | None = None,
+                 max_age: int = MAX_AGE):
+        """credential: PORTAL_PASSWORD_HASH (a new hash means a new password: every session ends); max_age:
+        PORTAL_SESSION_DAYS in seconds (a shorter one ends older sessions at once)."""
+        self.max_age = max_age
         self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.session")
         self._fp = hmac.new(secret.encode(), credential.encode(), hashlib.sha256).hexdigest()[:32]
         self._clock = clock
@@ -123,13 +126,13 @@ class Sessions:
         if not token or len(token) > 4096:
             return None
         try:
-            data = self._ser.loads(token, max_age=MAX_AGE)
+            data = self._ser.loads(token, max_age=self.max_age)
         except (BadSignature, ValueError, TypeError):
             return None
         if not isinstance(data, dict) or data.get("v") != 1:
             return None
         iat = data.get("iat")
-        if not isinstance(iat, (int, float)) or iat <= self.not_before or self._clock() - iat > MAX_AGE:
+        if not isinstance(iat, (int, float)) or iat <= self.not_before or self._clock() - iat > self.max_age:
             return None
         if not hmac.compare_digest(str(data.get("fp", "")), self._fp):
             return None

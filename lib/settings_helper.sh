@@ -4,7 +4,7 @@
 #
 #   .state/requests/cfg-<nonce>.req    a settings change, at most 8 KB, one item per line:
 #                                        bedrock-now-settings 1 / nonce HEX32 / requested_at EPOCH / base HEX64 /
-#                                        origin local|remote / auth BASE64 / set KEY BASE64 (1-20) / end
+#                                        origin local|remote / auth BASE64 / set KEY BASE64 or regen KEY (1-20) / end
 #                                      Everything is checked again here — format, age, single use, the password
 #                                      (against the helper's own hash, not anything the portal can change), the
 #                                      allowlist and each value — then ./stack config apply --stdin gets the values on
@@ -71,6 +71,11 @@ settings_check_request() {
         [ "${#k}" -le 41 ] && [ "${#line}" -le 2780 ] || { echo "line $n is too long" >&2; return 1; }
         case " $SREQ_KEYS " in *" $k "*) echo "$k appears twice" >&2; return 1 ;; esac
         SREQ_KEYS="${SREQ_KEYS:+$SREQ_KEYS }$k"; SREQ_LINES="$SREQ_LINES$line"$'\n' ;;
+      body:*:'regen '*)
+        printf '%s\n' "$line" | grep -Eq '^regen [A-Z][A-Z0-9_]+$' && [ "${#line}" -le 48 ] || { echo "line $n is not 'regen KEY'" >&2; return 1; }
+        k="${line#regen }"
+        case " $SREQ_KEYS " in *" $k "*) echo "$k appears twice" >&2; return 1 ;; esac
+        SREQ_KEYS="${SREQ_KEYS:+$SREQ_KEYS }$k"; SREQ_LINES="$SREQ_LINES$line"$'\n' ;;
       body:*:end) state=end ;;
       *) echo "not a valid settings request (line $n)" >&2; return 1 ;;
     esac
@@ -100,6 +105,11 @@ settings_request_allowed() {
   while [ -n "$rest" ]; do
     line="${rest%%$'\n'*}"; if [ "$line" = "$rest" ]; then rest=''; else rest="${rest#*$'\n'}"; fi
     [ -n "$line" ] || continue
+    case "$line" in
+      'regen '*) k="${line#regen }"
+                 [ "$(setting_field "$k" 4)" = regen ] || { echo "$k cannot be regenerated" >&2; return 1; }
+                 continue ;;
+    esac
     k="${line#set }"; k="${k%% *}"
     setting_known "$k" || { echo "$k is not a bedrock-now setting" >&2; return 1; }
     v="$(_b64_decode "${line##* }")"
@@ -231,6 +241,7 @@ helper_run_diag() {
     backup) helper_write_status running "Backing up databases, files and .env"; set -- backup ;;
     test) helper_write_status running "Running the smoke test (~\$0.0001)"; set -- test ;;
     report) helper_write_status running "Writing the status report"; set -- config report ;;
+    backup-nightly) helper_write_status running "Nightly backup"; set -- backup --nightly ;;
     restart-*) s="${action#restart-}"; helper_write_status running "Restarting $s"; set -- restart "$s" ;;
   esac
   if [ "$action" = report ]; then
@@ -253,7 +264,7 @@ helper_run_diag() {
   case "$action" in
     check-aws) msg="AWS key works: $(sed -n 's/.*belongs to AWS account \(.*\)$/account \1/p; s/.*the instance role works: AWS account \(.*\)$/instance role, account \1/p' "$logf" | head -n 1); Bedrock access confirmed (free check)" ;;
     models-recheck) msg="Models re-checked: $(sed -n 's/^==> \([0-9]* model(s) enabled, [0-9]* unavailable\).*/\1/p' "$logf" | tail -n 1)" ;;
-    backup) msg="Backup written: $(sed -n 's/^==> backup written to \([^ ]*\) (\([^)]*\)).*/\1 (\2)/p' "$logf" | tail -n 1)" ;;
+    backup | backup-nightly) msg="$([ "$action" = backup ] && echo Backup || echo "Nightly backup") written: $(sed -n 's/^==> backup written to \([^ ]*\) (\([^)]*\)).*/\1 (\2)/p' "$logf" | tail -n 1)" ;;
     test) msg="All $(grep -c '^  ok' "$logf" | tr -d ' ') checks passed" ;;
     report) msg="Status report ready" ;;
     restart-*) msg="${action#restart-} restarted" ;;
@@ -328,12 +339,69 @@ _refuse_settings() {
   helper_write_status failed "Not saved: $1. Your settings are unchanged."
 }
 
+# --- nightly backups (BACKUP_NIGHTLY=on): once per night, in the three hours from BACKUP_HOUR (this computer's time) ---
+
+backup_last_file() { printf '%s/backup-last\n' "$(helper_dir)"; }   # the start of the last window that was handled
+
+# _backup_clock -> "EPOCH HOUR SECONDS_SINCE_LOCAL_MIDNIGHT" (tests replace it)
+_backup_clock() {
+  local e h m s
+  read -r e h m s <<EOF
+$(date '+%s %H %M %S')
+EOF
+  printf '%s %s %s\n' "$e" "$((10#$h))" "$((10#$h * 3600 + 10#$m * 60 + 10#$s))"
+}
+_in_window() { [ $((($2 - $1 + 24) % 24)) -lt 3 ]; }   # _in_window HOUR NOW_HOUR: NOW_HOUR in [HOUR, HOUR+3)
+# _window_start EPOCH SINCE_MIDNIGHT NOW_HOUR HOUR -> start (epoch) of the window we are in, else of the next one
+_window_start() {
+  local start=$(($1 - $2 + $4 * 3600))
+  if _in_window "$4" "$3"; then [ "$start" -le "$1" ] || start=$((start - 86400))
+  else [ "$start" -gt "$1" ] || start=$((start + 86400)); fi
+  echo "$start"
+}
+
+# backup_decision ON HOUR NOW_HOUR WINDOW_START LAST_WINDOW AUTO_UPDATE_AT BUSY -> what the nightly backup does now,
+# with no clock or file of its own (tests/test_settings.sh): off | wait (outside the window) | done (this window had
+# its backup) | update (an automatic update started in this window: it made its own backup) | busy | run
+backup_decision() {
+  [ "$1" = on ] || { echo off; return 0; }
+  _in_window "$2" "$3" || { echo wait; return 0; }
+  [ "$5" != "$4" ] || { echo done; return 0; }
+  case "$6" in '' | *[!0-9]*) ;; *) [ "$6" -lt "$4" ] || { echo update; return 0; } ;; esac
+  [ -z "$7" ] || { echo busy; return 0; }
+  echo run
+}
+
+# backup_nightly_tick — runs ./stack backup --nightly when due (status on Home and in Settings like a diagnostic)
+backup_nightly_tick() {
+  local clock now since nowh hour start last auto_at='' busy='' d
+  [ "$(get_env BACKUP_NIGHTLY)" = on ] || return 0
+  clock="$(_backup_clock)"; now="${clock%% *}"; since="${clock##* }"; nowh="${clock#* }"; nowh="${nowh%% *}"
+  hour="$(backup_hour)"
+  start="$(_window_start "$now" "$since" "$nowh" "$hour")"
+  last="$(head -c 20 "$(backup_last_file)" 2>/dev/null | tr -cd '0-9' || true)"
+  if declare -F auto_last_file >/dev/null && [ -f "$(auto_last_file)" ]; then auto_at="$(ENV_FILE="$(auto_last_file)" get_env at)"; fi
+  [ -z "$(stack_lock_holder)" ] || busy=lock
+  ! _status_in_progress || busy=job
+  d="$(backup_decision on "$hour" "$nowh" "$start" "$last" "$auto_at" "$busy")"
+  case "$d" in
+    run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now" ;;
+    update) printf '%s\n' "$start" > "$(backup_last_file)"
+            printf '%s nightly backup skipped: an automatic update made its own backup tonight\n' "$(date '+%F %T')" >&2 ;;
+  esac
+  return 0
+}
+
 # settings_helper_tick — every loop: the settings snapshot when .env changed, the helper's own password hash (once),
-# and the capability file that tells the portal this helper takes settings requests
+# the backup list when backups/ changed, a nightly backup when due, and the capability file that tells the portal
+# this helper takes settings requests
 settings_helper_tick() {
-  local f; f="$(settings_capability_file)"
+  local f l; f="$(settings_capability_file)"
   [ -f "$(helper_password_file)" ] || helper_password_sync 2>/dev/null || true
   settings_snapshot_refresh 2>/dev/null || true
+  l="$( (ls "$STACK_DIR/backups" 2>/dev/null || true) | cksum)"
+  if [ "$l" != "${_BACKUPS_SEEN:-}" ] || [ ! -f "$(status_dir)/backups.json" ]; then _BACKUPS_SEEN="$l"; write_backups_json 2>/dev/null || true; fi
+  backup_nightly_tick
   if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
     printf '{"settings": 1, "diagnostics": [%s], "written_at": %s}\n' \
       "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(date +%s)" > "$f.tmp" 2>/dev/null &&

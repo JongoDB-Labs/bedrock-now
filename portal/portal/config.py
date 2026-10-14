@@ -53,6 +53,8 @@ class Settings:
     rustfs_access_key: str = ""
     rustfs_secret_key: str = ""
     shared_mcp_token: str = field(default="", repr=False)  # Settings → Files shows it behind the password
+    session_days: int = 30   # PORTAL_SESSION_DAYS (1-90): how long a sign-in lasts
+    alert_pct: int = 80      # BUDGET_ALERT_PCT (50-99): where Home's budget meters turn amber
     openwebui_url: str = "http://open-webui:8080"
     rustfs_url: str = "http://rustfs:9000"
     shared_mcp_url: str = "http://shared-mcp:8000"
@@ -125,6 +127,12 @@ class Settings:
         return {sub: self.origin(sub, remote) + path for sub, path in APPS.items()}
 
 
+def _int_in(raw, lo: int, hi: int, default: int) -> int:
+    """A whole number within [lo, hi] from the environment; anything else is the default (as ./stack reads it)."""
+    raw = (raw or "").strip()
+    return int(raw) if raw.isdigit() and lo <= int(raw) <= hi else default
+
+
 def from_env(env: dict | None = None) -> Settings:
     from .security import PW_HASH, hash_password  # (security imports this module)
 
@@ -161,6 +169,8 @@ def from_env(env: dict | None = None) -> Settings:
         rustfs_access_key=env.get("RUSTFS_ACCESS_KEY", ""),
         rustfs_secret_key=env.get("RUSTFS_SECRET_KEY", ""),
         shared_mcp_token=env.get("SHARED_MCP_TOKEN", ""),
+        session_days=_int_in(env.get("PORTAL_SESSION_DAYS"), 1, 90, 30),
+        alert_pct=_int_in(env.get("BUDGET_ALERT_PCT"), 50, 99, 80),
         openwebui_url=env.get("OPENWEBUI_URL", "http://open-webui:8080"),
         rustfs_url=env.get("RUSTFS_URL", "http://rustfs:9000"),
         shared_mcp_url=env.get("SHARED_MCP_URL", "http://shared-mcp:8000"),

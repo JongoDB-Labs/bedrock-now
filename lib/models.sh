@@ -59,17 +59,20 @@ spend_text() {
   if [ -n "$max" ]; then printf '%s of %s\n' "$(usd "$spend")" "$(usd "$max")"; else printf '%s, no budget\n' "$(usd "$spend")"; fi
 }
 
-# budget_warning < /key/info JSON -> "⚠ 84% of monthly budget used" when spend is at least 80% of
+# alert_pct -> BUDGET_ALERT_PCT from .env (50-99; anything else: 80): where every budget warning starts
+alert_pct() { local p; p="$(get_env BUDGET_ALERT_PCT)"; case "$p" in [5-9][0-9]) echo "$p" ;; *) echo 80 ;; esac; }
+
+# budget_warning < /key/info JSON -> "⚠ 84% of monthly budget used" when spend is at least alert_pct (80%) of
 # max_budget (the soft budget setup sets); fails (prints nothing) below that or without a budget.
 budget_warning() {
   local j spend max
   j="$(cat)"; spend="$(printf '%s' "$j" | json_num spend)"; max="$(printf '%s' "$j" | json_num max_budget)"
   [ -n "$spend" ] && [ -n "$max" ] || return 1
-  awk -v s="$spend" -v m="$max" 'BEGIN { if (m <= 0 || s < 0.8 * m) exit 1; printf "⚠ %d%% of monthly budget used\n", s * 100 / m }'
+  awk -v s="$spend" -v m="$max" -v p="$(alert_pct)" 'BEGIN { if (m <= 0 || s < p / 100 * m) exit 1; printf "⚠ %d%% of monthly budget used\n", s * 100 / m }'
 }
 
-# soft_budget_of MAX_BUDGET -> 80% of it (LiteLLM's soft_budget: alert, never block), e.g. 200 -> 160
-soft_budget_of() { awk -v b="$1" 'BEGIN { s = sprintf("%.4f", b * 0.8); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'; }
+# soft_budget_of MAX_BUDGET -> alert_pct (80%) of it (LiteLLM's soft_budget: alert, never block), e.g. 200 -> 160
+soft_budget_of() { awk -v b="$1" -v p="$(alert_pct)" 'BEGIN { s = sprintf("%.4f", b * p / 100); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'; }
 
 prices_as_of() { # -> YYYY-MM-DD from the "# as_of:" header line, or empty
   [ -r "$PRICES" ] || return 0

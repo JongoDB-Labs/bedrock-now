@@ -217,8 +217,51 @@ sync_openwebui_models() {
       then ok=$((ok + 1)); else bad=$((bad + 1)); warn "Open WebUI: could not update $a ($OWUI_ERR)"; fi
     done
   done 3< <(catalog_rows)
+  owui_apply_hidden   # MODELS_HIDDEN (Settings → AWS & models)
   if [ "$bad" -eq 0 ]; then log "Open WebUI model picker: friendly names and Bedrock prices ($ok models; helper models hidden)"
   else warn "$bad Open WebUI model update(s) failed — prices are still in ./stack costs and the LiteLLM UI; re-run ./stack setup to retry"; fi
+}
+
+# owui_hidden_merge WANT(true|false) < model JSON -> the updated JSON, or nothing when nothing changes. MODELS_HIDDEN
+# hides a model and marks it (meta.bedrock_now_hidden); a model it no longer lists is shown again only if it carries
+# that mark, so a model you hid in Chat's own settings stays hidden.
+owui_hidden_merge() {
+  # shellcheck disable=SC2016  # Python source, not shell
+  _owui_py 'import json, sys
+want = sys.argv[1] == "true"
+d = json.load(sys.stdin)
+meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+d["meta"] = meta
+before = json.dumps(d, sort_keys=True)
+if want:
+    meta["hidden"] = True
+    meta["bedrock_now_hidden"] = True
+elif meta.get("bedrock_now_hidden"):
+    meta["hidden"] = False
+    meta.pop("bedrock_now_hidden", None)
+if json.dumps(d, sort_keys=True) != before:
+    json.dump(d, sys.stdout)' "$1"
+}
+
+# owui_apply_hidden — MODELS_HIDDEN in .env: those chat models are left out of Chat's picker (for everyone; the API
+# and Claude Code can still use them). Needs a portal session. Never fatal.
+owui_apply_hidden() {
+  local en name mode tmp code body want list n=0
+  [ -n "$(get_env OPENWEBUI_API_KEY)" ] || return 0
+  list=",$(get_env MODELS_HIDDEN),"
+  en="$(_enabled_or_all)"
+  while IFS=$'\t' read -r name mode _ <&3; do
+    [ "$mode" = chat ] && is_enabled "$name" "$en" || continue
+    want=false; case "$list" in *",$name,"*) want=true ;; esac
+    tmp="$(mktemp)"
+    code="$(_owui_get "/api/v1/models/model?id=$name" "$tmp")"
+    if [ "$code" = 200 ] && body="$(owui_hidden_merge "$want" < "$tmp" 2>/dev/null)" && [ -n "$body" ]; then
+      code="$(_owui_post /api/v1/models/model/update "$body" "$tmp")"
+      if [ "$code" = 200 ]; then n=$((n + 1)); else warn "Open WebUI: could not change whether $name is shown (HTTP $code)"; fi
+    fi
+    rm -f "$tmp"
+  done 3< <(catalog_rows)
+  [ "$n" = 0 ] || log "Chat's model picker: $n model(s) shown or hidden as MODELS_HIDDEN says"
 }
 
 # --- cost filter function (owui/functions/bedrock_cost.py) ---
@@ -342,18 +385,18 @@ owui_install_cost_filter() {
 BUDGET_BANNER_PREFIX=bedrock-now-budget
 
 # budget_banner_json NOW_EPOCH < "alias<TAB>spend<TAB>max_budget<TAB>reset_date" lines -> JSON list of
-# Open WebUI banners for keys at >= 80% of their budget ("warning"), >= 100% ("error"); [] when none.
+# Open WebUI banners for keys at >= alert_pct (80%) of their budget ("warning"), >= 100% ("error"); [] when none.
 budget_banner_json() {
-  awk -F'\t' -v now="$1" -v p="$BUDGET_BANNER_PREFIX" '
+  awk -F'\t' -v now="$1" -v p="$BUDGET_BANNER_PREFIX" -v a="$(alert_pct)" '
     function usd(v) { return (v < 1 && v > 0) ? sprintf("$%.4f", v) : sprintf("$%.2f", v) }
     function envk(a) { return a == "claude-code" ? "BUDGET_CLAUDE_CODE" : (a == "open-webui" ? "BUDGET_OPENWEBUI" : "BUDGET_SETUP") }
     NF >= 3 && $3 + 0 > 0 {
       pct = int($2 / $3 * 100)
-      if (pct < 80) next
+      if (pct < a) next
       reset = ($4 != "") ? " (resets " $4 ")" : ""
       if (pct >= 100) { type = "error"; what = "has used its whole monthly budget" reset " — requests with this key are refused until then" }
       else { type = "warning"; what = "has used " pct "% of its monthly budget" reset }
-      msg = "The **" $1 "** key " what ": " usd($2 + 0) " of " usd($3 + 0) ". To raise it, set " envk($1) " in .env and re-run ./stack setup."
+      msg = "The **" $1 "** key " what ": " usd($2 + 0) " of " usd($3 + 0) ". To raise it: Settings in the portal, or ./stack config set " envk($1) "."
       out = out (n++ ? "," : "") sprintf("{\"id\":\"%s-%s-%s\",\"type\":\"%s\",\"title\":\"Budget\",\"content\":\"%s\",\"dismissible\":true,\"timestamp\":%d}", p, $1, type, type, msg, now)
     }
     END { print "[" out "]" }'
@@ -391,7 +434,7 @@ if merged != cur:
     print(json.dumps({"banners": merged}))' "$BUDGET_BANNER_PREFIX" "$1"
 }
 
-# sync_budget_banner — shows a banner in Open WebUI while a key is at >= 80% of its budget, removes it
+# sync_budget_banner — shows a banner in Open WebUI while a key is at >= alert_pct of its budget, removes it
 # otherwise. Runtime config (ENABLE_PERSISTENT_CONFIG=false keeps it in memory only), so setup and
 # ./stack up re-apply it after every Open WebUI restart. Never fatal.
 sync_budget_banner() {
@@ -407,7 +450,7 @@ sync_budget_banner() {
     [ "$code" = 200 ] || warn "Open WebUI: could not set the budget banner (HTTP $code)"
   fi
   rm -f "$tmp"
-  [ "$new" = '[]' ] || warn "a LiteLLM key is at 80% or more of its monthly budget — see ./stack costs (Open WebUI shows a banner)"
+  [ "$new" = '[]' ] || warn "a LiteLLM key is at $(alert_pct)% or more of its monthly budget — see ./stack costs (Open WebUI shows a banner)"
 }
 
 # --- LiteLLM database admin (replaces the shared env-credential login) ---

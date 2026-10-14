@@ -273,7 +273,7 @@ test_budget_banner_thresholds() {
   assert_eq "$out" "[]"
   out="$(printf 'open-webui\t42.10\t50\t2026-11-01\n' | budget_banner_json 1700000000)"
   assert_contains "$out" '"id":"bedrock-now-budget-open-webui-warning","type":"warning","title":"Budget"'
-  assert_contains "$out" 'used 84% of its monthly budget (resets 2026-11-01): $42.10 of $50.00. To raise it, set BUDGET_OPENWEBUI in .env'
+  assert_contains "$out" 'used 84% of its monthly budget (resets 2026-11-01): $42.10 of $50.00. To raise it: Settings in the portal, or ./stack config set BUDGET_OPENWEBUI'
   assert_contains "$out" '"dismissible":true,"timestamp":1700000000}'
   out="$(printf 'claude-code\t201\t200\t\nopen-webui\t5\t0\t\n' | budget_banner_json 1)"
   assert_contains "$out" '"type":"error"'

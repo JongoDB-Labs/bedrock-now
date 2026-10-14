@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote, urlencode
 
-from common import ENV, HOST, PORT, Skip, check, expect, http, origin, portal_login
+from common import ENV, HOST, PORT, Skip, check, expect, http, origin, portal_login, real_helper_running
 
 APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
 PUBLIC = ["/login", "/healthz", "/favicon.svg", "/static/login.css", "/static/logo.svg", "/manifest.webmanifest", "/sw.js"]
@@ -198,6 +198,8 @@ def api_routes(ctx):
 
 @check("http", "api-admin-request-guards")
 def admin_request(ctx):
+    if real_helper_running():
+        raise Skip("a real update helper is running: this check needs it absent (503)")
     s = ctx.session()
     base = {**API, "Content-Type": "application/json"}
     ok_body = json.dumps({"action": "clean", "password": ENV["PORTAL_PASSWORD"]})

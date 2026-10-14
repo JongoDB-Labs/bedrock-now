@@ -64,6 +64,14 @@
 .set-adv-item dd { margin: 3px 0 0; color: var(--muted); font-size: 13px; display: grid; gap: 3px; }
 .set-adv-cli { color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere; }
 
+/* the backup list */
+.set-backups { margin-top: 10px; overflow-x: auto; }
+.set-backups table { font-size: 13px; }
+.set-backups th { font-size: 12px; padding: 0 10px 6px 0; }
+.set-backups td { padding: 5px 10px 5px 0; white-space: nowrap; }
+.set-bk-name { font-family: var(--mono); font-size: 12.5px; }
+.set-bk-size { font-variant-numeric: tabular-nums; text-align: right; }
+
 /* the status report */
 .set-report { padding: 12px 0 14px; border-top: 1px solid var(--line); }
 .set-report-text { margin: 8px 0 0; max-height: 360px; overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);

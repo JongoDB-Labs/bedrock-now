@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 SNAPSHOT = "settings.json"
+BACKUPS = "backups.json"
 CAPABILITY = "helper-settings.json"
 REPORT = "report.txt"
 MAX_SNAPSHOT = 512 * 1024
@@ -34,6 +35,7 @@ MAX_VALUE = 2000
 CAPABILITY_MAX_AGE_S = 24 * 3600
 GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates", "remote", "advanced")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
+REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
 SECRET_CODES = ("-", "s", "k", "u", "h", "S")
 # What Reveal may hand back (behind the password): values the portal already holds for Home and its own work.
 REVEAL = ("LITELLM_UI_PASSWORD", "RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE",
@@ -94,6 +96,8 @@ def snapshot(status_dir: Path) -> dict | None:
                        for p in ("bedrock", "openai", "groq")},
         "stt_bedrock_ready": [m for m in ch.get("stt_bedrock_ready") or [] if isinstance(m, str)][:10],
         "restart": [s for s in ch.get("restart") or [] if isinstance(s, str) and f"restart-{s}" in DIAG_ACTIONS],
+        "chat_models": [[m[0], _s(m[1], 80) or m[0]] for m in ch.get("chat_models") or []
+                        if isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m[0])],
     }
     written = d.get("written_at") if isinstance(d.get("written_at"), int) else None
     base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""
@@ -113,6 +117,22 @@ def capability(status_dir: Path, now: float | None = None) -> dict:
     ok = d.get("settings") == 1 and at is not None and now - at <= CAPABILITY_MAX_AGE_S
     acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
     return {"settings": ok, "diagnostics": acts}
+
+
+def backups(status_dir: Path) -> dict:
+    """The backup list ./stack and the helper write (names, kinds, sizes, times; never contents)."""
+    d = _read_json(status_dir / BACKUPS, 256 * 1024)
+    out = []
+    for b in d.get("backups") or []:
+        if not isinstance(b, dict) or not isinstance(b.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", b["name"]):
+            continue
+        out.append({"name": b["name"], "kind": b.get("kind") if b.get("kind") in ("manual", "auto", "nightly") else "manual",
+                    "bytes": b["bytes"] if isinstance(b.get("bytes"), int) else None,
+                    "at": b["at"] if isinstance(b.get("at"), int) else None, "rollback": b.get("rollback") is True})
+    n = d.get("nightly") if isinstance(d.get("nightly"), dict) else {}
+    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "backups": out[-200:],
+            "nightly": {"on": n.get("on") is True, "hour": n.get("hour") if isinstance(n.get("hour"), int) else 2,
+                        "keep": n.get("keep") if isinstance(n.get("keep"), int) else 7}}
 
 
 def report(status_dir: Path) -> dict:
@@ -258,6 +278,19 @@ def _login(v, remote_on=False):
     return None if ok else "must be a Tailscale login in lowercase (you@example.com or you@github)"
 
 
+def _range(lo, hi, msg):
+    return lambda v, remote_on=False: None if v == "" or (re.fullmatch(r"[1-9][0-9]?", v) and lo <= int(v) <= hi) else msg
+
+
+def _model_pin(v, remote_on=False):
+    return None if v == "" or re.fullmatch(r"[a-z0-9.-]{1,64}", v) else "must be one of the models your key can use (blank = automatic)"
+
+
+def _models_list(v, remote_on=False):
+    return None if v == "" or (re.fullmatch(r"[a-z0-9.-]+(,[a-z0-9.-]+)*", v) and len(v) <= MAX_VALUE) else \
+        "must be a comma list of model names"
+
+
 VALIDATORS = {
     "portal_password": _portal_password, "litellm_password": _litellm_password, "email": _email,
     "aws_key_id": _aws_key_id, "aws_secret": _aws_secret, "budget": _budget, "webhook": _webhook,
@@ -268,6 +301,10 @@ VALIDATORS = {
     "stt_provider": _one_of("bedrock", "openai", "groq", "", msg="must be bedrock, openai, groq or blank (the browser)"),
     "stt_key": _stt_key, "stt_model": _stt_model, "or_key": _or_key, "or_mode": _or_mode, "int_1_5000": _int_1_5000,
     "login": _login,
+    "days": _range(1, 90, "must be a whole number of days from 1 to 90 (blank = 30)"),
+    "pct": _range(50, 99, "must be a percentage from 50 to 99 (blank = 80)"),
+    "keep": _range(1, 60, "must be a whole number from 1 to 60 (blank = 7)"),
+    "model_pin": _model_pin, "models_list": _models_list,
 }
 
 
@@ -284,6 +321,8 @@ def policy_error(row: dict, value: str, local: bool) -> str | None:
     p = row.get("policy")
     if p == "edit":
         return None
+    if p == "regen":
+        return "can only be regenerated (Regenerate makes a new random value)"
     if p == "local":
         return None if local else "can only be changed from the computer running bedrock-now"
     if p == "on-only":
@@ -314,10 +353,12 @@ def _b64(v: str) -> str:
     return base64.b64encode(v.encode("utf-8", "surrogatepass")).decode("ascii")
 
 
-def build_request(nonce: str, base: str, local: bool, password: str, values: dict, now: float | None = None) -> bytes:
+def build_request(nonce: str, base: str, local: bool, password: str, values: dict, now: float | None = None,
+                  regen: tuple = ()) -> bytes:
     lines = ["bedrock-now-settings 1", f"nonce {nonce}", f"requested_at {int(time.time() if now is None else now)}",
              f"base {base}", f"origin {'local' if local else 'remote'}", f"auth {_b64(password)}"]
     lines += [f"set {k} {_b64(v)}" for k, v in values.items()]
+    lines += [f"regen {k}" for k in regen if k in REGEN]
     lines.append("end")
     body = ("\n".join(lines) + "\n").encode("ascii")
     if len(body) > MAX_REQUEST:
@@ -325,14 +366,14 @@ def build_request(nonce: str, base: str, local: bool, password: str, values: dic
     return body
 
 
-def write_request(request_dir: Path, base: str, local: bool, password: str, values: dict) -> str:
+def write_request(request_dir: Path, base: str, local: bool, password: str, values: dict, regen: tuple = ()) -> str:
     """REQUEST_DIR/cfg-<nonce>.req for the helper. -> nonce"""
-    if not values or len(values) > MAX_KEYS or not HEX64.fullmatch(base or ""):
+    if not (values or regen) or len(values) + len(regen) > MAX_KEYS or not HEX64.fullmatch(base or ""):
         raise ValueError("bad request")
-    if any(not NAME.fullmatch(k) for k in values):
+    if any(not NAME.fullmatch(k) for k in values) or any(k not in REGEN for k in regen):
         raise ValueError("bad key")
     nonce = secrets.token_hex(16)
-    _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req", build_request(nonce, base, local, password, values))
+    _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req", build_request(nonce, base, local, password, values, regen=regen))
     return nonce
 
 

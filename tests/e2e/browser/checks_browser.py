@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, need, origin, redact
+from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, need, origin, real_helper_running, redact
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
@@ -229,6 +229,8 @@ def _write_json(path: Path, data: dict):
 
 @check("browser", "home-update-card-states")
 def update_card(ctx):
+    if real_helper_running():
+        raise Skip("a real update helper is running: this check fakes its heartbeat")
     up = STATE / "update-check" / "latest.json"
     beat = STATE / "status" / "helper.json"
     saved = up.read_bytes() if up.exists() else None
@@ -295,6 +297,8 @@ def update_card(ctx):
 
 @check("browser", "home-auto-update-switch")
 def auto_switch(ctx):
+    if real_helper_running():
+        raise Skip("a real update helper is running: this check fakes its heartbeat")
     up = STATE / "update-check" / "latest.json"
     beat = STATE / "status" / "helper.json"
     saved = up.read_bytes() if up.exists() else None
@@ -1679,6 +1683,102 @@ def settings_backup(ctx):
     shot(page, "26-settings-backup", mask=[".set-value", ".set-adv-value"])
     rec.save()
     return msg
+
+
+def _owui_upload(f, name: str, text: str) -> dict:
+    """Uploads a small text file through Open WebUI (its S3 storage is RustFS) and returns its record."""
+    return f.evaluate("""async ([n, t]) => { const fd = new FormData(); fd.append('file', new File([t], n, {type: 'text/plain'}));
+        const r = await fetch('/api/v1/files/?process=false', {method: 'POST', headers: {Authorization: 'Bearer ' + localStorage.token}, body: fd});
+        return {status: r.status, body: await r.text()}; }""", [name, text])
+
+
+def _owui_download(f, fid: str) -> dict:
+    return f.evaluate("""async id => { const r = await fetch('/api/v1/files/' + id + '/content', {headers: {Authorization: 'Bearer ' + localStorage.token}});
+        return {status: r.status, body: await r.text()}; }""", fid)
+
+
+@check("settings", "settings-regenerate-rustfs")
+def settings_regen_rustfs(ctx):
+    need("open-webui")
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-regen")
+    login(page)
+    fl, f = chat_frame(page)
+    text = f"kept across a new RustFS key pair {int(time.time())}"
+    up = _owui_upload(f, "e2e-regen-before.txt", text)
+    expect(up["status"] == 200, f"upload before: {up['status']} {up['body'][:120]}")
+    fid = json.loads(up["body"])["id"]
+    old_access = page.evaluate("fetch('/api/logins', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())")["files"]["username"]
+    open_settings(page)
+    page.locator("#settings .set-row[data-key=RUSTFS_ACCESS_KEY] .set-actions .action", has_text="Regenerate").click()
+    _confirm(page)
+    ok, msg = _wait_job(page, 300)
+    expect(ok, f"regenerate failed: {msg}")
+    page2, rec2 = ctx.page("settings-regen-after")
+    login(page2)
+    new_logins = page2.evaluate("fetch('/api/logins', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())")["files"]
+    expect(new_logins["username"] != old_access and new_logins["username"].startswith("bn-"), "Home still shows the old Files sign-in")
+    ENV["RUSTFS_ACCESS_KEY"], ENV["RUSTFS_SECRET_KEY"] = new_logins["username"], new_logins["password"]
+    fl2, f2 = chat_frame(page2)
+    got = _owui_download(f2, fid)
+    expect(got["status"] == 200 and got["body"] == text, f"the file uploaded before: HTTP {got['status']}")
+    up2 = _owui_upload(f2, "e2e-regen-after.txt", "a new upload with the new pair")
+    expect(up2["status"] == 200, f"upload after: {up2['status']} {up2['body'][:120]}")
+    rec.save(); rec2.save()
+    return f"new RustFS pair ({msg}); a file stored before still downloads, a new Chat upload works, Home shows the new sign-in"
+
+
+def _local_hour_of_helper() -> int:
+    """The hour on the computer running the helper (its windows use that clock): from the heartbeat's next update
+    window, which starts at AUTO_UPDATE_HOUR local time."""
+    beat = json.loads((STATE / "status" / "helper.json").read_text())
+    a = beat.get("auto") or {}
+    if not isinstance(a.get("next_window"), int) or not isinstance(a.get("hour"), int):
+        raise Skip("this helper's heartbeat has no update window to read the local time from")
+    offset = (a["hour"] * 3600 - a["next_window"] % 86400) % 86400
+    return int(((time.time() + offset) % 86400) // 3600)
+
+
+@check("settings", "settings-nightly-backup-and-list")
+def settings_nightly(ctx):
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-nightly")
+    login(page)
+    open_settings(page)
+    now_h = _local_hour_of_helper()
+    before = {b["name"] for b in _settings_api(ctx)["backups"]["backups"]}
+    row = page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]")
+    keys = {k["key"]: k for k in _settings_api(ctx)["snapshot"]["keys"]}
+    # a window that includes now but is not the current one (each window gets one backup: an earlier run may have had it)
+    cur = keys.get("BACKUP_HOUR", {}).get("value") or "2"
+    hour = next(h for h in (now_h, (now_h - 1) % 24, (now_h - 2) % 24) if str(h) != cur)
+    if cur != str(hour):
+        row.locator("select").first.select_option(str(hour))
+        _confirm(page)
+        ok, msg = _wait_job(page)
+        expect(ok, f"BACKUP_HOUR: {msg}")
+    on = page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="On")
+    if on.get_attribute("aria-pressed") != "true":   # (an earlier, interrupted run may have left it on)
+        on.click()
+        _confirm(page)
+        ok, msg = _wait_job(page)
+        expect(ok, f"BACKUP_NIGHTLY: {msg}")
+    t0, nightly = time.time(), []
+    while time.time() - t0 < 180 and not nightly:
+        nightly = [b for b in _settings_api(ctx)["backups"]["backups"] if b["kind"] == "nightly" and b["name"] not in before]
+        time.sleep(3)
+    expect(nightly, "no nightly backup within 3 minutes of turning it on in its window")
+    page.click("#set-reload")
+    page.wait_for_selector(f"#settings .set-backups td:text-is('{nightly[0]['name']}')", timeout=20000)
+    kinds = page.inner_text("#settings .set-backups")
+    expect("nightly" in kinds and "yours" in kinds, f"backup list: {kinds[:200]}")
+    page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]").scroll_into_view_if_needed()
+    shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
+    page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="Off").click()
+    _confirm(page)
+    _wait_job(page)
+    rec.save()
+    return f"nightly backups on at {hour:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with the manual one"
 
 
 @check("settings", "settings-portal-password")

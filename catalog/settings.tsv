@@ -9,7 +9,8 @@
 #            | h secret, last 4 shown | S secret, nothing shown
 #   policy   edit (from the portal; remotely only with REMOTE_ADMIN_ACTIONS=true) | local (only from the computer
 #            running bedrock-now) | on-only (may be turned on, never off) | widen-local (off anywhere, on only
-#            locally) | companion (only together with its key: PORTAL_PASSWORD_HASH) | ro | derived (written by ./stack)
+#            locally) | companion (only together with its key: PORTAL_PASSWORD_HASH) | regen (only a new random value,
+#            made by ./stack: never one the request brings) | ro | derived (written by ./stack)
 #   apply    what ./stack config apply does after writing .env (comma list; - = nothing, read when needed)
 key	group	secret	policy	validator	apply	label	note	cli
 PORTAL_PASSWORD	account	S	edit	portal_password	portal-pw	Portal password	The one sign-in for Home, Chat, Admin and Files. The portal restarts (about 10 s); this browser stays signed in and every other device is signed out.	./stack config set PORTAL_PASSWORD
@@ -17,6 +18,7 @@ PORTAL_PASSWORD_HASH	account	h	companion	pw_hash	-	Portal password hash	What the
 OPENWEBUI_ADMIN_EMAIL	account	s	edit	email	email	Owner email	Your account in Chat (Open WebUI) and the Admin (LiteLLM) sign-in. Changed in both apps first, so your chats stay yours. Chat and the portal restart (about 20 s).	./stack config set OPENWEBUI_ADMIN_EMAIL
 LITELLM_UI_PASSWORD	account	S	edit	litellm_password	litellm-pw	Admin (LiteLLM) password	The password of the Admin tab (LiteLLM). Changed in LiteLLM at once; the portal restarts (about 10 s) so Home copies the new one. LiteLLM needs 12+ characters with upper- and lowercase letters, a digit and a symbol.	./stack config set LITELLM_UI_PASSWORD
 LITELLM_UI_USER	account	s	derived	-	-	Admin (LiteLLM) user	The Admin sign-in name: your owner email (admin before the first setup). Follows the owner email.	./stack config set OPENWEBUI_ADMIN_EMAIL
+PORTAL_SESSION_DAYS	account	-	edit	days	portal	Session length	How many days a sign-in lasts (1-90; blank = 30). A shorter one takes effect at once: older sign-ins end. The portal restarts (about 10 s).	./stack config set PORTAL_SESSION_DAYS
 LITELLM_STORE_PROMPTS	account	-	edit	bool	litellm-cfg	Store prompts in LiteLLM logs	true keeps the text of every prompt and answer in LiteLLM's spend logs for 90 days (and in backups). LiteLLM restarts (about 15 s).	./stack config set LITELLM_STORE_PROMPTS
 PORTAL_SECRET	account	h	ro	-	-	Session signing key	Signs portal sessions. Not changed from the browser: a new one signs out every device, including this one.	edit .env, then ./stack up (signs everyone out)
 AWS_ACCESS_KEY_ID	aws	k	local	aws_key_id	aws	AWS access key ID	The IAM user key LiteLLM calls Bedrock with. A new key is checked with AWS first (free), then LiteLLM restarts (about 15 s) and a smoke test runs (~$0.0001); a failure puts the old key back.	./stack rotate-aws
@@ -28,6 +30,12 @@ CLAUDE_BEDROCK_SONNET_MODEL	aws	-	derived	-	-	Claude Code sonnet slot	Chosen by 
 CLAUDE_BEDROCK_HAIKU_MODEL	aws	-	derived	-	-	Claude Code haiku slot (background tasks)	Chosen by setup from the models your key can use.	./stack models --recheck
 OWUI_DEFAULT_MODEL	aws	-	derived	-	-	Chat default model	Chosen by setup from the models your key can use.	./stack models --recheck
 OWUI_TASK_MODEL	aws	-	derived	-	-	Chat title and tag model	A cheap model for titles, tags and follow-ups, chosen by setup.	./stack models --recheck
+CHAT_DEFAULT_MODEL	aws	-	edit	model_pin	pins	Chat default model	Pins Chat's default model; blank = automatic (setup picks one from the models your key can use). A pinned model that is no longer enabled falls back to the automatic choice, with a warning. Chat restarts (about 15 s).	./stack config set CHAT_DEFAULT_MODEL
+CHAT_TASK_MODEL	aws	-	edit	model_pin	pins	Chat title and tag model	Pins the model that writes titles, tags and follow-up suggestions (every chat pays for it: pick a cheap one); blank = automatic. Chat restarts (about 15 s).	./stack config set CHAT_TASK_MODEL
+CLAUDE_MODEL_OPUS	aws	-	edit	model_pin	pins	Claude Code main model	Pins claude-bedrock's main model (its opus slot); blank = automatic. Takes effect at the next claude-bedrock start; no restart.	./stack config set CLAUDE_MODEL_OPUS
+CLAUDE_MODEL_SONNET	aws	-	edit	model_pin	pins	Claude Code sonnet slot	Pins claude-bedrock's sonnet slot; blank = automatic. Next claude-bedrock start; no restart.	./stack config set CLAUDE_MODEL_SONNET
+CLAUDE_MODEL_HAIKU	aws	-	edit	model_pin	pins	Claude Code haiku slot	Pins claude-bedrock's haiku slot (background tasks); blank = automatic. Next claude-bedrock start; no restart.	./stack config set CLAUDE_MODEL_HAIKU
+MODELS_HIDDEN	aws	-	edit	models_list	owui-models	Hidden in Chat's model picker	A comma list of models Chat's picker leaves out (for everyone). This does not block them: the API and Claude Code can still use them. No restart.	./stack config set MODELS_HIDDEN
 OWUI_EMBED_ENGINE	advanced	-	derived	-	-	Embedding engine	Always openai (LiteLLM): never a local model.	./stack setup
 OWUI_EMBED_MODEL	advanced	-	derived	-	-	Embedding model	Chosen by setup. Changing it would make existing knowledge bases unsearchable.	./stack models --recheck
 OWUI_HYBRID_SEARCH	advanced	-	derived	-	-	Hybrid search	true while a rerank model is enabled.	./stack models --recheck
@@ -39,6 +47,7 @@ OWUI_COST_FILTER_INSTALLED	advanced	-	derived	-	-	Cost filter installed	Marks th
 BUDGET_CLAUDE_CODE	budgets	-	edit	budget	budget	Claude Code budget	Monthly budget in USD of the claude-code key. Takes effect at once, no restart; the reset date stays. Below this month's spend the key is refused until it resets.	./stack config set BUDGET_CLAUDE_CODE
 BUDGET_OPENWEBUI	budgets	-	edit	budget	budget	Chat budget	Monthly budget in USD of the open-webui key (Chat, document search, voice). Takes effect at once, no restart.	./stack config set BUDGET_OPENWEBUI
 BUDGET_SETUP	budgets	-	edit	budget	budget	Setup and tests budget	Monthly budget in USD of the setup key (model checks and smoke tests). Keep it above $0.05: setup, updates and tests need it.	./stack config set BUDGET_SETUP
+BUDGET_ALERT_PCT	budgets	-	edit	pct	alert-pct	Alert threshold	The share of a budget at which Home, Chat, ./stack costs and the webhook warn (50-99%; blank = 80). Applied to the three keys at once; the portal restarts (about 10 s).	./stack config set BUDGET_ALERT_PCT
 ALERT_WEBHOOK_URL	budgets	u	local	webhook	litellm-cfg	Budget alert webhook	LiteLLM POSTs a JSON alert here when a key reaches its alert threshold and its budget (key names and spend). Blank = no alerts. LiteLLM restarts (about 15 s).	./stack config set ALERT_WEBHOOK_URL
 LITELLM_KEY_CLAUDE_CODE	budgets	h	ro	-	-	claude-code key	The LiteLLM key claude-bedrock uses. A new key would restart its budget period, so it is not changed here.	./stack setup (creates a missing one)
 LITELLM_KEY_OPENWEBUI	budgets	h	ro	-	-	open-webui key	The LiteLLM key Chat uses (also document search and voice).	./stack setup (creates a missing one)
@@ -53,14 +62,17 @@ OPENROUTER_API_KEY	openrouter	h	local	or_key	openrouter	OpenRouter API key	Adds 
 OPENROUTER_MODELS	openrouter	-	edit	or_mode	openrouter	OpenRouter models	all, free, paid, or a comma list of model ids. LiteLLM restarts (about 30 s).	./stack openrouter models all|free|paid|IDS
 OPENROUTER_MAX_MODELS	openrouter	-	edit	int_1_5000	openrouter	OpenRouter model cap	At most this many OpenRouter models (blank = 1000, the newest first). A long list slows LiteLLM's start.	./stack config set OPENROUTER_MAX_MODELS
 OPENROUTER_INCLUDE_ALIASES	openrouter	-	edit	true_blank	openrouter	OpenRouter -latest aliases	true = also the ~vendor/…-latest alias models.	./stack config set OPENROUTER_INCLUDE_ALIASES
-RUSTFS_ACCESS_KEY	files	s	ro	-	-	Files (RustFS) access key	The Files sign-in and the S3 key of Chat, shared-mcp and backups.	edit .env, then ./stack up
-RUSTFS_SECRET_KEY	files	S	ro	-	-	Files (RustFS) secret key	The Files password.	edit .env, then ./stack up
-SHARED_MCP_TOKEN	files	h	ro	-	-	Shared MCP token	The bearer token of the shared file server claude-bedrock uses (.state/mcp.json).	edit .env, then ./stack up
+RUSTFS_ACCESS_KEY	files	s	regen	-	rustfs	Files (RustFS) access key	The Files sign-in and the S3 key of Chat, shared-mcp and backups. Regenerate makes a new random pair: stored files stay; Files, Chat and the portal restart (about 35 s), and scripts that used the old pair need the new one.	./stack config regenerate rustfs
+RUSTFS_SECRET_KEY	files	S	regen	-	rustfs	Files (RustFS) secret key	The Files password (regenerated together with the access key).	./stack config regenerate rustfs
+SHARED_MCP_TOKEN	files	h	regen	-	mcp	Shared MCP token	The bearer token of the shared file server claude-bedrock uses (.state/mcp.json). Regenerate makes a new one: running claude-bedrock sessions and other MCP clients need it (claude-bedrock reads it at its next start); shared-mcp restarts (about 15 s).	./stack config regenerate mcp-token
 PRICE_UPDATES	updates	-	edit	bool	portal	Daily price update	true = Bedrock prices are updated daily from public price lists (no credentials sent). The portal restarts (about 10 s).	./stack config set PRICE_UPDATES
 UPDATE_CHECK	updates	-	edit	bool	portal	Daily release check	true = the portal asks GitHub once a day whether a newer bedrock-now exists (nothing about you is sent). Off, automatic updates never see a new release. The portal restarts (about 10 s).	./stack config set UPDATE_CHECK
 AUTO_UPDATE	updates	-	edit	on_off	-	Automatic updates	on = the update helper installs a new release by itself at night, after a backup. No restart.	./stack helper auto on|off
 AUTO_UPDATE_HOUR	updates	-	edit	hour	-	Automatic update window	The first hour of the three-hour nightly window (this computer's time). No restart.	./stack helper auto on --hour N
 UPDATE_REQUIRE_SIGNED_TAGS	updates	-	on-only	true_blank	-	Signed releases only	true = ./stack update installs only release tags whose signature git verify-tag accepts. Can be turned on here; turning it off is a terminal step.	./stack config set UPDATE_REQUIRE_SIGNED_TAGS
+BACKUP_NIGHTLY	updates	-	edit	on_off	-	Nightly backups	on = the update helper backs up every night (backups/<time>-nightly/), in the three hours from BACKUP_HOUR, and keeps the newest BACKUP_KEEP. Skipped on a night an automatic update made its own backup. No restart.	./stack config set BACKUP_NIGHTLY
+BACKUP_HOUR	updates	-	edit	hour	-	Nightly backup window	The first hour of the three-hour window (this computer's time; blank = 2).	./stack config set BACKUP_HOUR
+BACKUP_KEEP	updates	-	edit	keep	-	Nightly backups kept	How many nightly backups to keep (1-60; blank = 7). Only -nightly backups are removed, never yours or the one a rollback needs.	./stack config set BACKUP_KEEP
 BEDROCK_NOW_HELPER_ALLOW_BRANCH	updates	-	ro	-	-	Helper may update a branch	1 = the update helper may update a checkout that follows a branch. A security switch of the helper itself: never from the browser.	edit .env (the helper reads it)
 HELPER_PORTAL_UID	updates	-	ro	-	-	Helper: the portal's user id	Linux: which host user may own request files. A security switch of the helper itself: never from the browser.	edit .env (the helper reads it)
 REMOTE_ADMIN_ACTIONS	remote	-	widen-local	bool	portal	Update, settings and diagnostics from your devices	true = remote sessions (your phone over Tailscale) may also use Update, Settings and Diagnostics. Turning it on works only from the computer running bedrock-now; off works everywhere. The portal restarts (about 10 s).	./stack config set REMOTE_ADMIN_ACTIONS

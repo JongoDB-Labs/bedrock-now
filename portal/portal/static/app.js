@@ -93,6 +93,7 @@ function setCostView(view) {
 const paidZero = (v) => `of which ${usd(v)} is free-model usage you paid $0 for`;
 
 function renderSpend(spend) {
+  const alert = Number.isInteger(spend.alert_pct) ? spend.alert_pct : 80;   // BUDGET_ALERT_PCT (Settings)
   const eq = spend.equivalent || null;
   const view = eq ? costView : "actual";
   const useEq = view === "equivalent" && eq && !eq.error;
@@ -122,7 +123,7 @@ function renderSpend(spend) {
     } else {
       const ek = useEq ? (eq.keys || {})[k.alias] : null;
       const pct = k.max_budget ? (k.spend / k.max_budget) * 100 : 0;   // budgets count actual spend
-      if (pct >= 100) li.classList.add("over"); else if (pct >= 80) li.classList.add("warn");
+      if (pct >= 100) li.classList.add("over"); else if (pct >= alert) li.classList.add("warn");
       const budget = k.max_budget != null ? ` of ${usd(k.max_budget)}` : ", no budget";
       // Equivalent with free-model usage: both figures, the bold one (actual) is what the bar shows
       const amount = ek && ek.spend != null && ek.extra > 0
@@ -132,9 +133,10 @@ function renderSpend(spend) {
       const bar = el("i"); bar.style.width = `${Math.min(pct, 100)}%`;
       const gauge = el("div", { class: "gauge", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100",
         "aria-valuenow": String(Math.round(pct)), "aria-label": `${k.label}: ${Math.round(pct)}% of budget` }, bar);
+      gauge.style.setProperty("--alert", `${alert}%`);
       let foot = k.max_budget ? `${Math.round(pct)}% of the monthly budget` : "no budget set";
       if (pct >= 100) foot = "Budget used up: requests with this key are refused until it resets";
-      else if (pct >= 80) foot = `${Math.round(pct)}% used: close to the budget`;
+      else if (pct >= alert) foot = `${Math.round(pct)}% used: close to the budget`;
       if (k.reset_at) foot += ` · resets ${day(k.reset_at)}`;
       if (ek && ek.free_requests) foot += ek.extra > 0 ? ` · ${paidZero(ek.extra)}` : ` · ${count(ek.free_requests)} free-model requests with no paid version ($0)`;
       li.append(head, gauge, el("div", { class: "meter-foot", text: foot }));
@@ -566,7 +568,7 @@ function renderJob(job, inProgress) {
   const at = steps.findIndex(([p]) => p === job.phase);
   const auto = job.trigger === "auto";
   const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up", settings: "Settings change",
-    backup: "Backup", test: "Smoke test", "check-aws": "AWS key check", "models-recheck": "Model check", report: "Status report" }[job.action]
+    backup: "Backup", "backup-nightly": "Nightly backup", test: "Smoke test", "check-aws": "AWS key check", "models-recheck": "Model check", report: "Status report" }[job.action]
     || (/^restart-/.test(job.action || "") ? `Restart of ${job.action.slice(8)}` : "Request");
   $("#job-title").textContent = `${name}${{ failed: " failed", done: " finished", skipped: " skipped" }[job.phase] || " in progress"}`;
   const list = $("#job-steps"); list.replaceChildren();

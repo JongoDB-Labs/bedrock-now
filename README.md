@@ -70,7 +70,7 @@ delete the folder.
 
 Open http://bedrock-now.localhost (or the URL `./stack status` prints) and sign in with `PORTAL_PASSWORD`.
 `*.localhost` names point at your own computer in every current browser, so there is nothing to configure. You
-stay signed in for 30 days; **Sign out** at the bottom of the sidebar ends every session at once. `./stack
+stay signed in for 30 days (Settings → Session length); **Sign out** at the bottom of the sidebar ends every session at once. `./stack
 open` opens it: the installed app if you have installed it (see [Desktop app](#desktop-app)), otherwise a tab in
 your browser.
 
@@ -254,14 +254,20 @@ last four characters of generated keys and the `AKIA…` ends of the AWS key ID)
 **What you can change here**, each with what it restarts and for how long:
 
 - the portal password (this browser stays signed in, every other device signs in again), the owner email (the
-  same Chat account keeps its chats; the Admin sign-in follows), the Admin (LiteLLM) password, storing prompts;
-  **Sign out other devices** and **Sign out everywhere**;
+  same Chat account keeps its chats; the Admin sign-in follows), the Admin (LiteLLM) password, how many days a
+  sign-in lasts (1-90), storing prompts; **Sign out other devices** and **Sign out everywhere**;
 - the AWS access key (checked with AWS first, including Bedrock access, free; a failed smoke test puts the old
   key back), **Check AWS key** (free) and **Re-check models** (< $0.01, at most hourly);
-- the three budgets (at once, no restart) and the budget alert webhook;
+- your own model choices: Chat's default model, its title/tag model and Claude Code's three slots (blank =
+  automatic; setup keeps a pin while that model is enabled and warns when it is not), and which models Chat's picker
+  leaves out (a tidier picker only: the API and Claude Code can still use them);
+- the three budgets (at once, no restart), the alert threshold (50-99%, default 80%) and the budget alert webhook;
 - speech-to-text (Bedrock, OpenAI, Groq or the browser), OpenRouter's key and model set;
 - the daily release and price checks, automatic updates and their hour, signed releases only (on only);
-  **Back up now**;
+  **Back up now**, **nightly backups** (by the update helper, in a three-hour window you pick, keeping the newest
+  1-60) and the list of backups (name, kind, size, date, and which one a rollback needs);
+- **Regenerate** the Files (RustFS) key pair or the shared MCP token: new random values made by `./stack`, stored
+  files stay;
 - `REMOTE_ADMIN_ACTIONS` (off from anywhere, on only from this computer) and the allowed Tailscale login;
 - **Diagnostics**: the smoke test (~$0.0001), a restart of one service, a status report to copy (your home
   folder shown as `~`, no secrets).
@@ -284,6 +290,7 @@ Without the helper the page is read-only and shows the terminal command next to 
 ./stack config get BUDGET_SETUP
 ./stack config set PORTAL_PASSWORD BUDGET_OPENWEBUI   # asks for each value (hidden for secrets)
 ./stack config check-aws       # free
+./stack config regenerate rustfs
 ./stack restart litellm
 ```
 
@@ -329,7 +336,7 @@ until the reset date shown by `./stack costs`. To change one, use **Settings →
 `./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`): it applies at once, with no
 restart, and keeps the reset date.
 
-**Alerts.** Each key has a soft budget at **80%**: it never blocks, but `./stack costs`, Home and the
+**Alerts.** Each key has a soft budget at **80%** (Settings → Budgets & alerts → Alert threshold, 50-99%): it never blocks, but `./stack costs`, Home and the
 `claude-bedrock` launch line warn from there on. To also get a message, set **Settings → Budgets & alerts → Budget
 alert webhook** (or `./stack config set ALERT_WEBHOOK_URL`) to any URL that accepts a JSON POST (an n8n, Zapier or
 Make hook, for example). LiteLLM then
@@ -565,7 +572,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack costs` | Prices for your enabled models + spend per key | none |
 | `./stack prices [--accept]` | Check prices now; `--accept` applies a refused change | none |
 | `./stack models [--recheck]` | Which models your key can use; `--recheck` re-probes | `--recheck`: < $0.01 |
-| `./stack backup` | Databases + buckets + `.env` → `backups/<timestamp>/` | none |
+| `./stack backup [--nightly]` | Databases + buckets + `.env` → `backups/<timestamp>/` (`--nightly`: the update helper's nightly backup, keeps `BACKUP_KEEP`) | none |
 | `./stack restore DIR` | Replace all data with a backup, then test | ~$0.0001 |
 | `./stack update [--to <tag\|branch>] [--force]` | Backup, new code, pinned images, setup; with nothing new it says so and stops (`--force` runs setup anyway) | < $0.01 (nothing new: none) |
 | `./stack clean [--dry-run] [--yes]` | Remove this install's old images (lists them first; keeps one previous version); `--dry-run` only lists them | none |
@@ -579,7 +586,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
-| `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
+| `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
 | `./stack help` | All of the above; `./stack <command> --help` shows one | none |

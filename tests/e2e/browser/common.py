@@ -151,6 +151,16 @@ class Skip(Exception):
     pass
 
 
+def real_helper_running() -> bool:
+    """A real update helper writes its heartbeat (with its pid) every few seconds into the mounted status folder: the
+    checks that fake one, or that need it absent, skip then (the settings/* checks use the real one)."""
+    try:
+        beat = json.loads(Path("/state/status/helper.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(beat.get("pid"), int) and isinstance(beat.get("heartbeat"), int) and time.time() - beat["heartbeat"] < 30
+
+
 def need(app: str) -> None:
     """Skip the calling check when compose.yaml pins another version of APP than the selectors were written for."""
     if PINNED.get(app) != TESTED_WITH[app]:

@@ -102,6 +102,17 @@ All notable changes to bedrock-now are documented here. The format follows
   first, one atomic `.env` write (`set_env_batch`), only the restarts the change needs, free checks of the result,
   and on failure the previous values back. Each change is logged by key name only in
   `.state/helper/settings-audit.log`. **`./stack restart SERVICE`** recreates one service.
+- **More in Settings**: **Regenerate** the Files (RustFS) key pair (stored files, IAM users and service accounts
+  stay; Files, Chat, shared-mcp and the portal restart together) or the shared MCP token (`.state/mcp.json` is
+  rewritten); **model pins** for Chat's default and title/tag models and Claude Code's three slots
+  (`CHAT_DEFAULT_MODEL`, `CHAT_TASK_MODEL`, `CLAUDE_MODEL_OPUS|SONNET|HAIKU`; blank = automatic, setup keeps a pin
+  while the model is enabled and warns when it is not); **hidden models** in Chat's picker (`MODELS_HIDDEN`; the API
+  and Claude Code can still use them; models you hid in Chat yourself stay hidden); the **alert threshold**
+  (`BUDGET_ALERT_PCT`, 50-99%, replacing the fixed 80% of soft budgets, `./stack costs`, Chat's banner and Home's
+  meters); the **session length** (`PORTAL_SESSION_DAYS`, 1-90 days); **nightly backups** (`BACKUP_NIGHTLY`,
+  `BACKUP_HOUR`, `BACKUP_KEEP`: run by the update helper in its window like automatic updates, `./stack backup
+  --nightly`, pruning only `-nightly` backups) and the **backup list** (`.state/status/backups.json`: names, kinds,
+  sizes, dates, and which one a rollback needs). `./stack config regenerate rustfs|mcp-token`.
 - `./stack up`, setup and `./stack restore` reconcile Chat's owner account and the Admin (LiteLLM) sign-in with
   `.env` (a change cut short, an older backup restored), and `./stack up` applies `BUDGET_*` edited by hand.
 

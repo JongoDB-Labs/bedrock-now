@@ -23,7 +23,7 @@ from starlette.staticfiles import StaticFiles
 from . import admin, appicons, icons, prices, settings_api, summary, updates, webapp
 from .config import Settings
 from .security import (
-    MAX_AGE, Handoff, LoginThrottle, Sessions, cookie_params, is_remote, remote_identity_ok, safe_next, same_origin,
+    Handoff, LoginThrottle, Sessions, cookie_params, is_remote, remote_identity_ok, safe_next, same_origin,
     session_login, tailscale_login, verify_password,
 )
 
@@ -86,12 +86,12 @@ GENERIC_WHERE = "the .env file of your bedrock-now folder"
 
 
 def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: int = 0,
-                where: str = "") -> HTMLResponse:
+                where: str = "", days: int = 30) -> HTMLResponse:
     page = (STATIC / "login.html").read_text(encoding="utf-8")
     err = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ""
     hint = f"<code>{html.escape(where)}</code>" if where else html.escape(GENERIC_WHERE).replace(".env", "<code>.env</code>", 1)
     page = page.replace("{{next}}", html.escape(next_url, quote=True)).replace("{{error}}", err)
-    page = page.replace("{{where}}", hint)
+    page = page.replace("{{where}}", hint).replace("{{days}}", str(days))
     resp = HTMLResponse(page, status_code=status)
     if retry_after:
         resp.headers["Retry-After"] = str(retry_after)
@@ -118,7 +118,7 @@ class _CarryOver:
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     state_file = settings.state_dir / "logout-not-before" if settings.state_dir else None
-    sessions = Sessions(settings.secret, settings.password_hash, state_file=state_file)
+    sessions = Sessions(settings.secret, settings.password_hash, state_file=state_file, max_age=settings.session_days * 86400)
     throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
     admin_rate = admin.RateLimit()
 
@@ -166,7 +166,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     # URLs all carry it; only a link clicked on another site arrives without it (that shows the login page once).
     def set_session(resp: Response, rem: bool, login: str | None = None, iat: float | None = None) -> None:
         c = cookie_params(settings, rem)
-        resp.set_cookie(c["key"], sessions.issue(iat, login), max_age=MAX_AGE, path="/", domain=c["domain"],
+        resp.set_cookie(c["key"], sessions.issue(iat, login), max_age=sessions.max_age, path="/", domain=c["domain"],
                         httponly=True, samesite="strict", secure=c["secure"])
 
     def clear_session(resp: Response, rem: bool) -> None:
@@ -233,7 +233,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         nxt = safe_next(request.query_params.get("next"), settings)
         if authed(request):
             return _no_store(RedirectResponse(nxt, status_code=303))
-        return _security_headers(_login_page(nxt, where=password_where(request)), settings)
+        return _security_headers(_login_page(nxt, where=password_where(request), days=settings.session_days), settings)
 
     async def login_post(request: Request) -> Response:
         if not same_origin(request.headers, settings):
@@ -256,14 +256,14 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         wait = throttle.retry_after()
         if wait:
             return _security_headers(_login_page(nxt, f"Too many wrong passwords. Try again in {wait} s.", 429, wait,
-                                                 where=password_where(request)), settings)
+                                                 where=password_where(request), days=settings.session_days), settings)
         if not await asyncio.to_thread(verify_password, (form.get("password") or [""])[0], settings.password_hash):
             throttle.failure()
             log.warning("portal login failed (%d in a row)", throttle.failures)
             where = password_where(request)
             return _security_headers(_login_page(
                 nxt, f"That password is not right. It is PORTAL_PASSWORD in {where or GENERIC_WHERE}.", 401,
-                where=where), settings)
+                where=where, days=settings.session_days), settings)
         throttle.success()
         resp = RedirectResponse(nxt, status_code=303)
         set_session(resp, remote(request), session_login(request.headers, settings))
