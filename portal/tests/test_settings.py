@@ -577,9 +577,11 @@ def test_backup_list_is_sanitized(make, dirs):
     sd, _ = dirs
     (sd / "backups.json").write_text(json.dumps({"written_at": 1, "nightly": {"on": True, "hour": 4, "keep": 3}, "backups": [
         {"name": "20261001-120000", "kind": "manual", "bytes": 1024, "at": 1790000000, "rollback": False},
-        {"name": "../../etc", "kind": "manual"}, {"name": "x", "kind": "weird", "bytes": "big", "rollback": "yes"}]}))
+        {"name": "../../etc", "kind": "manual"}, {"name": "x", "kind": "weird", "bytes": "big", "rollback": "yes"},
+        {"name": "20261002-120000-portal", "kind": "portal"}]}))
     b = st.backups(sd)
-    assert [x["name"] for x in b["backups"]] == ["20261001-120000", "x"]
+    assert [x["name"] for x in b["backups"]] == ["20261001-120000", "x", "20261002-120000-portal"]
+    assert b["backups"][2]["kind"] == "portal"   # Back up now in Settings
     assert b["backups"][1] == {"name": "x", "kind": "manual", "bytes": None, "at": None, "rollback": False}
     assert b["nightly"] == {"on": True, "hour": 4, "keep": 3}
     write_snapshot(sd)

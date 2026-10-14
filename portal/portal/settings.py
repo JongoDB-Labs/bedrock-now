@@ -126,7 +126,7 @@ def backups(status_dir: Path) -> dict:
     for b in d.get("backups") or []:
         if not isinstance(b, dict) or not isinstance(b.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", b["name"]):
             continue
-        out.append({"name": b["name"], "kind": b.get("kind") if b.get("kind") in ("manual", "auto", "nightly") else "manual",
+        out.append({"name": b["name"], "kind": b.get("kind") if b.get("kind") in ("manual", "auto", "nightly", "portal") else "manual",
                     "bytes": b["bytes"] if isinstance(b.get("bytes"), int) else None,
                     "at": b["at"] if isinstance(b.get("at"), int) else None, "rollback": b.get("rollback") is True})
     n = d.get("nightly") if isinstance(d.get("nightly"), dict) else {}

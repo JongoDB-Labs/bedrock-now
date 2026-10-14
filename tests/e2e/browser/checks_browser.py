@@ -1072,16 +1072,19 @@ def tablet(ctx):
     page, rec = ctx.page("tablet", device="tablet")
     login(page)
     page.wait_for_selector("#home:not([hidden])")
-    vis = {t: page.locator(f".tab[data-tab={t}]").is_visible() for t in ("home", "chat", "admin", "files")}
+    vis = {t: page.locator(f".tab[data-tab={t}]").is_visible() for t in ("home", "chat", "admin", "files", "settings")}
     expect(all(vis.values()), f"tabs visible {vis}")
     expect(not page.locator("#more-btn").is_visible(), "More shown on a tablet")
     side = page.locator(".sidebar").bounding_box()
     expect(side and side["width"] < 120 and side["height"] > 900, f"not a narrow rail: {side}")
+    page.click(".tab[data-tab=settings]")   # a page of the portal, not a frame
+    page.wait_for_selector("#settings:not([hidden]) .set-head", timeout=15000)
     page.click(".tab[data-tab=files]")
     page.wait_for_selector("iframe[data-app=files]")
+    expect(page.locator("#settings").is_hidden(), "Settings still shown over Files")
     shot(page, "15-tablet-files")
     rec.save()
-    return "icon rail with Home/Chat/Admin/Files, no More; Files opens in the frame"
+    return "icon rail with Home/Chat/Admin/Files/Settings, no More; Settings opens as a page, Files in the frame"
 
 
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
