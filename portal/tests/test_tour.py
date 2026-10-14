@@ -45,13 +45,14 @@ def test_home_loads_the_walkthrough_after_the_other_scripts(client):
     for tag in page.split("<")[1:]:
         if 'id="tour-btn"' in tag or 'id="tour"' in tag or 'id="more-tour"' in tag:
             assert " hidden" in tag, tag
-    assert re.search(r'<aside id="tour" class="tour" aria-labelledby="tour-title"', page)
+    # a region (it sits inside the sidebar's Apps navigation), named by its heading
+    assert '<div id="tour" class="tour" role="region" aria-labelledby="tour-title" hidden></div>' in page
 
 
 @pytest.mark.parametrize("path,ctype", [("/static/tour.js", "javascript"), ("/static/tour.css", "text/css")])
 def test_walkthrough_files_are_served_with_their_type_and_security_headers(client, path, ctype):
-    assert client.get(path).status_code == 200  # the portal serves it; Caddy asks for the session first
-    r = client.get(path)
+    r = client.get(path)  # the portal serves it; Caddy asks for the session first
+    assert r.status_code == 200
     assert ctype in r.headers["content-type"]
     assert r.headers["x-content-type-options"] == "nosniff"
     assert "script-src 'self'" in r.headers["content-security-policy"]
@@ -90,8 +91,3 @@ def test_progress_is_stored_in_local_storage_defensively():
         before = js[:m.start()]
         assert before.rfind("try {") > before.rfind("}"), m.group(0)
 
-
-def test_walkthrough_polls_no_faster_than_home():
-    js = (STATIC / "tour.js").read_text(encoding="utf-8")
-    assert "const POLL_MS = 30000" in js
-    assert js.count('api("/api/summary")') == 1

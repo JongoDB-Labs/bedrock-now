@@ -17,6 +17,7 @@
   const NAMES = { chat: "Chat", admin: "Admin", files: "Files" };
   const PROMPT = 'Write notes/hello.md to the shared store with a two-line summary of this folder, and ingest it into knowledge base "Claude Code".';
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const CHECK_FAILED = "Could not check: Home says why; trying again every 30 s.";
 
   // --- small builders ---
   const p = (...c) => el("p", {}, ...c);
@@ -61,9 +62,10 @@
       });
     });
   }
-  // Admin / Files sign-in: the user name as text (masked in the e2e screenshots), the password only through Copy.
-  function signIn(app, nameLabel, userCopy, passCopy) {   // also its Open button, next to the Copy buttons
-    if (!logins && !signIn.asked) { signIn.asked = true; loadLogins().then(() => { if (st.open) render(); }); }
+  // Admin / Files sign-in: the user name as text (masked in the e2e screenshots), the password only through Copy;
+  // its Open button next to the Copy buttons. app.js loads the sign-ins at start-up (the panel redraws once they are
+  // in, see "wiring"); Copy asks for them only if that failed.
+  function signIn(app, nameLabel, userCopy, passCopy) {
     const user = logins && logins[app] && logins[app].username;
     const grab = (field, what) => async () => {
       if (!logins) await loadLogins();
@@ -183,7 +185,7 @@
         return [
           p("Each app has its own LiteLLM key with a monthly budget:"),
           keys.length ? list("ul", keys.map((k) => [`${k.label}: `, b(k.error ? "unavailable" : k.max_budget != null ? `${usd(k.max_budget)} a month` : "no budget")]))
-            : note("Loading…"),
+            : note(failedAt ? CHECK_FAILED : "Loading…"),
           p("Once a key's budget is used up, LiteLLM refuses its requests until the budget resets (Home shows the date)."),
           p("To change them, set ", code("BUDGET_CLAUDE_CODE"), ", ", code("BUDGET_OPENWEBUI"), " or ", code("BUDGET_SETUP"),
             " in ", code(".env"), ", then run ", code("./stack setup"), "."),
@@ -327,8 +329,10 @@
   // --- state: {open, cur ("" = the finished view), done, skipped, base: {key alias: spend when first shown}} ---
   function load() {
     const s = { open: null, cur: "welcome", done: [], skipped: [], base: {} };
+    let text = null;
+    try { text = localStorage.getItem(KEY); } catch (_) { /* storage blocked: start fresh */ }
     try {
-      const raw = JSON.parse(localStorage.getItem(KEY) || "null");
+      const raw = JSON.parse(text || "null");
       if (raw && typeof raw === "object") {
         if (typeof raw.open === "boolean") s.open = raw.open;
         if (raw.cur === "" || (typeof raw.cur === "string" && has(STEPS, raw.cur))) s.cur = raw.cur;
@@ -339,13 +343,14 @@
           if (raw.base && Number.isFinite(raw.base[a])) s.base[a] = raw.base[a];
         }
       }
-    } catch (_) { /* storage blocked or unreadable: start fresh */ }
+    } catch (_) { /* unreadable: start fresh */ }
     return s;
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (_) { /* storage blocked: this session only */ } }
+  // false when storage is blocked: progress then lasts for this page only
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); return true; } catch (_) { return false; } }
 
   let st = load();
-  let sum = null, sumAt = 0, askedAt = 0, pollT = null, shown = "";
+  let sum = null, sumAt = 0, askedAt = 0, failedAt = 0, pollT = null, shown = "";
   let openSecs = new Set();
   const isDone = (id) => st.done.includes(id);
   const isSkipped = (id) => st.skipped.includes(id);
@@ -388,7 +393,11 @@
 
   function onSummary(d) {
     if (!d || d === sum) return;
-    sum = d; sumAt = Date.now();
+    sum = d; sumAt = Date.now(); failedAt = 0;
+    for (const a of Object.keys(st.base)) {
+      const v = spendOf(a);
+      if (v != null && v < st.base[a]) st.base[a] = v;
+    }
     noteBaseline();
     const flipped = detectAll();
     save();
@@ -398,17 +407,22 @@
     poll();
   }
 
-  // At most one /api/summary every 30 s, only while the panel shows a step that needs it (app.js's own refreshes
-  // of Home count: the MutationObserver below hands them over).
+  // At most one /api/summary every 30 s, only while the panel shows a step that needs it. While Home is on screen,
+  // app.js refreshes it every 30 s and the MutationObserver below hands each one over: this waits 10 s longer, so it
+  // only asks when Home's refresh did not come.
+  const homeOwns = () => !$("#home").hidden && !document.hidden;
   function poll() {
     clearTimeout(pollT); pollT = null;
     const s = STEPS[st.cur];
     if (!st.open || !s || !s.live || document.hidden) return;
-    const wait = Math.max(sumAt, askedAt) + POLL_MS - Date.now();
+    const wait = Math.max(sumAt, askedAt) + POLL_MS + (homeOwns() ? 10000 : 0) - Date.now();
     if (wait > 0) { pollT = setTimeout(poll, wait); return; }
     askedAt = Date.now();   // also when it fails: the next try is 30 s away
-    api("/api/summary").then(onSummary, () => { /* Home says what is wrong; try again later */ })
-      .finally(() => { clearTimeout(pollT); pollT = setTimeout(poll, POLL_MS); });
+    api("/api/summary").then(onSummary, (e) => {
+      if (e.message === "signed out") return;
+      failedAt = Date.now();
+      if (st.open) render();
+    }).finally(() => { clearTimeout(pollT); pollT = setTimeout(poll, POLL_MS); });
   }
 
   // --- rendering ---
@@ -450,14 +464,14 @@
   function card(id) {
     const s = STEPS[id], det = detection(id), i = ORDER.indexOf(id);
     const n = el("div", { class: "tour-card" },
-      el("h4", { id: "tour-cur", tabindex: "-1" }, el("span", { class: "tour-mark", "aria-hidden": "true", text: isDone(id) ? "✓" : "●" }),
+      el("h4", { id: "tour-cur", tabindex: "-1", "data-k": "heading" }, el("span", { class: "tour-mark", "aria-hidden": "true", text: isDone(id) ? "✓" : "●" }),
         el("span", { text: s.title })));
     const tags = [...(s.badges || []), ...(s.optional ? ["Optional"] : [])];
     if (tags.length) n.append(el("p", { class: "tour-badges" }, ...tags.map((t) => el("span", { class: "tour-badge", text: t }))));
     if (det && det.text) {
       n.append(el("p", { class: `tour-status${det.ok ? " ok" : det.warn ? " warn" : ""}`,
         text: det.ok && !det.text.startsWith("Detected") ? `✓ ${det.text}` : det.text }));
-    } else if (s.detect && !sum) n.append(el("p", { class: "tour-status", text: "Checking…" }));
+    } else if ((s.detect || s.spendKey) && !sum) n.append(el("p", { class: `tour-status${failedAt ? " warn" : ""}`, text: failedAt ? CHECK_FAILED : "Checking…" }));
     n.append(...s.body(sum).filter(Boolean));
     const acts = s.actions ? s.actions(sum).filter(Boolean) : [];
     if (acts.length) n.append(el("div", { class: "tour-actions" }, ...acts));
@@ -489,7 +503,7 @@
   function finishedCard() {
     const left = ORDER.filter((id) => !handled(id)).length;
     return el("div", { class: "tour-card tour-finished" },
-      el("h4", { id: "tour-cur", tabindex: "-1", text: left ? `${left} step${left === 1 ? "" : "s"} still open` : "You're all set" }),
+      el("h4", { id: "tour-cur", tabindex: "-1", "data-k": "heading", text: left ? `${left} step${left === 1 ? "" : "s"} still open` : "You're all set" }),
       p(left ? "Pick one below to finish or skip it." : "Every step is done or skipped. Click any step below to read it again."),
       el("div", { class: "tour-nav" }, button("Start over", "restart", restart, "tour-link"),
         button("Close", "close-done", () => setOpen(false), "action primary")));
@@ -587,17 +601,20 @@
     }
     poll();
   }
-  // Phones: an app or Home needs the whole screen — the sheet steps aside (it is under More).
+  // Phones and tablets: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside.
   function away() {
-    if (!PHONE.matches || !st.open) return;
+    if (!(PHONE.matches || TABLET.matches) || !st.open) return;
     setOpen(false, false);
-    toast("The walkthrough is under More");
+    toast(PHONE.matches ? "The walkthrough is under More" : "The walkthrough is under the compass button");
   }
 
   // --- wiring ---
-  if (st.open === null) st.open = !PHONE.matches;   // first visit: open, except on phones (it would cover Chat)
+  // First visit: open, except on phones (it would cover Chat; it is under More) and when storage is blocked (it
+  // would open again on every load). Phones also start closed after a visit that left it open.
   if (!isDone("signin-portal")) mark("signin-portal", "done");
-  save();
+  const first = st.open === null;
+  if (first || PHONE.matches) st.open = !PHONE.matches && first;
+  if (!save() && first) st.open = false;
   opener.hidden = false;
   if (moreEntry) moreEntry.hidden = false;
   opener.addEventListener("click", () => setOpen(!st.open));
@@ -619,7 +636,15 @@
     if (st.open && st.cur === "signin-chat") announce("Chat opened: signed in, done.");
     commit();
   });
-  document.addEventListener("visibilitychange", poll);
+  document.addEventListener("DOMContentLoaded", () => setTimeout(poll, homeOwns() ? 10000 : 0));   // after app.js's
+  // Back on the page: Home refreshes itself at once (app.js); the panel asks only if that did not happen.
+  document.addEventListener("visibilitychange", () => { clearTimeout(pollT); pollT = setTimeout(poll, homeOwns() ? 5000 : 0); });
+  // app.js's sign-ins arrive: the Admin / Files step shows the user name.
+  const signins = $("#logins");
+  if (signins) {
+    new MutationObserver(() => { if (st.open && (st.cur === "signin-admin" || st.cur === "signin-files")) render(); })
+      .observe(signins, { childList: true, characterData: true, subtree: true });
+  }
   document.addEventListener("keydown", (e) => {
     // Escape closes the floating card (tablets) and the sheet (phones); on desktops it is part of the page.
     if (e.key !== "Escape" || !st.open || !(PHONE.matches || TABLET.matches)) return;

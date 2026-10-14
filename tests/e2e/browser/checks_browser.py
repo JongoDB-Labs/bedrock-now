@@ -753,9 +753,15 @@ def tablet(ctx):
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
 
 TOUR_STEPS = 19
-# What the app frames log by themselves while they load (before their own sign-in): not the walkthrough's doing.
-FRAME_NOISE = [r"No token found in localStorage", r"console.error Failed to .*Failed to fetch",
-               r"401 GET .*/rustfs/admin/v3/.*", r"console.error Failed to load resource.*401"]
+# What the app frames may log by themselves while they load, before their own sign-in (as in the Chat and Files
+# checks): not the walkthrough's doing.
+FRAME_NOISE = [r"^401 GET " + re.escape(origin("files")) + r"/rustfs/admin/v3/",
+               r"^console\.error .*No token found in localStorage"]
+
+
+def _summaries(rec, since: int) -> int:
+    """How many /api/summary answers the page got after event number SINCE."""
+    return sum(1 for e in rec.events[since:] if e["t"] == "resp" and e["url"].startswith(origin() + "/api/summary"))
 
 
 def _cur(page) -> str:
@@ -815,6 +821,11 @@ def walkthrough(ctx):
     page.locator("#tour .tour-step.cur .tour-status.ok", has_text="chat model").wait_for(timeout=40000)
     aws = page.inner_text("#tour .tour-step.cur .tour-status")
     expect(page.locator("#tour .tour-step.cur.done").count() == 1, "the AWS step is not marked done")
+    # With Home on screen, Home's own 30 s refresh feeds the step: no second /api/summary every 30 s.
+    since = len(rec.events)
+    page.wait_for_timeout(65000)
+    asked = _summaries(rec, since)
+    expect(asked <= 3, f"{asked} /api/summary requests in 65 s with Home visible and the walkthrough on a live step")
     for want in ("openrouter", "voice", "claude-setup", "budgets"):
         page.click("#tour [data-k=next]")
         _to_step(page, want)
@@ -890,12 +901,50 @@ def walkthrough(ctx):
     page.click("#tour-btn")
     page.wait_for_selector("#tour:not([hidden]) #tour-cur")
     expect(_cur(page) == "signin-files", f"reopened on {_cur(page)!r}")
+
+    # A reload on "Chat: pick a model and ask" with the Chat tab in front (Home is not refreshing): the step asks for
+    # the summary itself, leaves "Checking…" and keeps the open-webui key's spend as its starting point.
+    page.click("#tour [data-k=sec-2]")
+    page.click("#tour [data-k=go-chat]")
+    _to_step(page, "chat")
+    page.click("#tour [data-k=open-chat]")
+    page.wait_for_selector("iframe[data-app=chat]:not([hidden])")
+    page.reload()
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    expect(_cur(page) == "chat" and page.locator("iframe[data-app=chat]").is_visible(), "not back on Chat at the chat step")
+    page.wait_for_function("() => { const s = document.querySelector('#tour .tour-step.cur .tour-status'); "
+                           "return s && !/Checking/.test(s.textContent) }", timeout=10000)
+    chat_status = page.inner_text("#tour .tour-step.cur .tour-status")
+    saved = page.evaluate("() => JSON.parse(localStorage.getItem('bn.tour'))")
+    expect(isinstance((saved.get("base") or {}).get("open-webui"), (int, float)), f"no spend baseline: {saved.get('base')}")
+
+    # Skip moves on and can be undone; Finish lists what is still open; Start over begins again.
+    page.click("#tour [data-k=next]")
+    _to_step(page, "voice-use")
+    page.click("#tour [data-k=skip]")
+    _to_step(page, "docs")
+    expect(page.locator("#tour .tour-step[data-step=voice-use].skipped").count() == 1, "Skip did not mark the step skipped")
+    page.click("#tour [data-k=back]")
+    _to_step(page, "voice-use")
+    page.click("#tour [data-k=undo]")
+    page.locator("#tour .tour-step.cur [data-k=skip]").wait_for(timeout=5000)
+    expect(page.locator("#tour .tour-step[data-step=voice-use].skipped").count() == 0, "Undo left the step skipped")
+    page.click("#tour [data-k=go-done]")
+    _to_step(page, "done")
+    page.click("#tour [data-k=next]")   # Finish
+    page.locator("#tour #tour-cur", has_text="still open").wait_for(timeout=5000)
+    shot(page, "w10-walkthrough-finished")
+    page.click("#tour [data-k=restart]")
+    _to_step(page, "welcome")
+    left = int(re.match(r"\d+", page.inner_text("#tour .tour-prog")).group(0))
+    expect(left <= 4, f"Start over left {left} steps done")
     probs = rec.problems(allow=FRAME_NOISE)
     rec.save()
     expect(not probs, f"errors: {probs[:6]}")
     return (f"opens on a first visit as a section of the {open_w:.0f} px sidebar (closed: {side['width']:.0f} px), beside the frames; {aws.strip()!r}; "
-            f"Next through Set up; Open Chat → done; Admin/Files sign-ins shown and copied (LiteLLM: Username/Password/{submit}); "
-            f"reload keeps the step; closed → {label!r}, stays closed")
+            f"{asked} summaries in 65 s; Next through Set up; Open Chat → done; Admin/Files sign-ins shown and copied "
+            f"(LiteLLM: Username/Password/{submit}); reload keeps the step; closed → {label!r}, stays closed; reload on Chat → "
+            f"{chat_status.strip()[:40]!r}; skip/undo/finish/start over")
 
 
 @check("browser", "walkthrough-tablet")
@@ -913,8 +962,25 @@ def walkthrough_tablet(ctx):
     page.keyboard.press("Escape")
     page.wait_for_selector("#tour", state="hidden")
     expect(page.evaluate("document.activeElement.id") == "tour-btn", "focus did not return to the button")
+    # Open Admin from the card: the card steps aside, so it does not cover LiteLLM's sign-in form.
+    page.click("#tour-btn")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    page.click("#tour [data-k=sec-1]")
+    page.click("#tour [data-k=go-signin-admin]")
+    _to_step(page, "signin-admin")
+    page.click("#tour [data-k=open-admin]")
+    page.locator("#toast.show", has_text="compass button").wait_for(timeout=3000)
+    page.wait_for_selector("#tour", state="hidden", timeout=5000)
+    need("litellm")
+    field = page.frame_locator("iframe[data-app=admin]").locator("input[name=username]")
+    field.wait_for(timeout=45000)
+    box = field.bounding_box()
+    covered = page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); return !e || !!e.closest('#tour'); }",
+                           [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
+    expect(not covered, "the walkthrough covers LiteLLM's username field")
     rec.save()
-    return f"a {card['width']:.0f}×{card['height']:.0f} card next to the {rail['width']:.0f} px rail; Escape closes it"
+    return (f"a {card['width']:.0f}×{card['height']:.0f} card next to the {rail['width']:.0f} px rail; Escape closes it; "
+            "Open Admin moves it aside (the username field is free)")
 
 
 @check("browser", "walkthrough-phone")
@@ -946,8 +1012,49 @@ def walkthrough_phone(ctx):
     shot(page, "w09-walkthrough-phone-admin")
     page.keyboard.press("Escape")
     page.wait_for_selector("#tour", state="hidden")
+    # Left open, it still starts closed on the next load (a phone starts on Chat).
+    page.click("#more-btn")
+    page.click("#more-tour")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    page.reload()
+    page.wait_for_selector("iframe[data-app=chat]", timeout=20000)
+    page.wait_for_selector("#tour-btn:not([hidden])", state="attached")
+    expect(page.locator("#tour").is_hidden(), "the walkthrough opened by itself after a reload on a phone")
     rec.save()
-    return "closed at first; More → Walkthrough opens a sheet above the tab bar; Open Admin is a new-tab link; Escape closes"
+    return ("closed at first and after a reload; More → Walkthrough opens a sheet above the tab bar; Open Admin is a "
+            "new-tab link; Escape closes")
+
+
+@check("browser", "walkthrough-storage")
+def walkthrough_storage(ctx):
+    """Whatever bn.tour holds, or when storage refuses, the page works and the walkthrough starts on Welcome."""
+    hostile = json.dumps({"cur": "constructor", "done": "x", "base": {"open-webui": "1e9"}})
+    cases = (("garbled", "localStorage.setItem('bn.tour', '{')", True),
+             ("hostile", f"localStorage.setItem('bn.tour', {json.dumps(hostile)})", True),
+             ("getItem throws", "Storage.prototype.getItem = function () { throw new Error('blocked') }", True),
+             ("blocked", "Storage.prototype.getItem = Storage.prototype.setItem = function () { throw new Error('blocked') }", False))
+    out = []
+    for i, (name, js, opens) in enumerate(cases):
+        page, rec = ctx.page(f"walkthrough-storage-{i}", tour=True)
+        page.context.add_init_script(f"(o => {{ if (location.origin === o) {{ {js}; }} }})({json.dumps(origin())});")
+        login(page)
+        page.wait_for_selector("#tour-btn:not([hidden])", state="attached")
+        if opens:
+            page.wait_for_selector("#tour:not([hidden]) #tour-cur", timeout=10000)
+        else:   # blocked storage: not opened by itself (it would on every load), the button still works
+            page.wait_for_timeout(500)
+            expect(page.locator("#tour").is_hidden(), f"[{name}] opened by itself although nothing can be saved")
+            page.click("#tour-btn")
+            page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+        expect(_cur(page) == "welcome", f"[{name}] opened on {_cur(page)!r}")
+        if name == "hostile":
+            saved = page.evaluate("() => JSON.parse(localStorage.getItem('bn.tour'))")
+            expect(saved["cur"] == "welcome" and saved["base"] == {} and "signin-portal" in saved["done"], f"[{name}] saved {saved}")
+        probs = rec.problems()
+        rec.save()
+        expect(not probs, f"[{name}] errors: {probs[:4]}")
+        out.append(f"{name} → {'opens' if opens else 'closed, opens on click'} on Welcome")
+    return "; ".join(out)
 
 
 # --- sign out (last: it revokes every session) ---

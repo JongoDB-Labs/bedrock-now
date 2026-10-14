@@ -84,9 +84,6 @@
 .tour-flash { animation: tour-flash 1.6s ease-out; }
 @keyframes tour-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
 
-/* Toasts ("Copied …") show above the panel. */
-.toast { z-index: 20; }
-
 .sheet-tour { display: none; }
 
 /* ---------- Desktops: a section of the sidebar, which widens; the apps' frames just get narrower ---------- */
@@ -98,8 +95,9 @@
   .tour { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin-top: -6px; padding-top: 14px; border-top: 1px solid var(--line); }
   .tour-scroll { flex: 1 1 auto; }
 }
-/* With the walkthrough open, a narrow window has room for one column of Home's cards. */
-@media (min-width: 1100px) and (max-width: 1299.98px) {
+/* With the walkthrough open, a window narrower than 1440 px has room for one column of Home's cards (two would
+   clip the Models table's prices). */
+@media (min-width: 1100px) and (max-width: 1439.98px) {
   body.tour-open .grid { grid-template-columns: minmax(0, 1fr); }
 }
 
