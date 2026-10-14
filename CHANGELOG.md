@@ -114,6 +114,20 @@ All notable changes to bedrock-now are documented here. The format follows
   `/api/summary`'s `update` gains `commit`, `commit_date` and `release_url` (always there, also with the update
   check off or no network), and `.state/status/version.json` gains `commit_date` (written by `./stack setup` and
   `./stack up`).
+- **Open in the app.** A browser tab of the portal now knows when the app is installed and offers **Open in
+  the app** (sidebar, and a slimmer note on Home with *Not now*) instead of **Install app**; inside the app there
+  is neither, and nothing shows until the page knows which (no flash). It knows from the browser
+  (`navigator.getInstalledRelatedApps()`, answered by Chrome and Edge 140+ on desktop and Chrome on Android, via a
+  new `related_applications` entry naming the app itself), from a `bn.app` mark the app sets in the site's
+  storage whenever it runs, and from `beforeinstallprompt`, which means "not installed" and clears the mark (so an
+  uninstall brings **Install app** back). The link opens the app through its own scheme (new manifest
+  `protocol_handlers`: `web+bedrocknow` for the default copy, `web+bedrocknow` + 8 letters for every other copy
+  and for the remote site, so copies never open each other's app): the browser asks twice the first time, then
+  the open window comes forward on the tab you were on (or the app starts there), answers the tab over a
+  `BroadcastChannel`, and the tab says it can be closed. Without an answer the note lists the other ways in.
+  Android has no such link, so there the note says where the app is. The walkthrough's Extras step follows suit.
+  `portal/e2e/install/run.sh` checks all of it in a real Chromium: detection, both permission prompts, the
+  window switching tab, a cold start, and the install offer after an uninstall.
 
 ### Changed
 

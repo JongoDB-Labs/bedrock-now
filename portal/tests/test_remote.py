@@ -415,8 +415,13 @@ def test_manifest_sw_and_icons_are_public_on_the_remote_site(rclient):
     m = r.json()
     assert m["name"] == "bedrock-now (remote)" and m["short_name"] == "remote"
     assert m["start_url"] == "/" and m["scope"] == "/"
+    # The remote app is another app: its own id, manifest URL and link scheme.
+    assert m["related_applications"] == [{"platform": "webapp", "url": f"{R_ORIGIN}/manifest.webmanifest", "id": f"{R_ORIGIN}/"}]
     local = rclient.get("/manifest.webmanifest").json()
     assert local["name"] == "bedrock-now"
+    assert local["related_applications"][0]["id"] == "http://bedrock-now.localhost/"
+    assert local["protocol_handlers"][0]["protocol"] == "web+bedrocknow"
+    assert m["protocol_handlers"][0]["protocol"].startswith("web+bedrocknow") and m["protocol_handlers"] != local["protocol_handlers"]
     assert rclient.get("/sw.js", headers=REMOTE).status_code == 200
     icon = m["icons"][0]["src"]
     assert rclient.get(icon, headers=REMOTE).status_code == 200

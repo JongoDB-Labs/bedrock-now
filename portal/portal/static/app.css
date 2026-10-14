@@ -194,7 +194,7 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 /* Phones and tablets: mobile.css. */
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
 
-/* Install app (install.js shows these only when the browser can install the portal). */
+/* Install app (install.js shows these only when the browser can install the portal), or Open in the app. */
 .install-btn { margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--ink); font-weight: 500; text-align: left; }
 .install-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -207,3 +207,8 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 .install-note h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .install-note .note { margin-top: 2px; }
 .install-actions { display: flex; gap: 8px; margin: 0; }
+/* "Open in the app" (the app is installed): links, and a slimmer note. */
+a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointer; }
+.app-note { margin-top: 16px; padding: 10px 16px; }
+.app-note img { border-radius: 7px; }
+.app-note > div { flex-basis: 200px; }   /* the icon stays beside the text on a phone */

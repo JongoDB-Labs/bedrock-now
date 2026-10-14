@@ -128,9 +128,22 @@ microphone keeps working), kept by your browser.
   opens the installed app when it finds one and otherwise the portal as a tab in your everyday browser profile
   (with a one-time tip on how to install it). The app's **Chat** and **Home** shortcuts are on its Dock icon's
   right-click menu.
+- **Once it is installed, a browser tab says so:** instead of **Install app**, the sidebar and Home show **Open
+  in the app**, which brings the app forward (or starts it) on the tab you were on; the tab then says you can
+  close it. The first time, the browser asks twice: **Open bedrock-now?** (tick *Always allow…*) and the app's
+  **Allow app to open web+bedrocknow links?** (tick *Remember this choice*); after that it just opens. If
+  nothing opens, Home lists the other ways in (and Chrome's **Open in app** button in the address bar does the
+  same). Chrome and Edge 140 or newer tell the page that the app is installed; older ones learn it once the app
+  has run, since the app and the browser's tabs share the site's storage. Uninstall it and the tab offers
+  **Install app** again. On Android, Home says where the app is (home screen, or **⋮ → Open in app**): there is
+  no link that opens an installed web app there. Inside the app there is neither button. An app installed
+  before this version learns its link when the browser next refreshes it from the portal's manifest (it does
+  so when the app or a portal tab loads); until then **Open in the app** falls back to the list on Home.
 - **Several copies:** each portal address is its own app: `bedrock-now` for the default one, `bedrock-now
   (bn-dev)` for a copy with `COMPOSE_PROJECT_NAME=bn-dev`, `bedrock-now (port 8800)` when the portal is not on
-  port 80. If you rename the app in the install dialog, `./stack open` will not find it (it opens a tab).
+  port 80. If you rename the app in the install dialog, `./stack open` will not find it (it opens a tab). Each
+  has its own **Open in the app** link (`web+bedrocknow` for the default copy, `web+bedrocknow` plus eight
+  letters for any other copy or the remote address), so one copy's tab never opens another copy's app.
 - **Uninstall:** in the app, **⋮ → Uninstall bedrock-now** (or chrome://apps → right-click → **Remove from
   Chrome**; Edge: edge://apps). Your data is in the stack, not in the app.
 - `BEDROCK_NOW_OPEN_MODE=window ./stack open` brings back the old separate window (Chrome `--app` with its own

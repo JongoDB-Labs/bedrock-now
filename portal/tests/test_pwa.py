@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import struct
 import zlib
 from dataclasses import replace
@@ -91,6 +92,10 @@ def test_manifest_is_public_installable_and_hardened(client):
     for need in (("192x192", "any"), ("512x512", "any"), ("192x192", "maskable"), ("512x512", "maskable"), ("512x512", "monochrome")):
         assert need in by
     assert {s["url"] for s in m["shortcuts"]} == {"/#chat", "/#home"}
+    # A tab asks the browser whether this very app is installed, and opens it through its own link scheme.
+    assert m["related_applications"] == [{"platform": "webapp", "url": "http://bedrock-now.localhost/manifest.webmanifest",
+                                          "id": "http://bedrock-now.localhost/"}]
+    assert m["protocol_handlers"] == [{"protocol": "web+bedrocknow", "url": "/?open=%s"}]
     for icon in m["icons"] + [i for s in m["shortcuts"] for i in s["icons"]]:
         got = client.get(icon["src"])
         assert got.status_code == 200 and got.headers["content-type"] == "image/png", icon["src"]
@@ -114,6 +119,28 @@ def test_manifest_name_follows_the_portal_address(settings):
     with make_client(replace(settings, host="bn-dev.localhost", port=8800)) as c:
         m = c.get("/manifest.webmanifest").json()
     assert m["name"] == "bedrock-now (bn-dev, port 8800)" and m["short_name"] == "bn-dev, port 8800"
+    # The app id Chrome computes ("id": "/" on this origin) and this site's manifest URL: what getInstalledRelatedApps
+    # matches (desktop: id, Android: url).
+    assert m["related_applications"] == [{"platform": "webapp", "url": "http://bn-dev.localhost:8800/manifest.webmanifest",
+                                          "id": "http://bn-dev.localhost:8800/"}]
+    assert m["protocol_handlers"] == [{"protocol": webapp.protocol(replace(settings, host="bn-dev.localhost", port=8800)),
+                                       "url": "/?open=%s"}]
+
+
+def test_each_copy_has_a_link_scheme_of_its_own(settings):
+    # The operating system gives a scheme to one app, so a second copy (or the remote site) on the same computer
+    # must not take over the first one's "Open in the app".
+    sites = [(settings, False), (replace(settings, host="bn-dev.localhost"), False), (replace(settings, port=8800), False),
+             (replace(settings, host="bn-dev.localhost", port=8800), False),
+             (replace(settings, remote_mode="tailscale", remote_host="bn.tail1234.ts.net"), True),
+             (replace(settings, remote_mode="tailscale", remote_host="bn-dev.tail1234.ts.net"), True)]
+    schemes = [webapp.protocol(s, rem) for s, rem in sites]
+    assert schemes[0] == "web+bedrocknow"
+    assert len(set(schemes)) == len(schemes)
+    for scheme in schemes:   # the only custom schemes browsers accept: web+ and lowercase ASCII letters
+        assert re.fullmatch(r"web\+[a-z]+", scheme), scheme
+    assert webapp.protocol(replace(settings, host="bn-dev.localhost")) == schemes[1]   # stable: the same every start
+    assert all(len(sc) == len("web+bedrocknow") + 8 for sc in schemes[1:])
 
 
 # --- the icons -------------------------------------------------------------------------------------------------------
@@ -214,18 +241,23 @@ def test_shell_links_manifest_icons_and_modules(client):
         assert needle in page, needle
 
 
-def test_install_button_starts_hidden_and_install_js_waits_for_the_browser(client):
+def test_install_and_open_buttons_start_hidden_and_install_js_decides(client):
     client.post("/login", data={"password": "correct horse"}, headers={"Origin": "http://bedrock-now.localhost"})
     page = client.get("/").text
-    # Two Install buttons (sidebar, Home note), both hidden until beforeinstallprompt; the note too.
-    assert page.count("data-install") == 2
+    # Two Install buttons and two "Open in the app" links (sidebar, Home note), all hidden until install.js knows
+    # which one applies; both notes too. Nothing can flash before that.
+    assert page.count("data-install") == 2 and page.count("data-open-app") == 2
     for tag in page.split("<")[1:]:
-        if "data-install" in tag or 'id="install-note"' in tag:
+        if any(k in tag for k in ("data-install", "data-open-app", 'id="install-note"', 'id="app-note"')):
             assert " hidden" in tag, tag
+    assert 'id="app-note-later"' in page and 'id="app-note-text"' in page
     js = client.get("/static/install.js").text
     assert "beforeinstallprompt" in js and "preventDefault" in js and "appinstalled" in js
     assert "display-mode: ${m}" in js and "standalone" in js  # hidden inside the installed app
-    assert "launchQueue" in js  # focus-existing: the shortcut's #tab arrives here
+    assert "getInstalledRelatedApps" in js and "bn.app" in js  # installed? the browser, and the app's own mark
+    assert "protocol_handlers" in js and "BroadcastChannel" in js  # Open in the app: the link, and the app's answer
+    assert "launchQueue" in js  # focus-existing: the shortcut's #tab and the link arrive here
+    assert "innerHTML" not in js and "eval(" not in js
 
 
 def test_mobile_assets_load(client):

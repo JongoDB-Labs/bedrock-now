@@ -2,11 +2,11 @@
 # Opt-in end-to-end check, run by hand (not part of tests/run.sh or CI: it builds a ~1 GB image and needs Docker).
 # Installs the portal as a web app in a throwaway Chromium (Debian's current package; check.py prints its
 # version) inside a container and checks that ./stack open finds and opens it. Touches nothing outside Docker:
-# no browser profile, no ~/Applications, no ports. Its two image tags are removed afterwards.
+# no browser profile, no ~/Applications, no ports. Its two image tags (unique to the run) are removed afterwards.
 # Usage: portal/e2e/install/run.sh [OUT_DIR]   (OUT_DIR, if given, receives a screenshot of the installed app)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../../.." && pwd)"
-BASE=bedrock-now-portal-e2e-base; E2E=bedrock-now-portal-e2e
+BASE=bedrock-now-portal-e2e-base-$$; E2E=bedrock-now-portal-e2e-$$
 trap 'docker rmi -f "$E2E" "$BASE" >/dev/null 2>&1 || true' EXIT
 docker build -q --target test -t "$BASE" "$root/portal" >/dev/null
 docker build -q --build-arg BASE="$BASE" -t "$E2E" "$here" >/dev/null

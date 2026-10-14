@@ -196,11 +196,16 @@
       title: "Extras", optional: true,
       body: () => {
         const install = [...document.querySelectorAll("[data-install]")].find((n) => !n.hidden);
+        const open = [...document.querySelectorAll("[data-open-app]")].find((n) => !n.hidden);
+        const where = document.documentElement.dataset.app;   // install.js: app, open (installed), install or none
+        const app = where === "app" ? "You are using it now." : where === "open" ? $("#app-note-text").textContent : "";
         const how = PHONE.matches ? "iPhone and iPad: Share → Add to Home Screen. Android: Chrome's ⋮ → Install app."
           : "Chrome: ⋮ → Cast, save and share → Install page as app. Edge: ⋯ → Apps → Install this site as an app. Safari on a Mac: File → Add to Dock.";
         return [
           p(b("Desktop app"), ": the portal in its own window, with its own icon."),
-          install ? el("div", { class: "tour-actions" }, button("Install app", "install", () => install.click())) : note(how),
+          open ? el("div", { class: "tour-actions" }, button("Open in the app", "open-app", () => open.click()))
+            : install ? el("div", { class: "tour-actions" }, button("Install app", "install", () => install.click()))
+              : note(app || how),
           p(b("One-click Update, Rollback and Clean"), " on Home:"), cmd("./stack helper install"),
           p(b("From your phone"), ": remote access over Tailscale (", ext(`${REPO}/blob/main/docs/remote.md`, "how it works"), "):"),
           cmd("./stack remote enable tailscale"),
@@ -662,8 +667,6 @@
   const relayout = () => { if (st.open) render(); else renderButtons(); };
   PHONE.addEventListener("change", relayout);
   TABLET.addEventListener("change", relayout);
-  // The Extras step offers the Install button once the browser does.
-  for (const ev of ["beforeinstallprompt", "appinstalled"]) {
-    window.addEventListener(ev, () => setTimeout(() => { if (st.open && st.cur === "extras") render(); }, 0));
-  }
+  // The Extras step offers Install app or Open in the app once install.js knows which.
+  document.addEventListener("bn:app", () => { if (st.open && st.cur === "extras") render(); });
 })();
