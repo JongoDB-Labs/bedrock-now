@@ -24,7 +24,7 @@
 #                    Setup, the spend guard and the claude-bedrock link check always run.
 #   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
 #                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
-#                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; Claude Code key budget $0.10)
+#                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
 #
 # Never touches the default install: only project names bne2e[-…] are accepted, and teardown touches Docker only
 # after the project was found to be this suite's own (or free); ports 80/4000/8765 (and the others in AVOID_PORTS)
@@ -73,8 +73,8 @@ for part in $(printf '%s' "$ONLY" | tr ',' ' '); do
   case "$part" in cli | browser | voice | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, voice, claude, mutating)" >&2; exit 2 ;; esac
 done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
-# The terminal's claude-bedrock -p (browser suite) is a second Claude Code run on the claude-code key.
-if [ "$TERMINAL" = 1 ]; then BUDGETS="BUDGET_CLAUDE_CODE=0.10 BUDGET_OPENWEBUI=0.04 BUDGET_SETUP=0.02"; SPEND_LIMIT="0.16"; fi
+# The terminal's claude-bedrock -p (browser suite) is a second Claude Code run, on the terminal's own key.
+if [ "$TERMINAL" = 1 ]; then BUDGETS="$BUDGETS BUDGET_TERMINAL=0.06"; SPEND_LIMIT="0.16"; fi
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
 
 mkdir -p "$OUT" || exit 2
@@ -225,13 +225,29 @@ spend_start   # with --reuse: only this run's spend is counted
 terminal_probe() {
   docker exec -i "$1" bash -s <<'SH'
 tcp() { if timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo open; else echo closed; fi; }
-for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000; do
-  printf '%s\t%s\n' "${t%%:*}" "$(tcp "${t%%:*}" "${t##*:}")"
+for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
+         gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
+  printf '%s\t%s\n' "$t" "$(tcp "${t%%:*}" "${t##*:}")"
 done
-printf 'gateway-litellm\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://gateway:8091/health/liveliness)"
-printf 'gateway-mcp-no-token\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST http://gateway:8091/mcp)"
-printf 'gateway-key\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" http://gateway:8091/key/info)"
-printf 'internet\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ || true)"
+g=http://gateway:8091
+code() { curl -s -m 10 -o /dev/null -w '%{http_code}' "$@" || true; }
+printf 'gateway-litellm\t%s\n' "$(code $g/health/liveliness)"
+printf 'gateway-mcp-no-token\t%s\n' "$(code -X POST $g/mcp)"
+printf 'gateway-mcp-tools\t%s\n' "$(curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' $g/mcp | grep -c search_knowledge)"
+printf 'gateway-key\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/key/info)"
+printf 'gateway-models\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/v1/models)"
+# LiteLLM's admin UI and API, and the Bedrock pass-through that signs with the stack's AWS credentials: not here
+printf 'gateway-ui\t%s\n' "$(code $g/ui/)"
+printf 'gateway-key-generate\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/key/generate)"
+printf 'gateway-bedrock\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/bedrock/model/x/converse)"
+printf 'gateway-spend-logs\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/spend/logs)"
+printf 'gateway-chat-completions\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/v1/chat/completions)"
+# ttyd itself, from inside: the forged header the old check accepted, then nothing at all
+printf 'ttyd-forged-user\t%s\n' "$(code -H 'X-Portal-User: admin@example.com' http://127.0.0.1:7681/)"
+# (getent hosts asks for IPv6 first, from /etc/hosts or else Docker's DNS; ahostsv4 for IPv4)
+printf 'host-docker-internal\t%s\n' "$(for h in host.docker.internal gateway.docker.internal; do getent hosts "$h"; getent ahostsv4 "$h"; done | awk '{ print $1 }' | sort -u | tr '\n' ' ')"
+printf 'internet\t%s\n' "$(code https://registry.npmjs.org/)"
 printf 'master-key-in-env\t%s\n' "$(env | grep -c LITELLM_MASTER_KEY || true)"
 printf 'user\t%s\n' "$(id -u)"
 printf 'workspace\t%s\n' "$(ls -a /workspace | tr '\n' ' ')"
@@ -254,16 +270,43 @@ if [ "$TERMINAL" = 1 ]; then
   else
     probe="$(terminal_probe "$tc" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/terminal-isolation.log"; redact "$LOGS/terminal-isolation.log"
     bad=''
-    for k in portal open-webui postgres rustfs litellm shared-mcp stt; do printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"; done
-    for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-key=200 internet=200 master-key-in-env=0 docker-socket=2; do
+    for k in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
+             gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
+      printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
+    done
+    for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-mcp-tools=1 gateway-key=200 gateway-models=200 gateway-ui=404 \
+              gateway-key-generate=404 gateway-bedrock=404 gateway-spend-logs=404 gateway-chat-completions=404 \
+              ttyd-forged-user=407 host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
     [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "user" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
     printf '%s\n' "$probe" | grep -q '^claude	[0-9.]* (Claude Code)' || bad="$bad no-claude"
+    # Its key is its own (claude-code-terminal), never the claude-code key of claude-bedrock on this computer
+    ins="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$tc" 2>/dev/null)"
+    ! env_has LITELLM_KEY_CLAUDE_CODE "$ins" || bad="$bad has-the-claude-code-key"
+    env_has LITELLM_KEY_TERMINAL "$ins" || bad="$bad no-terminal-key"
+    unset ins
+    # The main Caddy shares no network with the terminal; through the gateway, ttyd wants the secret header
+    cad="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)"
+    out="$(docker exec "$cad" sh -c 'wget -q -T 4 -O /dev/null http://terminal:7681/ 2>&1 | head -n 1; wget -S -T 10 -O /dev/null --header "X-Portal-User: admin@example.com" http://terminal-upstream:7681/ 2>&1 | awk "/^  HTTP\// { print \$2; exit }"' 2>&1)"
+    case "$out" in *"bad address"*407* | *"resolve"*407*) ;; *) bad="$bad main-caddy:$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80)" ;; esac
     if [ -z "$bad" ]; then
-      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "reaches only the gateway (LiteLLM with its key, /mcp needs the token) and the internet; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt; your uid; no Docker socket; no master key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
+      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions) and the internet; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd 407 without the secret; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
     else record terminal terminal-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/terminal-isolation.log)"; fi
   fi
+  # Caddy's own check of every terminal/remote combination of the main Caddyfile, and of the gateway's file, with the
+  # pinned binary in the running containers (own-domain mode needs the DNS-plugin build: not here)
+  t0="$(now)"; bad=''
+  cad="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)"
+  tgw="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal-gateway)"
+  for tm in off on; do for rm in off tailscale; do
+    docker exec -e TERMINAL_MODE="$tm" -e REMOTE_MODE="$rm" "$cad" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
+      > "$LOGS/terminal-caddy-$tm-$rm.log" 2>&1 || bad="$bad terminal-$tm/remote-$rm"
+  done; done
+  docker exec "$tgw" caddy validate --config /etc/caddy/terminal-gateway.caddy --adapter caddyfile > "$LOGS/terminal-caddy-gateway.log" 2>&1 ||
+    bad="$bad gateway"
+  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on × remote off/tailscale, and terminal-gateway.caddy"
+  else record terminal caddy-configs-validate FAIL "$(( $(now) - t0 ))" "caddy validate failed for:$bad (logs $LOGS/terminal-caddy-*.log)"; fi
 fi
 
 # --- 2. read-only CLI checks ---

@@ -366,3 +366,25 @@ def test_origin_helpers(ts):
     assert terminal_same_origin({"referer": f"{TERM}/x"}, ts, False)
     assert not terminal_same_origin({"referer": f"{TERM}.evil.example/"}, ts, False)
     assert not terminal_same_origin({}, ts, False)
+
+
+# --- review fixes: every spelling of the WebSocket handshake, the terminal's own key on Home ---
+
+@pytest.mark.parametrize("uri,extra", [
+    ("/ws", {}), ("//ws", {}), ("/%77s", {}), ("/ws?x=1", {}), ("/./ws", {}), ("/ws/", {}),
+    ("/anything", {"Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}), ("/", {"Upgrade": "WebSocket"}),
+])
+def test_every_websocket_spelling_needs_the_terminal_origin(tc, uri, extra):
+    tok, ut = unlocked(tc)
+    jar = {COOKIE: tok, TERMINAL_COOKIE: ut}
+    h = {"X-Forwarded-Method": "GET", "X-Forwarded-Host": TERM_HOST, "X-Forwarded-Uri": uri, **extra}
+    assert verify(tc, jar, h).status_code == 403, uri                    # no Origin
+    assert verify(tc, jar, {**h, "Origin": "http://evil.example"}).status_code == 403, uri
+    assert verify(tc, jar, {**h, "Origin": TERM}).status_code == 200, uri
+
+
+def test_terminal_key_is_shown_only_once_it_exists():
+    base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "x" * 40, "LITELLM_KEY_CLAUDE_CODE": "sk-cc"}
+    assert [a for a, _, _ in from_env(base).keys] == ["claude-code", "open-webui", "setup"]
+    keys = from_env({**base, "LITELLM_KEY_TERMINAL": "sk-term"}).keys
+    assert keys[-1] == ("claude-code-terminal", "Terminal (browser)", "sk-term")

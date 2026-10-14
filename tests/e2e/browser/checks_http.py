@@ -169,7 +169,8 @@ def api_routes(ctx):
     expect(not down, f"services down: {down}")
     bedrock_stt = d["voice"]["on"] and d["voice"]["provider"] == "bedrock"
     expect(len(d["services"]) == 5 + bedrock_stt, f"{len(d['services'])} services (Bedrock speech-to-text {bedrock_stt})")
-    expect({k["alias"] for k in d["spend"]["keys"]} == {"claude-code", "open-webui", "setup"}, "spend keys")
+    want_keys = {"claude-code", "open-webui", "setup"} | ({"claude-code-terminal"} if ENV.get("LITELLM_KEY_TERMINAL") else set())
+    expect({k["alias"] for k in d["spend"]["keys"]} == want_keys, "spend keys")
     expect(all(k["error"] is None and k["max_budget"] for k in d["spend"]["keys"]), f"key errors: {d['spend']['keys']}")
     expect(d["spend"]["total_error"] is None, f"total: {d['spend']['total_error']}")
     rows = d["models"]["rows"]

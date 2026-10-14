@@ -1,0 +1,50 @@
+# The browser terminal's gateway (compose.terminal.yaml, service terminal-gateway): a second, minimal Caddy and the
+# terminal container's only peer, so the main Caddy — its portal login, its speech-to-text site — shares no network
+# with the sandbox. Not published on the host; no admin API.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# On the internal "terminal" network alone ("gateway"): exactly what Claude Code and the terminal's claude-bedrock
+# use — LiteLLM's Anthropic API (/v1/messages, …/count_tokens), its model list, the key's own info and model prices,
+# its liveness — and shared-mcp's /mcp. Each still needs the terminal's key or SHARED_MCP_TOKEN. Everything else
+# (LiteLLM's admin UI and API, /key/generate, the /bedrock/… pass-through that signs with the stack's AWS
+# credentials) is 404 here.
+http://:8091 {
+	bind gateway
+	route {
+		request_header -X-Portal-User
+		request_header -X-Portal-Remote
+		request_header -X-Portal-Proxy
+		request_header -Tailscale-User-Login
+		request_header -Tailscale-User-Name
+		request_header -Tailscale-User-Profile-Pic
+		request_header -Tailscale-Headers-Info
+		request_header -Cookie
+		# shared-mcp's DNS-rebinding guard accepts only a loopback Host (shared-mcp/shared_mcp/server.py): no browser
+		# reaches this listener, so the gateway names it so.
+		@mcp path /mcp /mcp/*
+		reverse_proxy @mcp shared-mcp:8000 {
+			header_up Host 127.0.0.1:8000
+		}
+		@litellm path /v1/messages /v1/messages/* /v1/models /v1/models/* /key/info /model/info /health/liveliness
+		reverse_proxy @litellm litellm:4000
+		respond 404
+	}
+}
+
+# On the default network alone ("terminal-upstream"), for the main Caddy: ttyd. The main Caddy has asked the portal
+# (session, fresh unlock, Origin) and adds the terminal's secret header; without that header ttyd answers nothing.
+http://:7681 {
+	bind terminal-upstream
+	reverse_proxy terminal:7681
+}
+
+# The container's health check (its own loopback only).
+http://127.0.0.1:8092 {
+	bind 127.0.0.1
+	respond /health 200
+	respond 404
+}

@@ -35,7 +35,9 @@ KEYS = (
     ("LITELLM_KEY_CLAUDE_CODE", "claude-code", "Claude Code"),
     ("LITELLM_KEY_OPENWEBUI", "open-webui", "Chat (Open WebUI)"),
     ("LITELLM_KEY_SETUP", "setup", "Setup and tests"),
+    ("LITELLM_KEY_TERMINAL", "claude-code-terminal", "Terminal (browser)"),   # only once ./stack terminal made it
 )
+OPTIONAL_KEYS = ("LITELLM_KEY_TERMINAL",)
 
 
 class ConfigError(RuntimeError):
@@ -175,7 +177,7 @@ def from_env(env: dict | None = None) -> Settings:
         port = int(env.get("PORTAL_PORT") or 80)
     except ValueError as e:
         raise ConfigError(f"PORTAL_PORT is not a number: {env.get('PORTAL_PORT')!r}") from e
-    keys = tuple((alias, label, env.get(var, "")) for var, alias, label in KEYS)
+    keys = tuple((alias, label, env.get(var, "")) for var, alias, label in KEYS if var not in OPTIONAL_KEYS or env.get(var))
     terminal = _on(env.get("TERMINAL_ENABLED"))
     remote_terminal = terminal and _on(env.get("REMOTE_TERMINAL"))
     app_hosts = {sub: env.get(var, "").strip().lower() for sub, var in APP_HOST_ENV.items() if env.get(var, "").strip()}

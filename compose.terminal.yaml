@@ -2,13 +2,13 @@
 # while TERMINAL_ENABLED=true in .env). Claude Code runs in a sandbox container, never on your computer: no Docker
 # socket, no capabilities, not root, a read-only image, and of your files only the one folder you chose
 # (TERMINAL_WORKSPACE, at /workspace). Its home folder (Claude Code's settings and history) is the terminal-home
-# volume. The browser reaches it at terminal.PORTAL_HOST through Caddy, which first asks the portal for the session,
-# a fresh password unlock and the Origin (portal/portal/app.py), then proxies to ttyd.
+# volume. The browser reaches it at terminal.PORTAL_HOST through the main Caddy, which first asks the portal for the
+# session, a fresh password unlock and the Origin (portal/portal/app.py), then adds the terminal's secret header.
 #
-# Networks: "terminal" (internal: no internet) holds only this container and Caddy, whose gateway listener (:8091,
-# alias "gateway") forwards to LiteLLM's API and shared-mcp's /mcp — the container cannot reach the portal, Open
-# WebUI, Postgres or RustFS. "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the way
-# out to the internet: git clone, npm, pip, Claude Code's web fetches.
+# Networks: the terminal shares its internal network "terminal" (no internet) with one peer only, terminal-gateway: a
+# second, minimal Caddy that forwards the few LiteLLM and shared-mcp paths Claude Code needs (:8091, as "gateway")
+# and nothing else. The main Caddy, the portal, Open WebUI and the databases are on no network with the terminal.
+# "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the way out to the internet.
 services:
   terminal:
     build:
@@ -28,10 +28,11 @@ services:
     pids_limit: 1024
     init: true
     environment:
-      # Claude Code → LiteLLM through Caddy's gateway, with the claude-code key (its monthly budget caps it), the
-      # same model mapping and switches as bin/claude-bedrock: plain `claude` in here uses Bedrock too.
+      # Claude Code → LiteLLM through the gateway, with the terminal's own key (claude-code-terminal: its own monthly
+      # budget, BUDGET_TERMINAL, revocable on its own), the same model mapping and switches as bin/claude-bedrock:
+      # plain `claude` in here uses Bedrock too.
       ANTHROPIC_BASE_URL: http://gateway:8091
-      ANTHROPIC_AUTH_TOKEN: ${LITELLM_KEY_CLAUDE_CODE:-}
+      ANTHROPIC_AUTH_TOKEN: ${LITELLM_KEY_TERMINAL:-}
       ANTHROPIC_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
       ANTHROPIC_DEFAULT_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
       ANTHROPIC_DEFAULT_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
@@ -41,9 +42,18 @@ services:
       ENABLE_TOOL_SEARCH: "true"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"   # no telemetry, error reports or update checks
       DISABLE_AUTOUPDATER: "1"                        # the image is read-only; ./stack update rebuilds it
-      # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these, then drops the token).
+      # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp
       SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
+      # ttyd answers only requests that carry the header X-Bn-Terminal-0<this>, which only the main Caddy adds.
+      TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}
+    # Docker Desktop's names for your computer point nowhere in here. A speed bump only: the address behind them stays
+    # reachable while the terminal has internet access (TERMINAL_EGRESS=off removes that).
+    extra_hosts:   # IPv4 TEST-NET and the IPv6 discard prefix: nothing answers there
+      - "host.docker.internal:192.0.2.1"
+      - "host.docker.internal:100::1"
+      - "gateway.docker.internal:192.0.2.1"
+      - "gateway.docker.internal:100::1"
     volumes:
       - terminal-home:/home/claude
       # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
@@ -53,30 +63,62 @@ services:
         bind: { create_host_path: false, selinux: z }
     networks: [terminal]
     depends_on:
-      caddy: { condition: service_started }
+      terminal-gateway: { condition: service_started }
     logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # Caddy: the terminal site (caddy/Caddyfile, TERMINAL_HOST) and, on the terminal network only by name, the gateway.
+  # The terminal's only peer (caddy/terminal-gateway.caddy; the same pinned image as the main Caddy). On "terminal" it
+  # is "gateway" (:8091, bound there alone): LiteLLM's /v1/messages…, /v1/models…, /key/info, /model/info and
+  # /health/liveliness and shared-mcp's /mcp; 404 for anything else. On the default network it is "terminal-upstream"
+  # (:7681, bound there alone): ttyd, for the main Caddy.
+  terminal-gateway:
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/terminal-gateway.caddy", "--adapter", "caddyfile"]
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]   # the image's caddy binary carries this file capability; exec fails without it
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/data:uid=65534,gid=65534,mode=0700", "/config:uid=65534,gid=65534,mode=0700"]
+    mem_limit: 256m
+    pids_limit: 200
+    # Directory mount, like the main Caddy's (a file replaced by git is seen after a restart).
+    volumes:
+      - ./caddy:/etc/caddy:ro,z
+    networks:
+      default:
+        aliases: [terminal-upstream]
+      terminal:
+        aliases: [gateway]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # The main Caddy: the terminal site (caddy/terminal-on.caddy, TERMINAL_HOST), proxied to terminal-upstream:7681.
   caddy:
     environment:
-      TERMINAL_MODE: "on"   # caddy/terminal-on.caddy: the terminal site and the gateway (terminal-off.caddy otherwise)
+      TERMINAL_MODE: "on"   # caddy/terminal-on.caddy (terminal-off.caddy otherwise: no terminal site)
       TERMINAL_HOST: ${TERMINAL_HOST:-terminal.${PORTAL_HOST:-bedrock-now.localhost}}
+      TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}
       # Remote access to the terminal (REMOTE_TERMINAL=true and ./stack remote): lib/terminal.sh writes this name;
       # blank, the remote site's terminal block matches nothing.
       REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-terminal.remote.invalid}
-    networks:
-      terminal:
-        aliases: [gateway]
 
-  # The portal: the Terminal tab, the unlock and the terminal host's checks.
+  # The portal: the Terminal tab, the unlock, the terminal host's checks and the terminal key's meter on Home.
   portal:
     environment:
       TERMINAL_ENABLED: "true"
       TERMINAL_HOST: ${TERMINAL_HOST:-}
       REMOTE_TERMINAL: ${REMOTE_TERMINAL:-false}
       REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-}
+      LITELLM_KEY_TERMINAL: ${LITELLM_KEY_TERMINAL:-}
 
 networks:
   terminal:

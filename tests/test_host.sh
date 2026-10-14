@@ -731,10 +731,11 @@ test_ssh_info_flags_missing_tmux() {
   assert_contains "$out" "install tmux"
 }
 
-test_ssh_info_never_offers_a_web_terminal() {
+test_ssh_info_names_the_sandboxed_browser_terminal_as_the_alternative() {
   _ssh_stubs; tailscale_cli() { return 1; }
   out="$(cmd_ssh_info 2>&1)"
-  assert_contains "$out" "no web terminal"
+  assert_contains "$out" "./stack terminal enable: a sandbox in the portal that sees only one folder of yours"
+  assert_not_contains "$out" "no web terminal"
 }
 
 # --- wiring -----------------------------------------------------------------------------------------------------

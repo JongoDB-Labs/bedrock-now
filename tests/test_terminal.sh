@@ -1,25 +1,30 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016,SC2034,SC2329  # literal ${...} in compose/Caddy patterns; stubs read by the libs
 # The browser terminal (./stack terminal; lib/terminal.sh): enable/disable/status with docker stubbed, the workspace
-# rules, the compose overlays, the remote gating (host names, Tailscale Services, Caddy files) and the image pins.
+# rules (also case-insensitive file systems), its own key and secret, the compose overlays, the gateway, the remote
+# gating (host names, Tailscale Services, Caddy files), update/rollback/uninstall hooks and the image pins.
 . "$STACK_DIR/lib/commands.sh"
 
 TN=tail1234.ts.net
 
-# _stubs — no docker: compose and docker calls are recorded in $TMP/dc and $TMP/docker; HOME is a scratch folder
+# _stubs — no docker: compose and docker calls are recorded in $TMP/dc and $TMP/docker; LiteLLM answers (curl) and
+# makes keys (ensure_virtual_key); HOME is a scratch folder
 _stubs() {
   export ASSUME_YES=1 HOME="$TMP/home"
   mkdir -p "$HOME"
   check_prereqs() { :; }
   stack_lock() { :; }
   run_phase() { shift 2; "$@"; }
+  curl() { return 0; }
+  ensure_virtual_key() { echo "key $*" >> "$TMP/keys"; set_env "$1" "sk-$2"; }
   dc() { echo "dc $*" >> "$TMP/dc"; return 0; }
   docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
-  printf 'PORTAL_SECRET=%s\nPORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\nLITELLM_KEY_CLAUDE_CODE=sk-cc\n' \
+  printf 'PORTAL_SECRET=%s\nPORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\nLITELLM_PORT=9\nLITELLM_MASTER_KEY=sk-m\nLITELLM_KEY_CLAUDE_CODE=sk-cc\n' \
     "$(printf 's%.0s' $(seq 1 40))" > "$ENV_FILE"
 }
 
 _perm() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 
 test_terminal_is_off_by_default() {
   : > "$ENV_FILE"
@@ -30,17 +35,33 @@ test_terminal_is_off_by_default() {
   assert_contains "$(terminal_status)" "Terminal: off — ./stack terminal enable"
 }
 
+test_switches_read_like_the_portal() {
+  for v in true TRUE 1 yes On ' on'; do flag_on "$v" || { echo "not on: '$v'" >&2; return 1; }; done
+  for v in false 0 no OFF; do flag_off "$v" || { echo "not off: '$v'" >&2; return 1; }; done
+  for v in '' maybe tru; do if flag_on "$v" || flag_off "$v"; then echo "read '$v'" >&2; return 1; fi; done
+  printf 'TERMINAL_ENABLED=true\nREMOTE_TERMINAL=sometimes\nTERMINAL_EGRESS=nope\n' > "$ENV_FILE"
+  out="$(terminal_flag_warnings 2>&1)"
+  assert_contains "$out" "REMOTE_TERMINAL=sometimes in .env is neither on nor off"
+  assert_contains "$out" "read as off"
+  assert_contains "$out" "TERMINAL_EGRESS=nope in .env is neither on nor off"
+  if terminal_remote_wanted; then return 1; fi
+  terminal_egress_on || return 1
+}
+
 test_compose_overlays_add_the_terminal_and_its_way_out() {
-  printf 'TERMINAL_ENABLED=true\n' > "$ENV_FILE"
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"
   assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml "
-  printf 'TERMINAL_ENABLED=true\nTERMINAL_EGRESS=off\n' > "$ENV_FILE"
+  printf 'TERMINAL_ENABLED=yes\nTERMINAL_WORKSPACE=/w\nTERMINAL_EGRESS=no\n' > "$ENV_FILE"
   assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml "
-  printf 'TERMINAL_ENABLED=true\nREMOTE_MODE=tailscale\n' > "$ENV_FILE"
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\nREMOTE_MODE=tailscale\n' > "$ENV_FILE"
   assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.tailscale.yaml compose.terminal.yaml compose.terminal-egress.yaml "
   REMOTE_DEGRADED=1; assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml "; REMOTE_DEGRADED=0
-  printf 'TERMINAL_ENABLED=false\n' > "$ENV_FILE"; assert_eq "$(compose_overlays)" ""
+  printf 'TERMINAL_ENABLED=false\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"; assert_eq "$(compose_overlays)" ""
+  # on, but no folder: compose could not read the file at all, so it stays out (./stack up says why)
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=\n' > "$ENV_FILE"; assert_eq "$(compose_overlays)" ""
+  assert_contains "$(terminal_why_out)" "TERMINAL_WORKSPACE is empty"
   docker() { printf '%s\n' "$*" > "$TMP/args"; }
-  printf 'TERMINAL_ENABLED=true\n' > "$ENV_FILE"; dc ps
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"; dc ps
   assert_contains "$(cat "$TMP/args")" "-f $STACK_DIR/compose.terminal.yaml -f $STACK_DIR/compose.terminal-egress.yaml --env-file"
   for f in compose.terminal.yaml compose.terminal-egress.yaml; do [ -f "$STACK_DIR/$f" ] || { echo "missing $f" >&2; return 1; }; done
 }
@@ -54,21 +75,32 @@ test_dc_never_takes_terminal_settings_from_the_shell() {
   assert_eq "$out" ""
 }
 
-test_enable_creates_the_default_workspace_with_mode_700() {
+test_enable_creates_the_default_workspace_its_key_and_secret() {
   _stubs
   terminal_enable > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
-  ws="$(cd "$HOME/bedrock-now-workspace" && pwd -P)"
+  ws="$(cd "$HOME/bedrock-now-workspace" && /bin/pwd -P)"
   assert_eq "$(_perm "$ws")" 700
   assert_eq "$(get_env TERMINAL_ENABLED)" true
   assert_eq "$(get_env TERMINAL_WORKSPACE)" "$ws"
   if [ "$(id -u)" = 0 ]; then assert_eq "$(get_env TERMINAL_UID)" 10104; else assert_eq "$(get_env TERMINAL_UID):$(get_env TERMINAL_GID)" "$(id -u):$(id -g)"; fi
+  # its own key with its own budget, and the header secret only its Caddy and ttyd know
+  assert_eq "$(cat "$TMP/keys")" "key LITELLM_KEY_TERMINAL claude-code-terminal 50"
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-claude-code-terminal
+  assert_eq "$(get_env BUDGET_TERMINAL)" 50
+  s1="$(get_env TERMINAL_PROXY_SECRET)"
+  case "$s1" in *[!0-9a-f]* | '') echo "secret not hex: $s1" >&2; return 1 ;; esac
+  [ "${#s1}" -ge 32 ] || { echo "secret too short" >&2; return 1; }
   calls="$(cat "$TMP/dc")"
   assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
   assert_contains "$calls" "dc up -d --wait portal"
   assert_contains "$calls" "dc up -d --wait --force-recreate caddy"
+  assert_contains "$calls" "dc up -d --wait --force-recreate terminal-gateway"
   assert_contains "$calls" "dc up -d --wait terminal"
   assert_contains "$(cat "$TMP/out")" "Terminal: on — http://terminal.bedrock-now.localhost"
   assert_contains "$(cat "$TMP/out")" "created the workspace folder $ws (mode 700)"
+  # enabling again keeps the secret
+  terminal_enable > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env TERMINAL_PROXY_SECRET)" "$s1"
   # a second copy of the stack gets a folder of its own
   printf 'COMPOSE_PROJECT_NAME=bn_dev\n' >> "$ENV_FILE"
   assert_eq "$(terminal_default_workspace)" "$HOME/bedrock-now-bn-dev-workspace"
@@ -78,65 +110,90 @@ test_enable_keeps_an_existing_folder_as_it_is() {
   _stubs
   mkdir -p "$HOME/projects/my app"; chmod 755 "$HOME/projects/my app"
   ( cd "$HOME/projects" && terminal_enable --workspace "my app" ) > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
-  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects/my app" && pwd -P)"
+  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects/my app" && /bin/pwd -P)"
   assert_eq "$(_perm "$HOME/projects/my app")" 755
   terminal_enable --workspace '~/projects' > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
-  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects" && pwd -P)"
+  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects" && /bin/pwd -P)"
   # enable again without --workspace: the folder in .env stays
   terminal_enable > "$TMP/out" 2>&1 || return 1
-  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects" && pwd -P)"
+  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$HOME/projects" && /bin/pwd -P)"
 }
 
 test_enable_refuses_folders_the_terminal_must_never_see() {
   _stubs
-  mkdir -p "$HOME/.ssh" "$HOME/ok" "$TMP/a:b"
+  mkdir -p "$HOME/.ssh" "$HOME/ok" "$TMP/a:b" "$HOME/Library/Keychains" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/p"
   ln -s "$HOME" "$HOME/ok/home-link"
   for d in "$HOME" "$HOME/.." / /etc /usr/local "$HOME/.ssh" "$STACK_DIR" "$STACK_DIR/lib" "$(dirname "$STACK_DIR")" \
-           "$HOME/ok/home-link" "$TMP/a:b"; do
+           "$HOME/ok/home-link" "$TMP/a:b" "$HOME/Library" "$HOME/Library/Keychains"; do
     if (terminal_enable --workspace "$d") > "$TMP/out" 2>&1; then echo "accepted $d" >&2; return 1; fi
     assert_contains "$(cat "$TMP/out")" "not using"
   done
   assert_eq "$(get_env TERMINAL_ENABLED)" ""
   assert_eq "$(get_env TERMINAL_WORKSPACE)" ""
-  if [ -s "$TMP/dc" ]; then echo "compose ran: $(cat "$TMP/dc")" >&2; return 1; fi
-  # a folder it created for a refused path is removed again
+  if [ -s "$TMP/dc" ] || [ -s "$TMP/keys" ]; then echo "compose ran or a key was made" >&2; return 1; fi
+  # a folder it created for a refused path is removed again; a path .env could not hold is refused before any
   if (terminal_enable --workspace "$STACK_DIR/tests/terminal-ws-$$") > "$TMP/out" 2>&1; then return 1; fi
   [ ! -e "$STACK_DIR/tests/terminal-ws-$$" ] || { rmdir "$STACK_DIR/tests/terminal-ws-$$"; echo "left a folder in the checkout" >&2; return 1; }
+  if (terminal_enable --workspace "$HOME/a\$b") > "$TMP/out" 2>&1; then return 1; fi
+  assert_contains "$(cat "$TMP/out")" "contains \$, a quote or a backtick"
+  [ ! -e "$HOME/a\$b" ] || { echo "created a folder for a path .env cannot hold" >&2; return 1; }
   terminal_workspace_check "$HOME/ok" >/dev/null || return 1
+  terminal_workspace_check "$HOME/Library/Mobile Documents/com~apple~CloudDocs/p" >/dev/null || return 1   # iCloud Drive
   mkdir -p "$TMP/scratch"
   terminal_workspace_check "$TMP/scratch" >/dev/null || return 1   # temporary folders are fine
 }
 
-test_enable_needs_setup_first() {
+test_case_insensitive_spellings_are_refused_too() {
+  _stubs
+  mkdir -p "$HOME/.ssh"
+  [ -d "$(_upper "$HOME")" ] || { echo "case-sensitive file system: nothing to check" >&2; return 77; }
+  for d in "$(_upper "$HOME")" "$HOME/.SSH" "$(_upper "$STACK_DIR")" "$(_upper "$STACK_DIR")/LIB"; do
+    if why="$(terminal_workspace_check "$d")"; then echo "accepted $d as $why" >&2; return 1; fi
+  done
+  if [ -d /SYSTEM/LIBRARY ]; then if terminal_workspace_check /SYSTEM/LIBRARY >/dev/null; then return 1; fi; fi
+  # the folder is stored in its on-disk spelling
+  mkdir -p "$HOME/Projects"
+  assert_eq "$(terminal_workspace_check "$HOME/PROJECTS")" "$(cd "$HOME/Projects" && /bin/pwd -P)"
+}
+
+test_enable_needs_setup_a_running_stack_and_a_key() {
   _stubs
   : > "$ENV_FILE"
   if (terminal_enable) > "$TMP/out" 2>&1; then return 1; fi
   assert_contains "$(cat "$TMP/out")" "run ./stack setup first"
-  printf 'PORTAL_SECRET=%s\n' "$(printf 's%.0s' $(seq 1 40))" > "$ENV_FILE"
+  _stubs; curl() { return 7; }
   if (terminal_enable) > "$TMP/out" 2>&1; then return 1; fi
-  assert_contains "$(cat "$TMP/out")" "no LiteLLM key for Claude Code yet"
+  assert_contains "$(cat "$TMP/out")" "the stack is not running"
+  # LiteLLM refuses the key: the folder it just made goes again, nothing is switched on
+  _stubs; ensure_virtual_key() { die "could not create LiteLLM key"; }
+  if (terminal_enable) > "$TMP/out" 2>&1; then return 1; fi
+  assert_contains "$(cat "$TMP/out")" "could not create the terminal's LiteLLM key"
+  [ ! -e "$HOME/bedrock-now-workspace" ] || return 1
+  assert_eq "$(get_env TERMINAL_ENABLED)" ""
   if (cmd_terminal enable --bogus) > "$TMP/out" 2>&1; then return 1; fi
   if (cmd_terminal frobnicate) > "$TMP/out" 2>&1; then return 1; fi
 }
 
-test_disable_removes_the_container_and_networks_and_keeps_the_folder() {
+test_disable_removes_containers_and_networks_and_keeps_folder_and_key() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
   ws="$(get_env TERMINAL_WORKSPACE)"; : > "$TMP/dc"; : > "$TMP/docker"
   terminal_disable > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
   assert_eq "$(get_env TERMINAL_ENABLED)" false
   [ -d "$ws" ] || return 1
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-claude-code-terminal
   calls="$(cat "$TMP/dc")"
-  assert_eq "$(printf '%s\n' "$calls" | head -n 1)" "dc rm -sf terminal"   # while compose still knows it
+  assert_eq "$(printf '%s\n' "$calls" | head -n 1)" "dc rm -sf terminal terminal-gateway"   # while compose still knows them
   assert_contains "$calls" "dc up -d --wait --force-recreate caddy"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-out"
   assert_contains "$(cat "$TMP/out")" "volume bedrock-now_terminal-home"
+  assert_contains "$(cat "$TMP/out")" "delete it in Admin to revoke it"
   terminal_disable > "$TMP/out" 2>&1 || return 1
   assert_contains "$(cat "$TMP/out")" "already off"
 }
 
-test_status_names_folder_address_internet_and_remote() {
+test_status_names_folder_key_address_internet_and_remote() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
   dc() { case "$*" in *"ps -a --format"*) echo "running healthy" ;; esac; }
@@ -144,50 +201,77 @@ test_status_names_folder_address_internet_and_remote() {
   assert_contains "$out" "Terminal: on — http://terminal.bedrock-now.localhost"
   assert_contains "$out" "Workspace  $(get_env TERMINAL_WORKSPACE) → /workspace"
   assert_contains "$out" "Container  running healthy"
+  assert_contains "$out" 'Key        claude-code-terminal, its own monthly budget: $50 (BUDGET_TERMINAL'
   assert_contains "$out" "Internet   on"
   assert_contains "$out" "Remote     off (REMOTE_TERMINAL=true"
   set_env TERMINAL_EGRESS off
   assert_contains "$(terminal_status)" "Internet   off (TERMINAL_EGRESS=off)"
   assert_eq "$(status_url terminal)" "http://terminal.bedrock-now.localhost   (the Terminal tab; ./stack terminal status)"
+  assert_contains "$(status_url terminal-gateway)" "the terminal's only way into the stack"
   assert_contains "$(terminal_summary_line)" "Terminal        http://terminal.bedrock-now.localhost"
   set_env TERMINAL_HOST shell.localhost
   assert_eq "$(portal_url terminal)" "http://shell.localhost"
 }
 
-test_a_missing_workspace_leaves_the_terminal_out_not_the_stack() {
+test_a_workspace_gone_or_no_longer_allowed_leaves_the_terminal_out() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
-  assert_eq "$(terminal_services)" terminal
-  assert_eq "$(stack_services)" "$STACK_BASE_SERVICES terminal"
-  rmdir "$(get_env TERMINAL_WORKSPACE)"
+  assert_eq "$(terminal_services)" "terminal-gateway terminal"
+  assert_eq "$(stack_services)" "$STACK_BASE_SERVICES terminal-gateway terminal"
+  ws="$(get_env TERMINAL_WORKSPACE)"
+  rmdir "$ws"
+  assert_eq "$(terminal_services)" ""
+  : > "$TMP/dc"
+  terminal_up_hook 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "the terminal is left out of this run: its workspace folder $ws is gone"
+  assert_contains "$(cat "$TMP/dc")" "dc rm -sf terminal terminal-gateway"
+  terminal_setup_hook 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "Terminal: not started"
+  # the folder became a symlink to your home folder since enable: refused at every run, not only at enable
+  ln -s "$HOME" "$ws"
   assert_eq "$(terminal_services)" ""
   terminal_up_hook 2> "$TMP/err" || return 1
-  assert_contains "$(cat "$TMP/err")" "is gone, so the terminal is left out of this run"
-  terminal_setup_hook 2> "$TMP/err" || return 1
-  assert_contains "$(cat "$TMP/err")" "not started"
+  assert_contains "$(cat "$TMP/err")" "is refused now: it is your home folder"
 }
 
-test_setup_hook_never_stops_setup() {
+test_setup_hook_syncs_the_key_and_never_stops_setup() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
+  : > "$TMP/keys"
+  terminal_setup_hook > /dev/null 2>&1 || return 1
+  assert_eq "$(cat "$TMP/keys")" "key LITELLM_KEY_TERMINAL claude-code-terminal 50"
   dc() { echo "boom: no network" >&2; return 1; }
   terminal_setup_hook 2> "$TMP/err" || return 1
   assert_contains "$(cat "$TMP/err")" "could not build or start it"
   assert_contains "$(cat "$TMP/err")" "boom: no network"
+  ensure_virtual_key() { die "LiteLLM down"; }
+  terminal_setup_hook 2> "$TMP/err" || return 1
+  assert_contains "$(cat "$TMP/err")" "could not create or update its LiteLLM key"
   # off: nothing at all
   set_env TERMINAL_ENABLED false; : > "$TMP/err"
   terminal_setup_hook 2> "$TMP/err" || return 1
   assert_eq "$(cat "$TMP/err")" ""
 }
 
-test_remote_terminal_only_with_remote_terminal_true() {
+test_up_makes_a_missing_key_and_drops_the_way_out_when_asked() {
+  _stubs
+  terminal_enable > /dev/null 2>&1 || return 1
+  unset_env LITELLM_KEY_TERMINAL; : > "$TMP/dc"; : > "$TMP/docker"
+  set_env TERMINAL_EGRESS off
+  terminal_after_up || return 1
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-claude-code-terminal
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --no-deps terminal"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-out"
+}
+
+test_remote_terminal_only_with_remote_terminal_on() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
   set_env REMOTE_MODE tailscale; set_env TS_TAILNET "$TN"
   remote_hosts_tailscale "$TN"
   assert_eq "$(get_env REMOTE_TERMINAL_HOST)" ""
   assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files"
-  set_env REMOTE_TERMINAL true
+  set_env REMOTE_TERMINAL yes   # read like the portal reads it
   remote_hosts_tailscale "$TN"
   assert_eq "$(get_env REMOTE_TERMINAL_HOST)" "bedrock-now-terminal.$TN"
   assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal"
@@ -231,20 +315,84 @@ test_missing_images_skips_the_local_terminal_build() {
   assert_eq "$(missing_images)" "caddy:2"
 }
 
-# --- the files: hardening, Caddy's gating, the pins ---
+test_costs_and_test_show_the_terminal_key_once_it_exists() {
+  body="$(sed -n '/^cmd_costs() {/,/^}/p' "$STACK_DIR/lib/commands.sh")"
+  assert_contains "$body" 'echo terminal); do'
+  assert_contains "$body" 'terminal) envk=LITELLM_KEY_TERMINAL'
+  assert_contains "$(sed -n '/^cmd_test() {/,/^}/p' "$STACK_DIR/lib/commands.sh")" 'claude-code-terminal) envk=LITELLM_KEY_TERMINAL'
+  assert_contains "$(cat "$STACK_DIR/.env.example")" "BUDGET_TERMINAL=50"
+}
+
+test_restore_brings_the_backups_terminal_key_or_none() {
+  mkdir -p "$TMP/bk"
+  printf 'LITELLM_KEY_CLAUDE_CODE=sk-1\nLITELLM_KEY_OPENWEBUI=sk-2\nLITELLM_KEY_SETUP=sk-3\nOPENWEBUI_API_KEY=sk-4\nLITELLM_KEY_TERMINAL=sk-t-bak\n' > "$TMP/bk/.env"
+  printf 'LITELLM_KEY_TERMINAL=sk-t-now\n' > "$ENV_FILE"
+  _restore_key_trio "$TMP/bk" 2>/dev/null
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-t-bak
+  printf 'LITELLM_KEY_CLAUDE_CODE=sk-1\nLITELLM_KEY_OPENWEBUI=sk-2\nLITELLM_KEY_SETUP=sk-3\nOPENWEBUI_API_KEY=sk-4\n' > "$TMP/bk/.env"
+  _restore_key_trio "$TMP/bk" 2>/dev/null
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" ""   # a key the restored database never knew: a new one comes at ./stack up
+}
+
+test_update_keeps_and_rollback_restores_the_terminal_build() {
+  printf 'TERMINAL_ENABLED=true\n' > "$ENV_FILE"
+  assert_eq "$(terminal_image_refs)" "bedrock-now/terminal:local"
+  assert_contains "$(sed -n '/^images_snapshot_before() {/,/^}/p' "$STACK_DIR/lib/images.sh")" "terminal_image_refs"
+  docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
+  _rollback_local_builds
+  assert_contains "$(cat "$TMP/docker")" "docker tag bedrock-now/terminal:previous bedrock-now/terminal:local"
+  printf 'TERMINAL_ENABLED=false\n' > "$ENV_FILE"
+  assert_eq "$(terminal_image_refs)" ""
+}
+
+test_uninstall_removes_the_terminal_even_while_off() {
+  printf 'TERMINAL_ENABLED=false\n' > "$ENV_FILE"
+  docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
+  terminal_uninstall_cleanup
+  d="$(cat "$TMP/docker")"
+  assert_contains "$d" "docker volume rm bedrock-now_terminal-home"
+  assert_contains "$d" "docker network rm bedrock-now_terminal"
+  assert_contains "$d" "docker image rm bedrock-now/terminal:local bedrock-now/terminal:previous"
+  assert_contains "$(sed -n '/^cmd_uninstall() {/,/^}/p' "$STACK_DIR/lib/commands.sh")" "terminal_uninstall_cleanup"
+}
+
+test_env_value_problem_matches_set_env() {
+  assert_eq "$(env_value_problem 'a b')" ""
+  for v in 'a$b' "a'b" 'a"b' 'a`b' 'a #b' ' a' 'a '; do
+    env_value_problem "$v" >/dev/null || { echo "accepted '$v'" >&2; return 1; }
+    if (set_env K "$v") 2>/dev/null; then echo "set_env accepted '$v'" >&2; return 1; fi
+  done
+}
+
+# --- the files: hardening, the gateway, Caddy's gating, ttyd's secret, the pins ---
 
 test_compose_terminal_is_a_sandbox() {
   f="$(cat "$STACK_DIR/compose.terminal.yaml")"
+  t="$(awk '/^  terminal:$/,/^  terminal-gateway:$/' "$STACK_DIR/compose.terminal.yaml")"
+  g="$(awk '/^  terminal-gateway:$/,/^  caddy:$/' "$STACK_DIR/compose.terminal.yaml")"
   for want in "read_only: true" "cap_drop: [ALL]" 'security_opt: ["no-new-privileges:true"]' 'user: "${TERMINAL_UID:-10104}:${TERMINAL_GID:-10104}"' \
               "pids_limit:" "mem_limit:" "create_host_path: false" 'source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}' \
-              "networks: [terminal]" "internal: true" "aliases: [gateway]" "ANTHROPIC_BASE_URL: http://gateway:8091" \
-              'ANTHROPIC_AUTH_TOKEN: ${LITELLM_KEY_CLAUDE_CODE:-}' 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"' \
-              'TERMINAL_MODE: "on"' 'REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-terminal.remote.invalid}' \
-              'REMOTE_TERMINAL: ${REMOTE_TERMINAL:-false}'; do
-    assert_contains "$f" "$want"
+              "networks: [terminal]" "ANTHROPIC_BASE_URL: http://gateway:8091" 'ANTHROPIC_AUTH_TOKEN: ${LITELLM_KEY_TERMINAL:-}' \
+              'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"' 'TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}' \
+              '"host.docker.internal:192.0.2.1"' '"host.docker.internal:100::1"' '"gateway.docker.internal:100::1"'; do
+    assert_contains "$t" "$want"
   done
-  for bad in docker.sock privileged "ports:" "network_mode" "pid:" "LITELLM_MASTER_KEY" "AWS_" "PORTAL_PASSWORD" "/var/run" "cap_add"; do
-    assert_not_contains "$f" "$bad"
+  for bad in docker.sock privileged "ports:" "network_mode" "pid:" "LITELLM_MASTER_KEY" "LITELLM_KEY_CLAUDE_CODE" "AWS_" \
+             "PORTAL_PASSWORD" "/var/run" "cap_add" "default:"; do
+    assert_not_contains "$t" "$bad"
+  done
+  # the gateway: the main Caddy's pinned image, hardened, the only peer of the terminal
+  assert_contains "$g" "image: $(sed -n 's/^    image: \(caddy:[^ ]*\)$/\1/p' "$STACK_DIR/compose.yaml")"
+  for want in "read_only: true" "cap_drop: [ALL]" "aliases: [terminal-upstream]" "aliases: [gateway]" "/etc/caddy/terminal-gateway.caddy"; do
+    assert_contains "$g" "$want"
+  done
+  assert_not_contains "$g" "ports:"
+  # the main Caddy joins no terminal network; the terminal network is internal
+  assert_not_contains "$(awk '/^  caddy:$/,/^  portal:$/' "$STACK_DIR/compose.terminal.yaml")" "networks:"
+  assert_contains "$f" "internal: true"
+  for want in 'TERMINAL_MODE: "on"' 'REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-terminal.remote.invalid}' \
+              'REMOTE_TERMINAL: ${REMOTE_TERMINAL:-false}' 'LITELLM_KEY_TERMINAL: ${LITELLM_KEY_TERMINAL:-}'; do
+    assert_contains "$f" "$want"
   done
   # only the terminal is on the way out
   e="$(cat "$STACK_DIR/compose.terminal-egress.yaml")"
@@ -256,19 +404,24 @@ test_compose_render_with_the_terminal() {
   [ -n "${BN_REAL_DOCKER:-}" ] && "$BN_REAL_DOCKER" compose version >/dev/null 2>&1 || { echo "no docker compose" >&2; return 77; }
   docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
   mkdir -p "$TMP/ws"
-  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\nLITELLM_KEY_CLAUDE_CODE=sk-cc\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nTERMINAL_UID=501\nTERMINAL_GID=20\n' "$TMP/ws" > "$ENV_FILE"
+  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\nLITELLM_KEY_CLAUDE_CODE=sk-cc\nLITELLM_KEY_TERMINAL=sk-term\nTERMINAL_PROXY_SECRET=0123456789abcdef0123456789abcdef\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nTERMINAL_UID=501\nTERMINAL_GID=20\n' "$TMP/ws" > "$ENV_FILE"
   out="$(TERMINAL_WORKSPACE=/ dc config --format json 2>&1)" || { echo "$out" >&2; return 1; }
   printf '%s' "$out" | WS="$TMP/ws" python3 -c '
 import json, os, sys
 d = json.load(sys.stdin)
-t = d["services"]["terminal"]
+t, g, c = d["services"]["terminal"], d["services"]["terminal-gateway"], d["services"]["caddy"]
 assert [v["source"] for v in t["volumes"] if v["type"] == "bind"] == [os.environ["WS"]], t["volumes"]
 assert sorted(t["networks"]) == ["terminal", "terminal-out"], t["networks"]
-assert t["user"] == "501:20" and t["read_only"] and t["cap_drop"] == ["ALL"]
-assert "ports" not in t
+assert t["user"] == "501:20" and t["read_only"] and t["cap_drop"] == ["ALL"] and "ports" not in t
+assert t["environment"]["ANTHROPIC_AUTH_TOKEN"] == "sk-term" and "sk-cc" not in json.dumps(t)
+hosts = sorted(h.replace("=", ":", 1) for h in t["extra_hosts"])
+assert hosts == ["gateway.docker.internal:100::1", "gateway.docker.internal:192.0.2.1", "host.docker.internal:100::1",
+                 "host.docker.internal:192.0.2.1"], t["extra_hosts"]
 assert d["networks"]["terminal"]["internal"] is True and not d["networks"]["terminal-out"].get("internal")
-assert d["services"]["caddy"]["networks"]["terminal"]["aliases"] == ["gateway"]
-assert d["services"]["caddy"]["environment"]["TERMINAL_MODE"] == "on"
+assert g["networks"]["terminal"]["aliases"] == ["gateway"] and g["networks"]["default"]["aliases"] == ["terminal-upstream"]
+assert g["read_only"] and "ports" not in g
+assert "terminal" not in c["networks"], c["networks"]
+assert c["environment"]["TERMINAL_MODE"] == "on" and c["environment"]["TERMINAL_PROXY_SECRET"] == "0123456789abcdef0123456789abcdef"
 assert d["services"]["portal"]["environment"]["TERMINAL_ENABLED"] == "true"
 assert d["services"]["portal"]["environment"]["REMOTE_TERMINAL"] == "false"' || return 1
   printf 'TERMINAL_EGRESS=off\n' >> "$ENV_FILE"
@@ -282,40 +435,55 @@ assert "terminal-out" not in d["networks"]' || return 1
   dc config --format json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-assert "terminal" not in d["services"] and "terminal" not in d["networks"]
+assert "terminal" not in d["services"] and "terminal-gateway" not in d["services"] and "terminal" not in d["networks"]
 assert "TERMINAL_MODE" not in d["services"]["caddy"]["environment"]
 assert "TERMINAL_ENABLED" not in d["services"]["portal"]["environment"]' || return 1
 }
 
-test_caddy_terminal_site_only_when_on_and_remote_only_by_name() {
+test_caddy_terminal_site_gateway_and_remote_gating() {
   f="$(cat "$STACK_DIR/caddy/Caddyfile")"
   assert_contains "$f" 'import terminal-{$TERMINAL_MODE:off}.caddy'
-  # off: no site, no gateway
-  assert_eq "$(grep -cv '^#' "$STACK_DIR/caddy/terminal-off.caddy")" 0
-  on="$(cat "$STACK_DIR/caddy/terminal-on.caddy")"
-  assert_contains "$on" 'http://{$TERMINAL_HOST} {'
+  assert_eq "$(grep -cv '^#' "$STACK_DIR/caddy/terminal-off.caddy")" 0   # off: no site
   site="$(awk '/^http:\/\/\{\$TERMINAL_HOST\}/,/^}/' "$STACK_DIR/caddy/terminal-on.caddy")"
-  # first the local rules, then the unlock form, then the check — only then ttyd, without cookies
+  # first the local rules, then the unlock form, then the check — only then ttyd, through the gateway
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
     "import local_request import terminal_unlock import terminal_auth import terminal_upstream import frame_by_portal_only "
-  gw="$(awk '/^http:\/\/:8091/,/^}/' "$STACK_DIR/caddy/terminal-on.caddy")"
+  assert_contains "$site" "reverse_proxy terminal-upstream:7681"
+  assert_not_contains "$(cat "$STACK_DIR/caddy/terminal-on.caddy")" ":8091"
+  # the gateway's file: only its two networks' names, an allowlist with 404 for the rest, a loopback health check
+  gw="$(cat "$STACK_DIR/caddy/terminal-gateway.caddy")"
+  assert_contains "$gw" "admin off"
+  assert_eq "$(printf '%s\n' "$gw" | grep -c '^	bind ')" 3
   assert_contains "$gw" "bind gateway"
-  assert_contains "$gw" "reverse_proxy @mcp shared-mcp:8000"
-  assert_contains "$gw" "reverse_proxy litellm:4000"
-  assert_contains "$gw" "request_header -X-Portal-User"
-  # the snippets
+  assert_contains "$gw" "bind terminal-upstream"
+  assert_contains "$gw" "bind 127.0.0.1"
+  assert_contains "$gw" "@litellm path /v1/messages /v1/messages/* /v1/models /v1/models/* /key/info /model/info /health/liveliness"
+  assert_contains "$gw" "@mcp path /mcp /mcp/*"
+  assert_contains "$(awk '/reverse_proxy @mcp/,/}/' "$STACK_DIR/caddy/terminal-gateway.caddy")" "header_up Host 127.0.0.1:8000"
+  assert_contains "$gw" "reverse_proxy @litellm litellm:4000"
+  assert_contains "$(awk '/^http:\/\/:8091/,/^}/' "$STACK_DIR/caddy/terminal-gateway.caddy")" "respond 404"
+  if printf '%s\n' "$gw" | grep -q 'reverse_proxy litellm'; then echo "an unmatched proxy to LiteLLM" >&2; return 1; fi
+  # the snippets: a fixed check, ttyd's secret header after any client copy is gone
   assert_contains "$(awk '/^\(terminal_auth\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "uri /auth/verify?app=terminal"
   up="$(awk '/^\(terminal_upstream\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_contains "$up" "header_up -Cookie"
-  assert_contains "$up" "header_up -X-Portal-Proxy"
+  for want in "header_up -Cookie" "header_up -X-Portal-Proxy" "header_up -X-Portal-User" \
+              'header_up X-Bn-Terminal-0{$TERMINAL_PROXY_SECRET} 1'; do
+    assert_contains "$up" "$want"
+  done
+  # a client's own X-Bn-Terminal-* goes in a step before the proxy: within header_up Caddy deletes after it sets
+  assert_not_contains "$up" "header_up -X-Bn-Terminal"
+  auth="$(awk '/^\(terminal_auth\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
+  assert_eq "$(printf '%s\n' "$auth" | sed -n 2p | tr -d '\t')" "request_header -X-Bn-Terminal-*"
   assert_contains "$(awk '/^\(terminal_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/terminal-unlock"
-  # remote: a block per mode that matches only the name lib/terminal.sh writes with REMOTE_TERMINAL=true
+  # remote: a block per mode that matches only the name lib/terminal.sh writes with REMOTE_TERMINAL on
   assert_contains "$(cat "$STACK_DIR/caddy/remote-tailscale.caddy")" 'http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {'
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" '@terminal host {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}'
   for m in tailscale domain; do
     r="$(cat "$STACK_DIR/caddy/remote-$m.caddy")"
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_auth')" 1
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_upstream')" 1
+    assert_contains "$r" "reverse_proxy terminal-upstream:7681"
+    assert_not_contains "$r" " terminal:7681"
   done
   # the portal's cookie names and the unlock route agree with Caddy's
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"'
@@ -323,23 +491,31 @@ test_caddy_terminal_site_only_when_on_and_remote_only_by_name() {
   assert_contains "$(cat "$STACK_DIR/portal/portal/static/terminal-unlock.html")" 'action="/.bn/unlock"'
 }
 
-test_ttyd_checks_the_origin_and_needs_caddys_header() {
+test_ttyd_checks_the_origin_and_needs_the_secret_header() {
   f="$(cat "$STACK_DIR/terminal/bin/bn-terminal")"
   assert_contains "$f" "--check-origin"
-  assert_contains "$f" "--auth-header X-Portal-User"
+  assert_contains "$f" '--auth-header "X-Bn-Terminal-0$secret"'
+  assert_not_contains "$f" "X-Portal-User"
   assert_contains "$f" "--writable"
   assert_contains "$f" "--index /usr/local/share/bedrock-now/ttyd.html"
-  assert_contains "$(cat "$STACK_DIR/terminal/ttyd-page.py")" '<meta name="viewport" content="width=device-width'
+  assert_not_contains "$f" "--url-arg"
+  assert_not_contains "$f" " -a "
+  assert_contains "$(cat "$STACK_DIR/terminal/Dockerfile")" 'X-Bn-Terminal-0$TERMINAL_PROXY_SECRET: 1'
+  # no terminal without a real secret: it stops before ttyd (which is not even on this machine)
+  for s in '' short "$(printf 'z%.0s' $(seq 1 40))"; do
+    if out="$(HOME="$TMP/h" TERMINAL_PROXY_SECRET="$s" bash "$STACK_DIR/terminal/bin/bn-terminal" 2>&1)"; then echo "started with '$s'" >&2; return 1; fi
+    assert_contains "$out" "TERMINAL_PROXY_SECRET"
+  done
+  [ ! -e "$TMP/h" ] || { echo "it did things before checking the secret" >&2; return 1; }
+  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" "tmux new-session -A -s claude"
   # the page rewrite: a viewport and our icon in, ttyd's icon out
+  assert_contains "$(cat "$STACK_DIR/terminal/ttyd-page.py")" '<meta name="viewport" content="width=device-width'
   printf '<html><head><meta charset="UTF-8"><link rel="icon" type="image/png" href="data:image/png;base64,AAA"></head></html>' > "$TMP/in.html"
   python3 "$STACK_DIR/terminal/ttyd-page.py" "$TMP/in.html" "$TMP/out.html" || return 1
   out="$(cat "$TMP/out.html")"
   assert_contains "$out" '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1'
   assert_contains "$out" '<link rel="icon" href="data:image/svg+xml,'
   assert_not_contains "$out" "image/png"
-  assert_not_contains "$f" "--url-arg"
-  assert_not_contains "$f" " -a "
-  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" "tmux new-session -A -s claude"
 }
 
 test_image_pins() {
@@ -356,14 +532,23 @@ for p in ("", "-linux-x64", "-linux-arm64"):
     e = lock[f"node_modules/@anthropic-ai/claude-code{p}"]
     assert e["version"] == sys.argv[2] and e["integrity"].startswith("sha512-"), (p, e)
 PY
-  # the in-container wrapper never gets the master key, and asks LiteLLM with the claude-code key only
+  # the in-container wrapper never gets the master key
   assert_not_contains "$(cat "$STACK_DIR/terminal/bin/claude-bedrock")" "MASTER_KEY"
 }
 
-test_test_checks_report_the_unlock_form_and_isolation() {
+test_test_checks_report_unlock_secret_gateway_and_isolation() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
-  dc() { case "$*" in *"ps --format"*) echo healthy ;; *"exec -T terminal curl"*) printf 200 ;; *"exec -T terminal sh"*) printf '000 000 000 000 000 ' ;; esac; }
+  ok_dc() {
+    case "$*" in
+      *"ps --format"*) echo healthy ;;
+      *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
+      *"exec -T terminal sh -c g="*) printf '200 404 404 404 404 ' ;;
+      *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
+      *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 ' ;;
+    esac
+  }
+  dc() { ok_dc "$@"; }
   portal_session_start() { PORTAL_JAR=x; return 0; }
   portal_session_end() { PORTAL_JAR=''; }
   portal_curl() {
@@ -375,9 +560,13 @@ test_test_checks_report_the_unlock_form_and_isolation() {
   }
   fails=0
   out="$(terminal_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 6
-  assert_contains "$out" "ok    terminal with a session but no unlock → the unlock form"
-  dc() { case "$*" in *"exec -T terminal sh"*) printf '000 200 000 000 000 ' ;; *) echo healthy ;; esac; }
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 8
+  assert_contains "$out" "ok    terminal gateway: the shared MCP server's tools"
+  assert_contains "$out" "ok    ttyd refuses requests without the terminal's secret header"
+  assert_contains "$out" "ok    terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs"
+  dc() { case "$*" in *"exec -T terminal sh -c g="*) printf '200 200 404 404 404 ' ;; *"exec -T caddy wget"*) printf '  HTTP/1.1 200 OK\n' ;; *) ok_dc "$@" ;; esac; }
   out="$(terminal_test_checks)"
-  assert_contains "$out" "FAIL  terminal cannot reach the portal, Open WebUI, LiteLLM, RustFS or Postgres directly (got 000 200 000 000 000"
+  assert_contains "$out" "FAIL  terminal gateway"
+  assert_contains "$out" "(got 200 200 404 404 404"
+  assert_contains "$out" "FAIL  ttyd refuses requests without the terminal's secret header (got 200"
 }

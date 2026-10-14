@@ -705,8 +705,9 @@ cmd_costs() {
     printf '  %-20s %s\n' "$name" "$label"
   done 3< <(catalog_rows)
   printf '\nSpend this budget period (monthly budget per key; each resets on the date shown)\n'
-  for alias in claude-code open-webui setup; do
-    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; *) envk=LITELLM_KEY_SETUP ;; esac
+  # + the browser terminal's own key (claude-code-terminal, shown as "terminal") once ./stack terminal made one
+  for alias in claude-code open-webui setup $([ -z "$(get_env LITELLM_KEY_TERMINAL)" ] || echo terminal); do
+    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; terminal) envk=LITELLM_KEY_TERMINAL ;; *) envk=LITELLM_KEY_SETUP ;; esac
     if [ -z "$(get_env "$envk")" ]; then printf '  %-12s no key yet — run ./stack setup\n' "$alias"; continue; fi
     if ! j="$(key_info "$(get_env "$envk")")" || ! label="$(printf '%s' "$j" | spend_text)"; then
       printf '  %-12s unavailable — LiteLLM did not answer (is the stack up? ./stack status)\n' "$alias"; continue
@@ -728,7 +729,8 @@ cmd_costs() {
   openrouter_costs_section
   stt_costs_section
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
-  printf 'Budgets: Settings in the portal, or ./stack config set BUDGET_CLAUDE_CODE (BUDGET_OPENWEBUI, BUDGET_SETUP)\n'
+  printf 'Budgets: Settings in the portal, or ./stack config set BUDGET_CLAUDE_CODE (BUDGET_OPENWEBUI, BUDGET_SETUP%s)\n' \
+    "$([ -z "$(get_env LITELLM_KEY_TERMINAL)" ] || echo ', BUDGET_TERMINAL')"
   printf 'Alerts at %s%%: Settings → Budgets & alerts, or ./stack config set ALERT_WEBHOOK_URL (%s)\n' "$(alert_pct)" \
     "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo 'webhook set' || echo 'none set')"
   [ "$PRICES_SOURCE" = catalog ] || return 0   # the daily update keeps them current (and says so above when it fails)
@@ -908,6 +910,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
     shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
     tailscale) if [ -n "$(remote_url)" ]; then echo "$(remote_url)   (your devices; ./stack remote status)"; else echo "- (./stack remote status)"; fi ;;
     terminal) echo "$(portal_url terminal)   (the Terminal tab; ./stack terminal status)" ;;
+    terminal-gateway) echo "- (the terminal's only way into the stack)" ;;
     *) echo "- (internal only)" ;;
   esac
 }
@@ -1019,8 +1022,8 @@ cmd_test() {
   code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$lp/health/liveliness" || true)"
   _check "litellm alive" "$code" 200
   # Free: every virtual key is checked with /key/info. Paid (~$0.0001): the calls below use the setup key only.
-  for alias in claude-code open-webui setup; do
-    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; *) envk=LITELLM_KEY_SETUP ;; esac
+  for alias in claude-code open-webui setup $([ -z "$(get_env LITELLM_KEY_TERMINAL)" ] || echo claude-code-terminal); do
+    case "$alias" in claude-code) envk=LITELLM_KEY_CLAUDE_CODE ;; open-webui) envk=LITELLM_KEY_OPENWEBUI ;; claude-code-terminal) envk=LITELLM_KEY_TERMINAL ;; *) envk=LITELLM_KEY_SETUP ;; esac
     k="$(get_env "$envk")"
     if [ -n "$k" ]; then code="$(litellm_key_status "$k")"; else code=missing; fi
     _check "LiteLLM key '$alias' is valid" "$code" 200
@@ -1153,6 +1156,10 @@ _restore_key_trio() {
     fi
     [ "$v" = "$(get_env "$k")" ] || { set_env "$k" "$v"; n=$((n + 1)); }
   done
+  # The browser terminal's key (lib/terminal.sh), when there is one: the backup's, or none — ./stack up and
+  # ./stack terminal enable then make a new one for the restored database.
+  v="$(ENV_FILE="$1/.env" get_env LITELLM_KEY_TERMINAL)"
+  [ "$v" = "$(get_env LITELLM_KEY_TERMINAL)" ] || { set_env LITELLM_KEY_TERMINAL "$v"; n=$((n + 1)); }
   log "restored the backup's keys (LiteLLM virtual keys, Open WebUI API key) into .env ($n changed)"
 }
 
@@ -1557,6 +1564,7 @@ cmd_uninstall() {
   [ "$(ask "Type 'bedrock-now' to confirm" "")" = bedrock-now ] || die "aborted — nothing was removed"
   if confirm "Take a backup first?"; then cmd_backup; fi
   dc down -v --remove-orphans
+  terminal_uninstall_cleanup   # lib/terminal.sh: its volume, networks and image, also while it is off
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."

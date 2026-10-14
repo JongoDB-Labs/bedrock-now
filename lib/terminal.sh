@@ -1,27 +1,40 @@
 # shellcheck shell=bash
 # The optional browser terminal (./stack terminal): Claude Code in a sandbox container, in the portal's Terminal tab
-# (ttyd + tmux; terminal/, compose.terminal.yaml, caddy/terminal-on.caddy). Off unless you turn it on.
+# (ttyd + tmux; terminal/, compose.terminal.yaml, caddy/terminal-on.caddy, caddy/terminal-gateway.caddy). Off unless
+# you turn it on.
 #
 #   enable [--workspace DIR]   TERMINAL_ENABLED=true. DIR (default ~/bedrock-now-workspace, created with mode 700)
 #                              is the only folder of this computer the container sees, at /workspace.
-#   disable                    the container and its networks go; the folder and terminal-home (Claude Code's
-#                              settings and history) are kept
-#   status                     on/off, the folder, the container, its address, internet and remote access
+#   disable                    the container, its gateway and their networks go; the folder, terminal-home (Claude
+#                              Code's settings and history) and its LiteLLM key are kept
+#   status                     on/off, the folder, the container, its key, address, internet and remote access
 #
 # .env: TERMINAL_ENABLED, TERMINAL_WORKSPACE, TERMINAL_UID / TERMINAL_GID (yours, so files in the folder stay yours),
 # TERMINAL_EGRESS (off = no internet), TERMINAL_HOST (default terminal.PORTAL_HOST), TERMINAL_MEM_LIMIT (default
-# 4g), REMOTE_TERMINAL (true = also through ./stack remote; REMOTE_TERMINAL_HOST is then written here).
-# Only .env counts: dc() drops TERMINAL_* from your shell, so an exported TERMINAL_WORKSPACE never mounts anything.
+# 4g), REMOTE_TERMINAL (on = also through ./stack remote; REMOTE_TERMINAL_HOST is then written here), BUDGET_TERMINAL
+# (its key's monthly budget, default $50), and generated: LITELLM_KEY_TERMINAL (claude-code-terminal) and
+# TERMINAL_PROXY_SECRET (the header the main Caddy adds and ttyd requires). Switches read true/1/yes/on and
+# false/0/no/off, like the portal. Only .env counts: dc() drops TERMINAL_* from your shell, so an exported
+# TERMINAL_WORKSPACE never mounts anything.
 #
-# Hooks for other parts of ./stack: terminal_services (status, up), terminal_up_hook (up), terminal_setup_hook
-# (setup, update), terminal_remote_sync (remote host names), terminal_test_checks (./stack test),
-# terminal_summary_line, terminal_rollback_cleanup.
+# Hooks for other parts of ./stack: terminal_services (status, up), terminal_up_hook / terminal_after_up (up),
+# terminal_setup_hook (setup, update), terminal_remote_sync (remote host names), terminal_test_checks (./stack
+# test), terminal_summary_line, terminal_image_refs (update/rollback), terminal_rollback_cleanup,
+# terminal_uninstall_cleanup.
 
-terminal_on() { [ "$(get_env TERMINAL_ENABLED)" = true ]; }
-# terminal_services -> "terminal" while it is on and its workspace folder exists (without it Docker cannot start it:
-# ./stack up then leaves it out and says why — terminal_up_hook — instead of failing as a whole)
-terminal_services() { ! terminal_on || [ ! -d "$(get_env TERMINAL_WORKSPACE)" ] || echo terminal; }
-terminal_egress_on() { [ "$(get_env TERMINAL_EGRESS)" != off ]; }
+terminal_on() { flag_on "$(get_env TERMINAL_ENABLED)"; }
+terminal_egress_on() { ! flag_off "$(get_env TERMINAL_EGRESS)"; }
+terminal_remote_wanted() { flag_on "$(get_env REMOTE_TERMINAL)"; }
+
+# terminal_ready -> 0 while the terminal is on and its workspace folder exists and still passes
+# terminal_workspace_check (a folder replaced by a symlink to your home folder since enable is refused, too)
+terminal_ready() {
+  local ws; ws="$(get_env TERMINAL_WORKSPACE)"
+  terminal_on && [ -n "$ws" ] && [ -d "$ws" ] && terminal_workspace_check "$ws" >/dev/null
+}
+# terminal_services -> its two services while it is ready; otherwise none, so ./stack up leaves it out (and says why:
+# terminal_up_hook) instead of failing as a whole
+terminal_services() { ! terminal_ready || echo "terminal-gateway terminal"; }
 
 terminal_usage() {
   cat <<'EOF'
@@ -54,31 +67,41 @@ terminal_default_workspace() {
   else printf '%s/bedrock-now-%s-workspace\n' "$HOME" "$(printf '%s' "$p" | tr '_' '-')"; fi
 }
 
-# _phys DIR -> DIR with every symlink resolved (empty when it cannot be opened)
-_phys() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+# _phys DIR -> DIR with every symlink resolved, in its on-disk spelling (the external pwd: on macOS the shell's own
+# keeps the case you typed, and the file system ignores case); empty when it cannot be opened
+_phys() { (cd "$1" 2>/dev/null && /bin/pwd -P) || true; }
+# _fold PATH -> PATH as compared: lower case on macOS (its file systems ignore case), unchanged elsewhere
+_fold() { if [ "$(uname -s)" = Darwin ]; then printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; else printf '%s\n' "$1"; fi; }
 
 # terminal_workspace_check DIR -> the folder's physical path; fails, printing why, for a folder the terminal must
 # never see: the root or a system folder (the Docker socket lives in one), your home folder or one around it, a
-# hidden folder in it (~/.ssh, ~/.aws, ~/.docker …), this checkout (its .env holds every secret), or a folder that
-# contains it or lies inside it. Temporary folders are fine.
+# hidden folder in it (~/.ssh, ~/.aws, ~/.docker …), ~/Library (keychains, app data; its iCloud Drive folder,
+# ~/Library/Mobile Documents, is fine), this checkout (its .env holds every secret), or a folder that contains it or
+# lies inside it. Temporary folders are fine. On macOS every comparison ignores case, as the disk does.
 terminal_workspace_check() {
-  local real home stack p
+  local real r h s p
   case "$1" in *:* | *,*) echo "its path contains ':' or ',' (Docker cannot mount that)"; return 1 ;; esac
   real="$(_phys "$1")"
   [ -n "$real" ] || { echo "cannot open it"; return 1; }
-  home="$(_phys "$HOME")"; stack="$(_phys "$STACK_DIR")"
-  case "$real/" in "$stack/"*) echo "it is this bedrock-now folder or inside it"; return 1 ;; esac
-  case "$stack/" in "$real/"*) echo "it contains this bedrock-now folder (and its .env)"; return 1 ;; esac
-  if [ -n "$home" ]; then
-    case "$home/" in "$real/"*) echo "it is your home folder or a folder around it — pick a folder inside it"; return 1 ;; esac
-    case "$real" in "$home"/.*) echo "it is a hidden folder of your home folder (keys and settings live there)"; return 1 ;; esac
+  if p="$(env_value_problem "$real")"; then echo "its path $p"; return 1; fi
+  r="$(_fold "$real")"; h="$(_fold "$(_phys "$HOME")")"; s="$(_fold "$(_phys "$STACK_DIR")")"
+  case "$r/" in "$s/"*) echo "it is this bedrock-now folder or inside it"; return 1 ;; esac
+  case "$s/" in "$r/"*) echo "it contains this bedrock-now folder (and its .env)"; return 1 ;; esac
+  if [ -n "$h" ]; then
+    case "$h/" in "$r/"*) echo "it is your home folder or a folder around it — pick a folder inside it"; return 1 ;; esac
+    case "$r" in "$h"/.*) echo "it is a hidden folder of your home folder (keys and settings live there)"; return 1 ;; esac
+    case "$r" in
+      "$(_fold "$h/Library/Mobile Documents")" | "$(_fold "$h/Library/Mobile Documents")"/*) ;;
+      "$(_fold "$h/Library")" | "$(_fold "$h/Library")"/*) echo "it is in ~/Library (keychains, app data and settings live there)"; return 1 ;;
+    esac
   fi
-  case "$real" in /tmp | /tmp/* | /var/tmp | /var/tmp/* | /private/tmp | /private/tmp/* | /private/var/folders/*) printf '%s\n' "$real"; return 0 ;; esac
+  case "$r" in /tmp | /tmp/* | /var/tmp | /var/tmp/* | /private/tmp | /private/tmp/* | /private/var/folders/*) printf '%s\n' "$real"; return 0 ;; esac
   for p in /bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /root /run /sbin /snap /srv/docker /sys /usr /var \
            /private /System /Library /Applications /cores /opt/homebrew; do
-    case "$real" in "$p" | "$p"/*) echo "it is a system folder ($p)"; return 1 ;; esac
+    p="$(_fold "$p")"
+    case "$r" in "$p" | "$p"/*) echo "it is a system folder ($p)"; return 1 ;; esac
   done
-  [ "$real" != / ] || { echo "it is the root of the disk"; return 1; }
+  [ "$r" != / ] || { echo "it is the root of the disk"; return 1; }
   printf '%s\n' "$real"
 }
 
@@ -91,10 +114,26 @@ terminal_ids() {
 # terminal_build — the image (terminal/Dockerfile) with this week's Debian packages (the stt image's rule)
 terminal_build() { dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" terminal; }
 _terminal_build_and_up() { terminal_build && _terminal_up; }
-# Portal (the tab, the unlock) and Caddy (the terminal site, the gateway: a changed Caddyfile is read only at start),
-# then the container.
-_terminal_up() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy && dc up -d --wait terminal; }
+# Portal (the tab, the unlock) and Caddy (the terminal site: a changed Caddyfile is read only at start), then the
+# terminal's gateway (likewise) and the container.
+_terminal_up() {
+  dc up -d --wait portal && dc up -d --wait --force-recreate caddy &&
+    dc up -d --wait --force-recreate terminal-gateway && dc up -d --wait terminal
+}
 _terminal_front() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy; }
+
+# terminal_secrets — what the terminal needs besides the stack's own: its secret header for ttyd
+# (TERMINAL_PROXY_SECRET, 32 hex characters, generated once) and its monthly budget (BUDGET_TERMINAL, default $50)
+terminal_secrets() {
+  local v; v="$(get_env TERMINAL_PROXY_SECRET)"
+  case "$v" in *[!0-9a-f]* | '') set_env TERMINAL_PROXY_SECRET "$(gen_hex 16)" ;; *) [ "${#v}" -ge 32 ] || set_env TERMINAL_PROXY_SECRET "$(gen_hex 16)" ;; esac
+  ensure_env BUDGET_TERMINAL 50
+}
+
+# terminal_key — the terminal's own LiteLLM key, claude-code-terminal (BUDGET_TERMINAL): the sandbox never holds the
+# claude-code key of claude-bedrock on your computer, and its key can be revoked (Admin) or capped on its own.
+# Needs LiteLLM running. Fails (in a subshell, so callers decide how loud) rather than dying.
+terminal_key() { ( ensure_virtual_key LITELLM_KEY_TERMINAL claude-code-terminal "$(get_env BUDGET_TERMINAL)" ); }
 
 terminal_enable() {
   local ws='' real why created=0 ids
@@ -105,13 +144,16 @@ terminal_enable() {
       *) die "usage: ./stack terminal enable [--workspace DIR]" ;;
     esac
   done
-  [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_SECRET)" ] || die "run ./stack setup first"
-  [ -n "$(get_env LITELLM_KEY_CLAUDE_CODE)" ] || die "no LiteLLM key for Claude Code yet — run ./stack setup first"
+  [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_SECRET)" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
   stack_lock terminal
   check_prereqs
+  curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$(get_env LITELLM_PORT)/health/liveliness" 2>/dev/null ||
+    die "the stack is not running (the terminal gets its own LiteLLM key) — ./stack up first"
   [ -n "$ws" ] || ws="$(get_env TERMINAL_WORKSPACE)"
   [ -n "$ws" ] || ws="$(terminal_default_workspace)"
   case "$ws" in "~") ws="$HOME" ;; "~/"*) ws="$HOME/${ws#"~/"}" ;; /*) ;; *) ws="$PWD/$ws" ;; esac
+  # Before anything is created: a path .env could not hold
+  if why="$(env_value_problem "$ws")"; then die "not using $ws as the terminal's workspace: its path $why"; fi
   if [ ! -e "$ws" ]; then
     (umask 077; mkdir -p "$ws") || die "cannot create the workspace folder $ws"
     chmod 700 "$ws"; created=1
@@ -121,6 +163,11 @@ terminal_enable() {
     why="$real"; [ "$created" = 0 ] || rmdir "$ws" 2>/dev/null || true
     die "not using $ws as the terminal's workspace: $why. Pick another one: ./stack terminal enable --workspace DIR"
   fi
+  terminal_secrets
+  if ! terminal_key; then
+    [ "$created" = 0 ] || rmdir "$ws" 2>/dev/null || true
+    die "could not create the terminal's LiteLLM key (claude-code-terminal) — see ./stack logs litellm; nothing else was changed"
+  fi
   [ "$created" = 0 ] || log "created the workspace folder $real (mode 700)"
   ids="$(terminal_ids)"
   set_env TERMINAL_WORKSPACE "$real"
@@ -129,7 +176,7 @@ terminal_enable() {
   set_env TERMINAL_ENABLED true
   terminal_remote_sync
   run_phase "Terminal image (build; the first one takes a few minutes)" terminal terminal_build
-  run_phase "Terminal + portal + Caddy" "terminal portal caddy" _terminal_up
+  run_phase "Terminal + its gateway + portal + Caddy" "terminal terminal-gateway portal caddy" _terminal_up
   terminal_after_up
   printf '\n'; terminal_status
   printf '\nOpen the Terminal tab on Home (%s) and unlock it with the portal password.\n' "$(portal_url)"
@@ -140,13 +187,13 @@ terminal_disable() {
   if ! terminal_on; then log "the terminal is already off"; return 0; fi
   stack_lock terminal
   check_prereqs
-  dc rm -sf terminal >/dev/null 2>&1 || true   # with the overlay still on: compose knows the service
+  dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true   # with the overlay still on: compose knows them
   set_env TERMINAL_ENABLED false
   terminal_remote_sync
   run_phase "Portal + Caddy (terminal off)" "portal caddy" _terminal_front
   terminal_network_cleanup
   log "the terminal is off: no Terminal tab, no terminal host, no container"
-  log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE) and Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them)"
+  log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE), Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them) and its LiteLLM key claude-code-terminal (spend history; delete it in Admin to revoke it)"
 }
 
 # terminal_network_cleanup — the terminal's two networks, once nothing is attached (never fatal)
@@ -157,12 +204,13 @@ terminal_network_cleanup() {
 }
 
 # terminal_remote_sync — REMOTE_TERMINAL_HOST in .env: the terminal's remote name while the terminal is on,
-# REMOTE_TERMINAL=true and remote access has its names (<base>-terminal.<tailnet>, or terminal.<your domain>);
-# otherwise none: the remote site's terminal block then matches nothing (and the portal refuses it anyway).
+# REMOTE_TERMINAL is on (true/1/yes/on, as the portal reads it) and remote access has its names
+# (<base>-terminal.<tailnet>, or terminal.<your domain>); otherwise none: the remote site's terminal block then matches
+# nothing (and the portal refuses it anyway).
 terminal_remote_sync() {
   local h='' r t
   r="$(get_env REMOTE_HOST)"
-  if terminal_on && [ "$(get_env REMOTE_TERMINAL)" = true ] && [ -n "$r" ]; then
+  if terminal_on && terminal_remote_wanted && [ -n "$r" ]; then
     case "$(get_env REMOTE_MODE)" in
       tailscale) t="$(get_env TS_TAILNET)"; ! valid_tailnet "$t" || h="$(ts_base)-terminal.$t" ;;
       domain) h="terminal.$r" ;;
@@ -171,32 +219,66 @@ terminal_remote_sync() {
   [ "$(get_env REMOTE_TERMINAL_HOST)" = "$h" ] || set_env REMOTE_TERMINAL_HOST "$h"
 }
 
+# terminal_flag_warnings — a hand-edited REMOTE_TERMINAL / TERMINAL_EGRESS that is neither on nor off is said out loud
+terminal_flag_warnings() {
+  local k v
+  for k in REMOTE_TERMINAL TERMINAL_EGRESS; do
+    v="$(get_env "$k")"
+    [ -z "$v" ] || flag_on "$v" || flag_off "$v" ||
+      warn "$k=$v in .env is neither on nor off (true/1/yes/on or false/0/no/off) — read as $( [ "$k" = REMOTE_TERMINAL ] && echo off || echo on)"
+  done
+}
+
 # terminal_remote_app -> "terminal" while the remote site serves the terminal (a Tailscale Service of its own)
 terminal_remote_app() { [ -z "$(get_env REMOTE_TERMINAL_HOST)" ] || echo terminal; }
 
-# terminal_up_hook — ./stack up, before compose: remote names in line with .env, and the way out to the internet
-# removed when TERMINAL_EGRESS=off (the container is recreated without it; the network can go once it has left)
-terminal_up_hook() {
-  terminal_remote_sync
-  terminal_on || return 0
-  [ -d "$(get_env TERMINAL_WORKSPACE)" ] ||
-    warn "the terminal's workspace folder $(get_env TERMINAL_WORKSPACE) is gone, so the terminal is left out of this run — create it again, or ./stack terminal enable --workspace DIR (or ./stack terminal disable)"
-}
-terminal_after_up() { terminal_on && ! terminal_egress_on && docker network rm "$(project_name)_terminal-out" >/dev/null 2>&1; return 0; }
-
-# terminal_setup_hook — setup / ./stack update: a new image (new code, this week's packages) and a container with
-# the current keys. Never stops setup: a failed build leaves the previous image running, with a warning.
-terminal_setup_hook() {
-  local out start
-  terminal_remote_sync
-  terminal_on || return 0
-  if [ ! -d "$(get_env TERMINAL_WORKSPACE)" ]; then
-    warn "Terminal: its workspace folder $(get_env TERMINAL_WORKSPACE) is gone — not started (./stack terminal enable --workspace DIR)"
-    return 0
+# terminal_why_out -> why the terminal is left out although it is on (empty when it is ready)
+terminal_why_out() {
+  local ws why; ws="$(get_env TERMINAL_WORKSPACE)"
+  if [ -z "$ws" ]; then echo "TERMINAL_WORKSPACE is empty in .env"
+  elif [ ! -d "$ws" ]; then echo "its workspace folder $ws is gone"
+  elif ! why="$(terminal_workspace_check "$ws")"; then echo "its workspace folder $ws is refused now: $why"
   fi
+}
+
+# terminal_up_hook — ./stack up, before compose: remote names in line with .env, its secret, and a terminal whose
+# workspace is gone or no longer allowed left out of this run (its container removed) with the reason.
+terminal_up_hook() {
+  local why
+  terminal_remote_sync
+  terminal_on || return 0
+  terminal_flag_warnings
+  terminal_secrets
+  why="$(terminal_why_out)"
+  [ -n "$why" ] || return 0
+  warn "the terminal is left out of this run: $why — ./stack terminal enable --workspace DIR (or ./stack terminal disable)"
+  [ -z "$(get_env TERMINAL_WORKSPACE)" ] || dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true
+}
+# terminal_after_up — once LiteLLM is up: the terminal's own key if it has none yet (then the container gets it), and
+# the way out to the internet removed when TERMINAL_EGRESS=off (the network can go once the container has left it)
+terminal_after_up() {
+  terminal_ready || return 0
+  if [ -z "$(get_env LITELLM_KEY_TERMINAL)" ]; then
+    if terminal_key; then dc up -d --no-deps terminal >/dev/null 2>&1 || true
+    else warn "could not create the terminal's LiteLLM key — Claude Code in the terminal cannot reach Bedrock until ./stack terminal enable"; fi
+  fi
+  terminal_egress_on || docker network rm "$(project_name)_terminal-out" >/dev/null 2>&1 || true
+  return 0
+}
+
+# terminal_setup_hook — setup / ./stack update: its key (budget synced), a new image (new code, this week's packages)
+# and containers with the current keys. Never stops setup: a failure leaves the previous ones running, with a warning.
+terminal_setup_hook() {
+  local out start why
+  terminal_remote_sync
+  terminal_on || return 0
+  terminal_secrets
+  why="$(terminal_why_out)"
+  if [ -n "$why" ]; then warn "Terminal: not started — $why (./stack terminal enable --workspace DIR)"; return 0; fi
+  terminal_key || warn "Terminal: could not create or update its LiteLLM key (claude-code-terminal) — see ./stack logs litellm"
   out="$(mktemp)"; start="$(_now)"
   if _terminal_build_and_up > "$out" 2>&1; then
-    rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; return 0
+    rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; terminal_after_up; return 0
   fi
   warn "Terminal: could not build or start it — its last messages:"
   tail -n 15 "$out" | sed 's/^/    /' >&2; rm -f "$out"
@@ -204,23 +286,26 @@ terminal_setup_hook() {
 }
 
 terminal_status() {
-  local st ws
+  local st ws why
   if ! terminal_on; then
     printf 'Terminal: off — ./stack terminal enable [--workspace DIR] adds a Terminal tab to the portal:\n'
     printf '  Claude Code in a sandbox container that sees only DIR (README: "Claude Code in the browser")\n'
     return 0
   fi
-  ws="$(get_env TERMINAL_WORKSPACE)"
+  ws="$(get_env TERMINAL_WORKSPACE)"; why="$(terminal_why_out)"
   st="$(dc ps -a --format '{{.State}} {{.Health}}' terminal 2>/dev/null | head -n 1 || true)"
   printf 'Terminal: on — %s (the Terminal tab; unlock with the portal password, 12 h per browser)\n' "$(portal_url terminal)"
-  printf '  Workspace  %s → /workspace (the only folder of this computer it sees)%s\n' "$ws" "$([ -d "$ws" ] || printf '  !! missing')"
+  printf '  Workspace  %s → /workspace (the only folder of this computer it sees)\n' "${ws:-(none)}"
+  [ -z "$why" ] || printf '             !! left out: %s\n' "$why"
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
+  printf '  Key        claude-code-terminal, its own monthly budget: $%s (BUDGET_TERMINAL; spend on Home)\n' "$(get_env BUDGET_TERMINAL)"
   if terminal_egress_on; then printf '  Internet   on (git, npm, pip, web fetches); TERMINAL_EGRESS=off in .env, then ./stack up, takes it away\n'
-  else printf '  Internet   off (TERMINAL_EGRESS=off): only LiteLLM and the shared MCP server\n'; fi
+  else printf '  Internet   off (TERMINAL_EGRESS=off): only the gateway to LiteLLM and the shared MCP server\n'; fi
   if [ -n "$(get_env REMOTE_TERMINAL_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_TERMINAL_HOST)"
-  elif [ "$(get_env REMOTE_TERMINAL)" = true ]; then printf '  Remote     REMOTE_TERMINAL=true, but remote access is off or not finished (./stack remote status)\n'
+  elif terminal_remote_wanted; then printf '  Remote     REMOTE_TERMINAL is on, but remote access is off or not finished (./stack remote status)\n'
   else printf '  Remote     off (REMOTE_TERMINAL=true in .env, then ./stack up, adds it to remote access)\n'; fi
   printf '  Off again  ./stack terminal disable\n'
+  terminal_flag_warnings
 }
 
 terminal_summary_line() {
@@ -229,10 +314,11 @@ terminal_summary_line() {
 }
 
 # terminal_test_checks — ./stack test while the terminal is on (uses cmd_test's `fails`; no Bedrock calls): the
-# container's health, the host's checks (login, then the unlock page), the gateway, and what it must not reach.
+# container's health, the host's checks (login, then the unlock page, other sites' Origins), ttyd's secret header,
+# the gateway's few paths, and everything the sandbox must not reach.
 terminal_test_checks() {
   local code out got
-  terminal_on || return 0
+  terminal_ready || return 0
   code="$(dc ps --format '{{.Health}}' terminal 2>/dev/null | head -n 1 || true)"
   _check "terminal container healthy" "$code" healthy
   # shellcheck disable=SC2034  # read by portal_curl
@@ -249,20 +335,43 @@ terminal_test_checks() {
   else
     _skip "terminal unlock checks" "portal login failed"
   fi
-  code="$(dc exec -T terminal curl -s -m 10 -o /dev/null -w '%{http_code}' http://gateway:8091/health/liveliness 2>/dev/null || true)"
-  _check "terminal reaches LiteLLM through the gateway" "$code" 200
-  out="$(dc exec -T terminal sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://rustfs:9000/ http://postgres:5432/; do curl -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
-  _check "terminal cannot reach the portal, Open WebUI, LiteLLM, RustFS or Postgres directly" "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000"
+  # ttyd itself, as the main Caddy reaches it, without the secret header (a forged X-Portal-User changes nothing)
+  out="$(dc exec -T caddy wget -S -O /dev/null -T 10 --header 'X-Portal-User: admin@example.com' http://terminal-upstream:7681/ 2>&1 || true)"
+  _check "ttyd refuses requests without the terminal's secret header" "$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')" 407
+  # From inside the sandbox: the gateway's paths, 404 for the rest of LiteLLM, nothing else of the stack
+  out="$(dc exec -T terminal sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs"; do curl -s -m 10 -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
+  _check "terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs" \
+    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "200 404 404 404 404"
+  out="$(dc exec -T terminal sh -c 'curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}" http://gateway:8091/mcp' 2>/dev/null || true)"
+  case "$out" in *search_knowledge*) got=yes ;; *) got=no ;; esac
+  _check "terminal gateway: the shared MCP server's tools" "$got" yes
+  out="$(dc exec -T terminal sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/; do curl -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
+  _check "terminal cannot reach the portal, Open WebUI, LiteLLM/shared-mcp directly, RustFS, the main Caddy or the gateway's other ports" \
+    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000 000 000 000 000"
 }
 
-# terminal_rollback_cleanup — ./stack rollback to a version without the terminal: its container goes (by its
-# Compose labels; that version's compose files do not know it). .env keeps TERMINAL_*: ./stack update brings it back.
+# terminal_image_refs -> the terminal's local build while it is on (lib/images.sh keeps it as :previous for rollback)
+terminal_image_refs() { ! terminal_on || printf '%s/terminal:local\n' "$(project_name)"; }
+
+# terminal_rollback_cleanup — ./stack rollback to a version without the terminal: its containers go (by their
+# Compose labels; that version's compose files do not know them). .env keeps TERMINAL_*: ./stack update brings it back.
 terminal_rollback_cleanup() {
-  local p ids
+  local p ids s
   p="$(project_name)"
-  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$p" --filter "label=com.docker.compose.service=terminal" 2>/dev/null || true)"
-  # shellcheck disable=SC2086  # one id per word
-  [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || warn "could not remove the terminal container — docker rm -f $p-terminal-1"
+  for s in terminal terminal-gateway; do
+    ids="$(docker ps -aq --filter "label=com.docker.compose.project=$p" --filter "label=com.docker.compose.service=$s" 2>/dev/null || true)"
+    # shellcheck disable=SC2086  # one id per word
+    [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1 || warn "could not remove the $s container — docker rm -f $p-$s-1"
+  done
   terminal_on || return 0
   log "terminal: the version you rolled back to has no browser terminal (./stack update brings it back)"
+}
+
+# terminal_uninstall_cleanup — ./stack uninstall, after compose's down (which knows the terminal only while it is
+# on): its volume, networks and images by their exact names, whether or not it is on now. The workspace folder stays.
+terminal_uninstall_cleanup() {
+  local p; p="$(project_name)"
+  docker volume rm "${p}_terminal-home" >/dev/null 2>&1 || true
+  terminal_network_cleanup
+  docker image rm "$p/terminal:local" "$p/terminal:previous" >/dev/null 2>&1 || true
 }

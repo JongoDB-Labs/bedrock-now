@@ -3,10 +3,15 @@
 # theme screen done once, then ttyd on :7681. Each browser connection attaches to the same tmux session (bn-session).
 set -euo pipefail
 umask 077
+# ttyd answers only requests carrying X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>, which only the main Caddy adds after the
+# portal's check: without a real secret (32+ characters, ./stack terminal enable) there is no terminal at all.
+secret="${TERMINAL_PROXY_SECRET:-}"
+case "$secret" in *[!0-9a-f]* | '') echo "bn-terminal: TERMINAL_PROXY_SECRET is missing or not hex — run ./stack terminal enable" >&2; exit 1 ;; esac
+[ "${#secret}" -ge 32 ] || { echo "bn-terminal: TERMINAL_PROXY_SECRET is too short — run ./stack terminal enable" >&2; exit 1; }
 conf="$HOME/.config/bedrock-now"
 mkdir -p "$conf"
-# The shared store and knowledge bases (shared-mcp) through Caddy's gateway: rewritten at every start, so a new
-# SHARED_MCP_TOKEN reaches it. The token then leaves the environment of everything started here.
+# The shared store and knowledge bases (shared-mcp) through the gateway: rewritten at every start, so a new
+# SHARED_MCP_TOKEN reaches it.
 if [ -n "${SHARED_MCP_TOKEN:-}" ] && [ -n "${BN_MCP_URL:-}" ]; then
   jq -n --arg url "$BN_MCP_URL" --arg auth "Bearer $SHARED_MCP_TOKEN" \
     '{mcpServers: {"bedrock-shared": {type: "http", url: $url, headers: {Authorization: $auth}}}}' > "$conf/mcp.json.tmp"
@@ -16,12 +21,14 @@ fi
 # you trust the files in /workspace — stays yours to answer.
 [ -e "$HOME/.claude.json" ] || printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$HOME/.claude.json"
 # ttyd: -W lets keystrokes through; -O refuses a WebSocket whose Origin is not this host (another website cannot
-# drive the terminal with your cookies); -H refuses every request without X-Portal-User, which only Caddy's check
-# adds (caddy/Caddyfile terminal_auth: the portal session, a fresh unlock, the Origin); URL arguments stay off.
-# --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at any pixel ratio;
-# with tmux's mouse on, Shift-drag (Option-drag on a Mac) still selects text for the clipboard.
-exec env -u SHARED_MCP_TOKEN ttyd --port 7681 --writable --check-origin --auth-header X-Portal-User --ping-interval 20 \
-  --index /usr/local/share/bedrock-now/ttyd.html \
+# drive the terminal with your cookies); -H refuses every request without the secret header above; URL arguments
+# stay off. --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at any
+# pixel ratio; with tmux's mouse on, Shift-drag (Option-drag on a Mac) still selects text for the clipboard.
+# The token and the secret are left out of the environment of the shells started here: a convenience, not a
+# boundary — anything in the sandbox runs as the same user and can read them (/proc/1/environ, mcp.json); they only
+# open what the sandbox may use anyway.
+exec env -u SHARED_MCP_TOKEN -u TERMINAL_PROXY_SECRET ttyd --port 7681 --writable --check-origin \
+  --auth-header "X-Bn-Terminal-0$secret" --ping-interval 20 --index /usr/local/share/bedrock-now/ttyd.html \
   -t 'titleFixed=Terminal · bedrock-now' -t fontSize=14 -t disableLeaveAlert=true -t disableResizeOverlay=true \
   -t rendererType=dom -t macOptionClickForcesSelection=true \
   -t 'fontFamily=ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace' \

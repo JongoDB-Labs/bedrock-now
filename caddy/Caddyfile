@@ -142,7 +142,7 @@ http://{$FILES_HOST} {
 # password typed again — posts to /.bn/unlock on the terminal host, answered by the portal before the check (it
 # sets the host-only unlock cookie). Everything else needs the portal's yes for the terminal (?app=terminal, fixed
 # here, so no request header can turn it into another app's check): a session, a fresh unlock, and an Origin of
-# the terminal host itself. Nothing of the browser's (cookies, the proxy secret) reaches ttyd.
+# the terminal host itself. ttyd sits behind terminal-upstream:7681 (the terminal's gateway, compose.terminal.yaml).
 (terminal_unlock) {
 	request_body /.bn/unlock {
 		max_size 16KB
@@ -153,18 +153,23 @@ http://{$FILES_HOST} {
 	}
 }
 
+# (Any client-sent X-Bn-Terminal-* goes here, in a step of its own: within one header_up block Caddy deletes after
+# it sets, which would take the secret header below away again.)
 (terminal_auth) {
+	request_header -X-Bn-Terminal-*
 	forward_auth portal:8000 {
 		uri /auth/verify?app=terminal
-		copy_headers X-Portal-User
 	}
 }
 
-# Towards ttyd: no cookies and no proxy secret. X-Portal-User stays: ttyd (-H) refuses any request without it, so
-# only what passed the check above gets in.
+# Towards ttyd: none of the browser's cookies or headers that only Caddy, the portal or the sidecar may set, and the
+# terminal's secret header (X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>): ttyd answers nothing without it, so only what
+# passed the check above gets in.
 (terminal_upstream) {
 	header_up -Cookie
 	header_up -X-Portal-Proxy
+	header_up -X-Portal-User
+	header_up X-Bn-Terminal-0{$TERMINAL_PROXY_SECRET} 1
 }
 
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only

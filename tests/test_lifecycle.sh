@@ -227,8 +227,10 @@ test_uninstall_confirmed_removes_volumes_and_own_symlink_only() {
   printf 'X=1\n' > "$ENV_FILE"; _stub_dc; HOME="$TMP/home"; STACK_DIR="$TMP/stack"
   mkdir -p "$HOME/.local/bin" "$STACK_DIR/bin"; ln -s "$STACK_DIR/bin/claude-bedrock" "$HOME/.local/bin/claude-bedrock"
   ask() { echo "bedrock-now"; }; confirm() { return 1; }
+  docker() { echo "docker $*" >> "$TMP/calls"; }
   cmd_uninstall 2> "$TMP/err"
   assert_contains "$(cat "$TMP/calls")" "dc down -v --remove-orphans"
+  assert_contains "$(cat "$TMP/calls")" "docker volume rm bedrock-now_terminal-home"   # also while the terminal is off
   [ ! -e "$HOME/.local/bin/claude-bedrock" ] && [ ! -L "$HOME/.local/bin/claude-bedrock" ] || { echo "symlink not removed" >&2; return 1; }
   assert_contains "$(cat "$TMP/err")" ".env and backups/ were kept"
 }

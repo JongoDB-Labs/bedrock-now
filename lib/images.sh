@@ -64,7 +64,9 @@ _local_build() { case "$1" in "$(project_name)/"*:local) return 0 ;; esac; retur
 images_snapshot_before() {
   local d ref
   d="$(images_dir)"; mkdir -p "$d" 2>/dev/null || return 0
-  project_refs "${1:-}" | snapshot_refs > "$d/before.tsv.new" 2>/dev/null || true
+  # + the browser terminal's local build while it is on (its overlay, compose.terminal.yaml, is not compose.yaml)
+  { project_refs "${1:-}"; ! declare -F terminal_image_refs >/dev/null || terminal_image_refs; } |
+    snapshot_refs > "$d/before.tsv.new" 2>/dev/null || true
   mv "$d/before.tsv.new" "$d/before.tsv" 2>/dev/null || true
   while IFS= read -r ref; do
     _local_build "$ref" || continue

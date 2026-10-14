@@ -7,10 +7,11 @@ import contextlib
 import html
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -115,6 +116,17 @@ class _CarryOver:
                 message = {**message, "headers": list(message.get("headers", [])) + self.upgrade(scope["bn_carry"])}
             await send(message)
         await self.app(scope, receive, send_upgraded)
+def _is_websocket(headers) -> bool:
+    """A WebSocket handshake to the terminal host, however its path is spelled (ttyd also upgrades //ws, /%77s or
+    /ws?x=1): its Sec-WebSocket-Key or Upgrade header (Caddy's forward_auth passes the first on), or a path that
+    normalises to …/ws."""
+    if headers.get("sec-websocket-key") is not None or "websocket" in (headers.get("upgrade") or "").lower():
+        return True
+    # (not urlsplit: it would read "//ws" as a host name)
+    path = unquote((headers.get("x-forwarded-uri") or "/").split("?", 1)[0].split("#", 1)[0])
+    return re.sub(r"/+", "/", path).rstrip("/").endswith("/ws")
+
+
 def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, retry_after: int = 0) -> HTMLResponse:
     """The terminal host's own page while it is locked: the portal password again (POST /.bn/unlock, same host).
     Styled by the portal's public login.css; framed only by the portal (its Terminal tab), or full screen."""
@@ -261,7 +273,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                 return _no_store(PlainTextResponse(
                     "The terminal is off for remote access (REMOTE_TERMINAL=true in .env turns it on).", status_code=403))
             return _no_store(PlainTextResponse("The terminal is off (./stack terminal enable).", status_code=404))
-        websocket = urlsplit(request.headers.get("x-forwarded-uri", "/")).path == "/ws"   # ttyd's WebSocket
+        websocket = _is_websocket(request.headers)
         if not terminal_origin_ok(request.headers, settings, rem, websocket):
             log.warning("terminal: a request from another site (Origin %s) refused", request.headers.get("origin", "none")[:100])
             return _no_store(PlainTextResponse("cross-site request refused", status_code=403))

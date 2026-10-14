@@ -2,7 +2,7 @@
 # Host integration (sourced by lib/commands.sh):
 #   - AWS credentials from the machine's IAM role on EC2 (AWS_AUTH=instance-role: no keys stored in .env);
 #   - ./stack serve: keep the stack up and the Mac awake while it serves (caffeinate; systemd-inhibit on Linux);
-#   - ./stack ssh-info: how to run claude-bedrock from a phone over SSH (never a web terminal).
+#   - ./stack ssh-info: how to run claude-bedrock from a phone over SSH (the browser terminal is ./stack terminal).
 # See docs/cloud-vm.md and docs/phone-claude-code.md.
 
 host_os() { uname -s; }   # overridable in tests
@@ -452,7 +452,8 @@ cmd_ssh_info() {
   fi
   cb="$(claude_bedrock_cmd 2>/dev/null || echo claude-bedrock)"
   cat <<EOF
-Claude Code (claude-bedrock) from your phone: SSH into this machine — bedrock-now has no web terminal.
+Claude Code (claude-bedrock) from your phone: SSH into this machine — or, without SSH, the optional browser
+terminal (./stack terminal enable: a sandbox in the portal that sees only one folder of yours).
 
   This machine   $name
                  ($where)

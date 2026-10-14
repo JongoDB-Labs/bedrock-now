@@ -61,7 +61,7 @@ ENV LANG=C.UTF-8 HOME=/home/claude SHELL=/bin/bash NPM_CONFIG_PREFIX=/home/claud
 USER claude
 WORKDIR /workspace
 EXPOSE 7681
-# ttyd answers only requests that carry X-Portal-User (-H; Caddy adds it after the portal's check), so this one does too.
+# ttyd answers only requests that carry the terminal's secret header (bn-terminal), so this one does too.
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 \
-  CMD curl -fsS -o /dev/null -H 'X-Portal-User: healthcheck' http://127.0.0.1:7681/ || exit 1
+  CMD sh -c 'curl -fsS -o /dev/null -H "X-Bn-Terminal-0$TERMINAL_PROXY_SECRET: 1" http://127.0.0.1:7681/' || exit 1
 CMD ["bn-terminal"]

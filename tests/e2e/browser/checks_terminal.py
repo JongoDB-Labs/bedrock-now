@@ -215,7 +215,7 @@ def claude_inside(ctx):
     expect(re.search(r"^bedrock · " + re.escape(haiku), out, re.M), f"no launch line: {out[-500:]!r}")
     expect(re.search(r"^ok\.?$", out, re.M | re.I), f"no 'ok' answer: {out[-500:]!r}")
     cost = re.search(r"^session: (.*)$", out, re.M).group(1)
-    expect(re.match(r"(<?\$[0-9.]+ \(claude-code key|no spend booked yet)", cost), f"session line {cost!r}")
+    expect(re.match(r"(<?\$[0-9.]+ \(terminal key|no spend booked yet)", cost), f"session line {cost!r}")
     launch = re.search(r"^bedrock · .*$", out, re.M).group(0)
     shot(page, "43-terminal-claude-bedrock")
     rec.save()

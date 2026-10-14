@@ -354,7 +354,7 @@ character; `./stack helper install` refuses such a path. `%` and `$` are escaped
 `./stack terminal enable` (off by default) puts Claude Code and a shell into the portal's Terminal tab. Earlier
 versions refused to offer this at all: a shell in the browser is one stolen session away from running commands.
 It is now offered as a **sandbox** with the checks below, so a stolen session cookie alone opens nothing, and
-what a successful attacker reaches is the container, not your computer.
+what a successful attacker reaches is the container — with the three exceptions under *Threat model*.
 
 - [x] **Not a shell on your computer.** ttyd runs `tmux` in its own container (`terminal/`, built locally; base
   image pinned by digest, Claude Code by version and SHA-512 in `terminal/claude-code/package-lock.json`, ttyd's
@@ -362,25 +362,41 @@ what a successful attacker reaches is the container, not your computer.
   `no-new-privileges`, a read-only image, a 1 GB in-memory `/tmp`, 4 GB of memory (`TERMINAL_MEM_LIMIT`) and
   1024 processes at most. No Docker socket, no host network, no published port.
 - [x] **One folder of yours.** The only host folder it sees is `TERMINAL_WORKSPACE` (at `/workspace`; Docker never
-  creates it). `./stack terminal enable` resolves symlinks and refuses `/`, system folders (where the Docker
-  socket lives), your home folder itself or any folder around it, hidden folders directly in your home folder
-  (`~/.ssh`, `~/.aws`, `~/.docker` …), the bedrock-now folder and anything around or inside it (its `.env` holds
-  every secret). Its default, `~/bedrock-now-workspace`, is created with mode 700. `TERMINAL_*` values from your
-  shell are ignored (`dc()` drops them): only `.env` decides what is mounted. Claude Code's own settings and
-  history live in the `terminal-home` volume (not part of `./stack backup`).
-- [x] **Inside the stack: LiteLLM and the shared MCP server only.** Its network `terminal` is internal and holds
-  only the container and Caddy. Caddy's gateway listener (`:8091`, bound to its address on that network alone)
-  forwards to LiteLLM's API and shared-mcp's `/mcp`, where the container still needs the `claude-code` key and
-  `SHARED_MCP_TOKEN`. It cannot reach the portal, Open WebUI (which trusts `X-Portal-User` from its network),
-  Postgres, RustFS or the speech-to-text container, and never holds the master key, the portal password or AWS
-  credentials. It can reach Caddy's other listeners like a browser on this computer: every site there needs a
-  portal session. Whatever runs in it can spend from the `claude-code` key (capped by `BUDGET_CLAUDE_CODE`) and
-  read and write the shared store; `./stack test` and the e2e suite probe these limits.
+  creates it). `./stack terminal enable` resolves symlinks to the on-disk path (the external `/bin/pwd -P`, which
+  gives the real spelling on macOS's case-insensitive disks) and refuses — comparing without regard to case on
+  macOS — `/`, system folders (where the Docker socket lives), your home folder itself or any folder around it,
+  hidden folders directly in your home folder (`~/.ssh`, `~/.aws`, `~/.docker` …), `~/Library` (keychains, app
+  data; only its iCloud Drive folder, `~/Library/Mobile Documents`, is allowed), the bedrock-now folder and
+  anything around or inside it (its `.env` holds every secret), and paths `.env` cannot hold. Every
+  `./stack up`, setup and update checks the folder again (it may have become a symlink since): a refused or
+  missing one leaves the terminal out of that run, with the reason. Its default, `~/bedrock-now-workspace`, is
+  created with mode 700. `TERMINAL_*` values from your shell are ignored (`dc()` drops them): only `.env` decides
+  what is mounted. Claude Code's own settings and history live in the `terminal-home` volume (not part of
+  `./stack backup`).
+- [x] **Its own key.** It holds `claude-code-terminal`, a LiteLLM key of its own with its own monthly budget
+  (`BUDGET_TERMINAL`, $50; a meter on Home, a line in `./stack costs`), never the `claude-code` key of
+  `claude-bedrock` on your computer, the master key, the portal password or AWS credentials. Delete the key in
+  Admin to cut the terminal off without touching anything else (`./stack terminal enable` makes a new one).
+- [x] **Inside the stack: one neighbour, a few paths.** Its network `terminal` is internal and holds only the
+  container and its gateway, a second minimal Caddy (`terminal-gateway`, the main Caddy's pinned image, read-only,
+  no capabilities but binding, no admin API, no published port). The gateway listens there only on `:8091`
+  (`bind gateway`) and forwards exactly what Claude Code and the terminal's `claude-bedrock` use: LiteLLM's
+  `/v1/messages` (and `…/count_tokens`), `/v1/models`, `/key/info`, `/model/info`, `/health/liveliness`, and
+  shared-mcp's `/mcp` — each still needing the terminal's key or `SHARED_MCP_TOKEN`. Everything else is 404 there:
+  LiteLLM's admin UI and management API (`/key/generate` …), its spend logs, and its `/bedrock/…` pass-through,
+  which signs requests with the stack's AWS credentials and would reach any Bedrock model, priced or not. The
+  main Caddy (the portal and its login form, the speech-to-text site), the portal, Open WebUI (which trusts
+  `X-Portal-User` from its network), Postgres, RustFS and the speech-to-text container share no network with the
+  terminal. `./stack test` and the e2e suite probe all of this from inside the container.
 - [x] **Out: the internet, unless you say no.** A second network, `terminal-out` (`compose.terminal-egress.yaml`),
-  gives it the internet for git, npm, pip and Claude Code's web fetch. On Docker Desktop that also reaches
-  services of your computer through `host.docker.internal`; on Linux a container can reach the host through its
-  network's gateway address (services listening on `0.0.0.0`). `TERMINAL_EGRESS=off` in `.env` (then
-  `./stack up`) leaves only the internal network.
+  gives it the internet for git, npm, pip and Claude Code's web fetch. On Docker Desktop the internet includes your
+  Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000` and shared-mcp
+  on `:8765` directly (past the gateway's list, still with their keys), dev servers, and the Docker API if
+  *Expose daemon on tcp://localhost:2375* is on (that would be the whole machine). In the container the names
+  `host.docker.internal` and `gateway.docker.internal` point at an unroutable address — a speed bump only: the
+  address itself stays reachable. On Linux a container can reach the host through its network's gateway address
+  (services listening on `0.0.0.0`). `TERMINAL_EGRESS=off` in `.env` (then `./stack up`) leaves only the
+  internal network and closes these paths.
 - [x] **A fresh password to open it.** The terminal host (`terminal.PORTAL_HOST`) needs the portal session **and**
   an unlock: the portal password typed again on that host's own page (`POST /.bn/unlock`; same lock-out as the
   login form: five wrong ones lock both for a while). The unlock is a signed cookie, host-only on the terminal
@@ -389,24 +405,43 @@ what a successful attacker reaches is the container, not your computer.
   **Sign out** revokes it with every session. Caddy asks the portal on every request with
   `/auth/verify?app=terminal`, fixed in the Caddyfile, so no request header can turn it into another app's
   check; the unlock form posts only with the terminal host's own `Origin`.
-- [x] **No other website can drive it.** A WebSocket must come with the terminal host's own `Origin`, checked
-  twice: by the portal before Caddy proxies anything (a missing, foreign, portal or app Origin is refused), and
-  by ttyd itself (`--check-origin`). ttyd also refuses every request without the `X-Portal-User` header that only
-  Caddy adds after the portal's yes (`--auth-header`); Caddy strips all cookies and the proxy secret before ttyd.
-  It may be framed only by the portal.
+- [x] **No other website can drive it, nothing else can reach it.** A WebSocket handshake — recognised by its
+  `Sec-WebSocket-Key`/`Upgrade` headers or any spelling of the `/ws` path — must come with the terminal host's own
+  `Origin`, checked twice: by the portal before Caddy proxies anything (a missing, foreign, portal or app Origin
+  is refused), and by ttyd itself (`--check-origin`). ttyd answers only requests that carry
+  `X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>` (`--auth-header`; 128 random bits in `.env`, mode 600), which only the
+  main Caddy adds after the portal's yes — a forged `X-Portal-User` or a request from any other container gets
+  407 — and the gateway serves ttyd only on its default-network address (`bind terminal-upstream`). Caddy strips
+  all cookies, the proxy secret and any client-sent `X-Bn-Terminal-*` before ttyd. It may be framed only by the
+  portal.
 - [x] **Remote access: off for the terminal.** The remote sites route the terminal's name only when
-  `REMOTE_TERMINAL=true` is in `.env` (then `./stack up`): `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`
+  `REMOTE_TERMINAL` is on in `.env` (true/1/yes/on, read the same by `./stack` and the portal; another value is
+  named as off), then `./stack up`: `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`
   (`<base>-terminal.<tailnet>.ts.net`, a fifth Tailscale Service, or `terminal.<your domain>`), and otherwise the
   remote blocks match nothing. The portal refuses remote terminal requests without it as well.
-- [x] **Easy to turn off.** `./stack terminal disable` removes the container and its networks; the folder and the
-  `terminal-home` volume stay (`docker volume rm <project>_terminal-home` forgets Claude Code's history).
-  `./stack uninstall` removes the volume too.
+- [x] **Easy to turn off.** `./stack terminal disable` removes the container, its gateway and their networks; the
+  folder, the `terminal-home` volume and the key stay (`docker volume rm <project>_terminal-home` forgets Claude
+  Code's history). `./stack uninstall` removes the volume, the networks and the image too, also while the terminal
+  is off.
 
 **Threat model.** Someone with your portal session cookie but not the password gets the unlock page. Someone with
-both (or with your unlocked browser) gets a shell in the container: your workspace folder, the `claude-code` key
-within its budget, the shared store, the internet — not your other files, the stack's secrets or the other
-services. Treat the workspace as what it is: whatever you put there, Claude Code and that shell can read and
-change. Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need your whole machine.
+both (or with your unlocked browser), or a malicious package or prompt that Claude Code runs in there, gets a shell
+in the container: your workspace folder, the terminal's key within its budget, the shared store, the internet
+(and, with it, your Mac's loopback services through Docker Desktop, unless `TERMINAL_EGRESS=off`) — not your other
+files, the stack's secrets or its other services. Three things reach further than the container and are yours to
+weigh:
+
+1. **The workspace can run code on your computer later.** Anything in it can be changed: a `.git/hooks` script,
+   `core.fsmonitor` or `core.sshCommand` in `.git/config`, `.vscode/tasks.json`, `.envrc` (direnv), an npm script
+   or Makefile target, Claude Code's `.claude/settings.json` hooks or `.mcp.json` — each runs on your computer
+   when you open the folder there with the tool that reads it (git, your editor, direnv, npm, `claude-bedrock`).
+   Use a workspace you only open in the terminal, or review it like code from someone else.
+2. **Your Mac's own services** (Docker Desktop, egress on): see above — LiteLLM and shared-mcp directly, dev
+   servers, an exposed Docker API.
+3. **The knowledge bases.** `write_file(…, ingest_to=…)` through the shared MCP server can put text into a
+   knowledge base that Chat later answers from (a prompt-injection route into Chat sessions).
+
+Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need your whole machine.
 
 ## Code provenance
 

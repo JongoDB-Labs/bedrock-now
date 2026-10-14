@@ -1,8 +1,8 @@
 #!/bin/bash
 # claude-bedrock in the bedrock-now terminal: Claude Code on AWS Bedrock through this stack's LiteLLM, reached through
-# Caddy's gateway on the terminal's own network (compose.terminal.yaml sets the environment). The same settings as
+# the terminal's gateway on its own network (compose.terminal.yaml sets the environment). The same settings as
 # bin/claude-bedrock on your computer — model mapping, no telemetry, the shared MCP server — plus its launch line
-# (price and budget) and a session cost on exit. That cost is the claude-code key's spend after the session minus
+# (price and budget) and a session cost on exit. That cost is the terminal key's spend after the session minus
 # before it: LiteLLM's per-session log needs the master key, which never enters this container, so other sessions
 # on the same key during this one count too. Plain `claude` here also uses Bedrock (without these extras).
 set -euo pipefail
@@ -35,7 +35,7 @@ case "${1:-}" in
     cat <<EOT
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now, in the browser terminal
   Model    ${CLAUDE_BEDROCK_OPUS_MODEL:-not set up} (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session
-  Proxy    LiteLLM through the stack's gateway ($gw), key 'claude-code' (monthly budget; Home shows it)
+  Proxy    LiteLLM through the stack's gateway ($gw), key 'claude-code-terminal' (BUDGET_TERMINAL; Home shows it)
   Files    /workspace is the folder ./stack terminal enable shared; nothing else of your computer is here
   Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch line and the session cost on exit
   Below    Claude Code's own help; every option works with claude-bedrock
@@ -104,7 +104,7 @@ for _ in 1 2 3 4 5 6 7 8 9; do
 done
 if [ -z "$after" ]; then msg="session cost: unknown (LiteLLM did not answer) — Home shows the key's spend"
 elif awk -v a="$after" -v b="$before" 'BEGIN { exit !(a > b) }'; then
-  msg="session: $(usd "$(awk -v a="$after" -v b="$before" 'BEGIN { printf "%.10f", a - b }')") (claude-code key: $(usd "$after") this period)"
+  msg="session: $(usd "$(awk -v a="$after" -v b="$before" 'BEGIN { printf "%.10f", a - b }')") (terminal key: $(usd "$after") this period)"
 else msg="session: no spend booked yet — Home shows the key's spend"; fi
 if [ -t 2 ]; then printf '\r\033[K%s\n' "$msg" >&2; else printf '%s\n' "$msg" >&2; fi
 exit "$rc"

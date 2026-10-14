@@ -86,6 +86,18 @@ get_env() {
   K="$1" awk 'index($0, ENVIRON["K"] "=") == 1 { v = substr($0, length(ENVIRON["K"]) + 2) } END { printf "%s", v }' "$ENV_FILE"
 }
 
+# env_value_problem VALUE -> why set_env would refuse VALUE (nothing, status 1, when it is fine)
+env_value_problem() {
+  local tab=$'\t'
+  case "$1" in
+    *$'\n'*) echo "contains a newline" ;;
+    *'$'* | *'"'* | *"'"* | *'`'*) echo "contains \$, a quote or a backtick, which docker compose would interpret — use a different value" ;;
+    *" #"* | *"$tab#"*) echo "contains whitespace followed by #, which docker compose reads as a comment" ;;
+    [[:space:]]* | *[[:space:]]) echo "has leading or trailing whitespace" ;;
+    *) return 1 ;;
+  esac
+}
+
 # set_env KEY VALUE -> writes/replaces KEY in $ENV_FILE atomically, keeps mode 600.
 # Values must survive docker compose's .env parsing literally, so anything compose would
 # interpolate or treat as quoting/comment syntax is rejected (generated secrets are hex,
@@ -109,13 +121,8 @@ set_env() {
 
 # _env_value_check KEY VALUE — dies unless docker compose reads VALUE literally (set_env's rules)
 _env_value_check() {
-  local tab=$'\t'
-  case "$2" in
-    *$'\n'*) die "set_env: value for $1 contains a newline" ;;
-    *'$'* | *'"'* | *"'"* | *'`'*) die "set_env: value for $1 contains \$, a quote or a backtick, which docker compose would interpret — use a different value" ;;
-    *" #"* | *"$tab#"*) die "set_env: value for $1 contains whitespace followed by #, which docker compose reads as a comment" ;;
-    [[:space:]]* | *[[:space:]]) die "set_env: value for $1 has leading or trailing whitespace" ;;
-  esac
+  local why
+  if why="$(env_value_problem "$2")"; then die "set_env: value for $1 $why"; fi
 }
 
 # set_env_batch KEY VALUE [KEY VALUE…] -> every pair in ONE atomic write (mode 600 kept); "-KEY ''" removes KEY's
@@ -269,12 +276,20 @@ compose_overlays() {
       domain) echo compose.tailscale.yaml compose.domain.yaml ;;
     esac
   fi
-  if [ "$(get_env TERMINAL_ENABLED)" = true ]; then
+  # (Without a folder in TERMINAL_WORKSPACE compose could not even read that file: it is left out, and ./stack up
+  # says why — lib/terminal.sh terminal_up_hook.)
+  if flag_on "$(get_env TERMINAL_ENABLED)" && [ -n "$(get_env TERMINAL_WORKSPACE)" ]; then
     echo compose.terminal.yaml
-    [ "$(get_env TERMINAL_EGRESS)" = off ] || echo compose.terminal-egress.yaml
+    flag_off "$(get_env TERMINAL_EGRESS)" || echo compose.terminal-egress.yaml
   fi
   return 0
 }
+
+# flag_on VALUE / flag_off VALUE -> 0 for true|1|yes|on / false|0|no|off, in any case (the portal reads its
+# switches the same way: portal/portal/config.py _on)
+_flag() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'; }
+flag_on() { case "$(_flag "$1")" in true | 1 | yes | on) return 0 ;; esac; return 1; }
+flag_off() { case "$(_flag "$1")" in false | 0 | no | off) return 0 ;; esac; return 1; }
 
 # curl with a bearer token that never appears in `ps` output (token is fed via -K stdin).
 curl_auth() { # curl_auth TOKEN curl-args...

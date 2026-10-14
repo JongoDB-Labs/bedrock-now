@@ -170,9 +170,10 @@ def home(ctx):
     up = page.locator("#services li.up").count()
     total = page.locator("#services li").count()
     expect(total == want_svc and up == want_svc, f"services {up}/{total} up: {page.inner_text('#services')}")
-    expect(page.locator("#meters li.meter").count() == 3, "three spend meters")
+    labels = ("Claude Code", "Open WebUI", "Setup") + (("Terminal",) if ENV.get("LITELLM_KEY_TERMINAL") else ())
+    expect(page.locator("#meters li.meter").count() == len(labels), f"{len(labels)} spend meters")
     meters = page.inner_text("#meters")
-    for label in ("Claude Code", "Open WebUI", "Setup"):
+    for label in labels:
         expect(label.lower() in meters.lower(), f"meter {label} missing: {meters[:200]}")
     tot = page.inner_text("#total")
     expect(re.match(r"^(\$\d|<\$0\.0001)", tot), f"total {tot!r}")
@@ -216,7 +217,7 @@ def home(ctx):
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return (f"{want_svc}/{want_svc} services, 3 meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
+    return (f"{want_svc}/{want_svc} services, {len(labels)} meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
             "4 Copy buttons")
 
 
