@@ -548,8 +548,12 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
         rshot(page, scope, f"{label}-login-failed")
         raise AssertionError(f"[{where}] no bucket list after login (see shots/{label}-login-failed.png)")
     steps.append("login")
-    expect(scope.locator("tr", has_text="openwebui").count() and scope.locator("tr", has_text="shared").count(),
-           f"[{where}] buckets openwebui/shared not listed")
+    for bucket in ("openwebui", "shared"):   # the list loads after the "Create Bucket" button: wait for each row
+        try:
+            scope.locator("tr", has_text=bucket).first.wait_for(timeout=20000)
+        except Exception:
+            rshot(page, scope, f"{label}-no-{bucket}")
+            raise AssertionError(f"[{where}] bucket {bucket} not listed (see shots/{label}-no-{bucket}.png)")
     steps.append("buckets")
     rshot(page, scope, f"{label}-buckets")
     scope.get_by_text("shared", exact=True).first.click()

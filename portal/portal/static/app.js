@@ -61,6 +61,13 @@ function day(iso) {
   const d = new Date(iso);
   return isNaN(d) ? iso.slice(0, 10) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+// since ISO -> "12 min ago" / "3 h ago" / "Oct 14" (failures of the last 24 hours cross midnight)
+function since(iso) {
+  const ms = Date.now() - new Date(iso);
+  if (isNaN(ms)) return "";
+  if (ms < 3600000) return `${Math.max(1, Math.round(ms / 60000))} min ago`;
+  return ms < 86400000 ? `${Math.round(ms / 3600000)} h ago` : day(iso);
+}
 function ago(iso) {
   const d = new Date(iso); if (isNaN(d)) return iso || "";
   const days = Math.floor((Date.now() - d) / 86400000);
@@ -114,13 +121,16 @@ function renderSpend(spend) {
       const ek = useEq ? (eq.keys || {})[k.alias] : null;
       const pct = k.max_budget ? (k.spend / k.max_budget) * 100 : 0;   // budgets count actual spend
       if (pct >= 100) li.classList.add("over"); else if (pct >= 80) li.classList.add("warn");
-      const shown = ek && ek.spend != null ? ek.spend : k.spend;
-      const amount = el("span", { class: "amount" }, el("b", { text: usd(shown) }), k.max_budget != null ? ` of ${usd(k.max_budget)}` : ", no budget");
+      const budget = k.max_budget != null ? ` of ${usd(k.max_budget)}` : ", no budget";
+      // Equivalent with free-model usage: both figures, the bold one (actual) is what the bar shows
+      const amount = ek && ek.spend != null && ek.extra > 0
+        ? el("span", { class: "amount" }, `≈ ${usd(ek.spend)} equivalent · `, el("b", { text: usd(k.spend) }), `${budget} actual`)
+        : el("span", { class: "amount" }, el("b", { text: usd(k.spend) }), budget);
       head.append(amount);
       const bar = el("i"); bar.style.width = `${Math.min(pct, 100)}%`;
       const gauge = el("div", { class: "gauge", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100",
         "aria-valuenow": String(Math.round(pct)), "aria-label": `${k.label}: ${Math.round(pct)}% of budget` }, bar);
-      let foot = k.max_budget ? `${Math.round(pct)}% of the monthly budget${useEq ? " (actual spend)" : ""}` : "no budget set";
+      let foot = k.max_budget ? `${Math.round(pct)}% of the monthly budget` : "no budget set";
       if (pct >= 100) foot = "Budget used up: requests with this key are refused until it resets";
       else if (pct >= 80) foot = `${Math.round(pct)}% used: close to the budget`;
       if (k.reset_at) foot += ` · resets ${day(k.reset_at)}`;
@@ -227,7 +237,7 @@ function renderOpenRouter(acct, use) {
   const ul = el("ul", { class: "or-fails" });
   for (const g of f.groups) {
     ul.append(el("li", {}, el("span", { class: "or-fail" }, el("b", { text: `${count(g.count)}×` }), ` ${g.label}`,
-      g.last_at && !isNaN(new Date(g.last_at)) ? el("span", { class: "or-when", text: ` · last at ${new Date(g.last_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` }) : null),
+      g.last_at && since(g.last_at) ? el("span", { class: "or-when", text: ` · last ${since(g.last_at)}` }) : null),
       g.fix ? el("span", { class: "or-fix", text: g.fix }) : null));
   }
   box.append(ul);

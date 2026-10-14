@@ -121,9 +121,10 @@ def login_csrf(ctx):
         expect(r.status == 403 and not r.headers_all("set-cookie"), f"Origin {o}: HTTP {r.status}")
     r = http("POST", None, "/login", {"Content-Type": "application/x-www-form-urlencoded", "Referer": origin() + "/login"}, body)
     expect(r.status == 303, f"same-origin Referer without Origin: HTTP {r.status}")
-    r = http("POST", None, "/login", {"Origin": origin(), "Content-Type": "application/x-www-form-urlencoded"}, "x" * 20000)
-    expect(r.status == 413, f"20 KB login body: HTTP {r.status}")
-    return "foreign/app/missing Origin → 403; same-origin Referer → 303; 20 KB body → 413"
+    # 9 KB: over the portal's 8 KB form limit, under Caddy's 16 KB, so the portal's own 413 answers (deterministic)
+    r = http("POST", None, "/login", {"Origin": origin(), "Content-Type": "application/x-www-form-urlencoded"}, "x" * 9000)
+    expect(r.status == 413, f"9 KB login body: HTTP {r.status}")
+    return "foreign/app/missing Origin → 403; same-origin Referer → 303; 9 KB body → 413"
 
 
 @check("http", "login-cookie-and-next")

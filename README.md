@@ -382,7 +382,8 @@ An account without credits can only use free models, so `apply`, `set` and setup
 | Error | Why | Fix |
 |---|---|---|
 | 404 *No endpoints found matching your data policy* | your privacy settings rule out every provider of that model (common for free models) | allow free endpoints that train on request data at [Settings › Privacy](https://openrouter.ai/settings/privacy), or pick another model |
-| 429 *rate limited* | free models allow 20 requests a minute and 50 a day (1000 a day once you have bought at least $10 of credits); a popular free model can also be busy at its provider | wait, try another model, or buy credits |
+| 429 *rate limited* | free models allow 20 requests a minute and 50 a day (1000 a day once you have bought at least $10 of credits) | wait, try another model, or buy credits |
+| 429 *temporarily rate-limited upstream* / *Provider returned error* | a popular free model is busy at its provider, for everyone (not your limit) | retry shortly, pick another free model, or use the free router `or/openrouter/free` |
 | 402 *payment required* | paid models need credits (a negative balance blocks free models too) | buy credits at [Settings › Credits](https://openrouter.ai/settings/credits), or `./stack openrouter models free` |
 | 401 | the key was revoked or mistyped | a new key: paste it into `.env` and run `./stack openrouter apply` (or `./stack openrouter set`) |
 
@@ -397,6 +398,8 @@ card then has a switch (remembered per browser):
 - **Equivalent**: what the same usage would have cost if every request had been paid — each free model
   (`…:free`) priced at its paid version (the same id without `:free`); a free model without one stays $0 and is
   named as such. The budget bars keep showing actual spend.
+
+The go-to free model is the free router `or/openrouter/free`: it picks a free model that is available right now.
 
 Home also shows OpenRouter's own count of today's free-model requests against the key's daily limit (50 a day,
 1,000 after buying $10 of credits; counted per UTC day), requests and tokens to `or/…` models today and in the

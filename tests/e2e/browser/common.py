@@ -123,7 +123,10 @@ def http(method: str, sub: str | None, path: str, headers: dict | None = None, b
         body = body.encode()
     conn.request(method, path, body=body, headers=h)
     r = conn.getresponse()
-    data = r.read()
+    try:
+        data = r.read()
+    except httpclient.IncompleteRead as e:   # the server answered and closed early (e.g. a refused oversize body)
+        data = e.partial
     out = Resp(r.status, r.getheaders(), data)
     conn.close()
     return out

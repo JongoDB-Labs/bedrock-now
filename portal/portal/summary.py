@@ -249,7 +249,10 @@ def models_with_openrouter(s: Settings) -> dict:
 async def spend_and_usage(client: httpx.AsyncClient, s: Settings) -> dict:
     """spend() plus, while OpenRouter is on, the Equivalent view and OpenRouter usage (usage.py); both None when off."""
     sp = await spend(client, s)
-    sp["equivalent"], sp["openrouter_usage"] = await usage.build(client, s, sp)
+    try:
+        sp["equivalent"], sp["openrouter_usage"] = await usage.build(client, s, sp)
+    except Exception as e:  # noqa: BLE001 — Actual (above) must never break because of the extra views
+        sp["equivalent"], sp["openrouter_usage"] = usage.unavailable(f"usage view failed ({type(e).__name__})")
     return sp
 
 

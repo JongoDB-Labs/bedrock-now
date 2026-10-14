@@ -37,8 +37,9 @@ body.shell { height: 100vh; display: grid; grid-template-columns: 200px minmax(0
 .figure { font-family: var(--figures); font-size: 44px; line-height: 1.1; font-variant-numeric: tabular-nums lining-nums; letter-spacing: -0.01em; }
 .total-note { color: var(--muted); }
 .meters { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
-.meter-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
-.meter-head .amount { font-variant-numeric: tabular-nums; }
+.meter-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; font-size: 14px; }
+.meter-head > span:first-child { white-space: nowrap; }
+.meter-head .amount { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }   /* a long one wraps under the name */
 .meter-head .amount b { font-family: var(--figures); font-weight: 600; font-size: 16px; }
 .gauge { position: relative; height: 10px; margin-top: 6px; border-radius: 5px; background: var(--track); overflow: hidden; }
 .gauge i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--accent); }

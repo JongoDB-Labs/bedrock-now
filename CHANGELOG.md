@@ -54,10 +54,10 @@ All notable changes to bedrock-now are documented here. The format follows
   cache-read price), so you can see what the same usage would have cost; a free model without a paid version stays
   $0 and is named. A two-button switch on the Spend card (remembered per browser as `bn.costView`) changes the
   30-day total and each key's amount, with a line like "of which $0.84 is free-model usage you paid $0 for"; the
-  budget bars keep showing actual spend. The portal reads per-model tokens from LiteLLM 1.105.0's
-  `GET /user/daily/activity/aggregated` (master key; one request for the widest window needed, cached for a
-  minute; per key through its hashed-key breakdown, from the first UTC day of its budget period); when LiteLLM
-  cannot answer, Equivalent says so and Actual is unchanged. `/api/summary` gains `spend.equivalent`
+  budget bars keep showing actual spend (a key reads "≈ $12.00 equivalent · $6.00 of $10.00 actual"). The portal
+  reads per-model tokens from LiteLLM 1.105.0's `GET /user/daily/activity/aggregated` (master key; one request
+  for the widest window needed, cached for a minute; per key through its hashed-key breakdown, from the first
+  UTC day of its budget period); when LiteLLM cannot answer, Equivalent says so and Actual is unchanged. `/api/summary` gains `spend.equivalent`
   (`total_30d`, `extra_30d`, free requests and tokens, per-key `spend`/`extra`/free counts, `no_paid_variant`,
   `error`; `null` while OpenRouter is off) and each key row a `period_start`.
 - **OpenRouter usage and failures on Home**, under the OpenRouter account line: the key's free-model requests
@@ -65,10 +65,15 @@ All notable changes to bedrock-now are documented here. The format follows
   tokens to `or/…` models today and in the last 30 days split free / paid with their cost (in Equivalent also what
   the free ones would have cost), the five most used models, and the last 24 hours' failed `or/…` requests from
   LiteLLM's logs (`GET /spend/logs/v2?status_filter=failure`, cached for a minute), grouped by cause with a
-  one-line fix: daily free limit reached, rate limited, no credits (HTTP 402), privacy settings that exclude free
-  endpoints (HTTP 404 "No endpoints found matching your data policy"), a rejected key (HTTP 401), a used-up key
-  budget, or the status and the provider's message (keys and AWS ARNs masked). In `/api/summary` as
-  `spend.openrouter_usage` (`null` while OpenRouter is off). Phone layout included.
+  one-line fix: daily free limit reached, the model busy upstream (HTTP 429 "…temporarily rate-limited upstream":
+  its provider throttles everyone — retry, another free model, or the free router `or/openrouter/free`), this
+  key's own rate limit, no credits (HTTP 402), privacy settings that exclude free endpoints (HTTP 404 "No
+  endpoints found matching your data policy"), a rejected key (HTTP 401), a used-up key budget, or the status and
+  the provider's message (keys, AWS access keys, ARNs, account ids, key hashes and emails masked). In
+  `/api/summary` as `spend.openrouter_usage` (`null` while OpenRouter is off). Failed requests' prompt-token
+  estimates are counted only in proportion to answered requests, so bursts of refusals do not inflate tokens or
+  Equivalent. If anything in these views fails, they say "usage view failed (…)" and Actual is unchanged. Phone
+  layout included.
 - `./stack costs` and `./stack openrouter status` print OpenRouter usage through LiteLLM: free and paid requests
   and tokens in the last 30 days (free as "$0 actual (≈ $… at paid rates)") and today's requests.
 
@@ -87,8 +92,13 @@ All notable changes to bedrock-now are documented here. The format follows
 - **Chat's cost line for free models** (cost filter version 4): an answer from a free OpenRouter model reads
   `free · 1,240 in / 380 out · Gemma 4 31B (free) · ≈ $0.0002 at paid rates · chat ≈ $0.04` instead of
   `≈ $0.00 · …`; the paid-rates figure appears only when the model has a paid version (its prices now reach the
-  filter as `equivalent_*_cost_per_token`), and the chat total stays actual. Older footers (every earlier shape)
-  are still stripped before a chat goes back to the model and still count in the chat total.
+  filter as `equivalent_*_cost_per_token`; a change in a paid version's price now also counts as a change for
+  `openrouter_refresh`, so the filter re-syncs), and the chat total stays actual. Older footers (every earlier
+  shape) are still stripped before a chat goes back to the model and still count in the chat total.
+- Docs name the free router `or/openrouter/free` as the go-to free model (it keeps answering when one free model
+  is busy upstream).
+- e2e: the RustFS console checks wait for each bucket row instead of counting right after the list appears, and
+  the oversize-login check sends 9 KB (over the portal's limit, under Caddy's) and tolerates an early close.
 
 ## [0.3.0] - 2026-10-13
 

@@ -336,6 +336,10 @@ openrouter_cost_prices_entries() {
     }' "$(or_cache_tsv)" -
 }
 
+# _or_cost_prices_sum -> checksum of the cost filter's OpenRouter prices. They include the paid versions' prices
+# of enabled free models (enabled or not), so openrouter_refresh counts a change there too: the filter re-syncs.
+_or_cost_prices_sum() { openrouter_cost_prices_entries | cksum; }
+
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
 # "---icons---" line, or_icon_lines, a "---existing---" line, then GET /api/v1/models/base JSON. argv[1]: our
 # icon hashes (owui_our_icon_hashes). stdout: "IMPORT <json>" lines (POST /api/v1/models/import bodies, ≤100
@@ -526,9 +530,9 @@ openrouter_refresh() {
     else warn "OpenRouter: $OR_ERR — no OpenRouter models until ./stack openrouter refresh succeeds"; fi
     return 0
   fi
-  before="$(or_selected | cut -f1,4-7)"
+  before="$(or_selected | cut -f1,4-7; _or_cost_prices_sum)"
   chmod 644 "$tmp"; mv "$tmp" "$f"
-  after="$(or_selected | cut -f1,4-7)"
+  after="$(or_selected | cut -f1,4-7; _or_cost_prices_sum)"
   or_missing "$(or_mode)" < <(or_cached_rows) | while IFS= read -r m; do warn "OpenRouter: '$m' (OPENROUTER_MODELS) is not an OpenRouter text model — skipped"; done
   or_write_portal_json
   [ "$before" != "$after" ] || return 0
@@ -613,7 +617,8 @@ or_counts() {
 # or_usage_totals FROM TODAY < flattened /user/daily/activity/aggregated -> one TAB-separated line:
 #   free_requests free_tokens free_equivalent free_requests_without_paid_version paid_requests paid_tokens paid_cost
 #   today_free_requests today_paid_requests
-# over the or/… model groups (answered requests only). A free model's tokens are priced at its paid version's
+# over the or/… model groups (answered requests and their share of the prompt tokens: LiteLLM books an estimate for
+# failed ones too, so a burst of 429s would inflate them). A free model's tokens are priced at its paid version's
 # prices from the cache (the Equivalent view on Home, portal/portal/usage.py); FROM is the first cache-TSV file.
 # Model ids contain dots, so paths are matched from both ends ("…model_groups.or/<id>.metrics.<field>").
 or_usage_totals() {
@@ -629,9 +634,11 @@ or_usage_totals() {
     END {
       for (k in seen) {
         split(k, q, SUBSEP); id = q[2]
-        req = v[k SUBSEP "api_requests"] - v[k SUBSEP "failed_requests"]; if (req < 0) req = 0
-        pt = v[k SUBSEP "prompt_tokens"]; ct = v[k SUBSEP "completion_tokens"]
-        cr = v[k SUBSEP "cache_read_input_tokens"]; cw = v[k SUBSEP "cache_creation_input_tokens"]
+        api = v[k SUBSEP "api_requests"]; req = api - v[k SUBSEP "failed_requests"]; if (req < 0) req = 0
+        # failed requests also book an estimate of their prompt tokens: keep the answered share (like the portal)
+        sh = (api > 0 && req < api) ? req / api : 1
+        pt = int(v[k SUBSEP "prompt_tokens"] * sh + 0.5); ct = v[k SUBSEP "completion_tokens"]
+        cr = int(v[k SUBSEP "cache_read_input_tokens"] * sh + 0.5); cw = int(v[k SUBSEP "cache_creation_input_tokens"] * sh + 0.5)
         free = (id in tier) ? tier[id] == "free" : id ~ /:free$/
         if (!free) { preq += req; ptok += pt + ct; pcost += v[k SUBSEP "spend"]; if (day[q[1]] == today) treqp += req; continue }
         freq += req; ftok += pt + ct; if (day[q[1]] == today) treqf += req
@@ -687,7 +694,7 @@ openrouter_costs_section() {
   printf ' (prompts go to openrouter.ai and the model provider; spend through LiteLLM is in the keys above)\n'
   or_account_lines "$(get_env OPENROUTER_API_KEY)" | sed 's/^/  /'
   printf '  models    %s   (OPENROUTER_MODELS=%s; prices as of %s)\n' "$(or_counts)" "$(or_mode)" "$(or_fetched_at)"
-  or_usage_lines | sed 's/^/  /'
+  [ -z "$(get_env LITELLM_MASTER_KEY)" ] || or_usage_lines | sed 's/^/  /'   # before the first setup: no LiteLLM yet
 }
 
 # openrouter_models_section — ./stack models: the OpenRouter summary under the Bedrock table

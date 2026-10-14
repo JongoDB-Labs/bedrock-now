@@ -45,6 +45,10 @@ API).
 `./stack openrouter models meta-llama/llama-3.3-70b-instruct,google/gemma-4-31b-it:free`. Stored as
 `OPENROUTER_MODELS` in `.env`.
 
+**The go-to free model is the free router, `or/openrouter/free`:** OpenRouter sends each request to one of its
+free models that is available right now, so it keeps answering when a single free model is busy upstream, and
+it is billed at $0. A specific `…:free` model is better when you need the same model every time.
+
 - Only models that answer in text are offered (no image/audio generation).
 - Always left out: OpenRouter's variable-priced routers (price `-1`) and `:batch` variants (they run only
   through OpenRouter's asynchronous batch API).
@@ -94,11 +98,15 @@ card has an **Actual | Equivalent** switch (stored in the browser as `bn.costVie
 - **Equivalent**: the same usage as if every request had been paid. A free model's tokens (`x/y:free`) are priced
   at its paid version (`x/y`, from the cached model list, enabled or not), cache reads at its cache-read price;
   everything else is unchanged. A free model without a paid version stays $0 and is named on Home. The 30-day total
-  and each key's amount change; the budget bars do not.
+  and each key's amount change (a key reads "≈ $12.00 equivalent · $6.00 of $10.00 actual"); the budget bars do
+  not. The free router `or/openrouter/free` always shows "$0 (no paid version)": LiteLLM's daily figures do not
+  say which model answered, so there is nothing to price it at.
 
 The portal reads per-model token counts from LiteLLM's daily activity (`GET /user/daily/activity/aggregated`,
 UTC days; a key's budget period starts at 00:00 UTC, so the key's window is exact) with the master key, and
-caches them for a minute. If LiteLLM cannot answer, Equivalent says so and shows actual spend.
+caches them for a minute. LiteLLM also books an estimate of each failed request's prompt tokens, so they are
+counted in proportion to the answered requests (a burst of refused requests does not inflate the tokens or
+Equivalent). If LiteLLM cannot answer, Equivalent says so and shows actual spend.
 
 In Chat, a free model's cost line reads `free · 1,240 in / 380 out · <model> · ≈ $0.0002 at paid rates · chat ≈
 $0.04` (the paid-rates part only when there is a paid version); the chat total is actual.
@@ -115,12 +123,13 @@ by cause with a fix:
 | Failure | Fix shown |
 |---|---|
 | HTTP 429 `free-models-per-day` | the daily free limit; it starts over with the next UTC day, $10 of credits raise it |
-| other HTTP 429 | too many requests in a short time (free models: 20 a minute); wait or use another model |
+| HTTP 429 "…temporarily rate-limited upstream" / "Provider returned error" | the model's provider is throttling everyone, not you: retry shortly, pick another free model, or use the free router `or/openrouter/free` |
+| other HTTP 429 | this key sent too many requests in a short time (free models allow 20 a minute); wait a minute or use another model |
 | HTTP 402 | paid models need credits (openrouter.ai/settings/credits), or `./stack openrouter models free` |
 | HTTP 404 "No endpoints found matching your data policy" | allow free endpoints that may train on prompts at openrouter.ai/settings/privacy |
-| HTTP 401 | `./stack openrouter set` replaces the key |
+| HTTP 401 | paste a new key into `.env` and run `./stack openrouter apply` (or `./stack openrouter set`) |
 | a key's monthly budget used up | raise `BUDGET_*` in `.env`, then `./stack setup` |
-| anything else | the status and the provider's message (keys and AWS ARNs masked) |
+| anything else | the status and the provider's message (keys, AWS access keys, ARNs, account ids, key hashes and emails masked) |
 
 `./stack costs` and `./stack openrouter status` print the 30-day free and paid totals (free: `$0 actual (≈ $… at
 paid rates)`) and today's requests from the same LiteLLM data.

@@ -1,5 +1,6 @@
 """Equivalent cost view and OpenRouter usage (portal/usage.py) against LiteLLM 1.105.0's response shapes."""
 
+import asyncio
 import dataclasses
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -147,20 +148,22 @@ def test_free_tokens_are_priced_at_the_paid_variant(settings):
     eq, use = usage.summarize(rows, usage.read_catalog(settings.litellm_dir), today, today - timedelta(days=30),
                               windows, 2.0, {"claude-code": 1.5, "open-webui": 0.25})
     g = lambda tin, tout, cr=0: (tin - cr) * GEMMA["in"] + cr * GEMMA["cache_read"] + tout * GEMMA["out"]  # noqa: E731
-    in_period_ow = g(30000, 2000) + g(1000, 100, 500)
-    in_30d = in_period_ow + g(10000, 1000) + g(100000, 10000)   # the day 20 days ago counts for 30 days, not the period
+    # today's open-webui gemma: 3 answered + 1 failed; LiteLLM's 30,000 prompt tokens include the failed one's
+    # estimate, so 3/4 of them count for the key; the model's total scales by its own share (4 of 5 answered)
+    in_period_ow = g(22500, 2000) + g(1000, 100, 500)
+    in_30d = g(32000, 3000) + g(1000, 100, 500) + g(100000, 10000)   # 20 days ago: in 30 days, not in the period
     assert eq["extra_30d"] == pytest.approx(in_30d)
     assert eq["total_30d"] == pytest.approx(2.0 + in_30d)
     ow, cc = eq["keys"]["open-webui"], eq["keys"]["claude-code"]
     assert ow["extra"] == pytest.approx(in_period_ow) and ow["spend"] == pytest.approx(0.25 + in_period_ow)
-    assert (ow["free_requests"], ow["free_tokens_in"], ow["free_tokens_out"]) == (3 + 1 + 4, 35000, 2500)  # ling counts, at $0
+    assert (ow["free_requests"], ow["free_tokens_in"], ow["free_tokens_out"]) == (3 + 1 + 4, 27500, 2500)  # ling counts, at $0
     assert cc["extra"] == pytest.approx(g(10000, 1000)) and cc["spend"] == pytest.approx(1.5 + g(10000, 1000))
     assert eq["no_paid_variant"] == ["inclusionai/ling-3.1-flash"]
-    assert (eq["free_requests_30d"], eq["free_tokens_in_30d"]) == (3 + 1 + 4 + 1 + 10, 145000)
+    assert (eq["free_requests_30d"], eq["free_tokens_in_30d"]) == (3 + 1 + 4 + 1 + 10, 137000)
     # OpenRouter usage: today and 30 days, free/paid
     t, d30 = use["today"], use["days_30"]
-    assert (t["free"]["requests"], t["free"]["tokens_in"], t["free"]["cost"]) == (4, 40000, 0.0)
-    assert t["free"]["equivalent"] == pytest.approx(g(30000, 2000) + g(10000, 1000))
+    assert (t["free"]["requests"], t["free"]["tokens_in"], t["free"]["cost"]) == (4, 32000, 0.0)
+    assert t["free"]["equivalent"] == pytest.approx(g(32000, 3000))
     assert (t["paid"]["requests"], t["paid"]["cost"], t["paid"]["equivalent"]) == (2, 0.00047, 0.00047)
     assert d30["free"]["requests"] == 19 and d30["paid"]["requests"] == 2
     assert [(m["id"], m["access"], m["requests"]) for m in use["top"]] == [
@@ -178,21 +181,55 @@ def test_parse_activity_tolerates_garbage_and_older_shapes():
     assert [(r["model"], r["m"]["requests"], r["m"]["tokens_in"]) for r in rows] == [("a/b:free", 2, 5)]
 
 
+# Seen live on an install with a free-tier account: the model's provider throttles everyone, not this key.
+UPSTREAM_429 = ('litellm.RateLimitError: RateLimitError: OpenrouterException - {"error":{"message":"Provider returned '
+                'error","code":429,"metadata":{"raw":"google/gemma-4-31b-it:free is temporarily rate-limited upstream. '
+                'Please retry shortly, or add your own key to accumulate your rate limits: '
+                'https://openrouter.ai/settings/integrations","provider_name":"Google AI Studio"}},"user_id":"user_2x"}')
+
+
+def test_upstream_429_is_not_blamed_on_the_user():
+    assert usage.classify("429", UPSTREAM_429) == "upstream_busy"
+    g = usage.group_failures([{"at": None, "model": "or/google/gemma-4-31b-it:free", "code": "429", "text": UPSTREAM_429}])[0]
+    assert g["label"] == "This model is busy upstream (HTTP 429)"
+    assert "not you" in g["fix"] and "or/openrouter/free" in g["fix"]
+    # order: OpenRouter's own daily limit first, then upstream, then other daily wording, then the key's rate
+    assert usage.classify("429", "Rate limit exceeded: free-models-per-day (upstream)") == "daily_limit"
+    assert usage.classify("429", "Provider returned error") == "upstream_busy"
+    assert usage.classify("429", "daily quota used") == "daily_limit"
+    assert usage.classify("429", "Rate limit exceeded: free-models-per-min.") == "rate_limit"
+    assert usage.classify("", "model is temporarily rate-limited upstream") == "upstream_busy"
+    # the readable text is the provider's raw message, not "Provider returned error"
+    assert usage.short_error(UPSTREAM_429).startswith("google/gemma-4-31b-it:free is temporarily rate-limited upstream.")
+
+
+def test_short_error_masks_secrets_and_reads_python_reprs():
+    s = usage.short_error("x AKIAABCDEFGHIJKLMNOP y ASIA0123456789ABCDEF arn:aws:iam::123456789012:user/a "
+                          "acct 123456789012 me@example.org Key Hash (Token) =" + "ab" * 32 + " sk-1234abcd")
+    for leaked in ("AKIA", "ASIA0123", "123456789012", "me@example.org", "ab" * 32, "sk-1234"):
+        assert leaked not in s, leaked
+    assert "[AWS key]" in s and "[account]" in s and "[email]" in s and "[hash]" in s and "[key]" in s
+    assert usage.short_error("APIError: {'error': {'message': 'Upstream said no', 'code': 500}}") == "Upstream said no"
+    assert usage.short_error("{'message': 'Provider returned error', 'metadata': {'raw': 'overloaded'}}") == "overloaded"
+
+
 def test_failures_are_grouped_with_a_fix():
     rows, more = usage.parse_failures(FAILURES)
     assert len(rows) == 8 and not more   # the Bedrock failure is not OpenRouter's
     groups = {g["kind"]: g for g in usage.group_failures(rows)}
-    assert groups["daily_limit"]["count"] == 2 and groups["daily_limit"]["last_at"] == "2026-10-14T11:00:00.000+00:00"
+    assert groups["daily_limit"]["count"] == 2 and groups["daily_limit"]["last_at"] == "2026-10-14T11:00:00+00:00"
     assert "UTC day" in groups["daily_limit"]["fix"] and "$10" in groups["daily_limit"]["fix"]
     assert groups["rate_limit"]["count"] == 1
     assert "openrouter.ai/settings/credits" in groups["credits"]["fix"] and "models free" in groups["credits"]["fix"]
     assert groups["credits"]["models"] == ["or/meta-llama/llama-3.3-70b-instruct"]
     assert "openrouter.ai/settings/privacy" in groups["data_policy"]["fix"]
-    assert groups["key"]["fix"] == "./stack openrouter set replaces it."
+    assert "./stack openrouter apply" in groups["key"]["fix"] and "./stack openrouter set" in groups["key"]["fix"]
     assert "BUDGET_" in groups["budget"]["fix"]
     other = groups["other"]
     assert other["label"] == "HTTP 500" and other["status"] == "500"
     assert "sk-or" not in other["fix"] and "123456789012" not in other["fix"] and "[key]" in other["fix"]
+    naive = usage.parse_failures({"data": [failure("500", "E", "x", at="2026-10-14T10:00:00")]})[0][0]
+    assert naive["at"] == "2026-10-14T10:00:00+00:00"   # LiteLLM writes UTC
     assert list(usage.group_failures(rows))[0]["kind"] == "daily_limit"   # most frequent first
     _, more = usage.parse_failures({**FAILURES, "total": 500})
     assert more
@@ -281,3 +318,95 @@ def test_openrouter_off_means_no_usage_calls_and_no_switch(settings):
     assert d["spend"]["equivalent"] is None and d["spend"]["openrouter_usage"] is None
     assert not act.called and not fails.called
     assert d["spend"]["total_30d"] == 2.0
+
+
+# --- Actual must never break ---
+
+
+def test_period_start_never_raises():
+    assert usage.period_start("2026-11-01T00:00:00Z", "99999999999d") is None        # OverflowError
+    assert usage.period_start("2026-11-01T00:00:00Z", "99999999999mo") is None       # year out of range
+    assert usage.period_start("0001-01-01T00:00:00Z", "30d") is None
+    assert usage.period_start("2026-11-01T00:00:00", "30d") == date(2026, 10, 1)      # naive = UTC
+
+
+def test_catalog_that_is_not_utf8_is_no_catalog(settings):
+    (settings.litellm_dir / "openrouter-models.tsv").write_bytes(b"google/x:free\t\xff\xfe\t1\t0\t0\t\t\tfree\t1\n")
+    assert usage.read_catalog(settings.litellm_dir) == {}
+
+
+def test_parse_activity_with_odd_key_breakdowns():
+    body = {"results": [{"date": "2026-10-14", "breakdown": {"model_groups": {"or/a/b:free": {
+        "metrics": {"api_requests": 2, "prompt_tokens": 10},
+        "api_key_breakdown": {"h1": ["x"], "h2": "y", "h3": None, "h4": {"metrics": {"api_requests": 1}}}}}}}]}
+    keys = usage.parse_activity(body)[0]["keys"]
+    assert keys["h1"]["requests"] == 0 and keys["h2"]["requests"] == 0 and keys["h4"]["requests"] == 1
+
+
+def test_failed_requests_prompt_tokens_are_left_out_proportionally():
+    m = usage._metrics({"api_requests": 10, "failed_requests": 8, "prompt_tokens": 1000, "completion_tokens": 50,
+                        "cache_read_input_tokens": 100})
+    assert (m["requests"], m["failed"], m["tokens_in"], m["tokens_out"], m["cache_read"]) == (2, 8, 200, 50, 20)
+    assert usage._metrics({"api_requests": 3, "failed_requests": 3, "prompt_tokens": 90})["tokens_in"] == 0
+    assert usage._metrics({"api_requests": 1, "failed_requests": 5, "prompt_tokens": 9})["requests"] == 0
+
+
+@respx.mock
+def test_a_crash_in_the_usage_views_leaves_actual_intact(settings, monkeypatch):
+    (settings.litellm_dir / "openrouter-models.tsv").write_text(TSV)
+    today = datetime.now(timezone.utc).date()
+    _mock_litellm(today)
+
+    def boom(*a, **k):
+        raise KeyError("surprise")
+
+    monkeypatch.setattr(usage, "summarize", boom)
+    d = run(summary.build, dataclasses.replace(settings, openrouter_api_key=OR_KEY))
+    sp = d["spend"]
+    assert sp["total_30d"] == 2.0 and {k["alias"]: k["spend"] for k in sp["keys"]}["claude-code"] == 1.5
+    assert sp["equivalent"]["error"] == "usage view failed (KeyError)" and sp["equivalent"]["total_30d"] is None
+    assert sp["openrouter_usage"]["error"] == "usage view failed (KeyError)"
+    assert sp["openrouter_usage"]["failures"]["error"] == "usage view failed (KeyError)"
+
+
+@respx.mock
+def test_a_garbage_budget_duration_keeps_the_key_row(settings):
+    respx.get("http://litellm:4000/key/info").respond(200, json={"info": {
+        "spend": 1.0, "max_budget": 5.0, "budget_reset_at": "2026-11-01T00:00:00Z", "budget_duration": "99999999999999d"}})
+    respx.get("http://litellm:4000/global/spend").respond(200, json={"spend": 1.0})
+    sp = run(summary.spend, settings)
+    row = {k["alias"]: k for k in sp["keys"]}["claude-code"]
+    assert row["spend"] == 1.0 and row["error"] is None and row["period_start"] is None
+
+
+@respx.mock
+def test_timeouts_and_errors_are_not_cached():
+    route = respx.get("http://litellm:4000/user/daily/activity/aggregated")
+    route.side_effect = [httpx.ReadTimeout("slow"), httpx.Response(500), httpx.Response(200, json={"results": []})]
+    d0 = date(2026, 10, 1)
+    args = ("http://litellm:4000", "sk-master", d0, d0)
+    assert run(usage.activity, *args, 100.0) == (None, "LiteLLM did not answer (ReadTimeout)")
+    assert run(usage.activity, *args, 101.0) == (None, "LiteLLM answered HTTP 500")
+    assert run(usage.activity, *args, 102.0) == ([], None)
+    assert run(usage.activity, *args, 103.0) == ([], None)          # now cached
+    assert route.call_count == 3
+    route.side_effect = None
+    route.return_value = httpx.Response(200, json={"results": []})
+    run(usage.activity, "http://litellm:4000", "sk-master", d0 - timedelta(days=1), d0, 104.0)   # another window
+    assert route.call_count == 4
+
+
+@respx.mock
+def test_concurrent_refreshes_share_one_request():
+    route = respx.get("http://litellm:4000/user/daily/activity/aggregated").respond(200, json={"results": []})
+    fails = respx.get("http://litellm:4000/spend/logs/v2").respond(200, json={"data": [], "total": 0})
+    d0, now = date(2026, 10, 1), datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+    async def go():
+        async with httpx.AsyncClient() as c:
+            await asyncio.gather(*(usage.activity(c, "http://litellm:4000", "m", d0, d0, 50.0) for _ in range(5)),
+                                 *(usage.failures(c, "http://litellm:4000", "m", now, 50.0) for _ in range(5)))
+    anyio.run(go)
+    assert route.call_count == 1 and fails.call_count == 1
+    q = fails.calls.last.request.url.params
+    assert q["page_size"] == "300" and q["exclude_internal_health_checks"] == "true"

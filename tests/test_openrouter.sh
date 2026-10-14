@@ -398,9 +398,10 @@ test_cost_prices_give_free_models_their_paid_version_prices() {
 test_usage_totals_price_free_models_at_the_paid_version() {
   _with_cache
   out="$(or_json_flatten < "$FIXA" | or_usage_totals "$TMP/litellm/openrouter-models.tsv" 2026-10-14)"
-  # free: gemma 4 answered today + 1 earlier, ling 4 (no paid version); tokens 43,000 + 1,100 + 4,400.
-  # gemma at its paid version: 40000*0.09 + 3000*0.34 + (500*0.09 + 500*0.05 cached + 100*0.34) per 1M
-  assert_eq "$out" "$(printf '9\t48500\t0.0047240000\t4\t2\t1500\t0.0004700000\t4\t2')"
+  # free: gemma 4 answered today (of 5: 4/5 of its 40,000 prompt tokens count) + 1 earlier, ling 4 (no paid
+  # version); tokens 35,000 + 1,100 + 4,400. Gemma at its paid version, per 1M tokens:
+  # 32000*0.09 + 3000*0.34 + (500*0.09 + 500*0.05 cached + 100*0.34)
+  assert_eq "$out" "$(printf '9\t40500\t0.0040040000\t4\t2\t1500\t0.0004700000\t4\t2')"
   assert_eq "$(printf '{}' | or_json_flatten | or_usage_totals /dev/null 2026-10-14)" "$(printf '0\t0\t0.0000000000\t0\t0\t0\t0.0000000000\t0\t0')"
 }
 
@@ -411,13 +412,13 @@ LITELLM_PORT=9
   today="$(date -u +%Y-%m-%d)"
   litellm_api() { echo "$1 $2" >> "$TMP/calls"; sed "s/2026-10-14/$today/" "$FIXA" > "$4"; echo 200; }
   out="$(or_usage_lines)"
-  assert_contains "$out" 'free      9 requests, 48,500 tokens — $0 actual (≈ $0.0047 at paid rates)   (last 30 days)'
+  assert_contains "$out" 'free      9 requests, 40,500 tokens — $0 actual (≈ $0.0040 at paid rates)   (last 30 days)'
   assert_contains "$out" 'paid      2 requests, 1,500 tokens — $0.0005   (last 30 days)'
   assert_contains "$out" 'today     4 free, 2 paid requests'
   assert_contains "$(cat "$TMP/calls")" "GET /user/daily/activity/aggregated?start_date="
   assert_contains "$(cat "$TMP/calls")" "&end_date=$today"
   _stub_curl_auth
-  assert_contains "$(KEY_BODY="$KEY_JSON" openrouter_costs_section)" 'free      9 requests, 48,500 tokens'
+  assert_contains "$(KEY_BODY="$KEY_JSON" openrouter_costs_section)" 'free      9 requests, 40,500 tokens'
   assert_contains "$(KEY_BODY="$KEY_JSON" cmd_openrouter status)" 'today     4 free, 2 paid requests'
   litellm_api() { echo 000; }
   assert_eq "$(or_usage_lines)" "usage     unavailable — LiteLLM did not answer (is the stack up? ./stack status)"
@@ -491,6 +492,20 @@ test_refresh_fetches_caches_and_reports_changes() {
   openrouter_refresh 2>/dev/null
   assert_eq "$OR_CHANGED" 0
   assert_not_contains "$(cat "$TMP/calls")" "RENDER"
+}
+
+test_refresh_reports_a_paid_version_price_change_for_free_models() {
+  # Only free models enabled: the paid "google/gemma-4-31b-it" is not, but its price is the free model's
+  # paid-rates figure in Chat's cost line, so a change there must re-sync the cost filter (OR_CHANGED=1).
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-abc\nOPENROUTER_MODELS=free\n' > "$ENV_FILE"; _stub_curl
+  render_config() { :; }
+  openrouter_refresh 2>/dev/null
+  openrouter_refresh 2>/dev/null; assert_eq "$OR_CHANGED" 0
+  sed 's/"prompt":"0.00000009"/"prompt":"0.00000012"/' "$FIXJ" > "$TMP/changed.json"
+  assert_contains "$(cat "$TMP/changed.json")" '"prompt":"0.00000012"'
+  CURL_BODY="$TMP/changed.json" openrouter_refresh 2>/dev/null
+  assert_eq "$OR_CHANGED" 1
+  assert_contains "$(openrouter_cost_prices_entries)" '"equivalent_input_cost_per_token":0.00000012'
 }
 
 test_refresh_max_age_skips_fresh_cache() {
