@@ -292,6 +292,97 @@ def update_card(ctx):
     return "; ".join(states)
 
 
+@check("browser", "home-auto-update-switch")
+def auto_switch(ctx):
+    up = STATE / "update-check" / "latest.json"
+    beat = STATE / "status" / "helper.json"
+    saved = up.read_bytes() if up.exists() else None
+    page, rec = ctx.page("auto-switch")
+    login(page)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    auto = {"on": False, "hour": 3, "state": "off", "target": "", "reason": "Off: new releases wait for you.",
+            "next_window": int(time.time()) + 3600, "last": {"version": "", "result": "", "at": None}}
+    states = []
+    try:
+        # 1. no helper: Maintenance says how to turn one-click updates on (the one command, Copy)
+        page.wait_for_selector("#helper-off:not([hidden])", timeout=15000)
+        expect(page.locator("#maint #helper-off").count() == 1, "the hint is not in Maintenance without an update")
+        expect(page.inner_text("#helper-off-title") == "One-click updates are off", page.inner_text("#helper-off-title"))
+        expect(page.inner_text("#helper-cmd") == "./stack helper install", "helper command")
+        expect(page.locator("#auto-row").is_hidden() and page.locator("#maint-actions").is_hidden(), "actions without a helper")
+        states.append("no helper: hint in Maintenance")
+        # ... and in the update card while an update is available
+        _write_json(up, {"tag": "v99.0.0", "name": "v99.0.0 (e2e)", "notes": "e2e", "checked_at": now, "error": None,
+                         "url": "https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v99.0.0"})
+        page.click("#refresh")
+        page.wait_for_selector("#update-card #helper-off:not([hidden])", timeout=15000)
+        expect(page.locator("#maint").is_hidden(), "Maintenance shown twice")
+        shot(page, "05a-home-one-click-off")
+        states.append("hint in the update card")
+        # the version label under the brand: the installed version, a dot and the release notes while one is available
+        label = page.locator("#version")
+        expect(label.is_visible() and re.fullmatch(r"v\d+\.\d+\.\d+", label.locator(".v-tag").inner_text()),
+               f"version label: {label.inner_text()!r}")
+        page.locator("#version .v-dot").wait_for(timeout=5000)
+        expect("update available: v99.0.0" in (label.get_attribute("aria-label") or ""), "label lacks the update")
+        page.click("#version")
+        page.locator(".update-notes[open]").wait_for(timeout=5000)
+        states.append(f"version label {label.inner_text()!r} → release notes")
+        # 2. a helper with automatic updates off: Off | Nightly; Nightly → password → an auto-on request
+        def fresh_beat(a=auto):  # the portal trusts a heartbeat for 30 s
+            _write_json(beat, {"heartbeat": int(time.time()), "version": "e2e", "rollback": {"available": False}, "auto": a})
+        fresh_beat()
+        page.reload()
+        page.wait_for_selector("#auto-row:not([hidden])", timeout=15000)
+        expect(page.locator("#auto-toggle [data-auto=off]").get_attribute("aria-pressed") == "true", "Off not pressed")
+        expect(page.locator("#helper-off").is_hidden(), "hint shown with a helper")
+        before = set((STATE / "requests").glob("req-*.json"))
+        page.click("#auto-toggle [data-auto=on]")
+        page.wait_for_selector("#confirm[open]")
+        expect("Turn on automatic updates" in page.inner_text("#confirm-title"), "confirm title")
+        page.fill("#confirm-password", ENV["PORTAL_PASSWORD"])
+        page.click("#confirm-ok")
+        t0, new = time.time(), set()
+        while time.time() - t0 < 45 and not new:
+            new = set((STATE / "requests").glob("req-*.json")) - before
+            err = page.locator("#confirm-error")
+            if not new and err.is_visible():
+                # the portal allows one request every 30 s, and the previous check just made one: as a person would,
+                # wait the time the dialog names and confirm again
+                m = re.search(r"wait (\d+) s", err.inner_text())
+                expect(m, f"the switch was refused: {err.inner_text()}")
+                page.wait_for_timeout((int(m.group(1)) + 1) * 1000)
+                fresh_beat()
+                page.click("#confirm-ok")
+            page.wait_for_timeout(250)
+        expect(new, "no request file for the helper after Nightly")
+        req = json.loads(next(iter(new)).read_text())
+        expect(req["action"] == "auto-on", f"request {req}")
+        for f in new:
+            f.unlink()
+        states.append("Nightly → auto-on request")
+        # 3. the helper reports it on, with the release waiting for the window: the update card says when
+        fresh_beat({**auto, "on": True, "state": "wait", "target": "v99.0.0",
+                    "reason": "v99.0.0 installs automatically between 03:00 and 06:00 (this computer's time), after a backup."})
+        page.reload()
+        page.locator("#auto-toggle [data-auto=on][aria-pressed=true]").wait_for(timeout=15000)
+        hint = page.inner_text("#update-hint")
+        expect(hint == "Will install automatically tonight between 03:00 and 06:00 — or Update now.", f"update hint: {hint}")
+        shot(page, "05b-home-automatic-updates-on")
+        states.append("on: update card says tonight")
+    finally:
+        if beat.exists():
+            beat.unlink()
+        if saved is None:
+            up.unlink(missing_ok=True)
+        else:
+            up.write_bytes(saved)
+        for f in (STATE / "requests").glob("req-*.json"):
+            f.unlink()
+    rec.save()
+    return "; ".join(states)
+
+
 @check("browser", "pwa-installable")
 def pwa(ctx):
     page, rec = ctx.page("pwa")

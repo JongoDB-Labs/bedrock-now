@@ -47,14 +47,18 @@ def _security_headers(resp: Response, s: Settings) -> Response:
 
 
 class _Static(StaticFiles):
-    """/static/*: with the pages' security headers (nosniff above all: a script or style is used only as what it is)."""
+    """/static/*: with the pages' security headers (nosniff above all: a script or style is used only as what it is),
+    and revalidated on every load (a cheap 304 while unchanged), so after an update a reload never pairs the new Home
+    page with a cached older script or style sheet."""
 
     def __init__(self, settings: Settings, **kwargs) -> None:
         super().__init__(**kwargs)
         self.settings = settings
 
     async def get_response(self, path: str, scope) -> Response:
-        return _security_headers(await super().get_response(path, scope), self.settings)
+        resp = _security_headers(await super().get_response(path, scope), self.settings)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 def _no_store(resp: Response) -> Response:
@@ -363,7 +367,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         return _no_store(JSONResponse(st))
 
     async def api_admin_request(request: Request) -> Response:
-        """POST {"action": "update"|"rollback"|"clean", "password": "…"} → 202: a request for the host helper."""
+        """POST {"action": "update"|"rollback"|"clean"|"auto-on"|"auto-off", "password": "…"} → 202: a request for the
+        host helper (auto-on/auto-off: the automatic-updates switch; same password, gating and rate limits)."""
         def err(status: int, msg: str, retry: int = 0) -> Response:
             r = JSONResponse({"error": msg}, status_code=status)
             if retry:
@@ -402,8 +407,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             throttle.success()
         st = admin.helper_state(settings.status_dir)
         if not st["running"]:
-            return err(503, "The update helper is not running. Install it with ./stack helper install, or run ./stack "
-                            f"{action} in a terminal.")
+            return err(503, "The update helper is not running. Install it with ./stack helper install, or run "
+                            f"{admin.CLI[action]} in a terminal.")
+        if action in admin.AUTO_ACTIONS and not st["auto"]["supported"]:
+            return err(409, "This update helper has no automatic updates yet: ./stack helper install refreshes it.")
         if admin.job_in_progress(st):
             return err(409, "Another action is still running.")
         if action == "rollback" and not st["rollback"]["available"]:

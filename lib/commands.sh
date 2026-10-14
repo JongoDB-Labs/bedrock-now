@@ -35,7 +35,9 @@ Usage: ./stack <command> [--yes]
   clean        Remove this project's old images (lists them first; keeps one previous version)
                --dry-run only lists them
   rollback     Back to the version before the last update: code, data (its backup) and images
-  helper       Optional one-click Update / Rollback / Clean on Home: install | uninstall | status
+  helper       One-click Update / Rollback / Clean on Home (setup offers it): install | uninstall
+               | status | auto on [--hour N] | auto off | auto status   (automatic updates: a new
+               release installs at night, N:00 to N+3:00 this computer's time; off by default, N=3)
   remote       The portal from your phone/laptop over HTTPS (Tailscale): status | enable tailscale
                | enable domain HOST | disable | test   (docs/remote.md)
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
@@ -904,6 +906,7 @@ cmd_status() {
   if upd="$(update_available)"; then
     printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
   fi
+  printf '  %s\n' "$(helper_status_line)"   # lib/helper.sh: one-click and automatic updates
 }
 
 _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
@@ -1346,6 +1349,7 @@ cmd_update() {
     _require_clean_tree
     if [ "$force" = 0 ] && update_nothing_new "$to"; then
       log "already on $(installed_version) — nothing to update (./stack update --force re-runs setup)"
+      offer_helper --after-update   # lib/helper.sh: one-click updates, so this needs no terminal next time
       return 0
     fi
     log "update: 1/4 backup"
@@ -1397,24 +1401,30 @@ cmd_update() {
     -u BEDROCK_NOW_UPDATE_FINISHING \
     "$STACK_DIR/stack" setup --yes ||
     die "update: setup failed (see the messages above) — $hint"
-  [ "$moved" = 1 ] || { log "update: done (no new version; ./stack rollback still goes back to the version before the last real update)"; return 0; }
+  if [ "$moved" != 1 ]; then
+    log "update: done (no new version; ./stack rollback still goes back to the version before the last real update)"
+    offer_helper --after-update; return 0
+  fi
   update_record_done
   # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
   images_after_update || warn "could not clean up old images — ./stack clean tries again"
   [ -z "$from" ] || log "updated to $(installed_version). Something wrong? ./stack rollback goes back (code, data and images)"
   update_whats_new
+  offer_helper --after-update   # lib/helper.sh: asks (default yes) unless declined before
 }
 
-# update_whats_new — after an update to a new version, at most 5 lines: voice, remote access and the one-click
-# helper (each with the command that changes it, the last two only while off) and the release notes of a tag
+# update_whats_new — after an update to a new version, at most 5 lines: voice, remote access and updates (each with
+# the command that changes it, the last two only while off: the one-click helper, or on a release its automatic
+# updates) and the release notes of a tag
 update_whats_new() {
   local tag
+  tag="$( [ ! -e "$STACK_DIR/.git" ] || _git describe --tags --exact-match HEAD 2>/dev/null || true)"
   printf "\nWhat's new in %s:\n" "$(installed_version)"
   if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
   else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
   remote_on || printf '  Remote access: off — ./stack remote enable tailscale (docs/remote.md)\n'
-  helper_installed || printf '  One-click updates from Home: ./stack helper install\n'
-  tag="$( [ ! -e "$STACK_DIR/.git" ] || _git describe --tags --exact-match HEAD 2>/dev/null || true)"
+  if ! helper_installed; then printf '  One-click updates from Home: ./stack helper install\n'
+  elif [ -n "$tag" ] && ! auto_on; then printf '  Automatic updates: off — ./stack helper auto on installs new releases at night\n'; fi
   case "$tag" in v[0-9]*) case "$tag" in *[!A-Za-z0-9._-]*) ;; *) printf '  Release notes: %s/tag/%s\n' "$BEDROCK_NOW_RELEASES_URL" "$tag" ;; esac ;; esac
   return 0
 }

@@ -27,6 +27,7 @@
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
   <div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>
+  <a class="version-label" id="version" target="_blank" rel="noopener noreferrer" hidden></a>
   <ul class="tabs">
     <li><button type="button" class="tab" data-tab="home" aria-current="page">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-3.5v-4.5h-5V17H4a1 1 0 0 1-1-1z"/></svg>Home</button></li>
@@ -69,7 +70,7 @@
   <section id="home" class="home" aria-labelledby="home-title">
     <header class="home-head">
       <h1 id="home-title">Home</h1>
-      <p class="updated"><span id="updated">Loading…</span> <button type="button" id="refresh" class="quiet">Refresh</button></p>
+      <p class="updated"><a class="version-label home-version" id="home-version" target="_blank" rel="noopener noreferrer" hidden></a> <span id="updated">Loading…</span> <button type="button" id="refresh" class="quiet">Refresh</button></p>
     </header>
     <p id="load-error" class="banner" hidden></p>
     <section id="install-note" class="install-note" aria-labelledby="install-title" hidden>
@@ -97,6 +98,7 @@
       <p class="cmdline"><code id="update-cmd">./stack update</code> <button type="button" class="copy" id="copy-update">Copy</button>
         <button type="button" class="action primary" id="update-now" data-action="update" hidden>Update now</button></p>
       <p class="note" id="update-hint">Run it in your bedrock-now folder.</p>
+      <div id="update-helper-slot"></div>
     </section>
 
     <section id="job" class="job" aria-live="polite" hidden>
@@ -104,6 +106,7 @@
       <ol id="job-steps" class="job-steps"></ol>
       <p id="job-message" class="job-message"></p>
       <p id="job-note" class="note"></p>
+      <p class="job-actions" id="job-actions" hidden><button type="button" class="action" data-action="rollback" id="job-rollback">Roll back</button></p>
     </section>
 
     <div class="grid">
@@ -165,12 +168,27 @@
 
       <section class="maint" id="maint" aria-labelledby="maint-title" hidden>
         <h2 id="maint-title">Maintenance</h2>
+        <div id="maint-helper-slot">
+          <div id="helper-off" class="helper-off" hidden>
+            <p class="helper-off-title" id="helper-off-title">One-click updates are off</p>
+            <p class="cmdline"><code id="helper-cmd">./stack helper install</code> <button type="button" class="copy" id="copy-helper">Copy</button></p>
+            <p class="note" id="helper-off-why">The portal cannot install software on your computer (by design), so this one step runs in a terminal, in your bedrock-now folder; then Update, Roll back, Clean up and automatic updates work from Home.</p>
+          </div>
+        </div>
         <p class="note" id="maint-state"></p>
-        <p class="maint-actions">
+        <div id="auto-row" class="auto-row" hidden>
+          <span class="auto-label" id="auto-label">Automatic updates</span>
+          <div class="chips" id="auto-toggle" role="group" aria-labelledby="auto-label">
+            <button type="button" class="chip" data-auto="off" aria-pressed="true">Off</button>
+            <button type="button" class="chip" data-auto="on" aria-pressed="false">Nightly (<span id="auto-window">03:00–06:00</span>)</button>
+          </div>
+          <p class="note" id="auto-state"></p>
+        </div>
+        <p class="maint-actions" id="maint-actions">
           <button type="button" class="action" data-action="clean" id="clean-now">Clean up old images</button>
           <button type="button" class="action" data-action="rollback" id="rollback-now" hidden>Roll back</button>
         </p>
-        <p class="note">Each action asks for the portal password and is carried out on this computer by the update helper (<code>./stack helper status</code>).</p>
+        <p class="note" id="maint-note">Each action asks for the portal password and is carried out on this computer by the update helper (<code>./stack helper status</code>).</p>
       </section>
 
       <section class="claude" aria-labelledby="claude-title">

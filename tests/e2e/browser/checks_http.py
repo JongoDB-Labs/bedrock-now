@@ -190,7 +190,7 @@ def api_routes(ctx):
     expect(r.status == 404, f"/icons/app-bogus.png with a session: {r.status}")
     r = http("GET", None, "/api/admin/status", API, cookie=s)
     st = r.json()
-    expect(r.status == 200 and st["allowed"] is True and st["remote"] is False and set(st["actions"]) == {"update", "rollback", "clean"},
+    expect(r.status == 200 and st["allowed"] is True and st["remote"] is False and set(st["actions"]) == {"update", "rollback", "clean", "auto-on", "auto-off"},
            f"/api/admin/status {r.status} {st}")
     enabled = sum(1 for m in rows if m["enabled"])
     return f"summary ({len(d['services'])} services up, 3 keys, {enabled}/{len(rows)} models enabled, no secrets), logins, admin/status; unknown app icon 404"

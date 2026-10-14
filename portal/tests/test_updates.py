@@ -266,3 +266,56 @@ def test_status_names_a_branch_install(paths):
     assert st["branch"] == "main" and st["available"] is True
     paths.version.write_text(json.dumps({"version": "v0.2.1", "branch": "bad branch;rm", "images": []}))
     assert updates.status(paths, True)["branch"] is None
+
+
+# --- Home's version label: the installed version in every state, and where a click leads ---
+
+def test_status_always_names_the_installed_version_and_its_page(paths):
+    paths.version.write_text(json.dumps({"version": "v0.3.0", "commit": "1a2b3c4", "commit_date": "2026-10-13T09:15:00-04:00",
+                                         "images": []}))
+    for enabled in (False, True):  # the check off, or on with no answer yet (no network)
+        st = updates.status(paths, enabled)
+        assert st["installed"] == "v0.3.0" and st["commit"] == "1a2b3c4" and st["commit_date"] == "2026-10-13T09:15:00-04:00"
+        assert st["release_url"] == "https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.3.0"
+    run_check(paths, GitHub(status=500))  # a failed check changes nothing about it
+    assert updates.status(paths, True)["installed"] == "v0.3.0"
+    paths.version.write_text(json.dumps({"version": "v0.3.0-7-g1a2b3c4", "branch": "main", "images": []}))
+    st = updates.status(paths, True)
+    assert st["installed"] == "v0.3.0-7-g1a2b3c4" and st["branch"] == "main"
+    assert st["release_url"] == "https://github.com/JongoDB-Labs/bedrock-now/blob/main/CHANGELOG.md"  # a dev build
+    assert st["commit"] is None and st["commit_date"] is None  # an older ./stack wrote no date
+
+
+def test_untrusted_commit_fields_are_dropped(paths):
+    paths.version.write_text(json.dumps({"version": "v0.3.0", "commit": "<b>xyz</b>", "commit_date": "tomorrow; rm",
+                                         "images": []}))
+    st = updates.status(paths, False)
+    assert st["commit"] is None and st["commit_date"] is None
+    paths.version.write_text('{"version": "x y"}')
+    st = updates.status(paths, False)
+    assert st["installed"] is None and st["release_url"].endswith("/CHANGELOG.md")
+
+
+def test_summary_carries_the_version_label_without_the_check(settings, paths):
+    paths.version.write_text(json.dumps({"version": "v0.3.0", "commit": "1a2b3c4", "images": []}))
+    s = replace(settings, update_check=False, update_dir=paths.update_dir, status_dir=paths.status_dir)
+    app = create_app(s, transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    with TestClient(app, base_url="http://bedrock-now.localhost", follow_redirects=False) as c:
+        c.post("/login", data={"password": "correct horse"}, headers={"Origin": "http://bedrock-now.localhost"})
+        u = c.get("/api/summary", headers={"X-Requested-With": "bedrock-now"}).json()["update"]
+    assert u["installed"] == "v0.3.0" and u["available"] is False and u["release_url"].endswith("/releases/tag/v0.3.0")
+
+
+def test_home_shows_the_version_under_the_brand_and_in_the_phone_header():
+    from pathlib import Path
+    static = Path(__file__).parent.parent / "portal" / "static"
+    page = (static / "index.html").read_text()
+    js = (static / "app.js").read_text()
+    brand = '<div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>'
+    assert brand + '\n  <a class="version-label" id="version" target="_blank" rel="noopener noreferrer" hidden></a>' in page
+    assert '<p class="updated"><a class="version-label home-version" id="home-version"' in page
+    # "v0.3.0-7-g1a2b3c4" -> "v0.3.0" "+7" "(1a2b3c4)", text nodes only; the dot while an update is available
+    assert "const BUILD = /^(v\\d+\\.\\d+\\.\\d+)(?:-(\\d+)-g([0-9a-f]{4,40}))?$/;" in js
+    assert 'el("span", { class: "v-plus", text: `+${m[2]}` })' in js and 'avail ? el("i", { class: "v-dot"' in js
+    assert 'tip.push(`update available: ${u.latest}`)' in js
+    assert "renderVersion(u);" in js and "innerHTML" not in js

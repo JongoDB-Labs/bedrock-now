@@ -76,8 +76,8 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   Chrome and Edge: *Install app*; iPhone/iPad Safari: *Share → Add to Home Screen*). Being another origin it is
   another app, named **bedrock-now (remote)** (a second copy: *bedrock-now (bn-dev, remote)*). Its manifest,
   icons and service worker are public on the remote site through the same `(public_paths)` list as locally.
-- One-click Update / Rollback / Clean stay off for remote requests unless you set `REMOTE_ADMIN_ACTIONS=true`
-  ([security](security.md#the-update-helper)).
+- One-click Update / Rollback / Clean and the automatic-updates switch stay off for remote requests unless you
+  set `REMOTE_ADMIN_ACTIONS=true` ([security](security.md#the-update-helper)).
 
 ### Your Tailscale login, checked
 

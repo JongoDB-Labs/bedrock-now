@@ -43,12 +43,18 @@ test_valid_request_is_accepted() {
   assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "clean $NONCE"
   _req update; assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "update $NONCE"
   _req rollback; assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "rollback $NONCE"
+  _req auto-on; assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "auto-on $NONCE"
+  _req auto-off; assert_eq "$(_check "$(request_dir)/req-$NONCE.json")" "auto-off $NONCE"
 }
 
 test_request_validation_refuses_everything_else() {
   local f; _checkout; f="$(request_dir)/req-$NONCE.json"
   _req restore;                        assert_contains "$(_check "$f" || true)" "not a valid request"
   _req 'update --to x';                assert_contains "$(_check "$f" || true)" "not a valid request"
+  _req auto;                           assert_contains "$(_check "$f" || true)" "not a valid request"
+  _req auto-on-;                       assert_contains "$(_check "$f" || true)" "not a valid request"
+  _req 'auto-on --hour 1';             assert_contains "$(_check "$f" || true)" "not a valid request"
+  _req auto-off 600;                   assert_contains "$(_check "$f" || true)" "stale"
   _req clean 600;                      assert_contains "$(_check "$f" || true)" "stale"
   _req clean -600;                     assert_contains "$(_check "$f" || true)" "future"
   _req clean 0 "$NONCE" ffffffffffffffffffffffffffffffff
@@ -127,10 +133,23 @@ test_home_recognizes_the_nothing_new_message() {
 
 test_failed_job_reports_the_error_and_the_way_back() {
   _checkout; _req update
+  update_record_write "$(git -C "$STACK_DIR" rev-parse HEAD)" "" backups/b   # the update moved the code: result=running
   FAKE_FAIL=1 helper_poll_once 2>/dev/null
   s="$(_status)"
   assert_contains "$s" '"phase": "failed", "message": "image pull failed (network/registry?) (full log: .state/helper/last-update.log; ./stack rollback goes back)"'
   assert_eq "$(ls -l "$(helper_dir)/last-update.log" | cut -c1-10)" "-rw-------"
+  helper_heartbeat
+  assert_contains "$(cat "$(helper_beat_file)")" '"unfinished": true}'
+}
+
+test_update_that_failed_before_moving_the_code_does_not_suggest_rollback() {
+  # ./stack rollback would undo the update BEFORE this one: not a way back from this failure
+  _checkout; _req update
+  update_record_write "$(git -C "$STACK_DIR" rev-parse HEAD)" "" backups/b; update_record_done
+  FAKE_FAIL=1 helper_poll_once 2>/dev/null
+  assert_contains "$(_status)" '"message": "image pull failed (network/registry?) (full log: .state/helper/last-update.log)"'
+  helper_heartbeat
+  assert_contains "$(cat "$(helper_beat_file)")" '"unfinished": false}'
 }
 
 test_local_changes_refuse_the_job() {
@@ -154,7 +173,7 @@ test_heartbeat_names_the_rollback_target() {
   assert_contains "$(cat "$(helper_beat_file)")" '"rollback": {"available": false'
   update_record_write "$(git -C "$STACK_DIR" rev-parse HEAD)" "" backups/20261012-000000-auto
   helper_heartbeat
-  assert_contains "$(cat "$(helper_beat_file)")" '"rollback": {"available": true, "to": "v0.3.0", "backup": "backups/20261012-000000-auto"}'
+  assert_contains "$(cat "$(helper_beat_file)")" '"rollback": {"available": true, "to": "v0.3.0", "backup": "backups/20261012-000000-auto", "unfinished": true}'
   assert_contains "$(cat "$(helper_beat_file)")" '"version": "v0.3.0"'
 }
 
@@ -221,6 +240,63 @@ test_install_without_systemd_user_session_explains_the_fallback() {
 test_plist_escapes_xml() {
   _checkout; STACK_DIR="$TMP/a&b<c"
   assert_contains "$(helper_plist_text)" "$TMP/a&amp;b&lt;c/bin/bedrock-now-helper"
+}
+
+_interactive() { # a terminal at the keyboard; ask() answers $ANSWER (else the default) and logs the question
+  ASSUME_YES=0
+  _have_tty() { return 0; }
+  ask() { printf '%s|%s\n' "$1" "$2" >> "$TMP/asked"; printf '%s\n' "${ANSWER:-$2}"; }
+}
+
+test_setup_asks_with_default_yes_and_installs() {
+  _checkout; _stub_services; HELPER_OS=Darwin; _interactive
+  helper_install() { echo INSTALL >> "$TMP/svc"; }
+  out="$(offer_helper 2>&1)"
+  assert_eq "$(cat "$TMP/asked")" "Turn on one-click updates from Home? (Y/n)|y"
+  assert_eq "$(cat "$TMP/svc")" "INSTALL"
+  assert_contains "$out" "One-click updates: a small background job under your user runs only ./stack update, rollback or
+clean, each after you confirm on Home with the portal password; ./stack helper uninstall removes it."
+  [ ! -e "$(helper_declined_file)" ] || return 1
+}
+
+test_a_no_is_remembered_and_never_asked_again_but_install_still_works() {
+  _checkout; _stub_services; HELPER_OS=Darwin; _interactive
+  helper_install() { echo INSTALL >> "$TMP/svc"; rm -f "$(helper_declined_file)"; }
+  ANSWER=n offer_helper 2>/dev/null
+  [ -f "$(helper_declined_file)" ] && [ ! -f "$TMP/svc" ] || return 1
+  rm -f "$TMP/asked"
+  offer_helper 2>/dev/null                       # setup and ./stack update: not asked again
+  [ ! -f "$TMP/asked" ] && [ ! -f "$TMP/svc" ] || return 1
+  cmd_helper install 2>/dev/null                 # ./stack helper install always works
+  assert_eq "$(cat "$TMP/svc")" "INSTALL"
+}
+
+test_install_clears_the_no_and_uninstall_records_it() {
+  _checkout; _stub_services; HELPER_OS=Darwin
+  date +%s > "$(helper_declined_file)"
+  helper_install 2>/dev/null
+  [ ! -e "$(helper_declined_file)" ] || { echo "install must clear the earlier no" >&2; return 1; }
+  cmd_helper uninstall 2>/dev/null
+  [ -f "$(helper_declined_file)" ] || { echo "./stack helper uninstall is a no for the offer" >&2; return 1; }
+}
+
+test_offer_after_update_needs_a_terminal_on_stdin_and_stdout() {
+  # the helper's own ./stack update and scripts are never asked; only someone typing ./stack update
+  _checkout; _stub_services; HELPER_OS=Darwin; _interactive
+  helper_install() { echo INSTALL >> "$TMP/svc"; }
+  offer_helper --after-update < /dev/null > "$TMP/out" 2>&1
+  [ ! -f "$TMP/asked" ] || { echo "asked without a terminal" >&2; return 1; }
+  body="$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")"
+  [ "$(printf '%s\n' "$body" | grep -c 'offer_helper --after-update')" = 3 ] ||
+    { echo "cmd_update must offer it at each of its ends (nothing new, no new version, updated)" >&2; return 1; }
+}
+
+test_a_failing_install_never_ends_setup() {
+  _checkout; _stub_services; HELPER_OS=Linux; _interactive
+  systemctl() { return 1; }   # no systemd user session
+  out="$(offer_helper 2>&1)" || { echo "offer_helper failed: $out" >&2; return 1; }
+  assert_contains "$out" "no systemd user session"
+  assert_contains "$out" "one-click updates are not on"
 }
 
 test_setup_offers_the_helper_but_yes_installs_it_only_when_asked() {

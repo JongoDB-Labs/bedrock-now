@@ -43,6 +43,9 @@ RETRY_AFTER_ERROR = 3600
 RELEASE_TAG = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
 INSTALLED = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-(\d+)-g[0-9a-f]{4,40})?")
 IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,250}")
+COMMIT = re.compile(r"[0-9a-f]{4,40}")
+COMMIT_DATE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})")
+CHANGELOG_URL = f"https://github.com/{REPO}/blob/main/CHANGELOG.md"
 
 # Rough on-disk sizes (MB) of the pinned images; mirrors image_size_mb in lib/commands.sh.
 IMAGE_MB = (("litellm", 1750), ("open-webui", 950), ("aws-cli", 680), ("pgvector", 660), ("rustfs", 360), ("caddy", 90))
@@ -104,15 +107,22 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _match(rx: re.Pattern, v) -> str:
+    return v if isinstance(v, str) and rx.fullmatch(v) else ""
+
+
 def installed(paths: Paths) -> dict:
-    """{version, commit, images}: what ./stack wrote into version.json (empty values if missing)."""
+    """{version, commit, commit_date, branch, images}: what ./stack wrote into version.json (empty values if missing)."""
     d = _read_json(paths.version)
-    v = d.get("version") if isinstance(d.get("version"), str) else ""
     imgs = [i for i in d.get("images") or [] if isinstance(i, str) and IMAGE_REF.fullmatch(i)]
-    br = d.get("branch") if isinstance(d.get("branch"), str) else ""
-    return {"version": v if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", v or "") else "", "images": imgs,
-            "commit": d.get("commit") if isinstance(d.get("commit"), str) else "",
-            "branch": br if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", br or "") else ""}
+    return {"version": _match(re.compile(r"[A-Za-z0-9._-]{1,80}"), d.get("version")), "images": imgs,
+            "commit": _match(COMMIT, d.get("commit")), "commit_date": _match(COMMIT_DATE, d.get("commit_date")),
+            "branch": _match(re.compile(r"[A-Za-z0-9._/-]{1,100}"), d.get("branch"))}
+
+
+def release_url(version: str) -> str:
+    """Where Home's version label points: the release page of an exact release, else the changelog."""
+    return f"https://github.com/{REPO}/releases/tag/{version}" if parse_release(version) else CHANGELOG_URL
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -282,9 +292,12 @@ async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = 
 
 
 def status(paths: Paths, enabled: bool) -> dict:
-    """The update card's data."""
+    """The update card's data, and the installed version for Home's version label (in every state: also with the
+    check off or no answer yet)."""
     inst = installed(paths)
     out = {"enabled": enabled, "installed": inst["version"] or None, "branch": inst["branch"] or None,
+           "commit": inst["commit"] or None, "commit_date": inst["commit_date"] or None,
+           "release_url": release_url(inst["version"]),
            "latest": None, "available": False,
            "checked_at": None, "error": None, "command": "./stack update"}
     if not enabled:

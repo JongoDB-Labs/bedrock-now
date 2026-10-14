@@ -124,29 +124,35 @@ Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](
 
 ## The update helper
 
-Optional (`./stack helper install`; setup asks once, `--yes` installs it only with `BEDROCK_NOW_HELPER=1`). It
-gives Home one-click **Update**, **Rollback** and **Clean up** buttons without giving the portal Docker access
-or a shell.
+Setup asks *Turn on one-click updates from Home? (Y/n)* (default yes), and so does the next interactive
+`./stack update` of an install without it; a "no" (or `./stack helper uninstall`) is remembered in
+`.state/helper-declined` and not asked again. `--yes` runs install it only with `BEDROCK_NOW_HELPER=1`;
+`./stack helper install` works any time. It gives Home one-click **Update**, **Rollback** and **Clean up**
+buttons, and optional **automatic updates**, without giving the portal Docker access or a shell. The portal
+cannot install it itself (that would need exactly the access it must not have), hence the one terminal step.
 
 **How it works.** The portal stays read-only, with no Docker socket. For a button click it writes one small file,
 `.state/requests/req-<nonce>.json` = `{"action": …, "requested_at": …, "nonce": …}`, into the only folder it may
 write for this purpose. The helper is a user-level launchd agent (macOS, `~/Library/LaunchAgents/io.bedrock-now.helper.<project>.plist`)
 or systemd user unit (Linux, `~/.config/systemd/user/bedrock-now-helper-<project>.service`). It runs as you,
 outside Docker, polls that folder every 3 seconds, and runs **only** `./stack update --yes`, `./stack rollback
---yes` or `./stack clean --yes` in its own checkout. It reports progress in `.state/status/helper-status.json`
-and a heartbeat in `.state/status/helper.json`; both are read-only in the portal. After each job it exits and
-launchd/systemd start it again (so it runs the code an update brought); after a crash it is **not** restarted
-(`KeepAlive` → `SuccessfulExit`, `Restart=on-success`).
+--yes` or `./stack clean --yes` in its own checkout, or `./stack helper auto on|off` for the automatic-updates
+switch (it writes `AUTO_UPDATE` to `.env`; nothing else). It reports progress in `.state/status/helper-status.json`
+and a heartbeat in `.state/status/helper.json`; both are read-only in the portal. After each update, rollback or
+clean it exits and launchd/systemd start it again (so it runs the code an update brought); after a crash it is
+**not** restarted (`KeepAlive` → `SuccessfulExit`, `Restart=on-success`).
 
-**What it can do:** exactly what you could do by typing those three commands in this checkout. **What it cannot
-do:** run any other command or arguments (`--to`, `restore <dir>`, `uninstall`, …), act on another checkout, read
-what the request says beyond the three fields, or run as root.
+**What it can do:** exactly what you could do by typing those commands in this checkout, plus, while you have
+automatic updates on, `./stack update --yes` for a new release at night. **What it cannot do:** run any other
+command or arguments (`--to`, `--hour`, `restore <dir>`, `uninstall`, …), act on another checkout, read what the
+request says beyond the three fields, or run as root.
 
 **Checklist (each point is tested):**
 
-- [x] **Allowlist.** The action must be `update`, `rollback` or `clean`. The request must match one strict
-  one-line JSON format (no extra fields), be at most 512 bytes and be named `req-<32 hex>.json` with the
-  same nonce inside.
+- [x] **Allowlist.** The action must be `update`, `rollback`, `clean`, `auto-on` or `auto-off`. The request must
+  match one strict one-line JSON format (no extra fields), be at most 512 bytes and be named `req-<32 hex>.json`
+  with the same nonce inside. The switch cannot set the hour: that is `./stack helper auto on --hour N` in a
+  terminal.
 - [x] **Fresh and single-use.** A request older than 2 minutes, or dated in the future, is refused. Each nonce
   is used once; the helper keeps the last 1000 in its private `.state/helper/nonces`.
 - [x] **No tricks with the file.** The helper first *moves* the request into a fresh private folder
@@ -183,13 +189,31 @@ what the request says beyond the three fields, or run as root.
   `.state/helper/helper.log` is 600 and trimmed to 200 KB when it passes 1 MB.
 - [x] **Bounded reads.** Everything the helper and `./stack` read from folders the portal can write is checked to be
   a regular file first and read with a size cap (requests 513 bytes, the release check's answer 256 bytes).
+- [x] **Automatic updates: off by default, releases only, once each.** The switch on Home is a request like the
+  others (password again, `REMOTE_ADMIN_ACTIONS`, both sets of rate limits, refused while `.state/lock/` is held,
+  since setup writes `.env` too). When `AUTO_UPDATE=on`, the helper runs the same `./stack update --yes` (backup
+  first) within three hours from `AUTO_UPDATE_HOUR` (default 3, this computer's local time) and only when all of
+  these hold: the portal's daily check (`latest.txt`) names a release newer than the installed version; this
+  checkout is detached at an exact release tag (as `install.sh` leaves it; never a branch, whatever
+  `BEDROCK_NOW_HELPER_ALLOW_BRANCH` says); and after a `git fetch` the newest release tag of **origin** (this
+  project's GitHub repository for an `install.sh` install) is exactly that version. So it fetches only what a
+  manual `./stack update` would fetch, release tags of the same repository with the same trust (and
+  `UPDATE_REQUIRE_SIGNED_TAGS=true` applies to it the same way). `latest.txt` is written by the portal, so it is
+  only a trigger: a version that origin does not have as its newest release is never installed. Each release is
+  tried at most once (`.state/helper/auto-last`): one that failed, did not finish, or was rolled back later is not
+  installed again automatically; a newer release is. It skips the night (`.state/helper/auto-skip`, shown on Home)
+  when a job or a terminal `./stack` command runs, the checkout has local changes, Docker or the stack is
+  stopped (it never starts a stack you stopped), or origin cannot be reached. Turn it off on Home, with
+  `./stack helper auto off`, or `AUTO_UPDATE=off` in `.env`; `./stack helper uninstall` stops everything.
 - [x] **Easy to turn off.** `./stack helper uninstall` removes the agent or unit; `./stack uninstall` does too, and
   so does a `./stack rollback` to a version that has no helper. Without the helper, the buttons disappear (the
-  portal only offers them while the heartbeat is fresh) and `./stack update` keeps working in a terminal.
+  portal only offers them while the heartbeat is fresh; Home then shows the one command that turns them on) and
+  `./stack update` keeps working in a terminal.
 
 **Threat model.** Someone who takes over the portal container, or steals a session *and* the password, can at
-most ask for an update to the newest release, a rollback to the recorded previous version, or an image clean-up,
-within the helper's limits above. Each of these is something you can already do, and each is backed up or
+most ask for an update to the newest release, a rollback to the recorded previous version, an image clean-up, or
+switch automatic updates on or off, within the helper's limits above. Switched on, automatic updates install
+only origin's newest release tag, once, at night: the same as asking for that update. Each of these is something you can already do, and each is backed up or
 reversible: update takes a backup first, rollback takes one before it restores, and clean keeps the previous
 version. They cannot choose a version, a backup or a command. The worst they can cause is a few minutes of
 downtime, at most twelve times a day. The helper never reads anything else the portal writes. Its own code is

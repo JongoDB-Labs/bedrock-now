@@ -371,10 +371,50 @@ function renderNotes(md) {
 
 function gb(mb) { return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`; }
 
+// --- the installed version: under the brand (desktop), a tiny label on the tablet rail, Home's header on phones ---
+// "v0.3.0-7-g1a2b3c4" (7 commits after v0.3.0) reads "v0.3.0 +7 (1a2b3c4)"; the tooltip has the whole story.
+const BUILD = /^(v\d+\.\d+\.\d+)(?:-(\d+)-g([0-9a-f]{4,40}))?$/;
+function renderVersion(u) {
+  if (!u) return;
+  const v = u.installed || "", m = BUILD.exec(v), avail = Boolean(u.available);
+  const tip = [`bedrock-now ${v || "(version unknown: ./stack up records it)"}`];
+  if (m && m[2]) tip.push(`${m[2]} commit${m[2] === "1" ? "" : "s"} after the release ${m[1]}${u.branch ? `, branch ${u.branch}` : ""}`);
+  else if (u.branch) tip.push(`branch ${u.branch}`);
+  const when = u.commit_date ? new Date(u.commit_date) : null;
+  if (when && !isNaN(when)) tip.push(`committed ${when.toLocaleString()}`);
+  if (avail) tip.push(`update available: ${u.latest}`);
+  tip.push(avail ? "Click for its release notes" : m && !m[2] ? "Click for this version's release notes" : "Click for the changelog");
+  for (const a of document.querySelectorAll(".version-label")) {
+    a.replaceChildren(...[avail ? el("i", { class: "v-dot", "aria-hidden": "true" }) : null,
+      el("span", { class: "v-tag", text: m ? m[1] : v || "version unknown" }),
+      m && m[2] ? el("span", { class: "v-plus", text: `+${m[2]}` }) : null,
+      m && m[3] ? el("span", { class: "v-commit", text: `(${m[3].slice(0, 7)})` }) : null].filter(Boolean));
+    a.title = tip.join("\n");
+    a.setAttribute("aria-label", tip.join(". "));
+    a.href = avail ? "#home" : /^https:\/\/github\.com\//.test(u.release_url || "") ? u.release_url : "#home";
+    if (a.href.endsWith("#home")) a.removeAttribute("target"); else a.target = "_blank";
+    a.classList.toggle("has-update", avail);
+    a.hidden = false;
+  }
+  $(".sidebar .brand").title = `${tip[0]}${avail ? " · update available" : ""}`;  // the logo on the tablet rail
+}
+
+// With an update available the label leads to the update card and its release notes; otherwise the link opens this
+// version's release page (or the changelog) on GitHub.
+function openVersion(ev) {
+  if (!(lastUpdate && lastUpdate.available)) return;
+  ev.preventDefault();
+  showTab("home");
+  $(".update-notes").open = true;
+  $("#update-card").scrollIntoView({ block: "start" });
+}
+
 function renderUpdate(u) {
+  lastUpdate = u;  // placeHelperOff (below) puts the "one-click updates are off" hint where it is seen
+  renderVersion(u);
   const card = $("#update-card");
   card.hidden = !(u && u.available);
-  if (card.hidden) return;
+  if (card.hidden) { placeHelperOff(); return; }
   $("#update-title").textContent = `${u.latest} available`;
   const bits = [`You have ${u.installed}.`];
   if (u.published_at) bits.push(`Released ${day(u.published_at)}.`);
@@ -393,14 +433,21 @@ function renderUpdate(u) {
     el("li", { text: `About ${e.downtime_min || 3} minutes of downtime while setup restarts the services and checks them (< $0.01 Bedrock).` }),
     el("li", { text: "The previous version's images stay, so going back needs no download." }));
   $("#update-cmd").textContent = u.command || "./stack update";
+  placeHelperOff();
 }
 
-// --- one-click Update / Rollback / Clean through the host helper (see /api/admin/*) ---
+// --- one-click Update / Rollback / Clean and automatic updates through the host helper (see /api/admin/*) ---
 const PHASES = {
   update: [["backing-up", "Backup"], ["downloading", "Download"], ["restarting", "Restart and check"], ["done", "Done"]],
   rollback: [["restoring", "Restore code and data"], ["restarting", "Restart"], ["done", "Done"]],
   clean: [["cleaning", "Remove old images"], ["done", "Done"]],
+  "auto-on": [], "auto-off": [],
 };
+const pad2 = (n) => String(n).padStart(2, "0");
+const autoHour = (a) => (a && a.auto && Number.isInteger(a.auto.hour) ? a.auto.hour : 3);
+// The nightly window on the helper's computer: its own clock, whatever time zone this browser is in.
+const autoWindow = (a) => [`${pad2(autoHour(a))}:00`, `${pad2((autoHour(a) + 3) % 24)}:00`];
+const ASLEEP = "If this computer is asleep then, it misses the window and tries the next night.";
 const ACTION_TEXT = {
   update: (a) => {
     // A checkout on a branch (vX.Y.Z-N-g… versions) updates to whatever that branch has now, not to the release.
@@ -410,24 +457,82 @@ const ACTION_TEXT = {
   },
   rollback: (a) => `Go back to ${a.rollback.to ? (/-\d+-g[0-9a-f]+$/.test(a.rollback.to) ? `${a.rollback.to} (a commit after the release ${a.rollback.to.replace(/-\d+-g[0-9a-f]+$/, "")})` : a.rollback.to) : "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).`,
   clean: () => "Remove this install's old images. The ones in use and one previous version (for rollback) stay.",
+  "auto-on": (a) => `New releases then install by themselves between ${autoWindow(a).join(" and ")} (this computer's time), the same way as Update now: a backup first, then a few minutes of downtime. Releases only, never a branch. A release that fails is not retried automatically, and Roll back is offered here. ${ASLEEP}`,
+  "auto-off": () => "New releases then wait for you: Home shows them, and Update now (or ./stack update) installs them.",
+};
+const CONFIRM = {
+  update: ["Update now?", "Update"], rollback: ["Roll back?", "Roll back"], clean: ["Clean up old images?", "Clean up"],
+  "auto-on": ["Turn on automatic updates?", "Turn on"], "auto-off": ["Turn off automatic updates?", "Turn off"],
 };
 let adminState = null, lastUpdate = null, adminTimer = null, pendingAction = null, reconnecting = false;
+// A request the helper has not answered yet ({id, at}): it polls every few seconds, so until its job shows up Home
+// keeps "Waiting for the update helper…" and asks again soon (at most a minute; then it shows what the helper says).
+let awaiting = null;
 
 function fmtBytes(b) { return b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${b || 0} B`; }
+
+function sinceText(t) {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  return s < 5400 ? `${Math.max(1, Math.round(s / 60))} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+}
+
+// Without the helper (and when this device may use it): how to turn it on, in the update card while an update is
+// available, else in Maintenance. Remote viewers keep the remote wording instead.
+function placeHelperOff() {
+  const a = adminState;
+  if (!a) return;
+  const off = !a.running && a.allowed;
+  const inUpdate = off && Boolean(lastUpdate && lastUpdate.available);
+  const box = $("#helper-off");
+  box.hidden = !off;
+  (inUpdate ? $("#update-helper-slot") : $("#maint-helper-slot")).append(box);
+  $("#maint").hidden = !(a.running || (off && !inUpdate));
+  $("#helper-off-title").textContent = a.heartbeat_at
+    ? `One-click updates are off: the update helper is not running (last seen ${sinceText(a.heartbeat_at)})` : "One-click updates are off";
+}
+
+function renderAuto(a, usable) {
+  const auto = a.auto || {};
+  const row = $("#auto-row");
+  row.hidden = !(a.running && auto.supported);
+  if (row.hidden) return;
+  $("#auto-window").textContent = autoWindow(a).join("–");
+  for (const b of document.querySelectorAll("#auto-toggle .chip")) {
+    b.setAttribute("aria-pressed", String((b.dataset.auto === "on") === Boolean(auto.on)));
+    b.disabled = !usable || a.in_progress;
+  }
+  $("#auto-state").textContent = auto.on ? `${auto.reason || "On."} ${ASLEEP}`
+    : "Off: new releases wait for you. Nightly installs a new release by itself, with a backup first.";
+}
+
+function updateHint(a, usable) {
+  if (!a.allowed) return "Run it in your bedrock-now folder. Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env).";
+  if (!usable) return "Run it in your bedrock-now folder.";
+  const auto = a.auto || {};
+  if (auto.supported && auto.on) {
+    const [from, to] = autoWindow(a), h = autoHour(a);
+    if (auto.state === "wait") return `Will install automatically ${h >= 18 || h < 6 ? "tonight" : "today or tomorrow"} between ${from} and ${to} — or Update now.`;
+    if (auto.state === "run" || auto.state === "running" || /Update now/.test(auto.reason || "")) return auto.reason;
+    if (auto.reason) return `${auto.reason} Or click Update now.`;
+  }
+  return "Or click Update now: the update helper runs it for you (asks for the portal password).";
+}
 
 function renderAdmin(a) {
   adminState = a;
   const usable = a.running && a.allowed;
-  $("#maint").hidden = !a.running;
   $("#maint-state").textContent = !a.allowed ? "Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env)."
     : `The update helper is running on this computer${a.version ? ` (installed version ${a.version})` : ""}.`;
+  $("#maint-state").hidden = $("#maint-actions").hidden = $("#maint-note").hidden = !a.running;
   for (const b of document.querySelectorAll("button.action[data-action]")) b.disabled = !usable || a.in_progress;
   const rb = $("#rollback-now");
   rb.hidden = !(a.rollback && a.rollback.available);
   rb.textContent = a.rollback && a.rollback.to ? `Roll back to ${a.rollback.to}` : "Roll back";
+  $("#job-rollback").textContent = rb.textContent;
   $("#update-now").hidden = !usable;
-  $("#update-hint").textContent = usable ? "Or click Update now: the update helper runs it for you (asks for the portal password)."
-    : "Run it in your bedrock-now folder. (./stack helper install adds a one-click button here.)";
+  renderAuto(a, usable);
+  placeHelperOff();
+  $("#update-hint").textContent = updateHint(a, usable);
   renderJob(a.job, a.in_progress);
   document.dispatchEvent(new CustomEvent("bn:admin", { detail: a }));  // mobile.js: phone wording
 }
@@ -441,7 +546,10 @@ function renderJob(job, inProgress) {
   if (box.hidden) return;
   const steps = PHASES[job.action] || [];
   const at = steps.findIndex(([p]) => p === job.phase);
-  $("#job-title").textContent = `${{ update: "Update", rollback: "Rollback", clean: "Clean-up" }[job.action] || "Request"}${job.phase === "failed" ? " failed" : job.phase === "done" ? " finished" : " in progress"}`;
+  const auto = job.trigger === "auto", toggle = job.action === "auto-on" || job.action === "auto-off";
+  const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up" }[job.action] || "Request";
+  $("#job-title").textContent = toggle ? `Automatic updates${job.phase === "failed" ? ": not changed" : ""}`
+    : `${name}${job.phase === "failed" ? " failed" : job.phase === "done" ? " finished" : " in progress"}`;
   const list = $("#job-steps"); list.replaceChildren();
   steps.forEach(([p, label], i) => {
     const state = job.phase === "failed" ? (i < Math.max(at, 0) ? "ok" : "") : i < at || job.phase === "done" ? "ok" : i === at ? "now" : "";
@@ -457,9 +565,13 @@ function renderJob(job, inProgress) {
   let note = "";
   if (reconnecting) note = "The portal is restarting as part of the update — reconnecting…";
   else if (inProgress) note = `Started ${job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : ""}. You can leave this page; it is carried out on your computer.`;
-  else if (job.phase === "done" && job.action !== "clean" && !nothingNew) note = "Reload this page to use the new version of Home.";
+  else if (job.phase === "done" && (job.action === "update" || job.action === "rollback") && !nothingNew) note = "Reload this page to use the new version of Home.";
+  else if (job.phase === "failed" && auto) note = "This release is not retried automatically: Update now tries again, and a newer release is tried as usual.";
   $("#job-note").textContent = note;
   $("#job-dismiss").hidden = inProgress;
+  // A failed update that moved the code: Roll back right here (the button in Maintenance does the same)
+  const rb = adminState && adminState.rollback;
+  $("#job-actions").hidden = inProgress || job.phase !== "failed" || job.action !== "update" || !(rb && rb.available && rb.unfinished);
 }
 
 async function pollAdmin() {
@@ -467,6 +579,9 @@ async function pollAdmin() {
   try {
     const a = await api("/api/admin/status");
     reconnecting = false;
+    const answered = a.job && (a.job.id === (awaiting && awaiting.id) || (a.job.started_at || 0) * 1000 >= (awaiting ? awaiting.at - 5000 : 0));
+    if (awaiting && (answered || Date.now() - awaiting.at > 60000)) awaiting = null;
+    if (awaiting && adminState) { a.in_progress = true; a.job = adminState.job; }
     renderAdmin(a);
     adminTimer = setTimeout(pollAdmin, a.in_progress ? 2500 : REFRESH_MS);
   } catch (e) {
@@ -481,11 +596,11 @@ async function pollAdmin() {
 function openConfirm(action) {
   if (!adminState) return;
   pendingAction = action;
-  $("#confirm-title").textContent = { update: "Update now?", rollback: "Roll back?", clean: "Clean up old images?" }[action];
+  $("#confirm-title").textContent = CONFIRM[action][0];
   $("#confirm-text").textContent = ACTION_TEXT[action](adminState);
   $("#confirm-error").hidden = true;
   $("#confirm-password").value = "";
-  $("#confirm-ok").textContent = { update: "Update", rollback: "Roll back", clean: "Clean up" }[action];
+  $("#confirm-ok").textContent = CONFIRM[action][1];
   $("#confirm").showModal();
   $("#confirm-password").focus();
 }
@@ -507,6 +622,7 @@ async function submitConfirm(ev) {
     $("#confirm-password").value = "";
     $("#confirm").close();
     toast("Request sent to the update helper");
+    awaiting = { id: d.id, at: Date.now() };
     if (adminState) { adminState.in_progress = true; adminState.job = { action: pendingAction, phase: "queued", message: "Waiting for the update helper…", started_at: Math.floor(Date.now() / 1000) }; renderAdmin(adminState); }
     setTimeout(pollAdmin, 1500);
   } catch (e) {
@@ -576,6 +692,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#copy-claude").addEventListener("click", () => copy($("#claude-cmd").textContent, "the command"));
   $("#copy-update").addEventListener("click", () => copy($("#update-cmd").textContent, "the command"));
   for (const b of document.querySelectorAll("button.action[data-action]")) b.addEventListener("click", () => openConfirm(b.dataset.action));
+  $("#copy-helper").addEventListener("click", () => copy($("#helper-cmd").textContent, "the command"));
+  for (const a of document.querySelectorAll(".version-label")) a.addEventListener("click", openVersion);
+  for (const b of document.querySelectorAll("#auto-toggle .chip")) {
+    b.addEventListener("click", () => { if (b.getAttribute("aria-pressed") !== "true") openConfirm(`auto-${b.dataset.auto}`); });
+  }
   $("#confirm-form").addEventListener("submit", submitConfirm);
   $("#confirm-cancel").addEventListener("click", () => { $("#confirm-password").value = ""; $("#confirm").close(); });
   $("#job-dismiss").addEventListener("click", () => {
@@ -595,4 +716,5 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
   loadLogins();
   showTab(location.hash.slice(1) || recalled() || (window.bnMobile ? window.bnMobile.defaultTab() : "home"));
+  if ($("#home").hidden) refresh();  // once, for the version label: Home refreshes itself only while it is shown
 });

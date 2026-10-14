@@ -147,6 +147,27 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 .action:disabled { opacity: 0.5; cursor: not-allowed; }
 .cmdline .action { margin-left: 8px; }
 .maint-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+/* The installed version: under the brand (desktop), a tiny label on the tablet rail (mobile.css), Home's header on
+   phones. An accent dot while an update is available. */
+.version-label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 5px; color: var(--muted); font-family: var(--mono);
+  font-size: 11.5px; line-height: 1.4; text-decoration: none; border-radius: 4px; }
+.version-label:hover { color: var(--ink); }
+.version-label .v-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.sidebar .version-label { align-self: flex-start; margin: -18px 0 0 46px; }
+.sidebar .version-label .v-dot { margin-left: -12px; }   /* in the indent: the version stays under the name */
+.home-version { display: none; }
+/* Without the helper: the one terminal step that turns one-click updates on (Maintenance, or the update card). */
+.helper-off { padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+#update-card .helper-off { margin-top: 12px; }
+.helper-off-title { margin: 0 0 8px; font-weight: 600; font-size: 14px; }
+.helper-off .note { margin-top: 8px; }
+/* Automatic updates: Off | Nightly, like the model filter chips. */
+.auto-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 12px 0 0; }
+.auto-label { font-size: 14px; font-weight: 500; }
+.auto-row .chips { margin: 0; }
+.auto-row .note { flex-basis: 100%; margin: 0; }
+.chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.job-actions { margin: 10px 0 0; }
 .job { max-width: 1180px; margin-top: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 22px; }
 .job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .job-head h2 { margin: 0; font-size: 16px; font-weight: 600; }

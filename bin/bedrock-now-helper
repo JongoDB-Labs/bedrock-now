@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# bedrock-now update helper: runs ONLY ./stack update|rollback|clean --yes in one checkout, when the portal
-# asks for it through .state/requests/ (see lib/helper.sh and docs/security.md#the-update-helper).
+# bedrock-now update helper: runs ONLY ./stack update|rollback|clean --yes (or ./stack helper auto on|off) in one
+# checkout, when the portal asks for it through .state/requests/, and ./stack update --yes for a new release in the
+# nightly window when AUTO_UPDATE=on (see lib/helper.sh and docs/security.md#the-update-helper).
 # Started by launchd / systemd --user (./stack helper install). Usage: bedrock-now-helper CHECKOUT_DIR [--once]
 set -euo pipefail
 [ -n "${1:-}" ] && [ -d "$1" ] || { echo "usage: bedrock-now-helper CHECKOUT_DIR [--once]" >&2; exit 2; }

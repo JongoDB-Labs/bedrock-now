@@ -27,10 +27,16 @@ def dirs(tmp_path):
     return st, rq
 
 
-def beat(st, age=1, rollback=True, to="v0.2.1"):
-    (st / "helper.json").write_text(json.dumps({
-        "heartbeat": int(time.time()) - age, "pid": 1, "poll_s": 3, "version": "v0.3.0",
-        "rollback": {"available": rollback, "to": to, "backup": "backups/20261012-000000-auto"}}))
+AUTO = {"on": False, "hour": 3, "state": "off", "target": "", "reason": "Off: new releases wait for you.",
+        "next_window": 1800000000, "last": {"version": "", "result": "", "at": None}}
+
+
+def beat(st, age=1, rollback=True, to="v0.2.1", auto=AUTO, **extra):
+    d = {"heartbeat": int(time.time()) - age, "pid": 1, "poll_s": 3, "version": "v0.3.0",
+         "rollback": {"available": rollback, "to": to, "backup": "backups/20261012-000000-auto"}, **extra}
+    if auto is not None:
+        d["auto"] = auto
+    (st / "helper.json").write_text(json.dumps(d))
 
 
 def job(st, phase, **kw):
@@ -58,6 +64,10 @@ def ask(c, action="clean", password="correct horse", headers=H):
                   headers={"Content-Type": "application/json", **headers})
 
 
+# The one request format lib/helper.sh accepts (helper_check_request)
+HELPER_FORMAT = r'\{"action":"(update|rollback|clean|auto-on|auto-off)","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}"\}'
+
+
 def requests_in(rq):
     return sorted(p.name for p in rq.iterdir())
 
@@ -73,7 +83,7 @@ def test_a_valid_request_writes_exactly_one_strict_file(make_client, dirs):
     assert files == [f"req-{nonce}.json"]
     body = (rq / files[0]).read_text()
     # exactly the format the helper's validator accepts (lib/helper.sh)
-    assert re.fullmatch(r'\{"action":"(update|rollback|clean)","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}"\}', body)
+    assert re.fullmatch(HELPER_FORMAT, body)
     assert json.loads(body)["nonce"] == nonce
     assert abs(json.loads(body)["requested_at"] - time.time()) < 5
     assert oct((rq / files[0]).stat().st_mode & 0o777) == "0o640"  # group (your gid on Linux) reads it
@@ -186,7 +196,8 @@ def test_status_reports_helper_and_job_with_types_checked(make_client, dirs):
     job(st, "done", message="Updated to v0.3.0 · freed 3.1 GB", freed_bytes=3100000000, finished_at=int(time.time()),
         phase_extra="<b>")
     s = c.get("/api/admin/status", headers=API).json()
-    assert s["running"] is True and s["rollback"] == {"available": True, "to": "v0.2.1", "backup": "backups/20261012-000000-auto"}
+    assert s["running"] is True and s["rollback"] == {"available": True, "to": "v0.2.1", "backup": "backups/20261012-000000-auto",
+                                                "unfinished": False}
     assert s["job"]["phase"] == "done" and s["job"]["freed_bytes"] == 3100000000
     assert "phase_extra" not in s["job"] and s["in_progress"] is False
     (st / "helper-status.json").write_text(json.dumps({"phase": ["x"], "freed_bytes": "lots", "message": 5}))
@@ -231,3 +242,99 @@ def test_home_shows_no_steps_and_no_reload_after_an_update_that_found_nothing_ne
     assert f'const nothingNew = job.phase === "done" && msg.startsWith("{NOTHING_NEW_PREFIX}");' in js
     assert "list.hidden = !steps.length || nothingNew;" in js  # no step ran: no ticked-off step list
     assert '!nothingNew) note = "Reload this page' in js
+
+
+# --- automatic updates: the switch on Home (auto-on / auto-off) and what the heartbeat says ---
+
+def test_the_switch_is_a_request_like_the_others(make_client, dirs):
+    st, rq = dirs
+    beat(st)
+    c = make_client()
+    r = ask(c, "auto-on")
+    assert r.status_code == 202, r.text
+    body = (rq / f"req-{r.json()['id']}.json").read_text()
+    assert re.fullmatch(HELPER_FORMAT, body) and json.loads(body)["action"] == "auto-on"
+    # the same rate limit as Update / Rollback / Clean
+    r = ask(c, "auto-off")
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) > 0
+    assert len(requests_in(rq)) == 1
+
+
+def test_the_switch_needs_the_password_and_is_off_for_remote_access(make_client, dirs):
+    st, rq = dirs
+    beat(st)
+    c = make_client()
+    assert ask(c, "auto-on", password="wrong").status_code == 403
+    r = ask(c, "auto-on", headers={**H, "X-Portal-Remote": "1"})
+    assert r.status_code == 403 and "REMOTE_ADMIN_ACTIONS" in r.json()["error"]
+    assert requests_in(rq) == []
+    c2 = make_client(remote_admin_actions=True)
+    assert ask(c2, "auto-off", headers={**H, "X-Portal-Remote": "1"}).status_code == 202
+
+
+def test_the_switch_needs_a_helper_that_knows_it(make_client, dirs):
+    st, rq = dirs
+    c = make_client()
+    r = ask(c, "auto-on")
+    assert r.status_code == 503 and "./stack helper auto on" in r.json()["error"]
+    beat(st, auto=None)  # a helper from before automatic updates
+    r = ask(c, "auto-on")
+    assert r.status_code == 409 and "./stack helper install" in r.json()["error"]
+    job(st, "downloading")
+    beat(st)
+    assert ask(c, "auto-off").status_code == 409  # one thing at a time
+    assert requests_in(rq) == []
+    for bad in ("auto", "auto-on --hour 1", "auto_on", "AUTO-ON"):
+        assert ask(c, bad).status_code == 400
+
+
+def test_status_reports_the_automatic_update_with_types_checked(make_client, dirs):
+    st, rq = dirs
+    c = make_client()
+    beat(st, auto={"on": True, "hour": 2, "state": "tried", "target": "v0.4.0", "reason": "v0.4.0 failed …",
+                   "next_window": 1800003600, "last": {"version": "v0.4.0", "result": "failed", "at": 1800000000}},
+         rollback=True)
+    job(st, "failed", trigger="auto", message="Automatic update to v0.4.0 failed at 03:06: x")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["auto"] == {"supported": True, "on": True, "hour": 2, "state": "tried", "target": "v0.4.0",
+                         "reason": "v0.4.0 failed …", "next_window": 1800003600,
+                         "last": {"version": "v0.4.0", "result": "failed", "at": 1800000000}}
+    assert s["job"]["trigger"] == "auto" and s["rollback"]["unfinished"] is False
+    assert "auto-on" in s["actions"] and "auto-off" in s["actions"]
+    beat(st, auto={"on": "yes", "hour": 99, "state": ["x"], "reason": 5, "next_window": "soon", "last": "x"},
+         rollback=True)
+    (st / "helper.json").write_text((st / "helper.json").read_text().replace(
+        '"backup": "backups/20261012-000000-auto"}', '"backup": "b", "unfinished": true}'))
+    job(st, "failed", trigger="<script>")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["auto"]["on"] is False and s["auto"]["hour"] == 3 and s["auto"]["state"] == "" and s["auto"]["reason"] == ""
+    assert s["auto"]["next_window"] is None and s["auto"]["last"] == {"version": "", "result": "", "at": None}
+    assert s["job"]["trigger"] == "request" and s["rollback"]["unfinished"] is True
+    beat(st, auto=None)
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["auto"]["supported"] is False and s["auto"]["on"] is False
+
+
+def test_home_has_the_switch_and_the_helper_missing_hint():
+    from pathlib import Path
+    static = Path(__file__).parent.parent / "portal" / "static"
+    page = (static / "index.html").read_text()
+    js = (static / "app.js").read_text()
+    # Maintenance: Off | Nightly, segmented like the model filter chips
+    assert 'id="auto-toggle" role="group" aria-labelledby="auto-label"' in page
+    assert 'data-auto="off" aria-pressed="true">Off</button>' in page
+    assert 'data-auto="on" aria-pressed="false">Nightly (<span id="auto-window">03:00–06:00</span>)</button>' in page
+    # without the helper: the one command, a Copy button and why it needs a terminal once
+    assert 'id="helper-off" class="helper-off" hidden' in page
+    assert '<code id="helper-cmd">./stack helper install</code> <button type="button" class="copy" id="copy-helper">Copy</button>' in page
+    assert "The portal cannot install software on your computer (by design)" in page
+    assert '"One-click updates are off"' in js
+    assert '$("#update-helper-slot")' in js and '$("#maint-helper-slot")' in js
+    # the update card while automatic updates are on
+    assert "Will install automatically ${" in js and "— or Update now." in js
+    assert '"auto-on": ["Turn on automatic updates?", "Turn on"]' in js
+    # an automatic update's job card, and Roll back right there after a failed update
+    assert 'auto ? "Automatic update"' in js
+    assert 'id="job-rollback"' in page and 'data-action="rollback" id="job-rollback"' in page
+    # after a request Home keeps polling until the helper's answer (its job id is the request's nonce) shows up
+    assert "awaiting = { id: d.id, at: Date.now() };" in js and "a.job.id === (awaiting && awaiting.id)" in js

@@ -44,6 +44,9 @@
   .logout button { padding: 8px 2px; font-size: 11.5px; text-align: center; line-height: 1.2; white-space: nowrap; }
   .install-btn { justify-content: center; gap: 0; min-height: 44px; padding: 0; font-size: 0; }
   .install-btn svg { width: 22px; height: 22px; }
+  .sidebar .version-label { align-self: center; flex-direction: column; margin: -16px 0 0; font-size: 10px; text-align: center; }
+  .sidebar .version-label .v-commit { display: none; }   /* the rail is 76 px: the full version is in the tooltip */
+  .sidebar .version-label .v-dot { margin-left: 0; }
 }
 
 /* ---------- Phones and tablets: the models table becomes a card list ---------- */
@@ -77,6 +80,7 @@
   .sidebar { grid-row: 2; flex-direction: row; gap: 0; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
   .sidebar .brand, .sidebar > .logout, .sidebar > .install-btn, .popout { display: none; }
+  .sidebar .version-label { display: none; } .home-version { display: inline-flex; margin-right: 6px; }
   .tabs { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
   .tabs li:has(> [data-tab="admin"]), .tabs li:has(> [data-tab="files"]) { display: none; }
   .tabs li { border-radius: 0; }
@@ -104,6 +108,7 @@
   #update-card .cmdline .action { margin-left: 0; }
   .action { min-height: 44px; padding-inline: 16px; }
   .admin-off .maint-actions, .admin-off #update-now { display: none; }
+  #update-card .helper-off .cmdline code { display: inline; }   /* the one command to type in a terminal, over SSH too */
   .claude { display: none; }
   .figure { font-size: 38px; }
   .total { margin-bottom: 14px; }

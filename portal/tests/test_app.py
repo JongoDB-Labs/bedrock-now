@@ -169,6 +169,14 @@ def test_static_assets_load(client):
         assert client.get(path).status_code == 200, path
 
 
+def test_static_assets_are_revalidated_so_an_update_never_mixes_old_and_new(client):
+    r = client.get("/static/app.js")
+    assert r.headers["cache-control"] == "no-cache" and r.headers.get("etag")
+    again = client.get("/static/app.js", headers={"If-None-Match": r.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"
+    assert client.get("/static/missing.js").status_code == 404
+
+
 PNG = b"\x89PNG\r\n\x1a\n"
 
 

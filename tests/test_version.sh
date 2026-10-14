@@ -44,6 +44,18 @@ test_write_version_file_for_the_portal() {
   if command -v python3 >/dev/null 2>&1; then python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$f"; fi
 }
 
+test_version_file_has_the_commit_date_and_branch_for_homes_label() {
+  _repo ahead; git -C "$STACK_DIR" checkout -q -b dev; printf 'COMPOSE_PROJECT_NAME=bn-t\n' > "$ENV_FILE"
+  write_version_file
+  f="$STATE_DIR/status/version.json"
+  assert_contains "$(cat "$f")" '"version": "v0.2.1-1-g'
+  assert_contains "$(cat "$f")" "\"commit_date\": \"$(git -C "$STACK_DIR" log -1 --format=%cI HEAD)\""
+  assert_contains "$(cat "$f")" '"branch": "dev"'
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c 'import json,sys,re; d=json.load(open(sys.argv[1])); assert re.fullmatch(r"\d{4}-\d\d-\d\dT[0-9:]{8}(Z|[+-]\d\d:\d\d)", d["commit_date"])' "$f"
+  fi
+}
+
 test_ensure_portal_dirs_creates_what_compose_mounts() {
   ensure_portal_dirs
   [ -d "$STATE_DIR/status" ] && [ -d "$STATE_DIR/update-check" ] || return 1

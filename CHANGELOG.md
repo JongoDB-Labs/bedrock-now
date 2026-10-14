@@ -77,6 +77,34 @@ All notable changes to bedrock-now are documented here. The format follows
   layout included.
 - `./stack costs` and `./stack openrouter status` print OpenRouter usage through LiteLLM: free and paid requests
   and tokens in the last 30 days (free as "$0 actual (≈ $… at paid rates)") and today's requests.
+- **Automatic updates, off by default.** Home → Maintenance has *Automatic updates: Off | Nightly (03:00–06:00)*
+  (segmented like the model filter, asks for the portal password; a new request action `auto-on` / `auto-off`
+  that the helper validates like the others and carries out as `./stack helper auto on|off`), and the CLI has
+  `./stack helper auto on [--hour N] | off | status` (`AUTO_UPDATE` / `AUTO_UPDATE_HOUR` in `.env`). When on, the
+  update helper runs the same `./stack update --yes` as Update now (backup first) for a new **release** in the
+  window `[N:00, N+3:00)` of this computer's clock: only when the portal's daily check names a release newer than
+  the installed one, the checkout is detached at a release (never a branch), the stack runs, and origin's newest
+  release tag, fetched first, is exactly that version. Each release is tried once: a failed, unfinished or
+  rolled-back release is not installed again automatically (Update now still works, a newer release is tried as
+  usual). A busy stack (a job, a terminal `./stack` command), local changes or no network skip that night, and
+  Home says why; a computer asleep during the window tries the next night instead of updating when it wakes. Home
+  shows the result as "Updated automatically to vX.Y.Z at 03:04", or the failure with **Roll back** right in the
+  progress card; the update card says "Will install automatically tonight between 03:00 and 06:00 — or Update
+  now". The heartbeat (`.state/status/helper.json`) gains `auto` (switch, hour, state, reason, next window, last
+  attempt) and `rollback.unfinished`; the job status gains `trigger`. `./stack status` and `./stack helper status`
+  show how updates happen on this install.
+- **Home without the helper:** instead of only the terminal command, "One-click updates are off" with
+  `./stack helper install`, a Copy button and why it needs a terminal once (in the update card while an update is
+  available, else in Maintenance; "the update helper is not running" when it was installed but stopped). Remote
+  viewers keep the remote-access wording.
+- **The installed version, always visible:** a small label under **bedrock-now** in the sidebar (a tiny label on
+  the tablet icon rail, with the full version in the logo's tooltip; in Home's header on phones). A build after a
+  release reads `v0.3.0 +7 (1a2b3c4)`, with the full `git describe`, branch and commit date in the tooltip. It
+  links to that version's GitHub release (a build after a release: the changelog); while an update is available
+  it shows an accent dot ("update available" in its tooltip and label) and opens the update card's release notes.
+  `/api/summary`'s `update` gains `commit`, `commit_date` and `release_url` (always there, also with the update
+  check off or no network), and `.state/status/version.json` gains `commit_date` (written by `./stack setup` and
+  `./stack up`).
 
 ### Changed
 
@@ -100,6 +128,22 @@ All notable changes to bedrock-now are documented here. The format follows
   is busy upstream).
 - e2e: the RustFS console checks wait for each bucket row instead of counting right after the list appears, and
   the oversize-login check sends 9 KB (over the portal's limit, under Caddy's) and tolerates an early close.
+- **One-click updates are offered by default.** Setup asks *Turn on one-click updates from Home? (Y/n)* (was an
+  opt-in "Install the update helper? (y/N)"), with two lines on what it is, and so does the end of an interactive
+  `./stack update` on an install without the helper. A "no" (or `./stack helper uninstall`) is remembered in
+  `.state/helper-declined` and respected from then on, so installs that declined the old question are asked once
+  more. `--yes` still installs it only with `BEDROCK_NOW_HELPER=1`, and a failing install (e.g. no systemd user
+  session) no longer ends setup.
+- A failed update on Home suggests `./stack rollback` only when the update had moved the code; before that, a
+  rollback would undo the previous update instead.
+
+### Fixed
+
+- After a one-click request Home kept the old state for up to 30 s when its first check came before the helper's
+  (it polls every 3 s); it now keeps "Waiting for the update helper…" and asks again every few seconds until the
+  helper has answered (at most a minute).
+- The portal's scripts and style sheets are revalidated on every load (`Cache-Control: no-cache`, a 304 while
+  unchanged), so the reload after an update never pairs the new Home page with an older cached script.
 
 ## [0.3.0] - 2026-10-13
 

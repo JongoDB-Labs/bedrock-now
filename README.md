@@ -87,6 +87,13 @@ password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Setup prints
 in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
+The installed version is always shown: under **bedrock-now** in the sidebar (on a tablet's icon rail as a tiny
+label, the full version in the logo's tooltip; on a phone in Home's header). A build after a release reads
+`v0.3.0 +7 (1a2b3c4)`: seven commits after v0.3.0, at commit 1a2b3c4; its tooltip adds the branch and the commit
+date. Clicking it opens that version's release notes on GitHub (a build after a release: the changelog). While an
+update is available it carries a small dot and leads to the update card's release notes instead; after an update,
+reloading the page shows the new version.
+
 ### Walkthrough
 
 New to the apps? **Walkthrough** at the bottom of the sidebar takes you through all of bedrock-now in about
@@ -493,7 +500,8 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack update [--to <tag\|branch>] [--force]` | Backup, new code, pinned images, setup; with nothing new it says so and stops (`--force` runs setup anyway) | < $0.01 (nothing new: none) |
 | `./stack clean [--dry-run] [--yes]` | Remove this install's old images (lists them first; keeps one previous version); `--dry-run` only lists them | none |
 | `./stack rollback [--yes]` | Back to the version before the last update: code, data (its backup), images | ~$0.0001 |
-| `./stack helper install\|uninstall\|status` | Optional: one-click Update / Rollback / Clean on Home (a user-level background job) | none |
+| `./stack helper install\|uninstall\|status` | One-click Update / Rollback / Clean on Home (a user-level background job; setup offers it) | none |
+| `./stack helper auto on [--hour N]\|off\|status` | Automatic updates: a new release installs by itself at night, `N:00`–`N+3:00` this computer's time (default 3; off by default) | < $0.01 per update |
 | `./stack remote status\|enable tailscale\|enable domain HOST\|disable\|test` | Optional: the portal from your phone/laptop over HTTPS through Tailscale ([docs/remote.md](docs/remote.md)) | none |
 | `./stack rotate-aws [--use-keys \| --use-instance-role]` | Replace the AWS key (verified first), then test; the flags switch between an EC2 IAM role and a key | ~$0.0001 |
 | `./stack serve [--background \| --stop]` | Start the stack and keep the Mac awake until Ctrl-C (prints the URLs) | none |
@@ -528,25 +536,47 @@ the last update moved the code but did not finish (its image pull or setup faile
 Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
-by the new code. It ends with a short "What's new": voice, remote access and the one-click helper (with the
-command that turns each on) and the release notes. Local changes to tracked files stop the update before
+by the new code. It ends with a short "What's new": voice, remote access and one-click or automatic updates
+(with the command that turns each on) and the release notes. Local changes to tracked files stop the update before
 anything happens; they are never discarded. If a later step fails, or the new version misbehaves,
 **`./stack rollback`** goes back: it checks out the code from before the update, restores the update's own
 pre-update backup (taking a backup of the current state first) and starts the previous images, which are still on
 disk. It also works when the update failed half-way. The failure message also shows the manual way
 (`git … && ./stack restore <backup>`).
 
-**One click, optional:** `./stack helper install` adds a small background job under your user (a launchd agent
-on macOS, a systemd user unit on Linux; setup offers it). Home then shows **Update now**, **Roll back** and
-**Clean up old images**. Each asks for the portal password again, and Home shows the progress (it reconnects
-when the portal restarts during the update) and the result, e.g. "Updated to v0.3.0 · freed 3.1 GB". The
-portal itself still cannot run anything: it can only leave a request that the helper checks strictly. The
-helper then runs one of those three `./stack` commands, one at a time (a terminal `./stack update`, `rollback`,
-`clean`, `restore` or `setup` makes it answer "Busy"), with its own limits (one a minute, 12 a day). It does not
-update a checkout that follows a branch unless `BEDROCK_NOW_HELPER_ALLOW_BRANCH=1` is in `.env`. Details and the
-security checklist: [docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes
-it. An update that finds nothing new ends as "Already up to date"; neither it nor `--force` touches the rollback
-target or the kept images.
+**One click from Home:** the update helper is a small background job under your user (a launchd agent on
+macOS, a systemd user unit on Linux). Setup asks *Turn on one-click updates from Home? (Y/n)*, and so does the
+next interactive `./stack update` of an install that has no helper yet; yes is the default. A "no" is
+remembered and not asked again (an install that said no to the earlier opt-in question is asked once more).
+`./stack setup --yes` installs it only with `BEDROCK_NOW_HELPER=1`, and `./stack helper install` works any
+time. The portal cannot install software on your computer by design, so this one step happens in a terminal;
+until then Home shows "One-click updates are off" with that command and a Copy button. With the helper, Home
+shows **Update now**, **Roll back** and **Clean up old images**. Each asks for the portal password again, and
+Home shows the progress (it reconnects when the portal restarts during the update) and the result, e.g.
+"Updated to v0.3.0 · freed 3.1 GB". The portal itself still cannot run anything: it can only leave a request
+that the helper checks strictly. The helper then runs one of those three `./stack` commands, one at a time (a
+terminal `./stack update`, `rollback`, `clean`, `restore` or `setup` makes it answer "Busy"), with its own
+limits (one a minute, 12 a day). It does not update a checkout that follows a branch unless
+`BEDROCK_NOW_HELPER_ALLOW_BRANCH=1` is in `.env`. Details and the security checklist:
+[docs/security.md](docs/security.md#the-update-helper). `./stack helper uninstall` removes it (and setup stops
+offering it). An update that finds nothing new ends as "Already up to date"; neither it nor `--force` touches
+the rollback target or the kept images.
+
+**Automatic updates (off by default):** in Home → Maintenance, *Automatic updates: Off | Nightly (03:00–06:00)*
+(asks for the portal password), or `./stack helper auto on [--hour N]` / `off` / `status` (`AUTO_UPDATE` and
+`AUTO_UPDATE_HOUR` in `.env`). When on, the helper installs a new **release** by itself between `N:00` and
+`N+3:00` on this computer's clock (default 03:00–06:00), the same way as Update now: a backup first, then a few
+minutes of downtime, and Home's progress card ("Updated automatically to v0.4.0 at 03:04"). It installs only
+the release Home announced (the portal's daily check, so not with `UPDATE_CHECK=false`), only on a checkout
+that is on a release (as `install.sh` leaves it; never a branch, whatever `BEDROCK_NOW_HELPER_ALLOW_BRANCH`
+says), and only while the stack runs. Each release is tried **once**: if it fails, Home shows the error with
+**Roll back** right there, and that release is not tried again automatically (Update now tries again; a newer
+release is tried as usual); a release you rolled back is not installed again either. If the window starts while
+something else runs (a terminal `./stack` command, another action), with local changes, or when GitHub cannot
+be reached, that night is skipped and Home says why. **A computer that is asleep** during the window misses it
+and tries the next night; it does not update when you wake it up and start working (keep a Mac awake with
+`./stack serve`, or pick an hour when it is on).
+
 `UPDATE_REQUIRE_SIGNED_TAGS=true` makes `./stack update` accept only signed release tags
 ([code provenance](docs/security.md#code-provenance)).
 
@@ -635,10 +665,11 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   every container on the VM can fetch the role's temporary credentials from the metadata service unless you
   firewall it ([docs/cloud-vm.md](docs/cloud-vm.md#keeping-the-roles-credentials-to-litellm)).
 - Images are pinned by version (Caddy also by digest) and Python dependencies are hash-locked.
-- The optional update helper runs only `./stack update|rollback|clean` for this checkout, on a strictly checked
-  request that the portal writes after you re-enter the password, within its own rate limits. It is off for
-  remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote; an SSH tunnel or
-  your own reverse proxy to `127.0.0.1` counts as local.
+- The update helper runs only `./stack update|rollback|clean` (and `./stack helper auto on|off`) for this
+  checkout, on a strictly checked request that the portal writes after you re-enter the password, within its
+  own rate limits; with automatic updates on, also `./stack update` for a new release tag at night. Its
+  buttons are off for remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote;
+  an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale
@@ -651,7 +682,7 @@ Details: [docs/security.md](docs/security.md).
 ```
 stack, setup.sh, install.sh   the CLI, setup and the one-line installer
 bin/claude-bedrock            Claude Code wrapper
-bin/bedrock-now-helper        the optional update helper (./stack helper install)
+bin/bedrock-now-helper        the update helper: one-click and automatic updates (./stack helper)
 compose.yaml                  all services (images pinned)
 compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
 compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin

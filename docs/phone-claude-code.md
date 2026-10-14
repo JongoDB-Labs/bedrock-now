@@ -78,10 +78,11 @@ For a laptop in a bag, leave the lid open or use a desktop Mac / a [cloud VM](cl
 bag, and it stays on until you remember to undo it. A Mac mini or Studio: set *Prevent automatic sleeping when
 the display is off* and *Start up automatically after a power failure* in its Energy settings.
 
-`serve` coexists with the optional update helper (`./stack helper install`, a launchd agent): the helper needs
-the Mac awake to run a one-click Update from Home, and `serve` provides that. If an update, rollback or clean
-is running when you start `serve`, it doesn't start the stack in the middle of it (the update does that) and
-only keeps the Mac awake. The helper itself never prevents sleep.
+`serve` coexists with the update helper (`./stack helper install`, a launchd agent): the helper needs the Mac
+awake to run a one-click Update from Home or an automatic update in its nightly window, and `serve` provides
+that. If an update, rollback or clean is running when you start `serve`, it doesn't start the stack in the
+middle of it (the update does that) and only keeps the Mac awake. The helper itself never prevents sleep: a Mac
+asleep during the window misses it and tries the next night.
 
 On Linux, `./stack serve` only acts on a laptop (a machine with a battery): it holds a `systemd-inhibit` sleep
 lock until Ctrl-C, and says so if the inhibitor can't be taken (or `systemd-inhibit` is missing). Without a

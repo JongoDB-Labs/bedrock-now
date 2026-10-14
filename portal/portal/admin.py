@@ -1,9 +1,11 @@
-"""One-click Update / Rollback / Clean: the portal's side of the optional host helper (lib/helper.sh).
+"""One-click Update / Rollback / Clean and the automatic-updates switch: the portal's side of the host helper
+(lib/helper.sh).
 
 The portal never runs anything itself. For an allowed, re-authenticated request it writes one small file,
 REQUEST_DIR/req-<nonce>.json = {"action","requested_at","nonce"}, into the only folder it may write for this
-purpose; the helper (outside Docker, as you) validates it and runs ./stack <action> --yes. Progress comes back
-through STATUS_DIR (read-only here): helper.json (heartbeat, rollback target) and helper-status.json.
+purpose; the helper (outside Docker, as you) validates it and runs ./stack <action> --yes (auto-on / auto-off:
+./stack helper auto on|off, which sets AUTO_UPDATE in .env). Progress comes back through STATUS_DIR (read-only
+here): helper.json (heartbeat, rollback target, automatic updates) and helper-status.json (the last job).
 
 Hooks for remote access (the mobile/remote work wires them; defaults are the safe ones):
   is_remote(request)          a request that did not come from this machine. Caddy deletes any client-sent
@@ -24,7 +26,11 @@ import time
 from collections import deque
 from pathlib import Path
 
-ACTIONS = ("update", "rollback", "clean")
+ACTIONS = ("update", "rollback", "clean", "auto-on", "auto-off")
+AUTO_ACTIONS = ("auto-on", "auto-off")
+# What to type instead, when the helper is not running
+CLI = {"update": "./stack update", "rollback": "./stack rollback", "clean": "./stack clean",
+       "auto-on": "./stack helper auto on", "auto-off": "./stack helper auto off"}
 TERMINAL = ("done", "failed")
 HEARTBEAT_MAX_AGE_S = 30          # the helper writes one every few seconds (also while a job runs)
 JOB_STALE_S = 3 * 3600            # a "running" status older than this no longer blocks new requests
@@ -32,7 +38,8 @@ MIN_INTERVAL_S = 30               # rate limit: one request per 30 s ...
 MAX_PER_HOUR = 6                  # ... and at most 6 an hour
 MAX_BODY = 1024
 NONCE = re.compile(r"[0-9a-f]{32}")
-LABEL = {"update": "Update", "rollback": "Rollback", "clean": "Clean up"}
+LABEL = {"update": "Update", "rollback": "Rollback", "clean": "Clean up", "auto-on": "Automatic updates on",
+         "auto-off": "Automatic updates off"}
 
 
 def is_remote(request) -> bool:
@@ -84,8 +91,25 @@ def _str(v, n=300):
     return v[:n] if isinstance(v, str) else ""
 
 
+def _auto(beat: dict) -> dict:
+    """The automatic update's switch and state from the heartbeat ("supported": False for a helper without it)."""
+    a = beat.get("auto") if isinstance(beat.get("auto"), dict) else None
+    if a is None:
+        return {"supported": False, "on": False, "hour": 3, "state": "", "target": "", "reason": "", "next_window": None,
+                "last": {"version": "", "result": "", "at": None}}
+    hour = _int(a.get("hour"))
+    last = a.get("last") if isinstance(a.get("last"), dict) else {}
+    return {
+        "supported": True, "on": a.get("on") is True,
+        "hour": hour if hour is not None and 0 <= hour <= 23 else 3,
+        "state": _str(a.get("state"), 16), "target": _str(a.get("target"), 80), "reason": _str(a.get("reason")),
+        "next_window": _int(a.get("next_window")),
+        "last": {"version": _str(last.get("version"), 80), "result": _str(last.get("result"), 16), "at": _int(last.get("at"))},
+    }
+
+
 def helper_state(status_dir: Path, now: float | None = None) -> dict:
-    """{running, heartbeat_at, rollback, job}: what Home needs, every field type-checked (files come from the host)."""
+    """{running, heartbeat_at, rollback, auto, job}: what Home needs, every field type-checked (files come from the host)."""
     now = time.time() if now is None else now
     beat = _read(status_dir / "helper.json")
     hb = _int(beat.get("heartbeat"))
@@ -99,6 +123,7 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
             "started_at": _int(job_raw.get("started_at")), "updated_at": _int(job_raw.get("updated_at")),
             "finished_at": _int(job_raw.get("finished_at")), "freed_bytes": _int(job_raw.get("freed_bytes")),
             "version": _str(job_raw.get("version"), 80),
+            "trigger": "auto" if job_raw.get("trigger") == "auto" else "request",
         }
     return {
         "running": hb is not None and 0 <= now - hb <= HEARTBEAT_MAX_AGE_S,
@@ -106,7 +131,8 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
         "version": _str(beat.get("version"), 80),
         "branch": _str(beat.get("branch"), 100),
         "rollback": {"available": rb.get("available") is True, "to": _str(rb.get("to"), 80),
-                     "backup": _str(rb.get("backup"), 120)},
+                     "backup": _str(rb.get("backup"), 120), "unfinished": rb.get("unfinished") is True},
+        "auto": _auto(beat),
         "job": job,
     }
 
