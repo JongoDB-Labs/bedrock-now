@@ -221,9 +221,10 @@ done
 spend_start   # with --reuse: only this run's spend is counted
 
 # --- 1b. the browser terminal (--terminal): on, with a workspace folder of the suite's own next to the checkout ---
-# terminal_probe CONTAINER — inside the terminal: what it can reach. Prints "name<TAB>result" lines.
+# terminal_probe CONTAINER HOST_ADDR — inside the terminal: what it can reach. Prints "name<TAB>result" lines.
+# HOST_ADDR: Docker's address for this computer (host-gateway; on Docker Desktop its loopback services answer there).
 terminal_probe() {
-  docker exec -i "$1" bash -s <<'SH'
+  docker exec -i -e HG="$2" -e LP="$(get_env LITELLM_PORT)" "$1" bash -s <<'SH'
 tcp() { if timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo open; else echo closed; fi; }
 for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
          gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
@@ -237,14 +238,30 @@ printf 'gateway-mcp-tools\t%s\n' "$(curl -s -m 20 -H "Authorization: Bearer $SHA
   -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' $g/mcp | grep -c search_knowledge)"
 printf 'gateway-key\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/key/info)"
 printf 'gateway-models\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/v1/models)"
+# Claude Code's token count, within the key's routes (no model call)
+printf 'gateway-count-tokens\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$ANTHROPIC_DEFAULT_HAIKU_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" $g/v1/messages/count_tokens)"
 # LiteLLM's admin UI and API, and the Bedrock pass-through that signs with the stack's AWS credentials: not here
 printf 'gateway-ui\t%s\n' "$(code $g/ui/)"
 printf 'gateway-key-generate\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/key/generate)"
 printf 'gateway-bedrock\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/bedrock/model/x/converse)"
 printf 'gateway-spend-logs\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/spend/logs)"
 printf 'gateway-chat-completions\t%s\n' "$(code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $g/v1/chat/completions)"
-# ttyd itself, from inside: the forged header the old check accepted, then nothing at all
-printf 'ttyd-forged-user\t%s\n' "$(code -H 'X-Portal-User: admin@example.com' http://127.0.0.1:7681/)"
+# paths the gateway would match cleaned but forward as sent (to LiteLLM's /bedrock/… pass-through)
+printf 'gateway-unclean\t%s\n' "$(for p in /bedrock/model/x/converse/../../../../v1/messages /v1/messages/../../bedrock/model/x/converse \
+  /v1/messages/%2e%2e/%2e%2e/bedrock/model/x/converse /v1/messages/..%2f..%2fbedrock/model/x/converse //v1/messages; do
+  code --path-as-is -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" "$g$p"; printf ' '; done)"
+# LiteLLM past the gateway, through this computer's loopback (Docker Desktop): the key works only on its routes
+lb=http://$HG:$LP
+printf 'loopback-litellm\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" $lb/v1/models; printf ' '
+  for p in /bedrock/model/x/converse /v1/chat/completions /v1/embeddings; do
+    code -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H 'Content-Type: application/json' -d '{}' "$lb$p"; printf ' '; done
+  code --path-as-is -X POST -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -d '{}' "$lb/v1/messages/../../bedrock/model/x/converse")"
+# ttyd: no TCP listener at all (only Docker's DNS on 127.0.0.11); its socket answers in here (it is this shell)
+printf 'ttyd-tcp\t%s\n' "$(code http://127.0.0.1:7681/)"
+printf 'tcp-listeners\t%s\n' "$(awk '$4 == "0A" && $2 !~ /^0B00007F:/' /proc/net/tcp /proc/net/tcp6 | wc -l | tr -d ' ')"
+printf 'ttyd-socket\t%s\n' "$(code --unix-socket /run/bn-ttyd/ttyd.sock http://terminal/)"
+printf 'proxy-secret-in-env\t%s\n' "$(cat /proc/1/environ /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep -c TERMINAL_PROXY_SECRET || true)"
 # (getent hosts asks for IPv6 first, from /etc/hosts or else Docker's DNS; ahostsv4 for IPv4)
 printf 'host-docker-internal\t%s\n' "$(for h in host.docker.internal gateway.docker.internal; do getent hosts "$h"; getent ahostsv4 "$h"; done | awk '{ print $1 }' | sort -u | tr '\n' ' ')"
 printf 'internet\t%s\n' "$(code https://registry.npmjs.org/)"
@@ -268,18 +285,26 @@ if [ "$TERMINAL" = 1 ]; then
   tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
   if [ -z "$tc" ]; then record terminal terminal-isolation FAIL 0 "no running terminal container"
   else
-    probe="$(terminal_probe "$tc" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/terminal-isolation.log"; redact "$LOGS/terminal-isolation.log"
+    # (on Docker's default bridge: with --network none, --add-host writes no hosts entry)
+    hg="$(docker run --rm --add-host hg:host-gateway --entrypoint getent "$PROJECT/terminal:local" ahostsv4 hg 2>/dev/null | awk 'NR == 1 { print $1 }')"
+    probe="$(terminal_probe "$tc" "${hg:-192.0.2.1}" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/terminal-isolation.log"; redact "$LOGS/terminal-isolation.log"
     bad=''
     for k in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
              gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
       printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
     done
-    for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-mcp-tools=1 gateway-key=200 gateway-models=200 gateway-ui=404 \
+    for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-mcp-tools=1 gateway-key=200 gateway-models=200 gateway-count-tokens=200 gateway-ui=404 \
               gateway-key-generate=404 gateway-bedrock=404 gateway-spend-logs=404 gateway-chat-completions=404 \
-              ttyd-forged-user=407 host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2; do
+              gateway-unclean="404 404 404 404 404 " ttyd-tcp=000 tcp-listeners=0 ttyd-socket=200 proxy-secret-in-env=0 \
+              host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
     [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "user" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
+    # LiteLLM through the loopback: reachable on Docker Desktop (the 200 shows it), but the key gets 403 off its
+    # routes (and 404 for a ../ path, which LiteLLM routes nowhere); elsewhere not reachable at all
+    lbr="$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "loopback-litellm" { print $2 }')"
+    case "$(uname -s):$lbr" in Darwin:"200 403 403 403 404" | Linux:"000 000 000 000 000" | Linux:"200 403 403 403 404") ;;
+      *) bad="$bad loopback-litellm:$lbr" ;; esac
     printf '%s\n' "$probe" | grep -q '^claude	[0-9.]* (Claude Code)' || bad="$bad no-claude"
     # Its key is its own (claude-code-terminal), never the claude-code key of claude-bedrock on this computer
     ins="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$tc" 2>/dev/null)"
@@ -290,9 +315,27 @@ if [ "$TERMINAL" = 1 ]; then
     cad="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)"
     out="$(docker exec "$cad" sh -c 'wget -q -T 4 -O /dev/null http://terminal:7681/ 2>&1 | head -n 1; wget -S -T 10 -O /dev/null --header "X-Portal-User: admin@example.com" http://terminal-upstream:7681/ 2>&1 | awk "/^  HTTP\// { print \$2; exit }"' 2>&1)"
     case "$out" in *"bad address"*407* | *"resolve"*407*) ;; *) bad="$bad main-caddy:$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80)" ;; esac
+    # The gateway's own neighbours: LiteLLM (and shared-mcp, the main Caddy), never the portal, Open WebUI or the data
+    tgw="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal-gateway)"
+    out="$(docker exec "$tgw" sh -c 'for h in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 stt:8000; do wget -q -T 3 -O /dev/null "http://$h/" 2>&1 | head -n 1 | grep -q "bad address" || echo "$h"; done; wget -q -T 5 -O /dev/null http://litellm:4000/health/liveliness || echo litellm-unreachable' 2>&1)"
+    [ -z "$out" ] || bad="$bad gateway-neighbours:$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80)"
     if [ -z "$bad" ]; then
-      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions) and the internet; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd 407 without the secret; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
+      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions and ../ or // paths) and the internet; LiteLLM via the loopback ($lbr): its key only on its routes; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd on a socket only (no TCP listener), 407 at the gateway without the secret, which is nowhere in the sandbox; the gateway's neighbours: LiteLLM, not the portal, Open WebUI or the data; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
     else record terminal terminal-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/terminal-isolation.log)"; fi
+    # A failed request to ttyd (the terminal stopped) writes no request headers — so not the secret — into the
+    # gateway's log; the secret goes to the main Caddy's wget on stdin, never onto a command line here
+    t0="$(now)"; sec="$(get_env TERMINAL_PROXY_SECRET)"
+    docker stop -t 5 "$tc" >/dev/null 2>&1
+    code="$(printf '%s\n' "$sec" | docker exec -i "$cad" sh -c 'read -r s; wget -S -T 10 -O /dev/null --header "X-Bn-Terminal-0$s: 1" http://terminal-upstream:7681/ 2>&1 | awk "/^  HTTP\// { print \$2; exit }"' 2>&1)"
+    docker start "$tc" >/dev/null 2>&1
+    for _ in $(seq 1 45); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$tc" 2>/dev/null)" = healthy ] && break; sleep 2; done
+    logs="$(docker logs "$tgw" 2>&1)"
+    n_sec="$(printf '%s\n' "$logs" | grep -c "$sec" || true)"; n_dial="$(printf '%s\n' "$logs" | grep -c 'dial unix /run/bn-ttyd/ttyd.sock' || true)"
+    unset logs sec
+    hl="$(docker inspect -f '{{.State.Health.Status}}' "$tc" 2>/dev/null)"
+    if [ "$code" = 502 ] && [ "$n_dial" -ge 1 ] && [ "$n_sec" = 0 ] && [ "$hl" = healthy ]; then
+      record terminal gateway-log-no-secret PASS "$(( $(now) - t0 ))" "ttyd stopped: 502, $n_dial dial error(s) logged without request headers (the secret 0 times); the terminal healthy again"
+    else record terminal gateway-log-no-secret FAIL "$(( $(now) - t0 ))" "code $code, dial errors $n_dial, secret in the log $n_sec times, terminal $hl"; fi
   fi
   # Caddy's own check of every terminal/remote combination of the main Caddyfile, and of the gateway's file, with the
   # pinned binary in the running containers (own-domain mode needs the DNS-plugin build: not here)

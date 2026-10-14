@@ -163,8 +163,8 @@ http://{$FILES_HOST} {
 }
 
 # Towards ttyd: none of the browser's cookies or headers that only Caddy, the portal or the sidecar may set, and the
-# terminal's secret header (X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>): ttyd answers nothing without it, so only what
-# passed the check above gets in.
+# terminal's secret header (X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>): the terminal's gateway passes nothing to ttyd
+# without it (and removes it), so only what passed the check above gets in.
 (terminal_upstream) {
 	header_up -Cookie
 	header_up -X-Portal-Proxy

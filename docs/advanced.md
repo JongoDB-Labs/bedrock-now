@@ -259,7 +259,8 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   suite's terminal checks (locked → unlock → xterm + tmux, a shell window, the session outliving the browser, the
   Origin rules at the terminal host, the phone's full-screen path, Sign out). With the `claude` part it also runs
   one `claude-bedrock -p` inside the terminal (~$0.001-0.02), on the terminal's own key (budget $0.06; the run's
-  limit is then $0.16). The probe also checks the gateway's 404s, ttyd's secret header and `caddy validate` of
-  every terminal/remote combination.
+  limit is then $0.16). The probe also checks the gateway's 404s (`..` paths included), its secret header before
+  ttyd's socket (and that a failed request logs no secret), the terminal key's 403s on LiteLLM past the gateway,
+  the gateway's neighbours and `caddy validate` of every terminal/remote combination.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.

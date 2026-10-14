@@ -567,8 +567,10 @@ portal_session_or_die() {
   }
 }
 
-ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
-  local envk="$1" alias="$2" budget="$3" cur tmp code key soft
+ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET [ROUTES_JSON]
+  # ROUTES_JSON (a JSON list of paths): the only LiteLLM routes the key may call, set on a new key and on every
+  # run on an existing one (so older keys get it too); LiteLLM answers 403 to the rest.
+  local envk="$1" alias="$2" budget="$3" routes="${4:-}" cur tmp code key soft
   valid_budget "$budget" || die "budget for $alias must be a number of USD, got '$budget' (see BUDGET_* in .env)"
   soft="$(soft_budget_of "$budget")"   # BUDGET_ALERT_PCT (default 80%): LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
   cur="$(get_env "$envk")"
@@ -579,7 +581,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
       200)
         # keep the key; sync max_budget + soft_budget (budget_duration untouched so the reset date stays put)
         tmp="$(mktemp)"
-        code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget,\"soft_budget\":$soft}" "$tmp")"
+        code="$(litellm_api POST /key/update "{\"key\":\"$cur\",\"max_budget\":$budget,\"soft_budget\":$soft${routes:+,\"allowed_routes\":$routes}}" "$tmp")"
         [ "$code" = 200 ] || warn "could not update the budget of LiteLLM key '$alias' (HTTP $code): $(head -c 300 "$tmp")"
         rm -f "$tmp"
         log "kept existing LiteLLM key '$alias' (monthly budget \$$budget, resets on the date shown by ./stack costs)"
@@ -589,7 +591,7 @@ ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
     esac
   fi
   tmp="$(mktemp)"
-  code="$(litellm_api POST /key/generate "{\"key_alias\":\"$alias\",\"max_budget\":$budget,\"soft_budget\":$soft,\"budget_duration\":\"30d\"}" "$tmp")"
+  code="$(litellm_api POST /key/generate "{\"key_alias\":\"$alias\",\"max_budget\":$budget,\"soft_budget\":$soft,\"budget_duration\":\"30d\"${routes:+,\"allowed_routes\":$routes}}" "$tmp")"
   [ "$code" = 200 ] || { head -c 500 "$tmp" >&2; rm -f "$tmp"; die "could not create LiteLLM key '$alias' (HTTP $code)"; }
   key="$(parse_virtual_key < "$tmp")" || { head -c 300 "$tmp" >&2; rm -f "$tmp"; die "unexpected /key/generate response for '$alias' (no sk- key found)"; }
   set_env "$envk" "$key"

@@ -247,18 +247,20 @@ It is a sandbox, not a shell on your computer:
   pinned by version and checksum, ttyd for the browser, git, node/npm, python/pip, ripgrep): as your user id,
   without root, capabilities or the Docker socket, on a read-only system. Of your files it sees **only the
   workspace folder** (at `/workspace`); `enable` — and every later `./stack up` — refuses your home folder
-  itself, hidden folders like `~/.ssh`, `~/Library`, system folders and the bedrock-now folder (its `.env` holds
-  every secret), in any spelling. Claude Code's settings and history live in the `terminal-home` volume.
+  itself, hidden folders like `~/.ssh`, `~/Library`, system folders, `/Volumes` itself and the bedrock-now folder
+  (its `.env` holds every secret), in any spelling. Claude Code's settings and history live in the `terminal-home` volume.
 - Inside the stack its only neighbour is its own gateway (a second, minimal Caddy), which passes just what Claude
   Code needs — LiteLLM's Anthropic API, model list and key info, and the shared MCP server's `/mcp` — and answers
   404 to everything else: LiteLLM's admin UI and API, the Bedrock pass-through, the portal and its login, Open
   WebUI, the databases. It never holds the master key or the `claude-code` key of `claude-bedrock` on your
-  computer.
+  computer, and its own key works only for those LiteLLM paths, wherever it is used.
 - Out, it reaches the internet (git clone, npm, pip, Claude Code's web fetch). On Docker Desktop that also means
-  your computer's own services through Docker's host address — LiteLLM on `127.0.0.1:4000` and the shared MCP
-  server on `:8765` directly, any dev server, and the Docker API if you exposed it on `tcp://localhost:2375`. The
-  name `host.docker.internal` points nowhere in the container, but the address stays reachable:
-  `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, takes the internet and that path away.
+  your computer's own services through Docker's host address — LiteLLM on `127.0.0.1:4000` (its key still only
+  for Claude Code's paths) and the shared MCP server on `:8765` directly, the portal's login (without the password
+  a runaway process can only keep the login's lock-out going for you), any dev server, and the Docker API if you
+  exposed it on `tcp://localhost:2375`. The name `host.docker.internal` points nowhere in the container, but the
+  address stays reachable: `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, takes the internet and that path
+  away.
 - Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
   ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
   page.

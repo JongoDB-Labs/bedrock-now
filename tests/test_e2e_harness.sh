@@ -217,7 +217,8 @@ test_e2e_teardown_removes_the_terminal_workspace_only_with_its_marker() {
   mkdir -p "$ws/project"; : > "$ws/.bedrock-now-e2e"
   OWNED=1 teardown 2>/dev/null
   [ ! -e "$ws" ] || { echo "marked workspace kept" >&2; return 1; }
-  assert_contains "$(_mutating_calls)" "docker volume rm bne2e_terminal-home"
+  assert_contains "$(_mutating_calls)" "docker volume rm bne2e_terminal-home bne2e_terminal-socket"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bne2e_terminal bne2e_terminal-out bne2e_terminal-link"
   # a folder of that name the suite did not create stays
   mkdir -p "$ws"; : > "$ws/precious"
   OWNED=1 teardown 2> "$TMP/err"

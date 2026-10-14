@@ -168,8 +168,8 @@ teardown() {
     docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
     # The browser terminal (--terminal) lives in overlay files that `down` without them does not read: its volume
     # and networks go by name.
-    docker volume rm "${PROJECT}_terminal-home" >/dev/null 2>&1 || true
-    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" >/dev/null 2>&1 || true
+    docker volume rm "${PROJECT}_terminal-home" "${PROJECT}_terminal-socket" >/dev/null 2>&1 || true
+    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" "${PROJECT}_terminal-link" >/dev/null 2>&1 || true
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
                "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous" \
                "$PROJECT/terminal:local" "$PROJECT/terminal:previous"; do

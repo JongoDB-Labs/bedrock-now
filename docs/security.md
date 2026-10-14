@@ -364,7 +364,8 @@ what a successful attacker reaches is the container — with the three exception
 - [x] **One folder of yours.** The only host folder it sees is `TERMINAL_WORKSPACE` (at `/workspace`; Docker never
   creates it). `./stack terminal enable` resolves symlinks to the on-disk path (the external `/bin/pwd -P`, which
   gives the real spelling on macOS's case-insensitive disks) and refuses — comparing without regard to case on
-  macOS — `/`, system folders (where the Docker socket lives), your home folder itself or any folder around it,
+  macOS — `/`, system folders (where the Docker socket lives), `/Volumes`, `/mnt` and `/media` themselves (every
+  mounted disk; a folder on one is fine), your home folder itself or any folder around it,
   hidden folders directly in your home folder (`~/.ssh`, `~/.aws`, `~/.docker` …), `~/Library` (keychains, app
   data; only its iCloud Drive folder, `~/Library/Mobile Documents`, is allowed), the bedrock-now folder and
   anything around or inside it (its `.env` holds every secret), and paths `.env` cannot hold. Every
@@ -375,8 +376,12 @@ what a successful attacker reaches is the container — with the three exception
   `./stack backup`).
 - [x] **Its own key.** It holds `claude-code-terminal`, a LiteLLM key of its own with its own monthly budget
   (`BUDGET_TERMINAL`, $50; a meter on Home, a line in `./stack costs`), never the `claude-code` key of
-  `claude-bedrock` on your computer, the master key, the portal password or AWS credentials. Delete the key in
-  Admin to cut the terminal off without touching anything else (`./stack terminal enable` makes a new one).
+  `claude-bedrock` on your computer, the master key, the portal password or AWS credentials. The key itself may
+  call only Claude Code's LiteLLM routes — `/v1/messages` (with `…/count_tokens`), `/v1/models`, `/key/info`,
+  `/model/info` (LiteLLM's `allowed_routes`, set when the key is made and again at every enable, setup and update,
+  so older keys get it too): wherever the sandbox reaches LiteLLM, its pass-through, `/v1/chat/completions` and the
+  rest answer 403. Delete the key in Admin to cut the terminal off without touching anything else
+  (`./stack terminal enable` makes a new one).
 - [x] **Inside the stack: one neighbour, a few paths.** Its network `terminal` is internal and holds only the
   container and its gateway, a second minimal Caddy (`terminal-gateway`, the main Caddy's pinned image, read-only,
   no capabilities but binding, no admin API, no published port). The gateway listens there only on `:8091`
@@ -384,15 +389,26 @@ what a successful attacker reaches is the container — with the three exception
   `/v1/messages` (and `…/count_tokens`), `/v1/models`, `/key/info`, `/model/info`, `/health/liveliness`, and
   shared-mcp's `/mcp` — each still needing the terminal's key or `SHARED_MCP_TOKEN`. Everything else is 404 there:
   LiteLLM's admin UI and management API (`/key/generate` …), its spend logs, and its `/bedrock/…` pass-through,
-  which signs requests with the stack's AWS credentials and would reach any Bedrock model, priced or not. The
-  main Caddy (the portal and its login form, the speech-to-text site), the portal, Open WebUI (which trusts
-  `X-Portal-User` from its network), Postgres, RustFS and the speech-to-text container share no network with the
-  terminal. `./stack test` and the e2e suite probe all of this from inside the container.
+  which signs raw Bedrock API calls (Converse, InvokeModel …) to the configured models with the stack's AWS
+  credentials, past the Anthropic API's checks. So is any path with a `.` or `..` segment or `//`, also
+  %-encoded: Caddy matches the cleaned path but forwards it as sent, so `/bedrock/…/../../v1/messages` would
+  otherwise pass the list and reach the pass-through. The gateway's other network, `terminal-link` (internal as
+  well), holds only what it talks to: LiteLLM, shared-mcp and the main Caddy. The main Caddy (the portal and its
+  login form, the speech-to-text site), the portal, Open WebUI (which trusts `X-Portal-User` from its network),
+  Postgres, RustFS and the speech-to-text container share no network with the terminal, and the portal, Open
+  WebUI, Postgres, RustFS and speech-to-text none with the gateway either. `./stack test` and the e2e suite probe
+  all of this from inside the container (and the gateway's neighbours from the gateway).
 - [x] **Out: the internet, unless you say no.** A second network, `terminal-out` (`compose.terminal-egress.yaml`),
   gives it the internet for git, npm, pip and Claude Code's web fetch. On Docker Desktop the internet includes your
-  Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000` and shared-mcp
-  on `:8765` directly (past the gateway's list, still with their keys), dev servers, and the Docker API if
-  *Expose daemon on tcp://localhost:2375* is on (that would be the whole machine). In the container the names
+  Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000` directly, past
+  the gateway's list (but not past its key's: the routes above, 403 for the rest, which `./stack test` checks),
+  shared-mcp on `:8765` (with the token it has anyway), the portal and its login on `127.0.0.1:PORTAL_PORT` (it
+  needs the password), dev servers, and the Docker API if *Expose daemon on tcp://localhost:2375* is on (that
+  would be the whole machine). The login's lock-out after wrong passwords is global, not per client: Docker
+  Desktop delivers your browser's requests and the sandbox's from the same address (its bridge gateway; checked),
+  so per-address counting could not tell them apart. A runaway process in the sandbox could therefore keep the
+  login (and the unlock) locked for up to five minutes at a time — `./stack terminal disable` or
+  `TERMINAL_EGRESS=off` ends that; it cannot get in. In the container the names
   `host.docker.internal` and `gateway.docker.internal` point at an unroutable address — a speed bump only: the
   address itself stays reachable. On Linux a container can reach the host through its network's gateway address
   (services listening on `0.0.0.0`). `TERMINAL_EGRESS=off` in `.env` (then `./stack up`) leaves only the
@@ -408,21 +424,26 @@ what a successful attacker reaches is the container — with the three exception
 - [x] **No other website can drive it, nothing else can reach it.** A WebSocket handshake — recognised by its
   `Sec-WebSocket-Key`/`Upgrade` headers or any spelling of the `/ws` path — must come with the terminal host's own
   `Origin`, checked twice: by the portal before Caddy proxies anything (a missing, foreign, portal or app Origin
-  is refused), and by ttyd itself (`--check-origin`). ttyd answers only requests that carry
-  `X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>` (`--auth-header`; 128 random bits in `.env`, mode 600), which only the
-  main Caddy adds after the portal's yes — a forged `X-Portal-User` or a request from any other container gets
-  407 — and the gateway serves ttyd only on its default-network address (`bind terminal-upstream`). Caddy strips
-  all cookies, the proxy secret and any client-sent `X-Bn-Terminal-*` before ttyd. It may be framed only by the
-  portal.
+  is refused), and by ttyd itself (`--check-origin`). ttyd has no TCP listener at all: it listens on a UNIX socket
+  (mode 700 folder) in the `terminal-socket` volume, mounted only into the terminal and, read-only, its gateway,
+  which runs as the terminal's user to reach it. The gateway passes a request to it only with
+  `X-Bn-Terminal-0<TERMINAL_PROXY_SECRET>` (128 random bits in `.env`, mode 600, new at every
+  `./stack terminal enable`), which only the main Caddy adds after the portal's yes — a forged `X-Portal-User` or
+  a request from any other container gets 407, and without a real secret in its environment it answers 503 —
+  and only on its `terminal-link` address (`bind terminal-upstream`). The secret lives in the two Caddys'
+  environments only: never on a command line (ttyd and its health check run without it; `/proc/*/cmdline` is
+  readable by every user of a Linux host), never in the sandbox (the gateway removes the header before ttyd), and
+  never in the gateway's log (it drops request headers, which Caddy otherwise logs with a failed request). Caddy
+  strips all cookies and any client-sent `X-Bn-Terminal-*` before ttyd. It may be framed only by the portal.
 - [x] **Remote access: off for the terminal.** The remote sites route the terminal's name only when
   `REMOTE_TERMINAL` is on in `.env` (true/1/yes/on, read the same by `./stack` and the portal; another value is
   named as off), then `./stack up`: `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`
   (`<base>-terminal.<tailnet>.ts.net`, a fifth Tailscale Service, or `terminal.<your domain>`), and otherwise the
   remote blocks match nothing. The portal refuses remote terminal requests without it as well.
-- [x] **Easy to turn off.** `./stack terminal disable` removes the container, its gateway and their networks; the
-  folder, the `terminal-home` volume and the key stay (`docker volume rm <project>_terminal-home` forgets Claude
-  Code's history). `./stack uninstall` removes the volume, the networks and the image too, also while the terminal
-  is off.
+- [x] **Easy to turn off.** `./stack terminal disable` removes the container, its gateway, their networks and the
+  socket volume (LiteLLM and shared-mcp are restarted off the gateway's network); the folder, the `terminal-home`
+  volume and the key stay (`docker volume rm <project>_terminal-home` forgets Claude Code's history).
+  `./stack uninstall` removes the volumes, the networks and the image too, also while the terminal is off.
 
 **Threat model.** Someone with your portal session cookie but not the password gets the unlock page. Someone with
 both (or with your unlocked browser), or a malicious package or prompt that Claude Code runs in there, gets a shell
@@ -436,7 +457,8 @@ weigh:
    or Makefile target, Claude Code's `.claude/settings.json` hooks or `.mcp.json` — each runs on your computer
    when you open the folder there with the tool that reads it (git, your editor, direnv, npm, `claude-bedrock`).
    Use a workspace you only open in the terminal, or review it like code from someone else.
-2. **Your Mac's own services** (Docker Desktop, egress on): see above — LiteLLM and shared-mcp directly, dev
+2. **Your Mac's own services** (Docker Desktop, egress on): see above — LiteLLM directly (its key still limited
+   to Claude Code's routes), shared-mcp, the portal's login (wrong guesses can keep it locked for you), dev
    servers, an exposed Docker API.
 3. **The knowledge bases.** `write_file(…, ingest_to=…)` through the shared MCP server can put text into a
    knowledge base that Chat later answers from (a prompt-injection route into Chat sessions).

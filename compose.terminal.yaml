@@ -3,12 +3,14 @@
 # socket, no capabilities, not root, a read-only image, and of your files only the one folder you chose
 # (TERMINAL_WORKSPACE, at /workspace). Its home folder (Claude Code's settings and history) is the terminal-home
 # volume. The browser reaches it at terminal.PORTAL_HOST through the main Caddy, which first asks the portal for the
-# session, a fresh password unlock and the Origin (portal/portal/app.py), then adds the terminal's secret header.
+# session, a fresh password unlock and the Origin (portal/portal/app.py), then adds the terminal's secret header,
+# and through the terminal's gateway, which requires that header and passes the request to ttyd's UNIX socket.
 #
 # Networks: the terminal shares its internal network "terminal" (no internet) with one peer only, terminal-gateway: a
 # second, minimal Caddy that forwards the few LiteLLM and shared-mcp paths Claude Code needs (:8091, as "gateway")
-# and nothing else. The main Caddy, the portal, Open WebUI and the databases are on no network with the terminal.
-# "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the way out to the internet.
+# and nothing else. The gateway's other network, "terminal-link" (internal too), holds only what it talks to:
+# LiteLLM, shared-mcp and the main Caddy. The portal, Open WebUI and the databases are on no network with either.
+# "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the terminal's way out to the internet.
 services:
   terminal:
     build:
@@ -45,8 +47,6 @@ services:
       # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp
       SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
-      # ttyd answers only requests that carry the header X-Bn-Terminal-0<this>, which only the main Caddy adds.
-      TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}
     # Docker Desktop's names for your computer point nowhere in here. A speed bump only: the address behind them stays
     # reachable while the terminal has internet access (TERMINAL_EGRESS=off removes that).
     extra_hosts:   # IPv4 TEST-NET and the IPv6 discard prefix: nothing answers there
@@ -56,6 +56,8 @@ services:
       - "gateway.docker.internal:100::1"
     volumes:
       - terminal-home:/home/claude
+      # ttyd's UNIX socket (no TCP listener in here at all), shared only with the gateway
+      - terminal-socket:/run/bn-ttyd
       # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
       - type: bind
         source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}
@@ -69,26 +71,34 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   # The terminal's only peer (caddy/terminal-gateway.caddy; the same pinned image as the main Caddy). On "terminal" it
-  # is "gateway" (:8091, bound there alone): LiteLLM's /v1/messages…, /v1/models…, /key/info, /model/info and
-  # /health/liveliness and shared-mcp's /mcp; 404 for anything else. On the default network it is "terminal-upstream"
-  # (:7681, bound there alone): ttyd, for the main Caddy.
+  # is "gateway" (:8091, bound there alone): LiteLLM's /v1/messages(/count_tokens), /v1/models…, /key/info,
+  # /model/info and /health/liveliness and shared-mcp's /mcp; 404 for anything else. On "terminal-link" it is
+  # "terminal-upstream" (:7681, bound there alone): ttyd's socket, for the main Caddy, only with the secret header.
+  # It runs as the terminal's user: ttyd's socket is that user's alone (mode 700).
   terminal-gateway:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     command: ["caddy", "run", "--config", "/etc/caddy/terminal-gateway.caddy", "--adapter", "caddyfile"]
-    user: "65534:65534"
+    user: "${TERMINAL_UID:-10104}:${TERMINAL_GID:-10104}"
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]   # the image's caddy binary carries this file capability; exec fails without it
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/data:uid=65534,gid=65534,mode=0700", "/config:uid=65534,gid=65534,mode=0700"]
+    tmpfs:
+      - "/data:uid=${TERMINAL_UID:-10104},gid=${TERMINAL_GID:-10104},mode=0700"
+      - "/config:uid=${TERMINAL_UID:-10104},gid=${TERMINAL_GID:-10104},mode=0700"
     mem_limit: 256m
     pids_limit: 200
+    environment:
+      # Required (X-Bn-Terminal-0<this>) before ttyd and removed on the way; only the main Caddy adds it. In the
+      # environment only, never on a command line (those are readable by every user of the machine).
+      TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}
     # Directory mount, like the main Caddy's (a file replaced by git is seen after a restart).
     volumes:
       - ./caddy:/etc/caddy:ro,z
+      - terminal-socket:/run/bn-ttyd:ro   # connecting to the socket needs no write access
     networks:
-      default:
+      terminal-link:
         aliases: [terminal-upstream]
       terminal:
         aliases: [gateway]
@@ -103,6 +113,7 @@ services:
 
   # The main Caddy: the terminal site (caddy/terminal-on.caddy, TERMINAL_HOST), proxied to terminal-upstream:7681.
   caddy:
+    networks: [default, terminal-link]
     environment:
       TERMINAL_MODE: "on"   # caddy/terminal-on.caddy (terminal-off.caddy otherwise: no terminal site)
       TERMINAL_HOST: ${TERMINAL_HOST:-terminal.${PORTAL_HOST:-bedrock-now.localhost}}
@@ -120,9 +131,18 @@ services:
       REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-}
       LITELLM_KEY_TERMINAL: ${LITELLM_KEY_TERMINAL:-}
 
+  # What the gateway forwards to (its :8091): on terminal-link too, beside their other networks.
+  litellm:
+    networks: [default, terminal-link]
+  shared-mcp:
+    networks: [default, terminal-link]
+
 networks:
   terminal:
+    internal: true
+  terminal-link:
     internal: true
 
 volumes:
   terminal-home:
+  terminal-socket:

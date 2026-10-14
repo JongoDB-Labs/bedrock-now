@@ -5,15 +5,15 @@
 #
 #   enable [--workspace DIR]   TERMINAL_ENABLED=true. DIR (default ~/bedrock-now-workspace, created with mode 700)
 #                              is the only folder of this computer the container sees, at /workspace.
-#   disable                    the container, its gateway and their networks go; the folder, terminal-home (Claude
-#                              Code's settings and history) and its LiteLLM key are kept
+#   disable                    the container, its gateway, their networks and ttyd's socket volume go; the folder,
+#                              terminal-home (Claude Code's settings and history) and its LiteLLM key are kept
 #   status                     on/off, the folder, the container, its key, address, internet and remote access
 #
 # .env: TERMINAL_ENABLED, TERMINAL_WORKSPACE, TERMINAL_UID / TERMINAL_GID (yours, so files in the folder stay yours),
 # TERMINAL_EGRESS (off = no internet), TERMINAL_HOST (default terminal.PORTAL_HOST), TERMINAL_MEM_LIMIT (default
 # 4g), REMOTE_TERMINAL (on = also through ./stack remote; REMOTE_TERMINAL_HOST is then written here), BUDGET_TERMINAL
 # (its key's monthly budget, default $50), and generated: LITELLM_KEY_TERMINAL (claude-code-terminal) and
-# TERMINAL_PROXY_SECRET (the header the main Caddy adds and ttyd requires). Switches read true/1/yes/on and
+# TERMINAL_PROXY_SECRET (the header the main Caddy adds and the gateway requires; new at every enable). Switches read true/1/yes/on and
 # false/0/no/off, like the portal. Only .env counts: dc() drops TERMINAL_* from your shell, so an exported
 # TERMINAL_WORKSPACE never mounts anything.
 #
@@ -74,7 +74,8 @@ _phys() { (cd "$1" 2>/dev/null && /bin/pwd -P) || true; }
 _fold() { if [ "$(uname -s)" = Darwin ]; then printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; else printf '%s\n' "$1"; fi; }
 
 # terminal_workspace_check DIR -> the folder's physical path; fails, printing why, for a folder the terminal must
-# never see: the root or a system folder (the Docker socket lives in one), your home folder or one around it, a
+# never see: the root or a system folder (the Docker socket lives in one), /Volumes, /mnt or /media themselves (every
+# mounted disk), your home folder or one around it, a
 # hidden folder in it (~/.ssh, ~/.aws, ~/.docker …), ~/Library (keychains, app data; its iCloud Drive folder,
 # ~/Library/Mobile Documents, is fine), this checkout (its .env holds every secret), or a folder that contains it or
 # lies inside it. Temporary folders are fine. On macOS every comparison ignores case, as the disk does.
@@ -96,6 +97,10 @@ terminal_workspace_check() {
     esac
   fi
   case "$r" in /tmp | /tmp/* | /var/tmp | /var/tmp/* | /private/tmp | /private/tmp/* | /private/var/folders/*) printf '%s\n' "$real"; return 0 ;; esac
+  # where other disks are mounted: the folder itself shows them all (a folder on one of them is fine)
+  for p in /Volumes /mnt /media; do
+    [ "$r" != "$(_fold "$p")" ] || { echo "it holds every mounted disk ($p) — pick a folder on one of them"; return 1; }
+  done
   for p in /bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /root /run /sbin /snap /srv/docker /sys /usr /var \
            /private /System /Library /Applications /cores /opt/homebrew; do
     p="$(_fold "$p")"
@@ -114,26 +119,34 @@ terminal_ids() {
 # terminal_build — the image (terminal/Dockerfile) with this week's Debian packages (the stt image's rule)
 terminal_build() { dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" terminal; }
 _terminal_build_and_up() { terminal_build && _terminal_up; }
-# Portal (the tab, the unlock) and Caddy (the terminal site: a changed Caddyfile is read only at start), then the
-# terminal's gateway (likewise) and the container.
+# Portal (the tab, the unlock) and Caddy (the terminal site: a changed Caddyfile is read only at start), LiteLLM and
+# shared-mcp (recreated only when they join or leave the gateway's network, terminal-link), then the terminal's
+# gateway (likewise read at start) and the container.
 _terminal_up() {
-  dc up -d --wait portal && dc up -d --wait --force-recreate caddy &&
-    dc up -d --wait --force-recreate terminal-gateway && dc up -d --wait terminal
+  _terminal_front && dc up -d --wait --force-recreate terminal-gateway && dc up -d --wait terminal
 }
-_terminal_front() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy; }
+_terminal_front() {
+  dc up -d --wait portal && dc up -d --wait --force-recreate caddy && dc up -d --wait --no-deps litellm shared-mcp
+}
 
-# terminal_secrets — what the terminal needs besides the stack's own: its secret header for ttyd
-# (TERMINAL_PROXY_SECRET, 32 hex characters, generated once) and its monthly budget (BUDGET_TERMINAL, default $50)
+# terminal_secrets [rotate] — what the terminal needs besides the stack's own: the secret header the main Caddy adds
+# and the gateway requires before ttyd (TERMINAL_PROXY_SECRET, 32 hex characters; generated when missing or weak, and
+# anew with "rotate": every ./stack terminal enable) and its monthly budget (BUDGET_TERMINAL, default $50)
 terminal_secrets() {
   local v; v="$(get_env TERMINAL_PROXY_SECRET)"
-  case "$v" in *[!0-9a-f]* | '') set_env TERMINAL_PROXY_SECRET "$(gen_hex 16)" ;; *) [ "${#v}" -ge 32 ] || set_env TERMINAL_PROXY_SECRET "$(gen_hex 16)" ;; esac
+  case "$v" in *[!0-9a-f]* | '') v='' ;; *) [ "${#v}" -ge 32 ] || v='' ;; esac
+  [ -n "$v" ] && [ "${1:-}" != rotate ] || set_env TERMINAL_PROXY_SECRET "$(gen_hex 16)"
   ensure_env BUDGET_TERMINAL 50
 }
 
 # terminal_key — the terminal's own LiteLLM key, claude-code-terminal (BUDGET_TERMINAL): the sandbox never holds the
-# claude-code key of claude-bedrock on your computer, and its key can be revoked (Admin) or capped on its own.
-# Needs LiteLLM running. Fails (in a subshell, so callers decide how loud) rather than dying.
-terminal_key() { ( ensure_virtual_key LITELLM_KEY_TERMINAL claude-code-terminal "$(get_env BUDGET_TERMINAL)" ); }
+# claude-code key of claude-bedrock on your computer, and its key can be revoked (Admin) or capped on its own. It may
+# call only TERMINAL_KEY_ROUTES — the gateway's LiteLLM paths — also where the sandbox reaches LiteLLM past the
+# gateway (Docker Desktop's way to your Mac's 127.0.0.1:LITELLM_PORT): no /bedrock/… pass-through, no
+# /v1/chat/completions. LiteLLM matches each entry and the paths below it. Needs LiteLLM running. Fails (in a
+# subshell, so callers decide how loud) rather than dying.
+TERMINAL_KEY_ROUTES='["/v1/messages","/v1/messages/count_tokens","/v1/models","/key/info","/model/info"]'
+terminal_key() { ( ensure_virtual_key LITELLM_KEY_TERMINAL claude-code-terminal "$(get_env BUDGET_TERMINAL)" "$TERMINAL_KEY_ROUTES" ); }
 
 terminal_enable() {
   local ws='' real why created=0 ids
@@ -163,7 +176,7 @@ terminal_enable() {
     why="$real"; [ "$created" = 0 ] || rmdir "$ws" 2>/dev/null || true
     die "not using $ws as the terminal's workspace: $why. Pick another one: ./stack terminal enable --workspace DIR"
   fi
-  terminal_secrets
+  terminal_secrets rotate
   if ! terminal_key; then
     [ "$created" = 0 ] || rmdir "$ws" 2>/dev/null || true
     die "could not create the terminal's LiteLLM key (claude-code-terminal) — see ./stack logs litellm; nothing else was changed"
@@ -176,7 +189,7 @@ terminal_enable() {
   set_env TERMINAL_ENABLED true
   terminal_remote_sync
   run_phase "Terminal image (build; the first one takes a few minutes)" terminal terminal_build
-  run_phase "Terminal + its gateway + portal + Caddy" "terminal terminal-gateway portal caddy" _terminal_up
+  run_phase "Terminal + its gateway + portal + Caddy" "terminal terminal-gateway portal caddy litellm shared-mcp" _terminal_up
   terminal_after_up
   printf '\n'; terminal_status
   printf '\nOpen the Terminal tab on Home (%s) and unlock it with the portal password.\n' "$(portal_url)"
@@ -190,17 +203,17 @@ terminal_disable() {
   dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true   # with the overlay still on: compose knows them
   set_env TERMINAL_ENABLED false
   terminal_remote_sync
-  run_phase "Portal + Caddy (terminal off)" "portal caddy" _terminal_front
+  run_phase "Portal + Caddy (terminal off)" "portal caddy litellm shared-mcp" _terminal_front
   terminal_network_cleanup
+  docker volume rm "$(project_name)_terminal-socket" >/dev/null 2>&1 || true   # ttyd's socket: nothing to keep
   log "the terminal is off: no Terminal tab, no terminal host, no container"
   log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE), Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them) and its LiteLLM key claude-code-terminal (spend history; delete it in Admin to revoke it)"
 }
 
-# terminal_network_cleanup — the terminal's two networks, once nothing is attached (never fatal)
+# terminal_network_cleanup — the terminal's three networks, once nothing is attached (never fatal)
 terminal_network_cleanup() {
-  local p; p="$(project_name)"
-  docker network rm "${p}_terminal" >/dev/null 2>&1 || true
-  docker network rm "${p}_terminal-out" >/dev/null 2>&1 || true
+  local p n; p="$(project_name)"
+  for n in terminal terminal-out terminal-link; do docker network rm "${p}_$n" >/dev/null 2>&1 || true; done
 }
 
 # terminal_remote_sync — REMOTE_TERMINAL_HOST in .env: the terminal's remote name while the terminal is on,
@@ -314,8 +327,9 @@ terminal_summary_line() {
 }
 
 # terminal_test_checks — ./stack test while the terminal is on (uses cmd_test's `fails`; no Bedrock calls): the
-# container's health, the host's checks (login, then the unlock page, other sites' Origins), ttyd's secret header,
-# the gateway's few paths, and everything the sandbox must not reach.
+# container's health, the host's checks (login, then the unlock page, other sites' Origins), the gateway's secret
+# header before ttyd, the gateway's few paths (a path with ../ in it included), its key's routes, and everything the
+# sandbox must not reach.
 terminal_test_checks() {
   local code out got
   terminal_ready || return 0
@@ -335,13 +349,18 @@ terminal_test_checks() {
   else
     _skip "terminal unlock checks" "portal login failed"
   fi
-  # ttyd itself, as the main Caddy reaches it, without the secret header (a forged X-Portal-User changes nothing)
+  # ttyd, as the main Caddy reaches it (through the gateway), without the secret header: a forged X-Portal-User
+  # changes nothing
   out="$(dc exec -T caddy wget -S -O /dev/null -T 10 --header 'X-Portal-User: admin@example.com' http://terminal-upstream:7681/ 2>&1 || true)"
-  _check "ttyd refuses requests without the terminal's secret header" "$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')" 407
-  # From inside the sandbox: the gateway's paths, 404 for the rest of LiteLLM, nothing else of the stack
-  out="$(dc exec -T terminal sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs"; do curl -s -m 10 -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
-  _check "terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs" \
-    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "200 404 404 404 404"
+  _check "the terminal's gateway refuses ttyd requests without the secret header" "$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')" 407
+  # From inside the sandbox: the gateway's paths, 404 for the rest of LiteLLM (also behind a ../), nothing else
+  out="$(dc exec -T terminal sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs" "POST /bedrock/model/x/converse/../../../../v1/messages"; do curl -s -m 10 --path-as-is -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
+  _check "terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs, a ../ path" \
+    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "200 404 404 404 404 404"
+  # Its key, where the sandbox can also reach LiteLLM (your Mac's loopback, on Docker Desktop): only Claude Code's
+  # routes — 403 for the Bedrock pass-through and the OpenAI-style API (empty bodies: nothing would run anyway)
+  out="$(litellm_call "$(get_env LITELLM_KEY_TERMINAL)" POST /bedrock/model/x/converse '{}') $(litellm_call "$(get_env LITELLM_KEY_TERMINAL)" POST /v1/chat/completions '{}')"
+  _check "the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions" "$out" "403 403"
   out="$(dc exec -T terminal sh -c 'curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}" http://gateway:8091/mcp' 2>/dev/null || true)"
   case "$out" in *search_knowledge*) got=yes ;; *) got=no ;; esac
   _check "terminal gateway: the shared MCP server's tools" "$got" yes
@@ -371,7 +390,7 @@ terminal_rollback_cleanup() {
 # on): its volume, networks and images by their exact names, whether or not it is on now. The workspace folder stays.
 terminal_uninstall_cleanup() {
   local p; p="$(project_name)"
-  docker volume rm "${p}_terminal-home" >/dev/null 2>&1 || true
+  docker volume rm "${p}_terminal-home" "${p}_terminal-socket" >/dev/null 2>&1 || true
   terminal_network_cleanup
   docker image rm "$p/terminal:local" "$p/terminal:previous" >/dev/null 2>&1 || true
 }

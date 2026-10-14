@@ -48,7 +48,8 @@ ARG BN_GID=10104
 RUN set -eu; userdel -r node 2>/dev/null || true; \
     getent group "$BN_GID" >/dev/null || groupadd -g "$BN_GID" claude; \
     useradd -o -M -d /home/claude -s /bin/bash -u "$BN_UID" -g "$BN_GID" claude; \
-    mkdir -p /home/claude /workspace; chown "$BN_UID:$BN_GID" /home/claude /workspace; chmod 700 /home/claude
+    mkdir -p /home/claude /workspace /run/bn-ttyd; chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd; \
+    chmod 700 /home/claude /run/bn-ttyd
 COPY tmux.conf /etc/tmux.conf
 COPY bashrc /etc/bedrock-now.bashrc
 COPY bin/ /usr/local/bin/
@@ -60,8 +61,7 @@ ENV LANG=C.UTF-8 HOME=/home/claude SHELL=/bin/bash NPM_CONFIG_PREFIX=/home/claud
     PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER claude
 WORKDIR /workspace
-EXPOSE 7681
-# ttyd answers only requests that carry the terminal's secret header (bn-terminal), so this one does too.
+# ttyd listens on a UNIX socket only (bn-terminal; the terminal-socket volume, shared with its gateway alone)
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 \
-  CMD sh -c 'curl -fsS -o /dev/null -H "X-Bn-Terminal-0$TERMINAL_PROXY_SECRET: 1" http://127.0.0.1:7681/' || exit 1
+  CMD curl -fsS -o /dev/null --unix-socket /run/bn-ttyd/ttyd.sock http://terminal/ || exit 1
 CMD ["bn-terminal"]
