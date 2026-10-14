@@ -92,12 +92,17 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   ASCII lines (`bedrock-now-settings 1`, `nonce`, `requested_at`, `base`, `origin local|remote`, `auth`,
   then `set KEY BASE64` or `regen KEY` for 1-20 keys, `end`), mode 640, renamed into place. `regen` asks for a new
   random value that `./stack` makes itself (the RustFS key pair, the shared MCP token): those keys never take a
-  value from a request. Diagnostics are
-  `act-<nonce>.json` with one action from a fixed list (check-aws, models-recheck, backup, test, report,
-  restart of litellm, open-webui, shared-mcp, stt, rustfs or caddy), in the strict format of the update requests.
+  value from a request (nor may a request `set` one). `confirm other-aws-account` (the tick in Settings) lets a new
+  AWS key of another account through. Diagnostics are `act-<nonce>.json`: one line with one action from a fixed
+  list (check-aws, models-recheck, backup, test, report, restart of litellm, open-webui, shared-mcp, stt, rustfs or
+  caddy) and the password again (`auth`), which the helper checks like a change's. Requests the helper has not
+  taken after 150 seconds (it is not running) are deleted by the portal itself: they carry the password.
 - **The helper checks everything again.** It moves the file into its private inbox, reads it without blocking or
-  following links (as `latest.txt`: [bounded reads](#the-update-helper)), refuses symlinks, other owners, more than 8 KB, any other line, a nonce used before and requests older than 2 minutes; then it deletes
-  the file and keeps the values in memory only. The password in `auth` must match **the helper's own hash**,
+    following links (as `latest.txt`: [bounded reads](#the-update-helper)), refuses symlinks, other owners, more
+  than 8 KB, any other line, a nonce used before and requests older than 2 minutes; then it deletes the file and
+  keeps the values in memory only. No value may hold a control character (a line break could split `.env` or
+  reach an app's API), whatever its key. The password in `auth` (a control character never counts: `openssl`
+  reads only its first line) must match **the helper's own hash**,
   `.state/helper/portal-password` (600, in a 700 folder no container mounts), which `./stack` writes from `.env`
   — never `PORTAL_PASSWORD_HASH`, which the portal can read. Five wrong passwords in 15 minutes (or 20 in a day)
   stop all settings requests until they age out. Each key must be in its allowlist (`catalog/settings.tsv` in
@@ -110,14 +115,19 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   request whose `base` no longer matches `.env` ("changed on disk since you opened the page"), runs the live
   checks before anything changes (the AWS key with STS and a free Bedrock check, OpenRouter's and the
   speech-to-text provider's key endpoints, the new owner email not taken by another Chat account), keeps the
-  old values (in memory, and in `.state/config/pending.env`, 600, until the change ends, so `./stack up` notices a
-  change cut short), changes the LiteLLM password or the owner email in LiteLLM and Open WebUI first, writes
+  old values in memory (`.state/config/pending.env`, 600, holds only the key names until the change ends, so
+  `./stack up` notices a change cut short), changes the LiteLLM password or the owner email in LiteLLM and Open WebUI first, writes
   `.env` once, restarts only what changed and checks the result (the paid smoke test only after an AWS key
   change). Any failure puts the previous values back, reverses the changes in LiteLLM and Open WebUI and restarts
-  with the old settings.
+  with the old settings — also when `.env` itself could not be written. `./stack up` and the other commands that
+  write `.env` (`rotate-aws`, `openrouter`, `models --recheck`) take the same lock, so none of them undoes a
+  change while it runs.
 - **Keys that could send data elsewhere** — the AWS key, the OpenRouter key, the speech-to-text provider and key,
   the alert webhook — are taken only from a local session (`origin local`); so is turning `REMOTE_ADMIN_ACTIONS`
   on and changing `TAILSCALE_ALLOWED_LOGIN` (never to blank). `UPDATE_REQUIRE_SIGNED_TAGS` can only be turned on.
+  Settings that would protect less move that way only locally, the other way from anywhere: storing prompts
+  (`LITELLM_STORE_PROMPTS` on), nightly backups off, fewer backups kept, longer sign-ins. A new AWS key of another
+  AWS account (other models, quotas and bill) needs a tick in Settings, or a yes in the terminal.
   Read-only, whatever a request says: hosts and ports, `HELPER_*`, `BEDROCK_NOW_*`, `REMOTE_MODE`, the Tailscale
   and Cloudflare keys, and the internal secrets (`PORTAL_SECRET`, `POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`,
   `LITELLM_SALT_KEY`, `WEBUI_SECRET_KEY`, the LiteLLM keys, `OPENWEBUI_API_KEY`).
@@ -130,16 +140,22 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   result, `cli` / `portal-local` / `portal-remote`, key names, never a value. Home shows the last change for a
   day.
 - **Startup reconcile.** `./stack up`, setup and `./stack restore` check that Chat's owner account and the
-  Admin (LiteLLM) sign-in match `.env`; they move the owner's email back, delete an empty `pending` Chat account
-  that holds the owner email (what a bare `.env` edit creates), and reset the Admin password from `.env` with the
-  master key, or warn.
+  Admin (LiteLLM) sign-in match `.env`; they move the owner's email back — only on the account recorded as the
+  owner (`.state/config/owui-owner`, its Open WebUI id), never another admin —, delete an empty `pending` Chat
+  account that holds the owner email (what a bare `.env` edit creates), and reset the Admin password from `.env`
+  with the master key, or warn. Emails are compared and stored in lowercase, as Open WebUI keeps them.
+- **Backups and reports from the portal.** Back up now writes `backups/<time>-portal/` and keeps the newest 5;
+  every backup (yours, nightly, before an update) is refused when the disk could not hold it twice. The status
+  report (`.state/status/report.txt`, 640) has the secrets of `.env`, emails and logins, tailnet names and AWS
+  account numbers removed.
 
 - **Nothing in Settings can stop the helper.** Its settings and diagnostics code runs in a subshell of the helper's
   loop: a failure there (even a bug that exits) is logged and the loop goes on, like everything else in it.
 - **Nightly backups** (`BACKUP_NIGHTLY=on`) are run by the helper itself, in its loop, like automatic updates: once
   per night in the three hours from `BACKUP_HOUR` (this computer's clock), `./stack backup --nightly`, which keeps
   the newest `BACKUP_KEEP` of the `-nightly` backups and never removes yours, the update backups or the one a
-  rollback needs. Skipped on a night an automatic update made its own backup. The backup list Settings shows
+  rollback needs. With automatic updates on, it uses their window: one backup a night, the update's own when a
+  release installs. Not counted in the diagnostics' rate limits; the heartbeat goes on during every job. The backup list Settings shows
   (`.state/status/backups.json`) holds names, kinds, sizes and dates only, never anything inside a backup.
 
 **What a compromised portal container can still do.** It already holds the LiteLLM master key, the RustFS root
@@ -147,12 +163,13 @@ pair, the LiteLLM keys and the MCP token, and it sits on the network next to Ope
 header from its peers): it can act as admin of LiteLLM, RustFS and Chat and spend Bedrock money within the
 budgets — Settings adds nothing to that. It can no longer read the portal password (only its hash: it would have to
 crack PBKDF2 or catch your next sign-in), so it cannot pass the helper's password check, and it cannot read the
-AWS key, the Cloudflare token or the speech-to-text and OpenRouter keys. With your password (caught at a sign-in)
+AWS key, the Cloudflare token or the speech-to-text key. It does hold the OpenRouter key (Home shows that
+account's credit with it). With your password (caught at a sign-in)
 it could make any change a local session may make, including pointing the AWS key, the OpenRouter or
 speech-to-text key or the alert webhook at its own accounts, or changing your passwords; each such change is
 in the audit log and on Home. It cannot run anything but `./stack config apply` and the listed diagnostics, cannot
 change hosts, ports, the helper's own switches or the internal secrets (beyond asking for a new random RustFS pair
-or MCP token, which it would not learn), and cannot restore a backup.
+or MCP token — it is restarted with them, as it holds the current ones), and cannot restore a backup.
 
 ## Remote access
 

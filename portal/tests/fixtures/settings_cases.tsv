@@ -153,3 +153,17 @@ models_list	0	ok	claude-opus-5-5
 models_list	0	ok	claude-opus-5-5,mistral-large-3
 models_list	0	bad	claude-opus-5-5,
 models_list	0	bad	a b
+email	0	bad	admin@example.com\nother@example.com
+email	0	bad	\nadmin@example.com
+aws_key_id	0	bad	\x41KIAABCDEFGHIJKLMNOP\nAKIAABCDEFGHIJKLMNOP
+aws_secret	0	bad	\x61bcdefghijABCDEFGHIJ\x30123456789/+abcdefgh\nx
+models_list	0	bad	claude-opus-5-5\nclaude-haiku-5-5
+pw_hash	0	ok	pbkdf2-sha256:600000:0123456789abcdef:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+pw_hash	0	bad	pbkdf2-sha256:600000:0123456789abcdef:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\npbkdf2-sha256:600000:0123456789abcdef:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+pw_hash	0	bad	pbkdf2-sha256:1000:0123456789abcdef:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+pw_hash	0	bad	x\npbkdf2-sha256:600000:0123456789abcdef:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+webhook	0	bad	http://10.attacker.example/hook
+webhook	0	bad	http://127.evil.example/hook
+webhook	0	ok	http://10.0.0.5:8080/hook
+webhook	0	ok	http://172.20.1.2/hook
+webhook	0	bad	http://172.32.1.2/hook

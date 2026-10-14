@@ -894,6 +894,7 @@ _or_apply() {
   render_config "$(_enabled_or_all)"
   if [ -z "$(dc ps -q litellm 2>/dev/null)" ]; then log "saved — the stack is stopped; ./stack up applies it"; return 0; fi
   run_phase "LiteLLM" litellm dc up -d --no-deps --force-recreate --wait litellm
+  ensure_portal_password_hash   # lib/settings.sh
   run_phase "Portal" portal dc up -d --no-deps --wait portal
   portal_session_or_die
   _or_owui_refresh
@@ -914,6 +915,7 @@ _or_use_key() {
 cmd_openrouter() {
   local key
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  case "${1:-status}" in set | apply | remove | models | refresh) stack_lock openrouter ;; esac   # they write .env
   case "${1:-status}" in
     set)
       # An explicit command: here OPENROUTER_API_KEY from the environment is the documented non-interactive input.

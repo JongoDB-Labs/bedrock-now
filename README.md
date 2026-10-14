@@ -256,21 +256,27 @@ last four characters of generated keys and the `AKIA…` ends of the AWS key ID)
 - the portal password (this browser stays signed in, every other device signs in again), the owner email (the
   same Chat account keeps its chats; the Admin sign-in follows), the Admin (LiteLLM) password, how many days a
   sign-in lasts (1-90), storing prompts; **Sign out other devices** and **Sign out everywhere**;
-- the AWS access key (checked with AWS first, including Bedrock access, free; a failed smoke test puts the old
-  key back), **Check AWS key** (free) and **Re-check models** (< $0.01, at most hourly);
+- the AWS access key (checked with AWS first, including Bedrock access, free; a key of another AWS account needs a
+  tick; a failed smoke test puts the old key back), **Check AWS key** (free) and **Re-check models** (< $0.01, at
+  most hourly);
 - your own model choices: Chat's default model, its title/tag model and Claude Code's three slots (blank =
-  automatic; setup keeps a pin while that model is enabled and warns when it is not), and which models Chat's picker
+  automatic; Claude Code's slots take Claude models; setup keeps a pin while that model is enabled and warns
+  when it is not), and which models Chat's picker
   leaves out (a tidier picker only: the API and Claude Code can still use them);
-- the three budgets (at once, no restart), the alert threshold (50-99%, default 80%) and the budget alert webhook;
+- the three budgets (at once, no restart; a warning when one is below this period's spend), the alert threshold
+  (50-99%, default 80%) and the budget alert webhook;
 - speech-to-text (Bedrock, OpenAI, Groq or the browser), OpenRouter's key and model set;
 - the daily release and price checks, automatic updates and their hour, signed releases only (on only);
-  **Back up now**, **nightly backups** (by the update helper, in a three-hour window you pick, keeping the newest
-  1-60) and the list of backups (name, kind, size, date, and which one a rollback needs);
+  **Back up now** (the newest 5 made here are kept), **nightly backups** (by the update helper, in a three-hour
+  window you pick or, with automatic updates on, theirs, keeping the newest 1-60) and the list of backups (name,
+  kind, size, date, and which one a rollback needs); a backup is refused when the disk could not hold it twice;
 - **Regenerate** the Files (RustFS) key pair or the shared MCP token: new random values made by `./stack`, stored
   files stay;
-- `REMOTE_ADMIN_ACTIONS` (off from anywhere, on only from this computer) and the allowed Tailscale login;
-- **Diagnostics**: the smoke test (~$0.0001), a restart of one service, a status report to copy (your home
-  folder shown as `~`, no secrets).
+- `REMOTE_ADMIN_ACTIONS` (off from anywhere, on only from this computer) and the allowed Tailscale login; the
+  same rule for anything that would protect less (storing prompts, nightly backups off, fewer kept, longer
+  sign-ins): only from this computer;
+- **Diagnostics** (the password again): the smoke test (~$0.0001), a restart of one service, a status report to
+  copy (your home folder shown as `~`; no secrets, emails, tailnet names or account numbers).
 
 Reveal/Copy works only for values the portal already holds (the Admin and Files sign-ins, the three LiteLLM keys,
 the shared MCP token), after the password again. Everything else in **Advanced** is read-only, with the reason and
@@ -756,11 +762,12 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - The update helper runs only `./stack update|rollback|clean` (and `./stack helper auto on|off`) for this
   checkout, on a strictly checked request that the portal writes after you re-enter the password, within its
   own rate limits; with automatic updates on, also `./stack update` for a new release tag at night. Its
-  buttons are off for remote access by default.
+  buttons are off for remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote;
+  an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
 - Settings changes are requests too: the helper checks the password against its own hash (the portal holds
   only a hash of it, never the password), its own allowlist and each value, and runs `./stack config apply`
-  with the values on stdin; keys that could send data elsewhere change only from this computer. Only `./stack remote`'s Caddy blocks mark requests as remote;
-  an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
+  with the values on stdin; keys that could send data elsewhere, and settings that would protect less, change
+  only from this computer.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale

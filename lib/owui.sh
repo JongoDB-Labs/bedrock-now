@@ -385,7 +385,7 @@ owui_install_cost_filter() {
 BUDGET_BANNER_PREFIX=bedrock-now-budget
 
 # budget_banner_json NOW_EPOCH < "alias<TAB>spend<TAB>max_budget<TAB>reset_date" lines -> JSON list of
-# Open WebUI banners for keys at >= alert_pct (80%) of their budget ("warning"), >= 100% ("error"); [] when none.
+# Open WebUI banners for keys at >= alert_pct (BUDGET_ALERT_PCT, default 80%) of their budget ("warning"), >= 100% ("error"); [] when none.
 budget_banner_json() {
   awk -F'\t' -v now="$1" -v p="$BUDGET_BANNER_PREFIX" -v a="$(alert_pct)" '
     function usd(v) { return (v < 1 && v > 0) ? sprintf("$%.4f", v) : sprintf("$%.2f", v) }

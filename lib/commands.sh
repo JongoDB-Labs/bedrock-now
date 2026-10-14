@@ -372,6 +372,7 @@ setup_secrets() {
   ensure_env BUDGET_SETUP 5
   ensure_env LITELLM_STORE_PROMPTS false
   local email src def
+  owner_email_lowercase   # lib/settings.sh: Chat keeps emails in lowercase
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"
   if [ -n "$email" ]; then
     src="from OPENWEBUI_ADMIN_EMAIL in .env"
@@ -380,6 +381,7 @@ setup_secrets() {
     if [ -n "$def" ]; then src="from git config"; else def=admin@bedrock-now.local; src="default"; fi
     email="$(ask "Open WebUI admin email" "$def")"
     [ "$email" = "$def" ] || src="entered"
+    email="$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')"   # (as Chat keeps it)
     case "$email" in *@*.*) set_env OPENWEBUI_ADMIN_EMAIL "$email" ;; *) die "invalid email: $email" ;; esac
     src="$src; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup"
   fi
@@ -531,6 +533,7 @@ _build_and_up_mcp() { dc build -q shared-mcp && dc up -d --wait shared-mcp; }
 # read at start). If Docker refuses to publish port 80 after all, falls back to 8800 once.
 _build_and_up_portal() {
   local out rc=0
+  ensure_portal_password_hash   # lib/settings.sh: the portal starts only with a hash that matches PORTAL_PASSWORD
   dc build -q portal && dc up -d --wait portal || return 1
   out="$(dc up -d --wait --force-recreate caddy 2>&1)" || rc=$?
   printf '%s\n' "$out"
@@ -562,7 +565,7 @@ portal_session_or_die() {
 ensure_virtual_key() { # ensure_virtual_key ENV_KEY ALIAS BUDGET
   local envk="$1" alias="$2" budget="$3" cur tmp code key soft
   valid_budget "$budget" || die "budget for $alias must be a number of USD, got '$budget' (see BUDGET_* in .env)"
-  soft="$(soft_budget_of "$budget")"   # BUDGET_ALERT_PCT (80%): LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
+  soft="$(soft_budget_of "$budget")"   # BUDGET_ALERT_PCT (default 80%): LiteLLM alerts there (ALERT_WEBHOOK_URL); only max_budget blocks
   cur="$(get_env "$envk")"
   if [ -n "$cur" ]; then
     # /key/info with the key itself as bearer (keeps the key out of URLs/argv).
@@ -617,6 +620,7 @@ setup_keys_and_ui() {
   log "creating LiteLLM virtual keys with monthly budgets"
   ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env BUDGET_CLAUDE_CODE)"
   ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env BUDGET_OPENWEBUI)"
+  alert_pct_mark || true   # lib/settings.sh: all three keys alert at BUDGET_ALERT_PCT now
   setup_litellm_admin
   stt_setup_service   # lib/stt.sh: the stt container (Bedrock speech-to-text) before Open WebUI; never fatal
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
@@ -639,10 +643,12 @@ setup_keys_and_ui() {
 # services whose settings depend on the enabled models and refreshes the Open WebUI price descriptions.
 models_recheck() {
   [ -f "$ENV_FILE" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
+  stack_lock models   # lib/lock.sh: the model choices in .env are rewritten
   check_prereqs
   setup_bringup_and_probe
   stt_after_probe   # lib/stt.sh: Voxtral may have become usable (or not)
   stt_setup_service
+  ensure_portal_password_hash
   run_phase "Open WebUI + shared-mcp + portal" "open-webui shared-mcp portal" dc up -d --wait open-webui shared-mcp portal
   portal_session_or_die
   sync_openwebui_models
@@ -820,11 +826,13 @@ cmd_up() {
   local extra; extra="$(stt_services)"
   local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  stack_lock up   # lib/lock.sh: never while a settings change, setup, update or restore writes .env
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_password_hash   # lib/settings.sh: PORTAL_PASSWORD edited by hand gets a new hash
+  owner_email_lowercase         # lib/settings.sh: as Chat keeps it
   settings_pending_check        # a settings change cut short: reconciled below
   ensure_portal_dirs; write_version_file   # lib/version.sh
   ensure_images "./stack up"
@@ -858,7 +866,8 @@ cmd_up() {
   # filter, which also carries OpenRouter's prices, and model descriptions) plus OpenRouter's label sync if
   # its models changed too; after OpenRouter changes alone, openrouter_after_up.
   if portal_session_start; then
-    settings_reconcile; budget_sync_quiet   # lib/settings.sh: sign-ins and budgets as .env says
+    settings_reconcile; budget_sync_quiet   # lib/settings.sh: sign-ins, budgets and alert thresholds as .env says
+    owui_apply_hidden   # lib/owui.sh: MODELS_HIDDEN changed while the stack was stopped
     sync_budget_banner
     stt_after_up   # lib/stt.sh: hides the speech-to-text model after ./stack stt set while stopped
     if [ "$PRICES_CHANGED" = 1 ] || [ "$repriced" = 1 ]; then
@@ -1064,10 +1073,26 @@ cmd_backup() {
   case "${1:-}" in
     '') [ $# -eq 0 ] || die "usage: ./stack backup [--nightly]"; _backup_named "" ;;
     # the update helper's nightly backup (BACKUP_NIGHTLY=on): backups/<timestamp>-nightly/, the newest BACKUP_KEEP kept
-    --nightly) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named nightly; prune_nightly_backups "$(backup_keep)" ;;
+    --nightly) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named nightly; prune_backups nightly "$(backup_keep)" ;;
+    # Back up now in the portal's Settings (through the update helper): backups/<timestamp>-portal/, the newest 5 kept
+    --portal) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named portal; prune_backups portal "$PORTAL_BACKUPS_KEEP" ;;
     *) die "usage: ./stack backup [--nightly]   (writes backups/<timestamp>/)" ;;
   esac
   write_backups_json   # lib/settings.sh: the list Settings shows
+}
+
+PORTAL_BACKUPS_KEEP=5   # backups made from the portal (Back up now): the newest 5 are kept
+
+# _backup_space_check — refuses a backup that would not fit: at least twice the newest backup's size must be free
+# (a full disk stops the databases too)
+_backup_space_check() {
+  local last='' d kb free
+  for d in "$STACK_DIR"/backups/*/; do [ -d "$d" ] || continue; case "$d" in *.partial/) ;; *) last="$d" ;; esac; done   # newest last
+  [ -n "$last" ] || return 0
+  kb="$(du -sk "$last" 2>/dev/null | cut -f1 || true)"; case "$kb" in '' | *[!0-9]*) return 0 ;; esac
+  free="$(df -Pk "$STACK_DIR/backups" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"; case "$free" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$free" -ge $((kb * 2)) ] ||
+    die "not enough free disk space for a backup: $((free / 1024)) MB free, and one needs about $((kb / 1024 + 1)) MB (twice that is kept free) — delete old backups in backups/ first"
 }
 
 # _backup_named SUFFIX — writes backups/<ts>[-SUFFIX]/ and sets LAST_BACKUP (backups/<ts>…) for callers
@@ -1075,6 +1100,7 @@ cmd_backup() {
 _backup_named() {
   local dir tmp db
   [ -f "$ENV_FILE" ] || die "nothing to back up — run ./stack setup first"
+  _backup_space_check
   dir="$STACK_DIR/backups/$(date +%Y%m%d-%H%M%S)${1:+-$1}"; tmp="$dir.partial"
   mkdir -p "$tmp"; chmod 700 "$STACK_DIR/backups" "$tmp"
   _BACKUP_PARTIAL="$tmp"; on_exit _cleanup_partial_backup
@@ -1191,6 +1217,7 @@ cmd_restore() {
       else $S3 s3 rm --recursive --only-show-errors s3://$b; fi
     done' || die "restoring the object-store buckets failed (databases are restored, services are stopped); $hint"
   _restore_key_trio "$dir"
+  ensure_portal_password_hash   # lib/settings.sh: a .env copied from an older backup has no PORTAL_PASSWORD_HASH yet
   write_mcp_config
   # .env may have changed: recreate the containers that read these keys, then start everything else.
   remote_net_preflight
@@ -1462,6 +1489,7 @@ update_whats_new() {
 cmd_rotate_aws() {
   local id secret region arn errf old old_auth old_secret
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  stack_lock rotate-aws   # lib/lock.sh: .env is written below
   case "${1:-}" in   # instance-role mode: lib/host.sh
     '') if uses_instance_role; then instance_role_rotate_info; return 0; fi ;;
     --use-keys) ;;

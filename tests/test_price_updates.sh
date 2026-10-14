@@ -280,6 +280,7 @@ _stub_up() {
   openrouter_up_hook() { echo "or-hook" >> "$TMP/calls"; OR_UP_CHANGED="${OR_SAW:-0}"; }
   openrouter_after_up() { echo "or-after-up changed=${OR_UP_CHANGED:-0}" >> "$TMP/calls"; }
   openrouter_sync_owui() { echo "or-labels" >> "$TMP/calls"; }
+  owui_apply_hidden() { :; }   # (lib/owui.sh: tested in test_settings.sh)
 }
 
 test_cmd_up_refreshes_before_rendering_and_restarts_litellm() {

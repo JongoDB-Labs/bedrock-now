@@ -62,7 +62,7 @@ spend_text() {
 # alert_pct -> BUDGET_ALERT_PCT from .env (50-99; anything else: 80): where every budget warning starts
 alert_pct() { local p; p="$(get_env BUDGET_ALERT_PCT)"; case "$p" in [5-9][0-9]) echo "$p" ;; *) echo 80 ;; esac; }
 
-# budget_warning < /key/info JSON -> "⚠ 84% of monthly budget used" when spend is at least alert_pct (80%) of
+# budget_warning < /key/info JSON -> "⚠ 84% of monthly budget used" when spend is at least alert_pct (BUDGET_ALERT_PCT, default 80%) of
 # max_budget (the soft budget setup sets); fails (prints nothing) below that or without a budget.
 budget_warning() {
   local j spend max
@@ -71,7 +71,7 @@ budget_warning() {
   awk -v s="$spend" -v m="$max" -v p="$(alert_pct)" 'BEGIN { if (m <= 0 || s < p / 100 * m) exit 1; printf "⚠ %d%% of monthly budget used\n", s * 100 / m }'
 }
 
-# soft_budget_of MAX_BUDGET -> alert_pct (80%) of it (LiteLLM's soft_budget: alert, never block), e.g. 200 -> 160
+# soft_budget_of MAX_BUDGET -> alert_pct (BUDGET_ALERT_PCT, default 80%) of it (LiteLLM's soft_budget: alert, never block), e.g. 200 -> 160
 soft_budget_of() { awk -v b="$1" -v p="$(alert_pct)" 'BEGIN { s = sprintf("%.4f", b * p / 100); sub(/0+$/, "", s); sub(/\.$/, "", s); print s }'; }
 
 prices_as_of() { # -> YYYY-MM-DD from the "# as_of:" header line, or empty
@@ -186,7 +186,7 @@ general_settings:
   proxy_batch_write_at: 1   # spend logs land within ~1-6 s (claude-bedrock's exit summary reads them)
   password_policy_check_breached_passwords: false   # no haveibeenpwned.com call (Bedrock-only rule)
 EOT
-  # Budget alerts (soft_budget = 80%, max_budget) go to WEBHOOK_URL, which compose fills from ALERT_WEBHOOK_URL.
+  # Budget alerts (soft_budget = BUDGET_ALERT_PCT, default 80%; max_budget) go to WEBHOOK_URL, which compose fills from ALERT_WEBHOOK_URL.
   [ "$alerting" != true ] || printf '  alerting: ["webhook"]\n  alert_types: ["budget_alerts"]\n'
   [ "$env_login_off" != true ] || printf '  disable_env_credential_login: true\n'
   cat <<EOT

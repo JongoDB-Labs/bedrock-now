@@ -127,6 +127,7 @@ def routes(ctx: Ctx) -> list[Route]:
         if (deny := ctx.api_guard(request)) is not None:
             return deny
         rem = is_remote(request)
+        st.sweep_requests(s.request_dir)
         state = admin.helper_state(s.status_dir)
         cap = st.capability(s.status_dir)
         snap = st.snapshot(s.status_dir)
@@ -140,7 +141,7 @@ def routes(ctx: Ctx) -> list[Route]:
                        "url": s.origin(remote=True) if s.remote_on() else ""},
         }))
 
-    def check_values(values: dict, snap: dict, local: bool) -> dict:
+    def check_values(values: dict, snap: dict, local: bool, same_password: bool = False) -> dict:
         """{KEY: what is wrong} (no value in any message); the same rules as lib/settings.sh settings_check_batch."""
         rows, fields = st.by_key(snap), {}
         for k, v in values.items():
@@ -156,11 +157,12 @@ def routes(ctx: Ctx) -> list[Route]:
         eff = lambda k: values[k] if k in values else (rows.get(k) or {}).get("value", "")  # noqa: E731
         if ("AWS_ACCESS_KEY_ID" in values) != ("AWS_SECRET_ACCESS_KEY" in values):
             fields["AWS_SECRET_ACCESS_KEY"] = "goes together with the access key ID: replace both"
-        if "PORTAL_PASSWORD" in values and verify_password(values["PORTAL_PASSWORD"], s.password_hash):
+        if same_password:   # (verified off the event loop by the caller: 600,000 rounds)
             fields["PORTAL_PASSWORD"] = "is the password you have now"
         if "LITELLM_UI_PASSWORD" in values and values["LITELLM_UI_PASSWORD"] == s.litellm_ui_password:
             fields["LITELLM_UI_PASSWORD"] = "is the password you have now"
-        if "OPENWEBUI_ADMIN_EMAIL" in values and values["OPENWEBUI_ADMIN_EMAIL"] == (rows.get("OPENWEBUI_ADMIN_EMAIL") or {}).get("value"):
+        if "OPENWEBUI_ADMIN_EMAIL" in values and \
+                values["OPENWEBUI_ADMIN_EMAIL"].lower() == ((rows.get("OPENWEBUI_ADMIN_EMAIL") or {}).get("value") or "").lower():
             fields["OPENWEBUI_ADMIN_EMAIL"] = "is the owner email you have now"
         if "TAILSCALE_ALLOWED_LOGIN" in values and values["TAILSCALE_ALLOWED_LOGIN"] == "":
             fields["TAILSCALE_ALLOWED_LOGIN"] = "cannot be made blank here"
@@ -168,6 +170,8 @@ def routes(ctx: Ctx) -> list[Route]:
         for k in ("CHAT_DEFAULT_MODEL", "CHAT_TASK_MODEL", "CLAUDE_MODEL_OPUS", "CLAUDE_MODEL_SONNET", "CLAUDE_MODEL_HAIKU"):
             if values.get(k) and values[k] not in chat:
                 fields[k] = "is not a chat model your AWS key can use"
+            elif k.startswith("CLAUDE_MODEL_") and values.get(k) and not values[k].startswith("claude-"):
+                fields[k] = "must be a Claude model (Claude Code speaks Anthropic's API)"
         if values.get("MODELS_HIDDEN") and not set(values["MODELS_HIDDEN"].split(",")) <= chat:
             fields["MODELS_HIDDEN"] = "lists a model your AWS key cannot use"
         if {"STT_PROVIDER", "STT_API_KEY", "STT_MODEL"} & set(values):
@@ -184,6 +188,7 @@ def routes(ctx: Ctx) -> list[Route]:
         return fields
 
     async def apply(request: Request) -> Response:
+        st.sweep_requests(s.request_dir)
         got = await front_door(request)
         if isinstance(got, Response):
             return got
@@ -202,7 +207,11 @@ def routes(ctx: Ctx) -> list[Route]:
         if any(not isinstance(k, str) or not st.NAME.fullmatch(k) or not isinstance(v, str) for k, v in values.items()):
             return err(400, "settings are names and text values")
         local = not is_remote(request)
-        fields = check_values(values, snap, local)
+        confirm = data.get("confirm") or []
+        if not isinstance(confirm, list) or any(c not in st.CONFIRMS for c in confirm):
+            return err(400, "unknown confirmation")
+        same = "PORTAL_PASSWORD" in values and await asyncio.to_thread(verify_password, values["PORTAL_PASSWORD"], s.password_hash)
+        fields = check_values(values, snap, local, same)
         if fields:
             return err(400, "Some settings need another value.", fields=fields)
         if (busy := helper_ready()) is not None:
@@ -215,7 +224,8 @@ def routes(ctx: Ctx) -> list[Route]:
             new_hash = await asyncio.to_thread(hash_password, values["PORTAL_PASSWORD"])
             values["PORTAL_PASSWORD_HASH"] = new_hash
         try:
-            nonce = st.write_request(s.request_dir, snap["base"], local, password, values, regen=tuple(regen))
+            nonce = st.write_request(s.request_dir, snap["base"], local, password, values, regen=tuple(regen),
+                                     confirm=tuple(confirm))
         except ValueError:
             return err(413, "These settings do not fit in one change: save them in smaller groups.")
         except OSError as e:
@@ -256,10 +266,12 @@ def routes(ctx: Ctx) -> list[Route]:
         return _no_store(JSONResponse({"key": key, "value": value}))
 
     async def action(request: Request) -> Response:
+        st.sweep_requests(s.request_dir)
         got = await front_door(request)
         if isinstance(got, Response):
             return got
-        act = got[0].get("action")
+        data, password = got
+        act = data.get("action")
         if act not in st.DIAG_ACTIONS:
             return err(400, "unknown action")
         if (busy := helper_ready()) is not None:
@@ -269,7 +281,7 @@ def routes(ctx: Ctx) -> list[Route]:
         if wait := action_rate.retry_after():
             return err(429, f"Please wait {wait} s before the next action.", wait)
         try:
-            nonce = st.write_action(s.request_dir, act)
+            nonce = st.write_action(s.request_dir, act, password)
         except OSError as e:
             log.warning("cannot write the %s request to %s (%s)", act, s.request_dir, e)
             return err(500, "Could not hand the request to the helper (see ./stack logs portal).")

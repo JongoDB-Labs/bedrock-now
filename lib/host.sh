@@ -125,7 +125,8 @@ _prove_bedrock() {
     if grep -q ValidationException "$errf"; then
       rm -f "$errf"; log "Bedrock access confirmed with $who ($id; free check)"; return 0
     fi
-    last="$id: $(tr '\n' ' ' < "$errf" | cut -c1-200)"
+    # (AWS names the user or role and its account in AccessDenied: masked, as everywhere else, before it reaches a log or Home)
+    last="$id: $(tr '\n' ' ' < "$errf" | sed -E 's#arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:[^ ]*#<arn>#g; s#[0-9]{12}#<account>#g' | cut -c1-200)"
   done <<EOF
 $(_role_probe_models)
 EOF
@@ -175,8 +176,7 @@ setup_instance_role() {
   arn="$(_verify_role "$region" "" "$role")" || exit 1   # (explicit: callers may have set -e off)
   _prove_bedrock "$region" "" || exit 1
   _confirm_role_identity "$arn" || return 1
-  set_env AWS_AUTH instance-role; set_env AWS_REGION_NAME "$region"
-  unset_env AWS_ACCESS_KEY_ID; unset_env AWS_SECRET_ACCESS_KEY
+  set_env_batch AWS_AUTH instance-role AWS_REGION_NAME "$region" -AWS_ACCESS_KEY_ID '' -AWS_SECRET_ACCESS_KEY ''   # one write
   log "using this machine's IAM role: AWS rotates its credentials; no keys in .env"
 }
 
@@ -196,9 +196,11 @@ verify_key_leaving_role() {
 # _restore_aws_settings AUTH KEY_ID SECRET WHY — put the AWS settings back as they were (AUTH "" = key mode),
 # recreate LiteLLM with them and die with WHY.
 _restore_aws_settings() {
-  if [ -n "$1" ]; then set_env AWS_AUTH "$1"; else unset_env AWS_AUTH; fi
-  if [ -n "$2" ]; then set_env AWS_ACCESS_KEY_ID "$2"; set_env AWS_SECRET_ACCESS_KEY "$3"
-  else unset_env AWS_ACCESS_KEY_ID; unset_env AWS_SECRET_ACCESS_KEY; fi
+  local args=()   # one .env write: never a half-restored key pair
+  if [ -n "$1" ]; then args+=(AWS_AUTH "$1"); else args+=(-AWS_AUTH ''); fi
+  if [ -n "$2" ]; then args+=(AWS_ACCESS_KEY_ID "$2" AWS_SECRET_ACCESS_KEY "$3")
+  else args+=(-AWS_ACCESS_KEY_ID '' -AWS_SECRET_ACCESS_KEY ''); fi
+  set_env_batch "${args[@]}"
   if dc up -d --wait litellm; then
     die "$4 — restored the previous AWS settings in .env and restarted LiteLLM with them (./stack logs litellm shows what went wrong)"
   fi
@@ -218,7 +220,7 @@ rotate_to_instance_role() {
   _confirm_role_identity "$arn" || die "not switched — $note"
   old_auth="$(get_env AWS_AUTH)"; old_id="$(get_env AWS_ACCESS_KEY_ID)"; old_secret="$(get_env AWS_SECRET_ACCESS_KEY)"
   [ -z "$old_id" ] || log "the old key $old_id stays valid in IAM until you deactivate it (or ask your AWS admin to)"
-  set_env AWS_AUTH instance-role; unset_env AWS_ACCESS_KEY_ID; unset_env AWS_SECRET_ACCESS_KEY
+  set_env_batch AWS_AUTH instance-role -AWS_ACCESS_KEY_ID '' -AWS_SECRET_ACCESS_KEY ''   # one write
   log "restarting LiteLLM with the instance role…"
   dc up -d --wait litellm ||   # env changed → the container is recreated without keys
     _restore_aws_settings "$old_auth" "$old_id" "$old_secret" "LiteLLM did not come up with the instance role"

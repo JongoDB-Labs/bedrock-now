@@ -4,6 +4,7 @@ the hash-based login."""
 
 import base64
 import json
+import os
 import re
 import stat
 import time
@@ -61,8 +62,10 @@ KEYS = [
     row("SHARED_MCP_TOKEN", "files", "h", "regen", "-", "mcp", hint="…cdef"),
     row("RUSTFS_ACCESS_KEY", "files", "s", "regen", "-", "rustfs", value="bn-abc123"),
     row("CHAT_DEFAULT_MODEL", "aws", "-", "edit", "model_pin", "pins", value=""),
+    row("CLAUDE_MODEL_OPUS", "aws", "-", "edit", "model_pin", "pins", value=""),
+    row("BACKUP_KEEP", "updates", "-", "widen-local", "keep", "-", value="7"),
     row("MODELS_HIDDEN", "aws", "-", "edit", "models_list", "owui-models", value=""),
-    row("PORTAL_SESSION_DAYS", "account", "-", "edit", "days", "portal", value=""),
+    row("PORTAL_SESSION_DAYS", "account", "-", "widen-local", "days", "portal", value=""),
 ]
 CHOICES = {"stt_models": {"bedrock": ["voxtral-small", "voxtral-mini"], "openai": ["gpt-4o-mini-transcribe"], "groq": []},
            "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm", "open-webui"],
@@ -496,7 +499,8 @@ def test_diagnostics_write_one_strict_request(make, dirs):
     assert r.status_code == 202
     nonce = r.json()["id"]
     body = (rq / f"act-{nonce}.json").read_text()
-    assert re.fullmatch(r'\{"action":"restart-litellm","requested_at":[0-9]{1,12},"nonce":"' + nonce + r'"\}', body)
+    m = re.fullmatch(r'\{"action":"restart-litellm","requested_at":[0-9]{1,12},"nonce":"' + nonce + r'","auth":"([A-Za-z0-9+/=]+)"\}', body)
+    assert m and base64.b64decode(m.group(1)) == b"correct horse"   # the helper checks the password again
     assert action(c, "restart-portal").status_code == 400
     assert action(c, "restore").status_code == 400
     assert action(c, "test", password="nope").status_code == 403
@@ -612,3 +616,59 @@ def test_alert_threshold_reaches_home(settings, dirs):
     assert js.count("pct >= alert") == 2   # the budget meters' colour and footer
     # the only fixed 80%: OpenRouter's daily free-request meter (a rate limit, not a budget)
     assert all("m.classList" in line for line in js.splitlines() if "pct >= 80" in line)
+
+
+# --- review round 2 ---
+
+def test_less_protection_only_from_this_computer():
+    keep = row("BACKUP_KEEP", policy="widen-local", validator="keep", value="7")
+    assert st.policy_error(keep, "10", local=False) is None
+    assert "can only be lowered" in st.policy_error(keep, "3", local=False)
+    assert st.policy_error(keep, "3", local=True) is None
+    days = row("PORTAL_SESSION_DAYS", policy="widen-local", validator="days", value="")
+    assert st.policy_error(days, "7", local=False) is None and "made longer" in st.policy_error(days, "60", local=False)
+    nightly = row("BACKUP_NIGHTLY", policy="widen-local", validator="on_off", value="on")
+    assert "turned off" in st.policy_error(nightly, "off", local=False)
+    prompts = row("LITELLM_STORE_PROMPTS", policy="widen-local", validator="bool", value="false")
+    assert "turned on" in st.policy_error(prompts, "true", local=False) and st.policy_error(prompts, "false", local=False) is None
+
+
+def test_stale_requests_are_deleted_by_the_portal(tmp_path):
+    old, new = tmp_path / ("cfg-" + "a" * 32 + ".req"), tmp_path / ("act-" + "b" * 32 + ".json")
+    other = tmp_path / ("req-" + "c" * 32 + ".json")   # Home's update requests: not the portal's settings files
+    for p in (old, new, other):
+        p.write_text("x")
+    os.utime(old, (time.time() - 200, time.time() - 200))
+    os.utime(other, (time.time() - 200, time.time() - 200))
+    assert st.sweep_requests(tmp_path) == 1
+    assert not old.exists() and new.exists() and other.exists()
+
+
+def test_a_confirmation_travels_with_the_change():
+    body = st.build_request("a" * 32, "0" * 64, True, "pw", {"AWS_ACCESS_KEY_ID": "AKIA"}, now=1, confirm=("other-aws-account", "x"))
+    assert b"\nconfirm other-aws-account\n" in body and b"confirm x" not in body
+
+
+def test_claude_code_slots_take_claude_models_only(make, dirs):
+    sd, _ = dirs
+    c = make()
+    write_snapshot(sd); helper_up(sd)
+    r = apply(c, {"CLAUDE_MODEL_OPUS": "mistral-large-3"})
+    assert r.status_code == 400 and "Claude model" in r.json()["fields"]["CLAUDE_MODEL_OPUS"]
+
+
+def test_the_owner_email_compares_without_case(make, dirs):
+    sd, _ = dirs
+    c = make()
+    write_snapshot(sd); helper_up(sd)
+    r = apply(c, {"OPENWEBUI_ADMIN_EMAIL": "admin@example.com"})
+    assert r.status_code == 400 and "you have now" in r.json()["fields"]["OPENWEBUI_ADMIN_EMAIL"]
+
+
+def test_unknown_confirmations_are_refused(make, dirs):
+    sd, _ = dirs
+    c = make()
+    write_snapshot(sd); helper_up(sd)
+    r = c.post("/api/settings/apply", content=json.dumps({"password": "correct horse", "base": BASE, "set": {"BUDGET_SETUP": "6"},
+                                                          "confirm": ["anything"]}), headers=H)
+    assert r.status_code == 400

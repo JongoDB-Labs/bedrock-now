@@ -5,9 +5,11 @@
 # are stubbed; nothing runs for real.
 # Made-up AWS-shaped test values, assembled at run time so secret scanners don't take them for real keys.
 FAKE_AWS_0="AKIA""ABCDEFGHIJKLMNOP"
-FAKE_AWS_1="AKIA""ZZZZZZZZZZZZZZZZ"
-FAKE_AWS_2="abcdefghijABCDEFGHIJ""0123456789/+abcdefgh"
-FAKE_AWS_3="Abcdefghij0123456789""abcdefghij0123456789"
+FAKE_AWS_1="AKIA""QRSTUVWXYZ012345"
+FAKE_AWS_2="AKIA""ZZZZZZZZZZZZZZZZ"
+FAKE_AWS_3="abcdefghijABCDEFGHIJ""0123456789/+abcdefgh"
+FAKE_AWS_4="ZYXWVUTSRQzyxwvutsrq""9876543210/+abcdefgh"
+FAKE_AWS_5="Abcdefghij0123456789""abcdefghij0123456789"
 . "$STACK_DIR/lib/commands.sh"
 . "$STACK_DIR/lib/owui.sh"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
@@ -23,7 +25,7 @@ _env() {   # a set-up .env (real-looking values, nothing real)
   cp "$T_ROOT/.env.example" "$ENV_FILE"
   set_env_batch PORTAL_PASSWORD 'correct horse battery' OPENWEBUI_ADMIN_EMAIL admin@example.com \
     LITELLM_UI_PASSWORD 'Bn9-0123456789abcdef' AWS_ACCESS_KEY_ID ${FAKE_AWS_0} \
-    AWS_SECRET_ACCESS_KEY ${FAKE_AWS_2} LITELLM_MASTER_KEY sk-master0123456789 \
+    AWS_SECRET_ACCESS_KEY ${FAKE_AWS_3} LITELLM_MASTER_KEY sk-master0123456789 \
     RUSTFS_SECRET_KEY rustfs0123456789secret SHARED_MCP_TOKEN mcp0123456789abcdef LITELLM_KEY_SETUP sk-setup0123456789 \
     OPENWEBUI_API_KEY sk-owui0123456789 LITELLM_PORT 9 COMPOSE_PROJECT_NAME bn-t
   mkdir -p "$STATE_DIR/status" "$STATE_DIR/helper" && chmod 700 "$STATE_DIR/helper"
@@ -156,7 +158,7 @@ test_snapshot_masks_every_secret() {
   settings_snapshot_write
   local f s v; f="$(settings_snapshot_file)"; s="$(cat "$f")"
   assert_eq "$(ls -l "$f" | cut -c1-10)" "-rw-r--r--"
-  for v in 'correct horse battery' ${FAKE_AWS_2} sk-master0123456789 rustfs0123456789secret \
+  for v in 'correct horse battery' ${FAKE_AWS_3} sk-master0123456789 rustfs0123456789secret \
            mcp0123456789abcdef Bn9-0123456789abcdef hooktoken123 mine123456789 sk-setup0123456789; do
     assert_not_contains "$s" "$v"
   done
@@ -334,7 +336,8 @@ test_apply_litellm_password_changes_it_in_litellm_first() {
   litellm_drop_session_key() { :; }
   _lines 'LITELLM_UI_PASSWORD=New-Passw0rd!x' | _apply 2>/dev/null
   assert_contains "$(cat "$TMP/calls")" "lpw admin@example.com old=yes new=yes"
-  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait litellm portal"
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait portal"
+  assert_not_contains "$(cat "$TMP/calls")" "litellm portal"   # LiteLLM changed it itself: no restart
   assert_eq "$(get_env LITELLM_UI_PASSWORD)" 'New-Passw0rd!x'
 }
 
@@ -376,10 +379,10 @@ test_apply_email_failure_moves_the_email_back() {
 test_apply_aws_key_is_checked_live_first_and_tested_after() {
   _env; _in_checkout; _stub_stack
   set_env AWS_AUTH instance-role
-  aws_key_live_check() { echo "live $1 $([ "$2" = "${FAKE_AWS_3}" ] && echo secret-ok) $4" >> "$TMP/calls"; }
+  aws_key_live_check() { echo "live $1 $([ "$2" = "${FAKE_AWS_5}" ] && echo secret-ok) $4" >> "$TMP/calls"; }
   cmd_test() { echo "smoke test" >> "$TMP/calls"; }
-  _lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_3} | _apply 2> "$TMP/err"
-  assert_eq "$(head -n 1 "$TMP/calls")" "live ${FAKE_AWS_1} secret-ok the new key"
+  _lines AWS_ACCESS_KEY_ID=${FAKE_AWS_2} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_5} | _apply 2> "$TMP/err"
+  assert_eq "$(head -n 1 "$TMP/calls")" "live ${FAKE_AWS_2} secret-ok the new key"
   assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait litellm"
   assert_eq "$(tail -n 1 "$TMP/calls")" "smoke test"
   assert_eq "$(get_env AWS_AUTH)" ""
@@ -390,10 +393,10 @@ test_apply_aws_smoke_test_failure_puts_the_old_key_back() {
   _env; _in_checkout; _stub_stack
   aws_key_live_check() { :; }
   cmd_test() { die "1 check(s) failed — see ./stack logs"; }
-  if out="$( (_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_3} | _apply) 2>&1)"; then return 1; fi
+  if out="$( (_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_2} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_5} | _apply) 2>&1)"; then return 1; fi
   assert_contains "$out" "failed while checking the result: 1 check(s) failed"
   assert_eq "$(get_env AWS_ACCESS_KEY_ID)" ${FAKE_AWS_0}
-  assert_eq "$(get_env AWS_SECRET_ACCESS_KEY)" ${FAKE_AWS_2}
+  assert_eq "$(get_env AWS_SECRET_ACCESS_KEY)" ${FAKE_AWS_3}
 }
 
 test_apply_aws_key_without_bedrock_changes_nothing() {
@@ -401,7 +404,7 @@ test_apply_aws_key_without_bedrock_changes_nothing() {
   aws_run() { case "$*" in *sts*) echo "arn:aws:iam::123456789012:user/me" ;; *) echo "AccessDeniedException" >&2; return 254 ;; esac; }
   docker() { :; }
   cp "$ENV_FILE" "$TMP/before"
-  if out="$( (_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_3} | _apply) 2>&1)"; then return 1; fi
+  if out="$( (_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_2} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_5} | _apply) 2>&1)"; then return 1; fi
   assert_contains "$out" "can't use Bedrock"
   assert_contains "$out" "account ••••9012"
   assert_not_contains "$out" "123456789012"
@@ -518,7 +521,7 @@ test_helper_locks_out_after_wrong_passwords() {
 
 test_helper_applies_its_own_allowlist_and_origin_rules() {
   _checkout
-  _cfg_req 0 remote 'correct horse battery' "$NONCE" "$(_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1})"
+  _cfg_req 0 remote 'correct horse battery' "$NONCE" "$(_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_2})"
   if settings_poll_once 2>/dev/null; then return 1; fi
   assert_contains "$(cat "$(helper_status_file)")" "can only be changed from the computer running bedrock-now"
   _cfg_req 0 local 'correct horse battery' 22222222222222222222222222222222 "$(_lines BEDROCK_NOW_HELPER_ALLOW_BRANCH=1)"
@@ -576,7 +579,10 @@ test_helper_sweep_keeps_settings_and_diagnostic_requests() {
 
 # --- the helper: diagnostics ---
 
-_act() { printf '{"action":"%s","requested_at":%s,"nonce":"%s"}' "$1" "$(( $(date +%s) - ${2:-0} ))" "${3:-$NONCE}" > "$(request_dir)/act-${3:-$NONCE}.json"; }
+_act() {   # _act ACTION [AGE] [NONCE] [PASSWORD] — a diagnostic request as the portal writes it (the password again)
+  printf '{"action":"%s","requested_at":%s,"nonce":"%s","auth":"%s"}' "$1" "$(( $(date +%s) - ${2:-0} ))" "${3:-$NONCE}" \
+    "$(printf '%s' "${4-correct horse battery}" | openssl base64 -A)" > "$(request_dir)/act-${3:-$NONCE}.json"
+}
 
 test_helper_diagnostics_run_only_their_commands() {
   _checkout
@@ -588,12 +594,30 @@ test_helper_diagnostics_run_only_their_commands() {
   _act test 0 22222222222222222222222222222222; FAKE_FAIL=1 settings_poll_once 2>/dev/null
   assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "1 check(s) failed: anthropic /v1/messages (got 400, want 200)'
   _act restart-litellm 0 33333333333333333333333333333333; settings_poll_once 2>/dev/null
-  assert_eq "$(cat "$CALLS" | tr '\n' ';')" "backup;test;test;restart litellm;"
+  assert_eq "$(cat "$CALLS" | tr '\n' ';')" "backup --portal;test;test;restart litellm;"
   for bad in restart-portal restart-postgres restore 'test --x' update; do
     _act "$bad" 0 44444444444444444444444444444444
     if settings_poll_once 2>/dev/null; then echo "ran $bad" >&2; return 1; fi
   done
   assert_eq "$(cat "$CALLS" | wc -l | tr -d ' ')" 4
+}
+
+test_helper_diagnostics_need_the_password() {
+  _checkout
+  DIAG_MIN_INTERVAL_S=0
+  _act backup 0 "$NONCE" 'wrong password here'; ! settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" "wrong portal password"
+  _act backup 0 11111111111111111111111111111111 $'correct horse battery\njunk'; ! settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" "wrong portal password"   # openssl reads one line: never enough
+  printf '{"action":"backup","requested_at":%s,"nonce":"%s"}' "$(date +%s)" 22222222222222222222222222222222 > "$(request_dir)/act-22222222222222222222222222222222.json"
+  ! settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" "not a valid request"
+  printf '{"action":"test","requested_at":%s,"nonce":"%s","auth":"%s"}\n{"action":"backup"}' "$(date +%s)" 33333333333333333333333333333333 \
+    "$(printf 'correct horse battery' | openssl base64 -A)" > "$(request_dir)/act-33333333333333333333333333333333.json"
+  ! settings_poll_once 2>/dev/null                                      # one line, matched as a whole
+  [ ! -e "$CALLS" ]
+  _act backup 0 44444444444444444444444444444444; settings_poll_once 2>/dev/null
+  assert_eq "$(cat "$CALLS")" "backup --portal"
 }
 
 test_helper_rechecks_models_at_most_hourly() {
@@ -626,8 +650,22 @@ test_reconcile_moves_the_owner_back_and_drops_a_stray() {
   _owner_email_move() { echo "move $1 $2" >> "$TMP/calls"; }
   _litellm_login() { echo 200; }; litellm_drop_session_key() { :; }
   json_get() { :; }
+  settings_reconcile 2>/dev/null                                     # no owner recorded: nothing is moved
+  [ ! -e "$TMP/calls" ]
+  owner_id_record u-owner
   settings_reconcile 2>/dev/null
   assert_eq "$(tr '\n' ';' < "$TMP/calls")" "delete u-stray;move u-owner admin@example.com;"
+}
+
+test_reconcile_never_moves_another_admin() {
+  _env
+  _owui_users_tsv() { printf 'u-owner\tgone@example.com\tuser\nu-other\tother@example.com\tadmin\n'; }   # the owner lost admin
+  _owui_delete_user() { echo "delete $1" >> "$TMP/calls"; }
+  _owner_email_move() { echo "move $1 $2" >> "$TMP/calls"; }
+  owner_id_record u-owner
+  out="$(settings_reconcile 2>&1)"
+  [ ! -e "$TMP/calls" ]
+  assert_contains "$out" "Chat has no admin account for admin@example.com"
 }
 
 test_reconcile_leaves_a_matching_owner_alone_and_repairs_litellm() {
@@ -790,7 +828,9 @@ test_regenerate_mcp_token_rewrites_the_client_config() {
 test_regen_keys_take_no_value_and_nothing_else_regenerates() {
   _env; _in_checkout; _stub_stack
   if out="$( (_lines RUSTFS_ACCESS_KEY=bn-chosen | _apply) 2>&1)"; then return 1; fi
-  assert_contains "$out" "can only be regenerated"
+  assert_contains "$out" "RUSTFS_ACCESS_KEY takes no value: only a new random one"
+  if out="$( ( { _lines RUSTFS_ACCESS_KEY=bn-chosen; printf 'regen RUSTFS_ACCESS_KEY\n'; } | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "takes no value"                            # set + regen: still no chosen value
   if out="$( (printf 'regen PORTAL_PASSWORD\n' | _apply) 2>&1)"; then return 1; fi
   assert_contains "$out" "cannot be regenerated"
   # the helper: regen lines only for regen keys
@@ -847,6 +887,155 @@ test_apply_openrouter_key_plans_models_like_openrouter_set() {
   set_env OPENROUTER_API_KEY sk-or-v1-0123456789abcdef0123456789abcdef; : > "$(or_models_auto)"
   _lines OPENROUTER_MODELS=all | _apply 2>/dev/null               # your own choice: no longer automatic
   [ ! -e "$(or_models_auto)" ]
+}
+
+# --- review round 2: restarts, rollbacks, emails, writes ---
+
+test_litellm_restarts_when_only_its_environment_changes() {
+  _env; _in_checkout; _stub_stack
+  printf 'model_list: []\n' > "$STACK_DIR/litellm/config.yaml"
+  _lines ALERT_WEBHOOK_URL=https://hooks.example.com/a | _apply 2>/dev/null   # the config stays the same
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait litellm"
+  assert_not_contains "$(cat "$TMP/calls")" "force-recreate"
+  : > "$TMP/calls"
+  render_config() { echo render >> "$TMP/calls"; echo "# changed $RANDOM" >> "$STACK_DIR/litellm/config.yaml"; }
+  _lines LITELLM_STORE_PROMPTS=true | _apply 2>/dev/null                       # the config changes: recreated
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --force-recreate --wait litellm"
+}
+
+test_first_openrouter_key_recreates_litellm_although_refresh_rendered_already() {
+  _env; _in_checkout; _stub_stack
+  printf 'model_list: []\n' > "$STACK_DIR/litellm/config.yaml"
+  or_validate_key() { return 0; }; or_plan_models() { :; }; or_plan_notes() { :; }; _or_owui_refresh() { :; }
+  openrouter_refresh() { echo "  - or/model" >> "$STACK_DIR/litellm/config.yaml"; }   # (renders itself)
+  _lines OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef | _apply 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --force-recreate --wait litellm"
+  : > "$TMP/calls"; openrouter_refresh() { :; }
+  _lines OPENROUTER_API_KEY=sk-or-v1-ffffffffffffffffffffffffffffffff | _apply 2>/dev/null   # another key, same models
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait litellm portal"
+}
+
+test_failed_portal_password_change_keeps_the_old_hash_once() {
+  _env; _in_checkout; _stub_stack
+  ensure_portal_password_hash
+  local old; old="$(get_env PORTAL_PASSWORD_HASH)"
+  DC_FAIL="up -d --no-deps --wait portal"
+  if (_lines "PORTAL_PASSWORD=$SECRETVAL" | _apply) 2>/dev/null; then return 1; fi
+  assert_eq "$(grep -c '^PORTAL_PASSWORD_HASH=' "$ENV_FILE")" 1
+  assert_eq "$(get_env PORTAL_PASSWORD_HASH)" "$old"                   # every session stays valid
+  assert_eq "$(get_env PORTAL_PASSWORD)" 'correct horse battery'
+  helper_password_ok 'correct horse battery'
+}
+
+test_failed_admin_password_change_puts_it_back_in_litellm() {
+  _env; _in_checkout; _stub_stack
+  set_env LITELLM_DB_ADMIN_READY true
+  litellm_admin_password() { echo "lpw $([ "$2" = Bn9-0123456789abcdef ] && echo old || echo new)->$([ "$3" = Bn9-0123456789abcdef ] && echo old || echo new)" >> "$TMP/calls"; }
+  DC_FAIL="up -d --no-deps --wait portal"
+  if (_lines 'LITELLM_UI_PASSWORD=New-Passw0rd!x' | _apply) 2>/dev/null; then return 1; fi
+  assert_eq "$(grep '^lpw' "$TMP/calls" | tr '\n' ';')" "lpw old->new;lpw new->old;"
+  assert_eq "$(get_env LITELLM_UI_PASSWORD)" Bn9-0123456789abcdef
+}
+
+test_uppercase_owner_email_is_lowercased_and_still_found() {
+  _env; _in_checkout; _stub_stack
+  set_env_batch OPENWEBUI_ADMIN_EMAIL John.Doe@Company.com LITELLM_UI_USER John.Doe@Company.com
+  _owui_users_tsv() { printf 'u-owner\tjohn.doe@company.com\tadmin\n'; }
+  _owui_chat_count() { echo 0; }; _owui_drop_strays() { :; }
+  _owner_email_move() { echo "move $1 $2" >> "$TMP/calls"; }
+  owner_signin_check() { :; }
+  if out="$( (_lines OPENWEBUI_ADMIN_EMAIL=john.doe@company.com | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "that is the owner email you have now"     # the same email, whatever its case
+  _lines OPENWEBUI_ADMIN_EMAIL=jd@company.com | _apply 2>/dev/null      # found although .env has capitals
+  assert_contains "$(cat "$TMP/calls")" "move u-owner jd@company.com"
+  assert_eq "$(owner_id_recorded)" u-owner
+  set_env_batch OPENWEBUI_ADMIN_EMAIL John.Doe@Company.com LITELLM_UI_USER John.Doe@Company.com
+  owner_email_lowercase 2>/dev/null
+  assert_eq "$(get_env OPENWEBUI_ADMIN_EMAIL)/$(get_env LITELLM_UI_USER)" "john.doe@company.com/john.doe@company.com"
+}
+
+test_a_failed_env_write_rolls_back_and_is_audited() {
+  _env; _in_checkout; _stub_stack
+  _owui_users_tsv() { printf 'u-owner\tadmin@example.com\tadmin\n'; }
+  _owui_chat_count() { echo 0; }
+  _owner_email_move() { echo "move $1 $2" >> "$TMP/calls"; }
+  _cfg_write() { die "the disk is full"; }
+  if out="$( (_lines OPENWEBUI_ADMIN_EMAIL=new@example.com | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "failed while saving .env"
+  assert_eq "$(grep '^move' "$TMP/calls" | tr '\n' ';')" "move u-owner new@example.com;move u-owner admin@example.com;"   # Chat back too
+  assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=failed"
+}
+
+test_every_key_refuses_control_characters() {
+  _env
+  if setting_validate OPENWEBUI_ADMIN_EMAIL $'admin@example.com\nother@example.com'; then return 1; fi
+  assert_contains "$SV_ERR" "control characters"
+  if setting_validate AWS_ACCESS_KEY_ID $''"${FAKE_AWS_0}"$'\n'; then return 1; fi
+  if setting_validate MODELS_HIDDEN $'claude-opus-5-5\tx'; then return 1; fi
+  setting_validate OPENWEBUI_ADMIN_EMAIL admin@example.com
+}
+
+test_portal_changes_need_a_running_litellm() {
+  _env; _in_checkout; _stub_stack
+  _cfg_stack_running() { return 1; }
+  if out="$( (_lines BUDGET_SETUP=7 | _apply --via portal --origin local) 2>&1)"; then return 1; fi
+  assert_contains "$out" "LiteLLM is not running"
+  assert_eq "$(get_env BUDGET_SETUP)" 5
+  _lines CHAT_DEFAULT_MODEL=claude-haiku-5-5 | _apply 2>/dev/null         # the terminal: saved for ./stack up
+  [ ! -s "$STACK_DIR/litellm/enabled-models.txt" ] || assert_eq "$(get_env OWUI_DEFAULT_MODEL)" claude-haiku-5-5
+}
+
+test_claude_code_slots_take_claude_models_only() {
+  _env; _in_checkout; _stub_stack
+  if out="$( (_lines CLAUDE_MODEL_HAIKU=llama-3-3-70b | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "must be a Claude model"
+}
+
+test_a_key_of_another_aws_account_needs_a_confirmation() {
+  _env; _in_checkout; _stub_stack
+  aws_key_live_check() { printf '111122223333\n' > "$AWS_ACCOUNT_OUT"; }
+  aws_run() { echo 444455556666; }   # the current key's account
+  cmd_test() { :; }
+  if out="$( (_lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_4} | _apply --via portal) 2>&1)"; then return 1; fi
+  assert_contains "$out" "the new key belongs to another AWS account (••••3333; the current one: ••••6666)"
+  assert_not_contains "$out" 111122223333
+  assert_eq "$(get_env AWS_ACCESS_KEY_ID)" ${FAKE_AWS_0}
+  _lines AWS_ACCESS_KEY_ID=${FAKE_AWS_1} AWS_SECRET_ACCESS_KEY=${FAKE_AWS_4} | _apply --via portal --confirm other-aws-account 2>/dev/null
+  assert_eq "$(get_env AWS_ACCESS_KEY_ID)" ${FAKE_AWS_1}
+}
+
+test_less_protection_only_from_this_computer() {
+  _env
+  set_env_batch BACKUP_KEEP 7 BACKUP_NIGHTLY on PORTAL_SESSION_DAYS 30 LITELLM_STORE_PROMPTS false
+  setting_allowed BACKUP_KEEP 10 remote; setting_allowed BACKUP_NIGHTLY on remote
+  setting_allowed PORTAL_SESSION_DAYS 7 remote; setting_allowed LITELLM_STORE_PROMPTS false remote
+  for kv in BACKUP_KEEP=3 BACKUP_NIGHTLY=off PORTAL_SESSION_DAYS=60 LITELLM_STORE_PROMPTS=true REMOTE_ADMIN_ACTIONS=true; do
+    if setting_allowed "${kv%%=*}" "${kv#*=}" remote; then echo "$kv allowed remotely" >&2; return 1; fi
+    setting_allowed "${kv%%=*}" "${kv#*=}" local
+  done
+  setting_allowed BACKUP_KEEP 3 remote || assert_contains "$SV_ERR" "can only be lowered from the computer running bedrock-now"
+}
+
+test_up_reapplies_a_new_alert_threshold_once() {
+  _env
+  set_env_batch BUDGET_ALERT_PCT 90 LITELLM_KEY_CLAUDE_CODE sk-cc0123456789 LITELLM_KEY_OPENWEBUI sk-ow0123456789
+  key_info() { printf '{"info": {"max_budget": 5}}'; }
+  ensure_virtual_key() { echo "key $2 $3" >> "$TMP/calls"; }
+  budget_sync_quiet 2>/dev/null
+  assert_eq "$(grep -c '^key' "$TMP/calls")" 3
+  assert_eq "$(alert_pct_applied)" 90
+  : > "$TMP/calls"; budget_sync_quiet 2>/dev/null
+  [ ! -s "$TMP/calls" ] || assert_eq "$(grep -c '^key' "$TMP/calls")" 2   # (only budgets that differ)
+}
+
+test_up_waits_for_a_running_settings_change() {
+  _env
+  ( stack_lock config; sleep 4 ) &   # (as in test_lock.sh: a holder that is a ./stack process)
+  local holder=$! i=0
+  while [ ! -f "$STATE_DIR/lock/pid" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  if out="$( (unset BEDROCK_NOW_LOCK_HELD; cmd_up) 2>&1)"; then kill "$holder"; return 1; fi
+  wait "$holder" 2>/dev/null || true
+  assert_contains "$out" "another ./stack config is running"
 }
 
 test_hidden_models_apply_in_open_webui() {
@@ -919,6 +1108,18 @@ test_nightly_backup_runs_once_per_window() {
   assert_eq "$(wc -l < "$TMP/diag" | tr -d ' ')" 1
 }
 
+test_nightly_backup_with_automatic_updates_is_one_a_night() {
+  _checkout
+  set_env_batch BACKUP_NIGHTLY on BACKUP_HOUR 22 AUTO_UPDATE on AUTO_UPDATE_HOUR 3
+  _backup_clock() { echo "1000000 3 $((3 * 3600))"; }   # 03:00: the update window, not BACKUP_HOUR's
+  helper_run_diag() { echo "diag $1" >> "$TMP/diag"; }
+  ! AUTO_STATE=run AUTO_TARGET=v9.9.9 backup_nightly_tick         # an update is due: its own backup counts
+  ! AUTO_STATE=wait AUTO_TARGET=v9.9.9 backup_nightly_tick
+  [ ! -e "$TMP/diag" ]
+  AUTO_STATE=none AUTO_TARGET='' backup_nightly_tick               # nothing to install tonight: the nightly one
+  assert_eq "$(cat "$TMP/diag")" "diag backup-nightly"
+}
+
 _mkbk() { mkdir -p "$STACK_DIR/backups/$1"; printf L > "$STACK_DIR/backups/$1/litellm.dump"; printf O > "$STACK_DIR/backups/$1/openwebui.dump"; }
 
 test_prune_nightly_keeps_the_newest_and_the_rollback_one() {
@@ -926,8 +1127,22 @@ test_prune_nightly_keeps_the_newest_and_the_rollback_one() {
   for t in 20261001-020000 20261002-020000 20261003-020000 20261004-020000; do _mkbk "$t-nightly"; done
   _mkbk 20261001-120000; _mkbk 20261001-130000-auto
   update_record_write abc "" backups/20261001-020000-nightly
-  prune_nightly_backups 2 2>/dev/null
+  prune_backups nightly 2 2>/dev/null
   assert_eq "$(ls "$STACK_DIR/backups" | tr '\n' ' ')" "20261001-020000-nightly 20261001-120000 20261001-130000-auto 20261003-020000-nightly 20261004-020000-nightly "
+  for t in 20261005 20261006 20261007; do _mkbk "$t-120000-portal"; done
+  prune_backups portal 2 2>/dev/null                            # Back up now in Settings: the newest few only
+  assert_eq "$(ls "$STACK_DIR/backups" | /usr/bin/grep -c portal)" 2
+  [ ! -d "$STACK_DIR/backups/20261005-120000-portal" ]
+  prune_backups manual 0 2>/dev/null; [ -d "$STACK_DIR/backups/20261001-120000" ]   # never yours
+}
+
+test_backup_refuses_when_the_disk_is_nearly_full() {
+  _env; _in_checkout
+  _mkbk 20261001-120000; head -c 4096 /dev/zero > "$STACK_DIR/backups/20261001-120000/big"
+  df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 100 90 3 97%% /\n'; }
+  if out="$( (_backup_named "") 2>&1)"; then return 1; fi
+  assert_contains "$out" "not enough free disk space for a backup"
+  [ "$(ls "$STACK_DIR/backups" | wc -l | tr -d ' ')" = 1 ]      # nothing started
 }
 
 test_backup_list_has_names_kinds_and_the_rollback_one() {
@@ -952,10 +1167,11 @@ test_backup_list_has_names_kinds_and_the_rollback_one() {
 test_backup_nightly_command_names_and_prunes() {
   _env
   _backup_named() { echo "named $1" >> "$TMP/calls"; }
-  prune_nightly_backups() { echo "prune $1" >> "$TMP/calls"; }
+  prune_backups() { echo "prune $1 $2" >> "$TMP/calls"; }
   write_backups_json() { echo list >> "$TMP/calls"; }
   set_env BACKUP_KEEP 3
   cmd_backup --nightly
-  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "named nightly;prune 3;list;"
+  cmd_backup --portal
+  assert_eq "$(tr '\n' ';' < "$TMP/calls")" "named nightly;prune nightly 3;list;named portal;prune portal 5;list;"
   if (cmd_backup --weekly) 2>/dev/null; then return 1; fi
 }

@@ -42,7 +42,7 @@ print(hashlib.pbkdf2_hmac("sha256", sys.stdin.buffer.read(), bytes.fromhex(sys.a
 }
 
 valid_pw_hash() {
-  printf '%s\n' "$1" | grep -Eq '^pbkdf2-sha256:[0-9]{6,8}:[0-9a-f]{16}:[0-9a-f]{64}$' || return 1
+  _sv_re "$1" '^pbkdf2-sha256:[0-9]{6,8}:[0-9a-f]{16}:[0-9a-f]{64}$' || return 1
   local r="${1#pbkdf2-sha256:}"; r="${r%%:*}"
   [ "$r" -ge "$PW_HASH_MIN_ITER" ] && [ "$r" -le 10000000 ]
 }
@@ -50,6 +50,7 @@ valid_pw_hash() {
 # pw_hash PASSWORD [ROUNDS] -> a new hash (random salt)
 pw_hash() {
   local r="${2:-$PW_HASH_ITER}" s
+  case "$1" in *[[:cntrl:]]*) die "a password must not contain control characters" ;; esac
   s="$(gen_hex 8)"
   printf 'pbkdf2-sha256:%s:%s:%s\n' "$r" "$s" "$(_pbkdf2 "$1" "$r" "$s")"
 }
@@ -57,6 +58,7 @@ pw_hash() {
 # pw_verify PASSWORD HASH -> 0 when HASH is PASSWORD's
 pw_verify() {
   local r s k rest
+  case "$1" in *[[:cntrl:]]*) return 1 ;; esac   # (openssl reads one line: "password\njunk" must never match)
   case "$2" in pbkdf2-sha256:*:*:*) ;; *) return 1 ;; esac
   rest="${2#pbkdf2-sha256:}"; r="${rest%%:*}"; rest="${rest#*:}"; s="${rest%%:*}"; k="${rest#*:}"
   case "$r" in '' | *[!0-9]*) return 1 ;; esac
@@ -96,6 +98,12 @@ ensure_portal_password_hash() {
 # --- validators: _sv_NAME VALUE -> 0, or 1 with SV_ERR (never the value). portal/portal/settings.py mirrors them;
 # portal/tests/fixtures/settings_cases.tsv is checked against both.
 
+# _sv_re VALUE ERE -> 0 when the whole VALUE matches (one string: a line break never splits it into lines that each
+# match, as grep would), in the C locale (ranges are ASCII)
+_sv_re() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+# _blen VALUE -> its length in bytes (what .env, LiteLLM and the portal count)
+_blen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
+
 _sv_envsafe() {
   case "$1" in *[[:cntrl:]]*) SV_ERR="must not contain control characters (tabs, line breaks)"; return 1 ;; esac
   case "$1" in *'$'* | *'"'* | *"'"* | *'`'* | *'\'*) SV_ERR="must not contain \$, quotes, backticks or backslashes"; return 1 ;; esac
@@ -105,25 +113,25 @@ _sv_envsafe() {
 }
 _sv_portal_password() {
   _sv_envsafe "$1" || return 1
-  [ "${#1}" -ge 12 ] || { SV_ERR="must be at least 12 characters"; return 1; }
-  [ "${#1}" -le 128 ] || { SV_ERR="must be at most 128 characters"; return 1; }
-  if [ "${SV_REMOTE_ON:-0}" = 1 ] && [ "${#1}" -lt 16 ]; then SV_ERR="must be at least 16 characters while remote access is on"; return 1; fi
+  [ "$(_blen "$1")" -ge 12 ] || { SV_ERR="must be at least 12 characters"; return 1; }
+  [ "$(_blen "$1")" -le 128 ] || { SV_ERR="must be at most 128 characters"; return 1; }
+  if [ "${SV_REMOTE_ON:-0}" = 1 ] && [ "$(_blen "$1")" -lt 16 ]; then SV_ERR="must be at least 16 characters while remote access is on"; return 1; fi
 }
 _sv_litellm_password() {
   _sv_envsafe "$1" || return 1
-  [ "${#1}" -le 128 ] || { SV_ERR="must be at most 128 characters"; return 1; }
+  [ "$(_blen "$1")" -le 128 ] || { SV_ERR="must be at most 128 characters"; return 1; }
   litellm_password_ok "$1" || { SV_ERR="needs 12+ characters with an upper- and a lowercase letter, a digit and a symbol (LiteLLM's rule)"; return 1; }
 }
 _sv_email() {
-  [ "${#1}" -le 254 ] || { SV_ERR="is too long"; return 1; }
-  printf '%s\n' "$1" | grep -Eq '^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$' ||
+  [ "$(_blen "$1")" -le 254 ] || { SV_ERR="is too long"; return 1; }
+  _sv_re "$1" '^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$' ||
     { SV_ERR="must be an email address in lowercase (name@example.com)"; return 1; }
 }
 _sv_aws_key_id() {
   case "$1" in ASIA*) SV_ERR="is a temporary key (ASIA…), which expires: use a long-lived IAM user key (AKIA…)"; return 1 ;; esac
-  printf '%s\n' "$1" | grep -Eq '^AKIA[A-Z0-9]{16}$' || { SV_ERR="must be an IAM user access key ID: AKIA and 16 more letters or digits"; return 1; }
+  _sv_re "$1" '^AKIA[A-Z0-9]{16}$' || { SV_ERR="must be an IAM user access key ID: AKIA and 16 more letters or digits"; return 1; }
 }
-_sv_aws_secret() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9/+]{40}$' || { SV_ERR="must be 40 characters (letters, digits, / and +)"; return 1; }; }
+_sv_aws_secret() { _sv_re "$1" '^[A-Za-z0-9/+]{40}$' || { SV_ERR="must be 40 characters (letters, digits, / and +)"; return 1; }; }
 _sv_budget() {
   if ! valid_budget "$1" || [ "${#1}" -gt 12 ] || ! awk -v v="$1" 'BEGIN { exit !(v + 0 > 0 && v + 0 <= 100000) }'; then
     SV_ERR="must be a number of USD above 0 and at most 100000 (e.g. 50 or 12.50)"; return 1
@@ -134,14 +142,13 @@ _sv_webhook() {
   [ -n "$1" ] || return 0
   _sv_envsafe "$1" || return 1
   [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] || { SV_ERR="is too long (at most $SETTINGS_MAX_VALUE characters)"; return 1; }
-  printf '%s\n' "$1" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~:/?&=%+,;@!*()-]*)?$' ||
+  _sv_re "$1" '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~:/?&=%+,;@!*()-]*)?$' ||
     { SV_ERR="must be an https:// URL without spaces, quotes or #"; return 1; }
   case "$1" in https://*) return 0 ;; esac
-  host="$(printf '%s\n' "${1#http://}" | sed 's#[:/].*##' | tr '[:upper:]' '[:lower:]')"
-  case "$host" in
-    localhost | host.docker.internal | *.local | *.lan | *.internal | *.home.arpa | 10.* | 192.168.* | 127.*) return 0 ;;
-    172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) return 0 ;;
-  esac
+  host="${1#http://}"; host="${host%%[:/]*}"; host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in localhost | host.docker.internal | *.local | *.lan | *.internal | *.home.arpa) return 0 ;; esac
+  # private addresses as numbers only (10.attacker.example is a public name)
+  _sv_re "$host" '^(10\.[0-9]{1,3}|192\.168|127\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}$' && return 0
   SV_ERR="must use https:// (plain http:// only for a host on your own network)"; return 1
 }
 _sv_bool() { case "$1" in true | false) return 0 ;; esac; SV_ERR="must be true or false"; return 1; }
@@ -171,7 +178,7 @@ _sv_model_pin() {
 }
 _sv_models_list() {
   [ -n "$1" ] || return 0
-  printf '%s\n' "$1" | grep -Eq '^[a-z0-9.-]+(,[a-z0-9.-]+)*$' && [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] ||
+  _sv_re "$1" '^[a-z0-9.-]+(,[a-z0-9.-]+)*$' && [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] ||
     { SV_ERR="must be a comma list of model names"; return 1; }
 }
 
@@ -192,9 +199,23 @@ setting_validate() {
   v="$(setting_field "$1" 5)"
   case "$v" in '' | - | *[!a-z0-9_]*) SV_ERR="$1 is not a setting you can change"; return 1 ;; esac
   declare -F "_sv_$v" >/dev/null || { SV_ERR="$1: unknown validator $v"; return 1; }
-  [ "${#2}" -le "$SETTINGS_MAX_VALUE" ] || { SV_ERR="$1 is too long"; return 1; }
+  [ "$(_blen "$2")" -le "$SETTINGS_MAX_VALUE" ] || { SV_ERR="$1 is too long"; return 1; }
+  # never a control character (a line break would split .env lines, or reach an app's API in a pre-step)
+  case "$2" in *[[:cntrl:]]*) SV_ERR="$1 must not contain control characters (tabs, line breaks)"; return 1 ;; esac
   "_sv_$v" "$2" || { SV_ERR="$1 $SV_ERR"; return 1; }
 }
+
+# setting_weakens KEY NEW OLD -> 0 when NEW protects less than OLD (policy widen-local: that direction only from the
+# computer running bedrock-now). portal/portal/settings.py weakens() is the same.
+setting_weakens() {
+  case "$1" in
+    BACKUP_KEEP) [ "${2:-7}" -lt "${3:-7}" ] 2>/dev/null ;;                 # fewer backups kept
+    BACKUP_NIGHTLY) [ "$2" != on ] && [ "$3" = on ] ;;                       # nightly backups off
+    PORTAL_SESSION_DAYS) [ "${2:-30}" -gt "${3:-30}" ] 2>/dev/null ;;        # longer sign-ins
+    *) [ "$2" = true ] && [ "$3" != true ] ;;                                # on: remote admin, stored prompts
+  esac
+}
+_weaken_word() { case "$1" in BACKUP_KEEP) echo lowered ;; BACKUP_NIGHTLY) echo "turned off" ;; PORTAL_SESSION_DAYS) echo "made longer" ;; *) echo "turned on" ;; esac; }
 
 # setting_allowed KEY VALUE ORIGIN(local|remote) -> 0 when the policy lets this change through (SV_ERR otherwise)
 setting_allowed() {
@@ -206,7 +227,8 @@ setting_allowed() {
     local) [ "$3" = local ] && return 0; SV_ERR="$1 can only be changed from the computer running bedrock-now" ;;
     regen) SV_ERR="$1 can only be regenerated (a new random value made by ./stack): $(setting_field "$1" 9)" ;;
     on-only) [ "$2" = true ] && return 0; SV_ERR="$1 can only be turned on here (turning it off is a terminal step: edit .env)" ;;
-    widen-local) { [ "$2" != true ] || [ "$3" = local ]; } && return 0; SV_ERR="$1 can only be turned on from the computer running bedrock-now" ;;
+    widen-local) { [ "$3" = local ] || ! setting_weakens "$1" "$2" "$(get_env "$1")"; } && return 0
+                 SV_ERR="$1 can only be $(_weaken_word "$1") from the computer running bedrock-now (the other way works everywhere)" ;;
     '') SV_ERR="$1 is not a bedrock-now setting" ;;
     *) SV_ERR="$1 is read-only here: $(setting_field "$1" 9)" ;;
   esac
@@ -227,9 +249,9 @@ CFG_REGEN=' '
 cfg_regen() {
   case "$1" in
     RUSTFS_ACCESS_KEY | RUSTFS_SECRET_KEY)
-      cfg_has RUSTFS_ACCESS_KEY || { cfg_put RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"; cfg_put RUSTFS_SECRET_KEY "$(gen_hex 24)"; }
+      cfg_regenerated RUSTFS_ACCESS_KEY || { cfg_put RUSTFS_ACCESS_KEY "bn-$(gen_hex 6)"; cfg_put RUSTFS_SECRET_KEY "$(gen_hex 24)"; }
       CFG_REGEN="$CFG_REGEN RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY " ;;
-    SHARED_MCP_TOKEN) cfg_has SHARED_MCP_TOKEN || cfg_put SHARED_MCP_TOKEN "$(gen_hex 32)"; CFG_REGEN="$CFG_REGEN SHARED_MCP_TOKEN " ;;
+    SHARED_MCP_TOKEN) cfg_regenerated SHARED_MCP_TOKEN || cfg_put SHARED_MCP_TOKEN "$(gen_hex 32)"; CFG_REGEN="$CFG_REGEN SHARED_MCP_TOKEN " ;;
     *) die "$1 cannot be regenerated" ;;
   esac
 }
@@ -255,6 +277,7 @@ settings_check_batch() {
     cfg_regenerated "$k" && die "$k cannot be regenerated"
     setting_allowed "$k" "$(cfg_new "$k")" "$origin" || die "$SV_ERR"
     setting_validate "$k" "$(cfg_new "$k")" || die "$SV_ERR"
+    _env_value_check "$k" "$(cfg_new "$k")"   # what .env itself would refuse never reaches the pre-steps
   done
   [ "$n" -gt 0 ] || die "nothing to change"
   [ "$n" -le "$SETTINGS_MAX_KEYS" ] || die "at most $SETTINGS_MAX_KEYS settings in one change"
@@ -272,12 +295,13 @@ settings_check_batch() {
     [ "$(cfg_new LITELLM_UI_PASSWORD)" != "$(get_env LITELLM_UI_PASSWORD)" ] || die "the new LITELLM_UI_PASSWORD is the one you have now"
   fi
   if cfg_has OPENWEBUI_ADMIN_EMAIL; then
-    [ "$(cfg_new OPENWEBUI_ADMIN_EMAIL)" != "$(get_env OPENWEBUI_ADMIN_EMAIL)" ] || die "that is the owner email you have now"
+    [ "$(_lc "$(cfg_new OPENWEBUI_ADMIN_EMAIL)")" != "$(_lc "$(get_env OPENWEBUI_ADMIN_EMAIL)")" ] || die "that is the owner email you have now"
   fi
   chat="$(settings_chat_models)"
   for k in CHAT_DEFAULT_MODEL CHAT_TASK_MODEL CLAUDE_MODEL_OPUS CLAUDE_MODEL_SONNET CLAUDE_MODEL_HAIKU; do
     cfg_has "$k" && [ -n "$(cfg_new "$k")" ] || continue
     printf '%s\n' "$chat" | grep -qxF "$(cfg_new "$k")" || die "$k: $(cfg_new "$k") is not a chat model your AWS key can use (./stack models)"
+    case "$k:$(cfg_new "$k")" in CLAUDE_MODEL_*:claude-*) ;; CLAUDE_MODEL_*) die "$k must be a Claude model (Claude Code speaks Anthropic's API)" ;; esac
   done
   if cfg_has MODELS_HIDDEN; then
     for p in $(cfg_new MODELS_HIDDEN | tr ',' ' '); do
@@ -445,7 +469,8 @@ config_list() {
   for g in account aws budgets voice openrouter files updates remote advanced; do
     printf '\n%s\n' "$(_settings_group_title "$g")"
     while IFS=$'\t' read -r k _ _ pol _; do
-      case "$pol" in edit) mark='' ;; local) mark='   (this computer only)' ;; on-only) mark='   (on only)' ;; widen-local) mark='   (on: this computer only)' ;; *) mark='   (read-only)' ;; esac
+      case "$pol" in edit) mark='' ;; local) mark='   (this computer only)' ;; on-only) mark='   (on only)' ;;
+        widen-local) mark='   (less protection: this computer only)' ;; regen) mark='   (regenerate)' ;; *) mark='   (read-only)' ;; esac
       printf '  %-30s %s%s\n' "$k" "$(_settings_mask "$k" "$(get_env "$k")")" "$mark"
     done < <(settings_rows | awk -F'\t' -v g="$g" '$2 == g')
   done
@@ -457,7 +482,7 @@ config_get() {
   code="$(setting_field "$1" 3)"
   case "$code" in
     - | s) printf '%s\n' "$(get_env "$1")" ;;
-    *) die "$1 is a secret: ./stack config get prints only plain settings ($(_settings_mask "$1" "$(get_env "$1")"))" ;;
+    *) die "$1 is a secret: ./stack config get prints only plain settings (it is $(_settings_mask "$1" "$(get_env "$1")" | tr -d '()'))" ;;
   esac
 }
 
@@ -482,6 +507,7 @@ config_set() {
     esac
     cfg_put "$k" "$v"
   done
+  CFG_CONFIRM_OTHER_ACCOUNT=ask   # (_cfg_live_checks asks in the terminal when the new AWS key is another account's)
   config_apply local cli ''
 }
 
@@ -495,6 +521,7 @@ config_apply_stdin() {
       --base) case "${2:-}" in *[!0-9a-f]* | '') die "--base takes the .env hash from the snapshot" ;; esac; base="$2"; shift 2 ;;
       --origin) case "${2:-}" in local | remote) origin="$2" ;; *) die "--origin local|remote" ;; esac; shift 2 ;;
       --via) case "${2:-}" in portal | cli) via="$2" ;; *) die "--via portal|cli" ;; esac; shift 2 ;;
+      --confirm) case "${2:-}" in other-aws-account) CFG_CONFIRM_OTHER_ACCOUNT=1 ;; *) die "--confirm other-aws-account" ;; esac; shift 2 ;;
       *) die "usage: ./stack config apply --stdin [--base HEX] [--origin local|remote]   (lines: set KEY BASE64)" ;;
     esac
   done
@@ -508,11 +535,12 @@ config_apply_stdin() {
       *) die "line $n: expected: set KEY BASE64 or regen KEY" ;;
     esac
     case "$k" in '' | *[!A-Z0-9_]*) die "line $n: not a setting name" ;; esac
+    [ "$(setting_field "$k" 4)" != regen ] || die "$k takes no value: only a new random one (regen $k)"
     case "$b" in *[!A-Za-z0-9+/=]*) die "line $n ($k): the value is not base64" ;; esac
     [ "${#b}" -le 2732 ] || die "$k is too long"
     v="$(printf '%s' "$b" | openssl base64 -d -A 2>/dev/null; echo x)"; v="${v%x}"
     len="$(printf '%s' "$b" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')"
-    [ "$len" = "${#v}" ] || die "$k contains a NUL byte"
+    [ "$len" = "$(_blen "$v")" ] || die "$k contains a NUL byte"
     cfg_put "$k" "$v"
   done
   config_apply "$origin" "$via" "$base"
@@ -560,11 +588,15 @@ config_apply() {
     _cfg_refuse "settings changed on disk since you opened the page — reload it and try again"
   fi
   CFG_CLASSES="$(_cfg_classes)"
+  # From the portal a change is applied at once or not at all: never "saved" for a later ./stack up
+  if [ "$via" = portal ] && ! _cfg_stack_running; then
+    _cfg_refuse "LiteLLM is not running, so the change cannot be applied now: ./stack up (or ./stack status) first"
+  fi
   _cfg_live_checks
   log "config: 2/4 saving"
   _cfg_save_old
   _cfg_pre || _cfg_rollback "changing the sign-ins" "$CFG_ERR"
-  _cfg_write
+  _cfg_step _cfg_write || _cfg_rollback "saving .env" "$CFG_ERR"
   log "config: 3/4 restarting what the change needs"
   _cfg_step _cfg_post || _cfg_rollback "restarting" "$CFG_ERR"
   log "config: 4/4 verifying"
@@ -586,8 +618,10 @@ _cfg_step() {
 
 _cfg_live_checks() {
   if cfg_has AWS_ACCESS_KEY_ID; then
-    _cfg_step aws_key_live_check "$(cfg_new AWS_ACCESS_KEY_ID)" "$(cfg_new AWS_SECRET_ACCESS_KEY)" "$(get_env AWS_REGION_NAME)" "the new key" ||
-      _cfg_refuse "$CFG_ERR"
+    local acct; acct="$(mktemp)"
+    AWS_ACCOUNT_OUT="$acct" _cfg_step aws_key_live_check "$(cfg_new AWS_ACCESS_KEY_ID)" "$(cfg_new AWS_SECRET_ACCESS_KEY)" "$(get_env AWS_REGION_NAME)" "the new key" ||
+      { rm -f "$acct"; _cfg_refuse "$CFG_ERR"; }
+    _cfg_account_check "$(cat "$acct")"; rm -f "$acct"
   fi
   if cfg_has OPENROUTER_API_KEY && [ -n "$(cfg_new OPENROUTER_API_KEY)" ]; then
     or_validate_key "$(cfg_new OPENROUTER_API_KEY)" || _cfg_refuse "OPENROUTER_API_KEY: $OR_ERR"
@@ -606,6 +640,25 @@ _cfg_live_checks() {
   if cfg_has OPENWEBUI_ADMIN_EMAIL; then _cfg_email_check; fi
 }
 
+# _cfg_account_check NEW_ACCOUNT — a key of another AWS account (other models, quotas and bill) is used only when
+# confirmed: --confirm other-aws-account (the tick in Settings), or a yes in the terminal (./stack config set)
+CFG_CONFIRM_OTHER_ACCOUNT=''
+_cfg_account_check() {
+  local old='' how
+  [ -n "$1" ] && [ -n "$(get_env AWS_ACCESS_KEY_ID)" ] && [ "$(get_env AWS_AUTH)" != instance-role ] || return 0
+  old="$(aws_run "$(get_env AWS_ACCESS_KEY_ID)" "$(get_env AWS_SECRET_ACCESS_KEY)" "$(get_env AWS_REGION_NAME)" \
+    sts get-caller-identity --query Account --output text 2>/dev/null | tr -cd '0-9')" || old=''
+  [ -n "$old" ] && [ "$old" != "$1" ] || return 0   # the same account, or the old key no longer works (why it is replaced)
+  log "the new key belongs to another AWS account: $(account_masked "$1") (the current key: $(account_masked "$old"))"
+  case "$CFG_CONFIRM_OTHER_ACCOUNT" in
+    1) return 0 ;;
+    ask) confirm "Use the other AWS account ($(account_masked "$1"))? Its models, quotas and bill are its own" && return 0 ;;
+  esac
+  [ "$CFG_VIA" = cli ] && how="./stack config set AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY in a terminal asks" ||
+    how="tick 'The new key belongs to another AWS account' and save again"
+  _cfg_refuse "the new key belongs to another AWS account ($(account_masked "$1"); the current one: $(account_masked "$old")): $how"
+}
+
 _cfg_stack_running() { [ -n "$(get_env LITELLM_MASTER_KEY)" ] && [ -n "$(dc ps -q --status running litellm 2>/dev/null)" ]; }
 
 # _cfg_email_check — the owner's Chat account is found (by the current email) and the new email is free, or held
@@ -616,9 +669,10 @@ _cfg_email_check() {
   _cfg_stack_running || return 0   # stopped: .env only; ./stack up reconciles both apps
   portal_session_start || _cfg_refuse "could not sign in to the portal to check the new email"
   users="$(_owui_users_tsv)" || _cfg_refuse "could not list Chat's accounts (is Open WebUI up? ./stack status)"
-  owner="$(printf '%s\n' "$users" | awk -F'\t' -v e="$old" '$2 == e && $3 == "admin" { print $1; exit }')"
+  owner="$(printf '%s\n' "$users" | awk -F'\t' -v e="$old" 'tolower($2) == tolower(e) && $3 == "admin" { print $1; exit }')"
   [ -n "$owner" ] || _cfg_refuse "could not find your Chat account ($old): ./stack up repairs the owner account first"
-  held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$new" '$2 == e { print $1 "\t" $3; exit }')"
+  owner_id_record "$owner"
+  held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$new" 'tolower($2) == tolower(e) { print $1 "\t" $3; exit }')"
   if [ -n "$held" ]; then
     role="${held#*	}"; held="${held%%	*}"
     [ "$role" = pending ] && [ "$(_owui_chat_count "$held")" = 0 ] ||
@@ -630,16 +684,22 @@ _cfg_email_check() {
 
 # _cfg_save_old — the current values in memory and in .state/config/pending.env (600; deleted when the change ends),
 # so a change cut short (power loss) is noticed and reconciled by the next ./stack up
+# What the steps after the .env write may change besides the keys themselves (restored exactly on a rollback)
+CFG_DERIVED="LITELLM_UI_USER AWS_AUTH PORTAL_PASSWORD_HASH OPENROUTER_MODELS OWUI_DEFAULT_MODEL OWUI_TASK_MODEL
+  CLAUDE_BEDROCK_OPUS_MODEL CLAUDE_BEDROCK_SONNET_MODEL CLAUDE_BEDROCK_HAIKU_MODEL STT_BEDROCK_MODEL"
+_cfg_saved_keys() { printf '%s\n' $CFG_ORDER $CFG_DERIVED | awk 'NF && !seen[$0]++'; }
+
 _cfg_save_old() {
   local k d f
-  for k in $CFG_ORDER LITELLM_UI_USER AWS_AUTH; do
+  for k in $(_cfg_saved_keys); do
     printf -v "CFG_OLD_$k" '%s' "$(get_env "$k")"
     printf -v "CFG_HAD_$k" '%s' "$(grep -q "^$k=" "$ENV_FILE" 2>/dev/null && echo 1)"
   done
+  CFG_OLD_STT_CHOICE="$(cat "$STATE_DIR/stt-choice" 2>/dev/null || true)"
+  CFG_HAD_STT_CHOICE="$([ -f "$STATE_DIR/stt-choice" ] && echo 1 || true)"
   d="$(settings_dir)"; mkdir -p "$d" && chmod 700 "$d"; f="$d/pending.env"
-  ( umask 077
-    { printf 'at=%s\nvia=%s\nkeys=%s\n' "$(date +%s)" "$CFG_VIA" "$(printf '%s' "$CFG_ORDER" | tr ' ' ',')"
-      for k in $CFG_ORDER; do printf 'OLD_%s=%s\n' "$k" "$(cfg_old "$k")"; done; } > "$f" )
+  # (key names only: the old values stay in memory, never on disk)
+  ( umask 077; printf 'at=%s\nvia=%s\nkeys=%s\n' "$(date +%s)" "$CFG_VIA" "$(printf '%s' "$CFG_ORDER" | tr ' ' ',')" > "$f" )
 }
 
 # _cfg_pre — what must change before .env: the LiteLLM password and the owner email in Open WebUI and LiteLLM
@@ -680,15 +740,6 @@ _cfg_write() {
   if cfg_has PORTAL_PASSWORD; then helper_password_sync; fi
 }
 
-# _cfg_render_litellm -> 0 when litellm/config.yaml changed (re-rendered from .env)
-_cfg_render_litellm() {
-  local cfg="$STACK_DIR/litellm/config.yaml" before
-  [ -f "$cfg" ] || return 1
-  before="$(cat "$cfg")"
-  render_config "$(_enabled_or_all)"
-  [ "$(cat "$cfg")" != "$before" ]
-}
-
 # _cfg_openrouter — as ./stack openrouter set|remove|models do (lib/openrouter.sh): a new key's account decides the
 # automatic free set, a removed key undoes it, OPENROUTER_MODELS set here is your choice from then on
 _cfg_openrouter() {
@@ -705,25 +756,31 @@ _cfg_openrouter() {
 
 # _cfg_post — restarts only what the change needs (Compose recreates a container only when its settings changed)
 _cfg_post() {
-  local svc='' k
-  _cfg_on openrouter && _cfg_openrouter
-  if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$STACK_DIR/litellm/config.yaml" ]; then log "saved — ./stack setup applies it"; return 0; fi
+  local svc='' k cfg="$STACK_DIR/litellm/config.yaml" before=''
+  [ ! -f "$cfg" ] || before="$(cat "$cfg")"   # before anything here re-renders it (openrouter_refresh does)
+  if _cfg_on openrouter; then _cfg_openrouter; fi
+  # .env first, so ./stack up applies them too when the stack is stopped
+  if _cfg_on pins && [ -s "$STACK_DIR/litellm/enabled-models.txt" ]; then choose_defaults; fi
+  if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$cfg" ]; then log "saved — ./stack setup applies it"; return 0; fi
   if ! _cfg_stack_running; then log "saved — the stack is stopped; ./stack up applies it"; return 0; fi
   if _cfg_on stt; then
     _stt_apply   # re-renders, recreates LiteLLM, the stt container, Chat and the portal; restores the previous choice if stt fails
+    before="$(cat "$cfg")"   # (LiteLLM was recreated with all of .env)
   fi
   if _cfg_on litellm-cfg || _cfg_on openrouter; then
-    if _cfg_render_litellm; then run_phase "LiteLLM (new settings)" litellm dc up -d --no-deps --force-recreate --wait litellm; fi
+    render_config "$(_enabled_or_all)"
+    if [ "$(cat "$cfg")" != "$before" ]; then run_phase "LiteLLM (new settings)" litellm dc up -d --no-deps --force-recreate --wait litellm
+    else svc="$svc litellm"; fi   # its environment (the webhook, the OpenRouter key) changed: Compose recreates it for that
   fi
   if _cfg_on rustfs; then   # every holder of the pair at once; rustfs-init (a dependency) runs again with it
     run_phase "Files (new sign-in)" "rustfs open-webui shared-mcp portal" dc up -d --wait rustfs open-webui shared-mcp portal
   fi
   if _cfg_on mcp; then write_mcp_config; svc="$svc shared-mcp"; fi
-  if _cfg_on pins; then
-    [ ! -s "$STACK_DIR/litellm/enabled-models.txt" ] || choose_defaults
-    svc="$svc open-webui"
-  fi
-  if _cfg_on aws || _cfg_on litellm-pw; then svc="$svc litellm"; fi
+  if _cfg_on pins; then svc="$svc open-webui"; fi
+  if _cfg_on aws; then svc="$svc litellm"; fi
+  # the Admin password: LiteLLM's own env login uses it only until the database admin exists (then it changed in
+  # LiteLLM at once, and the container picks .env up at the next ./stack up)
+  if _cfg_on litellm-pw && [ "$(get_env LITELLM_DB_ADMIN_READY)" != true ]; then svc="$svc litellm"; fi
   if _cfg_on email; then svc="$svc open-webui"; fi
   if _cfg_on portal || _cfg_on portal-pw || _cfg_on email || _cfg_on litellm-pw || _cfg_on openrouter || _cfg_on mcp || _cfg_on pins || _cfg_on alert-pct; then svc="$svc portal"; fi
   svc="$(printf '%s\n' $svc | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
@@ -736,6 +793,7 @@ _cfg_post() {
         BUDGET_OPENWEBUI) ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env "$k")" ;;
         *) ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env "$k")" ;; esac
     done
+    if _cfg_on alert-pct; then alert_pct_mark; fi
   fi
   if _cfg_on budget || _cfg_on email || _cfg_on openrouter || _cfg_on rustfs || _cfg_on pins || _cfg_on alert-pct || _cfg_on owui-models; then
     portal_session_start || die "could not sign in to the portal after the restart (HTTP ${PORTAL_LOGIN_CODE:-?})"
@@ -790,12 +848,13 @@ _mcp_token_works() {
 _cfg_rollback() {
   local k args=()
   warn "the change failed while $1${2:+ ($2)} — putting the previous settings back"
-  for k in $CFG_ORDER LITELLM_UI_USER AWS_AUTH; do
+  for k in $(_cfg_saved_keys); do   # each once, exactly as it was (the old hash too: sessions stay valid)
     local h="CFG_HAD_$k"
     if [ -n "${!h-}" ]; then args+=("$k" "$(cfg_old "$k")"); else args+=("-$k" ''); fi
   done
-  if cfg_has PORTAL_PASSWORD; then args+=(PORTAL_PASSWORD_HASH "$(pw_hash "$(cfg_old PORTAL_PASSWORD)")"); fi
   set_env_batch "${args[@]}" || true
+  if [ -n "${CFG_HAD_STT_CHOICE:-}" ]; then printf '%s\n' "$CFG_OLD_STT_CHOICE" > "$STATE_DIR/stt-choice" 2>/dev/null || true
+  else rm -f "$STATE_DIR/stt-choice"; fi
   if [ "$CFG_PRE_EMAIL" = 1 ]; then
     portal_session_start >/dev/null 2>&1 || true   # (the restart steps ended the earlier session)
     _owner_email_move "$CFG_OWUI_OWNER" "$(cfg_old OPENWEBUI_ADMIN_EMAIL)" || warn "could not put the previous owner email back ($OWNER_ERR) — ./stack up repairs it"
@@ -834,6 +893,7 @@ aws_key_live_check() {
   arn="$(aws_run "$1" "$2" "${3:-us-east-1}" sts get-caller-identity --query Arn --output text 2>/dev/null)" ||
     die "AWS rejected $what (sts get-caller-identity)"
   log "$what belongs to AWS account $(account_masked "$(arn_account "$arn")")"
+  [ -z "${AWS_ACCOUNT_OUT:-}" ] || arn_account "$arn" > "$AWS_ACCOUNT_OUT"   # (for the caller: never printed)
   _prove_bedrock "${3:-us-east-1}" "" "$1" "$2"
 }
 
@@ -900,7 +960,7 @@ _owui_drop_strays() {
   local id e r
   [ -n "$1" ] || return 0
   _owui_users_tsv | while IFS=$'\t' read -r id e r; do
-    [ "$e" = "$1" ] && [ "$r" = pending ] || continue
+    [ "$(_lc "$e")" = "$(_lc "$1")" ] && [ "$r" = pending ] || continue
     [ "$(_owui_chat_count "$id")" = 0 ] || continue
     if _owui_delete_user "$id"; then log "removed a stray, empty Chat account for $1"; fi
   done
@@ -932,21 +992,43 @@ owner_signin_check() {
   [ "$out" = "$1/admin" ] || { OWNER_ERR="signed in as ${out:-nobody}"; return 1; }
 }
 
+_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# owner_id_record ID / owner_id_recorded — the owner's Open WebUI account id (.state/config/owui-owner), the one
+# account the reconcile may move back to OPENWEBUI_ADMIN_EMAIL
+owner_id_record() {
+  case "$1" in '' | *[!A-Za-z0-9-]*) return 0 ;; esac
+  mkdir -p "$(settings_dir)" 2>/dev/null && chmod 700 "$(settings_dir)" && printf '%s\n' "$1" > "$(settings_dir)/owui-owner" || true
+}
+owner_id_recorded() { head -c 64 "$(settings_dir)/owui-owner" 2>/dev/null | tr -cd 'A-Za-z0-9-' || true; }
+
+# owner_email_lowercase — OPENWEBUI_ADMIN_EMAIL in lowercase, as Chat keeps every email (setup used to store a git
+# email as typed): changed once, with LITELLM_UI_USER when it follows it; the reconcile then moves the Admin sign-in
+owner_email_lowercase() {
+  local e l
+  e="$(get_env OPENWEBUI_ADMIN_EMAIL)"; l="$(_lc "$e")"
+  [ "$e" != "$l" ] || return 0
+  if [ "$(get_env LITELLM_UI_USER)" = "$e" ]; then set_env_batch OPENWEBUI_ADMIN_EMAIL "$l" LITELLM_UI_USER "$l"
+  else set_env OPENWEBUI_ADMIN_EMAIL "$l"; fi
+  log "OPENWEBUI_ADMIN_EMAIL is now in lowercase, as Chat keeps it ($l)"
+}
+
 # settings_reconcile — ./stack up, setup and restore (inside a portal session): Chat's owner account and the Admin
 # (LiteLLM) sign-in match OPENWEBUI_ADMIN_EMAIL / LITELLM_UI_PASSWORD in .env. A change cut short, or a restored
 # older backup, can leave them apart. Repairs what it can, warns otherwise; never fatal.
 settings_reconcile() {
-  local email users admins n held role tmp code
+  local email users owner held role tmp code
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"; [ -n "$email" ] || return 0
   if [ -n "$(get_env OPENWEBUI_API_KEY)" ] && users="$(_owui_users_tsv 2>/dev/null)" && [ -n "$users" ]; then
-    held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$email" '$2 == e { print $1 "\t" $3; exit }')"
-    admins="$(printf '%s\n' "$users" | awk -F'\t' -v e="$email" '$3 == "admin" && $2 != e { print $1 }')"
-    n="$(printf '%s\n' "$admins" | grep -c . || true)"
+    held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$email" 'tolower($2) == tolower(e) { print $1 "\t" $3; exit }')"
     role="${held#*	}"; held="${held%%	*}"
-    if [ -n "$held" ] && [ "$role" = admin ]; then :
-    elif [ "$n" = 1 ] && { [ -z "$held" ] || { [ "$role" = pending ] && [ "$(_owui_chat_count "$held")" = 0 ]; }; }; then
+    # Only the account recorded as the owner (at setup, or when it was last found) is ever moved: never another admin
+    owner="$(owner_id_recorded)"
+    [ -z "$owner" ] || printf '%s\n' "$users" | awk -F'\t' -v i="$owner" '$1 == i && $3 == "admin" { f = 1 } END { exit !f }' || owner=''
+    if [ -n "$held" ] && [ "$role" = admin ]; then owner_id_record "$held"
+    elif [ -n "$owner" ] && { [ -z "$held" ] || { [ "$role" = pending ] && [ "$(_owui_chat_count "$held")" = 0 ]; }; }; then
       [ -z "$held" ] || _owui_delete_user "$held" || true
-      if _owner_email_move "$admins" "$email"; then log "Chat's owner account now uses $email again (its chats stay)"
+      if _owner_email_move "$owner" "$email"; then log "Chat's owner account now uses $email again (its chats stay)"
       else warn "Chat's owner account does not use $email and could not be changed ($OWNER_ERR) — Settings → Owner email"; fi
     else
       warn "Chat has no admin account for $email (OPENWEBUI_ADMIN_EMAIL) — left as is; see README › Troubleshooting"
@@ -970,19 +1052,28 @@ settings_reconcile() {
   [ "$(get_env LITELLM_UI_USER)" = "$email" ] || set_env LITELLM_UI_USER "$email"
 }
 
+# alert_pct_applied -> the alert threshold the keys' soft budgets in LiteLLM were last set with (80 before there
+# was a setting); alert_pct_mark records BUDGET_ALERT_PCT as applied
+alert_pct_applied() { local p; p="$(head -c 4 "$(settings_dir)/alert-pct" 2>/dev/null | tr -cd '0-9' || true)"; echo "${p:-80}"; }
+alert_pct_mark() { mkdir -p "$(settings_dir)" 2>/dev/null && chmod 700 "$(settings_dir)" && printf '%s\n' "$(alert_pct)" > "$(settings_dir)/alert-pct"; }
+
 # budget_sync_quiet — ./stack up: each key's budget in LiteLLM as BUDGET_* in .env says (a change made while the
 # stack was stopped, or .env edited by hand); quiet when nothing differs. Never fatal.
 budget_sync_quiet() {
-  local envk alias bk j max want
+  local envk alias bk j max want soft=0 failed=0
+  [ "$(alert_pct_applied)" = "$(alert_pct)" ] || soft=1   # BUDGET_ALERT_PCT changed while the stack was stopped
   for envk in LITELLM_KEY_CLAUDE_CODE:claude-code:BUDGET_CLAUDE_CODE LITELLM_KEY_OPENWEBUI:open-webui:BUDGET_OPENWEBUI LITELLM_KEY_SETUP:setup:BUDGET_SETUP; do
     bk="${envk##*:}"; alias="${envk#*:}"; alias="${alias%%:*}"; envk="${envk%%:*}"
     want="$(get_env "$bk")"; valid_budget "$want" || continue
     [ -n "$(get_env "$envk")" ] || continue
     j="$(key_info "$(get_env "$envk")")" || continue
     max="$(printf '%s' "$j" | json_num max_budget)"
-    awk -v a="${max:-x}" -v b="$want" 'BEGIN { exit !(a == "x" || a + 0 != b + 0) }' || continue
-    ( ensure_virtual_key "$envk" "$alias" "$want" ) >/dev/null 2>&1 && log "budget of '$alias' set to \$$want (BUDGET_* in .env)" || true
+    [ "$soft" = 1 ] || awk -v a="${max:-x}" -v b="$want" 'BEGIN { exit !(a == "x" || a + 0 != b + 0) }' || continue
+    if ( ensure_virtual_key "$envk" "$alias" "$want" ) >/dev/null 2>&1; then
+      log "budget of '$alias' set to \$$want, alerts at $(alert_pct)% (BUDGET_* and BUDGET_ALERT_PCT in .env)"
+    else failed=1; fi
   done
+  [ "$soft" = 0 ] || [ "$failed" = 1 ] || alert_pct_mark || true
 }
 
 # settings_reconcile_with_session — settings_reconcile in a portal session of its own (./stack restore)
@@ -1002,9 +1093,10 @@ _owner_email_litellm() {
 
 # settings_pending_check — ./stack up: a change cut short (power loss, Docker stopped) left .state/config/pending.env
 settings_pending_check() {
-  local f; f="$(settings_dir)/pending.env"
+  local f h; f="$(settings_dir)/pending.env"
   [ -f "$f" ] || return 0
-  [ -z "$(stack_lock_holder)" ] || return 0
+  h="$(stack_lock_holder)"   # a change still running (not this ./stack up's own lock)
+  [ -z "$h" ] || [ "${h%% *}" = "${BEDROCK_NOW_LOCK_HELD:-}" ] || return 0
   warn "a settings change ($(ENV_FILE="$f" get_env keys)) did not finish — .env keeps what it had then; checking the Chat and Admin sign-ins against it"
   rm -f "$f"
   SETTINGS_RECONCILE_NEEDED=1
@@ -1015,17 +1107,18 @@ settings_pending_check() {
 backup_keep() { local k; k="$(get_env BACKUP_KEEP)"; case "$k" in [1-9] | [1-5][0-9] | 60) echo "$k" ;; *) echo 7 ;; esac; }
 backup_hour() { local h; h="$(get_env BACKUP_HOUR)"; case "$h" in [0-9] | 1[0-9] | 2[0-3]) echo "$h" ;; *) echo 2 ;; esac; }
 
-# prune_nightly_backups KEEP — keeps the newest KEEP backups/*-nightly (never one the update record names); manual,
-# update (-auto) and incomplete backups are never touched
-prune_nightly_backups() {
-  local keep="$1" d i=0 removed=0 all=() rec
+# prune_backups SUFFIX KEEP — the newest KEEP backups/<ts>-SUFFIX/ stay (nightly: BACKUP_KEEP; portal: 5); yours,
+# the update's and the one a rollback needs are never touched
+prune_backups() {
+  local suffix="$1" keep="$2" d i=0 removed=0 all=() rec
+  case "$suffix" in nightly | portal) ;; *) return 0 ;; esac
   rec="$(_record_get backup)"; rec="${rec%/}"
-  for d in "$STACK_DIR"/backups/*-nightly; do [ -d "$d" ] && all+=("$d"); done   # glob order = oldest first
+  for d in "$STACK_DIR"/backups/*-"$suffix"; do [ -d "$d" ] && all+=("$d"); done   # glob order = oldest first
   while [ $((${#all[@]} - i)) -gt "$keep" ]; do
     [ -n "$rec" ] && [ "${all[$i]}" = "$STACK_DIR/$rec" ] || { rm -rf "${all[$i]}"; removed=$((removed + 1)); }
     i=$((i + 1))
   done
-  [ "$removed" -eq 0 ] || log "removed $removed old nightly backup(s) (BACKUP_KEEP=$keep)"
+  [ "$removed" -eq 0 ] || log "removed $removed old $suffix backup(s) (the newest $keep are kept)"
 }
 
 # _backup_epoch NAME -> the epoch of a backups/<YYYYmmdd-HHMMSS>[-suffix] name (this computer's time), or null
@@ -1050,7 +1143,7 @@ write_backups_json() {
     for b in "$STACK_DIR"/backups/*; do
       [ -d "$b" ] && _is_backup "$b" || continue
       name="${b##*/}"
-      case "$name" in *.partial | *[!A-Za-z0-9._-]*) continue ;; *-auto) kind=auto ;; *-nightly) kind=nightly ;; *) kind=manual ;; esac
+      case "$name" in *.partial | *[!A-Za-z0-9._-]*) continue ;; *-auto) kind=auto ;; *-nightly) kind=nightly ;; *-portal) kind=portal ;; *) kind=manual ;; esac
       kb="$(du -sk "$b" 2>/dev/null | cut -f1)"; case "$kb" in '' | *[!0-9]*) kb=0 ;; esac
       rb=false; [ "backups/$name" != "$rec" ] || rb=true
       printf '%s{"name": "%s", "kind": "%s", "bytes": %s, "at": %s, "rollback": %s}' "$sep" "$name" "$kind" "$((kb * 1024))" "$(_backup_epoch "$name")" "$rb"
@@ -1114,6 +1207,10 @@ _report_scrub() {
       { line = $0
         for (i = 0; i < n; i++) while ((p = index(line, s[i])) > 0) line = substr(line, 1, p - 1) "***" substr(line, p + length(s[i]))
         if (h != "") while ((p = index(line, h)) > 0) line = substr(line, 1, p - 1) "~" substr(line, p + length(h))
+        # who you are and where: emails and logins (owner, Tailscale), tailnet names, AWS account numbers
+        gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/, "<email>", line)
+        gsub(/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.ts\.net/, "<host>.ts.net", line)
+        gsub(/(^|[^0-9])[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]([^0-9]|$)/, " <account> ", line)
         gsub(/\033\[[0-9;]*m/, "", line); print line }' )
 }
 

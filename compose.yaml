@@ -78,7 +78,7 @@ services:
       AWS_ACCESS_KEY_ID:
       AWS_SECRET_ACCESS_KEY:
       AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
-      WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
+      WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (soft budget at BUDGET_ALERT_PCT, 100%); empty = none
       # Optional; blank = no OpenRouter models are rendered (lib/openrouter.sh).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # LiteLLM sends these to OpenRouter as X-Title / HTTP-Referer, so OpenRouter's Activity and Logs show the

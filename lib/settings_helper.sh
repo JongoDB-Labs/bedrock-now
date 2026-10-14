@@ -46,7 +46,7 @@ _b64_decode() { local v; v="$(printf '%s' "$1" | openssl base64 -d -A 2>/dev/nul
 # SREQ_BASE SREQ_AUTH (base64) SREQ_LINES ("set KEY B64" lines) SREQ_KEYS; the reason on stderr otherwise.
 settings_check_request() {
   local f="$1" name="$2" body nonce line n=0 state=head k now rest
-  SREQ_NONCE=''; SREQ_ORIGIN=''; SREQ_BASE=''; SREQ_AUTH=''; SREQ_LINES=''; SREQ_KEYS=''; SREQ_TS=''
+  SREQ_NONCE=''; SREQ_ORIGIN=''; SREQ_BASE=''; SREQ_AUTH=''; SREQ_LINES=''; SREQ_KEYS=''; SREQ_TS=''; SREQ_CONFIRM=''
   case "$name" in cfg-*.req) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
   nonce="${name#cfg-}"; nonce="${nonce%.req}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
@@ -66,16 +66,17 @@ settings_check_request() {
       head:5:'origin local' | head:5:'origin remote') SREQ_ORIGIN="${line#origin }" ;;
       head:6:'auth '*) SREQ_AUTH="${line#auth }"; state=body ;;
       body:*:'set '*)
-        printf '%s\n' "$line" | grep -Eq '^set [A-Z][A-Z0-9_]+ [A-Za-z0-9+/]*={0,2}$' || { echo "line $n is not 'set KEY BASE64'" >&2; return 1; }
+        _sv_re "$line" '^set [A-Z][A-Z0-9_]+ [A-Za-z0-9+/]*={0,2}$' || { echo "line $n is not 'set KEY BASE64'" >&2; return 1; }
         k="${line#set }"; k="${k%% *}"
         [ "${#k}" -le 41 ] && [ "${#line}" -le 2780 ] || { echo "line $n is too long" >&2; return 1; }
         case " $SREQ_KEYS " in *" $k "*) echo "$k appears twice" >&2; return 1 ;; esac
         SREQ_KEYS="${SREQ_KEYS:+$SREQ_KEYS }$k"; SREQ_LINES="$SREQ_LINES$line"$'\n' ;;
       body:*:'regen '*)
-        printf '%s\n' "$line" | grep -Eq '^regen [A-Z][A-Z0-9_]+$' && [ "${#line}" -le 48 ] || { echo "line $n is not 'regen KEY'" >&2; return 1; }
+        _sv_re "$line" '^regen [A-Z][A-Z0-9_]+$' && [ "${#line}" -le 48 ] || { echo "line $n is not 'regen KEY'" >&2; return 1; }
         k="${line#regen }"
         case " $SREQ_KEYS " in *" $k "*) echo "$k appears twice" >&2; return 1 ;; esac
         SREQ_KEYS="${SREQ_KEYS:+$SREQ_KEYS }$k"; SREQ_LINES="$SREQ_LINES$line"$'\n' ;;
+      body:*:'confirm other-aws-account') SREQ_CONFIRM=other-aws-account ;;   # the new AWS key may be another account's
       body:*:end) state=end ;;
       *) echo "not a valid settings request (line $n)" >&2; return 1 ;;
     esac
@@ -85,9 +86,9 @@ settings_check_request() {
   [ -n "$SREQ_KEYS" ] || { echo "no setting in the request" >&2; return 1; }
   [ "$(printf '%s\n' $SREQ_KEYS | wc -l | tr -d ' ')" -le "$SETTINGS_MAX_KEYS" ] || { echo "more than $SETTINGS_MAX_KEYS settings" >&2; return 1; }
   [ "$SREQ_NONCE" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
-  printf '%s\n' "$SREQ_TS" | grep -Eq '^[0-9]{1,12}$' || { echo "bad time" >&2; return 1; }
-  printf '%s\n' "$SREQ_BASE" | grep -Eq '^[0-9a-f]{64}$' || { echo "bad base" >&2; return 1; }
-  printf '%s\n' "$SREQ_AUTH" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$' && [ "${#SREQ_AUTH}" -le 400 ] || { echo "bad auth line" >&2; return 1; }
+  _sv_re "$SREQ_TS" '^[0-9]{1,12}$' || { echo "bad time" >&2; return 1; }
+  _sv_re "$SREQ_BASE" '^[0-9a-f]{64}$' || { echo "bad base" >&2; return 1; }
+  _sv_re "$SREQ_AUTH" '^[A-Za-z0-9+/]+={0,2}$' && [ "${#SREQ_AUTH}" -le 400 ] || { echo "bad auth line" >&2; return 1; }
   now="$(date +%s)"
   [ "$SREQ_TS" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - SREQ_TS)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
@@ -99,8 +100,7 @@ settings_check_request() {
 # allowlist and validators (lib/settings.sh); the reason on stderr otherwise. Decoded values live only here.
 settings_request_allowed() {
   local line k v rest
-  _auth_throttled && { echo "too many wrong passwords: the helper takes no settings requests for a while" >&2; return 1; }
-  if ! helper_password_ok "$(_b64_decode "$SREQ_AUTH")"; then _auth_failed; echo "wrong portal password" >&2; return 1; fi
+  _auth_ok "$SREQ_AUTH" || return 1
   rest="$SREQ_LINES"
   while [ -n "$rest" ]; do
     line="${rest%%$'\n'*}"; if [ "$line" = "$rest" ]; then rest=''; else rest="${rest#*$'\n'}"; fi
@@ -116,6 +116,16 @@ settings_request_allowed() {
     setting_allowed "$k" "$v" "$SREQ_ORIGIN" || { echo "$SV_ERR" >&2; return 1; }
     setting_validate "$k" "$v" || { echo "$SV_ERR" >&2; return 1; }
   done
+}
+
+# _auth_ok BASE64 — the portal password a request carries, against the helper's own hash, with its lock-out. A
+# control character never counts (openssl reads only the first line: "password\njunk" must not pass).
+_auth_ok() {
+  local pw
+  _auth_throttled && { echo "too many wrong passwords: the helper takes no requests from Settings for a while" >&2; return 1; }
+  pw="$(_b64_decode "$1")"
+  case "$pw" in *[[:cntrl:]]*) pw='' ;; esac
+  if [ -z "$pw" ] || ! helper_password_ok "$pw"; then _auth_failed; echo "wrong portal password" >&2; return 1; fi
 }
 
 # The helper's own lock-out for wrong passwords in settings requests: it holds even when the portal (whose login
@@ -172,7 +182,7 @@ helper_run_settings() {
   logf="$(helper_dir)/last-settings.log"
   : > "$logf"; chmod 600 "$logf"
   printf '%s' "$SREQ_LINES" | ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" config apply --stdin \
-    --base "$SREQ_BASE" --origin "$SREQ_ORIGIN" --via portal --yes ) > "$logf" 2>&1 &
+    --base "$SREQ_BASE" --origin "$SREQ_ORIGIN" --via portal ${SREQ_CONFIRM:+--confirm "$SREQ_CONFIRM"} --yes ) > "$logf" 2>&1 &
   pid=$!
   SREQ_LINES=''; SREQ_AUTH=''
   while kill -0 "$pid" 2>/dev/null; do
@@ -192,24 +202,23 @@ helper_run_settings() {
 
 # act_check_request FILE NAME -> prints "ACTION NONCE" for a valid diagnostic request (the reason on stderr otherwise)
 act_check_request() {
-  local f="$1" name="$2" nonce body action ts n now
+  local f="$1" name="$2" nonce body action ts n now auth
   case "$name" in act-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
   nonce="${name#act-}"; nonce="${nonce%.json}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
   [ "${#nonce}" = 32 ] || { echo "bad nonce in the file name" >&2; return 1; }
   body="$(_req_read "$f" "$HELPER_MAX_BYTES")" || return 1
-  printf '%s\n' "$body" | grep -Eq '^\{"action":"(check-aws|models-recheck|backup|test|report|restart-(litellm|open-webui|shared-mcp|stt|rustfs|caddy))","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}"\}$' ||
+  body="${body%$'\n'}"   # one line, matched as a whole (the password again: every diagnostic costs time, disk or money)
+  _sv_re "$body" '^\{"action":"(check-aws|models-recheck|backup|test|report|restart-(litellm|open-webui|shared-mcp|stt|rustfs|caddy))","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})"\}$' ||
     { echo "not a valid request" >&2; return 1; }
-  action="$(printf '%s\n' "$body" | sed 's/^{"action":"\([a-z-]*\)".*/\1/')"
-  ts="$(printf '%s\n' "$body" | sed 's/.*"requested_at":\([0-9]*\).*/\1/')"
-  n="$(printf '%s\n' "$body" | sed 's/.*"nonce":"\([0-9a-f]*\)".*/\1/')"
+  action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[3]}"; n="${BASH_REMATCH[4]}"; auth="${BASH_REMATCH[5]}"
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
   case " $DIAG_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
   now="$(date +%s)"
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
   ! grep -qx "$nonce" "$(helper_dir)/nonces" 2>/dev/null || { echo "replayed (this request was already used)" >&2; return 1; }
-  printf '%s %s\n' "$action" "$nonce"
+  printf '%s %s %s\n' "$action" "$nonce" "$auth"
 }
 
 _diag_limits() {
@@ -224,6 +233,15 @@ _diag_limits() {
 
 # helper_run_diag ACTION ID — one diagnostic: ./stack config check-aws | models --recheck | backup | test |
 # config report | restart SERVICE, with a short result message for Settings (never a raw log line with an id)
+# _wait_beating PID -> its exit code, once it ended; the heartbeat goes on meanwhile (the portal shows a helper whose
+# heartbeat is older than 30 s as not running)
+_wait_beating() {
+  local rc=0
+  while kill -0 "$1" 2>/dev/null; do helper_heartbeat || true; sleep "${HELPER_JOB_POLL_S:-2}"; done
+  wait "$1" || rc=$?
+  return "$rc"
+}
+
 helper_run_diag() {
   local action="$1" logf rc=0 holder msg s
   JOB_ID="$2"; JOB_ACTION="$action"; JOB_TRIGGER=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
@@ -232,24 +250,27 @@ helper_run_diag() {
     JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused
     helper_write_status failed "Busy: ./stack ${holder#* } is running right now. Try again when it has finished."; return 0
   fi
-  _kind_count diag-jobs "$action"
+  [ "$action" = backup-nightly ] || _kind_count diag-jobs "$action"   # (the helper's own nightly run: not a request)
   logf="$(helper_dir)/last-diag.log"
   : > "$logf"; chmod 600 "$logf"
   case "$action" in
     check-aws) helper_write_status running "Checking the AWS key with AWS (free)"; set -- config check-aws ;;
     models-recheck) helper_write_status running "Re-checking which models your AWS key can use (about 2 minutes; < \$0.01)"; set -- models --recheck --yes ;;
-    backup) helper_write_status running "Backing up databases, files and .env"; set -- backup ;;
+    backup) helper_write_status running "Backing up databases, files and .env"; set -- backup --portal ;;
     test) helper_write_status running "Running the smoke test (~\$0.0001)"; set -- test ;;
     report) helper_write_status running "Writing the status report"; set -- config report ;;
     backup-nightly) helper_write_status running "Nightly backup"; set -- backup --nightly ;;
     restart-*) s="${action#restart-}"; helper_write_status running "Restarting $s"; set -- restart "$s" ;;
   esac
+  # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   if [ "$action" = report ]; then
-    ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf.out" 2> "$logf" || rc=$?
-    if [ "$rc" = 0 ]; then head -c 262144 "$logf.out" > "$(report_file).tmp" && chmod 644 "$(report_file).tmp" && mv "$(report_file).tmp" "$(report_file)"; fi
+    ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf.out" 2> "$logf" &
+    _wait_beating $! || rc=$?
+    if [ "$rc" = 0 ]; then head -c 262144 "$logf.out" > "$(report_file).tmp" && chmod 640 "$(report_file).tmp" && mv "$(report_file).tmp" "$(report_file)"; fi
     rm -f "$logf.out"
   else
-    ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 || rc=$?
+    ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 &
+    _wait_beating $! || rc=$?
   fi
   JOB_FINISHED="$(date +%s)"
   if [ "$rc" -ne 0 ]; then
@@ -275,7 +296,7 @@ helper_run_diag() {
 # settings_poll_once — one settings or diagnostic request per call, if any (moved into the private inbox first, like
 # lib/helper.sh does with req-*.json). 0 when a job ran. Never exits the helper: no code changes here.
 settings_poll_once() {
-  local rq inbox box f name res reason
+  local rq inbox box f name res reason action auth
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
   [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   for f in "$rq"/cfg-*.req "$rq"/act-*.json; do
@@ -301,13 +322,16 @@ settings_poll_once() {
         _refuse_settings "$(printf '%s' "$reason" | head -n 1)"; return 1 ;;
       act-*)
         if res="$(act_check_request "$box/$name" "$name" 2>"$box/.reason")"; then
-          rm -rf "$box"; _remember_nonce "${res#* }"
-          if reason="$(_diag_limits "${res%% *}" 2>&1)"; then helper_run_diag "${res%% *}" "${res#* }"; return 0; fi
+          rm -rf "$box"
+          action="${res%% *}"; res="${res#* }"; auth="${res#* }"; res="${res%% *}"   # res: the nonce from here on
+          _remember_nonce "$res"
+          if reason="$(_auth_ok "$auth" 2>&1)" && reason="$(_diag_limits "$action" 2>&1)"; then auth=''; helper_run_diag "$action" "$res"; return 0; fi
+          auth=''
         else
           reason="$(head -c 300 "$box/.reason" | head -n 1)"; rm -rf "$box"
-          res="? $(_name_nonce "$name")"
+          res="$(_name_nonce "$name")"
         fi
-        _refuse_diag "$reason" "${res#* }"; return 1 ;;
+        _refuse_diag "$reason" "$res"; return 1 ;;
     esac
   done
   return 1
@@ -378,11 +402,17 @@ backup_nightly_tick() {
   [ "$(get_env BACKUP_NIGHTLY)" = on ] || return 0
   clock="$(_backup_clock)"; now="${clock%% *}"; since="${clock##* }"; nowh="${clock#* }"; nowh="${nowh%% *}"
   hour="$(backup_hour)"
+  # With automatic updates on, one backup a night in their window: the update's own when a release installs (it
+  # backs up first), else this one. While the update is due (this loop's heartbeat decided "run"), it waits.
+  if auto_on; then
+    hour="$(auto_hour)"
+    case "${AUTO_STATE:-}" in run | running) busy=update ;; wait) [ -z "${AUTO_TARGET:-}" ] || busy=update ;; esac
+  fi
   start="$(_window_start "$now" "$since" "$nowh" "$hour")"
   last="$(head -c 20 "$(backup_last_file)" 2>/dev/null | tr -cd '0-9' || true)"
   auto_at="$(_auto_get "$(auto_last_file)" at)"
-  [ -z "$(stack_lock_holder)" ] || busy=lock
-  ! _status_in_progress || busy=job
+  [ -z "$(stack_lock_holder)" ] || busy="${busy:-lock}"
+  ! _status_in_progress || busy="${busy:-job}"
   d="$(backup_decision on "$hour" "$nowh" "$start" "$last" "$auto_at" "$busy")"
   case "$d" in
     run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now"; return 0 ;;

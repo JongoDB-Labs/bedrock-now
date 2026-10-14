@@ -193,7 +193,7 @@ def _litellm_password(v, remote_on=False):
 
 
 def _email(v, remote_on=False):
-    if len(v) > 254:
+    if _blen(v) > 254:
         return "is too long"
     if not re.fullmatch(r"[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}", v):
         return "must be an email address in lowercase (name@example.com)"
@@ -220,8 +220,9 @@ def _budget(v, remote_on=False):
     return None if ok else "must be a number of USD above 0 and at most 100000 (e.g. 50 or 12.50)"
 
 
-_PRIVATE = re.compile(r"(localhost|host\.docker\.internal|.*\.(local|lan|internal|home\.arpa)|10\..*|192\.168\..*|127\..*"
-                      r"|172\.(1[6-9]|2[0-9]|3[01])\..*)")
+# private addresses as numbers only (10.attacker.example is a public name)
+_PRIVATE = re.compile(r"(localhost|host\.docker\.internal|.*\.(local|lan|internal|home\.arpa)"
+                      r"|(10\.[0-9]{1,3}|192\.168|127\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3})")
 
 
 def _webhook(v, remote_on=False):
@@ -291,6 +292,11 @@ def _models_list(v, remote_on=False):
         "must be a comma list of model names"
 
 
+def _pw_hash(v, remote_on=False):
+    m = re.fullmatch(r"pbkdf2-sha256:([0-9]{6,8}):[0-9a-f]{16}:[0-9a-f]{64}", v)
+    return None if m and 100000 <= int(m.group(1)) <= 10000000 else "is not a password hash this version accepts"
+
+
 VALIDATORS = {
     "portal_password": _portal_password, "litellm_password": _litellm_password, "email": _email,
     "aws_key_id": _aws_key_id, "aws_secret": _aws_secret, "budget": _budget, "webhook": _webhook,
@@ -304,17 +310,40 @@ VALIDATORS = {
     "days": _range(1, 90, "must be a whole number of days from 1 to 90 (blank = 30)"),
     "pct": _range(50, 99, "must be a percentage from 50 to 99 (blank = 80)"),
     "keep": _range(1, 60, "must be a whole number from 1 to 60 (blank = 7)"),
-    "model_pin": _model_pin, "models_list": _models_list,
+    "model_pin": _model_pin, "models_list": _models_list, "pw_hash": _pw_hash,
 }
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def validate(validator: str, value: str, remote_on: bool = False) -> str | None:
     fn = VALIDATORS.get(validator)
     if fn is None:
         return "is not a setting you can change"
-    if len(value) > MAX_VALUE:
+    if _blen(value) > MAX_VALUE:
         return "is too long"
+    if _CONTROL.search(value):   # never a control character, whatever the key (lib/settings.sh: setting_validate)
+        return "must not contain control characters (tabs, line breaks)"
     return fn(value, remote_on)
+
+
+_WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer"}
+
+
+def _num(v: str, default: int) -> int:
+    return int(v) if v.isdigit() else default
+
+
+def weakens(key: str, new: str, old: str) -> bool:
+    """NEW protects less than OLD (policy widen-local: that direction only from this computer). lib/settings.sh
+    setting_weakens is the same."""
+    if key == "BACKUP_KEEP":
+        return _num(new, 7) < _num(old, 7)
+    if key == "BACKUP_NIGHTLY":
+        return new != "on" and old == "on"
+    if key == "PORTAL_SESSION_DAYS":
+        return _num(new, 30) > _num(old, 30)
+    return new == "true" and old != "true"
 
 
 def policy_error(row: dict, value: str, local: bool) -> str | None:
@@ -328,11 +357,38 @@ def policy_error(row: dict, value: str, local: bool) -> str | None:
     if p == "on-only":
         return None if value == "true" else "can only be turned on here (turning it off is a terminal step: edit .env)"
     if p == "widen-local":
-        return None if value != "true" or local else "can only be turned on from the computer running bedrock-now"
+        if local or not weakens(row.get("key", ""), value, row.get("value") or ""):
+            return None
+        return f"can only be {_WEAKEN_WORD.get(row.get('key'), 'turned on')} from the computer running bedrock-now (the other way works everywhere)"
     return f"is read-only here: {row.get('cli') or 'see ./stack config'}"
 
 
 # --- request files ---
+
+CONFIRMS = ("other-aws-account",)   # what a change may confirm (the new AWS key belongs to another account)
+STALE_REQUEST_S = 150               # the helper takes a request for 2 minutes; then the portal deletes its own file
+
+
+def sweep_requests(request_dir: Path, now: float | None = None) -> int:
+    """Deletes the portal's own settings and diagnostics requests the helper did not take in time (they hold the
+    password and new values in base64). -> how many"""
+    now = time.time() if now is None else now
+    n = 0
+    try:
+        entries = list(request_dir.iterdir())
+    except OSError:
+        return 0
+    for p in entries:
+        if not (re.fullmatch(r"cfg-[0-9a-f]{32}\.req|act-[0-9a-f]{32}\.json|\.(cfg|act)-.*\.tmp", p.name)):
+            continue
+        try:
+            st_ = p.lstat()
+            if now - st_.st_mtime > STALE_REQUEST_S:
+                p.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
 
 def _write_atomic(request_dir: Path, prefix: str, name: str, body: bytes) -> None:
     fd, tmp = tempfile.mkstemp(prefix=f".{prefix}-", suffix=".tmp", dir=request_dir)
@@ -354,9 +410,10 @@ def _b64(v: str) -> str:
 
 
 def build_request(nonce: str, base: str, local: bool, password: str, values: dict, now: float | None = None,
-                  regen: tuple = ()) -> bytes:
+                  regen: tuple = (), confirm: tuple = ()) -> bytes:
     lines = ["bedrock-now-settings 1", f"nonce {nonce}", f"requested_at {int(time.time() if now is None else now)}",
              f"base {base}", f"origin {'local' if local else 'remote'}", f"auth {_b64(password)}"]
+    lines += [f"confirm {c}" for c in confirm if c in CONFIRMS]
     lines += [f"set {k} {_b64(v)}" for k, v in values.items()]
     lines += [f"regen {k}" for k in regen if k in REGEN]
     lines.append("end")
@@ -366,23 +423,28 @@ def build_request(nonce: str, base: str, local: bool, password: str, values: dic
     return body
 
 
-def write_request(request_dir: Path, base: str, local: bool, password: str, values: dict, regen: tuple = ()) -> str:
+def write_request(request_dir: Path, base: str, local: bool, password: str, values: dict, regen: tuple = (),
+                  confirm: tuple = ()) -> str:
     """REQUEST_DIR/cfg-<nonce>.req for the helper. -> nonce"""
     if not (values or regen) or len(values) + len(regen) > MAX_KEYS or not HEX64.fullmatch(base or ""):
         raise ValueError("bad request")
     if any(not NAME.fullmatch(k) for k in values) or any(k not in REGEN for k in regen):
         raise ValueError("bad key")
     nonce = secrets.token_hex(16)
-    _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req", build_request(nonce, base, local, password, values, regen=regen))
+    _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req",
+                  build_request(nonce, base, local, password, values, regen=regen, confirm=confirm))
     return nonce
 
 
-def write_action(request_dir: Path, action: str, now: float | None = None) -> str:
-    """REQUEST_DIR/act-<nonce>.json: one diagnostic for the helper. -> nonce"""
+def write_action(request_dir: Path, action: str, password: str, now: float | None = None) -> str:
+    """REQUEST_DIR/act-<nonce>.json: one diagnostic for the helper, with the password (the helper checks it against
+    its own hash: each one costs time, disk or money). -> nonce"""
     if action not in DIAG_ACTIONS:
         raise ValueError("action not allowed")
     nonce = secrets.token_hex(16)
-    body = json.dumps({"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce},
-                      separators=(",", ":")).encode("ascii")
+    body = json.dumps({"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce,
+                       "auth": _b64(password)}, separators=(",", ":")).encode("ascii")
+    if len(body) > 512:
+        raise ValueError("too large")
     _write_atomic(request_dir, "act", f"act-{nonce}.json", body)
     return nonce

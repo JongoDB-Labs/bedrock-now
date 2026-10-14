@@ -197,11 +197,18 @@ All notable changes to bedrock-now are documented here. The format follows
   600,000 rounds), written by `./stack` whenever `PORTAL_PASSWORD` changes (a hand edit: `./stack up`).
   `PORTAL_PASSWORD` stays in `.env` for you and `./stack password --show`. The update helper checks the password of a
   settings request against its own hash in `.state/helper/`, which the portal cannot read or change, and stops
-  taking settings requests after five wrong passwords in 15 minutes.
+  taking settings requests after five wrong passwords in 15 minutes. **Once, after this upgrade, every browser and
+  device signs in again** (sessions are now bound to the hash), also when the update ran from Home.
 - Settings and diagnostics are new request kinds for the helper (`cfg-<nonce>.req`, at most 8 KB with base64
-  values; `act-<nonce>.json`), each with its own rate limits; the update/rollback/clean requests are unchanged.
-  Keys that could send data elsewhere (AWS key, OpenRouter, speech-to-text, alert webhook) are taken only from a
-  local session; hosts, ports, the helper's own switches and the internal secrets stay terminal-only.
+  values; `act-<nonce>.json`, with the password again), each with its own rate limits; the update/rollback/clean
+  requests are unchanged. Keys that could send data elsewhere (AWS key, OpenRouter, speech-to-text, alert webhook)
+  are taken only from a local session, and so are changes that protect less (storing prompts, nightly backups off,
+  fewer kept, longer sign-ins); hosts, ports, the helper's own switches and the internal secrets stay
+  terminal-only. No value may contain a control character.
+- `./stack up`, `rotate-aws`, `openrouter set|apply|models|remove|refresh` and `models --recheck` take the stack
+  lock (as setup, update and Settings do), so none of them rewrites `.env` under another. Every backup is refused
+  when the disk could not hold it twice. `OPENWEBUI_ADMIN_EMAIL` is kept in lowercase, as Open WebUI keeps emails
+  (an address setup took from `git config` as typed is lowercased once).
 - **`./stack rotate-aws` proves Bedrock access with the new key before switching** (free) and puts the old key back
   when LiteLLM does not come up or the smoke test fails.
 - Budgets, the alert webhook, the portal and LiteLLM passwords, the update and price checks: the docs and

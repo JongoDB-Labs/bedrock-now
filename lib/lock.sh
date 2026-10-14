@@ -19,7 +19,7 @@ stack_lock_holder() {
   local d pid what
   d="$(lock_dir)"
   [ -d "$d" ] || return 0
-  pid="$(head -c 20 "$d/pid" 2>/dev/null | tr -cd '0-9' || true)"; what="$(head -c 20 "$d/what" 2>/dev/null | tr -cd 'a-z' || true)"
+  pid="$(head -c 20 "$d/pid" 2>/dev/null | tr -cd '0-9' || true)"; what="$(head -c 20 "$d/what" 2>/dev/null | tr -cd 'a-z-' || true)"
   if [ -z "$pid" ]; then
     # being created right now (pid not written yet), unless it has been like that for a while
     [ -z "$(find "$d" -maxdepth 0 -mmin -1 2>/dev/null)" ] || printf '0 %s\n' "${what:-starting}"

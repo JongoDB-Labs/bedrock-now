@@ -1695,7 +1695,7 @@ def settings_backup(ctx):
     page.locator("#set-updates .set-actions .action", has_text="Back up now").click()
     _confirm(page)
     ok, msg = _wait_job(page, 180)
-    expect(ok and "Backup written: backups/" in msg, f"backup: {msg}")
+    expect(ok and "Backup written: backups/" in msg and msg.split()[2].rstrip().endswith("-portal"), f"backup: {msg}")
     shot(page, "26-settings-backup", mask=[".set-value", ".set-adv-value"])
     rec.save()
     return msg
@@ -1787,7 +1787,7 @@ def settings_nightly(ctx):
     page.click("#set-reload")
     page.wait_for_selector(f"#settings .set-backups td:text-is('{nightly[0]['name']}')", timeout=20000)
     kinds = page.inner_text("#settings .set-backups")
-    expect("nightly" in kinds and "yours" in kinds, f"backup list: {kinds[:200]}")
+    expect("nightly" in kinds and "Back up now" in kinds, f"backup list: {kinds[:200]}")   # (and the one Back up now made)
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]").scroll_into_view_if_needed()
     shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="Off").click()
@@ -1795,7 +1795,7 @@ def settings_nightly(ctx):
     ok, msg = _wait_job(page)
     expect(ok, f"BACKUP_NIGHTLY off: {msg}")
     rec.save()
-    return f"nightly backups on at {hour:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with the manual one"
+    return f"nightly backups on at {hour:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with Back up now's"
 
 
 @check("settings", "settings-portal-password")

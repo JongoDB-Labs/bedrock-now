@@ -576,7 +576,7 @@ _stt_restore_previous() {
 
 # _stt_refresh_portal — Home reads which speech-to-text is on from its environment (STT_ENGINE, STT_PROVIDER,
 # STT_MODEL, STT_BEDROCK_MODEL) at start: compose recreates the portal only when those changed. Never fatal.
-_stt_refresh_portal() { dc up -d --no-deps --wait portal >/dev/null 2>&1 || warn "could not restart the portal — Home shows the new voice setting after ./stack up"; }
+_stt_refresh_portal() { ensure_portal_password_hash; dc up -d --no-deps --wait portal >/dev/null 2>&1 || warn "could not restart the portal — Home shows the new voice setting after ./stack up"; }
 
 _stt_on_message() {
   local p; p="$(stt_provider)"

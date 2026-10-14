@@ -74,7 +74,8 @@
     if (data.helper.in_progress && j && !watching && (j.action === "settings" || DIAG_PHASES.includes(j.action) || /^restart-/.test(j.action))) {
       watch({ id: j.id, kind: j.action, at: Date.now() - 60000 });
     }
-    try { spend = (await api("/api/summary")).spend; renderSpend(); } catch (_) { /* budgets still show */ }
+    // this month's spend per key (next to the budgets): only while Settings is shown (the Home notice needs none)
+    if (page() && !page().hidden) try { spend = (await api("/api/summary")).spend; renderSpend(); } catch (_) { /* budgets still show */ }
   }
 
   function showError(msg) {
@@ -175,9 +176,17 @@
   }
 
   function editable(k) { return ["edit", "local", "on-only", "widen-local"].includes(k.policy); }
+  // lib/settings.sh setting_weakens: the less protective direction of a widen-local key
+  function weakens(k, v) {
+    const n = (x, d) => (/^\d+$/.test(x || "") ? Number(x) : d), old = "value" in k ? k.value : "";
+    if (k.key === "BACKUP_KEEP") return n(v, 7) < n(old, 7);
+    if (k.key === "BACKUP_NIGHTLY") return v !== "on" && old === "on";
+    if (k.key === "PORTAL_SESSION_DAYS") return n(v, 30) > n(old, 30);
+    return v === "true" && old !== "true";
+  }
   function localOnlyHere(k, value) {
     if (!data.here.remote) return false;
-    return k.policy === "local" || (k.policy === "widen-local" && value === "true");
+    return k.policy === "local" || (k.policy === "widen-local" && weakens(k, value));
   }
 
   function cliLine(k) {
@@ -254,7 +263,10 @@
     }
     const wrap = el("div", { class: "set-toggle" }, g);
     if (k.policy === "on-only" && cur === on) wrap.append(el("span", { class: "note", text: "Turning it off is a terminal step." }));
-    if (k.policy === "widen-local" && cur !== on && data.here.remote) wrap.append(el("span", { class: "note", text: "On only from the computer running bedrock-now." }));
+    const other = cur === on ? off : on;
+    if (k.policy === "widen-local" && data.here.remote && weakens(k, other)) {
+      wrap.append(el("span", { class: "note", text: `${other === on ? "On" : "Off"} only from the computer running bedrock-now.` }));
+    }
     return wrap;
   }
 
@@ -266,9 +278,12 @@
   function keepSelect(kk) {
     const cur = "value" in kk && /^\d+$/.test(kk.value) ? Number(kk.value) : 7;
     const sel = el("select", { "aria-label": "Nightly backups kept" });
-    for (const n of [1, 2, 3, 5, 7, 10, 14, 21, 30, 45, 60]) {
+    const ns = [1, 2, 3, 5, 7, 10, 14, 21, 30, 45, 60];
+    if (!ns.includes(cur)) ns.push(cur);   // a value set in a terminal shows as it is
+    for (const n of ns.sort((a, b) => a - b)) {
       const o = el("option", { value: String(n), text: `keep ${n}` });
       if (n === cur) o.selected = true;
+      if (n !== cur && localOnlyHere(kk, String(n))) o.disabled = true;   // fewer: only from this computer
       sel.append(o);
     }
     sel.disabled = !canChange();
@@ -327,14 +342,30 @@
       form.append(...field(`${id}-a`, "New access key ID (AKIA…)", "text", { maxlength: "20", autocapitalize: "characters" }),
         ...field(`${id}-b`, "New secret access key", "password", { maxlength: "40" }),
         el("p", { class: "note", text: "Checked with AWS before anything changes (free), including Bedrock access. Then LiteLLM restarts (about 15 s) and a smoke test runs (~$0.0001); if it fails, the old key comes back. Deactivate the old key in IAM afterwards." }));
+      const other = el("input", { type: "checkbox", id: `${id}-other` });
+      form.append(el("label", { for: `${id}-other`, class: "set-radio" }, other, " The new key belongs to another AWS account (its models, quotas and bill are its own)"));
       collect = () => ({ AWS_ACCESS_KEY_ID: $(`#${id}-a`, form).value.trim(), AWS_SECRET_ACCESS_KEY: $(`#${id}-b`, form).value.trim() });
+      form.dataset.confirm = "";
+      other.addEventListener("change", () => { form.dataset.confirm = other.checked ? "other-aws-account" : ""; });
     } else if (k.validator === "budget") {
       form.append(...field(id, "Monthly budget in USD", "text", { inputmode: "decimal", value: v, maxlength: "12" }));
+      const warn = el("p", { class: "note", hidden: "" });
+      form.append(warn);
+      const check = () => {
+        const n = Number($(`#${id}`, form).value.trim()), row = spend && (spend.keys || []).find((x) => x.alias === BUDGET_KEY[k.key][0]);
+        let w = "";
+        if (row && !row.error && n > 0 && n < row.spend) w = `Below this period's spend (${usd(row.spend)}): requests with this key are refused until the reset.`;
+        else if (k.key === "BUDGET_SETUP" && n > 0 && n < 0.05) w = "Setup's model check and smoke test cost up to about $0.05: a lower budget can make ./stack setup and Re-check models fail.";
+        warn.textContent = w; warn.hidden = !w;
+      };
+      $(`#${id}`, form).addEventListener("input", check);
+      check();
       collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });
     } else if (k.validator === "model_pin") {
       const sel = el("select", { id });
       sel.append(el("option", { value: "", text: "automatic (setup picks one)" }));
       for (const [m, name] of data.snapshot.choices.chat_models) {
+        if (k.key.startsWith("CLAUDE_MODEL_") && !m.startsWith("claude-")) continue;   // Claude Code speaks Anthropic's API
         const o = el("option", { value: m, text: `${name} (${m})` });
         if (m === v) o.selected = true;
         sel.append(o);
@@ -361,10 +392,23 @@
         rm.addEventListener("click", () => confirmApply({ [k.key]: "" }, `Remove ${k.label}?`, "OpenRouter's models disappear from Chat and the API; LiteLLM and the portal restart (about 40 s).", [k.key]));
         form.append(el("p", { class: "set-gen" }, rm));
       }
+    } else if (k.validator === "webhook") {
+      form.append(...field(id, "URL", "url", { maxlength: "2000" }));
+      collect = () => {
+        const u = $(`#${id}`, form).value.trim();
+        if (!u) throw new Error(k.set ? "Enter the new URL, or use Remove the webhook." : "Enter the URL.");
+        return { [k.key]: u };
+      };
+      if (k.set) {
+        const rm = el("button", { type: "button", class: "quiet", text: "Remove the webhook" });
+        rm.addEventListener("click", () => confirmApply({ [k.key]: "" }, "Remove the budget alert webhook?", "No more alerts are sent; LiteLLM restarts (about 15 s).", [k.key]));
+        form.append(el("p", { class: "set-gen" }, rm));
+      }
     } else {
-      const type = k.validator === "email" ? "email" : k.validator === "webhook" ? "url" : "text";
-      form.append(...field(id, k.validator === "webhook" ? "URL (blank = no alerts)" : "New value", type, { value: k.secret === "u" ? "" : v, maxlength: "2000" }));
-      collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });
+      const type = k.validator === "email" ? "email" : "text";
+      form.append(...field(id, "New value", type, { value: v, maxlength: "2000" }));
+      // emails in lowercase, as Chat keeps them
+      collect = () => ({ [k.key]: k.validator === "email" ? $(`#${id}`, form).value.trim().toLowerCase() : $(`#${id}`, form).value.trim() });
     }
     const err = el("p", { class: "error", role: "alert", hidden: "" });
     const cancel = el("button", { type: "button", class: "quiet", text: "Cancel" });
@@ -375,7 +419,7 @@
       ev.preventDefault();
       let values;
       try { values = collect(); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
-      confirmApply(values, `Save ${k.label}?`, k.note, Object.keys(values), form);
+      confirmApply(values, `Save ${k.label}?`, k.note, Object.keys(values), form, form.dataset.confirm ? [form.dataset.confirm] : []);
     });
     r.append(form);
     const first = form.querySelector("input, select");
@@ -464,10 +508,12 @@
   }
 
   // --- extra rows ---
+  function sessionDays() { const k = keys.PORTAL_SESSION_DAYS; return k && /^\d+$/.test(k.value || "") ? Number(k.value) : 30; }
+
   function sessionsRow() {
     const r = el("div", { class: "set-row" },
       el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Signed-in devices" })),
-        el("p", { class: "note set-note", text: "Every browser, phone and installed app that signed in with the portal password stays signed in for 30 days." })));
+        el("p", { class: "note set-note", text: `Every browser, phone and installed app that signed in with the portal password stays signed in for ${sessionDays()} days.` })));
     const a = el("div", { class: "set-actions" });
     const others = el("button", { type: "button", class: "action", text: "Sign out other devices" });
     others.disabled = !data.here.allowed;
@@ -494,12 +540,12 @@
 
   function backupRow() {
     const main = el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Backups" })),
-      el("p", { class: "note set-note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>/, readable only by you). It takes seconds and no service stops." }),
+      el("p", { class: "note set-note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>-portal/, readable only by you; the newest 5 made here are kept). It takes seconds and no service stops; it is refused when the disk could not hold it twice." }),
       el("p", { class: "note set-note", text: "Restoring stays in the terminal (./stack restore backups/<time>): it replaces every chat, key and file with an older state, so it asks twice and should never be one click away from a browser." }));
     const r = el("div", { class: "set-row" }, main, el("div", { class: "set-actions" }, actionButton("backup", "Back up now")));
     const list = (data.backups && data.backups.backups) || [];
     if (list.length) {
-      const KIND = { manual: "yours", auto: "before an update", nightly: "nightly" };
+      const KIND = { manual: "yours", auto: "before an update", nightly: "nightly", portal: "Back up now" };
       const tbody = el("tbody");
       for (const b of list.slice().reverse()) {
         tbody.append(el("tr", {}, el("td", { class: "set-bk-name", text: b.name }),
@@ -630,8 +676,8 @@
     $("#set-confirm-password").focus();
   }
 
-  function confirmApply(values, title, note, keyNames, form) {
-    askPassword({ kind: "apply", values, form, keys: keyNames, label: title.replace(/^Save |\?$/g, "") }, title,
+  function confirmApply(values, title, note, keyNames, form, confirm = []) {
+    askPassword({ kind: "apply", values, form, confirm, keys: keyNames, label: title.replace(/^Save |\?$/g, "") }, title,
       `${note || ""} Applied on this computer by the update helper, which checks it again first.`, "Save", keyNames);
   }
 
@@ -651,7 +697,7 @@
     ok.disabled = true;
     try {
       let r, d;
-      if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values, regen: what.regen || [] });
+      if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values, regen: what.regen || [], confirm: what.confirm || [] });
       else if (what.kind === "reveal") [r, d] = await post("/api/settings/reveal", { password: pw, key: what.key });
       else if (what.kind === "action") [r, d] = await post("/api/settings/action", { password: pw, action: what.action });
       else [r, d] = await post("/api/settings/signout-others", { password: pw });

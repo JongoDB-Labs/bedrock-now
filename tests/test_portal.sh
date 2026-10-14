@@ -64,6 +64,7 @@ _stub_up() {
   ensure_images() { :; }; run_phase() { :; }; sync_budget_banner() { :; }; cmd_status() { :; }; maybe_auto_open() { :; }
   portal_login() { echo 303; }; aws_auth_check() { :; }   # (tested in test_host.sh)
   dc() { :; }; refresh_prices() { :; }   # never the real Compose project (it may be a live install)
+  owui_apply_hidden() { :; }   # (lib/owui.sh: tested in test_settings.sh)
 }
 
 test_up_rewrites_portal_origin() {
