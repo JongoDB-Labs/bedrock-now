@@ -385,7 +385,7 @@ test_rotate_aws_in_role_mode_explains_and_changes_nothing() {
 
 test_rotate_aws_use_keys_switches_from_role_to_key() {
   printf 'AWS_AUTH=instance-role\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"
-  aws_run() { printf '%s|%s|%s\n' "$1" "$2" "$3" > "$TMP/aws"; echo "arn:aws:iam::1:user/me"; }
+  aws_run() { printf '%s|%s|%s\n' "$1" "$2" "$3" > "$TMP/aws"; case "$*" in *invoke-model*) echo ValidationException >&2; return 254 ;; esac; echo "arn:aws:iam::1:user/me"; }
   dc() { echo "dc $*" >> "$TMP/calls"; }; cmd_test() { echo test >> "$TMP/calls"; }
   AWS_ACCESS_KEY_ID=AKIANEW AWS_SECRET_ACCESS_KEY=newsecret cmd_rotate_aws --use-keys 2> "$TMP/err"
   assert_eq "$(cat "$TMP/aws")" "AKIANEW|newsecret|us-east-1"

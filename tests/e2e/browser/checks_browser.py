@@ -1044,9 +1044,10 @@ def phone(ctx):
     expect(bar and bar["y"] + bar["height"] >= 844 - 2 and bar["width"] >= 380, f"tab bar not at the bottom: {bar}")
     page.click("#more-btn")
     page.wait_for_selector("#more-sheet:not([hidden])")
-    links = page.eval_on_selector_all("#more-sheet .sheet-link", "els => els.map(a => [a.dataset.app, a.href, a.target])")
+    links = page.eval_on_selector_all("#more-sheet .sheet-link[data-app]", "els => els.map(a => [a.dataset.app, a.href, a.target])")
     expect(links == [["admin", origin("admin") + "/ui/", "_blank"], ["files", origin("files") + "/rustfs/console/", "_blank"]],
            f"More links {links}")
+    expect(page.locator("#more-sheet .sheet-link[data-page=settings]").is_visible(), "no Settings in More")
     expect(page.locator(".sheet-logout button").is_visible(), "no Sign out in More")
     shot(page, "13-phone-more")
     page.click("#more-close")
@@ -1384,6 +1385,329 @@ def walkthrough_storage(ctx):
         expect(not probs, f"[{name}] errors: {probs[:4]}")
         out.append(f"{name} → {'opens' if opens else 'closed, opens on click'} on Welcome")
     return "; ".join(out)
+
+
+# --- Settings (with the update helper running: bin/bedrock-now-helper <throwaway checkout> in the foreground) ---
+# They change real credentials of the throwaway, so they run after the other browser checks (suite "settings") and
+# keep ENV in step themselves: the container's copy of .env is a single-file mount that a rewritten .env never reaches.
+
+SECRET_ENV = ("PORTAL_PASSWORD", "PORTAL_PASSWORD_HASH", "PORTAL_SECRET", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY",
+              "AWS_SECRET_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITELLM_UI_PASSWORD", "SHARED_MCP_TOKEN", "POSTGRES_PASSWORD",
+              "WEBUI_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE", "LITELLM_KEY_OPENWEBUI", "LITELLM_KEY_SETUP", "OPENWEBUI_API_KEY",
+              "PORTAL_PROXY_SECRET", "OPENWEBUI_ADMIN_PASSWORD")
+_last_apply = [0.0]
+OWUI_USERS = "/api/v1/users"   # Open WebUI's account API
+
+
+def _settings_api(ctx) -> dict:
+    from common import http
+    r = http("GET", None, "/api/settings", {"X-Requested-With": "bedrock-now"}, cookie=ctx.session())
+    expect(r.status == 200, f"/api/settings {r.status}")
+    return json.loads(r.body)
+
+
+def _need_helper(ctx) -> dict:
+    d = _settings_api(ctx)
+    if not (d["helper"]["running"] and d["helper"]["settings"]):
+        raise Skip("no update helper with settings is running (bin/bedrock-now-helper <throwaway> in the foreground runs these)")
+    return d
+
+
+def open_settings(page):
+    page.click(".tab[data-tab=settings]")
+    page.wait_for_selector("#settings .set-card", timeout=20000)
+
+
+def _confirm(page, password=None):
+    page.wait_for_selector("#set-confirm[open]", timeout=10000)
+    page.fill("#set-confirm-password", password or ENV["PORTAL_PASSWORD"])
+    wait = 6 - (time.time() - _last_apply[0])   # the portal takes one change every 5 s
+    if wait > 0:
+        page.wait_for_timeout(int(wait * 1000))
+    page.click("#set-confirm-ok")
+    _last_apply[0] = time.time()
+
+
+def _wait_job(page, timeout=240):
+    page.wait_for_selector("#set-job:not([hidden]) .job-message.good, #set-job:not([hidden]) .job-message.bad", timeout=timeout * 1000)
+    return page.locator("#set-job .job-message.good").count() > 0, page.inner_text("#set-job-message")
+
+
+def _change(page, key, fill: dict, password=None, timeout=240):
+    """Change → fill the form → Save → password → wait for the helper. -> (ok, message)"""
+    row = page.locator(f"#settings .set-row[data-key={key}]")
+    row.locator(".set-actions .action", has_text=re.compile("Change|Set")).first.click()
+    for sel, value in fill.items():
+        row.locator(sel).fill(value)
+    row.locator(".set-form button[type=submit]").click()
+    _confirm(page, password)
+    return _wait_job(page, timeout)
+
+
+def _lite_key_info(key):
+    from checks_api import lite
+    r = lite("GET", "/key/info", key=key)
+    expect(r.status == 200, f"/key/info {r.status}")
+    return r.json()["info"]
+
+
+@check("browser", "settings-without-helper")
+def settings_without_helper(ctx):
+    d = _settings_api(ctx)
+    if d["helper"]["running"]:
+        raise Skip("an update helper is running (the settings/* checks cover that case)")
+    page, rec = ctx.page("settings-no-helper")
+    login(page)
+    open_settings(page)
+    expect(page.locator("#settings .set-helper.helper-off").is_visible(), "no hint that changes need the helper")
+    expect("./stack helper install" in page.inner_text("#settings .set-helper"), "helper command missing")
+    expect(page.locator("#settings .set-card").count() == 10, f"{page.locator('#settings .set-card').count()} cards")
+    expect(page.locator("#settings .set-actions .action:not([disabled])", has_text="Change").count() == 0, "Change works without a helper")
+    expect("./stack config set BUDGET_SETUP" in page.inner_text("#set-budgets"), "no terminal command next to a budget")
+    html = page.content()
+    leaked = [k for k in SECRET_ENV if len(ENV.get(k, "")) >= 8 and ENV[k] in html]
+    expect(not leaked, f"secret values in the page: {leaked}")
+    shot(page, "17-settings-no-helper")
+    probs = rec.problems()
+    rec.save()
+    expect(not probs, f"errors: {probs}")
+    return "read-only without the helper: the install hint, every card, ./stack config set per field; no secret in the page"
+
+
+@check("settings", "settings-page")
+def settings_page(ctx):
+    d = _need_helper(ctx)
+    page, rec = ctx.page("settings-page")
+    login(page)
+    open_settings(page)
+    expect(page.locator("#settings .set-card").count() == 10, "ten cards")
+    expect(page.locator("#settings .set-helper").is_hidden(), "the helper hint shows while the helper runs")
+    adv = page.inner_text("#set-advanced")
+    for k in ("LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "PORTAL_HOST", "COMPOSE_PROJECT_NAME"):
+        expect(k in adv, f"Advanced lacks {k}")
+    html = page.content()
+    leaked = [k for k in SECRET_ENV if len(ENV.get(k, "")) >= 8 and ENV[k] in html]
+    expect(not leaked, f"secret values in the page: {leaked}")
+    expect(d["snapshot"]["base"] and len(d["snapshot"]["keys"]) >= 86, "snapshot")
+    shot(page, "18-settings-desktop", mask=[".set-value", ".set-adv-value"])
+    page.emulate_media(color_scheme="dark")
+    page.wait_for_timeout(300)
+    shot(page, "19-settings-desktop-dark", mask=[".set-value", ".set-adv-value"])
+    page.locator("#set-budgets").scroll_into_view_if_needed()
+    shot(page, "20-settings-budgets-dark", mask=[".set-value", ".set-adv-value"])
+    page.emulate_media(color_scheme="light")
+    # a phone: Settings opens from More, as a page of the portal
+    ppage, prec = ctx.page("settings-phone", device="phone")
+    login(ppage)
+    ppage.click("#more-btn")
+    ppage.click("#more-sheet .sheet-link[data-page=settings]")
+    ppage.wait_for_selector("#settings .set-card", timeout=20000)
+    expect(ppage.locator("#settings").is_visible() and ppage.locator("#more-sheet").is_hidden(), "phone: Settings not shown")
+    width = ppage.evaluate("document.querySelector('#settings').scrollWidth")
+    expect(width <= 392, f"phone: the page scrolls sideways ({width}px)")
+    shot(ppage, "21-settings-phone", mask=[".set-value", ".set-adv-value"])
+    ppage.locator("#set-voice").scroll_into_view_if_needed()
+    shot(ppage, "22-settings-phone-voice", mask=[".set-value", ".set-adv-value"])
+    probs = rec.problems() + prec.problems()
+    rec.save(); prec.save()
+    expect(not probs, f"errors: {probs}")
+    return "10 cards, Advanced lists every other key, no secret in the page; desktop light/dark and phone (from More) render"
+
+
+@check("settings", "settings-budget-change")
+def settings_budget(ctx):
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-budget")
+    login(page)
+    open_settings(page)
+    new = "0.03" if ENV["BUDGET_SETUP"] != "0.03" else "0.025"
+    t0 = time.time()
+    ok, msg = _change(page, "BUDGET_SETUP", {"input": new})
+    expect(ok, f"budget change failed: {msg}")
+    secs = time.time() - t0
+    info = _lite_key_info(ENV["LITELLM_KEY_SETUP"])
+    expect(abs(float(info["max_budget"]) - float(new)) < 1e-9, f"LiteLLM max_budget {info['max_budget']}, want {new}")
+    ENV["BUDGET_SETUP"] = new
+    page.wait_for_selector(f"#settings .set-row[data-key=BUDGET_SETUP] .set-value:text-is('{new}')", timeout=15000)
+    shot(page, "23-settings-budget-saved", mask=[".set-value", ".set-adv-value"])
+    rec.save()
+    return f"BUDGET_SETUP → {new} in .env and in LiteLLM (max_budget) in {secs:.0f} s, no restart; message: {msg}"
+
+
+@check("settings", "settings-reveal-copies")
+def settings_reveal(ctx):
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-reveal")
+    login(page)
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
+    open_settings(page)
+    page.evaluate("navigator.clipboard.writeText('')")
+    page.locator("#settings .set-row[data-key=SHARED_MCP_TOKEN] .set-actions .copy").click()
+    _confirm(page)
+    clip, t0 = "", time.time()
+    while time.time() - t0 < 5 and not clip:
+        clip = page.evaluate("navigator.clipboard.readText()")
+        page.wait_for_timeout(100)
+    expect(clip == ENV["SHARED_MCP_TOKEN"], "Reveal did not copy SHARED_MCP_TOKEN")
+    page.evaluate("navigator.clipboard.writeText('')")
+    from common import http
+    r = http("POST", None, "/api/settings/reveal", {"X-Requested-With": "bedrock-now", "Origin": origin(), "Content-Type": "application/json"},
+             json.dumps({"key": "AWS_SECRET_ACCESS_KEY", "password": ENV["PORTAL_PASSWORD"]}), cookie=ctx.session())
+    expect(r.status == 403, f"AWS_SECRET_ACCESS_KEY revealed? HTTP {r.status}")
+    rec.save()
+    return "Reveal (password again) copies the MCP token; the AWS secret is never revealed (403)"
+
+
+@check("settings", "settings-litellm-password")
+def settings_litellm_password(ctx):
+    need("litellm")
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-litellm-pw")
+    login(page)
+    open_settings(page)
+    new = f"Set-E2e-{int(time.time()) % 100000}!a9"
+    old = ENV["LITELLM_UI_PASSWORD"]
+    ok, msg = _change(page, "LITELLM_UI_PASSWORD", {"input[id$=-a]": new, "input[id$=-b]": new})
+    expect(ok, f"LiteLLM password change failed: {msg}")
+    ENV["LITELLM_UI_PASSWORD"] = new
+    from checks_api import lite
+    good = lite("POST", "/v2/login", body={"username": ENV["LITELLM_UI_USER"], "password": new})
+    bad = lite("POST", "/v2/login", body={"username": ENV["LITELLM_UI_USER"], "password": old})
+    expect(good.status == 200, f"new password: HTTP {good.status}")
+    expect(bad.status != 200, "the old password still signs in")
+    # and in the Admin tab
+    page.click(".tab[data-tab=admin]")
+    fl = page.frame_locator("iframe[data-app=admin]")
+    fl.locator("input[name=username]").wait_for(timeout=45000)
+    fl.locator("input[name=username]").fill(ENV["LITELLM_UI_USER"])
+    fl.locator("input[name=password]").fill(new)
+    fl.locator("button[type=submit]").click()
+    fl.locator("text=Virtual Keys").first.wait_for(timeout=45000)
+    shot(page, "24-settings-admin-new-password", mask=["iframe[data-app=admin]"])
+    rec.save()
+    return f"LITELLM_UI_PASSWORD changed in LiteLLM at once: the new one signs in (API and Admin tab), the old one is refused; {msg}"
+
+
+@check("settings", "settings-owner-email")
+def settings_owner_email(ctx):
+    need("open-webui")
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-email")
+    login(page)
+    fl, f = chat_frame(page)
+    title = f"e2e-settings-keep-{int(time.time())}"
+    r = owui_api(f, "/api/v1/chats/new", "POST", {"chat": {"title": title, "messages": []}})
+    expect(r["status"] == 200, f"new chat {r['status']}")
+    me = json.loads(owui_api(f, "/api/v1/auths/")["body"])
+    open_settings(page)
+    new = f"owner-{int(time.time()) % 100000}@example.com"
+    ok, msg = _change(page, "OPENWEBUI_ADMIN_EMAIL", {"input": new}, timeout=300)
+    expect(ok, f"owner email change failed: {msg}")
+    ENV["OPENWEBUI_ADMIN_EMAIL"] = new
+    ENV["LITELLM_UI_USER"] = new
+    # a new browser, signed in through the portal: the same account, still admin, with its chat
+    page2, rec2 = ctx.page("settings-email-after")
+    login(page2)
+    fl2, f2 = chat_frame(page2)
+    me2 = json.loads(owui_api(f2, "/api/v1/auths/")["body"])
+    expect(me2["id"] == me["id"] and me2["email"] == new and me2["role"] == "admin", f"signed in as {me2.get('email')} ({me2.get('role')})")
+    chats = json.loads(owui_api(f2, "/api/v1/chats/list")["body"])
+    expect(any(c.get("title") == title for c in chats), "the chat made before the change is gone")
+    users = json.loads(owui_api(f2, OWUI_USERS + "/all")["body"])["users"]
+    expect(not [u for u in users if u.get("role") == "pending"], f"a stray pending account: {[u['email'] for u in users]}")
+    from checks_api import lite
+    expect(lite("POST", "/v2/login", body={"username": new, "password": ENV["LITELLM_UI_PASSWORD"]}).status == 200,
+           "the Admin (LiteLLM) sign-in does not take the new email")
+    shot(page2, "25-settings-email-chat-kept")
+    rec.save(); rec2.save()
+    return f"owner email migrated: same Chat account ({me['id'][:8]}…), still admin, chat kept, no stray account; Admin sign-in = new email; {msg}"
+
+
+def _cfg_file(lines: list[str], base: str, origin_: str = "local") -> str:
+    import base64
+    import secrets as sec
+    nonce = sec.token_hex(16)
+    b64 = lambda v: base64.b64encode(v.encode()).decode()  # noqa: E731
+    body = "\n".join(["bedrock-now-settings 1", f"nonce {nonce}", f"requested_at {int(time.time())}", f"base {base}",
+                      f"origin {origin_}", f"auth {b64(ENV['PORTAL_PASSWORD'])}"] + [f"set {k} {b64(v)}" for k, v in lines] + ["end", ""])
+    tmp = STATE / "requests" / f".cfg-{nonce}.tmp"
+    tmp.write_text(body, encoding="ascii")
+    tmp.chmod(0o640)
+    tmp.replace(STATE / "requests" / f"cfg-{nonce}.req")
+    return nonce
+
+
+def _helper_answer(nonce: str, timeout=120) -> dict:
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            st = json.loads((STATE / "status" / "helper-status.json").read_text())
+            if st.get("id") == nonce and st.get("phase") in ("done", "failed"):
+                return st
+        except (OSError, ValueError):
+            pass
+        time.sleep(1)
+    raise AssertionError(f"the helper did not answer request {nonce[:8]}…")
+
+
+@check("settings", "settings-helper-refusals")
+def settings_refusals(ctx):
+    d = _need_helper(ctx)
+    base = d["snapshot"]["base"]
+    # a remote-marked request for the AWS key: only ever from the computer running bedrock-now
+    st = _helper_answer(_cfg_file([("AWS_ACCESS_KEY_ID", "AKIAABCDEFGHIJKLMNOP"), ("AWS_SECRET_ACCESS_KEY", "a" * 40)], base, "remote"))
+    expect(st["phase"] == "failed" and "computer running bedrock-now" in st["message"], f"remote AWS key: {st['message']}")
+    time.sleep(2)
+    # a request made against an older .env (another change, or an edit by hand, in between)
+    st2 = _helper_answer(_cfg_file([("BUDGET_SETUP", "0.04")], "0" * 64))
+    expect(st2["phase"] == "failed" and "changed on disk" in st2["message"], f"stale base: {st2['message']}")
+    expect(_settings_api(ctx)["snapshot"]["base"] == base, ".env changed after a refused request")
+    expect(not list((STATE / "requests").glob("cfg-*")), "a request file was left behind")
+    return f"helper refused a remote AWS key ({st['message'][:70]}…) and a stale base ({st2['message'][:60]}…); .env unchanged"
+
+
+@check("settings", "settings-back-up-now")
+def settings_backup(ctx):
+    _need_helper(ctx)
+    page, rec = ctx.page("settings-backup")
+    login(page)
+    open_settings(page)
+    page.locator("#set-updates .set-actions .action", has_text="Back up now").click()
+    _confirm(page)
+    ok, msg = _wait_job(page, 180)
+    expect(ok and "Backup written: backups/" in msg, f"backup: {msg}")
+    shot(page, "26-settings-backup", mask=[".set-value", ".set-adv-value"])
+    rec.save()
+    return msg
+
+
+@check("settings", "settings-portal-password")
+def settings_portal_password(ctx):
+    _need_helper(ctx)
+    # another device signed in before the change (a raw HTTP session: ctx.page closes earlier browser contexts)
+    old_cookie = ctx.session().split("=", 1)[1]
+    page, rec = ctx.page("settings-portal-pw")
+    login(page)
+    open_settings(page)
+    new = f"e2e-new-portal-pw-{int(time.time()) % 100000}"
+    ok, msg = _change(page, "PORTAL_PASSWORD", {"input[id$=-a]": new, "input[id$=-b]": new}, timeout=240)
+    expect(ok, f"portal password change failed: {msg}")
+    ENV["PORTAL_PASSWORD"] = new
+    ctx.reset_session()
+    # this browser stays signed in (carry-over cookie, swapped for a normal session)
+    shot(page, "27a-settings-portal-password-saved", mask=[".set-value", ".set-adv-value"])
+    page.goto(origin() + "/#home")
+    page.wait_for_url(HOME_URL, timeout=20000)
+    page.locator("#updated", has_text="Updated").wait_for(timeout=20000)
+    names = {c["name"] for c in page.context.cookies()}
+    expect("bn_session" in names and "bn_session_next" not in names, f"cookies after the change: {names}")
+    from common import http
+    r = http("GET", None, "/api/summary", {"X-Requested-With": "bedrock-now"}, cookie=f"bn_session={old_cookie}")
+    expect(r.status == 401, f"the other device is still signed in (HTTP {r.status})")
+    expect(ctx.session(), "cannot sign in with the new password")
+    shot(page, "27-settings-portal-password-kept", mask=[".set-value", ".set-adv-value", ".cred"])
+    rec.save()
+    return f"PORTAL_PASSWORD changed: this browser stays signed in, another device's session is refused; {msg}"
 
 
 # --- sign out (last: it revokes every session) ---

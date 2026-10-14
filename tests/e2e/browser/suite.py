@@ -77,7 +77,8 @@ class Ctx:
 
 def main() -> int:
     RESULTS.write_text("", encoding="utf-8")
-    CHECKS.sort(key=lambda c: c[0] == "final")  # sign-out checks revoke every session: last
+    # Settings change credentials (after the rest), sign-out checks revoke every session (last)
+    CHECKS.sort(key=lambda c: {"settings": 1, "final": 2}.get(c[0], 0))
     print(f"bedrock-now e2e: http://{HOST} via {TARGET_IP}, {len(CHECKS)} checks", flush=True)
     with sync_playwright() as p:
         # *.localhost always means loopback in Chromium: point the throwaway's names at the host instead.

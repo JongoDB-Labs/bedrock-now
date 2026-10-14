@@ -19,10 +19,12 @@
 <link rel="stylesheet" href="/static/app.css">
 <link rel="stylesheet" href="/static/mobile.css">
 <link rel="stylesheet" href="/static/tour.css">
+<link rel="stylesheet" href="/static/settings.css">
 <script src="/static/app.js" defer></script>
 <script src="/static/mobile.js" defer></script>
 <script src="/static/install.js" defer></script>
 <script src="/static/tour.js" defer></script>
+<script src="/static/settings.js" defer></script>
 </head>
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
@@ -40,6 +42,8 @@
     <li><button type="button" class="tab" data-tab="files">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>Files</button>
       <a class="popout" data-app="files" target="_blank" rel="noopener" title="Open Files in its own window" aria-label="Open Files in its own window"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 4h5v5M16 4l-7 7M14 12v4H4V6h4"/></svg></a></li>
+    <li><button type="button" class="tab" data-tab="settings">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 8.5 17.5 8.7 17.5 11.3 15.5 11.5 14.9 12.8 16.2 14.3 14.3 16.2 12.8 14.9 11.5 15.5 11.3 17.5 8.7 17.5 8.5 15.5 7.2 14.9 5.7 16.2 3.8 14.3 5.1 12.8 4.5 11.5 2.5 11.3 2.5 8.7 4.5 8.5 5.1 7.2 3.8 5.7 5.7 3.8 7.2 5.1 8.5 4.5 8.7 2.5 11.3 2.5 11.5 4.5 12.8 5.1 14.3 3.8 16.2 5.7 14.9 7.2z"/><circle cx="10" cy="10" r="2.4"/></svg>Settings</button></li>
     <li class="more-item"><button type="button" class="more-btn" id="more-btn" aria-haspopup="dialog" aria-controls="more-sheet" aria-expanded="false">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg>More</button></li>
   </ul>
@@ -61,6 +65,7 @@
     <ul class="sheet-links">
       <li><a class="sheet-link" data-app="admin" target="_blank" rel="noopener">Admin <span>LiteLLM: keys, budgets, logs</span></a></li>
       <li><a class="sheet-link" data-app="files" target="_blank" rel="noopener">Files <span>RustFS: stored uploads</span></a></li>
+      <li><button type="button" class="sheet-link" data-page="settings">Settings <span>Passwords, keys, budgets, voice, backups</span></button></li>
     </ul>
     <button type="button" class="sheet-tour" id="more-tour" hidden>Walkthrough <span id="more-tour-note">Set up, sign in, try each app</span></button>
     <form method="post" action="/logout" class="sheet-logout"><button type="submit">Sign out</button></form>
@@ -135,7 +140,7 @@
         <p id="total-foot" class="note total-foot" hidden></p>
         <ul id="meters" class="meters"></ul>
         <div id="openrouter" class="or-account" hidden></div>
-        <p class="note">Each key has a monthly budget that resets on the date shown. Change budgets with <code>BUDGET_*</code> in <code>.env</code>, then run <code>./stack setup</code>.</p>
+        <p class="note">Each key has a monthly budget that resets on the date shown. Change budgets in <a href="#settings">Settings</a> (or <code>./stack config set BUDGET_…</code>).</p>
       </section>
 
       <section class="models" aria-labelledby="models-title">
@@ -174,7 +179,7 @@
           <div><dt>Admin (LiteLLM)</dt><dd><span class="cred" data-login="admin" data-field="username">–</span> <button type="button" class="copy" data-login="admin" data-field="username">Copy user</button> <button type="button" class="copy" data-login="admin" data-field="password">Copy password</button></dd></div>
           <div><dt>Files (RustFS)</dt><dd><span class="cred" data-login="files" data-field="username">–</span> <button type="button" class="copy" data-login="files" data-field="username">Copy access key</button> <button type="button" class="copy" data-login="files" data-field="password">Copy secret key</button></dd></div>
         </dl>
-        <p class="note">These are the passwords setup created. If you changed the LiteLLM password in its own UI, this still shows the initial one.</p>
+        <p class="note">Change them in <a href="#settings">Settings</a>. A password changed inside LiteLLM's own UI is not known here.</p>
       </section>
 
       <section class="maint" id="maint" aria-labelledby="maint-title" hidden>
@@ -210,6 +215,7 @@
       </div>
     </div>
   </section>
+  <section id="settings" class="settings-page" aria-labelledby="settings-title" hidden></section>
   <div id="frames" class="frames"></div>
   <dialog id="confirm" class="confirm" aria-labelledby="confirm-title">
     <form id="confirm-form" method="dialog">

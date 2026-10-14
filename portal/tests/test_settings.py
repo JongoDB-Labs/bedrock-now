@@ -1,0 +1,535 @@
+"""Settings: the masked snapshot, the validators (the same cases as lib/settings.sh), the front door of every change,
+the request files for the helper, Reveal, Sign out other devices, the carry-over cookie of a password change and
+the hash-based login."""
+
+import base64
+import json
+import re
+import stat
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+
+from conftest import PASSWORD_HASH, SECRET
+from portal import settings as st
+from portal.app import create_app
+from portal.config import ConfigError, from_env
+from portal.security import NEXT_COOKIE, Sessions, hash_password, verify_password
+
+ORIGIN = {"Origin": "http://bedrock-now.localhost"}
+API = {"X-Requested-With": "bedrock-now"}
+H = {**ORIGIN, **API, "Content-Type": "application/json"}
+PROXY = "p" * 64
+REMOTE = {"X-Portal-Remote": "1", "X-Portal-Proxy": PROXY}
+R_ORIGIN = {"Origin": "https://bn.tail1234.ts.net"}
+BASE = "b" * 64
+FIX = Path(__file__).parent / "fixtures" / "settings_cases.tsv"
+
+
+def offline(request):
+    raise httpx.ConnectError("offline in tests")
+
+
+def row(key, group="budgets", secret="-", policy="edit", validator="budget", apply="budget", value=None, **kw):
+    r = {"key": key, "group": group, "secret": secret, "policy": policy, "validator": validator, "apply": apply,
+         "label": key.title(), "note": "n", "cli": f"./stack config set {key}", "present": True, "set": True, **kw}
+    if value is not None:
+        r["value"] = value
+    return r
+
+
+KEYS = [
+    row("BUDGET_OPENWEBUI", value="50"),
+    row("BUDGET_SETUP", value="5"),
+    row("PORTAL_PASSWORD", "account", "S", "edit", "portal_password", "portal-pw"),
+    row("PORTAL_PASSWORD_HASH", "account", "h", "companion", "pw_hash", "-", hint="…abcd"),
+    row("OPENWEBUI_ADMIN_EMAIL", "account", "s", "edit", "email", "email", value="admin@example.com"),
+    row("LITELLM_UI_PASSWORD", "account", "S", "edit", "litellm_password", "litellm-pw"),
+    row("AWS_ACCESS_KEY_ID", "aws", "k", "local", "aws_key_id", "aws", hint="AKIA…MNOP"),
+    row("AWS_SECRET_ACCESS_KEY", "aws", "S", "local", "aws_secret", "aws"),
+    row("ALERT_WEBHOOK_URL", "budgets", "u", "local", "webhook", "litellm-cfg", hint="https://hooks.example.com/…"),
+    row("REMOTE_ADMIN_ACTIONS", "remote", "-", "widen-local", "bool", "portal", value="false"),
+    row("UPDATE_REQUIRE_SIGNED_TAGS", "updates", "-", "on-only", "true_blank", "-", value=""),
+    row("STT_PROVIDER", "voice", "-", "local", "stt_provider", "stt", value="bedrock"),
+    row("STT_API_KEY", "voice", "h", "local", "stt_key", "stt", set=False),
+    row("STT_MODEL", "voice", "-", "edit", "stt_model", "stt", value=""),
+    row("PORTAL_SECRET", "account", "h", "ro", "-", "-", hint="…1234", cli="edit .env, then ./stack up"),
+    row("SHARED_MCP_TOKEN", "files", "h", "ro", "-", "-", hint="…cdef"),
+]
+CHOICES = {"stt_models": {"bedrock": ["voxtral-small", "voxtral-mini"], "openai": ["gpt-4o-mini-transcribe"], "groq": []},
+           "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm", "open-webui"]}
+
+
+def write_snapshot(stdir, keys=KEYS, base=BASE, **extra):
+    d = {"version": 1, "written_at": int(time.time()), "base": base, "remote_on": False, "last_change": None,
+         "choices": CHOICES, "keys": keys, **extra}
+    (stdir / "settings.json").write_text(json.dumps(d))
+
+
+def helper_up(stdir, settings_cap=True, job=None):
+    (stdir / "helper.json").write_text(json.dumps({"heartbeat": int(time.time()), "pid": 1, "version": "v0.3.0",
+                                                    "rollback": {"available": False}}))
+    if settings_cap:
+        (stdir / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": list(st.DIAG_ACTIONS),
+                                                                "written_at": int(time.time())}))
+    if job:
+        (stdir / "helper-status.json").write_text(json.dumps(job))
+
+
+@pytest.fixture
+def dirs(tmp_path):
+    s, r = tmp_path / "status", tmp_path / "requests"
+    s.mkdir()
+    r.mkdir()
+    return s, r
+
+
+@pytest.fixture
+def make(settings, dirs):
+    def make(remote=False, login=True, **over):
+        sd, rq = dirs
+        s = replace(settings, status_dir=sd, request_dir=rq, shared_mcp_token="mcp-token-0123456789abcdef", **over)
+        if remote:
+            s = replace(s, remote_mode="tailscale", remote_host="bn.tail1234.ts.net", proxy_secret=PROXY,
+                        remote_app_hosts={"chat": "bn-chat.tail1234.ts.net", "admin": "bn-admin.tail1234.ts.net",
+                                          "files": "bn-files.tail1234.ts.net"})
+        c = TestClient(create_app(s, transport=httpx.MockTransport(offline)), follow_redirects=False,
+                       base_url="https://bn.tail1234.ts.net" if remote else "http://bedrock-now.localhost")
+        c.__enter__()
+        if login:
+            assert c.post("/login", data={"password": "correct horse"}, headers=ORIGIN).status_code == 303
+        return c
+    return make
+
+
+def apply(c, values, password="correct horse", base=BASE, headers=H):
+    return c.post("/api/settings/apply", content=json.dumps({"password": password, "base": base, "set": values}), headers=headers)
+
+
+def files(rq):
+    return sorted(p.name for p in rq.iterdir())
+
+
+# --- the validators: the same table as lib/settings.sh ---
+
+def _unescape(v):
+    out, i = [], 0
+    while i < len(v):
+        if v[i] == "\\" and i + 1 < len(v):
+            n = v[i + 1]
+            if n in "tnr\\":
+                out.append({"t": "\t", "n": "\n", "r": "\r", "\\": "\\"}[n]); i += 2; continue
+            if n == "x":
+                out.append(chr(int(v[i + 2:i + 4], 16))); i += 4; continue
+        out.append(v[i]); i += 1
+    return "".join(out)
+
+
+def cases():
+    for line in FIX.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        v, remote, expect, value = (line.split("\t", 3) + [""])[:4]
+        yield v, remote == "1", expect, _unescape(value)
+
+
+@pytest.mark.parametrize("validator,remote_on,expect,value", list(cases()))
+def test_validators_agree_with_the_shared_table(validator, remote_on, expect, value):
+    e = st.validate(validator, value, remote_on)
+    assert (e is None) == (expect == "ok"), f"{validator} {value!r}: {e}"
+    if e and len(value) >= 8:
+        assert value not in e   # messages never carry the value
+
+
+def test_every_snapshot_validator_has_a_python_twin():
+    # the names catalog/settings.tsv uses (the shell test compares that list with this one)
+    for name in ("portal_password", "litellm_password", "email", "aws_key_id", "aws_secret", "budget", "webhook", "bool",
+                 "on_off", "true_blank", "hour", "stt_provider", "stt_key", "stt_model", "or_key", "or_mode",
+                 "int_1_5000", "login"):
+        assert name in st.VALIDATORS
+
+
+# --- the snapshot ---
+
+def test_snapshot_keeps_values_of_plain_keys_only(dirs):
+    sd, _ = dirs
+    keys = [row("PORTAL_PASSWORD", "account", "S", "edit", "portal_password", value="leaked!", hint="x"),
+            row("AWS_ACCESS_KEY_ID", "aws", "k", "local", "aws_key_id", value="AKIAFULL", hint="AKIA…MNOP"),
+            row("BUDGET_SETUP", value="5"), {"key": "bad key"}, "nonsense", row("XKEY", secret="??", value="v")]
+    write_snapshot(sd, keys)
+    snap = st.snapshot(sd)
+    k = st.by_key(snap)
+    assert "value" not in k["PORTAL_PASSWORD"] and "hint" not in k["PORTAL_PASSWORD"]
+    assert "value" not in k["AWS_ACCESS_KEY_ID"] and k["AWS_ACCESS_KEY_ID"]["hint"] == "AKIA…MNOP"
+    assert k["BUDGET_SETUP"]["value"] == "5"
+    assert k["XKEY"]["secret"] == "S" and "value" not in k["XKEY"]   # an unknown code counts as a secret
+    assert len(snap["keys"]) == 4
+
+
+def test_no_snapshot_or_a_bad_one(dirs):
+    sd, _ = dirs
+    assert st.snapshot(sd) is None
+    (sd / "settings.json").write_text("{not json")
+    assert st.snapshot(sd) is None
+    (sd / "settings.json").write_text(json.dumps({"version": 2, "keys": []}))
+    assert st.snapshot(sd) is None
+
+
+def test_get_settings_needs_a_session_and_shows_the_snapshot(make, dirs):
+    sd, _ = dirs
+    write_snapshot(sd)
+    c = make(login=False)
+    assert c.get("/api/settings", headers=API).status_code == 401
+    c = make()
+    assert c.get("/api/settings").status_code == 400            # no X-Requested-With
+    d = c.get("/api/settings", headers=API).json()
+    assert d["available"] and d["snapshot"]["base"] == BASE
+    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [],
+                           "in_progress": False, "job": None}
+    assert d["here"] == {"remote": False, "allowed": True}
+    assert "correct horse" not in json.dumps(d) and PASSWORD_HASH not in json.dumps(d)
+    helper_up(sd)
+    d = c.get("/api/settings", headers=API).json()
+    assert d["helper"]["running"] and d["helper"]["settings"] and "test" in d["helper"]["diagnostics"]
+
+
+# --- the front door ---
+
+def test_apply_needs_session_header_origin_and_password(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    assert apply(make(login=False), {"BUDGET_SETUP": "6"}).status_code == 401
+    c = make()
+    assert apply(c, {"BUDGET_SETUP": "6"}, headers={**ORIGIN, "Content-Type": "application/json"}).status_code == 400
+    assert apply(c, {"BUDGET_SETUP": "6"}, headers={**API, "Origin": "http://evil.example"}).status_code == 403
+    assert apply(c, {"BUDGET_SETUP": "6"}, headers={**API, "Origin": "http://chat.bedrock-now.localhost"}).status_code == 403
+    r = apply(c, {"BUDGET_SETUP": "6"}, password="wrong")
+    assert r.status_code == 403 and "password" in r.json()["error"]
+    assert apply(c, {"BUDGET_SETUP": "6"}, password=None).status_code == 403
+    assert files(rq) == []
+
+
+def test_wrong_passwords_share_the_login_throttle(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    for _ in range(5):
+        apply(c, {"BUDGET_SETUP": "6"}, password="wrong")
+    r = apply(c, {"BUDGET_SETUP": "6"})
+    assert r.status_code == 429 and r.headers["Retry-After"]
+    assert c.post("/login", data={"password": "correct horse"}, headers=ORIGIN).status_code == 429   # the same lock
+    assert files(rq) == []
+
+
+def test_size_limits(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    big = {"BUDGET_SETUP": "6", "pad": "x" * 13000}
+    assert c.post("/api/settings/apply", content=json.dumps(big), headers=H).status_code == 413
+    r = c.post("/api/settings/apply", content=b"{}", headers={**H, "Content-Length": "99999"})
+    assert r.status_code == 413
+    assert files(rq) == []
+
+
+def test_a_valid_change_writes_one_request_the_helper_reads(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    r = apply(c, {"BUDGET_SETUP": "6.5", "BUDGET_OPENWEBUI": "75"})
+    assert r.status_code == 202, r.text
+    nonce = r.json()["id"]
+    assert files(rq) == [f"cfg-{nonce}.req"]
+    f = rq / f"cfg-{nonce}.req"
+    assert oct(f.stat().st_mode & 0o777) == "0o640"
+    body = f.read_text()
+    lines = body.split("\n")
+    assert lines[0] == "bedrock-now-settings 1" and lines[1] == f"nonce {nonce}"
+    assert re.fullmatch(r"requested_at [0-9]{1,12}", lines[2]) and lines[3] == f"base {BASE}" and lines[4] == "origin local"
+    assert base64.b64decode(lines[5].split(" ", 1)[1]).decode() == "correct horse"
+    # the line format lib/settings_helper.sh accepts
+    sets = [l for l in lines if l.startswith("set ")]
+    assert all(re.fullmatch(r"set [A-Z][A-Z0-9_]{1,40} [A-Za-z0-9+/]{0,2732}={0,2}", l) for l in sets)
+    assert {l.split()[1]: base64.b64decode(l.split()[2]).decode() for l in sets} == {"BUDGET_SETUP": "6.5", "BUDGET_OPENWEBUI": "75"}
+    assert lines[-2:] == ["end", ""] and len(body) <= st.MAX_REQUEST
+    assert "75" not in r.text or r.json()["keys"] == ["BUDGET_SETUP", "BUDGET_OPENWEBUI"]
+
+
+def test_invalid_values_come_back_per_field_without_the_value(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    r = apply(c, {"BUDGET_SETUP": "-5", "PORTAL_PASSWORD": "short$", "PORTAL_SECRET": "x" * 40, "NOPE": "1"})
+    assert r.status_code == 400
+    f = r.json()["fields"]
+    assert set(f) == {"BUDGET_SETUP", "PORTAL_PASSWORD", "PORTAL_SECRET", "NOPE"}
+    assert "read-only" in f["PORTAL_SECRET"] and "./stack up" in f["PORTAL_SECRET"]
+    assert "short$" not in r.text and "x" * 40 not in r.text
+    assert apply(c, {"PORTAL_PASSWORD_HASH": PASSWORD_HASH}).status_code == 400   # only ever added by the portal
+    assert files(rq) == []
+
+
+def test_keys_that_go_together_and_values_that_did_not_change(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    assert "AWS_SECRET_ACCESS_KEY" in apply(c, {"AWS_ACCESS_KEY_ID": "AKIAABCDEFGHIJKLMNOP"}).json()["fields"]
+    assert "PORTAL_PASSWORD" in apply(c, {"PORTAL_PASSWORD": "correct horse"}).json()["fields"]   # 13 chars, the current one
+    assert "OPENWEBUI_ADMIN_EMAIL" in apply(c, {"OPENWEBUI_ADMIN_EMAIL": "admin@example.com"}).json()["fields"]
+    assert "LITELLM_UI_PASSWORD" in apply(c, {"LITELLM_UI_PASSWORD": "ui-pass"}).json()["fields"]
+    assert "STT_API_KEY" in apply(c, {"STT_PROVIDER": "openai"}).json()["fields"]               # openai needs a key
+    assert "STT_MODEL" in apply(c, {"STT_MODEL": "whisper-1"}).json()["fields"]                 # not a Bedrock model
+    assert "STT_PROVIDER" in apply(c, {"STT_MODEL": "voxtral-mini"}).json()["fields"]           # not ready with this key
+    assert apply(c, {"STT_PROVIDER": "openai", "STT_API_KEY": "sk-proj-abcdefghijklmnop1234"}).status_code == 202
+
+
+def test_stale_base_is_refused(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    r = apply(make(), {"BUDGET_SETUP": "6"}, base="c" * 64)
+    assert r.status_code == 409 and "reload" in r.json()["error"]
+    assert files(rq) == []
+
+
+def test_needs_a_helper_that_takes_settings_and_no_job_running(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd)
+    c = make()
+    r = apply(c, {"BUDGET_SETUP": "6"})
+    assert r.status_code == 503 and "./stack config set" in r.json()["error"]
+    helper_up(sd, settings_cap=False)
+    assert "predates" in apply(c, {"BUDGET_SETUP": "6"}).json()["error"]
+    now = int(time.time())
+    helper_up(sd, job={"id": "a" * 32, "action": "update", "phase": "restarting", "message": "m", "started_at": now,
+                       "updated_at": now})
+    assert apply(c, {"BUDGET_SETUP": "6"}).status_code == 409
+    assert files(rq) == []
+
+
+def test_rate_limited(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    assert apply(c, {"BUDGET_SETUP": "6"}).status_code == 202
+    r = apply(c, {"BUDGET_SETUP": "7"})
+    assert r.status_code == 429 and r.headers["Retry-After"]
+    assert len(files(rq)) == 1
+
+
+def test_no_snapshot_no_change(make, dirs):
+    sd, rq = dirs
+    helper_up(sd)
+    r = apply(make(), {"BUDGET_SETUP": "6"})
+    assert r.status_code == 409 and "./stack up" in r.json()["error"]
+
+
+# --- remote sessions ---
+
+def remote_client(make, admin_actions):
+    c = make(remote=True, login=False, remote_admin_actions=admin_actions)
+    r = c.post("/login", data={"password": "correct horse"}, headers={**R_ORIGIN, **REMOTE})
+    assert r.status_code == 303
+    return c
+
+
+RH = {**R_ORIGIN, **API, **REMOTE, "Content-Type": "application/json"}
+
+
+def test_remote_sessions_need_remote_admin_actions(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = remote_client(make, False)
+    r = apply(c, {"BUDGET_SETUP": "6"}, headers=RH)
+    assert r.status_code == 403 and "REMOTE_ADMIN_ACTIONS" in r.json()["error"]
+    assert c.get("/api/settings", headers={**API, **REMOTE}).json()["here"] == {"remote": True, "allowed": False}
+    assert files(rq) == []
+
+
+def test_remote_sessions_never_change_exfiltration_keys(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = remote_client(make, True)
+    for values in ({"AWS_ACCESS_KEY_ID": "AKIAABCDEFGHIJKLMNOP", "AWS_SECRET_ACCESS_KEY": "a" * 40},
+                   {"ALERT_WEBHOOK_URL": "https://attacker.example/x"}, {"STT_PROVIDER": "openai", "STT_API_KEY": "k" * 30},
+                   {"REMOTE_ADMIN_ACTIONS": "true"}):
+        r = apply(c, values, headers=RH)
+        assert r.status_code == 400, values
+        assert any("computer running bedrock-now" in m for m in r.json()["fields"].values())
+    assert apply(c, {"REMOTE_ADMIN_ACTIONS": "false"}, headers=RH).status_code == 202   # narrowing is fine anywhere
+    req = next(rq.iterdir()).read_text()
+    assert "\norigin remote\n" in req
+
+
+def test_a_bare_remote_header_counts_as_remote(make, dirs):
+    # without Caddy's proxy secret the portal's remote site is not recognized — Settings still treats it as remote
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make(remote_admin_actions=True)
+    r = apply(c, {"ALERT_WEBHOOK_URL": "https://attacker.example/x"}, headers={**H, "X-Portal-Remote": "1"})
+    assert r.status_code == 400
+    assert files(rq) == []
+
+
+def test_signed_tags_only_on(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    assert "turned on" in apply(c, {"UPDATE_REQUIRE_SIGNED_TAGS": ""}).json()["fields"]["UPDATE_REQUIRE_SIGNED_TAGS"]
+    assert apply(c, {"UPDATE_REQUIRE_SIGNED_TAGS": "true"}).status_code == 202
+
+
+# --- the portal password: hash login, the hash in the request, the carry-over cookie ---
+
+def test_login_checks_the_hash():
+    # the same keys ./stack computes with openssl (lib/settings.sh _pbkdf2), UTF-8 included
+    h = hash_password("pässwörd-ü12", rounds=1000, salt=bytes.fromhex("0011223344556677"))
+    assert h.endswith(":fe4bdd45b01e4732567dd6880db806c24b446df017c533c6a5de845ccf5bdd5c")
+    assert hash_password("correct horse", rounds=1000, salt=bytes.fromhex("0011223344556677")) == \
+        "pbkdf2-sha256:1000:0011223344556677:c18ad9343a0073f2bf7cb960890cc7f2d9cff2da1261a3df2288e8f48920caa8"
+    assert verify_password("correct horse", PASSWORD_HASH)
+    assert not verify_password("correct horsE", PASSWORD_HASH)
+    assert not verify_password("correct horse", "plain")
+    assert not verify_password(None, PASSWORD_HASH)
+
+
+def test_from_env_takes_the_hash_and_never_needs_the_password():
+    s = from_env({"PORTAL_PASSWORD_HASH": PASSWORD_HASH, "PORTAL_SECRET": "z" * 40})
+    assert s.password_hash == PASSWORD_HASH
+    assert "correct" not in repr(s) and PASSWORD_HASH not in repr(s)
+    with pytest.raises(ConfigError):
+        from_env({"PORTAL_PASSWORD_HASH": "md5:abc", "PORTAL_SECRET": "z" * 40})
+    with pytest.raises(ConfigError):
+        from_env({"PORTAL_SECRET": "z" * 40})
+    dev = from_env({"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "z" * 40})   # development: hashed at start, stable
+    assert verify_password("pw", dev.password_hash) and dev.password_hash == from_env({"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "z" * 40}).password_hash
+
+
+def test_password_change_adds_the_hash_and_a_carry_over_cookie(make, dirs, settings):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    r = apply(c, {"PORTAL_PASSWORD": "a brand new password"})
+    assert r.status_code == 202, r.text
+    assert r.json()["keys"] == ["PORTAL_PASSWORD"]
+    lines = next(rq.iterdir()).read_text().split("\n")
+    sets = {l.split()[1]: base64.b64decode(l.split()[2]).decode() for l in lines if l.startswith("set ")}
+    assert sets["PORTAL_PASSWORD"] == "a brand new password"
+    new_hash = sets["PORTAL_PASSWORD_HASH"]
+    assert verify_password("a brand new password", new_hash) and new_hash.startswith("pbkdf2-sha256:600000:")
+    carry = c.cookies.get(NEXT_COOKIE)
+    assert carry
+    # the running portal (old hash) refuses the carry-over cookie on its own
+    old = TestClient(create_app(replace(settings, status_dir=sd, request_dir=rq), transport=httpx.MockTransport(offline)),
+                     base_url="http://bedrock-now.localhost")
+    assert old.get("/auth/verify", headers={"Cookie": f"{NEXT_COOKIE}={carry}"}).status_code == 401
+    # the portal restarted with the new hash: the old session is gone, the carry-over cookie works and is swapped
+    new = TestClient(create_app(replace(settings, password_hash=new_hash, status_dir=sd, request_dir=rq),
+                                transport=httpx.MockTransport(offline)), base_url="http://bedrock-now.localhost",
+                     follow_redirects=False)
+    old_cookie = c.cookies.get("bn_session")
+    assert new.get("/auth/verify", headers={"Cookie": f"bn_session={old_cookie}"}).status_code == 401
+    r = new.get("/api/settings", headers={**API, "Cookie": f"{NEXT_COOKIE}={carry}"})
+    assert r.status_code == 200
+    set_cookies = r.headers.get_list("set-cookie")
+    assert any(sc.startswith("bn_session=") and "Domain=bedrock-now.localhost" in sc and "HttpOnly" in sc for sc in set_cookies)
+    assert any(sc.startswith(f"{NEXT_COOKIE}=") and "Max-Age=0" in sc for sc in set_cookies)
+    fresh = next(sc.split(";", 1)[0].split("=", 1)[1] for sc in set_cookies if sc.startswith("bn_session="))
+    assert new.get("/auth/verify", headers={"Cookie": f"bn_session={fresh}"}).status_code == 200
+    # a normal session is not touched
+    r = new.get("/api/settings", headers={**API, "Cookie": f"bn_session={fresh}"})
+    assert r.headers.get_list("set-cookie") == []
+
+
+def test_logout_clears_the_carry_over_cookie_too(make, dirs):
+    c = make()
+    r = c.post("/logout", headers=ORIGIN)
+    assert any(sc.startswith(f"{NEXT_COOKIE}=") for sc in r.headers.get_list("set-cookie"))
+
+
+# --- Reveal, diagnostics, Sign out other devices, the report ---
+
+def reveal(c, key, password="correct horse", headers=H):
+    return c.post("/api/settings/reveal", content=json.dumps({"key": key, "password": password}), headers=headers)
+
+
+def test_reveal_only_what_the_portal_holds(make, dirs):
+    c = make()
+    assert reveal(c, "LITELLM_UI_PASSWORD").json() == {"key": "LITELLM_UI_PASSWORD", "value": "ui-pass"}
+    assert reveal(c, "RUSTFS_SECRET_KEY").json()["value"] == "rustfs-secret"
+    assert reveal(c, "LITELLM_KEY_CLAUDE_CODE").json()["value"] == "sk-cc"
+    assert reveal(c, "LITELLM_KEY_OPENWEBUI").json()["value"] == "sk-ow"
+    assert reveal(c, "SHARED_MCP_TOKEN").json()["value"] == "mcp-token-0123456789abcdef"
+    assert reveal(c, "LITELLM_KEY_SETUP").status_code == 404                 # not set in this fixture
+    for k in ("AWS_SECRET_ACCESS_KEY", "PORTAL_PASSWORD", "LITELLM_MASTER_KEY", "PORTAL_SECRET", "OPENROUTER_API_KEY"):
+        r = reveal(c, k)
+        assert r.status_code == 403 and "never shown" in r.json()["error"]
+    assert reveal(c, "LITELLM_UI_PASSWORD", password="wrong").status_code == 403
+    assert reveal(c, "LITELLM_UI_PASSWORD", headers={**API, "Origin": "http://evil.example"}).status_code == 403
+    assert reveal(make(login=False), "LITELLM_UI_PASSWORD").status_code == 401
+    assert reveal(c, "LITELLM_UI_PASSWORD").headers["Cache-Control"] == "no-store"
+
+
+def test_reveal_from_remote_needs_remote_admin_actions(make, dirs):
+    assert reveal(remote_client(make, False), "RUSTFS_SECRET_KEY", headers=RH).status_code == 403
+    assert reveal(remote_client(make, True), "RUSTFS_SECRET_KEY", headers=RH).json()["value"] == "rustfs-secret"
+
+
+def action(c, act, password="correct horse", headers=H):
+    return c.post("/api/settings/action", content=json.dumps({"action": act, "password": password}), headers=headers)
+
+
+def test_diagnostics_write_one_strict_request(make, dirs):
+    sd, rq = dirs
+    c = make()
+    assert action(c, "test").status_code == 503       # no helper
+    helper_up(sd)
+    r = action(c, "restart-litellm")
+    assert r.status_code == 202
+    nonce = r.json()["id"]
+    body = (rq / f"act-{nonce}.json").read_text()
+    assert re.fullmatch(r'\{"action":"restart-litellm","requested_at":[0-9]{1,12},"nonce":"' + nonce + r'"\}', body)
+    assert action(c, "restart-portal").status_code == 400
+    assert action(c, "restore").status_code == 400
+    assert action(c, "test", password="nope").status_code == 403
+    assert action(c, "test").status_code == 429       # rate limit
+    assert len(files(rq)) == 1
+
+
+def test_sign_out_other_devices_keeps_this_one(settings, dirs):
+    sd, rq = dirs
+    app = create_app(replace(settings, status_dir=sd, request_dir=rq), transport=httpx.MockTransport(offline))
+    other, c = (TestClient(app, base_url="http://bedrock-now.localhost", follow_redirects=False) for _ in range(2))
+    for x in (other, c):
+        assert x.post("/login", data={"password": "correct horse"}, headers=ORIGIN).status_code == 303
+    assert other.get("/api/settings", headers=API).status_code == 200
+    r = c.post("/api/settings/signout-others", content=json.dumps({"password": "correct horse"}), headers=H)
+    assert r.status_code == 200
+    assert other.get("/api/settings", headers=API).status_code == 401
+    assert c.get("/api/settings", headers=API).status_code == 200
+    assert c.post("/api/settings/signout-others", content=json.dumps({"password": "x"}), headers=H).status_code == 403
+
+
+def test_report_is_read_from_the_status_folder(make, dirs):
+    sd, _ = dirs
+    c = make()
+    assert c.get("/api/settings/report", headers=API).json() == {"text": "", "written_at": None}
+    (sd / "report.txt").write_text("bedrock-now status report\n")
+    assert c.get("/api/settings/report", headers=API).json()["text"].startswith("bedrock-now status report")
+    assert remote_client(make, False).get("/api/settings/report", headers={**API, **REMOTE}).status_code == 403
+
+
+def test_request_file_is_bounded():
+    with pytest.raises(ValueError):
+        st.build_request("a" * 32, BASE, True, "pw", {f"K{i:02d}": "x" * 400 for i in range(19)})
+
+
+def test_capability_file_must_be_recent(dirs):
+    sd, _ = dirs
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": 1}))
+    assert st.capability(sd) == {"settings": False, "diagnostics": []}
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
+    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"]}

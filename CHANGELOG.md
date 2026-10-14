@@ -77,6 +77,34 @@ All notable changes to bedrock-now are documented here. The format follows
   layout included.
 - `./stack costs` and `./stack openrouter status` print OpenRouter usage through LiteLLM: free and paid requests
   and tokens in the last 30 days (free as "$0 actual (≈ $… at paid rates)") and today's requests.
+- **Settings tab** (the gear after Files; on phones under More): every value of `.env`, grouped as Account &
+  security · AWS & models · Budgets & alerts · Voice · OpenRouter · Files · Updates & backups · Remote access ·
+  Diagnostics · Advanced, with secrets masked (*set*, at most a short hint). It changes the portal password (this
+  browser stays signed in through a carry-over cookie, every other device is signed out), the owner email (moved
+  in Open WebUI and LiteLLM first, so the same Chat account keeps its chats; a stray empty `pending` account is
+  removed), the Admin (LiteLLM) password (changed in LiteLLM itself: a bare `.env` edit never did anything), the
+  AWS access key (STS and a free Bedrock check first; a failed smoke test puts the old key back), the three
+  budgets (at once, no restart), the budget alert webhook, storing prompts, speech-to-text, OpenRouter, the daily
+  release and price checks, automatic updates and their hour, signed releases (on only), `REMOTE_ADMIN_ACTIONS`
+  and the allowed Tailscale login. Each field says what a change restarts and for how long; each change asks for
+  the portal password and is carried out by the update helper, with live progress that survives the portal's
+  own restart. Also: **Sign out other devices** / **Sign out everywhere**, **Check AWS key** (free), **Re-check
+  models** (< $0.01, at most hourly), **Back up now**, Reveal/Copy for the Admin and Files sign-ins, the three
+  LiteLLM keys and the MCP token (password again), a link to Chat's model visibility settings, and **Diagnostics**:
+  the smoke test (~$0.0001), a restart of one service, a status report to copy (home folder as `~`, secrets
+  scrubbed). Every other key is listed read-only under Advanced with its reason and the command that changes it.
+  Without the helper the page is read-only and shows the terminal command per field; Home says "Settings changed:
+  … at …" for a day.
+- **`./stack config`**: `list` (grouped like the page, secrets masked), `get KEY` (plain keys only), `set KEY…`
+  (asks; hidden and twice for secrets; never a value on the command line), `apply --stdin` (what the helper runs),
+  `check-aws` (free), `report`. One pipeline for both: lock, validation (`catalog/settings.tsv` names each key's
+  group, policy and validator), the `.env` hash the page loaded, live checks, the old values kept, LiteLLM/Open WebUI
+  first, one atomic `.env` write (`set_env_batch`), only the restarts the change needs, free checks of the result,
+  and on failure the previous values back. Each change is logged by key name only in
+  `.state/helper/settings-audit.log`. **`./stack restart SERVICE`** recreates one service.
+- `./stack up`, setup and `./stack restore` reconcile Chat's owner account and the Admin (LiteLLM) sign-in with
+  `.env` (a change cut short, an older backup restored), and `./stack up` applies `BUDGET_*` edited by hand.
+
 - **Automatic updates, off by default.** Home → Maintenance has *Automatic updates: Off | Nightly (03:00–06:00)*
   (segmented like the model filter, asks for the portal password; a new request action `auto-on` / `auto-off`
   that the helper validates like the others and carries out as `./stack helper auto on|off`; its result is
@@ -154,6 +182,19 @@ All notable changes to bedrock-now are documented here. The format follows
   is busy upstream).
 - e2e: the RustFS console checks wait for each bucket row instead of counting right after the list appears, and
   the oversize-login check sends 9 KB (over the portal's limit, under Caddy's) and tolerates an early close.
+- **The portal holds a hash of the portal password, not the password**: `PORTAL_PASSWORD_HASH` (PBKDF2-HMAC-SHA256,
+  600,000 rounds), written by `./stack` whenever `PORTAL_PASSWORD` changes (a hand edit: `./stack up`).
+  `PORTAL_PASSWORD` stays in `.env` for you and `./stack password --show`. The update helper checks the password of a
+  settings request against its own hash in `.state/helper/`, which the portal cannot read or change, and stops
+  taking settings requests after five wrong passwords in 15 minutes.
+- Settings and diagnostics are new request kinds for the helper (`cfg-<nonce>.req`, at most 8 KB with base64
+  values; `act-<nonce>.json`), each with its own rate limits; the update/rollback/clean requests are unchanged.
+  Keys that could send data elsewhere (AWS key, OpenRouter, speech-to-text, alert webhook) are taken only from a
+  local session; hosts, ports, the helper's own switches and the internal secrets stay terminal-only.
+- **`./stack rotate-aws` proves Bedrock access with the new key before switching** (free) and puts the old key back
+  when LiteLLM does not come up or the smoke test fails.
+- Budgets, the alert webhook, the portal and LiteLLM passwords, the update and price checks: the docs and
+  messages point at Settings or `./stack config set` instead of "edit `.env`, then `./stack setup`".
 - **One-click updates are offered by default.** Setup asks *Turn on one-click updates from Home? (Y/n)* (was an
   opt-in "Install the update helper? (y/N)"), with two lines on what it is, and so does the end of an interactive
   `./stack update` on an install without the helper. A "no" (or `./stack helper uninstall`) is remembered in
@@ -165,6 +206,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- `./stack up` no longer says "restarting LiteLLM so it uses the new prices" when it re-renders LiteLLM's
+  configuration for another reason (a changed `.env` setting such as `LITELLM_STORE_PROMPTS`).
 - After a one-click request Home kept the old state for up to 30 s when its first check came before the helper's
   (it polls every 3 s); it now keeps "Waiting for the update helper…" and asks again every few seconds until the
   helper has answered (at most a minute).

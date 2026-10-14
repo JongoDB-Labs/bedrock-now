@@ -52,6 +52,7 @@
 # The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it.
 (drop_session_cookie) {
 	header_up Cookie "bn_session=[^;]*;?\s*" ""
+	header_up Cookie "bn_session_next=[^;]*;?\s*" ""
 	header_up -X-Portal-Proxy
 }
 
@@ -82,6 +83,10 @@
 	# One-click Update/Rollback/Clean: a tiny JSON body (action + password).
 	request_body /api/admin/* {
 		max_size 4KB
+	}
+	# Settings: the changed values and the password (the portal refuses more than 12 KB itself).
+	request_body /api/settings/* {
+		max_size 16KB
 	}
 	# The public paths (snippet above) need no session; everything else does.
 	import public_paths

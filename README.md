@@ -80,10 +80,11 @@ your browser.
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | LiteLLM's own sign-in (copy it from Home) |
 | **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | RustFS's own sign-in (copy it from Home) |
+| **Settings** | Every setting of `.env`, secrets masked; change passwords, the owner email, the AWS key, budgets, voice, OpenRouter and updates; backups and diagnostics ([Settings](#settings)) | the portal (each change asks for the password again) |
 
 Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. If port 80
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
-password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Setup prints the password once, and only
+password, use **Settings → Account & security** (or `./stack config set PORTAL_PASSWORD`). Setup prints the password once, and only
 in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
@@ -242,6 +243,55 @@ In `claude-bedrock`, `/mcp` shows the **`bedrock-shared`** server with the tools
 then shows up in the **Files** tab (bucket `shared`) and in Chat as a knowledge base, and `search_knowledge`
 searches the same index as Chat's `#`.
 
+## Settings
+
+The **Settings** tab (the gear in the sidebar; on a phone under **More**) shows every value of `.env`, grouped
+like this: Account & security · AWS & models · Budgets & alerts · Voice · OpenRouter · Files · Updates & backups
+· Remote access · Diagnostics · Advanced. Plain values are shown as they are; secrets only as *set* (with the
+last four characters of generated keys and the `AKIA…` ends of the AWS key ID). The portal never reads `.env`:
+`./stack` writes a masked copy, `.state/status/settings.json`, whenever `.env` changes (the page shows "as of").
+
+**What you can change here**, each with what it restarts and for how long:
+
+- the portal password (this browser stays signed in, every other device signs in again), the owner email (the
+  same Chat account keeps its chats; the Admin sign-in follows), the Admin (LiteLLM) password, storing prompts;
+  **Sign out other devices** and **Sign out everywhere**;
+- the AWS access key (checked with AWS first, including Bedrock access, free; a failed smoke test puts the old
+  key back), **Check AWS key** (free) and **Re-check models** (< $0.01, at most hourly);
+- the three budgets (at once, no restart) and the budget alert webhook;
+- speech-to-text (Bedrock, OpenAI, Groq or the browser), OpenRouter's key and model set;
+- the daily release and price checks, automatic updates and their hour, signed releases only (on only);
+  **Back up now**;
+- `REMOTE_ADMIN_ACTIONS` (off from anywhere, on only from this computer) and the allowed Tailscale login;
+- **Diagnostics**: the smoke test (~$0.0001), a restart of one service, a status report to copy (your home
+  folder shown as `~`, no secrets).
+
+Reveal/Copy works only for values the portal already holds (the Admin and Files sign-ins, the three LiteLLM keys,
+the shared MCP token), after the password again. Everything else in **Advanced** is read-only, with the reason and
+the command that changes it (ports, host names, internal secrets). Restoring a backup stays a terminal command
+(`./stack restore`): it replaces every chat, key and file with an older state.
+
+**How a change is applied.** Changes need the [update helper](#updating) (`./stack helper install`): the portal
+writes a small request, and the helper — outside Docker, as you — checks it again (the password against its own
+copy, the allowlist, each value) and runs `./stack config apply`: the live checks first, one `.env` write, only
+the restarts the change needs, free checks of the result, and on any failure the previous values back.
+Without the helper the page is read-only and shows the terminal command next to each setting.
+
+**In a terminal** the same rules apply:
+
+```
+./stack config                 # every setting, grouped like the page, secrets masked
+./stack config get BUDGET_SETUP
+./stack config set PORTAL_PASSWORD BUDGET_OPENWEBUI   # asks for each value (hidden for secrets)
+./stack config check-aws       # free
+./stack restart litellm
+```
+
+Values never go on a command line (`config set` asks; scripts use `./stack config apply --stdin`). Each change is
+logged by key name only (`.state/helper/settings-audit.log`) and Home says "Settings changed: … at …" for a day.
+Keys that could send your data elsewhere (the AWS key, OpenRouter, speech-to-text providers, the alert webhook)
+change only from this computer, never from a remote device. Details: [docs/security.md](docs/security.md#settings).
+
 ## Remote access
 
 The portal from your phone or laptop, over HTTPS, without opening a port to the internet:
@@ -271,16 +321,18 @@ cross-checks it with the public AWS Price List; `./stack setup` and `./stack up`
 upstream file from making prices vanish or jump; a refused change shows as a warning on Home and in `./stack
 costs`. `./stack prices` checks now, `./stack prices --accept` applies a change the guards refused, and new
 prices reach LiteLLM at the next `./stack up` (Home and the `claude-bedrock` line say `new prices pending` until
-then). The fallback is `catalog/prices.tsv`; `PRICE_UPDATES=false` in `.env` turns updates off.
+then). The fallback is `catalog/prices.tsv`; Settings → Updates & backups (`PRICE_UPDATES`) turns updates off.
 
 **Budgets.** Setup creates three LiteLLM keys, each with a monthly budget: `claude-code` **$200**,
 `open-webui` **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused
-until the reset date shown by `./stack costs`. To change one, edit `BUDGET_CLAUDE_CODE` / `BUDGET_OPENWEBUI` /
-`BUDGET_SETUP` in `.env` and run `./stack setup`.
+until the reset date shown by `./stack costs`. To change one, use **Settings → Budgets & alerts** or
+`./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`): it applies at once, with no
+restart, and keeps the reset date.
 
 **Alerts.** Each key has a soft budget at **80%**: it never blocks, but `./stack costs`, Home and the
-`claude-bedrock` launch line warn from there on. To also get a message, set `ALERT_WEBHOOK_URL` in `.env` to any
-URL that accepts a JSON POST (an n8n, Zapier or Make hook, for example) and run `./stack setup`. LiteLLM then
+`claude-bedrock` launch line warn from there on. To also get a message, set **Settings → Budgets & alerts → Budget
+alert webhook** (or `./stack config set ALERT_WEBHOOK_URL`) to any URL that accepts a JSON POST (an n8n, Zapier or
+Make hook, for example). LiteLLM then
 posts its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Slack's message format.
 
 **Where to see spend:**
@@ -494,8 +546,8 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 - **Update check:** once a day the portal asks GitHub's public releases API (`api.github.com`) for the latest
   bedrock-now release and, only when it is newer than yours, fetches that release's `compose.yaml` from
   `raw.githubusercontent.com` to estimate the download. Unauthenticated, https only; nothing about your
-  install is sent (GitHub sees your IP address, as for any download). `UPDATE_CHECK=false` in `.env` turns it
-  off (then run `./stack up`).
+  install is sent (GitHub sees your IP address, as for any download). Settings → Updates & backups
+  (`UPDATE_CHECK`) turns it off.
 - **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;
   `claude-bedrock` turns off Claude Code's non-essential traffic; LiteLLM stores no prompt or response text.
   `./stack update` and image pulls contact GitHub and the image registries only when you run them.
@@ -527,6 +579,8 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
+| `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
+| `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |
 | `./stack help` | All of the above; `./stack <command> --help` shows one | none |
 
@@ -543,7 +597,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 When a newer release is out, Home shows an **update card** with its release notes, what the update will do
 (backup, roughly how much it downloads, a few minutes of downtime) and the command to copy; `./stack status`
 and the `claude-bedrock` launch line mention it too (they read the portal's last check; no network of their
-own). `UPDATE_CHECK=false` in `.env` turns the daily check off.
+own). Settings → Updates & backups (`UPDATE_CHECK=false`) turns the daily check off.
 
 The update first asks git whether there is anything new. If not, and the last successful setup ran on exactly
 this code, it says so (`already on v0.3.0 — nothing to update`) and stops: no backup, no restart, no Bedrock
@@ -638,12 +692,14 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | "project '…' was just claimed by …" | Another checkout ran a command at the same moment and now owns the project; fix it as for "already used". If it says "a record pointing to …, which no longer exists", just re-run. |
 | "project '…' is already used by another Compose project in …" | Something other than bedrock-now uses this project name. Stop it there (`docker compose down`), or set up this copy with `COMPOSE_PROJECT_NAME=<other name> ./setup.sh`. |
 | "./stack uninstall here would delete project '…'" | The volumes belong to another folder's install; run `./stack uninstall` there instead. |
-| Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD`, run `./stack setup`. |
+| Setup can't sign in to the portal or to Open WebUI through it | Run `./stack logs portal` and `./stack logs caddy`. If you edited `PORTAL_PASSWORD` in `.env` by hand, run `./stack up` (it hashes the new one for the portal). |
+| Settings: "changed on disk since you opened the page" | `.env` changed in the meantime (a terminal command, or an edit by hand): reload the page and make the change again. |
+| Settings shows everything but nothing can be changed | Changes need the update helper: `./stack helper install` (or use `./stack config set KEY` in a terminal). From a remote device they also need `REMOTE_ADMIN_ACTIONS=true`. |
 | Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#voice-speech-to-text) works there: `./stack stt set bedrock`. |
 | "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#voice-speech-to-text): `./stack stt set bedrock` (no key; `./stack stt status` says why it is off), or `openai` / `groq`. |
 | "Error transcribing chunk: External: …" | The message after it says what failed (budget, model access, throttling, a too-long recording); see [docs/voice.md](docs/voice.md#troubleshooting). |
 | LiteLLM UI login fails with `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (Home shows both); the shared `admin` login is off. |
-| Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Delete the `LITELLM_DB_ADMIN_READY=true` line from `.env` and run `./stack setup`: it resets the admin's password to `LITELLM_UI_PASSWORD`. Editing `LITELLM_UI_PASSWORD` alone does nothing once the admin exists. |
+| Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Set a new one in **Settings → Account & security** (or `./stack config set LITELLM_UI_PASSWORD`): it is changed in LiteLLM itself, with the master key when the old one no longer works. Editing `LITELLM_UI_PASSWORD` in `.env` alone does nothing once the admin exists (`./stack up` then warns and repairs it). |
 | Home warns about prices (refused change, stale, LiteLLM/AWS gap) | See [docs/prices.md](docs/prices.md#guards). After checking a refused change: `./stack prices --accept`, then `./stack up`. |
 | A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup`. |
 | Anything else | `./stack status` and `./stack test`, then `./stack logs litellm` / `./stack logs open-webui`. |
@@ -690,7 +746,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - The update helper runs only `./stack update|rollback|clean` (and `./stack helper auto on|off`) for this
   checkout, on a strictly checked request that the portal writes after you re-enter the password, within its
   own rate limits; with automatic updates on, also `./stack update` for a new release tag at night. Its
-  buttons are off for remote access by default. Only `./stack remote`'s Caddy blocks mark requests as remote;
+  buttons are off for remote access by default.
+- Settings changes are requests too: the helper checks the password against its own hash (the portal holds
+  only a hash of it, never the password), its own allowlist and each value, and runs `./stack config apply`
+  with the values on stdin; keys that could send data elsewhere change only from this computer. Only `./stack remote`'s Caddy blocks mark requests as remote;
   an SSH tunnel or your own reverse proxy to `127.0.0.1` counts as local.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses

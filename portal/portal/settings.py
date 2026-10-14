@@ -1,0 +1,347 @@
+"""The Settings page's data and requests. The portal never reads .env: ./stack writes a masked snapshot
+(STATUS_DIR/settings.json, lib/settings.sh) with every key's metadata from catalog/settings.tsv, plain values, and only
+"set" plus a short hint for secrets. A change is a request file for the host helper (lib/settings_helper.sh), which
+checks everything again — format, the password against its own hash, the allowlist, each value — before
+./stack config apply runs it. The validators here mirror lib/settings.sh (portal/tests/fixtures/settings_cases.tsv is
+checked against both) so the page can say what is wrong before anything is sent.
+
+Request file REQUEST_DIR/cfg-<nonce>.req (at most 8 KB, ASCII, one item per line):
+    bedrock-now-settings 1 / nonce HEX32 / requested_at EPOCH / base HEX64 / origin local|remote /
+    auth BASE64(password) / set KEY BASE64(value) … / end
+Diagnostics: REQUEST_DIR/act-<nonce>.json = {"action","requested_at","nonce"} (like admin.py's req-*.json).
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import secrets
+import tempfile
+import time
+from pathlib import Path
+
+SNAPSHOT = "settings.json"
+CAPABILITY = "helper-settings.json"
+REPORT = "report.txt"
+MAX_SNAPSHOT = 512 * 1024
+MAX_REPORT = 256 * 1024
+MAX_BODY = 12 * 1024           # the JSON the page sends (Caddy caps /api/settings/* at 16 KB)
+MAX_REQUEST = 8192             # the file for the helper (lib/settings_helper.sh SETTINGS_REQ_MAX_BYTES)
+MAX_KEYS = 20
+MAX_VALUE = 2000
+CAPABILITY_MAX_AGE_S = 24 * 3600
+GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates", "remote", "advanced")
+EDITABLE = ("edit", "local", "on-only", "widen-local")
+SECRET_CODES = ("-", "s", "k", "u", "h", "S")
+# What Reveal may hand back (behind the password): values the portal already holds for Home and its own work.
+REVEAL = ("LITELLM_UI_PASSWORD", "RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE",
+          "LITELLM_KEY_OPENWEBUI", "LITELLM_KEY_SETUP", "SHARED_MCP_TOKEN")
+DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "restart-litellm", "restart-open-webui",
+                "restart-shared-mcp", "restart-stt", "restart-rustfs", "restart-caddy")
+NAME = re.compile(r"[A-Z][A-Z0-9_]{1,40}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+# --- the snapshot ---
+
+def _read_json(path: Path, cap: int) -> dict:
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > cap:
+            return {}
+        d = json.loads(path.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _s(v, n=600) -> str:
+    return v[:n] if isinstance(v, str) else ""
+
+
+def _key_row(k: dict) -> dict | None:
+    name = k.get("key")
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        return None
+    code = k.get("secret") if k.get("secret") in SECRET_CODES else "S"
+    row = {"key": name, "group": k.get("group") if k.get("group") in GROUPS else "advanced", "secret": code,
+           "policy": _s(k.get("policy"), 20) or "ro", "validator": _s(k.get("validator"), 40) or "-",
+           "apply": _s(k.get("apply"), 80), "label": _s(k.get("label"), 120) or name, "note": _s(k.get("note")),
+           "cli": _s(k.get("cli"), 200), "set": k.get("set") is True, "present": k.get("present") is True,
+           "unknown": k.get("unknown") is True}
+    if code in ("-", "s"):  # plain keys only: a value of a secret never leaves this function, whatever the file says
+        row["value"] = _s(k.get("value"), MAX_VALUE)
+    elif code in ("k", "h", "u"):
+        row["hint"] = _s(k.get("hint"), 120)
+    return row
+
+
+def snapshot(status_dir: Path) -> dict | None:
+    """The snapshot ./stack wrote, every field type-checked (None when there is none yet)."""
+    d = _read_json(status_dir / SNAPSHOT, MAX_SNAPSHOT)
+    if d.get("version") != 1 or not isinstance(d.get("keys"), list):
+        return None
+    keys = [r for r in (_key_row(k) for k in d["keys"] if isinstance(k, dict)) if r]
+    lc = d.get("last_change") if isinstance(d.get("last_change"), dict) else None
+    if lc:
+        lc = {"at": _s(lc.get("at"), 40), "keys": [k for k in lc.get("keys") or [] if isinstance(k, str) and NAME.fullmatch(k)][:30],
+              "via": _s(lc.get("via"), 20), "result": _s(lc.get("result"), 10)}
+    ch = d.get("choices") if isinstance(d.get("choices"), dict) else {}
+    stt = ch.get("stt_models") if isinstance(ch.get("stt_models"), dict) else {}
+    choices = {
+        "stt_models": {p: [m for m in stt.get(p) or [] if isinstance(m, str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m)]
+                       for p in ("bedrock", "openai", "groq")},
+        "stt_bedrock_ready": [m for m in ch.get("stt_bedrock_ready") or [] if isinstance(m, str)][:10],
+        "restart": [s for s in ch.get("restart") or [] if isinstance(s, str) and f"restart-{s}" in DIAG_ACTIONS],
+    }
+    written = d.get("written_at") if isinstance(d.get("written_at"), int) else None
+    base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""
+    return {"written_at": written, "base": base, "remote_on": d.get("remote_on") is True, "last_change": lc,
+            "choices": choices, "keys": keys}
+
+
+def by_key(snap: dict | None) -> dict:
+    return {k["key"]: k for k in (snap or {}).get("keys") or []}
+
+
+def capability(status_dir: Path, now: float | None = None) -> dict:
+    """Whether the running helper takes settings and diagnostics requests (lib/settings_helper.sh writes this)."""
+    now = time.time() if now is None else now
+    d = _read_json(status_dir / CAPABILITY, 4096)
+    at = d.get("written_at") if isinstance(d.get("written_at"), int) else None
+    ok = d.get("settings") == 1 and at is not None and now - at <= CAPABILITY_MAX_AGE_S
+    acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
+    return {"settings": ok, "diagnostics": acts}
+
+
+def report(status_dir: Path) -> dict:
+    p = status_dir / REPORT
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > MAX_REPORT:
+            return {"text": "", "written_at": None}
+        return {"text": p.read_text(encoding="utf-8", errors="replace"), "written_at": int(p.stat().st_mtime)}
+    except OSError:
+        return {"text": "", "written_at": None}
+
+
+# --- validators (lib/settings.sh _sv_*) ---
+
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_LITELLM_SYMBOL = re.compile(r"[^A-Za-z0-9]")
+
+
+def _envsafe(v: str) -> str | None:
+    if _CTRL.search(v):
+        return "must not contain control characters (tabs, line breaks)"
+    if any(c in v for c in "$\"'`\\"):
+        return "must not contain $, quotes, backticks or backslashes"
+    if " #" in v:
+        return "must not contain a space followed by #"
+    if v != v.strip(" \t\n\r\f\v"):
+        return "must not start or end with a space"
+    return None
+
+
+def _blen(v: str) -> int:
+    return len(v.encode("utf-8", "surrogatepass"))
+
+
+def _portal_password(v, remote_on=False):
+    e = _envsafe(v)
+    if e:
+        return e
+    if _blen(v) < 12:
+        return "must be at least 12 characters"
+    if _blen(v) > 128:
+        return "must be at most 128 characters"
+    if remote_on and _blen(v) < 16:
+        return "must be at least 16 characters while remote access is on"
+    return None
+
+
+def _litellm_password(v, remote_on=False):
+    e = _envsafe(v)
+    if e:
+        return e
+    if _blen(v) > 128:
+        return "must be at most 128 characters"
+    if not (_blen(v) >= 12 and re.search(r"[A-Z]", v) and re.search(r"[a-z]", v) and re.search(r"[0-9]", v)
+            and _LITELLM_SYMBOL.search(v)):
+        return "needs 12+ characters with an upper- and a lowercase letter, a digit and a symbol (LiteLLM's rule)"
+    return None
+
+
+def _email(v, remote_on=False):
+    if len(v) > 254:
+        return "is too long"
+    if not re.fullmatch(r"[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}", v):
+        return "must be an email address in lowercase (name@example.com)"
+    return None
+
+
+def _aws_key_id(v, remote_on=False):
+    if v.startswith("ASIA"):
+        return "is a temporary key (ASIA…), which expires: use a long-lived IAM user key (AKIA…)"
+    return None if re.fullmatch(r"AKIA[A-Z0-9]{16}", v) else "must be an IAM user access key ID: AKIA and 16 more letters or digits"
+
+
+def _aws_secret(v, remote_on=False):
+    return None if re.fullmatch(r"[A-Za-z0-9/+]{40}", v) else "must be 40 characters (letters, digits, / and +)"
+
+
+def _budget(v, remote_on=False):
+    ok = re.fullmatch(r"[0-9.]+", v) and v.count(".") <= 1 and v != "." and len(v) <= 12
+    if ok:
+        try:
+            ok = 0 < float(v) <= 100000
+        except ValueError:
+            ok = False
+    return None if ok else "must be a number of USD above 0 and at most 100000 (e.g. 50 or 12.50)"
+
+
+_PRIVATE = re.compile(r"(localhost|host\.docker\.internal|.*\.(local|lan|internal|home\.arpa)|10\..*|192\.168\..*|127\..*"
+                      r"|172\.(1[6-9]|2[0-9]|3[01])\..*)")
+
+
+def _webhook(v, remote_on=False):
+    if v == "":
+        return None
+    e = _envsafe(v)
+    if e:
+        return e
+    if len(v) > MAX_VALUE:
+        return f"is too long (at most {MAX_VALUE} characters)"
+    if not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~:/?&=%+,;@!*()-]*)?", v):
+        return "must be an https:// URL without spaces, quotes or #"
+    if v.startswith("https://"):
+        return None
+    host = re.split(r"[:/]", v[len("http://"):], maxsplit=1)[0].lower()
+    return None if _PRIVATE.fullmatch(host) else "must use https:// (plain http:// only for a host on your own network)"
+
+
+def _one_of(*allowed, msg):
+    return lambda v, remote_on=False: None if v in allowed else msg
+
+
+def _hour(v, remote_on=False):
+    return None if re.fullmatch(r"[0-9]|1[0-9]|2[0-3]", v) else "must be an hour from 0 to 23"
+
+
+def _stt_key(v, remote_on=False):
+    return None if v == "" or (re.fullmatch(r"[A-Za-z0-9_-]+", v) and 20 <= len(v) <= 512) else \
+        "must be an API key: 20-512 letters, digits, - and _"
+
+
+def _stt_model(v, remote_on=False):
+    return None if v == "" or re.fullmatch(r"[a-z0-9.-]{1,64}", v) else "must be a model name (lowercase letters, digits, . and -)"
+
+
+def _or_key(v, remote_on=False):
+    return None if v == "" or (re.fullmatch(r"[A-Za-z0-9_-]+", v) and len(v) <= 256) else \
+        "must be an OpenRouter key (sk-or-…; letters, digits, - and _)"
+
+
+def _or_mode(v, remote_on=False):
+    return None if v == "" or (re.fullmatch(r"[A-Za-z0-9._/:~,-]+", v) and len(v) <= MAX_VALUE) else \
+        "must be all, free, paid or a comma list of model ids"
+
+
+def _int_1_5000(v, remote_on=False):
+    return None if v == "" or (re.fullmatch(r"[1-9][0-9]{0,3}", v) and int(v) <= 5000) else \
+        "must be a whole number from 1 to 5000 (blank = 1000)"
+
+
+def _login(v, remote_on=False):
+    ok = (re.fullmatch(r"[A-Za-z0-9@._+-]+", v) and "@" in v and not v.startswith("@") and not v.endswith("@")
+          and len(v) <= 254 and v == v.lower())
+    return None if ok else "must be a Tailscale login in lowercase (you@example.com or you@github)"
+
+
+VALIDATORS = {
+    "portal_password": _portal_password, "litellm_password": _litellm_password, "email": _email,
+    "aws_key_id": _aws_key_id, "aws_secret": _aws_secret, "budget": _budget, "webhook": _webhook,
+    "bool": _one_of("true", "false", msg="must be true or false"),
+    "on_off": _one_of("on", "off", msg="must be on or off"),
+    "true_blank": _one_of("true", "", msg="must be true or blank"),
+    "hour": _hour,
+    "stt_provider": _one_of("bedrock", "openai", "groq", "", msg="must be bedrock, openai, groq or blank (the browser)"),
+    "stt_key": _stt_key, "stt_model": _stt_model, "or_key": _or_key, "or_mode": _or_mode, "int_1_5000": _int_1_5000,
+    "login": _login,
+}
+
+
+def validate(validator: str, value: str, remote_on: bool = False) -> str | None:
+    fn = VALIDATORS.get(validator)
+    if fn is None:
+        return "is not a setting you can change"
+    if len(value) > MAX_VALUE:
+        return "is too long"
+    return fn(value, remote_on)
+
+
+def policy_error(row: dict, value: str, local: bool) -> str | None:
+    p = row.get("policy")
+    if p == "edit":
+        return None
+    if p == "local":
+        return None if local else "can only be changed from the computer running bedrock-now"
+    if p == "on-only":
+        return None if value == "true" else "can only be turned on here (turning it off is a terminal step: edit .env)"
+    if p == "widen-local":
+        return None if value != "true" or local else "can only be turned on from the computer running bedrock-now"
+    return f"is read-only here: {row.get('cli') or 'see ./stack config'}"
+
+
+# --- request files ---
+
+def _write_atomic(request_dir: Path, prefix: str, name: str, body: bytes) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=f".{prefix}-", suffix=".tmp", dir=request_dir)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+        os.chmod(tmp, 0o640)   # like admin.write_request: the helper reads it through your group on Linux
+        os.replace(tmp, request_dir / name)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _b64(v: str) -> str:
+    return base64.b64encode(v.encode("utf-8", "surrogatepass")).decode("ascii")
+
+
+def build_request(nonce: str, base: str, local: bool, password: str, values: dict, now: float | None = None) -> bytes:
+    lines = ["bedrock-now-settings 1", f"nonce {nonce}", f"requested_at {int(time.time() if now is None else now)}",
+             f"base {base}", f"origin {'local' if local else 'remote'}", f"auth {_b64(password)}"]
+    lines += [f"set {k} {_b64(v)}" for k, v in values.items()]
+    lines.append("end")
+    body = ("\n".join(lines) + "\n").encode("ascii")
+    if len(body) > MAX_REQUEST:
+        raise ValueError("too large")
+    return body
+
+
+def write_request(request_dir: Path, base: str, local: bool, password: str, values: dict) -> str:
+    """REQUEST_DIR/cfg-<nonce>.req for the helper. -> nonce"""
+    if not values or len(values) > MAX_KEYS or not HEX64.fullmatch(base or ""):
+        raise ValueError("bad request")
+    if any(not NAME.fullmatch(k) for k in values):
+        raise ValueError("bad key")
+    nonce = secrets.token_hex(16)
+    _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req", build_request(nonce, base, local, password, values))
+    return nonce
+
+
+def write_action(request_dir: Path, action: str, now: float | None = None) -> str:
+    """REQUEST_DIR/act-<nonce>.json: one diagnostic for the helper. -> nonce"""
+    if action not in DIAG_ACTIONS:
+        raise ValueError("action not allowed")
+    nonce = secrets.token_hex(16)
+    body = json.dumps({"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce},
+                      separators=(",", ":")).encode("ascii")
+    _write_atomic(request_dir, "act", f"act-{nonce}.json", body)
+    return nonce

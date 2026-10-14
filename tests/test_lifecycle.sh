@@ -189,7 +189,8 @@ test_rotate_aws_rejected_key_leaves_env_untouched() {
 
 test_rotate_aws_verifies_new_key_then_writes_and_restarts() {
   printf 'AWS_ACCESS_KEY_ID=AKIAOLD\nAWS_SECRET_ACCESS_KEY=oldsecret\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"; _stub_dc
-  aws_run() { printf '%s|%s|%s\n' "$1" "$2" "$3" > "$TMP/aws"; echo "arn:aws:iam::1:user/me"; }
+  # STS answers with the ARN; the free Bedrock check (an invalid invoke-model) with ValidationException = authorized
+  aws_run() { printf '%s|%s|%s\n' "$1" "$2" "$3" > "$TMP/aws"; case "$*" in *invoke-model*) echo ValidationException >&2; return 254 ;; esac; echo "arn:aws:iam::1:user/me"; }
   cmd_test() { echo "TESTED" >> "$TMP/calls"; }; ASSUME_YES=1
   AWS_ACCESS_KEY_ID=AKIANEW AWS_SECRET_ACCESS_KEY=newsecret cmd_rotate_aws 2> "$TMP/err"
   assert_eq "$(cat "$TMP/aws")" "AKIANEW|newsecret|us-east-1"
@@ -282,7 +283,7 @@ test_rotate_aws_interactive_ignores_env_unless_confirmed() {
   _have_tty() { return 0; }
   ask() { echo "$1" >> "$TMP/prompts"; case "$1" in *"use it?"*) echo n ;; *) echo AKIATYPED ;; esac; }
   ask_secret() { echo typedsecret; }
-  aws_run() { printf '%s|%s\n' "$1" "$2" > "$TMP/aws"; echo arn; }
+  aws_run() { printf '%s|%s\n' "$1" "$2" > "$TMP/aws"; case "$*" in *invoke-model*) echo ValidationException >&2; return 254 ;; esac; echo arn; }
   cmd_test() { :; }
   AWS_ACCESS_KEY_ID=AKIAENVVALUE123 AWS_SECRET_ACCESS_KEY=envsecret cmd_rotate_aws 2>/dev/null
   assert_eq "$(cat "$TMP/aws")" "AKIATYPED|typedsecret"

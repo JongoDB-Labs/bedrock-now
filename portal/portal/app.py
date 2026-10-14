@@ -14,16 +14,17 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, appicons, icons, prices, summary, updates, webapp
+from . import admin, appicons, icons, prices, settings_api, summary, updates, webapp
 from .config import Settings
 from .security import (
-    MAX_AGE, Handoff, LoginThrottle, Sessions, cookie_params, is_remote, password_ok, remote_identity_ok, safe_next,
-    same_origin, session_login, tailscale_login,
+    MAX_AGE, Handoff, LoginThrottle, Sessions, cookie_params, is_remote, remote_identity_ok, safe_next, same_origin,
+    session_login, tailscale_login, verify_password,
 )
 
 log = logging.getLogger("portal")
@@ -97,9 +98,27 @@ def _login_page(next_url: str, error: str = "", status: int = 200, retry_after: 
     return _no_store(resp)
 
 
+class _CarryOver:
+    """A browser signed in by the carry-over cookie of a password change (settings_api.apply) gets a normal session
+    cookie back with whatever the portal answers, and the carry-over cookie is deleted (ASGI wrapper)."""
+
+    def __init__(self, app, upgrade):
+        self.app, self.upgrade = app, upgrade
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_upgraded(message):
+            if message["type"] == "http.response.start" and scope.get("bn_carry"):
+                message = {**message, "headers": list(message.get("headers", [])) + self.upgrade(scope["bn_carry"])}
+            await send(message)
+        await self.app(scope, receive, send_upgraded)
+
+
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     state_file = settings.state_dir / "logout-not-before" if settings.state_dir else None
-    sessions = Sessions(settings.secret, settings.password, state_file=state_file)
+    sessions = Sessions(settings.secret, settings.password_hash, state_file=state_file)
     throttle = LoginThrottle()  # shared by the login form and the password re-entry of admin actions
     admin_rate = admin.RateLimit()
 
@@ -122,8 +141,22 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         return "" if remote(request) else settings.password_where()
 
     def session_claims(request: Request) -> dict | None:
-        return sessions.claims(request.cookies.get(cookie_params(settings, remote(request))["key"]),
-                               session_login(request.headers, settings))
+        rem, login = remote(request), session_login(request.headers, settings)
+        claims = sessions.claims(request.cookies.get(cookie_params(settings, rem)["key"]), login)
+        if claims is None:
+            # the carry-over cookie of a password change: valid only once this portal runs with the new password
+            claims = sessions.claims(request.cookies.get(cookie_params(settings, rem, carry=True)["key"]), login)
+            if claims is not None:
+                request.scope["bn_carry"] = (rem, login, claims["iat"])
+        return claims
+
+    def carry_upgrade(carry) -> list:
+        rem, login, iat = carry
+        r = Response()
+        set_session(r, rem, login, iat)
+        c = cookie_params(settings, rem, carry=True)
+        r.delete_cookie(c["key"], path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])
+        return [(k, v) for k, v in r.raw_headers if k == b"set-cookie"]
 
     def authed(request: Request) -> bool:
         return session_claims(request) is not None
@@ -137,8 +170,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                         httponly=True, samesite="strict", secure=c["secure"])
 
     def clear_session(resp: Response, rem: bool) -> None:
-        c = cookie_params(settings, rem)
-        resp.delete_cookie(c["key"], path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])
+        for carry in (False, True):
+            c = cookie_params(settings, rem, carry)
+            resp.delete_cookie(c["key"], path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])
 
     def login_redirect(next_url: str, rem: bool = False) -> RedirectResponse:
         target = settings.origin(remote=rem) + "/login"
@@ -223,7 +257,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if wait:
             return _security_headers(_login_page(nxt, f"Too many wrong passwords. Try again in {wait} s.", 429, wait,
                                                  where=password_where(request)), settings)
-        if not password_ok((form.get("password") or [""])[0], settings.password):
+        if not await asyncio.to_thread(verify_password, (form.get("password") or [""])[0], settings.password_hash):
             throttle.failure()
             log.warning("portal login failed (%d in a row)", throttle.failures)
             where = password_where(request)
@@ -403,7 +437,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if admin.fresh_auth_required(request, settings, action):
             if wait := throttle.retry_after():
                 return err(429, f"Too many wrong passwords. Try again in {wait} s.", wait)
-            if not isinstance(password, str) or not password_ok(password, settings.password):
+            if not isinstance(password, str) or not await asyncio.to_thread(verify_password, password, settings.password_hash):
                 throttle.failure()
                 log.warning("admin action %s: wrong password (%d in a row)", action, throttle.failures)
                 return err(403, "That password is not right (PORTAL_PASSWORD in .env).")
@@ -496,6 +530,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/logins", api_logins),
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),
+            *settings_api.routes(settings_api.Ctx(
+                settings=settings, sessions=sessions, throttle=throttle, remote=remote, api_guard=api_guard,
+                session_login=lambda r: session_login(r.headers, settings), set_session=set_session)),
             Route("/favicon.svg", favicon),
             Route("/favicon.ico", favicon_ico),
             Route("/manifest.webmanifest", manifest),
@@ -505,5 +542,6 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Mount("/static", _Static(settings, directory=STATIC), name="static"),
         ],
         lifespan=lifespan,
+        middleware=[Middleware(_CarryOver, upgrade=carry_upgrade)],
     )
     return app

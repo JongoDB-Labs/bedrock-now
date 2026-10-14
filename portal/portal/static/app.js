@@ -30,15 +30,17 @@ function el(tag, props = {}, ...children) {
 function remember(tab) { try { localStorage.setItem("bn.tab", tab); } catch (_) { /* storage blocked: fine */ } }
 function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) { return null; } }
 
+const PAGES = ["home", "settings"];  // the portal's own pages; everything else is an app in a frame
 function showTab(tab) {
-  if (tab !== "home" && !Object.prototype.hasOwnProperty.call(APPS, tab)) tab = "home";  // not "constructor" etc.
+  if (!PAGES.includes(tab) && !Object.prototype.hasOwnProperty.call(APPS, tab)) tab = "home";  // not "constructor" etc.
   if (window.bnMobile) tab = window.bnMobile.allowTab(tab);  // phones: Home and Chat only (mobile.js)
   for (const b of document.querySelectorAll(".tab")) {
     if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }
   $("#home").hidden = tab !== "home";
+  if ($("#settings")) $("#settings").hidden = tab !== "settings";
   for (const f of document.querySelectorAll("#frames iframe")) f.hidden = f.dataset.app !== tab;
-  if (tab !== "home" && !$(`#frames iframe[data-app="${tab}"]`)) {
+  if (!PAGES.includes(tab) && !$(`#frames iframe[data-app="${tab}"]`)) {
     // Created on first visit and kept, so switching tabs never reloads an app.
     $("#frames").append(el("iframe", { src: appUrl(tab), "data-app": tab, title: tab[0].toUpperCase() + tab.slice(1),
       allow: "clipboard-read; clipboard-write; microphone; screen-wake-lock" }));
@@ -563,7 +565,9 @@ function renderJob(job, inProgress) {
   const steps = PHASES[job.action] || [];
   const at = steps.findIndex(([p]) => p === job.phase);
   const auto = job.trigger === "auto";
-  const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up" }[job.action] || "Request";
+  const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up", settings: "Settings change",
+    backup: "Backup", test: "Smoke test", "check-aws": "AWS key check", "models-recheck": "Model check", report: "Status report" }[job.action]
+    || (/^restart-/.test(job.action || "") ? `Restart of ${job.action.slice(8)}` : "Request");
   $("#job-title").textContent = `${name}${{ failed: " failed", done: " finished", skipped: " skipped" }[job.phase] || " in progress"}`;
   const list = $("#job-steps"); list.replaceChildren();
   steps.forEach(([p, label], i) => {

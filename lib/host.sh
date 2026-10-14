@@ -110,24 +110,29 @@ _role_probe_models() {
     sed -e 's#^bedrock/##' -e 's#^invoke/##' -e 's#^converse/##' | head -n 3
 }
 
-# _prove_bedrock REGION NOTE — the role may really call Bedrock: a deliberately invalid invoke-model (free; IAM and
-# model access are checked before the body, so ValidationException = authorized) on the catalog's Haiku model, then
-# its embedding models. Dies (with NOTE) when none is authorized.
+# _prove_bedrock REGION NOTE [KEY_ID SECRET] — the role (or the access key given) may really call Bedrock: a
+# deliberately invalid invoke-model (free; IAM and model access are checked before the body, so ValidationException
+# = authorized) on the catalog's Haiku model, then its embedding models. Dies (with NOTE) when none is authorized.
 _prove_bedrock() {
-  local id r errf last=''
+  local id r errf last='' who="the role"
+  [ -z "${3:-}" ] || who="the key"
   errf="$(mktemp)"
   while IFS="$(printf '\t')" read -r id r; do
     [ -n "$id" ] || continue
     [ "$r" != "-" ] || r="$1"
-    aws_run_role "$r" bedrock-runtime invoke-model --model-id "$id" --body e30= /dev/null >/dev/null 2>"$errf" || true
+    if [ -n "${3:-}" ]; then aws_run "$3" "$4" "$r" bedrock-runtime invoke-model --model-id "$id" --body e30= /dev/null >/dev/null 2>"$errf" || true
+    else aws_run_role "$r" bedrock-runtime invoke-model --model-id "$id" --body e30= /dev/null >/dev/null 2>"$errf" || true; fi
     if grep -q ValidationException "$errf"; then
-      rm -f "$errf"; log "Bedrock access confirmed with the role ($id; free check)"; return 0
+      rm -f "$errf"; log "Bedrock access confirmed with $who ($id; free check)"; return 0
     fi
     last="$id: $(tr '\n' ' ' < "$errf" | cut -c1-200)"
   done <<EOF
 $(_role_probe_models)
 EOF
   rm -f "$errf"
+  if [ -n "${3:-}" ]; then
+    die "the key can't use Bedrock (${last:-no model to check in $CATALOG}): give its IAM user Bedrock access and enable model access${2:+ — $2}"
+  fi
   die "the instance role can't use Bedrock (${last:-no model to check in $CATALOG}). Give the role the policy in docs/cloud-vm.md and enable model access${2:+ — $2}"
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -39,8 +40,8 @@ class ConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class Settings:
-    password: str
-    secret: str
+    password_hash: str = field(repr=False)  # PBKDF2 hash of PORTAL_PASSWORD (security.hash_password); never the password
+    secret: str = field(repr=False)
     host: str = "bedrock-now.localhost"
     port: int = 80
     user_email: str = "admin@bedrock-now.local"
@@ -51,6 +52,7 @@ class Settings:
     litellm_ui_password: str = ""
     rustfs_access_key: str = ""
     rustfs_secret_key: str = ""
+    shared_mcp_token: str = field(default="", repr=False)  # Settings → Files shows it behind the password
     openwebui_url: str = "http://open-webui:8080"
     rustfs_url: str = "http://rustfs:9000"
     shared_mcp_url: str = "http://shared-mcp:8000"
@@ -124,20 +126,27 @@ class Settings:
 
 
 def from_env(env: dict | None = None) -> Settings:
+    from .security import PW_HASH, hash_password  # (security imports this module)
+
     env = os.environ if env is None else env
-    password = env.get("PORTAL_PASSWORD", "")
     secret = env.get("PORTAL_SECRET", "")
-    if not password:
-        raise ConfigError("PORTAL_PASSWORD is not set — run ./stack setup")
     if len(secret) < 32:
         raise ConfigError("PORTAL_SECRET is missing or shorter than 32 characters — run ./stack setup")
+    password_hash = (env.get("PORTAL_PASSWORD_HASH") or "").strip()
+    if password_hash and not PW_HASH.fullmatch(password_hash):
+        raise ConfigError("PORTAL_PASSWORD_HASH is not a hash this portal reads — run ./stack up")
+    if not password_hash and env.get("PORTAL_PASSWORD"):
+        # Development only (compose passes the hash): a salt derived from the secret keeps sessions across restarts.
+        password_hash = hash_password(env["PORTAL_PASSWORD"], salt=hashlib.sha256(secret.encode()).digest()[:8])
+    if not password_hash:
+        raise ConfigError("PORTAL_PASSWORD_HASH is not set — run ./stack setup")
     try:
         port = int(env.get("PORTAL_PORT") or 80)
     except ValueError as e:
         raise ConfigError(f"PORTAL_PORT is not a number: {env.get('PORTAL_PORT')!r}") from e
     keys = tuple((alias, label, env.get(var, "")) for var, alias, label in KEYS)
     return Settings(
-        password=password,
+        password_hash=password_hash,
         secret=secret,
         host=(env.get("PORTAL_HOST") or "bedrock-now.localhost").lower(),
         port=port,
@@ -151,6 +160,7 @@ def from_env(env: dict | None = None) -> Settings:
         litellm_ui_password=env.get("LITELLM_UI_PASSWORD", ""),
         rustfs_access_key=env.get("RUSTFS_ACCESS_KEY", ""),
         rustfs_secret_key=env.get("RUSTFS_SECRET_KEY", ""),
+        shared_mcp_token=env.get("SHARED_MCP_TOKEN", ""),
         openwebui_url=env.get("OPENWEBUI_URL", "http://open-webui:8080"),
         rustfs_url=env.get("RUSTFS_URL", "http://rustfs:9000"),
         shared_mcp_url=env.get("SHARED_MCP_URL", "http://shared-mcp:8000"),

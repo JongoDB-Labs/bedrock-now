@@ -39,6 +39,10 @@ case "$cmd" in setup | rotate-aws | help | -h | --help) ;; *) [ ! -f "$ENV_FILE"
 # Every command that touches this checkout's Compose project first checks that no other checkout owns it
 # (setup runs the same check itself, after it has settled the project name; status only warns, so you can
 # still look; uninstall checks even without .env, lists what it deletes, and releases the project afterwards).
+# Commands that may write .env refresh the settings snapshot the portal shows when they end (lib/settings.sh).
+case "$cmd" in
+  setup | up | restore | update | rollback | rotate-aws | openrouter | stt | remote | helper | config) on_exit settings_snapshot_refresh ;;
+esac
 case "$cmd" in
   setup) cmd_setup "$@" ;;
   status) [ ! -f "$ENV_FILE" ] || guard_project --warn; cmd_status "$@" ;;
@@ -62,6 +66,8 @@ case "$cmd" in
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
   stt) [ ! -f "$ENV_FILE" ] || guard_project; cmd_stt "$@" ;;
   password) cmd_password "$@" ;;
+  config) cmd_config "$@" ;;   # guards the project itself before a change (set, apply)
+  restart) [ ! -f "$ENV_FILE" ] || guard_project; cmd_restart "$@" ;;
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;
 esac

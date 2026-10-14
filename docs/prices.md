@@ -84,6 +84,7 @@ LiteLLM's prices anyway; then `./stack up` hands them to LiteLLM.
   pending — run ./stack up`. The chat cost filter and Open WebUI's model prices are updated at the same time.
 - Home, `./stack costs` and `./stack models` (its PRICE column) show the prices in use, where they come from
   and how old they are.
-- To turn the updates off, set `PRICE_UPDATES=false` in `.env` and run `./stack setup`.
+- To turn the updates off, switch **Daily price update** off in Settings → Updates & backups (or
+  `./stack config set PRICE_UPDATES` and answer `false`).
 - Linux: `./stack` sets `PORTAL_GID` in `.env` to your group (group 0 on rootless Docker) and makes
   `litellm/prices/` setgid and group-writable (2775); the portal keeps its own user, which owns `/state`.

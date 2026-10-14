@@ -83,13 +83,8 @@ get_env() {
 # interpolate or treat as quoting/comment syntax is rejected (generated secrets are hex,
 # AWS keys are [A-Za-z0-9+/], emails are fine; backslashes pass through literally).
 set_env() {
-  local tmp tab=$'\t'
-  case "$2" in
-    *$'\n'*) die "set_env: value for $1 contains a newline" ;;
-    *'$'* | *'"'* | *"'"* | *'`'*) die "set_env: value for $1 contains \$, a quote or a backtick, which docker compose would interpret — use a different value" ;;
-    *" #"* | *"$tab#"*) die "set_env: value for $1 contains whitespace followed by #, which docker compose reads as a comment" ;;
-    [[:space:]]* | *[[:space:]]) die "set_env: value for $1 has leading or trailing whitespace" ;;
-  esac
+  local tmp
+  _env_value_check "$1" "$2"
   [ -f "$ENV_FILE" ] || { : > "$ENV_FILE"; }
   chmod 600 "$ENV_FILE"
   tmp="$(mktemp "${ENV_FILE}.XXXXXX")" || die "set_env: cannot create temp file next to $ENV_FILE"
@@ -101,6 +96,47 @@ set_env() {
     END { if (!done) print ENVIRON["K"] "=" ENVIRON["V"] }' "$ENV_FILE" > "$tmp" || ! mv "$tmp" "$ENV_FILE"; then
     rm -f "$tmp"
     die "set_env: failed to update $ENV_FILE"
+  fi
+}
+
+# _env_value_check KEY VALUE — dies unless docker compose reads VALUE literally (set_env's rules)
+_env_value_check() {
+  local tab=$'\t'
+  case "$2" in
+    *$'\n'*) die "set_env: value for $1 contains a newline" ;;
+    *'$'* | *'"'* | *"'"* | *'`'*) die "set_env: value for $1 contains \$, a quote or a backtick, which docker compose would interpret — use a different value" ;;
+    *" #"* | *"$tab#"*) die "set_env: value for $1 contains whitespace followed by #, which docker compose reads as a comment" ;;
+    [[:space:]]* | *[[:space:]]) die "set_env: value for $1 has leading or trailing whitespace" ;;
+  esac
+}
+
+# set_env_batch KEY VALUE [KEY VALUE…] -> every pair in ONE atomic write (mode 600 kept); "-KEY ''" removes KEY's
+# lines. Every value is checked first, so nothing is written unless all pass. Values reach awk through variables
+# exported in a subshell, never through a command line.
+set_env_batch() {
+  local tmp n=0 i=0 k a=("$@")
+  [ $(($# % 2)) -eq 0 ] || die "set_env_batch: KEY VALUE pairs expected"
+  while [ "$i" -lt "$#" ]; do
+    k="${a[$i]#-}"
+    case "$k" in '' | *[!A-Za-z0-9_]*) die "set_env_batch: bad key name" ;; esac
+    _env_value_check "$k" "${a[$((i + 1))]}"
+    i=$((i + 2))
+  done
+  [ -f "$ENV_FILE" ] || { : > "$ENV_FILE"; }
+  chmod 600 "$ENV_FILE"
+  tmp="$(mktemp "${ENV_FILE}.XXXXXX")" || die "set_env: cannot create temp file next to $ENV_FILE"
+  chmod 600 "$tmp"
+  if ! (
+    while [ $# -gt 0 ]; do
+      case "$1" in -*) export "SETB_K$n=${1#-}" "SETB_D$n=1" ;; *) export "SETB_K$n=$1" "SETB_D$n=" ;; esac
+      export "SETB_V$n=$2"; n=$((n + 1)); shift 2
+    done
+    export SETB_N="$n"
+    awk 'BEGIN { n = ENVIRON["SETB_N"] + 0; for (i = 0; i < n; i++) { k[i] = ENVIRON["SETB_K" i]; v[i] = ENVIRON["SETB_V" i]; d[i] = ENVIRON["SETB_D" i] } }
+      { for (i = 0; i < n; i++) if (index($0, k[i] "=") == 1) { if (!d[i] && !w[i]) print k[i] "=" v[i]; w[i] = 1; next }; print }
+      END { for (i = 0; i < n; i++) if (!d[i] && !w[i]) print k[i] "=" v[i] }' "$ENV_FILE"
+  ) > "$tmp" || ! mv "$tmp" "$ENV_FILE"; then
+    rm -f "$tmp"; die "set_env: failed to update $ENV_FILE"
   fi
 }
 

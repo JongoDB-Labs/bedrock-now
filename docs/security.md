@@ -40,7 +40,7 @@ Back to the [README](../README.md#security-model).
 - LiteLLM uses its **bundled** price map (no runtime fetch from GitHub); our prices override it. LiteLLM's
   breached-password check (a haveibeenpwned.com lookup) is off.
 - LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
-  `LITELLM_STORE_PROMPTS=true` in `.env` and run `./stack setup`. Spend logs are kept for 90 days (LiteLLM's
+  `LITELLM_STORE_PROMPTS=true` (Settings → Account & security, or `./stack config set LITELLM_STORE_PROMPTS`). Spend logs are kept for 90 days (LiteLLM's
   built-in cleanup job, `maximum_spend_logs_retention_period`).
 - The portal's daily update check asks GitHub's public releases API for the latest release (unauthenticated,
   https only, no redirects followed, answers capped at 1 MB, release notes shown as plain text). It sends
@@ -60,8 +60,10 @@ session you get the login page.
   session; any `X-Portal-User` a client sends is deleted first, and Open WebUI publishes no port, so the header
   can't be forged.
 - The login form only accepts a POST from the portal itself, sends you back only to a portal address (no open
-  redirect), compares the password in constant time and slows down after five wrong attempts; a login body
-  over 8 KB is refused (Caddy caps it at 16 KB before it reaches the portal).
+  redirect), checks the password against `PORTAL_PASSWORD_HASH` (PBKDF2-HMAC-SHA256, 600,000 rounds, written by
+  `./stack` from `PORTAL_PASSWORD`; the portal never receives the password itself) with a constant-time compare,
+  and slows down after five wrong attempts; a login body over 8 KB is refused (Caddy caps it at 16 KB before it
+  reaches the portal). A session carries a fingerprint of that hash, so a new password ends every session.
 - **Sign out** on Home ends every session, and that survives a restart of the portal: the time of the last
   sign-out is kept in the small `portal-state` volume (the portal's only writable storage besides `/tmp`, the
   price files in `litellm/prices/` and the update check's answer in `.state/update-check/`).
@@ -69,6 +71,77 @@ session you get the login page.
   <portal>`); the portal can't be framed at all. Host names other than the four answer 404.
 - The LiteLLM and RustFS sign-ins shown on Home come from the portal's API with copy buttons; the values never
   appear in the page source.
+
+## Settings
+
+The **Settings** tab shows every key of `.env` and changes the ones listed in
+[README › Settings](../README.md#settings). The portal still has no `.env`, no Docker socket and no shell:
+
+- **What the page sees.** `./stack` writes `.state/status/settings.json` (read-only in the portal) whenever `.env`
+  changes: plain values as they are, secrets only as *set* with at most a short hint (the last four characters
+  of a generated key, the two ends of the AWS key ID, the host of the webhook URL; nothing of a password, the AWS
+  secret or the Cloudflare token), each key's description and policy from `catalog/settings.tsv`, and the
+  SHA-256 of `.env` (`base`). Reveal/Copy returns only what the portal already holds for Home and its own work
+  (the Admin and Files sign-ins, the three LiteLLM keys, `SHARED_MCP_TOKEN`), after the password again.
+- **The front door.** A change, a Reveal, a diagnostic and "Sign out other devices" need a session,
+  `X-Requested-With`, the portal's own `Origin`, the portal password typed again (wrong ones count toward the
+  login's lock-out), and, for a remote session, `REMOTE_ADMIN_ACTIONS=true`. A body over 12 KB is refused (Caddy:
+  16 KB). The portal checks each value with the same rules as `./stack` (`portal/portal/settings.py` mirrors
+  `lib/settings.sh`; one table of cases tests both) and allows one change every 5 seconds, 30 an hour.
+- **The request.** For an allowed change the portal writes `.state/requests/cfg-<nonce>.req`: at most 8 KB of
+  ASCII lines (`bedrock-now-settings 1`, `nonce`, `requested_at`, `base`, `origin local|remote`, `auth`,
+  then `set KEY BASE64` for 1-20 keys, `end`), mode 640, renamed into place. Diagnostics are
+  `act-<nonce>.json` with one action from a fixed list (check-aws, models-recheck, backup, test, report,
+  restart of litellm, open-webui, shared-mcp, stt, rustfs or caddy), in the strict format of the update requests.
+- **The helper checks everything again.** It moves the file into its private inbox, refuses symlinks, other
+  owners, more than 8 KB, any other line, a nonce used before and requests older than 2 minutes; then it deletes
+  the file and keeps the values in memory only. The password in `auth` must match **the helper's own hash**,
+  `.state/helper/portal-password` (600, in a 700 folder no container mounts), which `./stack` writes from `.env`
+  — never `PORTAL_PASSWORD_HASH`, which the portal can read. Five wrong passwords in 15 minutes (or 20 in a day)
+  stop all settings requests until they age out. Each key must be in its allowlist (`catalog/settings.tsv` in
+  the checkout, not something the request says), allowed for the request's origin, and pass its validator. It
+  has its own rate limits (changes at least 15 s apart, at most 60 a day; diagnostics 10 s and 60 a day; the
+  model re-check at most hourly), separate from update/rollback/clean.
+- **Applying.** The helper runs `./stack config apply --stdin --base <hash> --origin local|remote` and pipes
+  `set KEY BASE64` lines to it: values never appear in a command line, an environment variable, a file outside
+  `.env`, a log or an error message. `config apply` takes the stack lock, validates everything again, refuses a
+  request whose `base` no longer matches `.env` ("changed on disk since you opened the page"), runs the live
+  checks before anything changes (the AWS key with STS and a free Bedrock check, OpenRouter's and the
+  speech-to-text provider's key endpoints, the new owner email not taken by another Chat account), keeps the
+  old values (in memory, and in `.state/config/pending.env`, 600, until the change ends, so `./stack up` notices a
+  change cut short), changes the LiteLLM password or the owner email in LiteLLM and Open WebUI first, writes
+  `.env` once, restarts only what changed and checks the result (the paid smoke test only after an AWS key
+  change). Any failure puts the previous values back, reverses the changes in LiteLLM and Open WebUI and restarts
+  with the old settings.
+- **Keys that could send data elsewhere** — the AWS key, the OpenRouter key, the speech-to-text provider and key,
+  the alert webhook — are taken only from a local session (`origin local`); so is turning `REMOTE_ADMIN_ACTIONS`
+  on and changing `TAILSCALE_ALLOWED_LOGIN` (never to blank). `UPDATE_REQUIRE_SIGNED_TAGS` can only be turned on.
+  Read-only, whatever a request says: hosts and ports, `HELPER_*`, `BEDROCK_NOW_*`, `REMOTE_MODE`, the Tailscale
+  and Cloudflare keys, and the internal secrets (`PORTAL_SECRET`, `POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`,
+  `LITELLM_SALT_KEY`, `WEBUI_SECRET_KEY`, the LiteLLM keys, `OPENWEBUI_API_KEY`).
+- **A portal password change** sends the new password and the hash the portal computed for it; the helper
+  accepts the hash only if it matches the new password. The browser that made the change gets a second cookie
+  (`bn_session_next`, same scope and flags) signed for the new hash: the running portal rejects it, the restarted
+  one accepts it once and swaps it for a normal session. Every other session ends with the restart. Caddy strips
+  that cookie before the apps too.
+- **The record.** Each change, failure and refusal is one line in `.state/helper/settings-audit.log` (600): time,
+  result, `cli` / `portal-local` / `portal-remote`, key names, never a value. Home shows the last change for a
+  day.
+- **Startup reconcile.** `./stack up`, setup and `./stack restore` check that Chat's owner account and the
+  Admin (LiteLLM) sign-in match `.env`; they move the owner's email back, delete an empty `pending` Chat account
+  that holds the owner email (what a bare `.env` edit creates), and reset the Admin password from `.env` with the
+  master key, or warn.
+
+**What a compromised portal container can still do.** It already holds the LiteLLM master key, the RustFS root
+pair, the LiteLLM keys and the MCP token, and it sits on the network next to Open WebUI (which trusts the sign-in
+header from its peers): it can act as admin of LiteLLM, RustFS and Chat and spend Bedrock money within the
+budgets — Settings adds nothing to that. It can no longer read the portal password (only its hash: it would have to
+crack PBKDF2 or catch your next sign-in), so it cannot pass the helper's password check, and it cannot read the
+AWS key, the Cloudflare token or the speech-to-text and OpenRouter keys. With your password (caught at a sign-in)
+it could make any change a local session may make, including pointing the AWS key, the OpenRouter or
+speech-to-text key or the alert webhook at its own accounts, or changing your passwords; each such change is
+in the audit log and on Home. It cannot run anything but `./stack config apply` and the listed diagnostics, cannot
+change hosts, ports, the helper's own switches or the internal secrets, and cannot restore a backup.
 
 ## Remote access
 
@@ -133,7 +206,7 @@ cannot install it itself (that would need exactly the access it must not have), 
 
 **How it works.** The portal stays read-only, with no Docker socket. For a button click it writes one small file,
 `.state/requests/req-<nonce>.json` = `{"action": …, "requested_at": …, "nonce": …}`, into the only folder it may
-write for this purpose. The helper is a user-level launchd agent (macOS, `~/Library/LaunchAgents/io.bedrock-now.helper.<project>.plist`)
+write for this purpose (Settings and Diagnostics add `cfg-<nonce>.req` and `act-<nonce>.json`: [Settings](#settings)). The helper is a user-level launchd agent (macOS, `~/Library/LaunchAgents/io.bedrock-now.helper.<project>.plist`)
 or systemd user unit (Linux, `~/.config/systemd/user/bedrock-now-helper-<project>.service`). It runs as you,
 outside Docker, polls that folder every 3 seconds, and runs **only** `./stack update --yes`, `./stack rollback
 --yes` or `./stack clean --yes` in its own checkout, or `./stack helper auto on|off` for the automatic-updates

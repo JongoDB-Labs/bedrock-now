@@ -7,6 +7,7 @@ import hmac
 import logging
 import math
 import os
+import re
 import secrets
 import time
 from email.header import decode_header, make_header
@@ -20,7 +21,15 @@ from .config import APPS, Settings
 log = logging.getLogger("portal")
 
 COOKIE = "bn_session"
+# A portal password change (Settings) hands the browser that made it this second cookie, signed for the new password:
+# the running portal refuses it, the restarted one accepts it and swaps it for a normal session (app.py).
+NEXT_COOKIE = "bn_session_next"
+NEXT_MAX_AGE = 24 * 3600
 MAX_AGE = 30 * 24 * 3600  # 30 days
+
+# PORTAL_PASSWORD_HASH (written by ./stack, lib/settings.sh pw_hash): PBKDF2-HMAC-SHA256, "pbkdf2-sha256:ROUNDS:SALT:KEY"
+PW_HASH = re.compile(r"pbkdf2-sha256:([0-9]{1,8}):([0-9a-f]{16}):([0-9a-f]{64})")
+PW_ROUNDS = 600_000
 
 
 def password_ok(given: str, expected: str) -> bool:
@@ -30,19 +39,39 @@ def password_ok(given: str, expected: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
+def hash_password(password: str, rounds: int = PW_ROUNDS, salt: bytes | None = None) -> str:
+    """The format ./stack writes (lib/settings.sh pw_hash): the same password and salt give the same hash."""
+    salt = salt if salt is not None else secrets.token_bytes(8)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8", "surrogatepass"), salt, rounds, 32)
+    return f"pbkdf2-sha256:{rounds}:{salt.hex()}:{key.hex()}"
+
+
+def verify_password(given, stored: str) -> bool:
+    """Is GIVEN the password STORED is the hash of (constant-time compare of the derived keys)."""
+    m = PW_HASH.fullmatch(stored or "")
+    if not m or not isinstance(given, str) or len(given) > 1024:
+        return False
+    rounds = int(m.group(1))
+    if not 1 <= rounds <= 10_000_000:
+        return False
+    key = hashlib.pbkdf2_hmac("sha256", given.encode("utf-8", "surrogatepass"), bytes.fromhex(m.group(2)), rounds, 32)
+    return hmac.compare_digest(key.hex(), m.group(3))
+
+
 class Sessions:
     """Stateless signed session tokens.
 
-    A token carries a fingerprint of the current password, so changing PORTAL_PASSWORD (or PORTAL_SECRET)
+    A token carries a fingerprint of the current password hash, so changing PORTAL_PASSWORD (or PORTAL_SECRET)
     logs every browser out. Logging out revokes every session issued before that moment (there is only
     one user); the 30-day expiry is enforced by the signature. The revocation time is kept in state_file
     (the portal-state volume), so a restart does not bring revoked sessions back. A missing file revokes
     nothing; an unreadable one counts as "revoked just now" (log in again) rather than reviving anything.
     """
 
-    def __init__(self, secret: str, password: str, clock=time.time, state_file: Path | None = None):
+    def __init__(self, secret: str, credential: str, clock=time.time, state_file: Path | None = None):
+        """credential: PORTAL_PASSWORD_HASH (a new hash means a new password: every session ends)."""
         self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.session")
-        self._fp = hmac.new(secret.encode(), password.encode(), hashlib.sha256).hexdigest()[:32]
+        self._fp = hmac.new(secret.encode(), credential.encode(), hashlib.sha256).hexdigest()[:32]
         self._clock = clock
         self._state = state_file
         self.not_before = self._load()
@@ -200,6 +229,7 @@ def same_origin(headers, settings: Settings) -> bool:
 # (every node of a tailnet is <name>.<tailnet>.ts.net) ever receives one. __Host- makes browsers enforce it
 # (Secure, Path=/, no Domain). Caddy strips it before the apps (caddy/remote-*.caddy).
 REMOTE_COOKIE = "__Host-bn_session"
+REMOTE_NEXT_COOKIE = "__Host-bn_session_next"
 TAILSCALE_LOGIN_HEADER = "tailscale-user-login"
 
 
@@ -218,13 +248,14 @@ def is_remote(headers, settings: Settings) -> bool:
     return settings.remote_on() and headers.get("x-portal-remote") == "1" and from_proxy(headers, settings)
 
 
-def cookie_params(settings: Settings, remote: bool) -> dict:
+def cookie_params(settings: Settings, remote: bool, carry: bool = False) -> dict:
     """The session cookie of a site. Local: bn_session for PORTAL_HOST and its subdomains (a .localhost name
     nobody else can serve), not Secure (plain HTTP on 127.0.0.1). Remote: __Host-bn_session, host-only and
-    Secure, on the portal host; each app host gets its own through the hand-off (Handoff below)."""
+    Secure, on the portal host; each app host gets its own through the hand-off (Handoff below).
+    carry: the carry-over cookie of a password change, with the same scope (bn_session_next)."""
     if remote:
-        return {"key": REMOTE_COOKIE, "domain": None, "secure": True}
-    return {"key": COOKIE, "domain": settings.host, "secure": False}
+        return {"key": REMOTE_NEXT_COOKIE if carry else REMOTE_COOKIE, "domain": None, "secure": True}
+    return {"key": NEXT_COOKIE if carry else COOKIE, "domain": settings.host, "secure": False}
 
 
 def tailscale_login(headers) -> str | None:

@@ -126,7 +126,7 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
     job = None
     if job_raw:
         job = {
-            "id": _str(job_raw.get("id"), 64), "action": _str(job_raw.get("action"), 16),
+            "id": _str(job_raw.get("id"), 64), "action": _str(job_raw.get("action"), 32),
             "phase": _str(job_raw.get("phase"), 32), "message": _str(job_raw.get("message")),
             "started_at": _int(job_raw.get("started_at")), "updated_at": _int(job_raw.get("updated_at")),
             "finished_at": _int(job_raw.get("finished_at")), "freed_bytes": _int(job_raw.get("freed_bytes")),

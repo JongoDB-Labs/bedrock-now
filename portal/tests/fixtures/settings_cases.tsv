@@ -1,0 +1,126 @@
+# Validator cases checked against BOTH implementations: lib/settings.sh (tests/test_settings.sh) and
+# portal/portal/settings.py (portal/tests/test_settings.py). validator, remote access on (1/0), ok|bad, value.
+# In values, \t \n \r \x01 and \\ stand for a tab, a newline, a CR, byte 1 and a backslash.
+portal_password	0	ok	correct horse battery
+portal_password	0	ok	Twelve-chars
+portal_password	0	bad	eleven-char
+portal_password	1	bad	only15-chars-ok
+portal_password	1	ok	sixteen-chars-ok
+portal_password	0	bad	has $dollar sign
+portal_password	0	bad	has "quote" in it
+portal_password	0	bad	has 'quote' in it
+portal_password	0	bad	has `tick` in it
+portal_password	0	bad	back\\slash password
+portal_password	0	bad	has a comment #here
+portal_password	0	ok	no-space#hash-is-fine
+portal_password	0	bad	 leading space here
+portal_password	0	bad	trailing space here\x20
+portal_password	0	bad	tab\tinside the value
+portal_password	0	bad	newline\ninside value
+portal_password	0	bad	carriage\rreturn value
+portal_password	0	bad	control\x01character
+portal_password	0	ok	pässwörd-ünïcode
+portal_password	0	bad	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+litellm_password	0	ok	Bn9-0123456789abcdef
+litellm_password	0	ok	Good-Passw0rd!
+litellm_password	0	bad	alllowercase-1!
+litellm_password	0	bad	ALLUPPERCASE-1!
+litellm_password	0	bad	NoDigitsHere!!
+litellm_password	0	bad	NoSymbols12345
+litellm_password	0	bad	Sh0rt!
+litellm_password	0	bad	Has$Dollar-Sign1
+email	0	ok	me@example.com
+email	0	ok	first.last+tag@sub.example.co
+email	0	bad	Me@Example.com
+email	0	bad	not-an-email
+email	0	bad	me@localhost
+email	0	bad	me @example.com
+email	0	bad	me@example.x
+email	0	bad
+aws_key_id	0	ok	\x41KIAABCDEFGHIJKLMNOP
+aws_key_id	0	bad	\x41SIAABCDEFGHIJKLMNOP
+aws_key_id	0	bad	AKIAabcdefghijklmnop
+aws_key_id	0	bad	AKIAABCDEFGHIJKLMNO
+aws_key_id	0	bad
+aws_secret	0	ok	\x61bcdefghijABCDEFGHIJ\x30123456789/+abcdefgh
+aws_secret	0	bad	abcdefghijABCDEFGHIJ0123456789/+abcdefg
+aws_secret	0	bad	abcdefghijABCDEFGHIJ0123456789/+abcdefg=
+budget	0	ok	50
+budget	0	ok	12.50
+budget	0	ok	0.04
+budget	0	ok	100000
+budget	0	bad	0
+budget	0	bad	100000.01
+budget	0	bad	-5
+budget	0	bad	1e9
+budget	0	bad	abc
+budget	0	bad	1.2.3
+budget	0	bad	.
+budget	0	bad
+webhook	0	ok
+webhook	0	ok	https://hooks.example.com/webhook/abc?token=xyz
+webhook	0	ok	https://n8n.example.com:8443/webhook/budget
+webhook	0	ok	http://192.168.1.20:5678/webhook/x
+webhook	0	ok	http://n8n.local/webhook
+webhook	0	ok	http://host.docker.internal:5678/hook
+webhook	0	bad	http://hooks.example.com/webhook
+webhook	0	bad	ftp://example.com/x
+webhook	0	bad	https://example.com/a b
+webhook	0	bad	https://example.com/#frag
+webhook	0	bad	https://example.com/$x
+webhook	0	bad	javascript:alert(1)
+bool	0	ok	true
+bool	0	ok	false
+bool	0	bad	yes
+bool	0	bad
+on_off	0	ok	on
+on_off	0	ok	off
+on_off	0	bad	true
+true_blank	0	ok	true
+true_blank	0	ok
+true_blank	0	bad	false
+hour	0	ok	0
+hour	0	ok	9
+hour	0	ok	23
+hour	0	bad	24
+hour	0	bad	03
+hour	0	bad	-1
+hour	0	bad
+stt_provider	0	ok	bedrock
+stt_provider	0	ok	openai
+stt_provider	0	ok	groq
+stt_provider	0	ok
+stt_provider	0	bad	whisper
+stt_key	0	ok
+stt_key	0	ok	sk-proj-abcdefghijklmnop1234
+stt_key	0	bad	short-key
+stt_key	0	bad	sk-has spaces-abcdefghijk
+stt_model	0	ok
+stt_model	0	ok	voxtral-mini
+stt_model	0	ok	whisper-large-v3-turbo
+stt_model	0	bad	Voxtral-Mini
+stt_model	0	bad	a/b
+or_key	0	ok
+or_key	0	ok	sk-or-v1-0123456789abcdef
+or_key	0	bad	sk-or-v1 spaces
+or_key	0	bad	sk-or-v1-"quoted"
+or_mode	0	ok	all
+or_mode	0	ok	free
+or_mode	0	ok	meta-llama/llama-3.3-70b-instruct,google/gemma-4-31b-it:free
+or_mode	0	ok
+or_mode	0	bad	all; rm -rf
+int_1_5000	0	ok	1
+int_1_5000	0	ok	1000
+int_1_5000	0	ok	5000
+int_1_5000	0	ok
+int_1_5000	0	bad	0
+int_1_5000	0	bad	5001
+int_1_5000	0	bad	01
+int_1_5000	0	bad	1.5
+login	0	ok	me@example.com
+login	0	ok	me@github
+login	0	bad	Me@Example.com
+login	0	bad	me
+login	0	bad	@github
+login	0	bad	me@
+login	0	bad

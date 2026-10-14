@@ -53,6 +53,10 @@ Usage: ./stack <command> [--yes]
                status | set bedrock [small|mini] | set openai|groq [model] | remove   (see docs/voice.md)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
+  config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
+               list | get KEY | set KEY [KEY…] (asks; hidden for secrets) | apply --stdin
+               | check-aws (free) | report
+  restart      Restart one service: litellm | open-webui | shared-mcp | stt | rustfs | caddy
   uninstall    Remove containers and ALL data volumes
 
   Commands without a $ note make no Bedrock calls.  ./stack <command> --help shows one command.
@@ -86,7 +90,7 @@ cmd_password() {
     return 0
   fi
   printf 'The portal password is PORTAL_PASSWORD in %s (project %s).\n' "$(env_file_display)" "$(project_name)"
-  printf 'Print it: ./stack password --show   Change it: edit .env, then ./stack setup\n'
+  printf 'Print it: ./stack password --show   Change it: Settings in the portal, or ./stack config set PORTAL_PASSWORD\n'
 }
 
 check_prereqs() {
@@ -349,6 +353,7 @@ upgrade_litellm_password() {
 setup_secrets() {
   [ -n "$(get_env PORTAL_PASSWORD)" ] || rm -f "$STATE_DIR/portal-password-shown"
   ensure_env PORTAL_PASSWORD "$(gen_hex 10)"
+  ensure_portal_password_hash   # lib/settings.sh: the portal gets the hash, never the password
   ensure_env PORTAL_SECRET "$(gen_hex 32)"
   ensure_env POSTGRES_PASSWORD "$(gen_hex 24)"
   ensure_env LITELLM_MASTER_KEY "sk-$(gen_hex 24)"
@@ -603,6 +608,7 @@ setup_keys_and_ui() {
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   up_portal
   portal_session_or_die
+  settings_reconcile   # lib/settings.sh: Chat's owner and the Admin sign-in match .env (a change cut short, a restore)
   ensure_openwebui_api_key
   run_phase "shared-mcp" shared-mcp _build_and_up_mcp
   sync_openwebui_models
@@ -804,6 +810,8 @@ cmd_up() {
   check_portal_host "$(portal_host)"
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
+  ensure_portal_password_hash   # lib/settings.sh: PORTAL_PASSWORD edited by hand gets a new hash
+  settings_pending_check        # a settings change cut short: reconciled below
   ensure_portal_dirs; write_version_file   # lib/version.sh
   ensure_images "./stack up"
   # Prices (lib/prices.sh): refresh if the last check is older than 12 h (fast: LiteLLM's list only, at most
@@ -823,8 +831,8 @@ cmd_up() {
     [ -z "$(dc ps -q --status running litellm 2>/dev/null)" ] || restart=1
   fi
   if [ "$restart" = 1 ]; then
-    log "restarting LiteLLM so it uses the new prices (~30 s; requests in flight may fail)"
-    run_phase "LiteLLM (new prices)" litellm dc up -d --no-deps --force-recreate --wait litellm
+    log "restarting LiteLLM so it uses the new configuration from .env and the price list (~30 s; requests in flight may fail)"
+    run_phase "LiteLLM (new configuration)" litellm dc up -d --no-deps --force-recreate --wait litellm
   fi
   stt_before_up   # lib/stt.sh: removes a stt container left from Bedrock speech-to-text
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
@@ -836,6 +844,7 @@ cmd_up() {
   # filter, which also carries OpenRouter's prices, and model descriptions) plus OpenRouter's label sync if
   # its models changed too; after OpenRouter changes alone, openrouter_after_up.
   if portal_session_start; then
+    settings_reconcile; budget_sync_quiet   # lib/settings.sh: sign-ins and budgets as .env says
     sync_budget_banner
     stt_after_up   # lib/stt.sh: hides the speech-to-text model after ./stack stt set while stopped
     if [ "$PRICES_CHANGED" = 1 ] || [ "$repriced" = 1 ]; then
@@ -1171,6 +1180,7 @@ cmd_restore() {
   # shellcheck disable=SC2046  # word-split the service list on purpose
   dc up -d --wait $(stack_services)
   remote_up_hook
+  settings_reconcile_with_session   # lib/settings.sh: the backup's databases may carry an older owner email or Admin password
   log "restored $dir; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
   cmd_test
 }
@@ -1430,7 +1440,7 @@ update_whats_new() {
 }
 
 cmd_rotate_aws() {
-  local id secret region arn errf old
+  local id secret region arn errf old old_auth old_secret
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   case "${1:-}" in   # instance-role mode: lib/host.sh
     '') if uses_instance_role; then instance_role_rotate_info; return 0; fi ;;
@@ -1460,10 +1470,15 @@ cmd_rotate_aws() {
   fi
   rm -f "$errf"
   log "new key authenticated as $arn"
-  set_env AWS_ACCESS_KEY_ID "$id"; set_env AWS_SECRET_ACCESS_KEY "$secret"; unset_env AWS_AUTH
+  # Bedrock itself, before switching (free: a deliberately invalid request): a key without Bedrock access never
+  # replaces a working one.
+  _prove_bedrock "$region" ".env was NOT changed; the old key is still in use" "$id" "$secret" || exit 1
+  old_auth="$(get_env AWS_AUTH)"; old_secret="$(get_env AWS_SECRET_ACCESS_KEY)"
+  set_env_batch AWS_ACCESS_KEY_ID "$id" AWS_SECRET_ACCESS_KEY "$secret" -AWS_AUTH ''
   log "restarting LiteLLM with the new key…"
-  dc up -d --wait litellm   # env changed → the container is recreated with the new key
-  cmd_test
+  dc up -d --wait litellm ||   # env changed → the container is recreated with the new key
+    _restore_aws_settings "$old_auth" "$old" "$old_secret" "LiteLLM did not come up with the new key"
+  ( cmd_test ) || _restore_aws_settings "$old_auth" "$old" "$old_secret" "the smoke test failed with the new key"
   if [ -n "$old" ]; then log "rotated. Remember to deactivate the old key ($old) in IAM, or ask your AWS admin to."
   else log "now using the access key $(printf '%s' "$id" | cut -c1-8)… instead of the instance role."; fi
 }
@@ -1493,6 +1508,9 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/rollback.sh"
 # The optional host helper (one-click Update / Rollback / Clean from the portal): ./stack helper.
 . "$STACK_DIR/lib/helper.sh"
+# Settings (./stack config, ./stack restart, the snapshot for the portal) and the helper's settings requests.
+. "$STACK_DIR/lib/settings.sh"
+. "$STACK_DIR/lib/settings_helper.sh"
 # EC2 instance role, ./stack serve (keep the Mac awake), ./stack ssh-info.
 . "$STACK_DIR/lib/host.sh"
 # Remote access from your devices (./stack remote; Tailscale sidecar, remote Caddy site).

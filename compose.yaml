@@ -261,7 +261,8 @@ services:
     environment:
       PORTAL_STATE_DIR: /state
       # Not :? — ./stack update pulls images before setup has created these; the portal refuses to start without them.
-      PORTAL_PASSWORD: ${PORTAL_PASSWORD:-}
+      # The hash of PORTAL_PASSWORD (./stack keeps it in step): the portal never holds the password itself.
+      PORTAL_PASSWORD_HASH: ${PORTAL_PASSWORD_HASH:-}
       PORTAL_SECRET: ${PORTAL_SECRET:-}
       # Caddy sends it on every request it forwards; without it the portal ignores X-Portal-Remote and
       # Tailscale-User-Login (they could only come from another container talking to portal:8000 directly).
@@ -280,6 +281,8 @@ services:
       LITELLM_UI_PASSWORD: ${LITELLM_UI_PASSWORD:-}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-}
+      # Settings → Files shows it behind the password (the portal already holds the RustFS root pair it guards).
+      SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
       CLAUDE_BEDROCK_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
       CLAUDE_BEDROCK_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
       CLAUDE_BEDROCK_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
@@ -311,7 +314,8 @@ services:
     # .state/status (the installed version, written by ./stack). Writable besides /tmp: portal-state (/state:
     # the logout time, so a restart keeps it), litellm/prices/ (only prices.auto.tsv + prices.meta.json from the
     # daily price update), .state/update-check (only the release check's latest.json + latest.txt) and
-    # .state/requests (only req-<nonce>.json files for the optional host helper, lib/helper.sh). No Docker socket.
+    # .state/requests (only req-/act-<nonce>.json and cfg-<nonce>.req files for the optional host helper,
+    # lib/helper.sh and lib/settings_helper.sh). No Docker socket, no .env: Settings reads .state/status/settings.json.
     volumes:
       - ./litellm:/data/litellm:ro,z
       - ./litellm/prices:/data/prices:rw,z

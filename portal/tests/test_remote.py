@@ -10,6 +10,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from conftest import PASSWORD_HASH
 from portal.app import create_app
 from portal.config import from_env
 from portal.security import (
@@ -355,7 +356,7 @@ def test_a_container_skipping_caddy_cannot_pose_as_remote(rclient):
 
 
 def test_unbound_session_does_not_count_when_a_login_is_required(rclient, rs):
-    s = Sessions(SECRET, "correct horse")
+    s = Sessions(SECRET, PASSWORD_HASH)
     unbound = s.issue()
     assert rclient.get("/auth/verify", headers={**REMOTE, "Cookie": f"{REMOTE_COOKIE}={unbound}"}).status_code == 401
     bound = s.issue(login="me@example.com")

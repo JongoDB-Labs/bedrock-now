@@ -51,7 +51,7 @@
   function sheet() {
     const box = $("#more-sheet"), btn = $("#more-btn");
     if (!box || !btn) return;
-    for (const a of box.querySelectorAll(".sheet-link")) a.href = appUrl(a.dataset.app);
+    for (const a of box.querySelectorAll(".sheet-link[data-app]")) a.href = appUrl(a.dataset.app);
     const focusables = () => [...box.querySelectorAll("a[href], button")];
     const open = () => {
       box.hidden = false; btn.setAttribute("aria-expanded", "true");

@@ -976,14 +976,14 @@ _helper_auto_tick() {
 _sweep_requests() {
   local rq f
   rq="$(request_dir)"
-  for f in "$rq"/.req-*.tmp; do
+  for f in "$rq"/.req-*.tmp "$rq"/.cfg-*.tmp "$rq"/.act-*.tmp; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     [ -z "$(find "$f" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue
     rm -rf "$f" 2>/dev/null || true
   done
   for f in "$rq"/* "$rq"/.[!.]*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    case "${f##*/}" in req-*.json | .req-*.tmp) ;; *) rm -rf "$f" 2>/dev/null || true ;; esac
+    case "${f##*/}" in req-*.json | .req-*.tmp | cfg-*.req | .cfg-*.tmp | act-*.json | .act-*.tmp) ;; *) rm -rf "$f" 2>/dev/null || true ;; esac
   done
 }
 
@@ -994,6 +994,7 @@ helper_poll_once() {
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
   [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   _sweep_requests
+  settings_poll_once || true   # lib/settings_helper.sh: settings and diagnostics (never exits the helper)
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
@@ -1057,6 +1058,7 @@ helper_main() {
       return 0
     fi
     helper_heartbeat || true
+    settings_helper_tick || true   # lib/settings_helper.sh: the settings snapshot, the helper's password hash, nightly backups
     if helper_poll_once; then helper_heartbeat || true; return 0; fi
     if helper_auto_tick; then helper_heartbeat || true; return 0; fi
     [ "${1:-}" != --once ] || return 0
