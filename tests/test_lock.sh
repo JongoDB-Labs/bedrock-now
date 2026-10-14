@@ -3,13 +3,14 @@
 . "$STACK_DIR/lib/commands.sh"
 
 test_lock_is_exclusive_and_names_the_holder() {
-  ( stack_lock update; sleep 3 ) &
+  # the holder keeps the lock until the checks are done ($TMP/release), not for a fixed 3 s a busy machine can outlast
+  ( stack_lock update; i=0; while [ ! -f "$TMP/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done ) >/dev/null 2>&1 &
   holder=$!
-  i=0; while [ ! -f "$STATE_DIR/lock/pid" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  if out="$( (unset BEDROCK_NOW_LOCK_HELD; stack_lock clean) 2>&1)"; then kill "$holder"; return 1; fi
+  i=0; while [ ! -s "$STATE_DIR/lock/pid" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+  if out="$( (unset BEDROCK_NOW_LOCK_HELD; stack_lock clean) 2>&1)"; then touch "$TMP/release"; return 1; fi
   assert_contains "$out" "another ./stack update is running"
   assert_contains "$(stack_lock_holder)" " update"
-  wait "$holder"
+  touch "$TMP/release"; wait "$holder"
   [ ! -d "$STATE_DIR/lock" ] || { echo "the lock must go when its owner exits" >&2; return 1; }
 }
 

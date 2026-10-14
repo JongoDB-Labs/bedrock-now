@@ -68,6 +68,8 @@ _calls() { cat "$CALLS" 2>/dev/null; }
 _beat() { helper_heartbeat; cat "$(helper_beat_file)"; }
 _req() { printf '{"action":"%s","requested_at":%s,"nonce":"%s"}' "$1" "$(date +%s)" "${2:-$NONCE}" > "$(request_dir)/req-${2:-$NONCE}.json"; }
 _lock() { mkdir -p "$STATE_DIR/lock"; echo $$ > "$STATE_DIR/lock/pid"; echo "$1" > "$STATE_DIR/lock/what"; }
+# _wait_done — until a background job wrote $TMP/done: a second or so, up to 60 s on a busy machine
+_wait_done() { local i=0; while [ ! -f "$TMP/done" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done; }
 
 # --- the rule ---
 
@@ -116,10 +118,11 @@ test_window_start_is_the_current_or_the_next_one() {
 }
 
 test_the_real_clock_matches_date() {
-  local c e h s now
-  c="$(_auto_clock)"; e="${c%% *}"; s="${c##* }"; h="${c#* }"; h="${h%% *}"
-  now="$(date +%s)"
-  [ $((now - e)) -ge 0 ] && [ $((now - e)) -le 2 ] || { echo "epoch $e vs $now" >&2; return 1; }
+  local c e h s before after
+  # bracketed by date before and after (not "within 2 s of now": a busy machine can take longer between the calls)
+  before="$(date +%s)"; c="$(_auto_clock)"; after="$(date +%s)"
+  e="${c%% *}"; s="${c##* }"; h="${c#* }"; h="${h%% *}"
+  [ "$e" -ge "$before" ] && [ "$e" -le "$after" ] || { echo "epoch $e not within [$before, $after]" >&2; return 1; }
   [ "$h" = "$((10#$(date -r "$e" +%H 2>/dev/null || date -d "@$e" +%H)))" ] || { echo "hour $h" >&2; return 1; }
   [ "$s" -ge $((h * 3600)) ] && [ "$s" -lt $(((h + 1) * 3600)) ] || { echo "seconds since midnight $s for hour $h" >&2; return 1; }
 }
@@ -209,14 +212,14 @@ test_latest_txt_is_read_only_inside_the_window_and_once_per_window() {   # revie
   _release_checkout; _at 11
   rm -f "$(update_check_dir)/latest.txt"; mkfifo "$(update_check_dir)/latest.txt"   # what a hostile portal could leave
   ( for _ in 1 2 3; do helper_heartbeat; helper_auto_tick || true; done; echo finished > "$TMP/done" ) 2>/dev/null & p=$!
-  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$TMP/done" ] && break; sleep 1; done
+  _wait_done   # a helper that blocked would never get there
   kill "$p" 2>/dev/null || true
   [ -f "$TMP/done" ] || { echo "the helper blocked on latest.txt" >&2; return 1; }
   helper_auto_state; assert_eq "$AUTO_STATE $AUTO_TARGET" "wait "                  # outside the window: never read
   assert_contains "$AUTO_REASON" "On: a new release installs between 03:00 and 06:00 (this computer's time)"
   _at 3; rm -f "$TMP/done"
   ( helper_auto_tick || true; echo finished > "$TMP/done" ) 2>/dev/null & p=$!
-  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$TMP/done" ] && break; sleep 1; done
+  _wait_done
   kill "$p" 2>/dev/null || true
   [ -f "$TMP/done" ] || { echo "the helper blocked on latest.txt in the window" >&2; return 1; }
   [ -z "$(_calls)" ] || return 1                                                     # a FIFO says nothing
@@ -396,8 +399,11 @@ test_a_fetch_that_hangs_is_ended() {   # review M4
   _release_checkout
   mkdir -p "$TMP/slowbin"; printf '#!/bin/sh\nexec sleep 30\n' > "$TMP/slowbin/git"; chmod +x "$TMP/slowbin/git"
   t0="$(date +%s)"
-  if PATH="$TMP/slowbin:$PATH" HELPER_FETCH_TIMEOUT_S=1 _auto_fetch 2>/dev/null; then echo "a hung fetch succeeded" >&2; return 1; fi
-  [ $(($(date +%s) - t0)) -le 5 ] || { echo "the fetch was not ended in time" >&2; return 1; }
+  # (in a subshell: with the redirection on the function call, bash's saved copy of this test's stderr stays open in
+  # the $(git config …) subshell, which the kill does not reach, and tests/run.sh waited for the stub's 30 s)
+  if ( PATH="$TMP/slowbin:$PATH" HELPER_FETCH_TIMEOUT_S=1 _auto_fetch ) 2>/dev/null; then echo "a hung fetch succeeded" >&2; return 1; fi
+  # ended after its 1 s limit (a second or two); a fetch nobody ends takes the stub's 30 s. The rest: a busy machine.
+  [ $(($(date +%s) - t0)) -le 10 ] || { echo "the fetch was not ended in time ($(($(date +%s) - t0)) s)" >&2; return 1; }
 }
 
 test_local_changes_skip_the_window() {

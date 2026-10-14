@@ -74,7 +74,7 @@ test_cmd_open_window_mode_linux_launches_binary_detached() {
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$TMP" > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
   cmd_open 2>/dev/null
-  i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(tr '\n' '|' < "$TMP/args")" "--app=http://bedrock-now.localhost:8800|--user-data-dir=$TMP/home/.local/share/bedrock-now|--no-first-run|"
   [ -d "$TMP/home/.local/share/bedrock-now" ] || { echo "profile dir not created" >&2; return 1; }
 }
@@ -83,6 +83,9 @@ test_cmd_open_window_mode_linux_browser_that_fails_at_once_falls_back() {
   printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; _linux; _window; export DISPLAY=:0 OPEN_CHECK_DELAY=0.3; HOME="$TMP/home"
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
+  # _launch_detached's pause lasts until the stub has exited: it fails at once, but on a busy machine "at once" can be
+  # later than OPEN_CHECK_DELAY, and a browser still running then counts as started (at most 30 s)
+  sleep() { local i=0; while kill -0 "$!" 2>/dev/null && [ "$i" -lt 300 ]; do command sleep 0.1; i=$((i + 1)); done; }
   out="$(PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>&1)"   # no xdg-open in $TMP/bin; /usr/bin has none on macOS
   assert_contains "$out" "did not start"
   assert_contains "$out" "http://bedrock-now.localhost:8800"
@@ -238,17 +241,17 @@ test_cmd_open_linux_launches_the_installed_app() {
   printf '#!/bin/sh\necho "$*" > "%s/ran"\n' "$TMP" > "$TMP/bin/fakechrome"; chmod +x "$TMP/bin/fakechrome"
   # neither gio nor gtk-launch: its Exec line as argv, field codes dropped, %% -> %
   PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
-  i=0; while [ ! -s "$TMP/ran" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while [ ! -s "$TMP/ran" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(cat "$TMP/ran")" "--app-id=bbb --x=100%"
   # gtk-launch: by desktop id
   printf '#!/bin/sh\necho "GTK $*" > "%s/ran"\n' "$TMP" > "$TMP/bin/gtk-launch"; chmod +x "$TMP/bin/gtk-launch"
   PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
-  i=0; while ! grep -q GTK "$TMP/ran" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while ! grep -q GTK "$TMP/ran" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(cat "$TMP/ran")" "GTK chrome-bbb-Default"
   # gio first: by file
   printf '#!/bin/sh\necho "GIO $*" > "%s/ran"\n' "$TMP" > "$TMP/bin/gio"; chmod +x "$TMP/bin/gio"
   PATH="$TMP/bin:/usr/bin:/bin" cmd_open 2>/dev/null
-  i=0; while ! grep -q GIO "$TMP/ran" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while ! grep -q GIO "$TMP/ran" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(cat "$TMP/ran")" "GIO launch $d/chrome-bbb-Default.desktop"
 }
 
@@ -276,7 +279,7 @@ test_cmd_open_linux_without_app_opens_a_tab() {
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$TMP" > "$TMP/bin/chromium"; chmod +x "$TMP/bin/chromium"
   open_choose_browser() { echo "bin:$TMP/bin/chromium"; }
   cmd_open 2>/dev/null
-  i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+  i=0; while [ ! -s "$TMP/args" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   assert_eq "$(tr '\n' '|' < "$TMP/args")" "http://bedrock-now.localhost:8800|"
 }
 

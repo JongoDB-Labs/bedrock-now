@@ -102,7 +102,8 @@ test_classify_rejects_huge_exponents_fast() {
   # dec() pads zeros: an unbounded exponent (1e-99999) once took minutes. |exponent| > 30 = invalid price.
   start="$(date +%s)"
   out="$(printf 'a/huge\tn\t1\t1e-99999\t0\t\t\ttext\t1\na/big\tn\t1\t1e+400\t0\t\t\ttext\t1\na/ok\tn\t1\t1e-30\t0\t1e-31\t\ttext\t1\n' | or_classify)"
-  [ $(($(date +%s) - start)) -le 2 ]
+  # milliseconds now; 10 s leaves room for a busy machine and still catches minutes (the ids below catch the rest)
+  [ $(($(date +%s) - start)) -le 10 ] || { echo "or_classify took $(($(date +%s) - start)) s" >&2; return 1; }
   assert_eq "$(printf '%s\n' "$out" | _ids)" "a/ok "
   assert_eq "$(printf '%s' "$out" | cut -f4,6)" "$(printf '0.000000000000000000000000000001\t')"   # bad cache price → dropped
 }

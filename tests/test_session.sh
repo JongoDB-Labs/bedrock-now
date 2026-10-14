@@ -167,12 +167,17 @@ test_wrapper_ctrl_c_reaches_claude_and_summary_still_prints() {
   _wrapper_env
   export STUB_SLEEP=30 STUB_MARK="$TMP/mark"
   # Like Ctrl-C in a terminal: SIGINT to the whole process group (wrapper + claude). Job control gives the
-  # wrapper its own group, and keeps SIGINT from being ignored as it would be in a plain `&` job.
+  # wrapper its own group, and keeps SIGINT from being ignored as it would be in a plain `&` job. A suite that was
+  # itself started as such a job (`tests/run.sh &` in a script, some CI and agent runners) has SIGINT ignored, which
+  # no shell can undo and every child inherits: perl first puts it back to the default, as a terminal has it.
+  dfl=(); if command -v perl >/dev/null 2>&1; then dfl=(perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or die "exec: $!\n"'); fi
   set -m
-  PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" -p hi > /dev/null 2> "$TMP/err" &
+  PATH="$TMP/bin:$PATH" ${dfl[@]+"${dfl[@]}"} "$BASH" "$STACK_DIR/bin/claude-bedrock" -p hi > /dev/null 2> "$TMP/err" &
   w=$!
   set +m
-  i=0; while [ ! -f "$STUB_MARK.started" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  # up to 60 s for claude to start on a busy machine (a Ctrl-C before that would test nothing)
+  i=0; while [ ! -f "$STUB_MARK.started" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -f "$STUB_MARK.started" ] || { kill -KILL -- "-$w" 2>/dev/null || true; echo "claude never started" >&2; return 1; }
   kill -INT -- "-$w"
   rc=0; wait "$w" || rc=$?
   assert_eq "$(cat "$STUB_MARK" 2>/dev/null)" "GOT_INT"
@@ -188,13 +193,14 @@ test_wrapper_is_killed_by_sigint_like_claude() {
   rc="$(python3 -I -c '
 import os, signal, subprocess, sys, time
 env = dict(os.environ, PATH=os.environ["T_PATH"])
+signal.signal(signal.SIGINT, signal.SIG_DFL)   # as in a terminal, also when the suite runs in the background
 p = subprocess.Popen([os.environ.get("BASH", "bash"), os.environ["T_WRAPPER"], "-p", "hi"], env=env,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-for _ in range(50):
-    if os.path.exists(os.environ["STUB_MARK"] + ".started"): break
+deadline = time.time() + 60   # claude starts at once; a busy machine may take a while
+while not os.path.exists(os.environ["STUB_MARK"] + ".started") and time.time() < deadline:
     time.sleep(0.1)
 os.killpg(p.pid, signal.SIGINT)
-print(p.wait(timeout=20))')"
+print(p.wait(timeout=60))')"
   assert_eq "$rc" "-2"
   assert_eq "$(cat "$STUB_MARK" 2>/dev/null)" "GOT_INT"
 }

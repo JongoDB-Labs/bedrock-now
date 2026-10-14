@@ -19,16 +19,35 @@ _skip_unless_can_listen() {
   echo "skip: no python3 or BusyBox nc to open a listener" >&2
   return 77
 }
-_listen() { # start a listener on 127.0.0.1:$1, echo its pid
+_listen() { # start a listener on 127.0.0.1:$1, echo its pid (python3: it creates $TMP/listening.$1 once it listens)
   # stdout/stderr redirected so the background job doesn't hold the caller's $(...) open.
   if command -v python3 >/dev/null; then
-    python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(30)' "$1" >/dev/null 2>&1 &
+    python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); open(sys.argv[2], "w").close(); time.sleep(120)' "$1" "$TMP/listening.$1" >/dev/null 2>&1 &
   else # BusyBox nc (e.g. the bash:5.2 image): persistent listener
     nc -lk -p "$1" -s 127.0.0.1 -e cat >/dev/null 2>&1 &
   fi
   echo $!
 }
-_wait_listening() { for _ in 1 2 3 4 5 6 7 8 9 10; do port_in_use "$1" && return 0; sleep 0.3; done; return 1; }
+# _listen_free START — our own listener on a free port from START: sets LPORT and LPID. Another program, or another
+# copy of this suite running at the same time, can take the port between next_free_port and the bind: then ours
+# dies and the next port is tried. It listens within a second; up to 20 s on a busy machine. (BusyBox nc leaves no
+# marker: there the port itself is watched, as before.)
+_listen_free() {
+  local start="$1" tries=0 i
+  while [ "$tries" -lt 10 ]; do
+    LPORT="$(next_free_port "$start")" || return 1
+    LPID="$(_listen "$LPORT")"
+    i=0
+    while kill -0 "$LPID" 2>/dev/null && [ "$i" -lt 100 ]; do
+      if command -v python3 >/dev/null; then [ ! -f "$TMP/listening.$LPORT" ] || return 0
+      elif port_in_use "$LPORT"; then return 0; fi
+      sleep 0.2; i=$((i + 1))
+    done
+    kill "$LPID" 2>/dev/null || true
+    start=$((LPORT + 1)); tries=$((tries + 1))
+  done
+  return 1
+}
 # Fake compose for resolve_port: our stack holds no ports.
 dc() { return 1; }
 
@@ -39,27 +58,26 @@ test_free_port_is_not_in_use() {
 
 test_listening_port_is_in_use() {
   _skip_unless_can_listen || return
-  p="$(next_free_port 41100)"; pid="$(_listen "$p")"
-  if _wait_listening "$p"; then rc=0; else rc=1; fi
-  kill "$pid"
+  _listen_free 41100 || { echo "no listener came up" >&2; return 1; }
+  if port_in_use "$LPORT"; then rc=0; else rc=1; fi
+  kill "$LPID"
   [ "$rc" -eq 0 ]
 }
 
 test_next_free_port_skips_used() {
   _skip_unless_can_listen || return
-  p="$(next_free_port 41200)"; pid="$(_listen "$p")"
-  _wait_listening "$p" || true
-  n="$(next_free_port "$p")" || n=0
-  kill "$pid"
-  [ "$n" -gt "$p" ]
+  _listen_free 41200 || { echo "no listener came up" >&2; return 1; }
+  n="$(next_free_port "$LPORT")" || n=0
+  kill "$LPID"
+  [ "$n" -gt "$LPORT" ]
 }
 
 test_dev_tcp_fallback_detects_listener() {
   _skip_unless_can_listen || return
   lsof() { return 1; }; ss() { return 1; }   # force the /dev/tcp path
-  p="$(next_free_port 41300)"; pid="$(_listen "$p")"
-  if _wait_listening "$p"; then rc=0; else rc=1; fi
-  kill "$pid"
+  _listen_free 41300 || { echo "no listener came up" >&2; return 1; }
+  if port_in_use "$LPORT"; then rc=0; else rc=1; fi
+  kill "$LPID"
   [ "$rc" -eq 0 ]
 }
 

@@ -114,7 +114,8 @@ test_latest_release_is_read_without_ever_blocking() {   # review I4: the portal 
     assert_eq "$(latest_release_seen)" "v0.3.0"
     rm -f "$f"; mkfifo "$f"   # a reader that opened this normally would wait forever
     ( latest_release_seen > "$TMP/out" ) & p=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    # it returns at once; up to 30 s for a busy machine (a read that blocks never returns)
+    i=0; while kill -0 "$p" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
     if kill -0 "$p" 2>/dev/null; then kill "$p"; echo "$mode: blocked on a FIFO" >&2; return 1; fi
     assert_eq "$(cat "$TMP/out")" ""
     rm -f "$f"; printf 'latest=v9.9.9\n' > "$TMP/elsewhere"; ln -s "$TMP/elsewhere" "$f"
@@ -128,7 +129,8 @@ test_the_watchdog_ends_a_stuck_read_quietly() {   # re-review N7: no "Terminated
   printf 'latest=v0.3.0\n' > "$TMP/latest.txt"
   t0="$(date +%s)"
   out="$( (BEDROCK_NOW_NO_PERL=1 PATH="$TMP/slowbin:$PATH" read_portal_file "$TMP/latest.txt" 256) 2>"$TMP/err" || true)"
-  [ $(($(date +%s) - t0)) -le 5 ] || { echo "the read was not ended in time" >&2; return 1; }
+  # the watchdog ends it after 2 s; without one it would take the stub's 30 s. The rest is room for a busy machine.
+  [ $(($(date +%s) - t0)) -le 10 ] || { echo "the read was not ended in time ($(($(date +%s) - t0)) s)" >&2; return 1; }
   assert_eq "$out" ""
   assert_eq "$(cat "$TMP/err")" ""
 }
@@ -139,5 +141,7 @@ test_a_plain_read_without_perl_does_not_wait_for_the_watchdog() {   # verify N7:
   t0="$(date +%s)"
   for _ in 1 2 3; do out="$(BEDROCK_NOW_NO_PERL=1 read_portal_file "$TMP/latest.txt" 256)"; done
   assert_eq "$out" "latest=v0.3.0"
-  [ $(($(date +%s) - t0)) -le 2 ] || { echo "three plain reads took $(($(date +%s) - t0)) s" >&2; return 1; }
+  # waiting for the watchdog costs 2 s a read (>= 6 s in all); a plain read takes milliseconds. Up to 4 s leaves room
+  # for a busy machine (in whole seconds a run within 4 s never measures more than 4, one of 6 s never less than 6).
+  [ $(($(date +%s) - t0)) -le 4 ] || { echo "three plain reads took $(($(date +%s) - t0)) s" >&2; return 1; }
 }
