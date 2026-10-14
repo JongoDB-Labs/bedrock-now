@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-from . import icons, openrouter, updates
+from . import icons, openrouter, updates, usage
 from . import prices as price_update
 from .config import Settings
 
@@ -193,7 +193,8 @@ def _num(v):
 
 
 async def _key_spend(client: httpx.AsyncClient, s: Settings, alias: str, label: str, key: str) -> dict:
-    row = {"alias": alias, "label": label, "spend": None, "max_budget": None, "reset_at": None, "error": None}
+    row = {"alias": alias, "label": label, "spend": None, "max_budget": None, "reset_at": None, "period_start": None,
+           "error": None}
     if not key:
         row["error"] = "no key yet — run ./stack setup"
         return row
@@ -213,6 +214,9 @@ async def _key_spend(client: httpx.AsyncClient, s: Settings, alias: str, label: 
     row["spend"] = _num(info.get("spend")) or 0.0
     row["max_budget"] = _num(info.get("max_budget"))
     row["reset_at"] = info.get("budget_reset_at") if isinstance(info.get("budget_reset_at"), str) else None
+    dur = info.get("budget_duration") if isinstance(info.get("budget_duration"), str) else None
+    start = usage.period_start(row["reset_at"], dur)   # first UTC day this key's spend counts from
+    row["period_start"] = start.isoformat() if start else None
     return row
 
 
@@ -242,8 +246,16 @@ def models_with_openrouter(s: Settings) -> dict:
     return models
 
 
+async def spend_and_usage(client: httpx.AsyncClient, s: Settings) -> dict:
+    """spend() plus, while OpenRouter is on, the Equivalent view and OpenRouter usage (usage.py); both None when off."""
+    sp = await spend(client, s)
+    sp["equivalent"], sp["openrouter_usage"] = await usage.build(client, s, sp)
+    return sp
+
+
 async def build(client: httpx.AsyncClient, s: Settings) -> dict:
-    svc, sp, acct = await asyncio.gather(services(client, s), spend(client, s), openrouter.account(client, s.openrouter_api_key))
+    svc, sp, acct = await asyncio.gather(services(client, s), spend_and_usage(client, s),
+                                         openrouter.account(client, s.openrouter_api_key))
     sp["openrouter"] = acct
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

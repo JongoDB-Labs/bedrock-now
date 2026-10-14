@@ -109,8 +109,16 @@
     <div class="grid">
       <div class="col">
       <section class="spend" aria-labelledby="spend-title">
-        <h2 id="spend-title">Bedrock spend</h2>
+        <div class="spend-head">
+          <h2 id="spend-title">Bedrock spend</h2>
+          <div id="cost-view" class="chips seg" role="group" aria-label="Cost view" hidden>
+            <button type="button" class="chip" data-view="actual" aria-pressed="true">Actual</button>
+            <button type="button" class="chip" data-view="equivalent" aria-pressed="false">Equivalent</button>
+          </div>
+        </div>
+        <p id="cost-view-note" class="note view-note" hidden></p>
         <p class="total"><span id="total" class="figure">–</span> <span class="total-note">in the last 30 days, all keys</span></p>
+        <p id="total-foot" class="note total-foot" hidden></p>
         <ul id="meters" class="meters"></ul>
         <div id="openrouter" class="or-account" hidden></div>
         <p class="note">Each key has a monthly budget that resets on the date shown. Change budgets with <code>BUDGET_*</code> in <code>.env</code>, then run <code>./stack setup</code>.</p>

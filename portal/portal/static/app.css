@@ -79,6 +79,35 @@ td.provider .tier { margin-left: 6px; padding: 0 6px; border-radius: 4px; border
 .chip .count { margin-left: 4px; font-variant-numeric: tabular-nums; }
 .or-account { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 14px; }
 .or-account .meter-head b { font-family: var(--figures); font-weight: 600; font-size: 16px; }
+.or-account .or-title { font-weight: 500; }
+/* Cost views (Actual | Equivalent, only while OpenRouter is on): two chips joined into one switch. */
+.spend-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 12px; }
+.spend-head h2 { margin: 0; }
+.chips.seg { margin: 0; gap: 0; flex-wrap: nowrap; }
+.chips.seg .chip { border-radius: 0; }
+.chips.seg .chip:first-child { border-radius: 999px 0 0 999px; }
+.chips.seg .chip:last-child { border-radius: 0 999px 999px 0; margin-left: -1px; }
+.chips.seg .chip[aria-pressed="true"] { position: relative; }
+.view-note { margin: 0 0 12px; }
+.total-foot { margin: -12px 0 16px; }
+/* OpenRouter usage through this stack: free daily limit, today / 30 days, top models, recent failures. */
+.or-free { margin-top: 14px; }
+.or-usage { margin-top: 14px; font-size: 13px; }
+.or-usage tbody th { padding-top: 7px; vertical-align: top; color: var(--ink); }
+.or-usage tr:last-child th { border-bottom: 0; }
+.or-usage td span { display: block; }
+.or-usage td .sub { color: var(--muted); font-size: 12.5px; }
+.or-usage td.none { color: var(--muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.or-sub { margin: 16px 0 6px; font-size: 13px; font-weight: 600; }
+.or-top, .or-fails { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.or-top li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.or-name { font-weight: 500; overflow-wrap: anywhere; }
+.or-top .tier { padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); font-size: 12px; }
+.or-stats { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.or-fails li { padding-left: 8px; border-left: 3px solid var(--warn); }
+.or-fail, .or-fix { display: block; }
+.or-fix, .or-when { color: var(--muted); }
 
 .logins-list { margin: 0; display: grid; gap: 14px; }
 .logins-list dt { font-weight: 500; }

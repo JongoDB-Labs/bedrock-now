@@ -354,3 +354,71 @@ def test_footer_is_one_markdown_line_without_html_or_math():
     # every "$" is followed by a digit, so Open WebUI's KaTeX rule ("$…$" closed by a "$" before a space or
     # punctuation) never matches
     assert all(s[i + 1].isdigit() for i, ch in enumerate(s) if ch == "$")
+
+
+# --- version 4: free models (OpenRouter ":free", price 0) say "free", not a dollar amount ---
+
+FREE = {"name": "Gemma 4 31B (free) (OpenRouter)", "input_cost_per_token": 0, "output_cost_per_token": 0,
+        "equivalent_input_cost_per_token": 0.00000009, "equivalent_output_cost_per_token": 0.00000034,
+        "equivalent_cache_read_input_token_cost": 0.00000005}
+FREE_NO_PAID = {"name": "Free Models Router (OpenRouter)", "input_cost_per_token": 0, "output_cost_per_token": 0}
+FREE_PRICES = {**PRICES, "or/google/gemma-4-31b-it:free": FREE, "or/openrouter/free": FREE_NO_PAID}
+_T4 = {"input": 1240, "uncached": 1240, "cache_read": 0, "cache_write": 0, "output": 380}
+
+
+def test_is_free_only_when_every_price_is_zero():
+    assert bc.is_free(FREE) and bc.is_free(FREE_NO_PAID)
+    assert not bc.is_free(PRICES["llama"]) and not bc.is_free(None) and not bc.is_free({"name": "x"})
+    assert not bc.is_free({"input_cost_per_token": 0, "output_cost_per_token": 0, "cache_read_input_token_cost": 0.1})
+
+
+def test_free_footer_shape():
+    eq = bc.equivalent_cost(_T4, FREE)
+    assert abs(eq - (1240 * 0.00000009 + 380 * 0.00000034)) < 1e-15
+    s = bc.footer(0.0, _T4, "Gemma", 0.04, True, eq)
+    assert s == "*free · 1,240 in / 380 out · Gemma · ≈ " + bc.fmt_usd(eq) + " at paid rates · chat ≈ " + bc.fmt_usd(0.04) + "*"
+    assert bc.footer(0.0, _T4, "Router", 0.0, True, None) == "*free · 1,240 in / 380 out · Router · chat ≈ $0.00*"
+    assert bc.equivalent_cost(_T4, FREE_NO_PAID) is None
+    for line in (s, bc.footer(0.0, _T4, "R", 0.0, True, None)):
+        assert "\n" not in line and line.count("*") == 2
+        assert all(line[i + 1].isdigit() for i, ch in enumerate(line) if ch == "$")
+
+
+def test_free_footer_is_stripped_and_counts_zero():
+    s = bc.footer(0.0, _T4, "Gemma", 0.04, True, 0.0012)
+    assert bc.strip_footer("answer\n\n" + s) == "answer"
+    assert bc.footer_cost("answer\n\n" + s) == 0.0   # not the paid-rates figure, not the chat total
+    # mixed with every older shape, anywhere in the message
+    v3 = bc.footer(0.01, _T, "M", 0.02)
+    assert bc.strip_footer("a\n\n" + _V2 + " b\n\n" + v3 + " c\n\n" + s) == "a b c"
+    assert bc.footer_cost(v3 + " x\n\n" + s) == 0.0
+    assert bc.footer_cost(s + " x\n\n" + v3) == 0.01
+    # a version 3 footer of a free model ("≈ $0.00 · …") is still recognised
+    old_free = "*≈ $0.00 · 10 in / 5 out · Gemma · chat ≈ $0.00*"
+    assert bc.strip_footer("a\n\n" + old_free) == "a" and bc.footer_cost(old_free) == 0.0
+
+
+def test_outlet_free_model_shows_free_and_paid_rates_and_actual_chat_total():
+    f = make_filter(FREE_PRICES)
+    paid = 1240 * 0.0000022 + 380 * 0.000011
+    body = {"model": "or/google/gemma-4-31b-it:free", "messages": [
+        {"role": "assistant", "content": "old\n\n" + bc.footer(paid, _T4, "Claude Sonnet 5.5", paid), "usage": _usage()},
+        {"role": "assistant", "content": "A", "usage": _usage()},
+    ]}
+    content = run(f.outlet(body))["messages"][-1]["content"]
+    eq = 1240 * 0.00000009 + 380 * 0.00000034
+    assert content == "A\n\n*free · 1,240 in / 380 out · Gemma 4 31B (free) (OpenRouter) · ≈ " + bc.fmt_usd(eq) + \
+        " at paid rates · chat ≈ " + bc.fmt_usd(paid) + "*"
+    # the next answer (paid) counts the free one as $0
+    body["model"] = "claude-sonnet-5-5"
+    body["messages"].append({"role": "assistant", "content": "B", "usage": _usage()})
+    nxt = run(f.outlet(body))["messages"][-1]["content"]
+    assert nxt.endswith("chat ≈ " + bc.fmt_usd(paid * 2) + "*")
+
+
+def test_outlet_free_model_without_paid_version():
+    f = make_filter(FREE_PRICES)
+    body = {"model": "or/openrouter/free", "messages": [{"role": "assistant", "content": "A", "usage": _usage()}]}
+    content = run(f.outlet(body))["messages"][-1]["content"]
+    assert content == "A\n\n*free · 1,240 in / 380 out · Free Models Router (OpenRouter) · chat ≈ $0.00*"
+    assert run(f.inlet({"messages": [{"role": "assistant", "content": content}]}))["messages"][0]["content"] == "A"

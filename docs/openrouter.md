@@ -85,6 +85,46 @@ every `./stack openrouter refresh`), Open WebUI's labels and its per-answer cost
 free-model requests. The account's credit balance needs an OpenRouter *management* key, so with a normal key
 they link to https://openrouter.ai/settings/credits instead.
 
+### Actual and Equivalent cost
+
+Free models are priced at $0 in LiteLLM, so they never count against a budget. With OpenRouter on, Home's Spend
+card has an **Actual | Equivalent** switch (stored in the browser as `bn.costView`):
+
+- **Actual** (default): what you are charged — what LiteLLM records. Budgets always count this.
+- **Equivalent**: the same usage as if every request had been paid. A free model's tokens (`x/y:free`) are priced
+  at its paid version (`x/y`, from the cached model list, enabled or not), cache reads at its cache-read price;
+  everything else is unchanged. A free model without a paid version stays $0 and is named on Home. The 30-day total
+  and each key's amount change; the budget bars do not.
+
+The portal reads per-model token counts from LiteLLM's daily activity (`GET /user/daily/activity/aggregated`,
+UTC days; a key's budget period starts at 00:00 UTC, so the key's window is exact) with the master key, and
+caches them for a minute. If LiteLLM cannot answer, Equivalent says so and shows actual spend.
+
+In Chat, a free model's cost line reads `free · 1,240 in / 380 out · <model> · ≈ $0.0002 at paid rates · chat ≈
+$0.04` (the paid-rates part only when there is a paid version); the chat total is actual.
+
+### Usage and failures on Home
+
+Under the account line Home shows: OpenRouter's own count of the key's free-model requests today against its daily
+limit (a gauge; OpenRouter counts per UTC day: 50 requests, 1,000 once at least $10 of credits were bought);
+requests and tokens to `or/…` models through this stack today and in the last 30 days, free and paid, with what
+they cost (in Equivalent also what the free ones would have cost); the five most used models; and the failed
+`or/…` requests of the last 24 hours from LiteLLM's logs (`GET /spend/logs/v2?status_filter=failure`), grouped
+by cause with a fix:
+
+| Failure | Fix shown |
+|---|---|
+| HTTP 429 `free-models-per-day` | the daily free limit; it starts over with the next UTC day, $10 of credits raise it |
+| other HTTP 429 | too many requests in a short time (free models: 20 a minute); wait or use another model |
+| HTTP 402 | paid models need credits (openrouter.ai/settings/credits), or `./stack openrouter models free` |
+| HTTP 404 "No endpoints found matching your data policy" | allow free endpoints that may train on prompts at openrouter.ai/settings/privacy |
+| HTTP 401 | `./stack openrouter set` replaces the key |
+| a key's monthly budget used up | raise `BUDGET_*` in `.env`, then `./stack setup` |
+| anything else | the status and the provider's message (keys and AWS ARNs masked) |
+
+`./stack costs` and `./stack openrouter status` print the 30-day free and paid totals (free: `$0 actual (≈ $… at
+paid rates)`) and today's requests from the same LiteLLM data.
+
 ## When a model fails
 
 The usual errors (404 *No endpoints found matching your data policy*, 429, 402) and their fixes are in the

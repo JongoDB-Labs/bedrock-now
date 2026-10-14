@@ -68,8 +68,41 @@ function ago(iso) {
 }
 
 // --- rendering (textContent only: nothing from the API is parsed as HTML) ---
+// Two cost views while OpenRouter is on (spend.equivalent; null otherwise): Actual (what is charged; budgets
+// count it) and Equivalent (free OpenRouter models priced at their paid version). Remembered per browser.
+const VIEW_NOTE = {
+  actual: "Actual: what you are charged — Bedrock at its on-demand list prices (your AWS bill can differ with discounts or credits), paid OpenRouter models at their prices, free models $0; budgets always count this.",
+  equivalent: "Equivalent: what the same usage would have cost if every request had been paid — free OpenRouter models priced at their paid version, everything else unchanged.",
+};
+function savedView() { try { return localStorage.getItem("bn.costView") === "equivalent" ? "equivalent" : "actual"; } catch (_) { return "actual"; } }
+let costView = savedView();
+function setCostView(view) {
+  costView = view;
+  try { localStorage.setItem("bn.costView", view); } catch (_) { /* storage blocked: fine */ }
+  if (lastSummary) { renderSpend(lastSummary.spend); renderOpenRouter(lastSummary.spend.openrouter, lastSummary.spend.openrouter_usage); }
+}
+const paidZero = (v) => `of which ${usd(v)} is free-model usage you paid $0 for`;
+
 function renderSpend(spend) {
-  $("#total").textContent = spend.total_error ? "–" : usd(spend.total_30d);
+  const eq = spend.equivalent || null;
+  const view = eq ? costView : "actual";
+  const useEq = view === "equivalent" && eq && !eq.error;
+  $("#cost-view").hidden = !eq;
+  for (const b of document.querySelectorAll("#cost-view .chip")) b.setAttribute("aria-pressed", String(b.dataset.view === view));
+  const vn = $("#cost-view-note"); vn.hidden = !eq; vn.textContent = eq ? VIEW_NOTE[view] : "";
+  $("#total").textContent = spend.total_error ? "–" : usd(useEq && eq.total_30d != null ? eq.total_30d : spend.total_30d);
+  let tf = "";
+  if (view === "equivalent" && eq) {
+    if (eq.error) tf = `Equivalent unavailable (${eq.error}): showing actual spend.`;
+    else {
+      const none = eq.no_paid_variant || [];
+      if (eq.extra_30d > 0) tf = `${paidZero(eq.extra_30d)}${none.length ? `; no paid version, so $0 here too: ${none.join(", ")}` : ""}`;
+      else if (eq.free_requests_30d) tf = `${plural(eq.free_requests_30d, "free-model request")}, none with a paid version to price them at`;
+      else tf = "No free-model usage in the last 30 days";
+      tf += ". Budgets count actual spend.";
+    }
+  }
+  const tfe = $("#total-foot"); tfe.hidden = !tf; tfe.textContent = tf;
   const list = $("#meters"); list.replaceChildren();
   for (const k of spend.keys) {
     const li = el("li", { class: "meter" });
@@ -78,17 +111,20 @@ function renderSpend(spend) {
       head.append(el("span", { class: "amount", text: "unavailable" }));
       li.append(head, el("div", { class: "meter-foot", text: k.error }));
     } else {
-      const pct = k.max_budget ? (k.spend / k.max_budget) * 100 : 0;
+      const ek = useEq ? (eq.keys || {})[k.alias] : null;
+      const pct = k.max_budget ? (k.spend / k.max_budget) * 100 : 0;   // budgets count actual spend
       if (pct >= 100) li.classList.add("over"); else if (pct >= 80) li.classList.add("warn");
-      const amount = el("span", { class: "amount" }, el("b", { text: usd(k.spend) }), k.max_budget != null ? ` of ${usd(k.max_budget)}` : ", no budget");
+      const shown = ek && ek.spend != null ? ek.spend : k.spend;
+      const amount = el("span", { class: "amount" }, el("b", { text: usd(shown) }), k.max_budget != null ? ` of ${usd(k.max_budget)}` : ", no budget");
       head.append(amount);
       const bar = el("i"); bar.style.width = `${Math.min(pct, 100)}%`;
       const gauge = el("div", { class: "gauge", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100",
         "aria-valuenow": String(Math.round(pct)), "aria-label": `${k.label}: ${Math.round(pct)}% of budget` }, bar);
-      let foot = k.max_budget ? `${Math.round(pct)}% of the monthly budget` : "no budget set";
+      let foot = k.max_budget ? `${Math.round(pct)}% of the monthly budget${useEq ? " (actual spend)" : ""}` : "no budget set";
       if (pct >= 100) foot = "Budget used up: requests with this key are refused until it resets";
       else if (pct >= 80) foot = `${Math.round(pct)}% used: close to the budget`;
       if (k.reset_at) foot += ` · resets ${day(k.reset_at)}`;
+      if (ek && ek.free_requests) foot += ek.extra > 0 ? ` · ${paidZero(ek.extra)}` : ` · ${count(ek.free_requests)} free-model requests with no paid version ($0)`;
       li.append(head, gauge, el("div", { class: "meter-foot", text: foot }));
     }
     list.append(li);
@@ -105,14 +141,34 @@ function renderServices(services) {
   }
 }
 
-// Optional OpenRouter account line under the spend meters (usage of the key; credits when readable).
-function renderOpenRouter(acct) {
+// Optional OpenRouter block under the spend meters: the key's account line, OpenRouter's free daily request
+// count as a gauge, usage through this stack (today / 30 days, free / paid), top models and recent failures.
+function count(n) { return Number(n || 0).toLocaleString("en-US"); }
+function toks(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}K`;
+  return String(n);
+}
+const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
+// What a free model's usage cost: $0, or in the Equivalent view its price at the paid version's rates.
+function freeCost(equivalent, eqView) { return eqView && equivalent > 0 ? `≈ ${usd(equivalent)} at paid rates` : "$0"; }
+
+function orCell(b, free, eqView) {
+  if (!b || !b.requests) return el("td", { class: "none", text: "–" });
+  return el("td", {}, el("span", { class: "n", text: plural(b.requests, "request") }),
+    el("span", { class: "sub", text: `${toks(b.tokens_in)} in · ${toks(b.tokens_out)} out` }),
+    el("span", { class: "sub", text: free ? freeCost(b.equivalent, eqView) : usd(b.cost) }));
+}
+
+function renderOpenRouter(acct, use) {
   const box = $("#openrouter");
   box.hidden = !(acct && acct.enabled);
   $("#spend-title").textContent = box.hidden ? "Bedrock spend" : "Spend";
   if (box.hidden) return;
   box.replaceChildren();
-  const head = el("div", { class: "meter-head" }, el("span", { text: `OpenRouter${acct.label ? ` (${acct.label})` : ""}` }));
+  const eqView = costView === "equivalent";
+  const head = el("div", { class: "meter-head" }, el("span", { class: "or-title", text: `OpenRouter${acct.label ? ` (${acct.label})` : ""}` }));
   const foot = [];
   if (acct.error) {
     head.append(el("span", { class: "amount", text: "unavailable" })); foot.push(acct.error);
@@ -122,10 +178,60 @@ function renderOpenRouter(acct) {
     if (acct.limit != null) foot.push(`key limit ${usd(acct.limit)}, ${usd(acct.limit_remaining)} left`);
     if (acct.credits) foot.push(`credits ${usd(acct.credits.remaining)} left of ${usd(acct.credits.total)}`);
     else if (acct.credits_note) foot.push(acct.credits_note);
-    if (acct.free_requests) foot.push(`free models: ${acct.free_requests.used} of ${acct.free_requests.limit} requests today`);
     if (acct.is_free_tier) foot.push("free tier (no credits bought yet)");
   }
   box.append(head, el("div", { class: "meter-foot", text: foot.join(" · ") }));
+
+  const fr = acct.free_requests;
+  if (fr && fr.limit) {
+    const pct = (fr.used / fr.limit) * 100;
+    const m = el("div", { class: "meter or-free" });
+    if (pct >= 100) m.classList.add("over"); else if (pct >= 80) m.classList.add("warn");
+    const bar = el("i"); bar.style.width = `${Math.min(pct, 100)}%`;
+    let ff = "OpenRouter's count for this key, per UTC day";
+    if (pct >= 100) ff = "Limit reached: free models are refused until the next UTC day";
+    if (fr.limit < 1000) ff += " · buying $10 of credits raises it to 1,000 a day";
+    m.append(el("div", { class: "meter-head" }, el("span", { text: "Free-model requests today" }),
+      el("span", { class: "amount" }, el("b", { text: count(fr.used) }), ` of ${count(fr.limit)}`)),
+      el("div", { class: "gauge", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(Math.min(pct, 100))),
+        "aria-label": `Free-model requests today: ${count(fr.used)} of ${count(fr.limit)}` }, bar),
+      el("div", { class: "meter-foot", text: ff }));
+    box.append(m);
+  }
+  if (!use) return;
+  if (use.error) { box.append(el("p", { class: "note", text: `Usage of OpenRouter models: unavailable (${use.error}).` })); }
+  else {
+    const t = use.today, d = use.days_30;
+    box.append(el("table", { class: "or-usage" },
+      el("thead", {}, el("tr", {}, el("th", { scope: "col" }, el("span", { class: "sr", text: "Models" })),
+        el("th", { scope: "col", text: "Today" }), el("th", { scope: "col", text: "Last 30 days" }))),
+      el("tbody", {},
+        el("tr", {}, el("th", { scope: "row", text: "Free" }), orCell(t.free, true, eqView), orCell(d.free, true, eqView)),
+        el("tr", {}, el("th", { scope: "row", text: "Paid" }), orCell(t.paid, false, eqView), orCell(d.paid, false, eqView)))));
+    if (use.top && use.top.length) {
+      const ol = el("ol", { class: "or-top" });
+      for (const m of use.top) {
+        const cost = m.access === "free" ? (m.no_paid_variant ? "$0 (no paid version)" : freeCost(m.equivalent, eqView)) : usd(m.cost);
+        ol.append(el("li", {}, el("span", { class: "or-name", title: m.id, text: m.name }),
+          el("span", { class: "tier", text: m.access === "free" ? "Free" : "Paid" }),
+          el("span", { class: "or-stats", text: `${plural(m.requests, "request")} · ${toks(m.tokens_in + m.tokens_out)} tokens · ${cost}` })));
+      }
+      box.append(el("h3", { class: "or-sub", text: "Top models, last 30 days" }), ol);
+    }
+  }
+  const f = use.failures;
+  if (!f) return;
+  box.append(el("h3", { class: "or-sub", text: `Failed requests, last ${f.hours || 24} hours` }));
+  if (f.error) { box.append(el("p", { class: "note", text: `Unavailable (${f.error}).` })); return; }
+  if (!f.groups || !f.groups.length) { box.append(el("p", { class: "note", text: "None." })); return; }
+  const ul = el("ul", { class: "or-fails" });
+  for (const g of f.groups) {
+    ul.append(el("li", {}, el("span", { class: "or-fail" }, el("b", { text: `${count(g.count)}×` }), ` ${g.label}`,
+      g.last_at && !isNaN(new Date(g.last_at)) ? el("span", { class: "or-when", text: ` · last at ${new Date(g.last_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` }) : null),
+      g.fix ? el("span", { class: "or-fix", text: g.fix }) : null));
+  }
+  box.append(ul);
+  if (f.more) box.append(el("p", { class: "note", text: "Only the newest failed requests are counted here; Admin → Logs has all of them." }));
 }
 
 let modelFilter = "all";
@@ -411,7 +517,7 @@ async function refresh() {
   clearTimeout(timer);
   try {
     const d = await api("/api/summary");
-    renderSpend(d.spend); renderOpenRouter(d.spend.openrouter); renderServices(d.services); renderModels(d.models, d.prices); renderVoice(d.voice);
+    renderSpend(d.spend); renderOpenRouter(d.spend.openrouter, d.spend.openrouter_usage); renderServices(d.services); renderModels(d.models, d.prices); renderVoice(d.voice);
     renderUpdate(d.update); lastUpdate = d.update;
     lastSummary = d;
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;
@@ -453,6 +559,7 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const a of document.querySelectorAll(".popout")) a.href = appUrl(a.dataset.app);
   for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => showTab(b.dataset.tab));
   $("#refresh").addEventListener("click", refresh);
+  for (const b of document.querySelectorAll("#cost-view .chip")) b.addEventListener("click", () => setCostView(b.dataset.view));
   for (const b of document.querySelectorAll("#model-filter .chip")) {
     b.addEventListener("click", () => { modelFilter = b.dataset.filter; if (lastSummary) renderModels(lastSummary.models, lastSummary.prices); });
   }

@@ -124,6 +124,8 @@
   .svc-detail { grid-column: 2; text-align: left; }
 
   .chips { gap: 8px; }
+  /* OpenRouter top models: the numbers go under the name. */
+  .or-stats { margin-left: 0; flex-basis: 100%; }
 
   .toast { left: 16px; right: 16px; bottom: calc(72px + env(safe-area-inset-bottom)); text-align: center; }
 

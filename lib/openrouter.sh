@@ -314,16 +314,26 @@ openrouter_owui_models() {
 # openrouter_cost_prices_entries -> ',"or/<id>":{"name":"Llama 3.3 70B Instruct (OpenRouter)","input_cost_per_token":…,
 # "output_cost_per_token":…[,"cache_read_input_token_cost":…][,"cache_creation_input_token_cost":…]}' for every
 # enabled OpenRouter model (one awk pass), appended by cost_prices_json so Open WebUI's per-message cost footer
-# prices them too. Nothing when OpenRouter is off.
+# prices them too. A free model ("x/y:free") whose paid version "x/y" is in the cache (enabled or not) also gets
+# its prices as "equivalent_input_cost_per_token" etc.: the footer says "free · … · ≈ $… at paid rates".
+# Nothing when OpenRouter is off.
 openrouter_cost_prices_entries() {
-  openrouter_enabled || return 0
-  or_selected | awk -F'\t' '{
-    name = $2; if (index(name, ": ")) name = substr(name, index(name, ": ") + 2)
-    o = ",\"input_cost_per_token\":" $4 ",\"output_cost_per_token\":" $5
-    if ($6 != "") o = o ",\"cache_read_input_token_cost\":" $6
-    if ($7 != "") o = o ",\"cache_creation_input_token_cost\":" $7
-    printf ",\"or/%s\":{\"name\":\"%s (OpenRouter)\"%s}", $1, name, o
-  }'
+  openrouter_enabled && [ -r "$(or_cache_tsv)" ] || return 0
+  or_selected | awk -F'\t' '
+    FILENAME == ARGV[1] { if ($0 !~ /^#/ && $8 == "paid") { pi[$1] = $4; po[$1] = $5; pr[$1] = $6; pw[$1] = $7 }; next }
+    {
+      name = $2; if (index(name, ": ")) name = substr(name, index(name, ": ") + 2)
+      o = ",\"input_cost_per_token\":" $4 ",\"output_cost_per_token\":" $5
+      if ($6 != "") o = o ",\"cache_read_input_token_cost\":" $6
+      if ($7 != "") o = o ",\"cache_creation_input_token_cost\":" $7
+      b = $1; sub(/:free$/, "", b)
+      if ($8 == "free" && b != $1 && (b in pi)) {
+        o = o ",\"equivalent_input_cost_per_token\":" pi[b] ",\"equivalent_output_cost_per_token\":" po[b]
+        if (pr[b] != "") o = o ",\"equivalent_cache_read_input_token_cost\":" pr[b]
+        if (pw[b] != "") o = o ",\"equivalent_cache_creation_input_token_cost\":" pw[b]
+      }
+      printf ",\"or/%s\":{\"name\":\"%s (OpenRouter)\"%s}", $1, name, o
+    }' "$(or_cache_tsv)" -
 }
 
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
@@ -600,6 +610,75 @@ or_counts() {
   or_selected | T="$total" awk -F'\t' '{ n++; if ($8 == "free") f++; else p++ } END { printf "%d enabled (%d free, %d paid) of %d offered\n", n, f, p, ENVIRON["T"] }'
 }
 
+# or_usage_totals FROM TODAY < flattened /user/daily/activity/aggregated -> one TAB-separated line:
+#   free_requests free_tokens free_equivalent free_requests_without_paid_version paid_requests paid_tokens paid_cost
+#   today_free_requests today_paid_requests
+# over the or/… model groups (answered requests only). A free model's tokens are priced at its paid version's
+# prices from the cache (the Equivalent view on Home, portal/portal/usage.py); FROM is the first cache-TSV file.
+# Model ids contain dots, so paths are matched from both ends ("…model_groups.or/<id>.metrics.<field>").
+or_usage_totals() {
+  awk -F'\t' -v today="$2" '
+    FILENAME == ARGV[1] { if ($0 !~ /^#/ && NF >= 8) { tier[$1] = $8; if ($8 == "paid") { pi[$1] = $4; po[$1] = $5; pr[$1] = $6; pw[$1] = $7 } }; next }
+    $1 ~ /^results\.[0-9]+\.date$/ { split($1, p, "."); day[p[2]] = substr($2, 1, 10); next }
+    $1 ~ /^results\.[0-9]+\.breakdown\.model_groups\.or\/.*\.metrics\.[a-z_]+$/ && $1 !~ /\.api_key_breakdown\./ {
+      split($1, p, "."); i = p[2]
+      rest = substr($1, length("results." i ".breakdown.model_groups.or/") + 1)
+      f = rest; sub(/^.*\.metrics\./, "", f); id = substr(rest, 1, length(rest) - length(".metrics." f))
+      seen[i SUBSEP id] = 1; v[i SUBSEP id SUBSEP f] = $2 + 0
+    }
+    END {
+      for (k in seen) {
+        split(k, q, SUBSEP); id = q[2]
+        req = v[k SUBSEP "api_requests"] - v[k SUBSEP "failed_requests"]; if (req < 0) req = 0
+        pt = v[k SUBSEP "prompt_tokens"]; ct = v[k SUBSEP "completion_tokens"]
+        cr = v[k SUBSEP "cache_read_input_tokens"]; cw = v[k SUBSEP "cache_creation_input_tokens"]
+        free = (id in tier) ? tier[id] == "free" : id ~ /:free$/
+        if (!free) { preq += req; ptok += pt + ct; pcost += v[k SUBSEP "spend"]; if (day[q[1]] == today) treqp += req; continue }
+        freq += req; ftok += pt + ct; if (day[q[1]] == today) treqf += req
+        b = id; sub(/:free$/, "", b)
+        if (b == id || !(b in pi)) { fnp += req; continue }
+        un = pt - cr - cw; if (un < 0) un = 0
+        feq += un * pi[b] + cr * (pr[b] != "" ? pr[b] : pi[b]) + cw * (pw[b] != "" ? pw[b] : pi[b]) + ct * po[b]
+      }
+      # %.0f, not %d: mawk caps %d at 2^31-1
+      printf "%.0f\t%.0f\t%.10f\t%.0f\t%.0f\t%.0f\t%.10f\t%.0f\t%.0f\n", freq, ftok, feq, fnp, preq, ptok, pcost, treqf, treqp
+    }' "$1" -
+}
+
+# _or_count N -> "1,234"
+_or_count() { awk -v n="$1" 'BEGIN { s = sprintf("%.0f", n); o = ""; while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } print s o }'; }
+
+# or_usage_lines — usage of or/… models through LiteLLM in the last 30 days (UTC days, the window of
+# /global/spend) and today, from GET /user/daily/activity/aggregated (master key). For ./stack costs and
+# ./stack openrouter status; one "unavailable" line when LiteLLM does not answer.
+or_usage_lines() {
+  local tmp code today t0 start cache line fr ft feq fnp pq pt pc tf tp actual
+  today="$(date -u +%Y-%m-%d)"; t0="$(date_to_epoch "$today")" || return 0
+  start="$(date -u -r $((t0 - 30 * 86400)) +%Y-%m-%d 2>/dev/null || date -u -d "@$((t0 - 30 * 86400))" +%Y-%m-%d)"
+  tmp="$(mktemp)"
+  code="$(litellm_api GET "/user/daily/activity/aggregated?start_date=$start&end_date=$today" "" "$tmp")"
+  if [ "$code" != 200 ]; then
+    rm -f "$tmp"
+    case "$code" in 000 | '') echo "usage     unavailable — LiteLLM did not answer (is the stack up? ./stack status)" ;;
+      *) echo "usage     unavailable (LiteLLM answered HTTP $code)" ;; esac
+    return 0
+  fi
+  cache="$(or_cache_tsv)"; [ -r "$cache" ] || cache=/dev/null
+  line="$(or_json_flatten < "$tmp" | or_usage_totals "$cache" "$today")"
+  rm -f "$tmp"
+  IFS=$'\t' read -r fr ft feq fnp pq pt pc tf tp <<< "$line"
+  if [ "${fr:-0}" -eq 0 ]; then actual="none"
+  else
+    actual="$(_or_count "$fr") requests, $(_or_count "$ft") tokens — \$0 actual"
+    if awk -v e="$feq" 'BEGIN { exit !(e > 0) }'; then actual="$actual (≈ $(usd "$feq") at paid rates)"
+    elif [ "$fnp" -gt 0 ]; then actual="$actual (no paid version to compare)"; fi
+  fi
+  printf 'free      %s   (last 30 days)\n' "$actual"
+  if [ "${pq:-0}" -eq 0 ]; then printf 'paid      none   (last 30 days)\n'
+  else printf 'paid      %s requests, %s tokens — %s   (last 30 days)\n' "$(_or_count "$pq")" "$(_or_count "$pt")" "$(usd "$pc")"; fi
+  printf 'today     %s free, %s paid requests   (UTC day; failures: Home or Admin → Logs)\n' "$(_or_count "$tf")" "$(_or_count "$tp")"
+}
+
 # openrouter_costs_section — ./stack costs: OpenRouter account and model counts (one line when it is off)
 openrouter_costs_section() {
   or_key_problem
@@ -608,6 +687,7 @@ openrouter_costs_section() {
   printf ' (prompts go to openrouter.ai and the model provider; spend through LiteLLM is in the keys above)\n'
   or_account_lines "$(get_env OPENROUTER_API_KEY)" | sed 's/^/  /'
   printf '  models    %s   (OPENROUTER_MODELS=%s; prices as of %s)\n' "$(or_counts)" "$(or_mode)" "$(or_fetched_at)"
+  or_usage_lines | sed 's/^/  /'
 }
 
 # openrouter_models_section — ./stack models: the OpenRouter summary under the Bedrock table
@@ -876,7 +956,8 @@ cmd_openrouter() {
       fi
       printf 'OpenRouter: on (prompts to or/… models go to openrouter.ai and the model provider)\n'
       or_account_lines "$(get_env OPENROUTER_API_KEY)" | sed 's/^/  /'
-      printf '  models    %s\n            OPENROUTER_MODELS=%s; list as of %s\n' "$(or_counts)" "$(or_mode)" "$(or_fetched_at)" ;;
+      printf '  models    %s\n            OPENROUTER_MODELS=%s; list as of %s\n' "$(or_counts)" "$(or_mode)" "$(or_fetched_at)"
+      [ -z "$(get_env LITELLM_MASTER_KEY)" ] || or_usage_lines | sed 's/^/  /' ;;
     *) die "usage: ./stack openrouter [status|set|apply|remove|models all|free|paid|<ids>|refresh|list]" ;;
   esac
 }

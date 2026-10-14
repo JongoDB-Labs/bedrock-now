@@ -4,6 +4,7 @@
 . "$STACK_DIR/lib/commands.sh"   # also sources lib/openrouter.sh
 . "$STACK_DIR/lib/owui.sh"
 FIXJ="$STACK_DIR/tests/fixtures/openrouter_models.json"
+FIXA="$STACK_DIR/tests/fixtures/litellm_daily_activity.json"   # LiteLLM 1.105.0 /user/daily/activity/aggregated, trimmed
 
 _rows() { or_models_tsv < "$FIXJ" | or_classify; }
 _ids() { cut -f1 | tr '\n' ' '; }
@@ -377,6 +378,60 @@ test_cost_prices_include_openrouter_only_when_on() {
   fi
   printf 'OPENROUTER_API_KEY=\n' > "$ENV_FILE"
   assert_not_contains "$(CATALOG="$TMP/cat.tsv" PRICES="$STACK_DIR/none.tsv" cost_prices_json)" "or/"
+}
+
+test_cost_prices_give_free_models_their_paid_version_prices() {
+  # OPENROUTER_MODELS=free: the paid "google/gemma-4-31b-it" is not enabled, but its prices are in the cache
+  _with_cache 'OPENROUTER_MODELS=free
+'
+  out="$(openrouter_cost_prices_entries)"
+  assert_contains "$out" '"or/google/gemma-4-31b-it:free":{"name":"Gemma 4 31B (free) (OpenRouter)","input_cost_per_token":0,"output_cost_per_token":0,"equivalent_input_cost_per_token":0.00000009,"equivalent_output_cost_per_token":0.00000034,"equivalent_cache_read_input_token_cost":0.00000005}'
+  # free without a paid version: no equivalent prices (the footer just says "free")
+  assert_contains "$out" '"or/nvidia/nemotron-3-super-120b-a12b:free":{"name":"Nemotron 3 Super (free) (OpenRouter)","input_cost_per_token":0,"output_cost_per_token":0}'
+  assert_contains "$out" '"or/inclusionai/ling-3.1-flash":{"name":"Ling 3.1 Flash (OpenRouter)","input_cost_per_token":0,"output_cost_per_token":0}'
+  assert_eq "$(printf '%s' "$out" | grep -o equivalent_input | wc -l | tr -d ' ')" 1
+  if command -v python3 >/dev/null; then printf '{%s}' "${out#,}" | python3 -c 'import json, sys; json.load(sys.stdin)'; fi
+  rm -f "$TMP/litellm/openrouter-models.tsv"
+  assert_eq "$(openrouter_cost_prices_entries 2>&1)" ""   # no cache yet: nothing, and no awk error
+}
+
+test_usage_totals_price_free_models_at_the_paid_version() {
+  _with_cache
+  out="$(or_json_flatten < "$FIXA" | or_usage_totals "$TMP/litellm/openrouter-models.tsv" 2026-10-14)"
+  # free: gemma 4 answered today + 1 earlier, ling 4 (no paid version); tokens 43,000 + 1,100 + 4,400.
+  # gemma at its paid version: 40000*0.09 + 3000*0.34 + (500*0.09 + 500*0.05 cached + 100*0.34) per 1M
+  assert_eq "$out" "$(printf '9\t48500\t0.0047240000\t4\t2\t1500\t0.0004700000\t4\t2')"
+  assert_eq "$(printf '{}' | or_json_flatten | or_usage_totals /dev/null 2026-10-14)" "$(printf '0\t0\t0.0000000000\t0\t0\t0\t0.0000000000\t0\t0')"
+}
+
+test_usage_lines_in_costs_and_status() {
+  _with_cache 'LITELLM_MASTER_KEY=sk-master
+LITELLM_PORT=9
+'
+  today="$(date -u +%Y-%m-%d)"
+  litellm_api() { echo "$1 $2" >> "$TMP/calls"; sed "s/2026-10-14/$today/" "$FIXA" > "$4"; echo 200; }
+  out="$(or_usage_lines)"
+  assert_contains "$out" 'free      9 requests, 48,500 tokens — $0 actual (≈ $0.0047 at paid rates)   (last 30 days)'
+  assert_contains "$out" 'paid      2 requests, 1,500 tokens — $0.0005   (last 30 days)'
+  assert_contains "$out" 'today     4 free, 2 paid requests'
+  assert_contains "$(cat "$TMP/calls")" "GET /user/daily/activity/aggregated?start_date="
+  assert_contains "$(cat "$TMP/calls")" "&end_date=$today"
+  _stub_curl_auth
+  assert_contains "$(KEY_BODY="$KEY_JSON" openrouter_costs_section)" 'free      9 requests, 48,500 tokens'
+  assert_contains "$(KEY_BODY="$KEY_JSON" cmd_openrouter status)" 'today     4 free, 2 paid requests'
+  litellm_api() { echo 000; }
+  assert_eq "$(or_usage_lines)" "usage     unavailable — LiteLLM did not answer (is the stack up? ./stack status)"
+  litellm_api() { echo 500; }
+  assert_eq "$(or_usage_lines)" "usage     unavailable (LiteLLM answered HTTP 500)"
+  # no free usage at all
+  litellm_api() { printf '{"results":[],"metadata":{}}' > "$4"; echo 200; }
+  assert_contains "$(or_usage_lines)" "free      none   (last 30 days)"
+  # OpenRouter off: no usage call at all
+  : > "$TMP/calls"; printf 'OPENROUTER_API_KEY=\n' > "$ENV_FILE"
+  # shellcheck disable=SC2329  # must stay uncalled: that is the check
+  litellm_api() { echo "$1 $2" >> "$TMP/calls"; echo 200; }
+  assert_contains "$(openrouter_costs_section)" "OpenRouter: off"
+  assert_eq "$(cat "$TMP/calls")" ""
 }
 
 test_cost_filter_valves_go_through_stdin() {

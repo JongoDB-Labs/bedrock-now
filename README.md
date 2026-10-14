@@ -164,7 +164,10 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   chat ≈ $0.0412` shows this answer's cost and the whole chat's, from the same prices as `./stack costs`. It comes
   from the "Bedrock cost" filter (Admin Panel → Functions), which strips these lines before the chat goes back
   to the model, so they never cost tokens. After **Continue response** the line prices only the continued
-  part; `./stack costs` is always exact.
+  part; `./stack costs` is always exact. A free OpenRouter model's line starts with `free` instead of a price
+  (`free · 1,240 in / 380 out · Gemma 4 31B (free) · ≈ $0.0002 at paid rates · chat ≈ $0.04`): nothing is
+  charged, and the paid-rates figure (only when a paid version exists) is for comparison; the chat total stays
+  what you actually pay.
 - **Budget banner:** while the `open-webui` or `claude-code` key is at 80% or more of its monthly budget, a
   banner says so (red at 100%).
 - **Knowledge:** Workspace → Knowledge to create a knowledge base and upload documents; type `#` in a chat to
@@ -257,7 +260,8 @@ posts its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Sl
 
 **Where to see spend:**
 - `./stack costs`: prices for your enabled models, spend and budget per key, the 30-day total.
-- **Home**: spend per key against its budget (amber from 80%, red at 100%) and the 30-day total.
+- **Home**: spend per key against its budget (amber from 80%, red at 100%) and the 30-day total. With
+  OpenRouter on, an **Actual | Equivalent** switch (see [Optional: OpenRouter](#optional-openrouter)).
 - **Admin** tab → Usage: spend by model and day.
 - **Chat**: the cost under every answer and the chat total; each model's price in the picker.
 - `claude-bedrock`: spend this period at launch, the session's cost at exit.
@@ -384,6 +388,22 @@ An account without credits can only use free models, so `apply`, `set` and setup
 
 In Chat they show their vendor's logo (Claude, GPT, Gemini, Llama, Qwen, DeepSeek, … or the OpenRouter logo
 for vendors without one). Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
+
+**Actual and Equivalent.** Free models really cost $0, so using them never eats into a budget. Home's Spend
+card then has a switch (remembered per browser):
+- **Actual**: what you are charged — Bedrock at its on-demand list prices (what bedrock-now records; your AWS
+  bill can differ with discounts or credits), paid OpenRouter models at their prices, free models $0. Budgets
+  always count actual spend.
+- **Equivalent**: what the same usage would have cost if every request had been paid — each free model
+  (`…:free`) priced at its paid version (the same id without `:free`); a free model without one stays $0 and is
+  named as such. The budget bars keep showing actual spend.
+
+Home also shows OpenRouter's own count of today's free-model requests against the key's daily limit (50 a day,
+1,000 after buying $10 of credits; counted per UTC day), requests and tokens to `or/…` models today and in the
+last 30 days (free / paid), the top models, and the last 24 hours' failed requests grouped by cause with the fix
+(daily free limit reached, no credits, privacy settings that exclude free models, a rejected key, …).
+`./stack costs` and `./stack openrouter status` print the same 30-day and today totals.
+
 **Privacy:** a prompt to an `or/…` model goes to OpenRouter and the model's provider, and some free models may
 log or train on your prompts; keep confidential work on Bedrock. Details: [docs/openrouter.md](docs/openrouter.md).
 
