@@ -29,34 +29,72 @@ valid_or_key() { case "$1" in '' | *[!A-Za-z0-9_-]*) return 1 ;; esac; }
 # and is never handed to curl.
 openrouter_enabled() { valid_or_key "$(get_env OPENROUTER_API_KEY)"; }
 or_key_problem() { # warns when .env has an OPENROUTER_API_KEY that cannot be a real key
-  local k; k="$(get_env OPENROUTER_API_KEY)"
+  local k p; k="$(get_env OPENROUTER_API_KEY)"; p="$(or_env_line_problem)"
+  [ -z "$p" ] || { warn "OpenRouter stays off: $p"; return 0; }
   [ -z "$k" ] || valid_or_key "$k" || warn "OPENROUTER_API_KEY in .env is not a valid key (letters, digits, - and _ only) — OpenRouter stays off; fix it in .env and run ./stack openrouter apply, or ./stack openrouter set"
+}
+
+# or_env_line_problem -> what to fix when .env has an OPENROUTER_API_KEY line with a value that ./stack cannot read
+# (an "export " prefix or spaces around =, which Docker Compose would still pass on), else nothing
+or_env_line_problem() {
+  [ -f "$ENV_FILE" ] && [ -z "$(get_env OPENROUTER_API_KEY)" ] || return 0
+  # shellcheck disable=SC2016  # literal backticks
+  ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]' "$ENV_FILE" ||
+    echo 'remove the `export ` prefix / spaces around = on the OPENROUTER_API_KEY line in .env'
 }
 
 # The paste-in line for .env (new installs get the same from .env.example; setup adds it to older ones).
 OR_ENV_HINT='# Optional OpenRouter: paste a key from https://openrouter.ai/settings/keys after the =, then run ./stack openrouter apply'
 
 # or_env_placeholder — setup: appends OR_ENV_HINT and an empty OPENROUTER_API_KEY= to .env when it has no
-# OPENROUTER_API_KEY line at all. Any existing line (empty, a key, a hand-made block) is left exactly as it is.
+# OPENROUTER_API_KEY line at all. An install made from an older .env.example (its empty line right under the comment
+# 'With a key, prompts to "or/…" models go to …') gets OR_ENV_HINT inserted above that line, once. Any other line
+# (a key, a hand-made block) is left exactly as it is.
 or_env_placeholder() {
-  local tmp
+  local tmp insert=0
+  # shellcheck disable=SC2016  # awk source
+  local old='/^OPENROUTER_API_KEY=$/ && prev ~ /^# With a key, prompts to "or\// && !done'
   [ -f "$ENV_FILE" ] || return 0
-  ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY[[:space:]]*=' "$ENV_FILE" || return 0
-  tmp="$(mktemp "${ENV_FILE}.XXXXXX")" || return 0
+  if grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY[[:space:]]*=' "$ENV_FILE"; then
+    ! grep -q '^#.*\./stack openrouter apply' "$ENV_FILE" || return 0
+    awk "$old"' { f = 1 } { prev = $0 } END { exit !f }' "$ENV_FILE" || return 0
+    insert=1
+  fi
+  if ! tmp="$(mktemp "${ENV_FILE}.XXXXXX")"; then
+    warn "could not add the OpenRouter line to .env (no temp file next to it; optional: ./stack openrouter set works without it)"; return 0
+  fi
   chmod 600 "$tmp"
-  if { cat "$ENV_FILE"; [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf '%s\nOPENROUTER_API_KEY=\n' "$OR_ENV_HINT"; } > "$tmp" &&
-      mv "$tmp" "$ENV_FILE"; then return 0; fi
+  if [ "$insert" = 1 ]; then
+    H="$OR_ENV_HINT" awk "$old"' { print ENVIRON["H"]; done = 1 } { print; prev = $0 }' "$ENV_FILE" > "$tmp"
+  else
+    { cat "$ENV_FILE"; [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf '%s\nOPENROUTER_API_KEY=\n' "$OR_ENV_HINT"; } > "$tmp"
+  fi && mv "$tmp" "$ENV_FILE" && return 0
   rm -f "$tmp"; warn "could not add the OpenRouter line to .env (optional; ./stack openrouter set works without it)"
 }
 
-# or_clean_key VALUE -> VALUE without carriage returns, surrounding whitespace or one pair of quotes: a key
-# pasted as "sk-or-…" still works (Docker Compose would strip those quotes too).
+# or_clean_key VALUE -> the key in VALUE as Docker Compose reads it: carriage returns and surrounding whitespace
+# dropped, a quoted value up to its closing quote, an unquoted one up to a " # comment". A key pasted as
+# "sk-or-…" still works.
 or_clean_key() {
-  local v
+  local v q
   v="$(printf '%s' "$1" | tr -d '\r')"
-  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-  case "$v" in \"*\" | \'*\') v="${v:1:${#v}-2}" ;; esac
+  v="${v#"${v%%[![:space:]]*}"}"
+  case "$v" in \"*) q='"' ;; \'*) q="'" ;; *) q='' ;; esac
+  if [ -n "$q" ]; then
+    v="${v#?}"; case "$v" in *"$q"*) v="${v%%"$q"*}" ;; *) v="$q$v" ;; esac
+  else
+    v="$(printf '%s' "$v" | sed 's/[[:space:]]#.*$//')"
+  fi
+  v="${v%"${v##*[![:space:]]}"}"
   printf '%s\n' "$v"
+}
+
+# or_tidy_env_key — a key in .env that only reads as one once cleaned (quotes, spaces, CR, comment) is written
+# back clean; setup and apply (after the key is checked). Nothing else changes.
+or_tidy_env_key() {
+  local k c; k="$(get_env OPENROUTER_API_KEY)"; c="$(or_clean_key "$k")"
+  [ -n "$k" ] && [ "$c" != "$k" ] && valid_or_key "$c" || return 0
+  set_env OPENROUTER_API_KEY "$c"; log "removed the quotes/spaces around OPENROUTER_API_KEY in .env"
 }
 or_mode() { local m; m="$(get_env OPENROUTER_MODELS)"; printf '%s\n' "${m:-all}"; }
 or_max() { local m; m="$(get_env OPENROUTER_MAX_MODELS)"; case "$m" in '' | *[!0-9]*) m=$OPENROUTER_MAX_DEFAULT ;; esac; printf '%s\n' "$m"; }
@@ -414,18 +452,22 @@ or_write_portal_json() {
   chmod 644 "$tmp"; mv "$tmp" "$f"
 }
 
-# or_fetch_models OUT -> 0 if OUT now holds a fresh, non-empty classified cache (with a fetched_at header).
-# Asked with the key (curl -K -), so OpenRouter's "Filter the model catalog for API keys" account setting can
-# leave out models this key cannot use (privacy, provider and guardrail settings). A key OpenRouter rejects
-# (401/403) gets the public list instead, with a warning.
+# or_fetch_models OUT -> 0 if OUT now holds a fresh classified cache (with a fetched_at header).
+# Asked with the key (curl -K -), so OpenRouter's "Filter the model catalog for API keys" setting (Settings ›
+# Privacy › Model catalog) can leave out models this key cannot use (provider restrictions, guardrails). Then even
+# an empty list is the answer: it is cached, with a warning. Any 4xx with the key gets the public list instead,
+# with a warning; no answer or a 5xx keeps the last cache (and so does a public list without text models).
 or_fetch_models() {
   local out="$1" raw rows n code key src='as listed for your key'
   raw="$(mktemp)"; rows="$(mktemp)"; key="$(get_env OPENROUTER_API_KEY)"
   code="$(curl_auth "$key" --proto '=https' -sS --connect-timeout 10 -m 60 --max-filesize 20000000 -o "$raw" -w '%{http_code}' "$OPENROUTER_API/models" 2>/dev/null)" || code=000
   case "$code" in
     200) ;;
-    401 | 403)
-      warn "OpenRouter rejected the key in .env (HTTP $code) when listing models — using the public list instead; if the key was revoked, replace it: ./stack openrouter set"
+    4[0-9][0-9])
+      case "$code" in
+        401 | 403) warn "OpenRouter rejected the key in .env (HTTP $code) when listing models — using the public list instead; if the key was revoked, paste a new one into .env and run ./stack openrouter apply (or ./stack openrouter set)" ;;
+        *) warn "openrouter.ai answered HTTP $code when listing models with your key — using the public list instead" ;;
+      esac
       src='public list'
       if ! curl --proto '=https' -fsS --connect-timeout 10 -m 60 --max-filesize 20000000 -o "$raw" "$OPENROUTER_API/models" 2>/dev/null; then
         rm -f "$raw" "$rows"; OR_ERR="could not download the model list from openrouter.ai"; return 1
@@ -436,7 +478,12 @@ or_fetch_models() {
   esac
   or_models_tsv < "$raw" | or_classify > "$rows"
   n="$(wc -l < "$rows" | tr -d ' ')"
-  if [ "$n" -eq 0 ]; then rm -f "$raw" "$rows"; OR_ERR="openrouter.ai sent a model list with no usable text models"; return 1; fi
+  if [ "$n" -eq 0 ]; then
+    if [ "$src" = 'public list' ] || ! grep -q '"data"[[:space:]]*:[[:space:]]*\[' "$raw"; then
+      rm -f "$raw" "$rows"; OR_ERR="openrouter.ai sent a model list with no usable text models"; return 1
+    fi
+    warn "OpenRouter lists no text models your key can use — check the provider restrictions and guardrails at https://openrouter.ai/settings/privacy (Filter the model catalog for API keys applies them to this list); no OpenRouter models until then"
+  fi
   { printf '# fetched_at: %s\n# source: %s/models (%s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OPENROUTER_API" "$src"
     printf '# id\tname\tcontext\tprompt\tcompletion\tcache_read\tcache_write\ttier\tcreated\n'
     cat "$rows"; } > "$out"
@@ -510,11 +557,11 @@ or_validate_key() {
 # them, account credits. /api/v1/credits needs a management key; a normal key gets 403 and a pointer instead.
 or_account_lines() {
   local tmp code flat label usage month limit left free fu fl credits used
-  valid_or_key "$1" || { echo "key       not a valid OpenRouter key — ./stack openrouter set to replace it"; return 0; }
+  valid_or_key "$1" || { echo "key       not a valid OpenRouter key — fix it in .env + ./stack openrouter apply, or ./stack openrouter set"; return 0; }
   tmp="$(mktemp)"; code="$(or_key_check "$1" "$tmp")"
   if [ "$code" != 200 ]; then
     rm -f "$tmp"
-    case "$code" in 401 | 403) echo "key       rejected by OpenRouter (HTTP $code) — ./stack openrouter set to replace it" ;;
+    case "$code" in 401 | 403) echo "key       rejected by OpenRouter (HTTP $code) — a new key: paste into .env + ./stack openrouter apply, or ./stack openrouter set" ;;
       *) echo "key       could not ask openrouter.ai (HTTP ${code:-000})" ;; esac
     return 0
   fi
@@ -541,11 +588,11 @@ or_account_lines() {
   rm -f "$tmp"
 }
 
-# or_counts -> "N enabled (F free, P paid) of T offered" from the cache, or empty without a cache
+# or_counts -> "N enabled (F free, P paid) of T offered" from the cache, or "no model list yet" without one
 or_counts() {
   local total
+  [ -s "$(or_cache_tsv)" ] || { echo "no model list yet"; return 0; }
   total="$(or_cached_rows | grep -c . || true)"
-  [ "$total" -gt 0 ] || return 0
   or_selected | T="$total" awk -F'\t' '{ n++; if ($8 == "free") f++; else p++ } END { printf "%d enabled (%d free, %d paid) of %d offered\n", n, f, p, ENVIRON["T"] }'
 }
 
@@ -553,7 +600,7 @@ or_counts() {
 openrouter_costs_section() {
   or_key_problem
   printf '\nOpenRouter'
-  if ! openrouter_enabled; then printf ': off (Bedrock only) — ./stack openrouter set adds a key\n'; return 0; fi
+  if ! openrouter_enabled; then printf ': off (Bedrock only) — ./stack openrouter apply (key pasted into .env) or set adds a key\n'; return 0; fi
   printf ' (prompts go to openrouter.ai and the model provider; spend through LiteLLM is in the keys above)\n'
   or_account_lines "$(get_env OPENROUTER_API_KEY)" | sed 's/^/  /'
   printf '  models    %s   (OPENROUTER_MODELS=%s; prices as of %s)\n' "$(or_counts)" "$(or_mode)" "$(or_fetched_at)"
@@ -581,42 +628,69 @@ openrouter_summary_line() {
   printf '  OpenRouter      %s   (./stack openrouter status)\n' "$(or_counts)"
 }
 
-# or_no_credits KEY -> "WHY<TAB>WHEN" if the account behind KEY cannot pay for paid models (they fail with
-# HTTP 402), else nothing (also when that cannot be told); WHEN completes "…: ./stack openrouter models all".
-# From GET /key (OR_KEY_FLAT, set by or_validate_key or or_key_flat): no credits ever bought (is_free_tier) or
-# the key's own credit limit used up; otherwise GET /credits, which only a management key may read: a balance
-# at or below zero.
-or_no_credits() {
-  local flat="${OR_KEY_FLAT:-}" tmp code credits used
+# or_account_state KEY -> whether the account behind KEY can pay for paid models (they fail with HTTP 402 if not),
+# from GET /key in OR_KEY_FLAT (set by or_validate_key or or_key_flat):
+#   free<TAB>WHY<TAB>WHEN  it cannot: no credits ever bought (is_free_tier), the key's own credit limit used up for
+#                          good, or a balance at or below zero (GET /credits: readable only with a management key);
+#                          WHEN completes "…: ./stack openrouter models all"
+#   wait<TAB>WHY           the key's limit is used up until it resets (daily, weekly, monthly): nothing to change
+#   paid                   nothing says it cannot
+#   (nothing)              GET /key was not read (offline, rejected): no further request either
+or_account_state() {
+  local flat="${OR_KEY_FLAT:-}" tmp code credits used reset
+  [ -n "$flat" ] || return 0
   if [ "$(printf '%s\n' "$flat" | or_field data.is_free_tier)" = true ]; then
-    printf 'this OpenRouter account has no credits\tafter buying credits\n'; return 0
+    printf 'free\tthis OpenRouter account has no credits\tafter buying credits\n'; return 0
   fi
   if [ -n "$(printf '%s\n' "$flat" | or_field data.limit)" ] &&
       awk -v l="$(printf '%s\n' "$flat" | or_field data.limit_remaining)" 'BEGIN { exit !(l != "" && l + 0 <= 0) }'; then
-    printf "this OpenRouter key's credit limit is used up\tafter raising it (https://openrouter.ai/settings/keys)\n"; return 0
+    reset="$(printf '%s\n' "$flat" | or_field data.limit_reset | tr -cd 'A-Za-z0-9 :._-')"
+    if [ -n "$reset" ]; then printf "wait\tthis OpenRouter key's credit limit is used up until it resets (%s)\n" "$reset"
+    else printf "free\tthis OpenRouter key's credit limit is used up\tafter raising it (https://openrouter.ai/settings/keys)\n"; fi
+    return 0
   fi
   tmp="$(mktemp)"
   code="$(curl_auth "$1" --proto '=https' -sS --connect-timeout 10 -m 20 -o "$tmp" -w '%{http_code}' "$OPENROUTER_API/credits" 2>/dev/null || true)"
   if [ "$code" = 200 ]; then
     flat="$(or_json_flatten < "$tmp" || true)"
     credits="$(printf '%s\n' "$flat" | or_field data.total_credits)"; used="$(printf '%s\n' "$flat" | or_field data.total_usage)"
-    if [ -n "$credits" ] && awk -v a="$credits" -v b="${used:-0}" 'BEGIN { exit !(a - b <= 0) }'; then
-      printf 'this OpenRouter account has no credits left\tafter buying credits\n'
-    fi
   fi
   rm -f "$tmp"
+  if [ -n "${credits:-}" ] && awk -v a="$credits" -v b="${used:-0}" 'BEGIN { exit !(a - b <= 0) }'; then
+    printf 'free\tthis OpenRouter account has no credits left\tafter buying credits\n'
+  else
+    echo paid
+  fi
 }
 
-# or_plan_models KEY — after KEY was checked (set, apply, setup): an account that cannot pay gets free models
-# only, unless .env already chooses (OPENROUTER_MODELS set), and says so in one line. Remembers the reason in
-# OR_NO_CREDITS for or_plan_notes. Needs OR_KEY_FLAT. Never fatal.
+# or_models_auto -> the marker or_plan_models leaves when it set OPENROUTER_MODELS=free itself (not the user)
+or_models_auto() { printf '%s\n' "$STATE_DIR/openrouter-models-auto"; }
+
+# or_plan_models KEY — after KEY was checked (set, apply, setup). An account that cannot pay gets free models only,
+# unless .env already chooses (OPENROUTER_MODELS set): OPENROUTER_MODELS=free, the or_models_auto marker and one
+# line. Once the account can pay, a free set that was chosen that way goes back to the default (all), in one line;
+# one the user chose stays, with a hint. Remembers why it cannot pay in OR_NO_CREDITS for or_plan_notes. Never fatal.
 or_plan_models() {
-  local why
-  why="$(or_no_credits "$1" || true)"
-  OR_NO_CREDITS="$(printf '%s' "$why" | cut -f1)"
-  [ -n "$why" ] && [ -z "$(get_env OPENROUTER_MODELS)" ] || return 0
-  set_env OPENROUTER_MODELS free
-  log "$OR_NO_CREDITS, so only free models are offered (OPENROUTER_MODELS=free); $(printf '%s' "$why" | cut -f2): ./stack openrouter models all"
+  local state auto; auto="$(or_models_auto)"
+  [ "$(get_env OPENROUTER_MODELS)" = free ] || rm -f "$auto"   # changed by hand since: the user's choice
+  state="$(or_account_state "$1" || true)"
+  OR_NO_CREDITS=''
+  case "$state" in
+    free*)
+      OR_NO_CREDITS="$(printf '%s' "$state" | cut -f2)"
+      [ -z "$(get_env OPENROUTER_MODELS)" ] || return 0
+      set_env OPENROUTER_MODELS free; mkdir -p "$STATE_DIR"; : > "$auto"
+      log "$OR_NO_CREDITS, so only free models are offered (OPENROUTER_MODELS=free); $(printf '%s' "$state" | cut -f3): ./stack openrouter models all" ;;
+    wait*) warn "$(printf '%s' "$state" | cut -f2) — paid models fail with HTTP 402 until then" ;;
+    paid)
+      if [ "$(get_env OPENROUTER_MODELS)" != free ]; then :
+      elif [ -e "$auto" ]; then
+        set_env OPENROUTER_MODELS ''; rm -f "$auto"
+        log "this OpenRouter account has credits now — paid models are offered again (OPENROUTER_MODELS was set to free automatically)"
+      else
+        log "OPENROUTER_MODELS=free offers only free models; ./stack openrouter models all adds the paid ones"
+      fi ;;
+  esac
 }
 
 # or_plan_notes — after the refresh that follows or_plan_models, for an account that cannot pay: one warning
@@ -654,16 +728,17 @@ _or_env_key_wanted() {
 setup_openrouter() {
   local key='' marker="$STATE_DIR/openrouter-asked"
   or_env_placeholder
+  or_tidy_env_key
   or_key_problem
-  if [ -z "$(get_env OPENROUTER_API_KEY)" ]; then
+  if [ -z "$(get_env OPENROUTER_API_KEY)" ] && [ -z "$(or_env_line_problem)" ]; then
     if [ -n "${OPENROUTER_API_KEY:-}" ]; then
       if _or_env_key_wanted; then
-        key="$OPENROUTER_API_KEY"
+        key="$(or_clean_key "$OPENROUTER_API_KEY")"
         [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; }
       fi
     elif [ ! -e "$marker" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
       log "Optional: OpenRouter adds hundreds of other models (some free) next to Bedrock. Prompts to them go to openrouter.ai."
-      key="$(ask_secret "OpenRouter API key (optional — Enter to skip)")"
+      key="$(or_clean_key "$(ask_secret "OpenRouter API key (optional — Enter to skip)")")"
       [ -n "$key" ] || log "no OpenRouter key — Bedrock only (later: paste one after OPENROUTER_API_KEY= in .env and run ./stack openrouter apply)"
     fi
     if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then mkdir -p "$STATE_DIR"; : > "$marker"; fi
@@ -672,7 +747,8 @@ setup_openrouter() {
   if [ -n "$key" ]; then
     if or_validate_key "$key"; then set_env OPENROUTER_API_KEY "$key"; log "OpenRouter key accepted and stored in .env"; or_plan_models "$key"
     else warn "OpenRouter: $OR_ERR — not stored; continuing with Bedrock only"; fi
-  elif openrouter_enabled && [ -z "$(get_env OPENROUTER_MODELS)" ]; then
+  elif openrouter_enabled && { [ -z "$(get_env OPENROUTER_MODELS)" ] || [ -e "$(or_models_auto)" ]; }; then
+    # A key pasted into .env (or an automatic free set): the same account check as set/apply.
     key="$(get_env OPENROUTER_API_KEY)"; OR_KEY_FLAT="$(or_key_flat "$key")"; or_plan_models "$key"
   fi
   openrouter_enabled || return 0
@@ -742,8 +818,8 @@ cmd_openrouter() {
   case "${1:-status}" in
     set)
       # An explicit command: here OPENROUTER_API_KEY from the environment is the documented non-interactive input.
-      key="${OPENROUTER_API_KEY:-}"
-      [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(ask_secret "OpenRouter API key (hidden)")"; } ||
+      key="$(or_clean_key "${OPENROUTER_API_KEY:-}")"
+      [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(or_clean_key "$(ask_secret "OpenRouter API key (hidden)")")"; } ||
         die "no key: export OPENROUTER_API_KEY or run this in a terminal"
       [ -n "$key" ] || die "no key entered — nothing changed"
       or_validate_key "$key" || die "$OR_ERR — nothing changed"
@@ -753,21 +829,25 @@ cmd_openrouter() {
       _or_use_key "$key" ;;
     apply)
       # The key pasted into .env after OPENROUTER_API_KEY=: checked, then put to use exactly like set.
+      chmod 600 "$ENV_FILE"   # an editor may have saved it readable by others
+      [ -z "$(or_env_line_problem)" ] || die "OPENROUTER_API_KEY in .env cannot be read: $(or_env_line_problem)"
       key="$(or_clean_key "$(get_env OPENROUTER_API_KEY)")"
       [ -n "$key" ] || die "no OpenRouter key in .env — paste your key after OPENROUTER_API_KEY= in .env first, or run ./stack openrouter set"
       or_validate_key "$key" || die "$OR_ERR — nothing changed"
-      [ "$key" = "$(get_env OPENROUTER_API_KEY)" ] || { set_env OPENROUTER_API_KEY "$key"; log "removed the quotes/spaces around OPENROUTER_API_KEY in .env"; }
+      or_tidy_env_key
       log "OpenRouter key in .env accepted"
       _or_use_key "$key" ;;
     remove)
       [ -n "$(get_env OPENROUTER_API_KEY)" ] || { log "no OpenRouter key in .env — nothing to remove"; return 0; }
       set_env OPENROUTER_API_KEY ''   # the empty paste-in line stays: off, and ready for a new key
-      rm -f "$(or_cache_tsv)" "$(or_cache_json)"
+      # A free set or_plan_models chose belonged to that key's account: back to the default for the next one.
+      if [ -e "$(or_models_auto)" ] && [ "$(get_env OPENROUTER_MODELS)" = free ]; then set_env OPENROUTER_MODELS ''; fi
+      rm -f "$(or_cache_tsv)" "$(or_cache_json)" "$(or_models_auto)"
       log "OpenRouter key removed from .env — Bedrock only (revoke the key at https://openrouter.ai/settings/keys if you no longer need it)"
       _or_apply ;;
     models)
       [ -n "${2:-}" ] && valid_or_mode "$2" || die "usage: ./stack openrouter models all|free|paid|<id,id,…>"
-      set_env OPENROUTER_MODELS "$2"
+      set_env OPENROUTER_MODELS "$2"; rm -f "$(or_models_auto)"   # the user's choice from now on
       openrouter_enabled || { log "saved OPENROUTER_MODELS=$2 (used once a key is set: ./stack openrouter apply after pasting one into .env, or ./stack openrouter set)"; return 0; }
       or_missing "$2" < <(or_cached_rows) | while IFS= read -r m; do warn "'$m' is not an OpenRouter text model — skipped"; done
       or_write_portal_json
@@ -775,19 +855,19 @@ cmd_openrouter() {
       _or_apply ;;
     refresh)
       or_key_problem
-      openrouter_enabled || die "no OpenRouter key — ./stack openrouter set adds one"
+      openrouter_enabled || die "no OpenRouter key — paste one into .env and run ./stack openrouter apply, or ./stack openrouter set"
       openrouter_refresh
       log "OpenRouter: $(or_counts) (list as of $(or_fetched_at))"
       # Unchanged prices still re-check Open WebUI (labels, cost line): a retry after a failed sync.
       if [ "$OR_CHANGED" = 1 ]; then _or_apply; else log "no model or price changes — checking Open WebUI labels and prices"; _or_owui_only; fi ;;
     list)
-      openrouter_enabled || die "no OpenRouter key — ./stack openrouter set adds one"
+      openrouter_enabled || die "no OpenRouter key — paste one into .env and run ./stack openrouter apply, or ./stack openrouter set"
       [ -s "$(or_cache_tsv)" ] || die "no model list yet — ./stack openrouter refresh"
       openrouter_list ;;
     status)
       or_key_problem
       if ! openrouter_enabled; then
-        printf 'OpenRouter: off — Bedrock only. ./stack openrouter set adds a key (see README › Optional: OpenRouter).\n'; return 0
+        printf 'OpenRouter: off — Bedrock only. Paste a key into .env + ./stack openrouter apply, or ./stack openrouter set (see README › Optional: OpenRouter).\n'; return 0
       fi
       printf 'OpenRouter: on (prompts to or/… models go to openrouter.ai and the model provider)\n'
       or_account_lines "$(get_env OPENROUTER_API_KEY)" | sed 's/^/  /'

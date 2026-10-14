@@ -20,8 +20,12 @@ All notable changes to bedrock-now are documented here. The format follows
   pay (OpenRouter's `is_free_tier`, the key's own credit limit used up, or a zero balance where the credits
   endpoint is readable) and `OPENROUTER_MODELS` is not set, it becomes `free`, in one line: "this OpenRouter
   account has no credits, so only free models are offered (OPENROUTER_MODELS=free); after buying credits:
-  ./stack openrouter models all". A set you chose is kept, with one warning when it includes paid models (they
-  fail with HTTP 402), plus where to fix free models' "No endpoints found matching your data policy".
+  ./stack openrouter models all". It remembers that it chose this: once a later check finds the account can
+  pay, paid models are offered again ("this OpenRouter account has credits now — …"), and `remove` clears it. A
+  set you chose is kept, with one warning when it includes paid models (they fail with HTTP 402), plus where to
+  fix free models' "No endpoints found matching your data policy". A used-up key limit that resets is only
+  named. **`./stack update` runs setup**, so an existing install with a free-tier key and a blank
+  `OPENROUTER_MODELS` switches to free models; `./stack openrouter models all` undoes it.
 - README › Optional: OpenRouter: how to set up the OpenRouter account (key, privacy settings, *Filter the model
   catalog for API keys*, no OpenRouter logging needed) and what the common errors mean (404 data policy, 429
   free-model limits, 402 credits, 401).
@@ -29,8 +33,10 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Changed
 
 - **The OpenRouter model list is asked for with your key** (on curl's stdin, never on a command line), so
-  OpenRouter's *Filter the model catalog for API keys* setting can leave out models the key cannot use. If
-  OpenRouter rejects the key there (401/403), the public list is used, with a warning.
+  OpenRouter's *Filter the model catalog for API keys* setting (Settings › Privacy › Model catalog) can leave
+  out models the key cannot use; an empty list for the key is taken as it is. On a 4xx there (401/403: the key
+  was rejected), the public list is used, with a warning. Messages that only named `./stack openrouter set` now
+  also name the paste-in path, and the model count says "no model list yet" instead of nothing.
 - **OpenRouter sees requests from bedrock-now as "bedrock-now".** LiteLLM gets `OR_APP_NAME=bedrock-now` and
   `OR_SITE_URL=https://github.com/JongoDB-Labs/bedrock-now`, which LiteLLM 1.105.0 sends to OpenRouter as
   `X-Title` and `HTTP-Referer` (instead of "liteLLM" and litellm.ai), so OpenRouter's Activity and Logs name the app.

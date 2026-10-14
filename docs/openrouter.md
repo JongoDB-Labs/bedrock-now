@@ -21,15 +21,22 @@ API).
   used up; or, readable only with a management key, a balance at or below zero) can only use free models.
   When `set`, `apply` or setup checks such a key and `OPENROUTER_MODELS` is not set, it becomes `free`, in
   one line: `this OpenRouter account has no credits, so only free models are offered (OPENROUTER_MODELS=free);
-  after buying credits: ./stack openrouter models all`. A set you chose yourself is kept, with one warning
-  when it includes paid models (they fail with HTTP 402).
+  after buying credits: ./stack openrouter models all`. bedrock-now remembers that it chose this
+  (`.state/openrouter-models-auto`): once a later `apply`, `set` or setup finds the account can pay, it goes
+  back to the default (all) and says so, and `remove` clears it for the next key. A set you chose yourself
+  (also `free`, or any `./stack openrouter models …`) is kept: one warning when it includes paid models (they
+  fail with HTTP 402), one hint when `free` hides paid models a paying account could use. A key limit with a
+  reset (daily, weekly, monthly) that is used up changes nothing; it is only named.
+  `./stack update` runs setup, so an existing install with a free-tier key and a blank `OPENROUTER_MODELS`
+  switches to free models there too; `./stack openrouter models all` undoes it.
 - **Only `.env` counts.** An `OPENROUTER_API_KEY` that happens to be in your shell never turns OpenRouter on
   by itself: `./stack` strips `OPENROUTER_*` from what Docker Compose sees, an interactive setup asks
   `found OPENROUTER_API_KEY in your environment — use it for bedrock-now? [y/N]`, and `setup --yes` uses it
   only with `BEDROCK_NOW_OPENROUTER_FROM_ENV=1`. `./stack update` ignores it, so a removed key stays removed.
 - **Off:** `./stack openrouter remove` empties `OPENROUTER_API_KEY=` in `.env` (an empty key is off, like no
   line), deletes the cached model list, restarts LiteLLM with Bedrock only and removes the OpenRouter entries it
-  created in Open WebUI.
+  created in Open WebUI. `.env` lines that `./stack` cannot read (`export OPENROUTER_API_KEY=…`, spaces around
+  `=`) are named rather than ignored.
 - `./stack openrouter status` shows whether it is on, and the key's usage and limit.
 
 ## Picking models
@@ -66,9 +73,11 @@ per-request fee. A model whose price OpenRouter lists in a form bedrock-now can'
 exponent) is left out.
 
 The model list and prices are fetched with your key (`GET /api/v1/models`, the key on curl's stdin), so
-OpenRouter's account setting *Filter the model catalog for API keys* can leave out models your key cannot use
-(privacy, provider and guardrail settings); if OpenRouter rejects the key there (401/403), the public list is
-used, with a warning. They are fetched at setup and by `./stack openrouter refresh`; `./stack up` fetches only
+OpenRouter's *Filter the model catalog for API keys* (Settings › Privacy › Model catalog,
+https://openrouter.ai/settings/privacy) can leave out models your key cannot use (provider restrictions,
+guardrails). A list with no text models for your key is taken as it is (no OpenRouter models, with a warning).
+If OpenRouter answers the keyed request with a 4xx (401/403: the key was rejected), the public list is used,
+with a warning. They are fetched at setup and by `./stack openrouter refresh`; `./stack up` fetches only
 when the list is more than 12 hours old (it starts fine offline). Whenever the models or prices change (and on
 every `./stack openrouter refresh`), Open WebUI's labels and its per-answer cost prices are updated too.
 

@@ -334,8 +334,8 @@ add them next to your Bedrock models as `or/<id>`; it is **off unless you give i
 ```
 
 An account without credits can only use free models, so `apply`, `set` and setup then offer just those
-(`OPENROUTER_MODELS=free`) unless you chose a set yourself; once you have bought credits,
-`./stack openrouter models all`.
+(`OPENROUTER_MODELS=free`) unless you chose a set yourself. Once you have bought credits, the next `apply`,
+`set` or setup offers paid models again (or run `./stack openrouter models all`).
 
 **Set up your OpenRouter account** (once, on openrouter.ai):
 
@@ -345,11 +345,14 @@ An account without credits can only use free models, so `apply`, `set` and setup
    `./stack openrouter set`).
 3. **Privacy** ([Settings › Privacy](https://openrouter.ai/settings/privacy)): most free models need *Allow
    free endpoints that train on request data*. That is a trade-off: those providers may keep your prompts and
-   train on them. Without it, free models answer 404 (below). Leave the option to publish your prompts off.
-4. **Filter the model catalog for API keys** (recommended): bedrock-now asks for the model list with your key,
-   so with this on, Chat lists only the models your key can actually use under the settings above.
-5. **Observability:** nothing to turn on. Leave *Input & Output Logging* off: Admin's logs already record every
-   request (model, key, tokens, cost), and OpenRouter's logging would store your prompts at OpenRouter.
+   train on them. Without it, free models answer 404 (below). Leave *Allow free endpoints that publish
+   prompts* off.
+4. **Filter the model catalog for API keys** (recommended; Settings › Privacy › Model catalog): bedrock-now
+   asks for the model list with your key, so with this on, Chat lists only the models your key can actually use
+   under your provider restrictions and guardrails.
+5. **Observability:** nothing to turn on. Leave *Input & Output Logging* (and *Broadcast*) off: Admin's logs
+   already record every request (model, key, tokens, cost), and OpenRouter's logging would store your prompts
+   at OpenRouter.
    OpenRouter's Activity page lists the requests under the app name `bedrock-now`.
 
 **When an OpenRouter model fails** (the error shows in Chat):
@@ -359,7 +362,7 @@ An account without credits can only use free models, so `apply`, `set` and setup
 | 404 *No endpoints found matching your data policy* | your privacy settings rule out every provider of that model (common for free models) | allow free endpoints that train on request data at [Settings › Privacy](https://openrouter.ai/settings/privacy), or pick another model |
 | 429 *rate limited* | free models allow 20 requests a minute and 50 a day (1000 a day once you have bought at least $10 of credits); a popular free model can also be busy at its provider | wait, try another model, or buy credits |
 | 402 *payment required* | paid models need credits (a negative balance blocks free models too) | buy credits at [Settings › Credits](https://openrouter.ai/settings/credits), or `./stack openrouter models free` |
-| 401 | the key was revoked or mistyped | a new key: `./stack openrouter set` |
+| 401 | the key was revoked or mistyped | a new key: paste it into `.env` and run `./stack openrouter apply` (or `./stack openrouter set`) |
 
 In Chat they show their vendor's logo (Claude, GPT, Gemini, Llama, Qwen, DeepSeek, … or the OpenRouter logo
 for vendors without one). Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
