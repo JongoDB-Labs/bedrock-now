@@ -439,6 +439,9 @@ add them next to your Bedrock models as `or/<id>`; it is **off unless you give i
 ./stack openrouter remove              # back to Bedrock only
 ```
 
+The portal's **Settings → OpenRouter** does the same as `set` from the computer running bedrock-now (not over
+remote access): paste the key there, and it is checked before anything changes.
+
 An account without credits can only use free models, so `apply`, `set` and setup then offer just those
 (`OPENROUTER_MODELS=free`) unless you chose a set yourself. Once you have bought credits, the next `apply`,
 `set` or setup offers paid models again (or run `./stack openrouter models all`).

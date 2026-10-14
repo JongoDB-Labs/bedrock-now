@@ -609,7 +609,7 @@ test_helper_rechecks_models_at_most_hourly() {
 test_helper_tick_writes_capability_and_snapshot() {
   _checkout
   rm -f "$(helper_password_file)"
-  settings_helper_tick
+  ! settings_helper_tick   # (1: no backup ran)
   assert_contains "$(cat "$(settings_capability_file)")" '"settings": 1, "diagnostics": ["check-aws",'
   [ -f "$(settings_snapshot_file)" ]
   helper_password_ok 'correct horse battery'
@@ -829,6 +829,26 @@ test_pins_and_hidden_models_must_be_enabled_chat_models() {
   assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait open-webui portal"
 }
 
+test_apply_openrouter_key_plans_models_like_openrouter_set() {
+  _env; _in_checkout; _stub_stack
+  or_validate_key() { return 0; }
+  or_account_state() { printf 'free\tthis OpenRouter account has no credits\tafter buying credits\n'; }
+  openrouter_refresh() { echo refresh >> "$TMP/calls"; }
+  _or_owui_refresh() { echo "owui-or" >> "$TMP/calls"; }
+  or_selected() { :; }
+  _lines OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef | _apply 2> "$TMP/err"
+  assert_eq "$(get_env OPENROUTER_MODELS)" free                  # an account without credits: free models only
+  [ -e "$(or_models_auto)" ]                                       # ... chosen automatically
+  assert_contains "$(cat "$TMP/err")" "only free models are offered"
+  assert_contains "$(cat "$TMP/calls")" "refresh"
+  _lines OPENROUTER_API_KEY= | _apply 2>/dev/null                 # removed: the automatic free set goes with it
+  assert_eq "$(get_env OPENROUTER_API_KEY)/$(get_env OPENROUTER_MODELS)" "/"
+  [ ! -e "$(or_models_auto)" ]
+  set_env OPENROUTER_API_KEY sk-or-v1-0123456789abcdef0123456789abcdef; : > "$(or_models_auto)"
+  _lines OPENROUTER_MODELS=all | _apply 2>/dev/null               # your own choice: no longer automatic
+  [ ! -e "$(or_models_auto)" ]
+}
+
 test_hidden_models_apply_in_open_webui() {
   _env; _in_checkout; _stub_stack
   owui_apply_hidden() { echo "hidden $(get_env MODELS_HIDDEN)" >> "$TMP/calls"; }
@@ -890,12 +910,12 @@ test_nightly_backup_runs_once_per_window() {
   set_env_batch BACKUP_NIGHTLY on BACKUP_HOUR 2
   _backup_clock() { echo "${CLOCK:-1000000} 3 $((3 * 3600 + ${CLOCK:-1000000} - 1000000))"; }   # 03:00 local at 1000000
   helper_run_diag() { echo "diag $1" >> "$TMP/diag"; }
-  CLOCK=1000000 backup_nightly_tick
-  CLOCK=1000600 backup_nightly_tick                                   # same window: nothing
+  CLOCK=1000000 backup_nightly_tick                                   # 0: it ran
+  ! CLOCK=1000600 backup_nightly_tick                                 # same window: nothing
   assert_eq "$(cat "$TMP/diag")" "diag backup-nightly"
   assert_eq "$(cat "$(backup_last_file)")" "$((1000000 - 3600))"     # the window started at 02:00
   set_env BACKUP_NIGHTLY off; rm -f "$(backup_last_file)"
-  backup_nightly_tick
+  ! backup_nightly_tick
   assert_eq "$(wc -l < "$TMP/diag" | tr -d ' ')" 1
 }
 

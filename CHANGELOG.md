@@ -205,7 +205,9 @@ All notable changes to bedrock-now are documented here. The format follows
 - **`./stack rotate-aws` proves Bedrock access with the new key before switching** (free) and puts the old key back
   when LiteLLM does not come up or the smoke test fails.
 - Budgets, the alert webhook, the portal and LiteLLM passwords, the update and price checks: the docs and
-  messages point at Settings or `./stack config set` instead of "edit `.env`, then `./stack setup`".
+  messages point at Settings or `./stack config set` instead of "edit `.env`, then `./stack setup`" (also the
+  walkthrough, docs/openrouter.md and docs/voice.md). An OpenRouter key set or removed in Settings plans the model
+  set exactly like `./stack openrouter set` and `remove` (the automatic free set for an account without credits).
 - **One-click updates are offered by default.** Setup asks *Turn on one-click updates from Home? (Y/n)* (was an
   opt-in "Install the update helper? (y/N)"), with two lines on what it is, and so does the end of an interactive
   `./stack update` on an install without the helper. A "no" (or `./stack helper uninstall`) is remembered in

@@ -575,6 +575,16 @@ test_an_unwritable_folder_never_ends_the_helper() {   # N1: launchd/systemd rest
   assert_contains "$(cat "$TMP/err")" "could not write"
 }
 
+test_a_settings_failure_never_ends_the_helper() {   # lib/settings_helper.sh runs in subshells: even a die
+  _release_checkout; _at 12
+  settings_helper_tick() { die "the settings tick broke"; }
+  settings_poll_once() { die "a settings request broke"; }
+  rc=0; ( set -euo pipefail; helper_main --once ) 2>"$TMP/err" || rc=$?
+  assert_eq "$rc" 0
+  assert_contains "$(cat "$TMP/err")" "the settings tick broke"
+  assert_contains "$(cat "$TMP/err")" "a settings request broke"
+}
+
 test_recovery_waits_for_the_lock_and_then_runs_in_the_loop() {   # N2
   _release_checkout; _at 12
   _auto_record v0.4.0 running

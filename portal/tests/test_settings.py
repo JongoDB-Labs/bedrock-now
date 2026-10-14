@@ -609,4 +609,6 @@ def test_alert_threshold_reaches_home(settings, dirs):
         c.post("/login", data={"password": "correct horse"}, headers=ORIGIN)
         assert c.get("/api/summary", headers=API).json()["spend"]["alert_pct"] == 90
     js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
-    assert "pct >= alert" in js and "pct >= 80" not in js
+    assert js.count("pct >= alert") == 2   # the budget meters' colour and footer
+    # the only fixed 80%: OpenRouter's daily free-request meter (a rate limit, not a budget)
+    assert all("m.classList" in line for line in js.splitlines() if "pct >= 80" in line)

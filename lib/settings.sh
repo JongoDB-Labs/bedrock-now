@@ -677,7 +677,6 @@ _cfg_write() {
   set_env_batch "${args[@]}"
   if cfg_has STT_PROVIDER; then v="$(cfg_new STT_PROVIDER)"; stt_set_choice "${v:-browser}"; fi
   if cfg_has STT_PROVIDER || cfg_has STT_API_KEY || cfg_has STT_MODEL; then stt_sync_env; fi
-  if cfg_has OPENROUTER_API_KEY && [ -z "$(cfg_new OPENROUTER_API_KEY)" ]; then rm -f "$(or_cache_tsv)" "$(or_cache_json)"; fi
   if cfg_has PORTAL_PASSWORD; then helper_password_sync; fi
 }
 
@@ -690,14 +689,26 @@ _cfg_render_litellm() {
   [ "$(cat "$cfg")" != "$before" ]
 }
 
+# _cfg_openrouter — as ./stack openrouter set|remove|models do (lib/openrouter.sh): a new key's account decides the
+# automatic free set, a removed key undoes it, OPENROUTER_MODELS set here is your choice from then on
+_cfg_openrouter() {
+  if cfg_has OPENROUTER_MODELS; then rm -f "$(or_models_auto)"; fi
+  if openrouter_enabled; then
+    if cfg_has OPENROUTER_API_KEY; then or_plan_models "$(get_env OPENROUTER_API_KEY)"; fi
+    openrouter_refresh
+    or_plan_notes
+    return 0
+  fi
+  if [ -e "$(or_models_auto)" ] && [ "$(get_env OPENROUTER_MODELS)" = free ]; then set_env OPENROUTER_MODELS ''; fi
+  rm -f "$(or_cache_tsv)" "$(or_cache_json)" "$(or_models_auto)"
+}
+
 # _cfg_post — restarts only what the change needs (Compose recreates a container only when its settings changed)
 _cfg_post() {
   local svc='' k
+  _cfg_on openrouter && _cfg_openrouter
   if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$STACK_DIR/litellm/config.yaml" ]; then log "saved — ./stack setup applies it"; return 0; fi
   if ! _cfg_stack_running; then log "saved — the stack is stopped; ./stack up applies it"; return 0; fi
-  if _cfg_on openrouter; then
-    if openrouter_enabled; then openrouter_refresh; else rm -f "$(or_cache_tsv)" "$(or_cache_json)"; fi
-  fi
   if _cfg_on stt; then
     _stt_apply   # re-renders, recreates LiteLLM, the stt container, Chat and the portal; restores the previous choice if stt fails
   fi

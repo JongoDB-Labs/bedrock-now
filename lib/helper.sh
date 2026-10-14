@@ -994,7 +994,9 @@ helper_poll_once() {
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
   [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   _sweep_requests
-  settings_poll_once || true   # lib/settings_helper.sh: settings and diagnostics (never exits the helper)
+  # lib/settings_helper.sh: settings and diagnostics, in a subshell (nothing in it can end the helper); after one ran,
+  # this loop's heartbeat is out of date
+  if ( settings_poll_once ); then AUTO_FRESH=0; fi
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
@@ -1058,7 +1060,8 @@ helper_main() {
       return 0
     fi
     helper_heartbeat || true
-    settings_helper_tick || true   # lib/settings_helper.sh: the settings snapshot, the helper's password hash, nightly backups
+    # lib/settings_helper.sh: the settings snapshot, the helper's password hash, nightly backups (as above)
+    if ( settings_helper_tick ); then AUTO_FRESH=0; fi
     if helper_poll_once; then helper_heartbeat || true; return 0; fi
     if helper_auto_tick; then helper_heartbeat || true; return 0; fi
     [ "${1:-}" != --once ] || return 0

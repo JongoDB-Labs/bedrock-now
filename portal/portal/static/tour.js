@@ -24,6 +24,7 @@
   const note = (...c) => el("p", { class: "note" }, ...c);
   const b = (t) => el("strong", { text: t });
   const code = (t) => el("code", { text: t });
+  const settings = (where) => el("a", { href: "#settings", text: `Settings → ${where}` });   // the portal's Settings tab
   const list = (tag, items) => el(tag, { class: "tour-list" }, ...items.map((i) => el("li", {}, ...[].concat(i))));
   const ext = (href, text) => el("a", { href, target: "_blank", rel: "noopener noreferrer", "data-k": `link:${href}`, text });
 
@@ -137,7 +138,7 @@
           ["Create a key at ", ext("https://openrouter.ai/settings/keys", "openrouter.ai › Settings › API Keys"),
             ". Name it bedrock-now; a credit limit is optional (it caps what the key can spend). It is shown once: copy it then."],
           ["Paste it into ", code(".env"), " after ", code("OPENROUTER_API_KEY="), " and run", cmd("./stack openrouter apply"),
-            "or run", cmd("./stack openrouter set"), "(it asks for the key, hidden). Either way the key is checked with OpenRouter and what needs it restarts (~30 s)."],
+            "or run", cmd("./stack openrouter set"), "(it asks for the key, hidden), or paste it in ", settings("OpenRouter"), " on this computer. Either way the key is checked with OpenRouter and what needs it restarts (~30 s)."],
           ["An account without credits can only use free models, so apply and set then offer just those (",
             code("OPENROUTER_MODELS=free"), "). After buying credits, apply again or run ", code("./stack openrouter models all"), "."],
           ["On ", ext("https://openrouter.ai/settings/privacy", "Settings › Privacy"), ": most free models need ",
@@ -146,7 +147,7 @@
             b("Allow free endpoints that publish prompts"), " off. ", b("Filter the model catalog for API keys"),
             " (recommended) makes Chat list only the models your key can use."],
           ["Nothing to turn on at OpenRouter to watch it: the Spend card on Home gets an OpenRouter block (free and paid requests, top models, the daily free-request limit, recent failures with fixes) and the Actual/Equivalent switch; Admin → Logs has every request."]]),
-        note("The key goes in through your terminal or .env, never through this page."),
+        note("The key goes in through your terminal, .env or Settings on this computer, never through this walkthrough."),
       ],
     },
     voice: {
@@ -187,8 +188,7 @@
           keys.length ? list("ul", keys.map((k) => [`${k.label}: `, b(k.error ? "unavailable" : k.max_budget != null ? `${usd(k.max_budget)} a month` : "no budget")]))
             : note(failedAt ? CHECK_FAILED : "Loading…"),
           p("Once a key's budget is used up, LiteLLM refuses its requests until the budget resets (Home shows the date)."),
-          p("To change them, set ", code("BUDGET_CLAUDE_CODE"), ", ", code("BUDGET_OPENWEBUI"), " or ", code("BUDGET_SETUP"),
-            " in ", code(".env"), ", then run ", code("./stack setup"), "."),
+          p("Change them in ", settings("Budgets & alerts"), " (at once, no restart), or with ", code("./stack config set BUDGET_OPENWEBUI"), "."),
         ];
       },
     },
@@ -216,8 +216,8 @@
       title: "The portal", badges: ["Sign-in: Done"], info: true,
       body: () => [
         p("You're signed in with the portal password (", code("PORTAL_PASSWORD"), " in ", code(".env"), "; ",
-          code("./stack password --show"), " prints it)."),
-        p("It keeps you signed in for 30 days. ", b("Sign out"), PHONE.matches ? " (under More)" : " at the bottom of the sidebar",
+          code("./stack password --show"), " prints it; change it in ", settings("Account & security"), ")."),
+        p("It keeps you signed in for 30 days unless you changed the session length there. ", b("Sign out"), PHONE.matches ? " (under More)" : " at the bottom of the sidebar",
           " ends every session."),
       ],
     },

@@ -1422,7 +1422,7 @@ def open_settings(page):
     page.wait_for_selector("#settings .set-card", timeout=20000)
 
 
-def _confirm(page, password=None):
+def _confirm(page, password=None, wait_sent=True):
     page.wait_for_selector("#set-confirm[open]", timeout=10000)
     page.fill("#set-confirm-password", password or ENV["PORTAL_PASSWORD"])
     wait = 6 - (time.time() - _last_apply[0])   # the portal takes one change every 5 s
@@ -1430,10 +1430,26 @@ def _confirm(page, password=None):
         page.wait_for_timeout(int(wait * 1000))
     page.click("#set-confirm-ok")
     _last_apply[0] = time.time()
+    if not wait_sent:
+        return
+    # Sent once the dialog closes: settings.js then shows the new job in the same tick. Until then the panel may still
+    # show the previous job's result, which _wait_job must not take for this one.
+    try:
+        page.wait_for_selector("#set-confirm:not([open])", state="attached", timeout=30000)
+    except Exception:  # noqa: BLE001
+        raise AssertionError(f"not sent: {page.inner_text('#set-confirm-error') or 'the dialog stayed open'}") from None
+    form_err = page.locator("#settings .set-form .error:not([hidden])")
+    expect(form_err.count() == 0, f"refused by the portal: {form_err.first.inner_text() if form_err.count() else ''}")
 
 
 def _wait_job(page, timeout=240):
-    page.wait_for_selector("#set-job:not([hidden]) .job-message.good, #set-job:not([hidden]) .job-message.bad", timeout=timeout * 1000)
+    try:
+        page.wait_for_selector("#set-job:not([hidden]) .job-message.good, #set-job:not([hidden]) .job-message.bad", timeout=timeout * 1000)
+    except Exception:  # noqa: BLE001 — say what the page shows instead of a bare timeout
+        shown = page.evaluate("""() => [...document.querySelectorAll('#set-confirm[open] .error, #settings .set-form .error, #set-job')]
+            .filter(n => !n.hidden && n.textContent.trim()).map(n => n.textContent.trim().slice(0, 160))""")
+        shot(page, "settings-job-timeout", mask=[".set-value", ".set-adv-value"])
+        raise AssertionError(f"no result from the helper within {timeout} s; the page shows: {shown or 'nothing'}")
     return page.locator("#set-job .job-message.good").count() > 0, page.inner_text("#set-job-message")
 
 
@@ -1776,7 +1792,8 @@ def settings_nightly(ctx):
     shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="Off").click()
     _confirm(page)
-    _wait_job(page)
+    ok, msg = _wait_job(page)
+    expect(ok, f"BACKUP_NIGHTLY off: {msg}")
     rec.save()
     return f"nightly backups on at {hour:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with the manual one"
 

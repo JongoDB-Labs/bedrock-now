@@ -33,7 +33,7 @@ _req_read() {
   for u in $(_allowed_uids); do [ "$uid" != "$u" ] || ok=1; done
   [ "$ok" = 1 ] || { echo "owned by uid $uid, not by you or the portal" >&2; return 1; }
   [ -r "$f" ] || { echo "unreadable" >&2; return 1; }
-  body="$(head -c $(($2 + 1)) "$f" 2>/dev/null && echo x)" || { echo "unreadable" >&2; return 1; }
+  body="$(read_portal_file "$f" $(($2 + 1)) && echo x)" || { echo "unreadable" >&2; return 1; }
   body="${body%x}"
   [ -n "$body" ] || { echo "empty" >&2; return 1; }
   [ "${#body}" -le "$2" ] || { echo "larger than $2 bytes" >&2; return 1; }
@@ -277,7 +277,7 @@ helper_run_diag() {
 settings_poll_once() {
   local rq inbox box f name res reason
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
-  mkdir -p "$inbox"; chmod 700 "$(helper_dir)" "$inbox"
+  [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   for f in "$rq"/cfg-*.req "$rq"/act-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
@@ -380,32 +380,33 @@ backup_nightly_tick() {
   hour="$(backup_hour)"
   start="$(_window_start "$now" "$since" "$nowh" "$hour")"
   last="$(head -c 20 "$(backup_last_file)" 2>/dev/null | tr -cd '0-9' || true)"
-  if declare -F auto_last_file >/dev/null && [ -f "$(auto_last_file)" ]; then auto_at="$(ENV_FILE="$(auto_last_file)" get_env at)"; fi
+  auto_at="$(_auto_get "$(auto_last_file)" at)"
   [ -z "$(stack_lock_holder)" ] || busy=lock
   ! _status_in_progress || busy=job
   d="$(backup_decision on "$hour" "$nowh" "$start" "$last" "$auto_at" "$busy")"
   case "$d" in
-    run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now" ;;
+    run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now"; return 0 ;;
     update) printf '%s\n' "$start" > "$(backup_last_file)"
             printf '%s nightly backup skipped: an automatic update made its own backup tonight\n' "$(date '+%F %T')" >&2 ;;
   esac
-  return 0
+  return 1
 }
 
 # settings_helper_tick — every loop: the settings snapshot when .env changed, the helper's own password hash (once),
-# the backup list when backups/ changed, a nightly backup when due, and the capability file that tells the portal
-# this helper takes settings requests
+# the backup list when backups/ changed, a nightly backup when due, the capability file. 0 when a backup ran.
 settings_helper_tick() {
-  local f l; f="$(settings_capability_file)"
+  local f l seen ran=1; f="$(settings_capability_file)"; seen="$(helper_dir)/backups-seen"
   [ -f "$(helper_password_file)" ] || helper_password_sync 2>/dev/null || true
   settings_snapshot_refresh 2>/dev/null || true
   l="$( (ls "$STACK_DIR/backups" 2>/dev/null || true) | cksum)"
-  if [ "$l" != "${_BACKUPS_SEEN:-}" ] || [ ! -f "$(status_dir)/backups.json" ]; then _BACKUPS_SEEN="$l"; write_backups_json 2>/dev/null || true; fi
-  backup_nightly_tick
+  if [ "$l" != "$(head -c 64 "$seen" 2>/dev/null)" ] || [ ! -f "$(status_dir)/backups.json" ]; then
+    write_backups_json 2>/dev/null && printf '%s' "$l" > "$seen" || true
+  fi
+  ! backup_nightly_tick || ran=0
   if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
     printf '{"settings": 1, "diagnostics": [%s], "written_at": %s}\n' \
       "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
       chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
   fi
-  return 0
+  return "$ran"
 }

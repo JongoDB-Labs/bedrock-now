@@ -95,8 +95,8 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   value from a request. Diagnostics are
   `act-<nonce>.json` with one action from a fixed list (check-aws, models-recheck, backup, test, report,
   restart of litellm, open-webui, shared-mcp, stt, rustfs or caddy), in the strict format of the update requests.
-- **The helper checks everything again.** It moves the file into its private inbox, refuses symlinks, other
-  owners, more than 8 KB, any other line, a nonce used before and requests older than 2 minutes; then it deletes
+- **The helper checks everything again.** It moves the file into its private inbox, reads it without blocking or
+  following links (as `latest.txt`: [bounded reads](#the-update-helper)), refuses symlinks, other owners, more than 8 KB, any other line, a nonce used before and requests older than 2 minutes; then it deletes
   the file and keeps the values in memory only. The password in `auth` must match **the helper's own hash**,
   `.state/helper/portal-password` (600, in a 700 folder no container mounts), which `./stack` writes from `.env`
   — never `PORTAL_PASSWORD_HASH`, which the portal can read. Five wrong passwords in 15 minutes (or 20 in a day)
@@ -134,6 +134,8 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   that holds the owner email (what a bare `.env` edit creates), and reset the Admin password from `.env` with the
   master key, or warn.
 
+- **Nothing in Settings can stop the helper.** Its settings and diagnostics code runs in a subshell of the helper's
+  loop: a failure there (even a bug that exits) is logged and the loop goes on, like everything else in it.
 - **Nightly backups** (`BACKUP_NIGHTLY=on`) are run by the helper itself, in its loop, like automatic updates: once
   per night in the three hours from `BACKUP_HOUR` (this computer's clock), `./stack backup --nightly`, which keeps
   the newest `BACKUP_KEEP` of the `-nightly` backups and never removes yours, the update backups or the one a
@@ -270,8 +272,9 @@ request says beyond the three fields, or run as root.
   portal's uid. The helper's logs (`.state/helper/last-<action>.log`) are 600; its service log
   `.state/helper/helper.log` is 600 and trimmed to 200 KB when it passes 1 MB.
 - [x] **Bounded reads that never block.** Everything the helper and `./stack` read from folders the portal can write
-  is read with a size cap (requests 513 bytes, the release check's answer 256 bytes). Requests are first moved into
-  the helper's private folder and checked to be regular files. The release check's answer (`latest.txt`) is opened
+  is read with a size cap (requests 513 bytes, settings requests 8 KB, diagnostics 513 bytes, the release check's
+  answer 256 bytes). Requests are first moved into the helper's private folder and checked to be regular files;
+  settings and diagnostics requests are then read like `latest.txt` below. The release check's answer (`latest.txt`) is opened
   with `O_NONBLOCK | O_NOFOLLOW` and checked to be a regular file on the open handle (perl; without perl, the same
   checks by path and a read ended after 2 seconds), so a FIFO, device or symlink put there, even swapped in after a
   check, cannot stall or redirect the helper. The helper reads it only inside the automatic-update window, once per

@@ -128,7 +128,7 @@ by cause with a fix:
 | HTTP 402 | paid models need credits (openrouter.ai/settings/credits), or `./stack openrouter models free` |
 | HTTP 404 "No endpoints found matching your data policy" | allow free endpoints that may train on prompts at openrouter.ai/settings/privacy |
 | HTTP 401 | paste a new key into `.env` and run `./stack openrouter apply` (or `./stack openrouter set`) |
-| a key's monthly budget used up | raise `BUDGET_*` in `.env`, then `./stack setup` |
+| a key's monthly budget used up | raise it in the portal's Settings → Budgets & alerts (or `./stack config set BUDGET_OPENWEBUI`) |
 | anything else | the status and the provider's message (keys, AWS access keys, ARNs, account ids, key hashes and emails masked) |
 
 `./stack costs` and `./stack openrouter status` print the 30-day free and paid totals (free: `$0 actual (≈ $… at
