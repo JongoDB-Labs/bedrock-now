@@ -12,6 +12,7 @@ from playwright.sync_api import sync_playwright
 import checks_api  # noqa: F401 — registers checks
 import checks_browser  # noqa: F401
 import checks_http  # noqa: F401
+import checks_terminal  # noqa: F401
 import checks_voice  # noqa: F401
 from common import CHECKS, HOST, RESULTS, TARGET_IP, origin, portal_login, run_all
 from checks_browser import Recorder

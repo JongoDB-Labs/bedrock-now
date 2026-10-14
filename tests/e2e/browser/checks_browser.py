@@ -1049,8 +1049,10 @@ def phone(ctx):
     page.click("#more-btn")
     page.wait_for_selector("#more-sheet:not([hidden])")
     links = page.eval_on_selector_all("#more-sheet .sheet-link[data-app]", "els => els.map(a => [a.dataset.app, a.href, a.target])")
-    expect(links == [["admin", origin("admin") + "/ui/", "_blank"], ["files", origin("files") + "/rustfs/console/", "_blank"]],
-           f"More links {links}")
+    want = [["admin", origin("admin") + "/ui/", "_blank"], ["files", origin("files") + "/rustfs/console/", "_blank"]]
+    if ENV.get("TERMINAL_ENABLED") == "true":   # the browser terminal (--terminal): full screen from More
+        want.append(["terminal", origin("terminal") + "/", "_blank"])
+    expect(links == want, f"More links {links}")
     expect(page.locator("#more-sheet .sheet-link[data-page=settings]").is_visible(), "no Settings in More")
     expect(page.locator(".sheet-logout button").is_visible(), "no Sign out in More")
     shot(page, "13-phone-more")

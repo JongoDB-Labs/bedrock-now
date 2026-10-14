@@ -349,6 +349,65 @@ Full Disk Access. Keep the checkout elsewhere (the installer's default is fine) 
 character; `./stack helper install` refuses such a path. `%` and `$` are escaped (checked with
 `systemd-analyze verify`).
 
+## The browser terminal
+
+`./stack terminal enable` (off by default) puts Claude Code and a shell into the portal's Terminal tab. Earlier
+versions refused to offer this at all: a shell in the browser is one stolen session away from running commands.
+It is now offered as a **sandbox** with the checks below, so a stolen session cookie alone opens nothing, and
+what a successful attacker reaches is the container, not your computer.
+
+- [x] **Not a shell on your computer.** ttyd runs `tmux` in its own container (`terminal/`, built locally; base
+  image pinned by digest, Claude Code by version and SHA-512 in `terminal/claude-code/package-lock.json`, ttyd's
+  binary by SHA-256 for amd64 and arm64). It runs as your user id (not root), with `cap_drop: ALL`,
+  `no-new-privileges`, a read-only image, a 1 GB in-memory `/tmp`, 4 GB of memory (`TERMINAL_MEM_LIMIT`) and
+  1024 processes at most. No Docker socket, no host network, no published port.
+- [x] **One folder of yours.** The only host folder it sees is `TERMINAL_WORKSPACE` (at `/workspace`; Docker never
+  creates it). `./stack terminal enable` resolves symlinks and refuses `/`, system folders (where the Docker
+  socket lives), your home folder itself or any folder around it, hidden folders directly in your home folder
+  (`~/.ssh`, `~/.aws`, `~/.docker` …), the bedrock-now folder and anything around or inside it (its `.env` holds
+  every secret). Its default, `~/bedrock-now-workspace`, is created with mode 700. `TERMINAL_*` values from your
+  shell are ignored (`dc()` drops them): only `.env` decides what is mounted. Claude Code's own settings and
+  history live in the `terminal-home` volume (not part of `./stack backup`).
+- [x] **Inside the stack: LiteLLM and the shared MCP server only.** Its network `terminal` is internal and holds
+  only the container and Caddy. Caddy's gateway listener (`:8091`, bound to its address on that network alone)
+  forwards to LiteLLM's API and shared-mcp's `/mcp`, where the container still needs the `claude-code` key and
+  `SHARED_MCP_TOKEN`. It cannot reach the portal, Open WebUI (which trusts `X-Portal-User` from its network),
+  Postgres, RustFS or the speech-to-text container, and never holds the master key, the portal password or AWS
+  credentials. It can reach Caddy's other listeners like a browser on this computer: every site there needs a
+  portal session. Whatever runs in it can spend from the `claude-code` key (capped by `BUDGET_CLAUDE_CODE`) and
+  read and write the shared store; `./stack test` and the e2e suite probe these limits.
+- [x] **Out: the internet, unless you say no.** A second network, `terminal-out` (`compose.terminal-egress.yaml`),
+  gives it the internet for git, npm, pip and Claude Code's web fetch. On Docker Desktop that also reaches
+  services of your computer through `host.docker.internal`; on Linux a container can reach the host through its
+  network's gateway address (services listening on `0.0.0.0`). `TERMINAL_EGRESS=off` in `.env` (then
+  `./stack up`) leaves only the internal network.
+- [x] **A fresh password to open it.** The terminal host (`terminal.PORTAL_HOST`) needs the portal session **and**
+  an unlock: the portal password typed again on that host's own page (`POST /.bn/unlock`; same lock-out as the
+  login form: five wrong ones lock both for a while). The unlock is a signed cookie, host-only on the terminal
+  host (`bn_terminal`; remote `__Host-bn_terminal`, `Secure`), `HttpOnly`, `SameSite=Strict`, valid 12 hours,
+  bound to the password (a new `PORTAL_PASSWORD` voids it) and to your Tailscale login where sessions are.
+  **Sign out** revokes it with every session. Caddy asks the portal on every request with
+  `/auth/verify?app=terminal`, fixed in the Caddyfile, so no request header can turn it into another app's
+  check; the unlock form posts only with the terminal host's own `Origin`.
+- [x] **No other website can drive it.** A WebSocket must come with the terminal host's own `Origin`, checked
+  twice: by the portal before Caddy proxies anything (a missing, foreign, portal or app Origin is refused), and
+  by ttyd itself (`--check-origin`). ttyd also refuses every request without the `X-Portal-User` header that only
+  Caddy adds after the portal's yes (`--auth-header`); Caddy strips all cookies and the proxy secret before ttyd.
+  It may be framed only by the portal.
+- [x] **Remote access: off for the terminal.** The remote sites route the terminal's name only when
+  `REMOTE_TERMINAL=true` is in `.env` (then `./stack up`): `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`
+  (`<base>-terminal.<tailnet>.ts.net`, a fifth Tailscale Service, or `terminal.<your domain>`), and otherwise the
+  remote blocks match nothing. The portal refuses remote terminal requests without it as well.
+- [x] **Easy to turn off.** `./stack terminal disable` removes the container and its networks; the folder and the
+  `terminal-home` volume stay (`docker volume rm <project>_terminal-home` forgets Claude Code's history).
+  `./stack uninstall` removes the volume too.
+
+**Threat model.** Someone with your portal session cookie but not the password gets the unlock page. Someone with
+both (or with your unlocked browser) gets a shell in the container: your workspace folder, the `claude-code` key
+within its budget, the shared store, the internet — not your other files, the stack's secrets or the other
+services. Treat the workspace as what it is: whatever you put there, Claude Code and that shell can read and
+change. Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need your whole machine.
+
 ## Code provenance
 
 `./stack update` runs the code it downloads: on a release install, the newest `vX.Y.Z` tag of the `origin`
@@ -370,5 +429,7 @@ or no update will go through.
 
 Every image version is pinned in `compose.yaml` (Caddy also by digest); the portal, shared-mcp and stt Python
 dependencies are hash-locked, and the stt image's base (`python:3.12-alpine`) is pinned by digest (its ffmpeg
-comes from that Alpine release's repository). LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
+comes from that Alpine release's repository). The optional terminal image's base (`node:…-trixie-slim`) is pinned
+by digest, Claude Code by version and SHA-512 (`npm ci` with `terminal/claude-code/package-lock.json`) and ttyd by
+SHA-256; its Debian packages refresh weekly like stt's ffmpeg (`APT_REFRESH`). LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
 releases were compromised. Update only with `./stack update`.

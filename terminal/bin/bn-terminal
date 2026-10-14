@@ -1,0 +1,27 @@
+#!/bin/bash
+# The terminal container's start (compose.terminal.yaml): the MCP config for claude-bedrock, Claude Code's first-run
+# theme screen done once, then ttyd on :7681. Each browser connection attaches to the same tmux session (bn-session).
+set -euo pipefail
+umask 077
+conf="$HOME/.config/bedrock-now"
+mkdir -p "$conf"
+# The shared store and knowledge bases (shared-mcp) through Caddy's gateway: rewritten at every start, so a new
+# SHARED_MCP_TOKEN reaches it. The token then leaves the environment of everything started here.
+if [ -n "${SHARED_MCP_TOKEN:-}" ] && [ -n "${BN_MCP_URL:-}" ]; then
+  jq -n --arg url "$BN_MCP_URL" --arg auth "Bearer $SHARED_MCP_TOKEN" \
+    '{mcpServers: {"bedrock-shared": {type: "http", url: $url, headers: {Authorization: $auth}}}}' > "$conf/mcp.json.tmp"
+  mv "$conf/mcp.json.tmp" "$conf/mcp.json"
+fi
+# First start only: no theme picker (dark, like the terminal). Claude Code's other first-run question — whether
+# you trust the files in /workspace — stays yours to answer.
+[ -e "$HOME/.claude.json" ] || printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$HOME/.claude.json"
+# ttyd: -W lets keystrokes through; -O refuses a WebSocket whose Origin is not this host (another website cannot
+# drive the terminal with your cookies); -H refuses every request without X-Portal-User, which only Caddy's check
+# adds (caddy/Caddyfile terminal_auth: the portal session, a fresh unlock, the Origin); URL arguments stay off.
+# --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at any pixel ratio.
+exec env -u SHARED_MCP_TOKEN ttyd --port 7681 --writable --check-origin --auth-header X-Portal-User --ping-interval 20 \
+  --index /usr/local/share/bedrock-now/ttyd.html \
+  -t 'titleFixed=Terminal · bedrock-now' -t fontSize=14 -t disableLeaveAlert=true -t disableResizeOverlay=true -t rendererType=dom \
+  -t 'fontFamily=ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace' \
+  -t 'theme={"background":"#111820","foreground":"#e4e9ee","cursor":"#73b6cd","cursorAccent":"#111820","selectionBackground":"#2c4f5d"}' \
+  bn-session

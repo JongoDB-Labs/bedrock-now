@@ -4,8 +4,14 @@ Back to the [README](../README.md#claude-code-from-your-phone).
 
 `claude-bedrock` runs on the machine that runs bedrock-now (your Mac, or a [cloud VM](cloud-vm.md)). From a
 phone you reach it the way you'd reach any server: **SSH**, inside **tmux** so a dropped connection doesn't end
-the session. bedrock-now never offers a web terminal: a browser shell would be one stolen session cookie away
-from running commands on your machine.
+the session. That is what this page describes: Claude Code on the machine itself, with your projects and tools.
+
+There is also an easier, more limited way: the optional **browser terminal** (`./stack terminal enable`;
+[README](../README.md#claude-code-in-the-browser-optional)). On a phone it opens from the portal's **More →
+Terminal**, full screen, and needs no SSH app. It is a sandbox rather than a shell on your machine: Claude Code
+runs in a container that sees only one folder you choose, opening it takes the portal password again, and it
+stays off for [remote access](remote.md) unless you set `REMOTE_TERMINAL=true`. Its tmux session also survives a
+dropped connection. Typing on a phone's on-screen keyboard is cramped either way; an external keyboard helps.
 
 `./stack ssh-info` prints everything below with this machine's name filled in.
 
@@ -88,6 +94,16 @@ tries the next night.
 On Linux, `./stack serve` only acts on a laptop (a machine with a battery): it holds a `systemd-inhibit` sleep
 lock until Ctrl-C, and says so if the inhibitor can't be taken (or `systemd-inhibit` is missing). Without a
 battery it only notes that servers don't sleep. `--background` is macOS-only; on a Linux laptop run `serve` in tmux.
+
+## SSH or the browser terminal?
+
+| | SSH + tmux (this page) | Browser terminal (`./stack terminal enable`) |
+|---|---|---|
+| Runs | on the machine, as you | in a sandbox container |
+| Sees | everything your user can | only its workspace folder (`/workspace`) |
+| Needs | Tailscale (or the same Wi-Fi), SSH on, an SSH app | the portal (and, away from home, remote access with `REMOTE_TERMINAL=true`) |
+| Tools | yours (brew, your projects, Docker) | git, node/npm, python/pip, ripgrep, jq, nano inside the container |
+| Signing in | your SSH key | the portal password again (12 h per browser; Sign out locks it) |
 
 ## Why not Claude Code's Remote Control?
 

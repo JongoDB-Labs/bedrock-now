@@ -249,21 +249,31 @@ dc() {
   for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
   # Bedrock speech-to-text: its container is in the "stt" profile (lib/stt.sh), so down/ps/logs include it too.
   if [ "${_STT_PROFILE:-}" = 1 ] || [ "$(get_env STT_PROVIDER)" = bedrock ]; then f+=(--profile stt); fi
+  # The browser terminal too: an exported TERMINAL_WORKSPACE must never decide what the container sees.
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
       OWUI_STT_BASE_URL STT_BEDROCK_MODEL COMPOSE_PROFILES \
-      AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME
+      AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME \
+      TERMINAL_ENABLED TERMINAL_WORKSPACE TERMINAL_EGRESS TERMINAL_HOST TERMINAL_UID TERMINAL_GID TERMINAL_MEM_LIMIT \
+      REMOTE_TERMINAL REMOTE_TERMINAL_HOST
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }
 
 # compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)
-# adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin.
+# adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin; the browser terminal
+# (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet unless TERMINAL_EGRESS=off.
 compose_overlays() {
-  [ "${REMOTE_DEGRADED:-0}" != 1 ] || return 0   # remote network unusable this run (lib/remote.sh remote_net_preflight)
-  case "$(get_env REMOTE_MODE)" in
-    tailscale) echo compose.tailscale.yaml ;;
-    domain) echo compose.tailscale.yaml compose.domain.yaml ;;
-  esac
+  if [ "${REMOTE_DEGRADED:-0}" != 1 ]; then   # remote network unusable this run (lib/remote.sh remote_net_preflight)
+    case "$(get_env REMOTE_MODE)" in
+      tailscale) echo compose.tailscale.yaml ;;
+      domain) echo compose.tailscale.yaml compose.domain.yaml ;;
+    esac
+  fi
+  if [ "$(get_env TERMINAL_ENABLED)" = true ]; then
+    echo compose.terminal.yaml
+    [ "$(get_env TERMINAL_EGRESS)" = off ] || echo compose.terminal-egress.yaml
+  fi
+  return 0
 }
 
 # curl with a bearer token that never appears in `ps` output (token is fed via -K stdin).

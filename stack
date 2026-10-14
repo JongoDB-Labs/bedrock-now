@@ -31,6 +31,7 @@ if [ "$want_help" = 1 ]; then
   case "$cmd" in
     help | -h | --help) ;;
     remote) remote_usage; exit 0 ;;
+    terminal) terminal_usage; exit 0 ;;
     *) cmd_help_for "$cmd" || die "unknown command: $cmd (try ./stack help)"; exit 0 ;;
   esac
 fi
@@ -65,6 +66,7 @@ case "$cmd" in
   ssh-info) cmd_ssh_info "$@" ;;
   openrouter) [ ! -f "$ENV_FILE" ] || guard_project; cmd_openrouter "$@" ;;
   stt) [ ! -f "$ENV_FILE" ] || guard_project; cmd_stt "$@" ;;
+  terminal) [ ! -f "$ENV_FILE" ] || guard_project; cmd_terminal "$@" ;;
   password) cmd_password "$@" ;;
   config) cmd_config "$@" ;;   # guards the project itself before a change (set, apply)
   restart) [ ! -f "$ENV_FILE" ] || guard_project; cmd_restart "$@" ;;

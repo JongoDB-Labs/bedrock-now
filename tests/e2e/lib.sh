@@ -155,16 +155,24 @@ $out"
   printf '%s\n' "$all" | awk -v p="$PROJECT" 'NF && $0 != p && !s[$0]++ { printf "%s%s", (n++ ? " " : ""), $0 }'
 }
 
+# terminal_workspace_dir -> the browser terminal's workspace for the throwaway (--terminal): next to its checkout
+terminal_workspace_dir() { printf '%s/%s-workspace\n' "$(dirname "$STACK")" "$PROJECT"; }
+
 teardown() {
-  local img id left others
+  local img id left others ws
   if [ "$OWNED" != 1 ]; then
     warn "teardown: project $PROJECT is not known to be this suite's own — Docker left untouched"
   else
     say "teardown: project $PROJECT"
     docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose -p $PROJECT down failed"
     docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
+    # The browser terminal (--terminal) lives in overlay files that `down` without them does not read: its volume
+    # and networks go by name.
+    docker volume rm "${PROJECT}_terminal-home" >/dev/null 2>&1 || true
+    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" >/dev/null 2>&1 || true
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
-               "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous"; do
+               "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous" \
+               "$PROJECT/terminal:local" "$PROJECT/terminal:previous"; do
       docker image rm "$img" >/dev/null 2>&1 || true
     done
     for id in $(docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null); do
@@ -181,6 +189,10 @@ teardown() {
   elif [ -f "$STACK/.bedrock-now-e2e" ]; then chmod -R u+rwX "$STACK" 2>/dev/null; rm -rf "$STACK" || warn "could not delete $STACK"
   elif [ -d "$STACK" ] && [ -z "$(ls -A "$STACK" 2>/dev/null)" ]; then rmdir "$STACK"
   elif [ -e "$STACK" ]; then warn "not deleting $STACK: it was not created by this suite (no .bedrock-now-e2e marker)"; fi
+  # The terminal's workspace folder next to the checkout: only when this suite created it (its marker).
+  ws="$(terminal_workspace_dir)"
+  if [ -f "$ws/.bedrock-now-e2e" ]; then chmod -R u+rwX "$ws" 2>/dev/null; rm -rf "$ws" || warn "could not delete $ws"
+  elif [ -e "$ws" ]; then warn "not deleting $ws: it was not created by this suite (no .bedrock-now-e2e marker)"; fi
   [ "$OWNED" = 1 ] || return 0
   left="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT"; docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")"
   if [ -z "$left" ] && [ ! -e "$STACK" ]; then say "teardown complete: no containers, volumes or checkout of $PROJECT left"

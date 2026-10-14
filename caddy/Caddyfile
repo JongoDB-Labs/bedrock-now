@@ -5,6 +5,8 @@
 #   {$ADMIN_HOST}    LiteLLM admin UI       (default admin.PORTAL_HOST)
 #   {$FILES_HOST}    RustFS console         (default files.PORTAL_HOST; Host passed through unchanged: the console
 #                                           signs S3 requests with it)
+#   {$TERMINAL_HOST} the browser terminal   (only with ./stack terminal enable: terminal-on.caddy; default
+#                                           terminal.PORTAL_HOST; a session AND a fresh password unlock)
 # The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
 # Every host first deletes any client-supplied X-Portal-User (and the rest of local_request), then asks the portal
 # (forward_auth) whether the bn_session cookie is valid; only the portal's answer can set X-Portal-User.
@@ -136,6 +138,35 @@ http://{$FILES_HOST} {
 	}
 }
 
+# The browser terminal (./stack terminal; terminal-on.caddy and the remote sites). Its unlock form — the portal
+# password typed again — posts to /.bn/unlock on the terminal host, answered by the portal before the check (it
+# sets the host-only unlock cookie). Everything else needs the portal's yes for the terminal (?app=terminal, fixed
+# here, so no request header can turn it into another app's check): a session, a fresh unlock, and an Origin of
+# the terminal host itself. Nothing of the browser's (cookies, the proxy secret) reaches ttyd.
+(terminal_unlock) {
+	request_body /.bn/unlock {
+		max_size 16KB
+	}
+	@bn_unlock path /.bn/unlock
+	reverse_proxy @bn_unlock portal:8000 {
+		rewrite /auth/terminal-unlock
+	}
+}
+
+(terminal_auth) {
+	forward_auth portal:8000 {
+		uri /auth/verify?app=terminal
+		copy_headers X-Portal-User
+	}
+}
+
+# Towards ttyd: no cookies and no proxy secret. X-Portal-User stays: ttyd (-H) refuses any request without it, so
+# only what passed the check above gets in.
+(terminal_upstream) {
+	header_up -Cookie
+	header_up -X-Portal-Proxy
+}
+
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
 # through this site, so stt itself shares no network with Open WebUI — which trusts X-Portal-User from any peer —
 # or the portal: a one-way hop. Port 8090 is not published (compose.yaml publishes 8080 only); it answers on
@@ -165,6 +196,9 @@ http:// {
 	respond /caddy-health 200
 	respond "unknown host" 404
 }
+
+# The browser terminal: terminal-off.caddy (nothing; the default) or terminal-on.caddy (compose.terminal.yaml).
+import terminal-{$TERMINAL_MODE:off}.caddy
 
 # Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.
 import remote-{$REMOTE_MODE}.caddy

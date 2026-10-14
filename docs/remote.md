@@ -78,6 +78,11 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   icons and service worker are public on the remote site through the same `(public_paths)` list as locally.
 - One-click Update / Rollback / Clean and the automatic-updates switch stay off for remote requests unless you
   set `REMOTE_ADMIN_ACTIONS=true` ([security](security.md#the-update-helper)).
+- The optional browser terminal (`./stack terminal enable`) stays off for remote access unless you set
+  `REMOTE_TERMINAL=true` in `.env` and run `./stack up`. Then it gets a remote name of its own —
+  `<base>-terminal.<tailnet>.ts.net` (a fifth Tailscale Service: approve it like the others; `./stack remote
+  status` lists it) or `terminal.<your domain>` (the wildcard certificate covers it) — reached through the same
+  hand-off, and it still asks for the portal password again ([security](security.md#the-browser-terminal)).
 
 ### Your Tailscale login, checked
 

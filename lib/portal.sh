@@ -24,12 +24,12 @@ valid_hostname() {
 portal_host() { local h; h="$(get_env PORTAL_HOST)"; [ -n "$h" ] || h="$(default_portal_host "$(project_name)")"; printf '%s\n' "$h"; }
 portal_port() { local p; p="$(get_env PORTAL_PORT)"; printf '%s\n' "${p:-80}"; }
 
-# app_host [SUB] -> PORTAL_HOST, or an app's host name: CHAT_HOST / ADMIN_HOST / FILES_HOST from .env, else
+# app_host [SUB] -> PORTAL_HOST, or an app's host name: CHAT_HOST / ADMIN_HOST / FILES_HOST / TERMINAL_HOST from .env, else
 # SUB.PORTAL_HOST (the default; any other SUB is always SUB.PORTAL_HOST)
 app_host() {
   local h k=''
   h="$(portal_host)"
-  case "${1:-}" in '') printf '%s\n' "$h"; return 0 ;; chat) k=CHAT_HOST ;; admin) k=ADMIN_HOST ;; files) k=FILES_HOST ;; esac
+  case "${1:-}" in '') printf '%s\n' "$h"; return 0 ;; chat) k=CHAT_HOST ;; admin) k=ADMIN_HOST ;; files) k=FILES_HOST ;; terminal) k=TERMINAL_HOST ;; esac
   [ -z "$k" ] || k="$(get_env "$k")"
   printf '%s\n' "${k:-$1.$h}"
 }
@@ -62,11 +62,11 @@ setup_portal_host() {
   check_app_hosts
 }
 
-# check_app_hosts — CHAT_HOST / ADMIN_HOST / FILES_HOST, when set, follow PORTAL_HOST's rules, and all four names
-# must differ: Open WebUI and LiteLLM both keep a host-only cookie named "token".
+# check_app_hosts — CHAT_HOST / ADMIN_HOST / FILES_HOST / TERMINAL_HOST, when set, follow PORTAL_HOST's rules, and all
+# the names must differ: Open WebUI and LiteLLM both keep a host-only cookie named "token".
 check_app_hosts() {
   local k v seen; seen=" $(portal_host) "
-  for k in CHAT_HOST ADMIN_HOST FILES_HOST; do
+  for k in CHAT_HOST ADMIN_HOST FILES_HOST TERMINAL_HOST; do
     v="$(get_env "$k")"
     if [ -n "$v" ]; then
       valid_hostname "$v" || die "$k=$v in .env is not a valid host name"

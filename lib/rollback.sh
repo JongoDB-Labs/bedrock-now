@@ -78,7 +78,7 @@ _rollback_local_builds() {
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
-  local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 q quiet=()
+  local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 no_terminal=0 q quiet=()
   [ $# -eq 0 ] || die "usage: ./stack rollback [--yes]   (goes back to the version before the last ./stack update)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   stack_lock rollback
@@ -116,6 +116,12 @@ cmd_rollback() {
   if ! git -C "$STACK_DIR" cat-file -e "$from:stt/Dockerfile" 2>/dev/null && declare -F stt_rollback_cleanup >/dev/null; then
     no_stt=1; stt_rollback_cleanup
   fi
+  # A version from before the browser terminal, while it is on: its container goes (lib/terminal.sh); its networks
+  # after the up.
+  no_terminal=0
+  if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/Dockerfile" 2>/dev/null; then
+    no_terminal=1; terminal_rollback_cleanup
+  fi
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"
   # The restored scripts do the rest, in fresh processes; their messages say how to retry if something fails.
@@ -128,6 +134,7 @@ cmd_rollback() {
   env BEDROCK_NOW_NO_OPEN=1 ${quiet[@]+"${quiet[@]}"} "$STACK_DIR/stack" up --yes ||
     die "the code and data are back, but ./stack up failed (see above) — run it again"
   [ "$no_stt" = 0 ] || stt_rollback_network_cleanup
+  [ "$no_terminal" = 0 ] || terminal_network_cleanup
   _record_set result rolled-back
   # The images of the version rolled back from are now the "previous version": kept until the next update
   # replaces them as previous-previous (or ./stack clean, once they are no longer the previous version).

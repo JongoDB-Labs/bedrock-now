@@ -170,6 +170,21 @@ All notable changes to bedrock-now are documented here. The format follows
   walkthrough's Extras step follows suit. `portal/e2e/install/run.sh` checks it in a real Chromium: detection, a
   second tab switching to Open while the first installs, both permission prompts, the window switching tab, a cold
   start, and the install offer after an uninstall.
+- **Claude Code in the browser (optional): `./stack terminal enable [--workspace DIR] | disable | status`.** A
+  Terminal tab in the portal (on a phone: More → Terminal, full screen) runs `claude-bedrock` in a tmux session —
+  same models, `claude-code` key and budget, shared MCP server, launch line and session cost as on your computer —
+  that survives reloads, closed tabs and dropped connections; `Ctrl-b c` opens a shell window. It is a sandbox, not a
+  shell on your computer: a locally built container (`terminal/`: Debian trixie-slim with Node 24 pinned by digest,
+  Claude Code 2.1.296 by version and SHA-512 through `npm ci`, ttyd 1.7.7 by SHA-256 for amd64/arm64, tmux, git,
+  python/pip, ripgrep) running as your uid with no capabilities, a read-only image, no Docker socket and no published
+  port, that sees only the workspace folder (default `~/bedrock-now-workspace`, created mode 700; your home folder,
+  hidden folders such as `~/.ssh`, system folders and the bedrock-now folder are refused). Inside the stack it reaches
+  only LiteLLM's API and the shared MCP server, through a Caddy gateway on its own internal network; out, the
+  internet unless `TERMINAL_EGRESS=off`. Opening it takes the portal password again (a host-only, `HttpOnly`,
+  `SameSite=Strict` unlock cookie for 12 hours, ended by Sign out, throttled with the login); its WebSocket accepts
+  only its own `Origin` (checked by the portal and by ttyd) and ttyd only requests Caddy let through. Off by default,
+  and off over remote access unless `REMOTE_TERMINAL=true`. Home's Claude Code card says where to find it.
+  `./stack test` and the e2e suite (`tests/e2e/run.sh --terminal`) check its lock, Origin rules and isolation.
 
 ### Changed
 
@@ -226,6 +241,8 @@ All notable changes to bedrock-now are documented here. The format follows
   session) no longer ends setup.
 - A failed update on Home suggests `./stack rollback` only when the update had moved the code; before that, a
   rollback would undo the previous update instead.
+- The "never a web terminal" stance is replaced by the opt-in sandbox above: README, `docs/phone-claude-code.md`
+  (SSH or the browser terminal) and `docs/security.md` (*The browser terminal*: what it can and cannot reach).
 
 ### Fixed
 

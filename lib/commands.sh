@@ -6,7 +6,9 @@ STACK_BASE_SERVICES="caddy portal open-webui litellm rustfs shared-mcp postgres"
 STACK_SERVICES="$STACK_BASE_SERVICES"
 # stack_services -> the stack's own services plus the optional ones .env turns on (stt: Bedrock speech-to-text).
 # Built from STACK_BASE_SERVICES: callers keep a local STACK_SERVICES, which must not be extended twice.
-stack_services() { local extra; extra="$(stt_services)"; printf '%s\n' "$STACK_BASE_SERVICES${extra:+ $extra}"; }
+stack_services() { local extra; extra="$(optional_services)"; printf '%s\n' "$STACK_BASE_SERVICES${extra:+ $extra}"; }
+# optional_services -> the services .env turns on besides those: stt (Bedrock speech-to-text), terminal (./stack terminal)
+optional_services() { local s t; s="$(stt_services)"; t="$(terminal_services)"; printf '%s\n' "$s${s:+${t:+ }}$t"; }
 
 cmd_help() {
   cat <<'EOF'
@@ -19,7 +21,7 @@ Usage: ./stack <command> [--yes]
   open         The installed bedrock-now app, else the portal in your browser, where
                "Install app" installs it (setup and up open it too; BEDROCK_NOW_NO_OPEN=1
                turns that off)
-  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy, stt)
+  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy, stt, terminal)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
   prices       Check Bedrock prices now (public price lists; daily anyway)
@@ -52,6 +54,8 @@ Usage: ./stack <command> [--yes]
   stt          Speech-to-text for the microphone and voice calls: Bedrock (Mistral Voxtral, no key;
                on by default when your AWS key can use it) or OpenAI/Groq (outside Bedrock):
                status | set bedrock [small|mini] | set openai|groq [model] | remove   (see docs/voice.md)
+  terminal     Claude Code in the browser: a Terminal tab, a sandbox that sees only one folder of yours
+               status | enable [--workspace DIR] | disable   (asks for the portal password again)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
@@ -196,7 +200,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local | */terminal:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
@@ -413,6 +417,7 @@ cmd_setup() {
   stt_after_probe    # lib/stt.sh: Bedrock speech-to-text on by default when Voxtral is usable
   setup_keys_and_ui
   write_mcp_config
+  terminal_setup_hook   # lib/terminal.sh: the browser terminal, when on — rebuilt with the current keys; never fatal
   cmd_test
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
@@ -764,6 +769,7 @@ SUMMARY
 SUMMARY
   openrouter_summary_line
   stt_summary_line
+  terminal_summary_line
   remote_summary_line
   printf '\n  All credentials live in .env (mode 600).\n'
 }
@@ -823,8 +829,8 @@ offer_symlink() {
 
 cmd_up() {
   local repriced=0 restart=0 before own=1
-  local extra; extra="$(stt_services)"
-  local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
+  local extra; extra="$(optional_services)"
+  local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"   # + stt / terminal while .env turns them on
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   # lib/lock.sh: never while a settings change, setup, update or restore writes .env. Released when up returns (not at
   # exit): ./stack serve goes on keeping the machine awake for hours, and must not block everything else meanwhile.
@@ -833,6 +839,7 @@ cmd_up() {
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
+  terminal_up_hook     # lib/terminal.sh: its remote name, and a missing workspace folder said out loud
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_password_hash   # lib/settings.sh: PORTAL_PASSWORD edited by hand gets a new hash
   owner_email_lowercase         # lib/settings.sh: as Chat keeps it
@@ -863,6 +870,7 @@ cmd_up() {
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
   # shellcheck disable=SC2086  # word-split the service list on purpose
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
+  terminal_after_up   # TERMINAL_EGRESS=off: the network to the internet goes once the container has left it
   remote_up_hook
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup).
   # The same session updates Open WebUI's prices once: after Bedrock price changes, on_prices_changed (cost
@@ -899,6 +907,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
     rustfs) portal_url files ;;
     shared-mcp) echo "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" ;;
     tailscale) if [ -n "$(remote_url)" ]; then echo "$(remote_url)   (your devices; ./stack remote status)"; else echo "- (./stack remote status)"; fi ;;
+    terminal) echo "$(portal_url terminal)   (the Terminal tab; ./stack terminal status)" ;;
     *) echo "- (internal only)" ;;
   esac
 }
@@ -906,7 +915,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
 # status_table < "service<TAB>state<TAB>health<TAB>exit code" lines (dc ps -a --format) -> SERVICE STATE HEALTH URL
 status_table() {
   local ps s row state health sc hc O_RED O_GRN O_YEL O_OFF
-  local extra; extra="$(stt_services)"
+  local extra; extra="$(optional_services)"
   local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"
   out_colors
   ps="$(cat)"
@@ -1046,6 +1055,7 @@ cmd_test() {
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "http://127.0.0.1:$mp/mcp" 2>/dev/null | grep -o '"search_knowledge"' | head -n1 || true)"
   _check "shared-mcp lists tools" "$code" '"search_knowledge"'
   stt_test_checks   # lib/stt.sh: Bedrock speech-to-text, when on (~$0.00005)
+  terminal_test_checks   # lib/terminal.sh: the browser terminal's checks, when on (no Bedrock calls)
   rm -f "$tmp"
   [ "$fails" -eq 0 ] || die "$fails check(s) failed — see ./stack logs"
   log "all checks passed"
@@ -1573,3 +1583,5 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/host.sh"
 # Remote access from your devices (./stack remote; Tailscale sidecar, remote Caddy site).
 . "$STACK_DIR/lib/remote.sh"
+# The optional browser terminal (./stack terminal; Claude Code in a sandbox container, the portal's Terminal tab).
+. "$STACK_DIR/lib/terminal.sh"

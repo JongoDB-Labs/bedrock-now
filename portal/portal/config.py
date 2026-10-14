@@ -25,6 +25,10 @@ APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
 APP_HOST_ENV = {"chat": "CHAT_HOST", "admin": "ADMIN_HOST", "files": "FILES_HOST"}
 REMOTE_APP_HOST_ENV = {"chat": "REMOTE_CHAT_HOST", "admin": "REMOTE_ADMIN_HOST", "files": "REMOTE_FILES_HOST"}
 REMOTE_MODES = ("tailscale", "domain")
+# The optional browser terminal (./stack terminal; compose.terminal.yaml passes TERMINAL_ENABLED=true): its own host,
+# TERMINAL_HOST (default terminal.PORTAL_HOST), behind the session AND a fresh password unlock; on the remote site
+# only with REMOTE_TERMINAL=true (REMOTE_TERMINAL_HOST, written by lib/terminal.sh).
+TERMINAL = "terminal"
 
 # LiteLLM virtual keys shown on Home: (env var, key alias, label)
 KEYS = (
@@ -92,6 +96,8 @@ class Settings:
     stt_provider: str = ""
     stt_model: str = ""
     stt_url: str = "http://caddy:8090"   # Caddy's internal speech-to-text site (no network is shared with stt)
+    terminal: bool = False         # TERMINAL_ENABLED=true: the Terminal tab and terminal host (./stack terminal)
+    remote_terminal: bool = False  # REMOTE_TERMINAL=true: also on the remote site (remote_app_hosts["terminal"])
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -120,11 +126,28 @@ class Settings:
 
     def app_origins(self) -> list[str]:
         local = [self.origin(sub) for sub in APPS]
-        return local + ([self.origin(sub, remote=True) for sub in APPS] if self.remote_on() else [])
+        return local + ([self.origin(sub, remote=True) for sub in APPS] if self.remote_on() else []) + self.terminal_origins()
 
     def app_urls(self, remote: bool = False) -> dict:
-        """{"chat": "https://…/", …}: where Home opens each app on this site."""
-        return {sub: self.origin(sub, remote) + path for sub, path in APPS.items()}
+        """{"chat": "https://…/", …}: where Home opens each app on this site (the terminal only where it is on)."""
+        urls = {sub: self.origin(sub, remote) + path for sub, path in APPS.items()}
+        if self.terminal_on(remote):
+            urls[TERMINAL] = self.origin(TERMINAL, remote) + "/"
+        return urls
+
+    def terminal_on(self, remote: bool = False) -> bool:
+        """The terminal is enabled — and, on the remote site, allowed there (REMOTE_TERMINAL) with a name of its own."""
+        if not self.terminal:
+            return False
+        return not remote or (self.remote_terminal and self.remote_on() and bool(self.remote_app_hosts.get(TERMINAL)))
+
+    def terminal_origins(self) -> list[str]:
+        return [self.origin(TERMINAL, remote=rem) for rem in (False, True) if self.terminal_on(rem)]
+
+
+def _on(value: str | None) -> bool:
+    """true / 1 / yes / on (any case) — anything else, or nothing, is off."""
+    return (value or "false").strip().lower() in ("true", "1", "yes", "on")
 
 
 def _int_in(raw, lo: int, hi: int, default: int) -> int:
@@ -153,6 +176,14 @@ def from_env(env: dict | None = None) -> Settings:
     except ValueError as e:
         raise ConfigError(f"PORTAL_PORT is not a number: {env.get('PORTAL_PORT')!r}") from e
     keys = tuple((alias, label, env.get(var, "")) for var, alias, label in KEYS)
+    terminal = _on(env.get("TERMINAL_ENABLED"))
+    remote_terminal = terminal and _on(env.get("REMOTE_TERMINAL"))
+    app_hosts = {sub: env.get(var, "").strip().lower() for sub, var in APP_HOST_ENV.items() if env.get(var, "").strip()}
+    if (env.get("TERMINAL_HOST") or "").strip():
+        app_hosts[TERMINAL] = env["TERMINAL_HOST"].strip().lower()
+    remote_app_hosts = {sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()}
+    if remote_terminal and (env.get("REMOTE_TERMINAL_HOST") or "").strip():
+        remote_app_hosts[TERMINAL] = env["REMOTE_TERMINAL_HOST"].strip().lower()
     return Settings(
         password_hash=password_hash,
         secret=secret,
@@ -185,11 +216,13 @@ def from_env(env: dict | None = None) -> Settings:
         update_dir=Path(env.get("PORTAL_UPDATE_DIR", "/data/update-check")),
         status_dir=Path(env.get("PORTAL_STATUS_DIR", "/data/status")),
         request_dir=Path(env.get("PORTAL_REQUEST_DIR", "/data/requests")),
-        remote_admin_actions=(env.get("REMOTE_ADMIN_ACTIONS") or "false").strip().lower() in ("true", "1", "yes", "on"),
-        app_hosts={sub: env.get(var, "").strip().lower() for sub, var in APP_HOST_ENV.items() if env.get(var, "").strip()},
+        remote_admin_actions=_on(env.get("REMOTE_ADMIN_ACTIONS")),
+        app_hosts=app_hosts,
         remote_mode=(env.get("REMOTE_MODE") or "").strip().lower(),
         remote_host=(env.get("REMOTE_HOST") or "").strip().lower(),
-        remote_app_hosts={sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()},
+        remote_app_hosts=remote_app_hosts,
+        terminal=terminal,
+        remote_terminal=remote_terminal,
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),

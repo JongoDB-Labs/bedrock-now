@@ -326,16 +326,17 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     # only the sidecar's network, checked first
     assert_eq "$(printf '%s\n' "$snippet" | sed -n 2,3p | tr -d '\t')" "$(printf '@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32\nabort @not_sidecar')"
     assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
-    # every remote site block uses the snippet; the catch-all aborts other callers too
-    assert_eq "$(grep -c 'import remote_request' "$f")" 4
+    # every remote site block uses the snippet (the four apps and the browser terminal); the catch-all aborts
+    # other callers too
+    assert_eq "$(grep -c 'import remote_request' "$f")" 5
     assert_eq "$(grep -c 'abort @' "$f")" 2
     up="$(awk '/^\(remote_upstream\)/,/^}/' "$f")"
     assert_contains "$up" 'header_down Set-Cookie "^(.*)$" "$1; Secure"'
     assert_contains "$up" "header_up -X-Portal-Proxy"
-    assert_eq "$(grep -c 'import remote_upstream' "$f")" 3
+    assert_eq "$(grep -c 'import remote_upstream' "$f")" 4
   done
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" "request_header -Tailscale-User-Login"
-  for m in tailscale domain; do assert_eq "$(grep -c "import handoff_callback" "$STACK_DIR/caddy/remote-$m.caddy")" 3; done
+  for m in tailscale domain; do assert_eq "$(grep -c "import handoff_callback" "$STACK_DIR/caddy/remote-$m.caddy")" 4; done
 }
 
 test_remote_cookie_name_matches_portal_and_caddy() {

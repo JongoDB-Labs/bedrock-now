@@ -82,7 +82,7 @@
   .sidebar .brand, .sidebar > .logout, .sidebar > .install-btn, .popout { display: none; }
   .sidebar .version-label { display: none; } .home-version { display: inline-flex; margin-right: 6px; }
   .tabs { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
-  .tabs li:has(> [data-tab="admin"]), .tabs li:has(> [data-tab="files"]) { display: none; }
+  .tabs li:has(> [data-tab="admin"]), .tabs li:has(> [data-tab="files"]), .tabs .terminal-item { display: none; }
   .tabs li { border-radius: 0; }
   .tabs .more-item { display: flex; }
   .tab, .more-btn { flex: 1; flex-direction: column; justify-content: center; gap: 3px; min-height: 56px; padding: 6px 4px 4px;

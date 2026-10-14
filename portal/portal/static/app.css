@@ -212,3 +212,6 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 .app-note { margin-top: 16px; padding: 10px 16px; }
 .app-note img { border-radius: 7px; }
 .app-note > div { flex-basis: 200px; }   /* the icon stays beside the text on a phone */
+
+/* The browser terminal's line on the Claude Code card (terminal.js): a button that reads like a link. */
+.linkish { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; text-underline-offset: 2px; }

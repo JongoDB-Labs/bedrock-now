@@ -66,7 +66,14 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Settings: portal password | e2e `settings/settings-portal-password` | This browser stays signed in (carry-over cookie swapped for `bn_session`); another device and an old cookie are refused; a login with the new password works. |
 | Settings: AWS key, voice, OpenRouter, diagnostics | unit (`tests/test_settings.sh`, `portal/tests/test_settings.py`) · manual (a second AWS key, provider keys) | Live checks first; a failed smoke test puts the old key back; values never on a command line. |
 | Sign out | e2e `final/sign-out-all-hosts`, `final/logout-csrf-and-revocation` | Back to login; portal, chat, admin and files all redirect to login; every session (all browsers) revoked; persists across a portal restart (unit). |
-| Phone 390×844 | e2e `browser/phone-layout-390x844` | Starts on Chat; bottom bar Home/Chat/More; Admin and Files only in More (new tab) with Sign out; `#admin` falls back to Chat; Home health line "All 5 services running". |
+| Phone 390×844 | e2e `browser/phone-layout-390x844` | Starts on Chat; bottom bar Home/Chat/More; Admin and Files only in More (new tab) with Sign out (and Terminal while it is on); `#admin` falls back to Chat; Home health line "All 5 services running". |
+| Terminal tab (only `--terminal`) | e2e `browser/terminal-tab-follows-the-setting` (also without `--terminal`) | Off: no tab, `#terminal` falls back to Home, the Claude Code card says `./stack terminal enable`. On: a Terminal tab with a pop-out to `terminal.<host>/` and the card's "Terminal tab" line. |
+| Terminal: locked, unlock, tmux | e2e `browser/terminal-locked-then-unlocked` | The tab frames `terminal.<host>/`, which shows "Unlock the terminal" (the portal password again); a wrong password is refused; the right one opens xterm with the tmux session (status line "bedrock-now", Claude Code in window 1); `Ctrl-b c` gives a shell in `/workspace` where `echo` and `claude --version` run. Screenshots `40`–`42`. |
+| Terminal: the session outlives the browser | e2e `browser/terminal-session-survives-the-browser` | A tmux window made in one browser context is listed from the next one. |
+| Terminal: Claude Code on Bedrock inside | e2e `browser/terminal-claude-bedrock-inside` (only with the claude part) | `CLAUDE_BEDROCK_MODEL=<haiku> claude-bedrock -p …` in a shell window: the launch line (`bedrock · <model> ($… in / $… out per 1M tokens) · spent …`), the answer "ok" and the `session:` cost line (~$0.02). Screenshot `43`. |
+| Terminal on a phone | e2e `browser/terminal-phone-full-screen` | Not in the bottom bar; More → Terminal opens `terminal.<host>/` in a new tab: unlock page, then xterm full screen. Screenshots `44`–`46`. |
+| Terminal after Sign out | e2e `final/terminal-locked-after-sign-out` | Sign out → the terminal host sends you to the login; signed in again, the unlock page is back (Sign out voided the unlock). |
+| Terminal over remote access (`REMOTE_TERMINAL=true`) | unit (`portal/tests/test_terminal.py`, `tests/test_terminal.sh`) · manual | Off by default (403 from the portal, no Caddy route); on: `<base>-terminal.<tailnet>` or `terminal.<domain>`, hand-off, `__Host-bn_terminal`. |
 | Tablet 820×1180 | e2e `browser/tablet-layout-820x1180` | Narrow icon rail with Home/Chat/Admin/Files, no More; apps open in the frame. |
 | Real iPhone/iPad/Android | manual | Add to Home Screen; keyboard does not hide Chat's input; dictation tip on iOS. |
 | Offline page (service worker) | manual | With the stack stopped, an installed app shows "can't reach bedrock-now" instead of the browser error. |
@@ -79,6 +86,8 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `GET /healthz` | public | e2e `http/public-paths-without-session` | 200 `ok`. |
 | `GET/HEAD /auth/verify` | Caddy only | e2e `http/unknown-host-and-internal-paths`, `http/auth-required-every-host` | 404 from outside; for Caddy: 200 + `X-Portal-User`, or 302 to login (HTML GET), else 401. |
 | `GET /auth/handoff`, `/auth/callback` | remote only | unit · manual (remote access) | 404 locally. |
+| `GET /auth/verify?app=terminal` | Caddy only (the terminal host) | e2e `http/terminal-origin-and-unlock-enforced` · unit | Terminal off: 404. No session: login (HTML) / 401. Session only: the unlock page (401, framed by the portal only) / 401. Session + unlock: 200. A foreign, portal or app `Origin`, or a WebSocket (`/ws`) without one: 403. Remote without `REMOTE_TERMINAL=true`: 403. |
+| `POST /auth/terminal-unlock` (`/.bn/unlock` on the terminal host) | session + the terminal's own Origin + password | e2e `http/terminal-origin-and-unlock-enforced` · unit | Other host: 404. Foreign/portal/app/missing Origin: 403. Body > 16 KB: 413. Wrong password: 401 (throttled with the login: 429). Right: 303 to `/` and `bn_terminal` — host-only, `HttpOnly`, `SameSite=Strict`, 12 h. |
 | `GET /login` | public | e2e `http/login-*` | Page; signed in → 303 to a safe `next`. |
 | `POST /login` | public, same-origin | e2e `http/login-csrf-origin` | Foreign/app/missing Origin → 403; same-origin Referer ok; body > 16 KB → 413 (Caddy). |
 | `POST /logout` | same-origin | e2e `final/logout-csrf-and-revocation` | Foreign Origin → 403; else 303 to login and revocation. |
@@ -109,6 +118,8 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Portal headers | e2e `http/security-headers-per-host` | CSP (`script-src 'self'`, `frame-ancestors 'none'`, `frame-src` = the 3 apps), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`. |
 | Unknown Host → 404; `/caddy-health` 200 | e2e `http/unknown-host-and-internal-paths` | DNS-rebinding pages get nothing. |
 | Remote site (`remote-tailscale.caddy`, `remote-domain.caddy`) | manual (`./stack remote enable …`, phone on the tailnet) | `__Host-` cookies, hand-off per app host, `X-Portal-Remote: 1`, only the sidecar's IP. |
+| Terminal site (`terminal-on.caddy`, only `--terminal`) | e2e `http/terminal-origin-and-unlock-enforced` · unit (`tests/test_terminal.sh`) | `/.bn/unlock` to the portal, then `forward_auth ?app=terminal`, then ttyd without cookies; WebSocket 101 only from the terminal's own Origin (403 from another site, the portal or none; ttyd `--check-origin` too); ttyd pages framable only by the portal. Off: no terminal site and no gateway (`terminal-off.caddy`). |
+| Terminal gateway (`:8091`, bound to Caddy's address on the `terminal` network) | e2e `terminal/terminal-isolation` | LiteLLM (with the `claude-code` key) and shared-mcp `/mcp` (401 without the token) only. |
 
 ## 4. `./stack` commands (every one also answers `--help`: e2e `cli/help-every-command`)
 
@@ -140,6 +151,7 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | `rotate-aws` | e2e `cli/rotate-aws-same-key` | Same key re-verified, LiteLLM restarted, smoke test passes. `--use-instance-role`: manual (EC2). |
 | `serve --stop` | e2e `cli/serve-stop` | No-op when nothing is held. `serve` / `--background`: manual (keeps the Mac awake). |
 | `ssh-info` | e2e `cli/ssh-info` | Instructions for claude-bedrock over SSH. |
+| `terminal enable --workspace DIR`, `terminal status` | e2e `cli/terminal-enable`, `cli/terminal-status` (only `--terminal`) · unit (`tests/test_terminal.sh`: default folder mode 700, refused folders, disable, remote names) | Builds the image, starts it; "Terminal: on — http://terminal.<host>…", the workspace → `/workspace`, internet on, remote off. `disable`: unit · manual. |
 | `password`, `password --show` | e2e `cli/password`, `cli/password-show-no-tty` | Names `.env`; `--show` refuses without a terminal and prints nothing. |
 | `open` | skipped (opens a GUI window) · `portal/e2e/install/run.sh` | Installed app, else the browser. |
 | `uninstall` | e2e `cli/uninstall-abort` (confirmation refused) · teardown does the real removal | "aborted — nothing was removed". |
@@ -187,6 +199,14 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Isolation | e2e `voice/stt-isolation` | From the stt container: LiteLLM reachable; Open WebUI, the portal, Postgres, RustFS and the internet (IP and DNS) not; Caddy `:8090` answers `/healthz` 200 and `/v1/audio/transcriptions` (405 to a GET) and 404 to anything else. From Open WebUI: `caddy:8090/healthz` 200, `stt:8000` not resolvable. (The stt container can open Caddy's main `:8080` listener, where every site still requires the portal login — noted, not a failure.) |
 | `./stack test` voice checks | e2e `cli/test` | stt `/healthz`, Open WebUI → `caddy:8090/healthz`, a 1 s tone transcribed. |
 
+## 7c. The browser terminal (only `--terminal` / `E2E_TERMINAL=1`)
+
+| Item | How | Expected |
+|---|---|---|
+| Isolation | e2e `terminal/terminal-isolation` | From the terminal container: the portal, Open WebUI, Postgres, RustFS, LiteLLM and shared-mcp directly and the stt container not reachable; the gateway answers LiteLLM `/health/liveliness` 200, `/key/info` 200 with the container's key, `/mcp` 401 without the token; the internet (npm registry) reachable; your uid; no Docker socket; no `LITELLM_MASTER_KEY` in its environment; `claude --version`. |
+| `./stack test` terminal checks | e2e `cli/test` (with `--terminal`) | Container healthy; terminal host → login, then the unlock form; a foreign Origin 403; the gateway reaches LiteLLM; the portal, Open WebUI, LiteLLM, RustFS and Postgres not reachable directly. |
+| `TERMINAL_EGRESS=off`, `REMOTE_TERMINAL=true` | unit (`tests/test_terminal.sh` compose render) · manual | No `terminal-out` network; remote names and a fifth Tailscale Service. |
+
 ## 8. Safety of the suite itself
 
 Rules marked *unit* are proven by `tests/test_e2e_harness.sh` (part of `tests/run.sh`, with a stubbed docker).
@@ -197,11 +217,11 @@ Rules marked *unit* are proven by `tests/test_e2e_harness.sh` (part of `tests/ru
 | Ownership before any Docker change: the project must be free, or every container's folder (compared with `pwd -P`, read line by line, spaces allowed) and the owner marker must be this suite's checkout — or a folder under `tests/e2e/work/` that no longer exists (a killed run). Otherwise — or when a Docker query fails — the run stops and teardown touches nothing in Docker. | `lib.sh claim_project` · unit |
 | `--teardown` runs the same ownership check, and refuses a checkout folder without the suite's marker | `lib.sh teardown_only` · unit |
 | `--reuse` only with the marker, `.env` naming the project, the owner marker naming this checkout, and every service running and healthy | `lib.sh reuse_check` · unit |
-| Teardown: `docker compose -p <project> down -v --remove-orphans`, its owner volume, `<project>/…` images by exact name, the runner container; the checkout folder only when it carries the marker and no other project's containers were started from it; never a prune. Runs on every exit (also Ctrl-C/TERM/HUP); a run killed with -9 is cleaned up by the next one | `lib.sh teardown` · unit |
+| Teardown: `docker compose -p <project> down -v --remove-orphans`, its owner volume, the terminal's volume and networks, `<project>/…` images by exact name, the runner container, the terminal's workspace folder (only with the suite's marker); the checkout folder only when it carries the marker and no other project's containers were started from it; never a prune. Runs on every exit (also Ctrl-C/TERM/HUP); a run killed with -9 is cleaned up by the next one | `lib.sh teardown` · unit |
 | AWS key only from `--aws-env` (AWS_* lines; `export`, quotes and CR line ends accepted) or the environment; never printed or on a command line; every `.env` secret redacted from every log (also when the run fails); secrets and S3 signatures / token= / key= parameters redacted from network logs; screenshots mask the sign-ins and RustFS's access key | `run.sh`, `lib.sh redact`, `common.redact` · unit |
 | `./stack` runs with a clean environment (proxies kept) and no controlling terminal (`notty`), so nothing can prompt | `notty` · unit |
 | `~/.local/bin/claude-bedrock` unchanged: the link and a checksum of the file it points to | e2e `safety/claude-bedrock-link-untouched` |
-| Spend: the throwaway's keys get budgets of $0.04 / $0.04 / $0.02 (LiteLLM refuses more); this run's spend (summed around restores, which roll the spend log back) must stay under $0.10 | e2e `spend/spend-guard` |
+| Spend: the throwaway's keys get budgets of $0.04 / $0.04 / $0.02 (LiteLLM refuses more); this run's spend (summed around restores, which roll the spend log back) must stay under $0.10 — with `--terminal` the Claude Code key gets $0.10 and the limit is $0.16 (a second Claude Code run, inside the terminal) | e2e `spend/spend-guard` |
 | The browser runner reports every selected check (`expected.txt`); a crash or a missing result is a failure | e2e `browser/runner` |
 | App-specific selectors were written for Open WebUI v0.12.0-slim, LiteLLM 1.105.0 and RustFS 1.0.1; on other pinned versions those checks skip and say so | `common.need` |
 

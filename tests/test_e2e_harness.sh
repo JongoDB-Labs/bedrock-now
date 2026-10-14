@@ -209,3 +209,18 @@ test_e2e_notty_has_no_terminal_and_passes_status_and_timeout() {
   rc=0; "$n" sh -c 'exit 7' || rc=$?; assert_eq "$rc" 7
   rc=0; "$n" --timeout 1 sh -c 'sleep 20 & wait' || rc=$?; assert_eq "$rc" 124
 }
+
+test_e2e_teardown_removes_the_terminal_workspace_only_with_its_marker() {
+  _fake_docker; mkdir -p "$STACK"; : > "$STACK/.bedrock-now-e2e"; FAKE_DIRS="$STACK"
+  ws="$(terminal_workspace_dir)"
+  assert_eq "$ws" "$ROOT/tests/e2e/work/bne2e-workspace"
+  mkdir -p "$ws/project"; : > "$ws/.bedrock-now-e2e"
+  OWNED=1 teardown 2>/dev/null
+  [ ! -e "$ws" ] || { echo "marked workspace kept" >&2; return 1; }
+  assert_contains "$(_mutating_calls)" "docker volume rm bne2e_terminal-home"
+  # a folder of that name the suite did not create stays
+  mkdir -p "$ws"; : > "$ws/precious"
+  OWNED=1 teardown 2> "$TMP/err"
+  [ -f "$ws/precious" ] || return 1
+  assert_contains "$(cat "$TMP/err")" "not deleting $ws"
+}

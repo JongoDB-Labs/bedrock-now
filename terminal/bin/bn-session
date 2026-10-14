@@ -1,0 +1,5 @@
+#!/bin/bash
+# What ttyd runs for each browser connection: attach to the one tmux session, "claude" — or create it, with
+# claude-bedrock in /workspace as its first window (a shell takes over once Claude Code exits). Closing the tab
+# only detaches; Ctrl-b c opens another shell window.
+exec tmux new-session -A -s claude -n claude -c /workspace "claude-bedrock; exec bash"

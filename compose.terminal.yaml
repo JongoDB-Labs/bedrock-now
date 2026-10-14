@@ -1,0 +1,86 @@
+# The optional browser terminal (./stack terminal enable; lib/terminal.sh adds this file to every docker compose call
+# while TERMINAL_ENABLED=true in .env). Claude Code runs in a sandbox container, never on your computer: no Docker
+# socket, no capabilities, not root, a read-only image, and of your files only the one folder you chose
+# (TERMINAL_WORKSPACE, at /workspace). Its home folder (Claude Code's settings and history) is the terminal-home
+# volume. The browser reaches it at terminal.PORTAL_HOST through Caddy, which first asks the portal for the session,
+# a fresh password unlock and the Origin (portal/portal/app.py), then proxies to ttyd.
+#
+# Networks: "terminal" (internal: no internet) holds only this container and Caddy, whose gateway listener (:8091,
+# alias "gateway") forwards to LiteLLM's API and shared-mcp's /mcp — the container cannot reach the portal, Open
+# WebUI, Postgres or RustFS. "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the way
+# out to the internet: git clone, npm, pip, Claude Code's web fetches.
+services:
+  terminal:
+    build:
+      context: ./terminal
+      args:
+        BN_UID: ${TERMINAL_UID:-10104}
+        BN_GID: ${TERMINAL_GID:-10104}
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/terminal:local   # per project, like portal
+    restart: unless-stopped
+    hostname: terminal
+    user: "${TERMINAL_UID:-10104}:${TERMINAL_GID:-10104}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=1g,mode=1777"]
+    mem_limit: ${TERMINAL_MEM_LIMIT:-4g}
+    pids_limit: 1024
+    init: true
+    environment:
+      # Claude Code → LiteLLM through Caddy's gateway, with the claude-code key (its monthly budget caps it), the
+      # same model mapping and switches as bin/claude-bedrock: plain `claude` in here uses Bedrock too.
+      ANTHROPIC_BASE_URL: http://gateway:8091
+      ANTHROPIC_AUTH_TOKEN: ${LITELLM_KEY_CLAUDE_CODE:-}
+      ANTHROPIC_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${CLAUDE_BEDROCK_SONNET_MODEL:-}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${CLAUDE_BEDROCK_HAIKU_MODEL:-}
+      CLAUDE_BEDROCK_OPUS_MODEL: ${CLAUDE_BEDROCK_OPUS_MODEL:-}
+      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"   # Bedrock rejects Anthropic beta headers
+      ENABLE_TOOL_SEARCH: "true"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"   # no telemetry, error reports or update checks
+      DISABLE_AUTOUPDATER: "1"                        # the image is read-only; ./stack update rebuilds it
+      # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these, then drops the token).
+      BN_MCP_URL: http://gateway:8091/mcp
+      SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
+    volumes:
+      - terminal-home:/home/claude
+      # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
+      - type: bind
+        source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}
+        target: /workspace
+        bind: { create_host_path: false, selinux: z }
+    networks: [terminal]
+    depends_on:
+      caddy: { condition: service_started }
+    logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # Caddy: the terminal site (caddy/Caddyfile, TERMINAL_HOST) and, on the terminal network only by name, the gateway.
+  caddy:
+    environment:
+      TERMINAL_MODE: "on"   # caddy/terminal-on.caddy: the terminal site and the gateway (terminal-off.caddy otherwise)
+      TERMINAL_HOST: ${TERMINAL_HOST:-terminal.${PORTAL_HOST:-bedrock-now.localhost}}
+      # Remote access to the terminal (REMOTE_TERMINAL=true and ./stack remote): lib/terminal.sh writes this name;
+      # blank, the remote site's terminal block matches nothing.
+      REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-terminal.remote.invalid}
+    networks:
+      terminal:
+        aliases: [gateway]
+
+  # The portal: the Terminal tab, the unlock and the terminal host's checks.
+  portal:
+    environment:
+      TERMINAL_ENABLED: "true"
+      TERMINAL_HOST: ${TERMINAL_HOST:-}
+      REMOTE_TERMINAL: ${REMOTE_TERMINAL:-false}
+      REMOTE_TERMINAL_HOST: ${REMOTE_TERMINAL_HOST:-}
+
+networks:
+  terminal:
+    internal: true
+
+volumes:
+  terminal-home:

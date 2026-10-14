@@ -22,6 +22,9 @@
 #   --no-claude      skip the claude-bedrock check
 #   --only PARTS     run only these parts (comma list of cli, browser, voice, claude, mutating; default all).
 #                    Setup, the spend guard and the claude-bedrock link check always run.
+#   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
+#                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
+#                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; Claude Code key budget $0.10)
 #
 # Never touches the default install: only project names bne2e[-…] are accepted, and teardown touches Docker only
 # after the project was found to be this suite's own (or free); ports 80/4000/8765 (and the others in AVOID_PORTS)
@@ -41,6 +44,7 @@ NOTTY="$HERE/notty"
 
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
 SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,mutating"
+TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -53,6 +57,7 @@ while [ $# -gt 0 ]; do
     --skip-cli-mutating) SKIP_MUTATING=1; shift ;;
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
+    --terminal) TERMINAL=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -68,6 +73,8 @@ for part in $(printf '%s' "$ONLY" | tr ',' ' '); do
   case "$part" in cli | browser | voice | claude | mutating) ;; *) echo "--only: unknown part '$part' (cli, browser, voice, claude, mutating)" >&2; exit 2 ;; esac
 done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
+# The terminal's claude-bedrock -p (browser suite) is a second Claude Code run on the claude-code key.
+if [ "$TERMINAL" = 1 ]; then BUDGETS="BUDGET_CLAUDE_CODE=0.10 BUDGET_OPENWEBUI=0.04 BUDGET_SETUP=0.02"; SPEND_LIMIT="0.16"; fi
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
 
 mkdir -p "$OUT" || exit 2
@@ -213,6 +220,52 @@ for k in PORTAL_PORT LITELLM_PORT SHARED_MCP_PORT; do
 done
 spend_start   # with --reuse: only this run's spend is counted
 
+# --- 1b. the browser terminal (--terminal): on, with a workspace folder of the suite's own next to the checkout ---
+# terminal_probe CONTAINER — inside the terminal: what it can reach. Prints "name<TAB>result" lines.
+terminal_probe() {
+  docker exec -i "$1" bash -s <<'SH'
+tcp() { if timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo open; else echo closed; fi; }
+for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000; do
+  printf '%s\t%s\n' "${t%%:*}" "$(tcp "${t%%:*}" "${t##*:}")"
+done
+printf 'gateway-litellm\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://gateway:8091/health/liveliness)"
+printf 'gateway-mcp-no-token\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST http://gateway:8091/mcp)"
+printf 'gateway-key\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" http://gateway:8091/key/info)"
+printf 'internet\t%s\n' "$(curl -s -m 10 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ || true)"
+printf 'master-key-in-env\t%s\n' "$(env | grep -c LITELLM_MASTER_KEY || true)"
+printf 'user\t%s\n' "$(id -u)"
+printf 'workspace\t%s\n' "$(ls -a /workspace | tr '\n' ' ')"
+printf 'docker-socket\t%s\n' "$(ls /var/run/docker.sock /run/docker.sock 2>&1 | grep -c 'No such file')"
+printf 'claude\t%s\n' "$(claude --version 2>&1 | head -n 1)"
+SH
+}
+if [ "$TERMINAL" = 1 ]; then
+  if [ "$(get_env TERMINAL_ENABLED)" != true ]; then
+    tws="$(terminal_workspace_dir)"
+    [ ! -e "$tws" ] || [ -f "$tws/.bedrock-now-e2e" ] || die "$tws exists and was not created by this suite — nothing was changed"
+    ( umask 077; mkdir -p "$tws" ) && : > "$tws/.bedrock-now-e2e"
+    say "terminal: ./stack terminal enable (its image is built the first time: a few minutes)"
+    cli terminal-enable 0 'Terminal: on' terminal enable --workspace "$tws" || die "terminal enable failed — see $LOGS/cli-terminal-enable.log"
+  fi
+  cli terminal-status 0 'Workspace .*-workspace → /workspace' terminal status
+  t0="$(now)"
+  tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
+  if [ -z "$tc" ]; then record terminal terminal-isolation FAIL 0 "no running terminal container"
+  else
+    probe="$(terminal_probe "$tc" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/terminal-isolation.log"; redact "$LOGS/terminal-isolation.log"
+    bad=''
+    for k in portal open-webui postgres rustfs litellm shared-mcp stt; do printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"; done
+    for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-key=200 internet=200 master-key-in-env=0 docker-socket=2; do
+      printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
+    done
+    [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "user" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
+    printf '%s\n' "$probe" | grep -q '^claude	[0-9.]* (Claude Code)' || bad="$bad no-claude"
+    if [ -z "$bad" ]; then
+      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "reaches only the gateway (LiteLLM with its key, /mcp needs the token) and the internet; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt; your uid; no Docker socket; no master key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
+    else record terminal terminal-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/terminal-isolation.log)"; fi
+  fi
+fi
+
 # --- 2. read-only CLI checks ---
 if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
   say "CLI: read-only commands"
@@ -262,7 +315,10 @@ fi
 # runner check: a crash, a non-zero exit or fewer results than selected checks is a FAIL
 browser_run() {
   local label="$1" filter="${2:-}" tag="${3:-}" t0 rc got want
-  t0="$(now)"; E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
+  t0="$(now)"
+  # the terminal's one real Claude Code call (browser/terminal-claude-bedrock-inside) only with the claude part
+  E2E_TERMINAL_CLAUDE="$( [ "$TERMINAL" = 1 ] && part_on claude && [ "$NO_CLAUDE" = 0 ] && echo 1 || echo 0)" \
+    E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"

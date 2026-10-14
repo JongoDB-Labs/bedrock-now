@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from .config import APPS, Settings
+from .config import APPS, TERMINAL, Settings
 
 log = logging.getLogger("portal")
 
@@ -212,7 +212,8 @@ def safe_next(raw: str | None, settings: Settings) -> str:
 
 
 def _site_hosts(settings: Settings, remote: bool) -> set[str]:
-    return {h for h in [settings.app_host(None, remote)] + [settings.app_host(sub, remote) for sub in APPS] if h}
+    subs = list(APPS) + ([TERMINAL] if settings.terminal_on(remote) else [])
+    return {h for h in [settings.app_host(None, remote)] + [settings.app_host(sub, remote) for sub in subs] if h}
 
 
 def same_origin(headers, settings: Settings) -> bool:
@@ -345,3 +346,65 @@ class Handoff:
             return None
         self._used[nonce] = exp
         return data
+
+
+# --- the browser terminal (./stack terminal): a fresh password unlock on top of the session ---
+
+# Host-only on the terminal host (no Domain), so no other host — not the portal, not an app — ever receives it;
+# remote: __Host- (Secure, Path=/). Caddy strips every cookie before ttyd (caddy/Caddyfile terminal_upstream).
+TERMINAL_COOKIE = "bn_terminal"
+REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"
+TERMINAL_MAX_AGE = 12 * 3600
+
+
+def terminal_cookie_params(remote: bool) -> dict:
+    return {"key": REMOTE_TERMINAL_COOKIE if remote else TERMINAL_COOKIE, "domain": None, "secure": remote}
+
+
+class TerminalUnlocks:
+    """Signed proof that the portal password was typed again for the terminal, valid for TERMINAL_MAX_AGE. Like a
+    session it carries the password fingerprint (a new PORTAL_PASSWORD or PORTAL_SECRET voids it), counts only if
+    issued after the last Sign out (Sessions.not_before), and is bound to the Tailscale login where sessions are."""
+
+    def __init__(self, secret: str, sessions: Sessions, clock=time.time):
+        self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.terminal")
+        self._sessions = sessions
+        self._clock = clock
+
+    def issue(self, login: str | None = None) -> str:
+        return self._ser.dumps({"v": 1, "fp": self._sessions.fingerprint, "iat": self._clock(), "u": login or ""})
+
+    def valid(self, token: str | None, login: str | None = None) -> bool:
+        if not token or len(token) > 2048:
+            return False
+        try:
+            data = self._ser.loads(token, max_age=TERMINAL_MAX_AGE)
+        except (BadSignature, ValueError, TypeError):
+            return False
+        if not isinstance(data, dict) or data.get("v") != 1:
+            return False
+        iat, fp, bound = data.get("iat"), data.get("fp"), data.get("u")
+        if not isinstance(iat, (int, float)) or iat <= self._sessions.not_before or self._clock() - iat > TERMINAL_MAX_AGE:
+            return False
+        if not isinstance(fp, str) or not hmac.compare_digest(fp.encode(), self._sessions.fingerprint.encode()):
+            return False
+        return isinstance(bound, str) and hmac.compare_digest(bound.encode(), (login or "").encode())
+
+
+def terminal_origin_ok(headers, settings: Settings, remote: bool, websocket: bool) -> bool:
+    """Requests to the terminal host carry no Origin, or the terminal host's own: never another site's (which could
+    otherwise drive the shell with your cookies). ttyd's WebSocket must send it (browsers always do)."""
+    origin = headers.get("origin")
+    if origin is None:
+        return not websocket
+    return origin == settings.origin(TERMINAL, remote)
+
+
+def terminal_same_origin(headers, settings: Settings, remote: bool) -> bool:
+    """CSRF check for the unlock form: Origin (or, without it, Referer) must be the terminal host itself."""
+    want = settings.origin(TERMINAL, remote)
+    origin = headers.get("origin")
+    if origin is not None:
+        return origin == want
+    referer = headers.get("referer")
+    return bool(referer) and (referer == want or referer.startswith(want + "/"))

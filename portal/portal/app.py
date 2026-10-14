@@ -21,10 +21,11 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import admin, appicons, icons, prices, settings_api, summary, updates, webapp
-from .config import Settings
+from .config import TERMINAL, Settings
 from .security import (
-    Handoff, LoginThrottle, Sessions, cookie_params, is_remote, remote_identity_ok, safe_next, same_origin,
-    session_login, tailscale_login, verify_password,
+    TERMINAL_MAX_AGE, Handoff, LoginThrottle, Sessions, TerminalUnlocks, cookie_params, is_remote, remote_identity_ok,
+    safe_next, same_origin, session_login, tailscale_login, terminal_cookie_params, terminal_origin_ok,
+    terminal_same_origin, verify_password,
 )
 
 log = logging.getLogger("portal")
@@ -114,6 +115,21 @@ class _CarryOver:
                 message = {**message, "headers": list(message.get("headers", [])) + self.upgrade(scope["bn_carry"])}
             await send(message)
         await self.app(scope, receive, send_upgraded)
+def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, retry_after: int = 0) -> HTMLResponse:
+    """The terminal host's own page while it is locked: the portal password again (POST /.bn/unlock, same host).
+    Styled by the portal's public login.css; framed only by the portal (its Terminal tab), or full screen."""
+    portal = s.origin(remote=rem)
+    page = (STATIC / "terminal-unlock.html").read_text(encoding="utf-8").replace("{{portal}}", html.escape(portal, quote=True))
+    page = page.replace("{{error}}", f'<p class="error" role="alert">{html.escape(error)}</p>' if error else "")
+    resp = HTMLResponse(page, status_code=status)
+    resp.headers["Content-Security-Policy"] = (
+        f"default-src 'none'; style-src {portal}; img-src {portal}; form-action 'self'; base-uri 'none'; "
+        f"frame-ancestors {portal}")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "same-origin"
+    if retry_after:
+        resp.headers["Retry-After"] = str(retry_after)
+    return _no_store(resp)
 
 
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
@@ -123,6 +139,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     admin_rate = admin.RateLimit()
 
     handoff = Handoff(settings.secret, sessions.fingerprint)
+    unlocks = TerminalUnlocks(settings.secret, sessions)   # the browser terminal's password-again cookie
     if settings.remote_on() and len(settings.proxy_secret) < 32:
         # Without Caddy's proxy secret no request can count as remote: remote access would show local behaviour.
         log.warning("remote access is on but PORTAL_PROXY_SECRET is missing or shorter than 32 characters — remote "
@@ -207,11 +224,20 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
 
     async def verify(request: Request) -> Response:
         """Caddy forward_auth: 200 + X-Portal-User for a valid session; otherwise a redirect to the login
-        page for browser navigations, a bare 401 for everything else (XHR, WebSocket, API)."""
+        page for browser navigations, a bare 401 for everything else (XHR, WebSocket, API). The terminal host
+        (?app=terminal, which Caddy's terminal site always asks; or its name in X-Forwarded-Host) needs more:
+        terminal_verify."""
         if (deny := foreign_login(request)) is not None:
             return deny
+        rem = remote(request)
+        fwd_host = request.headers.get("x-forwarded-host", "").split(":")[0].lower()
+        if request.query_params.get("app") == TERMINAL or (fwd_host and fwd_host == settings.app_host(TERMINAL, rem)):
+            return terminal_verify(request, rem)
         if authed(request):
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
+        return need_login(request)
+
+    def need_login(request: Request) -> Response:
         method = request.headers.get("x-forwarded-method", "GET").upper()
         accept = request.headers.get("accept", "")
         if method in ("GET", "HEAD") and "text/html" in accept:
@@ -226,6 +252,65 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                 return _no_store(RedirectResponse(target, status_code=302))
             return _no_store(login_redirect(nxt, rem))
         return _no_store(PlainTextResponse("login required", status_code=401))
+
+    # --- the browser terminal (./stack terminal): its host needs the session, a fresh password unlock (a cookie
+    # --- of its own, set by terminal_unlock) and, from a browser, its own Origin — never another site's.
+    def terminal_verify(request: Request, rem: bool) -> Response:
+        if not settings.terminal_on(rem):
+            if settings.terminal and rem:
+                return _no_store(PlainTextResponse(
+                    "The terminal is off for remote access (REMOTE_TERMINAL=true in .env turns it on).", status_code=403))
+            return _no_store(PlainTextResponse("The terminal is off (./stack terminal enable).", status_code=404))
+        websocket = urlsplit(request.headers.get("x-forwarded-uri", "/")).path == "/ws"   # ttyd's WebSocket
+        if not terminal_origin_ok(request.headers, settings, rem, websocket):
+            log.warning("terminal: a request from another site (Origin %s) refused", request.headers.get("origin", "none")[:100])
+            return _no_store(PlainTextResponse("cross-site request refused", status_code=403))
+        if not authed(request):
+            return need_login(request)
+        if unlocks.valid(request.cookies.get(terminal_cookie_params(rem)["key"]), session_login(request.headers, settings)):
+            return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
+        method = request.headers.get("x-forwarded-method", "GET").upper()
+        if method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", ""):
+            return _unlock_page(settings, rem)
+        return _no_store(PlainTextResponse("terminal locked: unlock it with the portal password", status_code=401))
+
+    async def terminal_unlock(request: Request) -> Response:
+        """POST /.bn/unlock on the terminal host (Caddy → here): the portal password again → the host-only unlock
+        cookie for TERMINAL_MAX_AGE, then the terminal. Throttled together with the login form."""
+        rem = remote(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if not settings.terminal_on(rem) or host != settings.app_host(TERMINAL, rem):
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        if not terminal_same_origin(request.headers, settings, rem):
+            return _no_store(PlainTextResponse("cross-site unlock refused", status_code=403))
+        if not authed(request):
+            return _no_store(login_redirect(settings.origin(TERMINAL, rem) + "/", rem))
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii():
+            return _no_store(PlainTextResponse("Content-Length required", status_code=411))
+        if int(length) > MAX_FORM:
+            return _no_store(PlainTextResponse("form too large", status_code=413))
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_FORM:
+                return _no_store(PlainTextResponse("form too large", status_code=413))
+        if wait := throttle.retry_after():
+            return _unlock_page(settings, rem, f"Too many wrong passwords. Try again in {wait} s.", 429, wait)
+        password = (parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True).get("password") or [""])[0]
+        if not await asyncio.to_thread(verify_password, password, settings.password_hash):
+            throttle.failure()
+            log.warning("terminal unlock: wrong password (%d in a row)", throttle.failures)
+            return _unlock_page(settings, rem, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).")
+        throttle.success()
+        log.warning("terminal unlocked%s", " (remote)" if rem else "")
+        resp = RedirectResponse("/", status_code=303)
+        c = terminal_cookie_params(rem)
+        resp.set_cookie(c["key"], unlocks.issue(session_login(request.headers, settings)), max_age=TERMINAL_MAX_AGE,
+                        path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])
+        return _no_store(resp)
 
     async def login_get(request: Request) -> Response:
         if (deny := foreign_login(request)) is not None:
@@ -355,8 +440,12 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         # as data the page reads synchronously: <meta name="bn-apps" content="{json}">.
         # The same for this site's installed-app link scheme (install.js: "Open in the app").
         page = (STATIC / "index.html").read_text(encoding="utf-8")
-        meta = (f'<meta name="bn-apps" content="{html.escape(json.dumps(settings.app_urls(remote(request))), quote=True)}">\n'
-                f'<meta name="bn-app-scheme" content="{html.escape(webapp.protocol(settings, remote(request)), quote=True)}">')
+        rem = remote(request)
+        meta = (f'<meta name="bn-apps" content="{html.escape(json.dumps(settings.app_urls(rem)), quote=True)}">\n'
+                f'<meta name="bn-app-scheme" content="{html.escape(webapp.protocol(settings, rem), quote=True)}">')
+        # The browser terminal: enabled at all, and usable on this site (remote access needs REMOTE_TERMINAL).
+        term = {"enabled": settings.terminal, "here": settings.terminal_on(rem)}
+        meta += f'\n<meta name="bn-terminal" content="{html.escape(json.dumps(term), quote=True)}">'
         page = page.replace("</head>", meta + "\n</head>", 1)
         return _security_headers(_no_store(HTMLResponse(page)), settings)
 
@@ -375,6 +464,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         rem = remote(request)
         data["portal"]["url"] = settings.origin(remote=rem)
         data["apps"] = settings.app_urls(rem)
+        data["terminal"] = {"enabled": settings.terminal, "here": settings.terminal_on(rem)}
         data["remote"] = {"on": settings.remote_on(), "here": rem, "mode": settings.remote_mode if settings.remote_on() else "off",
                           "url": settings.origin(remote=True) if settings.remote_on() else ""}
         return _no_store(JSONResponse(data))
@@ -522,6 +612,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/verify", verify, methods=["GET", "HEAD"]),
             Route("/auth/handoff", auth_handoff, methods=["GET"]),
             Route("/auth/callback", auth_callback, methods=["GET"]),
+            Route("/auth/terminal-unlock", terminal_unlock, methods=["POST"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),
             Route("/logout", logout, methods=["POST"]),

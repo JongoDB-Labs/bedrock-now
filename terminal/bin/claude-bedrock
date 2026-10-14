@@ -1,0 +1,110 @@
+#!/bin/bash
+# claude-bedrock in the bedrock-now terminal: Claude Code on AWS Bedrock through this stack's LiteLLM, reached through
+# Caddy's gateway on the terminal's own network (compose.terminal.yaml sets the environment). The same settings as
+# bin/claude-bedrock on your computer — model mapping, no telemetry, the shared MCP server — plus its launch line
+# (price and budget) and a session cost on exit. That cost is the claude-code key's spend after the session minus
+# before it: LiteLLM's per-session log needs the master key, which never enters this container, so other sessions
+# on the same key during this one count too. Plain `claude` here also uses Bedrock (without these extras).
+set -euo pipefail
+
+die() { printf 'claude-bedrock: %s\n' "$*" >&2; exit 1; }
+gw="${ANTHROPIC_BASE_URL:-}"
+key="${ANTHROPIC_AUTH_TOKEN:-}"
+mcp="$HOME/.config/bedrock-now/mcp.json"
+
+# usd SPEND -> "$12.40"; 4 decimals below $1, "<$0.0001" for a tiny non-zero spend (as on your computer)
+usd() {
+  awk -v v="$1" 'BEGIN { if (v > 0 && v < 0.00005) print "<$0.0001"
+    else if (v > 0 && sprintf("%.2f", v) + 0 < 1) printf "$%.4f\n", v; else printf "$%.2f\n", v }'
+}
+# key_info -> LiteLLM /key/info for this key, asked with the key itself (a virtual key may read its own info)
+key_info() { curl -fsS -m "${1:-10}" -H "Authorization: Bearer $key" "$gw/key/info" 2>/dev/null; }
+key_spend() { key_info "${1:-10}" | jq -er '.info.spend // empty' 2>/dev/null; }
+# price_label MODEL -> "$5.00 in / $25.00 out per 1M tokens": what LiteLLM bills for it (its /model/info)
+price_label() {
+  curl -fsS -m 2 -H "Authorization: Bearer $key" "$gw/model/info" 2>/dev/null | jq -er --arg m "$1" '
+    [.data[] | select(.model_name == $m) | .model_info] | first
+    | select(.input_cost_per_token != null and .output_cost_per_token != null)
+    | "\(.input_cost_per_token * 1000000) \(.output_cost_per_token * 1000000)"' 2>/dev/null |
+    awk 'function money(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
+         NF == 2 { printf "%s in / %s out per 1M tokens\n", money($1), money($2) }'
+}
+
+case "${1:-}" in
+  -h | --help)
+    cat <<EOT
+claude-bedrock: Claude Code on AWS Bedrock via bedrock-now, in the browser terminal
+  Model    ${CLAUDE_BEDROCK_OPUS_MODEL:-not set up} (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session
+  Proxy    LiteLLM through the stack's gateway ($gw), key 'claude-code' (monthly budget; Home shows it)
+  Files    /workspace is the folder ./stack terminal enable shared; nothing else of your computer is here
+  Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch line and the session cost on exit
+  Below    Claude Code's own help; every option works with claude-bedrock
+
+EOT
+    exec claude "$@" ;;
+  -v | --version) exec claude "$@" ;;
+esac
+
+[ -n "$gw" ] && [ -n "$key" ] || die "this terminal has no LiteLLM settings — run ./stack terminal enable on your computer again"
+model="${CLAUDE_BEDROCK_MODEL:-${CLAUDE_BEDROCK_OPUS_MODEL:-}}"
+[ -n "$model" ] || die "no Claude model is enabled for your AWS key — run ./stack setup on your computer"
+curl -fsS -m 3 -o /dev/null "$gw/health/liveliness" 2>/dev/null || die "LiteLLM does not answer at $gw — is the stack up? (./stack status on your computer)"
+export ANTHROPIC_MODEL="$model"
+
+before=''
+if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
+  line="bedrock · $model"
+  if p="$(price_label "$model")" && [ -n "$p" ]; then line="$line ($p)"; fi
+  if info="$(key_info 2)"; then
+    before="$(printf '%s' "$info" | jq -er '.info.spend // empty' 2>/dev/null || true)"
+    max="$(printf '%s' "$info" | jq -er '.info.max_budget // empty' 2>/dev/null || true)"
+    if [ -n "$before" ]; then
+      if [ -n "$max" ]; then line="$line · spent $(usd "$before") of $(usd "$max") this period"
+        pct="$(awk -v s="$before" -v m="$max" 'BEGIN { if (m > 0 && s >= 0.8 * m) printf "%d", s * 100 / m }')"
+        [ -z "$pct" ] || line="$line · ⚠ $pct% of monthly budget used"
+      else line="$line · spent $(usd "$before") this period"; fi
+    fi
+  fi
+  printf '%s\n' "$line" >&2
+fi
+
+# The shared MCP server, unless the first argument is a Claude Code subcommand (those reject --mcp-config).
+subcmds="$(claude --help 2>/dev/null </dev/null | awk '/^Commands:/ { f = 1; next } f && /^[^ ]/ { f = 0 }
+  f && /^  [a-z]/ { n = split($1, a, "|"); for (i = 1; i <= n; i++) print a[i] }' || true)"
+add_mcp=1
+case "${1:-}" in '' | -*) ;; *) for c in $subcmds; do [ "$c" = "$1" ] && { add_mcp=0; break; }; done ;; esac
+mcp_args=()
+[ "$add_mcp" = 1 ] && [ -f "$mcp" ] && mcp_args=(--mcp-config "$mcp")
+
+# Every request carries a session id and tags (LiteLLM UI › Logs can filter by them); your own headers are kept.
+sid="cb-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+ANTHROPIC_CUSTOM_HEADERS="${ANTHROPIC_CUSTOM_HEADERS:+$ANTHROPIC_CUSTOM_HEADERS
+}x-litellm-session-id: $sid
+x-litellm-tags: claude-bedrock,terminal"
+export ANTHROPIC_CUSTOM_HEADERS
+
+want_summary=0
+if [ "$add_mcp" = 1 ] && [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ] && [ -n "$before" ]; then
+  if [ -t 2 ] || [ "${CLAUDE_BEDROCK_SUMMARY:-0}" = 1 ]; then want_summary=1; fi
+fi
+[ "$want_summary" = 1 ] || exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+
+# claude runs as a foreground child (Ctrl-C reaches it directly); the ':' traps only keep this script alive.
+trap ':' INT QUIT TERM
+trap 'exit 129' HUP
+if claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}; then rc=0; else rc=$?; fi
+trap 'exit "$rc"' INT QUIT TERM HUP
+# LiteLLM books spend in batches (within ~1-6 s): wait up to 8 s for it to move.
+[ ! -t 2 ] || printf 'session: tallying cost…' >&2
+after=''
+for _ in 1 2 3 4 5 6 7 8 9; do
+  after="$(key_spend 3 || true)"
+  if [ -n "$after" ] && awk -v a="$after" -v b="$before" 'BEGIN { exit !(a > b) }'; then break; fi
+  sleep 1
+done
+if [ -z "$after" ]; then msg="session cost: unknown (LiteLLM did not answer) — Home shows the key's spend"
+elif awk -v a="$after" -v b="$before" 'BEGIN { exit !(a > b) }'; then
+  msg="session: $(usd "$(awk -v a="$after" -v b="$before" 'BEGIN { printf "%.10f", a - b }')") (claude-code key: $(usd "$after") this period)"
+else msg="session: no spend booked yet — Home shows the key's spend"; fi
+if [ -t 2 ]; then printf '\r\033[K%s\n' "$msg" >&2; else printf '%s\n' "$msg" >&2; fi
+exit "$rc"

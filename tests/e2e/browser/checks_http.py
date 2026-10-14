@@ -174,8 +174,11 @@ def api_routes(ctx):
     expect(d["spend"]["total_error"] is None, f"total: {d['spend']['total_error']}")
     rows = d["models"]["rows"]
     expect(rows and any(m["enabled"] for m in rows), "no enabled models")
-    expect(d["apps"] == {"chat": origin("chat") + "/", "admin": origin("admin") + "/ui/", "files": origin("files") + "/rustfs/console/"},
-           f"apps {d['apps']}")
+    apps = {"chat": origin("chat") + "/", "admin": origin("admin") + "/ui/", "files": origin("files") + "/rustfs/console/"}
+    if ENV.get("TERMINAL_ENABLED") == "true":   # the browser terminal (--terminal)
+        apps["terminal"] = origin("terminal") + "/"
+    expect(d["apps"] == apps, f"apps {d['apps']}")
+    expect(d["terminal"] == {"enabled": "terminal" in apps, "here": "terminal" in apps}, f"terminal {d['terminal']}")
     expect(d["remote"]["here"] is False and d["remote"]["on"] is False, f"remote {d['remote']}")
     blob = r.text
     for k in ("LITELLM_MASTER_KEY", "PORTAL_PASSWORD", "LITELLM_UI_PASSWORD", "RUSTFS_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE"):

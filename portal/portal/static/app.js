@@ -32,7 +32,8 @@ function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) {
 
 const PAGES = ["home", "settings"];  // the portal's own pages; everything else is an app in a frame
 function showTab(tab) {
-  if (!PAGES.includes(tab) && !Object.prototype.hasOwnProperty.call(APPS, tab)) tab = "home";  // not "constructor" etc.
+  // not "constructor" etc.; the terminal only where the server offers it (APP_URLS: ./stack terminal, terminal.js)
+  if (!PAGES.includes(tab) && !Object.prototype.hasOwnProperty.call(APPS, tab) && !(tab === "terminal" && APP_URLS.terminal)) tab = "home";
   if (window.bnMobile) tab = window.bnMobile.allowTab(tab);  // phones: Home and Chat only (mobile.js)
   for (const b of document.querySelectorAll(".tab")) {
     if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");

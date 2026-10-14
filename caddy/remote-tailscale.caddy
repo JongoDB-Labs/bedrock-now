@@ -7,6 +7,8 @@
 # Tailscale-User-Login for devices signed in as a user, which the portal checks against TAILSCALE_ALLOWED_LOGIN.
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
+#   {$REMOTE_TERMINAL_HOST} the browser terminal — only with REMOTE_TERMINAL=true (lib/terminal.sh writes the name;
+#                          otherwise it is terminal.remote.invalid, which matches nothing)
 # Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
 # the remote origin and a host-only cookie per remote host (__Host-bn_session; app hosts get theirs via the
 # hand-off).
@@ -78,6 +80,19 @@ http://{$REMOTE_FILES_HOST}:8081 {
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import remote_upstream
+		}
+	}
+}
+
+http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
+	route {
+		import remote_request
+		import handoff_callback
+		import terminal_unlock
+		import terminal_auth
+		reverse_proxy terminal:7681 {
+			import remote_upstream
+			import terminal_upstream
 		}
 	}
 }

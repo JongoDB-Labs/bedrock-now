@@ -225,13 +225,50 @@ plain `claude` stays exactly as it was, and it takes the same arguments.
 
 More details (session headers, signals, `--help`): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
+### Claude Code in the browser (optional)
+
+```bash
+./stack terminal enable                           # workspace: ~/bedrock-now-workspace (created, mode 700)
+./stack terminal enable --workspace ~/projects    # or a folder of yours
+./stack terminal status                           # ./stack terminal disable turns it off again
+```
+
+This adds a **Terminal** tab to the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
+tmux session, set up like the one on your computer (same models, the `claude-code` key and its budget, the shared
+MCP server, the cost line and the session cost on exit). `Ctrl-b c` opens a shell window, `Ctrl-b n` switches.
+Reloading, closing the tab or losing the phone's connection only detaches: the session keeps running and opens
+where you left it (until the container restarts: `./stack update`, `./stack terminal enable`, a reboot). Hold Shift (Option on a Mac) to select text; an external keyboard helps a lot on a phone.
+
+It is a sandbox, not a shell on your computer:
+
+- Claude Code and the shell run in their own container, built on your machine from `terminal/` (Claude Code
+  pinned by version and checksum, ttyd for the browser, git, node/npm, python/pip, ripgrep): as your user id,
+  without root, capabilities or the Docker socket, on a read-only system. Of your files it sees **only the
+  workspace folder** (at `/workspace`); `enable` refuses your home folder itself, hidden folders like `~/.ssh`,
+  system folders and the bedrock-now folder (its `.env` holds every secret). Claude Code's settings and history
+  live in the `terminal-home` volume.
+- Into the stack it reaches only LiteLLM's API (with the `claude-code` key) and the shared MCP server, through
+  Caddy; not the portal, Open WebUI, the databases or the master key. Out, it reaches the internet (git clone,
+  npm, pip, Claude Code's web fetch) — and, through `host.docker.internal` on Docker Desktop, services on your
+  computer. `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, takes the internet away.
+- Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
+  ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
+  page.
+- Over [remote access](#remote-access) it is **off** unless you set `REMOTE_TERMINAL=true` in `.env` (then
+  `./stack up`; in Tailscale mode it is one more Service to approve, `./stack remote status` names it).
+- Anything you run in it can use the `claude-code` key (capped by its monthly budget) and the shared store.
+
+`./stack terminal disable` removes the container; the folder and Claude Code's history stay. Details and what
+was weighed: [docs/security.md](docs/security.md#the-browser-terminal).
+
 ### Claude Code from your phone
 
 SSH into the machine from a phone SSH app (Blink or Termius on iOS, Termius or JuiceSSH on Android), start
 `tmux new -A -s claude` and run `claude-bedrock` in it; a dropped connection then loses nothing. Tailscale on
 both devices makes this work from anywhere without open ports. `./stack ssh-info` prints the exact commands
-for this machine (its Tailscale name, the SSH command, apps, mosh). There is deliberately no web terminal, and
-Claude Code's Remote Control doesn't work with Bedrock or a custom API URL. A sleeping Mac answers no SSH:
+for this machine (its Tailscale name, the SSH command, apps, mosh). Without SSH, the optional
+[browser terminal](#claude-code-in-the-browser-optional) runs Claude Code in a sandbox from the portal's More
+menu. Claude Code's Remote Control doesn't work with Bedrock or a custom API URL. A sleeping Mac answers no SSH:
 `./stack serve` keeps the stack up and the Mac awake (on AC power, lid open) until Ctrl-C (`--background`
 without a terminal; on Linux only laptops get a sleep inhibitor). Step by step, incl. the lid-closed caveats: [docs/phone-claude-code.md](docs/phone-claude-code.md).
 
@@ -564,6 +601,10 @@ troubleshooting: [docs/voice.md](docs/voice.md).
   `raw.githubusercontent.com` to estimate the download. Unauthenticated, https only; nothing about your
   install is sent (GitHub sees your IP address, as for any download). Settings → Updates & backups
   (`UPDATE_CHECK`) turns it off.
+- **The browser terminal, only if you turn it on:** what you run in it may use the internet (git, npm, pip,
+  Claude Code's web fetch) unless `TERMINAL_EGRESS=off`; Claude Code there still talks only to Bedrock, through
+  LiteLLM, with its non-essential traffic off. Building its image downloads Debian packages, Claude Code from npm
+  and ttyd from GitHub.
 - **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;
   `claude-bedrock` turns off Claude Code's non-essential traffic; LiteLLM stores no prompt or response text.
   `./stack update` and image pulls contact GitHub and the image registries only when you run them.
@@ -576,7 +617,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack up` / `down` | Start / stop (data is kept) | none |
 | `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups, and old images `./stack clean` would remove, if any; reused for 5 minutes, `--disk` measures now) | none |
 | `./stack open` | The installed bedrock-now app, else the portal in a browser tab | none |
-| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`) | none |
+| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`, `stt`, `terminal`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
 | `./stack costs` | Prices for your enabled models + spend per key | none |
 | `./stack prices [--accept]` | Check prices now; `--accept` applies a refused change | none |
@@ -594,6 +635,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
+| `./stack terminal status\|enable [--workspace DIR]\|disable` | Optional: Claude Code in the browser, a sandbox that sees one folder ([above](#claude-code-in-the-browser-optional)) | none (its sessions: per token) |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
@@ -745,7 +787,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   console's upload/download/delete, phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs the safe `./stack`
   commands (backup/restore, down/up, update, rollback) and `claude-bedrock -p`, then removes everything it
   created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is printed);
-  results as a table and JUnit XML in `tests/e2e/out/`. What is covered, and what stays manual:
+  results as a table and JUnit XML in `tests/e2e/out/`. `--terminal` (or `E2E_TERMINAL=1`) also turns on the
+  browser terminal and checks it (lock, unlock, tmux, Origin, isolation; with the claude part one
+  `claude-bedrock -p` inside it, ~$0.02). What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).
 
@@ -768,6 +812,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   only a hash of it, never the password), its own allowlist and each value, and runs `./stack config apply`
   with the values on stdin; keys that could send data elsewhere, and settings that would protect less, change
   only from this computer.
+- The browser terminal is off by default. When on, it is a container (not a shell on your computer) that sees
+  one folder of yours and reaches only LiteLLM and the shared MCP server inside the stack; opening it needs the
+  portal password again, it refuses other sites' connections, and remote access leaves it out unless
+  `REMOTE_TERMINAL=true`.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale
@@ -784,9 +832,12 @@ bin/bedrock-now-helper        the update helper: one-click and automatic updates
 compose.yaml                  all services (images pinned)
 compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
 compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin
-caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site
+compose.terminal*.yaml        the optional browser terminal (only while ./stack terminal is on)
+caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site,
+                              caddy/terminal-*.caddy the terminal's site and gateway
 tailscale/                    the sidecar's serve config (written by ./stack remote)
 portal/                       login + Home service (Python; tests: docker build --target test portal)
+terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux
 shared-mcp/                   MCP server for shared files and knowledge (Python; tests: docker build --target test shared-mcp)
 owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map

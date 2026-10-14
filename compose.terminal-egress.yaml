@@ -1,0 +1,9 @@
+# The browser terminal's way out to the internet (git clone, npm, pip, Claude Code's web fetches): added with
+# compose.terminal.yaml unless TERMINAL_EGRESS=off in .env. Only the terminal container is on this network. On Docker
+# Desktop it also reaches services of your computer through host.docker.internal; TERMINAL_EGRESS=off removes both.
+services:
+  terminal:
+    networks: [terminal, terminal-out]
+
+networks:
+  terminal-out:

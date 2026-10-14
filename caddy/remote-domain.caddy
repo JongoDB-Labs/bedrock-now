@@ -6,6 +6,8 @@
 # names stay out of certificate-transparency logs.
 #   {$REMOTE_HOST}        portal     {$REMOTE_CHAT_HOST}   Open WebUI
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
+#   {$REMOTE_TERMINAL_HOST} the browser terminal — only with REMOTE_TERMINAL=true (lib/terminal.sh writes the name;
+#                          otherwise it is terminal.remote.invalid, which matches nothing)
 # Tailscale cannot see inside this TLS, so it passes no identity: access is the tailnet grant plus the password.
 
 (remote_request) {
@@ -83,6 +85,18 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import portal_auth
 		reverse_proxy rustfs:9001 {
 			import remote_upstream
+		}
+	}
+
+	@terminal host {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
+	route @terminal {
+		import remote_request
+		import handoff_callback
+		import terminal_unlock
+		import terminal_auth
+		reverse_proxy terminal:7681 {
+			import remote_upstream
+			import terminal_upstream
 		}
 	}
 

@@ -1,0 +1,36 @@
+# The browser terminal on (./stack terminal enable; compose.terminal.yaml sets TERMINAL_MODE=on). Imported by
+# Caddyfile; the snippets (terminal_unlock, terminal_auth, terminal_upstream) are defined there.
+
+# terminal.PORTAL_HOST (TERMINAL_HOST): ttyd, framed by the portal's Terminal tab — or full screen on a phone.
+http://{$TERMINAL_HOST} {
+	route {
+		import local_request
+		import terminal_unlock
+		import terminal_auth
+		reverse_proxy terminal:7681 {
+			import terminal_upstream
+			import frame_by_portal_only
+		}
+	}
+}
+
+# The gateway: the terminal container's only way into the stack. It listens on Caddy's address on the internal
+# "terminal" network alone (bind gateway: Caddy's alias there), so no other container — the speech-to-text one
+# included — gets a new path through it. LiteLLM's API and shared-mcp's /mcp, each still needing the terminal's own
+# key or token; not published. Nothing that only Caddy, the portal or the sidecar may set is passed on.
+http://:8091 {
+	bind gateway
+	route {
+		request_header -X-Portal-User
+		request_header -X-Portal-Remote
+		request_header -X-Portal-Proxy
+		request_header -Tailscale-User-Login
+		request_header -Tailscale-User-Name
+		request_header -Tailscale-User-Profile-Pic
+		request_header -Tailscale-Headers-Info
+		request_header -Cookie
+		@mcp path /mcp /mcp/*
+		reverse_proxy @mcp shared-mcp:8000
+		reverse_proxy litellm:4000
+	}
+}
