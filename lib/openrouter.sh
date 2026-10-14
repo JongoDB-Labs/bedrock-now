@@ -337,7 +337,7 @@ openrouter_cost_prices_entries() {
 }
 
 # _or_cost_prices_sum -> checksum of the cost filter's OpenRouter prices. They include the paid versions' prices
-# of enabled free models (enabled or not), so openrouter_refresh counts a change there too: the filter re-syncs.
+# of enabled free models (enabled or not): openrouter_refresh sets OR_PRICES_CHANGED when only these change.
 _or_cost_prices_sum() { openrouter_cost_prices_entries | cksum; }
 
 # Python run inside the open-webui container by openrouter_sync_owui. stdin: openrouter_owui_models lines, a
@@ -514,9 +514,11 @@ or_fetch_models() {
 # only warn; it never fails. When the enabled models or their prices changed it re-renders litellm/config.yaml
 # (if setup has rendered one) and sets OR_CHANGED=1: the caller then recreates LiteLLM
 # (`dc up -d --no-deps --force-recreate litellm`) and, with a portal session, runs openrouter_sync_owui.
+# OR_PRICES_CHANGED=1 alone: only Chat's cost-filter prices changed (a paid version of an enabled free model, which
+# LiteLLM does not use) — re-sync the filter (owui_install_cost_filter), no LiteLLM restart.
 openrouter_refresh() {
-  local f tmp before after
-  OR_CHANGED=0; OR_ERR=''
+  local f tmp before after prices
+  OR_CHANGED=0; OR_PRICES_CHANGED=0; OR_ERR=''
   openrouter_enabled || { rm -f "$(or_cache_json)"; return 0; }
   f="$(or_cache_tsv)"; mkdir -p "$(dirname "$f")"
   if [ -n "${1:-}" ] && [ -s "$f" ] && [ -n "$(find "$f" -mmin "-$1" 2>/dev/null)" ]; then
@@ -530,9 +532,10 @@ openrouter_refresh() {
     else warn "OpenRouter: $OR_ERR — no OpenRouter models until ./stack openrouter refresh succeeds"; fi
     return 0
   fi
-  before="$(or_selected | cut -f1,4-7; _or_cost_prices_sum)"
+  before="$(or_selected | cut -f1,4-7)"; prices="$(_or_cost_prices_sum)"
   chmod 644 "$tmp"; mv "$tmp" "$f"
-  after="$(or_selected | cut -f1,4-7; _or_cost_prices_sum)"
+  after="$(or_selected | cut -f1,4-7)"
+  [ "$prices" = "$(_or_cost_prices_sum)" ] || OR_PRICES_CHANGED=1
   or_missing "$(or_mode)" < <(or_cached_rows) | while IFS= read -r m; do warn "OpenRouter: '$m' (OPENROUTER_MODELS) is not an OpenRouter text model — skipped"; done
   or_write_portal_json
   [ "$before" != "$after" ] || return 0
@@ -852,9 +855,10 @@ setup_openrouter() {
 # they changed and LiteLLM is running, recreate it (the following `compose up --wait` waits for it). A stopped
 # LiteLLM just starts with the new config. Remembers the change for openrouter_after_up.
 openrouter_up_hook() {
-  OR_UP_CHANGED=0
+  OR_UP_CHANGED=0; OR_UP_PRICES=0
   openrouter_enabled || return 0
   openrouter_refresh 720
+  OR_UP_PRICES="$OR_PRICES_CHANGED"
   [ "$OR_CHANGED" = 1 ] || return 0
   OR_UP_CHANGED=1
   [ -z "$(dc ps -q litellm 2>/dev/null)" ] || dc up -d --no-deps --force-recreate litellm >/dev/null 2>&1 || warn "could not restart LiteLLM with the new OpenRouter models"
@@ -867,8 +871,12 @@ _or_owui_refresh() {
   ! declare -F owui_install_cost_filter >/dev/null || owui_install_cost_filter || true
 }
 
-# openrouter_after_up — ./stack up, inside its portal session: relabel Open WebUI when the hook saw changes.
-openrouter_after_up() { [ "${OR_UP_CHANGED:-0}" != 1 ] || _or_owui_refresh; }
+# openrouter_after_up — ./stack up, inside its portal session: relabel Open WebUI when the hook saw changes; when
+# only the cost filter's prices changed, update just those.
+openrouter_after_up() {
+  if [ "${OR_UP_CHANGED:-0}" = 1 ]; then _or_owui_refresh
+  elif [ "${OR_UP_PRICES:-0}" = 1 ]; then ! declare -F owui_install_cost_filter >/dev/null || owui_install_cost_filter || true; fi
+}
 
 # _or_owui_only — Open WebUI labels and cost-filter prices without restarting anything, when the stack runs.
 _or_owui_only() {

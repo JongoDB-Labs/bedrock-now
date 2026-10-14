@@ -410,3 +410,23 @@ def test_concurrent_refreshes_share_one_request():
     assert route.call_count == 1 and fails.call_count == 1
     q = fails.calls.last.request.url.params
     assert q["page_size"] == "300" and q["exclude_internal_health_checks"] == "true"
+
+
+@respx.mock
+def test_concurrent_refreshes_share_one_failed_request():
+    # LiteLLM failing (or hanging): five tabs wait for one request per kind, not five in a row
+    route = respx.get("http://litellm:4000/user/daily/activity/aggregated").respond(500)
+    fails = respx.get("http://litellm:4000/spend/logs/v2").respond(500)
+    d0, now = date(2026, 10, 1), datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+    async def go():
+        async with httpx.AsyncClient() as c:
+            return await asyncio.gather(
+                *(usage.activity(c, "http://litellm:4000", "m", d0, d0, 50.0) for _ in range(5)),
+                *(usage.failures(c, "http://litellm:4000", "m", now, 50.0) for _ in range(5)))
+    out = anyio.run(go)
+    assert route.call_count == 1 and fails.call_count == 1
+    assert all(o == (None, "LiteLLM answered HTTP 500") for o in out[:5])
+    assert all(o["error"] == "LiteLLM answered HTTP 500" for o in out[5:])
+    run(usage.activity, "http://litellm:4000", "m", d0, d0, 51.0)   # the error was not kept: the next refresh asks
+    assert route.call_count == 2 and all(not v for v in usage._inflight.values())

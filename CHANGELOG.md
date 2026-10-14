@@ -57,9 +57,10 @@ All notable changes to bedrock-now are documented here. The format follows
   budget bars keep showing actual spend (a key reads "≈ $12.00 equivalent · $6.00 of $10.00 actual"). The portal
   reads per-model tokens from LiteLLM 1.105.0's `GET /user/daily/activity/aggregated` (master key; one request
   for the widest window needed, cached for a minute; per key through its hashed-key breakdown, from the first
-  UTC day of its budget period); when LiteLLM cannot answer, Equivalent says so and Actual is unchanged. `/api/summary` gains `spend.equivalent`
-  (`total_30d`, `extra_30d`, free requests and tokens, per-key `spend`/`extra`/free counts, `no_paid_variant`,
-  `error`; `null` while OpenRouter is off) and each key row a `period_start`.
+  UTC day of its budget period); when LiteLLM cannot answer, Equivalent says so and Actual is unchanged.
+  `/api/summary` gains `spend.equivalent` (`total_30d`, `extra_30d`, free requests and tokens, per-key
+  `spend`/`extra`/free counts, `no_paid_variant`, `error`; `null` while OpenRouter is off) and each key row a
+  `period_start`.
 - **OpenRouter usage and failures on Home**, under the OpenRouter account line: the key's free-model requests
   today against OpenRouter's daily limit as a gauge (OpenRouter counts per UTC day; amber from 80%), requests and
   tokens to `or/…` models today and in the last 30 days split free / paid with their cost (in Equivalent also what

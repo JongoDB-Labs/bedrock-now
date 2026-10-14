@@ -495,17 +495,25 @@ test_refresh_fetches_caches_and_reports_changes() {
 }
 
 test_refresh_reports_a_paid_version_price_change_for_free_models() {
-  # Only free models enabled: the paid "google/gemma-4-31b-it" is not, but its price is the free model's
-  # paid-rates figure in Chat's cost line, so a change there must re-sync the cost filter (OR_CHANGED=1).
+  # Only free models enabled: the paid "google/gemma-4-31b-it" is not (LiteLLM never sees it), but its price is
+  # the free model's paid-rates figure in Chat's cost line: only the cost filter must re-sync (OR_PRICES_CHANGED).
   STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-abc\nOPENROUTER_MODELS=free\n' > "$ENV_FILE"; _stub_curl
-  render_config() { :; }
+  render_config() { echo RENDER >> "$TMP/render"; }
   openrouter_refresh 2>/dev/null
-  openrouter_refresh 2>/dev/null; assert_eq "$OR_CHANGED" 0
+  openrouter_refresh 2>/dev/null; assert_eq "$OR_CHANGED/$OR_PRICES_CHANGED" 0/0
   sed 's/"prompt":"0.00000009"/"prompt":"0.00000012"/' "$FIXJ" > "$TMP/changed.json"
   assert_contains "$(cat "$TMP/changed.json")" '"prompt":"0.00000012"'
+  : > "$TMP/litellm/config.yaml"; rm -f "$TMP/render"
   CURL_BODY="$TMP/changed.json" openrouter_refresh 2>/dev/null
-  assert_eq "$OR_CHANGED" 1
+  assert_eq "$OR_CHANGED/$OR_PRICES_CHANGED" 0/1
+  [ ! -e "$TMP/render" ]   # LiteLLM's config is not re-rendered
   assert_contains "$(openrouter_cost_prices_entries)" '"equivalent_input_cost_per_token":0.00000012'
+  # ./stack up: no LiteLLM restart, just the cost filter's prices
+  dc() { echo "dc $*" >> "$TMP/dc"; case "$1" in ps) echo abc123 ;; esac; }
+  openrouter_sync_owui() { echo SYNC >> "$TMP/dc"; }; owui_install_cost_filter() { echo COST >> "$TMP/dc"; }
+  touch -t 202001010000 "$TMP/litellm/openrouter-models.tsv"
+  openrouter_up_hook 2>/dev/null; openrouter_after_up
+  assert_eq "$(tr '\n' ';' < "$TMP/dc")" "COST;"
 }
 
 test_refresh_max_age_skips_fresh_cache() {

@@ -34,12 +34,23 @@ FAILURE_HOURS = 24
 FAILURE_PAGE = 300   # failed requests read per refresh (the newest); more → "more": true
 TOP_MODELS = 5
 _cache: dict = {}    # name -> (monotonic time, value, what it was asked for)
-_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()   # event loop -> {name: asyncio.Lock}
+_inflight: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()   # event loop -> {name: (ask, task)}
 
 
-def _lock(name: str) -> asyncio.Lock:
-    """One LiteLLM request at a time per kind, not one per open Home tab."""
-    return _locks.setdefault(asyncio.get_running_loop(), {}).setdefault(name, asyncio.Lock())
+async def _once(name: str, ask, fetch):
+    """FETCH() once for every caller asking the same at the same time (several open Home tabs): they share one
+    request and its answer, an error or a slow LiteLLM included. Nothing outlives the request but _cache."""
+    running = _inflight.setdefault(asyncio.get_running_loop(), {})
+    cur = running.get(name)
+    if cur is not None and cur[0] == ask:
+        return await asyncio.shield(cur[1])
+    task = asyncio.ensure_future(fetch())
+    running[name] = (ask, task)
+    try:
+        return await asyncio.shield(task)   # a caller that goes away does not cancel the others' request
+    finally:
+        if running.get(name, (None, None))[1] is task:
+            del running[name]
 
 
 def _cached(name: str, now: float, ask):
@@ -195,17 +206,20 @@ async def activity(client: httpx.AsyncClient, litellm_url: str, master: str, sta
                    now: float | None = None) -> tuple[list[dict] | None, str | None]:
     now = time.monotonic() if now is None else now
     ask = (litellm_url, start, end)
-    async with _lock("activity"):   # several open tabs: the first asks, the others get its answer
-        rows = _cached("activity", now, ask)
-        if rows is not None:
-            return rows, None
+    rows = _cached("activity", now, ask)
+    if rows is not None:
+        return rows, None
+
+    async def fetch():
         body, err = await _get(client, f"{litellm_url}/user/daily/activity/aggregated", master,
                                {"start_date": start.isoformat(), "end_date": end.isoformat()})
         if err:
-            return None, err   # not cached: tried again on the next refresh
-        rows = parse_activity(body)
-        _cache["activity"] = (now, rows, ask)
-        return rows, None
+            return None, err   # not cached: asked again on the next refresh
+        got = parse_activity(body)
+        _cache["activity"] = (now, got, ask)
+        return got, None
+
+    return await _once("activity", ask, fetch)
 
 
 # --- failures ---
@@ -338,10 +352,11 @@ def group_failures(rows: list[dict]) -> list[dict]:
 async def failures(client: httpx.AsyncClient, litellm_url: str, master: str, now_utc: datetime,
                    now: float | None = None) -> dict:
     now = time.monotonic() if now is None else now
-    async with _lock("failures"):
-        out = _cached("failures", now, litellm_url)
-        if out is not None:
-            return out
+    out = _cached("failures", now, litellm_url)
+    if out is not None:
+        return out
+
+    async def fetch():
         fmt = "%Y-%m-%d %H:%M:%S"
         body, err = await _get(client, f"{litellm_url}/spend/logs/v2", master, {
             "start_date": (now_utc - timedelta(hours=FAILURE_HOURS)).strftime(fmt), "end_date": now_utc.strftime(fmt),
@@ -349,9 +364,11 @@ async def failures(client: httpx.AsyncClient, litellm_url: str, master: str, now
         if err:
             return {"hours": FAILURE_HOURS, "count": None, "more": False, "groups": [], "error": err}
         rows, more = parse_failures(body)
-        out = {"hours": FAILURE_HOURS, "count": len(rows), "more": more, "groups": group_failures(rows), "error": None}
-        _cache["failures"] = (now, out, litellm_url)
-        return out
+        got = {"hours": FAILURE_HOURS, "count": len(rows), "more": more, "groups": group_failures(rows), "error": None}
+        _cache["failures"] = (now, got, litellm_url)
+        return got
+
+    return await _once("failures", litellm_url, fetch)
 
 
 # --- what Home gets ---
