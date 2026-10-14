@@ -132,3 +132,12 @@ test_the_watchdog_ends_a_stuck_read_quietly() {   # re-review N7: no "Terminated
   assert_eq "$out" ""
   assert_eq "$(cat "$TMP/err")" ""
 }
+
+test_a_plain_read_without_perl_does_not_wait_for_the_watchdog() {   # verify N7: stdout of the timer is closed
+  _repo; printf 'COMPOSE_PROJECT_NAME=bn-t\n' > "$ENV_FILE"
+  printf 'latest=v0.3.0\n' > "$TMP/latest.txt"
+  t0="$(date +%s)"
+  for _ in 1 2 3; do out="$(BEDROCK_NOW_NO_PERL=1 read_portal_file "$TMP/latest.txt" 256)"; done
+  assert_eq "$out" "latest=v0.3.0"
+  [ $(($(date +%s) - t0)) -le 2 ] || { echo "three plain reads took $(($(date +%s) - t0)) s" >&2; return 1; }
+}

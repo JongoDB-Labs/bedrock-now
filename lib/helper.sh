@@ -1034,7 +1034,7 @@ _rotate_log() {
 # the checkout's code) after an update/rollback/clean, and when the checkout moved to another commit under it (a
 # ./stack update in a terminal) once no ./stack command holds the lock.
 helper_main() {
-  local start_head
+  local start_head gone=0
   [ -f "$ENV_FILE" ] || die "$STACK_DIR is not set up (no .env)"
   # Nothing in the loop may end it with an error: launchd/systemd restart the helper only after a clean exit.
   { mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"; } || printf '%s cannot use %s\n' "$(date '+%F %T')" "$(helper_dir)" >&2
@@ -1043,6 +1043,13 @@ helper_main() {
   HELPER_CACHE=1; helper_facts force || true; start_head="$HF_HEAD"
   _helper_recover || true
   while :; do
+    # The checkout deleted (or moved away): stop for good — a non-zero exit is not restarted. Three loops in a row,
+    # so a git checkout replacing ./stack, or an atomic .env rewrite, is never mistaken for it.
+    if [ -f "$STACK_DIR/stack" ] && [ -f "$ENV_FILE" ]; then gone=0; else gone=$((gone + 1)); fi
+    if [ "$gone" -ge 3 ]; then
+      printf '%s the checkout %s is gone (no ./stack or .env): stopping the helper\n' "$(date '+%F %T')" "$STACK_DIR" >&2
+      return 1
+    fi
     [ "$HELPER_RECOVER_PENDING" != 1 ] || _helper_recover || true
     helper_facts || true
     if [ -n "$start_head" ] && [ -n "$HF_HEAD" ] && [ "$HF_HEAD" != "$start_head" ] && [ -z "$(stack_lock_holder)" ]; then
