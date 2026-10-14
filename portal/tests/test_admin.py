@@ -404,4 +404,6 @@ def test_home_scripts_say_what_the_helper_reports():
     assert '"auto-on": ["Turn on automatic updates?", "Turn on"]' in js
     assert '{ failed: " failed", done: " finished", skipped: " skipped" }' in js   # a skipped automatic update is no failure
     assert "awaiting.toggle ? sw.id === awaiting.id" in js   # a switch change answers in the heartbeat, not the job status
+    # while a job runs, the helper sees its own update as "unfinished": Home does not say so then
+    assert '!(a.in_progress && auto.state === "unfinished")' in js and 'a.in_progress && auto.state === "unfinished" ? "On."' in js
     assert "innerHTML" not in js

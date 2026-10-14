@@ -506,7 +506,8 @@ function renderAuto(a, usable) {
   // the last switch change, if it failed (a Busy refusal, say): said here, never in place of the last job
   const sw = auto.switch || {};
   const failed = sw.result === "failed" && sw.at && (Date.now() / 1000 - sw.at) < 600 ? ` Not changed: ${sw.message}` : "";
-  $("#auto-state").textContent = changing ? "Changing…" : auto.on ? `${auto.reason || "On."} ${ASLEEP}${failed}`
+  const reason = a.in_progress && auto.state === "unfinished" ? "On." : auto.reason || "On.";   // (see updateHint)
+  $("#auto-state").textContent = changing ? "Changing…" : auto.on ? `${reason} ${ASLEEP}${failed}`
     : `Off: new releases wait for you. Nightly installs a new release by itself, with a backup first.${failed}`;
 }
 
@@ -516,7 +517,8 @@ function updateHint(a, usable) {
   if (!a.allowed) return `Run it in your bedrock-now folder. ${REMOTE_OFF}`;
   if (!usable) return "Run it in your bedrock-now folder.";
   const auto = a.auto || {}, latest = lastUpdate && lastUpdate.latest, last = auto.last || {};
-  if (auto.supported && auto.on) {
+  // while a job runs, the update it is doing looks "unfinished" to the helper: the progress card speaks then
+  if (auto.supported && auto.on && !(a.in_progress && auto.state === "unfinished")) {
     const [from, to] = autoWindow(a), h = autoHour(a);
     if (["branch", "not-release", "unfinished", "run", "running", "busy"].includes(auto.state)) {
       return /Update now/.test(auto.reason || "") || auto.state === "run" || auto.state === "running" ? auto.reason : `${auto.reason} Or click Update now.`;

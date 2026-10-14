@@ -93,9 +93,10 @@ read_portal_file() {
     return
   fi
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
-  ( head -c "$2" "$1" 2>/dev/null & p=$!
-    ( sleep 2; kill "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
-    wait "$p"; r=$?; kill "$w" 2>/dev/null; exit "$r" )
+  # (stderr closed for the whole watchdog: bash reports the jobs it kills, "Terminated: 15", into the helper's log)
+  ( head -c "$2" "$1" & p=$!
+    ( sleep 2; kill "$p" ) & w=$!
+    wait "$p"; r=$?; kill "$w"; wait "$w"; exit "$r" ) 2>/dev/null
 }
 
 # latest_release_seen -> the newest release the portal's last check found ("" if none, off, or nonsense)

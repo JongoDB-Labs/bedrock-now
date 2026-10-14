@@ -121,3 +121,14 @@ test_latest_release_is_read_without_ever_blocking() {   # review I4: the portal 
     assert_eq "$(latest_release_seen)" ""
   done
 }
+
+test_the_watchdog_ends_a_stuck_read_quietly() {   # re-review N7: no "Terminated: 15" in the helper's log
+  _repo; printf 'COMPOSE_PROJECT_NAME=bn-t\n' > "$ENV_FILE"
+  mkdir -p "$TMP/slowbin"; printf '#!/bin/sh\nexec sleep 30\n' > "$TMP/slowbin/head"; chmod +x "$TMP/slowbin/head"
+  printf 'latest=v0.3.0\n' > "$TMP/latest.txt"
+  t0="$(date +%s)"
+  out="$( (BEDROCK_NOW_NO_PERL=1 PATH="$TMP/slowbin:$PATH" read_portal_file "$TMP/latest.txt" 256) 2>"$TMP/err" || true)"
+  [ $(($(date +%s) - t0)) -le 5 ] || { echo "the read was not ended in time" >&2; return 1; }
+  assert_eq "$out" ""
+  assert_eq "$(cat "$TMP/err")" ""
+}

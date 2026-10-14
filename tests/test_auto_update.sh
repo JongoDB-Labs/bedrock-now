@@ -32,6 +32,7 @@ case "$1" in
     fi
     echo "==> update: 1/4 backup"; echo "==> update: 2/4 code (git)"
     [ -z "${FAKE_FAIL:-}" ] || { echo "xx  could not fetch updates from origin (network?) — the code was not changed"; exit 1; }
+    [ "${MODE:-}" != no-move ] || { echo "==> update: 4/4 setup"; exit 0; }   # ends well, but the code stayed
     from="$(git -C "$d" rev-parse HEAD)"
     git -C "$d" -c advice.detachedHead=false checkout -q "$(git -C "$d" tag -l 'v*' --sort=-v:refname | head -n 1)"
     mkdir -p "$STATE_DIR/update"
@@ -281,11 +282,8 @@ test_an_unfinished_update_blocks_a_newer_release() {   # review I1 (reviewer pro
 
 test_done_is_recorded_only_when_the_release_is_installed() {   # review I1
   _release_checkout
-  # an update that only finishes an older one ends well, but v0.4.0 is not what is installed afterwards
-  mkdir -p "$STATE_DIR/update"
-  printf 'at=1\nfrom=0000000000000000000000000000000000000000\nbranch=\nfrom_version=v0.2.0\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"
-  auto_decision() { echo "run v0.4.0"; }   # past the rule, as if the state had changed after it was read
-  helper_auto_tick 2>/dev/null || return 1
+  # an update that ends well, but v0.4.0 is not what is installed afterwards
+  MODE=no-move helper_auto_tick 2>/dev/null || return 1
   assert_eq "$(_calls)" "update --yes"
   assert_eq "$(_auto_get "$(auto_last_file)" result)" failed
 }
@@ -400,7 +398,6 @@ test_a_fetch_that_hangs_is_ended() {   # review M4
   t0="$(date +%s)"
   if PATH="$TMP/slowbin:$PATH" HELPER_FETCH_TIMEOUT_S=1 _auto_fetch 2>/dev/null; then echo "a hung fetch succeeded" >&2; return 1; fi
   [ $(($(date +%s) - t0)) -le 5 ] || { echo "the fetch was not ended in time" >&2; return 1; }
-  assert_contains "$(sed -n '/^_auto_fetch() {/,/^}/p' "$T_ROOT/lib/helper.sh")" "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'"
 }
 
 test_local_changes_skip_the_window() {
@@ -420,7 +417,7 @@ test_main_loop_runs_the_tick_after_requests() {
 test_a_job_interrupted_by_a_crash_is_marked_at_start() {   # review I2 (reviewer probe P5)
   _release_checkout
   _auto_record v0.4.0 running
-  JOB_ID=auto-1; JOB_ACTION=update; JOB_TRIGGER=auto; JOB_STARTED="$(date +%s)"; helper_write_status backing-up "Backing up your data"
+  JOB_ID="auto-1"; JOB_ACTION=update; JOB_TRIGGER=auto; JOB_STARTED="$(date +%s)"; helper_write_status backing-up "Backing up your data"
   JOB_TRIGGER=''
   _at 3 1
   helper_main --once 2>/dev/null || true
@@ -438,7 +435,7 @@ test_a_job_interrupted_by_a_crash_is_marked_at_start() {   # review I2 (reviewer
 test_a_job_still_running_under_the_lock_is_left_alone() {   # review I2
   _release_checkout
   _auto_record v0.4.0 running
-  JOB_ID=auto-1; JOB_ACTION=update; JOB_TRIGGER=auto; JOB_STARTED="$(date +%s)"; helper_write_status restarting "Restarting"
+  JOB_ID="auto-1"; JOB_ACTION=update; JOB_TRIGGER=auto; JOB_STARTED="$(date +%s)"; helper_write_status restarting "Restarting"
   _lock update
   _helper_recover 2>/dev/null
   assert_contains "$(_status)" '"phase": "restarting"'
@@ -552,4 +549,86 @@ test_the_first_heartbeat_in_the_window_reads_latest_txt() {
   b="$(_beat)"
   assert_contains "$b" '"state": "run", "target": "v0.4.0"'   # not "up to date" until the tick has looked
   assert_eq "$(_auto_get "$(auto_seen_file)" latest)" v0.4.0
+}
+
+# --- re-review (N1-N7) ---
+
+test_an_unwritable_folder_never_ends_the_helper() {   # N1: launchd/systemd restart it only after a clean exit
+  _release_checkout; _at 4
+  [ "$(id -u)" != 0 ] || { echo "running as root: cannot make a folder unwritable" >&2; return 77; }
+  _kv_write() { return 1; }   # the disk is full: none of the helper's records can be written
+  rc=0; ( set -euo pipefail; helper_main --once ) 2>"$TMP/err" || rc=$?
+  assert_eq "$rc" 0
+  assert_contains "$(cat "$TMP/err")" "could not record what latest.txt said"
+  [ -z "$(_calls)" ] || { echo "an automatic update started without its record" >&2; return 1; }
+  unset -f _kv_write; eval "$(sed -n '/^_kv_write() {/,/^}/p' "$T_ROOT/lib/helper.sh")"
+  mkdir -p "$(status_dir)"; chmod 500 "$(status_dir)"
+  rc=0; ( set -euo pipefail; JOB_ID=x; JOB_ACTION=clean; helper_write_status "done" "x" ) 2>"$TMP/err" || rc=$?
+  chmod 755 "$(status_dir)"
+  assert_eq "$rc" 0
+  assert_contains "$(cat "$TMP/err")" "could not write"
+}
+
+test_recovery_waits_for_the_lock_and_then_runs_in_the_loop() {   # N2
+  _release_checkout; _at 12
+  _auto_record v0.4.0 running
+  JOB_ID="auto-1"; JOB_ACTION=update; JOB_TRIGGER=auto; JOB_STARTED="$(date +%s)"; helper_write_status backing-up "Backing up your data"
+  JOB_TRIGGER=''
+  _lock backup   # a terminal ./stack backup when the helper starts: HEAD does not move, the helper keeps running
+  export HELPER_POLL_S=0; n=0
+  sleep() {
+    n=$((n + 1))
+    case "$n" in
+      1) assert_contains "$(_status)" '"phase": "backing-up"'; rm -rf "$STATE_DIR/lock" ;;   # the backup ends
+      *) exit 0 ;;
+    esac
+  }
+  ( helper_main ) 2>/dev/null
+  assert_contains "$(_status)" '"phase": "failed", "message": "Interrupted (the computer or the helper stopped during the job)"'
+  assert_eq "$(_auto_get "$(auto_last_file)" result)" interrupted
+}
+
+test_preflight_looks_at_the_checkout_as_it_is_now() {   # N3
+  _release_checkout
+  HELPER_CACHE=1; helper_facts force                    # what the decision saw: v0.3.0
+  git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.4.0   # moved meanwhile (a terminal update)
+  rc=0; _auto_preflight v0.4.0 v0.3.0 || rc=$?
+  assert_eq "$rc" 2
+  assert_eq "$AUTO_WHY" "the installed version changed to v0.4.0"
+  git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.3.0
+  mkdir -p "$STATE_DIR/update"
+  printf 'at=1\nfrom=0000000000000000000000000000000000000000\nbranch=\nfrom_version=v0.2.0\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"
+  rc=0; _auto_preflight v0.4.0 v0.3.0 || rc=$?
+  assert_eq "$rc" 2
+  assert_eq "$AUTO_WHY" "the last update did not finish"
+  [ -z "$(_calls)" ] && [ ! -f "$(auto_skip_file)" ] || { echo "a changed checkout must not skip the window" >&2; return 1; }
+}
+
+test_a_last_line_without_a_newline_counts() {   # N4
+  _release_checkout
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nAUTO_UPDATE=on' > "$ENV_FILE"
+  _auto_env
+  assert_eq "$AE_AUTO_UPDATE" on
+  printf 'version=v0.4.0\nresult=failed' > "$(auto_last_file)"
+  _kv_read "$(auto_last_file)" T version result
+  # shellcheck disable=SC2154  # set by _kv_read
+  assert_eq "$T_version|$T_result" "v0.4.0|failed"
+}
+
+test_the_fetch_keeps_your_own_ssh_command() {   # N5
+  _release_checkout
+  mkdir -p "$TMP/gitbin"
+  printf '#!/bin/sh\ncase "$*" in *"config core.sshCommand"*) echo "ssh -i /keys/deploy"; exit 0 ;; esac\necho "$GIT_SSH_COMMAND" > "%s"\n' "$TMP/ssh" > "$TMP/gitbin/git"
+  chmod +x "$TMP/gitbin/git"
+  ( unset GIT_SSH_COMMAND; PATH="$TMP/gitbin:$PATH" _auto_fetch ) 2>/dev/null
+  assert_eq "$(cat "$TMP/ssh")" "ssh -i /keys/deploy -o BatchMode=yes -o ConnectTimeout=20"
+  ( export GIT_SSH_COMMAND="ssh -F /my/config"; PATH="$TMP/gitbin:$PATH" _auto_fetch ) 2>/dev/null
+  assert_eq "$(cat "$TMP/ssh")" "ssh -F /my/config -o BatchMode=yes -o ConnectTimeout=20"
+}
+
+test_an_ended_fetch_leaves_no_noise_in_the_log() {   # N7
+  _release_checkout
+  mkdir -p "$TMP/slowbin"; printf '#!/bin/sh\nexec sleep 30\n' > "$TMP/slowbin/git"; chmod +x "$TMP/slowbin/git"
+  ( PATH="$TMP/slowbin:$PATH" HELPER_FETCH_TIMEOUT_S=1 _auto_fetch || true ) 2>"$TMP/err"
+  assert_not_contains "$(cat "$TMP/err")" "Terminated"
 }

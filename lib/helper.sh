@@ -265,7 +265,7 @@ _kv_read() {
   shift 2
   for k in "$@"; do eval "${p}_$k=''"; done
   [ -f "$f" ] || return 0
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [ -n "$k" ]; do   # (also a last line without a newline)
     case " $* " in *" $k "*) eval "${p}_$k=\$v" ;; esac
   done < "$f"
 }
@@ -276,7 +276,7 @@ _auto_env() {
   local k v
   AE_AUTO_UPDATE=''; AE_AUTO_UPDATE_HOUR=''; AE_UPDATE_CHECK=''
   [ -f "$ENV_FILE" ] || return 0
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [ -n "$k" ]; do   # (also a last line without a newline, as get_env reads it)
     case "$k" in AUTO_UPDATE) AE_AUTO_UPDATE="$v" ;; AUTO_UPDATE_HOUR) AE_AUTO_UPDATE_HOUR="$v" ;; UPDATE_CHECK) AE_UPDATE_CHECK="$v" ;; esac
   done < "$ENV_FILE"
 }
@@ -393,7 +393,10 @@ helper_auto_state() {
   elif [ "$AUTO_ON" = on ] && [ "$AUTO_IN_WINDOW" = 1 ]; then
     _kv_read "$(auto_seen_file)" SN window latest
     if [ "$SN_window" = "$AUTO_WINDOW" ]; then latest="$SN_latest"
-    elif [ "${1:-}" = --read ]; then latest="$(latest_release_seen)"; _auto_seen "$AUTO_WINDOW" "$latest"; fi
+    elif [ "${1:-}" = --read ]; then
+      latest="$(latest_release_seen)"
+      _auto_seen "$AUTO_WINDOW" "$latest" || printf '%s could not record what latest.txt said (%s)\n' "$(date '+%F %T')" "$(auto_seen_file)" >&2
+    fi
   fi
   AUTO_BUSY=''
   if [ "$AUTO_LAST_RESULT" = running ]; then
@@ -565,8 +568,8 @@ helper_check_request() {
 # _remember_nonce NONCE — single use: kept (the newest 1000) in the helper's private folder
 _remember_nonce() {
   local f; f="$(helper_dir)/nonces"
-  printf '%s\n' "$1" >> "$f"
-  [ "$(wc -l < "$f" | tr -d ' ')" -le 1000 ] || { tail -n 1000 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+  printf '%s\n' "$1" >> "$f" || return 0
+  [ "$(wc -l < "$f" | tr -d ' ')" -le 1000 ] || { tail -n 1000 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; } || true
 }
 
 # helper_limits ACTION — the helper's own rate limits (state in its private folder): fails with the reason.
@@ -592,9 +595,9 @@ helper_limits() {
 # _helper_count ACTION — records a job start (for helper_limits); keeps a day and a bit
 _helper_count() {
   local f now; f="$(helper_dir)/jobs"; now="$(date +%s)"
-  printf '%s %s\n' "$now" "$1" >> "$f"
-  awk -v t=$((now - 90000)) '$1 + 0 >= t' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-  [ "$1" != rollback ] || _record_get at > "$(helper_dir)/rolled-back"
+  printf '%s %s\n' "$now" "$1" >> "$f" || return 0
+  { awk -v t=$((now - 90000)) '$1 + 0 >= t' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; } || true
+  [ "$1" != rollback ] || _record_get at > "$(helper_dir)/rolled-back" || true
 }
 
 # Job state for helper_write_status. JOB_TRIGGER: "auto" for the automatic update (else a request from Home);
@@ -606,16 +609,21 @@ JOB_ID=''; JOB_ACTION=''; JOB_STARTED=''; JOB_FINISHED=''; JOB_FREED=''; JOB_VER
 # done, failed, skipped (an automatic update that did not start; it tries again in the next window)
 helper_write_status() {
   local d f tmp
-  d="$(status_dir)"; f="$(helper_status_file)"; mkdir -p "$d"
-  tmp="$(mktemp "$d/.helper-status.XXXXXX")" || return 0
-  printf '{"id": "%s", "action": "%s", "phase": "%s", "message": "%s", "started_at": %s, "updated_at": %s, "finished_at": %s, "freed_bytes": %s, "version": "%s", "trigger": "%s"}\n' \
+  # never fatal (the loop runs under set -e, and launchd/systemd do not restart a helper that failed): a status that
+  # cannot be written is logged
+  d="$(status_dir)"; f="$(helper_status_file)"; mkdir -p "$d" 2>/dev/null || true
+  tmp="$(mktemp "$d/.helper-status.XXXXXX" 2>/dev/null)" || { printf '%s could not write %s\n' "$(date '+%F %T')" "$f" >&2; return 0; }
+  if printf '{"id": "%s", "action": "%s", "phase": "%s", "message": "%s", "started_at": %s, "updated_at": %s, "finished_at": %s, "freed_bytes": %s, "version": "%s", "trigger": "%s"}\n' \
     "$(_json_str "$JOB_ID")" "$(_json_str "$JOB_ACTION")" "$(_json_str "$1")" "$(_json_str "$2")" "${JOB_STARTED:-null}" "$(date +%s)" \
-    "${JOB_FINISHED:-null}" "${JOB_FREED:-null}" "$(_json_str "$JOB_VERSION")" "$(_json_str "${JOB_TRIGGER:-request}")" > "$tmp"
-  chmod 644 "$tmp"; mv "$tmp" "$f"
+    "${JOB_FINISHED:-null}" "${JOB_FREED:-null}" "$(_json_str "$JOB_VERSION")" "$(_json_str "${JOB_TRIGGER:-request}")" > "$tmp" &&
+    chmod 644 "$tmp" && mv "$tmp" "$f"; then return 0; fi
+  rm -f "$tmp" 2>/dev/null || true
+  printf '%s could not write %s\n' "$(date '+%F %T')" "$f" >&2
+  return 0
 }
 
 # _status_phase -> the phase the status file shows ("" when there is none)
-_status_phase() { head -c 4096 "$(helper_status_file)" 2>/dev/null | sed -n 's/.*"phase": "\([a-z-]*\)".*/\1/p'; }
+_status_phase() { head -c 4096 "$(helper_status_file)" 2>/dev/null | sed -n 's/.*"phase": "\([a-z-]*\)".*/\1/p' || true; }
 
 # _status_in_progress -> 0 while the status file shows a job that has not finished (updated in the last 3 h)
 _status_in_progress() {
@@ -639,15 +647,19 @@ _refuse() {
 # computer shut down or slept, or the helper crashed). Unless a ./stack command still holds the lock (it then carries
 # on), it is marked as interrupted, so Home does not wait on it for hours, and so is the automatic update's record (an
 # interrupted release is not retried automatically, like a failed one).
+# While a ./stack command holds the lock it waits (HELPER_RECOVER_PENDING=1) and the loop tries again each time round:
+# outside helper_run_job, a job the status file shows as running can only be one that stopped.
+HELPER_RECOVER_PENDING=0
 # shellcheck disable=SC2154  # PREFIX_KEY variables come from _kv_read
 _helper_recover() {
   local f s
-  [ -z "$(stack_lock_holder)" ] || return 0
+  if [ -n "$(stack_lock_holder)" ]; then HELPER_RECOVER_PENDING=1; return 0; fi
+  HELPER_RECOVER_PENDING=0
   f="$(helper_status_file)"
   case "$(_status_phase)" in
     '' | done | failed | skipped) ;;
     *)
-      s="$(head -c 4096 "$f" 2>/dev/null)"
+      s="$(head -c 4096 "$f" 2>/dev/null || true)"
       JOB_ID="$(printf '%s' "$s" | sed -n 's/.*"id": "\([A-Za-z0-9-]*\)".*/\1/p')"
       JOB_ACTION="$(printf '%s' "$s" | sed -n 's/.*"action": "\([a-z-]*\)".*/\1/p')"
       JOB_STARTED="$(printf '%s' "$s" | sed -n 's/.*"started_at": \([0-9]*\).*/\1/p')"
@@ -681,7 +693,7 @@ _jword() { case "$1" in *[!A-Za-z0-9._/:+-]*) JS='' ;; *) JS="${1:0:120}" ;; esa
 # shellcheck disable=SC2154  # PREFIX_KEY variables come from _kv_read
 helper_heartbeat() {
   local d f av=false un=false aon=false aun=false rto rbk ver br st tg rs lv lr la rb skw skr ska si sa sr sm sat nw out part
-  d="$(status_dir)"; [ -d "$d" ] || mkdir -p "$d"
+  d="$(status_dir)"; [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || return 0
   f="$(helper_beat_file)"
   _kv_read "$(update_record_file)" HR from result from_version backup
   if [ -n "$HR_from" ] && [ "$HR_result" != rolled-back ]; then
@@ -704,8 +716,8 @@ helper_heartbeat() {
   out="$out$part"
   printf -v part '"skipped": {"window": "%s", "reason": "%s", "at": %s}, "switch": {"id": "%s", "action": "%s", "result": "%s", "message": "%s", "at": %s}}}' \
     "$skw" "$skr" "$ska" "$si" "$sa" "$sr" "$sm" "$sat"
-  printf '%s%s\n' "$out" "$part" > "$d/.helper.json.next" || return 0
-  chmod 644 "$d/.helper.json.next" 2>/dev/null; mv -f "$d/.helper.json.next" "$f"
+  printf '%s%s\n' "$out" "$part" > "$d/.helper.json.next" 2>/dev/null || return 0
+  chmod 644 "$d/.helper.json.next" 2>/dev/null && mv -f "$d/.helper.json.next" "$f" 2>/dev/null || true
 }
 
 # _phase_of LOG -> "phase<TAB>message" from the progress lines ./stack prints
@@ -785,7 +797,7 @@ helper_run_job() {
   else helper_write_status queued "Starting $action"; fi
   _helper_count "$action"
   logf="$(helper_dir)/last-$action.log"
-  : > "$logf"; chmod 600 "$logf"
+  { : > "$logf" && chmod 600 "$logf"; } 2>/dev/null || logf=/dev/null
   case "$action" in
     clean) helper_write_status cleaning "Removing old images" ;;
     rollback) helper_write_status restoring "Going back to the previous version" ;;
@@ -804,7 +816,7 @@ helper_run_job() {
   JOB_FINISHED="$(date +%s)"; JOB_VERSION="$HF_VERSION"
   at="$(sed -n 's/^at=//p' "$STATE_DIR/images/last-clean" 2>/dev/null || true)"   # none yet (e.g. nothing to update)
   if [ -n "$at" ] && [ "$at" -ge "$JOB_STARTED" ]; then
-    freed="$(sed -n 's/^freed_bytes=//p' "$STATE_DIR/images/last-clean")"; summary="$(sed -n 's/^summary=//p' "$STATE_DIR/images/last-clean")"
+    freed="$(sed -n 's/^freed_bytes=//p' "$STATE_DIR/images/last-clean" || true)"; summary="$(sed -n 's/^summary=//p' "$STATE_DIR/images/last-clean" || true)"
     case "$freed" in '' | *[!0-9]*) freed='' ;; esac
     JOB_FREED="$freed"
   fi
@@ -844,7 +856,7 @@ helper_run_toggle() {
   fi
   _helper_count "$1"
   logf="$(helper_dir)/last-auto.log"
-  : > "$logf"; chmod 600 "$logf"
+  { : > "$logf" && chmod 600 "$logf"; } 2>/dev/null || logf=/dev/null
   ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" helper auto "${1#auto-}" --yes ) </dev/null > "$logf" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     _switch_record "$2" "$1" failed "$(_last_error "$logf") (full log: .state/helper/last-auto.log)"; return 0
@@ -879,23 +891,31 @@ _auto_stack_check() {
 _auto_fetch() {
   local pid n=0 limit
   limit="${HELPER_FETCH_TIMEOUT_S:-120}"; case "$limit" in '' | *[!0-9]*) limit=120 ;; esac
-  ( GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
+  # your own ssh command (GIT_SSH_COMMAND, else core.sshCommand) is kept: the options are added to it (inside the
+  # watched job, so even reading it cannot hang the helper)
+  ( ssh="${GIT_SSH_COMMAND:-$(git -C "$STACK_DIR" config core.sshCommand 2>/dev/null || echo ssh)}"
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh -o BatchMode=yes -o ConnectTimeout=20" \
       exec git -C "$STACK_DIR" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch --quiet --tags origin ) </dev/null >/dev/null 2>&1 &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    if [ "$n" -ge "$limit" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; fi
+    if [ "$n" -ge "$limit" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true; return 1; fi
     sleep 1; n=$((n + 1))
     [ $((n % 3)) != 0 ] || helper_heartbeat
   done
-  wait "$pid"
+  wait "$pid" 2>/dev/null
 }
 
-# _auto_preflight VERSION -> 0: go; 1: skip this window (AUTO_WHY says why); 2: not yet, ask again shortly (the
-# helper's one-a-minute limit). The checks of a job from Home and the helper's own limits, the stack running, and
+# _auto_preflight VERSION [INSTALLED] -> 0: go; 1: skip this window (AUTO_WHY says why); 2: not yet, ask again shortly
+# (the helper's one-a-minute limit, or the checkout changed since the decision: INSTALLED, what it saw). The checks of a job from Home and the helper's own limits, the stack running, and
 # origin reachable with VERSION as its newest release tag after fetching (the release Home announced: ./stack update
 # installs origin's newest)
 _auto_preflight() {
   local newest
+  # the facts the decision used may be a minute old: as they are now, the update must still be due (else the next
+  # loop decides again)
+  helper_facts force
+  if [ -n "${2:-}" ] && [ "$HF_VERSION" != "$2" ]; then AUTO_WHY="the installed version changed to $HF_VERSION"; return 2; fi
+  if update_unfinished; then AUTO_WHY="the last update did not finish"; return 2; fi
   AUTO_WHY="$(_job_refusal update)"; [ -z "$AUTO_WHY" ] || return 1
   if ! AUTO_WHY="$(helper_limits update 2>&1)"; then
     case "$AUTO_WHY" in *"too soon"*) return 2 ;; esac
@@ -937,7 +957,7 @@ _helper_auto_tick() {
     *) return 1 ;;
   esac
   target="$AUTO_TARGET"; win="$AUTO_WINDOW"
-  _auto_preflight "$target" || rc=$?
+  _auto_preflight "$target" "$HF_VERSION" || rc=$?
   case "$rc" in 0) ;; 2) return 1 ;; *) _auto_skip "$AUTO_WHY" "$win"; return 1 ;; esac
   JOB_TARGET="$target"
   helper_run_job update "auto-$(date +%s)" auto
@@ -959,11 +979,11 @@ _sweep_requests() {
   for f in "$rq"/.req-*.tmp; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     [ -z "$(find "$f" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue
-    rm -rf "$f"
+    rm -rf "$f" 2>/dev/null || true
   done
   for f in "$rq"/* "$rq"/.[!.]*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    case "${f##*/}" in req-*.json | .req-*.tmp) ;; *) rm -rf "$f" ;; esac
+    case "${f##*/}" in req-*.json | .req-*.tmp) ;; *) rm -rf "$f" 2>/dev/null || true ;; esac
   done
 }
 
@@ -972,7 +992,7 @@ _sweep_requests() {
 helper_poll_once() {
   local rq inbox box name res reason
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
-  [ -d "$inbox" ] || { mkdir -p "$inbox"; chmod 700 "$(helper_dir)" "$inbox"; }
+  [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   _sweep_requests
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -1006,7 +1026,8 @@ _rotate_log() {
   [ -f "$f" ] && [ ! -L "$f" ] || return 0
   [ "$(wc -c < "$f" | tr -d ' ')" -gt "$HELPER_LOG_MAX_BYTES" ] || return 0
   t="$(mktemp "$(helper_dir)/.log.XXXXXX")" || return 0
-  tail -c 200000 "$f" > "$t" && cat "$t" > "$f"; rm -f "$t"
+  { tail -c 200000 "$f" > "$t" && cat "$t" > "$f"; } || true
+  rm -f "$t"
 }
 
 # helper_main [--once] — the loop bin/bedrock-now-helper runs. It ends (exit 0: launchd/systemd start it again, with
@@ -1015,19 +1036,22 @@ _rotate_log() {
 helper_main() {
   local start_head
   [ -f "$ENV_FILE" ] || die "$STACK_DIR is not set up (no .env)"
-  mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"
-  _rotate_log
-  HELPER_CACHE=1; helper_facts force; start_head="$HF_HEAD"
-  _helper_recover
+  # Nothing in the loop may end it with an error: launchd/systemd restart the helper only after a clean exit.
+  { mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"; } || printf '%s cannot use %s\n' "$(date '+%F %T')" "$(helper_dir)" >&2
+  _rotate_log || true
+  # (each step runs as a condition, where set -e does not end it; poll and tick run inside if anyway)
+  HELPER_CACHE=1; helper_facts force || true; start_head="$HF_HEAD"
+  _helper_recover || true
   while :; do
-    helper_facts
+    [ "$HELPER_RECOVER_PENDING" != 1 ] || _helper_recover || true
+    helper_facts || true
     if [ -n "$start_head" ] && [ -n "$HF_HEAD" ] && [ "$HF_HEAD" != "$start_head" ] && [ -z "$(stack_lock_holder)" ]; then
       printf '%s the checkout moved to %s: restarting with its code\n' "$(date '+%F %T')" "$HF_VERSION" >&2
       return 0
     fi
-    helper_heartbeat
-    if helper_poll_once; then helper_heartbeat; return 0; fi
-    if helper_auto_tick; then helper_heartbeat; return 0; fi
+    helper_heartbeat || true
+    if helper_poll_once; then helper_heartbeat || true; return 0; fi
+    if helper_auto_tick; then helper_heartbeat || true; return 0; fi
     [ "${1:-}" != --once ] || return 0
     sleep "$HELPER_POLL_S"
   done
