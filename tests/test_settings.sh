@@ -1030,11 +1030,12 @@ test_up_reapplies_a_new_alert_threshold_once() {
 
 test_up_waits_for_a_running_settings_change() {
   _env
-  ( stack_lock config; sleep 4 ) &   # (as in test_lock.sh: a holder that is a ./stack process)
+  # (as in test_lock.sh: a holder that is a ./stack process, keeping the lock until the test has looked)
+  ( stack_lock config; i=0; while [ ! -f "$TMP/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done ) >/dev/null 2>&1 &
   local holder=$! i=0
-  while [ ! -f "$STATE_DIR/lock/pid" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  if out="$( (unset BEDROCK_NOW_LOCK_HELD; cmd_up) 2>&1)"; then kill "$holder"; return 1; fi
-  wait "$holder" 2>/dev/null || true
+  while [ ! -s "$STATE_DIR/lock/pid" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+  if out="$( (unset BEDROCK_NOW_LOCK_HELD; cmd_up) 2>&1)"; then touch "$TMP/release"; return 1; fi
+  touch "$TMP/release"; wait "$holder" 2>/dev/null || true
   assert_contains "$out" "another ./stack config is running"
 }
 
