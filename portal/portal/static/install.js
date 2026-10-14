@@ -13,27 +13,32 @@
 //      app and the browser's tabs of the same site.
 //   2. beforeinstallprompt fired: no (the browser only offers what this profile has not installed). It clears
 //      bn.app, which is how an uninstall is noticed, and wins even when it comes after the others.
-//   3. navigator.getInstalledRelatedApps() lists the manifest's related_applications entry (the app itself): yes.
-//      Chrome/Edge 140+ on desktop and Chrome on Android answer for web apps, so their empty list is a no (and
-//      clears bn.app); older ones return an empty list for every web app, which means nothing.
-//   4. appinstalled fired in this tab: yes.
+//   3. navigator.getInstalledRelatedApps() lists the manifest's related_applications entry (the app itself): yes;
+//      an empty list: no (and bn.app goes). Only Google Chrome and Microsoft Edge 140+ are asked: they answer for
+//      web apps (desktop and Android); older and other browsers return an empty list, which means nothing.
+//   4. Something just happened: appinstalled in this tab (yes, shown once Chrome has had SETTLE_MS to move the tab
+//      into the new app window), bn.app written by the app in another window (yes), this page leaving the app
+//      window for a browser tab (yes).
 //   5. bn.app is set: yes, once beforeinstallprompt has had DECIDE_MS to say otherwise.
+// A tab asks again (3.) whenever it comes back into view, and follows bn.app changes from other windows, so one left
+// open while the app is installed or uninstalled elsewhere catches up.
 //
 // Opening it from a tab (desktop Chrome/Edge): the link <scheme>://open?tab=<tab>&n=<nonce>, where <scheme> is this
-// site's own protocol_handlers entry (webapp.py). The first time, the browser asks whether the site may open the
-// app, and the app whether it may open such links. The operating system then starts the app at /?open=<link>, or
-// (launch_handler focus-existing) brings its open window forward and hands it the link through launchQueue. The app
-// shows <tab> and answers the nonce on the BroadcastChannel "bn.app"; the tab then says it can be closed. No answer
-// while this tab still has the focus ANSWER_MS later (no dialog, no app window took it), or once it gets it back (a
-// dialog was cancelled): the note names the other ways in. Android has no such launch (protocol_handlers are
-// desktop only, and Chrome keeps a site's own links in the tab), so there the note says where the app is.
+// site's own protocol_handlers entry (webapp.py; the portal puts it into the page as <meta name="bn-app-scheme">).
+// The first time, the browser asks whether the site may open the app, and the app whether it may open such links.
+// The operating system then starts the app at /?open=<link>, or (launch_handler focus-existing) brings its open
+// window forward and hands it the link through launchQueue. The app shows <tab> and answers the nonce on the
+// BroadcastChannel "bn.app"; the tab then says it can be closed. No answer while this tab still has the focus
+// ANSWER_MS later (no dialog, no app window took it), or once it gets it back (a dialog was cancelled): the note
+// names the other ways in. Android has no such launch (protocol_handlers are desktop only, and Chrome keeps a
+// site's own links in the tab), so there the note says where the app is.
 "use strict";
 
 (() => {
   const LATER_KEY = "bn.installLater";      // Home's install note dismissed
   const APP_LATER_KEY = "bn.appNoteLater";  // Home's "installed" note dismissed
   const APP_KEY = "bn.app";                 // written by the installed app (1. above)
-  const DECIDE_MS = 2000;
+  const DECIDE_MS = 2000, SETTLE_MS = 1500;
   const ANSWER_MS = 5000, ANSWER_MAX_MS = 120000;
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
@@ -42,35 +47,38 @@
   };
   const inApp = () => ["standalone", "window-controls-overlay", "minimal-ui"].some((m) => matchMedia(`(display-mode: ${m})`).matches)
     || navigator.standalone === true;
+  const uaData = navigator.userAgentData;
   const chromium = "BeforeInstallPromptEvent" in window;   // the browsers that install apps this way
-  const android = /Android/i.test(navigator.userAgent);
+  // Android also in "desktop site" mode, whose user agent string drops the word.
+  const android = /Android/i.test(navigator.userAgent) || Boolean(uaData && (uaData.platform === "Android" || uaData.mobile));
   const canLaunch = chromium && !android;
-  const answersForWebApps = android || (() => {
-    const c = ((navigator.userAgentData && navigator.userAgentData.brands) || []).find((b) => b.brand === "Chromium");
-    return Boolean(c) && Number(c.version) >= 140;
+  const trusted = Boolean(uaData && (uaData.brands || []).some((b) => /^(Google Chrome|Microsoft Edge)$/.test(b.brand) && Number(b.version) >= 140));
+  const scheme = (() => {   // this site's link scheme (webapp.protocol), from the portal (index())
+    const m = document.querySelector('meta[name="bn-app-scheme"]');
+    return m && /^web\+[a-z]+$/.test(m.content) ? m.content : "";
   })();
   const tell = (msg) => { if (typeof toast === "function") toast(msg); };
 
   let deferred = null;     // the beforeinstallprompt event, until it is used
-  let related = null;      // getInstalledRelatedApps: true, false (a real no) or null (no answer)
-  let justInstalled = false;
-  let waited = false;      // DECIDE_MS is over
-  let scheme = "", schemeAsked = false, schemeKnown = false;   // known: the manifest answered (or failed)
+  let known = null;        // installed? true / false from 3. and 4., else null (then 5.)
+  let settling = false;    // just installed: Chrome is moving this tab into the app window
+  let waited = false, waiting = false;
   let pending = "";        // the nonce of the launch waiting for the app's answer
-  let answerTimer = 0, channel = null;
+  let answerTimer = 0, channel = null, focusToast = "";
   let noteText = "", noteForced = false;
   let state = "";
+  const answeredNonces = new Set();
 
   function decide() {
     if (inApp()) return "app";
     if (deferred) return "install";
-    if (related === true || justInstalled) return "open";
-    if (related === null && waited && chromium && store.get(APP_KEY)) return "open";
-    return "none";
+    if (!chromium || settling) return "none";
+    if (known !== null) return known ? "open" : "none";
+    return waited && store.get(APP_KEY) ? "open" : "none";
   }
 
   // Where the app is, for when no link opens it.
-  const elsewhere = () => (android ? "Open it from your home screen or app list, or with ⋮\u00a0→ Open in app."
+  const elsewhere = () => (android ? "Open it from your home screen or app list, or with ⋮ → Open in app."
     : "Open bedrock-now from your Dock, Launchpad, Start menu or applications menu"
       + (location.protocol === "http:" ? ", run ./stack open" : "") + ", or use Open in app in the address bar.");
   const currentTab = () => { const t = location.hash.slice(1); return /^[a-z]+$/.test(t) ? t : "home"; };
@@ -80,7 +88,7 @@
     const next = decide();
     const install = next === "install", open = next === "open", link = open && canLaunch && Boolean(scheme);
     document.documentElement.classList.toggle("installed-app", next === "app");
-    document.documentElement.dataset.app = next;
+    document.documentElement.dataset.appState = next;
     for (const b of document.querySelectorAll("[data-install]")) b.hidden = !install;
     const note = document.getElementById("install-note");
     if (note) note.hidden = !install || store.get(LATER_KEY) === "1";
@@ -88,30 +96,26 @@
       a.hidden = !link;
       if (link && !a.getAttribute("href")) a.href = `${scheme}://open?tab=${currentTab()}&n=${nonce()}`;
     }
-    const appNote = document.getElementById("app-note");   // once its text is final (link or no link)
-    if (appNote) appNote.hidden = !open || (canLaunch && !schemeKnown) || (store.get(APP_LATER_KEY) === "1" && !noteForced);
+    const appNote = document.getElementById("app-note");
+    if (appNote) appNote.hidden = !open || (store.get(APP_LATER_KEY) === "1" && !noteForced);
     const text = document.getElementById("app-note-text");
     if (text) text.textContent = noteText || (link ? "Use it in its own window instead of this tab." : elsewhere());
-    if (open && canLaunch && !scheme) loadScheme();
     if (next !== state) {
       state = next;
       document.dispatchEvent(new CustomEvent("bn:app", { detail: state }));
     }
   }
 
-  // The link scheme comes from the manifest, like everything else that names this site's app.
-  function loadScheme() {
-    if (schemeAsked) return;
-    schemeAsked = true;
-    const m = document.querySelector('link[rel="manifest"]');
-    fetch(m ? m.href : "/manifest.webmanifest", { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then((j) => {
-        const h = (j.protocol_handlers || [])[0];
-        if (h && /^web\+[a-z]+$/.test(h.protocol)) scheme = h.protocol;
-      })
-      .catch(() => { /* no link then: the note says where the app is */ })
-      .then(() => { schemeKnown = true; render(); });
+  // 3. (and the clock for 5.): at load, whenever the tab comes back into view, when an app window becomes a tab.
+  function probe() {
+    if (inApp() || !chromium) return;
+    if (!waiting) { waiting = true; setTimeout(() => { waited = true; render(); }, DECIDE_MS); }
+    if (!trusted || typeof navigator.getInstalledRelatedApps !== "function") { render(); return; }
+    navigator.getInstalledRelatedApps().then((apps) => {
+      known = (apps || []).some((a) => a.platform === "webapp");
+      if (known) { deferred = null; store.set(APP_KEY, "1"); } else store.del(APP_KEY);
+      render();
+    }, () => { /* no answer: bn.app decides */ });
   }
 
   // --- Install app ---
@@ -133,8 +137,9 @@
     pending = ""; clearTimeout(answerTimer);
     const done = "Opened in the app. You can close this tab.";
     say(done); tell(done);
-    window.addEventListener("focus", () => tell(done), { once: true });   // seen again when coming back to this tab
+    focusToast = done;   // and once more when coming back to this tab
   }
+  window.addEventListener("focus", () => { if (focusToast) { tell(focusToast); focusToast = ""; } });
 
   function launch(e) {
     pending = nonce();
@@ -158,7 +163,7 @@
   }
 
   // In the app: a launch names a tab (a shortcut's #chat, or ?open=<link> from a tab's "Open in the app"). Answers
-  // the link's nonce and returns the tab, or "".
+  // the link's nonce (once: a cold start sees it both in the URL and in launchQueue) and returns the tab, or "".
   function launched(url) {
     let u;
     try { u = new URL(url, location.href); } catch (_) { return ""; }
@@ -167,7 +172,9 @@
     if (link) {
       try { const q = new URL(link).searchParams; tab = q.get("tab") || tab; n = q.get("n") || ""; } catch (_) { /* not ours */ }
     }
-    if (n && inApp() && typeof BroadcastChannel === "function") {
+    if (!/^[a-z0-9]{1,32}$/.test(n)) n = "";
+    if (n && inApp() && !answeredNonces.has(n) && typeof BroadcastChannel === "function") {
+      answeredNonces.add(n);
       const c = new BroadcastChannel("bn.app");
       c.postMessage({ opened: n });
       setTimeout(() => c.close(), 1000);
@@ -176,6 +183,8 @@
   }
 
   // A cold start lands on /?open=<link>: make it /#<tab> before app.js picks the first tab (on DOMContentLoaded).
+  // A signed-out app sees the login first, which brings it back to plain / (index() asks for "/"): it then opens on
+  // its last tab, and the tab that launched it falls back to the other ways in.
   if (new URLSearchParams(location.search).has("open")) {
     const tab = launched(location.href);
     history.replaceState(null, "", location.pathname + (tab ? `#${tab}` : location.hash));
@@ -193,35 +202,39 @@
 
   // --- what is installed ---
 
-  // Chrome moves the tab into the new app window on install, without a reload: follow the display mode.
+  // Chrome moves the tab into the new app window on install, without a reload, and "Open in Chrome" moves an app
+  // window into a tab: follow the display mode.
+  let wasInApp = inApp();
   const follow = () => {
-    if (inApp()) { deferred = null; store.set(APP_KEY, "1"); }
+    const now = inApp();
+    if (now) { deferred = null; store.set(APP_KEY, "1"); }
+    else if (wasInApp) { known = true; probe(); }   // it was the app a moment ago
+    wasInApp = now;
     render();
   };
   follow();
+  probe();
   const standalone = matchMedia("(display-mode: standalone)");
   if (standalone.addEventListener) standalone.addEventListener("change", follow);
   else if (standalone.addListener) standalone.addListener(follow);   // Safari before 14
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") probe(); });
+  // Another window of this site: the app wrote its mark (it runs, so it is installed), or a tab found it gone.
+  window.addEventListener("storage", (e) => {
+    if (e.key !== APP_KEY && e.key !== null) return;   // null: all of the site's storage was cleared
+    if (e.newValue === "1") { deferred = null; known = true; render(); } else { known = null; render(); probe(); }
+  });
 
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();             // no mini-infobar: our own button asks instead
     if (inApp()) return;
-    deferred = e; justInstalled = false; store.del(APP_KEY); render();
+    deferred = e; known = false; store.del(APP_KEY); render();
   });
   window.addEventListener("appinstalled", () => {
-    deferred = null; justInstalled = true; store.set(APP_KEY, "1"); render();
+    deferred = null; store.set(APP_KEY, "1");
+    settling = true; render();
+    setTimeout(() => { settling = false; known = true; render(); }, SETTLE_MS);
     tell("Installed: bedrock-now now opens in its own window.");
   });
-  if (!inApp() && chromium) {
-    setTimeout(() => { waited = true; render(); }, DECIDE_MS);
-    if (typeof navigator.getInstalledRelatedApps === "function") {
-      navigator.getInstalledRelatedApps().then((apps) => {
-        related = (apps || []).some((a) => a.platform === "webapp") ? true : answersForWebApps ? false : null;
-        if (related) store.set(APP_KEY, "1"); else if (related === false) store.del(APP_KEY);
-        render();
-      }, () => { /* no answer: bn.app decides */ });
-    }
-  }
 
   for (const b of document.querySelectorAll("[data-install]")) b.addEventListener("click", install);
   for (const a of document.querySelectorAll("[data-open-app]")) a.addEventListener("click", launch);

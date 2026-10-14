@@ -409,8 +409,8 @@ def pwa(ctx):
 
 # --- installed or not: Install app vs Open in the app (install.js) ---
 # Headless Chromium cannot install a web app, so each state is set up the way the browser would report it: display
-# mode, navigator.getInstalledRelatedApps, beforeinstallprompt, the app's bn.app mark. Every Install / Open element
-# that becomes visible is recorded from the first byte on, so a flash of the wrong one fails too.
+# mode, the browser's brand, navigator.getInstalledRelatedApps, beforeinstallprompt, the app's bn.app mark. Every
+# Install / Open element that becomes visible is recorded from the first byte on, so a flash of the wrong one fails.
 
 APP_WATCH = """window.__seen = []; window.__states = [];
   new MutationObserver((ms) => { for (const m of ms) { const n = m.target;
@@ -418,21 +418,37 @@ APP_WATCH = """window.__seen = []; window.__states = [];
       __seen.push([n.matches('[data-install], #install-note') ? 'install' : 'open', Math.round(performance.now())]); } })
     .observe(document, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
   document.addEventListener('bn:app', (e) => __states.push(e.detail));"""
-STANDALONE = "const mm = window.matchMedia.bind(window); window.matchMedia = (q) => /display-mode: *standalone/.test(q) ? mm('all') : mm(q);"
+# In the app window; window.__leaveApp() turns it into a browser tab (Chrome's "Open in Chrome").
+STANDALONE = """window.__standalone = true; const mm = window.matchMedia.bind(window); const ls = [];
+  window.matchMedia = (q) => (/display-mode: *standalone/.test(q) ? { media: q, get matches() { return window.__standalone; },
+    addEventListener: (t, f) => ls.push(f), removeEventListener() {}, addListener: (f) => ls.push(f), removeListener() {} } : mm(q));
+  window.__leaveApp = () => { window.__standalone = false; ls.forEach((f) => f({ matches: false })); };"""
+
+
+def chrome(version: int = 140, android: bool = False) -> str:
+    """The brand install.js trusts getInstalledRelatedApps from (Google Chrome / Microsoft Edge 140+)."""
+    data = {"brands": [{"brand": "Google Chrome", "version": str(version)}, {"brand": "Chromium", "version": str(version)}],
+            "mobile": android, "platform": "Android" if android else "Linux"}
+    return f"Object.defineProperty(Navigator.prototype, 'userAgentData', {{ configurable: true, get: () => ({json.dumps(data)}) }});"
+
+
+# Installed while window.__installed is not false.
 INSTALLED = ("Object.defineProperty(Navigator.prototype, 'getInstalledRelatedApps', { configurable: true, value: async () => "
-             "[{ platform: 'webapp', url: o + '/manifest.webmanifest', id: o + '/' }] });")
+             "(window.__installed === false ? [] : [{ platform: 'webapp', url: o + '/manifest.webmanifest', id: o + '/' }]) });")
 NOT_INSTALLED = "Object.defineProperty(Navigator.prototype, 'getInstalledRelatedApps', { configurable: true, value: async () => [] });"
-OLD_BROWSER = "delete Navigator.prototype.getInstalledRelatedApps;"   # a browser with no answer for web apps
-MARKED = "localStorage.setItem('bn.app', '1');"                       # the installed app ran here once
+NO_API = "delete Navigator.prototype.getInstalledRelatedApps;"
+MARKED = "localStorage.setItem('bn.app', '1');"   # the installed app ran here once
 BIP_SOON = ("if (location.pathname === '/') setTimeout(() => { const e = new Event('beforeinstallprompt', { cancelable: true }); "
             "e.prompt = () => {}; e.userChoice = Promise.resolve({ outcome: 'dismissed' }); dispatchEvent(e); }, 300);")
 OPEN_LINKS = "[...document.querySelectorAll('[data-open-app]')].filter(a => !a.hidden).map(a => a.getAttribute('href'))"
 NOTE_TEXT = "document.getElementById('app-note-text').textContent"
+APP_STATE = "document.documentElement.dataset.appState"
 OPENED = "Opened in the app. You can close this tab."
+TABS = ("home", "chat", "admin", "files")
 
 
-def _app_page(ctx, name: str, setup: str, device: str = "desktop"):
-    page, rec = ctx.page(name, device=device)
+def _app_page(ctx, name: str, setup: str, device: str = "desktop", tour: bool = False):
+    page, rec = ctx.page(name, device=device, tour=tour)
     page.context.add_init_script(f"(o => {{ if (location.origin === o) {{ {APP_WATCH} {setup} }} }})({json.dumps(origin())});")
     login(page)
     return page, rec
@@ -441,15 +457,28 @@ def _app_page(ctx, name: str, setup: str, device: str = "desktop"):
 def _settled(page, ms: int = 3000) -> dict:
     """What install.js decided once DECIDE_MS (2 s) is well over."""
     page.wait_for_timeout(ms)
-    return page.evaluate("() => ({ state: document.documentElement.dataset.app, seen: __seen, states: __states, "
+    return page.evaluate("() => ({ state: " + APP_STATE + ", seen: __seen, states: __states, "
                          "mark: localStorage.getItem('bn.app'), install: [...document.querySelectorAll('[data-install]')]"
                          ".filter(b => !b.hidden).length, open: " + OPEN_LINKS + ", "
                          "installNote: !document.getElementById('install-note').hidden, appNote: !document.getElementById('app-note').hidden })")
 
 
-def _answer(page, nonce: str):
+def _side(page):
+    """Another window of the same site that runs no portal script (the manifest): for the app's answer and mark."""
+    p = page.context.new_page()
+    p.goto(origin() + "/manifest.webmanifest")
+    return p
+
+
+def _answer(side, nonce: str):
     """What the installed app does after a launch from a link: answer the nonce (BroadcastChannel bn.app)."""
-    page.evaluate("n => { const c = new BroadcastChannel('bn.app'); c.postMessage({ opened: n }); setTimeout(() => c.close(), 500); }", nonce)
+    side.evaluate("n => { const c = new BroadcastChannel('bn.app'); c.postMessage({ opened: n }); setTimeout(() => c.close(), 500); }", nonce)
+
+
+def _no_errors(rec, label: str):
+    errs = [e for e in rec.events if e["t"] == "pageerror"]
+    rec.save()
+    expect(not errs, f"[{label}] page errors {errs}")
 
 
 @check("browser", "pwa-installed-or-not")
@@ -457,27 +486,43 @@ def pwa_app_states(ctx):
     out = []
 
     # 1. Inside the installed app: neither button, ever; it marks the site for the browser's tabs.
-    page, rec = _app_page(ctx, "pwa-standalone", STANDALONE + INSTALLED)
+    page, rec = _app_page(ctx, "pwa-standalone", STANDALONE + chrome() + INSTALLED)
     got = _settled(page)
     expect(got["state"] == "app" and got["seen"] == [] and got["mark"] == "1", f"[in the app] {got}")
-    # A launch from a tab's Open in the app (cold start): /?open=<link> becomes /#<tab> and the nonce is answered.
-    scheme = json.loads(page.evaluate("() => fetch('/manifest.webmanifest').then(r => r.text())"))["protocol_handlers"][0]["protocol"]
-    expect(re.fullmatch(r"web\+bedrocknow[a-z]{8}", scheme), f"scheme {scheme!r} (a throwaway's own, not the default copy's)")
-    other = page.context.new_page()
-    other.goto(origin() + "/#home")
-    other.evaluate("() => { window.__acks = []; const c = new BroadcastChannel('bn.app'); c.onmessage = (e) => __acks.push(e.data.opened); }")
-    link = f"{scheme}://open?tab=chat&n=e2e1"
-    page.goto(origin() + "/?open=" + quote(link, safe=""))
+    scheme = page.evaluate("() => document.querySelector('meta[name=\"bn-app-scheme\"]').content")
+    manifest = json.loads(page.evaluate("() => fetch('/manifest.webmanifest').then(r => r.text())"))
+    expect(scheme == manifest["protocol_handlers"][0]["protocol"] and re.fullmatch(r"web\+bedrocknow[a-z]{8}", scheme),
+           f"scheme {scheme!r} (the manifest's, a throwaway's own)")
+    # A launch from a tab's Open in the app (cold start): /?open=<link> becomes /#<tab> and the nonce is answered once.
+    side = _side(page)
+    side.evaluate("() => { window.__acks = []; const c = new BroadcastChannel('bn.app'); c.onmessage = (e) => __acks.push(e.data.opened); }")
+    page.goto(origin() + "/?open=" + quote(f"{scheme}://open?tab=chat&n=e2e1", safe=""))
     page.locator(".tab[data-tab=chat][aria-current=page]").wait_for(timeout=10000)
     expect(page.url == origin() + "/#chat", f"[cold start] URL {page.url}")
-    other.wait_for_function("() => __acks.includes('e2e1')", timeout=5000)
-    errs = [e for e in rec.events if e["t"] == "pageerror"]
-    rec.save(); other.close()
-    expect(not errs, f"[in the app] page errors {errs}")
-    out.append("in the app: nothing shown, bn.app set, /?open= → #chat + answer")
+    side.wait_for_function("() => __acks.includes('e2e1')", timeout=5000)
+    page.wait_for_timeout(1000)
+    expect(side.evaluate("() => __acks") == ["e2e1"], f"[cold start] answers {side.evaluate('() => __acks')}")
+    # Hostile launch URLs: no error, a real tab, the query gone, no answer.
+    for bad in ("/?open=web+x://open?tab=constructor&n=x", "/?open=javascript:alert(1)", "/?open=%3Cimg%3E",
+                "/?open=" + quote(f"{scheme}://open?tab=chat&n=" + "a" * 4096, safe="")):
+        page.goto(origin() + bad)
+        page.wait_for_selector(".tab[aria-current=page]")
+        page.wait_for_timeout(300)
+        where = page.evaluate("() => [location.search, document.querySelector('.tab[aria-current=page]').dataset.tab]")
+        expect(where[0] == "" and where[1] in TABS, f"[hostile {bad[:40]}] {where}")
+    expect(side.evaluate("() => __acks") == ["e2e1"], f"[hostile] answered {side.evaluate('() => __acks')}")
+    # "Open in Chrome": the app window becomes a tab, which offers to open the app again at once (it was the app a
+    # moment ago: no waiting for the browser's answer or for DECIDE_MS).
+    page.goto(origin() + "/#home")
+    page.wait_for_selector(".tab[aria-current=page]")
+    now = page.evaluate(f"() => {{ window.__leaveApp(); return [{APP_STATE}, {OPEN_LINKS}.length]; }}")
+    expect(now == ["open", 2], f"[app → tab] {now}")
+    side.close()
+    _no_errors(rec, "in the app")
+    out.append("app: nothing, mark, cold start+1 answer, 4 hostile ok, →tab: Open")
 
     # 2. A tab, and the browser lists the app as installed: Open in the app (sidebar + Home note), never Install.
-    page, rec = _app_page(ctx, "pwa-installed-tab", INSTALLED)
+    page, rec = _app_page(ctx, "pwa-installed-tab", chrome() + INSTALLED)
     got = _settled(page)
     expect(got["state"] == "open" and got["install"] == 0 and not got["installNote"] and got["appNote"], f"[installed] {got}")
     expect(got["seen"] and all(k == "open" for k, _ in got["seen"]), f"[installed] Install flashed: {got['seen']}")
@@ -489,14 +534,12 @@ def pwa_app_states(ctx):
     # handler for the scheme, so the click itself goes nowhere: the answer is sent the way the app would.)
     page.click("#app-note [data-open-app]")
     href = page.get_attribute("#app-note [data-open-app]", "href")
-    nonce = href.rsplit("&n=", 1)[1]
     expect(page.evaluate(NOTE_TEXT).startswith("Opening bedrock-now"), f"after click: {page.evaluate(NOTE_TEXT)!r}")
-    helper = page.context.new_page()
-    helper.goto(origin() + "/#home")
-    _answer(helper, "not-this-one")
+    side = _side(page)
+    _answer(side, "not-this-one")
     page.wait_for_timeout(500)
     expect(page.evaluate(NOTE_TEXT).startswith("Opening"), "a foreign nonce counted as the answer")
-    _answer(helper, nonce)
+    _answer(side, href.rsplit("&n=", 1)[1])
     page.wait_for_function(f"() => {NOTE_TEXT} === {json.dumps(OPENED)}", timeout=5000)
     shot(page, "06c-home-opened-in-app")
     # From another tab of the portal the link names that tab; without an answer, the other ways in.
@@ -507,7 +550,7 @@ def pwa_app_states(ctx):
     page.wait_for_function(f"() => {NOTE_TEXT}.startsWith(\"Didn't open?\")", timeout=9000)
     note = page.evaluate(NOTE_TEXT)
     expect("Dock" in note and "./stack open" in note and "Open in app" in note, f"fallback {note!r}")
-    _answer(helper, href.rsplit("&n=", 1)[1])   # a late answer (the user took a while with the browser's questions)
+    _answer(side, href.rsplit("&n=", 1)[1])   # a late answer (the user took a while with the browser's questions)
     page.wait_for_function(f"() => {NOTE_TEXT} === {json.dumps(OPENED)}", timeout=5000)
     # Not now: the note goes (and stays gone after a reload); the sidebar link stays.
     page.click("#app-note-later")
@@ -515,47 +558,84 @@ def pwa_app_states(ctx):
     page.reload()
     page.wait_for_selector(".sidebar [data-open-app]:not([hidden])", timeout=10000)
     expect(page.locator("#app-note").is_hidden(), "the dismissed note came back after a reload")
-    errs = [e for e in rec.events if e["t"] == "pageerror"]
-    rec.save(); helper.close()
-    expect(not errs, f"[installed] page errors {errs}")
-    out.append("installed: Open in the app (2 links, own scheme, #tab), answer/late answer/fallback, Not now")
+    # Uninstalled elsewhere while this tab stays open: when it comes back into view it asks again.
+    page.evaluate("() => { window.__installed = false; document.dispatchEvent(new Event('visibilitychange')); }")
+    page.wait_for_function(f"() => {APP_STATE} === 'none'", timeout=3000)
+    got = _settled(page, 300)
+    expect(got["open"] == [] and got["install"] == 0 and got["mark"] is None, f"[uninstalled while open] {got}")
+    side.close()
+    _no_errors(rec, "installed")
+    out.append("installed: 2 links, answer/late/fallback, Not now, uninstall seen on return")
 
-    # 3. The app's mark is still there but the browser offers to install: it was uninstalled. Install wins, the
-    #    mark goes, Open never shows (a browser with no answer, so only the mark and the event say anything).
-    page, rec = _app_page(ctx, "pwa-uninstalled-tab", OLD_BROWSER + MARKED + BIP_SOON)
+    # 3. Installed from another tab while this one offered Install: the app's mark appears, Open replaces Install.
+    page, rec = _app_page(ctx, "pwa-installed-elsewhere", BIP_SOON)
+    got = _settled(page)
+    expect(got["state"] == "install" and got["install"] == 2, f"[before] {got}")
+    side = _side(page)
+    side.evaluate("() => localStorage.setItem('bn.app', '1')")
+    page.wait_for_function(f"() => {APP_STATE} === 'open'", timeout=3000)
+    got = _settled(page, 300)
+    expect(got["install"] == 0 and not got["installNote"] and len(got["open"]) == 2, f"[installed elsewhere] {got}")
+    side.close()
+    # appinstalled in this tab: nothing for SETTLE_MS (Chrome moves the tab into the app window), then Open.
+    page.reload()
+    page.wait_for_function(f"() => {APP_STATE} === 'install'", timeout=5000)
+    t0 = page.evaluate("() => { __seen.length = 0; dispatchEvent(new Event('appinstalled')); return performance.now(); }")
+    expect(page.evaluate(APP_STATE) == "none", f"[appinstalled] at once: {page.evaluate(APP_STATE)}")
+    page.wait_for_function(f"() => {APP_STATE} === 'open'", timeout=4000)
+    first = min(t for k, t in page.evaluate("() => __seen") if k == "open")
+    expect(first - t0 >= 1400, f"[appinstalled] Open after {first - t0:.0f} ms")
+    _no_errors(rec, "installed elsewhere")
+    out.append(f"other tab installs: Install→Open; appinstalled: Open after {first - t0:.0f} ms")
+
+    # 4. The app's mark is still there but the browser offers to install: it was uninstalled. Install wins, the
+    #    mark goes, Open never shows (a browser that cannot answer, so only the mark and the event say anything).
+    page, rec = _app_page(ctx, "pwa-uninstalled-tab", NO_API + MARKED + BIP_SOON)
     got = _settled(page)
     expect(got["state"] == "install" and got["install"] == 2 and got["installNote"] and not got["open"] and not got["appNote"], f"[uninstalled] {got}")
     expect(all(k == "install" for k, _ in got["seen"]) and got["mark"] is None, f"[uninstalled] seen {got['seen']}, mark {got['mark']!r}")
-    rec.save()
-    out.append("uninstalled (mark + beforeinstallprompt): Install, mark cleared, no Open")
+    _no_errors(rec, "uninstalled")
+    out.append("mark+bip: Install, mark cleared")
 
-    # 4. A browser with no answer, the mark and no install offer: Open in the app, but only after DECIDE_MS (2 s).
-    page, rec = _app_page(ctx, "pwa-marked-old-browser", OLD_BROWSER + MARKED)
-    got = _settled(page)
-    expect(got["state"] == "open" and len(got["open"]) == 2 and got["install"] == 0, f"[marked] {got}")
-    first = min(t for _, t in got["seen"])
-    expect(all(k == "open" for k, _ in got["seen"]) and first >= 1900, f"[marked] shown at {first} ms: {got['seen']}")
-    rec.save()
-    out.append(f"no answer + mark: Open after {first} ms")
+    # 5. Browsers whose answer is not trusted, with the mark and no install offer: Open in the app after DECIDE_MS
+    #    (2 s), and the mark stays: no API (another Chromium), and Chrome 139 (an empty list for every web app).
+    for label, setup in (("no API", NO_API), ("Chrome 139", chrome(139) + NOT_INSTALLED)):
+        page, rec = _app_page(ctx, "pwa-marked-" + label.replace(" ", "-").lower(), setup + MARKED)
+        got = _settled(page)
+        expect(got["state"] == "open" and len(got["open"]) == 2 and got["install"] == 0 and got["mark"] == "1", f"[{label}] {got}")
+        first = min(t for _, t in got["seen"])
+        expect(all(k == "open" for k, _ in got["seen"]) and first >= 1900, f"[{label}] shown at {first} ms: {got['seen']}")
+        _no_errors(rec, label)
+        out.append(f"{label}+mark: Open at {first} ms")
 
-    # 5. Neither installed nor installable (Chrome 140+ says no; a stale mark goes): nothing, ever.
-    page, rec = _app_page(ctx, "pwa-neither", NOT_INSTALLED + MARKED)
+    # 6. Neither installed nor installable (Chrome 140 says no; a stale mark goes): nothing, ever.
+    page, rec = _app_page(ctx, "pwa-neither", chrome() + NOT_INSTALLED + MARKED)
     got = _settled(page)
     expect(got["state"] == "none" and got["seen"] == [] and got["mark"] is None, f"[neither] {got}")
     expect(got["states"] == ["none"], f"[neither] states {got['states']}")
-    rec.save()
-    out.append("neither: nothing shown, stale mark cleared")
+    _no_errors(rec, "neither")
+    out.append("neither: nothing, mark cleared")
 
-    # 6. Android (phone): installed, but there is no link to launch it: the note says where it is, no button.
-    page, rec = _app_page(ctx, "pwa-installed-phone", INSTALLED, device="phone")
+    # 7. The walkthrough's Extras step offers Open in the app, also right after a reload on that step.
+    page, rec = _app_page(ctx, "pwa-walkthrough-extras", chrome() + INSTALLED +
+                          "localStorage.setItem('bn.tour', JSON.stringify({ open: true, cur: 'extras' }));", tour=True)
+    for when in ("first load", "reload"):
+        if when == "reload":
+            page.reload()
+        page.wait_for_selector("#tour [data-k=open-app]", timeout=10000)
+    _no_errors(rec, "walkthrough")
+    out.append("Extras: Open (+reload)")
+
+    # 8. Android (phone): installed, but there is no link to launch it: the note says where it is, no button.
+    page, rec = _app_page(ctx, "pwa-installed-phone", chrome(android=True) + INSTALLED, device="phone")
     page.click(".tab[data-tab=home]")
     page.wait_for_selector("#app-note:not([hidden])", timeout=10000)
     got = _settled(page, 1000)
     note = page.evaluate(NOTE_TEXT)
     expect(got["open"] == [] and got["install"] == 0 and "home screen" in note and "Open in app" in note, f"[phone] {got} {note!r}")
     shot(page, "14b-phone-installed-note")
-    rec.save()
-    out.append("Android: note with where the app is, no link")
+    _no_errors(rec, "phone")
+    out.append("Android: note, no link")
     return "; ".join(out)
 
 

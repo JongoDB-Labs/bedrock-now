@@ -394,6 +394,9 @@ def test_home_gets_the_app_urls_of_its_site(rclient):
     urls = json.loads(m.group(1).replace("&quot;", '"'))
     assert urls == {"chat": f"https://{CHAT}/", "admin": f"https://bn-admin.{TN}/ui/",
                     "files": f"https://bn-files.{TN}/rustfs/console/"}
+    # The remote app's own link scheme, as in its manifest (not the local copy's web+bedrocknow).
+    scheme = rclient.get("/manifest.webmanifest", headers=REMOTE).json()["protocol_handlers"][0]["protocol"]
+    assert scheme != "web+bedrocknow" and f'<meta name="bn-app-scheme" content="{scheme}">' in r.text
     assert f"https://{CHAT}" in r.headers["content-security-policy"]
     assert "frame-src 'self' " in r.headers["content-security-policy"]   # the hand-off redirect inside frames
     r = rclient.get("/api/logins", headers={**REMOTE, "X-Requested-With": "bedrock-now", "Cookie": f"{REMOTE_COOKIE}={tok}"})

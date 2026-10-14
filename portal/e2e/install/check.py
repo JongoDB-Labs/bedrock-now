@@ -8,6 +8,7 @@ http://bedrock-now.localhost:8000, Chromium on a virtual display with a throwawa
      ~/.local/share/applications entry, named after the manifest.
   4. lib/open.sh finds that entry by name, and `./stack open` (cmd_open) opens the app: a standalone window
      in which the Install buttons are hidden.
+     A second portal tab, open in the background meanwhile, switches to "Open in the app".
   5. A browser tab of the same site knows the app is installed (getInstalledRelatedApps lists it, no
      beforeinstallprompt) and shows "Open in the app" instead of Install; the link uses the manifest's own
      scheme, which Chromium registered with the desktop (MimeType=x-scheme-handler/...).
@@ -115,6 +116,7 @@ time.sleep(1)
 subprocess.Popen(["chromium", "--no-first-run", "--test-type", "--window-size=1380,860", "--password-store=basic",
                   "--remote-debugging-port=9222", f"--remote-allow-origins={DEVTOOLS}", "--user-data-dir=/tmp/profile",
                   "about:blank"], stderr=subprocess.DEVNULL)
+first_id = pages()[0]["id"]
 tab = Page(pages()[0])
 tab("Page.enable"); tab("Runtime.enable")
 tab("Page.addScriptToEvaluateOnNewDocument", source="window.__bip = 0; addEventListener('beforeinstallprompt', () => __bip++)")
@@ -131,6 +133,14 @@ r["home: beforeinstallprompt fired"] = tab.js("__bip") >= 1
 r["home: install buttons shown"] = tab.js(VISIBLE_INSTALL)
 r["home: install note shown"] = tab.js("!document.getElementById('install-note').hidden")
 
+# A second tab of the portal, left open in the background while the first one installs the app.
+browser = Page(json.loads(wait_for(f"{DEVTOOLS}/json/version"))["webSocketDebuggerUrl"])
+other_id = browser("Target.createTarget", url=f"{ORIGIN}/#home", background=True)["targetId"]
+time.sleep(4)
+other = Page([t for t in pages() if t["id"] == other_id][0]); other("Runtime.enable")
+r["other tab before install: state"] = other.js("document.documentElement.dataset.appState")
+browser("Target.activateTarget", targetId=first_id)
+
 # A real click (user gesture) on Home's Install app, then the browser's dialog: Cancel has focus, Tab → Install.
 x, y = tab.js("(() => { const b = document.querySelector('#install-note [data-install]').getBoundingClientRect();"
               " return [b.x + b.width / 2, b.y + b.height / 2]; })()")
@@ -139,6 +149,10 @@ for kind in ("mousePressed", "mouseReleased"):
 time.sleep(3)
 subprocess.run(["xdotool", "key", "Tab", "key", "Return"])
 time.sleep(6)
+
+r["other tab after install: state, install buttons, open links"] = [
+    other.js("document.documentElement.dataset.appState"), other.js(VISIBLE_INSTALL), len(other.js(OPEN_LINKS))]
+browser("Target.closeTarget", targetId=other_id)
 
 apps = os.path.expanduser("~/.local/share/applications")
 entries = {f: open(os.path.join(apps, f)).read() for f in os.listdir(apps)} if os.path.isdir(apps) else {}
@@ -161,13 +175,12 @@ if os.path.isdir("/out"):
     subprocess.run(["import", "-window", "root", "/out/installed-app.png"], stderr=subprocess.DEVNULL)
 
 # 5. A browser tab of the same site (a new browser window: the first tab became the app window).
-browser = Page(json.loads(wait_for(f"{DEVTOOLS}/json/version"))["webSocketDebuggerUrl"])
 tab_id = browser("Target.createTarget", url="about:blank", newWindow=True)["targetId"]
 tab = Page([t for t in pages() if t["id"] == tab_id][0])
 tab("Page.enable"); tab("Runtime.enable")
 tab("Page.addScriptToEvaluateOnNewDocument", source=STATES)
 tab("Page.navigate", url=f"{ORIGIN}/#chat")
-wait_js(tab, "document.documentElement.dataset.app === 'open'")
+wait_js(tab, "document.documentElement.dataset.appState === 'open'")
 time.sleep(3)   # beforeinstallprompt would have come by now
 manifest = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/manifest.webmanifest").read())
 scheme = manifest["protocol_handlers"][0]["protocol"]
@@ -228,9 +241,10 @@ if pos:
     keys("Return")   # "Uninstall app?": Uninstall has the focus, "Remove this app's data" stays unticked
     time.sleep(4)
 r["uninstalled: desktop entries"] = sorted(os.listdir(apps)) if os.path.isdir(apps) else []
+r["uninstalled: the open tab, before a reload (info)"] = tab.js("document.documentElement.dataset.appState")
 tab("Page.reload")
-wait_js(tab, "document.documentElement.dataset.app === 'install'")
-r["uninstalled: tab"] = tab.js("navigator.getInstalledRelatedApps().then(a => ({state: document.documentElement.dataset.app, "
+wait_js(tab, "document.documentElement.dataset.appState === 'install'")
+r["uninstalled: tab"] = tab.js("navigator.getInstalledRelatedApps().then(a => ({state: document.documentElement.dataset.appState, "
                                "bip: __bip, flag: localStorage.getItem('bn.app'), related: a.length}))")
 r["uninstalled: install buttons shown"] = tab.js(VISIBLE_INSTALL)
 r["uninstalled: open links shown"] = len(tab.js(OPEN_LINKS))
@@ -249,6 +263,8 @@ checks = {
     "the app window is standalone, offers neither Install nor Open, and marks the site (bn.app)":
         r["app window: display-mode standalone"] is True and r["app window: install buttons shown"] == 0
         and r["app window: open links shown"] == 0 and r["app window: bn.app"] == "1",
+    "a tab left open while another installs the app switches to Open in the app":
+        r["other tab after install: state, install buttons, open links"] == ["open", 0, 2],
     "a tab knows it is installed: getInstalledRelatedApps lists it, no beforeinstallprompt":
         r["tab: related apps"] == [{"id": f"{ORIGIN}/", "platform": "webapp", "url": f"{ORIGIN}/manifest.webmanifest"}]
         and r["tab: beforeinstallprompt fired"] == 0,

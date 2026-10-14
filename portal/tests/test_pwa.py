@@ -116,15 +116,19 @@ def test_app_name_tells_copies_apart(host, port, name):
 
 
 def test_manifest_name_follows_the_portal_address(settings):
-    with make_client(replace(settings, host="bn-dev.localhost", port=8800)) as c:
+    copy = replace(settings, host="bn-dev.localhost", port=8800)
+    with make_client(copy) as c:
         m = c.get("/manifest.webmanifest").json()
+        c.post("/login", data={"password": "correct horse"}, headers={"Origin": "http://bn-dev.localhost:8800"})
+        page = c.get("/").text
     assert m["name"] == "bedrock-now (bn-dev, port 8800)" and m["short_name"] == "bn-dev, port 8800"
     # The app id Chrome computes ("id": "/" on this origin) and this site's manifest URL: what getInstalledRelatedApps
     # matches (desktop: id, Android: url).
     assert m["related_applications"] == [{"platform": "webapp", "url": "http://bn-dev.localhost:8800/manifest.webmanifest",
                                           "id": "http://bn-dev.localhost:8800/"}]
-    assert m["protocol_handlers"] == [{"protocol": webapp.protocol(replace(settings, host="bn-dev.localhost", port=8800)),
-                                       "url": "/?open=%s"}]
+    assert m["protocol_handlers"] == [{"protocol": webapp.protocol(copy), "url": "/?open=%s"}]
+    # Home names the same scheme for install.js.
+    assert f'<meta name="bn-app-scheme" content="{webapp.protocol(copy)}">' in page
 
 
 def test_each_copy_has_a_link_scheme_of_its_own(settings):
@@ -251,11 +255,14 @@ def test_install_and_open_buttons_start_hidden_and_install_js_decides(client):
         if any(k in tag for k in ("data-install", "data-open-app", 'id="install-note"', 'id="app-note"')):
             assert " hidden" in tag, tag
     assert 'id="app-note-later"' in page and 'id="app-note-text"' in page
+    # The link scheme of this site's app, for install.js to read synchronously (the same as the manifest's).
+    assert '<meta name="bn-app-scheme" content="web+bedrocknow">' in page
     js = client.get("/static/install.js").text
     assert "beforeinstallprompt" in js and "preventDefault" in js and "appinstalled" in js
     assert "display-mode: ${m}" in js and "standalone" in js  # hidden inside the installed app
     assert "getInstalledRelatedApps" in js and "bn.app" in js  # installed? the browser, and the app's own mark
-    assert "protocol_handlers" in js and "BroadcastChannel" in js  # Open in the app: the link, and the app's answer
+    assert "bn-app-scheme" in js and "BroadcastChannel" in js  # Open in the app: the link, and the app's answer
+    assert '"storage"' in js and '"visibilitychange"' in js  # a tab left open catches up with installs elsewhere
     assert "launchQueue" in js  # focus-existing: the shortcut's #tab and the link arrive here
     assert "innerHTML" not in js and "eval(" not in js
 

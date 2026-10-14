@@ -319,8 +319,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(login_redirect("/", remote(request)))
         # Where Home opens each app on this site (app host names differ per site, e.g. <name>-chat.<tailnet>.ts.net),
         # as data the page reads synchronously: <meta name="bn-apps" content="{json}">.
+        # The same for this site's installed-app link scheme (install.js: "Open in the app").
         page = (STATIC / "index.html").read_text(encoding="utf-8")
-        meta = f'<meta name="bn-apps" content="{html.escape(json.dumps(settings.app_urls(remote(request))), quote=True)}">'
+        meta = (f'<meta name="bn-apps" content="{html.escape(json.dumps(settings.app_urls(remote(request))), quote=True)}">\n'
+                f'<meta name="bn-app-scheme" content="{html.escape(webapp.protocol(settings, remote(request)), quote=True)}">')
         page = page.replace("</head>", meta + "\n</head>", 1)
         return _security_headers(_no_store(HTMLResponse(page)), settings)
 

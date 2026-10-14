@@ -197,7 +197,7 @@
       body: () => {
         const install = [...document.querySelectorAll("[data-install]")].find((n) => !n.hidden);
         const open = [...document.querySelectorAll("[data-open-app]")].find((n) => !n.hidden);
-        const where = document.documentElement.dataset.app;   // install.js: app, open (installed), install or none
+        const where = document.documentElement.dataset.appState;   // install.js: app, open (installed), install or none
         const app = where === "app" ? "You are using it now." : where === "open" ? $("#app-note-text").textContent : "";
         const how = PHONE.matches ? "iPhone and iPad: Share → Add to Home Screen. Android: Chrome's ⋮ → Install app."
           : "Chrome: ⋮ → Cast, save and share → Install page as app. Edge: ⋯ → Apps → Install this site as an app. Safari on a Mac: File → Add to Dock.";

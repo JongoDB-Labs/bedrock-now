@@ -133,12 +133,16 @@ microphone keeps working), kept by your browser.
   close it. The first time, the browser asks twice: **Open bedrock-now?** (tick *Always allow…*) and the app's
   **Allow app to open web+bedrocknow links?** (tick *Remember this choice*); after that it just opens. If
   nothing opens, Home lists the other ways in (and Chrome's **Open in app** button in the address bar does the
-  same). Chrome and Edge 140 or newer tell the page that the app is installed; older ones learn it once the app
-  has run, since the app and the browser's tabs share the site's storage. Uninstall it and the tab offers
-  **Install app** again. On Android, Home says where the app is (home screen, or **⋮ → Open in app**): there is
+  same). Google Chrome and Microsoft Edge 140 or newer tell the page that the app is installed; other browsers
+  learn it once the app has run, since the app and the browser's tabs share the site's storage. A tab left open
+  catches up when you come back to it. Uninstall it and the tab offers **Install app** again. On Android, Home says where the app is (home screen, or **⋮ → Open in app**): there is
   no link that opens an installed web app there. Inside the app there is neither button. An app installed
   before this version learns its link when the browser next refreshes it from the portal's manifest (it does
   so when the app or a portal tab loads); until then **Open in the app** falls back to the list on Home.
+  Answered **Don't allow** with *Remember this choice*? Chrome then never opens the app from the link: open
+  `chrome://settings/handlers` (Edge: `edge://settings/content/handlers`) and remove bedrock-now from the apps
+  that never handle links (or uninstall and reinstall the app). If the same copy is installed in both Chrome and
+  Edge, the operating system gives the link to one of the two apps.
 - **Several copies:** each portal address is its own app: `bedrock-now` for the default one, `bedrock-now
   (bn-dev)` for a copy with `COMPOSE_PROJECT_NAME=bn-dev`, `bedrock-now (port 8800)` when the portal is not on
   port 80. If you rename the app in the install dialog, `./stack open` will not find it (it opens a tab). Each
