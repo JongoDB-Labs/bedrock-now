@@ -1,0 +1,146 @@
+/* Walkthrough (tour.js): the sidebar button and the panel. Desktops: a section of the sidebar, which widens;
+   tablets: a card next to the icon rail; phones: a sheet above the tab bar, opened from More.
+   Loaded after mobile.css; tokens come from login.css. */
+
+/* The button at the bottom of the sidebar: progress as text and as a thin bar. */
+.tour-btn { margin-top: auto; display: grid; grid-template-columns: 18px max-content minmax(0, 1fr); align-items: center; gap: 6px 8px;
+  padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--ink); font-size: 14px; font-weight: 500;
+  text-align: left; white-space: nowrap; }
+.tour-btn:hover, .tour-btn[aria-expanded="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.tour-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.tour-count { justify-self: end; color: var(--muted); font-size: 13px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.tour-btn-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.tour-btn-bar i, .tour-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+/* The button (or the open panel) takes the free space; Install app and Sign out stay together below it. */
+.tour-btn:not([hidden]) ~ .install-btn, .tour-btn:not([hidden]) ~ .logout { margin-top: -12px; }
+
+/* The panel: the same content everywhere; only where it sits differs (below). */
+.tour { --tour-card: var(--surface); --tour-well: var(--bg); font-size: 14px; line-height: 1.45; color: var(--ink); }
+.tour-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; padding: 0 2px 10px; }
+.tour-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.tour-prog { grid-column: 1; margin: 0; color: var(--muted); font-size: 12.5px; }
+.tour-x { grid-row: 1 / span 2; grid-column: 2; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 8px;
+  background: none; color: var(--muted); font-size: 14px; }
+.tour-x:hover { color: var(--ink); background: var(--tour-card); }
+.tour-bar { grid-column: 1 / -1; height: 4px; margin-top: 8px; border-radius: 2px; background: var(--track); overflow: hidden; }
+/* The list scrolls inside the panel; its last 16 px fade out so a cut-off line reads as "more below". */
+.tour-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 16px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); }
+
+.tour-sec + .tour-sec { margin-top: 4px; }
+.tour-sec h3 { margin: 0; }
+.tour-sec-btn { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 4px; border: 0; border-radius: 6px; background: none;
+  color: var(--ink); font-size: 13px; font-weight: 600; text-align: left; }
+.tour-sec-name { flex: 1; }
+.tour-sec-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.tour-chev { flex: none; width: 7px; height: 7px; margin: 0 2px; border: solid var(--muted); border-width: 0 1.6px 1.6px 0; transform: rotate(-45deg); transition: transform .15s; }
+.tour-sec-btn[aria-expanded="true"] .tour-chev { transform: rotate(45deg) translate(-2px, -1px); }
+
+.tour-steps { list-style: none; margin: 0 0 6px; padding: 0; }
+.tour-step-btn { width: 100%; display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; border: 0; border-radius: 6px; background: none;
+  color: var(--muted); font-size: 13.5px; text-align: left; }
+.tour-step-btn:hover { color: var(--ink); background: var(--tour-card); }
+.tour-mark { flex: none; width: 14px; text-align: center; font-size: 12px; }
+.tour-step.done .tour-mark { color: var(--ok); }
+.tour-step.done .tour-step-btn { color: var(--ink); }
+
+/* The current step: a card in the list, in place. */
+.tour-card { margin: 4px 0 8px; padding: 12px 12px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--tour-card);
+  box-shadow: inset 3px 0 0 var(--accent); overflow-wrap: anywhere; }
+.tour-card h4 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.tour-card h4 .tour-mark { color: var(--accent); }
+.tour-step.done .tour-card h4 .tour-mark { color: var(--ok); }
+.tour-card h4:focus { outline: none; }
+.tour-card h4:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.tour-card p, .tour-list { margin: 0 0 8px; }
+.tour-card .note { margin: 0 0 8px; max-width: none; font-size: 12.5px; }
+.tour-list { padding-left: 18px; }
+.tour-list li + li { margin-top: 4px; }
+.tour-card code { padding: 0 3px; border-radius: 4px; background: var(--tour-well); }
+.tour-card a:not(.action) { color: var(--accent); }
+.tour-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.tour-badge { padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.tour-status { padding: 6px 10px; border-left: 3px solid var(--line); border-radius: 6px; background: var(--tour-well); font-size: 13px; }
+.tour-status.ok { border-left-color: var(--ok); }
+.tour-status.warn { border-left-color: var(--warn); }
+.tour-cmd { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0 8px; }
+.tour-cmd code { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12.5px; line-height: 1.4; }
+.tour-login { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.tour-cred { font-family: var(--mono); font-size: 13px; }
+.tour-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
+.tour .action { font-size: 13.5px; text-decoration: none; display: inline-flex; align-items: center; }
+.tour .action.primary { color: var(--accent-ink); }
+.tour .action:not(.primary), .tour .copy, .tour .quiet { background: var(--tour-well); }
+.tour-done-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tour-state { color: var(--muted); font-size: 13.5px; }
+.tour-state.ok { color: var(--ok); font-weight: 500; }
+.tour-nav { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
+.tour-nav .quiet:disabled { opacity: 0.45; cursor: default; }
+.tour-link { padding: 0; border: 0; background: none; color: var(--accent); font-size: 13.5px; text-decoration: underline; text-underline-offset: 2px; }
+.tour-finished h4 { display: block; }
+.tour-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* "Show spend / services / models": the card lights up for a moment. */
+.tour-flash { animation: tour-flash 1.6s ease-out; }
+@keyframes tour-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+
+/* Toasts ("Copied …") show above the panel. */
+.toast { z-index: 20; }
+
+.sheet-tour { display: none; }
+
+/* ---------- Desktops: a section of the sidebar, which widens; the apps' frames just get narrower ---------- */
+@media (min-width: 1100px) {
+  body.shell { grid-template-rows: minmax(0, 1fr); }   /* the sidebar is the window's height: the panel scrolls inside it */
+  body.shell.tour-open { grid-template-columns: 340px minmax(0, 1fr); }
+  body.shell.tour-anim { transition: grid-template-columns .2s ease-out; }
+  .tour-open .tour-btn { display: none; }
+  .tour { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin-top: -6px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .tour-scroll { flex: 1 1 auto; }
+}
+/* With the walkthrough open, a narrow window has room for one column of Home's cards. */
+@media (min-width: 1100px) and (max-width: 1299.98px) {
+  body.tour-open .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- Tablets: a card next to the icon rail ---------- */
+@media (min-width: 768px) and (max-width: 1099.98px) {
+  .sidebar { position: relative; }
+  .tour-btn { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; min-height: 48px; padding: 10px 0 7px; }
+  .tour-btn svg { width: 22px; height: 22px; }
+  .tour-btn-text, .tour-count { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .tour-btn-bar { width: 34px; }
+  .tour { --tour-card: var(--bg); --tour-well: var(--surface); position: absolute; z-index: 5; left: calc(100% + 12px); bottom: 12px;
+    width: min(360px, calc(100vw - 100px)); max-height: 75%; display: flex; flex-direction: column; padding: 14px 12px 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 14px 40px rgb(0 0 0 / 0.18); }
+  .tour-scroll { flex: 1 1 auto; }
+}
+
+/* ---------- Phones: a sheet above the tab bar (the More sheet's look); opened from More ---------- */
+@media (max-width: 767.98px) {
+  .sidebar { position: relative; }
+  .sidebar > .tour-btn { display: none; }
+  .tour { --tour-card: var(--bg); --tour-well: var(--surface); position: absolute; z-index: 5; left: 0; right: 0; bottom: 100%;
+    max-height: min(75vh, calc(var(--app-h, 100dvh) - 120px)); display: flex; flex-direction: column;
+    padding: 18px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+    background: var(--surface); border-top: 1px solid var(--line); border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgb(0 0 0 / 0.16);
+    transform: translateY(16px); opacity: 0; transition: transform .18s ease-out, opacity .18s; }
+  .tour.in { transform: none; opacity: 1; }
+  .tour-scroll { flex: 1 1 auto; }
+  .tour-head h2 { font-size: 18px; }
+  .sheet-tour { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 100%; min-height: 56px; margin-top: 8px;
+    padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--ink); font-weight: 600; text-align: left; }
+  .sheet-tour span { font-weight: 400; font-size: 13px; color: var(--muted); }
+}
+
+/* Touch screens: every control at least 44 px tall (as in mobile.css). */
+@media (pointer: coarse) {
+  .tour-btn, .tour-sec-btn, .tour-step-btn, .tour-link { min-height: 44px; }
+  .tour-x { width: 44px; height: 44px; }
+  .tour-step-btn { align-items: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.shell.tour-anim, .tour, .tour-chev { transition: none; }
+  .tour-flash { animation: none; outline: 3px solid var(--accent); outline-offset: 2px; }
+}

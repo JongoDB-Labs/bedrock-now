@@ -31,6 +31,19 @@ All notable changes to bedrock-now are documented here. The format follows
 - README › Optional: OpenRouter: how to set up the OpenRouter account (key, privacy settings, *Filter the model
   catalog for API keys*, no OpenRouter logging needed) and what the common errors mean (404 data policy, 429
   free-model limits, 402 credits, 401).
+- **Walkthrough in the portal.** A **Walkthrough** button at the bottom of the sidebar takes someone who has
+  never used the apps through all of bedrock-now, in three sections: *Set up* (the Bedrock models your AWS key
+  can use and how to get more, optional OpenRouter — key, free models, privacy settings, where to watch it —,
+  voice, Claude Code, budgets, extras), *Sign in to each app* (portal and Chat automatic; Admin's and Files' own
+  sign-ins shown with Copy buttons, passwords never displayed) and *Use it together* (Home, a chat and its cost
+  line, voice, documents and knowledge, Claude Code writing to the shared store and Chat answering from it,
+  Admin's keys, usage and logs). Steps show live status from `/api/summary` (polled at most every 30 s, only
+  while a step needs it) and tick off by themselves where the portal can tell; the rest have Mark as done or
+  Skip. It opens by itself on a first visit: on desktops as a section of the sidebar, which widens to 340 px so
+  the app frames get narrower instead of covered; on tablets as a card next to the icon rail; on phones it stays
+  closed (it would cover Chat) and opens from **More** as a sheet above the tab bar, where Admin and Files open
+  in a new tab. Progress is a per-browser convenience in `localStorage` (`bn.tour`). New files
+  `portal/portal/static/tour.js` and `tour.css`; everything is built with DOM nodes (no HTML parsing).
 
 ### Changed
 
@@ -42,6 +55,8 @@ All notable changes to bedrock-now are documented here. The format follows
 - **OpenRouter sees requests from bedrock-now as "bedrock-now".** LiteLLM gets `OR_APP_NAME=bedrock-now` and
   `OR_SITE_URL=https://github.com/JongoDB-Labs/bedrock-now`, which LiteLLM 1.105.0 sends to OpenRouter as
   `X-Title` and `HTTP-Referer` (instead of "liteLLM" and litellm.ai), so OpenRouter's Activity and Logs name the app.
+- The portal serves `/static/*` with the same security headers as its pages (`X-Content-Type-Options: nosniff`,
+  CSP, `X-Frame-Options`).
 
 ## [0.3.0] - 2026-10-13
 

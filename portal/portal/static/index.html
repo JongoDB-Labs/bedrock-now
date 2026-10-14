@@ -18,9 +18,11 @@
 <link rel="stylesheet" href="/static/login.css">
 <link rel="stylesheet" href="/static/app.css">
 <link rel="stylesheet" href="/static/mobile.css">
+<link rel="stylesheet" href="/static/tour.css">
 <script src="/static/app.js" defer></script>
 <script src="/static/mobile.js" defer></script>
 <script src="/static/install.js" defer></script>
+<script src="/static/tour.js" defer></script>
 </head>
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
@@ -40,6 +42,10 @@
     <li class="more-item"><button type="button" class="more-btn" id="more-btn" aria-haspopup="dialog" aria-controls="more-sheet" aria-expanded="false">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg>More</button></li>
   </ul>
+  <button type="button" class="tour-btn" id="tour-btn" aria-controls="tour" aria-expanded="false" hidden>
+    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m12.8 7.2-1.7 3.9-3.9 1.7 1.7-3.9z"/></svg><span class="tour-btn-text">Walkthrough</span> <span id="tour-count" class="tour-count"></span>
+    <span class="tour-btn-bar" aria-hidden="true"><i></i></span></button>
+  <aside id="tour" class="tour" aria-labelledby="tour-title" hidden></aside>
   <button type="button" class="install-btn" data-install title="Install bedrock-now as an app" hidden>
     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m-4-4 4 4 4-4M4 14v2h12v-2"/></svg>Install app</button>
   <form method="post" action="/logout" class="logout"><button type="submit">Sign out</button></form>
@@ -53,6 +59,7 @@
       <li><a class="sheet-link" data-app="admin" target="_blank" rel="noopener">Admin <span>LiteLLM: keys, budgets, logs</span></a></li>
       <li><a class="sheet-link" data-app="files" target="_blank" rel="noopener">Files <span>RustFS: stored uploads</span></a></li>
     </ul>
+    <button type="button" class="sheet-tour" id="more-tour" hidden>Walkthrough <span id="more-tour-note">Set up, sign in, try each app</span></button>
     <form method="post" action="/logout" class="sheet-logout"><button type="submit">Sign out</button></form>
     <button type="button" class="sheet-close" id="more-close">Close</button>
   </div>

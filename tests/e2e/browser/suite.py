@@ -4,6 +4,7 @@ network/console logs (/out/net, redacted) and tracebacks (/out/tracebacks, redac
 
 from __future__ import annotations
 
+import json
 import sys
 
 from playwright.sync_api import sync_playwright
@@ -12,7 +13,7 @@ import checks_api  # noqa: F401 — registers checks
 import checks_browser  # noqa: F401
 import checks_http  # noqa: F401
 import checks_voice  # noqa: F401
-from common import CHECKS, HOST, RESULTS, TARGET_IP, portal_login, run_all
+from common import CHECKS, HOST, RESULTS, TARGET_IP, origin, portal_login, run_all
 from checks_browser import Recorder
 
 DEVICES = {
@@ -52,8 +53,10 @@ class Ctx:
     def enabled_models(self) -> list[str]:
         return [m["name"] for m in self.enabled_rows()]
 
-    def page(self, name: str, device: str = "desktop"):
-        """A new browser context (no cookies) and page with a Recorder attached."""
+    def page(self, name: str, device: str = "desktop", tour: bool = False):
+        """A new browser context (no cookies) and page with a Recorder attached. The portal's walkthrough opens by
+        itself on a first visit (desktop, tablet) and narrows the apps' frames: closed in every context but the
+        walkthrough checks' own (tour=True), which see a first visit."""
         for c in self._contexts:
             try:
                 c.close()
@@ -62,6 +65,10 @@ class Ctx:
         self._contexts = []
         c = self.browser.new_context(locale="en-US", timezone_id="UTC", accept_downloads=True, **DEVICES[device])
         self._contexts.append(c)
+        if not tour:
+            c.add_init_script("(o => { try { if (location.origin === o && !localStorage.getItem('bn.tour')) "
+                              "localStorage.setItem('bn.tour', JSON.stringify({open: false})); } catch (e) {} })"
+                              f"({json.dumps(origin())});")
         rec = Recorder(name)
         p = rec.attach(c.new_page())
         p.set_default_timeout(30000)

@@ -46,6 +46,17 @@ def _security_headers(resp: Response, s: Settings) -> Response:
     return resp
 
 
+class _Static(StaticFiles):
+    """/static/*: with the pages' security headers (nosniff above all: a script or style is used only as what it is)."""
+
+    def __init__(self, settings: Settings, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.settings = settings
+
+    async def get_response(self, path: str, scope) -> Response:
+        return _security_headers(await super().get_response(path, scope), self.settings)
+
+
 def _no_store(resp: Response) -> Response:
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -481,7 +492,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/sw.js", service_worker),
             Route("/icons/app-{rest}.png", app_icon),  # before the catalog logos: app-* names are ours
             Route("/icons/{path:path}", icon),
-            Mount("/static", StaticFiles(directory=STATIC), name="static"),
+            Mount("/static", _Static(settings, directory=STATIC), name="static"),
         ],
         lifespan=lifespan,
     )

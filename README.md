@@ -87,6 +87,24 @@ password, edit `PORTAL_PASSWORD` in `.env` and run `./stack setup`. Setup prints
 in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
 `http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
 
+### Walkthrough
+
+New to the apps? **Walkthrough** at the bottom of the sidebar takes you through all of bedrock-now in about
+20 minutes (a few cents of usage). It opens by itself on your first visit; on a desktop it widens the sidebar
+instead of covering an app, on a tablet it is a card next to the icons, and on a phone it is under **More**.
+
+1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models, voice,
+   Claude Code, each app's budget, and extras (the desktop app, one-click updates, use from your phone). Each
+   step shows its live status from Home and the commands to run, with Copy buttons.
+2. **Sign in to each app:** the portal and Chat sign you in; Admin and Files have their own sign-in, which the
+   step shows with Copy buttons for the user name and password.
+3. **Use it together:** Home, a chat with its cost line, voice, your documents, Claude Code writing to the shared
+   store and Chat answering from that file, and where the money went in Admin.
+
+Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat opened, a
+key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
+closing the walkthrough leaves the button with your progress, and **Start over** at the end resets it.
+
 ### Desktop app
 
 Install the portal as an app and it gets its own window, its own icon in the Dock (macOS) or taskbar, a place

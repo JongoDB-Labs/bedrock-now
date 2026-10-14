@@ -13,7 +13,7 @@ from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, need, origin
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
-CRED_MASK = [".cred"]  # Home shows the RustFS access key / LiteLLM user: masked in every screenshot
+CRED_MASK = [".cred", ".tour-cred"]  # Home and the walkthrough show the RustFS access key / LiteLLM user: masked in every screenshot
 
 
 # --- per-page network / console recorder ---
@@ -750,6 +750,206 @@ def tablet(ctx):
     return "icon rail with Home/Chat/Admin/Files, no More; Files opens in the frame"
 
 
+# --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
+
+TOUR_STEPS = 19
+# What the app frames log by themselves while they load (before their own sign-in): not the walkthrough's doing.
+FRAME_NOISE = [r"No token found in localStorage", r"console.error Failed to .*Failed to fetch",
+               r"401 GET .*/rustfs/admin/v3/.*", r"console.error Failed to load resource.*401"]
+
+
+def _cur(page) -> str:
+    return page.evaluate("() => { const c = document.querySelector('#tour .tour-step.cur'); return c ? c.dataset.step : '' }")
+
+
+def _to_step(page, step: str):
+    page.wait_for_function("s => { const c = document.querySelector('#tour .tour-step.cur'); return c && c.dataset.step === s }",
+                           arg=step, timeout=10000)
+
+
+def _settled_width(page, sel: str, timeout=5) -> dict:
+    """The bounding box of SEL once its width stopped changing (the sidebar animates for 0.2 s)."""
+    last, t0 = None, time.time()
+    while time.time() - t0 < timeout:
+        box = page.locator(sel).bounding_box()
+        if last and box and abs(box["width"] - last["width"]) < 0.5:
+            return box
+        last = box
+        page.wait_for_timeout(150)
+    return last
+
+
+def _clipboard_after(page, click_sel: str) -> str:
+    page.evaluate("navigator.clipboard.writeText('')")
+    page.click(click_sel)
+    clip, t0 = "", time.time()
+    while time.time() - t0 < 5 and not clip:
+        clip = page.evaluate("navigator.clipboard.readText()")
+        if not clip:
+            page.wait_for_timeout(100)
+    return clip
+
+
+@check("browser", "walkthrough")
+def walkthrough(ctx):
+    page, rec = ctx.page("walkthrough", tour=True)   # a first visit: no walkthrough state yet
+    login(page)
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur", timeout=15000)
+    expect(_cur(page) == "welcome", f"opened on {_cur(page)!r}, not welcome")
+    expect(page.locator("#tour-btn").is_hidden(), "the sidebar button shows while the walkthrough is open")
+    # A section of the sidebar: the sidebar widens, the stage (Home, the app frames) starts where it ends.
+    side = _settled_width(page, ".sidebar")
+    stage = page.locator(".stage").bounding_box()
+    panel = page.locator("#tour").bounding_box()
+    open_w = side["width"]
+    expect(open_w >= 330, f"sidebar {open_w} px wide with the walkthrough open")
+    expect(stage["x"] >= side["x"] + side["width"] - 1, f"stage at x={stage['x']}, sidebar ends at {side['x'] + side['width']}")
+    expect(panel["x"] + panel["width"] <= stage["x"] + 1 and panel["height"] > 300, f"panel {panel} vs stage x={stage['x']}")
+    shot(page, "w01-walkthrough-desktop")
+    steps = page.eval_on_selector_all("#tour .tour-step", "els => els.map(e => e.dataset.step)")
+    expect(len(steps) == TOUR_STEPS, f"{len(steps)} steps listed")
+
+    # Set up: Next walks through; the AWS step counts the enabled chat models from /api/summary and is done by itself.
+    page.click("#tour [data-k=next]")
+    _to_step(page, "aws")
+    page.locator("#tour .tour-step.cur .tour-status.ok", has_text="chat model").wait_for(timeout=40000)
+    aws = page.inner_text("#tour .tour-step.cur .tour-status")
+    expect(page.locator("#tour .tour-step.cur.done").count() == 1, "the AWS step is not marked done")
+    for want in ("openrouter", "voice", "claude-setup", "budgets"):
+        page.click("#tour [data-k=next]")
+        _to_step(page, want)
+    page.locator("#tour .tour-step.cur li", has_text="a month").first.wait_for(timeout=40000)   # each key's budget
+    shot(page, "w02-walkthrough-budgets")
+    for want in ("extras", "signin-portal", "signin-chat"):
+        page.click("#tour [data-k=next]")
+        _to_step(page, want)
+
+    # Chat: Open Chat shows the frame (beside the walkthrough, not under it) and the step is done by itself.
+    page.click("#tour [data-k=open-chat]")
+    page.wait_for_selector("iframe[data-app=chat]:not([hidden])")
+    page.locator("#tour .tour-step.cur.done").wait_for(timeout=5000)
+    frame = page.locator("iframe[data-app=chat]").bounding_box()
+    side = _settled_width(page, ".sidebar")
+    expect(frame["x"] >= side["x"] + side["width"] - 1, f"chat frame at x={frame['x']} under the sidebar ({side})")
+    shot(page, "w03-walkthrough-chat")
+
+    # Admin and Files: the user name / access key as text, user and password through Copy (never in the page).
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
+    page.click("#tour [data-k=next]")
+    _to_step(page, "signin-admin")
+    page.locator("#tour .tour-cred", has_text=ENV["LITELLM_UI_USER"]).wait_for(timeout=10000)
+    expect(_clipboard_after(page, "#tour [data-k=copy-admin-user]") == ENV["LITELLM_UI_USER"], "Copy username")
+    expect(_clipboard_after(page, "#tour [data-k=copy-admin-pass]") == ENV["LITELLM_UI_PASSWORD"], "Copy password")
+    page.click("#tour [data-k=open-admin]")
+    need("litellm")
+    fl = page.frame_locator("iframe[data-app=admin]")
+    fl.locator("input[name=username]").wait_for(timeout=45000)
+    # The walkthrough names LiteLLM's form as it is: Username, Password, Login.
+    labels = " ".join(fl.locator("label").all_inner_texts())
+    submit = fl.locator("button[type=submit]").first.inner_text().strip()
+    expect("Username" in labels and "Password" in labels and re.fullmatch(r"(?i)log ?in", submit),
+           f"LiteLLM's sign-in form: labels {labels!r}, button {submit!r}")
+    shot(page, "w04-walkthrough-admin")
+    page.click("#tour [data-k=mark]")   # Mark as done moves on
+    _to_step(page, "signin-files")
+    page.locator("#tour .tour-cred", has_text=ENV["RUSTFS_ACCESS_KEY"]).wait_for(timeout=10000)
+    expect(_clipboard_after(page, "#tour [data-k=copy-files-user]") == ENV["RUSTFS_ACCESS_KEY"], "Copy access key")
+    expect(_clipboard_after(page, "#tour [data-k=copy-files-pass]") == ENV["RUSTFS_SECRET_KEY"], "Copy secret key")
+    page.evaluate("navigator.clipboard.writeText('')")
+    html = page.content()
+    expect(ENV["RUSTFS_SECRET_KEY"] not in html and ENV["LITELLM_UI_PASSWORD"] not in html, "a password is in the page")
+    page.click("#tour [data-k=open-files]")
+    need("rustfs")
+    ff = page.frame_locator("iframe[data-app=files]")
+    ff.locator("input[placeholder='Please enter account']").wait_for(timeout=45000)
+    expect(ff.get_by_role("button", name="Login", exact=True).count() == 1, "RustFS has no Login button")
+    labels = ff.locator("label").all_inner_texts()
+    expect("Account" in labels and "Key" in labels, f"RustFS's sign-in labels {labels}")
+    page.emulate_media(color_scheme="dark")
+    shot(page, "w05-walkthrough-files-dark")
+    page.emulate_media(color_scheme="light")
+
+    # Reload: still open, on the same step, with the same progress.
+    done = page.inner_text("#tour .tour-prog")
+    page.reload()
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    expect(_cur(page) == "signin-files", f"after a reload on {_cur(page)!r}")
+    expect(page.inner_text("#tour .tour-prog") == done, f"progress {page.inner_text('#tour .tour-prog')!r}, was {done!r}")
+
+    # Close: back to the button with the progress; the sidebar narrows again; it stays closed across a reload.
+    page.click("#tour .tour-x")
+    page.wait_for_selector("#tour", state="hidden")
+    label = " ".join(page.inner_text("#tour-btn").split())
+    expect(re.search(rf"Walkthrough\s*·\s*\d+/{TOUR_STEPS}", label), f"button reads {label!r}")
+    side = _settled_width(page, ".sidebar")
+    expect(side["width"] <= 210, f"sidebar still {side['width']} px wide")
+    shot(page, "w06-walkthrough-closed")
+    page.reload()
+    page.wait_for_selector("#tour-btn:not([hidden])")
+    expect(page.locator("#tour").is_hidden(), "the walkthrough reopened by itself after being closed")
+    page.click("#tour-btn")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    expect(_cur(page) == "signin-files", f"reopened on {_cur(page)!r}")
+    probs = rec.problems(allow=FRAME_NOISE)
+    rec.save()
+    expect(not probs, f"errors: {probs[:6]}")
+    return (f"opens on a first visit as a section of the {open_w:.0f} px sidebar (closed: {side['width']:.0f} px), beside the frames; {aws.strip()!r}; "
+            f"Next through Set up; Open Chat → done; Admin/Files sign-ins shown and copied (LiteLLM: Username/Password/{submit}); "
+            f"reload keeps the step; closed → {label!r}, stays closed")
+
+
+@check("browser", "walkthrough-tablet")
+def walkthrough_tablet(ctx):
+    page, rec = ctx.page("walkthrough-tablet", device="tablet", tour=True)
+    login(page)
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur", timeout=15000)
+    rail = page.locator(".sidebar").bounding_box()
+    card = page.locator("#tour").bounding_box()
+    expect(rail["width"] < 120, f"not a rail: {rail}")
+    expect(card["x"] >= rail["x"] + rail["width"] and card["width"] <= 361, f"card {card} vs rail {rail}")
+    expect(card["y"] + card["height"] <= 1180 - 8 and card["height"] <= 0.76 * 1180, f"card {card}")
+    expect(page.locator("#tour-btn").is_visible(), "no Walkthrough button in the rail")
+    shot(page, "w07-walkthrough-tablet")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#tour", state="hidden")
+    expect(page.evaluate("document.activeElement.id") == "tour-btn", "focus did not return to the button")
+    rec.save()
+    return f"a {card['width']:.0f}×{card['height']:.0f} card next to the {rail['width']:.0f} px rail; Escape closes it"
+
+
+@check("browser", "walkthrough-phone")
+def walkthrough_phone(ctx):
+    page, rec = ctx.page("walkthrough-phone", device="phone", tour=True)
+    login(page)
+    page.wait_for_selector("iframe[data-app=chat]", timeout=20000)   # phones start on Chat
+    page.wait_for_selector("#tour-btn:not([hidden])", state="attached")
+    expect(page.locator("#tour").is_hidden(), "the walkthrough opened by itself on a phone (it would cover Chat)")
+    page.click("#more-btn")
+    page.wait_for_selector("#more-sheet:not([hidden])")
+    expect(page.locator("#more-tour").is_visible(), "no Walkthrough in More")
+    page.click("#more-tour")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    expect(page.locator("#more-sheet").is_hidden(), "More stayed open")
+    page.wait_for_timeout(300)   # the sheet slides in
+    bar = page.locator(".sidebar").bounding_box()
+    sheet = page.locator("#tour").bounding_box()
+    expect(abs(sheet["y"] + sheet["height"] - bar["y"]) <= 2 and sheet["width"] >= 380, f"sheet {sheet} vs tab bar {bar}")
+    shot(page, "w08-walkthrough-phone")
+    page.click("#tour [data-k=sec-1]")   # open "Sign in to each app", jump to Admin
+    page.click("#tour [data-k=go-signin-admin]")
+    _to_step(page, "signin-admin")
+    a = page.locator("#tour a[data-k=open-admin]")
+    expect(a.count() == 1, "Open Admin is not a link on a phone")
+    href, target = a.get_attribute("href"), a.get_attribute("target")
+    expect(href == origin("admin") + "/ui/" and target == "_blank", f"Open Admin → {href} ({target})")
+    page.locator("#tour .tour-cred", has_text=ENV["LITELLM_UI_USER"]).wait_for(timeout=10000)
+    shot(page, "w09-walkthrough-phone-admin")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#tour", state="hidden")
+    rec.save()
+    return "closed at first; More → Walkthrough opens a sheet above the tab bar; Open Admin is a new-tab link; Escape closes"
+
+
 # --- sign out (last: it revokes every session) ---
 
 @check("final", "sign-out-all-hosts")
@@ -770,3 +970,4 @@ def sign_out(ctx):
     rec.save()
     ctx.reset_session()
     return "Sign out → login; portal, chat, admin and files all send the browser back to the login"
+
