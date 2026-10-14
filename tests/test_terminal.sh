@@ -329,7 +329,14 @@ test_ttyd_checks_the_origin_and_needs_caddys_header() {
   assert_contains "$f" "--auth-header X-Portal-User"
   assert_contains "$f" "--writable"
   assert_contains "$f" "--index /usr/local/share/bedrock-now/ttyd.html"
-  assert_contains "$(cat "$STACK_DIR/terminal/Dockerfile")" 'viewport\" content=\"width=device-width'
+  assert_contains "$(cat "$STACK_DIR/terminal/ttyd-page.py")" '<meta name="viewport" content="width=device-width'
+  # the page rewrite: a viewport and our icon in, ttyd's icon out
+  printf '<html><head><meta charset="UTF-8"><link rel="icon" type="image/png" href="data:image/png;base64,AAA"></head></html>' > "$TMP/in.html"
+  python3 "$STACK_DIR/terminal/ttyd-page.py" "$TMP/in.html" "$TMP/out.html" || return 1
+  out="$(cat "$TMP/out.html")"
+  assert_contains "$out" '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1'
+  assert_contains "$out" '<link rel="icon" href="data:image/svg+xml,'
+  assert_not_contains "$out" "image/png"
   assert_not_contains "$f" "--url-arg"
   assert_not_contains "$f" " -a "
   assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" "tmux new-session -A -s claude"

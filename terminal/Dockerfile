@@ -26,18 +26,13 @@ RUN set -eu; \
     echo "$sum  /tmp/ttyd" | sha256sum -c -; \
     install -m 755 /tmp/ttyd /usr/local/bin/ttyd; rm /tmp/ttyd; ttyd --version
 
-# ttyd's own page, served with -I: the same page plus a viewport for phones (without one they lay it out 980 px wide;
-# the on-screen keyboard then resizes it instead of covering the prompt) and a bedrock-now icon instead of ttyd's.
+# ttyd's own page, served with --index: the same page plus a viewport for phones and a bedrock-now icon (ttyd-page.py).
+COPY ttyd-page.py /tmp/ttyd-page.py
 RUN set -eu; ttyd -p 7682 -i lo true >/dev/null 2>&1 & pid=$!; \
     for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -o /tmp/ttyd.html http://127.0.0.1:7682/ && break; sleep 0.5; done; \
     kill "$pid"; mkdir -p /usr/local/share/bedrock-now; \
-    python3 -c 'import re, sys; p = open(sys.argv[1], encoding="utf-8").read(); \
-icon = "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 20 20%27%3E%3Crect width=%2720%27 height=%2720%27 rx=%274%27 fill=%27%23111820%27/%3E%3Cpath d=%27M5 7l3 3-3 3M10 13h5%27 fill=%27none%27 stroke=%27%2373b6cd%27 stroke-width=%271.8%27 stroke-linecap=%27round%27/%3E%3C/svg%3E"; \
-meta = "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content\"><meta name=\"theme-color\" content=\"#111820\">"; \
-assert "name=\"viewport\"" not in p; p, n = re.subn(r"<meta charset=\"UTF-8\">", lambda m: m.group(0) + meta, p, count=1); assert n == 1; \
-p, n = re.subn(r"<link rel=\"icon\"[^>]*>", lambda m: "<link rel=\"icon\" href=\"" + icon + "\">", p, count=1); assert n == 1; \
-open(sys.argv[2], "w", encoding="utf-8").write(p)' /tmp/ttyd.html /usr/local/share/bedrock-now/ttyd.html; \
-    rm /tmp/ttyd.html; chmod 644 /usr/local/share/bedrock-now/ttyd.html
+    python3 /tmp/ttyd-page.py /tmp/ttyd.html /usr/local/share/bedrock-now/ttyd.html; \
+    rm /tmp/ttyd.html /tmp/ttyd-page.py; chmod 644 /usr/local/share/bedrock-now/ttyd.html
 
 # Claude Code: npm ci refuses any tarball whose checksum differs from the lockfile (the platform's native binary
 # included). No auto-update in the container (read-only); ./stack update rebuilds with the next pinned version.

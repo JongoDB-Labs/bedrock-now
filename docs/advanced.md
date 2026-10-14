@@ -253,5 +253,12 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   those leftovers first (only when they are the suite's own). `--only cli,mutating` (any of `cli`, `browser`,
   `voice`, `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws,
   update and rollback.
+- **The browser terminal:** `--terminal` (or `E2E_TERMINAL=1`) also runs `./stack terminal enable` in the
+  throwaway, with a workspace folder of its own next to the checkout (`tests/e2e/work/<project>-workspace`, removed
+  at teardown): its isolation probe from inside the container, `./stack test`'s terminal checks, and the browser
+  suite's terminal checks (locked → unlock → xterm + tmux, a shell window, the session outliving the browser, the
+  Origin rules at the terminal host, the phone's full-screen path, Sign out). With the `claude` part it also runs
+  one `claude-bedrock -p` inside the terminal (~$0.001-0.02); the Claude Code key's budget is then $0.10 and the
+  run's limit $0.16.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.

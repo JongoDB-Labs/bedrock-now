@@ -18,10 +18,12 @@ fi
 # ttyd: -W lets keystrokes through; -O refuses a WebSocket whose Origin is not this host (another website cannot
 # drive the terminal with your cookies); -H refuses every request without X-Portal-User, which only Caddy's check
 # adds (caddy/Caddyfile terminal_auth: the portal session, a fresh unlock, the Origin); URL arguments stay off.
-# --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at any pixel ratio.
+# --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at any pixel ratio;
+# with tmux's mouse on, Shift-drag (Option-drag on a Mac) still selects text for the clipboard.
 exec env -u SHARED_MCP_TOKEN ttyd --port 7681 --writable --check-origin --auth-header X-Portal-User --ping-interval 20 \
   --index /usr/local/share/bedrock-now/ttyd.html \
-  -t 'titleFixed=Terminal · bedrock-now' -t fontSize=14 -t disableLeaveAlert=true -t disableResizeOverlay=true -t rendererType=dom \
+  -t 'titleFixed=Terminal · bedrock-now' -t fontSize=14 -t disableLeaveAlert=true -t disableResizeOverlay=true \
+  -t rendererType=dom -t macOptionClickForcesSelection=true \
   -t 'fontFamily=ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace' \
   -t 'theme={"background":"#111820","foreground":"#e4e9ee","cursor":"#73b6cd","cursorAccent":"#111820","selectionBackground":"#2c4f5d"}' \
   bn-session
