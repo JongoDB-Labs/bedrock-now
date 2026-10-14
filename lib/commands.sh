@@ -43,8 +43,9 @@ Usage: ./stack <command> [--yes]
   serve        Keep the stack up and this Mac awake until Ctrl-C (caffeinate; prints the URLs)
                --background holds it without a terminal, --stop ends that
   ssh-info     How to use claude-bedrock from your phone over SSH (Tailscale name, apps, tmux)
-  openrouter   Optional OpenRouter models: status | set | remove | refresh | list
+  openrouter   Optional OpenRouter models: status | set | apply | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
+               apply uses the key pasted after OPENROUTER_API_KEY= in .env; set asks for one
   stt          Speech-to-text for the microphone and voice calls: Bedrock (Mistral Voxtral, no key;
                on by default when your AWS key can use it) or OpenAI/Groq (outside Bedrock):
                status | set bedrock [small|mini] | set openai|groq [model] | remove   (see docs/voice.md)

@@ -325,11 +325,41 @@ picker. To add a model, see [docs/advanced.md](docs/advanced.md#adding-a-model).
 add them next to your Bedrock models as `or/<id>`; it is **off unless you give it a key**.
 
 ```bash
-./stack openrouter set                 # add a key (checked with OpenRouter first; stored in .env)
+# paste your key after OPENROUTER_API_KEY= in .env, then:
+./stack openrouter apply               # checks the key with OpenRouter, then turns the models on
+./stack openrouter set                 # or: asks for the key (hidden) and stores it in .env
 ./stack openrouter models free         # or: paid | all | a comma list of ids
 ./stack openrouter status | list | refresh
 ./stack openrouter remove              # back to Bedrock only
 ```
+
+An account without credits can only use free models, so `apply`, `set` and setup then offer just those
+(`OPENROUTER_MODELS=free`) unless you chose a set yourself; once you have bought credits,
+`./stack openrouter models all`.
+
+**Set up your OpenRouter account** (once, on openrouter.ai):
+
+1. **Create a key** at [Settings › API Keys](https://openrouter.ai/settings/keys). Name it `bedrock-now`; a
+   credit limit is optional (it caps what this key can spend).
+2. **Paste it** into `.env` after `OPENROUTER_API_KEY=` and run `./stack openrouter apply` (or run
+   `./stack openrouter set`).
+3. **Privacy** ([Settings › Privacy](https://openrouter.ai/settings/privacy)): most free models need *Allow
+   free endpoints that train on request data*. That is a trade-off: those providers may keep your prompts and
+   train on them. Without it, free models answer 404 (below). Leave the option to publish your prompts off.
+4. **Filter the model catalog for API keys** (recommended): bedrock-now asks for the model list with your key,
+   so with this on, Chat lists only the models your key can actually use under the settings above.
+5. **Observability:** nothing to turn on. Leave *Input & Output Logging* off: Admin's logs already record every
+   request (model, key, tokens, cost), and OpenRouter's logging would store your prompts at OpenRouter.
+   OpenRouter's Activity page lists the requests under the app name `bedrock-now`.
+
+**When an OpenRouter model fails** (the error shows in Chat):
+
+| Error | Why | Fix |
+|---|---|---|
+| 404 *No endpoints found matching your data policy* | your privacy settings rule out every provider of that model (common for free models) | allow free endpoints that train on request data at [Settings › Privacy](https://openrouter.ai/settings/privacy), or pick another model |
+| 429 *rate limited* | free models allow 20 requests a minute and 50 a day (1000 a day once you have bought at least $10 of credits); a popular free model can also be busy at its provider | wait, try another model, or buy credits |
+| 402 *payment required* | paid models need credits (a negative balance blocks free models too) | buy credits at [Settings › Credits](https://openrouter.ai/settings/credits), or `./stack openrouter models free` |
+| 401 | the key was revoked or mistyped | a new key: `./stack openrouter set` |
 
 In Chat they show their vendor's logo (Claude, GPT, Gemini, Llama, Qwen, DeepSeek, … or the OpenRouter logo
 for vendors without one). Their prices go into LiteLLM, so spend, budgets, `./stack costs` and the cost line in Chat include them.
@@ -424,7 +454,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack rotate-aws [--use-keys \| --use-instance-role]` | Replace the AWS key (verified first), then test; the flags switch between an EC2 IAM role and a key | ~$0.0001 |
 | `./stack serve [--background \| --stop]` | Start the stack and keep the Mac awake until Ctrl-C (prints the URLs) | none |
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
-| `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `remove`, `refresh`, `list`, `models` | none |
+| `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack uninstall` | Remove containers and ALL data volumes | none |

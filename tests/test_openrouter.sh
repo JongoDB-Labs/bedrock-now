@@ -15,18 +15,23 @@ _with_cache() {
   { printf '# fetched_at: 2026-10-12T00:00:00Z\n'; _rows; } > "$TMP/litellm/openrouter-models.tsv"
 }
 
-# curl stub for the public model list: logs args, writes $FIXJ (or nothing with CURL_FAIL=1) to -o.
+# curl stub for the model list: logs args, writes $FIXJ (or nothing with CURL_FAIL=1) to -o. A keyed request
+# (curl_auth's `curl -K -`) gets its stdin config logged to $TMP/stdin and answers KEYED_CODE (default 200);
+# -w '%{http_code}' prints the code.
 _stub_curl() {
   curl() {
-    local a prev='' out=''
-    for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+    local a prev='' out='' w='' keyed='' code=200
+    for a in "$@"; do [ "$prev" = -o ] && out="$a"; [ "$prev" = -w ] && w=1; [ "$prev$a" = "-K-" ] && keyed=1; prev="$a"; done
     echo "curl $*" >> "$TMP/calls"
-    [ -z "${CURL_FAIL:-}" ] || return 22
-    cp "${CURL_BODY:-$FIXJ}" "$out"
+    [ -z "$keyed" ] || { cat >> "$TMP/stdin"; code="${KEYED_CODE:-200}"; }
+    if [ -n "${CURL_FAIL:-}" ]; then [ -z "$w" ] || printf 000; return 22; fi
+    if [ "$code" = 200 ]; then cp "${CURL_BODY:-$FIXJ}" "$out"; else printf '{"error":{"code":%s}}' "$code" > "$out"; fi
+    [ -z "$w" ] || printf '%s' "$code"
   }
 }
 
-# curl_auth stub: logs "TOKEN URL"; answers per URL: KEY_CODE/KEY_BODY for /key, CRED_CODE/CRED_BODY for /credits.
+# curl_auth stub: logs "TOKEN URL"; answers per URL: KEY_CODE/KEY_BODY for /key, CRED_CODE/CRED_BODY for /credits,
+# MODELS_CODE and CURL_BODY (default the fixture) for /models.
 _stub_curl_auth() {
   curl_auth() {
     local tok="$1" a prev='' out='' url=''; shift
@@ -34,10 +39,16 @@ _stub_curl_auth() {
     echo "$tok $url $*" >> "$TMP/calls"
     case "$url" in
       */credits) [ -z "$out" ] || printf '%s' "${CRED_BODY:-}" > "$out"; printf '%s' "${CRED_CODE:-403}" ;;
+      */models) [ -z "$out" ] || cp "${CURL_BODY:-$FIXJ}" "$out"; printf '%s' "${MODELS_CODE:-200}" ;;
       *) [ -z "$out" ] || printf '%s' "${KEY_BODY:-}" > "$out"; printf '%s' "${KEY_CODE:-200}" ;;
     esac
   }
 }
+
+# GET /key answers: a free-tier account (no credits ever bought), a paying one, a key whose own limit is used up.
+FREE_KEY_JSON='{"data":{"label":"bedrock-now","limit":null,"limit_remaining":null,"usage":0,"is_free_tier":true,"free_model_daily_requests":{"used":0,"limit":50}}}'
+PAID_KEY_JSON='{"data":{"label":"bedrock-now","limit":null,"limit_remaining":null,"usage":2,"is_free_tier":false}}'
+SPENT_KEY_JSON='{"data":{"label":"bedrock-now","limit":5,"limit_remaining":0,"usage":5,"is_free_tier":false}}'
 
 KEY_JSON='{"data":{"label":"sk-or-v1-abc...xyz","limit":10,"limit_reset":null,"limit_remaining":8.5,"include_byok_in_limit":false,"budgets":[{"scope":"key_limit","limit_usd":10,"spend_usd":1.5}],"usage":1.5,"usage_daily":0.1,"usage_weekly":0.5,"usage_monthly":1.25,"byok_usage":0,"is_free_tier":false,"free_model_daily_requests":{"used":3,"limit":1000,"remaining":997}}}'
 
@@ -415,8 +426,11 @@ test_refresh_fetches_caches_and_reports_changes() {
   assert_eq "$(or_cached_rows | wc -l | tr -d ' ')" 8
   assert_contains "$(cat "$TMP/litellm/openrouter-models.json")" '"enabled":7'
   assert_contains "$(cat "$TMP/calls")" "--proto =https"
+  assert_contains "$(cat "$TMP/calls")" "-K - --proto =https"     # asked with the key, which curl reads from stdin
   assert_contains "$(cat "$TMP/calls")" "https://openrouter.ai/api/v1/models"
-  assert_not_contains "$(cat "$TMP/calls")" "sk-or-v1-abc"    # the public list is fetched without the key
+  assert_not_contains "$(cat "$TMP/calls")" "sk-or-v1-abc"       # never on the command line
+  assert_eq "$(cat "$TMP/stdin")" 'header = "Authorization: Bearer sk-or-v1-abc"'
+  assert_contains "$(sed -n 2p "$TMP/litellm/openrouter-models.tsv")" "/models (as listed for your key)"
   assert_not_contains "$(cat "$TMP/calls")" "RENDER"          # no config.yaml yet → nothing to re-render
   : > "$TMP/litellm/config.yaml"; : > "$TMP/calls"
   openrouter_refresh 2>/dev/null
@@ -629,5 +643,266 @@ test_key_never_on_argv() {
   assert_eq "$(grep -n 'OPENROUTER_API_KEY' "$STACK_DIR/lib/openrouter.sh" | grep -c 'curl ' || true)" 0
   assert_eq "$(grep -nE '(^|[^_])curl -' "$STACK_DIR/lib/openrouter.sh" | grep -v '^[0-9]*:[[:space:]]*#' | grep -vc '/models"' || true)" 0
   # and every curl call is https-only
-  assert_eq "$(grep -nE '(^|[^_])curl(_auth "\$1")? ' "$STACK_DIR/lib/openrouter.sh" | grep -v '^[0-9]*:[[:space:]]*#' | grep -vc -- "--proto '=https'" || true)" 0
+  assert_eq "$(grep -nE '(^|[^_])curl(_auth "[^"]*")? ' "$STACK_DIR/lib/openrouter.sh" | grep -v '^[0-9]*:[[:space:]]*#' | grep -vc -- "--proto '=https'" || true)" 0
+  # the model list is asked with the key through curl_auth too
+  assert_eq "$(grep 'curl_auth "' "$STACK_DIR/lib/openrouter.sh" | grep -c '/models"')" 1
+}
+
+# --- the .env paste-in line ---
+
+test_env_placeholder_added_once() {
+  printf 'X=1' > "$ENV_FILE"; chmod 600 "$ENV_FILE"   # no newline at the end
+  or_env_placeholder
+  assert_eq "$(cat "$ENV_FILE")" "X=1
+$OR_ENV_HINT
+OPENROUTER_API_KEY="
+  or_env_placeholder; or_env_placeholder
+  assert_eq "$(grep -c '^OPENROUTER_API_KEY=' "$ENV_FILE")" 1
+  assert_eq "$(grep -c 'paste a key' "$ENV_FILE")" 1
+  assert_eq "$(stat -f %Lp "$ENV_FILE" 2>/dev/null || stat -c %a "$ENV_FILE")" 600
+}
+
+test_env_placeholder_leaves_existing_lines_alone() {
+  local body
+  for body in 'OPENROUTER_API_KEY=sk-or-v1-abc' 'A=1
+# my own notes: free models only
+OPENROUTER_API_KEY=
+OPENROUTER_MODELS=free' 'OPENROUTER_API_KEY="sk-or-v1-abc"' 'export OPENROUTER_API_KEY=' ' OPENROUTER_API_KEY = x'; do
+    printf '%s\n' "$body" > "$ENV_FILE"
+    or_env_placeholder
+    assert_eq "$(cat "$ENV_FILE")" "$body"
+  done
+}
+
+test_new_install_from_env_example_has_one_paste_in_line() {
+  cp "$STACK_DIR/.env.example" "$ENV_FILE"
+  assert_contains "$(cat "$ENV_FILE")" "$OR_ENV_HINT
+OPENROUTER_API_KEY=
+"
+  STACK_DIR="$TMP"; _stub_curl_auth; _stub_curl
+  ASSUME_YES=1 setup_openrouter 2>/dev/null
+  assert_eq "$(grep -c 'OPENROUTER_API_KEY=' "$ENV_FILE")" 1
+  [ ! -e "$TMP/calls" ]
+}
+
+test_setup_adds_placeholder_to_an_older_env() {
+  STACK_DIR="$TMP"; printf 'POSTGRES_PASSWORD=p\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  ASSUME_YES=1 setup_openrouter 2>/dev/null
+  ASSUME_YES=1 setup_openrouter 2>/dev/null
+  assert_eq "$(cat "$ENV_FILE")" "POSTGRES_PASSWORD=p
+$OR_ENV_HINT
+OPENROUTER_API_KEY="
+  [ ! -e "$TMP/calls" ]
+}
+
+test_empty_key_line_keeps_openrouter_off() {
+  _with_cache; printf '%s\nOPENROUTER_API_KEY=\nOPENROUTER_MODELS=free\n' "$OR_ENV_HINT" > "$ENV_FILE"
+  _stub_curl_auth; _stub_curl
+  if openrouter_enabled; then return 1; fi
+  assert_eq "$(or_key_problem 2>&1)" ""
+  assert_eq "$(openrouter_yaml)" ""
+  assert_eq "$(openrouter_owui_models)" ""
+  openrouter_refresh
+  [ ! -e "$TMP/calls" ] && [ "$OR_CHANGED" = 0 ]
+  assert_contains "$(cmd_openrouter status 2>&1)" "OpenRouter: off"
+  # an interactive setup still asks once for a key; Enter keeps it off and points at the paste-in line
+  _have_tty() { return 0; }
+  ask_secret() { echo ASKED >> "$TMP/asked"; echo; }
+  out="$(setup_openrouter 2>&1)"
+  assert_eq "$(cat "$TMP/asked")" ASKED
+  assert_contains "$out" "paste one after OPENROUTER_API_KEY= in .env and run ./stack openrouter apply"
+  assert_eq "$(get_env OPENROUTER_API_KEY)" ""
+  [ ! -e "$TMP/calls" ]
+}
+
+# --- ./stack openrouter apply ---
+
+test_cmd_apply_refuses_an_empty_key() {
+  STACK_DIR="$TMP"; printf '%s\nOPENROUTER_API_KEY=\n' "$OR_ENV_HINT" > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  before="$(cat "$ENV_FILE")"
+  if out="$( (cmd_openrouter apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "paste your key after OPENROUTER_API_KEY= in .env first, or run ./stack openrouter set"
+  assert_eq "$(cat "$ENV_FILE")" "$before"
+  [ ! -e "$TMP/calls" ]
+}
+
+test_cmd_apply_rejected_key_changes_nothing() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-bad\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { echo APPLY >> "$TMP/calls"; }
+  if out="$( (KEY_CODE=401 cmd_openrouter apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "rejected the key (HTTP 401)"
+  assert_contains "$out" "nothing changed"
+  assert_eq "$(cat "$ENV_FILE")" "OPENROUTER_API_KEY=sk-or-v1-bad"
+  [ ! -e "$TMP/litellm/openrouter-models.tsv" ]
+  assert_not_contains "$(cat "$TMP/calls")" "APPLY"
+  assert_not_contains "$(cat "$TMP/calls")" "/models"
+  # a value that cannot be a key is never sent
+  : > "$TMP/calls"; printf 'OPENROUTER_API_KEY=sk-or v1 x\n' > "$ENV_FILE"
+  if out="$( (cmd_openrouter apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "does not look like an OpenRouter API key"
+  assert_eq "$(cat "$TMP/calls")" ""
+}
+
+test_cmd_apply_uses_the_pasted_key_and_always_applies() {
+  STACK_DIR="$TMP"; printf 'X=1\n%s\nOPENROUTER_API_KEY=sk-or-v1-pasted\n' "$OR_ENV_HINT" > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { echo APPLY >> "$TMP/seq"; }
+  out="$(KEY_BODY="$PAID_KEY_JSON" OPENROUTER_API_KEY=sk-or-v1-shell cmd_openrouter apply 2>&1)"
+  assert_contains "$out" "OpenRouter key in .env accepted"
+  assert_contains "$out" "OpenRouter: 7 enabled (4 free, 3 paid) of 8 offered"
+  assert_eq "$(head -n 1 "$TMP/calls" | cut -d' ' -f1-2)" "sk-or-v1-pasted https://openrouter.ai/api/v1/key"
+  assert_not_contains "$(cat "$TMP/calls")" "sk-or-v1-shell"   # the key in .env, never the shell's
+  [ -s "$TMP/litellm/openrouter-models.tsv" ] && [ -s "$TMP/litellm/openrouter-models.json" ]
+  assert_eq "$(get_env OPENROUTER_MODELS)" ""                    # a paying account: OPENROUTER_MODELS untouched
+  # the same list again: still applied (the key in .env changed by hand)
+  KEY_BODY="$PAID_KEY_JSON" cmd_openrouter apply 2>/dev/null
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "APPLY;APPLY;"
+  assert_eq "$(sed -n 2p "$ENV_FILE")" "$OR_ENV_HINT"
+}
+
+test_cmd_apply_strips_quotes_around_a_pasted_key() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY= "sk-or-v1-quoted" \nA=1\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  out="$(cmd_openrouter apply 2>&1)"
+  assert_contains "$out" "removed the quotes/spaces"
+  assert_eq "$(cat "$ENV_FILE")" "OPENROUTER_API_KEY=sk-or-v1-quoted
+A=1"
+  openrouter_enabled
+}
+
+test_cmd_remove_keeps_an_empty_paste_in_line() {
+  STACK_DIR="$TMP"; printf '%s\nOPENROUTER_API_KEY=sk-or-v1-abc\nB=2\n' "$OR_ENV_HINT" > "$ENV_FILE"
+  _or_apply() { :; }
+  cmd_openrouter remove 2>/dev/null
+  assert_eq "$(cat "$ENV_FILE")" "$OR_ENV_HINT
+OPENROUTER_API_KEY=
+B=2"
+}
+
+test_apply_in_help_and_usage() {
+  assert_contains "$(cmd_help_for openrouter)" "status | set | apply | remove"
+  assert_contains "$(cmd_help_for openrouter)" "apply uses the key pasted after OPENROUTER_API_KEY= in .env"
+  : > "$ENV_FILE"
+  assert_contains "$( (cmd_openrouter bogus) 2>&1)" "./stack openrouter [status|set|apply|remove|"
+}
+
+# --- free-tier allocation ---
+
+test_free_account_gets_free_models_when_unset() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-free\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  out="$(KEY_BODY="$FREE_KEY_JSON" cmd_openrouter apply 2>&1)"
+  assert_contains "$out" "this OpenRouter account has no credits, so only free models are offered (OPENROUTER_MODELS=free); after buying credits: ./stack openrouter models all"
+  assert_contains "$out" "OpenRouter: 4 enabled (4 free, 0 paid)"
+  assert_contains "$out" "No endpoints found matching your data policy"
+  assert_contains "$out" "https://openrouter.ai/settings/privacy"
+  assert_not_contains "$out" "HTTP 402"
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+  assert_contains "$(cat "$TMP/litellm/openrouter-models.json")" '"mode":"free","counts":{"enabled":4,"free":4,"paid":0}'
+  assert_not_contains "$(cat "$TMP/calls")" "/credits"           # is_free_tier already says it
+}
+
+test_free_account_keeps_a_chosen_set_and_warns_once() {
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  out="$(KEY_BODY="$FREE_KEY_JSON" OPENROUTER_API_KEY=sk-or-v1-free OPENROUTER_MODELS=all cmd_openrouter set 2>&1)"
+  assert_eq "$(get_env OPENROUTER_MODELS)" all
+  assert_not_contains "$out" "so only free models are offered"
+  assert_eq "$(printf '%s\n' "$out" | grep -c 'paid model(s)')" 1
+  assert_contains "$out" "this OpenRouter account has no credits, but OPENROUTER_MODELS=all offers 3 paid model(s) — they fail with HTTP 402"
+  # a chosen list of free models only: nothing to warn about
+  printf 'OPENROUTER_API_KEY=sk-or-v1-free\nOPENROUTER_MODELS=openrouter/free\n' > "$ENV_FILE"
+  out="$(KEY_BODY="$FREE_KEY_JSON" cmd_openrouter apply 2>&1)"
+  assert_not_contains "$out" "paid model(s)"
+  assert_eq "$(get_env OPENROUTER_MODELS)" openrouter/free
+}
+
+test_paying_account_is_left_alone() {
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  out="$(KEY_BODY="$PAID_KEY_JSON" OPENROUTER_API_KEY=sk-or-v1-paid cmd_openrouter set 2>&1)"
+  assert_eq "$(get_env OPENROUTER_MODELS)" ""
+  assert_not_contains "$out" "only free models"
+  assert_not_contains "$out" "paid model(s)"
+  assert_not_contains "$out" "data policy"
+  # a balance at zero, readable with a management key: free only
+  printf 'X=1\n' > "$ENV_FILE"
+  out="$(KEY_BODY="$PAID_KEY_JSON" CRED_CODE=200 CRED_BODY='{"data":{"total_credits":10,"total_usage":10}}' OPENROUTER_API_KEY=sk-or-v1-paid cmd_openrouter set 2>&1)"
+  assert_contains "$out" "this OpenRouter account has no credits left, so only free models are offered"
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+}
+
+test_key_with_its_limit_used_up_gets_free_models() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-spent\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  out="$(KEY_BODY="$SPENT_KEY_JSON" cmd_openrouter apply 2>&1)"
+  assert_contains "$out" "this OpenRouter key's credit limit is used up, so only free models are offered (OPENROUTER_MODELS=free); after raising it"
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+}
+
+test_setup_new_key_on_a_free_account_gets_free_models() {
+  STACK_DIR="$TMP"; : > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  out="$(KEY_BODY="$FREE_KEY_JSON" ASSUME_YES=1 BEDROCK_NOW_OPENROUTER_FROM_ENV=1 OPENROUTER_API_KEY=sk-or-v1-new setup_openrouter 2>&1)"
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+  assert_contains "$out" "so only free models are offered (OPENROUTER_MODELS=free)"
+  assert_contains "$(cat "$TMP/litellm/openrouter-models.json")" '"enabled":4'
+}
+
+test_setup_pasted_key_free_account_only_while_models_unset() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-pasted\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  KEY_BODY="$FREE_KEY_JSON" ASSUME_YES=1 setup_openrouter 2>/dev/null
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+  # once OPENROUTER_MODELS is set, setup does not ask about the account again
+  set_env OPENROUTER_MODELS all; : > "$TMP/calls"
+  KEY_BODY="$FREE_KEY_JSON" ASSUME_YES=1 setup_openrouter 2>/dev/null
+  assert_eq "$(get_env OPENROUTER_MODELS)" all
+  assert_not_contains "$(cat "$TMP/calls")" "/key"
+}
+
+test_free_tier_check_is_never_fatal() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-x\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  OR_KEY_FLAT=''; or_plan_models sk-or-v1-x                       # nothing known: nothing changes
+  KEY_BODY='not json' CRED_CODE=000 cmd_openrouter apply 2>/dev/null
+  assert_eq "$(get_env OPENROUTER_MODELS)" ""
+}
+
+# --- the model list, asked with the key ---
+
+test_refresh_falls_back_to_the_public_list_when_the_key_is_rejected() {
+  _with_cache; _stub_curl
+  touch -t 202001010000 "$TMP/litellm/openrouter-models.tsv"
+  err="$(KEYED_CODE=401 openrouter_refresh 2>&1)"
+  assert_contains "$err" "OpenRouter rejected the key in .env (HTTP 401) when listing models — using the public list instead"
+  assert_eq "$(grep -c '/models' "$TMP/calls")" 2
+  assert_eq "$(sed -n 2p "$TMP/calls" | cut -d' ' -f1-3)" "curl --proto =https"   # the public request: no -K, no key
+  assert_not_contains "$(cat "$TMP/calls")" "sk-or-v1-abc"
+  assert_contains "$(sed -n 2p "$TMP/litellm/openrouter-models.tsv")" "(public list)"
+  assert_eq "$(or_cached_rows | wc -l | tr -d ' ')" 8
+  # any other failure keeps the last list and does not ask without the key
+  : > "$TMP/calls"; touch -t 202001010000 "$TMP/litellm/openrouter-models.tsv"
+  err="$(KEYED_CODE=500 openrouter_refresh 2>&1)"
+  assert_contains "$err" "could not download the model list from openrouter.ai (HTTP 500) — keeping the list"
+  assert_eq "$(grep -c '/models' "$TMP/calls")" 1
+}
+
+# --- OpenRouter attribution ---
+
+test_compose_names_bedrock_now_to_openrouter() {
+  litellm="$(sed -n '/^  litellm:/,/^  open-webui:/p' "$STACK_DIR/compose.yaml")"
+  assert_contains "$litellm" "OR_APP_NAME: bedrock-now"
+  assert_contains "$litellm" "OR_SITE_URL: https://github.com/JongoDB-Labs/bedrock-now"
+  assert_eq "$(grep -c 'OR_APP_NAME\|OR_SITE_URL' "$STACK_DIR/compose.yaml")" 2   # LiteLLM only
+}
+
+test_compose_renders_attribution_and_an_empty_key_as_off() {
+  # Only `docker compose config` (renders the file; no daemon, no containers) may use the real docker.
+  if [ -z "${BN_REAL_DOCKER:-}" ] || ! "$BN_REAL_DOCKER" compose version >/dev/null 2>&1; then echo "no docker compose" >&2; return 77; fi
+  command -v python3 >/dev/null || { echo "python3 not on the host" >&2; return 77; }
+  # shellcheck disable=SC2329  # called by dc
+  docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
+  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nAWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=s\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\n%s\nOPENROUTER_API_KEY=\n' "$OR_ENV_HINT" > "$ENV_FILE"
+  _env() { OPENROUTER_API_KEY=sk-or-v1-shell dc config --format json 2>/dev/null |
+    python3 -c 'import json, sys; s = json.load(sys.stdin)["services"]; l, p = s["litellm"]["environment"], s["portal"]["environment"]
+print(l["OR_APP_NAME"], l["OR_SITE_URL"], repr(l["OPENROUTER_API_KEY"]), repr(p["OPENROUTER_API_KEY"]))'; }
+  assert_eq "$(_env)" "bedrock-now https://github.com/JongoDB-Labs/bedrock-now '' ''"
 }

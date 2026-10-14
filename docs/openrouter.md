@@ -10,16 +10,26 @@ API).
 
 ## Turning it on and off
 
-- **On:** an interactive setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden input).
-  Later, or without a terminal: `./stack openrouter set` (asks, or reads `OPENROUTER_API_KEY` from the
-  environment). The key is checked with OpenRouter first (`GET /api/v1/key`); a rejected key is not stored.
-  Create keys at https://openrouter.ai/settings/keys; a per-key credit limit there caps what it can spend.
+- **On:** paste a key from https://openrouter.ai/settings/keys after `OPENROUTER_API_KEY=` in `.env` (setup
+  puts that empty line there, with a comment saying so) and run `./stack openrouter apply`. Or: an interactive
+  setup asks once, `OpenRouter API key (optional — Enter to skip)` (hidden input), and
+  `./stack openrouter set` asks later (or reads `OPENROUTER_API_KEY` from the environment, without a terminal).
+  The key is checked with OpenRouter first (`GET /api/v1/key`): `set` does not store a rejected key, and
+  `apply` changes nothing with one. `apply` also drops quotes or spaces pasted around the key. A per-key
+  credit limit at https://openrouter.ai/settings/keys caps what the key can spend.
+- **An account without credits** (OpenRouter's `is_free_tier`: never bought any; or the key's own credit limit
+  used up; or, readable only with a management key, a balance at or below zero) can only use free models.
+  When `set`, `apply` or setup checks such a key and `OPENROUTER_MODELS` is not set, it becomes `free`, in
+  one line: `this OpenRouter account has no credits, so only free models are offered (OPENROUTER_MODELS=free);
+  after buying credits: ./stack openrouter models all`. A set you chose yourself is kept, with one warning
+  when it includes paid models (they fail with HTTP 402).
 - **Only `.env` counts.** An `OPENROUTER_API_KEY` that happens to be in your shell never turns OpenRouter on
   by itself: `./stack` strips `OPENROUTER_*` from what Docker Compose sees, an interactive setup asks
   `found OPENROUTER_API_KEY in your environment — use it for bedrock-now? [y/N]`, and `setup --yes` uses it
   only with `BEDROCK_NOW_OPENROUTER_FROM_ENV=1`. `./stack update` ignores it, so a removed key stays removed.
-- **Off:** `./stack openrouter remove` deletes the key from `.env` and the cached model list, restarts LiteLLM
-  with Bedrock only and removes the OpenRouter entries it created in Open WebUI.
+- **Off:** `./stack openrouter remove` empties `OPENROUTER_API_KEY=` in `.env` (an empty key is off, like no
+  line), deletes the cached model list, restarts LiteLLM with Bedrock only and removes the OpenRouter entries it
+  created in Open WebUI.
 - `./stack openrouter status` shows whether it is on, and the key's usage and limit.
 
 ## Picking models
@@ -55,13 +65,21 @@ Not modelled (OpenRouter bills them, LiteLLM's numbers leave them out): long-con
 per-request fee. A model whose price OpenRouter lists in a form bedrock-now can't read (e.g. an absurd
 exponent) is left out.
 
-The model list and prices are fetched at setup and by `./stack openrouter refresh`; `./stack up` fetches only
+The model list and prices are fetched with your key (`GET /api/v1/models`, the key on curl's stdin), so
+OpenRouter's account setting *Filter the model catalog for API keys* can leave out models your key cannot use
+(privacy, provider and guardrail settings); if OpenRouter rejects the key there (401/403), the public list is
+used, with a warning. They are fetched at setup and by `./stack openrouter refresh`; `./stack up` fetches only
 when the list is more than 12 hours old (it starts fine offline). Whenever the models or prices change (and on
 every `./stack openrouter refresh`), Open WebUI's labels and its per-answer cost prices are updated too.
 
 `./stack costs`, `./stack openrouter status` and Home also show the key's own usage, its limit and today's
 free-model requests. The account's credit balance needs an OpenRouter *management* key, so with a normal key
 they link to https://openrouter.ai/settings/credits instead.
+
+## When a model fails
+
+The usual errors (404 *No endpoints found matching your data policy*, 429, 402) and their fixes are in the
+[README](../README.md#optional-openrouter), with the OpenRouter account settings that go with bedrock-now.
 
 ## Privacy
 
@@ -71,6 +89,12 @@ your prompts**. Read [OpenRouter's provider logging policy](https://openrouter.a
 and [privacy policy](https://openrouter.ai/privacy), and set which providers may see your data in your
 OpenRouter [privacy settings](https://openrouter.ai/settings/privacy). Keep confidential work on Bedrock
 models.
+
+LiteLLM names bedrock-now to OpenRouter (`X-Title: bedrock-now` and `HTTP-Referer:
+https://github.com/JongoDB-Labs/bedrock-now`, set by `OR_APP_NAME` / `OR_SITE_URL` in `compose.yaml`), so
+OpenRouter's Activity and Logs show the requests as bedrock-now. They name the project only, nothing about you.
+OpenRouter's own *Input & Output Logging* is not needed (Admin's logs record every request) and would store
+your prompts at OpenRouter.
 
 The key itself stays in `.env` (mode 600) and reaches only the LiteLLM and portal containers; curl gets it on
 stdin (never on a command line), and the portal calls OpenRouter server-side, so the key never reaches a

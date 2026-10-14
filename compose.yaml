@@ -81,6 +81,10 @@ services:
       WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}   # budget alerts (80% soft budget, 100%); empty = none
       # Optional; blank = no OpenRouter models are rendered (lib/openrouter.sh).
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # LiteLLM sends these to OpenRouter as X-Title / HTTP-Referer, so OpenRouter's Activity and Logs show the
+      # requests as "bedrock-now" (not "liteLLM"). They name this project only, nothing about you or this install.
+      OR_APP_NAME: bedrock-now
+      OR_SITE_URL: https://github.com/JongoDB-Labs/bedrock-now
       # Optional speech-to-text provider key (OpenAI or Groq); blank = no "stt" model is rendered (lib/stt.sh).
       STT_API_KEY: ${STT_API_KEY:-}
     volumes:

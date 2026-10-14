@@ -6,6 +6,35 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter by pasting a key into `.env`.** Setup now adds an empty, commented `OPENROUTER_API_KEY=` line to
+  `.env` when it has none ("paste a key from https://openrouter.ai/settings/keys after the =, then run
+  ./stack openrouter apply"; new installs get it from `.env.example`). It is added once and never touches an
+  existing line, also a hand-made one; an empty key keeps OpenRouter off everywhere. **`./stack openrouter
+  apply`** uses that key: it refuses an empty one ("paste your key after OPENROUTER_API_KEY= in .env first, or
+  run ./stack openrouter set"), checks it with OpenRouter (a rejected key changes nothing), drops quotes or
+  spaces pasted around it, then fetches the model list and applies it like `set`, also when the list did not
+  change. `./stack openrouter remove` now empties the line instead of deleting it.
+- **Free models for accounts without credits.** When `set`, `apply` or setup checks a key whose account cannot
+  pay (OpenRouter's `is_free_tier`, the key's own credit limit used up, or a zero balance where the credits
+  endpoint is readable) and `OPENROUTER_MODELS` is not set, it becomes `free`, in one line: "this OpenRouter
+  account has no credits, so only free models are offered (OPENROUTER_MODELS=free); after buying credits:
+  ./stack openrouter models all". A set you chose is kept, with one warning when it includes paid models (they
+  fail with HTTP 402), plus where to fix free models' "No endpoints found matching your data policy".
+- README › Optional: OpenRouter: how to set up the OpenRouter account (key, privacy settings, *Filter the model
+  catalog for API keys*, no OpenRouter logging needed) and what the common errors mean (404 data policy, 429
+  free-model limits, 402 credits, 401).
+
+### Changed
+
+- **The OpenRouter model list is asked for with your key** (on curl's stdin, never on a command line), so
+  OpenRouter's *Filter the model catalog for API keys* setting can leave out models the key cannot use. If
+  OpenRouter rejects the key there (401/403), the public list is used, with a warning.
+- **OpenRouter sees requests from bedrock-now as "bedrock-now".** LiteLLM gets `OR_APP_NAME=bedrock-now` and
+  `OR_SITE_URL=https://github.com/JongoDB-Labs/bedrock-now`, which LiteLLM 1.105.0 sends to OpenRouter as
+  `X-Title` and `HTTP-Referer` (instead of "liteLLM" and litellm.ai), so OpenRouter's Activity and Logs name the app.
+
 ## [0.3.0] - 2026-10-13
 
 ### Added
