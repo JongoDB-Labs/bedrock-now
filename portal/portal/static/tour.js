@@ -421,7 +421,7 @@
     api("/api/summary").then(onSummary, (e) => {
       if (e.message === "signed out") return;
       failedAt = Date.now();
-      if (st.open) render();
+      if (st.open && !sum) render();   // an earlier summary stays on screen: no redraw every 30 s during an outage
     }).finally(() => { clearTimeout(pollT); pollT = setTimeout(poll, POLL_MS); });
   }
 
@@ -601,10 +601,11 @@
     }
     poll();
   }
-  // Phones and tablets: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside.
+  // Phones and tablets: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside,
+  // and focus goes to what opens it again (the compass button, or More).
   function away() {
     if (!(PHONE.matches || TABLET.matches) || !st.open) return;
-    setOpen(false, false);
+    setOpen(false);
     toast(PHONE.matches ? "The walkthrough is under More" : "The walkthrough is under the compass button");
   }
 
@@ -637,8 +638,13 @@
     commit();
   });
   document.addEventListener("DOMContentLoaded", () => setTimeout(poll, homeOwns() ? 10000 : 0));   // after app.js's
-  // Back on the page: Home refreshes itself at once (app.js); the panel asks only if that did not happen.
-  document.addEventListener("visibilitychange", () => { clearTimeout(pollT); pollT = setTimeout(poll, homeOwns() ? 5000 : 0); });
+  // Back on the page: with Home on screen, app.js refreshes it at once and the #updated observer hands that over (the
+  // panel asks only if it did not come); otherwise the panel asks itself if its summary is old.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { clearTimeout(pollT); return; }
+    if (homeOwns()) askedAt = Date.now();
+    poll();
+  });
   // app.js's sign-ins arrive: the Admin / Files step shows the user name.
   const signins = $("#logins");
   if (signins) {

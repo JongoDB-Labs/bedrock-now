@@ -42,7 +42,9 @@ All notable changes to bedrock-now are documented here. The format follows
   Skip. It opens by itself on a first visit: on desktops as a section of the sidebar, which widens to 340 px so
   the app frames get narrower instead of covered; on tablets as a card next to the icon rail; on phones it stays
   closed (it would cover Chat) and opens from **More** as a sheet above the tab bar, where Admin and Files open
-  in a new tab. Progress is a per-browser convenience in `localStorage` (`bn.tour`). New files
+  in a new tab. On tablets and phones the card or sheet steps aside when a step opens an app or a card on Home.
+  Progress is a per-browser convenience in `localStorage` (`bn.tour`); when the browser blocks storage it does
+  not open by itself (it would on every load), and the button still opens it. New files
   `portal/portal/static/tour.js` and `tour.css`; everything is built with DOM nodes (no HTML parsing).
 
 ### Changed
