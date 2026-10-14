@@ -1113,3 +1113,45 @@ test_bearer_only_through_curl_auth() {
   assert_eq "$(grep -c 'Bearer' "$STACK_DIR/lib/openrouter.sh" || true)" 0
   assert_contains "$(sed -n '/^curl_auth() {/,/^}/p' "$STACK_DIR/lib/common.sh")" 'Authorization: Bearer %s'
 }
+
+test_an_earlier_key_line_shadowed_by_an_empty_one_is_named() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-early\nA=1\nOPENROUTER_API_KEY=\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  assert_eq "$(or_env_line_problem)" "an earlier OPENROUTER_API_KEY line holds a key, but the last one (empty) wins — delete the empty one"
+  if out="$( (cmd_openrouter apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "cannot be read: an earlier OPENROUTER_API_KEY line holds a key, but the last one (empty) wins"
+  assert_not_contains "$out" "export"
+  assert_contains "$(or_key_problem 2>&1)" "OpenRouter stays off: an earlier OPENROUTER_API_KEY line holds a key"
+  [ ! -e "$TMP/calls" ]
+  # a plain key line (the one that wins) is no problem; an empty line alone neither
+  printf 'OPENROUTER_API_KEY=\nOPENROUTER_API_KEY=sk-or-v1-late\n' > "$ENV_FILE"; assert_eq "$(or_env_line_problem)" ""
+  printf 'OPENROUTER_API_KEY=\n' > "$ENV_FILE"; assert_eq "$(or_env_line_problem)" ""
+  # with an export line too, the export line is what to fix
+  printf 'export OPENROUTER_API_KEY=sk-or-v1-x\nOPENROUTER_API_KEY=\n' > "$ENV_FILE"
+  assert_contains "$(or_env_line_problem)" 'remove the `export ` prefix'
+}
+
+test_models_from_the_environment_are_the_users_choice() {
+  STACK_DIR="$TMP"; printf 'OPENROUTER_API_KEY=sk-or-v1-acct\n' > "$ENV_FILE"; _stub_curl_auth; _stub_curl
+  _or_apply() { :; }
+  KEY_BODY="$FREE_KEY_JSON" cmd_openrouter apply 2>/dev/null
+  [ -e "$STATE_DIR/openrouter-models-auto" ]
+  # an explicit free via set: kept once the account pays (a hint, not a revert)
+  out="$(KEY_BODY="$PAID_KEY_JSON" OPENROUTER_API_KEY=sk-or-v1-acct OPENROUTER_MODELS=free cmd_openrouter set 2>&1)"
+  [ ! -e "$STATE_DIR/openrouter-models-auto" ]
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+  assert_contains "$out" "./stack openrouter models all adds the paid ones"
+  assert_not_contains "$out" "offered again"
+  # the same for setup adopting a shell key with OPENROUTER_MODELS
+  printf 'X=1\n' > "$ENV_FILE"; mkdir -p "$STATE_DIR"; : > "$STATE_DIR/openrouter-models-auto"
+  KEY_BODY="$PAID_KEY_JSON" ASSUME_YES=1 BEDROCK_NOW_OPENROUTER_FROM_ENV=1 OPENROUTER_API_KEY=sk-or-v1-new OPENROUTER_MODELS=free setup_openrouter 2>/dev/null
+  [ ! -e "$STATE_DIR/openrouter-models-auto" ]
+  assert_eq "$(get_env OPENROUTER_MODELS)" free
+}
+
+test_a_failed_hidden_prompt_stops_set() {
+  STACK_DIR="$TMP"; printf 'X=1\n' > "$ENV_FILE"; _stub_curl_auth
+  _have_tty() { return 0; }; ask_secret() { return 1; }
+  if out="$( (OPENROUTER_API_KEY='' cmd_openrouter set) 2>&1)"; then return 1; fi
+  assert_contains "$out" "no key: export OPENROUTER_API_KEY or run this in a terminal"
+  assert_eq "$(cat "$ENV_FILE")" "X=1"
+}

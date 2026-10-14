@@ -10,8 +10,10 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **OpenRouter by pasting a key into `.env`.** Setup now adds an empty, commented `OPENROUTER_API_KEY=` line to
   `.env` when it has none ("paste a key from https://openrouter.ai/settings/keys after the =, then run
-  ./stack openrouter apply"; new installs get it from `.env.example`). It is added once and never touches an
-  existing line, also a hand-made one; an empty key keeps OpenRouter off everywhere. **`./stack openrouter
+  ./stack openrouter apply"; new installs get it from `.env.example`). It is added once and never changes the
+  value of an existing line, also a hand-made one: it only rewrites a quoted, spaced or commented key line
+  cleanly (the same key, as Compose reads it), and on an older install it inserts the hint comment above the empty
+  `OPENROUTER_API_KEY=` line that `.env.example` gave it. An empty key keeps OpenRouter off everywhere. **`./stack openrouter
   apply`** uses that key: it refuses an empty one ("paste your key after OPENROUTER_API_KEY= in .env first, or
   run ./stack openrouter set"), checks it with OpenRouter (a rejected key changes nothing), drops quotes or
   spaces pasted around it, then fetches the model list and applies it like `set`, also when the list did not

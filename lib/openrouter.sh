@@ -34,13 +34,17 @@ or_key_problem() { # warns when .env has an OPENROUTER_API_KEY that cannot be a 
   [ -z "$k" ] || valid_or_key "$k" || warn "OPENROUTER_API_KEY in .env is not a valid key (letters, digits, - and _ only) — OpenRouter stays off; fix it in .env and run ./stack openrouter apply, or ./stack openrouter set"
 }
 
-# or_env_line_problem -> what to fix when .env has an OPENROUTER_API_KEY line with a value that ./stack cannot read
-# (an "export " prefix or spaces around =, which Docker Compose would still pass on), else nothing
+# or_env_line_problem -> what to fix when the key in .env cannot be read while a line holds one: an "export "
+# prefix or spaces around = (Docker Compose would still pass it on), or an earlier key line followed by an empty
+# one (the last line wins, for ./stack and Compose alike); else nothing
 or_env_line_problem() {
   [ -f "$ENV_FILE" ] && [ -z "$(get_env OPENROUTER_API_KEY)" ] || return 0
-  # shellcheck disable=SC2016  # literal backticks
-  ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]' "$ENV_FILE" ||
+  if grep -Eq '^([[:space:]]*export[[:space:]]+|[[:space:]]+)OPENROUTER_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]#]|^OPENROUTER_API_KEY[[:space:]]+=[[:space:]]*[^[:space:]#]' "$ENV_FILE"; then
+    # shellcheck disable=SC2016  # literal backticks
     echo 'remove the `export ` prefix / spaces around = on the OPENROUTER_API_KEY line in .env'
+  elif grep -Eq '^OPENROUTER_API_KEY=[[:space:]]*[^[:space:]#]' "$ENV_FILE"; then
+    echo 'an earlier OPENROUTER_API_KEY line holds a key, but the last one (empty) wins — delete the empty one'
+  fi
 }
 
 # The paste-in line for .env (new installs get the same from .env.example; setup adds it to older ones).
@@ -734,11 +738,11 @@ setup_openrouter() {
     if [ -n "${OPENROUTER_API_KEY:-}" ]; then
       if _or_env_key_wanted; then
         key="$(or_clean_key "$OPENROUTER_API_KEY")"
-        [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; }
+        [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; rm -f "$(or_models_auto)"; }
       fi
     elif [ ! -e "$marker" ] && [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
       log "Optional: OpenRouter adds hundreds of other models (some free) next to Bedrock. Prompts to them go to openrouter.ai."
-      key="$(or_clean_key "$(ask_secret "OpenRouter API key (optional — Enter to skip)")")"
+      key="$(ask_secret "OpenRouter API key (optional — Enter to skip)")"; key="$(or_clean_key "$key")"
       [ -n "$key" ] || log "no OpenRouter key — Bedrock only (later: paste one after OPENROUTER_API_KEY= in .env and run ./stack openrouter apply)"
     fi
     if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then mkdir -p "$STATE_DIR"; : > "$marker"; fi
@@ -819,12 +823,13 @@ cmd_openrouter() {
     set)
       # An explicit command: here OPENROUTER_API_KEY from the environment is the documented non-interactive input.
       key="$(or_clean_key "${OPENROUTER_API_KEY:-}")"
-      [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(or_clean_key "$(ask_secret "OpenRouter API key (hidden)")")"; } ||
+      [ -n "$key" ] || { _have_tty && [ "${ASSUME_YES:-0}" != 1 ] && key="$(ask_secret "OpenRouter API key (hidden)")"; } ||
         die "no key: export OPENROUTER_API_KEY or run this in a terminal"
+      key="$(or_clean_key "$key")"
       [ -n "$key" ] || die "no key entered — nothing changed"
       or_validate_key "$key" || die "$OR_ERR — nothing changed"
       set_env OPENROUTER_API_KEY "$key"
-      [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; }
+      [ -z "${OPENROUTER_MODELS:-}" ] || { valid_or_mode "$OPENROUTER_MODELS" || die "OPENROUTER_MODELS must be all, free, paid or a comma list of model ids"; set_env OPENROUTER_MODELS "$OPENROUTER_MODELS"; rm -f "$(or_models_auto)"; }
       log "OpenRouter key accepted and stored in .env (mode 600)"
       _or_use_key "$key" ;;
     apply)
