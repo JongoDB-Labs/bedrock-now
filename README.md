@@ -567,15 +567,19 @@ the rollback target or the kept images.
 `AUTO_UPDATE_HOUR` in `.env`). When on, the helper installs a new **release** by itself between `N:00` and
 `N+3:00` on this computer's clock (default 03:00–06:00), the same way as Update now: a backup first, then a few
 minutes of downtime, and Home's progress card ("Updated automatically to v0.4.0 at 03:04"). It installs only
-the release Home announced (the portal's daily check, so not with `UPDATE_CHECK=false`), only on a checkout
-that is on a release (as `install.sh` leaves it; never a branch, whatever `BEDROCK_NOW_HELPER_ALLOW_BRANCH`
-says), and only while the stack runs. Each release is tried **once**: if it fails, Home shows the error with
-**Roll back** right there, and that release is not tried again automatically (Update now tries again; a newer
-release is tried as usual); a release you rolled back is not installed again either. If the window starts while
-something else runs (a terminal `./stack` command, another action), with local changes, or when GitHub cannot
-be reached, that night is skipped and Home says why. **A computer that is asleep** during the window misses it
-and tries the next night; it does not update when you wake it up and start working (keep a Mac awake with
-`./stack serve`, or pick an hour when it is on).
+the release Home announced (the portal's daily check, so not with `UPDATE_CHECK=false`) when it is also the newest
+release tag after fetching origin, only on a checkout that is on a release (as `install.sh` leaves it; never a
+branch, whatever `BEDROCK_NOW_HELPER_ALLOW_BRANCH` says), and only while the stack runs. Each release is tried
+**once**: if it fails, Home shows the error with **Roll back** right there (when the update had already changed
+the code), and that release is not tried again automatically (Update now tries again; a newer release is tried as
+usual). A release you rolled back, also with `./stack rollback` in a terminal, is not installed again either, and
+an update that did not finish (it failed after changing the code, or the computer stopped during it) holds
+automatic updates back until Update now finishes it or Roll back goes back. If the window starts while something
+else runs (a terminal `./stack` command, another action), with local changes, or when GitHub cannot be reached,
+that night is skipped and Home says why. While an update runs, the helper keeps the computer from sleeping; **a
+computer that is already asleep** when the window starts misses it and tries the next night; it does not update
+when you wake it up and start working (keep a Mac awake with `./stack serve`, or pick an hour when it is on). A
+`./stack update` in a terminal also restarts the helper with the new code.
 
 `UPDATE_REQUIRE_SIGNED_TAGS=true` makes `./stack update` accept only signed release tags
 ([code provenance](docs/security.md#code-provenance)).

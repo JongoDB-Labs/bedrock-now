@@ -380,7 +380,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not same_origin(request.headers, settings):
             return err(403, "cross-site request refused")
         if not admin_allowed(request):
-            return err(403, "Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env).")
+            return err(403, "Update, Rollback, Clean and the automatic-updates switch are off for remote access "
+                            "(REMOTE_ADMIN_ACTIONS in .env).")
         length = request.headers.get("content-length", "")
         if not length.isdigit() or not length.isascii():
             return err(411, "Content-Length required")

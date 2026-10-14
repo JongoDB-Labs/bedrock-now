@@ -307,15 +307,25 @@ def test_summary_carries_the_version_label_without_the_check(settings, paths):
 
 
 def test_home_shows_the_version_under_the_brand_and_in_the_phone_header():
+    from html.parser import HTMLParser
     from pathlib import Path
     static = Path(__file__).parent.parent / "portal" / "static"
     page = (static / "index.html").read_text()
     js = (static / "app.js").read_text()
-    brand = '<div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>'
-    assert brand + '\n  <a class="version-label" id="version" target="_blank" rel="noopener noreferrer" hidden></a>' in page
-    assert '<p class="updated"><a class="version-label home-version" id="home-version"' in page
-    # "v0.3.0-7-g1a2b3c4" -> "v0.3.0" "+7" "(1a2b3c4)", text nodes only; the dot while an update is available
+    found = {}
+
+    class P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if a.get("id") in ("version", "home-version"):
+                found[a["id"]] = (tag, a)
+    P().feed(page)
+    for i in ("version", "home-version"):   # links, filled in by app.js, hidden until it knows the version
+        tag, a = found[i]
+        assert tag == "a" and "version-label" in a["class"] and "hidden" in a and a["rel"] == "noopener noreferrer"
+    # the label sits right under the brand, before the tabs; on phones in Home's header next to "Updated"
+    assert page.index('class="brand"') < page.index('id="version"') < page.index('class="tabs"')
+    assert page.index('class="updated"') < page.index('id="home-version"') < page.index('id="updated"')
+    # "v0.3.0-7-g1a2b3c4" -> "v0.3.0" "+7" "(1a2b3c4)", text nodes only; a dot while an update is available
     assert "const BUILD = /^(v\\d+\\.\\d+\\.\\d+)(?:-(\\d+)-g([0-9a-f]{4,40}))?$/;" in js
-    assert 'el("span", { class: "v-plus", text: `+${m[2]}` })' in js and 'avail ? el("i", { class: "v-dot"' in js
-    assert 'tip.push(`update available: ${u.latest}`)' in js
-    assert "renderVersion(u);" in js and "innerHTML" not in js
+    assert "tip.push(`update available: ${u.latest}`)" in js and "innerHTML" not in js

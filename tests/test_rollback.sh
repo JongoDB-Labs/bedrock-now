@@ -57,6 +57,8 @@ test_rollback_restores_code_data_and_local_builds() {
   assert_contains "$(cat "$TMP/docker")" "docker tag bn-t/portal:previous bn-t/portal:local"
   assert_contains "$(cat "$TMP/docker")" "docker tag bn-t/shared-mcp:previous bn-t/shared-mcp:local"
   assert_contains "$(cat "$(update_record_file)")" "result=rolled-back"
+  # the version rolled back from: automatic updates never install it again (tests/test_auto_update.sh)
+  assert_contains "$(cat "$(update_record_file)")" "rolled_back_version=v0.3.0"
   assert_eq "$(cat "$STATE_DIR/images/previous.tsv")" "$(printf 'L2\tghcr.io/berriai/litellm:2')"   # kept, not removed
   assert_contains "$(cat "$TMP/out")" "restores backups/20261012-000000-auto"
   assert_contains "$(cat "$TMP/err")" "rollback: 1/3 code"

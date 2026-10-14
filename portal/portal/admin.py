@@ -31,7 +31,7 @@ AUTO_ACTIONS = ("auto-on", "auto-off")
 # What to type instead, when the helper is not running
 CLI = {"update": "./stack update", "rollback": "./stack rollback", "clean": "./stack clean",
        "auto-on": "./stack helper auto on", "auto-off": "./stack helper auto off"}
-TERMINAL = ("done", "failed")
+TERMINAL = ("done", "failed", "skipped")   # skipped: an automatic update that did not start
 HEARTBEAT_MAX_AGE_S = 30          # the helper writes one every few seconds (also while a job runs)
 JOB_STALE_S = 3 * 3600            # a "running" status older than this no longer blocks new requests
 MIN_INTERVAL_S = 30               # rate limit: one request per 30 s ...
@@ -91,20 +91,28 @@ def _str(v, n=300):
     return v[:n] if isinstance(v, str) else ""
 
 
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
 def _auto(beat: dict) -> dict:
-    """The automatic update's switch and state from the heartbeat ("supported": False for a helper without it)."""
+    """The automatic update's switch and state from the heartbeat ("supported": False for a helper without it):
+    the last release it tried, the one you rolled back, the last window it skipped and the last switch change."""
     a = beat.get("auto") if isinstance(beat.get("auto"), dict) else None
-    if a is None:
-        return {"supported": False, "on": False, "hour": 3, "state": "", "target": "", "reason": "", "next_window": None,
-                "last": {"version": "", "result": "", "at": None}}
+    supported = a is not None
+    a = a or {}
     hour = _int(a.get("hour"))
-    last = a.get("last") if isinstance(a.get("last"), dict) else {}
+    last, sk, sw = _dict(a.get("last")), _dict(a.get("skipped")), _dict(a.get("switch"))
     return {
-        "supported": True, "on": a.get("on") is True,
+        "supported": supported, "on": a.get("on") is True,
         "hour": hour if hour is not None and 0 <= hour <= 23 else 3,
         "state": _str(a.get("state"), 16), "target": _str(a.get("target"), 80), "reason": _str(a.get("reason")),
         "next_window": _int(a.get("next_window")),
         "last": {"version": _str(last.get("version"), 80), "result": _str(last.get("result"), 16), "at": _int(last.get("at"))},
+        "rolled_back": _str(a.get("rolled_back"), 80), "unfinished": a.get("unfinished") is True,
+        "skipped": {"window": _str(sk.get("window"), 16), "reason": _str(sk.get("reason")), "at": _int(sk.get("at"))},
+        "switch": {"id": _str(sw.get("id"), 64), "action": _str(sw.get("action"), 16), "result": _str(sw.get("result"), 16),
+                   "message": _str(sw.get("message")), "at": _int(sw.get("at"))},
     }
 
 

@@ -187,24 +187,36 @@ request says beyond the three fields, or run as root.
   host) on Linux. Request files are 640, so on Linux you read them through that group while they belong to the
   portal's uid. The helper's logs (`.state/helper/last-<action>.log`) are 600; its service log
   `.state/helper/helper.log` is 600 and trimmed to 200 KB when it passes 1 MB.
-- [x] **Bounded reads.** Everything the helper and `./stack` read from folders the portal can write is checked to be
-  a regular file first and read with a size cap (requests 513 bytes, the release check's answer 256 bytes).
+- [x] **Bounded reads that never block.** Everything the helper and `./stack` read from folders the portal can write
+  is read with a size cap (requests 513 bytes, the release check's answer 256 bytes). Requests are first moved into
+  the helper's private folder and checked to be regular files. The release check's answer (`latest.txt`) is opened
+  with `O_NONBLOCK | O_NOFOLLOW` and checked to be a regular file on the open handle (perl; without perl, the same
+  checks by path and a read ended after 2 seconds), so a FIFO, device or symlink put there, even swapped in after a
+  check, cannot stall or redirect the helper. The helper reads it only inside the automatic-update window, once per
+  window, and only with automatic updates on.
 - [x] **Automatic updates: off by default, releases only, once each.** The switch on Home is a request like the
   others (password again, `REMOTE_ADMIN_ACTIONS`, both sets of rate limits, refused while `.state/lock/` is held,
-  since setup writes `.env` too). When `AUTO_UPDATE=on`, the helper runs the same `./stack update --yes` (backup
-  first) within three hours from `AUTO_UPDATE_HOUR` (default 3, this computer's local time) and only when all of
-  these hold: the portal's daily check (`latest.txt`) names a release newer than the installed version; this
-  checkout is detached at an exact release tag (as `install.sh` leaves it; never a branch, whatever
-  `BEDROCK_NOW_HELPER_ALLOW_BRANCH` says); and after a `git fetch` the newest release tag of **origin** (this
-  project's GitHub repository for an `install.sh` install) is exactly that version. So it fetches only what a
-  manual `./stack update` would fetch, release tags of the same repository with the same trust (and
-  `UPDATE_REQUIRE_SIGNED_TAGS=true` applies to it the same way). `latest.txt` is written by the portal, so it is
-  only a trigger: a version that origin does not have as its newest release is never installed. Each release is
-  tried at most once (`.state/helper/auto-last`): one that failed, did not finish, or was rolled back later is not
-  installed again automatically; a newer release is. It skips the night (`.state/helper/auto-skip`, shown on Home)
-  when a job or a terminal `./stack` command runs, the checkout has local changes, Docker or the stack is
-  stopped (it never starts a stack you stopped), or origin cannot be reached. Turn it off on Home, with
-  `./stack helper auto off`, or `AUTO_UPDATE=off` in `.env`; `./stack helper uninstall` stops everything.
+  since setup writes `.env` too); its result is reported with the switch and never replaces the last job on Home.
+  When `AUTO_UPDATE=on`, the helper runs the same `./stack update --yes` (backup first) within three hours from
+  `AUTO_UPDATE_HOUR` (default 3, this computer's local time), within its own limits (one job a minute, 12 a day),
+  and only when all of these hold: this checkout is detached at an exact release tag (as `install.sh` leaves it;
+  never a branch, whatever `BEDROCK_NOW_HELPER_ALLOW_BRANCH` says); the last update finished (an unfinished one waits
+  for Update now or Roll back); the portal's daily check (`latest.txt`, read once per window as above) names a
+  release newer than the installed version; and the newest release tag of **origin** after fetching it (this
+  project's GitHub repository for an `install.sh` install) is exactly that version. So it fetches only what a manual
+  `./stack update` would fetch, release tags of the same repository with the same trust (and
+  `UPDATE_REQUIRE_SIGNED_TAGS=true` applies to it the same way). `latest.txt` is written by the portal, so it is only
+  a trigger: a version that is not origin's newest release tag is never installed. The fetch cannot ask for a
+  password or hang (ssh in batch mode, a connect timeout, and the whole fetch ended after two minutes). Each release
+  is tried at most once (`.state/helper/auto-last`, written before the job starts; if it cannot be written, the job
+  does not start): one that failed, was interrupted (a job the helper finds unfinished at start, with no `./stack`
+  command holding the lock, is marked so), or that you rolled back, also with your own `./stack rollback` (which
+  records the version it left), is not installed again automatically; a newer release is. It skips the night
+  (`.state/helper/auto-skip`, shown on Home) when a job or a terminal `./stack` command runs, the checkout has local
+  changes, Docker or the stack is stopped (it never starts a stack you stopped), or origin cannot be reached. While
+  an update or rollback runs, the helper keeps the computer from sleeping (`caffeinate` on macOS, `systemd-inhibit`
+  on Linux); it never wakes it. Turn automatic updates off on Home, with `./stack helper auto off`, or
+  `AUTO_UPDATE=off` in `.env`; `./stack helper uninstall` stops everything.
 - [x] **Easy to turn off.** `./stack helper uninstall` removes the agent or unit; `./stack uninstall` does too, and
   so does a `./stack rollback` to a version that has no helper. Without the helper, the buttons disappear (the
   portal only offers them while the heartbeat is fresh; Home then shows the one command that turns them on) and
@@ -213,11 +225,12 @@ request says beyond the three fields, or run as root.
 **Threat model.** Someone who takes over the portal container, or steals a session *and* the password, can at
 most ask for an update to the newest release, a rollback to the recorded previous version, an image clean-up, or
 switch automatic updates on or off, within the helper's limits above. Switched on, automatic updates install
-only origin's newest release tag, once, at night: the same as asking for that update. Each of these is something you can already do, and each is backed up or
-reversible: update takes a backup first, rollback takes one before it restores, and clean keeps the previous
+only origin's newest release tag, once, at night: the same as asking for that update. Each of these is something
+you can already do, and each is backed up or reversible: update takes a backup first, rollback takes one before it restores, and clean keeps the previous
 version. They cannot choose a version, a backup or a command. The worst they can cause is a few minutes of
-downtime, at most twelve times a day. The helper never reads anything else the portal writes. Its own code is
-the checkout's: whoever can change your checkout could already run anything as you (see Code provenance below).
+downtime, at most twelve times a day. Apart from the requests, the only file the helper reads from the portal is the
+release check's `latest.txt`: inside the automatic-update window, once, without blocking, and only as a trigger (see
+above). Its own code is the checkout's: whoever can change your checkout could already run anything as you (see Code provenance below).
 
 **Remote access.** `portal/portal/admin.py` has the hooks: `is_remote()` (which requests count as remote),
 `remote_allowed()` (the `REMOTE_ADMIN_ACTIONS` switch) and `fresh_auth_required()` (always true today; stricter

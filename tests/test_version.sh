@@ -103,3 +103,21 @@ test_up_and_setup_write_the_version_file_before_the_portal_starts() {
     assert_contains "$body" "ensure_portal_dirs; write_version_file"
   done
 }
+
+test_latest_release_is_read_without_ever_blocking() {   # review I4: the portal can write update-check/
+  local f d mode
+  _repo; printf 'COMPOSE_PROJECT_NAME=bn-t\n' > "$ENV_FILE"
+  d="$STATE_DIR/update-check"; mkdir -p "$d"; f="$d/latest.txt"
+  for mode in perl no-perl; do
+    [ "$mode" = perl ] && unset BEDROCK_NOW_NO_PERL || export BEDROCK_NOW_NO_PERL=1
+    rm -f "$f"; printf 'latest=v0.3.0\nchecked_at=1\n' > "$f"
+    assert_eq "$(latest_release_seen)" "v0.3.0"
+    rm -f "$f"; mkfifo "$f"   # a reader that opened this normally would wait forever
+    ( latest_release_seen > "$TMP/out" ) & p=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$p" 2>/dev/null; then kill "$p"; echo "$mode: blocked on a FIFO" >&2; return 1; fi
+    assert_eq "$(cat "$TMP/out")" ""
+    rm -f "$f"; printf 'latest=v9.9.9\n' > "$TMP/elsewhere"; ln -s "$TMP/elsewhere" "$f"
+    assert_eq "$(latest_release_seen)" ""
+  done
+}

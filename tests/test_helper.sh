@@ -27,6 +27,7 @@ EOS
   mkdir -p "$STATE_DIR/images" "$(request_dir)" "$(helper_dir)"
   export CALLS="$TMP/calls" STATE_DIR HELPER_JOB_POLL_S=0
   HELPER_MIN_INTERVAL_S=0   # the limits have their own tests
+  _keep_awake() { :; }      # never caffeinate/systemd-inhibit for real (tests/test_auto_update.sh tests it)
 }
 
 _req() { # _req ACTION [AGE_S] [NONCE] [FILE-NONCE] — a request file as the portal writes it

@@ -367,7 +367,8 @@ def auto_switch(ctx):
         page.reload()
         page.locator("#auto-toggle [data-auto=on][aria-pressed=true]").wait_for(timeout=15000)
         hint = page.inner_text("#update-hint")
-        expect(hint == "Will install automatically tonight between 03:00 and 06:00 — or Update now.", f"update hint: {hint}")
+        expect(hint == "Will install automatically tonight between 03:00 and 06:00 (this computer's time) — or Update now.",
+               f"update hint: {hint}")
         shot(page, "05b-home-automatic-updates-on")
         states.append("on: update card says tonight")
     finally:

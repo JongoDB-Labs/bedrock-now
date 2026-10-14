@@ -82,13 +82,27 @@ EOF
   chmod 644 "$f"; mv "$f" "$d/version.json"
 }
 
+# read_portal_file FILE MAXBYTES -> the first MAXBYTES of FILE, a file in a folder the portal can write. It never
+# blocks or follows anything: opened with O_NONBLOCK|O_NOFOLLOW and checked to be a regular file on the open handle
+# (perl), so a FIFO, a device or a symlink put there, even swapped in after a check, is refused. Without perl: the
+# same checks by path, and a read that is ended after 2 s (BEDROCK_NOW_NO_PERL=1 forces that, for the tests).
+read_portal_file() {
+  if [ -z "${BEDROCK_NOW_NO_PERL:-}" ] && command -v perl >/dev/null 2>&1; then
+    perl -e 'use Fcntl; sysopen(my $f, $ARGV[0], O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or exit 1; -f $f or exit 1;
+      my $b = ""; sysread($f, $b, $ARGV[1]); print $b' "$1" "$2" 2>/dev/null
+    return
+  fi
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  ( head -c "$2" "$1" 2>/dev/null & p=$!
+    ( sleep 2; kill "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+    wait "$p"; r=$?; kill "$w" 2>/dev/null; exit "$r" )
+}
+
 # latest_release_seen -> the newest release the portal's last check found ("" if none, off, or nonsense)
 latest_release_seen() {
-  local f v
+  local v
   [ "$(get_env UPDATE_CHECK)" != false ] || return 0
-  f="$(update_check_dir)/latest.txt"
-  [ -f "$f" ] && [ ! -L "$f" ] || return 0
-  v="$(head -c 256 "$f" | sed -n 's/^latest=//p' | head -n 1)"   # written by the portal: bounded read
+  v="$(read_portal_file "$(update_check_dir)/latest.txt" 256 | sed -n 's/^latest=//p' | head -n 1)" || true
   _semver "$v" >/dev/null 2>&1 && printf '%s\n' "$v"
   return 0
 }

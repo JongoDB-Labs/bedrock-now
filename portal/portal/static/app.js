@@ -448,6 +448,7 @@ const autoHour = (a) => (a && a.auto && Number.isInteger(a.auto.hour) ? a.auto.h
 // The nightly window on the helper's computer: its own clock, whatever time zone this browser is in.
 const autoWindow = (a) => [`${pad2(autoHour(a))}:00`, `${pad2((autoHour(a) + 3) % 24)}:00`];
 const ASLEEP = "If this computer is asleep then, it misses the window and tries the next night.";
+const REMOTE_OFF = "Update, Rollback, Clean and the automatic-updates switch are off for remote access (REMOTE_ADMIN_ACTIONS in .env).";
 const ACTION_TEXT = {
   update: (a) => {
     // A checkout on a branch (vX.Y.Z-N-g… versions) updates to whatever that branch has now, not to the release.
@@ -497,23 +498,36 @@ function renderAuto(a, usable) {
   row.hidden = !(a.running && auto.supported);
   if (row.hidden) return;
   $("#auto-window").textContent = autoWindow(a).join("–");
+  const changing = Boolean(awaiting && awaiting.toggle);
   for (const b of document.querySelectorAll("#auto-toggle .chip")) {
     b.setAttribute("aria-pressed", String((b.dataset.auto === "on") === Boolean(auto.on)));
-    b.disabled = !usable || a.in_progress;
+    b.disabled = !usable || a.in_progress || changing;
   }
-  $("#auto-state").textContent = auto.on ? `${auto.reason || "On."} ${ASLEEP}`
-    : "Off: new releases wait for you. Nightly installs a new release by itself, with a backup first.";
+  // the last switch change, if it failed (a Busy refusal, say): said here, never in place of the last job
+  const sw = auto.switch || {};
+  const failed = sw.result === "failed" && sw.at && (Date.now() / 1000 - sw.at) < 600 ? ` Not changed: ${sw.message}` : "";
+  $("#auto-state").textContent = changing ? "Changing…" : auto.on ? `${auto.reason || "On."} ${ASLEEP}${failed}`
+    : `Off: new releases wait for you. Nightly installs a new release by itself, with a backup first.${failed}`;
 }
 
+// The update card's line while automatic updates are on. The helper reads the portal's release check only inside its
+// window, so Home combines what the helper says (switch, state, what it tried) with the release this card shows.
 function updateHint(a, usable) {
-  if (!a.allowed) return "Run it in your bedrock-now folder. Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env).";
+  if (!a.allowed) return `Run it in your bedrock-now folder. ${REMOTE_OFF}`;
   if (!usable) return "Run it in your bedrock-now folder.";
-  const auto = a.auto || {};
+  const auto = a.auto || {}, latest = lastUpdate && lastUpdate.latest, last = auto.last || {};
   if (auto.supported && auto.on) {
     const [from, to] = autoWindow(a), h = autoHour(a);
-    if (auto.state === "wait") return `Will install automatically ${h >= 18 || h < 6 ? "tonight" : "today or tomorrow"} between ${from} and ${to} — or Update now.`;
-    if (auto.state === "run" || auto.state === "running" || /Update now/.test(auto.reason || "")) return auto.reason;
-    if (auto.reason) return `${auto.reason} Or click Update now.`;
+    if (["branch", "not-release", "unfinished", "run", "running", "busy"].includes(auto.state)) {
+      return /Update now/.test(auto.reason || "") || auto.state === "run" || auto.state === "running" ? auto.reason : `${auto.reason} Or click Update now.`;
+    }
+    if (latest && auto.rolled_back === latest) return `You rolled back ${latest}, so it is not installed automatically: Update now installs it.`;
+    if (latest && last.version === latest && last.result && last.result !== "done") {
+      return `${latest} ${last.result === "interrupted" ? "was interrupted" : "failed"} when it installed automatically and is not retried automatically: Update now tries again.`;
+    }
+    const sk = auto.skipped || {};
+    const skipped = sk.at && (Date.now() / 1000 - sk.at) < 86400 && sk.reason ? ` The last window was skipped: ${sk.reason}.` : "";
+    return `Will install automatically ${h >= 18 || h < 6 ? "tonight" : "today or tomorrow"} between ${from} and ${to} (this computer's time) — or Update now.${skipped}`;
   }
   return "Or click Update now: the update helper runs it for you (asks for the portal password).";
 }
@@ -521,7 +535,7 @@ function updateHint(a, usable) {
 function renderAdmin(a) {
   adminState = a;
   const usable = a.running && a.allowed;
-  $("#maint-state").textContent = !a.allowed ? "Update, Rollback and Clean are off for remote access (REMOTE_ADMIN_ACTIONS in .env)."
+  $("#maint-state").textContent = !a.allowed ? REMOTE_OFF
     : `The update helper is running on this computer${a.version ? ` (installed version ${a.version})` : ""}.`;
   $("#maint-state").hidden = $("#maint-actions").hidden = $("#maint-note").hidden = !a.running;
   for (const b of document.querySelectorAll("button.action[data-action]")) b.disabled = !usable || a.in_progress;
@@ -546,20 +560,19 @@ function renderJob(job, inProgress) {
   if (box.hidden) return;
   const steps = PHASES[job.action] || [];
   const at = steps.findIndex(([p]) => p === job.phase);
-  const auto = job.trigger === "auto", toggle = job.action === "auto-on" || job.action === "auto-off";
+  const auto = job.trigger === "auto";
   const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up" }[job.action] || "Request";
-  $("#job-title").textContent = toggle ? `Automatic updates${job.phase === "failed" ? ": not changed" : ""}`
-    : `${name}${job.phase === "failed" ? " failed" : job.phase === "done" ? " finished" : " in progress"}`;
+  $("#job-title").textContent = `${name}${{ failed: " failed", done: " finished", skipped: " skipped" }[job.phase] || " in progress"}`;
   const list = $("#job-steps"); list.replaceChildren();
   steps.forEach(([p, label], i) => {
-    const state = job.phase === "failed" ? (i < Math.max(at, 0) ? "ok" : "") : i < at || job.phase === "done" ? "ok" : i === at ? "now" : "";
+    const state = job.phase === "failed" || job.phase === "skipped" ? (i < Math.max(at, 0) ? "ok" : "") : i < at || job.phase === "done" ? "ok" : i === at ? "now" : "";
     list.append(el("li", { class: state, text: label }));
   });
   let msg = job.message || "";
   if (job.phase === "done" && job.action === "update" && job.version && !msg) msg = `Updated to ${job.version}`;
   // "Already up to date (…)": the helper's update found nothing new — no step ran, and Home did not change either
   const nothingNew = job.phase === "done" && msg.startsWith("Already up to date");
-  list.hidden = !steps.length || nothingNew;
+  list.hidden = !steps.length || nothingNew || job.phase === "skipped";
   $("#job-message").textContent = msg;
   $("#job-message").className = `job-message ${job.phase === "failed" ? "bad" : job.phase === "done" ? "good" : ""}`;
   let note = "";
@@ -567,6 +580,7 @@ function renderJob(job, inProgress) {
   else if (inProgress) note = `Started ${job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : ""}. You can leave this page; it is carried out on your computer.`;
   else if (job.phase === "done" && (job.action === "update" || job.action === "rollback") && !nothingNew) note = "Reload this page to use the new version of Home.";
   else if (job.phase === "failed" && auto) note = "This release is not retried automatically: Update now tries again, and a newer release is tried as usual.";
+  else if (job.phase === "skipped") note = "Nothing was changed. It tries again in the next window, or Update now runs it.";
   $("#job-note").textContent = note;
   $("#job-dismiss").hidden = inProgress;
   // A failed update that moved the code: Roll back right here (the button in Maintenance does the same)
@@ -579,11 +593,18 @@ async function pollAdmin() {
   try {
     const a = await api("/api/admin/status");
     reconnecting = false;
-    const answered = a.job && (a.job.id === (awaiting && awaiting.id) || (a.job.started_at || 0) * 1000 >= (awaiting ? awaiting.at - 5000 : 0));
-    if (awaiting && (answered || Date.now() - awaiting.at > 60000)) awaiting = null;
-    if (awaiting && adminState) { a.in_progress = true; a.job = adminState.job; }
+    if (awaiting) {
+      // a job answers in the job status (its id is the request's nonce; a refusal is newer than the request), a switch
+      // change in the heartbeat's "switch"
+      const sw = (a.auto && a.auto.switch) || {};
+      const answered = awaiting.toggle ? sw.id === awaiting.id
+        : a.job && (a.job.id === awaiting.id || (a.job.started_at || 0) * 1000 >= awaiting.at - 5000);
+      if (answered && awaiting.toggle) toast(sw.result !== "done" ? "Automatic updates: not changed" : a.auto.on ? "Automatic updates are on" : "Automatic updates are off");
+      if (answered || Date.now() - awaiting.at > 60000) awaiting = null;
+    }
+    if (awaiting && !awaiting.toggle && adminState) { a.in_progress = true; a.job = adminState.job; }
     renderAdmin(a);
-    adminTimer = setTimeout(pollAdmin, a.in_progress ? 2500 : REFRESH_MS);
+    adminTimer = setTimeout(pollAdmin, a.in_progress || awaiting ? 2500 : REFRESH_MS);
   } catch (e) {
     if (e.message === "signed out") return;
     // The portal restarts during an update: keep asking, show where things stood.
@@ -622,8 +643,10 @@ async function submitConfirm(ev) {
     $("#confirm-password").value = "";
     $("#confirm").close();
     toast("Request sent to the update helper");
-    awaiting = { id: d.id, at: Date.now() };
-    if (adminState) { adminState.in_progress = true; adminState.job = { action: pendingAction, phase: "queued", message: "Waiting for the update helper…", started_at: Math.floor(Date.now() / 1000) }; renderAdmin(adminState); }
+    const toggle = pendingAction === "auto-on" || pendingAction === "auto-off";
+    awaiting = { id: d.id, at: Date.now(), toggle };
+    if (adminState && !toggle) { adminState.in_progress = true; adminState.job = { action: pendingAction, phase: "queued", message: "Waiting for the update helper…", started_at: Math.floor(Date.now() / 1000) }; }
+    if (adminState) renderAdmin(adminState);
     setTimeout(pollAdmin, 1500);
   } catch (e) {
     const er = $("#confirm-error"); er.textContent = `Could not reach the portal (${e.message}).`; er.hidden = false;

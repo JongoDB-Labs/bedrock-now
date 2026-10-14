@@ -79,20 +79,29 @@ All notable changes to bedrock-now are documented here. The format follows
   and tokens in the last 30 days (free as "$0 actual (≈ $… at paid rates)") and today's requests.
 - **Automatic updates, off by default.** Home → Maintenance has *Automatic updates: Off | Nightly (03:00–06:00)*
   (segmented like the model filter, asks for the portal password; a new request action `auto-on` / `auto-off`
-  that the helper validates like the others and carries out as `./stack helper auto on|off`), and the CLI has
-  `./stack helper auto on [--hour N] | off | status` (`AUTO_UPDATE` / `AUTO_UPDATE_HOUR` in `.env`). When on, the
-  update helper runs the same `./stack update --yes` as Update now (backup first) for a new **release** in the
-  window `[N:00, N+3:00)` of this computer's clock: only when the portal's daily check names a release newer than
-  the installed one, the checkout is detached at a release (never a branch), the stack runs, and origin's newest
-  release tag, fetched first, is exactly that version. Each release is tried once: a failed, unfinished or
-  rolled-back release is not installed again automatically (Update now still works, a newer release is tried as
-  usual). A busy stack (a job, a terminal `./stack` command), local changes or no network skip that night, and
-  Home says why; a computer asleep during the window tries the next night instead of updating when it wakes. Home
-  shows the result as "Updated automatically to vX.Y.Z at 03:04", or the failure with **Roll back** right in the
-  progress card; the update card says "Will install automatically tonight between 03:00 and 06:00 — or Update
-  now". The heartbeat (`.state/status/helper.json`) gains `auto` (switch, hour, state, reason, next window, last
-  attempt) and `rollback.unfinished`; the job status gains `trigger`. `./stack status` and `./stack helper status`
-  show how updates happen on this install.
+  that the helper validates like the others and carries out as `./stack helper auto on|off`; its result is
+  reported with the switch, never in place of the last job), and the CLI has `./stack helper auto on [--hour N] |
+  off | status` (`AUTO_UPDATE` / `AUTO_UPDATE_HOUR` in `.env`). When on, the update helper runs the same
+  `./stack update --yes` as Update now (backup first) for a new **release** in the window `[N:00, N+3:00)` of this
+  computer's clock, within its own limits: only when the checkout is detached at a release (never a branch), the
+  last update finished, the stack runs, the portal's daily check names a release newer than the installed one, and
+  that release is the newest tag of origin after fetching it. The helper reads the portal's `latest.txt` only inside
+  the window, once per window, through a read that cannot block (`O_NONBLOCK | O_NOFOLLOW`, regular files only).
+  Each release is tried once: a failed or interrupted release, and one you rolled back (also with `./stack
+  rollback` in a terminal, which now records the version it left), is not installed again automatically; Update
+  now still works and a newer release is tried as usual. An update that did not finish holds automatic updates back
+  until Update now finishes it or Roll back goes back. A busy stack (a job, a terminal `./stack` command), local
+  changes or no network skip that night, and Home says why. While an update or rollback runs the helper keeps the
+  computer from sleeping (`caffeinate` / `systemd-inhibit`); a computer already asleep when the window starts tries
+  the next night instead of updating when it wakes. A job the helper finds unfinished when it starts (the computer
+  or the helper stopped) is marked as interrupted, and the helper restarts with the new code after a `./stack
+  update` in a terminal. Home shows the result as "Updated automatically to vX.Y.Z at 03:04", the failure with
+  **Roll back** right in the progress card, or "Automatic update skipped" when it could not start; the update card
+  says "Will install automatically tonight between 03:00 and 06:00 (this computer's time) — or Update now". The
+  heartbeat (`.state/status/helper.json`) gains `auto` (switch, hour, state, reason, next window, last attempt, the
+  release rolled back, the last skipped window, the last switch change) and `rollback.unfinished`; the job status
+  gains `trigger` and the final phase `skipped`. It costs less than before: the checkout's facts are cached and
+  the heartbeat runs in bash. `./stack status` and `./stack helper status` show how updates happen on this install.
 - **Home without the helper:** instead of only the terminal command, "One-click updates are off" with
   `./stack helper install`, a Copy button and why it needs a terminal once (in the update card while an update is
   available, else in Maintenance; "the update helper is not running" when it was installed but stopped). Remote

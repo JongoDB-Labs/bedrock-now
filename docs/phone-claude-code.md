@@ -81,8 +81,9 @@ the display is off* and *Start up automatically after a power failure* in its En
 `serve` coexists with the update helper (`./stack helper install`, a launchd agent): the helper needs the Mac
 awake to run a one-click Update from Home or an automatic update in its nightly window, and `serve` provides
 that. If an update, rollback or clean is running when you start `serve`, it doesn't start the stack in the
-middle of it (the update does that) and only keeps the Mac awake. The helper itself never prevents sleep: a Mac
-asleep during the window misses it and tries the next night.
+middle of it (the update does that) and only keeps the Mac awake. The helper itself keeps the Mac awake only while
+an update or rollback runs (`caffeinate`), and never wakes it: a Mac asleep when the window starts misses it and
+tries the next night.
 
 On Linux, `./stack serve` only acts on a laptop (a machine with a battery): it holds a `systemd-inhibit` sleep
 lock until Ctrl-C, and says so if the inhibitor can't be taken (or `systemd-inhibit` is missing). Without a

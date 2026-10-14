@@ -245,24 +245,49 @@ offer_helper() {
 
 # --- automatic updates (AUTO_UPDATE=on in .env: ./stack helper auto, or the switch in Home → Maintenance) ---
 # The helper installs a new RELEASE by itself, at most once per release, in a nightly window: three hours from
-# AUTO_UPDATE_HOUR (default 3; this computer's local time). Only when the portal's daily check (latest.txt) names a
-# release newer than the installed one and this checkout is on a release (detached at vX.Y.Z, as install.sh leaves
-# it), never on a branch. It runs the same ./stack update --yes as Update now (a backup first). A release it tried is
-# not tried again automatically, whether that failed or was rolled back later; a newer one is. Busy (a job, a terminal
-# ./stack holding the lock), the stack or Docker stopped, or origin unreachable: skipped until the next window. A
-# computer asleep during the window misses it (launchd/systemd do not run the helper then) and tries the next night.
+# AUTO_UPDATE_HOUR (default 3; this computer's local time). Only when this checkout is on a release (detached at
+# vX.Y.Z, as install.sh leaves it), never on a branch; no earlier update is unfinished; the portal's daily check
+# (latest.txt, read once per window and never in a way that could block) names a newer release; and after fetching
+# origin, its newest release tag is exactly that one. It runs the same ./stack update --yes as Update now (a backup
+# first). A release it tried is never tried again automatically (failed, interrupted, or rolled back, also by your own
+# ./stack rollback); a newer one is. Busy (a job, a terminal ./stack holding the lock), local changes, the stack or
+# Docker stopped, or origin unreachable: that window is skipped. A computer asleep during the window misses it.
 
-auto_last_file() { printf '%s/auto-last\n' "$(helper_dir)"; }   # version= result=running|done|failed at= finished=
-auto_skip_file() { printf '%s/auto-skip\n' "$(helper_dir)"; }   # window=<start epoch> reason= at=
+auto_last_file() { printf '%s/auto-last\n' "$(helper_dir)"; }     # version= result=running|done|failed|interrupted at= finished=
+auto_skip_file() { printf '%s/auto-skip\n' "$(helper_dir)"; }     # window=<local date it starts> reason= at=
+auto_seen_file() { printf '%s/auto-seen\n' "$(helper_dir)"; }     # window= latest=   (latest.txt, read once per window)
+auto_switch_file() { printf '%s/switch-last\n' "$(helper_dir)"; } # id= action= result= message= at=   (the last switch change)
+
+# _kv_read FILE PREFIX KEY... — KEY=value lines of a small file of the helper's own into PREFIX_KEY variables, in bash
+# (no process: the heartbeat runs every 3 s); a missing file or key leaves them empty
+_kv_read() {
+  local f="$1" p="$2" k v
+  shift 2
+  for k in "$@"; do eval "${p}_$k=''"; done
+  [ -f "$f" ] || return 0
+  while IFS='=' read -r k v; do
+    case " $* " in *" $k "*) eval "${p}_$k=\$v" ;; esac
+  done < "$f"
+}
+
+# _auto_env — AUTO_UPDATE, AUTO_UPDATE_HOUR and UPDATE_CHECK from .env in one pass, in bash (the last line wins, as in
+# get_env) -> AE_AUTO_UPDATE, AE_AUTO_UPDATE_HOUR, AE_UPDATE_CHECK
+_auto_env() {
+  local k v
+  AE_AUTO_UPDATE=''; AE_AUTO_UPDATE_HOUR=''; AE_UPDATE_CHECK=''
+  [ -f "$ENV_FILE" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in AUTO_UPDATE) AE_AUTO_UPDATE="$v" ;; AUTO_UPDATE_HOUR) AE_AUTO_UPDATE_HOUR="$v" ;; UPDATE_CHECK) AE_UPDATE_CHECK="$v" ;; esac
+  done < "$ENV_FILE"
+}
 
 auto_on() { [ "$(get_env AUTO_UPDATE)" = on ]; }
-# auto_hour -> AUTO_UPDATE_HOUR as a number 0-23 (blank or anything else: 3)
-auto_hour() {
-  local h; h="$(get_env AUTO_UPDATE_HOUR)"
-  case "$h" in [0-9] | [0-9][0-9]) h=$((10#$h)) ;; *) h=3 ;; esac
-  [ "$h" -le 23 ] || h=3
-  echo "$h"
+# _auto_hour_of VALUE -> VALUE as an hour 0-23 (blank or anything else: 3); auto_hour: AUTO_UPDATE_HOUR's
+_auto_hour_of() {
+  case "${1:-}" in [0-9] | [0-9][0-9]) if [ $((10#$1)) -le 23 ]; then echo $((10#$1)); return 0; fi ;; esac
+  echo 3
 }
+auto_hour() { _auto_hour_of "$(get_env AUTO_UPDATE_HOUR)"; }
 _auto_hour_label() { printf '%02d:00–%02d:00\n' "$1" $((($1 + 3) % 24)); }   # 3 -> 03:00–06:00
 _auto_between() { printf 'between %02d:00 and %02d:00\n' "$1" $((($1 + 3) % 24)); }   # 3 -> between 03:00 and 06:00
 _auto_time() { [ -n "${1:-}" ] || return 0; date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || true; }
@@ -285,7 +310,8 @@ EOF
 # _auto_in_window HOUR NOW_HOUR -> 0 when NOW_HOUR is in [HOUR, HOUR+3) (across midnight too)
 _auto_in_window() { [ $((($2 - $1 + 24) % 24)) -lt 3 ]; }
 
-# _auto_next_window EPOCH SINCE_MIDNIGHT NOW_HOUR HOUR -> start (epoch) of the window we are in, else of the next one
+# _auto_next_window EPOCH SINCE_MIDNIGHT NOW_HOUR HOUR -> start (epoch) of the window we are in, else of the next one.
+# Hour arithmetic: off by an hour on a daylight-saving day, so it only shows when; a window is known by _auto_day.
 _auto_next_window() {
   local start=$(($1 - $2 + $4 * 3600))
   if _auto_in_window "$4" "$3"; then [ "$start" -le "$1" ] || start=$((start - 86400))
@@ -293,88 +319,147 @@ _auto_next_window() {
   echo "$start"
 }
 
-# auto_decision ON HOUR NOW_HOUR LATEST INSTALLED BRANCH TRIED BUSY -> "STATE [VERSION]": the scheduling rule, with no
-# clock, file or git access of its own (tests/test_auto_update.sh). ON: on|off; HOUR: the window's first hour; NOW_HOUR:
-# the local hour now; LATEST: the newest release the portal's check saw ("" = none, or the check is off); INSTALLED:
-# installed_version; BRANCH: the branch HEAD follows ("" = detached, a release install); TRIED: the release the last
-# automatic update tried ("" = none); BUSY: why not now ("" = free). STATE, first match wins:
-#   off | branch | not-release | none (nothing newer) | tried V (never twice) | wait V (outside the window) | busy V | run V
+# _auto_day EPOCH -> the local date of a window's start: what the once-per-window records are keyed on (an hour more
+# or less on a daylight-saving day never moves a window to another date)
+_auto_day() { date -r "$1" +%F 2>/dev/null || date -d "@$1" +%F 2>/dev/null || echo "$1"; }
+
+# _is_release V -> 0 for an exact release tag vX.Y.Z (bash only)
+_is_release() { local re='^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$'; [[ $1 =~ $re ]]; }
+
+# auto_decision ON HOUR NOW_HOUR LATEST INSTALLED BRANCH TRIED BUSY [UNFINISHED] -> "STATE [VERSION]": the scheduling
+# rule, with no clock, file or git access of its own (tests/test_auto_update.sh). ON: on|off; HOUR: the window's first
+# hour; NOW_HOUR: the local hour now; LATEST: the newest release the portal's check saw ("" = none, unknown, or the check
+# is off); INSTALLED: installed_version; BRANCH: the branch HEAD follows ("" = detached, a release install); TRIED: the
+# releases never to install automatically again, space-separated (the last one tried, the one you rolled back from);
+# BUSY: why not now ("" = free); UNFINISHED: 1 when the last update moved the code and did not finish. First match wins:
+#   off | branch | not-release | unfinished | wait [V] (outside the window; V when LATEST is newer) | none (nothing newer)
+#   | tried V (never twice) | busy V | run V
 auto_decision() {
-  local on="$1" hour="$2" now_h="$3" latest="$4" inst="$5" br="$6" tried="$7" busy="$8"
+  local on="$1" hour="$2" now_h="$3" latest="$4" inst="$5" br="$6" tried="$7" busy="$8" unfinished="${9:-}" newer=''
   [ "$on" = on ] || { echo off; return 0; }
   [ -z "$br" ] || { echo branch; return 0; }
-  case "$inst" in v*-* | '') echo not-release; return 0 ;; esac
-  _semver "$inst" >/dev/null 2>&1 || { echo not-release; return 0; }
-  if [ -z "$latest" ] || ! version_newer "$latest" "$inst"; then echo none; return 0; fi
-  [ "$tried" != "$latest" ] || { echo "tried $latest"; return 0; }
-  _auto_in_window "$hour" "$now_h" || { echo "wait $latest"; return 0; }
-  [ -z "$busy" ] || { echo "busy $latest"; return 0; }
-  echo "run $latest"
+  _is_release "$inst" || { echo not-release; return 0; }
+  [ "$unfinished" != 1 ] || { echo unfinished; return 0; }
+  if [ -n "$latest" ] && version_newer "$latest" "$inst"; then newer="$latest"; fi
+  _auto_in_window "$hour" "$now_h" || { echo "wait${newer:+ $newer}"; return 0; }
+  [ -n "$newer" ] || { echo none; return 0; }
+  case " $tried " in *" $newer "*) echo "tried $newer"; return 0 ;; esac
+  [ -z "$busy" ] || { echo "busy $newer"; return 0; }
+  echo "run $newer"
 }
 
-# _auto_busy WINDOW_START -> why an automatic update cannot start now ("" = it can): skipped earlier in this window,
-# a job of the helper's own, or a ./stack command holding the lock
-_auto_busy() {
-  local f holder
-  f="$(auto_skip_file)"
-  if [ -f "$f" ] && [ "$(_auto_get "$f" window)" = "$1" ]; then
-    printf 'skipped at %s: %s\n' "$(_auto_time "$(_auto_get "$f" at)" | cut -c12-)" "$(_auto_get "$f" reason)"; return 0
-  fi
-  if _status_in_progress; then echo "another action is still running"; return 0; fi
-  holder="$(stack_lock_holder)"
-  [ -z "$holder" ] || echo "./stack ${holder#* } is running"
+# Facts about the checkout: HEAD, installed_version and the branch. The helper's loop (HELPER_CACHE=1) keeps them for
+# HELPER_REFRESH_S (60 s; they cost git processes, the heartbeat runs every 3 s); everywhere else they are read anew.
+HF_AT=''; HF_HEAD=''; HF_VERSION=''; HF_BRANCH=''
+helper_facts() {
+  local every
+  every="${HELPER_REFRESH_S:-60}"; case "$every" in '' | *[!0-9]*) every=60 ;; esac
+  if [ "${HELPER_CACHE:-0}" = 1 ] && [ "${1:-}" != force ] && [ -n "$HF_AT" ] && [ $((SECONDS - HF_AT)) -lt "$every" ]; then return 0; fi
+  HF_AT=$SECONDS
+  HF_HEAD="$(git -C "$STACK_DIR" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)"
+  HF_VERSION="$(installed_version)"
+  HF_BRANCH="$(git -C "$STACK_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
 }
 
-# helper_auto_state — the automatic update's state now, in AUTO_* (read by the heartbeat, the tick and the CLI)
+# helper_auto_state [--read | --peek] — the automatic update's state now, in AUTO_* (the heartbeat, the tick, the CLI).
+# latest.txt is the portal's (a folder it can write): the helper reads it only inside the window, once per window
+# (--read: the first heartbeat or tick in the window; later ones use what it saw). --peek reads it now (./stack helper
+# auto status, in your terminal). Both read it through latest_release_seen, which never blocks (lib/version.sh).
+# shellcheck disable=SC2154  # PREFIX_KEY variables come from _kv_read
 helper_auto_state() {
-  local clock now nowh since br inst d f w
-  clock="$(_auto_clock)"; now="${clock%% *}"; since="${clock##* }"; nowh="${clock#* }"; nowh="${nowh%% *}"
-  AUTO_ON=off; ! auto_on || AUTO_ON=on
-  AUTO_HOUR="$(auto_hour)"
-  AUTO_NEXT="$(_auto_next_window "$now" "$since" "$nowh" "$AUTO_HOUR")"
-  f="$(auto_last_file)"
-  AUTO_LAST_VERSION="$(_auto_get "$f" version)"; AUTO_LAST_RESULT="$(_auto_get "$f" result)"; AUTO_LAST_AT="$(_auto_get "$f" at)"
+  local clock nowh since latest='' w d tried
+  _auto_env
+  AUTO_ON=off; [ "$AE_AUTO_UPDATE" != on ] || AUTO_ON=on
+  AUTO_HOUR="$(_auto_hour_of "$AE_AUTO_UPDATE_HOUR")"
+  clock="$(_auto_clock)"; AUTO_NOW="${clock%% *}"; since="${clock##* }"; nowh="${clock#* }"; nowh="${nowh%% *}"
+  AUTO_NEXT="$(_auto_next_window "$AUTO_NOW" "$since" "$nowh" "$AUTO_HOUR")"
+  AUTO_IN_WINDOW=0; AUTO_WINDOW=''
+  if _auto_in_window "$AUTO_HOUR" "$nowh"; then AUTO_IN_WINDOW=1; AUTO_WINDOW="$(_auto_day "$AUTO_NEXT")"; fi
+  helper_facts
+  _kv_read "$(auto_last_file)" AL version result at
+  _kv_read "$(update_record_file)" UR from result to_version rolled_back_version
+  _kv_read "$(auto_skip_file)" SK window reason at
+  case "$SK_at" in *[!0-9]*) SK_at='' ;; esac
+  AUTO_LAST_VERSION="$AL_version"; AUTO_LAST_RESULT="$AL_result"; AUTO_LAST_AT="$AL_at"
   case "$AUTO_LAST_AT" in *[!0-9]*) AUTO_LAST_AT='' ;; esac
-  br="$(git -C "$STACK_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
-  inst="$(installed_version)"
+  AUTO_UNFINISHED=0
+  [ "$UR_result" != running ] || [ -z "$UR_from" ] || [ "$UR_from" = "$HF_HEAD" ] || AUTO_UNFINISHED=1
+  # ./stack rollback went back from it: never again automatically (a rollback by an older version recorded only
+  # result=rolled-back: then it is the version that update had installed)
+  AUTO_ROLLED_BACK="$UR_rolled_back_version"
+  [ -n "$AUTO_ROLLED_BACK" ] || [ "$UR_result" != rolled-back ] || AUTO_ROLLED_BACK="$UR_to_version"
+  tried="$AUTO_LAST_VERSION $AUTO_ROLLED_BACK"
+  if [ "${1:-}" = --peek ]; then latest="$(latest_release_seen)"
+  elif [ "$AUTO_ON" = on ] && [ "$AUTO_IN_WINDOW" = 1 ]; then
+    _kv_read "$(auto_seen_file)" SN window latest
+    if [ "$SN_window" = "$AUTO_WINDOW" ]; then latest="$SN_latest"
+    elif [ "${1:-}" = --read ]; then latest="$(latest_release_seen)"; _auto_seen "$AUTO_WINDOW" "$latest"; fi
+  fi
   AUTO_BUSY=''
-  d="$(auto_decision "$AUTO_ON" "$AUTO_HOUR" "$nowh" "$(latest_release_seen)" "$inst" "$br" "$AUTO_LAST_VERSION" '')"
-  if [ "${d%% *}" = run ]; then
-    AUTO_BUSY="$(_auto_busy "$AUTO_NEXT")"
-    d="$(auto_decision "$AUTO_ON" "$AUTO_HOUR" "$nowh" "$(latest_release_seen)" "$inst" "$br" "$AUTO_LAST_VERSION" "$AUTO_BUSY")"
+  if [ "$AUTO_LAST_RESULT" = running ]; then
+    d="running $AUTO_LAST_VERSION"   # this helper is running it (one that stopped mid-job was marked at start)
+  else
+    d="$(auto_decision "$AUTO_ON" "$AUTO_HOUR" "$nowh" "$latest" "$HF_VERSION" "$HF_BRANCH" "$tried" '' "$AUTO_UNFINISHED")"
+    if [ "${d%% *}" = run ]; then
+      AUTO_BUSY="$(_auto_busy "$AUTO_WINDOW")"
+      d="$(auto_decision "$AUTO_ON" "$AUTO_HOUR" "$nowh" "$latest" "$HF_VERSION" "$HF_BRANCH" "$tried" "$AUTO_BUSY" "$AUTO_UNFINISHED")"
+    fi
   fi
   AUTO_STATE="${d%% *}"; AUTO_TARGET=''; [ "$d" = "$AUTO_STATE" ] || AUTO_TARGET="${d#* }"
-  # the automatic update running right now (its record says running until it ends)
-  if [ "$AUTO_STATE" = tried ] && [ "$AUTO_LAST_RESULT" = running ] && { [ "${JOB_TRIGGER:-}" = auto ] || _status_in_progress; }; then
-    AUTO_STATE=running
-  fi
   w="$(_auto_between "$AUTO_HOUR")"
   case "$AUTO_STATE" in
     off) AUTO_REASON="Off: new releases wait for you (Update now on Home, or ./stack update)." ;;
-    branch) AUTO_REASON="On, but this checkout follows branch $br: automatic updates install releases only (./stack update --to vX.Y.Z puts it on one)." ;;
-    not-release) AUTO_REASON="On, but this checkout is not on a release ($inst): automatic updates install releases only." ;;
-    none)
-      if [ "$(get_env UPDATE_CHECK)" = false ]; then AUTO_REASON="On, but the daily release check is off (UPDATE_CHECK=false), so no new release is seen."
-      else AUTO_REASON="On: up to date ($inst). A new release installs $w (this computer's time)."; fi ;;
-    tried)
-      case "$AUTO_LAST_RESULT" in
-        failed) AUTO_REASON="$AUTO_TARGET failed to install automatically ($(_auto_time "$AUTO_LAST_AT")) and is not retried automatically: Update now tries again, and a newer release is tried as usual." ;;
-        running) AUTO_REASON="The automatic update to $AUTO_TARGET did not finish ($(_auto_time "$AUTO_LAST_AT")) and is not retried automatically: Update now finishes it." ;;
-        *) AUTO_REASON="$AUTO_TARGET was installed automatically once ($(_auto_time "$AUTO_LAST_AT")) and later rolled back, so it is not installed again automatically: Update now installs it." ;;
-      esac ;;
+    branch) AUTO_REASON="On, but this checkout follows branch $HF_BRANCH: automatic updates install releases only (./stack update --to vX.Y.Z puts it on one)." ;;
+    not-release) AUTO_REASON="On, but this checkout is not on a release ($HF_VERSION): automatic updates install releases only." ;;
+    unfinished) AUTO_REASON="On, but the last update did not finish: Update now finishes it, or Roll back goes back. Automatic updates wait until then." ;;
     wait)
-      AUTO_REASON="$AUTO_TARGET installs automatically $w (this computer's time), after a backup."
-      f="$(auto_skip_file)"
-      if [ -f "$f" ] && [ "$(_auto_get "$f" window)" = $((AUTO_NEXT - 86400)) ]; then
-        AUTO_REASON="$AUTO_REASON The last window was skipped: $(_auto_get "$f" reason)."
+      if [ -n "$AUTO_TARGET" ]; then AUTO_REASON="$AUTO_TARGET installs automatically $w (this computer's time), after a backup."
+      else AUTO_REASON="On: a new release installs $w (this computer's time), after a backup."; fi
+      if [ -n "$SK_at" ] && [ "$SK_window" != "$AUTO_WINDOW" ] && [ $((AUTO_NOW - SK_at)) -lt 86400 ]; then
+        AUTO_REASON="$AUTO_REASON The last window was skipped: $SK_reason."
       fi ;;
-    busy) AUTO_REASON="Skipped in this window ($AUTO_BUSY); tries again next time, $w." ;;
+    none)
+      if [ "$AE_UPDATE_CHECK" = false ]; then AUTO_REASON="On, but the daily release check is off (UPDATE_CHECK=false), so no new release is seen."
+      else AUTO_REASON="On: up to date ($HF_VERSION). A new release installs $w (this computer's time)."; fi ;;
+    tried)
+      if [ "$AUTO_TARGET" = "$AUTO_ROLLED_BACK" ]; then
+        AUTO_REASON="You rolled back $AUTO_TARGET, so it is not installed again automatically: Update now installs it. A newer release is installed as usual."
+      else
+        case "$AUTO_LAST_RESULT" in
+          interrupted) AUTO_REASON="The automatic update to $AUTO_TARGET was interrupted ($(_auto_time "$AUTO_LAST_AT")) and is not retried automatically: Update now tries again." ;;
+          *) AUTO_REASON="$AUTO_TARGET failed to install automatically ($(_auto_time "$AUTO_LAST_AT")) and is not retried automatically: Update now tries again, and a newer release is tried as usual." ;;
+        esac
+      fi ;;
+    busy) AUTO_REASON="Skipped in this window ($AUTO_BUSY); tries again tomorrow, $w." ;;
     run | running) AUTO_REASON="Installing $AUTO_TARGET now (automatic update)." ;;
   esac
 }
 
+# _auto_busy WINDOW -> why an automatic update cannot start now ("" = it can): this window was skipped already, a job of
+# the helper's own runs, or a ./stack command holds the lock (uses SK_* from helper_auto_state)
+_auto_busy() {
+  if [ -n "$1" ] && [ "$SK_window" = "$1" ]; then
+    printf 'skipped at %s: %s\n' "$(_auto_time "$SK_at" | cut -c12-)" "$SK_reason"; return 0
+  fi
+  if _status_in_progress; then echo "another action is still running"; return 0; fi
+  local holder; holder="$(stack_lock_holder)"
+  [ -z "$holder" ] || echo "./stack ${holder#* } is running"
+}
+
+# _auto_seen WINDOW LATEST — what latest.txt said in this window (the heartbeat reads this, never latest.txt)
+_auto_seen() { _kv_write "$(auto_seen_file)" "window=$1" "latest=$2"; }
+
+# _kv_write FILE LINE... — a small record of the helper's own, atomically; fails when it cannot be written
+_kv_write() {
+  local f="$1" tmp
+  shift
+  tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 1
+  if printf '%s\n' "$@" > "$tmp" && mv "$tmp" "$f"; then return 0; fi
+  rm -f "$tmp"; return 1
+}
+
 helper_auto_status_text() {
-  helper_auto_state
+  helper_auto_state --peek
   if [ "$AUTO_ON" != on ]; then echo "Automatic updates: off (./stack helper auto on)"; return 0; fi
   printf "Automatic updates: on, nightly %s (this computer's time)\n" "$(_auto_hour_label "$AUTO_HOUR")"
   printf '  %s\n' "$AUTO_REASON"
@@ -513,10 +598,12 @@ _helper_count() {
 }
 
 # Job state for helper_write_status. JOB_TRIGGER: "auto" for the automatic update (else a request from Home);
-# JOB_TARGET: the release it installs; JOB_RESULT (after a job): refused | failed | done | nothing (nothing new)
-JOB_ID=''; JOB_ACTION=''; JOB_STARTED=''; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_TRIGGER=''; JOB_TARGET=''; JOB_RESULT=''
+# JOB_TARGET: the release it installs; JOB_RESULT (after a job): refused | failed | done | nothing (nothing new);
+# JOB_MESSAGE: why it was refused
+JOB_ID=''; JOB_ACTION=''; JOB_STARTED=''; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_TRIGGER=''; JOB_TARGET=''; JOB_RESULT=''; JOB_MESSAGE=''
 
-# helper_write_status PHASE MESSAGE — .state/status/helper-status.json (atomic; read-only in the portal)
+# helper_write_status PHASE MESSAGE — .state/status/helper-status.json (atomic; read-only in the portal). Final phases:
+# done, failed, skipped (an automatic update that did not start; it tries again in the next window)
 helper_write_status() {
   local d f tmp
   d="$(status_dir)"; f="$(helper_status_file)"; mkdir -p "$d"
@@ -527,13 +614,16 @@ helper_write_status() {
   chmod 644 "$tmp"; mv "$tmp" "$f"
 }
 
+# _status_phase -> the phase the status file shows ("" when there is none)
+_status_phase() { head -c 4096 "$(helper_status_file)" 2>/dev/null | sed -n 's/.*"phase": "\([a-z-]*\)".*/\1/p'; }
+
 # _status_in_progress -> 0 while the status file shows a job that has not finished (updated in the last 3 h)
 _status_in_progress() {
   local f ph upd now
   f="$(helper_status_file)"; [ -f "$f" ] || return 1
   ph="$(head -c 4096 "$f" | sed -n 's/.*"phase": "\([a-z-]*\)".*/\1/p')"; upd="$(head -c 4096 "$f" | sed -n 's/.*"updated_at": \([0-9]*\).*/\1/p')"
   now="$(date +%s)"
-  case "$ph" in '' | done | failed) return 1 ;; esac
+  case "$ph" in '' | done | failed | skipped) return 1 ;; esac
   [ -n "$upd" ] && [ $((now - upd)) -lt 10800 ]
 }
 
@@ -545,26 +635,77 @@ _refuse() {
   helper_write_status failed "Request refused: $1"
 }
 
+# _helper_recover — at start: a job the status file still shows as running belonged to a helper that stopped (the
+# computer shut down or slept, or the helper crashed). Unless a ./stack command still holds the lock (it then carries
+# on), it is marked as interrupted, so Home does not wait on it for hours, and so is the automatic update's record (an
+# interrupted release is not retried automatically, like a failed one).
+# shellcheck disable=SC2154  # PREFIX_KEY variables come from _kv_read
+_helper_recover() {
+  local f s
+  [ -z "$(stack_lock_holder)" ] || return 0
+  f="$(helper_status_file)"
+  case "$(_status_phase)" in
+    '' | done | failed | skipped) ;;
+    *)
+      s="$(head -c 4096 "$f" 2>/dev/null)"
+      JOB_ID="$(printf '%s' "$s" | sed -n 's/.*"id": "\([A-Za-z0-9-]*\)".*/\1/p')"
+      JOB_ACTION="$(printf '%s' "$s" | sed -n 's/.*"action": "\([a-z-]*\)".*/\1/p')"
+      JOB_STARTED="$(printf '%s' "$s" | sed -n 's/.*"started_at": \([0-9]*\).*/\1/p')"
+      JOB_TRIGGER="$(printf '%s' "$s" | sed -n 's/.*"trigger": "\([a-z]*\)".*/\1/p')"
+      JOB_FINISHED="$(date +%s)"; JOB_FREED=''; JOB_VERSION="$(installed_version)"
+      helper_write_status failed "Interrupted (the computer or the helper stopped during the job)$(_rollback_hint "$JOB_ACTION")"
+      printf '%s marked the unfinished %s job as interrupted\n' "$(date '+%F %T')" "${JOB_ACTION:-?}" >&2
+      JOB_TRIGGER='' ;;
+  esac
+  _kv_read "$(auto_last_file)" RC version result
+  [ "$RC_result" != running ] || _auto_record "$RC_version" interrupted || true
+}
+
 _num_or_null() { case "${1:-}" in '' | *[!0-9]*) echo null ;; *) echo "$1" ;; esac; }
 _bool() { if [ "$1" = "$2" ]; then echo true; else echo false; fi; }
+_jnum() { case "${1:-}" in '' | *[!0-9]*) JN=null ;; *) JN="$1" ;; esac; }   # -> JN: a number, or null (bash only)
+
+# _jsafe TEXT -> JS: TEXT made safe inside a JSON string in bash, no process (the heartbeat runs every 3 s): printable
+# ASCII only (no quotes, backslashes or control characters; so cutting at 300 bytes never splits a character)
+_jsafe() {
+  JS="${1//[^ -~]/}"; JS="${JS//\"/}"; JS="${JS//\\/}"
+  JS="${JS:0:300}"
+}
+# _jword TEXT -> JS: TEXT when it is a plain word (versions, branches, paths, enums), else empty
+_jword() { case "$1" in *[!A-Za-z0-9._/:+-]*) JS='' ;; *) JS="${1:0:120}" ;; esac; }
 
 # helper_heartbeat — .state/status/helper.json: the portal offers the buttons only while this is fresh. "rollback":
 # what Roll back goes back to ("unfinished": the last update moved the code and did not finish); "auto": the automatic
-# update's switch, window and state (helper_auto_state)
+# update's switch, window and state (helper_auto_state), the last window it skipped and the last switch change.
+# Runs every 3 s: bash only, apart from the clock and one atomic rename (the checkout's facts are cached: helper_facts).
+# shellcheck disable=SC2154  # PREFIX_KEY variables come from _kv_read
 helper_heartbeat() {
-  local d tmp from res avail=false to='' bk='' br
-  d="$(status_dir)"; mkdir -p "$d"
-  from="$(_record_get from)"; res="$(_record_get result)"
-  if [ -n "$from" ] && [ "$res" != rolled-back ]; then avail=true; to="$(_record_get from_version)"; bk="$(_record_get backup)"; fi
-  br="$(git -C "$STACK_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
-  helper_auto_state
-  tmp="$(mktemp "$d/.helper.XXXXXX")" || return 0
-  printf '{"heartbeat": %s, "pid": %s, "poll_s": %s, "version": "%s", "branch": "%s", "rollback": {"available": %s, "to": "%s", "backup": "%s", "unfinished": %s}, "auto": {"on": %s, "hour": %s, "state": "%s", "target": "%s", "reason": "%s", "next_window": %s, "last": {"version": "%s", "result": "%s", "at": %s}}}\n' \
-    "$(date +%s)" "$$" "$HELPER_POLL_S" "$(_json_str "$(installed_version)")" "$(_json_str "$br")" "$avail" "$(_json_str "$to")" "$(_json_str "$bk")" \
-    "$(_bool "$avail$res" truerunning)" "$(_bool "$AUTO_ON" on)" "$AUTO_HOUR" "$(_json_str "$AUTO_STATE")" "$(_json_str "$AUTO_TARGET")" \
-    "$(_json_str "$AUTO_REASON")" "$(_num_or_null "$AUTO_NEXT")" "$(_json_str "$AUTO_LAST_VERSION")" "$(_json_str "$AUTO_LAST_RESULT")" \
-    "$(_num_or_null "$AUTO_LAST_AT")" > "$tmp"
-  chmod 644 "$tmp"; mv "$tmp" "$(helper_beat_file)"
+  local d f av=false un=false aon=false aun=false rto rbk ver br st tg rs lv lr la rb skw skr ska si sa sr sm sat nw out part
+  d="$(status_dir)"; [ -d "$d" ] || mkdir -p "$d"
+  f="$(helper_beat_file)"
+  _kv_read "$(update_record_file)" HR from result from_version backup
+  if [ -n "$HR_from" ] && [ "$HR_result" != rolled-back ]; then
+    av=true; [ "$HR_result" != running ] || un=true
+  fi
+  helper_auto_state --read; AUTO_FRESH=1   # (latest.txt: inside the window only, once per window)
+  [ "$AUTO_ON" != on ] || aon=true; [ "$AUTO_UNFINISHED" != 1 ] || aun=true
+  _kv_read "$(auto_switch_file)" SW id action result message at
+  _jword "$HR_from_version"; rto="$JS"; _jword "$HR_backup"; rbk="$JS"
+  _jword "$HF_VERSION"; ver="$JS"; _jword "$HF_BRANCH"; br="$JS"
+  _jword "$AUTO_STATE"; st="$JS"; _jword "$AUTO_TARGET"; tg="$JS"; _jsafe "$AUTO_REASON"; rs="$JS"
+  _jword "$AUTO_LAST_VERSION"; lv="$JS"; _jword "$AUTO_LAST_RESULT"; lr="$JS"; _jword "$AUTO_ROLLED_BACK"; rb="$JS"
+  _jword "$SK_window"; skw="$JS"; _jsafe "$SK_reason"; skr="$JS"
+  _jword "$SW_id"; si="$JS"; _jword "$SW_action"; sa="$JS"; _jword "$SW_result"; sr="$JS"; _jsafe "$SW_message"; sm="$JS"
+  _jnum "$AUTO_NEXT"; nw="$JN"; _jnum "$AUTO_LAST_AT"; la="$JN"; _jnum "$SK_at"; ska="$JN"; _jnum "$SW_at"; sat="$JN"
+  printf -v out '{"heartbeat": %s, "pid": %s, "poll_s": %s, "version": "%s", "branch": "%s", "rollback": {"available": %s, "to": "%s", "backup": "%s", "unfinished": %s}, ' \
+    "$AUTO_NOW" "$$" "$HELPER_POLL_S" "$ver" "$br" "$av" "$rto" "$rbk" "$un"
+  printf -v part '"auto": {"on": %s, "hour": %s, "state": "%s", "target": "%s", "reason": "%s", "next_window": %s, "last": {"version": "%s", "result": "%s", "at": %s}, "rolled_back": "%s", "unfinished": %s, ' \
+    "$aon" "$AUTO_HOUR" "$st" "$tg" "$rs" "$nw" "$lv" "$lr" "$la" "$rb" "$aun"
+  out="$out$part"
+  printf -v part '"skipped": {"window": "%s", "reason": "%s", "at": %s}, "switch": {"id": "%s", "action": "%s", "result": "%s", "message": "%s", "at": %s}}}' \
+    "$skw" "$skr" "$ska" "$si" "$sa" "$sr" "$sm" "$sat"
+  printf '%s%s\n' "$out" "$part" > "$d/.helper.json.next" || return 0
+  chmod 644 "$d/.helper.json.next" 2>/dev/null; mv -f "$d/.helper.json.next" "$f"
 }
 
 # _phase_of LOG -> "phase<TAB>message" from the progress lines ./stack prints
@@ -609,18 +750,39 @@ _job_refusal() {
 # running); an update that failed before that changed nothing a rollback should undo
 _rollback_hint() { [ "$1" != update ] || [ "$(_record_get result)" != running ] || printf '; ./stack rollback goes back'; }
 
+# _keep_awake PID — this computer stays awake while an update or rollback runs (at night it would otherwise sleep in
+# the middle of one): caffeinate (macOS) or systemd-inhibit (Linux), ending with PID. Best effort; it never wakes it up.
+_keep_awake() {
+  case "$(_helper_os)" in
+    Darwin) if command -v caffeinate >/dev/null 2>&1; then caffeinate -i -w "$1" >/dev/null 2>&1 & fi ;;
+    *) if command -v systemd-inhibit >/dev/null 2>&1; then
+         systemd-inhibit --what=sleep --who=bedrock-now --why="bedrock-now update or rollback" --mode=block \
+           /bin/sh -c 'while kill -0 "$1" 2>/dev/null; do sleep 5; done' sh "$1" >/dev/null 2>&1 &
+       fi ;;
+  esac
+  return 0
+}
+
 # helper_run_job ACTION ID [auto] — runs ./stack ACTION --yes in this checkout and reports progress. "auto": the
-# automatic update of JOB_TARGET (its own record and wording; helper_auto_tick)
+# automatic update of JOB_TARGET (its own record and wording; one that cannot start is "skipped", not "failed")
 helper_run_job() {
   local action="$1" logf pid rc=0 ph at freed summary why msg
-  JOB_ID="$2"; JOB_ACTION="$action"; JOB_TRIGGER="${3:-}"; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
+  JOB_ID="$2"; JOB_ACTION="$action"; JOB_TRIGGER="${3:-}"; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''
+  JOB_RESULT=''; JOB_MESSAGE=''
+  why="$(_job_refusal "$action")"
+  # from here on it counts as tried: an automatic update whose record cannot be written does not start at all
+  if [ -z "$why" ] && [ "$JOB_TRIGGER" = auto ] && ! _auto_record "$JOB_TARGET" running; then
+    why="could not write $(auto_last_file) (is the disk full?)"
+  fi
+  if [ -n "$why" ]; then
+    JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused; JOB_MESSAGE="$why"
+    printf '%s %s not started: %s\n' "$(date '+%F %T')" "$action" "$why" >&2
+    if [ "$JOB_TRIGGER" = auto ]; then helper_write_status skipped "The automatic update to $JOB_TARGET did not start: $why"
+    else helper_write_status failed "$why"; fi
+    return 0
+  fi
   if [ "$JOB_TRIGGER" = auto ]; then helper_write_status queued "Starting the automatic update to $JOB_TARGET"
   else helper_write_status queued "Starting $action"; fi
-  why="$(_job_refusal "$action")"
-  if [ -n "$why" ]; then
-    JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused; helper_write_status failed "$why"; return 0
-  fi
-  [ "$JOB_TRIGGER" != auto ] || _auto_record "$JOB_TARGET" running   # from here on it counts as tried
   _helper_count "$action"
   logf="$(helper_dir)/last-$action.log"
   : > "$logf"; chmod 600 "$logf"
@@ -631,13 +793,15 @@ helper_run_job() {
   esac
   ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$action" --yes ) </dev/null > "$logf" 2>&1 &
   pid=$!
+  [ "$action" = clean ] || _keep_awake "$pid"
   while kill -0 "$pid" 2>/dev/null; do
     if ph="$(_phase_of "$logf")"; then helper_write_status "${ph%%	*}" "${ph#*	}"; fi
     helper_heartbeat
     sleep "${HELPER_JOB_POLL_S:-2}"
   done
   wait "$pid" || rc=$?
-  JOB_FINISHED="$(date +%s)"; JOB_VERSION="$(installed_version)"
+  helper_facts force; AUTO_FRESH=0   # what the heartbeats saw during the job is out of date now
+  JOB_FINISHED="$(date +%s)"; JOB_VERSION="$HF_VERSION"
   at="$(sed -n 's/^at=//p' "$STATE_DIR/images/last-clean" 2>/dev/null || true)"   # none yet (e.g. nothing to update)
   if [ -n "$at" ] && [ "$at" -ge "$JOB_STARTED" ]; then
     freed="$(sed -n 's/^freed_bytes=//p' "$STATE_DIR/images/last-clean")"; summary="$(sed -n 's/^summary=//p' "$STATE_DIR/images/last-clean")"
@@ -664,41 +828,41 @@ helper_run_job() {
   esac
 }
 
+# _switch_record ID ACTION RESULT MESSAGE — the last switch change, for Home (the heartbeat carries it). It never
+# replaces the last job's status, so a failed update and its Roll back stay on Home.
+_switch_record() {
+  _kv_write "$(auto_switch_file)" "id=$1" "action=$2" "result=$3" "message=$(printf '%s' "$4" | tr -d '\000-\037' | head -c 300)" "at=$(date +%s)" ||
+    printf '%s could not record the switch change: %s\n' "$(date '+%F %T')" "$4" >&2
+}
+
 # helper_run_toggle auto-on|auto-off ID — the switch on Home: ./stack helper auto on|off --yes (AUTO_UPDATE in .env)
 helper_run_toggle() {
   local logf rc=0 holder
-  JOB_ID="$2"; JOB_ACTION="$1"; JOB_TRIGGER=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
   holder="$(stack_lock_holder)"   # setup writes .env too
   if [ -n "$holder" ]; then
-    JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused
-    helper_write_status failed "Busy: ./stack ${holder#* } is running right now. Try again when it has finished."; return 0
+    _switch_record "$2" "$1" failed "Busy: ./stack ${holder#* } is running right now. Try again when it has finished."; return 0
   fi
   _helper_count "$1"
   logf="$(helper_dir)/last-auto.log"
   : > "$logf"; chmod 600 "$logf"
   ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" helper auto "${1#auto-}" --yes ) </dev/null > "$logf" 2>&1 || rc=$?
-  JOB_FINISHED="$(date +%s)"
   if [ "$rc" -ne 0 ]; then
-    JOB_RESULT=failed; helper_write_status failed "$(_last_error "$logf") (full log: .state/helper/last-auto.log)"; return 0
+    _switch_record "$2" "$1" failed "$(_last_error "$logf") (full log: .state/helper/last-auto.log)"; return 0
   fi
-  JOB_RESULT="done"; helper_write_status "done" "$(auto_summary)."
+  _switch_record "$2" "$1" "done" "$(auto_summary)."
 }
 
-# _auto_record VERSION running|done|failed — what the automatic update tried (never the same release twice)
+# _auto_record VERSION running|done|failed|interrupted — what the automatic update tried (never the same release
+# twice); fails when it cannot be written (the job then does not start)
 _auto_record() {
-  local f tmp at fin=''
-  f="$(auto_last_file)"
-  if [ "$2" = running ]; then at="$(date +%s)"; else at="$(_auto_get "$f" at)"; fin="$(date +%s)"; fi
-  tmp="$(mktemp "$f.XXXXXX")" || return 0
-  printf 'version=%s\nresult=%s\nat=%s\nfinished=%s\n' "$1" "$2" "$at" "$fin" > "$tmp" && mv "$tmp" "$f"
+  local at fin=''
+  if [ "$2" = running ]; then at="$(date +%s)"; else at="$(_auto_get "$(auto_last_file)" at)"; fin="$(date +%s)"; fi
+  _kv_write "$(auto_last_file)" "version=$1" "result=$2" "at=$at" "finished=$fin"
 }
 
-# _auto_skip REASON WINDOW_START — no automatic update in this window (tried again in the next one)
+# _auto_skip REASON WINDOW — no automatic update in this window (tried again in the next one)
 _auto_skip() {
-  local f tmp
-  f="$(auto_skip_file)"
-  tmp="$(mktemp "$f.XXXXXX")" || return 0
-  printf 'window=%s\nreason=%s\nat=%s\n' "$2" "$(printf '%s' "$1" | tr -d '\000-\037' | head -c 300)" "$(date +%s)" > "$tmp" && mv "$tmp" "$f"
+  _kv_write "$(auto_skip_file)" "window=$2" "reason=$(printf '%s' "$1" | tr -d '\000-\037' | head -c 300)" "at=${AUTO_NOW:-$(date +%s)}" || true
   printf '%s automatic update skipped until the next window: %s\n' "$(date '+%F %T')" "$1" >&2
 }
 
@@ -709,41 +873,79 @@ _auto_stack_check() {
   [ -n "$(dc ps -q --status running portal 2>/dev/null)" ] || echo "the stack is not running (./stack up starts it)"
 }
 
-# _auto_preflight VERSION -> why the automatic update of VERSION must wait for the next window ("" = go): the
-# checks of a job from Home, the stack running, and origin reachable with VERSION as its newest release (exactly
-# the release Home announced; ./stack update installs the newest one)
+# _auto_fetch — git fetch --tags origin that can neither ask for a password nor hang: ssh in batch mode with a connect
+# timeout, https dropped below 1 KB/s for 30 s, and the whole fetch ended after HELPER_FETCH_TIMEOUT_S (120 s); the
+# heartbeat goes on meanwhile
+_auto_fetch() {
+  local pid n=0 limit
+  limit="${HELPER_FETCH_TIMEOUT_S:-120}"; case "$limit" in '' | *[!0-9]*) limit=120 ;; esac
+  ( GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
+      exec git -C "$STACK_DIR" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch --quiet --tags origin ) </dev/null >/dev/null 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$n" -ge "$limit" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 1; fi
+    sleep 1; n=$((n + 1))
+    [ $((n % 3)) != 0 ] || helper_heartbeat
+  done
+  wait "$pid"
+}
+
+# _auto_preflight VERSION -> 0: go; 1: skip this window (AUTO_WHY says why); 2: not yet, ask again shortly (the
+# helper's one-a-minute limit). The checks of a job from Home and the helper's own limits, the stack running, and
+# origin reachable with VERSION as its newest release tag after fetching (the release Home announced: ./stack update
+# installs origin's newest)
 _auto_preflight() {
-  local why newest
-  why="$(_job_refusal update)"; [ -z "$why" ] || { printf '%s\n' "$why"; return 0; }
-  ! _status_in_progress || { echo "another action is still running"; return 0; }
-  why="$(_auto_stack_check)"; [ -z "$why" ] || { printf '%s\n' "$why"; return 0; }
-  GIT_TERMINAL_PROMPT=0 git -C "$STACK_DIR" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch --quiet --tags origin \
-    </dev/null >/dev/null 2>&1 || { echo "could not fetch from origin (network?)"; return 0; }
+  local newest
+  AUTO_WHY="$(_job_refusal update)"; [ -z "$AUTO_WHY" ] || return 1
+  if ! AUTO_WHY="$(helper_limits update 2>&1)"; then
+    case "$AUTO_WHY" in *"too soon"*) return 2 ;; esac
+    return 1
+  fi
+  ! _status_in_progress || { AUTO_WHY="another action is still running"; return 1; }
+  AUTO_WHY="$(_auto_stack_check)"; [ -z "$AUTO_WHY" ] || return 1
+  helper_heartbeat
+  _auto_fetch || { AUTO_WHY="could not fetch from origin (network?)"; return 1; }
   newest="$(newest_release_tag "$STACK_DIR")"
-  [ "$newest" = "$1" ] || echo "origin's newest release is ${newest:-none}, not $1"
+  [ "$newest" = "$1" ] || { AUTO_WHY="origin's newest release is ${newest:-none}, not $1"; return 1; }
+  AUTO_WHY=''
 }
 
 # helper_auto_tick — starts the automatic update when it is due: 0 when it ran (the caller exits like after any job,
-# so the new code runs next), 1 otherwise
+# so the new code runs next), 1 otherwise. Uses the state the heartbeat computed in this loop when there is one.
 helper_auto_tick() {
-  local why
-  auto_on || return 1   # off: nothing else is read
-  helper_auto_state
+  local rc=0
+  _helper_auto_tick || rc=$?
+  AUTO_FRESH=0   # whatever heartbeats ran meanwhile: the next tick starts from the next loop's heartbeat
+  return "$rc"
+}
+_helper_auto_tick() {
+  local target win rc=0
+  if [ "${AUTO_FRESH:-0}" = 1 ]; then   # the heartbeat's state of this loop: off, or outside the window, ends here
+    AUTO_FRESH=0
+    [ "$AUTO_ON" = on ] && [ "$AUTO_IN_WINDOW" = 1 ] || return 1
+    # inside the window, once per window: what latest.txt says (helper_auto_state --read)
+    [ "$SN_window" = "$AUTO_WINDOW" ] || helper_auto_state --read
+  else
+    _auto_env; [ "$AE_AUTO_UPDATE" = on ] || return 1
+    helper_auto_state --read
+  fi
   case "$AUTO_STATE" in
     busy)   # once per window: the reason stays on Home until the next one
-      [ "$(_auto_get "$(auto_skip_file)" window)" = "$AUTO_NEXT" ] || _auto_skip "$AUTO_BUSY" "$AUTO_NEXT"
+      [ "$SK_window" = "$AUTO_WINDOW" ] || _auto_skip "$AUTO_BUSY" "$AUTO_WINDOW"
       return 1 ;;
     run) ;;
     *) return 1 ;;
   esac
-  why="$(_auto_preflight "$AUTO_TARGET")"
-  if [ -n "$why" ]; then _auto_skip "$why" "$AUTO_NEXT"; return 1; fi
-  JOB_TARGET="$AUTO_TARGET"
+  target="$AUTO_TARGET"; win="$AUTO_WINDOW"
+  _auto_preflight "$target" || rc=$?
+  case "$rc" in 0) ;; 2) return 1 ;; *) _auto_skip "$AUTO_WHY" "$win"; return 1 ;; esac
+  JOB_TARGET="$target"
   helper_run_job update "auto-$(date +%s)" auto
   case "$JOB_RESULT" in
-    refused) _auto_skip "something else started first" "$AUTO_NEXT" ;;
-    failed) _auto_record "$JOB_TARGET" failed ;;
-    *) _auto_record "$JOB_TARGET" "done" ;;
+    refused) _auto_skip "$JOB_MESSAGE" "$win"; JOB_TRIGGER=''; return 1 ;;
+    failed) _auto_record "$target" failed || true ;;
+    *)   # "done" only when the release is installed now (an update can also end by finishing an older one)
+      if [ "$HF_VERSION" = "$target" ]; then _auto_record "$target" "done" || true; else _auto_record "$target" failed || true; fi ;;
   esac
   JOB_TRIGGER=''
   return 0
@@ -770,7 +972,7 @@ _sweep_requests() {
 helper_poll_once() {
   local rq inbox box name res reason
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
-  mkdir -p "$inbox"; chmod 700 "$(helper_dir)" "$inbox"
+  [ -d "$inbox" ] || { mkdir -p "$inbox"; chmod 700 "$(helper_dir)" "$inbox"; }
   _sweep_requests
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -783,10 +985,12 @@ helper_poll_once() {
       if reason="$(helper_limits "${res%% *}" 2>&1)"; then
         rm -rf "$box"
         _remember_nonce "${res#* }"
-        case "${res%% *}" in auto-on | auto-off) helper_run_toggle "${res%% *}" "${res#* }"; return 1 ;; esac
+        case "${res%% *}" in auto-on | auto-off) helper_run_toggle "${res%% *}" "${res#* }"; AUTO_FRESH=0; return 1 ;; esac
         helper_run_job "${res%% *}" "${res#* }"
         return 0
       fi
+      # a refused switch change is reported with the switch, so it never hides the last job's status
+      case "${res%% *}" in auto-on | auto-off) rm -rf "$box"; _switch_record "${res#* }" "${res%% *}" failed "Request refused: $reason"; continue ;; esac
     else
       reason="$(head -c 300 "$box/.reason" | head -n 1)"
     fi
@@ -805,12 +1009,22 @@ _rotate_log() {
   tail -c 200000 "$f" > "$t" && cat "$t" > "$f"; rm -f "$t"
 }
 
-# helper_main [--once] — the loop bin/bedrock-now-helper runs
+# helper_main [--once] — the loop bin/bedrock-now-helper runs. It ends (exit 0: launchd/systemd start it again, with
+# the checkout's code) after an update/rollback/clean, and when the checkout moved to another commit under it (a
+# ./stack update in a terminal) once no ./stack command holds the lock.
 helper_main() {
+  local start_head
   [ -f "$ENV_FILE" ] || die "$STACK_DIR is not set up (no .env)"
   mkdir -p "$(helper_dir)" && chmod 700 "$(helper_dir)"
   _rotate_log
+  HELPER_CACHE=1; helper_facts force; start_head="$HF_HEAD"
+  _helper_recover
   while :; do
+    helper_facts
+    if [ -n "$start_head" ] && [ -n "$HF_HEAD" ] && [ "$HF_HEAD" != "$start_head" ] && [ -z "$(stack_lock_holder)" ]; then
+      printf '%s the checkout moved to %s: restarting with its code\n' "$(date '+%F %T')" "$HF_VERSION" >&2
+      return 0
+    fi
     helper_heartbeat
     if helper_poll_once; then helper_heartbeat; return 0; fi
     if helper_auto_tick; then helper_heartbeat; return 0; fi

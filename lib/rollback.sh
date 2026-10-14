@@ -5,7 +5,7 @@
 #
 # .state/update/last.env (key=value, written by ./stack update):
 #   at=<epoch> from=<commit> branch=<branch or empty> from_version=<git describe> backup=backups/<ts>-auto
-#   result=running|done|rolled-back  to_version=<after the update>
+#   result=running|done|rolled-back  to_version=<after the update>  rolled_back_version=<what ./stack rollback left>
 
 update_record_file() { printf '%s/update/last.env\n' "$STATE_DIR"; }
 
@@ -107,6 +107,8 @@ cmd_rollback() {
   confirm "Roll back now?" || die "aborted — nothing was changed"
   d="$(images_dir)"; mkdir -p "$d"
   now_imgs="$(project_refs | snapshot_refs)"
+  # the version gone back from: automatic updates never install it again (lib/helper.sh), whatever happens next
+  _record_set rolled_back_version "$(installed_version)"
   log "rollback: 1/3 code ($(installed_version) → ${fromv:-$from})"
   _rollback_checkout "$from" "$branch" || die "could not check out $from — nothing else was changed"
   # A version from before Bedrock speech-to-text has no stt service: its container and settings go (lib/stt.sh).
