@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-14
+
 ### Added
 
 - **OpenRouter by pasting a key into `.env`.** Setup now adds an empty, commented `OPENROUTER_API_KEY=` line to
@@ -889,7 +891,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.1.2...v0.2.0
