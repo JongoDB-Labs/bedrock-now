@@ -158,8 +158,107 @@ $out"
 # terminal_workspace_dir -> the browser terminal's workspace for the throwaway (--terminal): next to its checkout
 terminal_workspace_dir() { printf '%s/%s-workspace\n' "$(dirname "$STACK")" "$PROJECT"; }
 
+# --- the throwaway's update helper (run.sh --helper) ---
+# The throwaway's own bin/bedrock-now-helper, run as launchd/systemd would run it after `./stack helper install` —
+# but as a child of this run, never as a launchd agent or systemd unit: in its own session (notty: no terminal, and
+# its whole process group stops together), with a clean environment plus HELPER_KNOBS, started again after a clean
+# exit like launchd/systemd do (it exits after an update/rollback/clean), its output appended to $LOGS/helper.log.
+# The caller sets NOTTY. SETTINGS_MIN_INTERVAL_S=5: the settings/* checks make a change every 6 s (the portal takes
+# one every 5 s); the helper's default 15 s refuses the next one as "too soon". HELPER_POLL_S stays 3: after a job
+# the loop sleeps that long again, so two pick-ups are never less than 5 s apart.
+HELPER_KNOBS="SETTINGS_MIN_INTERVAL_S=5"
+# shellcheck disable=SC2034  # HELPER_ALIVE and HELPER_RC: set by e2e_helper_stop for run.sh
+HELPER_PID=''; HELPER_T0=''; HELPER_ALIVE=''; HELPER_RC=''
+
+# _helper_beat_at -> the heartbeat time of the throwaway's helper (helper.json), if it names a live process
+_helper_beat_at() {
+  local s pid hb
+  s="$(head -c 8192 "$STACK/.state/status/helper.json" 2>/dev/null)" || return 1
+  hb="$(printf '%s' "$s" | sed -n 's/.*"heartbeat": \([0-9][0-9]*\).*/\1/p')"
+  pid="$(printf '%s' "$s" | sed -n 's/.*"pid": \([0-9][0-9]*\).*/\1/p')"
+  [ -n "$hb" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$hb"
+}
+
+# e2e_helper_start — starts it and waits (up to 60 s) until its heartbeat is fresh and it offers Settings (what the
+# portal checks before it shows Change). Fails when it did not get there or stopped by itself.
+e2e_helper_start() {
+  local kv names='' hb
+  [ -x "$STACK/bin/bedrock-now-helper" ] || { echo "$STACK/bin/bedrock-now-helper is missing" >&2; return 1; }
+  _e2e_helper_sweep   # never two helpers on one checkout (one left by a run that was killed with -9)
+  for kv in $HELPER_KNOBS; do names="$names ${kv%%=*}"; done
+  HELPER_T0="$(now)"; HELPER_ALIVE=''; HELPER_RC=''
+  printf '%s e2e: starting %s/bin/bedrock-now-helper in the foreground (%s)\n' "$(date '+%F %T')" "$STACK" "$HELPER_KNOBS" >> "$LOGS/helper.log"
+  # shellcheck disable=SC2086,SC2016  # (names: a word list; the loop is the child shell's own script)
+  ( for kv in $HELPER_KNOBS; do export "${kv?}"; done
+    clean_env $names
+    cd "$STACK" && exec "$NOTTY" /bin/bash -c 'while :; do "$1/bin/bedrock-now-helper" "$1" || exit $?
+        printf "%s e2e: the helper exited cleanly (it does after an update, rollback or clean): started again, as launchd/systemd do\n" "$(date "+%F %T")"
+        sleep 2; done' bedrock-now-e2e-helper "$STACK" ) </dev/null >> "$LOGS/helper.log" 2>&1 &
+  HELPER_PID=$!
+  for _ in $(seq 1 60); do
+    kill -0 "$HELPER_PID" 2>/dev/null || { echo "it stopped by itself (log: $LOGS/helper.log)" >&2; return 1; }
+    hb="$(_helper_beat_at)" && [ "$hb" -ge "$HELPER_T0" ] && grep -q '"settings": 1' "$STACK/.state/status/helper-settings.json" 2>/dev/null && return 0
+    sleep 1
+  done
+  echo "no fresh heartbeat with Settings within 60 s (log: $LOGS/helper.log)" >&2
+  return 1
+}
+
+# _e2e_helper_sweep — stops every process group running this checkout's helper (a command line that ends in
+# "STACK/bin/bedrock-now-helper STACK"; never this run's own group): what e2e_helper_stop's own child left, or the
+# helper of a run that was killed with -9. (The path goes to awk in the environment: not on a command line it matches.)
+_e2e_helper_sweep() {
+  local me groups g
+  me="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  groups="$(ps -A -ww -o pgid= -o command= 2>/dev/null | M="$STACK/bin/bedrock-now-helper $STACK" awk -v me="$me" '
+    { g = $1; sub(/^ *[0-9]+ /, ""); n = length(ENVIRON["M"]) }
+    length($0) >= n && substr($0, length($0) - n + 1) == ENVIRON["M"] && g != me && g > 1 && !s[g]++ { print g }')"
+  [ -n "$groups" ] || return 0
+  for g in $groups; do kill -TERM -- "-$g" 2>/dev/null || true; done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    for g in $groups; do kill -0 -- "-$g" 2>/dev/null && break; g=''; done
+    [ -n "$g" ] || return 0
+    sleep 0.5
+  done
+  for g in $groups; do kill -KILL -- "-$g" 2>/dev/null || true; done
+  return 0
+}
+
+# e2e_helper_stop — stops it (TERM to its group through notty, then the sweep), then does what `./stack helper
+# uninstall` does to the state: no heartbeat (Home stops offering the buttons at once) and no request left waiting.
+# Keeps its last settings / diagnostics logs in $LOGS. Sets HELPER_ALIVE (1: it was still running when stopped) and
+# HELPER_RC (its exit status). Safe to call more than once.
+# shellcheck disable=SC2034
+e2e_helper_stop() {
+  local f
+  if [ -n "$HELPER_PID" ]; then
+    if kill -0 "$HELPER_PID" 2>/dev/null; then
+      HELPER_ALIVE=1
+      kill -TERM "$HELPER_PID" 2>/dev/null || true
+      for _ in $(seq 1 20); do kill -0 "$HELPER_PID" 2>/dev/null || break; sleep 0.5; done
+      kill -0 "$HELPER_PID" 2>/dev/null && kill -KILL "$HELPER_PID" 2>/dev/null
+    else HELPER_ALIVE=0; fi
+    HELPER_RC=0; wait "$HELPER_PID" 2>/dev/null || HELPER_RC=$?
+    HELPER_PID=''
+    printf '%s e2e: helper stopped\n' "$(date '+%F %T')" >> "$LOGS/helper.log"
+  fi
+  _e2e_helper_sweep
+  rm -f "$STACK/.state/status/helper.json" "$STACK/.state/requests"/req-*.json "$STACK/.state/requests"/cfg-*.req \
+    "$STACK/.state/requests"/act-*.json 2>/dev/null || true
+  for f in last-settings last-diag; do
+    [ ! -f "$STACK/.state/helper/$f.log" ] || cp "$STACK/.state/helper/$f.log" "$LOGS/helper-$f.log" 2>/dev/null || true
+  done
+  return 0
+}
+
+# e2e_helper_jobs KIND -> how many jobs of KIND (settings-jobs, diag-jobs) the helper started since e2e_helper_start
+e2e_helper_jobs() { awk -v t="${HELPER_T0:-0}" '$1 + 0 >= t' "$STACK/.state/helper/$1" 2>/dev/null | wc -l | tr -d ' '; }
+
 teardown() {
   local img id left others ws
+  # the throwaway's update helper (--helper), also one a killed run left: only from a checkout this suite created
+  [ ! -f "$STACK/.bedrock-now-e2e" ] || _e2e_helper_sweep
   if [ "$OWNED" != 1 ]; then
     warn "teardown: project $PROJECT is not known to be this suite's own — Docker left untouched"
   else

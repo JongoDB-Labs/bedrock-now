@@ -225,3 +225,75 @@ test_e2e_teardown_removes_the_terminal_workspace_only_with_its_marker() {
   [ -f "$ws/precious" ] || return 1
   assert_contains "$(cat "$TMP/err")" "not deleting $ws"
 }
+
+# _fake_helper DIR — a stand-in for DIR/bin/bedrock-now-helper: prints its environment, starts a child (as a job's
+# ./stack would be), offers Settings and writes a heartbeat every second while $TMP/alive is there (the runner deletes
+# $TMP after each test, so a failed test leaves nothing running for long); FAKE_HELPER_EXIT=N: exits N at once
+_fake_helper() {
+  mkdir -p "$1/bin" "$1/.state/status" "$1/.state/requests" "$1/.state/helper"; : > "$TMP/alive"
+  { printf '#!/usr/bin/env bash\nalive=%q\n' "$TMP/alive"; cat <<'SH'
+[ -z "${FAKE_HELPER_EXIT:-}" ] || exit "$FAKE_HELPER_EXIT"
+d="$1/.state/status"
+printf 'knob=%s secret=%s\n' "${SETTINGS_MIN_INTERVAL_S:-unset}" "${E2E_FAKE_SECRET:-unset}"
+sleep 60 & echo "child $!"
+printf '{"settings": 1, "written_at": %s}\n' "$(date +%s)" > "$d/helper-settings.json" 2>/dev/null
+while [ -e "$alive" ]; do printf '{"heartbeat": %s, "pid": %s}\n' "$(date +%s)" "$$" > "$d/helper.json" 2>/dev/null; sleep 1; done
+SH
+  } > "$1/bin/bedrock-now-helper"
+  chmod 755 "$1/bin/bedrock-now-helper"
+}
+_alive() { kill -0 "$1" 2>/dev/null; }
+
+test_e2e_helper_runs_with_its_knobs_only_and_stops_with_its_children() {
+  command -v perl >/dev/null || { echo "no perl" >&2; return 77; }
+  _fake_docker; NOTTY="$STACK_DIR/tests/e2e/notty"; _fake_helper "$STACK"
+  E2E_FAKE_SECRET=leaked; export E2E_FAKE_SECRET
+  e2e_helper_start
+  log="$(cat "$LOGS/helper.log")"
+  assert_contains "$log" "knob=5"
+  assert_contains "$log" "secret=unset"    # a clean environment: nothing of this shell but the knobs
+  child="$(printf '%s\n' "$log" | sed -n 's/^child //p')"; beat="$(sed -n 's/.*"pid": \([0-9]*\).*/\1/p' "$STACK/.state/status/helper.json")"
+  if ! _alive "$child" || ! _alive "$beat"; then echo "helper or its child not running" >&2; return 1; fi
+  [ "$(ps -o pgid= -p "$beat" | tr -d ' ')" != "$(ps -o pgid= -p $$ | tr -d ' ')" ] || { echo "helper in this shell's process group" >&2; return 1; }
+  printf '{}\n' > "$STACK/.state/requests/req-1.json"; : > "$STACK/.state/helper/last-settings.log"
+  e2e_helper_stop
+  assert_eq "$HELPER_ALIVE" 1
+  for _ in 1 2 3 4 5 6; do _alive "$child" || _alive "$beat" || break; sleep 0.5; done
+  if _alive "$child" || _alive "$beat"; then echo "still running after stop: helper $beat / child $child" >&2; return 1; fi
+  [ ! -e "$STACK/.state/status/helper.json" ] && [ ! -e "$STACK/.state/requests/req-1.json" ] || { echo "heartbeat or request left" >&2; return 1; }
+  [ -f "$LOGS/helper-last-settings.log" ] || { echo "the helper's last settings log was not kept" >&2; return 1; }
+  assert_contains "$(cat "$LOGS/helper.log")" "e2e: helper stopped"
+  e2e_helper_stop   # a second stop is harmless
+}
+
+test_e2e_helper_that_stops_by_itself_is_reported() {
+  command -v perl >/dev/null || { echo "no perl" >&2; return 77; }
+  _fake_docker; NOTTY="$STACK_DIR/tests/e2e/notty"; _fake_helper "$STACK"
+  HELPER_KNOBS="SETTINGS_MIN_INTERVAL_S=5 FAKE_HELPER_EXIT=3"
+  rc=0; e2e_helper_start 2> "$TMP/err" || rc=$?
+  e2e_helper_stop
+  assert_eq "$rc" 1
+  assert_contains "$(cat "$TMP/err")" "stopped by itself"
+  assert_eq "$HELPER_ALIVE $HELPER_RC" "0 3"
+}
+
+test_e2e_teardown_stops_a_helper_a_killed_run_left_but_no_other_checkouts() {
+  command -v perl >/dev/null || { echo "no perl" >&2; return 77; }
+  _fake_docker; NOTTY="$STACK_DIR/tests/e2e/notty"
+  _fake_helper "$STACK"; _fake_helper "$STACK-rel"; : > "$STACK/.bedrock-now-e2e"
+  # a run killed with -9: its notty is gone, the helper (its own session) still runs; and another checkout's helper
+  "$NOTTY" "$STACK/bin/bedrock-now-helper" "$STACK" > /dev/null 2>&1 & n=$!
+  "$NOTTY" "$STACK-rel/bin/bedrock-now-helper" "$STACK-rel" > /dev/null 2>&1 & other=$!
+  for _ in $(seq 1 20); do [ -s "$STACK/.state/status/helper.json" ] && [ -s "$STACK-rel/.state/status/helper.json" ] && break; sleep 0.5; done
+  kill -KILL "$n"; wait "$n" 2>/dev/null || true
+  beat="$(sed -n 's/.*"pid": \([0-9]*\).*/\1/p' "$STACK/.state/status/helper.json")"
+  rel="$(sed -n 's/.*"pid": \([0-9]*\).*/\1/p' "$STACK-rel/.state/status/helper.json")"
+  _alive "$beat" || { echo "the orphaned helper is not running" >&2; return 1; }
+  OWNED=1 teardown 2>/dev/null
+  for _ in 1 2 3 4 5 6; do _alive "$beat" || break; sleep 0.5; done
+  rc=0
+  if _alive "$beat"; then echo "teardown left the helper of $STACK running" >&2; rc=1; fi
+  _alive "$rel" || { echo "teardown stopped the helper of another checkout ($STACK-rel)" >&2; rc=1; }
+  kill -TERM "$other" 2>/dev/null; wait "$other" 2>/dev/null || true
+  return "$rc"
+}

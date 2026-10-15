@@ -4,6 +4,7 @@ the installable web app, sign-out. Screenshots mask every credential; network/co
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -1397,7 +1398,8 @@ def walkthrough_storage(ctx):
     return "; ".join(out)
 
 
-# --- Settings (with the update helper running: bin/bedrock-now-helper <throwaway checkout> in the foreground) ---
+# --- Settings (with the update helper running: tests/e2e/run.sh --helper runs the throwaway's bin/bedrock-now-helper
+# in the foreground for them) ---
 # They change real credentials of the throwaway, so they run after the other browser checks (suite "settings") and
 # keep ENV in step themselves: the container's copy of .env is a single-file mount that a rewritten .env never reaches.
 
@@ -1419,7 +1421,10 @@ def _settings_api(ctx) -> dict:
 def _need_helper(ctx) -> dict:
     d = _settings_api(ctx)
     if not (d["helper"]["running"] and d["helper"]["settings"]):
-        raise Skip("no update helper with settings is running (bin/bedrock-now-helper <throwaway> in the foreground runs these)")
+        if os.environ.get("E2E_HELPER_ON") == "1":   # run.sh --helper started it for these checks: missing is a failure
+            raise AssertionError(f"run.sh --helper started the update helper, but the portal sees running={d['helper']['running']}, "
+                                 f"settings={d['helper']['settings']} (see out/logs/helper.log)")
+        raise Skip("no update helper with settings is running (tests/e2e/run.sh --helper runs these)")
     return d
 
 

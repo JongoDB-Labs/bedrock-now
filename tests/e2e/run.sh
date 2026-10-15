@@ -25,6 +25,13 @@
 #   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
 #                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
 #                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
+#   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
+#                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
+#                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
+#                    OUT/logs/helper.log. The browser part then runs in three passes: every other check first (those
+#                    that fake the helper or need it absent), settings/* while the helper runs, then final/ (sign-out).
+#                    It is stopped right after settings/* — and on any exit (failure, Ctrl-C). helper/update-helper in
+#                    the results says whether it ran.
 #
 # Never touches the default install: only project names bne2e[-…] are accepted, and teardown touches Docker only
 # after the project was found to be this suite's own (or free); ports 80/4000/8765 (and the others in AVOID_PORTS)
@@ -45,6 +52,7 @@ NOTTY="$HERE/notty"
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
 SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,mutating"
 TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
+HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -58,6 +66,7 @@ while [ $# -gt 0 ]; do
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
     --terminal) TERMINAL=1; shift ;;
+    --helper) HELPER=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -154,6 +163,7 @@ follow_logs() {
 finish() {
   local rc=$?
   trap - EXIT INT TERM HUP
+  [ -z "$HELPER_PID" ] || { warn "stopping the update helper"; e2e_helper_stop; }
   redact_outputs
   if [ "$KEEP" = 0 ]; then teardown; fi
   exit "$rc"
@@ -397,24 +407,55 @@ if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
 fi
 
 # --- 3. the browser suite (Playwright container) ---
-# browser_run LABEL [FILTER [TAG]] — the suite (or the checks matching FILTER; their results named id@TAG), then a
-# runner check: a crash, a non-zero exit or fewer results than selected checks is a FAIL
+# browser_run LABEL [FILTER [TAG [RUNNER]]] — the suite (or the checks matching FILTER, a Python regex on suite/id;
+# their results named id@TAG), then a runner check (browser/RUNNER, default runner[@TAG]): a crash, a non-zero exit
+# or fewer results than selected checks is a FAIL. HELPER_ON=1: the update helper runs, so a settings/* check that
+# finds none FAILs instead of skipping.
 browser_run() {
-  local label="$1" filter="${2:-}" tag="${3:-}" t0 rc got want
+  local label="$1" filter="${2:-}" tag="${3:-}" t0 rc got want runner
+  runner="${4:-runner${tag:+@$tag}}"
   t0="$(now)"
   # the terminal's one real Claude Code call (browser/terminal-claude-bedrock-inside) only with the claude part
   E2E_TERMINAL_CLAUDE="$( [ "$TERMINAL" = 1 ] && part_on claude && [ "$NO_CLAUDE" = 0 ] && echo 1 || echo 0)" \
-    E2E_TERMINAL_HOSTILE="${HOSTILE:-0}" E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
+    E2E_TERMINAL_HOSTILE="${HOSTILE:-0}" E2E_HELPER_ON="${HELPER_ON:-0}" E2E_TAG="$tag" \
+    "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
   if [ "$rc" != 0 ] || [ "$got" = 0 ] || [ "$got" != "$want" ]; then
-    record browser "runner${tag:+@$tag}" FAIL "$(( $(now) - t0 ))" "$label: exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
-  else record browser "runner${tag:+@$tag}" PASS "$(( $(now) - t0 ))" "$label: $got checks reported"; fi
+    record browser "$runner" FAIL "$(( $(now) - t0 ))" "$label: exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
+  else record browser "$runner" PASS "$(( $(now) - t0 ))" "$label: $got checks reported"; fi
 }
-if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
+if ! part_on browser; then
+  record browser suite SKIP 0 "--only $ONLY"
+  [ "$HELPER" = 0 ] || record helper update-helper SKIP 0 "--helper: not started (no browser part in --only $ONLY)"
+elif [ "$HELPER" = 0 ]; then
   say "browser suite (Playwright container)"
   browser_run "full suite"
+  record helper update-helper SKIP 0 "not started: the settings/* checks skip (tests/e2e/run.sh --helper runs them)"
+else
+  # Three passes, in the order of one run: the checks that fake the helper's heartbeat or need it absent; settings/*
+  # with the real helper; final/ (sign-out revokes every session) last
+  say "browser suite (Playwright container): every check but settings/* and final/*"
+  browser_run "without settings/* and final/*" '^(?!settings/|final/)'
+  say "update helper: $STACK/bin/bedrock-now-helper in the foreground ($HELPER_KNOBS; log: $LOGS/helper.log)"
+  if e2e_helper_start 2> "$LOGS/helper-start.log"; then   # (not in a $( ) subshell: it keeps HELPER_PID)
+    say "browser suite: settings/* (the update helper running)"
+    HELPER_ON=1 browser_run "settings/* with the update helper" '^settings/' '' runner-settings
+    nset="$(e2e_helper_jobs settings-jobs)"; ndiag="$(e2e_helper_jobs diag-jobs)"
+    e2e_helper_stop
+    if [ "$HELPER_ALIVE" = 1 ]; then
+      record helper update-helper PASS "$(( $(now) - HELPER_T0 ))" "ran in the foreground for settings/* (not installed; $HELPER_KNOBS): $nset settings change(s), $ndiag diagnostic(s); stopped afterwards; log $LOGS/helper.log"
+    else record helper update-helper FAIL "$(( $(now) - HELPER_T0 ))" "stopped by itself during settings/* (exit $HELPER_RC; $nset settings change(s), $ndiag diagnostic(s)) — see $LOGS/helper.log"; fi
+  else
+    e2e_helper_stop
+    record helper update-helper FAIL "$(( $(now) - HELPER_T0 ))" "did not start: $(tail -n 2 "$LOGS/helper-start.log" | tr '\n' ' ')"
+    browser_run "settings/* (no update helper: they skip)" '^settings/' '' runner-settings
+  fi
+  say "browser suite: final/* (sign-out)"
+  browser_run "final/* (sign-out)" '^final/' '' runner-final
+fi
+if part_on browser; then
   # The terminal host whoever answers on ttyd's socket: as code in the sandbox could, a stand-in (terminal-stub.py)
   # takes the socket's path (ttyd's own moved aside: ttyd keeps listening on it), the browser check runs against it,
   # then the stand-in puts ttyd's socket back. The gateway restarts each time, so it keeps no connection to the other.

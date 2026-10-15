@@ -808,7 +808,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is printed);
   results as a table and JUnit XML in `tests/e2e/out/`. `--terminal` (or `E2E_TERMINAL=1`) also turns on the
   browser terminal and checks it (lock, unlock, tmux, Origin, isolation; with the claude part one
-  `claude-bedrock -p` inside it, ~$0.02). What is covered, and what stays manual:
+  `claude-bedrock -p` inside it, ~$0.02). `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
+  in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).
 

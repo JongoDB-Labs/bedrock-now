@@ -262,5 +262,12 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   limit is then $0.16). The probe also checks the gateway's 404s (`..` paths included), its secret header before
   ttyd's socket (and that a failed request logs no secret), the terminal key's 403s on LiteLLM past the gateway,
   the gateway's neighbours and `caddy validate` of every terminal/remote combination.
+- **The update helper:** the `settings/*` checks (Settings changes through the helper: a budget, the Admin and
+  portal passwords, the owner email, a new RustFS key pair, Back up now, nightly backups, the helper's refusals)
+  need it running. `--helper` (or `E2E_HELPER=1`) runs the throwaway's own `bin/bedrock-now-helper` in the
+  foreground for them, as a child of the run (never `./stack helper install`: no launchd agent or systemd unit),
+  with `SETTINGS_MIN_INTERVAL_S=5`; it is stopped right after them and on any exit, its log in `logs/helper.log`.
+  The other browser checks run before it starts (those that fake the helper's heartbeat run for real), the
+  sign-out checks after it stopped; `helper/update-helper` in the results says whether it ran.
 - **Known product bugs** go in `tests/e2e/known-issues.tsv` (check id, reason): a listed check that fails is
   reported as XFAIL, one that passes as XPASS.
