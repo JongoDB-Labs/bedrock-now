@@ -72,6 +72,23 @@ test_up_rewrites_portal_origin() {
   _stub_up
   cmd_up 2>/dev/null
   assert_eq "$(get_env PORTAL_ORIGIN)" "http://mine.localhost:8900"
+  assert_eq "$(get_env CHAT_ORIGIN)" "http://chat.mine.localhost:8900"   # Open WebUI's CORS_ALLOW_ORIGIN
+  printf 'CHAT_HOST=talk.localhost\nPORTAL_PORT=80\n' >> "$ENV_FILE"
+  cmd_up 2>/dev/null
+  assert_eq "$(get_env CHAT_ORIGIN)" "http://talk.localhost"
+}
+
+test_open_webui_answers_cross_origin_requests_from_chat_only() {
+  [ -n "${BN_REAL_DOCKER:-}" ] && "$BN_REAL_DOCKER" compose version >/dev/null 2>&1 || { echo "no docker compose" >&2; return 77; }
+  docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
+  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\nCHAT_ORIGIN=http://chat.mine.localhost:8900\n' > "$ENV_FILE"
+  _cors() { dc config --format json 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["open-webui"]["environment"]["CORS_ALLOW_ORIGIN"])'; }
+  assert_eq "$(_cors)" "http://chat.mine.localhost:8900"
+  printf 'REMOTE_CHAT_HOST=bedrock-now-chat.tail1234.ts.net\n' >> "$ENV_FILE"
+  assert_eq "$(_cors)" "http://chat.mine.localhost:8900;https://bedrock-now-chat.tail1234.ts.net"
+  # before ./stack up has written CHAT_ORIGIN: Open WebUI's own default, never an origin that is not Chat's
+  printf 'CHAT_ORIGIN=\n' >> "$ENV_FILE"
+  assert_eq "$(_cors)" "*"
 }
 
 test_up_refuses_a_public_host_edited_into_env() {

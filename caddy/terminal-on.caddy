@@ -11,7 +11,7 @@ http://{$TERMINAL_HOST} {
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {
 			import terminal_upstream
-			import frame_by_portal_only
+			import terminal_page {$PORTAL_ORIGIN}
 		}
 	}
 }

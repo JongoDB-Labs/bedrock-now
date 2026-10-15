@@ -172,6 +172,29 @@ http://{$FILES_HOST} {
 	header_up X-Bn-Terminal-0{$TERMINAL_PROXY_SECRET} 1
 }
 
+# From ttyd — or from whatever listens on its socket instead (anything in the sandbox can): this Caddy sets the
+# terminal host's policy, whoever answered. Only ttyd's own script runs (its hash; terminal/Dockerfile stops the build
+# when ttyd's page changes: TTYD_PAGE_SCRIPT_SHA256, the same value), it talks only to this host, forms post only
+# to the unlock, and only {args[0]} (the portal) may frame it. Headers that could plant or clear cookies (the
+# portal's too), redirect, preload, widen a service worker, open CORS or send reports go. The unlock page and the
+# unlock itself are the portal's answers (forward_auth, terminal_unlock), with the portal's own headers.
+(terminal_page) {
+	header_down -X-Frame-Options
+	header_down -Set-Cookie
+	header_down -Clear-Site-Data
+	header_down -Refresh
+	header_down -Link
+	header_down -Location
+	header_down -Service-Worker-Allowed
+	header_down -Access-Control-*
+	header_down -Content-Security-Policy-Report-Only
+	header_down -Report-To
+	header_down -Reporting-Endpoints
+	header_down -NEL
+	header_down X-Content-Type-Options nosniff
+	header_down Content-Security-Policy "default-src 'none'; script-src 'sha256-qpCL1JTmm6ktW0DnjpSILM7GnS2fO8/e+XjSlYJuQzQ='; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]}"
+}
+
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
 # through this site, so stt itself shares no network with Open WebUI — which trusts X-Portal-User from any peer —
 # or the portal: a one-way hop. Port 8090 is not published (compose.yaml publishes 8080 only); it answers on

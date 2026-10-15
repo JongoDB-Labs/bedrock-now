@@ -185,6 +185,11 @@ services:
       # Remote access (./stack remote): links built for the remote name (empty = Open WebUI's default). Its cookies
       # stay non-Secure here (the local site is http); Caddy's remote site marks them Secure on the way out.
       WEBUI_URL: ${REMOTE_CHAT_HOST:+https://${REMOTE_CHAT_HOST:-}}
+      # Cross-origin requests (and its WebSocket) only from Chat's own origins: CHAT_ORIGIN (./stack writes it like
+      # PORTAL_ORIGIN) and the remote chat host. Open WebUI's default, '*', answers any Origin with credentials
+      # allowed: a page on the portal's other hosts (the terminal's included) could read your chats. '*' only
+      # until ./stack up has written CHAT_ORIGIN.
+      CORS_ALLOW_ORIGIN: "${CHAT_ORIGIN:-*}${CHAT_ORIGIN:+${REMOTE_CHAT_HOST:+;https://${REMOTE_CHAT_HOST:-}}}"
     volumes:
       - owui:/app/backend/data
     depends_on:

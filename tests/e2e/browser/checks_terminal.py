@@ -2,7 +2,9 @@
 tab follows the setting, the terminal host is locked until the portal password is typed again, then xterm shows the
 tmux session (Claude Code in window 1, shell windows with Ctrl-b c) that outlives the browser; its WebSocket refuses
 other sites' Origins; on a phone it opens full screen from More; Sign out locks it again. One real claude-bedrock -p
-inside it only with E2E_TERMINAL_CLAUDE=1 (run.sh's claude part). Every check but the first skips while it is off."""
+inside it only with E2E_TERMINAL_CLAUDE=1 (run.sh's claude part). With E2E_TERMINAL_HOSTILE=1 (run.sh, after the
+suite: a stand-in listener on ttyd's socket, as code in the sandbox could start one) the terminal host's policy is
+checked against it. Every check but the first skips while it is off."""
 
 from __future__ import annotations
 
@@ -18,6 +20,10 @@ from checks_browser import login, shot
 
 ON = ENV.get("TERMINAL_ENABLED") == "true"
 CLAUDE = os.environ.get("E2E_TERMINAL_CLAUDE") == "1"
+HOSTILE = os.environ.get("E2E_TERMINAL_HOSTILE") == "1"
+# What the main Caddy takes away from whatever answers on ttyd's socket (caddy/Caddyfile, terminal_page)
+STRIPPED = ("set-cookie", "clear-site-data", "refresh", "link", "location", "service-worker-allowed",
+            "access-control-allow-origin", "access-control-allow-credentials", "report-to", "x-frame-options")
 TERM = origin("terminal")
 FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 HTML = {"Accept": "text/html,application/xhtml+xml"}
@@ -38,6 +44,19 @@ def unlock_cookie(session: str) -> str:
     c = next((c for c in r.headers_all("set-cookie") if c.startswith("bn_terminal=")), "")
     expect(c, "unlock set no bn_terminal cookie")
     return c
+
+
+def page_policy_problems(csp: str) -> list[str]:
+    """What the terminal host's Content-Security-Policy (the main Caddy's terminal_page) lacks: [] when all is there —
+    ttyd's script by its hash alone, this host only, forms only to the unlock, framed by the portal only."""
+    host = f"terminal.{HOST}"
+    want = ["default-src 'none'", f"connect-src 'self' ws://{host}:* wss://{host}:*", "style-src 'unsafe-inline'",
+            f"form-action {host}:*/.bn/unlock", "base-uri 'none'", "object-src 'none'", f"frame-ancestors {origin()}"]
+    parts = [p.strip() for p in csp.split(";")]
+    probs = [w for w in want if w not in parts]
+    if not any(re.fullmatch(r"script-src 'sha256-[A-Za-z0-9+/]{43}='", p) for p in parts):
+        probs.append("script-src: not one hash alone")
+    return probs
 
 
 def ws_handshake(cookie: str | None, origin_hdr: str | None) -> int:
@@ -250,16 +269,53 @@ def enforced(ctx):
     expect("domain=" not in low and "secure" not in low, f"unlock cookie not host-only/plain: {c.split(';', 1)[1]}")
     both = f"{s}; {c.split(';', 1)[0]}"
     r = http("GET", "terminal", "/", HTML, cookie=both)
-    expect(r.status == 200 and (r.header("content-security-policy") or "") == f"frame-ancestors {origin()}",
-           f"unlocked: HTTP {r.status}, CSP {r.header('content-security-policy')}")
+    probs = page_policy_problems(r.header("content-security-policy") or "")
+    expect(r.status == 200 and not probs and r.header("x-frame-options") is None,
+           f"unlocked: HTTP {r.status}, CSP lacks {probs}: {r.header('content-security-policy')}")
     got = {o: ws_handshake(both, o) for o in (TERM, "http://evil.example", origin(), None)}
     expect(got == {TERM: 101, "http://evil.example": 403, origin(): 403, None: 403}, f"WebSocket by Origin: {got}")
     # the unlock is the terminal host's alone: a forged one, or the cookie without the session, opens nothing
     expect(ws_handshake(f"{s}; bn_terminal=forged.value.sig", TERM) == 401, "forged unlock cookie")
     expect(ws_handshake(c.split(";", 1)[0], TERM) == 401, "unlock cookie without a session")
     return ("no session → login; session only → unlock form (401, framed by the portal only), WebSocket 401; unlock refuses "
-            "foreign/portal/app/no Origin and 20 KB; cookie host-only HttpOnly Strict 12 h; unlocked: WebSocket 101 from the "
-            "terminal's own Origin, 403 from another site, the portal or none")
+            "foreign/portal/app/no Origin and 20 KB; cookie host-only HttpOnly Strict 12 h; unlocked: ttyd's page with the "
+            "terminal host's CSP (its script's hash only), WebSocket 101 from the terminal's own Origin, 403 from another "
+            "site, the portal or none")
+
+
+@check("browser", "terminal-hostile-upstream")
+def hostile(ctx):
+    need_on()
+    if not HOSTILE:
+        raise Skip("only with run.sh's stand-in on ttyd's socket (its result: browser/terminal-hostile-upstream@hostile)")
+    page, rec = ctx.page("terminal-hostile")
+    login(page)
+    page.goto(TERM + "/")
+    unlock_in(page, ENV["PORTAL_PASSWORD"])
+    page.locator("#stub").wait_for(timeout=20000)   # the stand-in answers, through the gateway, after the real unlock
+    resp = page.goto(TERM + "/")
+    page.locator("#stub").wait_for(timeout=10000)
+    hdrs = resp.all_headers()
+    left = [h for h in STRIPPED if h in hdrs]
+    expect(not left, f"the stand-in's headers got through: {left}")
+    probs = page_policy_problems(hdrs.get("content-security-policy", ""))
+    expect(not probs, f"CSP lacks {probs}: {hdrs.get('content-security-policy')}")
+    expect(page.evaluate("() => window.pwned === undefined && document.title !== 'pwned'"), "the stand-in's script ran")
+    page.evaluate("() => document.getElementById('steal').submit()")
+    page.wait_for_timeout(1500)
+    expect(page.url.startswith(TERM), f"its form posted away: {page.url}")
+    csp = [e["text"] for e in rec.events if e["t"] == "console" and "Content Security Policy" in e["text"]]
+    expect(any("script" in m for m in csp), f"no CSP violation for its script in the console: {csp}")
+    expect(any("form-action" in m for m in csp), f"no form-action violation in the console: {csp}")
+    names = {c["name"] for c in page.context.cookies()}
+    expect(not names & {"bn_stub", "bn_stub_wide"}, f"its cookies were set: {sorted(names)}")
+    r = page.request.get(origin() + "/api/summary", headers={"X-Requested-With": "bedrock-now"})
+    expect(r.status == 200, f"the portal session after its Clear-Site-Data: HTTP {r.status}")
+    shot(page, "47-terminal-stand-in")
+    rec.save()
+    return (f"a stand-in on ttyd's socket: its page arrives with the terminal host's CSP; its script blocked and its form "
+            f"stopped ({len(csp)} CSP violations in the console); none of {len(STRIPPED)} headers (Set-Cookie, "
+            "Clear-Site-Data, Refresh, Link, CORS …) through; no cookie planted; the portal session intact")
 
 
 @check("browser", "terminal-phone-full-screen")

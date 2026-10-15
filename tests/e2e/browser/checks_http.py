@@ -274,6 +274,22 @@ def stripping(ctx):
     return "X-Portal-User (no session → 401; with session → replaced), X-Portal-Remote/Proxy/Tailscale-* ignored"
 
 
+@check("http", "chat-cors-own-origin-only")
+def chat_cors(ctx):
+    """Open WebUI's CORS_ALLOW_ORIGIN: Chat's own origin (CHAT_ORIGIN), not '*' — which it answered with credentials
+    allowed for any Origin, so a page on another of the portal's hosts could have read your chats."""
+    s = ctx.session()
+    chat = ENV.get("CHAT_ORIGIN") or origin("chat")
+    got = {}
+    for o in (chat, origin(), origin("admin"), origin("files"), origin("terminal"), "http://evil.example"):
+        r = http("GET", "chat", "/api/config", {"Origin": o}, cookie=s)
+        got[o] = (r.status, r.header("access-control-allow-origin"))
+    expect(got[chat] == (200, chat), f"Chat's own origin: {got[chat]}")
+    leaked = {o: v for o, v in got.items() if o != chat and v[1] is not None}
+    expect(not leaked, f"Access-Control-Allow-Origin for other origins: {leaked}")
+    return f"Access-Control-Allow-Origin only for {chat}; none for the portal, admin, files, terminal or another site"
+
+
 @check("final", "logout-csrf-and-revocation")
 def logout(ctx):
     s = portal_login()

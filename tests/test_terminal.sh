@@ -99,6 +99,7 @@ test_enable_creates_the_default_workspace_its_key_and_secret() {
   assert_contains "$calls" "dc up -d --wait terminal"
   assert_contains "$(cat "$TMP/out")" "Terminal: on — http://terminal.bedrock-now.localhost"
   assert_contains "$(cat "$TMP/out")" "created the workspace folder $ws (mode 700)"
+  assert_contains "$(cat "$TMP/out")" "LiteLLM and shared-mcp restart once as they join the terminal's gateway network"
   # ./stack up and setup keep the secret; enabling again makes a new one
   terminal_up_hook 2>/dev/null; terminal_setup_hook > /dev/null 2>&1
   assert_eq "$(get_env TERMINAL_PROXY_SECRET)" "$s1"
@@ -204,6 +205,7 @@ test_disable_removes_containers_and_networks_and_keeps_folder_and_key() {
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-link"
   assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_terminal-socket"
   assert_contains "$(cat "$TMP/out")" "volume bedrock-now_terminal-home"
+  assert_contains "$(cat "$TMP/out")" "LiteLLM and shared-mcp restart once as they leave the terminal's gateway network"
   assert_contains "$(cat "$TMP/out")" "delete it in Admin to revoke it"
   terminal_disable > "$TMP/out" 2>&1 || return 1
   assert_contains "$(cat "$TMP/out")" "already off"
@@ -502,7 +504,19 @@ test_caddy_terminal_site_gateway_and_remote_gating() {
   site="$(awk '/^http:\/\/\{\$TERMINAL_HOST\}/,/^}/' "$STACK_DIR/caddy/terminal-on.caddy")"
   # first the local rules, then the unlock form, then the check — only then ttyd, through the gateway
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
-    "import local_request import terminal_unlock import terminal_auth import terminal_upstream import frame_by_portal_only "
+    "import local_request import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
+  assert_contains "$site" 'import terminal_page {$PORTAL_ORIGIN}'
+  # the terminal host's policy, whoever answers on ttyd's socket: ttyd's script alone (the hash the image build
+  # checks), this host only, forms only to the unlock, framed by the portal; cookies, Clear-Site-Data and the like go
+  pg="$(awk '/^\(terminal_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
+  h="$(sed -n 's/^ARG TTYD_PAGE_SCRIPT_SHA256=//p' "$STACK_DIR/terminal/Dockerfile")"
+  [ "${#h}" = 44 ] || { echo "no TTYD_PAGE_SCRIPT_SHA256 in the Dockerfile" >&2; return 1; }
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'sha256-$h'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]}\""
+  assert_eq "$(grep -c "sha256-" "$STACK_DIR/caddy/Caddyfile")" 1
+  for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
+           Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
+    assert_contains "$pg" "header_down -$d"
+  done
   assert_contains "$site" "reverse_proxy terminal-upstream:7681"
   assert_not_contains "$(cat "$STACK_DIR/caddy/terminal-on.caddy")" ":8091"
   # the gateway's file: only its two networks' names, an allowlist with 404 for the rest, a loopback health check
@@ -559,6 +573,9 @@ respond 407
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_upstream')" 1
     assert_contains "$r" "reverse_proxy terminal-upstream:7681"
     assert_not_contains "$r" " terminal:7681"
+    # its own response policy there too (framed by the remote portal), not the apps' (which keeps Set-Cookie)
+    tb="$(printf '%s\n' "$r" | awk '/reverse_proxy terminal-upstream:7681/,/}/' | grep -o 'import .*' | tr '\n' '|')"
+    assert_eq "$tb" 'import terminal_upstream|import terminal_page {$REMOTE_ORIGIN}|' 
   done
   # the portal's cookie names and the unlock route agree with Caddy's
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"'
@@ -590,12 +607,20 @@ test_ttyd_listens_on_a_socket_only_and_checks_the_origin() {
   assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" "tmux new-session -A -s claude"
   # the page rewrite: a viewport and our icon in, ttyd's icon out
   assert_contains "$(cat "$STACK_DIR/terminal/ttyd-page.py")" '<meta name="viewport" content="width=device-width'
-  printf '<html><head><meta charset="UTF-8"><link rel="icon" type="image/png" href="data:image/png;base64,AAA"></head></html>' > "$TMP/in.html"
-  python3 "$STACK_DIR/terminal/ttyd-page.py" "$TMP/in.html" "$TMP/out.html" || return 1
+  printf '<html><head><meta charset="UTF-8"><link rel="icon" type="image/png" href="data:image/png;base64,AAA"></head><body><script type="text/javascript">var t="é";</script></body></html>' > "$TMP/in.html"
+  h="$(printf 'var t="é";' | python3 -c 'import base64, hashlib, sys; print(base64.b64encode(hashlib.sha256(sys.stdin.buffer.read()).digest()).decode())')"
+  python3 "$STACK_DIR/terminal/ttyd-page.py" "$TMP/in.html" "$TMP/out.html" "$h" || return 1
   out="$(cat "$TMP/out.html")"
   assert_contains "$out" '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1'
   assert_contains "$out" '<link rel="icon" href="data:image/svg+xml,'
   assert_not_contains "$out" "image/png"
+  # another script (a new ttyd) stops the build, naming both places of the hash
+  if err="$(python3 "$STACK_DIR/terminal/ttyd-page.py" "$TMP/in.html" "$TMP/out.html" "sha256-$(printf 'x%.0s' $(seq 1 43))=" 2>&1)"; then
+    echo "accepted another script" >&2; return 1
+  fi
+  assert_contains "$err" "ttyd's page script is sha256-$h, not the pinned"
+  assert_contains "$err" "TTYD_PAGE_SCRIPT_SHA256"
+  assert_contains "$(cat "$STACK_DIR/terminal/Dockerfile")" 'ttyd-page.py /tmp/ttyd.html /usr/local/share/bedrock-now/ttyd.html "$TTYD_PAGE_SCRIPT_SHA256"' 
 }
 
 test_image_pins() {

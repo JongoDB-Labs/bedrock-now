@@ -192,13 +192,19 @@ All notable changes to bedrock-now are documented here. The format follows
   the login); its WebSocket accepts only its own `Origin` (checked by the portal, whatever the path's spelling, and
   by ttyd). ttyd listens on a UNIX socket only, shared with the gateway, which passes requests to it only with a
   secret header that only the main Caddy adds (new at every `./stack terminal enable`; never on a command line, in
-  the sandbox or in the gateway's log). Off by default, and
+  the sandbox or in the gateway's log). The main Caddy sets the terminal host's policy whoever answers on that
+  socket: a CSP that runs only ttyd's script (its hash, checked at image build), forms only to the unlock, and no
+  upstream `Set-Cookie`, `Clear-Site-Data`, `Refresh` or `Link`. Off by default, and
   off over remote access unless `REMOTE_TERMINAL=true`. Home's Claude Code card says where to find it. `./stack
   test` and the e2e suite (`tests/e2e/run.sh --terminal`) check its lock, Origin rules, secret header, gateway list
   and isolation; `./stack uninstall` removes its volume and image also while it is off, and update/rollback keep
   its previous build.
 ### Changed
 
+- **Open WebUI answers cross-origin requests only from Chat's own origin** (`CORS_ALLOW_ORIGIN`: the new
+  `CHAT_ORIGIN` in `.env`, written by `./stack` like `PORTAL_ORIGIN`, plus the remote chat host while remote
+  access is on) instead of its default `*`, which it answered with credentials allowed for any `Origin`: a page on
+  another of the portal's hosts could have read your chats.
 - **The OpenRouter model list is asked for with your key** (on curl's stdin, never on a command line), so
   OpenRouter's *Filter the model catalog for API keys* setting (Settings › Privacy › Model catalog) can leave
   out models the key cannot use; an empty list for the key is taken as it is. On a 4xx there (401/403: the key

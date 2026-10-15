@@ -27,11 +27,14 @@ RUN set -eu; \
     install -m 755 /tmp/ttyd /usr/local/bin/ttyd; rm /tmp/ttyd; ttyd --version
 
 # ttyd's own page, served with --index: the same page plus a viewport for phones and a bedrock-now icon (ttyd-page.py).
+# Its inline script must hash to this: the main Caddy's CSP for the terminal host allows that script alone
+# (caddy/Caddyfile, terminal_page — the same value), so a new ttyd stops the build until both are updated.
+ARG TTYD_PAGE_SCRIPT_SHA256=qpCL1JTmm6ktW0DnjpSILM7GnS2fO8/e+XjSlYJuQzQ=
 COPY ttyd-page.py /tmp/ttyd-page.py
 RUN set -eu; ttyd -p 7682 -i lo true >/dev/null 2>&1 & pid=$!; \
     for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -o /tmp/ttyd.html http://127.0.0.1:7682/ && break; sleep 0.5; done; \
     kill "$pid"; mkdir -p /usr/local/share/bedrock-now; \
-    python3 /tmp/ttyd-page.py /tmp/ttyd.html /usr/local/share/bedrock-now/ttyd.html; \
+    python3 /tmp/ttyd-page.py /tmp/ttyd.html /usr/local/share/bedrock-now/ttyd.html "$TTYD_PAGE_SCRIPT_SHA256"; \
     rm /tmp/ttyd.html /tmp/ttyd-page.py; chmod 644 /usr/local/share/bedrock-now/ttyd.html
 
 # Claude Code: npm ci refuses any tarball whose checksum differs from the lockfile (the platform's native binary

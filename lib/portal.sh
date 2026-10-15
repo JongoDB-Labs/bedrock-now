@@ -50,9 +50,9 @@ portal_app_name() {
   if [ -n "$label" ]; then printf 'bedrock-now (%s)\n' "$label"; else echo bedrock-now; fi
 }
 
-# save_portal_origin — PORTAL_ORIGIN (= portal_url) in .env, for Caddy's frame-ancestors; rewritten whenever
-# the host or port is decided.
-save_portal_origin() { set_env PORTAL_ORIGIN "$(portal_url)"; }
+# save_portal_origin — PORTAL_ORIGIN (= portal_url) in .env, for Caddy's frame-ancestors, and CHAT_ORIGIN (=
+# portal_url chat), Open WebUI's CORS_ALLOW_ORIGIN; rewritten whenever the host or port is decided (and at every up).
+save_portal_origin() { set_env PORTAL_ORIGIN "$(portal_url)"; set_env CHAT_ORIGIN "$(portal_url chat)"; }
 
 # setup_portal_host — PORTAL_HOST in .env: kept if set (validated), else derived from the project name.
 setup_portal_host() {

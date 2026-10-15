@@ -1,8 +1,12 @@
 """ttyd's own page (fetched from ttyd at image build) → the page bn-terminal serves with --index: the same page plus a
 viewport for phones (without one they lay it out 980 px wide; the on-screen keyboard then resizes it instead of
 covering the prompt), the terminal's background as theme colour, and a bedrock-now icon instead of ttyd's.
-Usage: python3 ttyd-page.py IN OUT"""
+Then the page's one inline script must hash to SHA256 (the main Caddy's Content-Security-Policy for the terminal
+host allows only that script: caddy/Caddyfile, terminal_page): a new ttyd fails the build here, not in browsers.
+Usage: python3 ttyd-page.py IN OUT SHA256"""
 
+import base64
+import hashlib
 import re
 import sys
 
@@ -19,4 +23,14 @@ page, n = re.subn(r'<meta charset="UTF-8">', lambda m: m.group(0) + META, page, 
 assert n == 1, "no <meta charset> in ttyd's page"
 page, n = re.subn(r'<link rel="icon"[^>]*>', lambda m: f'<link rel="icon" href="{ICON}">', page, count=1)
 assert n == 1, "no icon link in ttyd's page"
-open(sys.argv[2], "w", encoding="utf-8").write(page)
+open(sys.argv[2], "w", encoding="utf-8", newline="").write(page)
+
+# The hash browsers compute: over the script's text as served (UTF-8, no carriage returns to normalise).
+served = open(sys.argv[2], "rb").read()
+scripts = re.findall(rb"<script\b[^>]*>(.*?)</script>", served, re.S)
+assert len(scripts) == 1 and b"\r" not in scripts[0], f"ttyd's page has {len(scripts)} inline scripts (or CRs): check its CSP"
+got = base64.b64encode(hashlib.sha256(scripts[0]).digest()).decode()
+want = sys.argv[3].removeprefix("sha256-")
+if got != want:
+    sys.exit(f"ttyd's page script is sha256-{got}, not the pinned sha256-{want}: put the new hash in terminal/Dockerfile "
+             "(TTYD_PAGE_SCRIPT_SHA256) and caddy/Caddyfile (terminal_page), after checking what changed")

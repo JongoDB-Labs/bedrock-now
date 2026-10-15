@@ -95,8 +95,8 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import terminal_unlock
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {
-			import remote_upstream
 			import terminal_upstream
+			import terminal_page {$REMOTE_ORIGIN}
 		}
 	}
 

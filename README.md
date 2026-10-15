@@ -263,7 +263,7 @@ It is a sandbox, not a shell on your computer:
   away.
 - Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
   ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
-  page.
+  page. Whatever answers there, its page runs only ttyd's own script and can set or clear no cookies.
 - Over [remote access](#remote-access) it is **off** unless you set `REMOTE_TERMINAL=true` in `.env` (then
   `./stack up`; in Tailscale mode it is one more Service to approve, `./stack remote status` names it).
 - What runs in it can spend its key (within `BUDGET_TERMINAL`), read and write the shared store and knowledge
@@ -274,7 +274,9 @@ It is a sandbox, not a shell on your computer:
   open the folder. Treat what the terminal wrote like code from someone else.
 
 `./stack terminal disable` removes the container; the folder, Claude Code's history and the key stay (delete the
-key in Admin to revoke it). Details and what was weighed: [docs/security.md](docs/security.md#the-browser-terminal).
+key in Admin to revoke it). The first `enable`, and `disable`, restart LiteLLM and the shared MCP server once (they
+join or leave the terminal's gateway network): Chat answers, `claude-bedrock` requests and MCP sessions in progress
+drop for a few seconds. Details and what was weighed: [docs/security.md](docs/security.md#the-browser-terminal).
 
 ### Claude Code from your phone
 

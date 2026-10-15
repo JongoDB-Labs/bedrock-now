@@ -69,6 +69,10 @@ session you get the login page.
   price files in `litellm/prices/` and the update check's answer in `.state/update-check/`).
 - Chat, Admin and Files may be framed only by the portal (`Content-Security-Policy: frame-ancestors
   <portal>`); the portal can't be framed at all. Host names other than the four answer 404.
+- Open WebUI answers cross-origin requests only from Chat's own origin (`CORS_ALLOW_ORIGIN`: `CHAT_ORIGIN`, which
+  `./stack` writes like `PORTAL_ORIGIN`, and the remote chat host while remote access is on). Its default, `*`, is
+  answered with credentials allowed for any `Origin`: a page on another of the portal's hosts — the terminal's
+  among them — could otherwise have read your chats with your cookies.
 - The LiteLLM and RustFS sign-ins shown on Home come from the portal's API with copy buttons; the values never
   appear in the page source.
 
@@ -435,6 +439,19 @@ what a successful attacker reaches is the container — with the three exception
   readable by every user of a Linux host), never in the sandbox (the gateway removes the header before ttyd), and
   never in the gateway's log (it drops request headers, which Caddy otherwise logs with a failed request). Caddy
   strips all cookies and any client-sent `X-Bn-Terminal-*` before ttyd. It may be framed only by the portal.
+- [x] **The terminal host's page policy is the main Caddy's, whoever answers.** Code in the sandbox runs as
+  ttyd's user and could replace the listener on ttyd's socket; the gateway would pass it the unlocked browser's
+  requests. So every answer from there gets the main Caddy's headers (`terminal_page` in `caddy/Caddyfile`): a
+  `Content-Security-Policy` that runs only ttyd's own script (by its SHA-256; the image build stops when ttyd's
+  page changes, `TTYD_PAGE_SCRIPT_SHA256` in `terminal/Dockerfile`, the same value), talks only to the terminal
+  host, posts forms only to its unlock, loads nothing else (`default-src 'none'`, `base-uri 'none'`,
+  `object-src 'none'`) and is framed only by the portal; and none of the upstream's `Set-Cookie`,
+  `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`, CORS or reporting headers. A page
+  from a stand-in can show text but cannot run script with your cookies, plant or clear cookies on the portal's
+  domain, or send a typed password anywhere but the real unlock; the e2e suite starts such a stand-in and checks
+  it. (The unlock page and the unlock itself are the portal's own answers, with the portal's headers.) Framed by
+  the portal, its `frame-src` keeps the frame on the portal's own hosts; opened full screen, a stand-in could still
+  navigate the tab to another site, visible in the address bar.
 - [x] **Remote access: off for the terminal.** The remote sites route the terminal's name only when
   `REMOTE_TERMINAL` is on in `.env` (true/1/yes/on, read the same by `./stack` and the portal; another value is
   named as off), then `./stack up`: `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`

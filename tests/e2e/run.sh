@@ -404,7 +404,7 @@ browser_run() {
   t0="$(now)"
   # the terminal's one real Claude Code call (browser/terminal-claude-bedrock-inside) only with the claude part
   E2E_TERMINAL_CLAUDE="$( [ "$TERMINAL" = 1 ] && part_on claude && [ "$NO_CLAUDE" = 0 ] && echo 1 || echo 0)" \
-    E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
+    E2E_TERMINAL_HOSTILE="${HOSTILE:-0}" E2E_TAG="$tag" "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
@@ -415,6 +415,31 @@ browser_run() {
 if ! part_on browser; then record browser suite SKIP 0 "--only $ONLY"; else
   say "browser suite (Playwright container)"
   browser_run "full suite"
+  # The terminal host whoever answers on ttyd's socket: as code in the sandbox could, a stand-in (terminal-stub.py)
+  # takes the socket's path (ttyd's own moved aside: ttyd keeps listening on it), the browser check runs against it,
+  # then the stand-in puts ttyd's socket back. The gateway restarts each time, so it keeps no connection to the other.
+  # The main Caddy's policy for the terminal host must hold for the stand-in's page.
+  if [ "$TERMINAL" = 1 ]; then
+    tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
+    tgw="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal-gateway)"
+    gw_fresh() { docker restart -t 5 "$tgw" >/dev/null 2>&1; for _ in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$tgw" 2>/dev/null)" = healthy ] && return 0; sleep 1; done; return 1; }
+    t0="$(now)"
+    if [ -n "$tc" ] && [ -n "$tgw" ] && docker exec -i "$tc" sh -c 'cat > /tmp/bn-stub.py' < "$HERE/terminal-stub.py" &&
+       docker exec -d "$tc" python3 /tmp/bn-stub.py /run/bn-ttyd/ttyd.sock; then
+      for _ in $(seq 1 20); do docker exec "$tc" test -S /run/bn-ttyd/ttyd.real && break; sleep 0.5; done
+      gw_fresh
+      HOSTILE=1; browser_run "terminal: a stand-in on ttyd's socket" 'browser/terminal-hostile-upstream$' hostile; HOSTILE=0
+    else record browser terminal-hostile-upstream@hostile FAIL "$(( $(now) - t0 ))" "could not start the stand-in on ttyd's socket"; fi
+    # The stand-in stopped (it puts ttyd's socket back), ttyd answering again through a fresh gateway
+    t0="$(now)"
+    docker exec "$tc" pkill -f 'bn-stub[.]py' >/dev/null 2>&1
+    for _ in $(seq 1 20); do docker exec "$tc" test -e /run/bn-ttyd/ttyd.real || break; sleep 0.5; done
+    gw_fresh
+    page="$(docker exec "$tc" curl -fsS -m 5 --unix-socket /run/bn-ttyd/ttyd.sock http://terminal/ 2>/dev/null || true)"
+    case "$page" in *'<title>ttyd'*) record terminal stand-in-removed PASS "$(( $(now) - t0 ))" "ttyd answers on its socket again" ;;
+      *) record terminal stand-in-removed FAIL "$(( $(now) - t0 ))" "ttyd's socket not back (docker exec $tc ls -la /run/bn-ttyd)" ;; esac
+    unset page
+  fi
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---

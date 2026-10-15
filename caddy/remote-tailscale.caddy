@@ -91,8 +91,8 @@ http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 		import terminal_unlock
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {
-			import remote_upstream
 			import terminal_upstream
+			import terminal_page {$REMOTE_ORIGIN}
 		}
 	}
 }
