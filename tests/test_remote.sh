@@ -333,7 +333,8 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     up="$(awk '/^\(remote_upstream\)/,/^}/' "$f")"
     assert_contains "$up" 'header_down Set-Cookie "^(.*)$" "$1; Secure"'
     assert_contains "$up" "header_up -X-Portal-Proxy"
-    assert_eq "$(grep -c 'import remote_upstream' "$f")" 4
+    assert_eq "$(grep -c 'import remote_upstream' "$f")" 3   # the three apps (the terminal: terminal_page instead)
+    assert_eq "$(grep -c 'import terminal_page {$REMOTE_ORIGIN}' "$f")" 1
   done
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" "request_header -Tailscale-User-Login"
   for m in tailscale domain; do assert_eq "$(grep -c "import handoff_callback" "$STACK_DIR/caddy/remote-$m.caddy")" 4; done

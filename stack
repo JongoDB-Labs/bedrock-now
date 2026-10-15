@@ -42,7 +42,7 @@ case "$cmd" in setup | rotate-aws | help | -h | --help) ;; *) [ ! -f "$ENV_FILE"
 # still look; uninstall checks even without .env, lists what it deletes, and releases the project afterwards).
 # Commands that may write .env refresh the settings snapshot the portal shows when they end (lib/settings.sh).
 case "$cmd" in
-  setup | up | restore | update | rollback | rotate-aws | openrouter | stt | remote | helper | config | models) on_exit settings_snapshot_refresh ;;
+  setup | up | restore | update | rollback | rotate-aws | openrouter | stt | remote | helper | config | models | terminal) on_exit settings_snapshot_refresh ;;
 esac
 case "$cmd" in
   setup) cmd_setup "$@" ;;

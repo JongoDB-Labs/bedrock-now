@@ -15,7 +15,7 @@ from portal.app import create_app
 from portal.config import from_env
 from portal.security import (
     COOKIE, REMOTE_COOKIE, REMOTE_TERMINAL_COOKIE, TERMINAL_COOKIE, TERMINAL_MAX_AGE, LoginThrottle, Sessions,
-    TerminalUnlocks, safe_next, terminal_origin_ok, terminal_same_origin,
+    TerminalUnlocks, hash_password, safe_next, terminal_origin_ok, terminal_same_origin,
 )
 
 SECRET = "s" * 64
@@ -217,8 +217,9 @@ def test_sign_out_ends_the_unlock(tc):
 def test_a_new_password_voids_the_unlock(ts):
     with _client(ts) as c:
         tok, ut = unlocked(c)
-    with _client(replace(ts, password="new password")) as c:
-        assert not TerminalUnlocks(SECRET, Sessions(SECRET, "new password")).valid(ut)
+    new_hash = hash_password("new password", rounds=1000, salt=bytes.fromhex("8899aabbccddeeff"))
+    with _client(replace(ts, password_hash=new_hash)) as c:
+        assert not TerminalUnlocks(SECRET, Sessions(SECRET, new_hash)).valid(ut)
         r = c.post("/login", data={"password": "new password", "next": "/"}, headers={"Origin": PORTAL})
         tok2 = _cookie(r, COOKIE).split(";", 1)[0].split("=", 1)[1]
         assert verify(c, {COOKIE: tok2, TERMINAL_COOKIE: ut}).status_code == 401

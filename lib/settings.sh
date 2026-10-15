@@ -212,7 +212,7 @@ setting_weakens() {
     BACKUP_KEEP) [ "$(_eff_int "$2" 1 60 7)" -lt "$(_eff_int "$3" 1 60 7)" ] ;;                 # fewer backups kept
     PORTAL_SESSION_DAYS) [ "$(_eff_int "$2" 1 90 30)" -gt "$(_eff_int "$3" 1 90 30)" ] ;;       # longer sign-ins
     BUDGET_ALERT_PCT) [ "$(_eff_int "$2" 50 99 80)" -gt "$(_eff_int "$3" 50 99 80)" ] ;;        # later warnings
-    BUDGET_CLAUDE_CODE | BUDGET_OPENWEBUI | BUDGET_SETUP)                                         # a higher cost cap
+    BUDGET_CLAUDE_CODE | BUDGET_OPENWEBUI | BUDGET_SETUP | BUDGET_TERMINAL)                       # a higher cost cap
       awk -v n="$(_eff_budget "$1" "$2")" -v o="$(_eff_budget "$1" "$3")" 'BEGIN { exit !(n + 0 > o + 0) }' ;;
     BACKUP_NIGHTLY | AUTO_UPDATE) [ "$2" != on ] && [ "$3" = on ] ;;                              # turned off
     UPDATE_CHECK) [ "$2" = false ] && [ "$3" != false ] ;;                                       # no release checks
@@ -230,7 +230,7 @@ _eff_int() { case "$1" in '' | *[!0-9]* | ????*) echo "$4" ;; *) if [ "$1" -ge "
 # _eff_budget KEY VALUE -> VALUE when a budget, else the one setup gives that key
 _eff_budget() {
   if valid_budget "$2"; then echo "$2"; return 0; fi
-  case "$1" in BUDGET_CLAUDE_CODE) echo 200 ;; BUDGET_OPENWEBUI) echo 50 ;; *) echo 5 ;; esac
+  case "$1" in BUDGET_CLAUDE_CODE) echo 200 ;; BUDGET_OPENWEBUI | BUDGET_TERMINAL) echo 50 ;; *) echo 5 ;; esac
 }
 
 # setting_allowed KEY VALUE ORIGIN(local|remote) -> 0 when the policy lets this change through (SV_ERR otherwise)
@@ -807,10 +807,13 @@ _cfg_post() {
   # shellcheck disable=SC2086  # word-split the service list on purpose
   [ -z "$svc" ] || run_phase "Restart:$svc" "${svc# }" dc up -d --no-deps --wait $svc
   if _cfg_on budget || _cfg_on alert-pct; then
-    for k in BUDGET_CLAUDE_CODE BUDGET_OPENWEBUI BUDGET_SETUP; do
+    for k in BUDGET_CLAUDE_CODE BUDGET_OPENWEBUI BUDGET_SETUP BUDGET_TERMINAL; do
       cfg_has "$k" || _cfg_on alert-pct || continue   # a new alert threshold: every key's soft budget
       case "$k" in BUDGET_CLAUDE_CODE) ensure_virtual_key LITELLM_KEY_CLAUDE_CODE claude-code "$(get_env "$k")" ;;
         BUDGET_OPENWEBUI) ensure_virtual_key LITELLM_KEY_OPENWEBUI open-webui "$(get_env "$k")" ;;
+        # the browser terminal's key (with its routes: lib/terminal.sh), only once ./stack terminal made it
+        BUDGET_TERMINAL) [ -z "$(get_env LITELLM_KEY_TERMINAL)" ] || terminal_key ||
+          die "could not update the budget of LiteLLM key 'claude-code-terminal' — see ./stack logs litellm" ;;
         *) ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env "$k")" ;; esac
     done
     if _cfg_on alert-pct; then alert_pct_mark; fi
@@ -1086,16 +1089,18 @@ models_hidden_mark() {
 # budget_sync_quiet — ./stack up: each key's budget in LiteLLM as BUDGET_* in .env says (a change made while the
 # stack was stopped, or .env edited by hand); quiet when nothing differs. Never fatal.
 budget_sync_quiet() {
-  local envk alias bk j max want soft=0 failed=0
+  local envk alias bk j max want routes soft=0 failed=0
   [ "$(alert_pct_applied)" = "$(alert_pct)" ] || soft=1   # BUDGET_ALERT_PCT changed while the stack was stopped
-  for envk in LITELLM_KEY_CLAUDE_CODE:claude-code:BUDGET_CLAUDE_CODE LITELLM_KEY_OPENWEBUI:open-webui:BUDGET_OPENWEBUI LITELLM_KEY_SETUP:setup:BUDGET_SETUP; do
+  for envk in LITELLM_KEY_CLAUDE_CODE:claude-code:BUDGET_CLAUDE_CODE LITELLM_KEY_OPENWEBUI:open-webui:BUDGET_OPENWEBUI LITELLM_KEY_SETUP:setup:BUDGET_SETUP \
+              LITELLM_KEY_TERMINAL:claude-code-terminal:BUDGET_TERMINAL; do
     bk="${envk##*:}"; alias="${envk#*:}"; alias="${alias%%:*}"; envk="${envk%%:*}"
     want="$(get_env "$bk")"; valid_budget "$want" || continue
     [ -n "$(get_env "$envk")" ] || continue
     j="$(key_info "$(get_env "$envk")")" || continue
     max="$(printf '%s' "$j" | json_num max_budget)"
     [ "$soft" = 1 ] || awk -v a="${max:-x}" -v b="$want" 'BEGIN { exit !(a == "x" || a + 0 != b + 0) }' || continue
-    if ( ensure_virtual_key "$envk" "$alias" "$want" ) >/dev/null 2>&1; then
+    routes=''; [ "$envk" != LITELLM_KEY_TERMINAL ] || routes="$TERMINAL_KEY_ROUTES"   # (lib/terminal.sh: kept on update)
+    if ( ensure_virtual_key "$envk" "$alias" "$want" "$routes" ) >/dev/null 2>&1; then
       log "budget of '$alias' set to \$$want, alerts at $(alert_pct)% (BUDGET_* and BUDGET_ALERT_PCT in .env)"
     else failed=1; fi
   done

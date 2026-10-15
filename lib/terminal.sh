@@ -149,7 +149,7 @@ TERMINAL_KEY_ROUTES='["/v1/messages","/v1/messages/count_tokens","/v1/models","/
 terminal_key() { ( ensure_virtual_key LITELLM_KEY_TERMINAL claude-code-terminal "$(get_env BUDGET_TERMINAL)" "$TERMINAL_KEY_ROUTES" ); }
 
 terminal_enable() {
-  local ws='' real why created=0 ids
+  local ws='' real why created=0 ids own=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --workspace) [ -n "${2:-}" ] || die "usage: ./stack terminal enable [--workspace DIR]"; ws="$2"; shift 2 ;;
@@ -158,6 +158,8 @@ terminal_enable() {
     esac
   done
   [ -f "$ENV_FILE" ] && [ -n "$(get_env PORTAL_SECRET)" ] && [ -n "$(get_env LITELLM_MASTER_KEY)" ] || die "run ./stack setup first"
+  # lib/lock.sh: not while a settings change, setup, update or restore writes .env; released when enable is done
+  ! stack_lock_ours || own=0
   stack_lock terminal
   check_prereqs
   curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$(get_env LITELLM_PORT)/health/liveliness" 2>/dev/null ||
@@ -193,13 +195,16 @@ terminal_enable() {
   run_phase "Terminal image (build; the first one takes a few minutes)" terminal terminal_build
   run_phase "Terminal + its gateway + portal + Caddy" "terminal terminal-gateway portal caddy litellm shared-mcp" _terminal_up
   terminal_after_up
+  [ "$own" = 0 ] || stack_unlock
   printf '\n'; terminal_status
   printf '\nOpen the Terminal tab on Home (%s) and unlock it with the portal password.\n' "$(portal_url)"
 }
 
 terminal_disable() {
+  local own=1
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   if ! terminal_on; then log "the terminal is already off"; return 0; fi
+  ! stack_lock_ours || own=0
   stack_lock terminal
   check_prereqs
   dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true   # with the overlay still on: compose knows them
@@ -210,6 +215,7 @@ terminal_disable() {
   run_phase "Portal + Caddy (terminal off)" "portal caddy litellm shared-mcp" _terminal_front
   terminal_network_cleanup
   docker volume rm "$(project_name)_terminal-socket" >/dev/null 2>&1 || true   # ttyd's socket: nothing to keep
+  [ "$own" = 0 ] || stack_unlock
   log "the terminal is off: no Terminal tab, no terminal host, no container"
   log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE), Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them) and its LiteLLM key claude-code-terminal (spend history; delete it in Admin to revoke it)"
 }
@@ -315,7 +321,7 @@ terminal_status() {
   printf '  Workspace  %s → /workspace (the only folder of this computer it sees)\n' "${ws:-(none)}"
   [ -z "$why" ] || printf '             !! left out: %s\n' "$why"
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
-  printf '  Key        claude-code-terminal, its own monthly budget: $%s (BUDGET_TERMINAL; spend on Home)\n' "$(get_env BUDGET_TERMINAL)"
+  printf '  Key        claude-code-terminal, its own monthly budget: $%s (BUDGET_TERMINAL: Settings → Budgets & alerts; spend on Home)\n' "$(get_env BUDGET_TERMINAL)"
   if terminal_egress_on; then printf '  Internet   on (git, npm, pip, web fetches); TERMINAL_EGRESS=off in .env, then ./stack up, takes it away\n'
   else printf '  Internet   off (TERMINAL_EGRESS=off): only the gateway to LiteLLM and the shared MCP server\n'; fi
   if [ -n "$(get_env REMOTE_TERMINAL_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_TERMINAL_HOST)"

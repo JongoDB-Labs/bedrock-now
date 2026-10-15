@@ -19,11 +19,13 @@
   const PROMPT = "M3.5 5.5h13a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM6 8.5l2.5 2-2.5 2M10.5 13h3.5";
   const POPOUT = "M11 4h5v5M16 4l-7 7M14 12v4H4V6h4";
 
-  // Sidebar: before More (the phone's bottom bar hides it; mobile.css), with a pop-out like the other apps.
+  // Sidebar: after the other apps, before Settings and More (the phone's bottom bar hides it; mobile.css), with a
+  // pop-out like the other apps.
   function addTab() {
-    const more = $(".tabs .more-item");
-    if (!more) return;
-    more.before(el("li", { class: "terminal-item" },
+    const settings = $(".tabs .tab[data-tab=settings]");
+    const before = settings ? settings.closest("li") : $(".tabs .more-item");
+    if (!before) return;
+    before.before(el("li", { class: "terminal-item" },
       el("button", { type: "button", class: "tab", "data-tab": "terminal" }, icon(PROMPT), "Terminal"),
       el("a", { class: "popout", "data-app": "terminal", href: appUrl("terminal"), target: "_blank", rel: "noopener",
         title: "Open Terminal in its own window", "aria-label": "Open Terminal in its own window" }, icon(POPOUT))));

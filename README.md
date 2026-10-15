@@ -236,7 +236,9 @@ More details (session headers, signals, `--help`): [docs/advanced.md](docs/advan
 This adds a **Terminal** tab to the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
 tmux session, set up like the one on your computer (same models, the shared MCP server, the cost line and the
 session cost on exit), but with **its own LiteLLM key**, `claude-code-terminal`, and its own monthly budget
-(`BUDGET_TERMINAL`, $50; a Terminal meter on Home). `Ctrl-b c` opens a shell window, `Ctrl-b n` switches.
+(`BUDGET_TERMINAL`, $50, in Settings → Budgets & alerts; a Terminal meter on Home). `Ctrl-b c` opens a shell
+window, `Ctrl-b n` switches. Its other settings are shown under Settings → Advanced, read-only: they change with
+`./stack terminal`.
 Reloading, closing the tab or losing the phone's connection only detaches: the session keeps running and opens
 where you left it (until the container restarts: `./stack update`, `./stack terminal enable`, a reboot). Hold
 Shift (Option on a Mac) to select text; an external keyboard helps a lot on a phone.

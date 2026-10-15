@@ -329,8 +329,9 @@ def validate(validator: str, value: str, remote_on: bool = False) -> str | None:
 
 _WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer",
                 "BUDGET_ALERT_PCT": "raised", "BUDGET_CLAUDE_CODE": "raised", "BUDGET_OPENWEBUI": "raised",
-                "BUDGET_SETUP": "raised", "AUTO_UPDATE": "turned off", "UPDATE_CHECK": "turned off"}
-_BUDGET_DEFAULT = {"BUDGET_CLAUDE_CODE": 200.0, "BUDGET_OPENWEBUI": 50.0, "BUDGET_SETUP": 5.0}
+                "BUDGET_SETUP": "raised", "BUDGET_TERMINAL": "raised", "AUTO_UPDATE": "turned off",
+                "UPDATE_CHECK": "turned off"}
+_BUDGET_DEFAULT = {"BUDGET_CLAUDE_CODE": 200.0, "BUDGET_OPENWEBUI": 50.0, "BUDGET_SETUP": 5.0, "BUDGET_TERMINAL": 50.0}
 
 
 def _eff_int(v: str, lo: int, hi: int, default: int) -> int:

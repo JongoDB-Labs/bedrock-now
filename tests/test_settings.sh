@@ -63,8 +63,9 @@ test_every_env_key_is_in_the_settings_table_once() {
   dup="$(settings_rows | cut -f1 | sort | uniq -d)"
   assert_eq "$dup" ""
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
-  # model pins, hidden models, nightly backups with their hour and how many to keep)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 97
+  # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12 and
+  # Chat's origin)
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 110
 }
 
 test_table_columns_are_valid() {
@@ -176,12 +177,14 @@ test_portal_password_hash_follows_env_and_the_helper_keeps_its_own() {
 
 test_snapshot_masks_every_secret() {
   _env
-  set_env_batch ALERT_WEBHOOK_URL 'https://hooks.example.com/abc?token=hooktoken123' MY_OWN_SECRET 'mine123456789'
+  set_env_batch ALERT_WEBHOOK_URL 'https://hooks.example.com/abc?token=hooktoken123' MY_OWN_SECRET 'mine123456789' \
+    TERMINAL_PROXY_SECRET 0123456789abcdef0123456789abcdef LITELLM_KEY_TERMINAL sk-term0123456789
   settings_snapshot_write
   local f s v; f="$(settings_snapshot_file)"; s="$(cat "$f")"
   assert_eq "$(ls -l "$f" | cut -c1-10)" "-rw-r--r--"
   for v in 'correct horse battery' ${FAKE_AWS_3} sk-master0123456789 rustfs0123456789secret \
-           mcp0123456789abcdef Bn9-0123456789abcdef hooktoken123 mine123456789 sk-setup0123456789; do
+           mcp0123456789abcdef Bn9-0123456789abcdef hooktoken123 mine123456789 sk-setup0123456789 \
+           0123456789abcdef0123456789abcdef sk-term0123456789; do
     assert_not_contains "$s" "$v"
   done
   assert_contains "$s" '"hint": "AKIA…MNOP"'
@@ -191,7 +194,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 98; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 111; assert d["last_change"] is None' "$f"
   fi
 }
 
@@ -1122,6 +1125,26 @@ test_alert_threshold_follows_budget_alert_pct() {
   assert_eq "$(printf 'open-webui\t17\t20\t\n' | budget_banner_json 1)" "[]"
   assert_contains "$(printf 'open-webui\t19\t20\t\n' | budget_banner_json 1)" '"type":"warning"'
   set_env BUDGET_ALERT_PCT 120; assert_eq "$(alert_pct)" 80                                     # nonsense: 80
+}
+
+test_terminal_budget_keeps_its_keys_routes() {
+  _env; _in_checkout; _stub_stack
+  # the terminal off (no key yet): .env only — no key is made for it here
+  _lines BUDGET_TERMINAL=20 | _apply 2>/dev/null
+  assert_eq "$(get_env BUDGET_TERMINAL)" 20
+  assert_not_contains "$(cat "$TMP/calls")" "LITELLM_KEY_TERMINAL"
+  # its key exists: updated with Claude Code's routes (lib/terminal.sh), not just the budget
+  set_env LITELLM_KEY_TERMINAL sk-term0123456789; : > "$TMP/calls"
+  _lines BUDGET_TERMINAL=30 | _apply 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "key LITELLM_KEY_TERMINAL claude-code-terminal 30 $TERMINAL_KEY_ROUTES"
+  # ./stack up: a budget changed while the stack was stopped, likewise
+  : > "$TMP/calls"; set_env BUDGET_TERMINAL 40
+  key_info() { printf '{"info": {"max_budget": 30}}'; }
+  budget_sync_quiet 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "key LITELLM_KEY_TERMINAL claude-code-terminal 40 $TERMINAL_KEY_ROUTES"
+  # raising it is the less protective direction: only from this computer
+  if setting_allowed BUDGET_TERMINAL 50 remote; then echo "raised remotely" >&2; return 1; fi
+  setting_allowed BUDGET_TERMINAL 10 remote || return 1
 }
 
 test_alert_threshold_change_resets_every_soft_budget() {
