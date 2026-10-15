@@ -549,14 +549,16 @@ elif ! command -v claude >/dev/null 2>&1; then record claude claude-bedrock SKIP
 else
   say "claude-bedrock -p (Haiku, one short prompt)"
   t0="$(now)"; log="$LOGS/claude-bedrock.log"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
-  # Its own CLAUDE_CONFIG_DIR and an empty working folder: your ~/.claude and this checkout's files stay out of it.
-  mkdir -p "$OUT/claude-config" "$OUT/claude-cwd"
-  ( export CLAUDE_CONFIG_DIR="$OUT/claude-config" CLAUDE_BEDROCK_MODEL="$haiku" CLAUDE_BEDROCK_SUMMARY=1
-    clean_env CLAUDE_CONFIG_DIR CLAUDE_BEDROCK_MODEL CLAUDE_BEDROCK_SUMMARY
+  # Its own config folder (the wrapper's lean CLAUDE_CONFIG_DIR, not ~/.claude-bedrock) and an empty working folder:
+  # your ~/.claude, ~/.claude-bedrock and this checkout's files stay out of it.
+  mkdir -p "$OUT/claude-cwd"
+  ( export CLAUDE_BEDROCK_CONFIG_DIR="$OUT/claude-config" CLAUDE_BEDROCK_MODEL="$haiku" CLAUDE_BEDROCK_SUMMARY=1
+    clean_env CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_BEDROCK_MODEL CLAUDE_BEDROCK_SUMMARY
     cd "$OUT/claude-cwd" && exec "$NOTTY" "$STACK/bin/claude-bedrock" -p "Reply with exactly the word: ok" --max-turns 1 ) > "$log" 2>&1 </dev/null; rc=$?
   redact "$log"
-  if [ "$rc" = 0 ] && grep -qiE '^ok\.?$' "$log" && grep -q '^bedrock · ' "$log"; then
-    record claude claude-bedrock PASS "$(( $(now) - t0 ))" "answered ok via $haiku; cost line shown"
+  if [ "$rc" = 0 ] && grep -qiE '^ok\.?$' "$log" && grep -q '^bedrock · ' "$log" && grep -q '^config: lean ' "$log" &&
+    [ "$(perm_of "$OUT/claude-config")" = 700 ]; then
+    record claude claude-bedrock PASS "$(( $(now) - t0 ))" "answered ok via $haiku; cost line shown; lean config folder (700)"
   else record claude claude-bedrock FAIL "$(( $(now) - t0 ))" "exit $rc: $(tail -n 3 "$log" | tr '\n' ' ')"; fi
   t0="$(now)"; out="$( (clean_env; cd "$OUT/claude-cwd" && exec "$NOTTY" "$STACK/bin/claude-bedrock" --help) 2>&1 </dev/null)"
   if printf '%s' "$out" | grep -q 'claude-bedrock: Claude Code on AWS Bedrock via bedrock-now'; then

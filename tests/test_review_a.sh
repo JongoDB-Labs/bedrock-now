@@ -59,11 +59,11 @@ test_costs_total_transport_failure() {
 
 test_claude_bedrock_help_before_setup() {
   mkdir -p "$TMP/bin"; printf '#!/bin/sh\necho "CLAUDE $*"\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
-  out="$(PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
+  out="$(HOME="$TMP/home" PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
   assert_contains "$out" "not set up yet — run"
   assert_not_contains "$out" "127.0.0.1:,"
   assert_not_contains "$out" "price not in catalog"
-  assert_eq "$(printf '%s\n' "$out" | sed -n 7p)" ""
+  assert_eq "$(printf '%s\n' "$out" | sed -n 8p)" ""
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "CLAUDE --help"
 }
 

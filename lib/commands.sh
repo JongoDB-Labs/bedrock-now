@@ -1584,6 +1584,10 @@ cmd_uninstall() {
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
+  # claude-bedrock's own Claude Code folder (settings, plugins, sessions): yours, possibly shared by other copies
+  if [ -d "$HOME/.claude-bedrock" ]; then
+    log "~/.claude-bedrock (claude-bedrock's Claude Code settings and sessions) was kept — delete it yourself if you're done."
+  fi
 }
 
 # One update/rollback/clean/restore/setup at a time (.state/lock).

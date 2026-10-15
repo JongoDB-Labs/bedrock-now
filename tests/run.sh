@@ -37,6 +37,9 @@ rc=$?; rm -rf "$TMP"; exit $rc'
 # Live-state guard: tests must never touch this checkout's real .env, .state/, litellm/ or backups/.
 _live_state() { (cd "$ROOT" && find .env .state litellm backups -type f 2>/dev/null | LC_ALL=C sort | xargs cksum 2>/dev/null) || true; }
 live_before="$(_live_state)"
+# claude-bedrock creates ~/.claude-bedrock (its own Claude Code config folder): tests run it with a throwaway HOME.
+# Only its appearance is checked — a claude-bedrock of yours running meanwhile may change what is inside.
+cb_home_before=0; [ ! -e "${HOME:-/nonexistent}/.claude-bedrock" ] || cb_home_before=1
 
 for f in $pattern; do
   if ! err="$("$SH" -n "$f" 2>&1)"; then
@@ -59,6 +62,9 @@ for f in $pattern; do
 done
 if [ "$(_live_state)" != "$live_before" ]; then
   fail=$((fail + 1)); printf 'FAIL live-state guard: the suite modified real files in .env/.state/litellm/backups\n'
+fi
+if [ "$cb_home_before" = 0 ] && [ -e "${HOME:-/nonexistent}/.claude-bedrock" ]; then
+  fail=$((fail + 1)); printf 'FAIL live-state guard: the suite created ~/.claude-bedrock in your real home (remove it)\n'
 fi
 if [ -s "$BN_SHIM_LOG" ]; then
   fail=$((fail + 1)); printf 'FAIL isolation guard: tests called real docker/aws/tailscale or curl to this computer\n'

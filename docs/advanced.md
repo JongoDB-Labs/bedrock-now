@@ -205,6 +205,40 @@ test fails.
   simply `exec`s claude. Otherwise claude runs as an ordinary foreground child: Ctrl-C, Ctrl-Z and closing
   the terminal reach it as usual, its exit code is the wrapper's, and if it was killed by Ctrl-C or TERM the
   wrapper ends with the same signal.
+- **Config folder** (`lib/claude_config.sh`). The wrapper sets `CLAUDE_CONFIG_DIR` for Claude Code, in this order:
+  `CLAUDE_BEDROCK_USE_MY_CONFIG=1` leaves it as you have it (unset: `~/.claude`, today's plain `claude`); otherwise
+  `CLAUDE_BEDROCK_CONFIG_DIR` (an absolute path; a leading `~/` is expanded, a relative path is refused), otherwise
+  `~/.claude-bedrock`. A missing lean folder is created with mode 700; an existing one keeps its mode. A
+  `CLAUDE_CONFIG_DIR` you exported for plain `claude` is deliberately not used in lean mode (it is the folder whose
+  plugins this avoids); the launch line names it as "your …". A lean folder that is your own after all (named
+  directly, or `~/.claude-bedrock` linked to `~/.claude`) is treated as the opt-in, warning included. `--help`
+  shows the folder on its `Config` line and, like `--version`, creates nothing. Subcommands get the same folder, so
+  `claude-bedrock mcp add -s user …` writes to `~/.claude-bedrock/.claude.json` and `claude-bedrock plugin
+  install …` installs into `~/.claude-bedrock/plugins`.
+  Everything Claude Code keeps per user lives there: settings, `.claude.json` (user MCP servers, which folders you
+  trusted, project MCP approvals), sessions, plugins. The working folder's `.mcp.json` (asks for approval once per
+  folder, as usual), `.claude/settings.json` and `CLAUDE.md` are read in either mode.
+- **What the lean folder leaves out**, and how to bring it back selectively: plugins (`claude-bedrock plugin
+  install …`), user MCP servers (`claude-bedrock mcp add …`), `CLAUDE.md` (a link or a copy; the wrapper prints how
+  once, remembered by an empty `.bedrock-now-claude-md-hint` in the folder, and never copies it), `settings.json`
+  (permissions, `statusLine`, `outputStyle`, `hooks`, `env`: copy only the keys you want — `hooks` run commands at
+  every event, and an `env` block can override the wrapper's `ANTHROPIC_*`), `keybindings.json`, your own
+  `commands/`, `agents/`, `skills/` and `output-styles/`. The theme and the folders you trusted are asked again once.
+- **Resume.** Claude Code's exit hint `claude --resume <id>` looks in `~/.claude`. When the wrapper prints the
+  session cost (a terminal, not `CLAUDE_BEDROCK_QUIET=1`, not a subcommand) and the run was interactive (no
+  `-p`/`--print`), it adds `resume: claude-bedrock --resume <id>` — prefixed with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` or
+  `CLAUDE_BEDROCK_CONFIG_DIR=…` when one of them picked the folder. The id is that of the newest transcript
+  (`projects/<working folder>/<id>.jsonl` in the config folder) written during the run, found through a marker
+  file in `$TMPDIR` that is removed right after; no line when there is none (nothing typed).
+- **Requests at launch.** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (set by the wrapper) also skips Claude Code's
+  startup connection warm-up (Claude Code 2.1.290 and later); its changelog names no other switch for startup
+  requests, and none is needed here: in lean mode an interactive launch made no model request until something was
+  typed (Claude Code 2.1.301, checked against a local stand-in for the API). The 4 requests measured at every
+  launch with a well-stocked `~/.claude` came from plugins (their user agent is the Agent SDK's, not Claude
+  Code's); `CLAUDE_BEDROCK_USE_MY_CONFIG=1` brings them back.
+- **The browser terminal** (`terminal/bin/claude-bedrock`) is not affected: Claude Code there uses the container's
+  own `~/.claude` in the `terminal-home` volume, which starts empty (lean) and never sees your computer's folders.
+- `./stack uninstall` keeps `~/.claude-bedrock` (it says so); delete it yourself if you're done.
 
 ## End-to-end tests
 

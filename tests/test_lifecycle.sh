@@ -259,6 +259,10 @@ test_uninstall_confirmed_removes_volumes_and_own_symlink_only() {
   assert_contains "$(cat "$TMP/calls")" "docker volume rm bedrock-now_terminal-home"   # also while the terminal is off
   [ ! -e "$HOME/.local/bin/claude-bedrock" ] && [ ! -L "$HOME/.local/bin/claude-bedrock" ] || { echo "symlink not removed" >&2; return 1; }
   assert_contains "$(cat "$TMP/err")" ".env and backups/ were kept"
+  assert_not_contains "$(cat "$TMP/err")" ".claude-bedrock"
+  mkdir -p "$HOME/.claude-bedrock"; cmd_uninstall 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "~/.claude-bedrock (claude-bedrock's Claude Code settings and sessions) was kept"
+  [ -d "$HOME/.claude-bedrock" ] || { echo "~/.claude-bedrock removed" >&2; return 1; }
 }
 
 test_uninstall_removes_this_installs_built_images_by_exact_name() {

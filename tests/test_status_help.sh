@@ -83,15 +83,20 @@ _fake_claude() {
 test_claude_bedrock_help_prints_header_and_no_cost_line() {
   _fake_claude
   printf 'LITELLM_PORT=9\nCLAUDE_BEDROCK_OPUS_MODEL=claude-opus-5-5\nCLAUDE_BEDROCK_HAIKU_MODEL=claude-haiku-5-5\n' > "$ENV_FILE"
+  HOME="$TMP/home"; mkdir -p "$HOME"; unset CLAUDE_BEDROCK_USE_MY_CONFIG CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_CONFIG_DIR
   PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help > "$TMP/out" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
   out="$(cat "$TMP/out")"
-  assert_eq "$(sed -n 7p "$TMP/out")" ""
+  assert_eq "$(sed -n 8p "$TMP/out")" ""
   assert_contains "$(sed -n 1p "$TMP/out")" "claude-bedrock"
-  assert_contains "$(head -n 6 "$TMP/out")" "CLAUDE_BEDROCK_MODEL"
-  assert_contains "$(head -n 6 "$TMP/out")" "CLAUDE_BEDROCK_QUIET"
-  assert_contains "$(head -n 6 "$TMP/out")" "per 1M tokens"
+  assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_MODEL"
+  assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_QUIET"
+  assert_contains "$(head -n 7 "$TMP/out")" "per 1M tokens"
+  assert_eq "$(sed -n 4p "$TMP/out")" "  Config   ~/.claude-bedrock, lean: nothing from ~/.claude; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses ~/.claude (≈10× the tokens)"
   assert_eq "$(tail -n 1 "$TMP/out")" "CLAUDE --help"
   assert_eq "$(cat "$TMP/err")" ""
+  [ ! -e "$HOME/.claude-bedrock" ] || { echo "--help created ~/.claude-bedrock" >&2; return 1; }
+  CLAUDE_BEDROCK_USE_MY_CONFIG=1 PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help > "$TMP/out" 2> /dev/null
+  assert_contains "$(sed -n 4p "$TMP/out")" "  Config   ~/.claude (CLAUDE_BEDROCK_USE_MY_CONFIG=1): your plugins, hooks and MCP servers load"
 }
 
 test_claude_bedrock_version_has_no_header_or_cost_line() {

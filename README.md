@@ -210,7 +210,8 @@ configuration.
 ### Claude Code: `claude-bedrock`
 
 `claude-bedrock` is Claude Code pointed at this stack. It sets the environment for its own process only, so
-plain `claude` stays exactly as it was, and it takes the same arguments.
+plain `claude` stays exactly as it was, and it takes the same arguments. It runs Claude Code with **its own config
+folder, `~/.claude-bedrock`**, not your `~/.claude` ([why and how](#a-lean-config-folder-for-bedrock)).
 
 - Models: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks, subagents) =
   `claude-haiku-5-5`. For a cheaper session: `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`.
@@ -223,7 +224,47 @@ plain `claude` stays exactly as it was, and it takes the same arguments.
 - Claude Code warns that "claude.ai connectors are disabled". That is expected: the wrapper's auth token takes
   precedence over your claude.ai login.
 
-More details (session headers, signals, `--help`): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
+#### A lean config folder for Bedrock
+
+Your everyday `~/.claude` may hold plugins, hooks, skills, agents and MCP servers. Bedrock takes no Anthropic beta
+headers, so Claude Code cannot defer MCP tools there: the definitions of all of them go into **every request**, billed
+per token. Measured on Haiku with a one-line `claude-bedrock -p "Reply with just: ok"`:
+
+| Claude Code's config | Requests | Input tokens per request | Cost |
+|---|---|---|---|
+| a well-stocked `~/.claude` | 5 | 258K–340K | ~$0.14 (one such request on Opus: $1.44) |
+| the same with `--strict-mcp-config` (MCP: only `bedrock-shared`) | 8, plus 2 from hooks | 46K–63K; the hooks' 353K | ~$0.07 |
+| an empty config folder (what `claude-bedrock` uses now) | 1 | 25K | $0.001 |
+
+With that `~/.claude`, every interactive launch also cost $0.13 before anything was typed (4 requests, made by
+plugins through the Agent SDK). On a flat-rate claude.ai plan that is invisible; per token it multiplies the cost
+10–100×. So:
+
+- **Lean by default.** `claude-bedrock` sets `CLAUDE_CONFIG_DIR=~/.claude-bedrock` (created on first use, mode 700):
+  Claude Code's own tools, the stack's `bedrock-shared` MCP server, and the working folder's own `.mcp.json`,
+  `.claude/settings.json` and `CLAUDE.md` (Claude Code reads those from the folder you start it in, whatever the
+  config folder). The launch line says so: `config: lean (~/.claude-bedrock) — your ~/.claude plugins, hooks and MCP
+  servers are not loaded; …`. The first launch asks Claude Code's first-run questions (theme, trusting the folder)
+  once more. In lean mode a launch makes no model request until you type (Claude Code 2.1.301).
+- **Your full setup anyway:** `CLAUDE_BEDROCK_USE_MY_CONFIG=1 claude-bedrock` uses `~/.claude` (or the
+  `CLAUDE_CONFIG_DIR` you exported for plain `claude`), as before this change, with a ⚠ on the launch line.
+  `CLAUDE_BEDROCK_CONFIG_DIR=/some/folder` picks another lean folder. A `CLAUDE_CONFIG_DIR` you exported for plain
+  `claude` is not used in lean mode: that is where the plugins live.
+- **Bring things in one by one.** `~/.claude-bedrock` is an ordinary Claude Code config folder, and subcommands
+  manage it: `claude-bedrock mcp add …`, `claude-bedrock plugin install …`. A personal
+  `~/.claude-bedrock/CLAUDE.md` is read as usual; to reuse yours, `ln -s ~/.claude/CLAUDE.md ~/.claude-bedrock/`
+  (or copy it for a Bedrock-only version) — the wrapper says this once and never copies it, as it may hold things
+  you don't want sent to Bedrock. Settings are separate now too: permissions, status line, output style
+  (`settings.json`), `keybindings.json`, your own `commands/`, `agents/` and `skills/`. Copy what you want, e.g.
+  `cp ~/.claude/keybindings.json ~/.claude-bedrock/`; from `settings.json` take only the keys you want
+  (`permissions`, `statusLine`, `outputStyle`): a whole copy brings its `hooks` back, and an `env` block in it can
+  override the wrapper.
+- **Resume with `claude-bedrock --resume <id>`** (or `claude-bedrock --continue`): sessions are kept in
+  `~/.claude-bedrock`, so the `claude --resume <id>` that Claude Code prints at exit does not find them. After an
+  interactive session the wrapper prints the right line below the session cost:
+  `resume: claude-bedrock --resume 0b2c3d4e-…`.
+
+More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
 ### Claude Code in the browser (optional)
 
@@ -413,7 +454,9 @@ posts its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Sl
 - `claude-bedrock`: spend this period at launch, the session's cost at exit.
 
 A single Claude Code prompt is several requests with a large cached context: a small task on Haiku costs
-about $0.04, a long interactive Opus session can cost dollars. Use Haiku or Sonnet for routine work.
+about $0.04, a long interactive Opus session can cost dollars. Use Haiku or Sonnet for routine work. Plugins and MCP
+servers multiply this, which is why `claude-bedrock` leaves your `~/.claude` out
+([a lean config folder](#a-lean-config-folder-for-bedrock)).
 
 **Why Open WebUI adds tokens.** Open WebUI v0.12 lets the model call its built-in tools (search your knowledge
 bases, chat history and notes, calendar, automations, skills, task lists, the time, …) and sends the
@@ -760,7 +803,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | Forgot the portal password | It is `PORTAL_PASSWORD` in `.env`: `./stack password` says which file (the login page names it too, with the Compose project, so a second copy is not mixed up), `./stack password --show` prints it. After five wrong tries the login waits a few seconds (up to five minutes). |
 | The old Open WebUI address (`127.0.0.1:8080`/`8082`) stopped working after an update | By design: browsers reach every app through the portal now. Open the URL from `./stack status`. |
 | A setting changed in Open WebUI's admin UI reverts after a restart | By design (`ENABLE_PERSISTENT_CONFIG=false`): `.env` and setup own the configuration. |
-| `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in `~/.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper. Remove those keys, or move them to a project-level setting you don't use with `claude-bedrock`. |
+| `claude-bedrock` ignores the stack, or uses the wrong model or key | An `env` block in Claude Code's user settings (`~/.claude-bedrock/settings.json`; `~/.claude/settings.json` with `CLAUDE_BEDROCK_USE_MY_CONFIG=1`) or the folder's `.claude/settings.json` (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) overrides the wrapper. Remove those keys. |
+| Your plugins, MCP servers, `CLAUDE.md` or keybindings are missing in `claude-bedrock` | By design: it uses its own config folder, `~/.claude-bedrock`. Add what you need there (`claude-bedrock mcp add …`, `claude-bedrock plugin install …`, a `CLAUDE.md`), or run with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` ([a lean config folder](#a-lean-config-folder-for-bedrock)). |
+| `claude --resume <id>` finds no conversation after `claude-bedrock` | Its sessions are kept in `~/.claude-bedrock`: `claude-bedrock --resume <id>`. |
 | `claude-bedrock --debug mcp list` fails | Options placed *before* a subcommand trip the wrapper's MCP flag. Use `claude-bedrock mcp list --debug`, or plain `claude` for management commands. |
 | "LiteLLM is not running" from `claude-bedrock` | `./stack up` |
 | Requests fail for about a minute during `./stack setup` | LiteLLM restarts while setup probes the models. Wait, or avoid running setup mid-session. |
