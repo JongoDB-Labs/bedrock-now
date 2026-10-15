@@ -451,7 +451,9 @@ what a successful attacker reaches is the container — with the three exception
   domain, or send a typed password anywhere but the real unlock; the e2e suite starts such a stand-in and checks
   it. (The unlock page and the unlock itself are the portal's own answers, with the portal's headers.) Framed by
   the portal, its `frame-src` keeps the frame on the portal's own hosts; opened full screen, a stand-in could still
-  navigate the tab to another site, visible in the address bar.
+  navigate the tab to another site, visible in the address bar. It can also serve ttyd's own (allowed) script
+  and send it options over the WebSocket, e.g. turn on ttyd's file transfer and push a file download to your
+  browser: a download you see and choose to open, not script running on the portal's origin.
 - [x] **Remote access: off for the terminal.** The remote sites route the terminal's name only when
   `REMOTE_TERMINAL` is on in `.env` (true/1/yes/on, read the same by `./stack` and the portal; another value is
   named as off), then `./stack up`: `lib/terminal.sh` writes `REMOTE_TERMINAL_HOST`
