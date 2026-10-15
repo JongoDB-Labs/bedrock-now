@@ -62,7 +62,8 @@ Usage: ./stack <command> [--yes]
                list | get KEY | set KEY [KEY…] (asks; hidden for secrets) | apply --stdin
                | check-aws (free) | report | regenerate rustfs|mcp-token
   restart      Restart one service: litellm | open-webui | shared-mcp | stt | rustfs | caddy
-  uninstall    Remove containers and ALL data volumes
+  uninstall    Remove the containers, ALL data volumes and this install's built images
+               (keeps .env and backups/)
 
   Commands without a $ note make no Bedrock calls.  ./stack <command> --help shows one command.
   --yes        Accept defaults (non-interactive). AWS creds can come from
@@ -954,7 +955,9 @@ cmd_status() {
     ! remote_on || printf '  Remote: %s   (./stack remote status)\n' "$(remote_url || true)"
   fi
   printf '  %s\n' "$(disk_line_cached $fresh)"   # names ./stack clean when it would free something
-  if upd="$(update_available)"; then
+  if update_unfinished; then   # lib/rollback.sh: its pull or setup failed, or it was stopped
+    printf '  %sThe last update did not finish — ./stack update finishes it, ./stack rollback goes back%s\n' "$O_YEL" "$O_OFF"
+  elif upd="$(update_available)"; then
     printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
   fi
   printf '  %s\n' "$(helper_status_line)"   # lib/helper.sh: one-click and automatic updates
@@ -1240,9 +1243,19 @@ cmd_restore() {
     dc exec -T postgres pg_restore -U postgres -d "$db" --no-owner --exit-on-error < "$dir/$db.dump" ||
       die "pg_restore of $db failed, the databases are only partly restored (services are stopped); $hint"
   done
+  # Each bucket becomes an exact copy of the backup's folder. `aws s3 sync` alone cannot do that: uploading, it
+  # skips a file of unchanged size unless the file is NEWER than the object, and a backup's files keep the objects'
+  # dates from backup time — a file overwritten since then with the same size would keep its new content. So
+  # `cp --recursive` first uploads every file whatever its size or date (objects are replaced in place: the bucket
+  # is never empty), then `sync --delete` removes the objects the backup does not have (it uploads nothing more:
+  # each object now has its file's size and a newer date; were the clocks off, it would only upload a file again).
+  # Unlike re-dating a copy of the backup first, this needs no extra disk space and no clocks that agree.
+  # No bucket folder in the backup: the bucket is emptied.
   s3_job "$dir" ro 'set -e; S3="aws --endpoint-url http://rustfs:9000"
     for b in openwebui shared; do
-      if [ -d /backup/s3/$b ]; then $S3 s3 sync --delete --only-show-errors /backup/s3/$b s3://$b
+      if [ -d /backup/s3/$b ]; then
+        $S3 s3 cp --recursive --only-show-errors /backup/s3/$b s3://$b
+        $S3 s3 sync --delete --only-show-errors /backup/s3/$b s3://$b
       else $S3 s3 rm --recursive --only-show-errors s3://$b; fi
     done' || die "restoring the object-store buckets failed (databases are restored, services are stopped); $hint"
   _restore_key_trio "$dir"
@@ -1562,11 +1575,12 @@ cmd_rotate_aws() {
 
 cmd_uninstall() {
   local target="$HOME/.local/bin/claude-bedrock"
-  warn "This deletes all containers AND data volumes (chats, knowledge bases, files, spend history)."
+  warn "This deletes all containers AND data volumes (chats, knowledge bases, files, spend history) and this install's built images."
   [ "$(ask "Type 'bedrock-now' to confirm" "")" = bedrock-now ] || die "aborted — nothing was removed"
   if confirm "Take a backup first?"; then cmd_backup; fi
   dc down -v --remove-orphans
   terminal_uninstall_cleanup   # lib/terminal.sh: its volume, networks and image, also while it is off
+  local_builds_remove          # lib/images.sh: <project>/portal:local, …:previous, by exact name (never a prune)
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."

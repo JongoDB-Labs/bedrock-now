@@ -52,6 +52,21 @@ test_cmd_status_hints_up_when_nothing_runs() {
   assert_contains "$(cmd_status 2>&1)" "./stack up"
 }
 
+test_cmd_status_says_when_the_last_update_did_not_finish() {
+  _ports_env
+  dc() { printf 'litellm\trunning\thealthy\t0\n'; }; docker() { :; }
+  update_available() { echo v9.9.9; }
+  update_unfinished() { return 0; }   # lib/rollback.sh: result=running and the code moved (tests/test_rollback.sh)
+  out="$(cmd_status 2>&1)"
+  assert_eq "$(printf '%s\n' "$out" | grep -c 'did not finish')" 1
+  assert_contains "$out" "The last update did not finish — ./stack update finishes it, ./stack rollback goes back"
+  assert_not_contains "$out" "Update available"   # ./stack update would finish that one, not install v9.9.9
+  update_unfinished() { return 1; }
+  out="$(cmd_status 2>&1)"
+  assert_not_contains "$out" "did not finish"
+  assert_contains "$out" "Update available: v9.9.9"
+}
+
 test_help_marks_spending_commands() {
   out="$(cmd_help)"
   assert_contains "$(printf '%s\n' "$out" | grep '^  test ')" '(~$0.0001 Bedrock)'

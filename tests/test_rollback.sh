@@ -24,6 +24,8 @@ _write_stack() { # a ./stack that says which version ran which command (and, in 
   printf 'echo "%s $* finishing=${BEDROCK_NOW_UPDATE_FINISHING:-unset} from=${BEDROCK_NOW_UPDATE_FROM:-} backup=${BEDROCK_NOW_UPDATE_BACKUP:-}" >> "$CALLS.update"\n' "$2" >> "$1/stack"
   # like the real setup: a successful one records the commit it ran on (.state/update/setup-commit)
   printf '[ "$1" != setup ] || [ "${FAKE_RC:-0}" != 0 ] || { mkdir -p "$STATE_DIR/update"; git -C "$(dirname "$0")" rev-parse HEAD > "$STATE_DIR/update/setup-commit"; }\n' >> "$1/stack"
+  # with MARK set: the backup's bucket files no newer than MARK when its restore starts (into $CALLS.stale)
+  printf '[ "$1" != restore ] || [ -z "${MARK:-}" ] || find "$2/s3" -type f ! -newer "$MARK" > "$CALLS.stale"\n' >> "$1/stack"
   printf 'exit ${FAKE_RC:-0}\n' >> "$1/stack"
   chmod +x "$1/stack"
 }
@@ -65,6 +67,47 @@ test_rollback_restores_code_data_and_local_builds() {
   assert_contains "$(cat "$TMP/err")" "rolled back to v0.2.1"
   if out="$( (ASSUME_YES=1 cmd_rollback) 2>&1)"; then return 1; fi
   assert_contains "$out" "already rolled back"
+}
+
+test_status_names_an_unfinished_update() {
+  _fixture; _record   # result=running and the code moved on: the update did not finish
+  printf 'LITELLM_PORT=4000\nPORTAL_HOST=bedrock-now.localhost\nPORTAL_PORT=80\n' >> "$ENV_FILE"
+  dc() { printf 'litellm\trunning\thealthy\t0\n'; }; docker() { :; }; disk_line_cached() { echo "Disk: (stub)"; }
+  assert_contains "$(cmd_status 2>&1)" "The last update did not finish — ./stack update finishes it, ./stack rollback goes back"
+  update_record_done
+  assert_not_contains "$(cmd_status 2>&1)" "did not finish"
+}
+
+_old_bucket_files() { # the pre-update backup's bucket files, dated 2020; MARK (exported) is dated 2021
+  local b="$STACK_DIR/backups/20261012-000000-auto/s3"
+  mkdir -p "$b/shared/upgrade-test" "$b/openwebui"
+  printf 'a4u1' > "$b/shared/upgrade-test/canary.txt"; printf 'x' > "$b/openwebui/file"
+  touch -t 202001010000 "$b/shared/upgrade-test/canary.txt" "$b/openwebui/file"
+  export MARK="$TMP/mark"; touch -t 202101010000 "$MARK"
+}
+
+test_rollback_redates_the_backups_bucket_files_before_the_old_restore() {
+  # v0.3.0's restore (aws s3 sync --delete) uploads only files whose size differs or that are newer than the object:
+  # a file changed since the backup without changing size would keep its newer content
+  _fixture; _record; update_record_done; _old_bucket_files
+  ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+  assert_contains "$(cat "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
+  [ -f "$CALLS.stale" ] || { echo "the old restore did not look at the files" >&2; return 1; }
+  assert_eq "$(cat "$CALLS.stale")" ""   # every file newer than before the rollback when the old restore starts
+  assert_eq "$(cat "$STACK_DIR/backups/20261012-000000-auto/s3/shared/upgrade-test/canary.txt")" "a4u1"   # content kept
+  assert_not_contains "$(cat "$TMP/err")" "could not give"
+}
+
+test_rollback_goes_on_with_a_warning_when_the_backup_files_cannot_be_redated() {
+  _fixture; _record; update_record_done; _old_bucket_files
+  mkdir -p "$TMP/bin"; printf '#!/bin/sh\necho "touch: $1: Operation not permitted" >&2; exit 1\n' > "$TMP/bin/touch"; chmod +x "$TMP/bin/touch"
+  PATH="$TMP/bin:$PATH" ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+  err="$(cat "$TMP/err")"
+  assert_contains "$err" "could not give the files in backups/20261012-000000-auto/s3 the current time (touch: "
+  assert_contains "$err" "Operation not permitted) — the restore by v0.2.1 then skips a file changed since the backup"
+  assert_contains "$err" "find backups/20261012-000000-auto/s3 -type f -exec touch {} + && ./stack restore backups/20261012-000000-auto --yes"
+  assert_eq "$(tr '\n' '|' < "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes|old up --yes|"   # never fatal
+  assert_contains "$err" "rolled back to v0.2.1"
 }
 
 test_rollback_hides_composes_container_progress_lines() {

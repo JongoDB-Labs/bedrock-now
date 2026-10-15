@@ -149,6 +149,32 @@ test_restore_recreates_dbs_syncs_buckets_and_tests() {
   assert_contains "$(cat "$TMP/err")" "no pre-restore backup"
 }
 
+test_restore_uploads_every_backup_file_then_deletes_what_the_backup_lacks() {
+  # `aws s3 sync` alone skips a file of unchanged size that is not newer than its object, and a backup's files keep
+  # the objects' dates: a file overwritten since the backup with the same size kept its new content. cp --recursive
+  # uploads every file first; sync --delete then removes the objects the backup does not have.
+  printf 'SHARED_MCP_PORT=8765\nSHARED_MCP_TOKEN=t0k\n' > "$ENV_FILE"; _mk_backup ''; _stub_dc
+  s3_job() { echo "s3 $1 $2" >> "$TMP/calls"; printf '%s\n' "$3" > "$TMP/s3-script"; }
+  confirm() { case "$1" in *"backup of the current state"*) return 1 ;; *) return 0 ;; esac; }
+  cmd_test() { :; }; ASSUME_YES=1
+  cmd_restore "$B" 2>/dev/null
+  assert_contains "$(cat "$TMP/calls")" "s3 $(cd "$B" && pwd -P) ro"   # the backup is mounted read-only
+  # The job's own script, run with a fake aws (its calls logged) and /backup as a folder here: openwebui is in the
+  # backup, shared is not (that bucket is emptied).
+  mkdir -p "$TMP/fake" "$TMP/backup/s3/openwebui"
+  printf '#!/bin/sh\necho "aws $*" >> "$AWS_LOG"\ncase "$*" in *" cp "*) exit "${CP_RC:-0}" ;; esac\n' > "$TMP/fake/aws"; chmod +x "$TMP/fake/aws"
+  sed "s#/backup/#$TMP/backup/#g" "$TMP/s3-script" > "$TMP/s3-script.sh"
+  AWS_LOG="$TMP/aws" PATH="$TMP/fake:$PATH" sh "$TMP/s3-script.sh"
+  e="aws --endpoint-url http://rustfs:9000 s3"
+  assert_eq "$(cat "$TMP/aws")" "$e cp --recursive --only-show-errors $TMP/backup/s3/openwebui s3://openwebui
+$e sync --delete --only-show-errors $TMP/backup/s3/openwebui s3://openwebui
+$e rm --recursive --only-show-errors s3://shared"
+  # a failed upload stops the job (set -e): nothing is deleted after it, and restore says the buckets failed
+  : > "$TMP/aws"
+  if AWS_LOG="$TMP/aws" CP_RC=1 PATH="$TMP/fake:$PATH" sh "$TMP/s3-script.sh"; then echo "should fail" >&2; return 1; fi
+  assert_eq "$(cat "$TMP/aws")" "$e cp --recursive --only-show-errors $TMP/backup/s3/openwebui s3://openwebui"
+}
+
 test_restore_hides_composes_container_progress_lines() {
   printf 'SHARED_MCP_PORT=8765\nSHARED_MCP_TOKEN=t0k\n' > "$ENV_FILE"; _mk_backup ''; _stub_dc
   eval "_logged_$(declare -f dc)"   # dc as stubbed, plus the COMPOSE_PROGRESS each call runs with
@@ -233,6 +259,47 @@ test_uninstall_confirmed_removes_volumes_and_own_symlink_only() {
   assert_contains "$(cat "$TMP/calls")" "docker volume rm bedrock-now_terminal-home"   # also while the terminal is off
   [ ! -e "$HOME/.local/bin/claude-bedrock" ] && [ ! -L "$HOME/.local/bin/claude-bedrock" ] || { echo "symlink not removed" >&2; return 1; }
   assert_contains "$(cat "$TMP/err")" ".env and backups/ were kept"
+}
+
+test_uninstall_removes_this_installs_built_images_by_exact_name() {
+  printf 'COMPOSE_PROJECT_NAME=bn-x\n' > "$ENV_FILE"; _stub_dc; HOME="$TMP/home"; STACK_DIR="$TMP/stack"; mkdir -p "$HOME" "$STACK_DIR"
+  ask() { echo "bedrock-now"; }; confirm() { return 1; }
+  # present: portal:local and :previous, stt:local, shared-mcp:local (still used by something: its rm fails)
+  docker() {
+    echo "docker $*" >> "$TMP/calls"
+    case "$*" in
+      "image inspect bn-x/portal:local" | "image inspect bn-x/portal:previous" | "image inspect bn-x/stt:local" | \
+        "image inspect bn-x/shared-mcp:local") return 0 ;;
+      "image inspect "*) return 1 ;;
+      "image rm bn-x/shared-mcp:local") return 1 ;;
+    esac
+    return 0
+  }
+  cmd_uninstall 2> "$TMP/err"
+  # each one by its name, only those that exist (the terminal's as before: lib/terminal.sh); never forced or pruned
+  assert_eq "$(grep '^docker image rm' "$TMP/calls")" "docker image rm bn-x/terminal:local bn-x/terminal:previous
+docker image rm bn-x/portal:local
+docker image rm bn-x/portal:previous
+docker image rm bn-x/shared-mcp:local
+docker image rm bn-x/stt:local"
+  for ref in caddy-dns:local caddy-dns:previous stt:previous terminal:local; do
+    assert_contains "$(cat "$TMP/calls")" "docker image inspect bn-x/$ref"
+  done
+  assert_eq "$(grep -cE 'prune|image rm -f|image rm --force|docker rmi ' "$TMP/calls" || true)" 0
+  assert_contains "$(cat "$TMP/err")" "removed this install's built images: portal:local portal:previous stt:local"
+  assert_contains "$(cat "$TMP/err")" "could not remove the image(s) bn-x/shared-mcp:local (still in use?)"
+  assert_contains "$(cat "$TMP/err")" ".env and backups/ were kept"
+  # nothing built here (a fresh checkout): nothing removed, nothing said
+  : > "$TMP/calls"; docker() { echo "docker $*" >> "$TMP/calls"; case "$1 $2" in "image inspect") return 1 ;; esac; return 0; }
+  local_builds_remove 2> "$TMP/err"
+  assert_eq "$(grep -c '^docker image rm' "$TMP/calls" || true)" 0
+  assert_eq "$(cat "$TMP/err")" ""
+}
+
+test_uninstall_and_its_help_name_the_built_images() {
+  assert_contains "$(cmd_help_for uninstall)" "ALL data volumes and this install's built images"
+  assert_contains "$(cmd_help_for uninstall)" "(keeps .env and backups/)"
+  assert_contains "$(cat "$STACK_DIR/README.md")" "| \`./stack uninstall\` | Remove the containers, ALL data volumes and this install's built images"
 }
 
 test_update_runs_setup_as_separate_process_without_aws_env() {

@@ -77,6 +77,22 @@ _rollback_local_builds() {
   done
 }
 
+# _rollback_redate_backup_files BACKUP VERSION — right before the restored code's ./stack restore: every file in
+# BACKUP/s3 gets the current time. The restore of v0.3.0 and before copies the buckets back with
+# `aws s3 sync --delete`, which uploads a file only when its size differs or it is newer than the object, and a
+# backup's files keep the objects' dates from backup time: a file changed since then without changing size would
+# keep its new content. Newer than every object, each file is uploaded. (This version's own restore uploads every
+# file anyway.) Never fatal: when the dates cannot be changed (e.g. files owned by another user), it says so and
+# how to make sure afterwards.
+_rollback_redate_backup_files() {
+  local b="$1" err
+  [ -d "$STACK_DIR/$b/s3" ] || return 0   # the restore itself refuses a backup without its bucket folders
+  err="$(find "$STACK_DIR/$b/s3" -type f -exec touch {} + 2>&1)" && return 0
+  err="${err%%$'\n'*}"
+  warn "could not give the files in $b/s3 the current time (${err:-find failed}) — the restore by $2 then skips a file changed since the backup whose size did not change, so that file may keep its newer content"
+  warn "to be sure afterwards: make the files yours (sudo chown -R \"\$(id -un)\" $b), then find $b/s3 -type f -exec touch {} + && ./stack restore $b --yes"
+}
+
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
   local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 no_terminal=0 q quiet=()
@@ -125,6 +141,7 @@ cmd_rollback() {
   fi
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"
+  _rollback_redate_backup_files "$backup" "${fromv:-$from}"
   # The restored scripts do the rest, in fresh processes; their messages say how to retry if something fails.
   # An absolute path: the restored code may be a version whose restore resolves it against the current folder.
   # COMPOSE_PROGRESS=quiet (unless verbose) also reaches the older versions' restore, whose dc() keeps it.

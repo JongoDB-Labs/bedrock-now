@@ -59,8 +59,8 @@ run depending on your connection (about 2 minutes after that), and under $0.05 o
 (the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04).
 
 **Stop or remove:** `./stack down` stops everything and keeps your data; `./stack up` starts it again.
-`./stack uninstall` removes the containers and **all data volumes** (it keeps `.env` and `backups/`); then
-delete the folder.
+`./stack uninstall` removes the containers, **all data volumes** and this install's built images (it keeps `.env`
+and `backups/`); then delete the folder.
 
 `./stack setup` is safe to re-run at any time: it keeps your keys and data and re-checks which models work.
 
@@ -658,7 +658,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
-| `./stack uninstall` | Remove containers and ALL data volumes | none |
+| `./stack uninstall` | Remove the containers, ALL data volumes and this install's built images (keeps `.env` and `backups/`) | none |
 | `./stack help` | All of the above; `./stack <command> --help` shows one | none |
 
 `--yes` accepts defaults (non-interactive; AWS credentials can then come from `AWS_ACCESS_KEY_ID` /

@@ -213,6 +213,26 @@ EOF
   log "old images: $CLEAN_SUMMARY"
 }
 
+# LOCAL_BUILDS — the images this project builds itself: <project>/<name>:local (and :previous, the build before the
+# last update's, kept for ./stack rollback); caddy-dns only with the own-domain overlay, and never a :previous
+LOCAL_BUILDS="portal shared-mcp stt terminal caddy-dns"
+
+# local_builds_remove — ./stack uninstall, after compose's down: this install's built images by their exact names,
+# only those that exist. Never forced and never a prune: an image something still uses stays (and is named).
+local_builds_remove() {
+  local p n t ref removed='' kept=''
+  p="$(project_name)"
+  for n in $LOCAL_BUILDS; do
+    for t in local previous; do
+      ref="$p/$n:$t"
+      docker image inspect "$ref" >/dev/null 2>&1 || continue
+      if docker image rm "$ref" >/dev/null 2>&1; then removed="$removed $n:$t"; else kept="$kept $ref"; fi
+    done
+  done
+  [ -z "$removed" ] || log "removed this install's built images:$removed"
+  [ -z "$kept" ] || warn "could not remove the image(s)$kept (still in use?) — docker image rm <name> removes one once nothing uses it"
+}
+
 # _protected -> IDs that must never be removed (used by any container, or named by another checkout). Fails when
 # Docker cannot list them: the callers then remove nothing.
 _protected() {

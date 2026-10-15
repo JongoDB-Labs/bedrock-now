@@ -565,10 +565,24 @@ else
 fi
 
 # --- 5. CLI commands that change the throwaway (backup/restore, down/up, rotate-aws, update, rollback) ---
+# bucket_job SCRIPT — sh -c SCRIPT in the throwaway's own aws-cli service (rustfs-init, on its network; the RustFS
+# keys reach it from the throwaway .env through Compose, never on a command line); E2E_CANARY is passed on.
+CANARY=shared/e2e-restore/canary.txt   # bucket/key, and its path under a backup's s3/
+bucket_job() {
+  ( clean_env E2E_CANARY; cd "$STACK" &&
+    exec docker compose -p "$PROJECT" -f compose.yaml run --rm --no-deps -T -e E2E_CANARY --entrypoint /bin/sh rustfs-init -c "$1" ) </dev/null
+}
+# shellcheck disable=SC2016  # $E2E_CANARY expands in the container
+canary_put() { E2E_CANARY="$1" bucket_job 'printf %s "$E2E_CANARY" > /tmp/canary && aws --endpoint-url http://rustfs:9000 s3 cp --only-show-errors /tmp/canary s3://'"$CANARY"; }
+canary_get() { bucket_job 'aws --endpoint-url http://rustfs:9000 s3 cp --only-show-errors s3://'"$CANARY"' -'; }
 if [ "$SKIP_MUTATING" = 1 ] || ! part_on mutating; then
   record cli mutating SKIP 0 "--skip-cli-mutating / --only $ONLY"
 else
   say "CLI: commands that change the stack"
+  # A file of the shared bucket overwritten after the backup with content of the SAME size: the restore must bring
+  # back the backup's (aws s3 sync alone kept the newer one — it compares only size and date).
+  n="$(printf '%05d' "$((RANDOM % 100000))")"; canary_a="canary-backup-$n"; canary_b="canary-latest-$n"
+  canary_put "$canary_a" > "$LOGS/canary-put-backup.log" 2>&1 || warn "could not write the canary (log $LOGS/canary-put-backup.log)"
   cli backup 0 'backup written to backups/' backup
   bk=''
   for d in "$STACK"/backups/2*; do case "$d" in *-auto | *.partial) ;; *) [ -d "$d" ] && bk="$d" ;; esac; done
@@ -580,8 +594,15 @@ else
   fi
   if [ -n "$bk" ] && [ -z "$miss" ]; then
     record cli backup-contents PASS 0 "litellm.dump openwebui.dump s3/openwebui s3/shared .env, mode 700"
+    t0="$(now)"
+    canary_put "$canary_b" > "$LOGS/canary-put-latest.log" 2>&1 || warn "could not overwrite the canary (log $LOGS/canary-put-latest.log)"
+    c_bk="$(cat "$bk/s3/$CANARY" 2>/dev/null)"; c_before="$(canary_get 2>/dev/null)"
     spend_cut
     cli restore 0 'all checks passed' restore "backups/${bk##*/}" --yes
+    c_after="$(canary_get 2> "$LOGS/canary-get.log")"
+    if [ "$c_bk" = "$canary_a" ] && [ "$c_before" = "$canary_b" ] && [ "$c_after" = "$canary_a" ]; then
+      record cli restore-same-size-change PASS "$(( $(now) - t0 ))" "$CANARY: '$c_bk' in the backup, overwritten with '$c_before' (same size), '$c_after' after the restore"
+    else record cli restore-same-size-change FAIL "$(( $(now) - t0 ))" "$CANARY: '$c_bk' in the backup (want '$canary_a'), '$c_before' before the restore (want '$canary_b'), '$c_after' after it (want '$canary_a')"; fi
     # The path ./stack prints ("./stack restore backups/<ts>") and ./stack rollback passes on is relative to the
     # checkout: it must work from another folder too (e.g. ~/bedrock-now/stack restore run from $HOME).
     ST_CWD=/ cli restore-from-another-folder 0 'all checks passed' restore "backups/${bk##*/}" --yes

@@ -262,9 +262,25 @@ All notable changes to bedrock-now are documented here. The format follows
   (SSH or the browser terminal), `./stack ssh-info` and `docs/security.md` (*The browser terminal*: what it can and
   cannot reach, and what reaches further — a workspace you open on your computer later, your Mac's loopback services
   through Docker Desktop, the knowledge bases).
+- `./stack status` says when the last update did not finish (its image pull or setup failed, or it was stopped):
+  "The last update did not finish — ./stack update finishes it, ./stack rollback goes back" (instead of the
+  "Update available" line).
+- **`./stack uninstall` also removes this install's built images** (`<project>/portal`, `shared-mcp`, `stt`,
+  `terminal` and `caddy-dns`, `:local` and the `:previous` build kept for rollback), each by its exact name and only
+  when it exists; never forced and never a prune: an image something still uses stays, and is named. It still keeps
+  `.env` and `backups/`; the README and `./stack help` say so.
 
 ### Fixed
 
+- **Restore and rollback now bring back files changed after the backup even when their size didn't change.**
+  `./stack restore` copied the buckets back with `aws s3 sync --delete`, which uploads a file only when its size
+  differs or it is newer than the object, and a backup's files keep the objects' dates from backup time: a file
+  overwritten later with content of the same size kept the newer content (also after `./stack rollback` and Home's
+  Rollback, in both buckets). The restore now uploads every file of the backup (`aws s3 cp --recursive`), then
+  `sync --delete` removes what the backup does not have; the bucket is never empty in between. A rollback to v0.3.0
+  or earlier, whose own restore still compares sizes and dates, first gives the backup's bucket files the current
+  time, so every file is uploaded (when it cannot, e.g. files owned by another user, it says so and how to make
+  sure afterwards). The e2e suite checks it (`cli/restore-same-size-change`).
 - `./stack up` no longer says "restarting LiteLLM so it uses the new prices" when it re-renders LiteLLM's
   configuration for another reason (a changed `.env` setting such as `LITELLM_STORE_PROMPTS`).
 - After a one-click request Home kept the old state for up to 30 s when its first check came before the helper's
