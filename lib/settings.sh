@@ -208,14 +208,30 @@ setting_validate() {
 # setting_weakens KEY NEW OLD -> 0 when NEW protects less than OLD (policy widen-local: that direction only from the
 # computer running bedrock-now). portal/portal/settings.py weakens() is the same.
 setting_weakens() {
-  case "$1" in
-    BACKUP_KEEP) [ "${2:-7}" -lt "${3:-7}" ] 2>/dev/null ;;                 # fewer backups kept
-    BACKUP_NIGHTLY) [ "$2" != on ] && [ "$3" = on ] ;;                       # nightly backups off
-    PORTAL_SESSION_DAYS) [ "${2:-30}" -gt "${3:-30}" ] 2>/dev/null ;;        # longer sign-ins
-    *) [ "$2" = true ] && [ "$3" != true ] ;;                                # on: remote admin, stored prompts
+  case "$1" in   # both values as they take effect (blank or nonsense = the default)
+    BACKUP_KEEP) [ "$(_eff_int "$2" 1 60 7)" -lt "$(_eff_int "$3" 1 60 7)" ] ;;                 # fewer backups kept
+    PORTAL_SESSION_DAYS) [ "$(_eff_int "$2" 1 90 30)" -gt "$(_eff_int "$3" 1 90 30)" ] ;;       # longer sign-ins
+    BUDGET_ALERT_PCT) [ "$(_eff_int "$2" 50 99 80)" -gt "$(_eff_int "$3" 50 99 80)" ] ;;        # later warnings
+    BUDGET_CLAUDE_CODE | BUDGET_OPENWEBUI | BUDGET_SETUP)                                         # a higher cost cap
+      awk -v n="$(_eff_budget "$1" "$2")" -v o="$(_eff_budget "$1" "$3")" 'BEGIN { exit !(n + 0 > o + 0) }' ;;
+    BACKUP_NIGHTLY | AUTO_UPDATE) [ "$2" != on ] && [ "$3" = on ] ;;                              # turned off
+    UPDATE_CHECK) [ "$2" = false ] && [ "$3" != false ] ;;                                       # no release checks
+    *) [ "$2" = true ] && [ "$3" != true ] ;;                                                    # remote admin, stored prompts
   esac
 }
-_weaken_word() { case "$1" in BACKUP_KEEP) echo lowered ;; BACKUP_NIGHTLY) echo "turned off" ;; PORTAL_SESSION_DAYS) echo "made longer" ;; *) echo "turned on" ;; esac; }
+_weaken_word() {
+  case "$1" in
+    BACKUP_KEEP) echo lowered ;; PORTAL_SESSION_DAYS) echo "made longer" ;; BUDGET_*) echo raised ;;
+    BACKUP_NIGHTLY | AUTO_UPDATE | UPDATE_CHECK) echo "turned off" ;; *) echo "turned on" ;;
+  esac
+}
+# _eff_int VALUE LO HI DEFAULT -> VALUE when a whole number in LO..HI, else DEFAULT (as the stack reads it)
+_eff_int() { case "$1" in '' | *[!0-9]* | ????*) echo "$4" ;; *) if [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; then echo "$((10#$1))"; else echo "$4"; fi ;; esac; }
+# _eff_budget KEY VALUE -> VALUE when a budget, else the one setup gives that key
+_eff_budget() {
+  if valid_budget "$2"; then echo "$2"; return 0; fi
+  case "$1" in BUDGET_CLAUDE_CODE) echo 200 ;; BUDGET_OPENWEBUI) echo 50 ;; *) echo 5 ;; esac
+}
 
 # setting_allowed KEY VALUE ORIGIN(local|remote) -> 0 when the policy lets this change through (SV_ERR otherwise)
 setting_allowed() {
@@ -399,8 +415,8 @@ settings_snapshot_write() {
   f="$(settings_snapshot_file)"; base="$(env_sha256)"
   tmp="$(mktemp "$d/.settings.XXXXXX")" || return 0
   {
-    printf '{"version": 1, "written_at": %s, "base": "%s", "remote_on": %s, "last_change": %s, "choices": %s, "keys": [\n' \
-      "$(date +%s)" "$base" "$(remote_on && echo true || echo false)" "$(_settings_last_change)" "$(_settings_choices)"
+    printf '{"version": 1, "written_at": %s, "base": "%s", "facts": "%s", "remote_on": %s, "last_change": %s, "choices": %s, "keys": [\n' \
+      "$(date +%s)" "$base" "$(_settings_facts)" "$(remote_on && echo true || echo false)" "$(_settings_last_change)" "$(_settings_choices)"
     settings_rows | awk -F'\t' '
       function js(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, " ", s); gsub(/[\001-\037\177]/, "", s); return "\"" s "\"" }
       function mask(code, v,  n, m) {
@@ -437,9 +453,13 @@ settings_snapshot_write() {
 settings_snapshot_refresh() {
   local f; f="$(settings_snapshot_file)"
   [ -f "$ENV_FILE" ] || return 0
-  if [ -f "$f" ] && head -c 200 "$f" | grep -q "\"base\": \"$(env_sha256)\""; then return 0; fi
+  if [ -f "$f" ] && head -c 300 "$f" | grep -q "\"base\": \"$(env_sha256)\", \"facts\": \"$(_settings_facts)\""; then return 0; fi
   settings_snapshot_write
 }
+
+# _settings_facts -> a hash of what the choices come from besides .env: the models the last check enabled (and so
+# whether Voxtral is ready) and the catalog. Re-check models changes it without touching .env.
+_settings_facts() { cat "$STACK_DIR/litellm/enabled-models.txt" "$CATALOG" 2>/dev/null | openssl dgst -sha256 | awk '{ print $NF }'; }
 
 # --- ./stack config ---
 
@@ -1057,6 +1077,12 @@ settings_reconcile() {
 alert_pct_applied() { local p; p="$(head -c 4 "$(settings_dir)/alert-pct" 2>/dev/null | tr -cd '0-9' || true)"; echo "${p:-80}"; }
 alert_pct_mark() { mkdir -p "$(settings_dir)" 2>/dev/null && chmod 700 "$(settings_dir)" && printf '%s\n' "$(alert_pct)" > "$(settings_dir)/alert-pct"; }
 
+# models_hidden_applied -> the MODELS_HIDDEN Chat's picker was last brought in line with (.state/config/models-hidden)
+models_hidden_applied() { head -c 4096 "$(settings_dir)/models-hidden" 2>/dev/null | head -n 1 || true; }
+models_hidden_mark() {
+  mkdir -p "$(settings_dir)" 2>/dev/null && chmod 700 "$(settings_dir)" && printf '%s\n' "$(get_env MODELS_HIDDEN)" > "$(settings_dir)/models-hidden" || true
+}
+
 # budget_sync_quiet — ./stack up: each key's budget in LiteLLM as BUDGET_* in .env says (a change made while the
 # stack was stopped, or .env edited by hand); quiet when nothing differs. Never fatal.
 budget_sync_quiet() {
@@ -1210,7 +1236,12 @@ _report_scrub() {
         # who you are and where: emails and logins (owner, Tailscale), tailnet names, AWS account numbers
         gsub(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/, "<email>", line)
         gsub(/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.ts\.net/, "<host>.ts.net", line)
-        gsub(/(^|[^0-9])[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]([^0-9]|$)/, " <account> ", line)
+        out = ""; rest = line   # whole 12-digit numbers only (AWS account ids), their neighbours untouched
+        while (match(rest, /[0-9]+/)) {
+          out = out substr(rest, 1, RSTART - 1) (RLENGTH == 12 ? "<account>" : substr(rest, RSTART, RLENGTH))
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+        line = out rest
         gsub(/\033\[[0-9;]*m/, "", line); print line }' )
 }
 

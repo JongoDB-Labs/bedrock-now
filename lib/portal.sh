@@ -164,12 +164,15 @@ portal_session_start() {
   find "$STATE_DIR" -maxdepth 1 -name 'portal-session.*' -type f -mmin +60 -exec rm -f {} + 2>/dev/null || true
   on_exit portal_session_end
   PORTAL_JAR="$(mktemp "$STATE_DIR/portal-session.XXXXXX")" || die "cannot create a temp file in $STATE_DIR"
+  PORTAL_JAR_LEVEL="$BASH_SUBSHELL"
   chmod 600 "$PORTAL_JAR"
   PORTAL_LOGIN_CODE="$(portal_login "$PORTAL_JAR")"
   [ "$PORTAL_LOGIN_CODE" = 303 ]
 }
 portal_session_end() {
-  [ -z "${PORTAL_JAR:-}" ] || rm -f "$PORTAL_JAR"
+  # (a subshell forgets its parent's session; only the level that started it deletes the file)
+  _shell_level
+  [ -z "${PORTAL_JAR:-}" ] || { [ -n "${PORTAL_JAR_LEVEL:-}" ] && [ "$PORTAL_JAR_LEVEL" != "$_LEVEL" ]; } || rm -f "$PORTAL_JAR"
   PORTAL_JAR=''
   off_exit portal_session_end
 }

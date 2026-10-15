@@ -246,7 +246,7 @@ if json.dumps(d, sort_keys=True) != before:
 # owui_apply_hidden — MODELS_HIDDEN in .env: those chat models are left out of Chat's picker (for everyone; the API
 # and Claude Code can still use them). Needs a portal session. Never fatal.
 owui_apply_hidden() {
-  local en name mode tmp code body want list n=0
+  local en name mode tmp code body want list n=0 failed=0
   [ -n "$(get_env OPENWEBUI_API_KEY)" ] || return 0
   list=",$(get_env MODELS_HIDDEN),"
   en="$(_enabled_or_all)"
@@ -257,12 +257,15 @@ owui_apply_hidden() {
     code="$(_owui_get "/api/v1/models/model?id=$name" "$tmp")"
     if [ "$code" = 200 ] && body="$(owui_hidden_merge "$want" < "$tmp" 2>/dev/null)" && [ -n "$body" ]; then
       code="$(_owui_post /api/v1/models/model/update "$body" "$tmp")"
-      if [ "$code" = 200 ]; then n=$((n + 1)); else warn "Open WebUI: could not change whether $name is shown (HTTP $code)"; fi
+      if [ "$code" = 200 ]; then n=$((n + 1)); else warn "Open WebUI: could not change whether $name is shown (HTTP $code)"; failed=1; fi
+    elif [ "$code" != 200 ]; then failed=1
     fi
     rm -f "$tmp"
   done 3< <(catalog_rows)
   [ "$n" = 0 ] || log "Chat's model picker: $n model(s) shown or hidden as MODELS_HIDDEN says"
+  [ "$failed" = 1 ] || models_hidden_mark   # ./stack up skips the check while MODELS_HIDDEN stays the same
 }
+
 
 # --- cost filter function (owui/functions/bedrock_cost.py) ---
 

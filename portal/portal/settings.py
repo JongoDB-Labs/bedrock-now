@@ -327,22 +327,36 @@ def validate(validator: str, value: str, remote_on: bool = False) -> str | None:
     return fn(value, remote_on)
 
 
-_WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer"}
+_WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer",
+                "BUDGET_ALERT_PCT": "raised", "BUDGET_CLAUDE_CODE": "raised", "BUDGET_OPENWEBUI": "raised",
+                "BUDGET_SETUP": "raised", "AUTO_UPDATE": "turned off", "UPDATE_CHECK": "turned off"}
+_BUDGET_DEFAULT = {"BUDGET_CLAUDE_CODE": 200.0, "BUDGET_OPENWEBUI": 50.0, "BUDGET_SETUP": 5.0}
 
 
-def _num(v: str, default: int) -> int:
-    return int(v) if v.isdigit() else default
+def _eff_int(v: str, lo: int, hi: int, default: int) -> int:
+    """V as the stack reads it: a whole number in LO..HI, else DEFAULT (lib/settings.sh _eff_int)."""
+    return int(v) if re.fullmatch(r"[0-9]{1,3}", v or "") and lo <= int(v) <= hi else default
+
+
+def _eff_budget(key: str, v: str) -> float:
+    return float(v) if re.fullmatch(r"[0-9]*\.?[0-9]+|[0-9]+\.", v or "") else _BUDGET_DEFAULT.get(key, 5.0)
 
 
 def weakens(key: str, new: str, old: str) -> bool:
-    """NEW protects less than OLD (policy widen-local: that direction only from this computer). lib/settings.sh
-    setting_weakens is the same."""
+    """NEW protects less than OLD, both as they take effect (policy widen-local: that direction only from this
+    computer). lib/settings.sh setting_weakens is the same."""
     if key == "BACKUP_KEEP":
-        return _num(new, 7) < _num(old, 7)
-    if key == "BACKUP_NIGHTLY":
-        return new != "on" and old == "on"
+        return _eff_int(new, 1, 60, 7) < _eff_int(old, 1, 60, 7)
     if key == "PORTAL_SESSION_DAYS":
-        return _num(new, 30) > _num(old, 30)
+        return _eff_int(new, 1, 90, 30) > _eff_int(old, 1, 90, 30)
+    if key == "BUDGET_ALERT_PCT":
+        return _eff_int(new, 50, 99, 80) > _eff_int(old, 50, 99, 80)
+    if key in _BUDGET_DEFAULT:
+        return _eff_budget(key, new) > _eff_budget(key, old)
+    if key in ("BACKUP_NIGHTLY", "AUTO_UPDATE"):
+        return new != "on" and old == "on"
+    if key == "UPDATE_CHECK":
+        return new == "false" and old != "false"
     return new == "true" and old != "true"
 
 
@@ -365,6 +379,7 @@ def policy_error(row: dict, value: str, local: bool) -> str | None:
 
 # --- request files ---
 
+MAX_AUTH = 300                      # bytes of the password a request carries (the helper's limit: 400 base64 characters)
 CONFIRMS = ("other-aws-account",)   # what a change may confirm (the new AWS key belongs to another account)
 STALE_REQUEST_S = 150               # the helper takes a request for 2 minutes; then the portal deletes its own file
 
@@ -441,6 +456,8 @@ def write_action(request_dir: Path, action: str, password: str, now: float | Non
     its own hash: each one costs time, disk or money). -> nonce"""
     if action not in DIAG_ACTIONS:
         raise ValueError("action not allowed")
+    if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
+        raise ValueError("password too long")
     nonce = secrets.token_hex(16)
     body = json.dumps({"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce,
                        "auth": _b64(password)}, separators=(",", ":")).encode("ascii")

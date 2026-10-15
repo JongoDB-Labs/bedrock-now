@@ -822,11 +822,14 @@ offer_symlink() {
 # --- day-2 commands ---
 
 cmd_up() {
-  local repriced=0 restart=0 before
+  local repriced=0 restart=0 before own=1
   local extra; extra="$(stt_services)"
   local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"   # + stt while Bedrock speech-to-text is chosen
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  stack_lock up   # lib/lock.sh: never while a settings change, setup, update or restore writes .env
+  # lib/lock.sh: never while a settings change, setup, update or restore writes .env. Released when up returns (not at
+  # exit): ./stack serve goes on keeping the machine awake for hours, and must not block everything else meanwhile.
+  ! stack_lock_ours || own=0   # (setup, restore and update call up holding the lock: theirs to release)
+  stack_lock up
   aws_auth_check   # lib/host.sh: a key in .env, or the instance role on EC2
   check_portal_host "$(portal_host)"
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
@@ -867,7 +870,8 @@ cmd_up() {
   # its models changed too; after OpenRouter changes alone, openrouter_after_up.
   if portal_session_start; then
     settings_reconcile; budget_sync_quiet   # lib/settings.sh: sign-ins, budgets and alert thresholds as .env says
-    owui_apply_hidden   # lib/owui.sh: MODELS_HIDDEN changed while the stack was stopped
+    # lib/owui.sh: MODELS_HIDDEN changed while the stack was stopped (one call per model: only when it changed)
+    [ "$(models_hidden_applied)" = "$(get_env MODELS_HIDDEN)" ] || owui_apply_hidden
     sync_budget_banner
     stt_after_up   # lib/stt.sh: hides the speech-to-text model after ./stack stt set while stopped
     if [ "$PRICES_CHANGED" = 1 ] || [ "$repriced" = 1 ]; then
@@ -880,6 +884,7 @@ cmd_up() {
     warn "could not sign in to the portal — budget banner and Open WebUI prices not refreshed"
   fi
   portal_session_end
+  [ "$own" = 0 ] || stack_unlock
   cmd_status
   maybe_auto_open
 }
@@ -1070,15 +1075,20 @@ _cleanup_partial_backup() { [ -z "$_BACKUP_PARTIAL" ] || rm -rf "$_BACKUP_PARTIA
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_backup() {
+  local own=1
+  [ -f "$ENV_FILE" ] || die "nothing to back up — run ./stack setup first"
+  ! stack_lock_ours || own=0   # (restore, rollback and clean ask for one holding their own lock)
+  stack_lock backup   # lib/lock.sh: ./stack up must not recreate Postgres or RustFS halfway
   case "${1:-}" in
-    '') [ $# -eq 0 ] || die "usage: ./stack backup [--nightly]"; _backup_named "" ;;
+    '') [ $# -eq 0 ] || die "usage: ./stack backup [--nightly | --portal]"; _backup_named "" ;;
     # the update helper's nightly backup (BACKUP_NIGHTLY=on): backups/<timestamp>-nightly/, the newest BACKUP_KEEP kept
-    --nightly) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named nightly; prune_backups nightly "$(backup_keep)" ;;
+    --nightly) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly | --portal]"; _backup_named nightly; prune_backups nightly "$(backup_keep)" ;;
     # Back up now in the portal's Settings (through the update helper): backups/<timestamp>-portal/, the newest 5 kept
-    --portal) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly]"; _backup_named portal; prune_backups portal "$PORTAL_BACKUPS_KEEP" ;;
-    *) die "usage: ./stack backup [--nightly]   (writes backups/<timestamp>/)" ;;
+    --portal) [ $# -eq 1 ] || die "usage: ./stack backup [--nightly | --portal]"; _backup_named portal; prune_backups portal "$PORTAL_BACKUPS_KEEP" ;;
+    *) die "usage: ./stack backup [--nightly | --portal]   (writes backups/<timestamp>/)" ;;
   esac
   write_backups_json   # lib/settings.sh: the list Settings shows
+  [ "$own" = 0 ] || stack_unlock
 }
 
 PORTAL_BACKUPS_KEEP=5   # backups made from the portal (Back up now): the newest 5 are kept

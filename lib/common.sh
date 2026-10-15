@@ -52,14 +52,22 @@ _cleanup_on_signal() {
 # on_exit FUNC / off_exit FUNC — cleanups that must run however the script ends (die, error, Ctrl-C, kill).
 # Several can be active at once (the LiteLLM config restore during setup's probe, the portal session file,
 # a partial backup), so they share one EXIT trap instead of replacing each other's.
-_EXIT_HOOKS=' '
-_run_exit_hooks() { local h; for h in $_EXIT_HOOKS; do "$h" || true; done; }
+# A subshell inherits the list but not the trap: its first on_exit/off_exit starts a list of its own
+# (BASH_SUBSHELL), so a subshell's exit never runs its parent's hooks (the lock, a partial backup, a config restore).
+_EXIT_HOOKS=' '; _EXIT_LEVEL=0
+# _shell_level -> _LEVEL: how deep a subshell this is. bash 3.2 says 0 in the EXIT trap of a $( ) subshell, so the
+# hooks use the level their list was built at (a variable, not $(...): that would be a subshell itself)
+_shell_level() { if [ -n "${_IN_EXIT_HOOKS:-}" ]; then _LEVEL="$_EXIT_LEVEL"; else _LEVEL="$BASH_SUBSHELL"; fi; }
+_run_exit_hooks() { local h; _IN_EXIT_HOOKS=1; for h in $_EXIT_HOOKS; do "$h" || true; done; }
+_exit_hooks_here() { _shell_level; [ "$_EXIT_LEVEL" = "$_LEVEL" ] || { _EXIT_HOOKS=' '; _EXIT_LEVEL="$_LEVEL"; }; }
 on_exit() {
+  _exit_hooks_here
   case "$_EXIT_HOOKS" in *" $1 "*) ;; *) _EXIT_HOOKS="$_EXIT_HOOKS$1 " ;; esac
   trap _run_exit_hooks EXIT
 }
 # The trap itself goes once no hook is left: bash 3.2 can report status 0 from an EXIT trap after a fatal error.
 off_exit() {
+  _exit_hooks_here
   _EXIT_HOOKS="${_EXIT_HOOKS/ $1 / }"
   [ "$_EXIT_HOOKS" != ' ' ] || trap - EXIT
 }

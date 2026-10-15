@@ -393,9 +393,10 @@ cmd_serve() {
   # stack back itself: don't start it in the middle of that, just keep the machine awake.
   holder="$(stack_lock_holder 2>/dev/null || true)"
   if [ -n "$holder" ]; then
-    warn "./stack ${holder#* } is running (pid ${holder%% *}): not starting the stack now — it does that itself; keeping the machine awake anyway"
+    warn "$(stack_lock_says "$holder"): not starting the stack now — it does that itself; keeping the machine awake anyway"
   else
     BEDROCK_NOW_NO_OPEN=1 cmd_up
+    ! stack_lock_ours || stack_unlock   # (up releases it itself): keeping the machine awake blocks nothing else
   fi
   serve_urls
   case "$(host_os)" in

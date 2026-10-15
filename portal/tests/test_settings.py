@@ -633,6 +633,18 @@ def test_less_protection_only_from_this_computer():
     assert "turned off" in st.policy_error(nightly, "off", local=False)
     prompts = row("LITELLM_STORE_PROMPTS", policy="widen-local", validator="bool", value="false")
     assert "turned on" in st.policy_error(prompts, "true", local=False) and st.policy_error(prompts, "false", local=False) is None
+    budget = row("BUDGET_OPENWEBUI", policy="widen-local", value="50")
+    assert st.policy_error(budget, "20", local=False) is None and "raised" in st.policy_error(budget, "60", local=False)
+    pct = row("BUDGET_ALERT_PCT", policy="widen-local", validator="pct", value="")
+    assert st.policy_error(pct, "70", local=False) is None and "raised" in st.policy_error(pct, "90", local=False)
+    auto = row("AUTO_UPDATE", policy="widen-local", validator="on_off", value="on")
+    assert "turned off" in st.policy_error(auto, "off", local=False)
+    check = row("UPDATE_CHECK", policy="widen-local", validator="bool", value="")
+    assert "turned off" in st.policy_error(check, "false", local=False) and st.policy_error(check, "true", local=False) is None
+    # old values as they take effect (lib/settings.sh _eff_int / _eff_budget agree)
+    assert st.weakens("BACKUP_KEEP", "5", "abc") and not st.weakens("BACKUP_KEEP", "10", "abc")
+    assert st.weakens("PORTAL_SESSION_DAYS", "40", "999") and not st.weakens("PORTAL_SESSION_DAYS", "20", "999")
+    assert st.weakens("BUDGET_SETUP", "6", "x") and not st.weakens("BUDGET_SETUP", "4", "x")
 
 
 def test_stale_requests_are_deleted_by_the_portal(tmp_path):
@@ -674,3 +686,18 @@ def test_unknown_confirmations_are_refused(make, dirs):
     r = c.post("/api/settings/apply", content=json.dumps({"password": "correct horse", "base": BASE, "set": {"BUDGET_SETUP": "6"},
                                                           "confirm": ["anything"]}), headers=H)
     assert r.status_code == 400
+
+
+def test_a_password_too_long_for_a_request_is_a_clear_413(settings, dirs):
+    from portal.security import hash_password
+    sd, rq = dirs
+    long_pw = "x" * 301
+    app = create_app(replace(settings, status_dir=sd, request_dir=rq, password_hash=hash_password(long_pw)),
+                     transport=httpx.MockTransport(offline))
+    c = TestClient(app, base_url="http://bedrock-now.localhost", follow_redirects=False)
+    assert c.post("/login", data={"password": long_pw}, headers=ORIGIN).status_code == 303
+    write_snapshot(sd); helper_up(sd)
+    r = action(c, "test", password=long_pw)
+    assert r.status_code == 413 and "300 bytes" in r.json()["error"]
+    assert apply(c, {"BUDGET_SETUP": "6"}, password=long_pw).status_code == 413
+    assert files(rq) == []

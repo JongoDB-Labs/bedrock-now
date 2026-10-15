@@ -27,8 +27,29 @@ _env() {   # a set-up .env (real-looking values, nothing real)
     LITELLM_UI_PASSWORD 'Bn9-0123456789abcdef' AWS_ACCESS_KEY_ID ${FAKE_AWS_0} \
     AWS_SECRET_ACCESS_KEY ${FAKE_AWS_3} LITELLM_MASTER_KEY sk-master0123456789 \
     RUSTFS_SECRET_KEY rustfs0123456789secret SHARED_MCP_TOKEN mcp0123456789abcdef LITELLM_KEY_SETUP sk-setup0123456789 \
-    OPENWEBUI_API_KEY sk-owui0123456789 LITELLM_PORT 9 COMPOSE_PROJECT_NAME bn-t
+    OPENWEBUI_API_KEY sk-owui0123456789 LITELLM_PORT 9 COMPOSE_PROJECT_NAME bn-t PORTAL_PASSWORD_HASH "$PW_FIXTURE"
   mkdir -p "$STATE_DIR/status" "$STATE_DIR/helper" && chmod 700 "$STATE_DIR/helper"
+  ( umask 077; printf '%s\n' "$PW_FIXTURE" > "$STATE_DIR/helper/portal-password" )   # the helper's copy, as ./stack writes it
+}
+# 'correct horse battery' at the real 600,000 rounds (a fixed salt: tests/shims/openssl computes it once per run)
+PW_FIXTURE=pbkdf2-sha256:600000:00112233445566ff:56115ff6f30f98260c541dee76c81024842530a3723e5cd2a16ea16dd00e33c6
+
+test_password_hashes_use_600000_rounds() {   # in a fresh shell: nothing in the environment lowers them
+  local h
+  h="$(env -i PATH="$PATH" HOME="$HOME" /bin/bash -c 'set -eu; STACK_DIR="$1"; ENV_FILE=/dev/null; STATE_DIR=/nonexistent
+    . "$1/lib/common.sh"; . "$1/lib/settings.sh"; printf "%s %s" "$PW_HASH_ITER" "$(pw_hash "x y z")"' _ "$T_ROOT")"
+  case "$h" in "600000 pbkdf2-sha256:600000:"????????????????":"*) ;; *) echo "rounds: $h" >&2; return 1 ;; esac
+  pw_verify 'correct horse battery' "$PW_FIXTURE"
+}
+
+test_the_pbkdf2_cache_gives_what_openssl_gives() {   # tests/shims/openssl: cached output = the real derivation
+  [ -n "${BN_PBKDF2_CACHE:-}" ] || { echo "no cache (run through tests/run.sh)" >&2; return 77; }
+  local want=21651daf89d8409ba144fdb3f24be22bdc08ada5dcb6fc4ddcce98dcca210881   # PBKDF2-HMAC-SHA256, 1000 rounds
+  assert_eq "$(_pbkdf2 'correct horse battery' 1000 0123456789abcdef)" "$want"   # computed (or from the cache)
+  assert_eq "$(_pbkdf2 'correct horse battery' 1000 0123456789abcdef)" "$want"   # from the cache
+  assert_eq "$(printf 'correct horse battery\n' | "$BN_REAL_OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 1000 -md sha256 \
+    -S 0123456789abcdef -pass stdin -P | sed -n 's/^key=//p' | tr 'A-F' 'a-f')" "$want"         # the real openssl
+  [ -n "$(ls "$BN_PBKDF2_CACHE")" ]
 }
 
 # --- the table ---
@@ -136,6 +157,7 @@ test_password_hash_roundtrip_and_python_agreement() {
 
 test_portal_password_hash_follows_env_and_the_helper_keeps_its_own() {
   _env
+  set_env_batch -PORTAL_PASSWORD_HASH ''; rm -f "$(helper_password_file)"   # (no fixture: as before the first setup)
   ensure_portal_password_hash
   local h; h="$(get_env PORTAL_PASSWORD_HASH)"
   pw_verify 'correct horse battery' "$h"
@@ -182,7 +204,13 @@ test_snapshot_refresh_follows_env_and_shows_the_last_change() {
   settings_audit ok cli "BUDGET_SETUP BUDGET_OPENWEBUI"
   settings_snapshot_refresh
   assert_contains "$(cat "$(settings_snapshot_file)")" '"keys": ["BUDGET_SETUP","BUDGET_OPENWEBUI"], "via": "cli", "result": "ok"'
-  assert_contains "$(cat "$(settings_snapshot_file)")" '"key": "BUDGET_SETUP", "group": "budgets", "secret": "-", "policy": "edit"'
+  assert_contains "$(cat "$(settings_snapshot_file)")" '"key": "BUDGET_SETUP", "group": "budgets", "secret": "-", "policy": "widen-local"'
+  # Re-check models with .env unchanged: the model choices are written again
+  local was; was="$(cat "$(settings_snapshot_file)")"
+  STACK_DIR="$TMP/co"; mkdir -p "$STACK_DIR/litellm"; printf 'claude-haiku-5-5\n' > "$STACK_DIR/litellm/enabled-models.txt"
+  settings_snapshot_refresh
+  [ "$(cat "$(settings_snapshot_file)")" != "$was" ]
+  assert_contains "$(cat "$(settings_snapshot_file)")" '"chat_models": [["claude-haiku-5-5", '
 }
 
 # --- ./stack config ---
@@ -753,6 +781,8 @@ test_report_scrubs_home_and_secrets() {
   HOME="$TMP/home"
   out="$(printf 'in %s/bedrock-now: key sk-master0123456789 pw correct horse battery\n\033[32mok\033[0m\n' "$HOME" | _report_scrub)"
   assert_eq "$out" "$(printf 'in ~/bedrock-now: key *** pw ***\nok')"
+  out="$(printf 'owner John.Doe@Company.com on box.tail1234.ts.net, account 123456789012, at 1792020909123 (id:123456789012)\n' | _report_scrub)"
+  assert_eq "$out" "owner <email> on <host>.ts.net, account <account>, at 1792020909123 (id:<account>)"   # (neighbours kept)
 }
 
 test_dispatcher_knows_config_and_restart() {
@@ -1014,6 +1044,18 @@ test_less_protection_only_from_this_computer() {
     setting_allowed "${kv%%=*}" "${kv#*=}" local
   done
   setting_allowed BACKUP_KEEP 3 remote || assert_contains "$SV_ERR" "can only be lowered from the computer running bedrock-now"
+  set_env_batch BUDGET_OPENWEBUI 50 BUDGET_ALERT_PCT '' AUTO_UPDATE on UPDATE_CHECK ''
+  setting_allowed BUDGET_OPENWEBUI 20 remote; setting_allowed BUDGET_ALERT_PCT 70 remote
+  setting_allowed AUTO_UPDATE on remote; setting_allowed UPDATE_CHECK true remote
+  for kv in BUDGET_OPENWEBUI=60 BUDGET_ALERT_PCT=90 AUTO_UPDATE=off UPDATE_CHECK=false; do
+    if setting_allowed "${kv%%=*}" "${kv#*=}" remote; then echo "$kv allowed remotely" >&2; return 1; fi
+  done
+  assert_contains "$SV_ERR" "can only be turned off"
+  setting_allowed BUDGET_OPENWEBUI 60 remote || assert_contains "$SV_ERR" "can only be raised"
+  # old values as they take effect: BACKUP_KEEP=abc keeps 7, PORTAL_SESSION_DAYS=999 lasts 30, a broken budget is setup's
+  set_env_batch BACKUP_KEEP abc PORTAL_SESSION_DAYS 999 BUDGET_SETUP x
+  setting_allowed BACKUP_KEEP 10 remote; setting_allowed PORTAL_SESSION_DAYS 20 remote; setting_allowed BUDGET_SETUP 4 remote
+  if setting_allowed BACKUP_KEEP 5 remote || setting_allowed PORTAL_SESSION_DAYS 40 remote || setting_allowed BUDGET_SETUP 6 remote; then return 1; fi
 }
 
 test_up_reapplies_a_new_alert_threshold_once() {
@@ -1036,7 +1078,7 @@ test_up_waits_for_a_running_settings_change() {
   while [ ! -s "$STATE_DIR/lock/pid" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
   if out="$( (unset BEDROCK_NOW_LOCK_HELD; cmd_up) 2>&1)"; then touch "$TMP/release"; return 1; fi
   touch "$TMP/release"; wait "$holder" 2>/dev/null || true
-  assert_contains "$out" "another ./stack config is running"
+  assert_contains "$out" "a settings change (from the portal or ./stack config) is running"
 }
 
 test_hidden_models_apply_in_open_webui() {
@@ -1045,6 +1087,15 @@ test_hidden_models_apply_in_open_webui() {
   _lines MODELS_HIDDEN=claude-opus-5-5 | _apply 2>/dev/null
   assert_contains "$(cat "$TMP/calls")" "hidden claude-opus-5-5"
   assert_not_contains "$(cat "$TMP/calls")" "dc up"   # no restart
+}
+
+test_up_syncs_hidden_models_only_when_models_hidden_changed() {
+  _env
+  local src; src="$(sed -n '/^cmd_up() {/,/^}/p' "$T_ROOT/lib/commands.sh")"
+  assert_contains "$src" '[ "$(models_hidden_applied)" = "$(get_env MODELS_HIDDEN)" ] || owui_apply_hidden'
+  assert_eq "$(models_hidden_applied)" ""                       # nothing hidden yet, nothing applied: skipped
+  set_env MODELS_HIDDEN claude-opus-5-5; models_hidden_mark
+  assert_eq "$(models_hidden_applied)" claude-opus-5-5
 }
 
 test_hidden_merge_marks_only_its_own_models() {
@@ -1107,6 +1158,27 @@ test_nightly_backup_runs_once_per_window() {
   set_env BACKUP_NIGHTLY off; rm -f "$(backup_last_file)"
   ! backup_nightly_tick
   assert_eq "$(wc -l < "$TMP/diag" | tr -d ' ')" 1
+}
+
+test_nightly_backup_found_busy_is_tried_again_in_its_window() {
+  _checkout
+  set_env_batch BACKUP_NIGHTLY on BACKUP_HOUR 2
+  _backup_clock() { echo "1000000 3 $((3 * 3600))"; }
+  helper_run_diag() { echo "diag $1" >> "$TMP/diag"; JOB_RESULT=refused; }   # a ./stack command took the lock meanwhile
+  backup_nightly_tick
+  helper_run_diag() { echo "diag $1" >> "$TMP/diag"; JOB_RESULT=done; }
+  backup_nightly_tick                                                         # the next loop: it runs
+  ! backup_nightly_tick                                                       # and once only
+  assert_eq "$(tr '\n' ';' < "$TMP/diag")" "diag backup-nightly;diag backup-nightly;"
+}
+
+test_backup_takes_the_lock() {
+  _env
+  _backup_named() { cat "$(lock_dir)/what" >> "$TMP/calls"; }
+  write_backups_json() { :; }; prune_backups() { :; }
+  ( cmd_backup --portal )
+  assert_eq "$(cat "$TMP/calls")" backup
+  [ ! -d "$(lock_dir)" ]
 }
 
 test_nightly_backup_with_automatic_updates_is_one_a_night() {

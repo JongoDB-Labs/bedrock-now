@@ -178,10 +178,15 @@
   function editable(k) { return ["edit", "local", "on-only", "widen-local"].includes(k.policy); }
   // lib/settings.sh setting_weakens: the less protective direction of a widen-local key
   function weakens(k, v) {
-    const n = (x, d) => (/^\d+$/.test(x || "") ? Number(x) : d), old = "value" in k ? k.value : "";
-    if (k.key === "BACKUP_KEEP") return n(v, 7) < n(old, 7);
-    if (k.key === "BACKUP_NIGHTLY") return v !== "on" && old === "on";
-    if (k.key === "PORTAL_SESSION_DAYS") return n(v, 30) > n(old, 30);
+    const old = "value" in k ? k.value : "";
+    const n = (x, lo, hi, d) => (/^\d{1,3}$/.test(x || "") && Number(x) >= lo && Number(x) <= hi ? Number(x) : d);   // _eff_int
+    const usd = (x) => (/^(\d*\.?\d+|\d+\.)$/.test(x || "") ? Number(x) : { BUDGET_CLAUDE_CODE: 200, BUDGET_OPENWEBUI: 50 }[k.key] || 5);
+    if (k.key === "BACKUP_KEEP") return n(v, 1, 60, 7) < n(old, 1, 60, 7);
+    if (k.key === "PORTAL_SESSION_DAYS") return n(v, 1, 90, 30) > n(old, 1, 90, 30);
+    if (k.key === "BUDGET_ALERT_PCT") return n(v, 50, 99, 80) > n(old, 50, 99, 80);
+    if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP)$/.test(k.key)) return usd(v) > usd(old);
+    if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
+    if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
     return v === "true" && old !== "true";
   }
   function localOnlyHere(k, value) {

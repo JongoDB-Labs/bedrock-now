@@ -1,0 +1,30 @@
+#!/bin/sh
+# Test shim: the real openssl, except PBKDF2 key derivation (lib/settings.sh _pbkdf2: enc -aes-256-cbc -pbkdf2
+# -iter N -md sha256 -S SALT -pass stdin -P), whose output is cached in $BN_PBKDF2_CACHE (tests/run.sh makes and
+# removes it) by a hash of the password, the rounds and the salt: the 600,000 rounds are real, and computed once
+# per password and salt for the whole suite. Without a cache folder it is the real openssl throughout.
+real="${BN_REAL_OPENSSL:-}"
+if [ -z "$real" ]; then   # (run outside tests/run.sh: the next openssl on PATH that is not this shim)
+  here="$(cd "$(dirname "$0")" && pwd)"; IFS=:
+  for d in $PATH; do [ "$d" != "$here" ] && [ -x "$d/openssl" ] && { real="$d/openssl"; break; }; done
+  unset IFS
+  [ -n "$real" ] || { echo "openssl: not found" >&2; exit 127; }
+fi
+case " $* " in
+  " enc -aes-256-cbc -pbkdf2 "*" -pass stdin -P ") ;;
+  *) exec "$real" "$@" ;;
+esac
+[ -n "${BN_PBKDF2_CACHE:-}" ] && [ -d "$BN_PBKDF2_CACHE" ] || exec "$real" "$@"
+iter=''; salt=''; prev=''
+for a in "$@"; do
+  case "$prev" in -iter) iter="$a" ;; -S) salt="$a" ;; esac
+  prev="$a"
+done
+IFS= read -r pw || true   # (openssl reads only the first line of -pass stdin too)
+key="$(printf '%s\n%s\n%s' "$iter" "$salt" "$pw" | "$real" dgst -sha256 | awk '{ print $NF }')"
+f="$BN_PBKDF2_CACHE/$key"
+if [ ! -s "$f" ]; then
+  t="$f.$$"
+  printf '%s\n' "$pw" | "$real" "$@" > "$t" 2>/dev/null && mv "$t" "$f" || { rm -f "$t"; printf '%s\n' "$pw" | exec "$real" "$@"; }
+fi
+cat "$f"

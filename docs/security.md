@@ -119,14 +119,18 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   `./stack up` notices a change cut short), changes the LiteLLM password or the owner email in LiteLLM and Open WebUI first, writes
   `.env` once, restarts only what changed and checks the result (the paid smoke test only after an AWS key
   change). Any failure puts the previous values back, reverses the changes in LiteLLM and Open WebUI and restarts
-  with the old settings — also when `.env` itself could not be written. `./stack up` and the other commands that
-  write `.env` (`rotate-aws`, `openrouter`, `models --recheck`) take the same lock, so none of them undoes a
-  change while it runs.
+  with the old settings — also when `.env` itself could not be written. `./stack up`, `./stack backup` and the
+  other commands that write `.env` (`rotate-aws`, `openrouter`, `models --recheck`) take the same lock, so none of
+  them undoes a change, or recreates a database under a backup, while it runs (`./stack serve` releases it once
+  the stack is up). A subshell never releases its parent's lock or runs its parent's exit hooks. A portal password
+  longer than 300 bytes cannot travel in a request: the portal says so (413).
 - **Keys that could send data elsewhere** — the AWS key, the OpenRouter key, the speech-to-text provider and key,
   the alert webhook — are taken only from a local session (`origin local`); so is turning `REMOTE_ADMIN_ACTIONS`
   on and changing `TAILSCALE_ALLOWED_LOGIN` (never to blank). `UPDATE_REQUIRE_SIGNED_TAGS` can only be turned on.
-  Settings that would protect less move that way only locally, the other way from anywhere: storing prompts
-  (`LITELLM_STORE_PROMPTS` on), nightly backups off, fewer backups kept, longer sign-ins. A new AWS key of another
+  Settings that would protect less move that way only locally, the other way from anywhere: higher budgets and a
+  later alert threshold, automatic updates or the daily release check off, storing prompts (`LITELLM_STORE_PROMPTS`
+  on), nightly backups off, fewer backups kept, longer sign-ins (compared as they take effect: a value `.env`
+  holds that the stack would not use counts as its default). A new AWS key of another
   AWS account (other models, quotas and bill) needs a tick in Settings, or a yes in the terminal.
   Read-only, whatever a request says: hosts and ports, `HELPER_*`, `BEDROCK_NOW_*`, `REMOTE_MODE`, the Tailscale
   and Cloudflare keys, and the internal secrets (`PORTAL_SECRET`, `POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`,

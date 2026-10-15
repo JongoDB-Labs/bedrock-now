@@ -498,6 +498,19 @@ test_serve_mac_brings_stack_up_then_holds_caffeinate() {
   assert_contains "$out" "Ctrl-C"
 }
 
+test_serve_keeps_the_mac_awake_without_holding_the_lock() {   # the real cmd_up and stack_lock (lib/lock.sh)
+  _serve_stubs; host_os() { echo Darwin; }
+  eval "$(sed -n '/^cmd_up() {/,/^}/p' "$T_ROOT/lib/commands.sh")"   # (_serve_stubs stubs it)
+  for f in aws_auth_check check_portal_host save_portal_origin ensure_portal_password_hash owner_email_lowercase \
+    settings_pending_check ensure_portal_dirs write_version_file ensure_images refresh_prices openrouter_up_hook \
+    stt_before_up remote_up_hook cmd_status maybe_auto_open portal_session_end run_phase; do eval "$f() { :; }"; done
+  config_prices_line() { echo p; }; stt_up_hook() { return 1; }; reprice_litellm_config() { return 1; }
+  portal_session_start() { return 1; }; remote_on() { return 1; }; stt_services() { :; }
+  caffeinate() { if [ -d "$(lock_dir)" ]; then echo "locked while awake" >> "$TMP/calls"; else echo "awake, no lock" >> "$TMP/calls"; fi; }
+  cmd_serve >/dev/null 2>&1
+  assert_eq "$(cat "$TMP/calls")" "awake, no lock"   # Settings, updates and the helper's jobs go on meanwhile
+}
+
 test_serve_does_not_start_the_stack_during_an_update() {
   _serve_stubs; host_os() { echo Darwin; }
   stack_lock_holder() { echo "4711 update"; }

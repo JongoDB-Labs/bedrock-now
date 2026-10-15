@@ -18,7 +18,9 @@ pass=0; fail=0; skip=0
 # computer (only the closed port 9 there). A refused call is logged to $BN_SHIM_LOG; any entry fails the suite.
 # BN_REAL_DOCKER is for the one test that renders compose.yaml (`docker compose config`: no daemon, no containers).
 BN_SHIM_LOG="$(mktemp)"; BN_REAL_CURL="$(command -v curl || echo /usr/bin/curl)"; BN_REAL_DOCKER="$(command -v docker || true)"
-export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER
+# openssl is real too; only its PBKDF2 derivation (600,000 real rounds) is cached for the run (tests/shims/openssl)
+BN_REAL_OPENSSL="$(command -v openssl || echo /usr/bin/openssl)"; BN_PBKDF2_CACHE="$(mktemp -d)"
+export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER BN_REAL_OPENSSL BN_PBKDF2_CACHE
 
 # No EXIT trap in the child: bash 3.2 reports exit status 0 from an EXIT trap after fatal
 # errors (unbound variable, failed `.`), which would turn real failures into passes.
@@ -64,6 +66,6 @@ if [ -s "$BN_SHIM_LOG" ]; then
 else
   printf 'isolation guard: no real docker/aws/tailscale call and no curl to this computer\n'
 fi
-rm -f "$BN_SHIM_LOG"
+rm -f "$BN_SHIM_LOG"; rm -rf "${BN_PBKDF2_CACHE:?}"
 printf '\n%d passed, %d skipped, %d failed\n' "$pass" "$skip" "$fail"
 [ "$fail" -eq 0 ]

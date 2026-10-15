@@ -110,6 +110,9 @@ def routes(ctx: Ctx) -> list[Route]:
             log.warning("settings: wrong password (%d in a row)", ctx.throttle.failures)
             return err(403, "That password is not right (PORTAL_PASSWORD in .env).")
         ctx.throttle.success()
+        if len(password.encode("utf-8", "surrogatepass")) > st.MAX_AUTH:
+            return err(413, f"The portal password is longer than {st.MAX_AUTH} bytes, more than a request to the update helper "
+                            "can carry: set a shorter one with ./stack config set PORTAL_PASSWORD.")
         return data, password
 
     def helper_ready() -> Response | None:
@@ -282,6 +285,8 @@ def routes(ctx: Ctx) -> list[Route]:
             return err(429, f"Please wait {wait} s before the next action.", wait)
         try:
             nonce = st.write_action(s.request_dir, act, password)
+        except ValueError:
+            return err(413, f"The portal password is longer than {st.MAX_AUTH} bytes: set a shorter one with ./stack config set PORTAL_PASSWORD.")
         except OSError as e:
             log.warning("cannot write the %s request to %s (%s)", act, s.request_dir, e)
             return err(500, "Could not hand the request to the helper (see ./stack logs portal).")

@@ -205,8 +205,11 @@ All notable changes to bedrock-now are documented here. The format follows
   are taken only from a local session, and so are changes that protect less (storing prompts, nightly backups off,
   fewer kept, longer sign-ins); hosts, ports, the helper's own switches and the internal secrets stay
   terminal-only. No value may contain a control character.
-- `./stack up`, `rotate-aws`, `openrouter set|apply|models|remove|refresh` and `models --recheck` take the stack
-  lock (as setup, update and Settings do), so none of them rewrites `.env` under another. Every backup is refused
+- `./stack up`, `./stack backup`, `rotate-aws`, `openrouter set|apply|models|remove|refresh` and `models --recheck`
+  take the stack lock (as setup, update and Settings do), so none of them rewrites `.env` under another; `./stack
+  serve` releases it once the stack is up, and a busy message names a settings change or the update helper's job
+  (`./stack helper status`). Higher budgets, a later alert threshold and automatic updates or release checks off
+  change only from the computer running bedrock-now. Every backup is refused
   when the disk could not hold it twice. `OPENWEBUI_ADMIN_EMAIL` is kept in lowercase, as Open WebUI keeps emails
   (an address setup took from `git config` as typed is lowercased once).
 - **`./stack rotate-aws` proves Bedrock access with the new key before switching** (free) and puts the old key back

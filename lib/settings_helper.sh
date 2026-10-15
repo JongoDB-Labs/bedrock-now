@@ -88,7 +88,8 @@ settings_check_request() {
   [ "$SREQ_NONCE" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
   _sv_re "$SREQ_TS" '^[0-9]{1,12}$' || { echo "bad time" >&2; return 1; }
   _sv_re "$SREQ_BASE" '^[0-9a-f]{64}$' || { echo "bad base" >&2; return 1; }
-  _sv_re "$SREQ_AUTH" '^[A-Za-z0-9+/]+={0,2}$' && [ "${#SREQ_AUTH}" -le 400 ] || { echo "bad auth line" >&2; return 1; }
+  _sv_re "$SREQ_AUTH" '^[A-Za-z0-9+/]+={0,2}$' || { echo "bad auth line" >&2; return 1; }
+  [ "${#SREQ_AUTH}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   now="$(date +%s)"
   [ "$SREQ_TS" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - SREQ_TS)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
@@ -212,6 +213,7 @@ act_check_request() {
   _sv_re "$body" '^\{"action":"(check-aws|models-recheck|backup|test|report|restart-(litellm|open-webui|shared-mcp|stt|rustfs|caddy))","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})"\}$' ||
     { echo "not a valid request" >&2; return 1; }
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[3]}"; n="${BASH_REMATCH[4]}"; auth="${BASH_REMATCH[5]}"
+  [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
   case " $DIAG_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
   now="$(date +%s)"
@@ -248,7 +250,7 @@ helper_run_diag() {
   holder="$(stack_lock_holder)"
   if [ -n "$holder" ]; then
     JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused
-    helper_write_status failed "Busy: ./stack ${holder#* } is running right now. Try again when it has finished."; return 0
+    helper_write_status failed "Busy: $(stack_lock_says "$holder"). Try again when it has finished."; return 0
   fi
   [ "$action" = backup-nightly ] || _kind_count diag-jobs "$action"   # (the helper's own nightly run: not a request)
   logf="$(helper_dir)/last-diag.log"
@@ -415,7 +417,12 @@ backup_nightly_tick() {
   ! _status_in_progress || busy="${busy:-job}"
   d="$(backup_decision on "$hour" "$nowh" "$start" "$last" "$auto_at" "$busy")"
   case "$d" in
-    run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now"; return 0 ;;
+    run) printf '%s\n' "$start" > "$(backup_last_file)"; helper_run_diag backup-nightly "nightly-$now"
+         # another ./stack command took the lock after all: again on a later loop of this window
+         if [ "${JOB_RESULT:-}" = refused ] || { [ "${JOB_RESULT:-}" = failed ] && grep -q 'is running (pid' "$(helper_dir)/last-diag.log" 2>/dev/null; }; then
+           printf '%s\n' "$last" > "$(backup_last_file)"
+         fi
+         return 0 ;;
     update) printf '%s\n' "$start" > "$(backup_last_file)"
             printf '%s nightly backup skipped: an automatic update made its own backup tonight\n' "$(date '+%F %T')" >&2 ;;
   esac
