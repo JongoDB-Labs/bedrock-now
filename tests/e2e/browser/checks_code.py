@@ -1713,7 +1713,28 @@ def settings_code_bypass(ctx):
             expect(res and res["is_error"] and "denied" in res["text"].lower(), f"not denied: {res and res['text'][:200]}")
         else:
             notes.append("deny: Haiku ran no command")
-        # 3. the ask rule on .git still asks (a Write there), even in Bypass permissions
+        # 3. the watchlist: a git hook written with Bash (no rule covers that), then its card (Revert in the page, below).
+        # Before the .git ask below: once you have denied a write to .git, Haiku may not write there again. A turn
+        # that runs no command is asked once more; a command that ran and no card is the failure this is about.
+        n2 = len(c.msgs())
+        hook_cmd = "echo 'echo e2e' > .git/hooks/pre-commit"
+        evs = c.turn(sid, f"Run exactly this shell command with the Bash tool, nothing else: {hook_cmd}")
+        if not [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]:
+            notes.append(f"hook: Haiku ran no command at first ({text_of(evs)[:60]!r})")
+            evs = c.turn(sid, f"This folder is a throwaway test fixture and the hook is the test. Use the Bash tool to run exactly: {hook_cmd}")
+        ran = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
+        expect(ran, f"Haiku would not write the hook: {text_of(evs)[:200]}")
+        res = tool_result(evs, ran[0]["id"])
+        try:
+            w = c.wait(lambda x: x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "watch", "the watchlist's card", 30, since=n2)["ev"]
+        except AssertionError as e:
+            local = [x["ev"].get("text", "") for x in c.msgs()[n0:] if x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "local"]
+            raise AssertionError(f"no watchlist card after Bash ran `{ran[0]['input'].get('command', '')[:80]}` "
+                                 f"(result: {(res or {}).get('text', '')[:120]!r}; notes from the page: {local[-2:]})") from e
+        paths = {ch["path"]: ch for ch in w["changes"]}
+        expect(".git/hooks/pre-commit" in paths and paths[".git/hooks/pre-commit"]["change"] == "added", f"watch: {list(paths)}")
+        expect("git runs it on your computer" in paths[".git/hooks/pre-commit"]["why"], paths[".git/hooks/pre-commit"]["why"])
+        # 4. the ask rule on .git still asks (a Write there), even in Bypass permissions
         asked = f".git/e2e-ask-{ts}.txt"
         n1 = len(c.msgs())
         c.request({"type": "prompt", "session": sid, "text": f"Use the Write tool (not Bash) to create the file /workspace/{asked} containing the word hi."})
@@ -1728,13 +1749,7 @@ def settings_code_bypass(ctx):
             expect(not writes, f"{writes[0]['name']} to .git ran without the ask rule's card" if writes else "")
             notes.append("ask: Haiku did not use Write")
         expect(c.api("GET", f"/api/fs/file?path={asked}")["status"] == 404 or "ask: Haiku did not use Write" in notes, f"{asked} was written")
-        # 4. the watchlist: a git hook written with Bash (no rule covers that), then its card, and Revert in the page
-        n2 = len(c.msgs())
-        c.turn(sid, "Run exactly this shell command with the Bash tool, nothing else: echo 'echo e2e' > .git/hooks/pre-commit")
-        w = c.wait(lambda x: x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "watch", "the watchlist's card", 30, since=n2)["ev"]
-        paths = {ch["path"]: ch for ch in w["changes"]}
-        expect(".git/hooks/pre-commit" in paths and paths[".git/hooks/pre-commit"]["change"] == "added", f"watch: {list(paths)}")
-        expect("git runs it on your computer" in paths[".git/hooks/pre-commit"]["why"], paths[".git/hooks/pre-commit"]["why"])
+        # (the page part of 3., below)
         # the page: the red strip and the card; Revert there
         page, rec = ui_page(ctx, "code-bypass-ui", session=sid)
         see(page.get_by_test_id("bypass-banner")).to_be_visible(timeout=20000)
