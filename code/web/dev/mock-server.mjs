@@ -20,8 +20,8 @@
 // that code; /__mock/lock makes the code host refuse this browser (the unlock expired) until /__mock/unlock;
 // /__mock/budget?spend=&max= sets the key's budget; /__mock/clear?session= resets that session's conversation as
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
-// in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/reset
-// restores the fixtures.
+// in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
+// name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures.
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
@@ -1307,11 +1307,18 @@ function addPort(port, cmd) {
 }
 const CAP = 'a'.repeat(9) + 'b'.repeat(24);
 const previewOrigin = (port) => `http://p${port}-${CAP}.localhost:${PREVIEW_PORT}`;
-const LAUNCH = [
-  { name: 'web', port: 5173, command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: ['NODE_ENV'] },
-  { name: 'api', port: 8787, command: 'node server.js --verbose', cwd: 'api', url: null, autoPort: false, env: [] },
+// (the digest as code/server/api.mjs computes it: argv, folder, environment sorted by name, port)
+const launchDigest = ({ argv, cwd, env, port }) => crypto.createHash('sha256')
+  .update(JSON.stringify([argv, cwd, Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), port])).digest('hex');
+const launchEntry = (e) => (e.error ? e : { ...e, env: Object.entries(e.env).map(([name, value]) => ({ name, value })), digest: launchDigest(e) });
+let LAUNCH;
+const resetLaunch = () => (LAUNCH = [
+  { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: { NODE_ENV: 'development' } },
+  { name: 'api', port: 8787, argv: ['node', 'server.js', '--verbose'], command: 'node server.js --verbose', cwd: 'api', url: null, autoPort: false,
+    env: { NODE_OPTIONS: '--require ./api/trace.js', DEBUG: 'api:*' } },
   { name: 'broken', error: 'port: a number from 1 to 65535' },
-];
+]);
+resetLaunch();
 
 async function previewApi(req, res, p) {
   const m = req.method;
@@ -1325,11 +1332,12 @@ async function previewApi(req, res, p) {
     mockPorts.delete(b.port);
     return json(res, 200, { ok: true, pid: b.pid, port: b.port, signal: b.force ? 'SIGKILL' : 'SIGTERM' });
   }
-  if (p === '/api/launch' && m === 'GET') return json(res, 200, { exists: true, error: null, configurations: LAUNCH });
+  if (p === '/api/launch' && m === 'GET') return json(res, 200, { exists: true, error: null, configurations: LAUNCH.map(launchEntry) });
   if (p === '/api/launch/start' && m === 'POST') {
     const b = await jsonBody(req);
     const e = LAUNCH.find((x) => x.name === b.name && !x.error);
     if (!e) return json(res, 400, { error: 'no such entry in .claude/launch.json' });
+    if (b.digest !== launchDigest(e)) return json(res, 409, { error: '.claude/launch.json changed since it was shown: review it again' });
     setTimeout(() => addPort(e.port, e.command), FAST ? 50 : 1200);
     return json(res, 200, { ok: true, name: e.name, window: e.name, port: e.port, command: e.command });
   }
@@ -1471,7 +1479,14 @@ const server = http.createServer(async (req, res) => {
         else addPort(port, url.searchParams.get('cmd') || `python3 -m http.server ${port}`);
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/launch-swap') {
+        // something in the sandbox changed an entry after the page showed it
+        const e = LAUNCH.find((x) => x.name === (url.searchParams.get('name') || 'web'));
+        if (e && !e.error) { e.argv = [...e.argv, '--host', '0.0.0.0']; e.env = { ...e.env, BASH_ENV: '/workspace/.evil' }; }
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === '/__mock/reset') {
+        resetLaunch();
         mockPorts.clear();
         checkpoints.clear();
         beacons.length = 0;

@@ -41,9 +41,20 @@ const s = http.createServer((req, res) => {
   const h = req.headers;
   const info = { host: h.host, origin: h.origin || null, cookie: h.cookie || '', referer: h.referer || null, url: req.url, method: req.method,
     forwarded: Object.keys(h).filter((k) => /^(x-forwarded-|forwarded$|x-bn-|x-real-ip$|via$)/.test(k)) };
-  if (req.url.startsWith('/info')) { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(info)); }
+  if (req.url.startsWith('/info')) {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify({ ...info, body })); });
+    return;
+  }
   if (req.url === '/setcookie') { res.writeHead(200, { 'set-cookie': ['app_s=1; Domain=example.invalid; Path=/', 'plain=1; Path=/'], 'content-type': 'text/plain' }); return res.end('ok'); }
   if (req.url === '/redirect') { res.writeHead(302, { location: `http://localhost:${port}/landed?x=1` }); return res.end(); }
+  // classic form posts (no script): with the previews' Referrer-Policy, and with an app's own no-referrer (Origin: null)
+  if (req.url === '/form' || req.url === '/form-noref') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(`<!doctype html><meta charset=utf-8>${req.url === '/form-noref' ? '<meta name=referrer content=no-referrer>' : ''}<title>form</title>`
+      + `<form method=post action="/info?${req.url.slice(1)}"><input name=a value=1><button id=go>go</button></form>`);
+  }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html><meta charset=utf-8><title>bn-e2e echo</title><body style="font:16px system-ui;margin:2rem"><h1 id=h>Echo server on :${port}</h1><p>Host: <code id=host>${String(h.host).replace(/[<&]/g, '')}</code> · path <code>${req.url.replace(/[<&]/g, '')}</code></p>`);
 });
@@ -120,6 +131,11 @@ def wait_port(c: Code, port: int, timeout=60, gone=False):
     raise AssertionError(f"port {port} {'still listening' if gone else 'never listened'} within {timeout} s")
 
 
+def link_origin(f) -> str:
+    """The preview's origin, from a frame on it."""
+    return re.match(r"^(http://[^/]+)", f.url).group(1)
+
+
 def preview_frame(page, port: int, timeout=30):
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -147,10 +163,20 @@ def start_echo(c: Code):
                      "runtimeArgs": ["install", "--no-audit", "--no-fund", "--ignore-scripts", "--no-save", "vite@7.1.5"]}])
     ls = c.api("GET", "/api/launch")["json"]
     expect([e["name"] for e in ls["configurations"]] == ["bn-e2e echo", "bn-e2e vite", "bn-e2e vite install"], f"launch.json {ls}")
+    echo = ls["configurations"][0]
+    expect(echo["argv"] == ["node", ".bn-e2e/echo.cjs"] and echo["env"] == [] and re.fullmatch(r"[0-9a-f]{64}", echo["digest"] or ""),
+           f"the echo entry as the page shows it: {echo}")
     if ECHO_PORT not in [p["port"] for p in c.api("GET", "/api/ports")["json"]["ports"]]:
-        r = c.api("POST", "/api/launch/start", {"name": "bn-e2e echo"})
+        r = start_entry(c, "bn-e2e echo")
         expect(r["status"] == 200 and r["json"]["window"] == "bn-e2e-echo", f"start: {r['status']} {r['text'][:200]}")
     wait_port(c, ECHO_PORT)
+
+
+def start_entry(c: Code, name: str):
+    """Start, as the page does: the entry's name and the digest of what was shown (GET /api/launch)."""
+    e = next((x for x in c.api("GET", "/api/launch")["json"]["configurations"] if x.get("name") == name), None)
+    expect(e and e.get("digest"), f"no entry {name!r} with a digest in launch.json")
+    return c.api("POST", "/api/launch/start", {"name": name, "digest": e["digest"]})
 
 
 @check("browser", "code-preview-capability-refused")
@@ -223,6 +249,19 @@ def echo_server(ctx):
     })""")
     hello = json.loads(ws[0])
     expect(hello == {"host": f"localhost:{ECHO_PORT}", "origin": f"http://localhost:{ECHO_PORT}"} and ws[1] == "echo:ping", f"websocket: {ws}")
+    # classic form posts (no script), in the frame: the dev server gets them, with the Origin it expects — also from an
+    # app with its own no-referrer (the browser then sends "Origin: null", which the portal takes from the preview itself)
+    forms = {}
+    for path in ("/form", "/form-noref"):
+        f.goto(link_origin(f) + path)
+        f.wait_for_selector("#go")
+        f.click("#go")
+        f.wait_for_load_state()
+        got = json.loads(f.locator("pre").first.inner_text())   # (Chromium shows a JSON answer in a <pre>)
+        expect(got["method"] == "POST" and got["body"] == "a=1" and got["origin"] == f"http://localhost:{ECHO_PORT}", f"{path}: {got}")
+        forms[path] = got["origin"]
+    f.goto(link_origin(f) + "/")
+    f.wait_for_selector("#h")
     red = f.evaluate("async () => { const r = await fetch('/redirect'); return [r.url, r.redirected]; }")
     expect(red[0].endswith("/landed?x=1") and red[0].startswith(f"http://p{ECHO_PORT}-"), f"redirect followed to {red}")
     # latency through Caddy, the portal's check, the gateway and bn-preview: 100 requests one after another, 50 at once
@@ -243,15 +282,17 @@ def echo_server(ctx):
     tab.wait_for_load_state()
     expect(re.match(rf"^http://p{ECHO_PORT}-[a-z2-7]{{33}}\.{re.escape(DOMAIN)}(:\d+)?/$", tab.url), f"new tab at {tab.url}")
     tab.wait_for_selector("#h", timeout=20000)
-    tab.evaluate("() => { document.cookie = 'app_cookie=1; Path=/'; }")
+    # (a preview's own bn_* cookie goes too — the main Caddy strips that prefix — and leaves no empty pair behind)
+    tab.evaluate("() => { document.cookie = 'bn_first=1; Path=/'; document.cookie = 'app_cookie=1; Path=/'; }")
     info2 = tab.evaluate("async () => (await fetch('/info')).json()")
-    expect("app_cookie=1" in info2["cookie"] and "bn_" not in info2["cookie"], f"cookies at the dev server (new tab): {info2['cookie']!r}")
+    expect(info2["cookie"] == "app_cookie=1", f"cookies at the dev server (new tab): {info2['cookie']!r}")
     shot(tab, "code-preview-new-tab")
     tab.close()
     ctx.preview_code = c
     c.rec.save()
     return (f"preview of :{ECHO_PORT} in the Code page: Host and Origin localhost:{ECHO_PORT}, no forwarding headers or Referer, the "
             f"app's cookie passes (new tab; in the frame: {'kept' if framed_cookie else 'not kept, third-party cookies blocked'}), "
+            f"classic form posts reach it (Origin {forms['/form']}; with the app's own no-referrer too), "
             f"WebSocket echo, a redirect to itself stays on the preview, a new tab; latency {ms[0]:.1f} ms per request "
             f"in sequence, 50 at once in {ms[1]:.0f} ms")
 
@@ -297,7 +338,8 @@ def isolation(ctx):
         page.locator(f"[data-testid=port-row][data-port='{ECHO_PORT}'] [data-testid=port-preview]").click()
     f = preview_frame(page, ECHO_PORT)
     f.wait_for_selector("#h", timeout=20000)
-    targets = [CODE + "/api/state", origin() + "/api/summary", origin("chat") + "/api/config", origin("terminal") + "/"]
+    targets = [CODE + "/api/state", origin() + "/api/summary", origin("chat") + "/api/config", origin("admin") + "/ui/",
+               origin("files") + "/rustfs/console/", origin("terminal") + "/"]
     seen = []
     page.on("request", lambda r: seen.append(r))
     f.evaluate("async (urls) => { for (const u of urls) { try { await fetch(u, { credentials: 'include', mode: 'no-cors' }); } catch (e) { /* refused */ } } }", targets)
@@ -332,6 +374,29 @@ def isolation(ctx):
     return (f"from the preview: {len(targets)} hosts got no cookie (cross-site) while the Code page's own request had bn_code; tossed "
             f"Domain={HOST} cookies refused (its own cookie {'kept' if own else 'not kept: third-party cookies blocked here'}); top navigation "
             f"blocked ({res}), the Code page unreadable ({read})")
+
+
+@check("browser", "code-preview-launch-swap-refused")
+def launch_swap(ctx):
+    """launch.json changed after the page showed an entry (as Claude or any command in the sandbox could): Start with
+    the digest of what was shown is refused (409), nothing starts; the entry shown again (its new digest) is what runs."""
+    need_preview()
+    c = getattr(ctx, "preview_code", None) or Code(ctx, "code-preview-swap")
+    if not c.api("GET", "/api/launch")["json"]["configurations"]:
+        start_echo(c)
+    shown = next(x for x in c.api("GET", "/api/launch")["json"]["configurations"] if x["name"] == "bn-e2e echo")
+    cfg = json.loads(c.api("GET", "/api/fs/file?path=.claude/launch.json")["json"]["text"].split("\n", 1)[1])
+    cfg["configurations"][0]["env"] = {"NODE_OPTIONS": "--require /workspace/.bn-e2e/not-there.js"}
+    write(c, ".claude/launch.json", "// bedrock-now e2e (checks_preview.py): swapped\n" + json.dumps(cfg, indent=1))
+    r = c.api("POST", "/api/launch/start", {"name": "bn-e2e echo", "digest": shown["digest"]})
+    expect(r["status"] == 409 and "review it again" in (r["json"] or {}).get("error", ""), f"a swapped entry: {r['status']} {r['text'][:200]}")
+    now = next(x for x in c.api("GET", "/api/launch")["json"]["configurations"] if x["name"] == "bn-e2e echo")
+    expect(now["digest"] != shown["digest"] and {"name": "NODE_OPTIONS", "value": "--require /workspace/.bn-e2e/not-there.js"} in now["env"],
+           f"the entry shown again: {now}")
+    # (back to the file the other checks use)
+    cfg["configurations"][0].pop("env")
+    write(c, ".claude/launch.json", "// bedrock-now e2e (checks_preview.py)\n" + json.dumps(cfg, indent=1))
+    return "Start with the digest of the entry as shown, after the file changed (NODE_OPTIONS added): 409, nothing started; the entry as it is now has another digest and shows the new variable"
 
 
 @check("browser", "code-preview-stop")
@@ -371,7 +436,7 @@ def vite(ctx):
     write(c, ".bn-e2e/vite/main.js", "document.getElementById('app').textContent = 'version one';\nif (import.meta.hot) import.meta.hot.accept();\n")
     t0 = time.time()
     if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/node_modules/vite/package.json")["status"] != 200:
-        r = c.api("POST", "/api/launch/start", {"name": "bn-e2e vite install"})
+        r = start_entry(c, "bn-e2e vite install")
         expect(r["status"] == 200, f"npm install: {r['text'][:200]}")
         while time.time() - t0 < 240:
             if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/node_modules/vite/package.json")["status"] == 200:
@@ -380,7 +445,7 @@ def vite(ctx):
         else:
             raise AssertionError("vite was not installed within 4 minutes (see the terminal's window 'bn-e2e-vite-install')")
     installed = time.time() - t0
-    r = c.api("POST", "/api/launch/start", {"name": "bn-e2e vite"})
+    r = start_entry(c, "bn-e2e vite")
     expect(r["status"] == 200, f"start vite: {r['text'][:200]}")
     wait_port(c, VITE_PORT, timeout=60)
     open_ports(page)

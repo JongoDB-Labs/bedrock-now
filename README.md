@@ -450,15 +450,19 @@ per browser.
   bar (⋯ → *Ports & previews* on a phone): every server listening in the sandbox with its process, **Preview**, a new
   tab, **Stop** (asks once more), and any other port by hand. If the workspace has a `.claude/launch.json` — the
   Claude Code desktop app's dev-server list, same format (`name`, `runtimeExecutable` + `runtimeArgs` or `program` +
-  `args`, `port`, `cwd`, `env`, `url`; comments allowed) — its entries are there too: **Start** runs one in a new
-  window of the terminal (with `PORT` set; `autoPort` is not applied) and opens its preview once it listens. The
+  `args`, `port`, `cwd`, `env`, `url`; comments allowed) — its entries are there too: **Start** shows the entry in full
+  (every argument, the folder, every variable with its value, a warning on those that run code first such as
+  `NODE_OPTIONS` or `BASH_ENV`: the file is the workspace's, which Claude can edit too), then runs it in a new window
+  of the terminal (with `PORT` set; `autoPort` is not applied) and opens its preview once it listens; a file changed
+  after you looked does not start. The
   server must listen on the sandbox's `localhost`, `127.0.0.1` or `0.0.0.0` (no `--host` needed); its own host checks
   pass unchanged (it is asked as `localhost:<port>`), and hot reload works. A preview is **sandbox content** on a
   site of its own (`p<port>-<capability>.bedrock-now-preview.localhost`): it gets none of bedrock-now's cookies,
   cannot take the Code page away, and its link (with its capability) works until the Code page's unlock ends — Sign
-  out or a new password end it. In the pane it is a frame from another site, so a browser that blocks third-party
-  cookies (Safari; Chrome when you chose that) keeps none of *the app's own* cookies there — an app you sign in to
-  works in **Open in a new tab**. Calls to *another* port from the app's page (`fetch('http://localhost:3000')`)
+  out or a new password end it. In the pane it is a frame from another site, so *the app's own* cookies mostly do not
+  work there (cookies without `SameSite=None` are not sent to a frame from another site, and Safari or Chrome set to
+  block third-party cookies keep none) — an app you sign in to works in **Open in a new tab**. Calls to *another*
+  port from the app's page (`fetch('http://localhost:3000')`)
   reach your computer, not the sandbox: use the dev server's proxy. Not over remote access yet. Details:
   [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox).
 - **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's

@@ -64,3 +64,42 @@ export function cleanPreviewPath(raw: string): string | null {
     return null;
   }
 }
+
+/** Environment variables that run or load code of their own before (or instead of) the command: shown with a warning
+ *  before Start. Not refused — a dev server may need them; the person starting it decides. */
+const LOADERS: [RegExp, string][] = [
+  [/^(BASH_ENV|ENV)$/, 'a shell runs this file first (Start runs the command through bash)'],
+  [/^NODE_OPTIONS$/, 'Node takes these options first: --require / --import load code before the program'],
+  [/^NODE_PATH$/, 'Node looks for modules here first'],
+  [/^LD_/, 'the dynamic loader loads or prefers these libraries in every program'],
+  [/^PATH$/, 'decides which program each command name runs'],
+  [/^PYTHON(STARTUP|PATH)$/, 'Python runs or imports code from here'],
+  [/^PERL5OPT$/, 'Perl adds these options (-M loads modules)'],
+  [/^RUBYOPT$/, 'Ruby adds these options (-r loads files)'],
+  [/^(npm_config_|NPM_CONFIG_)/, 'changes npm\'s settings (its scripts\' shell, registry, hooks)'],
+];
+export function loaderWhy(name: string): string | null {
+  for (const [re, why] of LOADERS) if (re.test(name)) return why;
+  return null;
+}
+
+/** launch.json entries started after you saw them: their digests (this browser; a changed entry asks again). */
+const APPROVED = 'bn.code.launch.v1';
+export function approvedLaunch(digest: string | null): boolean {
+  if (!digest) return false;
+  try {
+    const list = JSON.parse(globalThis.localStorage?.getItem(APPROVED) || '[]');
+    return Array.isArray(list) && list.includes(digest);
+  } catch {
+    return false;
+  }
+}
+export function approveLaunch(digest: string): void {
+  try {
+    const list = JSON.parse(globalThis.localStorage?.getItem(APPROVED) || '[]');
+    const next = [digest, ...(Array.isArray(list) ? list.filter((d) => typeof d === 'string' && d !== digest) : [])].slice(0, 50);
+    globalThis.localStorage?.setItem(APPROVED, JSON.stringify(next));
+  } catch {
+    /* blocked storage: it asks again next time */
+  }
+}

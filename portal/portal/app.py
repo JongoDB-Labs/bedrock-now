@@ -518,7 +518,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     def preview_verify(request: Request, rem: bool) -> Response:
         """Caddy's check for every request to a preview host (forward_auth ?app=preview): the capability in the host name
         (its signature, its port, the unlock's 12 hours, no Sign out or new password since) and no Origin but the
-        preview's own — then 200 with X-Bn-Preview-Port, which Caddy hands on to bn-preview. Never for remote requests."""
+        preview's own (or "null" from it: Sec-Fetch-Site same-origin) — then 200 with X-Bn-Preview-Port, which Caddy hands
+        on to bn-preview. Never for remote requests."""
         if rem or not settings.preview_on():
             return _no_store(PlainTextResponse("Previews are not available here.", status_code=404))
         fwd = (request.headers.get("x-forwarded-host") or "").lower()
@@ -526,8 +527,13 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         suffix = "." + settings.preview_domain
         cap = previews.check(name[: -len(suffix)]) if name.endswith(suffix) else None
         origin = request.headers.get("origin")
+        # its own Origin, or none; or "null" from the preview itself — a page with Referrer-Policy no-referrer (an app
+        # may set it) makes browsers send that for its own form posts, and Sec-Fetch-Site (which no page can set)
+        # says it came from the preview's own origin
+        own = (origin is None or origin == f"http://{fwd}"
+               or (origin == "null" and request.headers.get("sec-fetch-site") == "same-origin"))
         why = ("not a valid preview link (expired, signed out, a new password, or not one at all)" if cap is None
-               else "a request from another site" if origin is not None and origin != f"http://{fwd}" else "")
+               else "a request from another site" if not own else "")
         if why:
             now = time.time()
             if now - preview_refusals["last"] > 60:   # (a stale tab retrying: one line a minute)

@@ -322,12 +322,16 @@ export interface PortInfo {
 export interface LaunchEntry {
   name: string;
   port: number | null;
-  /** what Start runs (null: an entry that only names a running server, by its url) */
+  /** what Start runs, as one line (null: an entry that only names a running server, by its url) */
   command: string | null;
+  /** exactly what Start runs: the program and its arguments (null: no command) */
+  argv: string[] | null;
   cwd: string;
   url: string | null;
-  /** names of the variables it sets (never their values) */
-  env: string[];
+  /** the environment it sets, names and values (shown before Start: some variables run code of their own) */
+  env: { name: string; value: string }[];
+  /** SHA-256 of argv, folder, environment and port: Start sends it back, a file changed meanwhile is refused */
+  digest: string | null;
   /** why the entry cannot be used (then the rest is empty) */
   error: string | null;
 }

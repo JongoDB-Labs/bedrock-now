@@ -26,7 +26,8 @@ def site_of(host: str) -> str:
     return ".".join(host.split(".")[-2:])
 
 
-_PREVIEW_DOMAIN = re.compile(r"(?=.{1,200}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+")
+PREVIEW_SITE_SUFFIX = "-preview.localhost"
+_PREVIEW_DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]{0,52}[a-z0-9])?-preview\.localhost")
 
 # The apps the portal fronts and their start paths (Caddy routes them; see caddy/Caddyfile). Each has its own host
 # name: CHAT_HOST / ADMIN_HOST / FILES_HOST, by default chat./admin./files. under PORTAL_HOST.
@@ -226,11 +227,13 @@ def from_env(env: dict | None = None) -> Settings:
         remote_app_hosts[TERMINAL] = env["REMOTE_TERMINAL_HOST"].strip().lower()
     if code and remote_terminal and (env.get("REMOTE_CODE_HOST") or "").strip():
         remote_app_hosts[CODE] = env["REMOTE_CODE_HOST"].strip().lower()
-    # a preview domain must be another *site* than the portal's (its last two labels differ: browsers count
-    # x.bedrock-now.localhost and bedrock-now.localhost as one site), or the portal's cookies would reach the previews
+    # a preview domain is a site of its own, <name>-preview.localhost, and no portal's site is ever one (lib/portal.sh
+    # refuses such a PORTAL_HOST): browsers count x.bedrock-now.localhost and bedrock-now.localhost as one site, so a
+    # portal there — this one, or another install's — would get the previews' requests with its cookies
     preview = (env.get("PREVIEW_DOMAIN") or "").strip().lower() if code else ""
     host = (env.get("PORTAL_HOST") or "bedrock-now.localhost").lower()
-    if preview and (not _PREVIEW_DOMAIN.fullmatch(preview) or site_of(preview) == site_of(host)):
+    if preview and (not _PREVIEW_DOMAIN.fullmatch(preview) or site_of(preview) == site_of(host)
+                    or any(site_of(h).endswith(PREVIEW_SITE_SUFFIX) for h in [host, *app_hosts.values()])):
         preview = ""
     return Settings(
         password_hash=password_hash,

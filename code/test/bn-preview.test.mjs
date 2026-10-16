@@ -15,6 +15,8 @@ const ROOT = tmp('bnpv');
 const SOCKDIR = path.join(ROOT, 'sock');
 const pv = await import(path.join(TERMINAL_DIR, 'bin/bn-preview.mjs'));
 let proxy, dev, devPort, ws6;
+// helmet's default policy (the Express middleware): its frame-ancestors 'self' would keep the Code page from framing it
+const HELMET = "default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests";
 const seen = [];
 
 // a dev server: echoes what it got (method, url, headers, body); /chunked streams; /redirect* send Locations; /ws
@@ -31,6 +33,10 @@ function devServer(host = '127.0.0.1') {
         let i = 0;
         const t = setInterval(() => { res.write(`part${i}\n`); if (++i === 5) { clearInterval(t); res.end('end\n'); } }, 5);
         return;
+      }
+      if (req.url === '/csp') {
+        res.writeHead(200, { 'Content-Security-Policy': HELMET, 'Content-Type': 'text/plain' });
+        return res.end('csp');
       }
       if (req.url.startsWith('/redirect')) {
         const to = { '/redirect-same': `http://localhost:${s.address().port}/login?x=1#h`, '/redirect-ip': `http://127.0.0.1:${s.address().port}/a`,
@@ -156,6 +162,58 @@ test('nothing listening: 502 with a page that says so (and asks again); no port 
     c.write(`GET http://169.254.169.254/latest HTTP/1.1\r\nHost: x\r\nX-Bn-Preview-Port: ${devPort}\r\nConnection: close\r\n\r\n`);
   });
   assert.match(raw, /^HTTP\/1\.1 400/);
+});
+
+// raw(text) -> what bn-preview answers to these exact bytes (the connection closed by the server or after 1.5 s)
+function raw(text) {
+  return new Promise((resolve) => {
+    const c = net.connect(SOCK());
+    let got = '';
+    c.on('data', (d) => { got += d; });
+    c.on('close', () => resolve(got));
+    c.on('error', () => resolve(got));
+    c.write(text);
+    setTimeout(() => c.end(), 1500);
+  });
+}
+
+test('a body of unknown length goes on chunked: a GET\'s or DELETE\'s body never reaches the dev server as a request of its own', async () => {
+  const smuggled = 'GET /smuggled HTTP/1.1\r\nHost: evil\r\n\r\n';
+  const chunk = `${Buffer.byteLength(smuggled).toString(16)}\r\n${smuggled}\r\n0\r\n\r\n`;
+  for (const m of ['GET', 'DELETE', 'OPTIONS', 'POST']) {
+    seen.length = 0;
+    const r = await raw(`${m} /body HTTP/1.1\r\nHost: localhost:${devPort}\r\nX-Bn-Preview-Port: ${devPort}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${chunk}`);
+    assert.match(r, /^HTTP\/1\.1 200/, m);
+    await new Promise((x) => setTimeout(x, 200));
+    assert.deepEqual(seen.map((x) => [x.method, x.url]), [[m, '/body']], `${m}: ${JSON.stringify(seen.map((x) => x.url))}`);
+    assert.equal(seen[0].body, smuggled, m);   // the body, as a body
+    assert.equal(seen[0].headers['transfer-encoding'], 'chunked');
+  }
+});
+
+test('the port header: exactly one, digits only', async () => {
+  const two = await raw(`GET / HTTP/1.1\r\nHost: x\r\nX-Bn-Preview-Port: ${devPort}\r\nX-Bn-Preview-Port: 22\r\nConnection: close\r\n\r\n`);
+  assert.match(two, /^HTTP\/1\.1 400/);
+  for (const v of ['5173@evil', '0x10', '+80', '80.0', '0080']) {
+    assert.match(await raw(`GET / HTTP/1.1\r\nHost: x\r\nX-Bn-Preview-Port: ${v}\r\nConnection: close\r\n\r\n`), /^HTTP\/1\.1 400/, v);
+  }
+});
+
+test('an app\'s own frame-ancestors goes (the main Caddy adds the previews\' one); the rest of its CSP stays', async () => {
+  const r = await req('GET', '/csp');
+  assert.equal(r.headers['content-security-policy'], HELMET.replace("frame-ancestors 'self';", ''));
+  assert.equal(pv.withoutFrameAncestors("frame-ancestors 'none'"), '');
+  assert.equal(pv.withoutFrameAncestors("default-src 'self'; FRAME-ANCESTORS https://x; img-src *"), "default-src 'self'; img-src *");
+  assert.equal(pv.withoutFrameAncestors("default-src 'self'; frame-ancestors-x y"), "default-src 'self'; frame-ancestors-x y");
+});
+
+test('what is left of the Cookie header after the main Caddy took bedrock-now\'s cookies out: tidied, or none', async () => {
+  seen.length = 0;
+  await req('GET', '/c1', { headers: { Cookie: '; app=1' } });
+  await req('GET', '/c2', { headers: { Cookie: ';  ' } });
+  assert.equal(seen[0].headers.cookie, 'app=1');
+  assert.equal(seen[1].headers.cookie, undefined);
+  assert.equal(pv.tidyCookie('a=1; ; b=2;'), 'a=1; b=2');
 });
 
 test('a server on IPv6 loopback only is found too', async (t) => {

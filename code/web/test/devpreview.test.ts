@@ -67,8 +67,34 @@ test('ports and launch.json entries from the backend: checked again', () => {
   assert.equal(normPort({ port: 0 }), null);
   assert.equal(normPort({ port: '80' }), null);
   assert.equal(normPort({ port: 80, pid: 1 })?.pid, null);
-  assert.deepEqual(normLaunchEntry({ name: 'web', port: 5173, command: 'npm run dev', cwd: 'web', url: 'javascript:x', env: ['A', 7] }),
-    { name: 'web', port: 5173, command: 'npm run dev', cwd: 'web', url: null, env: ['A'], error: null });
-  assert.deepEqual(normLaunchEntry({ name: null, error: 'no name' }), { name: '(no name)', port: null, command: null, cwd: '.', url: null, env: [], error: 'no name' });
+  assert.deepEqual(normLaunchEntry({ name: 'attach', port: 8080, command: null, argv: null, cwd: '.', url: 'javascript:x', env: [{ name: 'A' }, 7] }),
+    { name: 'attach', port: 8080, command: null, argv: null, cwd: '.', url: null, env: [], digest: null, error: null });
+  assert.deepEqual(normLaunchEntry({ name: null, error: 'no name' }), { name: '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], digest: null, error: 'no name' });
   assert.equal(normLaunchEntry({}), null);
+});
+
+test('launch.json: loaders flagged; an entry shown whole or not at all; approvals by digest', async () => {
+  const { loaderWhy, approvedLaunch, approveLaunch } = await import('../src/devpreview');
+  for (const n of ['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PATH', 'PYTHONSTARTUP', 'PYTHONPATH', 'PERL5OPT', 'RUBYOPT',
+    'npm_config_script_shell', 'NPM_CONFIG_REGISTRY']) {
+    assert.ok(loaderWhy(n), n);
+  }
+  for (const n of ['NODE_ENV', 'PORT', 'DEBUG', 'HOST', 'MYPATH', 'ENVIRONMENT']) assert.equal(loaderWhy(n), null, n);
+  const d = 'a'.repeat(64);
+  const ok = normLaunchEntry({ name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', env: [{ name: 'A', value: 'b c' }], digest: d });
+  assert.deepEqual(ok, { name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', url: null, env: [{ name: 'A', value: 'b c' }], digest: d, error: null });
+  assert.equal(normLaunchEntry({ name: 'web', argv: ['npm'], digest: 'x', env: [] })?.argv, null);   // no digest: no Start
+  assert.match(normLaunchEntry({ name: 'w', argv: ['x'.repeat(2001)], digest: d, env: [] })?.error ?? '', /in full/);
+  assert.match(normLaunchEntry({ name: 'w', argv: ['n'], digest: d, env: Array.from({ length: 33 }, (_, i) => ({ name: `V${i}`, value: '' })) })?.error ?? '', /in full/);
+  // approvals: this browser's (localStorage); none without storage
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: unknown }).localStorage = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
+  assert.equal(approvedLaunch(d), false);
+  approveLaunch(d);
+  assert.equal(approvedLaunch(d), true);
+  assert.equal(approvedLaunch('b'.repeat(64)), false);
+  assert.equal(approvedLaunch(null), false);
+  for (let i = 0; i < 60; i++) approveLaunch(i.toString(16).padStart(64, '0'));
+  assert.equal(JSON.parse(mem.get('bn.code.launch.v1') ?? '[]').length, 50);
+  delete (globalThis as unknown as { localStorage?: unknown }).localStorage;
 });

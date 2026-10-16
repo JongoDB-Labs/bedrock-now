@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from '../server/main.mjs';
 import { SandboxError } from '../server/spawn-client.mjs';
-import { portRow, launchRow } from '../server/api.mjs';
+import { portRow, launchRow, launchDigest } from '../server/api.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
 import { tmp } from './helpers.mjs';
 
@@ -20,10 +20,14 @@ const answers = {
   'ports.stop': (req) => (req.pid === 99 ? Promise.reject(new SandboxError('that process does not listen on that port (it stopped already?)', 'refused'))
     : { result: { ok: true } }),
   'launch.list': () => ({ result: { exists: true, configurations: [
-    { name: 'web', port: 5173, command: 'npm run dev', cwd: 'web', url: 'javascript:alert(1)', autoPort: 'yes', env: { NODE_ENV: 'x', SECRET_TOKEN: 'v' } },
+    { name: 'web', argv: ['npm', 'run', 'dev'], port: 5173, command: 'npm run dev', cwd: 'web', url: 'javascript:alert(1)', autoPort: 'yes',
+      env: { NODE_ENV: 'x', NODE_OPTIONS: '--require ./x.js' }, digest: 'ignored: the code container computes its own' },
     { name: 'bad', error: 'port: a number from 1 to 65535' }, { error: 'no name' }, { name: '' }, 'junk',
-    { name: 'attach', port: 8080, command: null, url: 'http://localhost:8080' }] } }),
-  'launch.start': (req) => ({ result: { ok: true, name: req.name, window: 'web', port: 5173, command: 'npm run dev' } }),
+    { name: 'attach', port: 8080, argv: null, command: null, url: 'http://localhost:8080' },
+    { name: 'long', argv: ['node', 'x'.repeat(2001)], cwd: '.', port: 1 }, { name: 'ctl', argv: ['node', 'a\nb'], cwd: '.', port: 1 },
+    { name: 'envs', argv: ['node'], cwd: '.', env: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`V${i}`, 'x'])), port: 1 }] } }),
+  'launch.start': (req) => (req.digest === 'c'.repeat(64) ? Promise.reject(new SandboxError('.claude/launch.json changed since it was shown: review it again', 'refused'))
+    : { result: { ok: true, name: req.name, window: 'web', port: 5173, command: 'npm run dev' } }),
 };
 const call = async (req, opts) => { calls.push([req, opts]); const a = answers[req.op]; if (!a) throw new SandboxError('unknown op', 'refused'); return a(req); };
 
@@ -69,20 +73,33 @@ test('POST /api/ports/stop: a pid and a port (checked), SIGTERM or with force SI
   assert.equal(noOrigin.status, 403);
 });
 
-test('GET /api/launch: entries checked (no javascript: URL, env names only, never values); POST /api/launch/start by name only', async () => {
+test('GET /api/launch: entries whole (argv, folder, environment with values: shown before Start) or refused; the digest of what is shown', async () => {
   const r = await req('GET', '/api/launch');
   assert.equal(r.status, 200);
-  assert.deepEqual(r.json.configurations, [
-    { name: 'web', port: 5173, command: 'npm run dev', cwd: 'web', url: null, autoPort: null, env: ['NODE_ENV', 'SECRET_TOKEN'] },
+  const web = { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], cwd: 'web', env: [{ name: 'NODE_ENV', value: 'x' }, { name: 'NODE_OPTIONS', value: '--require ./x.js' }],
+    url: null, autoPort: null, command: 'npm run dev' };
+  web.digest = launchDigest({ argv: web.argv, cwd: 'web', env: { NODE_ENV: 'x', NODE_OPTIONS: '--require ./x.js' }, port: 5173 });
+  assert.deepEqual(r.json.configurations, [web,
     { name: 'bad', error: 'port: a number from 1 to 65535' }, { name: null, error: 'no name' },
-    { name: 'attach', port: 8080, command: null, cwd: '.', url: 'http://localhost:8080', autoPort: null, env: [] }]);
-  assert.ok(!JSON.stringify(r.json).includes('"v"'));
+    { name: 'attach', port: 8080, argv: null, cwd: '.', env: [], url: 'http://localhost:8080', autoPort: null, command: null, digest: null },
+    { name: 'long', error: 'its command cannot be shown here in full: start it in the terminal' },
+    { name: 'ctl', error: 'its command cannot be shown here in full: start it in the terminal' },
+    { name: 'envs', error: 'its environment cannot be shown here in full: start it in the terminal' }]);
+  assert.match(web.digest, /^[0-9a-f]{64}$/);
   assert.equal(launchRow({ name: '' }), null);
+});
+
+test('POST /api/launch/start: the name and the digest of what was shown — nothing else reaches the sandbox; a changed file is a 409', async () => {
   calls.length = 0;
-  const s = await req('POST', '/api/launch/start', { name: 'web', command: 'rm -rf /', argv: ['sh'] });
+  const d = 'a'.repeat(64);
+  const s = await req('POST', '/api/launch/start', { name: 'web', digest: d, command: 'rm -rf /', argv: ['sh'] });
   assert.deepEqual(s.json, { ok: true, name: 'web', window: 'web', port: 5173, command: 'npm run dev' });
-  assert.deepEqual(calls[0][0], { op: 'launch.start', name: 'web' });   // only the name goes to the sandbox
-  for (const b of [{}, { name: '' }, { name: 'a\nb' }, { name: 42 }, { name: 'x'.repeat(101) }]) {
+  assert.deepEqual(calls[0][0], { op: 'launch.start', name: 'web', digest: d });
+  const changed = await req('POST', '/api/launch/start', { name: 'web', digest: 'c'.repeat(64) });
+  assert.equal(changed.status, 409);
+  assert.match(changed.json.error, /review it again/);
+  for (const b of [{}, { name: 'web' }, { name: 'web', digest: 'x' }, { name: 'web', digest: 'A'.repeat(64) }, { name: '', digest: d },
+    { name: 'a\nb', digest: d }, { name: 42, digest: d }, { name: 'x'.repeat(101), digest: d }]) {
     assert.equal((await req('POST', '/api/launch/start', b)).status, 400, JSON.stringify(b));
   }
 });

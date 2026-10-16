@@ -8,8 +8,8 @@ import { exportName, toMarkdown } from './transcript';
 import { appendMemory, memoryLine } from './palette';
 import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
-import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
-import type { Viewport } from './devpreview';
+import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
+import { approveLaunch, approvedLaunch, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
@@ -89,7 +89,7 @@ export interface PreviewTab {
 export type Tab = FileTab | DiffTab | PreviewTab;
 
 export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch';
 
 /** "Restore files to here" on a prompt: what a dry run found, then the restore. */
 export interface RewindState {
@@ -147,6 +147,8 @@ export interface AppState {
   preview: PreviewInfo | null;
   /** the workspace's .claude/launch.json (null: not read yet) */
   launch: LaunchList | null;
+  /** a launch.json entry shown in full before it starts (the Start confirmation) */
+  launchConfirm: LaunchEntry | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -182,6 +184,7 @@ export const store: Store<AppState> = createStore<AppState>({
   portsError: null,
   preview: null,
   launch: null,
+  launchConfirm: null,
 });
 
 const set = store.set;
@@ -1290,16 +1293,41 @@ export async function loadLaunch(): Promise<void> {
   }
 }
 
-/** Start a launch.json entry: its command (the file's) in a new window of the terminal's tmux session; once its port
- *  listens, its preview opens. */
-export async function startLaunchEntry(name: string): Promise<void> {
+/** Start for a launch.json entry: shown in full first (its arguments, folder and environment, loaders flagged) — the
+ *  first time, and again whenever the entry changed (its digest); an entry this browser already started as it is now
+ *  starts at once. */
+export function requestLaunch(e: LaunchEntry): void {
+  if (!e.argv || !e.digest) return;
+  if (approvedLaunch(e.digest)) {
+    void startLaunchEntry(e);
+    return;
+  }
+  set((s) => ({ ...s, launchConfirm: e, dialog: 'launch' }));
+}
+export function confirmLaunch(): void {
+  const e = get().launchConfirm;
+  set((s) => ({ ...s, launchConfirm: null, dialog: null }));
+  if (!e?.digest) return;
+  approveLaunch(e.digest);
+  void startLaunchEntry(e);
+}
+
+/** Start a launch.json entry: its command (the file's, still as shown: its digest) in a new window of the terminal's
+ *  tmux session; once its port listens, its preview opens. A file changed since it was shown is refused (409). */
+export async function startLaunchEntry(e: LaunchEntry): Promise<void> {
+  if (!e.digest) return;
   try {
-    const r = await api.startLaunch(name);
+    const r = await api.startLaunch(e.name, e.digest);
     if (r.port) awaited = { port: r.port, until: Date.now() + 120_000 };
-    const msg = `Started "${label(name, 60)}" in the terminal (window ${r.window})${r.port ? `: its preview opens once :${r.port} listens` : ''}.`;
+    const msg = `Started "${label(e.name, 60)}" in the terminal (window ${r.window})${r.port ? `: its preview opens once :${r.port} listens` : ''}.`;
     toast(msg, 'ok', isPhone() ? undefined : { label: 'Show the terminal', run: () => setLayout({ terminal: true }) });
-  } catch (e) {
-    toast(`Could not start "${label(name, 60)}": ${errText(e)}`, 'error');
+  } catch (err) {
+    if (err instanceof api.ApiError && err.status === 409) {
+      toast(`.claude/launch.json changed since it was shown: "${label(e.name, 60)}" did not start. Look at it again (Ports).`, 'error');
+      void loadLaunch();
+      return;
+    }
+    toast(`Could not start "${label(e.name, 60)}": ${errText(err)}`, 'error');
   }
 }
 

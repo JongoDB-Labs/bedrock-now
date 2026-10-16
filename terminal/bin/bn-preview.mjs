@@ -13,7 +13,8 @@
 //   - connects only to the sandbox's own loopback, never anywhere else, and never listens on TCP
 //   - leaves out what the dev server must not see or need: hop-by-hop headers, the port header, X-Forwarded-*
 //   - a Location that points back at the same server (http://localhost:5173/x) becomes a path (/x), so redirects stay
-//     on the preview's own address
+//     on the preview's own address; an app's own frame-ancestors goes (the main Caddy adds the previews' one)
+//   - a request body of unknown length goes on chunked, never unframed
 //   - 502 with a short page when nothing listens on the port; at most MAX_CONNECTIONS connections; idle ones end
 // Node built-ins only: the image has no node_modules for this.
 import http from 'node:http';
@@ -32,11 +33,19 @@ const CONNECT_MS = 5000;
 const IDLE_MS = 10 * 60 * 1000;   // a request or WebSocket with nothing moving for this long ends (HMR pings well within)
 const KEEPALIVE_MS = 150 * 1000;  // longer than the gateway's own idle keep-alive (2 min): it closes first, never us mid-reuse
 
-// portOf(header) -> 1..65535 from digits only, else null
+// portOf(header) -> 1..65535 from digits only (no sign, no leading zero, no hex), else null. (Leading and trailing
+// spaces are not part of a header value in HTTP — Node removes them before anything here sees the value.)
 export function portOf(v) {
   if (typeof v !== 'string' || !/^[1-9][0-9]{0,4}$/.test(v)) return null;
   const n = Number(v);
   return n <= 65535 ? n : null;
+}
+// portOfRequest(req) -> the port of the one X-Bn-Preview-Port header the main Caddy set; two of them (or none) is null
+export function portOfRequest(req) {
+  const raw = req.rawHeaders || [];
+  const vals = [];
+  for (let i = 0; i < raw.length; i += 2) if (String(raw[i]).toLowerCase() === PORT_HEADER) vals.push(raw[i + 1]);
+  return vals.length === 1 ? portOf(vals[0]) : null;
 }
 
 const HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
@@ -55,23 +64,42 @@ function connectionTokens(raw) {
   return out;
 }
 
-// requestHeaders(rawHeaders, port, {upgrade}) -> a flat [name, value, …] list for the dev server: hop-by-hop and the
-// proxies' headers left out (a WebSocket upgrade keeps Upgrade and gets Connection: Upgrade); Host as the main Caddy
-// set it (localhost:<port>), or that when there is none
-export function requestHeaders(raw, port, { upgrade = false } = {}) {
+// tidyCookie(value) -> the Cookie header without empty pairs (what is left where the main Caddy took bedrock-now's
+// own cookies out: "; app=1" becomes "app=1"); '' when nothing is left
+export function tidyCookie(v) {
+  return String(v).split(';').map((x) => x.trim()).filter((x) => x && x !== '=').join('; ');
+}
+
+// requestHeaders(rawHeaders, port, {upgrade, chunked}) -> a flat [name, value, …] list for the dev server: hop-by-hop
+// and the proxies' headers left out (a WebSocket upgrade keeps Upgrade and gets Connection: Upgrade); Host as the main
+// Caddy set it (localhost:<port>), or that when there is none; an empty Cookie left out. chunked: the request has a
+// body of unknown length — it goes on chunked, said so explicitly (Node would otherwise write a GET's, DELETE's or
+// OPTIONS's body unframed, and the dev server would read it as the next request).
+export function requestHeaders(raw, port, { upgrade = false, chunked = false } = {}) {
   const listed = connectionTokens(raw);
   const out = [];
   let host = false, upg = null;
   for (let i = 0; i < raw.length; i += 2) {
-    const k = String(raw[i]), lk = k.toLowerCase(), v = raw[i + 1];
+    const k = String(raw[i]), lk = k.toLowerCase();
+    let v = raw[i + 1];
     if (lk === 'upgrade') { upg = v; continue; }
     if (HOP.has(lk) || listed.has(lk) || DROP.test(lk)) continue;
     if (lk === 'host') { if (host) continue; host = true; }
+    if (lk === 'cookie') { v = tidyCookie(v); if (!v) continue; }
+    if (chunked && lk === 'content-length') continue;
     out.push(k, v);
   }
   if (!host) out.unshift('Host', `localhost:${port}`);
+  if (chunked) out.push('Transfer-Encoding', 'chunked');
   if (upgrade) out.push('Connection', 'Upgrade', 'Upgrade', upg || 'websocket');
   return out;
+}
+
+// withoutFrameAncestors(csp) -> an app's Content-Security-Policy without its frame-ancestors directive (helmet's
+// "frame-ancestors 'self'" would keep the Code page from showing it): the main Caddy adds one of its own to every
+// preview answer — the Code page and the portal only. Every other directive stays as the app wrote it.
+export function withoutFrameAncestors(csp) {
+  return String(csp).split(';').filter((d) => !/^\s*frame-ancestors(\s|$)/i.test(d)).join(';').trim().replace(/^;+|;+$/g, '');
 }
 
 const LOCAL = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '[::]', '[0:0:0:0:0:0:0:1]']);
@@ -87,13 +115,18 @@ export function localLocation(loc, port) {
 }
 
 // responseHeaders(rawHeaders, port) -> the dev server's headers for the browser: hop-by-hop left out (Node frames the
-// body itself), a Location back to this server made a path
+// body itself), a Location back to this server made a path, its CSP without frame-ancestors
 export function responseHeaders(raw, port) {
   const listed = connectionTokens(raw);
   const out = [];
   for (let i = 0; i < raw.length; i += 2) {
     const k = String(raw[i]), lk = k.toLowerCase();
     if (HOP.has(lk) || listed.has(lk)) continue;
+    if (lk === 'content-security-policy') {
+      const v = withoutFrameAncestors(raw[i + 1]);
+      if (v) out.push(k, v);
+      continue;
+    }
     out.push(k, lk === 'location' ? localLocation(raw[i + 1], port) : raw[i + 1]);
   }
   return out;
@@ -141,7 +174,7 @@ function answer(res, status, body, extra = {}) {
 // One request: to the dev server on its port, the body streamed both ways (chunked, server-sent events and large
 // uploads alike).
 export async function onRequest(req, res, { hosts = LOOPBACK } = {}) {
-  const port = portOf(req.headers[PORT_HEADER]);
+  const port = portOfRequest(req);
   if (!port) return answer(res, 400, 'bn-preview: no port');
   if (typeof req.url !== 'string' || !req.url.startsWith('/')) return answer(res, 400, 'bn-preview: only paths');
   let sock;
@@ -151,7 +184,9 @@ export async function onRequest(req, res, { hosts = LOOPBACK } = {}) {
   }
   if (res.destroyed || req.destroyed) { sock.destroy(); return undefined; }
   // (no agent: with one, Node would open a connection of its own — to localhost:80 — instead of using this socket)
-  const up = http.request({ createConnection: () => sock, method: req.method, path: req.url, headers: requestHeaders(req.rawHeaders, port),
+  // a body without a Content-Length (chunked: Node's parser accepts no other framing) goes on chunked
+  const chunked = req.headers['transfer-encoding'] !== undefined;
+  const up = http.request({ createConnection: () => sock, method: req.method, path: req.url, headers: requestHeaders(req.rawHeaders, port, { chunked }),
     setHost: false });
   up.setTimeout(IDLE_MS, () => up.destroy(Object.assign(new Error('idle'), { code: 'ETIMEDOUT' })));
   up.on('response', (ures) => {
@@ -173,7 +208,7 @@ export async function onRequest(req, res, { hosts = LOOPBACK } = {}) {
 // proxies' headers), then raw bytes both ways — Vite's, webpack's and Next's HMR alike.
 export async function onUpgrade(req, client, head, { hosts = LOOPBACK } = {}) {
   client.on('error', () => client.destroy());
-  const port = portOf(req.headers[PORT_HEADER]);
+  const port = portOfRequest(req);
   if (!port || typeof req.url !== 'string' || !req.url.startsWith('/')) {
     client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     return;

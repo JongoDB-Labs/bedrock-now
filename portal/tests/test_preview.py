@@ -77,6 +77,13 @@ def test_the_preview_domain_comes_with_the_code_page_and_is_another_site():
         assert from_env({**base, "PREVIEW_DOMAIN": bad}).preview_domain == "", bad
     assert from_env({**base, "PORTAL_HOST": "a.b.localhost", "PREVIEW_DOMAIN": "c.b.localhost"}).preview_domain == ""
     assert from_env({**base, "PORTAL_HOST": "a.b.localhost", "PREVIEW_DOMAIN": "b-preview.localhost"}).preview_domain == "b-preview.localhost"
+    # only <name>-preview.localhost (two labels), and never while the portal's own site is one: a second install named
+    # bedrock-now-preview would be the first one's previews' site (lib/portal.sh refuses such a PORTAL_HOST too)
+    for bad in ("previews.localhost", "a.b-preview.localhost", "b-preview.example.com", f"{'x' * 60}-preview.localhost"):
+        assert from_env({**base, "PREVIEW_DOMAIN": bad}).preview_domain == "", bad
+    assert from_env({**base, "PORTAL_HOST": "bedrock-now-preview.localhost", "PREVIEW_DOMAIN": "x-preview.localhost"}).preview_domain == ""
+    assert from_env({**base, "PORTAL_HOST": "a.team-preview.localhost", "PREVIEW_DOMAIN": "x-preview.localhost"}).preview_domain == ""
+    assert from_env({**base, "CODE_HOST": "code.x-preview.localhost"}).preview_domain == ""
     assert site_of("p5173-x.bedrock-now-preview.localhost") == DOMAIN and site_of("code.bedrock-now.localhost") == "bedrock-now.localhost"
 
 
@@ -203,6 +210,13 @@ def test_the_preview_site_needs_a_valid_capability_and_its_own_origin(ps):
         assert check(c, host, origin=origin).status_code == 200            # its own fetches and its HMR WebSocket
         for bad in ("http://evil.example", CODE, PORTAL, "null", origin.replace("p5173-", "p5174-"), origin + ":81"):
             assert check(c, host, origin=bad).status_code == 403, bad
+        # "null" from the preview itself (a page with Referrer-Policy no-referrer posting a form): Sec-Fetch-Site says
+        # same-origin, which no page can set; from anywhere else it stays refused
+        h = {"X-Forwarded-Host": host, "X-Forwarded-Method": "POST", "X-Forwarded-Uri": "/form", "Origin": "null"}
+        assert c.get("/auth/verify?app=preview", headers={**h, "Sec-Fetch-Site": "same-origin"}).status_code == 200
+        for sfs in ("same-site", "cross-site", "none"):
+            assert c.get("/auth/verify?app=preview", headers={**h, "Sec-Fetch-Site": sfs}).status_code == 403, sfs
+        assert c.get("/auth/verify?app=preview", headers={**h, "Origin": origin, "Sec-Fetch-Site": "same-origin"}).status_code == 200
         # missing, forged, on another domain, or for another port: 403 (a page load gets a page that says why)
         lab = host.split(".", 1)[0]
         for h in (DOMAIN, f"x.{DOMAIN}", f"p5173.{DOMAIN}", f"{lab[:-1]}x.{DOMAIN}", f"{lab}.bedrock-now.localhost",

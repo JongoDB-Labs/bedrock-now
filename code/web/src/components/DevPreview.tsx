@@ -7,14 +7,14 @@
 // take this page away. Nothing here reads from or posts to the frame.
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, navigatePreview, openPreview, reloadPreview, setPreviewViewport, stopServer, loadLaunch, loadPreviewInfo, refreshPorts, startLaunchEntry,
-  type PreviewTab } from '../app';
+import { store, navigatePreview, openPreview, reloadPreview, setPreviewViewport, stopServer, loadLaunch, loadPreviewInfo, refreshPorts, requestLaunch,
+  confirmLaunch, setDialog, type PreviewTab } from '../app';
 import { previewTabUrl } from '../api';
-import { VIEWPORTS, cleanPreviewPath, fitScale } from '../devpreview';
-import type { PortInfo } from '../types';
-import { label } from '../text';
+import { VIEWPORTS, cleanPreviewPath, fitScale, loaderWhy } from '../devpreview';
+import type { LaunchEntry, PortInfo } from '../types';
+import { label, visible } from '../text';
 import { Icon, Spinner } from './icons';
-import { copyText, useMedia } from './ui';
+import { Dialog, copyText, useMedia } from './ui';
 
 /** What the preview frame may do: run its scripts on its own origin (another site), forms, popups (as new tabs, outside
  *  the sandbox flags: an OAuth window or "open in a new tab" works), alerts, downloads — never navigate this page. */
@@ -322,8 +322,8 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
                   </code>
                   {e.port !== null && <span class="muted small">:{e.port}</span>}
                   <span class="port-actions">
-                    {e.command && (
-                      <button type="button" class="btn small" onClick={() => (onDone?.(), void startLaunchEntry(e.name))} title="Run this entry's command in a new window of the terminal (tmux), with PORT set" data-testid="launch-start">
+                    {e.argv && e.digest && (
+                      <button type="button" class="btn small" onClick={() => (onDone?.(), requestLaunch(e))} title="Run this entry's command in a new window of the terminal (tmux), with PORT set — shown in full first" data-testid="launch-start">
                         <Icon name="play" size={12} /> Start
                       </button>
                     )}
@@ -340,5 +340,68 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
         </ul>
       )}
     </div>
+  );
+}
+
+/** Start's confirmation: exactly what will run — the program and each argument, the folder, every environment variable
+ *  with its value (PORT included), and a warning on those that run or load code of their own. The entry comes from the
+ *  workspace's .claude/launch.json, which anything in the sandbox can write; Start sends this entry's digest, so a file
+ *  changed after this is refused. */
+export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
+  const env = [...entry.env.filter((v) => v.name !== 'PORT'), ...(entry.port ? [{ name: 'PORT', value: String(entry.port) }] : [])];
+  const loaders = env.filter((v) => loaderWhy(v.name));
+  const close = () => setDialog(null);
+  return (
+    <Dialog title={`Start "${label(entry.name, 80)}"?`} onClose={close} wide testid="launch-confirm">
+      <p>
+        From the workspace's <code>.claude/launch.json</code>, which anything in the sandbox (Claude too) can write. It runs in the sandbox, in a new
+        window of the terminal — check that it is what you expect:
+      </p>
+      <h3>Program and arguments</h3>
+      <ol class="launch-argv" data-testid="launch-argv">
+        {(entry.argv ?? []).map((a, i) => (
+          <li key={i}>
+            <code>{visible(a) || '(empty)'}</code>
+          </li>
+        ))}
+      </ol>
+      <h3>Folder</h3>
+      <p>
+        <code>/workspace{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
+      </p>
+      <h3>Environment</h3>
+      <ul class="launch-env" data-testid="launch-env">
+        {env.map((v) => {
+          const why = loaderWhy(v.name);
+          return (
+            <li key={v.name} class={why ? 'loader' : ''} data-testid={why ? 'launch-env-loader' : 'launch-env-var'}>
+              <code>
+                {v.name}={visible(v.value)}
+              </code>
+              {v.name === 'PORT' && <span class="muted small"> (set by bedrock-now)</span>}
+              {why && (
+                <span class="loader-why">
+                  <Icon name="alert" size={13} /> {why}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {loaders.length > 0 && (
+        <div class="banner warn small" data-testid="launch-loaders">
+          {loaders.length === 1 ? 'One variable' : `${loaders.length} variables`} above can run code before the command itself. Start it only if you
+          know why it is there.
+        </div>
+      )}
+      <div class="dlg-buttons">
+        <button type="button" class="btn" onClick={close}>
+          Cancel
+        </button>
+        <button type="button" class="btn primary" onClick={confirmLaunch} data-testid="launch-confirm-run">
+          <Icon name="play" size={13} /> Start it
+        </button>
+      </div>
+    </Dialog>
   );
 }

@@ -1073,16 +1073,27 @@ export async function stopPort(pid: number, port: number, force = false): Promis
   await request('POST', '/api/ports/stop', { pid, port, force });
 }
 
+const SHA = /^[0-9a-f]{64}$/;
 export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const o = obj(v);
   if (!o) return null;
   const name = label(o.name, 100);
   const error = typeof o.error === 'string' ? label(o.error, 200) : null;
   if (!name && !error) return null;
+  const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], digest: null, error };
+  if (error) return none;
   const port = typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535 ? o.port : null;
   const url = typeof o.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(o.url) ? o.url : null;
-  return { name: name || '(no name)', port: error ? null : port, command: !error && typeof o.command === 'string' ? safe(o.command, 4000) : null,
-    cwd: label(o.cwd, 500) || '.', url: error ? null : url, env: error ? [] : arr(o.env, 32).map((k) => label(k, 64)).filter(Boolean), error };
+  // shown before Start as they are: an entry the page cannot show whole is not offered
+  const argvIn = o.argv === null || o.argv === undefined ? null : arr(o.argv, 67);
+  const argv = argvIn && argvIn.length && argvIn.length <= 66 && argvIn.every((a) => typeof a === 'string' && a.length <= 2000) ? (argvIn as string[]) : null;
+  const env = arr(o.env, 33).map((p) => obj(p)).filter((p): p is Obj => !!p && typeof p.name === 'string' && typeof p.value === 'string')
+    .map((p) => ({ name: String(p.name), value: String(p.value) }));
+  const whole = env.length <= 32 && env.every((p) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(p.name) && p.value.length <= 4000);
+  if ((argvIn && !argv) || !whole) return { ...none, error: 'It cannot be shown here in full: start it in the terminal.' };
+  const digest = typeof o.digest === 'string' && SHA.test(o.digest) ? o.digest : null;
+  return { name: name || '(no name)', port, command: argv && typeof o.command === 'string' ? safe(o.command, 4000) : null, argv: digest ? argv : null,
+    cwd: label(o.cwd, 1000) || '.', url, env, digest: argv ? digest : null, error: null };
 }
 
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */
@@ -1092,9 +1103,10 @@ export async function getLaunch(): Promise<LaunchList> {
     entries: arr(o.configurations, 20).map(normLaunchEntry).filter((e): e is LaunchEntry => e !== null) };
 }
 
-/** Start a launch.json entry by name (in a new window of the terminal's tmux session; the command is the file's). */
-export async function startLaunch(name: string): Promise<{ window: string; port: number | null }> {
-  const o = await request('POST', '/api/launch/start', { name });
+/** Start a launch.json entry by name and the digest of what was shown (in a new window of the terminal's tmux
+ *  session; the command is the file's — a 409 when the file changed since). */
+export async function startLaunch(name: string, digest: string): Promise<{ window: string; port: number | null }> {
+  const o = await request('POST', '/api/launch/start', { name, digest });
   return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
 }
 

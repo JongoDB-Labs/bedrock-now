@@ -90,7 +90,8 @@ test_the_preview_site_checks_every_request_and_rewrites_for_the_dev_server() {
               'header_up Host localhost:{http.request.header.X-Bn-Preview-Port}' \
               'header_up Origin ".+" "http://localhost:{http.request.header.X-Bn-Preview-Port}"' \
               'header_up X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1' \
-              'header_down Set-Cookie "(?i);\s*domain=[^;]*" ""' 'header_down Referrer-Policy no-referrer' \
+              'header_up Cookie "^[;\s]+" ""' \
+              'header_down Set-Cookie "(?i);\s*domain\s*=[^;]*" ""' 'header_down Referrer-Policy same-origin' \
               "header_down +Content-Security-Policy \"frame-ancestors {\$CODE_ORIGIN} {\$PORTAL_ORIGIN}; frame-src 'self' https: data: blob: http://*.{\$PREVIEW_DOMAIN}:*\""; do
     assert_contains "$up" "$want"
   done
@@ -163,4 +164,23 @@ test_uninstall_and_terminal_disable_remove_its_socket_volume() {
   terminal_uninstall_cleanup
   assert_contains "$(cat "$TMP/docker")" "bedrock-now_preview-socket"
   assert_contains "$(sed -n '/^terminal_disable() {/,/^}/p' "$STACK_DIR/lib/terminal.sh")" '"$(project_name)_preview-socket"'
+}
+
+test_portal_and_app_hosts_never_on_a_preview_site() {
+  _stubs
+  # a project named <x>-preview would otherwise get the previews' site of an install at <x>.localhost
+  assert_eq "$(default_portal_host bedrock-now-preview)" bedrock-now-preview-portal.localhost
+  assert_eq "$(default_portal_host my_app)" my-app.localhost
+  assert_eq "$(default_portal_host "$DEFAULT_PROJECT")" bedrock-now.localhost
+  for h in bedrock-now-preview.localhost portal.team-preview.localhost; do
+    if out="$( (check_portal_host "$h") 2>&1)"; then echo "accepted $h" >&2; return 1; fi
+    assert_contains "$out" "is on a *-preview.localhost site"
+  done
+  ( check_portal_host bedrock-now.localhost ) 2>/dev/null || return 1
+  ( check_portal_host preview.localhost ) 2>/dev/null || return 1        # (its site is preview.localhost: not one)
+  set_env CODE_HOST code.x-preview.localhost
+  if out="$( (check_app_hosts) 2>&1)"; then echo "CODE_HOST on a preview site accepted" >&2; return 1; fi
+  assert_contains "$out" "CODE_HOST=code.x-preview.localhost is on a *-preview.localhost site"
+  set_env CODE_HOST ide.localhost
+  ( check_app_hosts ) 2>/dev/null || return 1
 }

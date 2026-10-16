@@ -35,7 +35,7 @@ import { PluginsDialog } from './Plugins';
 import { McpPanel } from './Mcp';
 import { MemoryDialog } from './Memory';
 import { Icon, Spinner } from './icons';
-import { PortsPanel } from './DevPreview';
+import { LaunchConfirm, PortsPanel } from './DevPreview';
 
 // ---------------------------------------------------------------- pieces
 
@@ -328,6 +328,7 @@ function Toasts() {
 
 function Dialogs() {
   const dialog = useSel(store, (s) => s.dialog);
+  const launchConfirm = useSel(store, (s) => s.launchConfirm);
   const close = () => setDialog(null);
   if (dialog === 'shortcuts') {
     const rows: [string, string][] = [
@@ -362,6 +363,7 @@ function Dialogs() {
   if (dialog === 'plugins') return <PluginsDialog onClose={close} />;
   if (dialog === 'mcp') return <McpPanel onClose={close} />;
   if (dialog === 'memory') return <MemoryDialog onClose={close} />;
+  if (dialog === 'launch') return launchConfirm ? <LaunchConfirm entry={launchConfirm} /> : null;
   if (dialog === 'ports') {
     return (
       <Dialog title="Ports & previews" onClose={close} testid="ports-dialog">

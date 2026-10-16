@@ -840,7 +840,8 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
    └─ main Caddy, local listener only (caddy/preview-on.caddy)
         forward_auth → portal /auth/verify?app=preview: the capability, no Origin but the preview's own → the port
         towards the sandbox: Host and Origin = localhost:5173, no bedrock-now cookie, no Referer, the preview's secret header
-        back: + CSP frame-ancestors (the Code page, the portal) and frame-src, Set-Cookie without Domain=, no-referrer
+        back: + CSP frame-ancestors (the Code page, the portal) and frame-src, Set-Cookie without Domain=,
+              Referrer-Policy same-origin
    └─ terminal gateway :7682 (terminal-link only): requires and removes X-Bn-Preview-0<PREVIEW_PROXY_SECRET>
    └─ bn-preview on a UNIX socket in the sandbox (preview-socket volume) → 127.0.0.1:5173 (or [::1]:5173)
 ```
@@ -850,11 +851,15 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   be *same-site* with the portal — it would receive the portal's session cookie (`Domain=PORTAL_HOST`) and the code
   host's `SameSite=Strict` unlock cookie on its requests to them, and could plant `Domain=bedrock-now.localhost`
   cookies (verified in Chromium 140). So previews live on a site of their own, `PREVIEW_DOMAIN`, which `lib/code.sh`
-  derives from `PORTAL_HOST` (`bedrock-now.localhost` → `bedrock-now-preview.localhost`; the portal refuses a preview
-  domain on the portal's own site). From a preview, requests to the portal, Chat, Admin, Files, the terminal and the
-  Code page are *cross-site*: no cookie goes with them, and `Domain=` cookies for those hosts are refused. The e2e
-  suite checks exactly this from inside a preview (`Sec-Fetch-Site: cross-site`, no `Cookie`, tossed cookies refused),
-  against a control request of the Code page itself that does carry its cookie.
+  derives from `PORTAL_HOST` (`bedrock-now.localhost` → `bedrock-now-preview.localhost`). Names on a
+  `*-preview.localhost` site are the previews' alone: `./stack` refuses a `PORTAL_HOST` or an app host (`CHAT_HOST`,
+  `CODE_HOST` …) there, a project named `<x>-preview` gets `<x>-preview-portal.localhost` (a second install named
+  `bedrock-now-preview` would otherwise be the first one's previews' site and get their requests with its cookies),
+  and the portal turns previews off unless `PREVIEW_DOMAIN` is `<name>-preview.localhost` and none of its own hosts is
+  on such a site. From a preview, requests to the portal, Chat, Admin, Files, the terminal and the Code page are
+  *cross-site*: no cookie goes with them, and `Domain=` cookies for those hosts are refused. The e2e suite checks
+  exactly this from inside a preview (`Sec-Fetch-Site: cross-site`, no `Cookie`, tossed cookies refused), against a
+  control request of the Code page itself that does carry its cookie.
 - [x] **A capability in the host name instead of a cookie.** A preview's host is `p<port>-<capability>`: the
   Code page's unlock time and an HMAC-SHA256 (120 bits) over the port, that time and the password fingerprint, with a
   key of its own derived from `PORTAL_SECRET`. The portal mints it on the code host (`/.bn/preview`, after the code
@@ -863,13 +868,17 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   and ends with **Sign out** or a **new password** (or `PORTAL_SECRET`); a missing, forged, expired or other-port
   capability gets 403 (tested from outside, also with capabilities the test makes with the throwaway's secrets). With
   no cookie at all, the frame also works where third-party cookies are blocked. A request whose `Origin` is not the
-  preview's own (another site, the Code page, another preview) is refused too. Anyone who has a link (it is in your
-  browser's history, and *Copy address* copies it) can open that port's preview from this computer until it ends.
+  preview's own (another site, the Code page, another preview) is refused too; `Origin: null` only when
+  `Sec-Fetch-Site: same-origin` says it came from the preview itself (an app's own `no-referrer` makes browsers send
+  `null` for its form posts; no page can set `Sec-Fetch-Site`). Anyone who has a link (it is in your browser's history,
+  and *Copy address* copies it) can open that port's preview from this computer until it ends.
 - [x] **The dev server sees its own address.** After the check, Caddy sends `Host` and `Origin` as
   `localhost:<port>`, so Vite's, Next's and webpack's host and origin checks pass unchanged (their hot-reload
   WebSockets too), and nothing of the preview's public address: bn-preview drops `X-Forwarded-*`, `Forwarded` and
   `Via`, and Caddy drops `Referer`. A `Location` back to the same server (`http://localhost:5173/x`) becomes `/x`.
-  Links the app writes into its pages are not rewritten: "Open in a new tab" is the way out.
+  Links the app writes into its pages are not rewritten: "Open in a new tab" is the way out. A request body of
+  unknown length goes on to the dev server chunked (never unframed, where a `GET`'s body would read as a request of its
+  own), and the port comes from exactly one header the main Caddy set (digits only).
 - [x] **What a preview may do in the page.** The frame is `sandbox="allow-scripts allow-same-origin allow-forms
   allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"` with no `allow-top-navigation` (it
   cannot take the Code page away — tested), `allow=""` (no camera, microphone or location delegated) and
@@ -878,9 +887,13 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   Caddy adds a CSP of its own to every preview answer (beside the app's, both apply): `frame-ancestors` the Code page
   and the portal only, and `frame-src 'self' https: data: blob: http://*.<PREVIEW_DOMAIN>:*` — a preview cannot frame
   bedrock-now's hosts or anything on this computer's `localhost`. It drops `X-Frame-Options`, `Clear-Site-Data`,
-  `Service-Worker-Allowed` and reporting headers, makes every `Set-Cookie` host-only (no `Domain=`: one preview's
-  cookies never reach another's) and sends `Referrer-Policy: no-referrer` (the capability never leaves in a Referer).
-  The Code page's own CSP gains one `frame-src` source, `http://*.<PREVIEW_DOMAIN>:*`.
+  `Service-Worker-Allowed` and reporting headers (bn-preview drops the app's own `frame-ancestors`, e.g. helmet's
+  `'self'`, which would keep it out of the pane), makes every `Set-Cookie` host-only (`Domain=` in any spelling goes)
+  and sends `Referrer-Policy: same-origin`: no Referer to other origins (it would name the capability), while the
+  app's own requests keep theirs — and with it the real `Origin` of its form posts (with `no-referrer` browsers send
+  `Origin: null` for those). All previews share one site, so a preview's *script* can still set a cookie for the
+  preview domain that the others receive: they all come from the same sandbox, so sites of their own per preview are
+  not needed for now. The Code page's own CSP gains one `frame-src` source, `http://*.<PREVIEW_DOMAIN>:*`.
 - [x] **No new way into the sandbox.** The gateway's preview listener (`:7682`, on `terminal-link` only) passes
   nothing to bn-preview without `X-Bn-Preview-0<PREVIEW_PROXY_SECRET>` (128 random bits, new at every
   `./stack code enable`, in the two Caddys' environments only — never in the sandbox, the code container or the
@@ -893,9 +906,16 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   (`ports.list`: `/proc/net/tcp{,6}` and each socket's process, read by bn-coded in the sandbox; every row checked
   again by the code container and the page). **Stop** sends SIGTERM only to the process that listens on that port at
   that moment (never PID 1, never bn-coded). The workspace's `.claude/launch.json` (the Claude Code desktop app's
-  dev-server list) is read and checked by bn-coded; **Start** runs an entry's command — the file's, never the page's:
-  the page sends only the entry's name — in a new window of the terminal's tmux session, with `PORT` set. That is
-  what typing it in the terminal does: the workspace's own command, in the sandbox.
+  dev-server list) is read and checked by bn-coded; **Start** runs an entry's command — the file's, never the page's —
+  in a new window of the terminal's tmux session, with `PORT` set. The file is the workspace's, which anything in the
+  sandbox can write — Claude in *Accept edits* too — so Start shows the entry in full first: the program and every
+  argument, the folder, and every environment variable **with its value**, with a warning on the ones that run or
+  load code before the command (`BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `PATH`, `PYTHONSTARTUP`,
+  `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `npm_config_*`: warned, not refused). The page sends the entry's name and a
+  SHA-256 of exactly what it showed (arguments, folder, environment, port), computed by the code container; bn-coded
+  reads the file again and refuses an entry that no longer matches ("changed since it was shown: review it again"),
+  so a file swapped between seeing it and clicking does not run. The confirmation comes again whenever the entry
+  changes (the page remembers the digests you started, in this browser).
 - [x] **Local only, for now.** The preview site exists only on the local listener (`127.0.0.1:PORTAL_PORT`); the
   remote sites have no preview block, and the portal refuses to mint or check a preview for a remote request (the
   Code page says so). Remote previews need their own design: every Tailscale Service of a tailnet is one site
@@ -908,14 +928,21 @@ Remaining risks:
   any local page can (browsers' private-network rules do not stand between two local addresses). Open previews of
   what you or Claude started, as you would open a local web app.
 - **A link is a key for 12 hours.** It works for that port from any browser on this computer until the unlock ends,
-  Sign out or a new password; it is in the browser's history.
+  Sign out or a new password; it is in the browser's history. A tab left open, or a service worker the app installed
+  (allowed: PWA development needs them), can keep showing what it already has of a preview after Sign out; anything
+  new needs a new link, as the origin changes with each unlock.
+- **A link can reach DNS.** Browsers answer `*.localhost` names themselves, but Safari on macOS 15, `curl`, `wget`
+  and Python ask the system's resolver, which may pass the name — the capability with it — to your DNS server. Paste
+  a link (*Copy address*) only into a browser that resolves `.localhost` itself (Chrome, Firefox, Safari on macOS 26).
 - **Every request asks the portal** (as for every app host): the e2e suite measures it on each run (a few ms per
   request; its result line says how much).
-- **Third-party cookies.** In the pane a preview is a frame from another site: a browser that blocks third-party
-  cookies (Safari, Chrome with that setting, the e2e suite's Chromium) keeps none of the *app's own* cookies there,
-  so an app's sign-in works only in a new tab, where the preview is first-party. (bedrock-now's own check needs no
-  cookie.) Relaxing the app's cookies instead (`SameSite=None; Partitioned`) would hand them to every site in a new
-  tab, so they are left as the app sets them.
+- **The app's cookies in the pane.** In the pane a preview is a frame from another site. Even where third-party
+  cookies are allowed (default Chrome), its requests are cross-site there, so cookies the app sets without
+  `SameSite=None` (browsers treat a cookie without `SameSite` as `Lax`) are not sent back to it; where third-party
+  cookies are blocked (Safari, Chrome with that setting, the e2e suite's Chromium) none are kept at all. An app's
+  sign-in therefore works in a new tab, where the preview is first-party. (bedrock-now's own check needs no cookie.)
+  Relaxing the app's cookies instead (`SameSite=None; Partitioned`) would hand them to every site in a new tab, so
+  they are left as the app sets them.
 - **Browsers.** Safari resolves `*.localhost` names only where macOS does (macOS 26; not 15), like the stack's
   other hosts. Apps that need cross-origin isolation (`SharedArrayBuffer`) work in a new tab, not in the frame. An app
   whose page calls another port (`fetch('http://localhost:3000')`) reaches your computer's localhost, not the

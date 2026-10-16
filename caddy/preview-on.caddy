@@ -15,21 +15,24 @@
 # unlock's 12 hours, Sign out, the password; and no Origin but this preview's own) and answers with the port.
 (preview_upstream) {
 	# towards bn-preview: none of what only Caddy, the portal or the sidecar may set, no bedrock-now cookie (a browser
-	# sends none here: another site), no Referer (it names the capability); Host and Origin as the dev server expects
-	# them for its own address (Vite's, Next's and webpack's host checks pass unchanged); the preview's secret header,
-	# which the gateway requires before bn-preview and removes
+	# sends none here: another site; a preview's own bn_* go too), no Referer (it names the capability); Host and
+	# Origin as the dev server expects them for its own address (Vite's, Next's and webpack's host checks pass
+	# unchanged); the preview's secret header, which the gateway requires before bn-preview and removes
 	header_up -X-Portal-Proxy
 	header_up -X-Portal-User
 	header_up -Referer
 	header_up Cookie "(^|;\s*)(__Host-)?bn_[^=;]*=[^;]*" ""
+	header_up Cookie "^[;\s]+" ""
 	header_up Host localhost:{http.request.header.X-Bn-Preview-Port}
 	header_up Origin ".+" "http://localhost:{http.request.header.X-Bn-Preview-Port}"
 	header_up X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1
-	# back: the app's own headers, but no cookie for the whole preview domain (Domain= dropped: host-only), no framing
-	# refusal of its own (the CSP below decides), nothing that clears site data, widens a service worker or sends
-	# reports; the Referer of its own requests never leaves (no-referrer); and a CSP added beside the app's own (both
-	# apply): only the Code page (in the portal) may frame it, and it frames nothing on bedrock-now's hosts (or this
-	# computer's localhost: only https, its own previews, data: and blob:)
+	# back: the app's own headers, but no cookie for the whole preview domain (Domain= dropped, in any spelling:
+	# host-only), no framing refusal of its own (the CSP below decides; bn-preview drops the app's frame-ancestors),
+	# nothing that clears site data, widens a service worker or sends reports; no Referer to other origins (it would
+	# name the capability) — same-origin keeps it, and with it the Origin of the app's own form posts (no-referrer
+	# makes browsers send "Origin: null" for those); and a CSP added beside the app's own (both apply): only the Code
+	# page (in the portal) may frame it, and it frames nothing on bedrock-now's hosts (or this computer's localhost:
+	# only https, its own previews, data: and blob:)
 	header_down -X-Frame-Options
 	header_down -Clear-Site-Data
 	header_down -Service-Worker-Allowed
@@ -37,8 +40,8 @@
 	header_down -Report-To
 	header_down -Reporting-Endpoints
 	header_down -NEL
-	header_down Set-Cookie "(?i);\s*domain=[^;]*" ""
-	header_down Referrer-Policy no-referrer
+	header_down Set-Cookie "(?i);\s*domain\s*=[^;]*" ""
+	header_down Referrer-Policy same-origin
 	header_down +Content-Security-Policy "frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}; frame-src 'self' https: data: blob: http://*.{$PREVIEW_DOMAIN}:*"
 }
 

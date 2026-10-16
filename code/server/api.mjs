@@ -2,6 +2,7 @@
 // plugins — all through bn-coded in the sandbox (this container mounts no folder of yours), and every answer from
 // there checked before it goes to the page.
 import { isUtf8 } from 'node:buffer';
+import crypto from 'node:crypto';
 import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { LIMITS } from './protocol.mjs';
 import { fromHistory, sessionRow } from './normalize.mjs';
@@ -372,10 +373,18 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return { exists: result.exists === true, error: short(result.error, 200) || null,
       configurations: (Array.isArray(result.configurations) ? result.configurations : []).slice(0, 20).map(launchRow).filter(Boolean) };
   }
+  // Start: by name, and only while the entry is what the page showed (its digest: argv, folder, environment, port)
   async function launchStart(body) {
-    const name = body?.name;
+    const name = body?.name, digest = body?.digest;
     if (typeof name !== 'string' || !/^[^\x00-\x1f\x7f]{1,100}$/.test(name)) throw new HttpError(400, 'bad name');
-    const { result } = await call({ op: 'launch.start', name }, { timeoutMs: 30000 });
+    if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new HttpError(400, 'digest: the SHA-256 of the entry shown');
+    let result;
+    try {
+      ({ result } = await call({ op: 'launch.start', name, digest }, { timeoutMs: 30000 }));
+    } catch (e) {
+      if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
+      throw e;
+    }
     return { ok: result.ok === true, name: short(result.name, 100), window: short(result.window, 60), port: int(result.port, 1, 65535),
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
@@ -393,15 +402,40 @@ export function portRow(x) {
   if (port === null) return null;
   return { port, addrs: (Array.isArray(x.addrs) ? x.addrs : []).filter((a) => ADDRS.includes(a)).slice(0, 4), pid: int(x.pid, 2, 4194304), cmd: short(x.cmd, 300) };
 }
+// launchDigest(entry) -> SHA-256 (hex) of what Start runs — the same as bn-coded's (terminal/bin/bn-coded.mjs
+// launchDigest; code/test checks that they agree): computed here over exactly what goes to the page, so the page's Start
+// carries the digest of what it showed, and bn-coded refuses an entry that changed meanwhile
+export function launchDigest({ argv, cwd, env, port }) {
+  const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null])).digest('hex');
+}
+const ONE_LINE = /^[^\x00-\x1f\x7f]*$/;
+// launchRow(x) -> an entry for the page, whole or not at all: its arguments, folder and environment (names and values)
+// are shown before Start, so nothing of them is cut — an entry beyond bn-coded's own limits is refused with a reason
 export function launchRow(x) {
   if (!x || typeof x !== 'object') return null;
   const name = short(x.name, 100);
   if (typeof x.error === 'string') return { name: name || null, error: short(x.error, 200) };
   if (!name) return null;
+  const bad = (why) => ({ name, error: why });
+  const argv = x.argv === null || x.argv === undefined ? null : x.argv;
+  if (argv !== null && !(Array.isArray(argv) && argv.length >= 1 && argv.length <= 66 && argv.every((a) => typeof a === 'string' && a.length <= 2000 && ONE_LINE.test(a)))) {
+    return bad('its command cannot be shown here in full: start it in the terminal');
+  }
+  const env = x.env && typeof x.env === 'object' && !Array.isArray(x.env) ? x.env : {};
+  const pairs = Object.entries(env);
+  if (pairs.length > 32 || !pairs.every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k) && typeof v === 'string' && v.length <= 4000 && ONE_LINE.test(v))) {
+    return bad('its environment cannot be shown here in full: start it in the terminal');
+  }
+  const cwdIn = x.cwd === undefined || x.cwd === null ? '.' : x.cwd;
+  const cwd = typeof cwdIn === 'string' && cwdIn.length <= 1000 && ONE_LINE.test(cwdIn) ? cwdIn || '.' : null;
+  if (cwd === null) return bad('its folder cannot be shown here: start it in the terminal');
+  const port = int(x.port, 1, 65535);
   const url = typeof x.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(x.url) ? x.url : null;
-  return { name, port: int(x.port, 1, 65535), command: typeof x.command === 'string' ? str(x.command, 4000) : null,
-    cwd: short(x.cwd, 1000) || '.', url, autoPort: typeof x.autoPort === 'boolean' ? x.autoPort : null,
-    env: x.env && typeof x.env === 'object' && !Array.isArray(x.env) ? Object.keys(x.env).slice(0, 32).map((k) => short(k, 64)) : [] };
+  const row = { name, port, argv, cwd, env: pairs.map(([k, v]) => ({ name: k, value: v })), url, autoPort: typeof x.autoPort === 'boolean' ? x.autoPort : null,
+    command: typeof x.command === 'string' ? str(x.command, 4000) : null };
+  row.digest = argv ? launchDigest({ argv, cwd, env, port }) : null;
+  return row;
 }
 
 // --- what the CLI answers, checked for the page ---

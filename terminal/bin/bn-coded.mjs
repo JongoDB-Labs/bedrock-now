@@ -22,7 +22,7 @@
 //   launch.list / launch.start
 //                   the workspace's .claude/launch.json (the Claude Code desktop app's dev-server list): its entries,
 //                   and one of them started by name in a new window of the terminal's tmux session — the command is the
-//                   file's, never the page's
+//                   file's, never the page's, and only while it is still what the page showed (its digest)
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
 // Nothing here is a secret boundary for the sandbox (anything in it can run claude itself); the allowlist keeps the
 // socket from being a general "run anything" primitive, and keeps paths inside /workspace. The code container treats
@@ -627,8 +627,18 @@ export function launchConfig(c) {
   if (port === null && argv) port = 3000;   // (the desktop app's default)
   const cwd = (c.cwd ?? '').replace(/^\$\{workspaceFolder\}\/?/, '') || '.';
   const quote = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
-  return { name, argv, port, cwd, env: c.env ? { ...c.env } : {}, url: c.url ?? null, autoPort: c.autoPort === true ? true : c.autoPort === false ? false : null,
+  const out = { name, argv, port, cwd, env: c.env ? { ...c.env } : {}, url: c.url ?? null, autoPort: c.autoPort === true ? true : c.autoPort === false ? false : null,
     command: argv ? argv.map(quote).join(' ') : null };
+  out.digest = launchDigest(out);
+  return out;
+}
+// launchDigest(entry) -> SHA-256 (hex) of exactly what Start runs: the arguments, the folder, the environment (sorted
+// by name) and the port (PORT). The page shows these and sends the digest back with Start; a file changed meanwhile
+// (by Claude, a command, anything in the sandbox) no longer matches and is refused. The code container computes the
+// same digest over what it shows (code/server/api.mjs launchDigest; code/test checks the two agree).
+export function launchDigest({ argv, cwd, env, port }) {
+  const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null])).digest('hex');
 }
 // launchList() -> {exists, configurations, error}: the file's entries, checked (a broken one says why)
 export function launchList() {
@@ -663,13 +673,16 @@ function run(cmd, args, timeoutMs = 10000) {
     c.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
   });
 }
-// launchStart(name) — that entry (read from the file now) in a new tmux window of the terminal's session, named after
-// it, in its folder, with PORT=<port> and its env; when the command ends, a shell stays in the window (with its exit
-// status). The session is created as bn-session would (Claude Code in its first window) when none runs yet.
-export async function launchStart(name, { tmux = TMUX } = {}) {
+// launchStart(name, digest) — that entry (read from the file now: it must still be what the page showed, its digest)
+// in a new tmux window of the terminal's session, named after it, in its folder, with PORT=<port> and its env; when
+// the command ends, a shell stays in the window (with its exit status). The session is created as bn-session would
+// (Claude Code in its first window) when none runs yet.
+export async function launchStart(name, digest, { tmux = TMUX } = {}) {
+  if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the entry shown');
   const c = launchList().configurations.find((x) => x.name === name);
   if (!c) throw new Error('no such entry in .claude/launch.json');
   if (c.error) throw new Error(`.claude/launch.json: ${c.name}: ${c.error}`);
+  if (c.digest !== digest) throw new Error('.claude/launch.json changed since it was shown: review it again');
   if (!c.argv) throw new Error('that entry has no command (runtimeExecutable or program): it only names a running server');
   const cwd = confine(c.cwd);
   if (!cwd) throw new Error('cwd: not a folder in the workspace');
@@ -791,7 +804,7 @@ export function serve(sock) {
         case 'launch.list': return finish(T.RESULT, launchList());
         case 'launch.start':
           if (typeof req.name !== 'string') return fail('bad name');
-          launchStart(req.name).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          launchStart(req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
         default: return fail('unknown op');
       }

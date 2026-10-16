@@ -1611,8 +1611,19 @@ def devpreviews(browser):
     expect(panel.get_by_test_id("launch-row")).to_have_count(3)
     expect(panel.get_by_test_id("launch-row").nth(2)).to_contain_text("port: a number")
     p.shot("preview-ports-panel.png")
-    # Start an entry of .claude/launch.json: its preview opens once its port listens
+    # Start an entry of .claude/launch.json: shown in full first (each argument, the folder, every variable with its
+    # value, NODE_OPTIONS flagged); its preview opens once its port listens
     panel.get_by_test_id("launch-start").nth(1).click()
+    dlg = page.get_by_test_id("launch-confirm")
+    expect(dlg.get_by_test_id("launch-argv").locator("li")).to_have_count(3)
+    expect(dlg.get_by_test_id("launch-argv")).to_contain_text("--verbose")
+    expect(dlg).to_contain_text("/workspace/api")
+    expect(dlg.get_by_test_id("launch-env-loader")).to_have_count(1)
+    expect(dlg.get_by_test_id("launch-env-loader")).to_contain_text("NODE_OPTIONS=--require ./api/trace.js")
+    expect(dlg.get_by_test_id("launch-loaders")).to_be_visible()
+    expect(dlg).to_contain_text("PORT=8787")
+    p.shot("preview-launch-confirm.png")
+    dlg.get_by_test_id("launch-confirm-run").click()
     expect(page.locator("[data-testid=preview-pane]:not(.hidden)")).to_have_attribute("data-port", "8787", timeout=15_000)
     expect(devpreview_frame(page).locator("h1")).to_have_text("Hello from the dev server on :8787", timeout=10_000)
     # Stop asks once more, then the server is gone and the preview says nothing listens
@@ -1635,8 +1646,26 @@ def devpreviews(browser):
     page.wait_for_timeout(300)
     p.shot("preview-desktop-dark.png")
     page.emulate_media(color_scheme="light")
-    # (expected: the 502 of bn-preview's "nothing is listening" page, in the frame)
-    p.errors = [e for e in p.errors if "status of 502" not in e]
+    # an entry started before starts at once; one that changed after it was shown is refused, and asks again
+    page.get_by_test_id("ports-status").click()
+    post(NORMAL + "/__mock/port?port=8787&del=1")
+    page.get_by_test_id("launch-start").nth(1).click()
+    expect(page.get_by_test_id("launch-confirm")).to_have_count(0)
+    expect(page.get_by_test_id("toast").filter(has_text='Started "api"')).to_have_count(1, timeout=10_000)
+    with page.expect_response(lambda r: r.url.endswith("/api/launch")):
+        page.get_by_test_id("ports-status").click()
+    expect(page.get_by_test_id("launch-row")).to_have_count(3)
+    post(NORMAL + "/__mock/launch-swap?name=api")   # (after the panel read the file: the page shows the old entry)
+    page.get_by_test_id("launch-start").nth(1).click()
+    expect(page.get_by_test_id("toast").filter(has_text="changed since it was shown")).to_have_count(1, timeout=10_000)
+    page.get_by_test_id("ports-status").click()
+    page.get_by_test_id("launch-start").nth(1).click()
+    dlg = page.get_by_test_id("launch-confirm")
+    expect(dlg.get_by_test_id("launch-env-loader")).to_have_count(2)   # NODE_OPTIONS and the new BASH_ENV
+    expect(dlg.get_by_test_id("launch-argv")).to_contain_text("0.0.0.0")
+    dlg.get_by_role("button", name="Cancel").click()
+    # (expected: the 502 of bn-preview's "nothing is listening" page, in the frame; the 409 of the swapped entry)
+    p.errors = [e for e in p.errors if "status of 502" not in e and "status of 409" not in e]
     p.assert_clean()
     p.close()
 

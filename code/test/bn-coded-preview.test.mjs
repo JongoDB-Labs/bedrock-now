@@ -93,7 +93,15 @@ test('launch.json entries: checked one by one, the command shown as it will run'
   const c = coded.launchConfig({ name: 'web', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev', '--', '--host', "it's"], port: 5173,
     cwd: '${workspaceFolder}/web', env: { NODE_ENV: 'development' }, autoPort: true });
   assert.deepEqual(c, { name: 'web', argv: ['npm', 'run', 'dev', '--', '--host', "it's"], port: 5173, cwd: 'web', env: { NODE_ENV: 'development' },
-    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'" });
+    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'", digest: coded.launchDigest(c) });
+  assert.match(c.digest, /^[0-9a-f]{64}$/);
+  // the digest covers the arguments, the folder, the environment (in any order) and the port — nothing else
+  const d = (x) => coded.launchConfig({ name: 'web', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev'], port: 5173, ...x }).digest;
+  assert.equal(d({ env: { A: '1', B: '2' } }), d({ env: { B: '2', A: '1' } }));
+  assert.equal(d({ autoPort: true }), d({}));
+  for (const other of [{ runtimeArgs: ['run', 'start'] }, { port: 5174 }, { cwd: 'web' }, { env: { NODE_OPTIONS: '--require ./x.js' } }]) {
+    assert.notEqual(d(other), d({}), JSON.stringify(other));
+  }
   assert.deepEqual(coded.launchConfig({ name: 'srv', program: 'server.js', args: ['--verbose'] }).argv, ['node', 'server.js', '--verbose']);
   assert.equal(coded.launchConfig({ name: 'srv', program: 'server.js' }).port, 3000);                  // the desktop app's default
   const attach = coded.launchConfig({ name: 'mine', url: 'http://localhost:8080' });
@@ -137,7 +145,8 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
   writeLaunch(JSON.stringify({ configurations: [
     { name: 'web app', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev', '$(touch /tmp/pwned)'], cwd: 'web', port: 5173, env: { NODE_ENV: 'development' } },
     { name: 'attach', url: 'http://localhost:9000' }, { name: 'away', runtimeExecutable: 'x', cwd: '../..' }] }));
-  const r = result(await talk(SOCK, [open({ op: 'launch.start', name: 'web app', command: 'rm -rf /', argv: ['sh'] })]));
+  const listed = result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.find((x) => x.name === 'web app');
+  const r = result(await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: listed.digest, command: 'rm -rf /', argv: ['sh'] })]));
   assert.deepEqual([r.ok, r.name, r.window, r.port], [true, 'web app', 'web-app', 5173]);
   const calls = fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.trimEnd().split('\n'));
   assert.deepEqual(calls[0], ['has-session', '-t', '=claude']);
@@ -150,10 +159,34 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
   assert.deepEqual(w.slice(17), ['npm', 'run', 'dev', '$(touch /tmp/pwned)']);   // arguments, never parsed by a shell
   // the session runs now: no second new-session
   fs.writeFileSync(LOG, '');
-  await talk(SOCK, [open({ op: 'launch.start', name: 'web app' })]);
+  await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: listed.digest })]);
   assert.deepEqual(fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.split('\n')[0]), ['has-session', 'new-window']);
+  const digestOf = async (name) => result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.find((x) => x.name === name)?.digest;
   for (const [name, why] of [['attach', /no command/], ['away', /cwd/], ['nope', /no such entry/]]) {
-    assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name })])).error, why, name);
+    assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name, digest: (await digestOf(name)) || 'a'.repeat(64) })])).error, why, name);
   }
   assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name: 42 })])).error, /bad name/);
+  // no digest, or the digest of what was shown before the file changed (Claude, a command, anything in the sandbox
+  // swapped the command or added NODE_OPTIONS): refused, nothing started
+  fs.writeFileSync(LOG, '');
+  for (const dg of [undefined, 'x', 'A'.repeat(64)]) {
+    assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: dg })])).error, /digest|changed/, String(dg));
+  }
+  writeLaunch(JSON.stringify({ configurations: [
+    { name: 'web app', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev', '$(touch /tmp/pwned)'], cwd: 'web', port: 5173,
+      env: { NODE_ENV: 'development', NODE_OPTIONS: '--require /workspace/evil.js' } }] }));
+  assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: listed.digest })])).error, /changed since it was shown: review it again/);
+  assert.equal(fs.readFileSync(LOG, 'utf8'), '');
+});
+
+test('the code container\'s digest of an entry is bn-coded\'s', async (t) => {
+  let api;
+  try { api = await import('../server/api.mjs'); } catch { t.skip('the backend\'s dependencies are not installed here (code/test.sh runs it)'); return; }
+  writeLaunch(JSON.stringify({ configurations: [
+    { name: 'a', runtimeExecutable: 'node', runtimeArgs: ['x.js', 'ü'], port: 3000, env: { Z: '1', A: 'two words' }, cwd: '${workspaceFolder}/web' },
+    { name: 'b', program: 'server.js' }] }));
+  for (const c of result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations) {
+    const row = api.launchRow(c);
+    assert.equal(row.digest, c.digest, c.name);
+  }
 });

@@ -8,11 +8,22 @@ PORTAL_FALLBACK_PORT=8800
 
 # default_portal_host PROJECT -> bedrock-now.localhost for the default project, else <project>.localhost, so a
 # second copy (COMPOSE_PROJECT_NAME=bn-dev → bn-dev.localhost) never shares host names or cookies with the first.
+# A project named <x>-preview gets <x>-preview-portal.localhost: <x>-preview.localhost is the Code page previews' site
+# of an install at <x>.localhost (lib/code.sh), and a portal there would get those previews' requests with its cookies.
 default_portal_host() {
   local p="$1"
   if [ "$p" = "$DEFAULT_PROJECT" ]; then echo "$DEFAULT_PORTAL_HOST"; return 0; fi
   p="$(printf '%s' "$p" | tr '_' '-' | sed 's/-*$//')"   # "_" is not allowed in host names
+  case "$p" in *-preview) p="$p-portal" ;; esac
   printf '%s.localhost\n' "${p:-bedrock-now-2}"
+}
+
+# preview_site HOST -> 0 when HOST is on a site of the Code page's previews (its last two labels: <x>-preview.localhost)
+preview_site() {
+  local site
+  site="$(printf '%s\n' "$1" | awk -F. 'NF >= 2 { print $(NF-1) "." $NF }')"
+  case "$site" in *-preview.localhost) return 0 ;; esac
+  return 1
 }
 
 # valid_hostname NAME -> 0 for lowercase dot-separated labels of letters, digits and inner dashes
@@ -62,14 +73,16 @@ setup_portal_host() {
   check_app_hosts
 }
 
-# check_app_hosts — CHAT_HOST / ADMIN_HOST / FILES_HOST / TERMINAL_HOST, when set, follow PORTAL_HOST's rules, and all
-# the names must differ: Open WebUI and LiteLLM both keep a host-only cookie named "token".
+# check_app_hosts — CHAT_HOST / ADMIN_HOST / FILES_HOST / TERMINAL_HOST / CODE_HOST, when set, follow PORTAL_HOST's rules
+# (never on a *-preview.localhost site), and all the names must differ: Open WebUI and LiteLLM both keep a host-only
+# cookie named "token".
 check_app_hosts() {
   local k v seen; seen=" $(portal_host) "
-  for k in CHAT_HOST ADMIN_HOST FILES_HOST TERMINAL_HOST; do
+  for k in CHAT_HOST ADMIN_HOST FILES_HOST TERMINAL_HOST CODE_HOST; do
     v="$(get_env "$k")"
     if [ -n "$v" ]; then
       valid_hostname "$v" || die "$k=$v in .env is not a valid host name"
+      ! preview_site "$v" || die "$k=$v is on a *-preview.localhost site: those names are the Code page previews' (sandbox content would share a site with it) — pick another name"
       case "$v" in *.localhost) ;; *) [ "${BEDROCK_NOW_ALLOW_PUBLIC_HOST:-$(get_env BEDROCK_NOW_ALLOW_PUBLIC_HOST)}" = 1 ] ||
         die "$k=$v does not end in .localhost (same rule as PORTAL_HOST; BEDROCK_NOW_ALLOW_PUBLIC_HOST=1 allows it)" ;; esac
     fi
@@ -85,6 +98,10 @@ check_app_hosts() {
 check_portal_host() {
   local h="$1"
   valid_hostname "$h" || die "PORTAL_HOST=$h in .env is not a valid host name (lowercase letters, digits, dots and dashes, e.g. bedrock-now.localhost)"
+  # <x>-preview.localhost is where the Code page shows sandbox content (lib/code.sh code_preview_domain): a portal on
+  # such a site — this install's or another's — would share a site with those previews, and get their requests with
+  # its session cookie
+  ! preview_site "$h" || die "PORTAL_HOST=$h is on a *-preview.localhost site: names ending in -preview.localhost are where the Code page shows previews of sandbox content, and a portal there would share a site (and its cookies) with them. Use another name (e.g. ${h%-preview.localhost}-portal.localhost)"
   case "$h" in *.localhost) return 0 ;; esac
   [ "${BEDROCK_NOW_ALLOW_PUBLIC_HOST:-$(get_env BEDROCK_NOW_ALLOW_PUBLIC_HOST)}" = 1 ] ||
     die "PORTAL_HOST=$h does not end in .localhost. The portal is plain HTTP, so its session cookie has no Secure flag and is sent to $h and every *.$h — a name anything else can answer for could collect it. Use a name ending in .localhost (e.g. bedrock-now.localhost), or set BEDROCK_NOW_ALLOW_PUBLIC_HOST=1 in .env if $h is yours and resolves only to this machine."

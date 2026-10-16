@@ -26,10 +26,14 @@ All notable changes to bedrock-now are documented here. The format follows
   `localhost` links in Claude's answers opening the preview, a toast when a new server listens, and **Ports** in the
   status bar (⋯ → *Ports & previews* on a phone): the sandbox's listening servers with their process, Preview, Stop,
   any other port, and the entries of the workspace's `.claude/launch.json` (the Claude Code desktop app's format) with
-  **Start** (in a new window of the terminal, `PORT` set; its preview opens once it listens). Hot reload works (Vite,
+  **Start** (shown in full first — every argument, the folder, every variable with its value, a warning on those that
+  run code before the command — then in a new window of the terminal, `PORT` set; refused when the file changed after
+  you looked; its preview opens once it listens). Hot reload works (Vite,
   Next, webpack: their host and origin checks see `localhost:<port>`). Each preview is on a site of its own,
   `p<port>-<capability>.<PREVIEW_DOMAIN>` (`bedrock-now-preview.localhost`, derived from `PORTAL_HOST`): no
-  bedrock-now cookie reaches it, its requests to the other hosts are cross-site, and the capability — minted by the
+  bedrock-now cookie reaches it, its requests to the other hosts are cross-site (`./stack` now refuses a `PORTAL_HOST`
+  or app host on a `*-preview.localhost` site, and a project named `<x>-preview` gets `<x>-preview-portal.localhost`),
+  and the capability — minted by the
   portal for the Code page's unlock — names one port and ends with that unlock, Sign out or a new password. The path:
   the main Caddy (`caddy/preview-on.caddy`, the portal's check on every request) → the terminal's gateway (`:7682`,
   a secret header of its own, `PREVIEW_PROXY_SECRET`) → `bn-preview` in the sandbox (`terminal/bin/bn-preview.mjs`,
