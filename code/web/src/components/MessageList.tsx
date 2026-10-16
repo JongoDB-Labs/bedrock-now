@@ -82,9 +82,9 @@ const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 
           <button
             type="button"
             class="msg-fork icon-btn tiny"
-            title="Fork from here: a new session with the conversation up to this prompt"
+            title="Fork from here: a new session with the conversation before this prompt, the prompt back in the box to change"
             aria-label="Fork from here"
-            onClick={() => void forkFrom(session, it.uuid as string)}
+            onClick={() => void forkFrom(session, it.uuid as string, it.text)}
             data-testid="msg-fork"
           >
             <Icon name="fork" size={13} />

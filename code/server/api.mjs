@@ -91,6 +91,16 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return store;
   };
 
+  // The message a prompt of yours answered to (its parent in the transcript): a fork "before" that prompt resumes
+  // there. null: it was the conversation's first prompt. 404: no such prompt in the transcript.
+  async function parentOf(id, prompt) {
+    if (!isUuid(id) || !isUuid(prompt)) throw new HttpError(400, 'bad session or prompt id');
+    const { result } = await call({ op: 'sessions.load', id });
+    const e = (Array.isArray(result.entries) ? result.entries : []).find((x) => x && typeof x === 'object' && x.uuid === prompt && x.type === 'user');
+    if (!e) throw new HttpError(404, 'that prompt is not in the session\'s transcript (only its last 3 MiB are read)');
+    return isUuid(e.parentUuid) ? e.parentUuid : null;
+  }
+
   // A transcript as events: offset/limit count the SDK's messages (total: how many there are), each message gives one
   // or more events (`messages` and `events` are the same list). tail: the last `tail` messages (more: earlier ones)
   async function messages(id, offset, limit, tail) {
@@ -331,7 +341,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return action(['mcp', 'remove', name, '--scope=user'], 60000);
   }
 
-  return { listSessions, messages, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, memory, memoryWrite, plugins, available, pluginAction,
+  return { listSessions, messages, parentOf, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove };
 }
 

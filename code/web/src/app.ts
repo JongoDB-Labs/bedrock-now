@@ -201,6 +201,7 @@ export const socket = new api.Socket({
   },
   onOpen() {
     attached.clear();
+    infoAsked.clear();
     // after a reconnect the backend may have restarted: learn which sessions it still has before re-attaching
     const again = opened++ > 0;
     void (async () => {
@@ -257,10 +258,19 @@ function attach(id: string): void {
   if (needHistory.has(id) && socket.isOpen) historyAfterReplay(id, 700);
   if (!attached.has(id)) {
     attached.add(id);
-    socket.send({ type: 'commands', session: id });
-    socket.send({ type: 'models', session: id });
-    socket.send({ type: 'context', session: id });
+    askInfo(id);
   }
+}
+
+/** The running process's commands, models and context (a session without one has none: asked once it runs). */
+const infoAsked = new Set<string>();
+function askInfo(id: string): void {
+  const v = get().views[id];
+  if (!v || v.state === 'ended' || v.state === 'closed' || v.state === 'error' || infoAsked.has(id)) return;
+  infoAsked.add(id);
+  socket.send({ type: 'commands', session: id });
+  socket.send({ type: 'models', session: id });
+  socket.send({ type: 'context', session: id });
 }
 
 const spendTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
@@ -432,6 +442,8 @@ function handle(m: ServerMsg): void {
         return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode };
       });
       if (m.state === 'idle') updateView(m.session, (v) => ({ ...v, items: v.items.map((it) => ((it.t === 'assistant' || it.t === 'thinking') && it.streaming ? { ...it, streaming: false } : it)) }));
+      if (over) infoAsked.delete(m.session);
+      else askInfo(m.session);
       announce();
       return;
     }
@@ -613,9 +625,9 @@ async function reloadHistory(id: string, fresh: boolean, from = id, upTo?: strin
     const h = await api.getMessages(from, upTo ? { offset: 0, limit: 2000 } : { tail: HISTORY_PAGE });
     let events = h.events;
     if (upTo) {
-      // a fork holds the conversation up to and including that prompt (the SDK's resumeSessionAt)
+      // a fork holds the conversation before that prompt (resumed at the message it answered to)
       const at = events.findIndex((e) => e.kind === 'user' && e.uuid === upTo);
-      if (at >= 0) events = events.slice(0, at + 1);
+      if (at >= 0) events = events.slice(0, at);
     }
     updateView(id, (v) => mergeHistory(fresh ? { ...v, items: [], turns: [] } : v, events, Date.now(), { offset: upTo ? 0 : h.offset, truncated: h.truncated }));
   } catch (e) {
@@ -677,13 +689,14 @@ export function resumeSession(id: string, fork = false): Promise<void> {
   return whileOpening(openExisting(id, fork));
 }
 
-/** A new session from a session's conversation up to one of its prompts (the prompt's uuid). */
-export function forkFrom(id: string, at: string): Promise<void> {
-  if (!isUuid(at)) return Promise.resolve();
-  return whileOpening(openExisting(id, true, at));
+/** A new session from a session's conversation before one of its prompts (the prompt's uuid), like the CLI's
+ *  rewind: the prompt's text comes back to the prompt box, to send again or change. */
+export function forkFrom(id: string, before: string, text = ''): Promise<void> {
+  if (!isUuid(before)) return Promise.resolve();
+  return whileOpening(openExisting(id, true, before, text));
 }
 
-async function openExisting(id: string, fork: boolean, at?: string): Promise<void> {
+async function openExisting(id: string, fork: boolean, before?: string, text = ''): Promise<void> {
   const s = get();
   if (!fork && s.views[id] && s.views[id].state !== 'closed') return activate(id);
   if (s.opening) return;
@@ -692,7 +705,7 @@ async function openExisting(id: string, fork: boolean, at?: string): Promise<voi
     const info = s.sessions.find((x) => x.id === id);
     const src = s.views[id];
     const model = (fork && src?.model) || defaultModel(s);
-    const { id: newId, existing } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, at });
+    const { id: newId, existing, fresh } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, before });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -718,10 +731,10 @@ async function openExisting(id: string, fork: boolean, at?: string): Promise<voi
     setPrefs((p) => ({ ...p, lastSession: newId }));
     loadedHistory.add(newId);
     // a resumed process starts with an empty ring buffer, so the transcript can be loaded right away (a fork's from
-    // the session it came from, up to where it forked)
-    await reloadHistory(newId, true, id, at);
+    // the session it came from, up to the prompt it forked before; one before the first prompt has none)
+    if (!fresh) await reloadHistory(newId, true, id, before);
     attach(newId);
-    set((x) => ({ ...x, focusComposer: x.focusComposer + 1 }));
+    set((x) => ({ ...x, focusComposer: x.focusComposer + 1, restore: text ? { n: (x.restore?.n ?? 0) + 1, text } : x.restore }));
     void refreshSessions();
   } catch (e) {
     toast(`Could not open the session: ${errText(e)}`, 'error');
@@ -925,8 +938,8 @@ export function reloadPlugins(): void {
   toast('Reloading plugins…');
 }
 export function requestMcp(): void {
-  const id = get().active;
-  if (id) socket.send({ type: 'mcp', session: id });
+  const v = activeView();
+  if (v && v.state !== 'ended' && v.state !== 'closed' && v.state !== 'error') socket.send({ type: 'mcp', session: v.id });
 }
 /** Reconnect an MCP server, or switch it off/on, in the active session (answered by a fresh `mcp` list). */
 export function mcpReconnect(server: string): void {

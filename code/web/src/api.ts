@@ -620,21 +620,25 @@ export interface OpenOptions {
   resume?: string;
   fork?: boolean;
   at?: string;
+  /** with resume + fork: the conversation before this prompt of yours (the backend resumes at its parent) */
+  before?: string;
 }
 /** POST /api/sessions -> its id, and `existing` when the backend already had that session open (then it is the
  *  same process: attach to it, never start a second one). A full house answers 409 (shown as the error). */
-export async function openSession(opts: OpenOptions): Promise<{ id: string; existing: boolean }> {
+export async function openSession(opts: OpenOptions): Promise<{ id: string; existing: boolean; fresh: boolean }> {
   const body: Obj = { mode: opts.mode };
   if (opts.model) body.model = opts.model;
   if (opts.effort) body.effort = opts.effort;
   if (opts.resume) body.resume = opts.resume;
   if (opts.fork) body.fork = true;
   if (opts.at) body.at = opts.at;
+  if (opts.before) body.before = opts.before;
   // this page has a Stop per background task, so an interrupt spares them (the backend's taskStop)
   body.taskStop = true;
   const o = await request('POST', '/api/sessions', body);
   if (!isUuid(o.id)) throw new ApiError(502, 'The server answered without a valid session id.');
-  return { id: o.id.toLowerCase(), existing: o.existing === true };
+  // fresh: a fork before the conversation's first prompt is a new, empty session
+  return { id: o.id.toLowerCase(), existing: o.existing === true, fresh: o.fresh === true };
 }
 export async function closeSession(id: string): Promise<void> {
   if (!isUuid(id)) return;

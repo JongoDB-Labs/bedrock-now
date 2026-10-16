@@ -552,7 +552,7 @@ def ui_page(ctx, name, device="desktop", session=None):
     page.wait_for_load_state("domcontentloaded")
     built_page(page)
     see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
-    ctx.code_ui_rec = rec
+    ctx.code_ui_rec, ctx.code_ui_page = rec, page
     return page, rec
 
 
@@ -568,10 +568,22 @@ def turns(page, n, timeout=150000):
 
 
 def saved(fn):
-    """The check's network/console log is kept even when it fails (the Recorder of its last page)."""
+    """The check's network/console log is kept even when it fails (the Recorder of its last page); a failure also
+    leaves a screenshot and what the page showed last (out/browser/shots/fail-*.png, out/browser/fail-*.txt)."""
     def run(ctx):
         try:
             return fn(ctx)
+        except Exception:
+            page = getattr(ctx, "code_ui_page", None)
+            if page is not None:
+                try:
+                    page.screenshot(path=str(SHOTS / f"fail-{fn.__name__}.png"))
+                    txt = page.evaluate("""() => [document.querySelector('[data-testid=statusbar]')?.innerText || '',
+                      document.querySelector('[data-testid=chat]')?.innerText.slice(-3000) || ''].join('\\n----\\n')""")
+                    (SHOTS.parent / f"fail-{fn.__name__}.txt").write_text(txt, encoding="utf-8")
+                except Exception:  # noqa: BLE001 — diagnostics never hide the failure
+                    pass
+            raise
         finally:
             rec = getattr(ctx, "code_ui_rec", None)
             if rec is not None:
@@ -899,8 +911,8 @@ def ui_queue_clear(ctx):
     n = page.get_by_test_id("turn-end").count()
     users = page.get_by_test_id("msg-user").count()
     # a prompt typed while Claude works waits below the answer, then runs as its own turn
-    ask(page, "Count from 1 to 60, one number per line, nothing else.")
-    see(page.locator(".msg-claude.streaming")).to_have_count(1, timeout=120000)
+    ask(page, "Count from 1 to 300, one number per line, nothing else.")
+    see(page.get_by_test_id("session-state")).to_contain_text("working", timeout=10000)
     ask(page, "Reply with exactly the word: queued")
     see(page.locator("[data-testid=msg-user].queued")).to_have_count(1, timeout=10000)
     shot(page, "66-code-ui-queued")
@@ -918,8 +930,9 @@ def ui_queue_clear(ctx):
     see(page.get_by_test_id("msg-user")).to_have_count(0)
     see(page.get_by_test_id("model-picker")).to_contain_text("Haiku")
     expect(page.get_by_test_id("mode-picker").inner_text() == mode, f"mode {page.get_by_test_id('mode-picker').inner_text()!r}, was {mode!r}")
-    new = page.evaluate("(JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || ''")
-    expect(new and new != sid, f"/clear kept the session ({new})")
+    page.wait_for_function("(old) => { const s = (JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || '';"
+                           " return s.length === 36 && s !== old; }", arg=sid, timeout=10000)
+    new = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
     c = Code.on(page, rec, goto=False)
     st = state_of(c, sid)
     expect(st, "the cleared session is gone from the backend")
@@ -967,7 +980,7 @@ def ui_plan(ctx):
         page.wait_for_timeout(1000)
     expect(r and r["status"] == 200 and "planned" in r["json"]["text"], f"after approving the plan: {r and r['status']}")
     see(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
-    csp_clean(page, rec)
+    csp_clean(page, rec, [r"^404 GET .*/api/fs/file\?path=" + re.escape(target) + "$"])   # (polled until Claude wrote it)
     return f"Plan mode → the plan card (approve + accept edits / approve + ask / keep planning) → approved with Accept edits → {target} written, mode Accept edits"
 
 
@@ -986,18 +999,22 @@ def ui_fork(ctx):
     second.hover()
     second.get_by_test_id("msg-fork").click()
     see(page.locator(".chat-head .pane-title")).to_contain_text("Fork of", timeout=30000)
-    # the fork holds the conversation before that prompt; a new prompt continues from there
+    # the fork holds the conversation before that prompt (as the CLI's rewind), the prompt back in the box to change;
+    # a new prompt continues from there
     see(page.get_by_test_id("msg-user").first).to_contain_text("Reply with exactly the word: pong", timeout=30000)
     see(page.get_by_test_id("msg-user")).to_have_count(1)
+    see(page.get_by_test_id("prompt")).to_have_value(re.compile(r"^Use the Bash tool"))
+    page.wait_for_function("(old) => { const s = (JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || '';"
+                           " return s.length === 36 && s !== old; }", arg=sid, timeout=10000)
     fork = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
-    expect(fork != sid, "the fork is the same session")
     n = page.get_by_test_id("turn-end").count()
     ask(page, "Which single word did you reply with to my first message? Reply with that word only.")
     turns(page, n + 1)
     expect("pong" in last_answer(page).lower(), f"the fork does not know the first answer: {last_answer(page)!r}")
     shot(page, "68-code-ui-fork")
     csp_clean(page, rec)
-    return f"Fork from the second prompt → a new session {fork[:8]} (Fork of …) with the conversation before it; it remembers the first answer ({last_answer(page)!r})"
+    return (f"Fork from the second prompt → a new session {fork[:8]} (Fork of …) with the conversation before it, the prompt "
+            f"back in the box; it remembers the first answer ({last_answer(page)!r})")
 
 
 @check("browser", "code-ui-memory-find-rewind")
@@ -1024,8 +1041,10 @@ def ui_memory_find_rewind(ctx):
     m = c.api("GET", "/api/memory?scope=project")["json"]
     expect(m["exists"] and "the e2e suite was here" in m["text"], f"memory after Save: {m}")
     shot(page, "71-code-ui-memory")
-    dlg.get_by_role("button", name="Close").click()
+    dlg.locator(".dlg-head button[aria-label=Close]").click()
+    see(page.locator("dialog[open]")).to_have_count(0)   # (until it is gone the page behind it is inert)
     ask(page, "# the e2e marker is blue")
+    see(page.locator(".toast", has_text="Added to /workspace/CLAUDE.md")).to_be_visible(timeout=10000)
     t0 = time.time()
     while time.time() - t0 < 20 and "the e2e marker is blue" not in c.api("GET", "/api/memory?scope=project")["json"]["text"]:
         page.wait_for_timeout(500)

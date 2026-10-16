@@ -193,3 +193,12 @@ test('"# text" on one line is a memory line; CLAUDE.md gets it on a line of its 
   assert.equal(appendMemory('# Notes', 'a'), '# Notes\n- a\n');
   assert.equal(appendMemory('# Notes\n', 'b'), '# Notes\n- b\n');
 });
+
+test('palette: the page\'s own commands are listed even when the session\'s list lacks them, and rank first typed in full', () => {
+  const session = [{ name: 'workflow-authoring', description: 'Use when you resume a workflow; clear steps', argumentHint: '' }];
+  const all = mergeCommands(session, []);
+  for (const n of ['clear', 'new', 'reset', 'resume']) {
+    assert.ok(all.some((c) => c.name === n), n);
+    assert.equal(rankCommands(all, n)[0].name, n);
+  }
+});

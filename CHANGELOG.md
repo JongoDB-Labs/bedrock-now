@@ -62,7 +62,8 @@ All notable changes to bedrock-now are documented here. The format follows
   session; servers of your own (stdio, HTTP, SSE) added to or removed from the sandbox's user configuration — a stdio
   server's command runs inside the sandbox only — and a *Restart this session* to load them.
 - **More of the terminal in the Code page**: plan approval (approve and accept edits, approve and keep asking, or keep
-  planning with a note), fork from any of your prompts, file checkpoints (*Restore files to here*, with a dry run
+  planning with a note), fork before any of your prompts (as the terminal's rewind: the prompt comes back to the box
+  to change), file checkpoints (*Restore files to here*, with a dry run
   first), the memory editor for `CLAUDE.md` (workspace and your own in the sandbox) with the `# ` shortcut, an `@`
   picker that searches the whole workspace, a pinned to-do list, export as Markdown, opt-in notifications, prompts
   queued while Claude works, `/clear`/`/new`/`/reset` (a new session with the same settings) and `/resume`.

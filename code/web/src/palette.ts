@@ -77,7 +77,10 @@ export const BUILTIN_COMMANDS: Command[] = [
   { name: 'context', description: 'Show what fills the context window', argumentHint: '' },
   { name: 'cost', description: 'Show the token use of this session', argumentHint: '' },
   { name: 'model', description: 'Switch the model', argumentHint: '[model]' },
-  { name: 'clear', description: 'Start over with an empty conversation', argumentHint: '' },
+  { name: 'clear', description: 'A new session with the same model and mode (this one stays in the list)', argumentHint: '' },
+  { name: 'new', description: 'A new session with the same model and mode', argumentHint: '' },
+  { name: 'reset', description: 'A new session with the same model and mode', argumentHint: '' },
+  { name: 'resume', description: 'Open the session list', argumentHint: '' },
   { name: 'init', description: 'Write a CLAUDE.md for this workspace', argumentHint: '' },
   { name: 'review', description: 'Review a pull request', argumentHint: '' },
 ];

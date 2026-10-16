@@ -90,9 +90,11 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const attsRef = useRef<Attachment[]>([]);
   attsRef.current = atts;
 
-  // a prompt the backend refused comes back into an empty box
+  // a prompt the backend refused (or a fork's prompt) comes back into an empty box — once: not again on a remount
+  const restored = useRef(restore?.n ?? 0);
   useEffect(() => {
-    if (!restore) return;
+    if (!restore || restore.n === restored.current) return;
+    restored.current = restore.n;
     setText((t) => (t.trim() ? t : restore.text));
   }, [restore?.n]);
 

@@ -384,7 +384,8 @@ per browser.
   (`~/.claude/CLAUDE.md`); a one-line prompt starting with `# ` adds that line to the workspace's `CLAUDE.md`, as in
   the terminal.
 - **Checkpoints.** Claude's file changes are tracked per prompt: *Restore files to here* on one of your prompts shows
-  which files would go back (a dry run), then puts them back. *Fork* on a prompt starts a new session from there.
+  which files would go back (a dry run), then puts them back. *Fork* on a prompt starts a new session with the
+  conversation before it and puts the prompt back in the box to change, as the terminal's rewind does.
 - **Permission prompts.** In the *Ask* mode a command or file change Claude wants to make asks first (reading the
   workspace and read-only commands such as `ls` or `git status` do not; in *Accept edits* file changes do not
   either), in a card that says what would run or change — **Allow once**, **Always** (the rule, shown before you

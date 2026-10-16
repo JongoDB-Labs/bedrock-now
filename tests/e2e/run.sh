@@ -26,8 +26,8 @@
 #                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
 #                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
 #   --code           also turn on the Code page (./stack code enable; E2E_CODE=1 does the same; implies --terminal):
-#                    its isolation probe, its Caddy combinations, the browser suite's code checks (a few Haiku turns,
-#                    ~$0.02 on the terminal's key, whose budget becomes $0.15) and, after the suite, a hostile stand-in
+#                    its isolation probe, its Caddy combinations, the browser suite's code checks (a few dozen Haiku
+#                    turns, ~$0.14 on the terminal's key, whose budget becomes $0.25) and, after the suite, a hostile stand-in
 #                    on bn-coded's socket
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
@@ -90,8 +90,9 @@ done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
 # The terminal's claude-bedrock -p (browser suite) is a second Claude Code run, on the terminal's own key.
 if [ "$TERMINAL" = 1 ]; then BUDGETS="$BUDGETS BUDGET_TERMINAL=0.06"; SPEND_LIMIT="0.16"; fi
-# The Code page's checks: a handful of Haiku turns (each new session writes ~26k tokens of prompt cache) on that key.
-if [ "$CODE" = 1 ]; then BUDGETS="${BUDGETS% BUDGET_TERMINAL=*} BUDGET_TERMINAL=0.15"; SPEND_LIMIT="0.25"; fi
+# The Code page's checks: a few dozen Haiku turns (each new session writes ~26k tokens of prompt cache) on that key —
+# about $0.14 of it in a full run, with the terminal's claude-bedrock -p after them on the same key.
+if [ "$CODE" = 1 ]; then BUDGETS="${BUDGETS% BUDGET_TERMINAL=*} BUDGET_TERMINAL=0.25"; SPEND_LIMIT="0.35"; fi
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
 
 mkdir -p "$OUT" || exit 2

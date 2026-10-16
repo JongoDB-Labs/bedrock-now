@@ -189,6 +189,34 @@ test('sessions: the sandbox\'s rows checked (bogus ids, NaN dropped), history th
   assert.equal((await req('POST', `/api/sessions/${SID}/title`, { body: { title: 'a\nb' } })).status, 400);
 });
 
+test('fork before a prompt: resumed at the message it answered to; its first prompt gives a fresh session', async () => {
+  const P1 = 'a0000000-0000-4000-8000-000000000001', A1 = 'a0000000-0000-4000-8000-000000000002';
+  const saved = answers['sessions.load'];
+  answers['sessions.load'] = () => ({ result: { entries: [
+    { type: 'user', uuid: P1, parentUuid: null, message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', uuid: A1, parentUuid: P1, message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+    { type: 'user', uuid: 'a0000000-0000-4000-8000-000000000003', parentUuid: A1, message: { role: 'user', content: 'again' } },
+    { type: 'user', uuid: 'a0000000-0000-4000-8000-000000000004', parentUuid: '../x', message: { role: 'user', content: 'odd' } }] } });
+  try {
+    let r = await req('POST', '/api/sessions', { body: { resume: SID, fork: true, before: 'a0000000-0000-4000-8000-000000000003', mode: 'default' } });
+    assert.equal(r.status, 200, r.text);
+    const o = srv.mgr.get(r.json.id).q.options;
+    assert.deepEqual([o.resume, o.forkSession, o.resumeSessionAt, r.json.id !== SID, r.json.fresh], [SID, true, A1, true, undefined]);
+    r = await req('POST', '/api/sessions', { body: { resume: SID, fork: true, before: P1 } });
+    const f = srv.mgr.get(r.json.id).q.options;
+    assert.deepEqual([r.json.fresh, f.resume, f.sessionId === r.json.id], [true, undefined, true]);
+    r = await req('POST', '/api/sessions', { body: { resume: SID, fork: true, before: 'a0000000-0000-4000-8000-000000000004' } });
+    assert.equal(r.json.fresh, true);   // (a parent that is not an id: from the start)
+    assert.equal((await req('POST', '/api/sessions', { body: { resume: SID, fork: true, before: 'a0000000-0000-4000-8000-000000000009' } })).status, 404);
+    for (const body of [{ resume: SID, before: P1 }, { fork: true, before: P1 }, { resume: SID, fork: true, before: '../x' }, { resume: SID, fork: true, before: P1, at: A1 }]) {
+      assert.equal((await req('POST', '/api/sessions', { body })).status, 400, JSON.stringify(body));
+    }
+  } finally {
+    answers['sessions.load'] = saved;
+    for (const x of srv.mgr.list()) if (x.id !== SID) srv.mgr.get(x.id)?.close();
+  }
+});
+
 test('files: list (bad names dropped, sorted), text vs binary, write with the precondition, upload, delete, errors', async () => {
   let r = await req('GET', '/api/fs?path=');
   assert.deepEqual(r.json.entries.map((e) => [e.name, e.type]), [['a', 'dir'], ['b.txt', 'file'], ['x', 'other']]);

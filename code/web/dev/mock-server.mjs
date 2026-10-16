@@ -979,14 +979,19 @@ async function api(req, res, url) {
     if (sessions.size >= 4) return json(res, 409, { error: '4 sessions are working or waiting for you: stop or close one first' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
     const src = b.fork ? (sessions.get(b.resume)?.transcript ?? saved.get(b.resume)?.transcript) : null;
+    let fresh;
     if (src) {
-      // a fork from a prompt (at): the conversation up to and including it, as resumeSessionAt keeps it
-      const at = typeof b.at === 'string' ? src.findIndex((e) => e.type === 'user' && e.uuid === b.at) : -1;
-      s.transcript = at >= 0 ? src.slice(0, at + 1) : src.slice();
+      // a fork before a prompt: the conversation up to the message it answered to (its first prompt: a fresh one);
+      // at: up to and including that message, as resumeSessionAt keeps it
+      const before = typeof b.before === 'string' ? src.findIndex((e) => e.type === 'user' && e.uuid === b.before) : -1;
+      if (typeof b.before === 'string' && before < 0) return json(res, 404, { error: 'that prompt is not in the session\'s transcript' });
+      const at = typeof b.at === 'string' ? src.findIndex((e) => e.uuid === b.at) : -1;
+      s.transcript = before >= 0 ? src.slice(0, before) : at >= 0 ? src.slice(0, at + 1) : src.slice();
+      if (before === 0) fresh = true;
     }
     sessions.set(id, s);
     log('open', id, b.resume ? (b.fork ? 'fork of ' + b.resume : 'resume') : 'new', s.model, s.mode);
-    return json(res, 200, { id, existing: false });
+    return json(res, 200, { id, existing: false, ...(fresh ? { fresh } : {}) });
   }
   let mm = /^\/api\/sessions\/([^/]+)(\/messages|\/title)?$/.exec(p);
   if (mm) {

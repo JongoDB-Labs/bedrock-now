@@ -19,8 +19,12 @@
 //                                           offset/limit for those); without tail, more: there are later ones.
 //                                           truncated: only the transcript's last 3 MiB (and at most 20,000 entries,
 //                                           50 compaction boundaries) was read
-//   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, taskStop?: bool}
-//                                           -> {id, existing}: opens a session (new, resume, fork, resume-at).
+//   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, before?: PROMPT_UUID,
+//                                           taskStop?: bool}
+//                                           -> {id, existing, fresh?}: opens a session (new, resume, fork, resume-at).
+//                                           before (with resume + fork): a fork of the conversation BEFORE that prompt
+//                                           of yours (resumed at the message it answered to); its first prompt gives a
+//                                           new session (fresh: true); 404 when the prompt is not in the transcript.
 //                                           taskStop: the page has a Stop per background task (stop_task), so an
 //                                           interrupt spares them (the SDK's perTaskStopAffordance). Resuming
 //                                           one that is open here returns it (existing: true) instead of a second

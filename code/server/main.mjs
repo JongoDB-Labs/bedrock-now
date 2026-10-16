@@ -192,8 +192,14 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
     if (p === '/api/sessions' && m === 'POST') {
       const b = await readJson(req);
-      return send(res, 200, mgr.open({ model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined,
-        resume: b.resume ?? undefined, fork: b.fork === true, at: b.at ?? undefined, taskStop: b.taskStop === true }));
+      const base = { model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined, taskStop: b.taskStop === true };
+      if (b.before !== undefined && b.before !== null) {
+        // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
+        if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
+        const at = await api.parentOf(b.resume, b.before);
+        return send(res, 200, at ? mgr.open({ ...base, resume: b.resume, fork: true, at }) : { ...mgr.open(base), fresh: true });
+      }
+      return send(res, 200, mgr.open({ ...base, resume: b.resume ?? undefined, fork: b.fork === true, at: b.at ?? undefined }));
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/messages$/.exec(p)) && m === 'GET') {
       const n = (k) => (q.has(k) && /^[0-9]{1,7}$/.test(q.get(k)) ? Number(q.get(k)) : undefined);
