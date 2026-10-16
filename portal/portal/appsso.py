@@ -14,7 +14,9 @@ to the browser on the app's own host — never in a URL:
 /auth/verify (Caddy's check before every request) decides when, for page loads only (a script's requests pass as
 they are), sending them to /.bn/sso on the same host (Caddy → /auth/app-sso):
 - Admin: no LiteLLM session in the browser (its `token` cookie), or one the portal handed out for another portal
-  sign-in or other credentials (a signed marker cookie says which), or LiteLLM's own sign-in page.
+  sign-in or other credentials (a signed marker cookie says which), or LiteLLM's own sign-in page. Not right after
+  LiteLLM's own Logout, though: a load by its own page (Sec-Fetch-Site: same-origin) without its session but with a
+  valid marker goes to its form instead (see target).
 - Files: every load of a console page, since the console's session lives in localStorage, out of the server's sight
   (its own Logout clears it). A first page checks there, in the browser, for credentials from this portal session
   and these keys; only without them does it ask for new ones (?mint=1). The hand-off's own next step (a pass cookie
@@ -354,10 +356,13 @@ def _return_to(app: str, query: str, host: str) -> str:
     return safe_path(app, (u.path or "/") + (f"?{u.query}" if u.query else "")) if same else START[app]
 
 
-def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = False, passed: bool = False) -> str | None:
-    """The /.bn/sso URL for this page load (X-Forwarded-Uri), or None to let it through to the app.
+def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = False, passed: bool = False,
+           own: bool = False) -> str | None:
+    """Where this page load (X-Forwarded-Uri) goes first — /.bn/sso, or for Admin right after LiteLLM's own Logout its
+    form — or None to let it through to the app.
     Admin: mark is the marker's state, has_token whether LiteLLM's own `token` cookie is there (a session from its
-    form). Files: passed is the pass cookie of a hand-off a moment ago."""
+    form), own whether the app's own page started this load (Sec-Fetch-Site: same-origin). Files: passed is the pass
+    cookie of a hand-off a moment ago."""
     try:
         u = urlsplit(uri or "/")
     except ValueError:
@@ -373,6 +378,13 @@ def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = 
             return None
     elif not sign_in and has_token and mark != "stale":   # LiteLLM's session: from the portal, or its own form
         return None
+    elif not has_token and mark == "valid" and own:
+        # LiteLLM's own Logout ended the session the portal handed this browser (its `token` cookie is gone, the
+        # portal's marker is not), and its page moves on by itself: to PROXY_LOGOUT_URL (?sso=off) — or, when its UI
+        # has not fetched that setting yet (Logout right after the page loaded, a slow LiteLLM), by reloading the page
+        # it is on, which would sign in again at once. Its own form either way, as its Logout means. Opening Admin
+        # again (the portal's frame or pop-out, a link, the address bar: never same-origin) signs in as before.
+        return f"{SIGN_IN[app]}/?{OFF}"
     nxt = _return_to(app, u.query, host) if sign_in else safe_path(app, uri)
     return "/.bn/sso?next=" + quote(nxt, safe="")
 

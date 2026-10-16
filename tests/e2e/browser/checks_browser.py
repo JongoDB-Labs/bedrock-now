@@ -875,6 +875,33 @@ def drop_pass(page):
     page.context.add_cookies([{"name": "bn_sso_pass", "value": "", "domain": host_of("files"), "path": "/", "expires": 1}])
 
 
+def _admin_loads(events) -> list[str]:
+    """The Admin host's page loads (frame or window) among EVENTS: "status path" each."""
+    return [f"{e['status']} {url_path(e['url'])}" for e in events
+            if e["t"] == "resp" and e.get("type") == "document" and e["url"].startswith(origin("admin") + "/")]
+
+
+def litellm_logout(page, fl, rec, label: str) -> list[dict]:
+    """LiteLLM's own Logout (account menu) in the Admin frame FL: its own form shows (?sso=off), never a new automatic
+    sign-in. Returns the page's events from the click on; on failure says where LiteLLM went instead."""
+    since = len(rec.events)
+    fl.get_by_role("button", name=re.compile(r"^Account menu")).click()
+    fl.get_by_text(re.compile(r"^(Log ?out|Sign ?out)$", re.I)).first.click()
+    try:
+        fl.locator(SSO_FORM["admin"]).wait_for(timeout=30000)
+    except Exception as e:  # noqa: BLE001 — explained below
+        shot(page, f"{label}-after-logout", mask_locators=[fl.locator("input")])
+        where = url_path(frame_of(page, "admin").url)
+        raise AssertionError(f"LiteLLM's Logout: no form within 30 s ({type(e).__name__}), the frame is at {where}; page "
+                             f"loads since the click: {_admin_loads(rec.events[since:]) or 'none'} "
+                             f"(see shots/{label}-after-logout.png)") from None
+    after = rec.events[since:]
+    loads = _admin_loads(after)
+    expect(not any("/.bn/sso" in x for x in loads), f"LiteLLM's Logout went through the automatic sign-in: {loads}")
+    expect("sso=off" in frame_of(page, "admin").url, f"after LiteLLM's Logout: {frame_of(page, 'admin').url}")
+    return after
+
+
 @check("browser", "admin-litellm-ui")
 def admin_ui(ctx):
     need("litellm")
@@ -906,10 +933,7 @@ def admin_ui(ctx):
     shot(page, "12-admin-keys")
     # LiteLLM's own Logout ends its session and shows its own form (PROXY_LOGOUT_URL: ?sso=off), not a new sign-in
     keys_before = tok[0]["value"]
-    fl.get_by_role("button", name=re.compile(r"^Account menu")).click()
-    fl.get_by_text(re.compile(r"^(Log ?out|Sign ?out)$", re.I)).first.click()
-    fl.locator(SSO_FORM["admin"]).wait_for(timeout=30000)
-    expect("sso=off" in frame_of(page, "admin").url, f"after LiteLLM's Logout: {frame_of(page, 'admin').url}")
+    litellm_logout(page, fl, rec, "admin-frame")
     after = [c["value"] for c in page.context.cookies(origin("admin")) if c["name"] == "token"]
     expect(keys_before not in after, "LiteLLM's Logout left its session cookie")
     shot(page, "12a-admin-own-logout", mask_locators=[fl.locator("input")])
@@ -919,6 +943,44 @@ def admin_ui(ctx):
     expect(not probs, f"errors: {probs}")
     return (f"{how}; token cookie host-only, Lax, readable by the dashboard; marker HttpOnly, Strict; Virtual Keys with "
             "claude-code/open-webui/setup and their budgets; LiteLLM's Logout → its own form")
+
+
+@check("browser", "admin-litellm-logout-early")
+def admin_logout_early(ctx):
+    """LiteLLM's Logout before its UI has its own settings (PROXY_LOGOUT_URL comes with them: a slow LiteLLM, or Logout
+    right after the page loads) reloads the page it is on instead; the portal sends that load to LiteLLM's form as well,
+    never into a new automatic sign-in. The settings request is refused here, so this path runs every time. Admin opened
+    again (the portal page reloaded) signs in as before."""
+    need("litellm")
+    page, rec = ctx.page("admin-logout-early")
+    ui_settings = re.compile("^" + re.escape(origin("admin")) + r"/sso/get/ui_settings")
+    page.route(ui_settings, lambda route: route.abort())
+    login(page)
+    page.click(".tab[data-tab=admin]")
+    fl = page.frame_locator("iframe[data-app=admin]")
+    sso_signed_in(page, fl, rec, "admin", "Admin tab, LiteLLM without its settings", "admin-early")
+    reloaded = [x for x in _admin_loads(litellm_logout(page, fl, rec, "admin-early")) if x.startswith("302 /ui")]
+    expect(reloaded, "LiteLLM's Logout went to its form by itself although its settings never came: this check no "
+                     "longer covers the reload (LiteLLM changed?)")
+    shot(page, "12c-admin-logout-early", mask_locators=[fl.locator("input")])
+    # Admin opened again: the portal page reloaded makes the frame anew — a load by the portal, not by LiteLLM's page
+    page.unroute(ui_settings)
+    since = len(rec.events)
+    page.reload()
+    page.wait_for_selector(".shell")
+    if not page.locator("iframe[data-app=admin]").is_visible():
+        page.click(".tab[data-tab=admin]")
+    fl.locator(SSO_DONE["admin"]).first.wait_for(timeout=45000)
+    again = [x for x in _admin_loads(rec.events[since:]) if "/.bn/sso" in x]
+    expect(len(again) == 1 and again[0].startswith("303 "), f"Admin opened again: automatic sign-ins {again}")
+    probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch",
+                                                      r"FAILED GET .*/sso/get/ui_settings ",
+                                                      r"console.error Failed to load resource: net::ERR_FAILED",
+                                                      r"401 (GET|POST) .*/(key|user|team|global|model|sso|session)/"])
+    rec.save()
+    expect(not probs, f"errors: {probs}")
+    return (f"Logout before LiteLLM's settings: it reloads ({reloaded[0]}) → the portal sends it to its own form, no "
+            "automatic sign-in; Admin opened again: signed in by the portal")
 
 
 @check("browser", "admin-litellm-popout")

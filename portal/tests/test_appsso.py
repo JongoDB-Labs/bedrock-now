@@ -217,11 +217,40 @@ def test_admin_marker_is_for_this_session_and_these_credentials(settings, apps):
         # another portal session (signed out and in again): a new LiteLLM session first
         assert verify(c, ADMIN, "/ui/", session(c), f"{appsso.MARK}={lite}; token=t").status_code == 302
         assert verify(c, ADMIN, "/ui/", s, f"{appsso.MARK}={lite[:-3]}abc; token=t").status_code == 302   # forged
-        # with the marker but without LiteLLM's cookie (cleared by its own Logout): a new one
+        # with the marker but without LiteLLM's cookie (cleared by its own Logout), Admin opened again: a new one
+        # (the loads LiteLLM's own page makes right after its Logout: the next test)
         assert verify(c, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}").status_code == 302
     # the portal restarted with a new LiteLLM password (Settings)
     with _client(replace(settings, litellm_ui_password="new-pass"), apps) as c:
         assert verify(c, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}; token=old").status_code == 302
+
+
+def test_litellms_own_logout_shows_its_form_even_before_its_ui_knows_where(client, apps):
+    # LiteLLM's Logout drops its `token` cookie (the marker stays) and its page moves on by itself: to PROXY_LOGOUT_URL
+    # (?sso=off) once its UI has fetched that setting, else by reloading the page it is on (or to its sign-in page).
+    # Each of those loads comes from its own page (same-origin): its form, never a new automatic sign-in.
+    s = session(client)
+    lite = cookies(sso(client, ADMIN, "/ui/", s))[appsso.MARK][0]
+    signed_in = len(apps.of("/v2/login"))
+    own = {"Sec-Fetch-Site": "same-origin"}
+    back = quote("http://admin.bedrock-now.localhost/ui/?page=logs", safe="")
+    for uri in ("/ui/", "/ui/?page=api-keys", "/ui/api-keys/", "/ui/login", f"/ui/login/?redirect_to={back}"):
+        r = verify(client, ADMIN, uri, s, f"{appsso.MARK}={lite}", headers=own)
+        assert r.status_code == 302 and r.headers["location"] == "/ui/login/?sso=off", uri
+        assert r.headers["cache-control"] == "no-store" and not r.headers.get_list("set-cookie"), uri
+    assert verify(client, ADMIN, "/ui/login/?sso=off", s, f"{appsso.MARK}={lite}", headers=own).status_code == 200
+    assert len(apps.of("/v2/login")) == signed_in
+    # opening Admin again — the portal's frame or pop-out (same-site), a typed address (none) — signs in as before
+    for site in ("same-site", "none", "cross-site"):
+        r = verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}", headers={"Sec-Fetch-Site": site})
+        assert sso_location(r) == "/ui/", site
+    # its page with a session again (its own form) goes through; without the portal's marker for this session (none,
+    # another portal sign-in) a load by its own page is handed off as before
+    assert verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}; token=t", headers=own).status_code == 200
+    assert sso_location(verify(client, ADMIN, "/ui/", s, headers=own)) == "/ui/"
+    assert sso_location(verify(client, ADMIN, "/ui/", session(client), f"{appsso.MARK}={lite}", headers=own)) == "/ui/"
+    # Files is unchanged: every console page load is handed off
+    assert sso_location(verify(client, FILES, "/rustfs/console/", s, headers=own)) == "/rustfs/console/"
 
 
 def test_nothing_happens_before_setup(settings, apps):

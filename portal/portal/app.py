@@ -293,7 +293,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
 
     def app_sso_redirect(request: Request, rem: bool, host: str, claims: dict) -> Response | None:
         """On the Admin / Files host: a page load that needs the app's own session from the portal first goes to
-        /.bn/sso on the same host (portal/appsso.py target); None lets it through."""
+        /.bn/sso on the same host — right after LiteLLM's own Logout, to its form (portal/appsso.py target); None lets
+        it through."""
         app = sso_app(host, rem)
         if app is None or not appsso.available(settings, app):
             return None
@@ -304,7 +305,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             request.cookies.get(mark_name), app, claims["iat"], appsso.fingerprint(settings, app),
             session_login(request.headers, settings))
         to = appsso.target(app, request.headers.get("x-forwarded-uri", "/"), host, mark, bool(request.cookies.get("token")),
-                           bool(request.cookies.get(pass_name)))
+                           bool(request.cookies.get(pass_name)), request.headers.get("sec-fetch-site") == "same-origin")
         return None if to is None else _no_store(RedirectResponse(to, status_code=302))
 
     def need_login(request: Request) -> Response:

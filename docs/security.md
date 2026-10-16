@@ -92,7 +92,11 @@ and delivers the result.
 - **When.** Caddy's check (`/auth/verify`) acts on page loads only (`Sec-Fetch-Mode: navigate`, or `Accept:
   text/html` from a browser without it); a script's requests are never redirected. Admin: a page under `/ui` with
   no LiteLLM session in the browser (its `token` cookie), or one handed out for an earlier portal session or other
-  credentials, or LiteLLM's sign-in page. Which session and credentials an Admin session came from is in a signed
+  credentials, or LiteLLM's sign-in page — except right after LiteLLM's own Logout: a page load started by LiteLLM's
+  own page (`Sec-Fetch-Site: same-origin`) without its `token` cookie but with a valid marker goes to its form
+  (`/ui/login/?sso=off`) instead. (Its Logout goes there itself once its UI has fetched `PROXY_LOGOUT_URL`; before
+  that, it reloads the page it is on.) Opening Admin again is a load by the portal, a link or the address bar, and
+  signs in as before. Which session and credentials an Admin session came from is in a signed
   `bn_sso` marker (`HttpOnly`, `SameSite=Strict`, host-only), bound to the portal session's start, the Tailscale
   login and a keyed fingerprint of the credentials, so a new sign-in, a new LiteLLM password or a regenerated
   RustFS pair takes effect at the next page load. Files: every console page load, because the console keeps its

@@ -99,6 +99,14 @@ All notable changes to bedrock-now are documented here. The format follows
   one-token request that must answer within 5 s ("Couldn't confirm model …"), which a cold LiteLLM → Bedrock path can
   miss, while the page already showed the new model. The model now goes into the session's own `/model` picker first
   (no check request), a failed check is tried once more, and a refused switch is taken back in the page ("Still on …").
+- LiteLLM's own Logout in the Admin tab sometimes signed you straight back in instead of showing its form.
+  LiteLLM's UI learns where its Logout goes (`PROXY_LOGOUT_URL`, `?sso=off`) from a settings request it makes after the
+  page loads; a Logout before that answer (right after opening Admin, or with LiteLLM busy) reloads the page it is on,
+  and that load, now without LiteLLM's session, got a new automatic sign-in. The portal now sends a load by LiteLLM's
+  own page that has no LiteLLM session but the portal's sign-in marker (right after its Logout) to LiteLLM's form;
+  opening Admin again (a reload of the portal page, the pop-out, a link) signs you in as before. The e2e suite's
+  `browser/admin-litellm-ui` failed now and then on this; `browser/admin-litellm-logout-early` covers that path on
+  every run.
 
 ## [0.5.0] - 2026-10-16
 

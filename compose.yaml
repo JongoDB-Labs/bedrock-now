@@ -72,7 +72,8 @@ services:
       UI_USERNAME: admin
       UI_PASSWORD: ${LITELLM_UI_PASSWORD:?run ./stack setup}
       # The portal signs you in to the UI (portal/portal/appsso.py); the UI's own Logout then shows its own form
-      # (?sso=off: no automatic sign-in there) rather than reloading into a fresh automatic one.
+      # (?sso=off: no automatic sign-in there) rather than reloading into a fresh automatic one. (The UI fetches this
+      # after the page loads; a Logout before that reloads the page, which the portal sends to the form as well.)
       PROXY_LOGOUT_URL: /ui/login/?sso=off
       # Deletes expired UI session keys (one per sign-in, the portal's included) once a day instead of keeping them.
       LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED: "true"
