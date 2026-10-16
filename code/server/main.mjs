@@ -277,6 +277,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
 
   function page(req, res, p) {
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method not allowed');
+    // the sandboxed artifact viewer's pages are the artifact site's alone (artifactPage), never the code host's
+    if (p === '/artifact' || p.startsWith('/artifact/')) throw new HttpError(404, 'not found');
     let f = site.files.get(p === '/' ? '/index.html' : p);
     // the page's own routes (no dot in the last segment) get index.html
     if (!f && !/\.[A-Za-z0-9]{1,8}$/.test(p)) f = site.files.get('/index.html');
@@ -295,6 +297,20 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     return res.end(req.method === 'HEAD' ? undefined : f.body);
   }
 
+  // The artifact site (caddy/artifact-on.caddy: a<capability>.artifact.PREVIEW_DOMAIN, after the portal's check of the
+  // capability): only the viewer's own static files under /artifact/, GET/HEAD — never the page, the API or the
+  // WebSocket. Caddy marks these requests (X-Bn-Artifact: 1, which it removes from clients everywhere) and sets their
+  // CSP (sandboxed, no network).
+  function artifactPage(req, res, p) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { 'content-type': 'text/plain' }); return res.end('method not allowed'); }
+    const f = p.startsWith('/artifact/') ? site.files.get(p) : undefined;
+    if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }
+    const cache = IMMUTABLE.test(p) ? 'public, max-age=31536000, immutable' : 'no-cache';
+    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, { etag: f.etag, 'cache-control': cache }); return res.end(); }
+    res.writeHead(200, { 'content-type': f.type, 'x-content-type-options': 'nosniff', etag: f.etag, 'cache-control': cache, 'content-length': f.body.length });
+    return res.end(req.method === 'HEAD' ? undefined : f.body);
+  }
+
   const server = http.createServer(async (req, res) => {
     let url;
     try { url = new URL(req.url, 'http://code'); } catch { res.writeHead(400); return res.end(); }
@@ -303,6 +319,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, { ok: true });
     }
     if (!proxied(req)) { res.writeHead(407, { 'content-type': 'text/plain' }); return res.end('only through the main Caddy'); }
+    if (req.headers['x-bn-artifact'] !== undefined) return artifactPage(req, res, url.pathname);
     // state changes only from the page itself (the portal checked this too; fetch() sends Origin on these)
     if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== ownOrigin(req)) {
       return send(res, 403, { error: 'cross-site request refused' });
@@ -323,7 +340,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   server.on('upgrade', (req, sock, head) => {
     let pathname = '';
     try { pathname = new URL(req.url, 'http://code').pathname; } catch { /* refused below */ }
-    if (!proxied(req) || pathname !== '/ws' || !req.headers.origin || req.headers.origin !== ownOrigin(req)) {
+    if (!proxied(req) || req.headers['x-bn-artifact'] !== undefined || pathname !== '/ws' || !req.headers.origin || req.headers.origin !== ownOrigin(req)) {
       sock.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return sock.destroy();
     }
     wss.handleUpgrade(req, sock, head, (ws) => connection(ws));

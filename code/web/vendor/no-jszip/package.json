@@ -1,0 +1,8 @@
+{
+  "name": "jszip",
+  "version": "0.0.0-not-installed",
+  "description": "Stands in for mammoth's jszip. The page reads .docx files with its own bounded zip reader (src/preview/office/zip.ts, which build.mjs puts in jszip's place: a zip bomb stops at its caps before anything is inflated past them); package.json's overrides point here, so npm ci installs neither JSZip nor its dependencies.",
+  "license": "MIT",
+  "private": true,
+  "main": "index.js"
+}

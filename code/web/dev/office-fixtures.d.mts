@@ -1,0 +1,21 @@
+// Types for office-fixtures.mjs (the unit tests import it).
+export function zip(entries: { name: string; data: string | Uint8Array; store?: boolean; usz?: number }[], opts?: { overlap?: boolean }): Buffer;
+export function reportDocx(chartPng: Uint8Array): Buffer;
+export function hostileDocx(): Buffer;
+export function laughsDocx(): Buffer;
+export function bombDocx(): Buffer;
+export function dataXlsx(): Buffer;
+export function wideXlsx(): Buffer;
+export function stringsXlsx(): Buffer;
+export function liarXlsx(): Buffer;
+export function bombXlsx(): Buffer;
+export function deckPptx(chartPng: Uint8Array): Buffer;
+export function hostilePptx(): Buffer;
+export function notebook(chartPng: Uint8Array): Record<string, unknown>;
+export function hostileNotebook(): Record<string, unknown>;
+export const FAKE_PNG: string;
+export const PAGE_HTML: string;
+export const HOSTILE_HTML: string;
+export const FLOW_MMD: string;
+export const HOSTILE_MMD: string;
+export const MATH_MD: string;

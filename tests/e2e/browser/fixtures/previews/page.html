@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Report</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:24px;color:#1d2733} .card{padding:12px 16px;border-radius:8px;background:#eef4f7;margin:8px 0} h1{font-size:22px}</style>
+</head><body>
+<h1>An HTML report</h1>
+<div class="card">Static content renders.</div>
+<div class="card" id="dyn">Waiting for the script…</div>
+<canvas id="c" width="160" height="60"></canvas>
+<script>
+  document.getElementById('dyn').textContent = 'Rendered by the page\'s own script ✓';
+  const g = document.getElementById('c').getContext('2d'); g.fillStyle = '#1d6a84'; [40, 25, 50, 15].forEach((h, i) => g.fillRect(10 + i * 36, 60 - h, 24, h));
+  // what a sandbox without a network does with these: nothing
+  let out = [];
+  try { fetch('/__mock/beacon?html-fetch').then(() => out.push('fetch ok'), () => {}); } catch (e) {}
+  try { localStorage.setItem('x', '1'); out.push('storage ok'); } catch (e) { out.push('no storage'); }
+  try { out.push('cookie=' + document.cookie); } catch (e) { out.push('no cookie'); }
+  document.body.insertAdjacentHTML('beforeend', '<p id="probe">' + out.join(' · ') + '</p>');
+</script>
+</body></html>

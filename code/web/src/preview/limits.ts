@@ -21,3 +21,88 @@ export const isNumeric = (s: string): boolean => {
   const t = s.trim();
   return t.length > 0 && t.length <= 64 && /\d/.test(t) && NUM.test(t);
 };
+
+// ---------------------------------------------------------------- part 2: Office files, notebooks
+
+const MiB = 1024 * 1024;
+
+/** A .docx as a tree (office/htmlsafe.ts) and its pictures (classified by their bytes, within a byte/pixel budget). */
+export const DOC_LIMITS = { nodes: 200_000, depth: 60, chars: 16_000_000, images: 200, imageBytes: 40 * MiB, pixels: 150_000_000 };
+/** The zip of a .docx (office/zip.ts); an XML part over `xml` is refused (mammoth builds a DOM of it). */
+export const DOCX_ZIP = { entries: 5_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 32 * MiB };
+
+export interface DEl {
+  t: string;
+  a?: Record<string, string>;
+  c: DNode[];
+}
+export type DNode = string | DEl;
+/** A picture of a document or a deck: its bytes, its MIME type by those bytes, its size by its header. */
+export interface PvImage {
+  buf: ArrayBuffer;
+  mime: string;
+  w: number;
+  h: number;
+}
+
+/** Workbooks (.xlsx, .xls, .ods): values only — no formulas computed, no macros, no external links. */
+export const SHEET_LIMITS = { sheets: 100, rows: 1_000_000, cols: 200, cells: 2_000_000, cellChars: 2_000, chars: 40_000_000 };
+/** The zip of an .xlsx/.ods: only its XML parts go on to the parser, re-packed (office/sheet.ts). */
+export const SHEET_ZIP = { entries: 10_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 96 * MiB };
+export interface SheetMeta {
+  name: string;
+  rows: number;
+  cols: number;
+  hidden: boolean;
+  /** the first row looks like column names (text over a row with numbers) */
+  header: boolean;
+  rowsCut: boolean;
+  colsCut: boolean;
+  cellsCut: boolean;
+}
+
+/** Decks (.pptx): each slide's text and pictures, in order — no layout. */
+export const DECK_LIMITS = { slides: 500, paras: 20_000, chars: 4_000_000, images: 300, imageBytes: 60 * MiB, pixels: 200_000_000 };
+export const DECK_ZIP = { entries: 10_000, entry: 64 * MiB, total: 160 * MiB, ratio: 200, xml: 16 * MiB };
+export interface DeckPara {
+  /** outline level (0–8) */
+  lvl: number;
+  text: string;
+  bullet: boolean;
+}
+export interface Slide {
+  n: number;
+  title: string;
+  paras: DeckPara[];
+  /** indices into the deck's images */
+  images: number[];
+  notes: string;
+  hidden: boolean;
+}
+
+/** Jupyter notebooks: cells and their outputs; HTML and script outputs only ever go to the sandboxed viewer. */
+export const NB_LIMITS = { cells: 5_000, source: 1_000_000, outputs: 200, output: 1 * MiB, total: 20 * MiB, images: 500 };
+export type NbOutput =
+  | { k: 'text'; text: string; stream?: 'stdout' | 'stderr' }
+  | { k: 'error'; name: string; value: string; trace: string }
+  | { k: 'img'; buf: ArrayBuffer; mime: string; w: number; h: number }
+  | { k: 'svg'; text: string }
+  | { k: 'md'; text: string }
+  | { k: 'latex'; text: string }
+  | { k: 'html'; html: string; plain: string | null }
+  | { k: 'js'; js: string; plain: string | null }
+  | { k: 'rich'; mime: string; plain: string | null }
+  | { k: 'note'; text: string };
+export interface NbCell {
+  k: 'md' | 'code' | 'raw';
+  src: string;
+  /** execution count */
+  n: number | null;
+  out: NbOutput[];
+}
+export interface Notebook {
+  lang: string;
+  cells: NbCell[];
+  cut: boolean;
+  errors: string[];
+}

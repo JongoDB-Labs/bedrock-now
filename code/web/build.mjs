@@ -1,9 +1,12 @@
 // Builds the Code page into dist/: index.html + app.<hash>.js/.css + lazily loaded chunks (the editor, each
-// language, the previews' viewers), the previews' workers (workers/*.<hash>.js, and pdf.js's own worker) and the
-// files pdf.js fetches on demand (assets/pdfjs-<version>/: standard fonts, CMaps, its JavaScript image decoders). No
-// CDN, no inline script or style: the page runs under the CSP of caddy/Caddyfile's code_page (script-src 'self',
-// style-src 'self', Trusted Types with the one policy bn-worker, which allows exactly the worker paths written into
-// the page here as __BN_WORKERS__). `node build.mjs --watch` rebuilds on change (used by `npm run dev`).
+// language, the previews' viewers), the previews' workers (workers/*.<hash>.js, and pdf.js's own worker), the files
+// pdf.js fetches on demand (assets/pdfjs-<version>/: standard fonts, CMaps, its JavaScript image decoders) and KaTeX's
+// stylesheet and fonts (assets/katex-<version>/, loaded with the first formula). No CDN, no inline script or style:
+// the page runs under the CSP of caddy/Caddyfile's code_page (script-src 'self', style-src 'self', Trusted Types with
+// the one policy bn-worker, which allows exactly the worker paths written into the page here as __BN_WORKERS__).
+// artifact/: the sandboxed artifact viewer's pages and scripts (HTML files, Mermaid diagrams, notebooks' rich
+// outputs), served only on the artifact site (caddy/artifact-on.caddy), never on the code host.
+// `node build.mjs --watch` rebuilds on change (used by `npm run dev`).
 import * as esbuild from 'esbuild';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -15,6 +18,18 @@ const watch = process.argv.includes('--watch');
 const pdfjsDir = path.join(here, 'node_modules/pdfjs-dist');
 const pdfjsVersion = JSON.parse(fs.readFileSync(path.join(pdfjsDir, 'package.json'), 'utf8')).version;
 const pdfjsAssets = `assets/pdfjs-${pdfjsVersion}/`;
+const katexDir = path.join(here, 'node_modules/katex');
+const katexVersion = JSON.parse(fs.readFileSync(path.join(katexDir, 'package.json'), 'utf8')).version;
+const katexAssets = `assets/katex-${katexVersion}/`;
+
+// mammoth reads a .docx's zip through JSZip; the page's own bounded reader stands in for it (package.json points the
+// real jszip at an empty stub): src/preview/office/jszip-shim.ts.
+const jszipShim = {
+  name: 'jszip-shim',
+  setup(b) {
+    b.onResolve({ filter: /^jszip$/ }, () => ({ path: path.join(here, 'src/preview/office/jszip-shim.ts') }));
+  },
+};
 
 // a content hash in esbuild's style (8 characters, A-Z 0-9): the server caches such names for good
 const hash8 = (buf) => {
@@ -28,7 +43,13 @@ const hash8 = (buf) => {
 // Our workers (classic scripts: no module-worker support needed) — each a single file, no chunks.
 const workerOptions = {
   absWorkingDir: here,
-  entryPoints: { csv: 'src/preview/workers/csv.worker.ts', data: 'src/preview/workers/data.worker.ts' },
+  entryPoints: {
+    csv: 'src/preview/workers/csv.worker.ts',
+    data: 'src/preview/workers/data.worker.ts',
+    docx: 'src/preview/workers/docx.worker.ts',
+    sheet: 'src/preview/workers/sheet.worker.ts',
+    deck: 'src/preview/workers/deck.worker.ts',
+  },
   bundle: true,
   format: 'iife',
   target: ['chrome111', 'firefox113', 'safari16.4'],
@@ -40,6 +61,8 @@ const workerOptions = {
   legalComments: 'linked',
   metafile: true,
   logLevel: 'warning',
+  plugins: [jszipShim],
+  define: { 'process.env.NODE_ENV': '"production"' },
 };
 
 // pdf.js's worker (its legacy build: the modern one needs Map.getOrInsertComputed, missing in Chromium 140) and the
@@ -69,14 +92,75 @@ async function buildWorkers() {
     const name = Object.entries(workerOptions.entryPoints).find(([, src]) => src === o.entryPoint)?.[0];
     if (name) paths[name] = '/' + path.relative(out, path.join(here, f)).split(path.sep).join('/');
   }
-  if (!paths.csv || !paths.data) throw new Error('build: worker outputs not found');
+  for (const k of Object.keys(workerOptions.entryPoints)) if (!paths[k]) throw new Error(`build: worker output ${k} not found`);
   return { paths, metafile: r.metafile };
 }
 
-const define = (workers) => ({
+// KaTeX's stylesheet and its fonts (WOFF2 only: every browser the page supports reads it), copied as they are.
+function copyKatex() {
+  const dest = path.join(out, katexAssets);
+  fs.mkdirSync(path.join(dest, 'fonts'), { recursive: true });
+  fs.copyFileSync(path.join(katexDir, 'dist/katex.min.css'), path.join(dest, 'katex.min.css'));
+  for (const f of fs.readdirSync(path.join(katexDir, 'dist/fonts'))) if (f.endsWith('.woff2')) fs.copyFileSync(path.join(katexDir, 'dist/fonts', f), path.join(dest, 'fonts', f));
+  fs.copyFileSync(path.join(katexDir, 'LICENSE'), path.join(dest, 'LICENSE'));
+  return '/' + katexAssets + 'katex.min.css';
+}
+
+// The artifact viewer (served on the artifact site only): two fixed pages, each loading one script of this build.
+//   html.html     runs an HTML file or a notebook's HTML/JavaScript output as its own document (runner.ts)
+//   mermaid.html  draws Mermaid diagrams and hands the SVG back to the Code page (mermaid.ts; mermaid, bundled whole)
+// Single classic scripts (no chunks, no modules): the pages are sandboxed (an opaque origin), so a module or a chunk
+// would be a CORS request.
+const artifactOptions = {
+  absWorkingDir: here,
+  entryPoints: { runner: 'src/artifact/runner.ts', mermaid: 'src/artifact/mermaid.ts' },
+  bundle: true,
+  format: 'iife',
+  splitting: false,
+  target: ['chrome111', 'firefox113', 'safari16.4'],
+  platform: 'browser',
+  outdir: path.join(out, 'artifact'),
+  entryNames: '[name].[hash]',
+  minify: !watch,
+  legalComments: 'linked',
+  metafile: true,
+  logLevel: 'error',
+  define: { 'process.env.NODE_ENV': '"production"' },
+};
+
+const artifactPage = (title, script) => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>${title}</title>
+<script src="${script}"></script>
+</head>
+<body></body>
+</html>
+`;
+
+async function buildArtifact() {
+  const r = await esbuild.build(artifactOptions);
+  const js = {};
+  for (const [f, o] of Object.entries(r.metafile.outputs)) {
+    if (!o.entryPoint || f.endsWith('.map')) continue;
+    const name = Object.entries(artifactOptions.entryPoints).find(([, src]) => src === o.entryPoint)?.[0];
+    if (name) js[name] = path.basename(f);
+  }
+  if (!js.runner || !js.mermaid) throw new Error('build: artifact outputs not found');
+  fs.writeFileSync(path.join(out, 'artifact/html.html'), artifactPage('Sandboxed preview', js.runner));
+  fs.writeFileSync(path.join(out, 'artifact/mermaid.html'), artifactPage('Diagram', js.mermaid));
+  return { pages: { html: '/artifact/html.html', mermaid: '/artifact/mermaid.html' }, metafile: r.metafile };
+}
+
+const define = (workers, katexCss, artifact) => ({
   'process.env.NODE_ENV': watch ? '"development"' : '"production"',
   __BN_WORKERS__: JSON.stringify(workers),
   __BN_PDFJS_ASSETS__: JSON.stringify('/' + pdfjsAssets),
+  __BN_KATEX_CSS__: JSON.stringify(katexCss),
+  __BN_ARTIFACT__: JSON.stringify(artifact),
 });
 
 const options = {
@@ -131,8 +215,8 @@ function writeIndex(metafile) {
   return { js: rel(js), css: rel(css) };
 }
 
-function report(metafile, workerMeta) {
-  const rows = [...Object.entries(metafile.outputs), ...Object.entries(workerMeta.outputs)]
+function report(metafile, workerMeta, artifactMeta) {
+  const rows = [...Object.entries(metafile.outputs), ...Object.entries(workerMeta.outputs), ...Object.entries(artifactMeta.outputs)]
     .filter(([f]) => !f.endsWith('.map') && !f.endsWith('.LEGAL.txt'))
     .map(([f, o]) => [path.relative(out, path.join(here, f)), o.bytes])
     .sort((a, b) => b[1] - a[1]);
@@ -146,13 +230,15 @@ function report(metafile, workerMeta) {
 fs.rmSync(out, { recursive: true, force: true });
 const workers = await buildWorkers();
 workers.paths.pdf = copyPdfjs();
+const katexCss = copyKatex();
+const artifact = await buildArtifact();
 
 if (watch) {
   const wctx = await esbuild.context(workerOptions);
   await wctx.watch();
   const ctx = await esbuild.context({
     ...options,
-    define: define(workers.paths),
+    define: define(workers.paths, katexCss, artifact.pages),
     plugins: [
       {
         name: 'index',
@@ -169,8 +255,8 @@ if (watch) {
   });
   await ctx.watch();
 } else {
-  const r = await esbuild.build({ ...options, define: define(workers.paths) });
+  const r = await esbuild.build({ ...options, define: define(workers.paths, katexCss, artifact.pages) });
   const names = writeIndex(r.metafile);
-  report(r.metafile, workers.metafile);
+  report(r.metafile, workers.metafile, artifact.metafile);
   console.log(`dist/index.html → ${names.js}, ${names.css}; workers: ${Object.values(workers.paths).join(', ')}`);
 }

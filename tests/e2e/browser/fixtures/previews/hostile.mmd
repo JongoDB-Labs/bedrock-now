@@ -1,0 +1,6 @@
+%%{init: {"securityLevel": "loose", "startOnLoad": true, "flowchart": {"htmlLabels": true}}}%%
+graph TD
+  A["<img src=x onerror=fetch('/__mock/beacon?mmd-label')>"] --> B
+  B["<script>fetch('/__mock/beacon?mmd-script')</script>"]
+  click A "javascript:fetch('/__mock/beacon?mmd-click')"
+  click B href "http://127.0.0.1:9/mmd-href"

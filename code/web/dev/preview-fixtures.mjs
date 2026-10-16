@@ -1,5 +1,6 @@
 // Files for the previews' checks (the mock's workspace folder previews/, and the e2e suite's fixtures): every format
-// the Code page previews, made here byte by byte (PNG, GIF, BMP, ICO, WAV, PDF, CSV, JSON, YAML, Markdown, SVG), plus
+// the Code page previews, made here byte by byte (PNG, GIF, BMP, ICO, WAV, PDF, CSV, JSON, YAML, Markdown, SVG; Word,
+// Excel, PowerPoint, notebooks, HTML, Mermaid and formulas with their hostile ones: office-fixtures.mjs), plus
 // four tiny media files made once with ImageMagick, cwebp and ffmpeg (a JPEG, a WebP, a WebM video, an MP3) — and the
 // hostile ones: an SVG with a script, an onload handler, external references and a javascript: link; a PDF with
 // JavaScript (an open action, page and link actions), a launch action, javascript:/file: links and a form submit; a
@@ -13,6 +14,7 @@
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as office from './office-fixtures.mjs';
 
 const MEDIA = {
   jpg:
@@ -345,16 +347,35 @@ function dataCsv() {
   for (let i = 1; i <= 2000; i++) rows.push(`${i},${names[i % 6]} ${i},${['North', 'South', 'East', 'West'][i % 4]},${((i * 37) % 1000) + 0.5},2026-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`);
   return rows.join('\n') + '\n';
 }
-const notebook = {
-  cells: [
-    { cell_type: 'markdown', metadata: {}, source: ['# A notebook\n', 'Shown as JSON for now.'] },
-    { cell_type: 'code', execution_count: 1, metadata: {}, source: ['print(1 + 1)'], outputs: [{ output_type: 'stream', name: 'stdout', text: ['2\n'] }] },
-    { cell_type: 'code', execution_count: 2, metadata: {}, source: ['html'], outputs: [{ output_type: 'display_data', data: { 'text/html': ['<script>alert(1)</script>'] }, metadata: {} }] },
-  ],
-  metadata: { kernelspec: { name: 'python3', display_name: 'Python 3' } },
-  nbformat: 4,
-  nbformat_minor: 5,
-};
+// part 2's files (Word, Excel, PowerPoint, notebooks, HTML, Mermaid, formulas): made once (the bombs take a moment)
+let part2 = null;
+function officeFiles() {
+  if (part2) return part2;
+  const c = chart();
+  part2 = {
+    'previews/report.docx': office.reportDocx(c),
+    'previews/hostile.docx': office.hostileDocx(),
+    'previews/laughs.docx': office.laughsDocx(),
+    'previews/bomb.docx': office.bombDocx(),
+    'previews/data.xlsx': office.dataXlsx(),
+    'previews/wide.xlsx': office.wideXlsx(),
+    'previews/strings.xlsx': office.stringsXlsx(),
+    'previews/liar.xlsx': office.liarXlsx(),
+    'previews/bomb.xlsx': office.bombXlsx(),
+    'previews/broken.xlsx': Buffer.concat([Buffer.from('504b0304140000000800', 'hex'), Buffer.alloc(54, 0)]),
+    'previews/deck.pptx': office.deckPptx(c),
+    'previews/hostile.pptx': office.hostilePptx(),
+    'previews/old.doc': Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504, 0)]),
+    'previews/notebook.ipynb': JSON.stringify(office.notebook(c), null, 1) + '\n',
+    'previews/hostile.ipynb': JSON.stringify(office.hostileNotebook(), null, 1) + '\n',
+    'previews/page.html': office.PAGE_HTML,
+    'previews/hostile.html': office.HOSTILE_HTML,
+    'previews/flow.mmd': office.FLOW_MMD,
+    'previews/hostile.mmd': office.HOSTILE_MMD,
+    'previews/math.md': office.MATH_MD,
+  };
+  return part2;
+}
 function deepJson(n) {
   return '['.repeat(n) + '"bottom"' + ']'.repeat(n);
 }
@@ -392,8 +413,7 @@ export function previewFiles({ big = true } = {}) {
     'previews/config.yaml': 'service: code\nports:\n  - 8095\n  - 8096\nlimits: {pdf: 25MiB, yaml: 5MiB}\nanchors:\n  base: &base {retries: 3}\n  copy: *base\n',
     'previews/laughs.yaml': LAUGHS,
     'previews/tags.yaml': 'run: !!python/object/apply:os.system ["touch /tmp/pwned"]\nok: plain\n__proto__: {polluted: yes}\n',
-    'previews/notebook.ipynb': JSON.stringify(notebook, null, 1) + '\n',
-    'previews/sheet.xlsx': Buffer.concat([Buffer.from('504b0304140000000800', 'hex'), Buffer.alloc(54, 0)]),
+    ...officeFiles(),
   };
   if (big) f['previews/too-big.pdf'] = Buffer.concat([Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1'), Buffer.alloc(26 * 1024 * 1024 + 7, 0x20)]);
   return f;

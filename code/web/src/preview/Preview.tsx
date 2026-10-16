@@ -1,11 +1,13 @@
-// File previews in the editor area, on the Code page's own origin and under its CSP. Only formats that become DOM or
-// canvas without running anything of the file's: Markdown (our renderer), images and SVG (an <img>: an SVG's scripts,
-// event handlers and external references never run as an image), audio and video, PDF (pdf.js: canvas + a text
-// layer, its scripting never loaded), CSV/TSV (a table), JSON / JSON Lines / YAML (a tree). Bytes come from the
-// download endpoint as data (application/octet-stream), each blob: URL is used only as an <img>/<audio>/<video>
-// source (an image's is revoked as soon as it decoded, so it cannot be opened as a document), and parsing happens
-// in workers the page stops on a time budget. Viewers that need large code (pdf.js, the table, the tree) load on
-// first use.
+// File previews in the editor area. On the Code page's own origin and under its CSP, only formats that become DOM or
+// canvas without running anything of the file's: Markdown (our renderer; formulas by KaTeX), images and SVG (an
+// <img>: an SVG's scripts, event handlers and external references never run as an image), audio and video, PDF
+// (pdf.js: canvas + a text layer, its scripting never loaded), CSV/TSV and workbooks (a table), JSON / JSON Lines /
+// YAML (a tree), Word documents (an allowlisted tree), PowerPoint decks (an outline), notebooks (cells; their HTML and
+// script outputs only in the sandbox below). Bytes come from the download endpoint as data
+// (application/octet-stream), each blob: URL is used only as an <img>/<audio>/<video> source (an image's is revoked as
+// soon as it decoded, so it cannot be opened as a document), and parsing happens in workers the page stops on a time
+// budget. What must run the file's own script or parse HTML — HTML files, Mermaid diagrams, notebooks' HTML outputs —
+// runs only in the sandboxed artifact viewer, another site with no network (artifact.ts). Viewers load on first use.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import * as api from '../api';
@@ -18,7 +20,8 @@ import { ImageCache, type ImageEntry } from './images';
 
 const KIND_NAME: Record<Kind, string> = {
   markdown: 'Markdown files', image: 'images', svg: 'SVG images', audio: 'audio files', video: 'videos', pdf: 'PDF documents',
-  csv: 'CSV files', tsv: 'TSV files', json: 'JSON files', jsonl: 'JSON Lines files', yaml: 'YAML files', notebook: 'notebooks', later: '',
+  csv: 'CSV files', tsv: 'TSV files', json: 'JSON files', jsonl: 'JSON Lines files', yaml: 'YAML files', notebook: 'notebooks',
+  docx: 'Word documents', sheet: 'workbooks', deck: 'presentations', html: 'HTML pages', mermaid: 'diagrams', later: '',
 };
 
 export const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 500);
@@ -152,7 +155,7 @@ export function Preview({ tab, text, phone, active = true }: { tab: FileTab; tex
   if (pv.kind === 'later') {
     return (
       <PreviewMsg tab={tab}>
-        <strong>{basename(tab.path)}</strong> ({pv.what}): previews of Word, Excel and PowerPoint files come in a later version. Download it to open it on your computer.
+        <strong>{basename(tab.path)}</strong> ({pv.what}): this kind of file is not previewed. Download it to open it on your computer.
       </PreviewMsg>
     );
   }
@@ -180,10 +183,44 @@ export function Preview({ tab, text, phone, active = true }: { tab: FileTab; tex
     case 'csv':
     case 'tsv':
       return <Lazy name="table" load={() => import('./TableView')} props={props} />;
+    case 'sheet':
+      return <Lazy name="sheet" load={() => import('./SheetView')} props={props} />;
+    case 'docx':
+      return <Lazy name="docx" load={() => import('./DocView')} props={props} />;
+    case 'deck':
+      return <Lazy name="deck" load={() => import('./DeckView')} props={props} />;
+    case 'notebook':
+      return <Lazy name="notebook" load={() => import('./NotebookView')} props={props} />;
+    case 'html':
+      // a tab not shown: its frame (and the page's scripts in it) ends; it starts again from the text kept here
+      return active ? <Lazy name="html" load={() => import('./ArtifactView').then((m) => ({ View: m.HtmlView }))} props={props} /> : null;
+    case 'mermaid':
+      return <Lazy name="mermaid" load={() => import('./ArtifactView').then((m) => ({ View: m.MermaidView }))} props={props} />;
     default:
       return <Lazy name="tree" load={() => import('./TreeView')} props={props} />;
   }
 }
+
+// ---------------------------------------------------------------- formulas and diagrams (lazily loaded)
+
+function LazyMath({ tex, display }: { tex: string; display: boolean }) {
+  const m = useModule('math', () => import('./MathTex'));
+  if (!m || m instanceof Error) return <code class="math-src">{display ? `$$${tex}$$` : `$${tex}$`}</code>;
+  return <m.MathTex tex={tex} display={display} />;
+}
+function LazyDiagram({ code }: { code: string }) {
+  const m = useModule('artifact', () => import('./ArtifactView'));
+  if (!m || m instanceof Error) {
+    return (
+      <pre class="md-diagram">
+        <code>{code}</code>
+      </pre>
+    );
+  }
+  return <m.MermaidBlock code={code} />;
+}
+const renderMath = (tex: string, display: boolean, key: number) => <LazyMath key={key} tex={tex} display={display} />;
+const renderDiagram = (code: string, key: number) => <LazyDiagram key={key} code={code} />;
 
 // ---------------------------------------------------------------- Markdown
 
@@ -202,7 +239,7 @@ function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
     <div class="pv-scroll" data-testid="preview-md">
       {tab.truncated && <div class="banner subtle">Only the first {bytes(CAPS.markdown)} of this file ({bytes(tab.size)}) are shown.</div>}
       <div class="pv-md">
-        <MarkdownView text={text} images={dirname(tab.path)} renderImage={renderImage} />
+        <MarkdownView text={text} images={dirname(tab.path)} renderImage={renderImage} renderMath={renderMath} renderDiagram={renderDiagram} />
       </div>
     </div>
   );

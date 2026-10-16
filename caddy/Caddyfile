@@ -321,6 +321,7 @@ http://{$FILES_HOST} {
 	request_header -X-Bn-Portal-Origin
 	request_header -X-Bn-Terminal-Host
 	request_header -X-Bn-Remote
+	request_header -X-Bn-Artifact
 	forward_auth portal:8000 {
 		uri /auth/verify?app=code
 	}
@@ -329,13 +330,18 @@ http://{$FILES_HOST} {
 # After the check, the portal answers for the page what the code container must not hold: the models with this
 # stack's prices (/.bn/models), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the
 # portal) and the hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect
-# to that host's /.bn/unlock-callback, terminal_callback), and a preview link for a port in the sandbox (/.bn/preview:
+# to that host's /.bn/unlock-callback, terminal_callback), a preview link for a port in the sandbox (/.bn/preview:
 # locally its capability, from this unlock, caddy/preview-on.caddy; remotely a single-use hand-off to the preview
-# host, remote_preview below). Any other /.bn/ path is nobody's.
+# host, remote_preview below) and the sandboxed artifact viewer's address (/.bn/artifact: its capability, from this
+# unlock; caddy/artifact-on.caddy; local only). Any other /.bn/ path is nobody's.
 (code_portal) {
 	@bn_code_preview path /.bn/preview
 	reverse_proxy @bn_code_preview portal:8000 {
 		rewrite /auth/code-preview?{query}
+	}
+	@bn_code_artifact path /.bn/artifact
+	reverse_proxy @bn_code_artifact portal:8000 {
+		rewrite /auth/code-artifact?{query}
 	}
 	@bn_code_terminal path /.bn/terminal
 	reverse_proxy @bn_code_terminal portal:8000 {
@@ -359,6 +365,7 @@ http://{$FILES_HOST} {
 # 0 here; the Bypass permissions dialog says so).
 (code_upstream) {
 	header_up -Cookie
+	header_up -X-Bn-Artifact
 	header_up -X-Portal-Proxy
 	header_up -X-Portal-User
 	header_up X-Bn-Code-Proxy {$CODE_PROXY_SECRET}
@@ -508,6 +515,10 @@ import code-{$CODE_MODE:off}.caddy
 # The Code page's previews: preview-off.caddy (nothing; the default) or preview-on.caddy (compose.code.yaml). The remote
 # preview host is remote-*.caddy's (remote_preview above).
 import preview-{$PREVIEW_MODE:off}.caddy
+
+# Its sandboxed artifact viewer (HTML files, diagrams, notebooks' HTML outputs), with the previews: artifact-off.caddy
+# or artifact-on.caddy. Local only.
+import artifact-{$PREVIEW_MODE:off}.caddy
 
 # Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.
 import remote-{$REMOTE_MODE}.caddy

@@ -1,0 +1,8 @@
+{
+  "name": "argparse",
+  "version": "0.0.0-not-installed",
+  "description": "Stands in for argparse, which only mammoth's command-line tool uses (never the page). package.json's overrides point here, so npm ci installs neither it nor sprintf-js.",
+  "license": "MIT",
+  "private": true,
+  "main": "index.js"
+}

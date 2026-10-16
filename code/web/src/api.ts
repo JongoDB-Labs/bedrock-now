@@ -1292,6 +1292,30 @@ export async function getPreviewLink(port: number, path = '/'): Promise<PreviewL
   return link;
 }
 
+/** An artifact viewer's origin only when it is one: http, a host a<capability>.artifact.<domain>, no credentials, no
+ *  path (the page frames it and posts to it). */
+export function artifactOriginOk(v: unknown): string | null {
+  if (typeof v !== 'string' || v.length > 300) return null;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'http:' && !u.username && !u.password && u.origin === v && /^a[a-z2-7]{33}\.artifact\.[a-z0-9.-]{1,200}$/.test(u.hostname) ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The sandboxed artifact viewer's site for this unlock (src/preview/artifact.ts): an http origin
+ *  a<capability>.artifact.<domain>[:port] the portal minted, or why there is none (over remote access, off). */
+export async function getArtifactSite(): Promise<{ available: boolean; origin: string; reason: string; expires: number | null }> {
+  const o = await request('GET', '/.bn/artifact' + q({ format: 'json' }));
+  const reason = label(o.reason ?? o.error, 300);
+  if (o.available !== true) return { available: false, origin: '', reason: reason || 'The sandboxed viewer is off here.', expires: null };
+  const origin = artifactOriginOk(o.origin);
+  if (!origin) throw new ApiError(502, 'The portal answered with something that is not an artifact viewer address.');
+  const expires = typeof o.expires === 'number' && Number.isFinite(o.expires) ? o.expires * 1000 : null;
+  return { available: true, origin, reason: '', expires };
+}
+
 /** Where "Open in new tab" goes: the portal's redirect to the preview (no popup blocker: it is a plain link). */
 export function previewTabUrl(port: number, path = '/'): string {
   return '/.bn/preview' + q({ port, path: path === '/' ? undefined : path });

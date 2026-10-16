@@ -507,6 +507,32 @@ class PreviewCaps:
         iat_ms = int(unlock_iat * 1000)
         return f"p{port}-{b32_int(iat_ms, self.IAT_CHARS)}{self._mac(port, iat_ms)}"
 
+    # The Code page's sandboxed artifact viewer (caddy/artifact-on.caddy): a<iat><mac>.artifact.<PREVIEW_DOMAIN>, the
+    # same scheme with "artifact" where a preview names its port (a MAC over "v1|artifact|…" is never one over
+    # "v1|<digits>|…": no label works on the other site), for the same unlock, ended by the same things.
+    ARTIFACT = re.compile(r"a([a-z2-7]{9})([a-z2-7]{24})")
+
+    def _artifact_mac(self, iat_ms: int) -> str:
+        msg = f"v1|artifact|{iat_ms}|{self._sessions.fingerprint}".encode()
+        return base64.b32encode(hmac.new(self._key, msg, hashlib.sha256).digest()).decode("ascii").lower()[: self.MAC_CHARS]
+
+    def artifact_label(self, unlock_iat: float) -> str:
+        iat_ms = int(unlock_iat * 1000)
+        return f"a{b32_int(iat_ms, self.IAT_CHARS)}{self._artifact_mac(iat_ms)}"
+
+    def check_artifact(self, label: str) -> dict | None:
+        """{iat, expires} for a valid artifact label (as check()), else None."""
+        m = self.ARTIFACT.fullmatch(label or "")
+        if not m:
+            return None
+        iat_ms = b32_parse(m.group(1))
+        if iat_ms is None or not hmac.compare_digest(m.group(2), self._artifact_mac(iat_ms)):
+            return None
+        iat = iat_ms / 1000
+        if iat <= self._sessions.not_before or not 0 <= self._clock() - iat <= TERMINAL_MAX_AGE:
+            return None
+        return {"iat": iat, "expires": iat + TERMINAL_MAX_AGE}
+
     def check(self, label: str) -> dict | None:
         """{port, iat, expires} for a valid label (signature, port, the unlock's 12 hours, no Sign out since), else None."""
         m = self.LABEL.fullmatch(label or "")

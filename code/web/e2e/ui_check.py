@@ -1523,13 +1523,17 @@ def beacons():
 
 
 def tree_click(page, path):
-    """Click a row of the explorer (drawn virtually: scrolled until the row exists)."""
+    """Click a row of the explorer (drawn virtually: scrolled until the row exists; again when the explorer scrolled it
+    away before the click — it reveals the file of the tab just opened)."""
     row = page.locator(f".tree-row[data-path='{path}']")
     page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s) s.scrollTop = 0; }")
     for _ in range(150):
         if row.count():
-            row.click()
-            return
+            try:
+                row.click(timeout=4000)
+                return
+            except Exception:
+                continue
         # down a screen at a time; from the top again at the end (the folder may still be loading)
         page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) s.scrollTop = 0; else s.scrollTop += s.clientHeight * 0.7; }")
         page.wait_for_timeout(60)
@@ -1552,9 +1556,13 @@ def preview(page, path, kind, timeout=20_000):
     return pane
 
 
+ARTIFACT_RE = re.compile(r"^http://a[a-z2-7]{33}\.artifact\.localhost:\d+/artifact/[A-Za-z0-9.]+$")
+
+
 def no_outside_requests(p):
-    """Nothing went anywhere but the page's own origin (a hostile file's references point at 127.0.0.1:9)."""
-    out = [u for u in p.requests if not (u.startswith(NORMAL + "/") or u.startswith("blob:") or u.startswith("data:"))]
+    """Nothing went anywhere but the page's own origin and the sandboxed artifact viewer's own files (a hostile file's
+    references point at 127.0.0.1:9)."""
+    out = [u for u in p.requests if not (u.startswith(NORMAL + "/") or u.startswith("blob:") or u.startswith("data:") or ARTIFACT_RE.match(u))]
     assert not out, f"requests outside the page's origin: {out[:5]}"
     assert not beacons(), f"beacons: {beacons()}"
 
@@ -1643,12 +1651,12 @@ def previews_desktop(browser):
     expect(pane.get_by_test_id("preview-tree")).to_contain_text("service")
     p.shot("preview-yaml.png")
     pane = preview(page, "previews/notebook.ipynb", "notebook")
-    expect(pane.get_by_test_id("preview-tree")).to_contain_text("cells")
-    # past a cap, part 2 formats: download only
+    expect(pane.get_by_test_id("preview-notebook")).to_contain_text("A notebook", timeout=10_000)
+    # past a cap; a format no preview reads: download only
     pane = preview(page, "previews/too-big.pdf", "pdf")
     expect(pane.get_by_test_id("preview-msg")).to_contain_text("previews of PDF documents stop at 25.0 MB")
-    pane = preview(page, "previews/sheet.xlsx", "later")
-    expect(pane.get_by_test_id("preview-msg")).to_contain_text("later version")
+    pane = preview(page, "previews/old.doc", "later")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("not previewed")
     # Claude writes a Markdown file: its card offers Preview
     send(page, "Please write a markdown report")
     page.get_by_test_id("perm-once").click(timeout=15_000)
@@ -1728,7 +1736,11 @@ def previews_hostile(browser):
     expect(pane.get_by_test_id("preview-tree")).to_contain_text("polluted")
     assert page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined && !('polluted' in Function.prototype)")
     pane = preview(page, "previews/notebook.ipynb", "notebook")
-    assert page.evaluate("() => document.querySelectorAll('script:not([type=module]), iframe').length") == 0
+    expect(pane.get_by_test_id("preview-notebook")).to_contain_text("A notebook", timeout=10_000)
+    assert page.evaluate("() => document.querySelectorAll('script:not([type=module])').length") == 0
+    # frames: only the sandboxed artifact viewer's (the notebook's diagram), never the notebook's HTML output unasked
+    frames = page.evaluate("() => [...document.querySelectorAll('iframe')].map((f) => [f.src, f.getAttribute('sandbox')])")
+    assert all(ARTIFACT_RE.match(u) and sb == "allow-scripts" for u, sb in frames), frames
     # the worker policy: no other URL becomes a worker, and no second policy can be made
     tt = page.evaluate("""() => { const r = {};
       try { trustedTypes.createPolicy('other', { createHTML: (s) => s }); r.second = 'created'; } catch (e) { r.second = e.name; }
@@ -1770,6 +1782,280 @@ def previews_phone(browser):
         over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
         assert over <= 0, f"{path}: {over}px wider than the phone"
         sheet.get_by_role("button", name="Close", exact=True).click()
+    p.assert_clean()
+    p.close()
+
+
+# --- previews, part 2 (src/preview: Word, Excel, PowerPoint, notebooks, formulas; the sandboxed artifact viewer) ------
+
+# what the browser says when the artifact viewer's sandbox and policy stop something a file tries (in the viewer's frame,
+# never on the Code page: its own violations are window.__csp, checked as always)
+SANDBOX_NOISE = re.compile(r"Content Security Policy|Refused to connect|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|"
+                           r"Blocked form submission|allow-modals|net::ERR_BLOCKED_BY_CSP|Failed to load resource|Not allowed to load|"
+                           r"does not have permission to navigate|^Failed to fetch$")
+
+
+def sandbox_errors(p):
+    """The page's errors, less what the viewer's sandbox reported stopping (those come from the viewer's frame)."""
+    p.errors = [e for e in p.errors if not SANDBOX_NOISE.search(e)]
+
+
+def blocked_only(p, failed):
+    """Every request outside the page's origin and the viewer's files was one the viewer's policy or sandbox refused
+    before it left the browser (Playwright reports the attempt; its failure says ERR_BLOCKED_BY_CSP or the like)."""
+    out = [u for u in p.requests if not (u.startswith(NORMAL + "/") or u.startswith("blob:") or u.startswith("data:") or ARTIFACT_RE.match(u))]
+    left = [u for u in out if not re.search(r"^csp$|ERR_BLOCKED_BY_(CSP|CLIENT|RESPONSE)", failed.get(u) or "")]
+    assert not left, f"requests that were not refused: {[(u, failed.get(u)) for u in left[:5]]}"
+    assert not beacons(), f"beacons: {beacons()}"
+    return len(out)
+
+
+def viewer_frame(page, title):
+    """The sandboxed viewer's frame with this title: its attributes checked, its Frame returned."""
+    loc = page.locator(f"iframe.art-frame[title='{title}']")
+    expect(loc).to_have_count(1, timeout=15_000)
+    assert ARTIFACT_RE.match(loc.get_attribute("src")), loc.get_attribute("src")
+    assert loc.get_attribute("sandbox") == "allow-scripts" and loc.get_attribute("allow") == "" and loc.get_attribute("referrerpolicy") == "no-referrer"
+    return page.frame_locator(f"iframe.art-frame[title='{title}']")
+
+
+def decoded(page, sel, timeout=15_000):
+    page.wait_for_function("(s) => { const i = document.querySelector(s); return i && i.complete && i.naturalWidth > 0; }", arg=sel, timeout=timeout)
+    return page.evaluate("(s) => { const i = document.querySelector(s); return [i.naturalWidth, i.naturalHeight]; }", sel)
+
+
+@check("previews 2: Word, Excel, PowerPoint, notebooks, formulas; HTML and Mermaid in the sandboxed viewer — 0 CSP violations on the page")
+def previews2_desktop(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews2", **DESKTOP)
+    page = p.open()
+    expand(page, "previews")
+    # Word: headings, a list, a table, a picture from inside the file, a web link (new tab), a jump to a bookmark
+    pane = preview(page, "previews/report.docx", "docx")
+    doc = pane.get_by_test_id("preview-docx")
+    expect(doc.locator("h1")).to_have_text("Quarterly report", timeout=15_000)
+    expect(doc.locator("li")).to_have_count(2)
+    expect(doc.locator("td")).to_have_count(6)
+    assert decoded(page, ".pane:not(.hidden) .doc-img") == [160, 100]
+    web = doc.locator("a[href='https://example.com/docs']")
+    assert web.get_attribute("target") == "_blank" and "noopener" in web.get_attribute("rel")
+    doc.locator("a.doc-anchor").click()
+    assert page.url.startswith(NORMAL)
+    p.shot("preview2-docx.png")
+    # Excel: sheet tabs (a hidden one marked), values as Excel shows them, a formula's saved value — never the formula
+    pane = preview(page, "previews/data.xlsx", "sheet")
+    expect(pane.get_by_test_id("sheet-tabs").get_by_role("tab")).to_have_count(3, timeout=15_000)
+    expect(pane.get_by_test_id("table-size")).to_have_text("40 rows × 5 columns")
+    expect(pane.get_by_test_id("table-header")).to_be_checked()
+    expect(pane.locator(".tv-h").nth(1)).to_have_text("Month")
+    expect(pane.locator(".tv-r").first.locator(".tv-c").nth(1)).to_have_text(re.compile(r"^\d{1,2}/\d{1,2}/\d{2}$"))
+    p.shot("preview2-xlsx.png")
+    pane.get_by_role("tab", name="Notes").click()
+    expect(pane.get_by_test_id("preview-table")).to_contain_text("javascript:alert(1)")
+    expect(pane.get_by_test_id("preview-table")).to_contain_text("click")
+    assert "xlsx-formula" not in pane.get_by_test_id("preview-table").inner_text()
+    expect(pane.get_by_role("tab", name=re.compile("Hidden"))).to_contain_text("(hidden)")
+    # PowerPoint: an outline — titles, levels, a table, a picture, notes, a hidden slide
+    pane = preview(page, "previews/deck.pptx", "deck")
+    expect(pane.get_by_test_id("deck-slide")).to_have_count(4, timeout=15_000)
+    expect(pane.get_by_test_id("deck-slide").nth(1).locator(".deck-p.lvl1")).to_have_text("North led")
+    assert decoded(page, ".pane:not(.hidden) .deck-img") == [160, 100]
+    expect(pane.get_by_test_id("deck-slide").nth(3)).to_contain_text("hidden")
+    p.shot("preview2-pptx.png")
+    # a notebook: Markdown with formulas (KaTeX), highlighted code, ANSI colours, a PNG, a diagram drawn in the viewer;
+    # its HTML output only in the viewer, on request
+    pane = preview(page, "previews/notebook.ipynb", "notebook")
+    nb = pane.get_by_test_id("preview-notebook")
+    expect(nb.get_by_test_id("nb-cell")).to_have_count(8, timeout=15_000)
+    expect(nb.locator("[data-testid=math] .katex").first).to_be_visible(timeout=10_000)
+    assert nb.locator("[data-testid=math] .katex").count() >= 3
+    expect(nb.locator(".nb-out-text .ansi-fg2")).to_have_text("ok")
+    expect(nb.locator(".nb-code .tok-keyword").first).to_be_visible(timeout=10_000)
+    assert decoded(page, ".pane:not(.hidden) .nb-img") == [160, 100]
+    decoded(page, ".pane:not(.hidden) [data-testid=diagram] img", timeout=30_000)
+    assert nb.locator("iframe").count() == 0, "an HTML output runs only when asked"
+    nb.get_by_test_id("nb-rich-open").click()
+    fr = viewer_frame(page, "HTML output")
+    expect(fr.locator("#ran")).to_have_text("script ran in the sandbox", timeout=15_000)
+    expect(fr.locator("td").first).to_have_text("North")
+    p.shot("preview2-notebook.png")
+    # Markdown with formulas and a diagram; code keeps its dollars; a formula that does not parse shows its source
+    pane = preview(page, "previews/math.md", "markdown")
+    md = pane.get_by_test_id("preview-md")
+    expect(md.locator("[data-testid=math] .katex").first).to_be_visible(timeout=10_000)
+    expect(md.get_by_test_id("math-error")).to_have_count(1)
+    expect(md.locator("code", has_text="echo $HOME $PATH")).to_have_count(1)
+    decoded(page, ".pane:not(.hidden) [data-testid=diagram] img", timeout=30_000)
+    p.shot("preview2-math-diagram.png")
+    katex = [u for u in p.requests if "/assets/katex-" in u]
+    assert any(u.endswith("katex.min.css") for u in katex) and any(u.endswith(".woff2") for u in katex), katex
+    # an HTML file: its own scripts run — in the viewer, with no storage, no cookies and no network
+    pane = preview(page, "previews/page.html", "html")
+    fr = viewer_frame(page, "Preview of previews/page.html")
+    expect(fr.locator("#dyn")).to_have_text("Rendered by the page's own script ✓", timeout=15_000)
+    expect(fr.locator("#probe")).to_contain_text("no storage")
+    expect(fr.locator("#probe")).to_contain_text("no cookie")
+    p.shot("preview2-html.png")
+    pane.get_by_test_id("view-source").click()
+    expect(pane.locator(".cm-content")).to_contain_text("An HTML report", timeout=10_000)
+    pane.get_by_test_id("view-preview").click()
+    # a Mermaid file: drawn in the viewer, shown here as an image
+    pane = preview(page, "previews/flow.mmd", "mermaid")
+    w, h = decoded(page, ".pane:not(.hidden) [data-testid=preview-diagram] .pv-canvas img", timeout=30_000)
+    assert w > 100 and h > 100, (w, h)
+    p.shot("preview2-mermaid.png")
+    # the viewer's frames: from the artifact site only, sandboxed, nothing delegated
+    frames = page.evaluate("() => [...document.querySelectorAll('iframe')].map((f) => [f.src, f.getAttribute('sandbox'), f.getAttribute('allow')])")
+    assert frames and all(ARTIFACT_RE.match(u) and sb == "allow-scripts" and al == "" for u, sb, al in frames), frames
+    sandbox_errors(p)
+    no_outside_requests(p)
+    p.assert_clean()
+    p.close()
+
+
+@check("previews 2: hostile files do nothing (markup and links in Office files, bombs, billion laughs, a liar, hostile HTML/notebooks/diagrams); the viewer is isolated")
+def previews2_hostile(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews2-hostile", **DESKTOP)
+    page = p.open()
+    expand(page, "previews")
+    popups = []
+    p.ctx.on("page", lambda pg: popups.append(pg.url))
+    failed = {}
+    page.on("requestfailed", lambda r: failed.__setitem__(r.url, r.failure or ""))
+    # Word: markup is text, only the http link is a link, linked/HTML/EMF pictures are notes, the SVG only an image
+    pane = preview(page, "previews/hostile.docx", "docx")
+    doc = pane.get_by_test_id("preview-docx")
+    expect(doc).to_contain_text("<script>fetch(\"/__mock/beacon?docx-text-script\")", timeout=15_000)
+    assert doc.locator("script, iframe, object, embed, svg, a[href^='javascript'], a[href^='data'], a[href^='file'], img[src^='http']").count() == 0
+    assert [a.get_attribute("href") for a in doc.locator("a[href]").all()] == ["http://127.0.0.1:9/docx-link"]
+    expect(pane.get_by_test_id("docx-notes")).to_contain_text("a linked picture (never fetched)")
+    decoded(page, ".pane:not(.hidden) .doc-img")
+    p.shot("preview2-hostile-docx.png")
+    pane = preview(page, "previews/laughs.docx", "docx")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("entity not found", timeout=15_000)
+    pane = preview(page, "previews/bomb.docx", "docx")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("previews stop at 64 MB", timeout=15_000)
+    # Excel: a part that lies about its size, a 150 MB part, a broken zip, every column, one string in 30,000 cells
+    pane = preview(page, "previews/liar.xlsx", "sheet")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("unpacks to more than it says", timeout=15_000)
+    pane = preview(page, "previews/bomb.xlsx", "sheet")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("previews stop at 64 MB", timeout=15_000)
+    pane = preview(page, "previews/broken.xlsx", "sheet")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("not a zip file", timeout=15_000)
+    pane = preview(page, "previews/wide.xlsx", "sheet")
+    expect(pane.get_by_test_id("table-notes")).to_contain_text("only the first 1,000,000 rows", timeout=15_000)
+    pane = preview(page, "previews/strings.xlsx", "sheet")
+    expect(pane.get_by_test_id("table-notes")).to_contain_text("40 million characters", timeout=30_000)
+    # PowerPoint: markup is text, the external picture never fetched, the HTML ".png" no picture, no entity expanded
+    pane = preview(page, "previews/hostile.pptx", "deck")
+    expect(pane.get_by_test_id("deck-slide").first).to_contain_text("<script>fetch(\"/__mock/beacon?pptx-title\")</script>", timeout=15_000)
+    assert pane.locator("img").count() == 0
+    expect(pane.get_by_test_id("deck-slide").nth(1)).to_contain_text("&lol2; &xxe;")
+    # a hostile notebook: markup is text, its HTML and JavaScript outputs run only in the viewer (no network, no top
+    # navigation, no popups, no dialogs), its SVG only as an image, its "PNG" that is HTML a note, an OSC link text
+    pane = preview(page, "previews/hostile.ipynb", "notebook")
+    nb = pane.get_by_test_id("preview-notebook")
+    expect(nb).to_contain_text("<script>fetch(\"/__mock/beacon?nb-md-script\")</script>", timeout=15_000)
+    assert nb.locator("script, a[href^='javascript'], img[src^='http']").count() == 0
+    expect(nb).to_contain_text("an OSC link")
+    assert nb.locator("a", has_text="an OSC link").count() == 0
+    expect(nb).to_contain_text("not a PNG")
+    decoded(page, ".pane:not(.hidden) .nb-out[data-kind=svg] img")
+    for n in (2, 1):
+        expect(nb.get_by_test_id("nb-rich-open")).to_have_count(n, timeout=10_000)
+        nb.get_by_test_id("nb-rich-open").first.click()
+    expect(nb.locator("iframe.art-frame")).to_have_count(2, timeout=15_000)
+    # the viewer's frame, from inside (the HTML output's): an opaque origin — no cookies, no storage, no network, no
+    # reach into the Code page
+    frame = nb.locator("iframe.art-frame").first.element_handle().content_frame()
+    page.wait_for_function("(f) => f.contentWindow !== null", arg=nb.locator("iframe.art-frame").first.element_handle())
+    probe = frame.evaluate("""async () => { const r = {};
+      r.origin = self.origin;
+      try { r.cookie = document.cookie; } catch (e) { r.cookie = e.name; }
+      try { localStorage.setItem('x', '1'); r.storage = 'ok'; } catch (e) { r.storage = e.name; }
+      try { await fetch('/artifact/html.html'); r.fetch = 'ok'; } catch (e) { r.fetch = e.name; }
+      try { r.parent = parent.document.title; } catch (e) { r.parent = e.name; }
+      try { r.top = top.location.href; } catch (e) { r.top = e.name; }
+      return r; }""")
+    assert probe == {"origin": "null", "cookie": "SecurityError", "storage": "SecurityError", "fetch": "TypeError", "parent": "SecurityError", "top": "SecurityError"}, probe
+    # an HTML file that tries everything: fetch, XHR, WebSocket, SSE, beacons, images, frames, forms, popups, alerts,
+    # top navigation, a meta refresh, its own navigation (refused by the Code page's frame-src: the frame shows the
+    # browser's error page), a worker, forged messages to the Code page, cookies
+    pane = preview(page, "previews/hostile.html", "html")
+    fr_el = page.locator("iframe.art-frame[title='Preview of previews/hostile.html']")
+    expect(fr_el).to_have_count(1, timeout=15_000)
+    assert ARTIFACT_RE.match(fr_el.get_attribute("src")) and fr_el.get_attribute("sandbox") == "allow-scripts"
+    page.wait_for_timeout(3000)
+    p.shot("preview2-hostile-html.png")
+    # a hostile diagram: its init directive cannot loosen anything; drawn, as an image
+    pane = preview(page, "previews/hostile.mmd", "mermaid")
+    decoded(page, ".pane:not(.hidden) [data-testid=preview-diagram] .pv-canvas img", timeout=30_000)
+    pane = preview(page, "previews/old.doc", "later")
+    page.wait_for_timeout(1000)
+    assert page.url.startswith(NORMAL) and not popups, (page.url, popups)
+    assert not p.dialogs, p.dialogs
+    # the Code page's own policy saw only the hostile page trying to navigate its frame away (refused: frame-src)
+    csp = page.evaluate("window.__csp")
+    assert all(c.startswith("frame-src http://127.0.0.1:9") for c in csp), csp
+    page.evaluate("window.__csp = []")
+    assert page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined")
+    sandbox_errors(p)
+    print(f"      (the viewer refused {blocked_only(p, failed)} requests the hostile files tried)", flush=True)
+    p.assert_clean()
+    p.close()
+
+
+@check("previews 2 over remote access: HTML and diagrams say where they can be seen; Word, Excel and notebooks work")
+def previews2_remote(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/bypass?remote=1")
+    p = Page(browser, NORMAL, "previews2-remote", **DESKTOP)
+    page = p.open()
+    expand(page, "previews")
+    pane = preview(page, "previews/page.html", "html")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("not available over remote access", timeout=15_000)
+    pane = preview(page, "previews/math.md", "markdown")
+    expect(pane.get_by_test_id("diagram-error")).to_contain_text("not available over remote access", timeout=15_000)
+    expect(pane.locator("[data-testid=math] .katex").first).to_be_visible(timeout=10_000)
+    pane = preview(page, "previews/notebook.ipynb", "notebook")
+    pane.get_by_test_id("nb-rich-open").click(timeout=15_000)
+    expect(pane.get_by_test_id("artifact-off")).to_contain_text("not available over remote access")
+    p.shot("preview2-remote.png")
+    pane = preview(page, "previews/data.xlsx", "sheet")
+    expect(pane.get_by_test_id("table-size")).to_have_text("40 rows × 5 columns", timeout=15_000)
+    assert page.locator("iframe.art-frame").count() == 0
+    post(NORMAL + "/__mock/bypass?remote=0")
+    no_outside_requests(p)
+    p.assert_clean()
+    p.close()
+
+
+@check("previews 2 (phone 390×844): Word, Excel, PowerPoint, a notebook and an HTML page in the editor sheet, no horizontal overflow")
+def previews2_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews2-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="dark")
+    page = p.open()
+    for path, kind, shot, ready in (
+        ("previews/report.docx", "docx", "phone-preview2-docx.png", "[data-testid=preview-docx] h1"),
+        ("previews/data.xlsx", "sheet", "phone-preview2-xlsx.png", ".tv-c"),
+        ("previews/deck.pptx", "deck", "phone-preview2-pptx.png", "[data-testid=deck-slide]"),
+        ("previews/notebook.ipynb", "notebook", "phone-preview2-notebook.png", "[data-testid=math] .katex"),
+        ("previews/page.html", "html", "phone-preview2-html.png", "iframe.art-frame"),
+    ):
+        page.get_by_test_id("phone-files").click()
+        expect(page.get_by_test_id("sheet-files")).to_be_visible()
+        expand(page, "previews")
+        tree_click(page, path)
+        sheet = page.get_by_test_id("sheet-editor")
+        expect(sheet.locator(f".pane:not(.hidden) [data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=20_000)
+        expect(sheet.locator(f".pane:not(.hidden) {ready}").first).to_be_visible(timeout=20_000)
+        page.wait_for_timeout(800)
+        p.shot(shot)
+        over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+        assert over <= 0, f"{path}: {over}px wider than the phone"
+        sheet.get_by_role("button", name="Close", exact=True).click()
+    sandbox_errors(p)
     p.assert_clean()
     p.close()
 

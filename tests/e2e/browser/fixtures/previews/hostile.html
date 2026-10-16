@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>hostile</title>
+<meta http-equiv="refresh" content="1;url=http://127.0.0.1:9/html-refresh">
+<link rel="stylesheet" href="http://127.0.0.1:9/html-css">
+<link rel="prefetch" href="http://127.0.0.1:9/html-prefetch">
+<base href="http://127.0.0.1:9/">
+</head><body>
+<h1>A hostile page</h1>
+<img src="http://127.0.0.1:9/html-img">
+<img src="/__mock/beacon?html-img-self">
+<iframe src="http://127.0.0.1:9/html-iframe"></iframe>
+<form action="http://127.0.0.1:9/html-form" method="post"><input name="x" value="1"></form>
+<a id="a" href="http://127.0.0.1:9/html-link" target="_top">top link</a>
+<script>
+  const tries = [
+    () => fetch('http://127.0.0.1:9/html-fetch'),
+    () => fetch('/__mock/beacon?html-fetch-self'),
+    () => navigator.sendBeacon('http://127.0.0.1:9/html-beacon', 'x'),
+    () => new WebSocket('ws://127.0.0.1:9/html-ws'),
+    () => new EventSource('http://127.0.0.1:9/html-sse'),
+    () => { const x = new XMLHttpRequest(); x.open('GET', 'http://127.0.0.1:9/html-xhr'); x.send(); },
+    () => alert('html alert'),
+    () => window.open('http://127.0.0.1:9/html-popup'),
+    () => { top.location = 'http://127.0.0.1:9/html-top'; },
+    () => document.forms[0].submit(),
+    () => document.getElementById('a').click(),
+    () => new Worker('data:text/javascript,postMessage(1)'),
+    () => parent.postMessage({ type: 'bn-mermaid-svg', id: 1, svg: '<svg/>' }, '*'),
+    () => parent.postMessage({ type: 'bn-artifact-height', h: 1e9 }, '*'),
+    () => { document.cookie = 'x=1; Domain=localhost'; },
+  ];
+  for (const t of tries) { try { const r = t(); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
+  setTimeout(() => { try { location.href = 'http://127.0.0.1:9/html-nav'; } catch (e) {} }, 300);
+</script>
+</body></html>

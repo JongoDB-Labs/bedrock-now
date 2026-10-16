@@ -280,6 +280,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         rem = remote(request)
         if request.query_params.get("app") == "preview":
             return preview_verify(request, rem)
+        if request.query_params.get("app") == "artifact":
+            return artifact_verify(request, rem)
         fwd_host = request.headers.get("x-forwarded-host", "").split(":")[0].lower()
         for app in (TERMINAL, CODE):
             if request.query_params.get("app") == app or (fwd_host and fwd_host == settings.app_host(app, rem)):
@@ -618,6 +620,57 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                                            "another port's preview switches it." if rem else "")
             return _no_store(PlainTextResponse(f"preview refused: {why}", status_code=403))
         return Response(status_code=200, headers={"X-Bn-Preview-Port": str(cap["port"]), "Cache-Control": "no-store"})
+
+    # --- the Code page's sandboxed artifact viewer (caddy/artifact-on.caddy; local only, like the previews). GET
+    # --- /.bn/artifact on the code host (Caddy → here, after the code host's check), from the page itself: the viewer's
+    # --- origin for this unlock, a<capability>.artifact.PREVIEW_DOMAIN (security.PreviewCaps.artifact_label), as JSON.
+    # --- The viewer runs HTML files, Mermaid diagrams and notebooks' HTML outputs there: another site than the portal's,
+    # --- sandboxed, no network.
+    ARTIFACT_REMOTE = ("HTML files, diagrams and notebooks' HTML outputs are drawn on a sandboxed site that is not available "
+                       "over remote access yet: open the Code page on the computer that runs bedrock-now, or Download.")
+
+    async def code_artifact(request: Request) -> Response:
+        if (deny := code_guard(request)) is not None:
+            return deny
+        rem = remote(request)
+        # local only (the remote preview host is the dev-server previews' alone; the viewer has no remote site)
+        if rem or not settings.preview_on(False):
+            return _no_store(JSONResponse({"available": False, "reason": ARTIFACT_REMOTE if rem else "The sandboxed viewer is off here."}))
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            log.warning("artifact viewer refused: not from the Code page (Sec-Fetch-Site %s)", request.headers.get("sec-fetch-site", "none")[:40])
+            return _no_store(JSONResponse({"available": False, "error": "open it from the Code page"}, status_code=403))
+        unlock = unlocks[CODE].claims(request.cookies.get(unlock_cookie_params(CODE, rem)["key"]), session_login(request.headers, settings))
+        if unlock is None:   # (code_guard checked it; a race with Sign out)
+            return _no_store(JSONResponse({"available": False, "error": "locked"}, status_code=401))
+        host = f"{previews.artifact_label(unlock['iat'])}.artifact.{settings.preview_domain}"
+        origin = f"http://{host}" if settings.port == 80 else f"http://{host}:{settings.port}"
+        return _no_store(JSONResponse({"available": True, "origin": origin, "expires": int(unlock["iat"] + TERMINAL_MAX_AGE)}))
+
+    artifact_refusals = {"last": 0.0}
+
+    def artifact_verify(request: Request, rem: bool) -> Response:
+        """Caddy's check for every request to the artifact site (forward_auth ?app=artifact): the capability in the host
+        name (as for previews), GET or HEAD only (the viewer's static pages and scripts: nothing there changes), framed or
+        loaded by a page — never opened as a page of its own (Sec-Fetch-Dest: document) — and no Origin but none or the
+        sandboxed viewer's own ("null"). Never for remote requests."""
+        if rem or not settings.preview_on():
+            return _no_store(PlainTextResponse("The artifact viewer is not available here.", status_code=404))
+        fwd = (request.headers.get("x-forwarded-host") or "").lower()
+        name = fwd.split(":", 1)[0]
+        suffix = ".artifact." + settings.preview_domain
+        cap = previews.check_artifact(name[: -len(suffix)]) if name.endswith(suffix) else None
+        origin = request.headers.get("origin")
+        why = ("not a valid artifact viewer address (expired, signed out, a new password, or not one at all)" if cap is None
+               else "only GET and HEAD" if request.headers.get("x-forwarded-method", "GET").upper() not in ("GET", "HEAD")
+               else "not as a page of its own" if request.headers.get("sec-fetch-dest") == "document"
+               else "a request from another origin" if origin not in (None, "null") else "")
+        if why:
+            now = time.time()
+            if now - artifact_refusals["last"] > 60:
+                artifact_refusals["last"] = now
+                log.warning("artifact viewer: refused %s", why)
+            return _no_store(PlainTextResponse(f"artifact viewer refused: {why}", status_code=403))
+        return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
     async def code_models(request: Request) -> Response:
         if (deny := code_guard(request)) is not None:
@@ -1029,6 +1082,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-terminal", code_terminal, methods=["GET"]),
             Route("/auth/code-preview", code_preview, methods=["GET"]),
             Route("/auth/preview-callback", preview_callback, methods=["GET"]),
+            Route("/auth/code-artifact", code_artifact, methods=["GET"]),
             Route("/auth/terminal-unlock-callback", terminal_unlock_callback, methods=["GET"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),

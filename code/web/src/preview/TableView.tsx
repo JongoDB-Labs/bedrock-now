@@ -53,22 +53,13 @@ function textWidth(s: string, weight: number): number {
 }
 const DELIM_NAME: Record<string, string> = { ',': 'comma', ';': 'semicolon', '\t': 'tab', '|': 'pipe' };
 
+/** CSV/TSV: parsed in the csv worker, rows arriving in batches, drawn by Grid. */
 export function View({ tab, pv, data, phone }: ViewerProps) {
-  const coarse = useMedia('(pointer: coarse)');
-  const rowH = coarse ? 32 : 26;
   const rows = useRef<string[][]>([]);
   const [count, setCount] = useState(0);
   const [cols, setCols] = useState(0);
   const [meta, setMeta] = useState<CsvMeta | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [header, setHeader] = useState<boolean | null>(null);
-  const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
-  const [filterInput, setFilterInput] = useState('');
-  const [filter, setFilter] = useState('');
-  const [sized, setSized] = useState<Record<number, number>>({});
-  const [picked, setPicked] = useState<{ r: number; c: number } | null>(null);
-  const scroller = useRef<HTMLDivElement>(null);
-  const [win, setWin] = useState({ top: 0, left: 0, height: 600, width: 1000 });
 
   useEffect(() => {
     rows.current = [];
@@ -76,11 +67,6 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     setCols(0);
     setMeta(null);
     setErr(null);
-    setSort(null);
-    setFilter('');
-    setFilterInput('');
-    setSized({});
-    setPicked(null);
     let frame = 0;
     let width = 0;
     const buf = data.buf ? data.buf.slice(0) : null;
@@ -117,16 +103,78 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     };
   }, [data, pv.kind]);
 
+  if (err) return <PreviewMsg tab={tab} err>{err}</PreviewMsg>;
+  if (!count && !meta) {
+    return (
+      <div class="pane-msg">
+        <Spinner /> Reading {pv.what}…
+      </div>
+    );
+  }
+  const notes = [
+    meta?.rowsCut && `only the first ${CSV_LIMITS.rows.toLocaleString('en-US')} rows`,
+    meta?.cellsCut && `only the first ${meta.rows.toLocaleString('en-US')} rows (previews stop at ${CSV_LIMITS.cells.toLocaleString('en-US')} cells)`,
+    meta?.colsCut && `only the first ${CSV_LIMITS.cols} columns`,
+  ].filter((x): x is string => !!x);
+  return (
+    <Grid
+      rows={rows.current}
+      count={count}
+      cols={cols}
+      done={meta !== null}
+      headerGuess={meta?.header ?? false}
+      cut={notes}
+      errors={meta?.errors ?? []}
+      kind={pv.kind}
+      what={pv.what}
+      info={meta ? `${DELIM_NAME[meta.delimiter] ?? meta.delimiter}-separated` : ''}
+      phone={phone}
+    />
+  );
+}
+
+export interface GridProps {
+  /** every row (a header row too, when there is one); appended to while `done` is false */
+  rows: string[][];
+  count: number;
+  cols: number;
+  done: boolean;
+  /** "First row is a header" until you change it */
+  headerGuess: boolean;
+  /** what was left out ("only the first … rows"), and the parser's errors */
+  cut: string[];
+  errors: string[];
+  kind: string;
+  what: string;
+  info?: string;
+  phone: boolean;
+}
+
+/** A table of text cells drawn virtually in both directions, with a header row that can be turned off, sorting and a
+ *  row filter (up to SORT_MAX rows), resizable columns and a cell's full text below. */
+export function Grid({ rows: all, count, cols, done, headerGuess, cut, errors, kind, what, info, phone }: GridProps) {
+  const coarse = useMedia('(pointer: coarse)');
+  const rowH = coarse ? 32 : 26;
+  const rows = useRef<string[][]>(all);
+  rows.current = all;
+  const [header, setHeader] = useState<boolean | null>(null);
+  const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  const [filterInput, setFilterInput] = useState('');
+  const [filter, setFilter] = useState('');
+  const [sized, setSized] = useState<Record<number, number>>({});
+  const [picked, setPicked] = useState<{ r: number; c: number } | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [win, setWin] = useState({ top: 0, left: 0, height: 600, width: 1000 });
+
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
     const ro = new ResizeObserver(() => setWin({ top: el.scrollTop, left: el.scrollLeft, height: el.clientHeight, width: el.clientWidth }));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [meta !== null || count > 0]);
+  }, [done || count > 0]);
 
-  const hasHeader = header ?? meta?.header ?? false;
-  const done = meta !== null;
+  const hasHeader = header ?? headerGuess;
   const bodyStart = hasHeader ? 1 : 0;
 
   // the filter applies 150 ms after the last keystroke (each run reads every row)
@@ -184,14 +232,6 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     return idx;
   }, [sort, filter, canSort, bodyStart, count]);
 
-  if (err) return <PreviewMsg tab={tab} err>{err}</PreviewMsg>;
-  if (!count && !done) {
-    return (
-      <div class="pane-msg">
-        <Spinner /> Reading {pv.what}…
-      </div>
-    );
-  }
   const total = order ? order.length : Math.max(0, count - bodyStart);
   const rowAt = (i: number): string[] => rows.current[order ? order[i] : i + bodyStart] ?? [];
   const first = Math.max(0, Math.floor(win.top / rowH) - 8);
@@ -214,21 +254,15 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     el.style.width = `${widths[c]}px`;
   };
   const pickedRow = picked ? rowAt(picked.r) : null;
-  const cutNotes = [
-    meta?.rowsCut && `only the first ${CSV_LIMITS.rows.toLocaleString('en-US')} rows`,
-    meta?.cellsCut && `only the first ${meta.rows.toLocaleString('en-US')} rows (previews stop at ${CSV_LIMITS.cells.toLocaleString('en-US')} cells)`,
-    meta?.colsCut && `only the first ${CSV_LIMITS.cols} columns`,
-  ].filter(Boolean);
-
   return (
-    <div class="pv-table" data-testid="preview-table" data-kind={pv.kind}>
+    <div class="pv-table" data-testid="preview-table" data-kind={kind}>
       <div class="pv-tools">
         <span class="small" data-testid="table-size">
           {total.toLocaleString('en-US')} {total === 1 ? 'row' : 'rows'}
           {order && ` of ${Math.max(0, count - bodyStart).toLocaleString('en-US')}`} × {cols} {cols === 1 ? 'column' : 'columns'}
           {!done && ' (reading…)'}
         </span>
-        {meta && <span class="muted small">{DELIM_NAME[meta.delimiter] ?? meta.delimiter}-separated</span>}
+        {info && <span class="muted small">{info}</span>}
         <label class="small pv-check">
           <input type="checkbox" checked={hasHeader} onChange={(e) => setHeader((e.currentTarget as HTMLInputElement).checked)} data-testid="table-header" /> First row is a header
         </label>
@@ -242,11 +276,11 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
           data-testid="table-filter"
         />
       </div>
-      {(cutNotes.length > 0 || (meta?.errors.length ?? 0) > 0) && (
+      {(cut.length > 0 || errors.length > 0) && (
         <div class="banner subtle" data-testid="table-notes">
           <span>
-            {cutNotes.length > 0 && `Shown: ${cutNotes.join('; ')}. `}
-            {meta?.errors.length ? `The parser said: ${meta.errors.join(' · ')}` : ''}
+            {cut.length > 0 && `Shown: ${cut.join('; ')}. `}
+            {errors.length ? `The parser said: ${errors.join(' · ')}` : ''}
           </span>
         </div>
       )}

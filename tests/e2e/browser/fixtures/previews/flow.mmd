@@ -1,0 +1,6 @@
+graph TD
+  A[Workspace file] -->|bytes| B{Kind?}
+  B -->|Word| C[Allowlisted tree]
+  B -->|HTML| D[Sandboxed viewer]
+  B -->|Mermaid| D
+  D --> E[SVG as an image]

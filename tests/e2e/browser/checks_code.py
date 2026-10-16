@@ -1389,10 +1389,16 @@ def open_preview(page, path, kind, timeout=30000):
     return pane
 
 
+# the sandboxed artifact viewer's own files (caddy/artifact-on.caddy): HTML files, diagrams and notebooks' HTML outputs
+ARTIFACT_FILE = re.compile(r"^http://a[a-z2-7]{33}\.artifact\.[a-z0-9.-]+(:\d+)?/artifact/[A-Za-z0-9.]+$")
+
+
 def outside(rec, since=0):
-    """Requests that left the code host after event `since` (the sign-in before it is the portal's); a hostile file's
-    references point at 127.0.0.1:9."""
-    return [e["url"] for e in rec.events[since:] if e["t"] in ("resp", "failed") and not e["url"].startswith((CODE + "/", "blob:", "data:"))]
+    """Requests that left the code host after event `since` (the sign-in before it is the portal's) — other than the
+    artifact viewer's own files, and those its policy refused before they left (csp); a hostile file's references point
+    at 127.0.0.1:9."""
+    return [e["url"] for e in rec.events[since:] if e["t"] in ("resp", "failed") and not e["url"].startswith((CODE + "/", "blob:", "data:"))
+            and not ARTIFACT_FILE.match(e["url"]) and not (e["t"] == "failed" and e.get("error") == "csp")]
 
 
 @check("browser", "code-ui-previews")
@@ -1483,10 +1489,10 @@ def ui_previews(ctx):
     pane = open_preview(page, f"{d}/config.yaml", "yaml")
     see(pane.get_by_test_id("preview-tree")).to_contain_text("service", timeout=30000)
     pane = open_preview(page, f"{d}/notebook.ipynb", "notebook")
-    see(pane.get_by_test_id("preview-tree")).to_contain_text("cells", timeout=30000)
-    pane = open_preview(page, f"{d}/sheet.xlsx", "later")
-    see(pane.get_by_test_id("preview-msg")).to_contain_text("later version")
-    done.append("JSON, YAML, a notebook as JSON; an .xlsx: download only")
+    see(pane.get_by_test_id("preview-notebook")).to_contain_text("A notebook", timeout=30000)
+    pane = open_preview(page, f"{d}/old.doc", "later")
+    see(pane.get_by_test_id("preview-msg")).to_contain_text("not previewed")
+    done.append("JSON, YAML, a notebook (cells); an old .doc: download only")
     # hostile files do nothing
     pane = open_preview(page, f"{d}/hostile.svg", "svg")
     see(pane.get_by_test_id("image-dims")).to_contain_text("240 × 160", timeout=20000)

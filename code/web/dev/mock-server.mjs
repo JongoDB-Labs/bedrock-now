@@ -1041,7 +1041,7 @@ async function hostile(s) {
 
 // ------------------------------------------------------------------ HTTP
 
-const CT = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.ttf': 'font/ttf' };
+const CT = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.ttf': 'font/ttf', '.woff2': 'font/woff2' };
 
 function csp(req) {
   const host = req.headers.host || `${HOST}:${PORT}`;
@@ -1527,9 +1527,40 @@ function previewLink(res, url) {
   return res.end();
 }
 
+// the sandboxed artifact viewer (caddy/artifact-on.caddy), on the fake preview site's port: a<capability>.artifact.
+// localhost, dist/artifact/* only, GET/HEAD, with the viewer's policies (the same as Caddy's, framed by this mock's page)
+const ARTIFACT_ORIGIN = `http://a${CAP}.artifact.localhost:${PREVIEW_PORT}`;
+const ARTIFACT_ANCESTORS = 'http://127.0.0.1:* http://localhost:*';
+const ARTIFACT_CSP = {
+  runner: `sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
+  viewer: `sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
+};
+function artifactSite(req, res) {
+  const u = new URL(req.url, 'http://x');
+  if (!['GET', 'HEAD'].includes(req.method) || req.headers['sec-fetch-dest'] === 'document' || !u.pathname.startsWith('/artifact/')) {
+    res.writeHead(403, { 'content-type': 'text/plain' });
+    return res.end('artifact viewer refused');
+  }
+  const file = path.normalize(path.join(DIST, u.pathname));
+  if (!file.startsWith(path.join(DIST, 'artifact') + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    return res.end('not found');
+  }
+  res.writeHead(200, {
+    'content-type': CT[path.extname(file)] ?? 'application/octet-stream',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'cache-control': 'no-cache',
+    'content-security-policy': u.pathname === '/artifact/html.html' ? ARTIFACT_CSP.runner : ARTIFACT_CSP.viewer,
+  });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(file).pipe(res);
+}
+
 // the fake preview site: what bn-preview would pass on from the dev server (a page per port), or its 502 page
 const previewServer = http.createServer((req, res) => {
   const host = String(req.headers.host || '');
+  if (host === ARTIFACT_ORIGIN.slice('http://'.length)) return artifactSite(req, res);
   const m = /^p([0-9]{1,5})-[a-z2-7]{33}\.localhost(:[0-9]+)?$/.exec(host);
   const port = m ? Number(m[1]) : 0;
   const esc = (x) => String(x).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -1553,6 +1584,10 @@ previewServer.listen(PREVIEW_PORT, HOST);
 
 function bn(req, res, url) {
   if (url.pathname === '/.bn/preview') return previewLink(res, url);
+  if (url.pathname === '/.bn/artifact') {
+    if (remote) return json(res, 200, { available: false, reason: 'HTML files, diagrams and notebooks\' HTML outputs are drawn on a sandboxed site that is not available over remote access yet (mock).' });
+    return json(res, 200, { available: true, origin: ARTIFACT_ORIGIN, expires: Math.floor(Date.now() / 1000) + 43200 });
+  }
   if (url.pathname === '/.bn/models') {
     if (!HOSTILE_MODE) return json(res, 200, MODELS);
     return json(res, 200, { ...MODELS, models: [...MODELS.models, { id: HOSTILE.img, name: HOSTILE.script, input_per_mtok: -1, output_per_mtok: 'NaN' }] });

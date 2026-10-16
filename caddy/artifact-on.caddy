@@ -1,0 +1,70 @@
+# The Code page's sandboxed artifact viewer (README "The Code page"; docs/security.md "The artifact viewer"): on with
+# the dev-server previews (compose.code.yaml sets PREVIEW_MODE=on; artifact-off.caddy otherwise). Imported by
+# Caddyfile. Local only, like the previews: the remote sites have no such block and the portal refuses it remotely.
+#
+# What has to run a workspace file's own script or parse HTML — an HTML file, a Mermaid diagram, a notebook's HTML or
+# JavaScript output — is shown by a fixed viewer (code/web/src/artifact: two pages and their scripts, served by the
+# code container) on a host of its own, a<capability>.artifact.<PREVIEW_DOMAIN>: the previews' site, another site than
+# the portal's, so no cookie of bedrock-now reaches it and its requests to bedrock-now's hosts are cross-site. The
+# capability (the portal mints it on the code host, /.bn/artifact, from the Code page's unlock) is checked on every
+# request (/auth/verify?app=artifact): GET/HEAD only, framed — never opened as a page of its own.
+#
+# The viewer's documents are sandboxed by their CSP (an opaque origin: no cookies, no storage) and have no network at
+# all: connect-src 'none', images, fonts and media only data:/blob:, no frames, workers, forms, plugins or <base>, and
+# only the Code page may frame them. The HTML runner (artifact/html.html) lets the document it is handed run its own
+# inline scripts — that is the point of an HTML preview — under exactly that policy; the diagram page runs nothing but
+# its own script (Mermaid).
+(artifact_upstream) {
+	header_up -Cookie
+	header_up -Referer
+	header_up -X-Portal-Proxy
+	header_up -X-Portal-User
+	header_up X-Bn-Code-Proxy {$CODE_PROXY_SECRET}
+	header_up X-Bn-Artifact 1
+	header_down -Set-Cookie
+	header_down -X-Frame-Options
+	header_down -Clear-Site-Data
+	header_down -Refresh
+	header_down -Link
+	header_down -Location
+	header_down -Service-Worker-Allowed
+	header_down -Access-Control-*
+	header_down -Content-Security-Policy-Report-Only
+	header_down -Report-To
+	header_down -Reporting-Endpoints
+	header_down -NEL
+	header_down X-Content-Type-Options nosniff
+	header_down Referrer-Policy no-referrer
+}
+
+http://*.artifact.{$PREVIEW_DOMAIN} {
+	route {
+		import local_request
+		request_header -X-Bn-Artifact
+		request_header -X-Bn-Code-Proxy
+		request_header -X-Bn-Csp-Nonce
+		request_header -X-Bn-Portal-Origin
+		request_header -X-Bn-Terminal-Host
+		request_header -X-Bn-Remote
+		forward_auth portal:8000 {
+			uri /auth/verify?app=artifact
+		}
+		@runner {
+			method GET HEAD
+			path /artifact/html.html
+		}
+		reverse_proxy @runner code-upstream:8095 {
+			import artifact_upstream
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN}"
+		}
+		@viewer {
+			method GET HEAD
+			path /artifact/*
+		}
+		reverse_proxy @viewer code-upstream:8095 {
+			import artifact_upstream
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN}"
+		}
+		respond 404
+	}
+}

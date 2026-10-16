@@ -176,6 +176,47 @@ test('a frontend build: index.html no-store with its meta tags, hashed files and
   }
 });
 
+test('the artifact site: only the viewer\'s files, GET/HEAD; never the page, the API or the WebSocket; the code host never serves them', async () => {
+  const dist = tmp('bnartifact');
+  fs.mkdirSync(path.join(dist, 'artifact'));
+  fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><html><head></head><body></body></html>');
+  fs.writeFileSync(path.join(dist, 'app.ABCD1234.js'), 'console.log(1)');
+  fs.writeFileSync(path.join(dist, 'artifact', 'html.html'), '<!doctype html><script src="runner.ABCD1234.js"></script>');
+  fs.writeFileSync(path.join(dist, 'artifact', 'runner.ABCD1234.js'), '1');
+  const b = createServer({ secret: SECRET, query: fakeQuery(), spawn: () => {}, call, distDir: dist, plainDir: path.resolve(import.meta.dirname, '../plain'), logger: () => {} });
+  await new Promise((r) => b.server.listen(0, '127.0.0.1', r));
+  const u = `http://127.0.0.1:${b.server.address().port}`;
+  const art = { 'X-Bn-Code-Proxy': SECRET, 'X-Bn-Artifact': '1' };
+  const get = (p, h = art, method = 'GET') => fetch(u + p, { method, headers: h });
+  try {
+    let r = await get('/artifact/html.html');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(r.headers.get('cache-control'), 'no-cache');
+    r = await get('/artifact/runner.ABCD1234.js');
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal((await get('/artifact/html.html', art, 'HEAD')).status, 200);
+    // nothing else on the artifact site: not the page, its scripts, the API, a page route
+    for (const p of ['/', '/index.html', '/app.ABCD1234.js', '/api/state', '/api/fs/download?path=a', '/sessions/x', '/artifact/', '/artifact/missing.js', '/artifact/../index.html']) {
+      assert.equal((await get(p)).status, 404, p);
+    }
+    for (const m of ['POST', 'PUT', 'DELETE']) assert.equal((await fetch(u + '/api/sessions', { method: m, headers: { ...art, Origin: u, 'Content-Type': 'application/json' }, body: '{}' })).status, 405, m);
+    // without the secret: still nothing
+    const status = (h) => new Promise((resolve, reject) => http.get(`${u}/artifact/html.html`, { headers: h }, (x) => { x.resume(); resolve(x.statusCode); }).on('error', reject));
+    assert.equal(await status({ 'X-Bn-Artifact': '1' }), 407);
+    // the code host never serves the viewer's pages
+    for (const p of ['/artifact/html.html', '/artifact/runner.ABCD1234.js', '/artifact']) assert.equal((await get(p, { 'X-Bn-Code-Proxy': SECRET })).status, 404, p);
+    assert.equal((await get('/', { 'X-Bn-Code-Proxy': SECRET })).status, 200);
+    // the WebSocket refuses an artifact-site request
+    const ws = new WebSocket(`ws://127.0.0.1:${b.server.address().port}/ws`, { headers: { ...art, Origin: u } });
+    const code = await new Promise((resolve) => { ws.on('unexpected-response', (_q, res) => resolve(res.statusCode)); ws.on('open', () => resolve('open')); ws.on('error', () => {}); });
+    assert.equal(code, 403);
+  } finally {
+    b.mgr.closeAll(); b.wss.close(); b.server.close(); fs.rmSync(dist, { recursive: true, force: true });
+  }
+});
+
 test('sessions: the sandbox\'s rows checked (bogus ids, NaN dropped), history through the SDK\'s own parser', async () => {
   let r = await req('GET', '/api/sessions');
   assert.equal(r.status, 200);

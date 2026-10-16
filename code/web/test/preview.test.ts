@@ -50,8 +50,8 @@ test('sniff: binary files by their first bytes, whatever their name', () => {
   assert.equal(kind('a.bin', bytes('BM', new Array(30).fill(0))), null);
   assert.equal(mime('a.ico', bytes([0, 0, 1, 0, 1, 0])), 'image/x-icon');
   assert.equal(kind('a.dat', bytes([0, 0, 1, 0, 1, 0])), null);
-  // part 2: Office files say so; other zips are not previewed
-  assert.equal(kind('report.docx', bytes('PK\x03\x04')), 'later');
+  // Office files by their bytes and name (part 2: office.test.ts); other zips are not previewed
+  assert.equal(kind('report.docx', bytes('PK\x03\x04')), 'docx');
   assert.equal(sniffBinary('report.xlsx', bytes('PK\x03\x04'))?.what, 'Excel workbook');
   assert.equal(kind('old.doc', bytes([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])), 'later');
   assert.equal(kind('archive.zip', bytes('PK\x03\x04')), null);
@@ -70,7 +70,7 @@ test('sniff: text files by extension (SVG also by content); a "PNG" that is text
   assert.equal(t('a.yml', 'a: 1'), 'yaml');
   assert.equal(t('n.ipynb', '{}'), 'notebook');
   assert.equal(t('fake.png', '<html><script>alert(1)</script>'), null, 'text named .png: shown as text, never as an image');
-  assert.equal(t('page.html', '<html>'), null, 'HTML: the editor only (part 2: a sandboxed viewer)');
+  assert.equal(t('page.html', '<html>'), 'html', 'HTML: only ever in the sandboxed artifact viewer');
   assert.equal(t('logo.svg', '<?xml version="1.0"?>\n<!-- c -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x">\n<svg xmlns="http://www.w3.org/2000/svg"/>'), 'svg');
   assert.equal(t('logo.svg', '<html><svg></svg></html>'), null, 'an .svg that is HTML');
   assert.equal(t('notes.txt', '%PDF-1.4\n1 0 obj'), 'pdf', 'an ASCII PDF is a PDF');
@@ -103,7 +103,7 @@ test('caps, views and what needs bytes', () => {
   assert.equal(viewFor(csv, 'split'), 'preview', 'Split is for Markdown');
   assert.equal(viewFor(csv, 'source'), 'source');
   assert.equal(viewFor(pdf, 'source'), 'preview', 'a PDF has no source view');
-  assert.ok(previewableName('a/b.pdf') && previewableName('x.yaml') && !previewableName('x.ts') && !previewableName('x.docx'));
+  assert.ok(previewableName('a/b.pdf') && previewableName('x.yaml') && !previewableName('x.ts') && previewableName('x.docx') && !previewableName('x.doc'));
 });
 
 test('images: header dimensions; decompression bombs and unreadable headers are refused', () => {

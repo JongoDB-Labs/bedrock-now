@@ -1,6 +1,8 @@
 // Renders markdown.ts's node tree with Preact: elements from a fixed list, attributes from a fixed list, all text as
 // text nodes. No HTML string ever reaches the DOM. A file preview passes `images` (the file's folder) and
-// `renderImage`: the tree's workspace images are drawn by that (src/preview: bytes through the API, as blob: images).
+// `renderImage`: the tree's workspace images are drawn by that (src/preview: bytes through the API, as blob: images);
+// `renderMath` (formulas: KaTeX, building DOM nodes) and `renderDiagram` (```mermaid blocks: drawn in the sandboxed
+// artifact viewer, shown as an image) likewise.
 import { h, type ComponentChildren, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import { renderMarkdown, type MdNode } from '../markdown';
@@ -46,11 +48,24 @@ function textOf(n: MdNode): string {
 }
 
 type ImageFn = (path: string, alt: string, key: number) => ComponentChildren;
+export interface Extras {
+  renderMath?: (tex: string, display: boolean, key: number) => ComponentChildren;
+  renderDiagram?: (code: string, key: number) => ComponentChildren;
+}
 
-function toVNode(n: MdNode, key: number, img?: ImageFn, devLinks = false): ComponentChildren {
+function toVNode(n: MdNode, key: number, img?: ImageFn, devLinks = false, x: Extras = {}): ComponentChildren {
   if (typeof n === 'string') return n;
   if (n.tag === 'img') return img && n.attrs?.['data-src'] ? img(n.attrs['data-src'], n.attrs.alt ?? '', key) : null;
-  const kids = (list: MdNode[]) => list.map((c, i) => toVNode(c, i, img, devLinks));
+  if (n.tag === 'math') {
+    const tex = n.attrs?.tex ?? '';
+    const display = n.attrs?.display === '1';
+    return x.renderMath ? x.renderMath(tex, display, key) : h('code', { key }, display ? `$$${tex}$$` : `$${tex}$`);
+  }
+  if (n.tag === 'mermaid') {
+    const code = n.attrs?.code ?? '';
+    return x.renderDiagram ? x.renderDiagram(code, key) : <CodeBlock key={key} lang="mermaid" code={code} />;
+  }
+  const kids = (list: MdNode[]) => list.map((c, i) => toVNode(c, i, img, devLinks, x));
   if (!TAGS.has(n.tag)) return kids(n.children);
   if (n.tag === 'pre' && n.attrs?.class !== 'md-html') {
     return <CodeBlock key={key} lang={n.attrs?.['data-lang'] ?? ''} code={n.children.map(textOf).join('')} />;
@@ -90,8 +105,13 @@ function toVNode(n: MdNode, key: number, img?: ImageFn, devLinks = false): Compo
 }
 
 /** devLinks: http://localhost:<port> links open that port's dev-server preview (Claude's answers in the chat: there
- *  those addresses are the sandbox's); elsewhere (a workspace file's preview) links stay as written. */
-export const MarkdownView = memo(function MarkdownView({ text, class: cls, images, renderImage, devLinks }: { text: string; class?: string; images?: string; renderImage?: ImageFn; devLinks?: boolean }) {
-  const nodes = useMemo(() => renderMarkdown(text, images !== undefined && renderImage ? { images } : {}), [text, images, !!renderImage]);
-  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map((n, i) => toVNode(n, i, renderImage, devLinks === true))}</div>;
+ *  those addresses are the sandbox's); elsewhere (a workspace file's preview) links stay as written. renderMath /
+ *  renderDiagram: formulas and diagrams (file previews only; without them math stays text, diagrams code). */
+export const MarkdownView = memo(function MarkdownView({ text, class: cls, images, renderImage, devLinks, renderMath, renderDiagram }: { text: string; class?: string; images?: string; renderImage?: ImageFn; devLinks?: boolean } & Extras) {
+  const nodes = useMemo(
+    () => renderMarkdown(text, { ...(images !== undefined && renderImage ? { images } : {}), math: !!renderMath, diagrams: !!renderDiagram }),
+    [text, images, !!renderImage, !!renderMath, !!renderDiagram],
+  );
+  const x: Extras = { renderMath, renderDiagram };
+  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map((n, i) => toVNode(n, i, renderImage, devLinks === true, x))}</div>;
 });

@@ -20,9 +20,28 @@ await esbuild.build({
   jsxImportSource: 'preact',
   logLevel: 'warning',
   // what build.mjs defines for the page (src/env.d.ts)
-  define: { __BN_WORKERS__: JSON.stringify({ csv: '/workers/csv.TEST.js', data: '/workers/data.TEST.js', pdf: '/workers/pdf.worker.TEST.mjs' }), __BN_PDFJS_ASSETS__: '"/assets/pdfjs-test/"' },
+  define: {
+    __BN_WORKERS__: JSON.stringify({ csv: '/workers/csv.TEST.js', data: '/workers/data.TEST.js', pdf: '/workers/pdf.worker.TEST.mjs', docx: '/workers/docx.TEST.js', sheet: '/workers/sheet.TEST.js', deck: '/workers/deck.TEST.js' }),
+    __BN_PDFJS_ASSETS__: '"/assets/pdfjs-test/"',
+    __BN_KATEX_CSS__: '"/assets/katex-test/katex.min.css"',
+    __BN_ARTIFACT__: JSON.stringify({ html: '/artifact/html.html', mermaid: '/artifact/mermaid.html' }),
+  },
+  // as build.mjs: mammoth's jszip is the page's own bounded zip reader
+  plugins: [
+    { name: 'jszip-shim', setup(b) { b.onResolve({ filter: /^jszip$/ }, () => ({ path: path.join(here, '../src/preview/office/jszip-shim.ts') })); } },
+    // mammoth as the page's build gets it (package.json "browser"): its browser unzip and its "no linked files" reader
+    { name: 'mammoth-browser', setup(b) {
+      b.onResolve({ filter: /^\.\/(unzip|docx\/files|files)$/ }, (a) => {
+        if (!/[\\/]mammoth[\\/]lib/.test(a.importer)) return undefined;
+        const lib = a.importer.slice(0, a.importer.search(/[\\/]mammoth[\\/]lib/) + '/mammoth'.length);
+        if (a.path === './unzip') return { path: path.join(lib, 'browser/unzip.js') };
+        const rel = path.relative(path.join(lib, 'lib'), path.join(path.dirname(a.importer), a.path));
+        return rel === path.join('docx', 'files') ? { path: path.join(lib, 'browser/docx/files.js') } : undefined;
+      });
+    } },
+  ],
   // the bundles are ES modules; a dependency's CommonJS build (yaml's, for Node) may still call require()
-  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+  banner: { js: "import { createRequire as __bnCreateRequire } from 'node:module'; const require = __bnCreateRequire(import.meta.url);" },
 });
 const built = fs.readdirSync(out).filter((f) => f.endsWith('.test.mjs')).map((f) => path.join(out, f));
 const r = spawnSync(process.execPath, ['--test', ...built], { stdio: 'inherit' });

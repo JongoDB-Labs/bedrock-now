@@ -5,6 +5,7 @@
 // workspace files next to it (relative paths, at most MAX_IMAGES): MarkdownView gets them through the API as bytes.
 import { Lexer, type Token, type Tokens } from 'marked';
 import { cleanPath, visible } from './text';
+import { extractMath, restoreMath, splitMath, type MathSpan } from './mathtext';
 
 export interface MdEl {
   tag: string;
@@ -16,6 +17,7 @@ export type MdNode = string | MdEl;
 const MAX_NODES = 20_000;
 const MAX_DEPTH = 40;
 export const MAX_IMAGES = 50;
+export const MAX_DIAGRAMS = 50;
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ' };
 /** Decode the few entities Markdown authors use; the result is text, so this is display-only. */
@@ -57,6 +59,10 @@ interface Ctx {
   n: number;
   /** a file preview: images relative to this folder (of the workspace) are shown */
   images?: { base: string; n: number };
+  /** formulas found before lexing (mathtext.ts): text placeholders become `math` nodes */
+  math?: MathSpan[];
+  /** ```mermaid blocks become `mermaid` nodes (drawn in the sandboxed artifact viewer), at most MAX_DIAGRAMS */
+  diagrams?: { n: number };
 }
 
 /** An image reference relative to a Markdown file in folder `base` → its workspace path, or null (a URL, an absolute
@@ -90,8 +96,22 @@ function el(ctx: Ctx, tag: string, children: MdNode[], attrs?: Record<string, st
 
 function txt(ctx: Ctx, s: string, decode = true): string {
   ctx.n++;
+  if (ctx.math) s = restoreMath(s, ctx.math);
   return visible(decode ? entities(s) : s);
 }
+
+/** A text token: plain text, with its formulas (placeholders) as `math` nodes. */
+function textNodes(ctx: Ctx, s: string, decode = true): MdNode[] {
+  if (!ctx.math || !s.includes('\uE000')) return [txt(ctx, s, decode)];
+  const math = ctx.math;
+  return splitMath(s).map((x) => {
+    if (typeof x === 'string') return txt(ctx, x, decode);
+    const m = math[x];
+    return m ? el(ctx, 'math', [], { tex: m.tex, display: m.display ? '1' : '' }) : '';
+  });
+}
+
+const raw = (ctx: Ctx, s: string): string => (ctx.math ? restoreMath(s, ctx.math) : s);
 
 function inline(tokens: Token[] | undefined, ctx: Ctx, depth: number): MdNode[] {
   const out: MdNode[] = [];
@@ -109,7 +129,7 @@ function inline(tokens: Token[] | undefined, ctx: Ctx, depth: number): MdNode[] 
       case 'text': {
         const tt = t as Tokens.Text;
         if (tt.tokens && tt.tokens.length) out.push(...inline(tt.tokens, ctx, depth + 1));
-        else out.push(txt(ctx, tt.text, !tt.escaped));
+        else out.push(...textNodes(ctx, tt.text, !tt.escaped));
         break;
       }
       case 'escape':
@@ -137,8 +157,9 @@ function inline(tokens: Token[] | undefined, ctx: Ctx, depth: number): MdNode[] 
       case 'link': {
         const lt = t as Tokens.Link;
         const children = inline(lt.tokens, ctx, depth + 1);
-        const href = safeHref(lt.href);
-        const file = href ? null : fileHref(lt.href);
+        const target = raw(ctx, lt.href);
+        const href = safeHref(target);
+        const file = href ? null : fileHref(target);
         if (href) {
           const attrs: Record<string, string> = { href, target: '_blank', rel: 'noopener noreferrer nofollow', title: visible(href) };
           out.push(el(ctx, 'a', children, attrs));
@@ -146,12 +167,14 @@ function inline(tokens: Token[] | undefined, ctx: Ctx, depth: number): MdNode[] 
           out.push(el(ctx, 'a', children, { 'data-file': file, title: `Open ${file}`, href: '#' }));
         } else {
           // anything else (javascript:, data:, mailto:…) keeps its text and shows the target as text
-          out.push(el(ctx, 'span', [...children, txt(ctx, ` (${lt.href})`, false)], { class: 'md-badlink' }));
+          out.push(el(ctx, 'span', [...children, txt(ctx, ` (${target})`, false)], { class: 'md-badlink' }));
         }
         break;
       }
       case 'image': {
         const it = t as Tokens.Image;
+        it.href = raw(ctx, it.href);
+        it.text = raw(ctx, it.text || '');
         const href = safeHref(it.href);
         const label = `[image${it.text ? ': ' + it.text : ''}]`;
         const local = !href && ctx.images && ctx.images.n < MAX_IMAGES ? resolveRel(ctx.images.base, it.href) : null;
@@ -205,12 +228,17 @@ function block(tokens: Token[], ctx: Ctx, depth: number): MdNode[] {
         break;
       case 'text': {
         const tt = t as Tokens.Text;
-        out.push(el(ctx, 'p', tt.tokens ? inline(tt.tokens, ctx, depth + 1) : [txt(ctx, tt.text)]));
+        out.push(el(ctx, 'p', tt.tokens ? inline(tt.tokens, ctx, depth + 1) : textNodes(ctx, tt.text)));
         break;
       }
       case 'code': {
         const c = t as Tokens.Code;
         const lang = (c.lang || '').trim().split(/\s+/)[0].slice(0, 30).replace(/[^\w+#.-]/g, '');
+        if (ctx.diagrams && lang.toLowerCase() === 'mermaid' && ctx.diagrams.n < MAX_DIAGRAMS) {
+          ctx.diagrams.n++;
+          out.push(el(ctx, 'mermaid', [], { code: raw(ctx, c.text).slice(0, 50_000) }));
+          break;
+        }
         out.push(el(ctx, 'pre', [el(ctx, 'code', [txt(ctx, c.text, false)])], lang ? { 'data-lang': lang } : undefined));
         break;
       }
@@ -263,7 +291,7 @@ function listItemTight(tokens: Token[], ctx: Ctx, depth: number): MdNode[] {
   for (const t of tokens) {
     if (t.type === 'text') {
       const tt = t as Tokens.Text;
-      out.push(...(tt.tokens ? inline(tt.tokens, ctx, depth) : [txt(ctx, tt.text)]));
+      out.push(...(tt.tokens ? inline(tt.tokens, ctx, depth) : textNodes(ctx, tt.text)));
     } else if (t.type === 'checkbox') out.push(...inline([t], ctx, depth));
     else out.push(...block([t], ctx, depth));
   }
@@ -271,11 +299,19 @@ function listItemTight(tokens: Token[], ctx: Ctx, depth: number): MdNode[] {
 }
 
 /** Markdown source → node tree. Never throws: a lexer failure shows the source as text. `opts.images`: the folder
- *  of the Markdown file being previewed (its relative images become `img` nodes with a workspace path). */
-export function renderMarkdown(src: string, opts: { images?: string } = {}): MdNode[] {
-  const ctx: Ctx = { n: 0, images: opts.images !== undefined ? { base: opts.images, n: 0 } : undefined };
+ *  of the Markdown file being previewed (its relative images become `img` nodes with a workspace path); `math`:
+ *  $…$ and $$…$$ become `math` nodes (tex, display); `diagrams`: ```mermaid blocks become `mermaid` nodes (code). */
+export function renderMarkdown(src: string, opts: { images?: string; math?: boolean; diagrams?: boolean } = {}): MdNode[] {
+  const ctx: Ctx = { n: 0, images: opts.images !== undefined ? { base: opts.images, n: 0 } : undefined, diagrams: opts.diagrams ? { n: 0 } : undefined };
   let tokens: Token[];
   try {
+    if (opts.math) {
+      const m = extractMath(src);
+      if (m.spans.length) {
+        ctx.math = m.spans;
+        src = m.text;
+      }
+    }
     // a single newline is a line break, as Claude Code's own terminal shows its answers
     tokens = Lexer.lex(src, { gfm: true, breaks: true, async: false });
   } catch {

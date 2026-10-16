@@ -1,10 +1,13 @@
 // What a workspace file can be previewed as. Everything in /workspace is untrusted: a binary file's kind comes from
 // its first bytes (magic numbers; the backend sends the first 64 with every read), never from its name alone — a
-// "photo.png" that holds HTML is shown as text, a PDF named "notes.txt" as a PDF. Text formats (Markdown, CSV, JSON,
-// YAML, SVG) are told apart by their extension, and SVG must also look like SVG. Every kind has a size cap; above it
-// the file can only be downloaded. Pure functions (unit-tested): no DOM, no network.
+// "photo.png" that holds HTML is shown as text, a PDF named "notes.txt" as a PDF; Office files are zip (or the old
+// compound) files by their bytes and Word/Excel/PowerPoint by their name. Text formats (Markdown, CSV, JSON, YAML,
+// notebooks, HTML, Mermaid, SVG) are told apart by their extension, and SVG must also look like SVG. Every kind has a
+// size cap; above it the file can only be downloaded. Pure functions (unit-tested): no DOM, no network.
 
-export type Kind = 'markdown' | 'image' | 'svg' | 'audio' | 'video' | 'pdf' | 'csv' | 'tsv' | 'json' | 'jsonl' | 'yaml' | 'notebook' | 'later';
+export type Kind =
+  | 'markdown' | 'image' | 'svg' | 'audio' | 'video' | 'pdf' | 'csv' | 'tsv' | 'json' | 'jsonl' | 'yaml' | 'notebook'
+  | 'docx' | 'sheet' | 'deck' | 'html' | 'mermaid' | 'later';
 
 export interface Sniffed {
   kind: Kind;
@@ -29,6 +32,11 @@ export const CAPS: Record<Kind, number> = {
   jsonl: 25 * MiB,
   yaml: 5 * MiB,
   notebook: 20 * MiB,
+  docx: 25 * MiB,
+  sheet: 25 * MiB,
+  deck: 25 * MiB,
+  html: 10 * MiB,
+  mermaid: 1 * MiB,
   later: 0,
 };
 /** Images larger than this many pixels (by their header) are not decoded: a small file can claim a huge canvas. */
@@ -58,10 +66,21 @@ function brands(b: Uint8Array): string[] | null {
 }
 
 const AUDIO_EXT = new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'flac', 'm4a', 'aac', 'weba']);
+// zip files by their name (an .xlsx that is really a .docx fails in its reader, with a message)
+const ZIPPED: Record<string, Sniffed> = {
+  docx: { kind: 'docx', mime: '', what: 'Word document' },
+  docm: { kind: 'docx', mime: '', what: 'Word document (with macros, which never run)' },
+  xlsx: { kind: 'sheet', mime: '', what: 'Excel workbook' },
+  xlsm: { kind: 'sheet', mime: '', what: 'Excel workbook (with macros, which never run)' },
+  xlsb: { kind: 'sheet', mime: '', what: 'Excel binary workbook' },
+  ods: { kind: 'sheet', mime: '', what: 'OpenDocument spreadsheet' },
+  pptx: { kind: 'deck', mime: '', what: 'PowerPoint presentation' },
+};
+const COMPOUND: Record<string, Sniffed> = { xls: { kind: 'sheet', mime: '', what: 'Excel 97–2003 workbook' } };
+// Office files no preview reads: Download
 const LATER: Record<string, string> = {
-  docx: 'Word document', docm: 'Word document', doc: 'Word document', odt: 'OpenDocument text', rtf: 'RTF document',
-  xlsx: 'Excel workbook', xlsm: 'Excel workbook', xls: 'Excel workbook', ods: 'OpenDocument spreadsheet',
-  pptx: 'PowerPoint presentation', ppt: 'PowerPoint presentation', odp: 'OpenDocument presentation', epub: 'EPUB book',
+  doc: 'Word 97–2003 document', odt: 'OpenDocument text', rtf: 'RTF document', ppt: 'PowerPoint 97–2003 presentation',
+  pptm: 'PowerPoint presentation with macros', odp: 'OpenDocument presentation', epub: 'EPUB book',
 };
 
 /** A binary file's kind from its first bytes (and, where the magic is weak or shared, its extension). */
@@ -93,8 +112,12 @@ export function sniffBinary(path: string, head: Uint8Array): Sniffed | null {
     if (br.some((x) => /^(isom|iso[2-9]|mp41|mp42|avc1|dash|M4V |mmp4|3gp\d|3g2\w)$/.test(x))) return { kind: 'video', mime: 'video/mp4', what: 'MPEG-4 video' };
     return null;
   }
-  // Office files (zip, or the old compound format): part 2 of the previews
-  if ((ascii(b, 0, 'PK\x03\x04') || bytesAt(b, 0, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) && LATER[ext]) return { kind: 'later', mime: '', what: LATER[ext] };
+  // Office files: zip (Word, Excel, PowerPoint, OpenDocument), or the old compound format (Excel 97–2003)
+  const zip = ascii(b, 0, 'PK\x03\x04');
+  const cfb = bytesAt(b, 0, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  if (zip && ZIPPED[ext]) return ZIPPED[ext];
+  if (cfb && COMPOUND[ext]) return COMPOUND[ext];
+  if ((zip || cfb) && LATER[ext]) return { kind: 'later', mime: '', what: LATER[ext] };
   return null;
 }
 
@@ -115,7 +138,12 @@ const TEXT_KINDS: Record<string, Sniffed> = {
   ndjson: { kind: 'jsonl', mime: 'application/jsonl', what: 'JSON Lines' },
   yaml: { kind: 'yaml', mime: 'application/yaml', what: 'YAML' },
   yml: { kind: 'yaml', mime: 'application/yaml', what: 'YAML' },
-  ipynb: { kind: 'notebook', mime: 'application/json', what: 'Jupyter notebook (shown as JSON)' },
+  ipynb: { kind: 'notebook', mime: 'application/json', what: 'Jupyter notebook' },
+  html: { kind: 'html', mime: 'text/html', what: 'HTML page (sandboxed)' },
+  htm: { kind: 'html', mime: 'text/html', what: 'HTML page (sandboxed)' },
+  xhtml: { kind: 'html', mime: 'text/html', what: 'HTML page (sandboxed)' },
+  mmd: { kind: 'mermaid', mime: 'text/plain', what: 'Mermaid diagram' },
+  mermaid: { kind: 'mermaid', mime: 'text/plain', what: 'Mermaid diagram' },
 };
 
 // One prolog token at a time (whitespace, a processing instruction such as the XML declaration, a comment, a
@@ -149,10 +177,11 @@ export function sniff(path: string, file: { binary: boolean; head: Uint8Array | 
 }
 
 /** Kinds a viewer reads as bytes (from the download endpoint), whether or not the file is text. */
-export const needsBytes = (k: Kind): boolean => k === 'image' || k === 'audio' || k === 'video' || k === 'pdf';
+export const needsBytes = (k: Kind): boolean => k === 'image' || k === 'audio' || k === 'video' || k === 'pdf' || k === 'docx' || k === 'sheet' || k === 'deck';
 
 /** Kinds with a text source the editor can show (Preview / Source; Markdown also Split). */
-export const hasSource = (k: Kind): boolean => k === 'markdown' || k === 'svg' || k === 'csv' || k === 'tsv' || k === 'json' || k === 'jsonl' || k === 'yaml' || k === 'notebook';
+export const hasSource = (k: Kind): boolean =>
+  k === 'markdown' || k === 'svg' || k === 'csv' || k === 'tsv' || k === 'json' || k === 'jsonl' || k === 'yaml' || k === 'notebook' || k === 'html' || k === 'mermaid';
 
 export type FileView = 'preview' | 'source' | 'split';
 /** The view a file tab can have: no preview → the editor (Source); no source (images, PDF, audio, video) → the
@@ -166,7 +195,7 @@ export function viewFor(p: Sniffed | null, want: FileView): FileView {
 /** Could a path be previewed, going by its name alone (tool cards offer "Preview" for these)? */
 export function previewableName(path: string): boolean {
   const ext = extOf(path);
-  return ext in TEXT_KINDS || ['svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico', 'pdf', 'mp3', 'wav', 'ogg', 'm4a', 'flac', 'mp4', 'webm', 'mov'].includes(ext);
+  return ext in TEXT_KINDS || ext in ZIPPED || ext in COMPOUND || ['svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico', 'pdf', 'mp3', 'wav', 'ogg', 'm4a', 'flac', 'mp4', 'webm', 'mov'].includes(ext);
 }
 
 // ---------------------------------------------------------------- image dimensions
