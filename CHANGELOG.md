@@ -53,6 +53,22 @@ All notable changes to bedrock-now are documented here. The format follows
   panels, sessions, files and recent picks, fuzzy-matched in linear time, entirely by keyboard; a sheet on a phone. The
   keyboard shortcut sheet (`Ctrl/⌘+/` or `?`) now lists every shortcut.
 
+- **More previews on the Code page.** Word documents (`.docx`: headings, lists, tables, pictures from inside the file,
+  links), Excel workbooks (`.xlsx`, `.xlsm`, `.xls`, `.ods`: sheet tabs over the table, values as Excel shows them —
+  formulas are never read or computed, hidden sheets marked), PowerPoint decks (`.pptx`: an outline of each slide's
+  title, text, tables, pictures and speaker notes — no layout), Jupyter notebooks (`.ipynb`: Markdown cells, code
+  highlighted for the kernel's language, outputs with their terminal colours, images, formulas), formulas in Markdown
+  previews and notebooks (`$…$`, `$$…$$`: KaTeX), and — in a **sandboxed viewer** of their own — HTML files (their own
+  scripts run, with no network), Mermaid diagrams (`.mmd`, ```` ```mermaid ```` blocks in Markdown and notebooks;
+  shown as images) and notebooks' HTML and JavaScript outputs (on request). The viewer is on the previews' site
+  (`a<capability>.artifact.<PREVIEW_DOMAIN>`), sandboxed, framed only by the Code page; local only for now (over
+  remote access these say so, with Source and Download). Old `.doc`, `.ppt`, `.odt`, `.odp`, RTF and EPUB files:
+  Download. New pinned dependencies of `code/web`: `mammoth` 1.13.0, `htmlparser2` 12.0.0, `fflate` 0.8.3, `katex`
+  0.19.0, `mermaid` 12.0.0 (its `katex` and `lodash-es` raised to fixed versions by overrides), and SheetJS Community
+  Edition 0.20.3 vendored as the tarball from its CDN (`code/web/vendor/xlsx-0.20.3.tgz`, its SHA-512 in
+  `package-lock.json`; never npm's `xlsx` 0.18.5, which has known vulnerabilities). mammoth's JSZip and command-line
+  `argparse` are replaced by empty local packages (the page reads zip files with its own bounded reader).
+
 ### Changed
 
 - The Code page's previews are no longer "local only": over remote access the Code page says why they are off (the
@@ -75,6 +91,16 @@ All notable changes to bedrock-now are documented here. The format follows
   refreshes it; measured: one retry is always enough), for every file `./stack` and the helper write. Linux was not
   affected. Also: a heartbeat up to 10 s ahead of the portal's clock still counts (Docker Desktop's clock can trail
   the Mac's, e.g. after sleep), and the refusal says when the helper was last seen, or that Docker's clock is behind.
+
+### Security
+
+- **Zip bombs and hostile Office files.** Word, Excel and PowerPoint files are zip files: the page's own reader checks
+  the whole directory before inflating anything (at most 5,000–10,000 parts; each part's declared size within 64 MB,
+  all within 128–160 MB and 200 × the file's size; no zip64, encryption, overlapping or duplicate parts) and inflates
+  a part only up to the size it declared — one byte more stops it. SheetJS never unpacks a file's zip itself (its
+  inflater trusts declared sizes): it gets the value parts only, re-packed uncompressed. XML is parsed without DTD
+  entities (no billion laughs, no XXE); a document's HTML is sanitised to an allowlisted tree; linked (external)
+  pictures are never fetched. See docs/security.md, "File previews" and "The artifact viewer".
 
 ## [0.6.0] - 2026-10-16
 

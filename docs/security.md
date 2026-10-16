@@ -761,15 +761,17 @@ spawn server, Claude Code or any file at will.
   none of the upstream's `Set-Cookie`, `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`,
   CORS or reporting headers. The page renders sandbox text with `textContent` only, never as HTML, and keeps it
   inside messages and cards (never in its chrome); it never asks for a password (the unlock is the portal's page).
-- [x] **File previews draw the workspace's files; nothing in them runs.** Every file in `/workspace` is untrusted
-  (the sandbox writes whatever it likes there), so the page previews on its own origin only formats it can turn into
-  DOM or canvas from plain data, under the policy above:
+- [x] **File previews draw the workspace's files; nothing in them runs on bedrock-now's pages.** Every file in
+  `/workspace` is untrusted (the sandbox writes whatever it likes there), so the page previews on its own origin only
+  formats it can turn into DOM or canvas from plain data, under the policy above; what needs a file's own script or an
+  HTML parser runs only in the sandboxed artifact viewer, another site ("The artifact viewer", below):
   - *Bytes, not documents.* A preview fetches the file from the download endpoint (`application/octet-stream`,
     `nosniff`, an attachment; ≤ 25 MiB) and renders it itself; no workspace file is ever served for the browser to
     render. What a file is comes from its first bytes (a binary file's first 64 come with its read, so no second
     request is needed): an HTML file named `.png` stays text in the editor, a PNG named `.txt` is shown as a PNG.
-    Text formats (Markdown, CSV, JSON, YAML) go by their extension, an SVG must also look like one (checked on its
-    first 64 KiB in linear time). Everything the page itself runs on a file's text on its main thread — this check,
+    Office files must be zip files (or, for `.xls`, the old compound format) by their bytes and Word, Excel or
+    PowerPoint by their name. Text formats (Markdown, CSV, JSON, YAML, notebooks, HTML, Mermaid) go by their extension,
+    an SVG must also look like one (checked on its first 64 KiB in linear time). Everything the page itself runs on a file's text on its main thread — this check,
     the number test of table cells — is written without backtracking regular expressions (a ~50-byte crafted file
     must not freeze the tab and with it unsaved edits in other tabs); the unit tests time them on crafted input.
   - *Markdown*: the page's own renderer (raw HTML stays text, links only `http(s)` in a new tab). In a Markdown
@@ -818,13 +820,69 @@ spawn server, Claude Code or any file at will.
     that policy is as strict about script (only the code host's own files, no `eval`, no `wasm-unsafe-eval`) as a
     worker-only `default-src 'none'; script-src 'self'; connect-src 'self'` would be; it also lets a worker open a
     WebSocket to the code host and load images and fonts from it, which a worker has no use for.
-  - *Not on the code origin*: HTML, Mermaid diagrams, notebooks' HTML and script outputs, Word/Excel/PowerPoint
-    files — they need script or HTML parsing and get a sandboxed origin of their own in a later version; until then
-    they are offered for download (HTML and notebooks open as source text).
-  The browser checks preview every format with zero CSP violations and open hostile files (an SVG with a script, an
+  - *Zip files* (Word, Excel, PowerPoint, OpenDocument are zips; a zip bomb unpacks a few kilobytes into gigabytes):
+    the page reads them with its own reader (`src/preview/office/zip.ts`, fflate's inflater), which checks the whole
+    central directory before anything is inflated — at most 5,000 (Word) or 10,000 parts, each part's declared size
+    within 64 MB and no larger than deflate can make from its compressed size, all parts within 128 MB (160 MB for a
+    deck) and within 200 × the file's size, no zip64, no encryption, only stored or deflated parts, no two parts of
+    one name or sharing bytes (the "overlapping files" bomb), every part inside the file and before its directory —
+    and inflates a part only when it is read, in 4 KiB steps, up to the size it declared: one byte more stops it, so
+    what a lying header can make it inflate is what the directory declared, which the caps bounded. A part is
+    inflated once (a picture shown 1,000 times is not inflated 1,000 times).
+  - *Word (`.docx`)*: mammoth 1.13.0 in the page's DOCX worker, reading the zip only through that reader (the build
+    puts it in JSZip's place; `package.json` points JSZip at an empty package). Its XML parser (@xmldom/xmldom)
+    expands no DTD entities, internal or external: a "billion laughs" or an XXE entity is an error, nothing is fetched
+    or grown. mammoth writes HTML; in the worker, htmlparser2 12.0.0 tokenizes it and an allowlist keeps headings,
+    paragraphs, lists, tables (colspan/rowspan 1–100), quotes, code, line breaks, rules, bold/italic/underline/strike/
+    sub/superscript, links, pictures and ids — script, style, frames, objects, forms, SVG and MathML go with all they
+    hold, every other element is unwrapped, every other attribute dropped, at most 200,000 nodes, 60 levels and 16
+    million characters. The page draws that tree with Preact (elements and attributes checked again against the same
+    lists). Links: `http(s)` and `mailto:` in a new tab (`noopener noreferrer`), `#bookmark` a jump inside the
+    document, anything else (`javascript:`, `data:`, `file:` …) text. Pictures: only those inside the file (mammoth's
+    external file access stays off: a linked picture is never fetched), kept only when their bytes are an image the
+    browser shows (EMF, WMF, TIFF, an HTML file named `.png`: a note), within 200 pictures, 40 MB and 150 million
+    pixels, as `blob:` images revoked once decoded.
+  - *Excel (`.xlsx`, `.xlsm`, `.xls`, `.ods`)*: SheetJS Community Edition 0.20.3 in the page's sheet worker, from the
+    tarball SheetJS publishes on its own CDN, vendored (`code/web/vendor/xlsx-0.20.3.tgz`) and pinned by its SHA-512
+    in `package-lock.json` (a unit test checks the file against the lockfile; npm's `xlsx` stops at 0.18.5, which has
+    a prototype-pollution and a ReDoS advisory, so the registry is never used). SheetJS unpacks a zip itself, all of
+    it, with an inflater that trusts the sizes a file declares (a part that declares 0 bytes grows without bound): it
+    never sees the file's zip. The reader above unpacks it within its caps, only the parts values live in are kept
+    (XML and relationships; pictures, embedded objects, printer settings and macros dropped; at most 96 MB of them)
+    and they are packed again, uncompressed, into a zip of the page's own making for SheetJS. An `.xls` (the compound
+    format: no compression) is bounded by its size (25 MB); SheetJS checks its sector chains for loops. Only these two
+    containers reach SheetJS — never its HTML, CSV, SYLK or other text readers. Options: formulas not read
+    (`cellFormula: false`) — the values shown are those the file saved, nothing is computed — no HTML, styles, macros or
+    external links; at most 100 sheets, 1,000,000 rows and 200 columns a sheet, 2,000,000 cells and 40 million
+    characters in all (a string shared by a million cells counts each time), 2,000 characters a cell. Cells are text
+    in the same virtual table as CSV files. (Formula injection is not a concern: nothing is exported or computed.)
+  - *PowerPoint (`.pptx`)*: the page's own reader in the deck worker (the zip reader above, htmlparser2 in XML mode —
+    a tokenizer: no DTD, no entities beyond XML's five) gives an outline: each slide's title, its text by paragraph
+    and level, tables as rows of text, pictures (as for Word) and speaker notes. No layout, themes, charts or
+    animations; no renderer that draws slides as they look is both small and free of HTML strings.
+  - *Notebooks (`.ipynb`)*: parsed in the data worker (`JSON.parse`: `__proto__` is a key, never a prototype; every
+    field read only when it is the notebook's own and of the expected type; at most 5,000 cells, 200 outputs a cell,
+    1 MB an output, 20 MB in all). Markdown cells with the page's Markdown renderer; code highlighted with
+    CodeMirror's parsers as text; streams and tracebacks as text with their ANSI colours (a one-pass parser: SGR
+    colours become classes or CSSOM colours, every other escape sequence — cursor moves, OSC titles and links — is
+    dropped); PNG, JPEG and GIF outputs from their base64, kept only when their bytes are that image; SVG outputs only
+    as `<img>`; `text/latex` with KaTeX. `text/html` and `application/javascript` outputs never touch the page: a
+    button shows them in the artifact viewer. Widgets, Plotly, Vega and the like need a live kernel: their text.
+  - *Formulas*: `$…$` and `$$…$$` in Markdown previews and notebooks (not in the chat), found by a one-pass scanner
+    (money such as "$5 and $10", code spans and fences stay text; linear on crafted input, timed by the unit tests)
+    and drawn by KaTeX 0.19.0, which builds DOM nodes (no HTML string; styles through the CSSOM) on the code origin:
+    `trust` off (`\href`, `\url`, `\includegraphics`, `\html…` do nothing), at most 1,000 macro expansions,
+    `maxSize` 20 em, 10,000 characters a formula; one that does not parse shows its source. KaTeX's stylesheet and
+    fonts are the build's copy (`style-src`/`font-src 'self'`), loaded with the first formula.
+  The browser checks preview every format with zero CSP violations on the page and open hostile files (an SVG with a script, an
   `onload` handler and external references; a PDF with JavaScript in its open action, page and link actions, a
   launch action, `javascript:`/`file:` links and a form submit; a PNG claiming 50,000 × 50,000 pixels; a line of
-  300,000 commas; a billion-laughs YAML; JSON 5,000 levels deep; `__proto__` keys): nothing runs, nothing is fetched
+  300,000 commas; a billion-laughs YAML; JSON 5,000 levels deep; `__proto__` keys; a Word file with markup in its
+  text, `javascript:`/`data:`/`file:` links, a linked picture, an HTML ".png", an SVG with a script and an EMF; a
+  Word part with a billion-laughs DTD and external entities; zip bombs — a 100 MB part, a part that lies about its
+  size, a workbook claiming every column and a million rows, one 2,000-character string in 30,000 cells; a deck with
+  markup and an external picture; a notebook whose outputs try the network, top navigation and popups; HTML that
+  tries everything; a diagram whose directive tries to loosen Mermaid): nothing runs on the page, nothing is fetched
   from outside, no dialog, no popup. *Remaining*: Firefox and older Safari do not enforce Trusted Types (the rest of
   the policy still applies; DOM-only rendering is the defence, Trusted Types the backstop), and pdf.js is a large
   parser of untrusted input running on the code origin — a pdf.js bug that ran script in its worker would act with
@@ -896,9 +954,9 @@ spawn server, Claude Code or any file at will.
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
 or MCP status — deny service (kill the
-spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission rules into its own settings
-through *Always* (only for itself; into your folder's settings only through the explicit workspace button). A file
-it writes can be previewed, which shows its content but runs none of it. It
+spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission through *Always* (only for itself; into your folder's settings only through the explicit workspace button). A file
+it writes can be previewed, which shows its content and runs none of it on bedrock-now's pages (an HTML file's or a
+notebook output's script runs only in the sandboxed artifact viewer: another site, no network, no cookies). It
 cannot run script in your browser, reach the code container over the network, read its files, make it open or
 follow a path, call host callbacks other than `canUseTool`, obtain `CODE_PROXY_SECRET`, the master key or the unlock
 cookie, change the prices or costs shown, answer a permission prompt, or accept a plugin's install command (the hash
@@ -1171,6 +1229,72 @@ Remaining risks:
   other hosts. Apps that need cross-origin isolation (`SharedArrayBuffer`) work in a new tab, not in the frame. An app
   whose page calls another port (`fetch('http://localhost:3000')`) reaches your computer's localhost, not the
   sandbox's: use the dev server's proxy (Vite's `server.proxy`) or a relative URL.
+
+### The artifact viewer
+
+Some previews must run what a file holds or parse it as HTML: an **HTML file** (a generated report or a small app is
+expected to run its own script), a **Mermaid diagram** (Mermaid lays out SVG in a live document and parses untrusted
+diagram text; it has had cross-site-scripting bugs) and a notebook's **HTML or JavaScript output** (pandas tables,
+plots). None of that runs on the Code page. It runs in a fixed viewer — two pages and their scripts, part of the
+page's build (`code/web/src/artifact`, `artifact/` in `dist`) — served on a site of its own:
+
+```
+Code page (code.<PORTAL_HOST>) ── <iframe sandbox="allow-scripts" src="http://a<capability>.artifact.<PREVIEW_DOMAIN>:<port>/artifact/html.html">
+   │  posts the bytes (postMessage, to a fresh frame that has only run the viewer's script)
+   └─ main Caddy, local listener only (caddy/artifact-on.caddy)
+        forward_auth → portal /auth/verify?app=artifact: the capability; GET/HEAD; framed, never a page of its own
+        → code container, marked X-Bn-Artifact: 1 (Caddy removes a client's copy everywhere): /artifact/* only
+        back: the viewer's CSP (below), nosniff, Referrer-Policy no-referrer, no Set-Cookie
+```
+
+- [x] **Another site, sandboxed twice, no network.** The viewer's host is under the previews' site (`PREVIEW_DOMAIN`:
+  another site than the portal's, so no cookie of bedrock-now reaches it and its requests to bedrock-now's hosts would
+  be cross-site). Its documents are sandboxed by their CSP (`sandbox allow-scripts`) and by the frame
+  (`sandbox="allow-scripts"`, `allow=""`, `referrerpolicy="no-referrer"`): an opaque origin — no cookies, no storage,
+  no reading anything of another frame — with no forms, popups, dialogs, downloads, top navigation or pointer lock.
+  The CSP gives them no network at all: `default-src 'none'; connect-src 'none'` (no fetch, XHR, WebSocket,
+  EventSource, beacon), images, fonts and media only `data:`/`blob:`, `frame-src`, `worker-src`, `object-src`,
+  `form-action`, `base-uri` and `manifest-src` `'none'`, and `frame-ancestors` the Code page alone. The HTML runner
+  (`artifact/html.html`) lets the document it is handed run its inline scripts (`'unsafe-inline' 'unsafe-eval'` —
+  that is what an HTML preview is for) under exactly that policy; the diagram page runs only its own script
+  (`script-src 'self'`). A frame that tries to navigate itself elsewhere is stopped by the Code page's own
+  `frame-src` (only bedrock-now's terminal host and the previews' site). Tested in Chromium with a page that tries
+  fetch, XHR, WebSocket, EventSource, `sendBeacon`, images, stylesheets, prefetch, `<base>`, iframes, forms, popups,
+  alerts, a worker, top navigation, a meta refresh, its own navigation, cookies and forged messages to the Code page:
+  each refused, nothing left the browser; from inside the viewer, `self.origin` is `null` and `document.cookie`,
+  `localStorage` and `parent.document` throw.
+- [x] **A capability in the host name, like the previews'.** `a<capability>.artifact.<PREVIEW_DOMAIN>`: the Code
+  page's unlock time and an HMAC-SHA256 (120 bits) over "artifact", that time and the password fingerprint — the
+  previews' scheme (`PreviewCaps`), with "artifact" where a preview names its port, so a preview's capability never
+  opens the viewer and the viewer's never opens a preview. The portal mints it on the code host (`/.bn/artifact`, for
+  the page itself: `Sec-Fetch-Site: same-origin`) and checks it on every request: it lives as long as the unlock
+  (12 hours) and ends with Sign out or a new password; a missing, forged, expired or misplaced one gets 403, as do
+  methods other than GET/HEAD, a load as a page of its own (`Sec-Fetch-Dest: document`) and an `Origin` other than
+  the sandbox's `null`. The viewer serves nothing secret (static files); the capability keeps the code container
+  from answering anyone but the Code page's own unlock on a second name.
+- [x] **The code container serves the viewer's files and nothing else there.** Caddy proxies only GET/HEAD of
+  `/artifact/*` on the viewer's site, marked with `X-Bn-Artifact: 1` (with `CODE_PROXY_SECRET`, as for the code
+  host); the code container answers such a request with the viewer's static files only — never the page, the API or
+  the WebSocket — and never serves `/artifact/*` on the code host (tested, also with a client's own
+  `X-Bn-Artifact`, which Caddy removes).
+- [x] **What comes back is data.** The Code page listens only to messages whose `source` is one of its own viewer
+  frames (a window reference no page can forge): "ready", a diagram's SVG (text, ≤ 8 MB) or an error, a document's
+  height (a hint, kept between 40 and 2,400 px). An SVG is shown only as an `<img>` from a `blob:` URL (an SVG image
+  runs nothing and loads nothing). Bytes go to a frame only after it said "ready" — a fresh frame per document, which
+  has run only the viewer's own script. Mermaid runs with `securityLevel: 'strict'` and labels as SVG text; a
+  diagram's own `%%{init}%%` cannot change that, the theme or the labels (`secure`).
+- [x] **Local only, for now.** The viewer's site exists only on the local listener, like the previews; over remote
+  access the portal answers `available: false` and the page says so — an HTML file shows its source, a diagram its
+  code, a notebook's HTML output stays behind its button (everything else previews as usual).
+
+Remaining risks:
+- **Script in the viewer has your browser.** No network by its policy, but WebRTC is not governed by CSP in
+  Chromium: an HTML file's script could reach out over a STUN/TURN request (with `TERMINAL_EGRESS=off`, a way out for
+  what that file holds — it was written in the sandbox, which can send it out itself whenever its internet is on).
+  It cannot read anything of bedrock-now's: an opaque origin, other site, no cookies.
+- **A busy page.** An HTML file can loop forever. The frame is another site, which desktop browsers run in a process
+  of their own; on phones (site isolation is partial there) a busy frame can slow the Code page — close the tab.
+- **Mermaid is large** (5 MB of script, loaded into the viewer only when a diagram is shown).
 
 ### Bypass permissions
 

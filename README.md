@@ -481,18 +481,29 @@ per browser.
   plugins, MCP, Settings), sessions to resume, files anywhere in the workspace and what you ran last, matched as you
   type and run by keyboard alone (`>` only actions, `#` only sessions). **Keyboard shortcuts** (`Ctrl/⌘+/` or `?`)
   lists every shortcut of the page.
-- **Previews of files.** Markdown, images (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO), SVG, audio and video (what the
-  browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV, JSON, JSON Lines, YAML and Jupyter notebooks (as JSON,
-  for now) open in **Preview**; **Source** is the editor, and Markdown also has **Split** (not on a phone), whose
-  preview follows your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links
+- **Previews of files.** Markdown (with formulas, `$…$` and `$$…$$`, and Mermaid diagrams), images (PNG, JPEG, GIF,
+  WebP, AVIF, BMP, ICO), SVG, audio and video (what the browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV,
+  JSON, JSON Lines, YAML, Word (`.docx`), Excel (`.xlsx`, `.xlsm`, `.xls`, `.ods`), PowerPoint (`.pptx`), Jupyter
+  notebooks, HTML and Mermaid (`.mmd`) files open in **Preview**; **Source** is the editor (for the text formats), and
+  Markdown also has **Split** (not on a phone), whose preview follows your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links
   to the web open in a new tab, and nothing in it runs (no JavaScript, forms or launch actions). A CSV is a table (the
   header row found, or switched by hand; sort and filter up to 200,000 rows; drag a column's edge to resize it); JSON
   and YAML are a collapsible tree. A Markdown file shows the images next to it in the workspace (up to 40 MB and 150
   million pixels of them), never images from the web. What a file is comes from its first bytes, not its name.
+  A Word document shows its headings, lists, tables, pictures and links (no page layout); a workbook its sheets as
+  tabs, with the values Excel shows — formulas are never computed — and hidden sheets marked; a PowerPoint deck an
+  outline of its slides (titles, text, tables, pictures, speaker notes; no layout); a notebook its cells, code
+  highlighted, outputs with their colours and images. **HTML files run their own scripts in a sandboxed viewer**
+  (another site, no network, no cookies or storage: a generated report or a small app works, a page that loads files
+  next to it or from the web does not — serve its folder from the terminal and use a dev-server preview, below), and
+  Mermaid diagrams are drawn there and shown as images; a notebook's HTML and JavaScript outputs run there too, when
+  you click **Show the HTML output**. The viewer works on the computer running bedrock-now; over remote access these
+  previews say so (Source and Download still work).
   Claude's *Write*/*Edit* cards offer **Preview** for such files. Limits (above them: **Download**): Markdown, the
-  first 2 MB; YAML 5 MB; SVG 10 MB; everything else 25 MB; images up to 100 million pixels; tables 1,000,000 rows, 200
-  columns and 5,000,000 cells; trees 300,000 values and 100 levels. Word, Excel, PowerPoint, HTML and Mermaid previews
-  come in a later version (**Download** meanwhile); HEIC and TIFF are not shown.
+  first 2 MB; YAML 5 MB; SVG and HTML 10 MB; Mermaid 1 MB; notebooks 20 MB; everything else 25 MB; images up to 100
+  million pixels; tables 1,000,000 rows, 200 columns and 5,000,000 cells (workbooks 2,000,000 cells, 100 sheets);
+  trees 300,000 values and 100 levels; an Office file's parts at most 128 MB unpacked. Old `.doc`/`.ppt`, OpenDocument
+  text and slides, RTF, EPUB, HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which
   shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it
@@ -568,7 +579,8 @@ turn Claude Code ran on another model says so on its line; switching mid-session
 
 What the sandbox can do is what the terminal can (see above); on top, a compromised sandbox could show misleading
 *text* in the Code page (fake tool output or diffs, a misleading permission sentence, a fake plugin catalog) but
-cannot run script in your browser (a preview draws a file as text, an image or a canvas, never as a page that runs),
+cannot run script in your browser on bedrock-now's pages (a preview draws a file as text, an image or a canvas; an
+HTML file or a diagram runs only in the sandboxed viewer, another site with no network and no cookies),
 reach the page's container, change the prices or costs shown, answer a permission prompt itself, or accept a
 plugin's install command for you. Details:
 [docs/security.md](docs/security.md#the-code-page).
@@ -576,7 +588,8 @@ plugin's install command for you. Details:
 **The page's code** lives in `code/web` (TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild, every
 dependency pinned in its lockfile) and is built into the image (`./stack code enable`, `./stack update`): nothing is
 loaded from a CDN, and it runs under the main Caddy's CSP with Trusted Types (one policy, which starts only the
-build's own workers: the previews parse files in workers, and pdf.js loads only when a PDF is opened). To work on it:
+build's own workers: the previews parse files in workers, and pdf.js, SheetJS, mammoth, KaTeX and Mermaid load only
+when a file needs them). To work on it:
 
 ```bash
 cd code/web && npm ci       # exact versions from package-lock.json
@@ -1128,7 +1141,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   AskUserQuestion answered, plugins from a marketplace in the workspace with the install command confirmed by its
   SHA-256, the MCP panel, a phone, the Settings row — each with zero CSP violations; previews of a dev server in the
   sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`, isolation checked from inside
-  the preview, refused capabilities, a hot update over Vite's WebSocket; isolation; a hostile stand-in on its spawn
+  the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel, PowerPoint, notebook, HTML and
+  Mermaid previews and the sandboxed viewer's site (its policies, refused capabilities, isolation from inside it);
+  isolation; a hostile stand-in on its spawn
   socket; ~$0.03). Its unit tests (frontend and backend) run in its image's test stage:
   `code/test.sh`; the page's browser checks against a mock: `sh code/web/e2e/run.sh`. `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
   in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
