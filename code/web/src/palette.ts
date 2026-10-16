@@ -75,7 +75,9 @@ export function mergeCommands(session: Command[], initNames: string[]): Command[
   const seen = new Set<string>();
   const out: Command[] = [];
   for (const c of session) if (!seen.has(c.name)) (seen.add(c.name), out.push(c));
-  for (const n of initNames) if (!seen.has(n)) (seen.add(n), out.push({ name: n, description: '', argumentHint: '' }));
+  // the session's own list (supportedCommands, refreshed after a plugin reload) is authoritative once it is there;
+  // init's names (a snapshot from the turn's start) only fill in before it arrives
+  if (!session.length) for (const n of initNames) if (!seen.has(n)) (seen.add(n), out.push({ name: n, description: '', argumentHint: '' }));
   for (const c of BUILTIN_COMMANDS) if (!seen.has(c.name)) (seen.add(c.name), out.push(c));
   return out;
 }

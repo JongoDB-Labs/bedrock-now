@@ -470,6 +470,90 @@ test_apply_values_never_reach_a_command_line() {
   assert_not_contains "$(cat "$TMP/err")" "$SECRETVAL"
 }
 
+# --- the Code page: ./stack code enable | disable through the pipeline ---
+
+_stub_code() {   # lib/code.sh's enable / disable stubbed: each call logged with what .env said when it ran
+  code_enable() { echo "code enable (was $(get_env CODE_ENABLED))" >> "$TMP/calls"; [ "${CODE_FAIL:-}" != enable ] || die "code image build failed"; set_env CODE_ENABLED true; }
+  code_disable() { echo "code disable (was $(get_env CODE_ENABLED))" >> "$TMP/calls"; [ "${CODE_FAIL:-}" != disable ] || die "terminal restart failed"; set_env CODE_ENABLED false; }
+  terminal_ready() { [ "${TERM_READY:-1}" = 1 ]; }
+}
+
+test_code_page_policy_on_only_locally_off_from_anywhere() {
+  _env
+  assert_eq "$(setting_field CODE_ENABLED 4)/$(setting_field CODE_ENABLED 5)/$(setting_field CODE_ENABLED 6)" "widen-local/bool/code"
+  set_env CODE_ENABLED false
+  if setting_allowed CODE_ENABLED true remote; then return 1; fi
+  assert_contains "$SV_ERR" "CODE_ENABLED can only be turned on from the computer running bedrock-now"
+  setting_allowed CODE_ENABLED true local
+  set_env CODE_ENABLED true
+  setting_allowed CODE_ENABLED false remote
+  setting_allowed CODE_ENABLED false local
+  setting_validate CODE_ENABLED true
+  if setting_validate CODE_ENABLED yes; then return 1; fi
+}
+
+test_apply_code_page_on_runs_code_enable() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env_batch CODE_ENABLED false TERMINAL_ENABLED true
+  _lines CODE_ENABLED=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err"
+  # ./stack code enable writes CODE_ENABLED itself: the pipeline's own .env write leaves it alone
+  assert_eq "$(cat "$TMP/calls" | grep '^code')" "code enable (was false)"
+  assert_eq "$(get_env CODE_ENABLED)" true
+  assert_contains "$(cat "$TMP/err")" "saved: CODE_ENABLED"
+  assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=ok via=portal-local keys=CODE_ENABLED"
+  # on already: nothing to run
+  : > "$TMP/calls"
+  _lines CODE_ENABLED=true | _apply 2> "$TMP/err"
+  assert_not_contains "$(cat "$TMP/calls")" "code enable"
+  assert_contains "$(cat "$TMP/err")" "already on"
+}
+
+test_apply_code_page_off_runs_code_disable_from_anywhere() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED true
+  _lines CODE_ENABLED=false | _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null
+  assert_eq "$(cat "$TMP/calls" | grep '^code')" "code disable (was true)"
+  assert_eq "$(get_env CODE_ENABLED)/$(get_env TERMINAL_ENABLED)" "false/true"   # the terminal stays
+  assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=ok via=portal-remote keys=CODE_ENABLED"
+}
+
+test_apply_code_page_on_is_refused_remotely_and_while_the_terminal_is_off() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env CODE_ENABLED false
+  cp "$ENV_FILE" "$TMP/before"
+  if out="$( (_lines CODE_ENABLED=true | _apply --origin remote) 2>&1)"; then return 1; fi
+  assert_contains "$out" "can only be turned on from the computer running bedrock-now"
+  TERM_READY=0
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "the browser terminal's sandbox, which is off — turn both on in a terminal: ./stack code enable [--workspace DIR]"
+  assert_contains "$out" "nothing was changed"
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  [ ! -e "$TMP/calls" ] || assert_not_contains "$(cat "$TMP/calls")" "code "
+}
+
+test_apply_code_page_failed_enable_is_taken_back() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env_batch CODE_ENABLED false TERMINAL_ENABLED true
+  CODE_FAIL=enable
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "failed while restarting"
+  assert_contains "$out" "previous settings restored"
+  # the rollback runs ./stack code disable with CODE_ENABLED on, so it finds and removes what the enable started
+  assert_eq "$(cat "$TMP/calls" | grep '^code' | tr '\n' '|')" "code enable (was false)|code disable (was true)|"
+  assert_eq "$(get_env CODE_ENABLED)" false
+  assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=failed via=cli keys=CODE_ENABLED"
+}
+
+test_apply_code_page_with_the_stack_stopped_writes_only_env() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  _cfg_stack_running() { return 1; }
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED true
+  _lines CODE_ENABLED=false | _apply 2> "$TMP/err"
+  assert_eq "$(get_env CODE_ENABLED)" false
+  [ ! -e "$TMP/calls" ] || assert_not_contains "$(cat "$TMP/calls")" "code "
+  assert_contains "$(cat "$TMP/err")" "the stack is stopped; ./stack up applies it"
+}
+
 # --- the helper: settings requests ---
 
 _checkout() {   # a fake checkout whose ./stack logs its arguments and stdin and prints apply's progress

@@ -116,32 +116,72 @@ export function checkClaudeArgs(args) {
 // --- plugin / marketplace / MCP management: these shapes only ---
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
 const SOURCE = /^([A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}|https:\/\/[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?\/[\x21-\x7e]{1,400})$/;
-// command -> [positional check (or null: none), allowed options]. Never -y/--yes: a marketplace-declared install
-// command is shown in the page first and accepted by its sha256 (--accept-command), as `claude plugin install` asks.
+// a marketplace in a folder of the workspace (an absolute /workspace/… path to a folder that is there, resolved here)
+const workspaceDir = (v) => {
+  if (!v.startsWith(`${WORKSPACE}/`) || v.length > 1000 || /[\x00-\x1f\x7f]/.test(v)) return false;
+  const real = confine(v);
+  try { return real !== null && real !== WORKSPACE && fs.statSync(real).isDirectory(); } catch { return false; }
+};
+const marketplaceSource = (v) => SOURCE.test(v) || workspaceDir(v);
+// MCP servers the page adds or removes (user scope only): a name, and for add-json a configuration of one fixed shape —
+// stdio {command, args, env} (it runs here, in the sandbox, like every stdio server) or http/sse {url, headers}.
+// bedrock-shared is the stack's own (--mcp-config): never added or removed this way.
+export const MCP_NAME = /^(?!bedrock-shared$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const LINE = /^[^\x00-\x1f\x7f]*$/;
+export function mcpConfigOk(json) {
+  if (typeof json !== 'string' || json.length > 32 << 10) return false;
+  let c;
+  try { c = JSON.parse(json); } catch { return false; }
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+  const pairs = (o, key, max, len) => o === undefined || (o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length <= max
+    && Object.entries(o).every(([k, v]) => key.test(k) && typeof v === 'string' && v.length <= len && LINE.test(v)));
+  const keys = Object.keys(c);
+  if (c.type === 'stdio') {
+    return keys.every((k) => ['type', 'command', 'args', 'env'].includes(k))
+      && typeof c.command === 'string' && c.command.length >= 1 && c.command.length <= 500 && LINE.test(c.command)
+      && (c.args === undefined || (Array.isArray(c.args) && c.args.length <= 64 && c.args.every((x) => typeof x === 'string' && x.length <= 2000 && LINE.test(x))))
+      && pairs(c.env, /^[A-Za-z_][A-Za-z0-9_]{0,63}$/, 32, 4000);
+  }
+  if (c.type === 'http' || c.type === 'sse') {
+    return keys.every((k) => ['type', 'url', 'headers'].includes(k))
+      && typeof c.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,2000}$/.test(c.url)
+      && pairs(c.headers, /^[A-Za-z0-9-]{1,100}$/, 16, 4000);
+  }
+  return false;
+}
+// command -> [positional checks (none: no positional), allowed options, required options]. Never -y/--yes: a
+// marketplace-declared install command is shown in the page first and accepted by its sha256 (--accept-command), as
+// `claude plugin install` asks.
 const SCOPE = /^--scope=(user|project|local)$/, ACCEPT = /^--accept-command=[0-9a-f]{64}$/;
 const CLI = {
-  'plugin list': [null, ['--json', '--available']],
-  'plugin marketplace list': [null, ['--json']],
-  'plugin install': [NAME, ['--json', SCOPE, ACCEPT]],
-  'plugin update': [NAME, ['--json', SCOPE, ACCEPT]],
-  'plugin uninstall': [NAME, [SCOPE]],
-  'plugin enable': [NAME, [SCOPE]],
-  'plugin disable': [NAME, [SCOPE]],
-  'plugin details': [NAME, []],
-  'plugin marketplace add': [SOURCE, ['--json', SCOPE]],
-  'plugin marketplace remove': [NAME, []],
-  'plugin marketplace update': [NAME, []],
-  'mcp list': [null, []],
-  'mcp get': [NAME, []],
+  'plugin list': [[], ['--json', '--available']],
+  'plugin marketplace list': [[], ['--json']],
+  'plugin install': [[NAME], ['--json', SCOPE, ACCEPT]],
+  'plugin update': [[NAME], ['--json', SCOPE, ACCEPT]],
+  'plugin uninstall': [[NAME], ['--json', SCOPE]],
+  'plugin enable': [[NAME], ['--json', SCOPE]],
+  'plugin disable': [[NAME], ['--json', SCOPE]],
+  'plugin details': [[NAME], []],
+  'plugin marketplace add': [[marketplaceSource], ['--json', SCOPE]],
+  'plugin marketplace remove': [[NAME], ['--json']],
+  'plugin marketplace update': [[NAME], ['--json']],
+  'mcp list': [[], []],
+  'mcp get': [[NAME], []],
+  'mcp add-json': [[MCP_NAME, mcpConfigOk], ['--scope=user'], ['--scope=user']],
+  'mcp remove': [[MCP_NAME], ['--scope=user'], ['--scope=user']],
 };
+const test1 = (ok, v) => (typeof ok === 'function' ? ok(v) : ok.test(v));
 export function checkCliArgs(a) {
   if (!Array.isArray(a) || a.length > 8 || a.some((x) => typeof x !== 'string')) return 'bad arguments';
   const n = a[1] === 'marketplace' ? 3 : 2;
   const spec = CLI[a.slice(0, n).join(' ')];
   if (!spec) return 'command refused';
+  const [posSpec, optSpec, required = []] = spec;
   const rest = a.slice(n), pos = rest.filter((x) => !x.startsWith('-')), opts = rest.filter((x) => x.startsWith('-'));
-  if (spec[0] ? pos.length !== 1 || !spec[0].test(pos[0]) : pos.length !== 0) return 'argument refused';
-  if (!opts.every((o) => spec[1].some((ok) => (typeof ok === 'string' ? ok === o : ok.test(o))))) return 'option refused';
+  if (pos.length !== posSpec.length || !pos.every((p, i) => test1(posSpec[i], p))) return 'argument refused';
+  if (!opts.every((o) => optSpec.some((ok) => (typeof ok === 'string' ? ok === o : ok.test(o))))) return 'option refused';
+  if (!required.every((r) => opts.includes(r))) return 'option missing';
+  if (new Set(opts).size !== opts.length) return 'option repeated';
   return null;
 }
 
@@ -158,6 +198,16 @@ export function childEnv(extra, litellmSession, base = process.env) {
   if (typeof litellmSession === 'string' && UUID.test(litellmSession)) {
     env.ANTHROPIC_CUSTOM_HEADERS = `x-litellm-session-id: code-${litellmSession}\nx-litellm-tags: claude-bedrock,code`;
   } else delete env.ANTHROPIC_CUSTOM_HEADERS;
+  return env;
+}
+// The environment of a `claude plugin|mcp …` run: the same, and never a Claude Code session's own markers — the CLI
+// ignores --accept-command inside a session (an agent must not accept a command for itself); here a person accepted
+// it in the page, by its sha256.
+export function cliEnv(base = process.env) {
+  const env = childEnv({}, null, base);
+  for (const k of Object.keys(env)) {
+    if (/^(CLAUDECODE|CLAUDE_PID|AI_AGENT|CLAUDE_CODE_(ENTRYPOINT|SESSION_ID|CHILD_SESSION|SESSION_ATTENDED|EXECPATH|MESSAGING_[A-Z_]+|SDK_[A-Z_]+))$/.test(k)) delete env[k];
+  }
   return env;
 }
 
@@ -425,7 +475,7 @@ export function serve(sock) {
   const finish = (t, p) => { if (done) return; done = true; send(t, p); sock.end(); };
   const fail = (msg) => finish(T.ERROR, { error: printable(msg, 300) });
 
-  function startProcess(args, cwd, env) {
+  function startProcess(args, cwd, env, { noStdin = false } = {}) {
     if (running >= MAX_PROCS) return fail('too many Claude Code processes');
     running++;
     let counted = true;
@@ -438,6 +488,7 @@ export function serve(sock) {
     const pipe = (stream, type) => stream.on('data', (d) => { if (!send(type, d)) { stream.pause(); sock.once('drain', () => stream.resume()); } });
     pipe(c.stdout, T.STDOUT); pipe(c.stderr, T.STDERR);
     c.stdin.on('error', () => {});
+    if (noStdin) c.stdin.end();   // a `cli` op reads nothing: no TTY, no stdin (the CLI's non-interactive paths)
     c.on('error', (e) => { uncount(); fail(`spawn failed: ${e.code || e.message}`); });
     c.on('close', (code, signal) => {
       uncount(); if (c.pid) forgetChild(c.pid);
@@ -459,7 +510,7 @@ export function serve(sock) {
     if (req.op === 'cli') {
       const why = checkCliArgs(req.args);
       if (why) return fail(why);
-      return startProcess(req.args, WORKSPACE, childEnv({}, null));
+      return startProcess(req.args, WORKSPACE, cliEnv(), { noStdin: true });
     }
     try {
       switch (req.op) {

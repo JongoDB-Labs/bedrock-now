@@ -14,7 +14,8 @@ import { LIMITS, DECISIONS } from './protocol.mjs';
 import { PermissionBroker } from './broker.mjs';
 import { SessionManager, SessionError } from './sessions.mjs';
 import { makeApi, HttpError, sandboxStatus, attachment } from './api.mjs';
-import { str, short, plain, isUuid, isId } from './validate.mjs';
+import { str, short, isUuid, isId } from './validate.mjs';
+import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -83,7 +84,7 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
-export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log }) {
+export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log, reloadDelayMs, reloadAgainMs }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -108,8 +109,17 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     query, spawn, broker, log: logger,
     onEvent: (s, seq, ev) => toAttached(s.id, { type: 'event', session: s.id, seq, ev }),
     onState: (s) => toAll(stateMsg(s)),
+    // a plugin reload: the pages showing that session get its new commands, plugins and MCP servers
+    onReload: (s, r) => {
+      if (Array.isArray(r.commands)) toAttached(s.id, { type: 'commands', session: s.id, commands: commandsOf(r.commands) });
+      if (Array.isArray(r.plugins)) toAttached(s.id, { type: 'plugins', session: s.id, plugins: pluginsOf(r.plugins) });
+      if (Array.isArray(r.mcpServers)) toAttached(s.id, { type: 'mcp', session: s.id, servers: mcpOf(r.mcpServers) });
+    },
   });
-  const api = makeApi({ call, sessions: mgr });
+  const api = makeApi({ call, sessions: mgr, reloadDelayMs, reloadAgainMs });
+  // an MCP server's name as the session reports it (plugin servers: plugin:x:y; claude.ai ones may have spaces)
+  const MCP_SERVER = /^[\x20-\x7e]{1,200}$/;
+  const mcpName = (v) => { if (typeof v !== 'string' || !MCP_SERVER.test(v)) throw new SessionError('bad MCP server name'); return v; };
 
   // --- HTTP ---
   const send = (res, code, body, headers = {}) => {
@@ -176,11 +186,18 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
     if (p === '/api/fs/mkdir' && m === 'POST') return send(res, 200, await api.mkdir(await readJson(req)));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));
-    if (p === '/api/plugins' && m === 'GET') return send(res, 200, await api.plugins(q.get('available') === '1'));
+    if (p === '/api/plugins' && m === 'GET') return send(res, 200, await api.plugins());
+    if (p === '/api/plugins/available' && m === 'GET') {
+      const n = (k) => (q.has(k) && /^[0-9]{1,7}$/.test(q.get(k)) ? Number(q.get(k)) : undefined);
+      return send(res, 200, await api.available({ q: q.get('q') ?? '', marketplace: q.get('marketplace') ?? '', offset: n('offset'), limit: n('limit') }));
+    }
     if ((mm = /^\/api\/plugins\/([a-z]+)$/.exec(p)) && m === 'POST') return send(res, 200, await api.pluginAction(mm[1], await readJson(req)));
     if (p === '/api/marketplaces' && m === 'GET') return send(res, 200, await api.marketplaces());
     if (p === '/api/marketplaces' && m === 'POST') return send(res, 200, await api.marketplaceAdd(await readJson(req)));
+    if (p === '/api/marketplaces/update' && m === 'POST') return send(res, 200, await api.marketplaceUpdate(await readJson(req)));
     if (p === '/api/marketplaces' && m === 'DELETE') return send(res, 200, await api.marketplaceRemove(q.get('name')));
+    if (p === '/api/mcp' && m === 'POST') return send(res, 200, await api.mcpAdd(await readJson(req)));
+    if (p === '/api/mcp' && m === 'DELETE') return send(res, 200, await api.mcpRemove(q.get('name')));
     if (p.startsWith('/api/')) throw new HttpError(404, 'not found');
     return page(req, res, p);
   }
@@ -303,11 +320,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         }
         return reply({});
       }
-      case 'commands': {
-        const list = await sessionOf(m).need().supportedCommands();
-        return answer('commands', 'commands', (Array.isArray(list) ? list : []).slice(0, 1000).filter((x) => x && typeof x === 'object')
-          .map((x) => ({ name: short(x.name, 200), description: str(x.description, 500), argumentHint: short(x.argumentHint, 200) })));
-      }
+      case 'commands': return answer('commands', 'commands', commandsOf(await sessionOf(m).need().supportedCommands()));
       case 'models': {
         const list = await sessionOf(m).need().supportedModels();
         const EFF = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -316,11 +329,16 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
             resolvedModel: short(x.resolvedModel, 128), supportsEffort: x.supportsEffort === true,
             supportedEffortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels.filter((e) => EFF.includes(e)) : [] })));
       }
-      case 'mcp': {
-        const list = await sessionOf(m).need().mcpServerStatus();
-        return answer('mcp', 'servers', (Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
-          .map((x) => ({ name: short(x.name, 200), status: short(x.status, 40), error: str(x.error ?? '', 500), scope: short(x.scope, 40),
-            tools: Array.isArray(x.tools) ? x.tools.length : null })));
+      case 'mcp': return answer('mcp', 'servers', mcpOf(await sessionOf(m).need().mcpServerStatus()));
+      // reconnect a server, or switch it off/on for this session: then the fresh list
+      case 'mcp_reconnect':
+      case 'mcp_toggle': {
+        const s = sessionOf(m);
+        const name = mcpName(m.server ?? m.name);
+        if (m.type === 'mcp_reconnect') await s.mcpReconnect(name);
+        else if (typeof m.enabled !== 'boolean') throw new SessionError('enabled: true or false');
+        else await s.mcpToggle(name, m.enabled);
+        return answer('mcp', 'servers', mcpOf(await s.need().mcpServerStatus()));
       }
       case 'context': {
         const u = await sessionOf(m).need().getContextUsage();
@@ -331,7 +349,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
             .map((x) => ({ name: short(x.name, 80), tokens: n(x.tokens), kind: short(x.kind, 20) })),
         });
       }
-      case 'reload_plugins': return reply(plain(await sessionOf(m).need().reloadPlugins(), 256 << 10, 2000));
+      case 'reload_plugins': {
+        const r = await sessionOf(m).reloadPlugins();   // (the new lists go to every page showing the session)
+        return reply({ commands: Array.isArray(r?.commands) ? r.commands.length : 0, plugins: Array.isArray(r?.plugins) ? r.plugins.length : 0,
+          errors: Number.isInteger(r?.error_count) && r.error_count >= 0 ? r.error_count : 0 });
+      }
       case 'stop_task': {
         if (!isId(m.task)) throw new SessionError('bad task id');
         await sessionOf(m).need().stopTask(m.task);

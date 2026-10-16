@@ -28,6 +28,8 @@ import { FileTree } from './FileTree';
 import { SessionList } from './SessionList';
 import { ContextMeter, CostMeter, EffortPicker, ModelPicker, ModePicker, currentModel, modelLabel } from './Pickers';
 import { Dialog, Dropdown, MenuItem, Sheet, Splitter, useMedia } from './ui';
+import { PluginsDialog } from './Plugins';
+import { McpPanel } from './Mcp';
 import { Icon, Spinner } from './icons';
 
 // ---------------------------------------------------------------- pieces
@@ -52,10 +54,10 @@ function MoreMenu() {
           <MenuItem icon="plus" onSelect={() => (close(), void newSession())}>
             New session
           </MenuItem>
-          <MenuItem icon="plug" onSelect={() => (close(), setDialog('plugins'))} hint="soon">
+          <MenuItem icon="plug" onSelect={() => (close(), setDialog('plugins'))} testid="menu-plugins">
             Plugins & marketplaces…
           </MenuItem>
-          <MenuItem icon="server" onSelect={() => (close(), setDialog('mcp'))}>
+          <MenuItem icon="server" onSelect={() => (close(), setDialog('mcp'))} testid="menu-mcp">
             MCP servers…
           </MenuItem>
           <MenuItem icon="refresh" onSelect={() => (close(), reloadPlugins())}>
@@ -273,7 +275,6 @@ function Toasts() {
 
 function Dialogs() {
   const dialog = useSel(store, (s) => s.dialog);
-  const v = useSel(store, (s) => activeView(s));
   const close = () => setDialog(null);
   if (dialog === 'shortcuts') {
     const rows: [string, string][] = [
@@ -305,49 +306,8 @@ function Dialogs() {
       </Dialog>
     );
   }
-  if (dialog === 'plugins') {
-    return (
-      <Dialog title="Plugins & marketplaces" onClose={close} testid="plugins-dialog">
-        <p>Installing and managing plugins from this page comes in a later update. Until then, in the terminal:</p>
-        <pre class="cmd">
-          claude plugin marketplace add anthropics/claude-code{'\n'}claude plugin install commit-commands@claude-code-plugins
-        </pre>
-        <p class="muted">Then choose “Reload plugins & skills” in the ⋯ menu; new commands appear in the / palette.</p>
-        {v?.init?.plugins.length ? (
-          <>
-            <h3>Loaded in this session</h3>
-            <ul class="plain">
-              {v.init.plugins.map((p) => (
-                <li key={p.name}>
-                  <code>{p.name}</code> {p.version && <span class="muted">{p.version}</span>}
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
-      </Dialog>
-    );
-  }
-  if (dialog === 'mcp') {
-    const servers = v?.mcp.length ? v.mcp : (v?.init?.mcp ?? []).map((m) => ({ ...m, tools: null }));
-    return (
-      <Dialog title="MCP servers" onClose={close} testid="mcp-dialog">
-        {!v && <p class="muted">Start a session to see its MCP servers.</p>}
-        {servers.length > 0 && (
-          <ul class="plain mcp-list">
-            {servers.map((s) => (
-              <li key={s.name}>
-                <span class={`sdot ${s.status === 'connected' ? 'live' : 'err'}`} /> <code>{s.name}</code> <span class="muted">{s.status}</span>
-                {s.tools !== null && <span class="muted"> · {s.tools} tools</span>}
-              </li>
-            ))}
-          </ul>
-        )}
-        {v && !servers.length && <p class="muted">No MCP servers reported yet.</p>}
-        <p class="muted">Reconnecting and switching servers on or off from this page comes in a later update.</p>
-      </Dialog>
-    );
-  }
+  if (dialog === 'plugins') return <PluginsDialog onClose={close} />;
+  if (dialog === 'mcp') return <McpPanel onClose={close} />;
   return null;
 }
 

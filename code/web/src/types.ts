@@ -101,8 +101,82 @@ export interface BnModel {
 
 export interface McpServer {
   name: string;
+  /** connected | failed | needs-auth | pending | disabled | unknown */
   status: string;
   tools: number | null;
+  error: string;
+  /** where its configuration lives: user, project, local, dynamic (the stack's bedrock-shared), plugin … */
+  scope: string;
+  source: string;
+  toolNames: string[];
+  serverVersion: string;
+  /** what it is, without secrets: stdio + its command line, or http/sse + its address */
+  transport: string;
+  command: string;
+  url: string;
+}
+
+/** A plugin as `claude plugin list --json` reports it (GET /api/plugins). */
+export interface InstalledPlugin {
+  id: string;
+  name: string;
+  marketplace: string;
+  version: string;
+  scope: string;
+  enabled: boolean;
+  fromFolder: boolean;
+  errors: string[];
+}
+export interface Marketplace {
+  name: string;
+  source: string;
+  location: string;
+}
+/** One entry of the added marketplaces' catalog (GET /api/plugins/available). */
+export interface AvailablePlugin {
+  id: string;
+  name: string;
+  marketplace: string;
+  description: string;
+  version: string;
+  /** how it installs: path | git-subdir | url | github | npm | command … */
+  kind: string;
+  /** kind "command": the command the marketplace declares (confirmed by its SHA-256 before it runs) */
+  command: string | null;
+  installed: boolean;
+}
+export interface Catalog {
+  plugins: AvailablePlugin[];
+  total: number;
+  more: boolean;
+  marketplaces: { name: string; count: number }[];
+}
+/** A marketplace-declared command the CLI showed and will run only once a person accepts its SHA-256. */
+export interface Confirmation {
+  kind: string;
+  plugin: string | null;
+  command: string;
+  sha256: string;
+  mode: string | null;
+  archiveUrl: string | null;
+  /** this hash was offered and still refused (the catalog changed, or it cannot be accepted here) */
+  matched: boolean;
+}
+/** The outcome of a plugin, marketplace or MCP change. */
+export interface Outcome {
+  ok: boolean;
+  outcome: string;
+  message: string;
+  failureCode: string | null;
+  confirm: Confirmation | null;
+  /** open sessions that reloaded their plugins after the change */
+  reloaded: number | null;
+}
+/** A plugin a running session loaded (after a reload). */
+export interface LoadedPlugin {
+  name: string;
+  version: string;
+  source: string;
 }
 
 export interface ContextUsage {
@@ -178,9 +252,12 @@ export type ServerMsg =
   | { kind: 'permission'; req: PermissionReq }
   | { kind: 'permission_done'; id: string; session: string | null }
   | { kind: 'session_state'; session: string; state: SessionState }
+  /** the answer to `attach`: replayed events start at `from`; `gap`: some after the page's `since` are gone */
+  | { kind: 'attached'; session: string; from: number; last: number; gap: boolean }
   | { kind: 'commands'; session: string | null; commands: Command[] }
   | { kind: 'models'; session: string | null; models: CliModel[] }
   | { kind: 'mcp'; session: string | null; servers: McpServer[] }
+  | { kind: 'plugins'; session: string | null; plugins: LoadedPlugin[] }
   | { kind: 'context'; session: string | null; usage: ContextUsage }
   | { kind: 'error'; session: string | null; message: string };
 

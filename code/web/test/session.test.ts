@@ -47,17 +47,17 @@ test('a result without its call still shows', () => {
   assert.equal(v.items[0].t, 'tool');
 });
 
-test('seq: replays are ignored, a jump flags a gap', () => {
+test('seq: replays are ignored; holes (the ring drops finished deltas) are not a gap', () => {
   let v = newView(ID);
   v = applySeq(v, 1, { kind: 'local', text: 'a' });
   v = applySeq(v, 2, { kind: 'local', text: 'b' });
   v = applySeq(v, 2, { kind: 'local', text: 'b again' });
   v = applySeq(v, 1, { kind: 'local', text: 'a again' });
   assert.equal(v.items.length, 2);
-  assert.equal(v.gap, false);
   v = applySeq(v, 7, { kind: 'local', text: 'g' });
-  assert.equal(v.gap, true);
+  assert.equal(v.gap, false);
   assert.equal(v.seq, 7);
+  assert.equal(v.items.length, 3);
 });
 
 test('an optimistic prompt is not duplicated by the server echo; a busy session queues', () => {

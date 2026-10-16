@@ -27,12 +27,37 @@ All notable changes to bedrock-now are documented here. The format follows
   each session's cost (LiteLLM's spend logs, the terminal key's rows) come from the portal (`/.bn/models`,
   `/.bn/spend`). A new session or a model switch makes the next turn write that model's prompt cache again
   (~30k tokens: about $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5); the model list says so. Remote
-  access follows the terminal's `REMOTE_TERMINAL` (a sixth Tailscale Service, or `code.<your domain>`). This
-  release serves a plain page; a richer frontend (`code/web`, built into the image when present) follows. Home's
+  access follows the terminal's `REMOTE_TERMINAL` (a sixth Tailscale Service, or `code.<your domain>`). Home's
   Claude Code card and the walkthrough mention the Code tab. `./stack test` checks it (health, the unlock, other
-  Origins, the secret header, isolation of both sides); the e2e suite gains `--code`; the backend's unit tests run
-  in its image's test stage (`code/test.sh`). How it is built and what it trusts: README › The Code page,
-  docs/security.md › The Code page.
+  Origins, the secret header, isolation of both sides); the e2e suite gains `--code`; the unit tests (frontend and
+  backend) run in its image's test stage (`code/test.sh`). How it is built and what it trusts: README › The Code
+  page, docs/security.md › The Code page.
+- **The Code page's frontend** (`code/web`: TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild into
+  the image, every dependency pinned; nothing from a CDN; runs under the CSP with Trusted Types): an IDE-like layout —
+  explorer, editor tabs, chat, the sandbox's terminal in a bottom panel — that becomes chat + one pane on a tablet and
+  chat-first with sheets on a phone, sizes remembered per browser. Markdown rendered as DOM (raw HTML stays text,
+  only http(s) links), tool cards (Bash output, Edit/Write diffs, nested subagents, MCP tools, to-dos), background
+  tasks with a Stop each, permission cards that say what would run or change, a `/` palette (commands, skills,
+  plugin commands) and `@` file picker, image paste/drop, uploads into the workspace, the editor with a "changed on
+  disk" check and Claude's edits as side-by-side diffs, session search/resume/fork/rename, each turn's cost and the
+  context meter, and re-attach after a reload or a dropped connection without duplicates. A mock backend
+  (`npm run dev`) and browser checks against it (`code/web/e2e/run.sh`: desktop light/dark, tablet, phone, a hostile
+  sandbox) come with it.
+- **AskUserQuestion in the Code page**: Claude's questions show as a small form (one choice, several, or *Other* with
+  your own words) and the answers go back to Claude as answers (the SDK's own channel), not as a refusal.
+- **Plugins & marketplaces in the Code page** (⋯ menu): installed plugins (on/off, update, uninstall; built-in ones
+  read-only), the added marketplaces' catalog (search, install) and the marketplaces (add `owner/repo`, an https URL
+  or a folder of the workspace; update; remove). A plugin whose marketplace installs it by running a command is
+  shown with that exact command and its SHA-256 first and runs only after **Run this command and install**
+  (`claude plugin install --accept-command <sha256>`; never `-y`). Open sessions reload their plugins after a
+  change, so new commands and skills appear in the palette at once.
+- **MCP servers in the Code page** (⋯ menu): each server's status, tools and errors, reconnect, off/on for the
+  session; servers of your own (stdio, HTTP, SSE) added to or removed from the sandbox's user configuration — a stdio
+  server's command runs inside the sandbox only — and a *Restart this session* to load them.
+- **Settings → Code page**: turn the Code page on (only from the computer running bedrock-now, while the browser
+  terminal is on) or off (from anywhere); the update helper runs `./stack code enable` / `disable`. The workspace is
+  shown read-only with the command that changes it. The walkthrough's Claude Code steps point at the Code tab when
+  it is on, and at Settings when it is not.
 
 ## [0.4.1] - 2026-10-15
 

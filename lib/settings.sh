@@ -324,6 +324,11 @@ settings_check_batch() {
       printf '%s\n' "$chat" | grep -qxF "$p" || die "MODELS_HIDDEN: $p is not a chat model your AWS key can use (./stack models)"
     done
   fi
+  # The Code page runs in the browser terminal's sandbox: Settings turns it on only while the terminal is ready (which
+  # folder of yours the sandbox sees is chosen in a terminal: ./stack code enable --workspace DIR turns both on)
+  if cfg_has CODE_ENABLED && [ "$(cfg_new CODE_ENABLED)" = true ] && ! code_on && ! terminal_ready; then
+    die "CODE_ENABLED: the Code page runs in the browser terminal's sandbox, which is off — turn both on in a terminal: ./stack code enable [--workspace DIR] (it picks the folder the sandbox sees)"
+  fi
   if cfg_has TAILSCALE_ALLOWED_LOGIN && [ -z "$(cfg_new TAILSCALE_ALLOWED_LOGIN)" ]; then
     die "TAILSCALE_ALLOWED_LOGIN cannot be made blank here (that would let anyone in your tailnet try the password)"
   fi
@@ -744,6 +749,7 @@ _cfg_write() {
     v="$(cfg_new "$k")"
     case "$k" in
       OPENROUTER_API_KEY | STT_API_KEY | STT_MODEL) if [ -z "$v" ]; then args+=("-$k" ''); continue; fi ;;
+      CODE_ENABLED) continue ;;   # written by ./stack code enable | disable (_cfg_code), which need the old value first
     esac
     args+=("$k" "$v")
   done
@@ -754,7 +760,7 @@ _cfg_write() {
     '') if cfg_has STT_PROVIDER; then args+=(-STT_API_KEY '' -STT_MODEL ''); fi ;;
     bedrock) cfg_has STT_API_KEY || args+=(-STT_API_KEY '') ;;
   esac
-  set_env_batch "${args[@]}"
+  [ ${#args[@]} -eq 0 ] || set_env_batch "${args[@]}"   # (none: a change of CODE_ENABLED alone, written by _cfg_code)
   if cfg_has STT_PROVIDER; then v="$(cfg_new STT_PROVIDER)"; stt_set_choice "${v:-browser}"; fi
   if cfg_has STT_PROVIDER || cfg_has STT_API_KEY || cfg_has STT_MODEL; then stt_sync_env; fi
   if cfg_has PORTAL_PASSWORD; then helper_password_sync; fi
@@ -781,8 +787,8 @@ _cfg_post() {
   if _cfg_on openrouter; then _cfg_openrouter; fi
   # .env first, so ./stack up applies them too when the stack is stopped
   if _cfg_on pins && [ -s "$STACK_DIR/litellm/enabled-models.txt" ]; then choose_defaults; fi
-  if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$cfg" ]; then log "saved — ./stack setup applies it"; return 0; fi
-  if ! _cfg_stack_running; then log "saved — the stack is stopped; ./stack up applies it"; return 0; fi
+  if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$cfg" ]; then ! _cfg_on code || _cfg_code; log "saved — ./stack setup applies it"; return 0; fi
+  if ! _cfg_stack_running; then ! _cfg_on code || _cfg_code; log "saved — the stack is stopped; ./stack up applies it"; return 0; fi
   if _cfg_on stt; then
     _stt_apply   # re-renders, recreates LiteLLM, the stt container, Chat and the portal; restores the previous choice if stt fails
     before="$(cat "$cfg")"   # (LiteLLM was recreated with all of .env)
@@ -825,6 +831,25 @@ _cfg_post() {
     if _cfg_on owui-models; then owui_apply_hidden; fi
     sync_budget_banner
     portal_session_end
+  fi
+  if _cfg_on code; then _cfg_code; fi   # last: it restarts the terminal, the portal and Caddy itself
+}
+
+# _cfg_code — CODE_ENABLED: ./stack code enable | disable (lib/code.sh), which write CODE_ENABLED themselves, build or
+# remove the code container and restart the terminal, the portal and Caddy; disabling leaves the terminal on, and
+# Settings turns it on only while the terminal is ready (settings_check_batch). With the stack stopped only .env
+# changes (./stack up applies it). On a rollback (CFG_ROLLBACK=1) .env already holds the previous value again: the
+# Code page follows it (code_disable needs CODE_ENABLED on to find what a failed enable started).
+_cfg_code() {
+  local v back="${CFG_ROLLBACK:-0}"
+  if [ "$back" = 1 ]; then v="$(get_env CODE_ENABLED)"; else v="$(cfg_new CODE_ENABLED)"; fi
+  if ! _cfg_stack_running; then [ "$back" = 1 ] || set_env CODE_ENABLED "$v"; return 0; fi
+  if [ "$v" = true ]; then
+    if code_on && [ "$back" != 1 ]; then log "the Code page is already on"; return 0; fi
+    code_enable
+  else
+    [ "$back" != 1 ] || set_env CODE_ENABLED true
+    code_disable
   fi
 }
 
@@ -888,7 +913,7 @@ _cfg_rollback() {
   fi
   if cfg_has STT_PROVIDER || cfg_has STT_API_KEY || cfg_has STT_MODEL; then stt_sync_env || true; fi
   helper_password_sync || true
-  ( _cfg_post ) >/dev/null 2>&1 || warn "could not restart everything with the previous settings — ./stack up retries"
+  ( CFG_ROLLBACK=1; _cfg_post ) >/dev/null 2>&1 || warn "could not restart everything with the previous settings — ./stack up retries"
   rm -f "$(settings_dir)/pending.env"
   settings_audit failed "$CFG_VIA" "$CFG_ORDER" "$1"
   settings_snapshot_write

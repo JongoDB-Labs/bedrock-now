@@ -1,8 +1,9 @@
 // A hostile stand-in for bn-coded (tests/e2e/run.sh --code, after the browser suite; run inside the terminal container
 // with its own node): what code in the sandbox could do, since it can take the spawn socket's path. It moves bn-coded's
 // socket aside (bn-coded keeps listening on it), answers in its place with markup in every field, bogus ids, NaN and
-// negative numbers, an answer over the frame limit, and a Claude Code that sends forged control requests and then an
-// endless line; on SIGTERM it puts bn-coded's socket back.
+// negative numbers, an answer over the frame limit, `claude plugin …` listings and an install "command" full of markup
+// (with a hash that is not one), and a Claude Code that sends forged control requests and then an endless line; on
+// SIGTERM it puts bn-coded's socket back.
 //   node code-stub.mjs /run/bn-code/coded.sock
 import net from 'node:net';
 import fs from 'node:fs';
@@ -56,6 +57,18 @@ function serve(conn) {
         opened = true;
         let req = {}; try { req = JSON.parse(p.toString('utf8')); } catch { /* nothing */ }
         if (req.op === 'claude') onStdin = claude(conn);
+        else if (req.op === 'cli') {
+          // `claude plugin …` as a process: markup everywhere, bogus ids, a "command" to confirm with a bogus hash
+          const a = Array.isArray(req.args) ? req.args.join(' ') : '';
+          const out = a.startsWith('plugin list') && a.includes('--available')
+            ? { installed: [], available: [{ pluginId: 'evil@m', name: M, description: M, marketplaceName: M, version: M, source: { source: 'command', command: `${M}\u202e` } }, { pluginId: '../../etc', name: M }] }
+            : a.startsWith('plugin list') ? [{ id: M }, { id: 'ok@m', name: M, version: M, scope: M, enabled: 'yes', errors: [M] }]
+              : a.startsWith('plugin marketplace list') ? [{ name: M }, { name: 'm', source: M, path: M }]
+                : { command: 'install', outcome: 'failed', failureCode: 'command_source_refused', message: M,
+                  shownCommand: { kind: M, pluginId: '../x', command: `${M}\u202e`, sha256: 'not-a-sha' } };
+          conn.write(frame(T.STDOUT, Buffer.from(`${M}\n${JSON.stringify(out)}\n`.replace(`${M}\n`, a.startsWith('plugin install') ? `${M}\n` : ''))));
+          conn.end(frame(T.EXIT, { code: a.startsWith('plugin install') ? 1 : 0, signal: null }));
+        }
         else if (req.op === 'sessions.list') {
           conn.end(frame(T.RESULT, { sessions: [
             { id: '3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8', mtimeMs: Date.now(), size: 10, firstPrompt: M, customTitle: M },

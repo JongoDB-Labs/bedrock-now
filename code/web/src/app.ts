@@ -260,7 +260,18 @@ function handle(m: ServerMsg): void {
       const next = applySeq(v, m.seq, m.ev);
       if (next === v) return;
       updateView(m.session, () => next);
-      onEvent(m.session, m.ev, !v.gap && next.gap);
+      onEvent(m.session, m.ev);
+      return;
+    }
+    case 'attached': {
+      // Events this page had not seen are gone from the backend's ring (it keeps the recent ones): start over from
+      // what the replay brings next, and put the transcript in front of it once the replay has settled.
+      const v = get().views[m.session];
+      if (v && m.gap) {
+        updateView(m.session, (x) => ({ ...x, items: [], turns: [], gap: true }));
+        needHistory.add(m.session);
+        historyAfterReplay(m.session, 250);
+      }
       return;
     }
     case 'permission': {
@@ -304,6 +315,10 @@ function handle(m: ServerMsg): void {
     case 'mcp':
       if (m.session) updateView(m.session, (v) => ({ ...v, mcp: m.servers }));
       return;
+    case 'plugins':
+      // a plugin reload: what the session loaded now (its commands come in their own message)
+      if (m.session) updateView(m.session, (v) => (v.init ? { ...v, init: { ...v.init, plugins: m.plugins.map((p) => ({ name: p.name, version: p.version })) } } : v));
+      return;
     case 'context':
       if (m.session) updateView(m.session, (v) => ({ ...v, context: m.usage }));
       return;
@@ -314,8 +329,7 @@ function handle(m: ServerMsg): void {
   }
 }
 
-function onEvent(id: string, ev: Ev, gapNow: boolean): void {
-  if (gapNow) void reloadHistory(id, true);
+function onEvent(id: string, ev: Ev): void {
   if (ev.kind === 'result') {
     scheduleSpend(id);
     socket.send({ type: 'context', session: id });
@@ -408,16 +422,31 @@ async function reloadHistory(id: string, fresh: boolean, from = id): Promise<voi
     if (!(e instanceof api.ApiError && e.status === 404)) updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: `History could not be loaded: ${errText(e)}`, level: 'warn' }], nextKey: v.nextKey + 1 }));
   } finally {
     historyLoading.delete(id);
+    updateView(id, (v) => (v.gap ? { ...v, gap: false } : v));
   }
 }
 
-export async function newSession(): Promise<string | null> {
+/** A session being opened (new, resumed, forked): a prompt sent meanwhile goes to it, not to the one shown before. */
+let opening: Promise<unknown> | null = null;
+function whileOpening<T>(p: Promise<T>): Promise<T> {
+  const tracked = p.finally(() => {
+    if (opening === tracked) opening = null;
+  });
+  opening = tracked;
+  return tracked;
+}
+
+export function newSession(): Promise<string | null> {
+  return get().opening ? Promise.resolve(null) : whileOpening(openNew());
+}
+
+async function openNew(): Promise<string | null> {
   const s = get();
   if (s.opening) return null;
   set((x) => ({ ...x, opening: true }));
   try {
     const model = defaultModel(s);
-    const id = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort });
+    const { id } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort });
     loadedHistory.add(id);
     ensureView(id, { state: 'idle', model, mode: s.prefs.mode, effort: s.prefs.effort });
     set((x) => ({ ...x, active: id, sheet: null }));
@@ -435,7 +464,11 @@ export async function newSession(): Promise<string | null> {
 }
 
 /** Resume (or fork) a session from the list. An already-open one is just shown. */
-export async function resumeSession(id: string, fork = false): Promise<void> {
+export function resumeSession(id: string, fork = false): Promise<void> {
+  return whileOpening(openExisting(id, fork));
+}
+
+async function openExisting(id: string, fork: boolean): Promise<void> {
   const s = get();
   if (!fork && s.views[id] && s.views[id].state !== 'closed') return activate(id);
   if (s.opening) return;
@@ -443,7 +476,22 @@ export async function resumeSession(id: string, fork = false): Promise<void> {
   try {
     const info = s.sessions.find((x) => x.id === id);
     const model = defaultModel(s);
-    const newId = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork });
+    const { id: newId, existing } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork });
+    if (existing) {
+      // open already (another tab, another device): the same process — attach to it; its history merges after the replay
+      set((x) => ({ ...x, opening: false }));
+      if (!get().views[newId] || get().views[newId].state === 'closed') {
+        set((x) => {
+          const views = { ...x.views };
+          delete views[newId];
+          return { ...x, views };
+        });
+        loadedHistory.delete(newId);
+      }
+      await activate(newId);
+      void refreshSessions();
+      return;
+    }
     set((x) => {
       const views = { ...x.views };
       delete views[newId];
@@ -497,7 +545,7 @@ async function revive(id: string): Promise<string | null> {
   const s = get();
   try {
     const v = s.views[id];
-    const newId = await api.openSession({ model: v?.model || defaultModel(s) || undefined, mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort, resume: id });
+    const { id: newId } = await api.openSession({ model: v?.model || defaultModel(s) || undefined, mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort, resume: id });
     if (newId !== id) {
       // the backend gave the resumed process a new id: carry the conversation over to it
       loadedHistory.add(newId);
@@ -519,6 +567,7 @@ async function revive(id: string): Promise<string | null> {
 }
 
 export async function sendPrompt(text: string, images: ImageBlock[]): Promise<boolean> {
+  if (opening) await opening.catch(() => undefined);
   let id = get().active;
   const v = id ? get().views[id] : undefined;
   if (id && v && (v.state === 'closed' || v.state === 'ended')) id = await revive(id);
@@ -564,6 +613,13 @@ export function setEffort(effort: string | null): void {
   }
 }
 
+/** AskUserQuestion's answers: {question text: chosen label(s)} (questions.ts builds them). */
+export function answerQuestions(session: string, id: string, answers: Record<string, string>): void {
+  socket.send({ type: 'permission', id, session, decision: 'answer', answers });
+  updateView(session, (v) => ({ ...v, permissions: v.permissions.filter((p) => p.id !== id) }));
+  announce();
+}
+
 export function answerPermission(session: string, id: string, decision: 'once' | 'always' | 'deny', message?: string): void {
   const msg = message?.trim() ? message.trim().slice(0, 2000) : undefined;
   socket.send(msg ? { type: 'permission', id, session, decision, message: msg } : { type: 'permission', id, session, decision });
@@ -579,13 +635,39 @@ export function stopTask(task: string): void {
 export function reloadPlugins(): void {
   const id = get().active;
   if (!id) return toast('Start a session first.');
+  // the backend answers with the session's new commands, plugins and MCP servers
   socket.send({ type: 'reload_plugins', session: id });
-  socket.send({ type: 'commands', session: id });
   toast('Reloading plugins…');
 }
 export function requestMcp(): void {
   const id = get().active;
   if (id) socket.send({ type: 'mcp', session: id });
+}
+/** Reconnect an MCP server, or switch it off/on, in the active session (answered by a fresh `mcp` list). */
+export function mcpReconnect(server: string): void {
+  const id = get().active;
+  if (id) socket.send({ type: 'mcp_reconnect', session: id, server });
+}
+export function mcpToggle(server: string, enabled: boolean): void {
+  const id = get().active;
+  if (id) socket.send({ type: 'mcp_toggle', session: id, server, enabled });
+}
+/** End the active session's process and start it again on the same transcript (MCP servers added since load). */
+export async function restartSession(): Promise<void> {
+  const id = get().active;
+  const v = id ? get().views[id] : undefined;
+  if (!id || !v) return;
+  try {
+    if (v.state !== 'closed' && v.state !== 'ended') await api.closeSession(id);
+  } catch (e) {
+    if (!(e instanceof api.ApiError && e.status === 404)) return toast(errText(e), 'error');
+  }
+  updateView(id, (x) => ({ ...x, state: 'ended', seq: 0, permissions: [] }));
+  const n = await revive(id);
+  if (n) {
+    socket.send({ type: 'mcp', session: n });
+    toast('Session restarted: new MCP servers and settings are loaded.', 'ok');
+  }
 }
 
 // ---------------------------------------------------------------- files

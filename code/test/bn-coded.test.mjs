@@ -60,18 +60,47 @@ test('claude arguments: the SDK prefix, then only allowlisted --name=value / fla
 });
 
 test('cli: the plugin / marketplace / mcp shapes only, never -y', () => {
+  fs.mkdirSync(path.join(WS, 'mkt', '.claude-plugin'), { recursive: true });
+  fs.symlinkSync(path.join(ROOT, 'outside'), path.join(WS, 'mkt-out'));
+  const stdio = JSON.stringify({ type: 'stdio', command: 'npx', args: ['-y', 'some-mcp@1.2.3'], env: { API_KEY: 'k' } });
+  const http = JSON.stringify({ type: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer x' } });
   const ok = [['plugin', 'list', '--json'], ['plugin', 'list', '--json', '--available'], ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'install', 'commit-commands@claude-code-plugins', '--json', '--scope=user'],
-    ['plugin', 'install', 'x', `--accept-command=${'a'.repeat(64)}`], ['plugin', 'uninstall', 'x'], ['plugin', 'enable', 'x', '--scope=local'],
+    ['plugin', 'install', 'x', `--accept-command=${'a'.repeat(64)}`], ['plugin', 'uninstall', 'x', '--json'], ['plugin', 'enable', 'x', '--scope=local'],
+    ['plugin', 'disable', 'x@m', '--json'], ['plugin', 'update', 'x@m', '--json', `--accept-command=${'b'.repeat(64)}`],
     ['plugin', 'marketplace', 'add', 'anthropics/claude-code', '--json'], ['plugin', 'marketplace', 'add', 'https://example.com/m.git'],
-    ['plugin', 'marketplace', 'remove', 'm'], ['mcp', 'list'], ['mcp', 'get', 'bedrock-shared']];
+    ['plugin', 'marketplace', 'add', `${WS}/mkt`, '--json'], ['plugin', 'marketplace', 'update', 'm', '--json'],
+    ['plugin', 'marketplace', 'remove', 'm', '--json'], ['mcp', 'list'], ['mcp', 'get', 'bedrock-shared'],
+    ['mcp', 'add-json', 'my-server', stdio, '--scope=user'], ['mcp', 'add-json', 'remote_1', http, '--scope=user'],
+    ['mcp', 'add-json', 'sse', JSON.stringify({ type: 'sse', url: 'http://10.0.0.5:9000/sse' }), '--scope=user'],
+    ['mcp', 'remove', 'my-server', '--scope=user']];
   for (const a of ok) assert.equal(coded.checkCliArgs(a), null, a.join(' '));
   const refused = [['plugin', 'install', 'x', '-y'], ['plugin', 'install', 'x', '--yes'], ['plugin', 'install', 'x', '--config', 'k=v'],
     ['plugin', 'install', '../x'], ['plugin', 'install', 'x', 'y'], ['plugin', 'install'], ['plugin', 'list', 'x'],
     ['plugin', 'marketplace', 'add', 'file:///etc'], ['plugin', 'marketplace', 'add', '/workspace/m'], ['plugin', 'marketplace', 'add', 'http://x/y'],
+    ['plugin', 'marketplace', 'add', `${WS}/missing`], ['plugin', 'marketplace', 'add', `${WS}/../outside`], ['plugin', 'marketplace', 'add', `${WS}/mkt-out`],
+    ['plugin', 'marketplace', 'add', WS], ['plugin', 'marketplace', 'add', `${WS}/mkt\nx`], ['plugin', 'marketplace', 'add', 'mkt'],
+    ['plugin', 'uninstall', 'x', '--prune'], ['plugin', 'uninstall', 'x', '-y'], ['plugin', 'disable', '--all'], ['plugin', 'install', 'x', '--json', '--json'],
     ['mcp', 'add', 'x', 'cmd'], ['config', 'set'], ['--settings', 'x'], ['plugin', 'install', 'x', '--scope=managed'],
-    ['plugin', 'install', 'x', `--accept-command=${'A'.repeat(64)}`], ['plugin'], [], 'plugin list', ['plugin', 'list', 7]];
+    ['plugin', 'install', 'x', `--accept-command=${'A'.repeat(64)}`], ['plugin'], [], 'plugin list', ['plugin', 'list', 7],
+    // MCP: user scope only, one fixed shape, never the stack's own server
+    ['mcp', 'add-json', 'my-server', stdio], ['mcp', 'add-json', 'my-server', stdio, '--scope=project'], ['mcp', 'add-json', 'my-server', stdio, '--scope=local'],
+    ['mcp', 'add-json', 'bedrock-shared', stdio, '--scope=user'], ['mcp', 'add-json', '-x', stdio, '--scope=user'], ['mcp', 'add-json', 'a b', stdio, '--scope=user'],
+    ['mcp', 'add-json', 'x', '{"type":"stdio"}', '--scope=user'], ['mcp', 'add-json', 'x', '{"type":"ws","url":"wss://x/y"}', '--scope=user'],
+    ['mcp', 'add-json', 'x', JSON.stringify({ type: 'stdio', command: 'a\nb' }), '--scope=user'],
+    ['mcp', 'add-json', 'x', JSON.stringify({ type: 'stdio', command: 'a', oauth: {} }), '--scope=user'],
+    ['mcp', 'add-json', 'x', JSON.stringify({ type: 'stdio', command: 'a', env: { 'A-B': 'x' } }), '--scope=user'],
+    ['mcp', 'add-json', 'x', JSON.stringify({ type: 'http', url: 'file:///etc/passwd' }), '--scope=user'],
+    ['mcp', 'add-json', 'x', JSON.stringify({ type: 'http', url: 'https://x/y', headers: { 'X-A': 'a\r\nb' } }), '--scope=user'],
+    ['mcp', 'add-json', 'x', 'not json', '--scope=user'], ['mcp', 'add-json', 'x', '[1]', '--scope=user'],
+    ['mcp', 'remove', 'bedrock-shared', '--scope=user'], ['mcp', 'remove', 'x'], ['mcp', 'add-from-claude-desktop'], ['mcp', 'serve']];
   for (const a of refused) assert.notEqual(coded.checkCliArgs(a), null, JSON.stringify(a));
+});
+
+test('cli environment: no Claude Code session markers (the CLI ignores --accept-command inside a session)', () => {
+  const env = coded.cliEnv({ PATH: '/bin', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 'x', CLAUDE_CODE_MESSAGING_SOCKET: '/s',
+    CLAUDE_PID: '1', AI_AGENT: 'x', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', SHARED_MCP_TOKEN: 't', ANTHROPIC_CUSTOM_HEADERS: 'x' });
+  assert.deepEqual(env, { PATH: '/bin', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
 });
 
 test('environment: the container\'s, minus the MCP token and its own variables; the SDK\'s few; the LiteLLM tag from a UUID', () => {

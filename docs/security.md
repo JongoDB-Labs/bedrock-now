@@ -572,8 +572,9 @@ Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need you
 
 ## The Code page
 
-`./stack code enable` (off by default) puts Claude Code into the portal's Code tab as a chat: streamed answers,
-tool cards, permission prompts, models, sessions and the workspace's files. It adds no new place where code runs:
+`./stack code enable` (off by default; or Settings → Code page, see the last item below) puts Claude Code into the
+portal's Code tab as an IDE-like page: streamed answers, tool cards, permission prompts, models, sessions, the
+workspace's files in an explorer and an editor, plugins and MCP servers. It adds no new place where code runs:
 Claude Code runs in the browser terminal's sandbox (above), with its workspace, key, budget, internet and remote
 switches. What is new is a page that shows what the sandbox says and lets you answer it, and the page's own
 container. The design treats everything that comes out of the sandbox as untrusted: the sandbox can replace the
@@ -637,6 +638,31 @@ spawn server, Claude Code or any file at will.
   none of the upstream's `Set-Cookie`, `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`,
   CORS or reporting headers. The page renders sandbox text with `textContent` only, never as HTML, and keeps it
   inside messages and cards (never in its chrome); it never asks for a password (the unlock is the portal's page).
+- [x] **Answers to Claude's questions are answers, for that question only.** When Claude asks you something (its
+  AskUserQuestion tool) the page's form sends `{decision: "answer", answers}`; the code container accepts it only for
+  a waiting AskUserQuestion prompt and only answers to that prompt's own questions (one line each, ≤ 2,000
+  characters, no control characters), and hands Claude Code the tool's input with those answers — the SDK's own
+  channel. Any other tool's prompt can only be allowed or denied.
+- [x] **Plugins: a marketplace's install command runs only with your yes, for that command's hash.** Plugins and
+  marketplaces are managed with `claude plugin …` in the sandbox, in the spawn server's fixed shapes (a plugin or
+  marketplace name; a marketplace source `owner/repo`, an `https://` URL or a folder of the workspace, resolved in the
+  sandbox; `--scope` user/project/local; never `-y`, `--prune` or `--config`). Some marketplaces install a plugin by
+  running a command they declare (or fetch it with a "headers helper" command). Claude Code then refuses to run it
+  until someone accepts it; with `--json` it reports the command and a SHA-256 over it and the catalog's revision.
+  The page shows that command **verbatim** (as text, with invisible direction and control characters made visible)
+  and its SHA-256, and only **Run this command and install** sends the same request again with
+  `--accept-command=<that sha256>` — which the CLI honours for exactly that command, plugin and catalog revision (a
+  changed catalog makes it ask again). The command runs in the sandbox, with the sandbox's files and network; the
+  confirmation is about consent to a third party's command, not a new boundary. (`claude plugin` ignores
+  `--accept-command` inside a Claude Code session; the spawn server runs these listings outside one — a person
+  accepted it in the page.) After a change the open sessions reload their plugins.
+- [x] **MCP servers of your own run in the sandbox.** The page adds or removes user-scope servers in the sandbox's
+  Claude Code configuration (`claude mcp add-json … --scope user`, `claude mcp remove … --scope user`) in one checked
+  shape: stdio `{command, args, env}` or http/sse `{url, headers}`, one-line values, never the stack's
+  `bedrock-shared`. A stdio server's command runs **inside the sandbox only** — like everything Claude Code starts —
+  never on your computer, and the page says so. Reconnecting a server or switching it off/on applies to one session
+  (the SDK's own controls). The status the page shows never includes a server's environment or headers, and an
+  address is shown without credentials or query.
 - [x] **A fresh password, its own unlock, its own Origin.** The code host (`code.PORTAL_HOST`) needs the session
   and an unlock typed on that host (`bn_code`, remote `__Host-bn_code`: host-only, `HttpOnly`, `SameSite=Strict`, 12
   hours, signed with a salt of its own — the terminal's unlock never opens the Code page, nor the other way round;
@@ -650,15 +676,23 @@ spawn server, Claude Code or any file at will.
 - [x] **Orphans and resumes.** A killed spawn server leaves its Claude Code processes running (reparented to the
   container's init): they finish what was already approved, but nothing new can be approved. The spawn server
   records its children and, when it starts again, ends the ones still running Claude Code's stream-json mode; the
-  code container never opens a second process on a session it has open.
+  code container never opens a second process on a session it has open (opening it again returns the open one).
+- [x] **Turned on only where it is local.** In Settings, `CODE_ENABLED` is *widen-local*: turning the Code page on
+  (it adds a host for Claude Code processes with the sandbox's internet access, reachable from the browser) works
+  only from the computer running bedrock-now, and only while the browser terminal is on (its workspace folder is
+  chosen in a terminal, `./stack terminal enable --workspace DIR`, and only shown in Settings); turning it off — the
+  safer direction — works from anywhere the settings can be changed. The update helper runs `./stack code enable`
+  or `disable`.
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
-page — fake tool output, fake diffs, misleading permission sentences, wrong session titles — deny service (kill the
+page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
+or MCP status — deny service (kill the
 spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission rules into its own settings
 through *Always* (only for itself). It cannot run script in your browser, reach the code container over the
 network, read its files, make it open or follow a path, call host callbacks other than `canUseTool`, obtain
-`CODE_PROXY_SECRET`, the master key or the unlock cookie, change the prices or costs shown, or answer a permission
-prompt. *Project settings*: sessions load `/workspace/.claude` settings (hooks included) like the terminal does once
+`CODE_PROXY_SECRET`, the master key or the unlock cookie, change the prices or costs shown, answer a permission
+prompt, or accept a plugin's install command (the hash goes back only after your click, and a confirmation whose hash
+is not a SHA-256 is never offered). *Project settings*: sessions load `/workspace/.claude` settings (hooks included) like the terminal does once
 you trust the folder; they run in the sandbox either way.
 
 **What a compromised code container gains** (a bug in the SDK, `ws` or the page): it can drive the sandbox (as

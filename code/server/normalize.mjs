@@ -157,12 +157,25 @@ export function fromHistory(m) {
   const parent = parentOf(m);
   if (m.type === 'assistant') return blocks(m, parent);
   if (m.type === 'user') {
+    if (m.isMeta === true) return [];   // Claude Code's own notes to the model (a local command's caveat …)
     const c = m.message?.content;
     const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n') : '';
     const images = Array.isArray(c) ? c.filter((b) => b && b.type === 'image').length : 0;
     const results = toolResults(m, parent, false);
     if (results.length) return results;
     if (!text && !images) return [];
+    const t = text.trim();
+    // a slash command as the transcript records it (typed, or the SDK's own: a model or mode switch) -> as it was typed
+    const cmd = /^<command-name>\/?([^<\n]{1,200})<\/command-name>/.exec(t);
+    if (cmd) {
+      const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? '';
+      return [{ type: 'user', text: str(`/${cmd[1].trim()}${args ? ` ${args}` : ''}`, TEXT), uuid: uuidOr(m.uuid), images: 0 }];
+    }
+    const out = /^<local-command-(stdout|stderr)>([\s\S]*)<\/local-command-\1>$/.exec(t);
+    if (out) return [{ type: 'local', text: str(out[2], TEXT) }];
+    if (/^<local-command-caveat>/.test(t)) return [];
+    // what Claude Code writes after an interrupt is not a prompt of yours
+    if (/^\[Request interrupted by user[^\]\n]{0,80}\]$/.test(t)) return [{ type: 'local', text: 'Interrupted.' }];
     return [{ type: 'user', text: str(text, TEXT), uuid: uuidOr(m.uuid), images }];
   }
   if (m.type === 'system') {
@@ -171,6 +184,41 @@ export function fromHistory(m) {
   }
   return [];
 }
+
+// --- the answers of a session's control requests (supportedCommands, mcpServerStatus, reloadPlugins …) ---
+const objs = (v, n) => (Array.isArray(v) ? v.slice(0, n).filter((x) => x && typeof x === 'object') : []);
+
+export const commandsOf = (list) => objs(list, 1000)
+  .map((x) => ({ name: short(x.name, 200), description: str(x.description, 500), argumentHint: short(x.argumentHint, 200) }));
+
+const MCP_STATES = ['connected', 'failed', 'needs-auth', 'pending', 'disabled'];
+// what a server is, without its secrets: the transport, a stdio server's command line, an http/sse server's address
+// without credentials or query (env and headers never leave)
+function mcpWhere(c) {
+  if (!c || typeof c !== 'object') return null;
+  const type = short(c.type ?? (typeof c.command === 'string' ? 'stdio' : ''), 30);
+  if (typeof c.command === 'string') {
+    const args = Array.isArray(c.args) ? c.args.filter((a) => typeof a === 'string').slice(0, 32) : [];
+    return { type: type || 'stdio', command: short([c.command, ...args].join(' '), 500) };
+  }
+  if (typeof c.url === 'string') {
+    let url = '';
+    try { const u = new URL(c.url); if (/^(https?|wss?):$/.test(u.protocol)) url = `${u.protocol}//${u.host}${u.pathname}`; } catch { /* not a URL */ }
+    return { type, url: short(url, 500) };
+  }
+  return type ? { type } : null;
+}
+export const mcpOf = (list) => objs(list, 100).map((x) => ({
+  name: short(x.name, 200), status: MCP_STATES.includes(x.status) ? x.status : 'unknown', error: str(x.error ?? '', 500),
+  scope: short(x.scope, 40), source: short(x.source, 40), tools: Array.isArray(x.tools) ? x.tools.length : null,
+  toolNames: objs(x.tools, 200).map((t) => short(t.name, 200)).filter(Boolean),
+  server: x.serverInfo && typeof x.serverInfo === 'object' ? { name: short(x.serverInfo.name, 200), version: short(x.serverInfo.version, 60) } : null,
+  config: mcpWhere(x.config),
+}));
+
+export const pluginsOf = (list) => objs(list, 200)
+  .map((p) => ({ name: short(p.name, 200), version: short(p.version, 60) || null, source: short(p.source, 200) || null }))
+  .filter((p) => p.name);
 
 /** Session rows from bn-coded (sessions.list) -> what /api/sessions lists; rows that do not check out are dropped. */
 export function sessionRow(r) {

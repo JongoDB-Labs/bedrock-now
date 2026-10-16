@@ -701,3 +701,54 @@ def test_a_password_too_long_for_a_request_is_a_clear_413(settings, dirs):
     assert r.status_code == 413 and "300 bytes" in r.json()["error"]
     assert apply(c, {"BUDGET_SETUP": "6"}, password=long_pw).status_code == 413
     assert files(rq) == []
+
+
+# --- the Code page: on only from this computer and only with the terminal on; off from anywhere ---
+
+def code_rows(code="false", terminal="true"):
+    return KEYS + [row("CODE_ENABLED", "advanced", "-", "widen-local", "bool", "code", value=code),
+                   row("TERMINAL_ENABLED", "advanced", "-", "ro", "-", "-", value=terminal),
+                   row("TERMINAL_WORKSPACE", "advanced", "s", "ro", "-", "-", value="/home/u/bedrock-workspace")]
+
+
+def test_code_page_turns_on_here_with_the_terminal_and_off_from_anywhere(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd, keys=code_rows(code="false", terminal="false")); helper_up(sd)
+    c = make()
+    r = apply(c, {"CODE_ENABLED": "true"})
+    assert r.status_code == 400 and "needs the browser terminal" in r.json()["fields"]["CODE_ENABLED"]
+    assert "./stack code enable" in r.json()["fields"]["CODE_ENABLED"] and files(rq) == []
+    write_snapshot(sd, keys=code_rows(code="false", terminal="true"))
+    r = apply(c, {"CODE_ENABLED": "true"})
+    assert r.status_code == 202, r.text
+    req = (rq / f"cfg-{r.json()['id']}.req").read_text()
+    assert f"set CODE_ENABLED {base64.b64encode(b'true').decode()}\n" in req and "\norigin local\n" in req
+    # the policy, as lib/settings.sh setting_allowed: turning it on weakens (this computer only), off never does
+    code = row("CODE_ENABLED", policy="widen-local", validator="bool", value="false")
+    assert "can only be turned on from the computer running bedrock-now" in st.policy_error(code, "true", local=False)
+    assert st.policy_error(code, "true", local=True) is None
+    assert st.policy_error(row("CODE_ENABLED", policy="widen-local", validator="bool", value="true"), "false", local=False) is None
+
+
+def test_code_page_from_remote_access_only_off(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd, keys=code_rows(code="false", terminal="true")); helper_up(sd)
+    c = remote_client(make, True)
+    r = apply(c, {"CODE_ENABLED": "true"}, headers=RH)
+    assert r.status_code == 400 and "computer running bedrock-now" in r.json()["fields"]["CODE_ENABLED"]
+    write_snapshot(sd, keys=code_rows(code="true", terminal="true"))
+    r = apply(c, {"CODE_ENABLED": "false"}, headers=RH)
+    assert r.status_code == 202, r.text
+    assert "\norigin remote\n" in (rq / f"cfg-{r.json()['id']}.req").read_text()
+
+
+def test_settings_page_has_the_code_page_row_and_its_read_only_workspace():
+    from portal.app import STATIC
+    js = (STATIC / "settings.js").read_text(encoding="utf-8")
+    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED"]' in js
+    assert 'if (g === "code") { codeRow(body); return c; }' in js
+    # the workspace shown, never changed here: the command that changes it, with Copy
+    assert "Workspace (read-only here): " in js and '"./stack terminal enable --workspace DIR"' in js
+    # On stays off while the terminal is off (the helper and the portal refuse it too) and remotely (widen-local)
+    assert "needsTerminal(k, val)" in js and "localOnlyHere(k, val)" in js
+    assert "./stack code enable" in js and "./stack code disable" in js

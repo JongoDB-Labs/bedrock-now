@@ -36,10 +36,26 @@
 //   POST   /api/fs/mkdir {path}            {path}
 //   POST   /api/fs/rename {from, to}       {path}; 409 when `to` exists
 //   DELETE /api/fs?path=P                  {trash}: moved into /workspace/.bedrock-now-trash/
-//   GET    /api/plugins                    {installed: …, marketplaces: …} (claude plugin list/marketplace list --json)
-//   POST   /api/plugins/install|update|uninstall|enable|disable {name, scope?, acceptCommand?}   CliResult
-//   GET    /api/marketplaces · POST /api/marketplaces {source} · DELETE /api/marketplaces?name=N   CliResult
-//     CliResult = {ok, code, data: <parsed JSON or null>, text: <output when not JSON>}
+//   GET    /api/plugins                    {installed: [{id, name, marketplace, version, scope, enabled, fromFolder,
+//                                           installedAt, updatedAt, errors}], marketplaces: [{name, source, location}]}
+//                                           (claude plugin list / plugin marketplace list --json in the sandbox)
+//   GET    /api/plugins/available?q=&marketplace=&offset=&limit= (≤ 500)   {plugins: [{id, name, marketplace,
+//                                           description, version, kind, command?, installed}], total, offset, limit,
+//                                           more, marketplaces: [{name, count}]} — the added marketplaces' catalog,
+//                                           searched here (kind "command": installed by running `command`)
+//   POST   /api/plugins/install|update|uninstall|enable|disable {name, scope?, acceptCommand?: SHA256}   Outcome
+//   GET    /api/marketplaces {marketplaces} · POST /api/marketplaces {source: owner/repo | https://… | /workspace/…}
+//          · POST /api/marketplaces/update {name} · DELETE /api/marketplaces?name=N   Outcome
+//     Outcome = {ok, outcome, message, failureCode, reloaded?: N, needs_confirmation?: {kind, plugin, command, sha256,
+//               mode, archiveUrl, matched}} — needs_confirmation: the marketplace declares a command that installs the
+//               plugin (or fetches it); nothing ran. The page shows `command` verbatim with its sha256; only a person's
+//               "accept" sends the same request again with acceptCommand = sha256 (the CLI's --accept-command; never
+//               -y). reloaded: after a change, how many open sessions reloaded their plugins (their pages get new
+//               `commands`, `plugins` and `mcp` messages)
+//   POST   /api/mcp {name, transport: stdio|http|sse, command?, args?, env?, url?, headers?}   Outcome
+//          · DELETE /api/mcp?name=N   Outcome: an MCP server of your own in the sandbox's user configuration
+//          (claude mcp add-json / remove --scope user). A stdio server runs in the sandbox, never on your computer;
+//          sessions started (or resumed) after the change have it
 // Answered by the portal on the same host (Caddy routes /.bn/* there, after the same check):
 //   POST /.bn/unlock (the unlock form)
 //   GET  /.bn/models  {models: [{id, name, alias, input_per_mtok, output_per_mtok, cache_read_per_mtok,
@@ -75,6 +91,7 @@
 //                                               (the SDK's channel; multi-select labels comma-separated)
 //   {type: "commands"|"models"|"mcp"|"context", session}   answered by a message of the same type (below)
 //   {type: "reload_plugins", session} · {type: "stop_task", session, task}
+//   {type: "mcp_reconnect", session, server} · {type: "mcp_toggle", session, server, enabled}   answered by "mcp"
 // server -> client:
 //   {type: "hello", pending, limits}                          once, on connect
 //   {type: "attached", session, state, from, last, gap}      gap: events before `from` are gone (re-read history)
@@ -86,7 +103,10 @@
 //   {type: "commands", session, commands: [{name, description, argumentHint}]}
 //   {type: "models", session, models: [{value, displayName, description, resolvedModel, supportsEffort,
 //          supportedEffortLevels}]}
-//   {type: "mcp", session, servers: [{name, status, error, scope, tools}]}
+//   {type: "mcp", session, servers: [{name, status: connected|failed|needs-auth|pending|disabled|unknown, error,
+//          scope, source, tools (a count), toolNames, server: {name, version}, config: {type, command? | url?}}]}
+//          (config without env or headers; a URL without credentials or query)
+//   {type: "plugins", session, plugins: [{name, version, source}]}   after a plugin reload: what the session loaded
 //   {type: "context", session, usage: {totalTokens, maxTokens, percentage, model, categories: [{name, tokens, kind}]}}
 //   {type: "pending", count}                                  prompts waiting in all sessions (the badge)
 //   {type: "error", session?, req?, message}                  a request that failed

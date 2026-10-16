@@ -19,7 +19,9 @@ import {
   safe,
 } from './text';
 import type {
+  AvailablePlugin,
   BnModel,
+  Catalog,
   CliModel,
   Command,
   ContextUsage,
@@ -30,9 +32,13 @@ import type {
   Hunk,
   ImageBlock,
   InitInfo,
+  InstalledPlugin,
+  LoadedPlugin,
+  Marketplace,
   McpServer,
   Mode,
   OpenSession,
+  Outcome,
   PermissionReq,
   ServerMsg,
   ServerState,
@@ -190,7 +196,7 @@ export function normEvent(v: unknown): Ev | null {
         kind: 'task',
         id: o.id,
         status: label(o.status, 40) || 'running',
-        summary: label(o.summary ?? o.description, 500),
+        summary: label(o.summary || o.description, 500),
         toolUseId: optId(o.tool_use_id ?? o.toolUseId),
       };
     }
@@ -282,6 +288,38 @@ function normContext(v: unknown): ContextUsage | null {
   };
 }
 
+const MCP_STATES = ['connected', 'failed', 'needs-auth', 'pending', 'disabled'];
+/** An MCP server's status (mcpServerStatus through the backend): everything as text; no env or headers ever arrive. */
+export function normMcpServer(v: unknown): McpServer {
+  const x = obj(v) ?? {};
+  const cfg = obj(x.config) ?? {};
+  const server = obj(x.server) ?? obj(x.serverInfo) ?? {};
+  const status = label(x.status, 40);
+  return {
+    name: label(x.name),
+    status: MCP_STATES.includes(status) ? status : 'unknown',
+    tools: typeof x.tools === 'number' ? nonneg(x.tools) : Array.isArray(x.tools) ? x.tools.length : null,
+    error: label(x.error, 500),
+    scope: label(x.scope, 40),
+    source: label(x.source, 40),
+    toolNames: arr(x.toolNames, 200).map((t) => label(t)).filter(Boolean),
+    serverVersion: [label(server.name, 100), label(server.version, 40)].filter(Boolean).join(' '),
+    transport: label(cfg.type, 30),
+    command: label(cfg.command, 500),
+    url: absUrl(cfg.url),
+  };
+}
+/** An absolute http(s)/ws(s) URL as text (shown, never followed), else ''. */
+function absUrl(v: unknown): string {
+  if (typeof v !== 'string' || v.length > 2000) return '';
+  try {
+    const u = new URL(v);
+    return /^(https?|wss?):$/.test(u.protocol) ? label(`${u.protocol}//${u.host}${u.pathname}`, 500) : '';
+  } catch {
+    return '';
+  }
+}
+
 function normPermission(o: Obj): PermissionReq | null {
   const id = o.id;
   const session = o.session;
@@ -322,6 +360,12 @@ export function normServerMsg(raw: string): ServerMsg | null {
     }
     case 'permission_done':
       return isId(o.id) ? { kind: 'permission_done', id: o.id, session } : null;
+    case 'attached': {
+      const from = num(o.from, NaN);
+      const last = num(o.last, NaN);
+      if (!session || !Number.isInteger(from) || !Number.isInteger(last) || from < 0 || last < 0) return null;
+      return { kind: 'attached', session, from, last, gap: o.gap === true };
+    }
     case 'session_state': {
       const state = sessionState(o.state);
       return session && state ? { kind: 'session_state', session, state } : null;
@@ -331,13 +375,14 @@ export function normServerMsg(raw: string): ServerMsg | null {
     case 'models':
       return { kind: 'models', session, models: normCliModels(o.models) };
     case 'mcp':
+      return { kind: 'mcp', session, servers: arr(o.servers, 100).map(normMcpServer).filter((x) => x.name !== '') };
+    case 'plugins':
       return {
-        kind: 'mcp',
+        kind: 'plugins',
         session,
-        servers: arr(o.servers, 100).map((s): McpServer => {
-          const x = obj(s) ?? {};
-          return { name: label(x.name), status: label(x.status, 40), tools: typeof x.tools === 'number' ? nonneg(x.tools) : Array.isArray(x.tools) ? x.tools.length : null };
-        }),
+        plugins: arr(o.plugins, 200)
+          .map((p): LoadedPlugin => ({ name: label(obj(p)?.name), version: label(obj(p)?.version, 60), source: label(obj(p)?.source, 200) }))
+          .filter((p) => p.name !== ''),
       };
     case 'context': {
       const usage = normContext(o.usage ?? o.context);
@@ -487,7 +532,9 @@ export interface OpenOptions {
   fork?: boolean;
   at?: string;
 }
-export async function openSession(opts: OpenOptions): Promise<string> {
+/** POST /api/sessions -> its id, and `existing` when the backend already had that session open (then it is the
+ *  same process: attach to it, never start a second one). A full house answers 409 (shown as the error). */
+export async function openSession(opts: OpenOptions): Promise<{ id: string; existing: boolean }> {
   const body: Obj = { mode: opts.mode };
   if (opts.model) body.model = opts.model;
   if (opts.effort) body.effort = opts.effort;
@@ -496,7 +543,7 @@ export async function openSession(opts: OpenOptions): Promise<string> {
   if (opts.at) body.at = opts.at;
   const o = await request('POST', '/api/sessions', body);
   if (!isUuid(o.id)) throw new ApiError(502, 'The server answered without a valid session id.');
-  return o.id.toLowerCase();
+  return { id: o.id.toLowerCase(), existing: o.existing === true };
 }
 export async function closeSession(id: string): Promise<void> {
   if (!isUuid(id)) return;
@@ -572,6 +619,126 @@ export function downloadUrl(path: string): string {
   return '/api/fs/file' + q({ path, download: 1 });
 }
 
+// ---------------------------------------------------------------- plugins, marketplaces, MCP servers
+
+const PLUGIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function normInstalled(v: unknown): InstalledPlugin | null {
+  const x = obj(v);
+  if (!x || typeof x.id !== 'string' || !PLUGIN_ID.test(x.id)) return null;
+  return {
+    id: x.id,
+    name: label(x.name, 100) || x.id.split('@')[0],
+    marketplace: label(x.marketplace, 100),
+    version: label(x.version, 60),
+    scope: label(x.scope, 20),
+    enabled: x.enabled === true,
+    fromFolder: x.fromFolder === true,
+    errors: arr(x.errors, 5).map((e) => label(e, 500)).filter(Boolean),
+  };
+}
+function normMarketplace(v: unknown): Marketplace | null {
+  const x = obj(v);
+  if (!x || typeof x.name !== 'string' || !PLUGIN_ID.test(x.name)) return null;
+  return { name: x.name, source: label(x.source, 40), location: label(x.location, 500) };
+}
+function normAvailable(v: unknown): AvailablePlugin | null {
+  const x = obj(v);
+  if (!x || typeof x.id !== 'string' || !PLUGIN_ID.test(x.id)) return null;
+  return {
+    id: x.id,
+    name: label(x.name, 100) || x.id.split('@')[0],
+    marketplace: label(x.marketplace, 100),
+    description: label(x.description, 600),
+    version: label(x.version, 60),
+    kind: label(x.kind, 40),
+    // shown verbatim (visible bidi/control characters), never run by the page
+    command: typeof x.command === 'string' ? safe(x.command, 2000) : null,
+    installed: x.installed === true,
+  };
+}
+/** A change's outcome. A confirmation needs a well-formed SHA-256 and a command; anything else is just a failure. */
+export function normOutcome(v: unknown): Outcome {
+  const x = obj(v) ?? {};
+  const c = obj(x.needs_confirmation);
+  const confirm =
+    c && typeof c.command === 'string' && typeof c.sha256 === 'string' && SHA256.test(c.sha256)
+      ? {
+          kind: label(c.kind, 40),
+          plugin: typeof c.plugin === 'string' && PLUGIN_ID.test(c.plugin) ? c.plugin : null,
+          command: safe(c.command, 8000),
+          sha256: c.sha256,
+          mode: c.mode ? label(c.mode, 20) : null,
+          archiveUrl: typeof c.archiveUrl === 'string' && c.archiveUrl ? safe(c.archiveUrl, 2000) : null,
+          matched: c.matched === true,
+        }
+      : null;
+  return {
+    ok: x.ok === true,
+    outcome: label(x.outcome, 40),
+    message: safe(x.message, 4000),
+    failureCode: x.failureCode ? label(x.failureCode, 60) : null,
+    confirm,
+    reloaded: nonneg(x.reloaded),
+  };
+}
+
+export async function getPlugins(): Promise<{ installed: InstalledPlugin[]; marketplaces: Marketplace[] }> {
+  const o = await request('GET', '/api/plugins');
+  return {
+    installed: arr(o.installed, 500).map(normInstalled).filter((p): p is InstalledPlugin => p !== null),
+    marketplaces: arr(o.marketplaces, 100).map(normMarketplace).filter((m): m is Marketplace => m !== null),
+  };
+}
+export async function getAvailable(query: string, marketplace = '', limit = 100): Promise<Catalog> {
+  const o = await request('GET', '/api/plugins/available' + q({ q: query.trim().slice(0, 200) || undefined, marketplace: marketplace || undefined, limit }));
+  return {
+    plugins: arr(o.plugins, 500).map(normAvailable).filter((p): p is AvailablePlugin => p !== null),
+    total: nonneg(o.total) ?? 0,
+    more: o.more === true,
+    marketplaces: arr(o.marketplaces, 100)
+      .map((m) => ({ name: label(obj(m)?.name, 100), count: nonneg(obj(m)?.count) ?? 0 }))
+      .filter((m) => m.name !== ''),
+  };
+}
+export type PluginAction = 'install' | 'update' | 'uninstall' | 'enable' | 'disable';
+/** acceptCommand: the SHA-256 of a command the person was shown and accepted (never sent on its own). */
+export async function pluginAction(action: PluginAction, name: string, opts: { scope?: string; acceptCommand?: string } = {}): Promise<Outcome> {
+  if (!PLUGIN_ID.test(name)) throw new ApiError(400, 'bad plugin name');
+  const body: Obj = { name };
+  if (opts.scope) body.scope = opts.scope;
+  if (opts.acceptCommand) {
+    if (!SHA256.test(opts.acceptCommand)) throw new ApiError(400, 'bad SHA-256');
+    body.acceptCommand = opts.acceptCommand;
+  }
+  return normOutcome(await request('POST', `/api/plugins/${action}`, body));
+}
+export async function marketplaceAdd(source: string): Promise<Outcome> {
+  return normOutcome(await request('POST', '/api/marketplaces', { source: source.trim().slice(0, 500) }));
+}
+export async function marketplaceRemove(name: string): Promise<Outcome> {
+  return normOutcome(await request('DELETE', '/api/marketplaces' + q({ name })));
+}
+export async function marketplaceUpdate(name: string): Promise<Outcome> {
+  return normOutcome(await request('POST', '/api/marketplaces/update', { name }));
+}
+export interface McpForm {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+export async function mcpAdd(form: McpForm): Promise<Outcome> {
+  return normOutcome(await request('POST', '/api/mcp', form));
+}
+export async function mcpRemove(name: string): Promise<Outcome> {
+  return normOutcome(await request('DELETE', '/api/mcp' + q({ name })));
+}
+
 // ---------------------------------------------------------------- portal endpoints on the code host
 
 export interface BnModels {
@@ -633,12 +800,15 @@ export type ClientMsg =
   | { type: 'set_mode'; session: string; mode: Mode }
   | { type: 'set_effort'; session: string; effort: string | null }
   | { type: 'permission'; id: string; session: string; decision: 'once' | 'always' | 'deny'; message?: string }
+  | { type: 'permission'; id: string; session: string; decision: 'answer'; answers: Record<string, string> }
   | { type: 'commands'; session: string }
   | { type: 'models'; session: string }
   | { type: 'mcp'; session: string }
   | { type: 'context'; session: string }
   | { type: 'stop_task'; session: string; task: string }
-  | { type: 'reload_plugins'; session: string };
+  | { type: 'reload_plugins'; session: string }
+  | { type: 'mcp_reconnect'; session: string; server: string }
+  | { type: 'mcp_toggle'; session: string; server: string; enabled: boolean };
 
 export type ConnStatus = 'connecting' | 'open' | 'closed';
 

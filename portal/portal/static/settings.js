@@ -11,6 +11,7 @@
     ["voice", "Voice", "Speech-to-text for Chat's microphone and voice calls."],
     ["openrouter", "OpenRouter", "Optional: hundreds of other models next to Bedrock. Prompts to them go to openrouter.ai."],
     ["files", "Files", "The file store (RustFS) and the shared file server Claude Code uses."],
+    ["code", "Code page", "Claude Code in the browser: the Code tab, with a chat, permission prompts and your workspace's files. It runs in the browser terminal's sandbox."],
     ["updates", "Updates & backups", "Release checks, automatic updates and backups."],
     ["remote", "Remote access", "The portal from your phone or laptop over Tailscale (docs/remote.md)."],
     ["diagnostics", "Diagnostics", "Checks and restarts, carried out on this computer by the update helper."],
@@ -25,6 +26,7 @@
     voice: ["STT_PROVIDER"],
     openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MODELS", "OPENROUTER_MAX_MODELS", "OPENROUTER_INCLUDE_ALIASES"],
     files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
+    code: ["CODE_ENABLED"],
     updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
     remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN"],
   };
@@ -147,6 +149,7 @@
     if (g === "advanced") { advanced(body); return c; }
     if (g === "diagnostics") { diagnostics(body); return c; }
     if (g === "voice") { voiceRow(body); return c; }
+    if (g === "code") { codeRow(body); return c; }
     for (const k of CARD_KEYS[g] || []) {
       if (!keys[k]) continue;
       if (k === "TAILSCALE_ALLOWED_LOGIN" && !(data.remote && data.remote.on)) continue;
@@ -193,6 +196,10 @@
     if (!data.here.remote) return false;
     return k.policy === "local" || (k.policy === "widen-local" && weakens(k, value));
   }
+  // The Code page runs in the browser terminal's sandbox: Settings turns it on only while the terminal is on (which
+  // folder the sandbox sees is chosen in a terminal; lib/settings.sh settings_check_batch refuses it too)
+  const terminalOn = () => Boolean(keys.TERMINAL_ENABLED && keys.TERMINAL_ENABLED.value === "true");
+  function needsTerminal(k, value) { return k.key === "CODE_ENABLED" && value === "true" && shown(k) !== "true" && !terminalOn(); }
 
   function cliLine(k) {
     const cmd = k.cli || `./stack config set ${k.key}`;
@@ -262,8 +269,9 @@
     const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
     for (const [val, label] of [[off, "Off"], [on, "On"]]) {
       const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });
-      b.disabled = !canChange() || (val !== cur && ((k.policy === "on-only" && val !== on) || localOnlyHere(k, val)));
-      b.addEventListener("click", () => { if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${label}`, k.note, [k.key]); });
+      b.disabled = !canChange() || (val !== cur && ((k.policy === "on-only" && val !== on) || localOnlyHere(k, val) || needsTerminal(k, val)));
+      const what = k.key === "CODE_ENABLED" ? CODE_SWITCH[val] : k.note;
+      b.addEventListener("click", () => { if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${label}`, what, [k.key]); });
       g.append(b);
     }
     const wrap = el("div", { class: "set-toggle" }, g);
@@ -273,6 +281,32 @@
       wrap.append(el("span", { class: "note", text: `${other === on ? "On" : "Off"} only from the computer running bedrock-now.` }));
     }
     return wrap;
+  }
+
+  // --- the Code page (./stack code enable | disable, run by the update helper) ---
+  const CODE_SWITCH = {
+    true: "The helper runs ./stack code enable: it builds the Code page's image (a few minutes the first time) and restarts the terminal (its tmux session ends), the portal and Caddy.",
+    false: "The helper runs ./stack code disable: the code container goes; the terminal, its folder and Claude Code's history stay (the terminal restarts once).",
+  };
+  function codeRow(body) {
+    const k = keys.CODE_ENABLED;
+    if (!k) return;
+    const r = row(k);
+    const main = r.querySelector(".set-main");
+    const ws = keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value;
+    const egress = !(keys.TERMINAL_EGRESS && keys.TERMINAL_EGRESS.value === "off");
+    main.append(el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace (read-only here): " }),
+      el("code", { text: terminalOn() && ws ? ws : "none: the browser terminal is off" })));
+    if (terminalOn()) {
+      main.append(el("p", { class: "note", text: `Claude sees only that folder (at /workspace), uses the terminal's key and budget, and ${egress ? "can reach the internet (TERMINAL_EGRESS=off in .env turns that off)" : "has no internet (TERMINAL_EGRESS=off)"}.` }));
+    } else if (shown(k) !== "true") {
+      main.append(el("p", { class: "note set-remote", text: "It needs the browser terminal, which is off: turn both on in a terminal on the computer running bedrock-now (it asks which folder the sandbox sees)." }));
+    }
+    const cmd = terminalOn() ? "./stack terminal enable --workspace DIR" : "./stack code enable --workspace DIR";
+    const b = el("button", { type: "button", class: "copy", text: "Copy" });
+    b.addEventListener("click", () => copy(cmd, "the command"));
+    r.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: terminalOn() ? "Another folder, in a terminal: " : "In a terminal: " }), el("code", { text: cmd }), " ", b));
+    body.append(r);
   }
 
   function modelName(id) {

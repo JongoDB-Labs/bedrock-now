@@ -173,6 +173,16 @@ export class Session {
     await this.need().applyFlagSettings({ effortLevel: effort }); this.effort = effort; this.status();
   }
 
+  // Plugins and MCP servers of the running process: a reload (after a plugin change: new commands and skills at once),
+  // and a server's reconnect or switch for this session. Pages get the fresh lists (onReload, main.mjs).
+  async reloadPlugins() {
+    const r = await this.need().reloadPlugins();
+    this.mgr.onReload(this, r && typeof r === 'object' ? r : {});
+    return r;
+  }
+  async mcpReconnect(name) { await this.need().reconnectMcpServer(name); }
+  async mcpToggle(name, enabled) { await this.need().toggleMcpServer(name, enabled === true); }
+
   close(reason = 'closed') {
     const q = this.q;
     if (!q) return;
@@ -185,9 +195,9 @@ export class Session {
 }
 
 export class SessionManager {
-  constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, maxOpen = LIMITS.maxOpen,
+  constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, maxOpen = LIMITS.maxOpen,
     idleMs = LIMITS.idleMinutes * 60000 }) {
-    Object.assign(this, { query, spawn, broker, log, onEvent, onState, maxOpen, idleMs });
+    Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, maxOpen, idleMs });
     this.sessions = new Map();
     this.timer = setInterval(() => this.sweepIdle(), 60000);
     this.timer.unref?.();
@@ -235,6 +245,19 @@ export class SessionManager {
   trim() {
     const ended = [...this.sessions.values()].filter((s) => !s.open).sort((a, b) => a.lastActive - b.lastActive);
     while (this.sessions.size > KEEP && ended.length) this.sessions.delete(ended.shift().id);
+  }
+
+  /** After a plugin change: every running process reloads its plugins -> how many did (each within timeoutMs). */
+  async reloadPlugins(timeoutMs = 30000) {
+    const running = [...this.sessions.values()].filter((s) => s.open);
+    const within = (p) => new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      t.unref?.();
+      p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+    });
+    const r = await Promise.allSettled(running.map((s) => within(s.reloadPlugins())));
+    r.forEach((x, i) => { if (x.status === 'rejected') this.log(`reload plugins ${running[i].id.slice(0, 8)}: ${short(x.reason?.message || String(x.reason), 200)}`); });
+    return r.filter((x) => x.status === 'fulfilled').length;
   }
 
   closeAll() { for (const s of this.sessions.values()) s.close(); clearInterval(this.timer); }

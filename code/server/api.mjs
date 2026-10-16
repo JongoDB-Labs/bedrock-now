@@ -7,7 +7,7 @@ import { LIMITS } from './protocol.mjs';
 import { fromHistory, sessionRow } from './normalize.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
-import { isUuid, relPath, fileName, short, str, int, num, plain } from './validate.mjs';
+import { isUuid, relPath, fileName, short, str, int, num } from './validate.mjs';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -42,7 +42,7 @@ export function attachment(name) {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(base).slice(0, 600)}`;
 }
 
-export function makeApi({ call, sessions }) {
+export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 4000 }) {
   const need = (v, what) => { if (v === null) throw new HttpError(400, `bad ${what}`); return v; };
   const okPath = (v) => short(v, 4096);
 
@@ -164,47 +164,197 @@ export function makeApi({ call, sessions }) {
     return { trash: okPath((await call({ op: 'fs.delete', path: p })).result.trash) };
   }
 
-  // --- plugins (claude plugin … in the sandbox; bn-coded allows these shapes only) ---
-  async function cli(args, timeoutMs = 60000) {
+  // --- plugins and MCP servers (claude plugin … / claude mcp … in the sandbox; bn-coded allows these shapes only) ---
+  // run(args) -> {code, out, err}: the CLI's exit code and output (untrusted text)
+  async function run(args, timeoutMs = 60000) {
     const r = await call({ op: 'cli', args }, { timeoutMs });
     if (!r.exit) throw new HttpError(502, 'unexpected answer from the sandbox');
-    const out = r.stdout.toString('utf8');
-    let data = null;
-    try { data = plain(JSON.parse(out), 1 << 20, 4000); } catch { /* not JSON: shown as text */ }
-    return { ok: r.exit.code === 0, code: r.exit.code, data, text: data === null ? str(`${out}${r.stderr ? `\n${r.stderr}` : ''}`.trim(), 20000) : '' };
+    return { code: r.exit.code, out: r.stdout.toString('utf8'), err: typeof r.stderr === 'string' ? r.stderr : '' };
   }
+  // listing(args) -> the parsed JSON of a listing (`plugin list --json` …), or a 502 with what the CLI said
+  async function listing(args) {
+    const r = await run(args);
+    try { if (r.code === 0) return JSON.parse(r.out); } catch { /* below */ }
+    throw new HttpError(502, `claude ${args.slice(0, 3).join(' ')} failed: ${short(lastLine(`${r.err}\n${r.out}`), 300) || `exit ${r.code}`}`);
+  }
+  // action(args) -> an action's outcome for the page: {ok, outcome, message, failureCode, needs_confirmation?}. The CLI's
+  // --json prints one result line (after any human text it shows first); without one the exit code decides.
+  async function action(args, timeoutMs = 120000) {
+    const r = await run(args, timeoutMs);
+    return actionResult(r.code, r.out, r.err);
+  }
+
   const PLUGIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
   const SCOPES = ['user', 'project', 'local'];
-  async function plugins(available) {
-    const installed = await cli(['plugin', 'list', '--json', ...(available ? ['--available'] : [])]);
-    const marketplaces = await cli(['plugin', 'marketplace', 'list', '--json']);
-    return { installed, marketplaces };
+  // The catalog of every added marketplace's plugins (`plugin list --json --available`: thousands of entries, ~2 MB) is
+  // read once and searched here; any change through this API reads it again.
+  let catalog = null;   // {at, rows}
+  const CATALOG_MS = 10 * 60000;
+  const invalidate = () => { catalog = null; };
+
+  async function plugins() {
+    const [inst, mk] = await Promise.all([listing(['plugin', 'list', '--json']), listing(['plugin', 'marketplace', 'list', '--json'])]);
+    return { installed: (Array.isArray(inst) ? inst : []).slice(0, 500).map(installedRow).filter(Boolean),
+      marketplaces: (Array.isArray(mk) ? mk : []).slice(0, 100).map(marketplaceRow).filter(Boolean) };
   }
-  async function pluginAction(action, body) {
-    if (!['install', 'update', 'uninstall', 'enable', 'disable'].includes(action)) throw new HttpError(404, 'not found');
+
+  async function available({ q, marketplace, offset, limit } = {}) {
+    if (!catalog || Date.now() - catalog.at > CATALOG_MS) {
+      const d = await listing(['plugin', 'list', '--json', '--available']);
+      const rows = (Array.isArray(d?.available) ? d.available : []).slice(0, 20000).map(availableRow).filter(Boolean);
+      const installed = new Set((Array.isArray(d?.installed) ? d.installed : []).map((x) => (typeof x?.id === 'string' ? x.id : '')));
+      for (const r of rows) r.installed = installed.has(r.id);
+      catalog = { at: Date.now(), rows };
+    }
+    const needle = typeof q === 'string' ? q.trim().toLowerCase().slice(0, 200) : '';
+    const mk = typeof marketplace === 'string' && marketplace ? marketplace : null;
+    const hits = catalog.rows.filter((r) => (!mk || r.marketplace === mk) && (!needle || `${r.name}\n${r.description}\n${r.marketplace}`.toLowerCase().includes(needle)));
+    const off = int(offset, 0, 1e6) ?? 0, lim = int(limit, 1, 500) ?? 100;
+    const counts = {};
+    for (const r of catalog.rows) counts[r.marketplace] = (counts[r.marketplace] || 0) + 1;
+    return { plugins: hits.slice(off, off + lim), total: hits.length, offset: off, limit: lim, more: off + lim < hits.length,
+      marketplaces: Object.entries(counts).slice(0, 100).map(([name, count]) => ({ name, count })) };
+  }
+
+  // After a change: the catalog again, and the open sessions reload their plugins (new commands and skills in the
+  // palette at once). A running Claude Code learns of the CLI's settings change through its file watcher, a moment
+  // later: the reload waits a little, and once more a few seconds after (pages get each new list).
+  const changed = async (res) => {
+    if (!res.ok) return res;
+    invalidate();
+    await new Promise((r) => setTimeout(r, reloadDelayMs));
+    res.reloaded = await sessions.reloadPlugins?.() ?? 0;
+    if (res.reloaded) setTimeout(() => { sessions.reloadPlugins?.().catch(() => {}); }, reloadAgainMs).unref?.();
+    return res;
+  };
+
+  async function pluginAction(act, body) {
+    if (!['install', 'update', 'uninstall', 'enable', 'disable'].includes(act)) throw new HttpError(404, 'not found');
     const name = body?.name;
     if (typeof name !== 'string' || !PLUGIN_NAME.test(name)) throw new HttpError(400, 'bad plugin name');
-    const args = ['plugin', action, name];
-    if (body.scope !== undefined) { if (!SCOPES.includes(body.scope)) throw new HttpError(400, 'bad scope'); args.push(`--scope=${body.scope}`); }
-    if (['install', 'update'].includes(action)) {
-      args.push('--json');
-      if (body.acceptCommand !== undefined) {
-        if (typeof body.acceptCommand !== 'string' || !/^[0-9a-f]{64}$/.test(body.acceptCommand)) throw new HttpError(400, 'bad acceptCommand (a SHA-256)');
-        args.push(`--accept-command=${body.acceptCommand}`);
-      }
+    const args = ['plugin', act, name, '--json'];
+    if (body.scope !== undefined && body.scope !== null) { if (!SCOPES.includes(body.scope)) throw new HttpError(400, 'bad scope'); args.push(`--scope=${body.scope}`); }
+    if (body.acceptCommand !== undefined && body.acceptCommand !== null) {
+      if (!['install', 'update'].includes(act)) throw new HttpError(400, 'acceptCommand is for install and update');
+      if (typeof body.acceptCommand !== 'string' || !/^[0-9a-f]{64}$/.test(body.acceptCommand)) throw new HttpError(400, 'bad acceptCommand (a SHA-256)');
+      args.push(`--accept-command=${body.acceptCommand}`);
     }
-    return cli(args, 120000);
+    return changed(await action(args));
   }
   async function marketplaceAdd(body) {
-    const src = body?.source;
-    if (typeof src !== 'string' || src.length > 500) throw new HttpError(400, 'bad source');
-    return cli(['plugin', 'marketplace', 'add', src, '--json'], 120000);
+    const src = typeof body?.source === 'string' ? body.source.trim() : '';
+    if (!src || src.length > 500 || /[\x00-\x1f\x7f]/.test(src)) throw new HttpError(400, 'bad source');
+    return changed(await action(['plugin', 'marketplace', 'add', src, '--json'], 180000));
   }
   async function marketplaceRemove(name) {
     if (typeof name !== 'string' || !PLUGIN_NAME.test(name)) throw new HttpError(400, 'bad name');
-    return cli(['plugin', 'marketplace', 'remove', name], 60000);
+    return changed(await action(['plugin', 'marketplace', 'remove', name, '--json']));
+  }
+  async function marketplaceUpdate(body) {
+    const name = body?.name;
+    if (typeof name !== 'string' || !PLUGIN_NAME.test(name)) throw new HttpError(400, 'bad name');
+    return changed(await action(['plugin', 'marketplace', 'update', name, '--json'], 180000));
   }
 
-  return { listSessions, messages, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, plugins, pluginAction,
-    marketplaces: () => cli(['plugin', 'marketplace', 'list', '--json']), marketplaceAdd, marketplaceRemove };
+  // MCP servers of your own (user scope, in the sandbox's ~/.claude.json): added as one checked JSON configuration —
+  // stdio servers run in the sandbox, like Claude Code itself
+  async function mcpAdd(body) {
+    const cfg = mcpConfig(body);
+    return action(['mcp', 'add-json', cfg.name, JSON.stringify(cfg.config), '--scope=user'], 60000);
+  }
+  async function mcpRemove(name) {
+    if (typeof name !== 'string' || !MCP_NAME.test(name)) throw new HttpError(400, 'bad name');
+    return action(['mcp', 'remove', name, '--scope=user'], 60000);
+  }
+
+  return { listSessions, messages, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, plugins, available, pluginAction,
+    marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove };
+}
+
+// --- what the CLI answers, checked for the page ---
+const lines = (s) => String(s).split('\n').map((l) => l.trim()).filter(Boolean);
+const lastLine = (s) => lines(s).pop() || '';
+// a success without a --json line: its first line ("Removed MCP server x from user config", then "File modified: …")
+const firstLine = (s) => lines(s)[0] || '';
+const SHA = /^[0-9a-f]{64}$/;
+const PLUGIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
+// failure codes after which the CLI shows a marketplace-declared command and waits for a person to accept its sha256
+const CONFIRM = ['command_source_refused', 'command_source_declined', 'entry_helper_unconfirmed', 'entry_helper_declined', 'entry_helper_unshown', 'entry_helper_changed'];
+
+// actionResult(code, stdout, stderr) -> {ok, outcome, message, failureCode, needs_confirmation?}
+export function actionResult(code, out, err = '') {
+  let j = null;
+  const lines = String(out).split('\n');
+  for (let i = lines.length - 1; i >= 0 && !j; i--) {
+    const l = lines[i].trim();
+    if (!l.startsWith('{')) continue;
+    try { const v = JSON.parse(l); if (v && typeof v === 'object' && !Array.isArray(v)) j = v; } catch { /* not this line */ }
+  }
+  const ok = code === 0 && (!j || j.outcome !== 'failed');
+  const res = { ok, outcome: short(j?.outcome, 40) || (ok ? 'ok' : 'failed'),
+    message: str(typeof j?.message === 'string' ? j.message : (ok ? firstLine(out) : lastLine(`${out}\n${err}`)) || (ok ? 'Done.' : `exit ${code}`), 4000),
+    failureCode: short(j?.failureCode, 60) || null };
+  const sc = j?.shownCommand;
+  if (!ok && sc && typeof sc === 'object' && typeof sc.command === 'string' && SHA.test(sc.sha256 ?? '') && CONFIRM.includes(j.failureCode)) {
+    res.needs_confirmation = {
+      kind: short(sc.kind, 40), plugin: PLUGIN_ID.test(sc.pluginId ?? '') ? sc.pluginId : null,
+      // shown verbatim (as text) — exactly what will run in the sandbox once accepted
+      command: str(sc.command, 8000), sha256: sc.sha256, mode: short(sc.mode, 20) || null,
+      archiveUrl: typeof sc.archiveUrl === 'string' ? str(sc.archiveUrl, 2000) : null,
+      // the CLI says this hash was offered and still refused: the catalog changed, or it was not accepted here
+      matched: sc.acceptCommandMatched === true,
+    };
+  }
+  return res;
+}
+
+const time = (v) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? Date.parse(v) : null);
+export function installedRow(x) {
+  if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !PLUGIN_ID.test(x.id)) return null;
+  const [name, marketplace = ''] = x.id.split('@');
+  return { id: x.id, name, marketplace, version: short(x.version, 60), scope: short(x.scope, 20), enabled: x.enabled === true,
+    fromFolder: typeof x.readFromFolder === 'string', installedAt: time(x.installedAt), updatedAt: time(x.lastUpdated),
+    errors: Array.isArray(x.errors) ? x.errors.slice(0, 5).map((e) => str(typeof e === 'string' ? e : e?.message, 500)).filter(Boolean) : [] };
+}
+export function marketplaceRow(x) {
+  if (!x || typeof x !== 'object' || typeof x.name !== 'string' || !PLUGIN_ID.test(x.name)) return null;
+  const where = [x.repo, x.url, x.path].find((v) => typeof v === 'string');
+  return { name: x.name, source: short(x.source, 40), location: short(where ?? '', 500) };
+}
+export function availableRow(x) {
+  if (!x || typeof x !== 'object' || typeof x.pluginId !== 'string' || !PLUGIN_ID.test(x.pluginId)) return null;
+  const s = x.source;
+  const kind = typeof s === 'string' ? 'path' : s && typeof s === 'object' ? short(s.source, 40) : '';
+  const row = { id: x.pluginId, name: short(x.name, 100) || x.pluginId.split('@')[0], marketplace: short(x.marketplaceName, 100),
+    description: str(typeof x.description === 'string' ? x.description : '', 600), version: short(x.version, 60), kind };
+  // a plugin installed by running a command: the page says so before you click (the command itself is confirmed later)
+  if (kind === 'command' && typeof s.command === 'string') row.command = str(s.command, 2000);
+  return row;
+}
+
+// mcpConfig(body) -> {name, config}: an MCP server of your own, from the page's form, in the one shape bn-coded takes
+export const MCP_NAME = /^(?!bedrock-shared$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const LINE = /^[^\x00-\x1f\x7f]*$/;
+export function mcpConfig(b) {
+  if (!b || typeof b !== 'object') throw new HttpError(400, 'a JSON object, please');
+  if (typeof b.name !== 'string' || !MCP_NAME.test(b.name)) throw new HttpError(400, 'a name of letters, digits, - and _ (not bedrock-shared)');
+  const pairs = (o, key, what, max) => {
+    if (o === undefined || o === null) return undefined;
+    if (typeof o !== 'object' || Array.isArray(o) || Object.keys(o).length > max) throw new HttpError(400, `bad ${what}`);
+    for (const [k, v] of Object.entries(o)) if (!key.test(k) || typeof v !== 'string' || v.length > 4000 || !LINE.test(v)) throw new HttpError(400, `bad ${what}: ${short(k, 60)}`);
+    return Object.keys(o).length ? { ...o } : undefined;
+  };
+  if (b.transport === 'stdio') {
+    if (typeof b.command !== 'string' || !b.command.trim() || b.command.length > 500 || !LINE.test(b.command)) throw new HttpError(400, 'a command, please (one line)');
+    const args = b.args ?? [];
+    if (!Array.isArray(args) || args.length > 64 || !args.every((a) => typeof a === 'string' && a.length <= 2000 && LINE.test(a))) throw new HttpError(400, 'bad arguments');
+    const env = pairs(b.env, /^[A-Za-z_][A-Za-z0-9_]{0,63}$/, 'environment variable', 32);
+    return { name: b.name, config: { type: 'stdio', command: b.command.trim(), ...(args.length ? { args } : {}), ...(env ? { env } : {}) } };
+  }
+  if (b.transport === 'http' || b.transport === 'sse') {
+    if (typeof b.url !== 'string' || !/^https?:\/\/[\x21-\x7e]{1,2000}$/.test(b.url)) throw new HttpError(400, 'an http(s) URL, please');
+    const headers = pairs(b.headers, /^[A-Za-z0-9-]{1,100}$/, 'header', 16);
+    return { name: b.name, config: { type: b.transport, url: b.url, ...(headers ? { headers } : {}) } };
+  }
+  throw new HttpError(400, 'transport: stdio, http or sse');
 }

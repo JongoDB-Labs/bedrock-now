@@ -1681,7 +1681,7 @@ def settings_without_helper(ctx):
     open_settings(page)
     expect(page.locator("#settings .set-helper.helper-off").is_visible(), "no hint that changes need the helper")
     expect("./stack helper install" in page.inner_text("#settings .set-helper"), "helper command missing")
-    expect(page.locator("#settings .set-card").count() == 10, f"{page.locator('#settings .set-card').count()} cards")
+    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} cards")
     expect(page.locator("#settings .set-actions .action:not([disabled])", has_text="Change").count() == 0, "Change works without a helper")
     expect("./stack config set BUDGET_SETUP" in page.inner_text("#set-budgets"), "no terminal command next to a budget")
     html = page.content()
@@ -1700,7 +1700,7 @@ def settings_page(ctx):
     page, rec = ctx.page("settings-page")
     login(page)
     open_settings(page)
-    expect(page.locator("#settings .set-card").count() == 10, "ten cards")
+    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} cards, not eleven")
     expect(page.locator("#settings .set-helper").is_hidden(), "the helper hint shows while the helper runs")
     adv = page.inner_text("#set-advanced")
     for k in ("LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "PORTAL_HOST", "COMPOSE_PROJECT_NAME"):
@@ -1731,7 +1731,7 @@ def settings_page(ctx):
     probs = rec.problems() + prec.problems()
     rec.save(); prec.save()
     expect(not probs, f"errors: {probs}")
-    return "10 cards, Advanced lists every other key, no secret in the page; desktop light/dark and phone (from More) render"
+    return "11 cards, Advanced lists every other key, no secret in the page; desktop light/dark and phone (from More) render"
 
 
 @check("settings", "settings-budget-change")

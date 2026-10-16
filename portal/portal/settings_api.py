@@ -168,6 +168,12 @@ def routes(ctx: Ctx) -> list[Route]:
         if "OPENWEBUI_ADMIN_EMAIL" in values and \
                 values["OPENWEBUI_ADMIN_EMAIL"].lower() == ((rows.get("OPENWEBUI_ADMIN_EMAIL") or {}).get("value") or "").lower():
             fields["OPENWEBUI_ADMIN_EMAIL"] = "is the owner email you have now"
+        # the Code page runs in the browser terminal's sandbox: on from here only while the terminal is on (the folder
+        # it sees is chosen in a terminal: ./stack code enable --workspace DIR turns both on)
+        if values.get("CODE_ENABLED") == "true" and (rows.get("CODE_ENABLED") or {}).get("value") != "true" and \
+                (rows.get("TERMINAL_ENABLED") or {}).get("value") != "true":
+            fields["CODE_ENABLED"] = ("needs the browser terminal, which is off: turn both on in a terminal with "
+                                      "./stack code enable (it picks the folder the sandbox sees)")
         if "TAILSCALE_ALLOWED_LOGIN" in values and values["TAILSCALE_ALLOWED_LOGIN"] == "":
             fields["TAILSCALE_ALLOWED_LOGIN"] = "cannot be made blank here"
         chat = {m[0] for m in snap["choices"]["chat_models"]}

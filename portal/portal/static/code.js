@@ -68,7 +68,8 @@
       line = el("p", { class: "note code-line" }, "The Code tab is off for remote access (", el("code", { text: "REMOTE_TERMINAL=true" }),
         " in ", el("code", { text: ".env" }), " turns it on with the terminal).");
     } else {
-      line = el("p", { class: "note code-line" }, "Or in the browser with a chat: ", el("code", { text: "./stack code enable" }),
+      line = el("p", { class: "note code-line" }, "Or in the browser with a chat: ", el("a", { href: "#settings", text: "Settings → Code page" }),
+        " (on this computer) or ", el("code", { text: "./stack code enable" }),
         " adds a Code tab (Claude Code in the terminal's sandbox, with permission prompts and your files).");
     }
     card.append(line);

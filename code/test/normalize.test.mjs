@@ -100,3 +100,20 @@ test('history: prompts, answers, tool results, meta dropped', () => {
   assert.deepEqual(fromHistory({ type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } }), [{ type: 'text', text: 'a', model: '', parent: null }]);
   assert.deepEqual(fromHistory({ type: 'summary' }), []);
 });
+
+test('history: slash commands as typed, their output as local, caveats dropped, an interrupt is not a prompt', () => {
+  const U = '171ad5e7-dbb3-4ec9-8265-4f79d0c722dd';
+  // (as Claude Code 2.1.296 writes them: a model switch through the SDK, its output, the caveat before it)
+  assert.deepEqual(fromHistory({ type: 'user', isMeta: true, uuid: U, message: { content: '<local-command-caveat>The command below was run directly …</local-command-caveat>' } }), []);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: '<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>' } }),
+    [{ type: 'user', text: '/model sonnet', uuid: U, images: 0 }]);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: '<command-name>/cost</command-name>\n<command-message>cost</command-message>\n<command-args></command-args>' } }),
+    [{ type: 'user', text: '/cost', uuid: U, images: 0 }]);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: '<local-command-stdout>Set model to `sonnet (claude-sonnet-5-5)`</local-command-stdout>' } }),
+    [{ type: 'local', text: 'Set model to `sonnet (claude-sonnet-5-5)`' }]);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: [{ type: 'text', text: '<local-command-stderr>oops</local-command-stderr>' }] } }), [{ type: 'local', text: 'oops' }]);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } }), [{ type: 'local', text: 'Interrupted.' }]);
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } }), [{ type: 'local', text: 'Interrupted.' }]);
+  // markup a person typed stays a prompt (as text)
+  assert.deepEqual(fromHistory({ type: 'user', uuid: U, message: { content: '<b>bold</b>' } }), [{ type: 'user', text: '<b>bold</b>', uuid: U, images: 0 }]);
+});

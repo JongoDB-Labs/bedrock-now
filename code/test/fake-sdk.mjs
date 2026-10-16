@@ -13,9 +13,22 @@ export function fakeQuery(log = []) {
       async applyFlagSettings(s) { q.calls.push(['applyFlagSettings', s]); },
       async supportedCommands() { return [{ name: 'context', description: 'ctx <b>', argumentHint: '' }, { name: 7 }, null]; },
       async supportedModels() { return [{ value: 'haiku', displayName: 'Haiku', description: 'd', supportedEffortLevels: ['low', 'bogus'] }]; },
-      async mcpServerStatus() { return [{ name: 'bedrock-shared', status: 'connected', tools: [1, 2], config: { headers: { Authorization: 'x' } } }]; },
+      mcp: { 'bedrock-shared': 'connected', 'mine': 'failed' },
+      async mcpServerStatus() {
+        return [{ name: 'bedrock-shared', status: q.mcp['bedrock-shared'], tools: [{ name: 'search' }, { name: 2 }], scope: 'dynamic', source: 'dynamic',
+          config: { type: 'http', url: 'http://user:pw@gateway:8091/mcp?token=secret', headers: { Authorization: 'x' } } },
+        { name: 'mine', status: q.mcp.mine, error: 'spawn ENOENT', scope: 'user', source: 'user', config: { type: 'stdio', command: 'npx', args: ['-y', 'x'], env: { KEY: 'secret' } } },
+        { name: '<img src=x>', status: 'bogus', tools: 'x' }];
+      },
+      async reconnectMcpServer(n) { q.calls.push(['reconnect', n]); if (q.mcp[n]) q.mcp[n] = 'connected'; else throw new Error(`no server ${n}`); },
+      async toggleMcpServer(n, on) { q.calls.push(['toggle', n, on]); q.mcp[n] = on ? 'connected' : 'disabled'; },
       async getContextUsage() { return { totalTokens: 10, categories: [{ name: 'x' }] }; },
-      async reloadPlugins() { return { commands: [] }; },
+      async reloadPlugins() {
+        q.calls.push('reloadPlugins');
+        return { commands: [{ name: 'hello-local:hello', description: 'Say hello <b>' }], agents: [], error_count: 0,
+          plugins: [{ name: 'hello-local', path: '/home/coder/.claude/plugins/cache/x', source: 'hello-local@bn-e2e', version: '1.0.0' }, { name: 7 }],
+          mcpServers: [{ name: 'bedrock-shared', status: 'connected', tools: [] }] };
+      },
       async stopTask(id) { q.calls.push(['stopTask', id]); },
       close() { closed = true; q.calls.push('close'); wake?.(); },
       async *[Symbol.asyncIterator]() {

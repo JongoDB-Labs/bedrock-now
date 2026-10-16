@@ -17,6 +17,11 @@
   const NAMES = { chat: "Chat", admin: "Admin", files: "Files" };
   const PROMPT = 'Write notes/hello.md to the shared store with a two-line summary of this folder, and ingest it into knowledge base "Claude Code".';
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  // The Code page (code.js reads the same): {enabled, here} — on at all, and usable on this site (remote access needs
+  // REMOTE_TERMINAL). Its Claude Code steps point at the Code tab while it is here, at Settings → Code page while off.
+  const CODE = (() => {
+    try { const c = JSON.parse(document.querySelector('meta[name="bn-code"]').content) || {}; return { enabled: c.enabled === true, here: c.here === true && Boolean(APP_URLS.code) }; } catch (_) { return { enabled: false, here: false }; }
+  })();
   const CHECK_FAILED = "Could not check: Home says why; trying again every 30 s.";
 
   // --- small builders ---
@@ -46,6 +51,24 @@
       return a;
     }
     return button(label, `open-${app}`, () => { showTab(app); away(); });
+  }
+  // The Code tab (on a phone: full screen in a new browser tab, as under More)
+  function openCode() {
+    if (PHONE.matches) {
+      return el("a", { class: "action", href: appUrl("code"), target: "_blank", rel: "noopener", "data-k": "open-code" },
+        "Open Code", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
+    }
+    return button("Open Code", "open-code", () => { showTab("code"); away(); });
+  }
+  // Where Claude Code also runs: the Code tab when it is on here, else how to turn it on
+  function codeLine(use) {
+    if (CODE.here) {
+      return use ? p("Or in the ", b("Code"), " tab: start a session and paste the same prompt. It shows each command and edit for your OK first; unlock it with the portal password.")
+        : p("Or nothing to install: the ", b("Code"), " tab is Claude Code in the browser, with a chat, your workspace's files and permission prompts, in the browser terminal's sandbox.");
+    }
+    if (CODE.enabled) return note("The Code tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
+    return note(use ? "Prefer the browser? " : "Claude Code in the browser, nothing to install: ", settings("Code page"),
+      " turns on a Code tab (from the computer running bedrock-now; it needs the browser terminal — ", code("./stack code enable"), " turns both on).");
   }
   // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
   function opened(app) {
@@ -202,7 +225,9 @@
           ext(`${REPO}#a-lean-config-folder-for-bedrock`, "why"), "). Add only what you want with ",
           code("claude-bedrock plugin install …"), " or ", code("claude-bedrock mcp add …"), "; ",
           code("CLAUDE_BEDROCK_USE_MY_CONFIG=1"), " loads your whole setup."),
+        codeLine(false),
       ],
+      actions: () => (CODE.here ? [openCode()] : []),
     },
     budgets: {
       title: "Budgets", info: true, live: true,
@@ -313,7 +338,8 @@
       actions: () => [openApp("chat")],
     },
     claude: {
-      title: "Claude Code in your terminal", optional: true, live: true, spendKey: "claude-code",
+      title: CODE.here ? "Claude Code: terminal or Code tab" : "Claude Code in your terminal", optional: true, live: true,
+      spendKey: "claude-code", spendAlso: CODE.here ? "claude-code-terminal" : null,   // the Code tab spends the terminal's key
       waiting: "Not detected yet: spend can take a minute to show.",
       body: () => [
         p("In a terminal, in a project folder:"), cmd(command()),
@@ -321,8 +347,10 @@
           code("resume: claude-bedrock --resume <id>"), "."),
         p("Type ", code("/mcp"), ": ", code("bedrock-shared"), " is connected. Then ask:"),
         cmd(PROMPT, "the prompt"),
-        PHONE.matches ? note("From a phone, ", code("./stack ssh-info"), " shows how to reach Claude Code over SSH.") : null,
+        PHONE.matches && !CODE.here ? note("From a phone, ", code("./stack ssh-info"), " shows how to reach Claude Code over SSH.") : null,
+        codeLine(true),
       ],
+      actions: () => (CODE.here ? [openCode()] : []),
     },
     shared: {
       title: "One store for both", optional: true,
@@ -375,7 +403,7 @@
         for (const k of ["done", "skipped"]) {
           if (Array.isArray(raw[k])) s[k] = [...new Set(raw[k].filter((id) => typeof id === "string" && has(STEPS, id)))];
         }
-        for (const a of ["open-webui", "claude-code"]) {
+        for (const a of ["open-webui", "claude-code", "claude-code-terminal"]) {
           if (raw.base && Number.isFinite(raw.base[a])) s.base[a] = raw.base[a];
         }
       }
@@ -397,22 +425,31 @@
     if (how === "done") st.done.push(id); else if (how === "skipped") st.skipped.push(id);
   }
 
+  // the LiteLLM keys whose spend marks a step done (the Claude Code step: claude-bedrock's, and the Code tab's too)
+  const spendKeys = (s) => (s.spendAlso ? [s.spendKey, s.spendAlso] : [s.spendKey]);
   function detection(id) {
     const s = STEPS[id];
     if (!s || !sum) return null;
     if (s.spendKey) {
-      const base = st.base[s.spendKey], now = spendOf(s.spendKey);
-      if (base == null || now == null) return null;
-      return now > base + 1e-9 ? { ok: true, text: `Detected ✓ (${usd(now - base)} more on the ${s.spendKey} key)` } : { ok: false, text: s.waiting };
+      let seen = false;
+      for (const k of spendKeys(s)) {
+        const base = st.base[k], now = spendOf(k);
+        if (base == null || now == null) continue;
+        if (now > base + 1e-9) return { ok: true, text: `Detected ✓ (${usd(now - base)} more on the ${k} key)` };
+        seen = true;
+      }
+      return seen ? { ok: false, text: s.waiting } : null;
     }
     return s.detect ? s.detect(sum) : null;
   }
   // The spend a "did it work?" step compares against: taken from a summary at most 30 s old.
   function noteBaseline() {
     const s = STEPS[st.cur];
-    if (!s || !s.spendKey || st.base[s.spendKey] != null || Date.now() - sumAt > POLL_MS) return;
-    const v = spendOf(s.spendKey);
-    if (v != null) st.base[s.spendKey] = v;
+    if (!s || !s.spendKey || Date.now() - sumAt > POLL_MS) return;
+    for (const k of spendKeys(s)) {
+      const v = st.base[k] == null ? spendOf(k) : null;
+      if (v != null) st.base[k] = v;
+    }
   }
   function detectAll() {
     const flipped = [];

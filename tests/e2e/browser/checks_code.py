@@ -5,9 +5,15 @@ the page's own API and WebSocket (so these checks hold for any frontend build, n
 streams an answer (Haiku), a Bash permission prompt is allowed (the file appears in the workspace) or denied (it does
 not), the Code tab's badge counts a waiting prompt, the model switches, a turn is interrupted, a slash command runs at
 $0, a reload re-attaches and a closed session resumes, the workspace's files are listed, read, written (with the
-"changed on disk" check), uploaded and deleted, and the session's spend comes from LiteLLM. With E2E_CODE_HOSTILE=1
-(run.sh, after the suite: a stand-in on bn-coded's socket, as code in the sandbox could start one) the page stays
-safe. Every check skips while the Code page is off (but the first two, which check that state)."""
+"changed on disk" check), uploaded and deleted, and the session's spend comes from LiteLLM. Then the page itself (the
+frontend build, code/web), driven like a person would: Haiku chosen, an answer streams, a Bash prompt allowed in its
+card, Accept edits mode and an @-mentioned file edited (the diff opens in the editor), the / palette, an upload, a
+model switch (no turn on the other model), an interrupt, the terminal panel, a reload without duplicates,
+AskUserQuestion answered in its card, plugins from a marketplace in the workspace (one installed by a command shown
+with its SHA-256 first; its commands in the palette), the MCP panel, and a phone — each with zero CSP violations
+(Trusted Types enforced). With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
+in the sandbox could start one) the page stays safe. Every check skips while the Code page is off (but the first two,
+which check that state)."""
 
 from __future__ import annotations
 
@@ -17,8 +23,10 @@ import re
 import time
 from urllib.parse import urlencode
 
-from common import ENV, HOST, PORT, Skip, check, expect, http, origin
-from checks_browser import login, shot
+from playwright.sync_api import expect as see
+
+from common import ENV, HOST, PORT, SHOTS, Skip, check, expect, http, origin
+from checks_browser import login, open_settings, shot
 
 ON = ENV.get("CODE_ENABLED") == "true" and ENV.get("TERMINAL_ENABLED") == "true"
 HOSTILE = os.environ.get("E2E_CODE_HOSTILE") == "1"
@@ -512,6 +520,383 @@ def plain_page(ctx):
     return "plain page: Haiku, prompt → streamed 'pong' → success; nothing but text in the log; no console errors or CSP violations"
 
 
+# --- the page itself (code/web's build): what a person does, through the real Caddy, backend and sandbox ---
+
+# Every CSP / Trusted Types violation on the code host is recorded (and fails the check)
+CSP_GUARD = """(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', (e) =>
+  window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || '') + ' ' + (e.sample || ''))); })();"""
+# While the framed terminal is locked, its unlock page answers 401
+TERMINAL_LOCKED_OK = [r"^401 (GET|POST) " + re.escape(origin("terminal")) + r"/", r"console.error Failed to load resource.*401"]
+UI = "e2e-ui"
+MKT = "e2e-mkt"
+
+
+def built_page(page):
+    if page.locator("form#ask").count():
+        raise Skip("this image serves the plain page (no code/web build)")
+
+
+def ui_page(ctx, name, device="desktop", session=None):
+    """The Code page on the code host, signed in and unlocked, connected; `session`: the one it shows first."""
+    page, rec = ctx.page(name, device)
+    page.add_init_script(CSP_GUARD)
+    if session:
+        # the page shows this session first (what it remembers per browser: its lastSession)
+        page.add_init_script(
+            "(() => { try { if (location.hostname.startsWith('code.')) { const p = JSON.parse(localStorage.getItem('bn.code.v1') || '{}');"
+            f" p.lastSession = {json.dumps(session)}; localStorage.setItem('bn.code.v1', JSON.stringify(p)); }} }} catch (e) {{}} }})();")
+    login(page)
+    page.goto(CODE + "/")
+    unlock_page(page)
+    page.wait_for_load_state("domcontentloaded")
+    built_page(page)
+    see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    ctx.code_ui_rec = rec
+    return page, rec
+
+
+def csp_clean(page, rec, allow=()):
+    v = page.evaluate("window.__csp || []")
+    probs = rec.problems(allow=LOCKED_OK + list(allow))
+    rec.save()
+    expect(not v and not probs, f"CSP violations {v[:4]}, errors {probs[:6]}")
+
+
+def turns(page, n, timeout=150000):
+    see(page.get_by_test_id("turn-end")).to_have_count(n, timeout=timeout)
+
+
+def saved(fn):
+    """The check's network/console log is kept even when it fails (the Recorder of its last page)."""
+    def run(ctx):
+        try:
+            return fn(ctx)
+        finally:
+            rec = getattr(ctx, "code_ui_rec", None)
+            if rec is not None:
+                rec.save()
+                ctx.code_ui_rec = None
+    run.__name__ = fn.__name__
+    return run
+
+
+def ask(page, text):
+    box = page.get_by_test_id("prompt")
+    box.fill(text)
+    box.press("Enter")
+
+
+def last_answer(page):
+    return page.get_by_test_id("msg-claude").last.inner_text()
+
+
+def fixtures(c):
+    """Files in the workspace for these checks, through the page's own API: a file to edit, and a plugin marketplace
+    (one plugin from a folder, one installed by a command that prints its folder)."""
+    for d in (UI, MKT, f"{MKT}/.claude-plugin", f"{MKT}/plugins", f"{MKT}/plugins/hello-local", f"{MKT}/plugins/hello-local/.claude-plugin",
+              f"{MKT}/plugins/hello-local/commands", f"{MKT}/plugins/hello-cmd", f"{MKT}/plugins/hello-cmd/.claude-plugin", f"{MKT}/plugins/hello-cmd/commands"):
+        r = c.api("POST", "/api/fs/mkdir", {"path": d})
+        expect(r["status"] in (200, 400, 409, 502) or "exists" in r["text"], f"mkdir {d}: {r['status']} {r['text'][:100]}")
+    files = {
+        f"{UI}/edit-me.txt": "value = 1\n",
+        f"{MKT}/.claude-plugin/marketplace.json": json.dumps({"name": MKT, "owner": {"name": "bedrock-now e2e"}, "plugins": [
+            {"name": "hello-local", "source": "./plugins/hello-local", "description": "A local test plugin with one command", "version": "1.0.0"},
+            {"name": "hello-cmd", "source": {"source": "command", "command": f"printf '%s\\n' /workspace/{MKT}/plugins/hello-cmd"},
+             "description": "Installed by running a command", "version": "1.0.0"}]}, indent=1),
+        f"{MKT}/plugins/hello-local/.claude-plugin/plugin.json": json.dumps({"name": "hello-local", "version": "1.0.0", "description": "e2e"}),
+        f"{MKT}/plugins/hello-local/commands/hello.md": "---\ndescription: Say hello (bedrock-now e2e plugin)\n---\nReply with exactly: hello from the e2e plugin\n",
+        f"{MKT}/plugins/hello-cmd/.claude-plugin/plugin.json": json.dumps({"name": "hello-cmd", "version": "1.0.0", "description": "e2e"}),
+        f"{MKT}/plugins/hello-cmd/commands/hi.md": "---\ndescription: Say hi (installed by a command)\n---\nReply with exactly: hi\n",
+    }
+    for path, text in files.items():
+        r = c.api("PUT", f"/api/fs/file?path={path}", {"text": text})
+        expect(r["status"] == 200, f"write {path}: {r['status']} {r['text'][:100]}")
+
+
+def state_of(c, sid):
+    st = c.api("GET", "/api/state")["json"]
+    return next((s for s in st["sessions"] if s["id"] == sid), {})
+
+
+def wait_state(c, sid, key, value, timeout=20):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if state_of(c, sid).get(key) == value:
+            return
+        c.page.wait_for_timeout(300)
+    raise AssertionError(f"session {key} is {state_of(c, sid).get(key)!r}, not {value!r}")
+
+
+@check("browser", "code-ui-desktop")
+@saved
+def ui_desktop(ctx):
+    need_haiku()
+    page, rec = ui_page(ctx, "code-ui-desktop")
+    c = Code.on(page, rec, goto=False)
+    fixtures(c)
+    # Haiku for the new session (the picker before the first prompt), then an answer streams
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    see(page.get_by_test_id("model-picker")).to_contain_text("Haiku")
+    old = page.evaluate("(JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || ''")
+    page.get_by_test_id("chat-new").click()
+    ask(page, "Reply with exactly the word: pong")   # (sent while the session opens: it goes to the new one)
+    see(page.locator(".chat-head .pane-title")).to_have_text("Reply with exactly the word: pong", timeout=30000)
+    turns(page, 1)
+    expect("pong" in last_answer(page).lower(), f"answer {last_answer(page)!r}")
+    page.wait_for_function("(old) => { const s = (JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || '';"
+                           " return s.length === 36 && s !== old; }", arg=old, timeout=10000)
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    ctx.code_ui_session = sid
+    expect(state_of(c, sid).get("model") == "haiku", f"model {state_of(c, sid)}")
+    # a Bash permission prompt in its card: Allow once, the command runs in the sandbox
+    ask(page, f"Use the Bash tool to run exactly this command, then reply with the word done: echo ui-ok > {UI}/bash.txt")
+    card = page.get_by_test_id("permission")
+    see(card).to_contain_text("Claude wants to run a command", timeout=120000)
+    see(card).to_contain_text(f"{UI}/bash.txt")
+    shot(page, "56-code-ui-permission")
+    page.get_by_test_id("perm-once").click()
+    turns(page, 2)
+    r = c.api("GET", f"/api/fs/file?path={UI}/bash.txt")
+    expect(r["status"] == 200 and r["json"]["text"].strip() == "ui-ok", f"after Allow once: {r['status']} {r['text'][:80]}")
+    # Accept edits (the mode picker), an @-mentioned file, Claude's Edit -> its diff in the editor
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    wait_state(c, sid, "mode", "acceptEdits")
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type(f"In @{UI}/edi")
+    see(page.get_by_test_id("palette")).to_contain_text(f"{UI}/edit-me.txt", timeout=10000)
+    box.press("Tab")
+    see(box).to_have_value(f"In @{UI}/edit-me.txt ")
+    box.type("use the Edit tool to change `value = 1` to `value = 2`. Change nothing else, run nothing else, then reply with the word done.")
+    box.press("Enter")
+    turns(page, 3)
+    r = c.api("GET", f"/api/fs/file?path={UI}/edit-me.txt")
+    expect(r["json"]["text"] == "value = 2\n", f"the edited file: {r['json']['text']!r}")
+    edit = page.locator(".tool[data-tool='Edit'], .tool[data-tool='MultiEdit'], .tool[data-tool='Write']").last
+    see(edit).to_be_visible()
+    expect(page.get_by_test_id("permission").count() == 0, "Accept edits still asked")
+    edit.get_by_role("button", name="Open diff").click()
+    page.wait_for_function("() => { const h = document.querySelector('.pane:not(.hidden) .cm-host');"
+                           " return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-mergeView, .cm-editor'); }", timeout=20000)
+    page.mouse.move(0, 0)
+    shot(page, "57-code-ui-diff")
+    # the / palette: built-ins and skills from the session
+    box.click()
+    box.fill("")
+    box.type("/con")
+    see(page.get_by_test_id("palette")).to_contain_text("/context", timeout=10000)
+    box.fill("")
+    # an upload: into the workspace, mentioned in the composer
+    up = f"e2e-ui-upload-{int(time.time())}.txt"
+    page.get_by_test_id("file-input").set_input_files(files=[{"name": up, "mimeType": "text/plain", "buffer": b"uploaded from the page"}])
+    see(box).to_have_value(re.compile(r"@(\S+/)?" + re.escape(up)), timeout=20000)
+    up = re.search(r"@(\S*" + re.escape(up) + ")", box.input_value()).group(1)   # (into the folder selected in the explorer)
+    r = c.api("GET", f"/api/fs/file?path={up}")
+    expect(r["status"] == 200 and r["json"]["text"] == "uploaded from the page", f"upload: {r['status']}")
+    box.fill("")
+    # a model switch (Sonnet and back, no turn on Sonnet: free), then the next turn is Haiku's
+    page.get_by_test_id("model-picker").click()
+    if page.get_by_test_id("model-sonnet").count():
+        page.get_by_test_id("model-sonnet").click()
+        wait_state(c, sid, "model", "sonnet")
+        see(page.get_by_test_id("model-picker")).to_contain_text("Sonnet")
+        page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    wait_state(c, sid, "model", "haiku")
+    # an interrupt: the stop button while it streams
+    ask(page, "Count from 1 to 400, one number per line, nothing else.")
+    see(page.locator(".msg-claude.streaming")).to_have_count(1, timeout=120000)
+    page.get_by_test_id("stop").click()
+    turns(page, 4, 60000)
+    see(page.get_by_test_id("turn-end").last).to_contain_text("Stopped")
+    # the terminal panel (its own unlock, framed)
+    page.get_by_test_id("toggle-terminal").click()
+    see(page.get_by_test_id("terminal")).to_be_visible()
+    t0 = time.time()
+    while time.time() - t0 < 20 and not any(f.url.startswith(origin("terminal")) for f in page.frames):
+        page.wait_for_timeout(250)
+    expect(any(f.url.startswith(origin("terminal")) for f in page.frames), "the terminal panel did not load the terminal host")
+    page.wait_for_timeout(1500)
+    shot(page, "58-code-ui-desktop")
+    # a reload re-attaches: the same conversation, nothing twice
+    n_user, n_tool = page.get_by_test_id("msg-user").count(), page.get_by_test_id("tool-card").count()
+    page.reload()
+    see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    see(page.get_by_test_id("msg-user")).to_have_count(n_user, timeout=30000)
+    page.wait_for_timeout(2500)
+    expect(page.get_by_test_id("msg-user").count() == n_user and page.get_by_test_id("tool-card").count() == n_tool,
+           f"after the reload: {page.get_by_test_id('msg-user').count()} prompts (want {n_user}), {page.get_by_test_id('tool-card').count()} tools (want {n_tool})")
+    page.evaluate(CLIENT_JS)   # (the reload took the in-page client along)
+    c.api("DELETE", f"/api/fs?path={up}")
+    csp_clean(page, rec, TERMINAL_LOCKED_OK + [r"^400 POST .*/api/fs/mkdir$"])   # (fixtures: a folder that is there already)
+    return (f"session {sid[:8]} (Haiku): pong streamed; Bash card → Allow once → {UI}/bash.txt; Accept edits + @{UI}/edit-me.txt → "
+            f"edited, diff in the editor; / palette; upload → @{up}; Sonnet ⇄ Haiku switch; Stop → Stopped; terminal panel; "
+            f"reload: {n_user} prompts, {n_tool} tools, no duplicates; no CSP violations")
+
+
+@check("browser", "code-ui-ask-user-question")
+@saved
+def ui_question(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-question", session=sid)
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, "Use the AskUserQuestion tool to ask me one question: \"Tea or coffee?\" with the two options Tea and Coffee. "
+              "After my answer, reply with exactly the option I chose and nothing else.")
+    q = page.get_by_test_id("question")
+    see(q.or_(page.get_by_test_id("turn-end").nth(n))).to_have_count(1, timeout=120000)
+    if not q.count():
+        rec.save()
+        raise Skip("Haiku answered without asking (no AskUserQuestion call this time)")
+    see(page.get_by_test_id("q-send")).to_be_disabled()
+    try:
+        q.locator(".q-label", has_text=re.compile(r"^\s*Coffee\s*$")).first.click()
+        see(page.get_by_test_id("q-send")).to_be_enabled()
+        shot(page, "59-code-ui-question")
+        page.get_by_test_id("q-send").click()
+        turns(page, n + 1)
+    finally:
+        # never leave the session waiting on a question (the later checks use it)
+        if page.get_by_test_id("q-decline").count():
+            page.get_by_test_id("q-decline").click()
+        rec.save()
+    expect("coffee" in last_answer(page).lower(), f"the answer did not reach Claude: {last_answer(page)!r}")
+    csp_clean(page, rec)
+    return f"AskUserQuestion card: Coffee chosen, Send answer → Claude replied {last_answer(page)!r}"
+
+
+@check("browser", "code-ui-plugins-mcp")
+@saved
+def ui_plugins_mcp(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-plugins", session=sid)
+    c = Code.on(page, rec, goto=False)
+    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-plugins").click()
+    dlg = page.get_by_test_id("plugins-dialog")
+    dlg.get_by_test_id("plugins-tab-marketplaces").click()
+    dlg.get_by_test_id("marketplace-source").fill(f"/workspace/{MKT}")
+    dlg.get_by_test_id("marketplace-add").click()
+    see(dlg.get_by_test_id("plugins-note")).to_contain_text("marketplace", timeout=120000)
+    see(dlg.locator(f"[data-marketplace='{MKT}']")).to_be_visible(timeout=20000)
+    dlg.get_by_test_id("plugins-tab-discover").click()
+    dlg.get_by_test_id("plugins-marketplace").select_option(MKT)
+    see(dlg.get_by_test_id("plugins-available").locator(".plg-row")).to_have_count(2, timeout=30000)
+    dlg.locator(f"[data-plugin='hello-local@{MKT}'] [data-testid=plugin-install]").click()
+    see(dlg.get_by_test_id("plugins-note")).to_contain_text(f"hello-local@{MKT}", timeout=120000)
+    note = dlg.get_by_test_id("plugins-note").inner_text()
+    expect("Reloaded in" in note, f"no session reloaded: {note!r}")
+    # installed by a command: the exact command and its SHA-256 first; nothing runs until it is accepted
+    dlg.locator(f"[data-plugin='hello-cmd@{MKT}'] [data-testid=plugin-install]").click()
+    see(dlg.get_by_test_id("plugin-confirm")).to_be_visible(timeout=120000)
+    see(dlg.get_by_test_id("plugin-confirm-command")).to_have_text(f"printf '%s\\n' /workspace/{MKT}/plugins/hello-cmd")
+    sha = dlg.get_by_test_id("plugin-confirm-sha").inner_text().strip()
+    expect(re.fullmatch(r"[0-9a-f]{64}", sha), f"sha {sha!r}")
+    inst = [p["id"] for p in c.api("GET", "/api/plugins")["json"]["installed"]]
+    expect(f"hello-cmd@{MKT}" not in inst, f"installed before it was accepted: {inst}")
+    shot(page, "60-code-ui-plugin-confirm")
+    dlg.get_by_test_id("plugin-confirm-accept").click()
+    see(dlg.get_by_test_id("plugins-note")).to_contain_text(f"hello-cmd@{MKT}", timeout=120000)
+    dlg.get_by_test_id("plugins-tab-installed").click()
+    see(dlg.locator(f"[data-plugin='hello-local@{MKT}']")).to_be_visible()
+    see(dlg.locator(f"[data-plugin='hello-cmd@{MKT}']")).to_be_visible()
+    page.mouse.move(0, 0)
+    shot(page, "61-code-ui-plugins")
+    dlg.get_by_role("button", name="Close").click()
+    # the session reloaded its plugins: their commands are in the palette, and one runs (Haiku)
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("/hello")
+    see(page.get_by_test_id("palette")).to_contain_text("/hello-local:hello", timeout=30000)
+    box.fill("")
+    box.type("/hi")
+    see(page.get_by_test_id("palette")).to_contain_text("/hello-cmd:hi", timeout=30000)
+    box.fill("")
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, "/hello-local:hello")
+    turns(page, n + 1)
+    expect("hello from the e2e plugin" in last_answer(page).lower(), f"plugin command: {last_answer(page)!r}")
+    # the MCP panel: the stack's bedrock-shared connected; off and on for this session
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-mcp").click()
+    mdlg = page.get_by_test_id("mcp-dialog")
+    srv = mdlg.locator("[data-server='bedrock-shared']")
+    see(srv.get_by_test_id("mcp-status")).to_have_text("connected", timeout=30000)
+    tools = srv.inner_text()
+    see(mdlg.get_by_test_id("mcp-sandbox-note")).to_contain_text("inside the sandbox only")
+    page.mouse.move(0, 0)
+    shot(page, "62-code-ui-mcp")
+    srv.get_by_test_id("mcp-toggle").click()
+    see(srv.get_by_test_id("mcp-status")).to_have_text("disabled", timeout=30000)
+    srv.get_by_test_id("mcp-toggle").click()
+    see(srv.get_by_test_id("mcp-status")).to_have_text(re.compile("connected|pending"), timeout=30000)
+    mdlg.get_by_role("button", name="Close").click()
+    # tidy: the plugins and the marketplace go (the throwaway keeps nothing of this)
+    for pid in (f"hello-local@{MKT}", f"hello-cmd@{MKT}"):
+        c.api("POST", "/api/plugins/uninstall", {"name": pid})
+    c.api("DELETE", f"/api/marketplaces?name={MKT}")
+    csp_clean(page, rec)
+    tools = " ".join(tools.split())[:60]
+    return (f"marketplace /workspace/{MKT} added; hello-local installed (session reloaded); hello-cmd: command + SHA-256 {sha[:12]}… "
+            f"shown, not installed until accepted, then installed; /hello-local:hello and /hello-cmd:hi in the palette, "
+            f"/hello-local:hello answered; MCP: bedrock-shared connected ({tools}), off → disabled → on")
+
+
+@check("browser", "code-ui-phone")
+@saved
+def ui_phone(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-phone", device="phone", session=sid)
+    see(page.get_by_test_id("phone-sessions")).to_be_visible()
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, "Reply with exactly the word: phone")
+    turns(page, n + 1)
+    expect("phone" in last_answer(page).lower(), f"answer {last_answer(page)!r}")
+    over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+    expect(over <= 0, f"the page is {over}px wider than the phone")
+    shot(page, "63-code-ui-phone")
+    page.get_by_test_id("phone-menu-btn").click()
+    see(page.get_by_test_id("phone-menu")).to_contain_text("Model")
+    shot(page, "64-code-ui-phone-menu")
+    csp_clean(page, rec)
+    return f"phone (390×844): chat-first, answer {last_answer(page)!r}, no horizontal overflow, the session sheet; no CSP violations"
+
+
+@check("browser", "code-settings-row")
+def settings_row(ctx):
+    need_on()
+    page, rec = ctx.page("code-settings")
+    login(page)
+    open_settings(page)
+    card = page.locator("#set-code")
+    card.wait_for(timeout=20000)
+    on = card.locator(".chip[aria-pressed=true]").inner_text()
+    ws = card.locator(".set-code-ws code").inner_text()
+    cli = card.locator(".set-cli code").last.inner_text()
+    expect(on == "On", f"the switch shows {on!r}")
+    expect(ws == ENV.get("TERMINAL_WORKSPACE"), f"workspace shown {ws!r}")
+    expect(cli == "./stack terminal enable --workspace DIR", f"cli {cli!r}")
+    try:
+        card.screenshot(path=str(SHOTS / "65-code-settings-row.png"), animations="disabled")
+    except Exception:  # noqa: BLE001 — a screenshot never fails a check
+        pass
+    probs = rec.problems()
+    rec.save()
+    expect(not probs, f"errors: {probs}")
+    return f"Settings → Code page: On, the workspace (…/{os.path.basename(ws)}) read-only, its CLI ({cli})"
+
+
 # --- a stand-in on bn-coded's socket (run.sh starts it after the suite; E2E_CODE_HOSTILE=1) ---
 
 @check("browser", "code-hostile-sandbox")
@@ -543,6 +928,25 @@ def hostile(ctx):
         page.reload(); page.wait_for_selector("#sessions li", timeout=20000)
         page.wait_for_timeout(1500)
         page.evaluate(CLIENT_JS)   # (the reload took the in-page client along)
+    built = page.locator("form#ask").count() == 0
+    if built:
+        # the frontend: the session list, the explorer and the plugins dialog with the stand-in's answers (markup in
+        # every field, a "command" to confirm whose hash is not one)
+        page.reload()
+        see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+        page.get_by_test_id("side-sessions").click()
+        page.wait_for_timeout(1500)
+        page.get_by_test_id("side-files").click()
+        page.wait_for_timeout(1000)
+        page.get_by_test_id("more-menu").click()
+        page.get_by_test_id("menu-plugins").click()
+        page.get_by_test_id("plugins-tab-discover").click()
+        page.wait_for_timeout(1500)
+        if page.locator("[data-testid=plugin-install]").count():
+            page.locator("[data-testid=plugin-install]").first.click()
+            page.wait_for_timeout(1500)
+            expect(page.get_by_test_id("plugin-confirm").count() == 0, "a confirmation with a bogus hash was offered")
+        page.evaluate(CLIENT_JS)
     injected = page.evaluate("() => document.querySelectorAll('img[src=\"x\"], [onerror], [onload], script:not([src]), a[href^=\"javascript:\"]').length")
     state = c.api("GET", "/api/state")
     shot(page, "55-code-hostile")

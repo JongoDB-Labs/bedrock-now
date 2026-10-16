@@ -1,8 +1,8 @@
 # The Code page (browser UI)
 
 The IDE-like page on `code.<host>` that drives Claude Code: chat with streaming answers, tool cards, permission
-prompts, an explorer and CodeMirror 6 editor over `/workspace`, Claude's edits as diffs, and the sandbox terminal
-in a bottom panel. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
+prompts (and AskUserQuestion as a form), an explorer and CodeMirror 6 editor over `/workspace`, Claude's edits as
+diffs, plugins & marketplaces, MCP servers, and the sandbox terminal in a bottom panel. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
 through the API in the design's §5; `src/api.ts` is the one module that knows that wire format.
 
 ## Build
@@ -35,7 +35,11 @@ tasks, slash commands, interrupts, seq replay on re-attach, files (list/read/wri
 upload, mkdir, rename, delete), `/.bn/models` with prices and `/.bn/spend`. It serves `dist/` with the §6 CSP.
 A prompt picks the scenario by keyword: *fix … retry* (Read + Edit), *write/create* (Write), *run the tests* (Bash),
 *background* (a background task), *agent/explore* (Task with nested calls), *fetch/web*, *mcp*, *todo/plan*, *long*,
-*ask me* (AskUserQuestion), *hostile*, or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`).
+*ask me* (AskUserQuestion, one choice), *ask me two* (several choices + one), *hostile*, or a slash command
+(`/context`, `/cost`, `/model sonnet`, `/compact`). Plugins: one marketplace with a few plugins; adding any other
+(`/workspace/name`, `owner/repo`) gives one plain plugin and one installed by a command, which answers
+`needs_confirmation {command, sha256}` until that hash comes back; installs reload the open sessions' commands. MCP:
+`bedrock-shared` plus servers you add (they load when a session starts), off/on per session, reconnect.
 
 ## Tests
 
@@ -46,14 +50,19 @@ sh e2e/run.sh     # browser checks in Docker (needs dist/ and node_modules)
 
 The unit tests cover the markdown renderer (raw HTML stays text, only http(s) links, no images), the wire
 normaliser (ids, caps, bad shapes), the session reducer (streaming, tool pairing, replay and gaps, history merge),
-cost attribution per turn, diffs, the pickers, permission sentences and stored-prefs validation.
+cost attribution per turn, diffs, the pickers, permission sentences and stored-prefs validation, plugin outcomes
+(a confirmation needs a real SHA-256), MCP statuses (no secrets), AskUserQuestion answers (keys exactly as sent, one
+or several choices, Other), and the backend's message shapes (`code/server/protocol.mjs`) as the page reads them.
 
 `e2e/run.sh` runs `e2e/ui_check.py` in the Playwright image the e2e suite pins (`tests/e2e/run.sh` `PW_IMAGE`,
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the
 page on desktop (light and dark), tablet and phone — streaming, permission prompts (once / always / deny with a
-message), diffs, the / and @ pickers, uploads and image attachments, modes, background tasks, interrupt, reconnect
-and reload without duplicates, resume/fork/rename, editor save conflicts, remembered layout — and a hostile session
-(markup in every field, `javascript:` links, bidi and control characters, giant strings, bad ids). Any CSP violation,
+message), AskUserQuestion (one choice, several, Other, decline), diffs, the / and @ pickers, uploads and image
+attachments, modes, background tasks, interrupt, reconnect and reload without duplicates, resume/fork/rename, an
+already-open session, editor save conflicts, remembered layout, plugins (a marketplace from the workspace, install,
+a command shown with its SHA-256 before it runs, on/off, update, uninstall, the palette after the reload), the MCP
+panel (status, off/on, reconnect, a server of your own, restart) — and a hostile session (markup in every field,
+`javascript:` links, bidi and control characters, giant strings, bad ids; a hostile plugin catalog and MCP list). Any CSP violation,
 page error or dialog fails a check. Screenshots and `results.json` go to `e2e/out/` (`E2E_OUT=…` to change;
 `E2E_ONLY=phone` to run one check; `KEEP_IMAGE=1` keeps the runner image `bn-code-web-e2e:local`).
 
@@ -68,6 +77,8 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/markdown.ts` | marked lexer → a node tree from fixed tags/attributes |
 | `src/text.ts` | caps, visible bidi/control characters, id and path validation, formatting |
 | `src/editor/` | CodeMirror (lazy chunk): editor, merge view, languages |
-| `src/components/` | Shell (layouts, top bar, status bar, terminal), Chat, MessageList, ToolCard, PermissionCard, Composer, FileTree, EditorArea, SessionList, Pickers |
+| `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
+| `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |
+| `src/components/` | Shell (layouts, top bar, status bar, terminal), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer, FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel) |
 | `dev/` | the mock backend and `npm run dev` |
 | `e2e/` | the browser checks |

@@ -172,6 +172,12 @@ function head(it: ToolItem): Head {
       return { verb: 'To-dos', subject: <span class="one muted">updated</span>, open: true };
     case 'ExitPlanMode':
       return { verb: 'Plan', subject: <span class="one muted">ready for review</span>, open: true };
+    case 'AskUserQuestion': {
+      const qs = Array.isArray(i.questions) ? (i.questions as unknown[]).map(obj) : [];
+      return { verb: 'Asked', subject: <span class="one">{label(qs[0]?.question, 200)}{qs.length > 1 ? ` (+${qs.length - 1})` : ''}</span>, open: false };
+    }
+    case 'Skill':
+      return { verb: 'Skill', subject: <code class="one">{label(i.skill ?? i.command ?? i.name, 200)}</code>, open: false };
     default: {
       const m = mcpParts(it.name);
       if (m) return { verb: m.tool, subject: <span class="one muted">{preview(it.input, 160)}</span>, extra: <span class="tag">MCP · {m.server}</span>, open: false };
@@ -265,6 +271,8 @@ function Body({ it, nested }: { it: ToolItem; nested?: ComponentChildren }) {
     case 'Grep':
     case 'WebSearch':
     case 'BashOutput':
+    case 'AskUserQuestion':
+    case 'Skill':
       return r ? <Output text={r.text} lines={20} class={r.isError ? 'err' : ''} /> : null;
     default:
       return (

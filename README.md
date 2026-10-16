@@ -359,17 +359,50 @@ drop for a few seconds. Details and what was weighed: [docs/security.md](docs/se
 ./stack code status                        # ./stack code disable turns it off again (the terminal stays)
 ```
 
+Or from the portal: **Settings → Code page → On** (only on the computer running bedrock-now, and only while the
+browser terminal is on; **Off** works from anywhere). The update helper runs `./stack code enable` / `disable` for
+you; the workspace folder is shown there read-only — it is chosen in a terminal (`./stack terminal enable
+--workspace DIR`).
+
 This adds a **Code** tab to the portal, directly under Chat (on a phone: **More → Code**, full screen): Claude Code
-with a chat instead of a terminal. You type a prompt, the answer streams in, tool calls show as cards, and every
-command or file change Claude wants to make asks first — **Allow once**, **Always** (the rule Claude Code proposes,
-shown before you click; never "skip all permissions") or **Deny**. While a prompt waits, the Code tab shows a badge;
-nobody answering for 10 minutes counts as Deny. You pick the model (with this stack's prices), the permission mode
-(*Ask before changes*, *Accept edits*, *Plan*, *Don't ask*) and the effort; **Stop** interrupts a turn; slash
-commands work as typed (`/context`, `/cost`, `/compact`, skills and plugin commands); your sessions are listed and
-can be resumed — also from the Terminal tab's `claude --resume`, which shares them. Files: the workspace's tree,
-open, edit and save (with a "changed on disk" check), upload. A session keeps working when you close the tab or
-reload: the page re-attaches and shows what it missed. At most 4 sessions run at once (each Claude Code process
-takes ~220 MB of the sandbox's memory); an idle one stops after 30 minutes and your next prompt resumes it.
+in an IDE-like page instead of a terminal — an explorer of the workspace on the left, an editor (CodeMirror) in the
+middle, the chat on the right and the sandbox's terminal in a bottom panel (`Ctrl+\``); on a tablet the chat and
+one of explorer/editor, on a phone the chat first with files, editor and diffs as sheets. Pane sizes are remembered
+per browser.
+
+- **Chat.** You type a prompt, the answer streams in (markdown, rendered as text-only DOM), thinking folds away, tool
+  calls show as cards (Bash with its output, Edit/Write as a diff, Read, Grep, web fetches, subagents nested, MCP
+  tools, to-do lists), background tasks get a Stop each, and **Stop** (or `Esc`) interrupts a turn. The `/` palette
+  lists built-in commands, skills and plugin commands; `@` picks a file of the workspace; images can be pasted or
+  dropped (sent to Claude), other files are uploaded into the workspace and mentioned.
+- **Permission prompts.** Every command or file change Claude wants to make asks first, in a card that says what
+  would run or change — **Allow once**, **Always** (the rule Claude Code proposes, shown before you click; never
+  "skip all permissions") or **Deny** (with an optional note for Claude). While one waits the Code tab shows a
+  badge; nobody answering for 10 minutes counts as Deny. When Claude asks *you* something (its AskUserQuestion
+  tool), the card is a small form — one choice, several, or **Other** with your own words — and your answers go back
+  to Claude as answers.
+- **Model, mode, effort, cost.** You pick the model (this stack's models and prices), the permission mode (*Ask*,
+  *Accept edits*, *Plan*, *Don't ask*; `Shift+Tab` cycles) and the effort; the meter shows each turn's and the
+  session's cost and the context window's use.
+- **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
+  drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
+  side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
+- **Sessions.** Listed with search; resume, fork, rename — also from the Terminal tab's `claude --resume`, which
+  shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it
+  missed, nothing twice. At most 4 sessions run at once (each Claude Code process takes ~220 MB of the sandbox's
+  memory); an idle one stops after 30 minutes and your next prompt resumes it.
+- **Plugins & marketplaces** (⋯ menu). What is installed (on/off, update, uninstall; the built-in ones read-only),
+  the added marketplaces' catalog (search, install) and the marketplaces themselves (add `owner/repo`, an `https://`
+  git URL or a folder of the workspace, `/workspace/…`, which works without internet; update; remove). Some plugins
+  are installed by running a command their marketplace declares: the page then shows that command verbatim and its
+  SHA-256, and only **Run this command and install** lets it run (Claude Code's `--accept-command <sha256>`; never
+  `-y`). After a change the open sessions reload their plugins, so new commands and skills are in the `/` palette at
+  once (that rewrites their prompt cache on the next turn).
+- **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's
+  `bedrock-shared` included); **Reconnect**, or switch one off and on for this session. Servers of your own (stdio,
+  HTTP or SSE) are added to or removed from the sandbox's Claude Code user configuration — a stdio server's command
+  runs **inside the sandbox only**, never on your computer; new servers load when a session starts (**Restart this
+  session** does that for the open one).
 
 It runs in the [browser terminal's](#claude-code-in-the-browser-optional) sandbox — the same container, workspace
 folder, key (`claude-code-terminal`) and budget (`BUDGET_TERMINAL`), internet switch (`TERMINAL_EGRESS`) and
@@ -388,9 +421,22 @@ $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5 (the model list show
 lives 5 minutes, so the first turn after a longer pause writes it again too.
 
 What the sandbox can do is what the terminal can (see above); on top, a compromised sandbox could show misleading
-*text* in the Code page (fake tool output or diffs, a misleading permission sentence) but cannot run script in your
-browser, reach the page's container, change the prices or costs shown, or answer a permission prompt itself.
-Details: [docs/security.md](docs/security.md#the-code-page).
+*text* in the Code page (fake tool output or diffs, a misleading permission sentence, a fake plugin catalog) but
+cannot run script in your browser, reach the page's container, change the prices or costs shown, answer a permission
+prompt itself, or accept a plugin's install command for you. Details:
+[docs/security.md](docs/security.md#the-code-page).
+
+**The page's code** lives in `code/web` (TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild, every
+dependency pinned in its lockfile) and is built into the image (`./stack code enable`, `./stack update`): nothing is
+loaded from a CDN, and it runs under the main Caddy's CSP with Trusted Types. To work on it:
+
+```bash
+cd code/web && npm ci       # exact versions from package-lock.json
+npm run dev                 # rebuilds on change + a mock backend on http://127.0.0.1:8095 (no stack, no Bedrock)
+npm test                    # tsc --noEmit, then the unit tests
+sh e2e/run.sh               # browser checks against the mock (desktop, tablet, phone, a hostile sandbox), in Docker
+code/test.sh                # (from the repo root) the image's test stage: the frontend's and the backend's tests
+```
 
 ### Claude Code from your phone
 
@@ -928,8 +974,12 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   browser terminal and checks it (lock, unlock, tmux, Origin, isolation; with the claude part one
   `claude-bedrock -p` inside it, ~$0.02). `--code` (or `E2E_CODE=1`) also turns on the Code page and checks it
   (unlock, CSP, a Haiku session: streaming, permission allow/deny and the badge, model switch, interrupt, a slash
-  command, re-attach and resume, files, spend; isolation; a hostile stand-in on its spawn socket; ~$0.02).
-  Its backend's unit tests run in its image's test stage: `code/test.sh`. `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
+  command, re-attach and resume, files, spend; then the page itself as a person uses it — a Bash prompt allowed in
+  its card, an @-mentioned file edited and its diff, the palette, an upload, a reload without duplicates, an
+  AskUserQuestion answered, plugins from a marketplace in the workspace with the install command confirmed by its
+  SHA-256, the MCP panel, a phone, the Settings row — each with zero CSP violations; isolation; a hostile stand-in
+  on its spawn socket; ~$0.03). Its unit tests (frontend and backend) run in its image's test stage:
+  `code/test.sh`; the page's browser checks against a mock: `sh code/web/e2e/run.sh`. `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
   in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).
@@ -988,8 +1038,9 @@ tailscale/                    the sidecar's serve config (written by ./stack rem
 portal/                       login + Home service (Python; tests: docker build --target test portal)
 terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux, the Code page's
                               spawn server (bin/bn-coded.mjs)
-code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code; tests:
-                              code/test.sh), the plain page (plain/) and the frontend build (web/, when present)
+code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code), the page
+                              (web/: Preact + CodeMirror 6, built into the image; a mock backend in web/dev) and
+                              a plain fallback page (plain/); tests: code/test.sh, code/web/e2e/run.sh
 shared-mcp/                   MCP server for shared files and knowledge (Python; tests: docker build --target test shared-mcp)
 owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map

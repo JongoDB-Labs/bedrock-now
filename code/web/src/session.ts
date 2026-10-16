@@ -248,12 +248,15 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
   }
 }
 
-/** Apply a seq-numbered live event: ignores replays (seq ≤ applied) and flags a gap when seq jumps. */
+/**
+ * Apply a seq-numbered live event: ignores replays (seq ≤ applied). Holes in the numbering are normal — the backend's
+ * ring drops the deltas of a block once its finished text arrives — so they are not a gap: lost events are reported
+ * by the `attached` message (`gap`), which reloads the history.
+ */
 export function applySeq(v: SessionView, seq: number, ev: Ev, now = Date.now()): SessionView {
   if (seq <= v.seq) return v;
-  const gap = v.seq > 0 && seq > v.seq + 1;
   const next = applyEvent(v, ev, now);
-  return { ...next, seq, gap: v.gap || gap };
+  return { ...next, seq };
 }
 
 /** Optimistic user prompt shown before the server echoes it (deduplicated by uuid). */

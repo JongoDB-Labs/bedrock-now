@@ -6,14 +6,18 @@
 #
 #   web      code/web's build (its package-lock.json, npm ci, npm run build -> dist/: index.html + hashed assets) when
 #            code/web exists; otherwise an empty dist, and the backend serves the plain page (code/plain)
+#   webtest  the frontend's checks on that same install: npm test (tsc --noEmit, then its unit tests)
 #   deps     the backend's node_modules, checked: no native binaries, no peer dependencies, the SDK imports
-#   test     the unit tests (code/test.sh builds this stage; it needs --build-context terminal=terminal)
+#   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal)
 #   (last)   the runtime image
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS web
 WORKDIR /src
 # build-web.sh always exists; "web*" adds code/web's files when there is such a folder (nothing otherwise)
 COPY build-web.sh web* /src/
 RUN sh /src/build-web.sh
+
+FROM web AS webtest
+RUN if [ -f package.json ]; then npm test; else echo "no code/web: no frontend tests"; fi && touch /tmp/web-tested
 
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS deps
 WORKDIR /opt/code
@@ -25,6 +29,8 @@ RUN npm ci --omit=optional --omit=dev --ignore-scripts --no-audit --no-fund --lo
  && node -e 'import("@anthropic-ai/claude-agent-sdk").then((m) => { if (typeof m.query !== "function" || typeof m.getSessionMessages !== "function") process.exit(1); })'
 
 FROM deps AS test
+# (the frontend's tests first: this stage needs their stage)
+COPY --from=webtest /tmp/web-tested /tmp/web-tested
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
