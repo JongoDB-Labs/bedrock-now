@@ -89,14 +89,18 @@ one person; RustFS's OIDC hands the console its credentials in the URL fragment,
 history. Each app's own sign-in call already yields exactly the session its UI uses, so the portal makes that call
 and delivers the result.
 
-- **When.** Caddy's check (`/auth/verify`) acts on page loads only (`Sec-Fetch-Mode: navigate`, or `Accept:
-  text/html` from a browser without it); a script's requests are never redirected. Admin: a page under `/ui` with
+- **When.** Caddy's check (`/auth/verify`) acts on page loads only (`Sec-Fetch-Mode: navigate`; a browser that sends
+  no `Sec-Fetch-*` headers is never handed off and gets the app's own form — `Accept: text/html` counts only for
+  the redirect to the portal's login); a script's requests are never redirected. Admin: a page under `/ui` with
   no LiteLLM session in the browser (its `token` cookie), or one handed out for an earlier portal session or other
   credentials, or LiteLLM's sign-in page — except right after LiteLLM's own Logout: a page load started by LiteLLM's
-  own page (`Sec-Fetch-Site: same-origin`) without its `token` cookie but with a valid marker goes to its form
-  (`/ui/login/?sso=off`) instead. (Its Logout goes there itself once its UI has fetched `PROXY_LOGOUT_URL`; before
-  that, it reloads the page it is on.) Opening Admin again is a load by the portal, a link or the address bar, and
-  signs in as before. Which session and credentials an Admin session came from is in a signed
+  own page (`Sec-Fetch-Site: same-origin`) without its `token` cookie but with a valid marker that has more than an
+  hour left goes to its form (`/ui/login/?sso=off`) instead. (Its Logout goes there itself once its UI has fetched
+  `PROXY_LOGOUT_URL`; before that, it reloads the page it is on. In the marker's last hour such a load is signed in
+  again: a browser clock that runs fast makes LiteLLM's own expiry check end its session early, the same way.)
+  Opening Admin again is a load by the portal, a link or the address bar, and signs in as before; a browser reload of
+  an Admin window may count as LiteLLM's own (its form then: reopen Admin from the portal). Which session and
+  credentials an Admin session came from is in a signed
   `bn_sso` marker (`HttpOnly`, `SameSite=Strict`, host-only), bound to the portal session's start, the Tailscale
   login and a keyed fingerprint of the credentials, so a new sign-in, a new LiteLLM password or a regenerated
   RustFS pair takes effect at the next page load. Files: every console page load, because the console keeps its

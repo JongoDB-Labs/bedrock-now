@@ -301,11 +301,12 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if request.headers.get("x-forwarded-method", "GET").upper() != "GET" or not appsso.is_navigation(request.headers):
             return None
         mark_name, _, pass_name = appsso.cookie_names(rem)
-        mark = "none" if app != "admin" else markers.state(
+        mark, left = ("none", 0.0) if app != "admin" else markers.check(
             request.cookies.get(mark_name), app, claims["iat"], appsso.fingerprint(settings, app),
             session_login(request.headers, settings))
         to = appsso.target(app, request.headers.get("x-forwarded-uri", "/"), host, mark, bool(request.cookies.get("token")),
-                           bool(request.cookies.get(pass_name)), request.headers.get("sec-fetch-site") == "same-origin")
+                           bool(request.cookies.get(pass_name)), request.headers.get("sec-fetch-site") == "same-origin",
+                           left)
         return None if to is None else _no_store(RedirectResponse(to, status_code=302))
 
     def need_login(request: Request) -> Response:

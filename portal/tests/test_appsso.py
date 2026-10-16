@@ -244,13 +244,37 @@ def test_litellms_own_logout_shows_its_form_even_before_its_ui_knows_where(clien
     for site in ("same-site", "none", "cross-site"):
         r = verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}", headers={"Sec-Fetch-Site": site})
         assert sso_location(r) == "/ui/", site
-    # its page with a session again (its own form) goes through; without the portal's marker for this session (none,
-    # another portal sign-in) a load by its own page is handed off as before
+    # its page with a session again (its own form) goes through, and its sign-in page with one is answered by the
+    # portal as before; without the portal's marker for this session (none, forged, another portal sign-in) a load by
+    # its own page is handed off as before
     assert verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}; token=t", headers=own).status_code == 200
+    assert sso_location(verify(client, ADMIN, "/ui/login", s, f"{appsso.MARK}={lite}; token=t", headers=own)) == "/ui/"
     assert sso_location(verify(client, ADMIN, "/ui/", s, headers=own)) == "/ui/"
+    assert sso_location(verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite[:-3]}abc", headers=own)) == "/ui/"
     assert sso_location(verify(client, ADMIN, "/ui/", session(client), f"{appsso.MARK}={lite}", headers=own)) == "/ui/"
+    # a script's request from its own page is never redirected
+    r = verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}", headers={**own, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
+    assert r.status_code == 200
     # Files is unchanged: every console page load is handed off
     assert sso_location(verify(client, FILES, "/rustfs/console/", s, headers=own)) == "/rustfs/console/"
+
+
+def test_near_the_end_of_litellms_session_its_own_page_is_signed_in_again(client, apps):
+    # A browser clock fast by more than MARGIN makes LiteLLM's own expiry check end its session early in the browser:
+    # it clears its cookie and goes to its sign-in page by itself (same-origin) while the marker is still valid. In the
+    # marker's last hour (LOGOUT_MIN_LEFT) such a load is signed in again rather than shown the form.
+    s = session(client)
+    apps.exp = time.time() + appsso.MARGIN + appsso.LOGOUT_MIN_LEFT - 60
+    lite = cookies(sso(client, ADMIN, "/ui/", s))[appsso.MARK][0]
+    own = {"Sec-Fetch-Site": "same-origin"}
+    back = quote("http://admin.bedrock-now.localhost/ui/?page=logs", safe="")
+    assert sso_location(verify(client, ADMIN, f"/ui/login/?redirect_to={back}", s, f"{appsso.MARK}={lite}", headers=own)) == "/ui/?page=logs"
+    assert sso_location(verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}", headers=own)) == "/ui/"
+    # with more than that left: its form (the test above)
+    apps.exp = time.time() + appsso.MARGIN + appsso.LOGOUT_MIN_LEFT + 120
+    lite = cookies(sso(client, ADMIN, "/ui/", s))[appsso.MARK][0]
+    r = verify(client, ADMIN, "/ui/", s, f"{appsso.MARK}={lite}", headers=own)
+    assert r.status_code == 302 and r.headers["location"] == "/ui/login/?sso=off"
 
 
 def test_nothing_happens_before_setup(settings, apps):
@@ -605,7 +629,9 @@ def test_markers(settings):
     m = appsso.Markers(settings.secret, clock=lambda: now[0])
     t = m.issue("files", 5.0, "fp", None, 2000.0)
     assert m.state(t, "files", 5.0, "fp", None) == "valid"
+    assert m.check(t, "files", 5.0, "fp", None) == ("valid", 1000.0)   # and how long it has left
     assert m.state(None, "files", 5.0, "fp", None) == "none"
+    assert m.check(t, "files", 6.0, "fp", None) == ("stale", 0.0)
     for args in (("admin", 5.0, "fp", None), ("files", 6.0, "fp", None), ("files", 5.0, "other", None),
                  ("files", 5.0, "fp", "me@example.com")):
         assert m.state(t, *args) == "stale", args

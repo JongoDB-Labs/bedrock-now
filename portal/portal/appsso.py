@@ -65,6 +65,10 @@ PASS, REMOTE_PASS = "bn_sso_pass", "__Host-bn_sso_pass"
 LOOP_MAX, LOOP_WINDOW = 5, 15   # hand-offs to one host, each within LOOP_WINDOW s of the last, before it stops
 PASS_SECONDS = 15        # Files: page loads right after a hand-off go straight through (its own next step)
 MARGIN = 300            # the marker ends this many seconds before the app session does
+# Admin: a load by LiteLLM's own page without its session goes to its form (its Logout: target) only while the marker
+# has more than this left. Near the end, a browser clock fast by more than MARGIN makes LiteLLM's own expiry check end
+# its session early (it clears its cookie and goes to its sign-in page by itself): that one is signed in again.
+LOGOUT_MIN_LEFT = 3600
 STS_SECONDS = 12 * 3600  # what RustFS's console asks for itself
 MAX_PER_MINUTE = 20      # sign-ins (a LiteLLM key or STS credentials) per portal session and minute
 MINT = "mint=1"          # Files: the browser has no usable credentials, make new ones
@@ -121,22 +125,26 @@ class Markers:
 
     def state(self, token: str | None, app: str, iat: float, fp: str, login: str | None) -> str:
         """"valid", "stale" (present but for another session, other credentials, expired or forged) or "none"."""
+        return self.check(token, app, iat, fp, login)[0]
+
+    def check(self, token: str | None, app: str, iat: float, fp: str, login: str | None) -> tuple[str, float]:
+        """(the state, as state() says it; the seconds a valid marker has left, 0 for any other)."""
         if not token:
-            return "none"
+            return "none", 0.0
         if len(token) > 2048:
-            return "stale"
+            return "stale", 0.0
         try:
             d = self._ser.loads(token, max_age=8 * 86400)
         except (BadSignature, ValueError, TypeError):
-            return "stale"
+            return "stale", 0.0
         if not isinstance(d, dict):
-            return "stale"
-        exp = d.get("exp")
+            return "stale", 0.0
+        exp, now = d.get("exp"), self._clock()
         ok = (d.get("a") == app and d.get("iat") == iat and isinstance(d.get("fp"), str) and isinstance(d.get("u"), str)
               and hmac.compare_digest(d["fp"].encode(), fp.encode())
               and hmac.compare_digest(d["u"].encode(), (login or "").encode())
-              and isinstance(exp, (int, float)) and exp > self._clock())
-        return "valid" if ok else "stale"
+              and isinstance(exp, (int, float)) and exp > now)
+        return ("valid", float(exp) - now) if ok else ("stale", 0.0)
 
 
 class Budget:
@@ -357,12 +365,12 @@ def _return_to(app: str, query: str, host: str) -> str:
 
 
 def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = False, passed: bool = False,
-           own: bool = False) -> str | None:
+           own: bool = False, left: float = 0.0) -> str | None:
     """Where this page load (X-Forwarded-Uri) goes first — /.bn/sso, or for Admin right after LiteLLM's own Logout its
     form — or None to let it through to the app.
-    Admin: mark is the marker's state, has_token whether LiteLLM's own `token` cookie is there (a session from its
-    form), own whether the app's own page started this load (Sec-Fetch-Site: same-origin). Files: passed is the pass
-    cookie of a hand-off a moment ago."""
+    Admin: mark is the marker's state and left the seconds a valid one has left, has_token whether LiteLLM's own
+    `token` cookie is there (a session from its form), own whether the app's own page started this load
+    (Sec-Fetch-Site: same-origin). Files: passed is the pass cookie of a hand-off a moment ago."""
     try:
         u = urlsplit(uri or "/")
     except ValueError:
@@ -378,12 +386,14 @@ def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = 
             return None
     elif not sign_in and has_token and mark != "stale":   # LiteLLM's session: from the portal, or its own form
         return None
-    elif not has_token and mark == "valid" and own:
+    elif not has_token and mark == "valid" and own and left > LOGOUT_MIN_LEFT:
         # LiteLLM's own Logout ended the session the portal handed this browser (its `token` cookie is gone, the
         # portal's marker is not), and its page moves on by itself: to PROXY_LOGOUT_URL (?sso=off) — or, when its UI
         # has not fetched that setting yet (Logout right after the page loaded, a slow LiteLLM), by reloading the page
         # it is on, which would sign in again at once. Its own form either way, as its Logout means. Opening Admin
-        # again (the portal's frame or pop-out, a link, the address bar: never same-origin) signs in as before.
+        # again (the portal's frame or pop-out, a link, the address bar: never same-origin) signs in as before; a
+        # browser reload of an Admin window may count as LiteLLM's own (its form then; reopen Admin from the portal).
+        # Not in the marker's last hour (LOGOUT_MIN_LEFT: a fast browser clock ends LiteLLM's session early).
         return f"{SIGN_IN[app]}/?{OFF}"
     nxt = _return_to(app, u.query, host) if sign_in else safe_path(app, uri)
     return "/.bn/sso?next=" + quote(nxt, safe="")
