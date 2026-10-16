@@ -86,12 +86,13 @@ test_claude_bedrock_help_prints_header_and_no_cost_line() {
   HOME="$TMP/home"; mkdir -p "$HOME"; unset CLAUDE_BEDROCK_USE_MY_CONFIG CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_CONFIG_DIR
   PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help > "$TMP/out" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
   out="$(cat "$TMP/out")"
-  assert_eq "$(sed -n 8p "$TMP/out")" ""
+  assert_eq "$(sed -n 9p "$TMP/out")" ""
   assert_contains "$(sed -n 1p "$TMP/out")" "claude-bedrock"
-  assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_MODEL"
-  assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_QUIET"
-  assert_contains "$(head -n 7 "$TMP/out")" "per 1M tokens"
+  assert_contains "$(head -n 8 "$TMP/out")" "CLAUDE_BEDROCK_MODEL"
+  assert_contains "$(head -n 8 "$TMP/out")" "CLAUDE_BEDROCK_QUIET"
+  assert_contains "$(head -n 8 "$TMP/out")" "per 1M tokens"
   assert_eq "$(sed -n 4p "$TMP/out")" "  Config   ~/.claude-bedrock, lean: nothing from ~/.claude; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses ~/.claude (can cost about 100× more)"
+  assert_eq "$(sed -n 5p "$TMP/out")" "  Auto     auto mode off (as in the browser terminal and the Code page); CLAUDE_BEDROCK_AUTO_MODE=1 leaves it to Claude Code"
   assert_eq "$(tail -n 1 "$TMP/out")" "CLAUDE --help"
   assert_eq "$(cat "$TMP/err")" ""
   [ ! -e "$HOME/.claude-bedrock" ] || { echo "--help created ~/.claude-bedrock" >&2; return 1; }

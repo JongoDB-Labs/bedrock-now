@@ -63,7 +63,7 @@ test_claude_bedrock_help_before_setup() {
   assert_contains "$out" "not set up yet — run"
   assert_not_contains "$out" "127.0.0.1:,"
   assert_not_contains "$out" "price not in catalog"
-  assert_eq "$(printf '%s\n' "$out" | sed -n 8p)" ""
+  assert_eq "$(printf '%s\n' "$out" | sed -n 9p)" ""
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "CLAUDE --help"
 }
 

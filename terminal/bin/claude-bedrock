@@ -50,6 +50,12 @@ esac
 
 [ -n "$gw" ] && [ -n "$key" ] || die "this terminal has no LiteLLM settings — run ./stack terminal enable on your computer again"
 model="${CLAUDE_BEDROCK_MODEL:-${CLAUDE_BEDROCK_OPUS_MODEL:-}}"
+# by its full id: given one of Claude Code's aliases it picks the model itself (with "haiku", Plan mode plans on Sonnet)
+case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
+  haiku) model="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-$model}" ;;
+  sonnet) model="${ANTHROPIC_DEFAULT_SONNET_MODEL:-$model}" ;;
+  opus) model="${ANTHROPIC_DEFAULT_OPUS_MODEL:-$model}" ;;
+esac
 [ -n "$model" ] || die "no Claude model is enabled for your AWS key — run ./stack setup on your computer"
 curl -fsS -m 3 -o /dev/null "$gw/health/liveliness" 2>/dev/null || die "LiteLLM does not answer at $gw — is the stack up? (./stack status on your computer)"
 export ANTHROPIC_MODEL="$model"

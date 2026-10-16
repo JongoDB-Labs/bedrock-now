@@ -102,6 +102,7 @@ case "$1" in --help) printf 'Usage: claude\n\nCommands:\n  mcp            Config
 printf 'CLAUDE %s\n' "$*"
 printf 'HEADERS %s\n' "$(printf '%s' "$ANTHROPIC_CUSTOM_HEADERS" | tr '\n' '|')"
 printf 'CONFIG %s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
+printf 'MODEL %s\n' "${ANTHROPIC_MODEL-}"
 # like Claude Code once something was typed (STUB_TYPED=1): the transcript goes to
 # <config>/projects/<working folder, non-alphanumerics as "-">/<id>.jsonl, the id from --session-id or STUB_TRANSCRIPT.
 # STUB_OTHER: another session of the same folder written meanwhile (/clear, an in-session /resume, a second session).
@@ -144,8 +145,9 @@ if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; 
 EOS
   chmod +x "$TMP/bin/claude" "$TMP/bin/curl"
   printf 'LITELLM_PORT=9\nCLAUDE_BEDROCK_OPUS_MODEL=claude-opus-5-5\nLITELLM_KEY_CLAUDE_CODE=sk-cc\nLITELLM_MASTER_KEY=sk-master-SECRET\n' > "$ENV_FILE"
-  # stderr goes to a file in these tests, so the summary has to be forced on
-  export STUB_V2="$FIXTURE_V2" CLAUDE_BEDROCK_SUMMARY_WAIT=0 CLAUDE_BEDROCK_SUMMARY=1
+  # stderr goes to a file in these tests, so the summary has to be forced on. Auto mode is left alone here (its own
+  # --settings argument: test_wrapper_turns_auto_mode_off_in_the_lean_folder), so the arguments below are exactly theirs.
+  export STUB_V2="$FIXTURE_V2" CLAUDE_BEDROCK_SUMMARY_WAIT=0 CLAUDE_BEDROCK_SUMMARY=1 CLAUDE_BEDROCK_AUTO_MODE=1
 }
 
 _run_wrapper() { PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" "$@"; }
@@ -488,6 +490,43 @@ test_wrapper_puts_the_shared_mcp_config_first_as_one_argument() {
   assert_contains "$(head -n 1 "$TMP/out")" "CLAUDE --session-id="
   _run_wrapper mcp list > "$TMP/out" 2> /dev/null
   assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"
+}
+
+test_wrapper_turns_auto_mode_off_in_the_lean_folder() {
+  _wrapper_env; mkdir -p "$STATE_DIR"; printf '{}' > "$STATE_DIR/mcp.json"
+  unset CLAUDE_BEDROCK_AUTO_MODE
+  off='--settings={"disableAutoMode":"disable"}'
+  # a session in the lean folder: Claude Code's flag tier says auto mode off (before your arguments, after the MCP one)
+  _run_wrapper -p -- "a prompt" > "$TMP/out" 2> /dev/null
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --mcp-config=$STATE_DIR/mcp.json $off -p -- a prompt"
+  CLAUDE_BEDROCK_QUIET=1 _run_wrapper "fix it" > "$TMP/out" 2> /dev/null   # the exec path too
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --mcp-config=$STATE_DIR/mcp.json $off fix it"
+  # not for a subcommand, not for your own folder, not with CLAUDE_BEDROCK_AUTO_MODE=1
+  _run_wrapper mcp list > "$TMP/out" 2> /dev/null
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"
+  CLAUDE_BEDROCK_USE_MY_CONFIG=1 _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_not_contains "$(head -n 1 "$TMP/out")" "disableAutoMode"
+  CLAUDE_BEDROCK_AUTO_MODE=1 _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_not_contains "$(head -n 1 "$TMP/out")" "disableAutoMode"
+  # --help says which
+  out="$(PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
+  assert_contains "$out" "  Auto     auto mode off (as in the browser terminal and the Code page); CLAUDE_BEDROCK_AUTO_MODE=1 leaves it to Claude Code"
+  out="$(CLAUDE_BEDROCK_USE_MY_CONFIG=1 PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
+  assert_contains "$out" "  Auto     auto mode left to Claude Code and your settings (your own config folder)"
+}
+
+test_wrapper_names_models_in_full_never_by_an_alias() {
+  _wrapper_env
+  printf 'CLAUDE_BEDROCK_HAIKU_MODEL=claude-haiku-5-5\nCLAUDE_BEDROCK_SONNET_MODEL=claude-sonnet-5-5\n' >> "$ENV_FILE"
+  for pair in haiku=claude-haiku-5-5 HAIKU=claude-haiku-5-5 'sonnet[1m]=claude-sonnet-5-5[1m]' opus=claude-opus-5-5 \
+              claude-haiku-5-5=claude-haiku-5-5 us.anthropic.x=us.anthropic.x opusplan=opusplan; do
+    CLAUDE_BEDROCK_QUIET=1 CLAUDE_BEDROCK_MODEL="${pair%%=*}" _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+    assert_contains "$(cat "$TMP/out")" "MODEL ${pair#*=}"
+  done
+  # no slot for it in .env: the name as given
+  sed -i.bak '/CLAUDE_BEDROCK_SONNET_MODEL/d' "$ENV_FILE"
+  CLAUDE_BEDROCK_QUIET=1 CLAUDE_BEDROCK_MODEL=sonnet _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_contains "$(cat "$TMP/out")" "MODEL sonnet"
 }
 
 test_wrapper_continue_names_the_one_session_or_offers_the_picker() {

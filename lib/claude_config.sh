@@ -330,3 +330,33 @@ session_resume_choice() {
     return 1
   fi
 }
+
+# --- models and auto mode in claude-bedrock's sessions ---
+
+# cb_model_id NAME -> NAME, or for Claude Code's aliases haiku, sonnet and opus (any case, [1m] kept) the full id of
+# that slot in .env (CLAUDE_BEDROCK_HAIKU_MODEL …), when it has one. Given an alias, Claude Code picks the model itself:
+# with "haiku" it plans on Sonnet in Plan mode (probed: 2.1.296; with the full id, Plan stays on Haiku).
+cb_model_id() {
+  local m="$1" base suffix='' slot=''
+  case "$m" in *'[1m]' | *'[1M]') suffix="${m#"${m%????}"}"; base="${m%????}" ;; *) base="$m" ;; esac
+  case "$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')" in
+    haiku) slot="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)" ;;
+    sonnet) slot="$(get_env CLAUDE_BEDROCK_SONNET_MODEL)" ;;
+    opus) slot="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)" ;;
+  esac
+  if [ -n "$slot" ]; then printf '%s%s\n' "$slot" "$suffix"; else printf '%s\n' "$m"; fi
+}
+
+# The one argument that turns Claude Code's auto mode off for a session (its flag tier: above user, project and local
+# settings). Claude Code 2.1.283 and later counts auto mode — a classifier model approving actions for you, on your
+# key — as available behind this stack's address and may start in it; the classifier asks for claude-sonnet-5, which
+# LiteLLM does not serve, so it runs on the session's model (an Opus classifier for an Opus session) and blocks what
+# it cannot judge. The browser terminal (managed settings) and the Code page turn it off the same way.
+# shellcheck disable=SC2034  # read by bin/claude-bedrock
+CB_AUTO_OFF_ARG='--settings={"disableAutoMode":"disable"}'
+
+# claude_auto_mode_off -> true when claude-bedrock passes CB_AUTO_OFF_ARG: the lean folder (never your own: there your
+# settings decide), unless CLAUDE_BEDROCK_AUTO_MODE=1. A --settings of your own replaces it (Claude Code takes the last).
+claude_auto_mode_off() {
+  [ "${CLAUDE_BEDROCK_AUTO_MODE:-0}" != 1 ] && [ "${CB_OPT_IN:-0}" = 0 ] && [ "${CB_CONFIG_MODE:-}" = lean ]
+}
