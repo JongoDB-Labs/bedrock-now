@@ -127,6 +127,10 @@ test('reverseHunks: a CR-less hunk in a CRLF file keeps the file CRLF; a place t
   const nonl: Hunk[] = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '\\ No newline at end of file', '+new', '\\ No newline at end of file'] }];
   assert.deepEqual(reverseHunks('new', nonl), { ok: true, text: 'old' });
   assert.equal(reverseHunks('new\n', nonl).ok, false);
+  // the change ends with a newline, the file now does not: its end changed — refused (nothing guessed)
+  const endNl: Hunk[] = [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' a', '-b', '+c'] }];
+  assert.deepEqual(reverseHunks('a\nc\n', endNl), { ok: true, text: 'a\nb\n' });
+  assert.equal(reverseHunks('a\nc', endNl).ok, false);
   // a newline added at the end, undone
   const addNl: Hunk[] = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-x', '\\ No newline at end of file', '+x'] }];
   assert.deepEqual(reverseHunks('x\n', addNl), { ok: true, text: 'x' });
@@ -175,6 +179,8 @@ test('undoBlocker / deletedText: binary, links, mode-only, cut and bad files are
   const base = buildReview({ repo: true, reason: '', head: null, truncated: false, timedOut: false, files: [gitFile({ hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] })] }, undefined, null)[0];
   assert.equal(undoBlocker(base), '');
   for (const over of [{ binary: true }, { symlink: true }, { modeOnly: true }, { cut: true }, { bad: true }] as Partial<ReviewFile>[]) assert.ok(undoBlocker({ ...base, ...over }), JSON.stringify(over));
+  // a file that is not UTF-8: git's text of it came with replacement characters — never written back
+  assert.match(undoBlocker({ ...base, hunks: withIds('u', [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-caf\uFFFD', '+cafe'] }]) }), /not UTF-8/);
   const del = { ...base, status: 'deleted' as const, hunks: withIds('d', [{ oldStart: 1, oldLines: 2, newStart: 0, newLines: 0, lines: ['-one', '-two', '\\ No newline at end of file'] }]) };
   assert.equal(deletedText(del), 'one\ntwo');
   assert.equal(deletedText({ ...del, cut: true }), null);

@@ -200,7 +200,7 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
             type="button"
             class="btn small"
             disabled={!!blocker || !!busy}
-            title={blocker || (f.status === 'added' ? 'Move it to the workspace trash' : f.status === 'deleted' ? 'Write it back' : 'Undo every change in this file')}
+            title={blocker || (f.status === 'added' ? 'Move it to the workspace trash' : f.status === 'deleted' ? 'Write it back' : 'Undo the changes listed in this file (not those you kept)')}
             onClick={() => void run()}
             data-testid="review-undo-file"
           >

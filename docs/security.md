@@ -957,9 +957,11 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   change's own lines must still be there (a moved place is found, a changed one refused: nothing guessed). A new file
   goes to the workspace trash (only while unchanged: `fs.delete` with the same precondition; Claude's own new file only
   while it is still exactly what Claude wrote), a deleted one is written back only if no file of that name appeared
-  (`create`). Binary files, links, mode-only changes, changes shown only in part (a cut patch, a line over 10,000
-  characters) and patches that do not add up (counts, positions) are shown and never undone. CRLF files stay CRLF; a
-  missing last newline stays missing. Line comments are text you typed: they go with your next prompt as
+  (`create`; with the default mode: an executable bit is not restored). Binary files, links, mode-only changes,
+  changes shown only in part (a cut patch, a line over 10,000 characters), patches that do not add up (counts,
+  positions) and text that is not UTF-8 (git's text of it arrives with replacement characters) are shown and never
+  undone. Undoing a file or *Undo all* undoes the changes listed — never one you kept. CRLF files stay CRLF; a missing
+  last newline stays missing, and a file whose end changed since is refused. Line comments are text you typed: they go with your next prompt as
   `path:line — comment` (not with a `/command` or a `# memory` line).
 - [x] **The code container checks git's answer.** The patch is parsed there (any text: headers must name the same
   workspace path on both sides — no `..`, nothing absolute —, hunk counts must add up, every count and line is capped:
@@ -972,7 +974,8 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   `--max-filesize=1M`, `--max-depth=40`, `--regex-size-limit=4M`, `--dfa-size-limit=16M`, links not followed (no
   `-L`), `.gitignore` honoured (`--no-require-git`, nothing above `/workspace`), `.git`, the trash, dependencies and
   build output skipped; your include/exclude globs (at most 10 each, 200 printable characters, no `!` or backslash)
-  checked on both sides. At most 2,000 hits (then ripgrep is stopped), 10 s (then it is killed, with whatever it
+  checked on both sides (the skipped folders come after them: ripgrep's last matching glob decides, so an include
+  cannot bring `.git` or `node_modules` back). At most 2,000 hits (then ripgrep is stopped), 10 s (then it is killed, with whatever it
   started: its own process group), a line cropped to 240 characters around the match, two searches at once. Without
   ripgrep a bounded walk (50,000 entries, depth 40, regular files ≤ 1 MiB opened `O_NOFOLLOW`, binary files skipped,
   the top `.gitignore`'s simple patterns) searches literal text only — a regular expression there is refused, as a

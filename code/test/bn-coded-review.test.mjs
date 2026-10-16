@@ -270,6 +270,15 @@ test('git: the patch is capped (truncated), a configuration include that never e
   const rv = reviewOf(r, patch);
   assert.equal(rv.files[0].path, 'huge.txt');
   assert.equal(rv.files[0].bad || rv.files[0].cut, true, 'a cut patch is never undone');
+  // a list of changed names over the cap: truncated, not a failure (the last, maybe cut, name left out)
+  for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(WS, `n${i}.txt`), 'x\n');
+  git(WS, 'add', '.');
+  commit(WS);
+  for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(WS, `n${i}.txt`), 'y\n');
+  const cut = await diff({ namesMax: 22 });
+  assert.equal(cut.r.repo, true, cut.r.reason);
+  assert.equal(cut.r.truncated, true);
+  assert.ok(cut.r.files.length >= 1 && cut.r.files.length < 7 && cut.r.files.every((f) => /^(huge|n[0-5])\.txt$/.test(f.path)), JSON.stringify(cut.r.files.map((f) => f.path)));
   // a FIFO named by include.path: git waits for ever — the deadline ends it
   const fifo = path.join(ROOT, 'fifo.cfg');
   try { execFileSync('mkfifo', [fifo]); } catch { t.skip('no mkfifo'); return; }
@@ -319,6 +328,8 @@ test('fs.grep: the request is checked; ripgrep\'s arguments are fixed (its own e
   assert.deepEqual(c, { q: '--pre=sh', regex: false, caseSensitive: false, include: ['src/**', '*.{ts,tsx}'], exclude: ['*.min.js'] });
   const a = coded.rgArgs(c);
   assert.equal(a[a.length - 3], '--regexp=--pre=sh', 'the text travels as the value of --regexp=');
+  assert.ok(a.indexOf('--glob=!node_modules') > a.indexOf('--glob=src/**') && a.indexOf('--glob=!.git') > a.indexOf('--glob=!*.min.js'),
+    'the skipped folders come last (ripgrep: the last matching glob decides)');
   assert.deepEqual(a.slice(-2), ['--', '.']);
   for (const want of ['--json', '--no-config', '--fixed-strings', '--ignore-case', '--max-count=100', '--max-filesize=1M', '--engine=default', '--glob=!.git',
     '--glob=!node_modules', '--glob=!.bedrock-now-trash', '--glob=src/**', '--glob=!*.min.js']) assert.ok(a.includes(want), want);

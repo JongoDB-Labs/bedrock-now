@@ -2014,6 +2014,18 @@ def review(browser):
     review_file(page, "src/http/errors.ts").get_by_test_id("review-keep-file").click()
     expect(review_file(page, "src/http/errors.ts")).to_have_count(0)
     expect(page.get_by_test_id("review-kept-toggle")).to_contain_text("Kept (1)")
+    # the file changed after the review was loaded (its end, not the change's lines): Undo refuses, nothing written;
+    # after Refresh it works on the file as it is
+    post(NORMAL + "/__mock/touch?path=src/http/client.ts")
+    before = api_text(page, "src/http/client.ts")
+    review_file(page, "src/http/client.ts").get_by_test_id("review-undo-hunk").first.click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("changed since the review was loaded", timeout=10_000)
+    assert api_text(page, "src/http/client.ts") == before, "written although the file changed since the review"
+    page.get_by_test_id("review-refresh").click()
+    expect(review_file(page, "src/http/client.ts")).to_contain_text("changed on disk by someone else", timeout=10_000)
+    # Keep that hunk: Undo all leaves it (only the changes listed are undone)
+    review_file(page, "src/http/client.ts").get_by_test_id("review-hunk").filter(has_text="changed on disk by someone else").get_by_test_id("review-keep-hunk").click()
+    expect(review_file(page, "src/http/client.ts")).not_to_contain_text("changed on disk by someone else")
     # a comment on a line of client.ts: a chip in the prompt box, then part of the next prompt
     row = review_file(page, "src/http/client.ts").locator(".rv-row.dl-add").first
     line_no = row.locator(".dl-no").nth(1).inner_text().strip()
@@ -2037,8 +2049,9 @@ def review(browser):
     p.shot("review-undo-all.png")
     page.get_by_test_id("undo-all-confirm").click()
     expect(page.get_by_test_id("toast").last).to_contain_text("Undid the changes of", timeout=15_000)
-    for f, t in orig.items():
-        assert api_text(page, f) == t, f"{f} is not back to the last commit"
+    assert api_text(page, "src/utils/format.ts") == orig["src/utils/format.ts"], "format.ts is not back to the last commit"
+    assert api_text(page, "src/http/client.ts") == orig["src/http/client.ts"] + "\n// changed on disk by someone else\n", \
+        f"client.ts: Claude's change undone, the kept hunk kept? {api_text(page, 'src/http/client.ts')[-200:]!r}"
     assert not api_exists(page, "NOTES.md"), "NOTES.md is still there"
     assert api_exists(page, "src/http/errors.ts"), "the kept file was undone"
     expect(review_file(page, "src/utils/format.ts")).to_have_count(0)

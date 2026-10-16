@@ -667,7 +667,7 @@ function untrackedDiff(rel, st, budget) {
 }
 // gitDiff(send) -> STDOUT: the patch (git's own, then the untracked files'), RESULT {repo, reason?, head, files:
 // [{path, status, mtimeMs, size, type}], untracked: [{path, mtimeMs, size, shown}], truncated, timedOut}
-export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE } = {}) {
+export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, namesMax = 4 << 20 } = {}) {
   const t0 = Date.now();
   const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
   let extra = [];
@@ -693,10 +693,12 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE } = {
   if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return no('git: an unexpected HEAD');
   const base = head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'];
   // the changed paths (exact, NUL-separated), then the patch
-  r = await run(GIT_ARGS.names(base), { maxOut: 4 << 20 });
-  if (r.timedOut || r.code !== 0) return no(`git diff: ${r.timedOut ? 'no answer in time' : why(r)}`);
+  r = await run(GIT_ARGS.names(base), { maxOut: namesMax });
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return no(`git diff: ${r.timedOut ? 'no answer in time' : why(r)}`);
   let truncated = r.cut;
-  const names = r.out.toString('utf8').split('\0').filter(gitRel);
+  const nameList = r.out.toString('utf8').split('\0');
+  if (r.cut) nameList.pop();   // (the last name of a cut list may be cut too)
+  const names = nameList.filter(gitRel);
   if (names.length > GIT_NAMES_MAX) truncated = true;
   const files = names.slice(0, GIT_NAMES_MAX).map((p) => {
     const st = statRel(p);
@@ -717,7 +719,9 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE } = {
   const untracked = [];
   if (r.code === 0 || r.cut) {
     if (r.cut) truncated = true;
-    const list = r.out.toString('utf8').split('\0').filter((p) => gitRel(p) && p.split('/')[0] !== TRASH);
+    const all = r.out.toString('utf8').split('\0');
+    if (r.cut) all.pop();
+    const list = all.filter((p) => gitRel(p) && p.split('/')[0] !== TRASH);
     if (list.length > GIT_NAMES_MAX) truncated = true;
     const budget = { left: GIT_UNTRACKED_TOTAL };
     for (const p of list.slice(0, GIT_NAMES_MAX)) {
@@ -759,7 +763,8 @@ export function rgArgs({ q, regex, caseSensitive, include, exclude }) {
   return ['--json', '--no-config', '--no-messages', '--hidden', '--no-require-git', '--no-ignore-parent', '--sort=path',
     `--max-count=${GREP_PER_FILE}`, '--max-filesize=1M', '--max-depth=40', '--regex-size-limit=4M', '--dfa-size-limit=16M', '--engine=default',
     regex ? '--no-fixed-strings' : '--fixed-strings', caseSensitive ? '--case-sensitive' : '--ignore-case',
-    ...GREP_SKIP.map((d) => `--glob=!${d}`), ...include.map((g) => `--glob=${g}`), ...exclude.map((g) => `--glob=!${g}`),
+    // (ripgrep: the last glob that matches decides — the skipped folders come last, so no include brings them back)
+    ...include.map((g) => `--glob=${g}`), ...exclude.map((g) => `--glob=!${g}`), ...GREP_SKIP.map((d) => `--glob=!${d}`),
     `--regexp=${q}`, '--', '.'];
 }
 // a hit's line, at most GREP_TEXT characters around the match: {text, col (in the line), len, cutBefore}

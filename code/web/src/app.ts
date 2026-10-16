@@ -1973,6 +1973,7 @@ export async function undoReview(f: ReviewFile, only?: string): Promise<string> 
 async function undoOne(f: ReviewFile, only?: string): Promise<string> {
   const changed = 'it changed since the review was loaded: Refresh, then look again';
   try {
+    if (f.status !== 'modified' && !only && (f.hunks.some((h) => get().review.kept[h.id]) || get().review.kept[`file:${f.path}`])) return 'you kept it';
     if (f.status === 'added' && (!only || f.hunks.length <= 1)) {
       if (f.source === 'git') {
         await api.fsDelete(f.path, f.mtimeMs);
@@ -1994,11 +1995,12 @@ async function undoOne(f: ReviewFile, only?: string): Promise<string> {
     if (cur.binary || cur.text === null) return 'it is a binary file now';
     if (cur.truncated) return 'it is too large to change here (2 MB): undo it in the terminal';
     if (f.source === 'git' && f.mtimeMs !== null && cur.mtimeMs !== f.mtimeMs) return changed;
-    // (the edits last first; within one, its hunks — reverseHunks goes bottom up)
-    const groups: ReviewHunk[][] = only ? [f.hunks.filter((h) => h.id === only)] : [...f.edits].reverse();
-    if (!groups[0]?.length) return 'that change is not in this file any more';
+    // (the edits last first; within one, its hunks — reverseHunks goes bottom up). The whole file: the changes listed,
+    // never one you kept or one undone already
+    const { undone, kept } = get().review;
+    const groups: ReviewHunk[][] = only ? [f.hunks.filter((h) => h.id === only)] : [...f.edits].reverse().map((g) => g.filter((h) => !kept[h.id]));
+    if (only ? !groups[0]?.length : !groups.some((g) => g.length)) return only ? 'that change is not in this file any more' : 'nothing left to undo here: every change was kept';
     let text = cur.text;
-    const undone = get().review.undone;
     for (const g of groups) {
       const r = reverseHunks(text, g.filter((h) => !undone[h.id]));
       if (!r.ok) return r.error;

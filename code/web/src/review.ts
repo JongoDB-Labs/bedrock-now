@@ -236,8 +236,9 @@ export function reverseHunks(text: string, hunks: Hunk[]): Reversed {
     const end = at + neu.length;
     const atEnd = end === t.lines.length;
     const lastNew = neu[neu.length - 1];
-    // the change says the new text ends without a newline here: so must the file
+    // the change says the new text ends without a newline here: so must the file — and with one, the file must have it
     if (lastNew?.noNl && (!atEnd || t.nl)) return { ok: false, error: 'the file\'s end changed since' };
+    if (lastNew && !lastNew.noNl && atEnd && !t.nl) return { ok: false, error: 'the file\'s end changed since' };
     // the old lines in the file's line ending style (where a CR-less hunk is put into a CRLF file)
     const put = old.map((o) => (loose && crlf && !o.text.endsWith('\r') ? `${o.text}\r` : o.text));
     t.lines.splice(at, neu.length, ...put);
@@ -291,6 +292,8 @@ export function undoBlocker(f: ReviewFile): string {
   if (f.cut) return 'only part of this change is shown here: undo it in the terminal';
   if (f.bad) return 'its diff did not add up: undo it in the terminal';
   if (f.status === 'added' && f.source === 'session' && f.created === null) return 'Claude changed it more than once since creating it: undo the changes one by one';
+  // (git's text of a file that is not UTF-8 came with replacement characters: written back, it would not be the file)
+  if (f.hunks.some((h) => h.lines.some((l) => l.includes('\uFFFD')))) return 'its text is not UTF-8 here: undo it in the terminal (git checkout -- FILE)';
   return '';
 }
 
