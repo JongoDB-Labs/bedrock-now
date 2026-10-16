@@ -266,6 +266,14 @@ test_uninstall_confirmed_removes_volumes_and_own_symlink_only() {
   [ -d "$HOME/.claude-bedrock" ] && [ -d "$TMP/cb" ] || { echo "a config folder was removed" >&2; return 1; }
   CLAUDE_BEDROCK_CONFIG_DIR="$HOME/.claude-bedrock/" cmd_uninstall 2> "$TMP/err"
   assert_eq "$(grep -c 'claude-bedrock.s Claude Code settings' "$TMP/err")" 1
+  # never names ~/.claude, your home folder or / to delete: only folders that resolve as lean
+  mkdir -p "$HOME/.claude"; rm -rf "$HOME/.claude-bedrock"
+  for v in "$HOME/.claude" "$HOME" / '~' rel/dir; do
+    CLAUDE_BEDROCK_CONFIG_DIR="$v" cmd_uninstall 2> "$TMP/err"
+    assert_not_contains "$(cat "$TMP/err")" "Claude Code settings and sessions) was kept"
+  done
+  CLAUDE_BEDROCK_USE_MY_CONFIG=1 cmd_uninstall 2> "$TMP/err"
+  assert_not_contains "$(cat "$TMP/err")" "Claude Code settings and sessions) was kept"
 }
 
 test_uninstall_removes_this_installs_built_images_by_exact_name() {

@@ -58,6 +58,31 @@ test_resolve_without_home() {
     { echo "no-home handling" >&2; return 1; }
 }
 
+test_resolve_with_home_at_root_joins_paths_cleanly() {
+  _home; HOME=/
+  claude_config_resolve
+  assert_eq "$CB_CONFIG_DIR" /.claude-bedrock
+  assert_eq "$CB_MY_CONFIG_DIR" /.claude
+  CLAUDE_BEDROCK_CONFIG_DIR='~/cb' claude_config_resolve
+  assert_eq "$CB_CONFIG_DIR" /cb
+  assert_eq "$(_cb_join / x)" /x
+  assert_eq "$(_cb_join /a x)" /a/x
+}
+
+test_prepare_names_the_fix_for_a_folder_of_another_user() {
+  [ "$(id -u)" != 0 ] || { echo "running as root: every folder is root's own" >&2; return 77; }
+  [ -d /usr/bin ] && [ ! -O /usr/bin ] || { echo "no /usr/bin owned by someone else" >&2; return 77; }
+  _home
+  # outside your home folder: never "sudo chown" (that would take over a system or another user's folder)
+  CLAUDE_BEDROCK_CONFIG_DIR=/usr/bin claude_config_resolve
+  if claude_config_prepare; then return 1; fi
+  assert_eq "$CB_CONFIG_ERR" "/usr/bin belongs to another user — pick a folder of your own with CLAUDE_BEDROCK_CONFIG_DIR"
+  # under your home folder (here: HOME=/usr): most likely made by sudo claude-bedrock
+  HOME=/usr; unset CB_HOME; CLAUDE_BEDROCK_CONFIG_DIR=/usr/bin claude_config_resolve
+  if claude_config_prepare; then return 1; fi
+  assert_eq "$CB_CONFIG_ERR" "~/bin belongs to another user (made by sudo claude-bedrock?) — fix: sudo chown -R $(id -un) ~/bin"
+}
+
 test_resolve_use_my_config_keeps_your_folder_and_beats_the_override() {
   _home
   CLAUDE_BEDROCK_USE_MY_CONFIG=1 claude_config_resolve
@@ -194,6 +219,11 @@ test_new_uuid_is_lowercase_v4_with_fallbacks() {
   ( uuidgen() { return 1; }; u="$(cb_new_uuid)"; cb_is_uuid "$u" ) || { echo "no fallback" >&2; return 1; }
   if cb_is_uuid ABCDEF01-2345-4678-89ab-cdef01234567; then return 1; fi
   if cb_is_uuid not-a-uuid; then return 1; fi
+  # in a locale whose [a-f] would also match A-F
+  for loc in en_US.UTF-8 C.UTF-8 C; do
+    if ( LC_ALL="$loc"; cb_is_uuid ABCDEF01-2345-4678-89AB-CDEF01234567 ) 2>/dev/null; then echo "capitals in $loc" >&2; return 1; fi
+    ( LC_ALL="$loc"; cb_is_uuid abcdef01-2345-4678-89ab-cdef01234567 ) 2>/dev/null || { echo "lowercase in $loc" >&2; return 1; }
+  done
 }
 
 test_resume_plan_from_claudes_arguments() {
@@ -216,6 +246,16 @@ test_resume_plan_from_claudes_arguments() {
   assert_eq "$(_plan --continue)" "detect "
   assert_eq "$(_plan -c "and now")" "detect "
   assert_eq "$(_plan --from-pr 12)" "detect "
+  # combined short options: claude expands them, the wrapper does not take them apart
+  assert_eq "$(_plan -cp)" "none "
+  assert_eq "$(_plan -pc)" "none "
+  assert_eq "$(_plan "-r$u")" "detect "
+  assert_eq "$(_plan -cr)" "detect "
+  # --remote (the old name of --cloud): not a session in this terminal
+  assert_eq "$(_plan --remote "task")" "none "
+  assert_eq "$(_plan --remote=task)" "none "
+  # an id in capitals is not a transcript name
+  assert_eq "$(_plan -r AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE)" "detect "
 }
 
 _uuid1=11111111-2222-4333-8444-555555555555
@@ -253,4 +293,22 @@ test_resume_detect_only_this_folder_and_its_worktrees_and_only_when_unambiguous(
   assert_eq "$(session_resume_detect "$cfg" "$TMP/marker")" "$_uuid2"
   rc=0; session_resume_detect "$cfg" "$TMP/no-marker" > /dev/null || rc=$?; assert_eq "$rc" 1
   rc=0; session_resume_detect "$TMP/no-cfg" "$TMP/marker" > /dev/null || rc=$?; assert_eq "$rc" 1
+}
+
+test_resume_choice_names_the_session_and_notices_clear() {
+  cfg="$TMP/cfg"; mkdir -p "$TMP/work"; cd "$TMP/work" || return 1
+  proj="$cfg/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"; mkdir -p "$proj"
+  : > "$TMP/marker"; sleep 1
+  rc=0; session_resume_choice fresh "$_uuid1" "$cfg" "$TMP/marker" > /dev/null || rc=$?
+  assert_eq "$rc" 1                                                     # nothing typed
+  : > "$proj/$_uuid1.jsonl"
+  assert_eq "$(session_resume_choice fresh "$_uuid1" "$cfg" "$TMP/marker")" "$_uuid1"
+  : > "$proj/$_uuid2.jsonl"                                             # /clear went on in a new session
+  assert_eq "$(session_resume_choice fresh "$_uuid1" "$cfg" "$TMP/marker")" "$_uuid1 others"
+  assert_eq "$(session_resume_choice known "$_uuid1" "$cfg" "$TMP/marker")" "$_uuid1 others"
+  rm -f "$proj/$_uuid1.jsonl"                                           # /clear before typing in the first one
+  assert_eq "$(session_resume_choice fresh "$_uuid1" "$cfg" "$TMP/marker")" pick
+  assert_eq "$(session_resume_choice detect '' "$cfg" "$TMP/marker")" "$_uuid2"
+  : > "$proj/$_uuid3.jsonl"
+  assert_eq "$(session_resume_choice detect '' "$cfg" "$TMP/marker")" pick
 }

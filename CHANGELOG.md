@@ -36,17 +36,27 @@ All notable changes to bedrock-now are documented here. The format follows
     what not.
   - **Resume:** sessions are kept in `~/.claude-bedrock`, so Claude Code's own exit hint (`claude --resume <id>`)
     doesn't find them. A new interactive session gets its id from the wrapper (`--session-id`), and when it ends the
-    wrapper prints `resume: claude-bedrock --resume <id>`, before the session cost. After `--continue` or the picker
-    it names the one session written in that folder (or its `claude -w` worktrees) during the run, or suggests the
-    picker when there were several. No line for `-p`, with `CLAUDE_BEDROCK_QUIET=1` or without a terminal.
+    wrapper prints `resume: claude-bedrock --resume <id>`, before the session cost; after `/clear` (`/new`,
+    `/reset`) or an in-session `/resume` it adds "(after /clear or /resume: claude-bedrock --resume to pick)". After
+    `--continue` or the picker it names the one session written in that folder (or its `claude -w` worktrees) during
+    the run, or suggests the picker when there were several. No line for `-p`, `--bg`, `--cloud`/`--remote`, with
+    `CLAUDE_BEDROCK_QUIET=1` or without a terminal.
   - `ENABLE_TOOL_SEARCH=true` is no longer set (here and in the browser terminal): with the beta headers off it
     changed nothing — checked with Claude Code 2.1.301, an MCP server's 40 tools were all in the request either way.
   - The browser terminal is otherwise unchanged: its Claude Code already has its own config (`~/.claude` in the
     `terminal-home` volume); its `--help` now says so. `./stack uninstall` mentions that `~/.claude-bedrock` (and a
     `CLAUDE_BEDROCK_CONFIG_DIR` folder) is kept.
+  - `./stack uninstall` names a claude-bedrock folder only as the wrapper resolves it in lean mode, never `~/.claude`
+    or your home folder.
   - Tests: `tests/run.sh` fails if the suite creates `~/.claude-bedrock` in your real home folder. e2e:
     `claude/claude-bedrock` runs with a fresh `CLAUDE_BEDROCK_CONFIG_DIR` (was `CLAUDE_CONFIG_DIR`, which the
     wrapper now ignores) and checks the `config: lean` line and the folder's mode.
+
+### Fixed
+
+- `claude-bedrock -- "a prompt"` (and the browser terminal's `claude-bedrock`) lost the shared MCP server: its
+  `--mcp-config` was appended after your arguments, so after a `--` it became part of the prompt. It now comes first,
+  as one `--mcp-config=<file>` argument (two arguments there would let the option take your prompt for a config file).
 
 ## [0.4.0] - 2026-10-14
 

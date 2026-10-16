@@ -1585,15 +1585,15 @@ cmd_uninstall() {
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
   # claude-bedrock's own Claude Code folder (settings, plugins, sessions): yours, possibly shared by other copies.
-  # The default one, and the one CLAUDE_BEDROCK_CONFIG_DIR names in this shell.
-  local cb_dir cb_seen=''
-  for cb_dir in "$HOME/.claude-bedrock" "${CLAUDE_BEDROCK_CONFIG_DIR:-}"; do
-    while [ "${#cb_dir}" -gt 1 ] && [ "${cb_dir%/}" != "$cb_dir" ]; do cb_dir="${cb_dir%/}"; done
+  # The default one and the one CLAUDE_BEDROCK_CONFIG_DIR names in this shell — each only as lib/claude_config.sh
+  # resolves it in lean mode, so this never points at ~/.claude, your home folder or / ("delete it yourself").
+  local cb_dir cb_seen='' cb_env
+  for cb_env in "${CLAUDE_BEDROCK_CONFIG_DIR:-}" ''; do
+    cb_dir="$(CLAUDE_BEDROCK_USE_MY_CONFIG=0 CLAUDE_BEDROCK_CONFIG_DIR="$cb_env" claude_config_resolve 2>/dev/null &&
+      [ "$CB_CONFIG_MODE" = lean ] && printf '%s' "$CB_CONFIG_DIR")" || continue
     [ -n "$cb_dir" ] && [ -d "$cb_dir" ] && [ "$cb_dir" != "$cb_seen" ] || continue
     cb_seen="$cb_dir"
-    # shellcheck disable=SC2088  # "~/…" for display
-    case "$cb_dir" in "$HOME"/*) cb_dir="~/${cb_dir#"$HOME"/}" ;; esac
-    log "$cb_dir (claude-bedrock's Claude Code settings and sessions) was kept — delete it yourself if you're done."
+    log "$(claude_config_show "$cb_dir") (claude-bedrock's Claude Code settings and sessions) was kept — delete it yourself if you're done."
   done
 }
 
@@ -1620,3 +1620,5 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/remote.sh"
 # The optional browser terminal (./stack terminal; Claude Code in a sandbox container, the portal's Terminal tab).
 . "$STACK_DIR/lib/terminal.sh"
+# claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
+. "$STACK_DIR/lib/claude_config.sh"

@@ -266,10 +266,12 @@ claude.ai plan that is invisible; billed per token it is not. So:
 - **Resume with `claude-bedrock --resume <id>`** (or `claude-bedrock --continue`): sessions are kept in
   `~/.claude-bedrock`, so the `claude --resume <id>` that Claude Code prints at exit does not find them. A new
   interactive session gets its id from the wrapper (`--session-id`), and when it ends the wrapper prints the right
-  line, before the session cost: `resume: claude-bedrock --resume 0b2c3d4e-…`. After `--continue` or the picker it
-  names the session it can tell apart, or suggests the picker (`claude-bedrock --resume`) when several sessions wrote
-  in that folder meanwhile. There is no such line for `-p`, with `CLAUDE_BEDROCK_QUIET=1`, or when stderr is not a
-  terminal: use `claude-bedrock --resume` (the picker) or `claude-bedrock --continue` then.
+  line, before the session cost: `resume: claude-bedrock --resume 0b2c3d4e-…`. That is the session you started; if
+  you moved on with `/clear` (or `/new`, `/reset`) or an in-session `/resume`, the line adds `(after /clear or /resume:
+  claude-bedrock --resume to pick)`. After `--continue` or the picker it names the session it can tell apart, or
+  suggests the picker (`claude-bedrock --resume`) when several sessions wrote in that folder meanwhile. There is no
+  such line for `-p`, with `CLAUDE_BEDROCK_QUIET=1`, or when stderr is not a terminal: use `claude-bedrock --resume`
+  (the picker) or `claude-bedrock --continue` then.
 
 More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 

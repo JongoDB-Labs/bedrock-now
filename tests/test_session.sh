@@ -103,13 +103,18 @@ printf 'CLAUDE %s\n' "$*"
 printf 'HEADERS %s\n' "$(printf '%s' "$ANTHROPIC_CUSTOM_HEADERS" | tr '\n' '|')"
 printf 'CONFIG %s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
 # like Claude Code once something was typed (STUB_TYPED=1): the transcript goes to
-# <config>/projects/<working folder, non-alphanumerics as "-">/<id>.jsonl, the id from --session-id or STUB_TRANSCRIPT
-if [ -n "${STUB_TYPED:-}" ]; then
+# <config>/projects/<working folder, non-alphanumerics as "-">/<id>.jsonl, the id from --session-id or STUB_TRANSCRIPT.
+# STUB_OTHER: another session of the same folder written meanwhile (/clear, an in-session /resume, a second session).
+if [ -n "${STUB_TYPED:-}${STUB_OTHER:-}" ]; then
   sid="${STUB_TRANSCRIPT:-}"; prev=''
-  for a in "$@"; do [ "$prev" = --session-id ] && sid="$a"; prev="$a"; done
+  for a in "$@"; do
+    case "$a" in --session-id=*) sid="${a#--session-id=}" ;; esac
+    [ "$prev" = --session-id ] && sid="$a"; prev="$a"
+  done
   d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
-  sleep 1; mkdir -p "$d" && : > "$d/$sid.jsonl"   # (after the wrapper's marker, also on 1 s clocks)
-  [ -z "${STUB_OTHER:-}" ] || : > "$d/$STUB_OTHER.jsonl"   # another session writing in the same folder meanwhile
+  sleep 1; mkdir -p "$d"   # (after the wrapper's marker, also on 1 s clocks)
+  [ -z "${STUB_TYPED:-}" ] || : > "$d/$sid.jsonl"
+  [ -z "${STUB_OTHER:-}" ] || : > "$d/$STUB_OTHER.jsonl"
 fi
 [ -z "${STUB_DUMP:-}" ] || { printf 'ARGV %s\n' "$*"; env; } > "$STUB_DUMP"
 if [ -n "${STUB_SLEEP:-}" ]; then
@@ -399,6 +404,7 @@ test_wrapper_refuses_unusable_config_folders() {
   _run_wrapper -p hi > /dev/null 2>&1; chmod 770 "$HOME/.claude-bedrock"
   rc=0; _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
   assert_eq "$rc" 1
+  # shellcheck disable=SC2088  # the message shows "~/"
   assert_contains "$(cat "$TMP/err")" "~/.claude-bedrock can be changed by other users — fix: chmod 700 ~/.claude-bedrock"
 }
 
@@ -414,24 +420,33 @@ test_wrapper_without_home_still_helps_and_says_why_it_stops() {
 
 test_wrapper_new_session_gets_its_id_from_the_wrapper_and_names_exactly_it() {
   _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
-  # another session writes in the same folder meanwhile: the line still names this one
-  STUB_TYPED=1 STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556666 _run_wrapper > "$TMP/out" 2> "$TMP/err"
-  id="$(sed -n "s/^CLAUDE --session-id \($_uuid_re\)\$/\1/p" "$TMP/out")"
+  STUB_TYPED=1 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  id="$(sed -n "s/^CLAUDE --session-id=\($_uuid_re\)\$/\1/p" "$TMP/out")"
   [ -n "$id" ] || { cat "$TMP/out" >&2; echo "no --session-id passed" >&2; return 1; }
   assert_eq "$(tail -n 2 "$TMP/err" | head -n 1)" "resume: claude-bedrock --resume $id"
   assert_contains "$(tail -n 1 "$TMP/err")" "session: 2 requests"   # the (slow) summary comes after it
+  # another session of this folder written meanwhile (/clear, /resume, a second session): still this id, plus a hint
+  STUB_TYPED=1 STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556666 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  id="$(sed -n "s/^CLAUDE --session-id=\($_uuid_re\)\$/\1/p" "$TMP/out")"
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume $id  (after /clear or /resume: claude-bedrock --resume to pick)"
+  # /clear before anything was typed in the first one: only the picker can tell
+  STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556670 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume  (more than one session wrote in this folder meanwhile: pick yours)"
   # with your own folder the command says so
   CLAUDE_BEDROCK_USE_MY_CONFIG=1 STUB_TYPED=1 _run_wrapper > "$TMP/out" 2> "$TMP/err"
-  id="$(sed -n "s/^CLAUDE --session-id \($_uuid_re\)\$/\1/p" "$TMP/out")"
+  id="$(sed -n "s/^CLAUDE --session-id=\($_uuid_re\)\$/\1/p" "$TMP/out")"
   assert_contains "$(cat "$TMP/err")" "resume: CLAUDE_BEDROCK_USE_MY_CONFIG=1 claude-bedrock --resume $id"
   CLAUDE_BEDROCK_CONFIG_DIR="$TMP/cb" STUB_TYPED=1 _run_wrapper > "$TMP/out" 2> "$TMP/err"
   assert_contains "$(cat "$TMP/err")" "resume: CLAUDE_BEDROCK_CONFIG_DIR=$TMP/cb claude-bedrock --resume "
+  for f in "$HOME/.claude-bedrock"/.claude-bedrock-run.* "$TMP/cb"/.claude-bedrock-run.*; do
+    [ ! -e "$f" ] || { echo "marker left: $f" >&2; return 1; }
+  done
 }
 
 test_wrapper_no_resume_line_when_nothing_was_typed_or_for_one_shots() {
   _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
   _run_wrapper > "$TMP/out" 2> "$TMP/err"
-  assert_contains "$(head -n 1 "$TMP/out")" "CLAUDE --session-id "
+  assert_contains "$(head -n 1 "$TMP/out")" "CLAUDE --session-id="
   assert_not_contains "$(cat "$TMP/err")" "resume:"
   STUB_TYPED=1 STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556667 _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
   assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE -p hi"
@@ -441,9 +456,38 @@ test_wrapper_no_resume_line_when_nothing_was_typed_or_for_one_shots() {
 test_wrapper_resume_by_id_names_that_session() {
   _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
   u=0b2c3d4e-1111-4222-8333-444455556668
-  STUB_TYPED=1 STUB_TRANSCRIPT="$u" STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556669 _run_wrapper --resume "$u" > "$TMP/out" 2> "$TMP/err"
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" _run_wrapper --resume "$u" > "$TMP/out" 2> "$TMP/err"
   assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --resume $u"   # no --session-id of the wrapper's
+  assert_eq "$(grep '^resume:' "$TMP/err")" "resume: claude-bedrock --resume $u"
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556669 _run_wrapper --resume "$u" > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume $u  (after /clear or /resume:"
+}
+
+test_wrapper_combined_short_options_get_no_session_id() {
+  _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
+  u=0b2c3d4e-1111-4222-8333-44445555666c
+  for a in -cp -pc; do
+    STUB_TYPED=1 STUB_TRANSCRIPT="$u" _run_wrapper "$a" hi > "$TMP/out" 2> "$TMP/err"
+    assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE $a hi"
+    assert_not_contains "$(cat "$TMP/err")" "resume:"
+  done
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" _run_wrapper "-r$u" > "$TMP/out" 2> "$TMP/err"
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE -r$u"   # (claude reads it as --resume <id>)
   assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume $u"
+}
+
+test_wrapper_puts_the_shared_mcp_config_first_as_one_argument() {
+  _wrapper_env; mkdir -p "$STATE_DIR"; printf '{}' > "$STATE_DIR/mcp.json"
+  # after a `--` of yours it would be prompt text; as two arguments the variadic option would take your prompt
+  _run_wrapper -p -- "a prompt" > "$TMP/out" 2> /dev/null
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --mcp-config=$STATE_DIR/mcp.json -p -- a prompt"
+  CLAUDE_BEDROCK_QUIET=1 _run_wrapper "fix it" -p > "$TMP/out" 2> /dev/null   # the exec path too
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --mcp-config=$STATE_DIR/mcp.json fix it -p"
+  _run_wrapper -- "a prompt" > "$TMP/out" 2> /dev/null
+  assert_contains "$(head -n 1 "$TMP/out")" " --mcp-config=$STATE_DIR/mcp.json -- a prompt"
+  assert_contains "$(head -n 1 "$TMP/out")" "CLAUDE --session-id="
+  _run_wrapper mcp list > "$TMP/out" 2> /dev/null
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"
 }
 
 test_wrapper_continue_names_the_one_session_or_offers_the_picker() {
@@ -455,5 +499,5 @@ test_wrapper_continue_names_the_one_session_or_offers_the_picker() {
   STUB_TYPED=1 STUB_TRANSCRIPT="$u" STUB_OTHER=0b2c3d4e-1111-4222-8333-44445555666b _run_wrapper -c > "$TMP/out" 2> "$TMP/err"
   assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume  (more than one session wrote in this folder meanwhile: pick yours)"
   # the marker (in the config folder, the transcripts' clock) is gone
-  assert_eq "$(ls -A "$HOME/.claude-bedrock" | grep -c '^\.claude-bedrock-run\.' || true)" 0
+  for f in "$HOME/.claude-bedrock"/.claude-bedrock-run.*; do [ ! -e "$f" ] || { echo "left: $f" >&2; return 1; }; done
 }

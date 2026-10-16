@@ -233,13 +233,20 @@ test fails.
   the session cost (a terminal, not `CLAUDE_BEDROCK_QUIET=1`, not a subcommand) and the run is interactive (no
   `-p`), it prints `resume: claude-bedrock --resume <id>` right after claude exits, before the (slower) cost —
   prefixed with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` or `CLAUDE_BEDROCK_CONFIG_DIR=…` when one of them picked the folder.
-  A new session gets its id from the wrapper (`claude --session-id <uuid>`, from `uuidgen`, the Linux kernel or
-  Python), so the line names exactly it, also with other sessions in the same folder; `--resume <id>` and
-  `--session-id <id>` name that id. For `--continue`, the `--resume` picker, `--fork-session` and `--from-pr` it
-  is the one transcript written during the run in this working folder's project or its `claude -w` worktrees (a
-  marker file in the config folder, on the transcripts' own clock, tells which); several (another session there, or
-  a plugin's Agent SDK session in your own `~/.claude`) give `claude-bedrock --resume` (the picker) instead. Nothing
-  typed, no transcript: no line. `--bg`, `--cloud` and `--desktop` get none either.
+  A new session gets its id from the wrapper (`claude --session-id=<uuid>`, from `uuidgen`, the Linux kernel or
+  Python), so the line names exactly it; `--resume <id>` and `--session-id <id>` name that id. A marker file in the
+  config folder (on the transcripts' own clock) marks the start of the run: when other transcripts of this working
+  folder (or its `claude -w` worktrees) were written too — `/clear`, `/new` and `/reset` start a new session, an
+  in-session `/resume` switches to another, or a second session ran there — the line adds `(after /clear or /resume:
+  claude-bedrock --resume to pick)`, and if the wrapper's own session has no transcript (cleared before anything was
+  typed) it suggests the picker instead. For `--continue`, the `--resume` picker, `--fork-session`, `--from-pr` and
+  combined short options (`-cr`, `-r<id>`: claude expands them, the wrapper does not take them apart) it is the one
+  transcript written during the run there; several (another session, or a plugin's Agent SDK session in your own
+  `~/.claude`) give `claude-bedrock --resume` (the picker). Never another folder's session. Nothing typed, no
+  transcript: no line. `--bg`, `--cloud`/`--remote`, `--desktop` and a combined option with `p` in it get none.
+- The shared MCP server is passed first, as one argument (`--mcp-config=<file>`), the wrapper's `--session-id=…`
+  likewise: after your arguments, a `--` of yours made it prompt text (it used to be appended); first but as two
+  arguments, Claude Code's variadic `--mcp-config` would take your prompt for a second config file.
 - **Requests at launch.** Claude Code's changelog, 2.1.290: "Changed `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` to
   also skip the startup connection warm-up" — the wrapper sets that variable. The changelog names no other switch for
   startup requests, and none is needed here: in lean mode an interactive launch made no model request until

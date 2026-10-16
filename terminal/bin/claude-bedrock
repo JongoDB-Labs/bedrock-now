@@ -77,7 +77,8 @@ subcmds="$(claude --help 2>/dev/null </dev/null | awk '/^Commands:/ { f = 1; nex
 add_mcp=1
 case "${1:-}" in '' | -*) ;; *) for c in $subcmds; do [ "$c" = "$1" ] && { add_mcp=0; break; }; done ;; esac
 mcp_args=()
-[ "$add_mcp" = 1 ] && [ -f "$mcp" ] && mcp_args=(--mcp-config "$mcp")
+# First, as one argument: after yours a `--` would make it prompt text; as two, the variadic option takes your prompt.
+[ "$add_mcp" = 1 ] && [ -f "$mcp" ] && mcp_args=("--mcp-config=$mcp")
 
 # Every request carries a session id and tags (LiteLLM UI › Logs can filter by them); your own headers are kept.
 sid="cb-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
@@ -90,12 +91,12 @@ want_summary=0
 if [ "$add_mcp" = 1 ] && [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ] && [ -n "$before" ]; then
   if [ -t 2 ] || [ "${CLAUDE_BEDROCK_SUMMARY:-0}" = 1 ]; then want_summary=1; fi
 fi
-[ "$want_summary" = 1 ] || exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
+[ "$want_summary" = 1 ] || exec claude ${mcp_args[@]+"${mcp_args[@]}"} "$@"
 
 # claude runs as a foreground child (Ctrl-C reaches it directly); the ':' traps only keep this script alive.
 trap ':' INT QUIT TERM
 trap 'exit 129' HUP
-if claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}; then rc=0; else rc=$?; fi
+if claude ${mcp_args[@]+"${mcp_args[@]}"} "$@"; then rc=0; else rc=$?; fi
 trap 'exit "$rc"' INT QUIT TERM HUP
 # LiteLLM books spend in batches (within ~1-6 s): wait up to 8 s for it to move.
 [ ! -t 2 ] || printf 'session: tallying cost…' >&2

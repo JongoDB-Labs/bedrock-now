@@ -21,6 +21,11 @@ _cb_strip() {
   printf '%s\n' "$p"
 }
 
+# _cb_join DIR NAME -> DIR/NAME, without a doubled slash when DIR is "/"
+_cb_join() {
+  case "$1" in /) printf '/%s\n' "$2" ;; *) printf '%s/%s\n' "$1" "$2" ;; esac
+}
+
 # _cb_home -> your home folder: $HOME, or — HOME unset or empty — the account's own (tilde expansion reads the
 # password database when HOME is unset). Empty when neither is known.
 # shellcheck disable=SC2088  # a literal "~" to compare against
@@ -75,9 +80,9 @@ claude_config_resolve() {
   local d set="${CLAUDE_BEDROCK_CONFIG_DIR:-}" mine
   CB_CONFIG_ERR=''; CB_CONFIG_SAME_AS=''
   CB_HOME="$(_cb_home)"
-  CB_DEFAULT_DIR="${CB_HOME:+$CB_HOME/.claude-bedrock}"
+  CB_DEFAULT_DIR=''; [ -z "$CB_HOME" ] || CB_DEFAULT_DIR="$(_cb_join "$CB_HOME" .claude-bedrock)"
   CB_MY_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}"
-  [ -n "$CB_MY_CONFIG_DIR" ] || CB_MY_CONFIG_DIR="${CB_HOME:+$CB_HOME/.claude}"
+  [ -n "$CB_MY_CONFIG_DIR" ] || [ -z "$CB_HOME" ] || CB_MY_CONFIG_DIR="$(_cb_join "$CB_HOME" .claude)"
   [ -n "$CB_MY_CONFIG_DIR" ] || CB_MY_CONFIG_DIR='~/.claude'   # no home folder at all: for display only
   CB_MY_CONFIG_DIR="$(_cb_strip "$CB_MY_CONFIG_DIR")"
   if [ "${CLAUDE_BEDROCK_USE_MY_CONFIG:-0}" = 1 ]; then
@@ -87,7 +92,7 @@ claude_config_resolve() {
   case "$set" in
     '') d="$CB_DEFAULT_DIR" ;;
     '~' | '~/') d="$CB_HOME" ;;
-    '~/'*) d="${CB_HOME:+$CB_HOME/${set#\~/}}" ;;   # "~/x" that reached us unexpanded (quoted when it was set)
+    '~/'*) d=''; [ -z "$CB_HOME" ] || d="$(_cb_join "$CB_HOME" "${set#\~/}")" ;;   # "~/x" that reached us unexpanded
     /*) d="$set" ;;
     *) CB_CONFIG_ERR="CLAUDE_BEDROCK_CONFIG_DIR must be an absolute path (it is: $set)"; return 1 ;;
   esac
@@ -105,7 +110,7 @@ claude_config_resolve() {
   fi
   CB_CONFIG_DIR="$d"
   # The "lean" folder is one of yours after all (named directly, or a link to it): say so, as for the opt-in.
-  for mine in "$CB_MY_CONFIG_DIR" "${CB_HOME:+$CB_HOME/.claude}"; do
+  for mine in "$CB_MY_CONFIG_DIR" "$( [ -z "$CB_HOME" ] || _cb_join "$CB_HOME" .claude)"; do
     if _cb_same "$d" "$mine"; then CB_CONFIG_MODE=mine; CB_CONFIG_SAME_AS="$mine"; break; fi
   done
   return 0
@@ -131,7 +136,13 @@ claude_config_prepare() {
     return 1
   fi
   if [ ! -O "$d" ]; then
-    CB_CONFIG_ERR="$show belongs to another user (made by sudo claude-bedrock?) — fix: sudo chown -R $(id -un) $show"
+    # Under your home folder: most likely one `sudo claude-bedrock` made. Anywhere else, never suggest taking it over.
+    CB_CONFIG_ERR="$show belongs to another user — pick a folder of your own with CLAUDE_BEDROCK_CONFIG_DIR"
+    if [ -n "$CB_HOME" ] && [ "$CB_HOME" != / ]; then
+      case "$d" in
+        "$CB_HOME"/*) CB_CONFIG_ERR="$show belongs to another user (made by sudo claude-bedrock?) — fix: sudo chown -R $(id -un) $show" ;;
+      esac
+    fi
     return 1
   fi
   if [ ! -w "$d" ]; then
@@ -200,10 +211,13 @@ claude_config_resume_prefix() {
 
 # --- the session id for `claude-bedrock --resume` ---
 
-# cb_is_uuid STR -> true for a lowercase 8-4-4-4-12 hex id (Claude Code's session ids and transcript names)
+# cb_is_uuid STR -> true for a lowercase 8-4-4-4-12 hex id (Claude Code's session ids and transcript names). The
+# digits are spelled out: a range like [a-f] can match A-F too, depending on the locale.
 cb_is_uuid() {
+  local h='[0123456789abcdef]'
+  # shellcheck disable=SC2254  # $h is a pattern on purpose
   case "$1" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+    $h$h$h$h$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h$h$h$h$h$h$h$h$h) return 0 ;;
   esac
   return 1
 }
@@ -219,12 +233,13 @@ cb_new_uuid() {
 }
 
 # claude_resume_plan ARGS… -> how this run's session id is known, from claude's arguments:
-#   CB_RESUME_KIND=none    one-shot (-p), or not a session in this terminal (--bg, --cloud, --desktop): no line
+#   CB_RESUME_KIND=none    one-shot (-p), or not a session in this terminal (--bg, --cloud/--remote, --desktop)
 #   CB_RESUME_KIND=fresh   a new session: the wrapper passes --session-id <new uuid> and names exactly that
 #   CB_RESUME_KIND=known   --session-id ID, or --resume ID, without --fork-session: CB_RESUME_ID
 #   CB_RESUME_KIND=detect  --continue, the --resume picker, --fork-session, --from-pr, …: looked for after the run
+# Combined short options (-cp, -r<id>: claude expands them) are not taken apart: with a "p" in them none, else detect.
 claude_resume_plan() {
-  local a prev='' cont=0 fork=0 sid='' rid='' resumed=0
+  local a prev='' cont=0 fork=0 sid='' rid='' resumed=0 cluster=0
   CB_RESUME_KIND=fresh; CB_RESUME_ID=''
   for a in "$@"; do
     case "$prev" in
@@ -234,7 +249,7 @@ claude_resume_plan() {
     case "$a" in
       --) break ;;
       -p | --print) CB_RESUME_KIND=none; return 0 ;;
-      --bg | --background | --cloud | --cloud=* | --desktop) CB_RESUME_KIND=none; return 0 ;;
+      --bg | --background | --cloud | --cloud=* | --remote | --remote=* | --desktop) CB_RESUME_KIND=none; return 0 ;;
       --session-id) prev="$a" ;;
       --session-id=*) sid="${a#--session-id=}" ;;
       --resume | -r) resumed=1; prev="$a" ;;
@@ -243,11 +258,13 @@ claude_resume_plan() {
       --from-pr=* | --teleport=*) resumed=1 ;;
       --continue | -c) cont=1 ;;
       --fork-session) fork=1 ;;
+      -[!-]?*) case "$a" in *p*) CB_RESUME_KIND=none; return 0 ;; *) cluster=1 ;; esac ;;
     esac
   done
   if [ "$fork" = 0 ] && cb_is_uuid "$sid"; then CB_RESUME_KIND=known; CB_RESUME_ID="$sid"
   elif [ "$fork" = 0 ] && [ "$cont" = 0 ] && cb_is_uuid "$rid"; then CB_RESUME_KIND=known; CB_RESUME_ID="$rid"
-  elif [ -n "$sid" ] || [ "$resumed" = 1 ] || [ "$cont" = 1 ] || [ "$fork" = 1 ]; then CB_RESUME_KIND=detect
+  elif [ -n "$sid" ] || [ "$resumed" = 1 ] || [ "$cont" = 1 ] || [ "$fork" = 1 ] || [ "$cluster" = 1 ]; then
+    CB_RESUME_KIND=detect
   fi
   return 0
 }
@@ -259,27 +276,57 @@ session_transcript_exists() {
   [ -n "$(find "$1/projects" -mindepth 2 -maxdepth 2 -type f -name "$2.jsonl" 2>/dev/null | head -n 1)" ]
 }
 
-# session_resume_detect CONFIG_DIR MARKER -> the id of the session this run wrote, for runs whose id the wrapper
-# cannot know beforehand: the transcripts (projects/<folder>/<uuid>.jsonl) changed after MARKER was created, in this
-# working folder's project and its `claude -w` worktrees only (Claude Code names a project after the physical path,
-# every character but A-Z a-z 0-9 as "-"; a worktree is <folder>/.claude/worktrees/<name>). Exactly one: prints it.
-# Fails with 1 when there is none, and with 2 when there are several (another session in the same folder, or a
-# plugin's own Agent SDK session in your ~/.claude): then only the picker can tell.
-session_resume_detect() {
-  local cfg="$1" marker="$2" slug f id found='' n=0 d
-  [ -f "$marker" ] && [ -d "$cfg/projects" ] || return 1
+# session_written_ids CONFIG_DIR MARKER -> the ids of the sessions whose transcripts (projects/<folder>/<uuid>.jsonl)
+# changed after MARKER was created, one per line: in this working folder's project and its `claude -w` worktrees only
+# (Claude Code names a project after the physical path, every character but A-Z a-z 0-9 as "-"; a worktree is
+# <folder>/.claude/worktrees/<name>). Never another folder's.
+session_written_ids() {
+  local cfg="$1" marker="$2" slug f id found='' d
+  [ -f "$marker" ] && [ -d "$cfg/projects" ] || return 0
   slug="$(pwd -P 2>/dev/null | sed 's/[^A-Za-z0-9]/-/g')"
-  [ -n "$slug" ] || return 1
+  [ -n "$slug" ] || return 0
   for d in "$cfg/projects/$slug" "$cfg/projects/$slug--claude-worktrees-"*; do
     [ -d "$d" ] || continue
     for f in "$d"/*.jsonl; do
       [ -f "$f" ] && [ -n "$(find "$f" -newer "$marker" 2>/dev/null)" ] || continue
       id="$(basename "$f" .jsonl)"
       cb_is_uuid "$id" || continue
-      case " $found " in *" $id "*) ;; *) found="$found $id"; n=$((n + 1)) ;; esac
+      case " $found " in *" $id "*) ;; *) found="$found $id"; printf '%s\n' "$id" ;; esac
     done
   done
+}
+
+# session_resume_detect CONFIG_DIR MARKER -> for runs whose id the wrapper cannot know beforehand (--continue, the
+# picker, …): the one session written during the run (see session_written_ids). Fails with 1 when there is none, and
+# with 2 when there are several (another session in the same folder, or a plugin's own Agent SDK session in your
+# ~/.claude): then only the picker can tell.
+session_resume_detect() {
+  local ids n
+  ids="$(session_written_ids "$1" "$2")"
+  n="$(printf '%s' "$ids" | grep -c . || true)"
   [ "$n" -gt 0 ] || return 1
   [ "$n" -eq 1 ] || return 2
-  printf '%s\n' "${found# }"
+  printf '%s\n' "$ids"
+}
+
+# session_resume_choice KIND ID CONFIG_DIR MARKER -> what the resume line names, after the run:
+#   "<id>"         the session (KIND fresh/known: ID, once its transcript exists; detect: the one written)
+#   "<id> others"  ID, while other sessions of this folder were written too: /clear (/new, /reset) and an in-session
+#                  /resume switch to another session, or another one ran there meanwhile
+#   "pick"         only the picker can tell
+# Fails when there is nothing to resume (nothing typed).
+session_resume_choice() {
+  local kind="$1" id="$2" cfg="$3" marker="$4" others n
+  if [ "$kind" = detect ]; then
+    others="$(session_resume_detect "$cfg" "$marker")" && n=0 || n=$?
+    case "$n" in 0) printf '%s\n' "$others"; return 0 ;; 2) echo pick; return 0 ;; *) return 1 ;; esac
+  fi
+  others="$(session_written_ids "$cfg" "$marker" | grep -vxF "$id" | grep -c . || true)"
+  if session_transcript_exists "$cfg" "$id"; then
+    if [ "$others" -gt 0 ]; then printf '%s others\n' "$id"; else printf '%s\n' "$id"; fi
+  elif [ "$others" -gt 0 ]; then
+    echo pick
+  else
+    return 1
+  fi
 }
