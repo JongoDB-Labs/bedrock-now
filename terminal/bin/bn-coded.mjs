@@ -718,7 +718,7 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
 // --- Node has no openat — but only with something running as this same user in the sandbox, which could write these
 // --- files directly anyway: the watchlist is a detector, not a boundary.)
 //   fixed files      git, VS Code, direnv, Claude Code, MCP, npm/yarn/pnpm, git hook managers, dev containers
-//   hook folders     .git/hooks, .husky, and core.hooksPath (husky v9's .husky/_, .githooks/ …) when it is in /workspace
+//   hook folders     .git/hooks, .husky, and every core.hooksPath (husky v9's .husky/_, .githooks/ …) in /workspace
 //   git itself       .git (a folder, or a "gitdir:" file — followed when it points into /workspace, with its commondir),
 //                    its config and include.path / includeIf targets and a core.fsmonitor program in /workspace, and
 //                    submodules (.git/modules/*/config, …/hooks/*)
@@ -733,6 +733,9 @@ const WATCH_MAX_FILE = 1 << 20, WATCH_MAX_DATA = 2 << 20, WATCH_MAX_DIR = 64, WA
 // at most this many entries in all (the code container takes 300) and git config files followed through includes;
 // beyond either the answer says truncated (the page then says not everything could be checked) — never a silent cut
 const WATCH_MAX_ENTRIES = 256, WATCH_MAX_INCLUDES = 16;
+// every distinct core.hooksPath / core.fsmonitor value seen counts (an includeIf git does not apply could otherwise
+// steer which one is watched), at most this many of each — beyond, truncated
+const WATCH_MAX_GIT_VALUES = 4;
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 // a path of the workspace this list may name: relative, one-line, no "." or ".." part
 export const watchRel = (rel) => typeof rel === 'string' && rel.length > 0 && rel.length <= 1024 && !rel.startsWith('/') &&
@@ -828,9 +831,11 @@ export function gitConfigLines(text) {
 }
 // gitLayout(): what git on your computer reads from this folder — the git folders (.git, or a gitdir in /workspace and
 // its commondir), their config files (config.worktree too with extensions.worktreeConfig, and include.path /
-// includeIf targets in /workspace: 3 levels, WATCH_MAX_INCLUDES in all), the hook folder git uses (the LAST
-// core.hooksPath, as git; .git/hooks without one), .husky, a core.fsmonitor program in /workspace (the last one), and
-// submodules (their config and hooks, listed last). truncated: something was left out (too many includes or modules).
+// includeIf targets in /workspace: 3 levels, WATCH_MAX_INCLUDES in all), the hook folders git may use (every distinct
+// core.hooksPath in /workspace, the last one first: which one git applies depends on includeIf conditions this does
+// not evaluate; and .git/hooks), .husky, the core.fsmonitor programs in /workspace (every distinct value), and
+// submodules (their config and hooks, listed last). truncated: something was left out (too many includes, values or
+// modules).
 function gitLayout() {
   const out = { gitdirs: [], configs: [], hookDirs: [], moduleConfigs: [], moduleHookDirs: [], fsmonitor: [], truncated: false };
   const top = watchPath('.git');
@@ -849,7 +854,9 @@ function gitLayout() {
   }
   // the configs git reads for this worktree: the common one (or the gitdir's), then config.worktree; includes inline
   const seen = new Set();
-  let includes = 0, hooksPath = null, fsmonitor = null, worktreeConfig = false;
+  let includes = 0, worktreeConfig = false;
+  const hooksPaths = [], fsmonitors = [];   // every distinct value, in the order read
+  const note = (list, v) => { if (!list.includes(v)) list.push(v); };
   const walk = (rel, depth, main) => {
     if (seen.has(rel)) return;
     seen.add(rel);
@@ -857,8 +864,8 @@ function gitLayout() {
     const text = readSmall(rel);
     if (text === null) return;
     for (const { section, key, value } of gitConfigLines(text)) {
-      if (main && section === 'core' && key === 'hookspath') hooksPath = value;   // the last one counts, as in git
-      if (main && section === 'core' && key === 'fsmonitor') fsmonitor = value;
+      if (main && section === 'core' && key === 'hookspath' && value.trim() !== '') note(hooksPaths, value);
+      if (main && section === 'core' && key === 'fsmonitor' && !isFlag(value)) note(fsmonitors, value);
       if (main && section === 'extensions' && key === 'worktreeconfig') worktreeConfig = /^(true|yes|on|1)$/i.test(value);
       if ((section === 'include' || section === 'includeif') && key === 'path') {
         const f = gitPathRel(value, path.dirname(rel));
@@ -873,13 +880,15 @@ function gitLayout() {
   if (common) walk(`${common}/config`, 0, true);
   if (own && own !== common) walk(`${own}/config`, 0, true);   // (git reads only the common one; a stray one here still counts)
   if (own && worktreeConfig) walk(`${own}/config.worktree`, 0, true);
-  if (hooksPath !== null && hooksPath.trim() !== '') {
-    const d = gitPathRel(hooksPath, '.');
-    if (d) out.hookDirs.push(d);   // (outside the workspace: not this folder's)
-  } else if (common) out.hookDirs.push(`${common}/hooks`);
-  if (common && !out.hookDirs.includes(`${common}/hooks`)) out.hookDirs.push(`${common}/hooks`);   // (a later config may drop hooksPath)
+  // git applies the last value whose include applies: all of them are watched (the last read first), up to the cap
+  if (hooksPaths.length > WATCH_MAX_GIT_VALUES || fsmonitors.length > WATCH_MAX_GIT_VALUES) out.truncated = true;
+  for (const v of hooksPaths.slice(-WATCH_MAX_GIT_VALUES).reverse()) {
+    const d = gitPathRel(v, '.');
+    if (d && !out.hookDirs.includes(d)) out.hookDirs.push(d);   // (outside the workspace: not this folder's)
+  }
+  if (common && !out.hookDirs.includes(`${common}/hooks`)) out.hookDirs.push(`${common}/hooks`);   // (with no hooksPath, or a later config dropping it)
   out.hookDirs.push('.husky');
-  if (fsmonitor !== null && !isFlag(fsmonitor)) { const f = gitPathRel(fsmonitor, '.'); if (f) out.fsmonitor.push(f); }
+  for (const v of fsmonitors.slice(-WATCH_MAX_GIT_VALUES).reverse()) { const f = gitPathRel(v, '.'); if (f && !out.fsmonitor.includes(f)) out.fsmonitor.push(f); }
   for (const g of out.gitdirs) {
     let mods = [];
     try { mods = fs.readdirSync(path.join(WORKSPACE, g, 'modules')).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..').sort(); } catch { /* none */ }

@@ -1014,42 +1014,43 @@ action, including those a file, a web page or a tool's output talks Claude into.
 
 **Checked after every turn, in every mode.** Writes to these files in the workspace run **on your computer** later,
 not in the sandbox (threat 1 of the browser terminal). Git's own: `.git` itself (a folder, or a `gitdir:` file —
-followed, with its `commondir`, when it points into the workspace), the hook folder git uses — the one the last
-`core.hooksPath` names when it is in the workspace (husky v9's `.husky/_`, `.githooks/` …; git takes the last value),
-and `.git/hooks/*` (not git's `*.sample`) either way —, `.git/config`, `config.worktree` (with
-`extensions.worktreeConfig`) and the files their `include.path` / `includeIf` name inside the workspace (3 levels, 16
-in all; read as git reads them: a `#` or `;` inside quotes is part of the value), a `core.fsmonitor` program inside
-the workspace (the last value; git runs it at every `git status`), and submodules (`.git/modules/*/config`,
-`…/hooks/*`, listed last); a hook that is a link counts with the content of what it points to when that is in the
-workspace (read without blocking: a FIFO there is not read). Then `.husky/*` and the git hook managers' configuration
-(`.pre-commit-config.yaml`, `lefthook*.yml`, `.lintstagedrc*`, `lint-staged.config.*`), `.envrc` (direnv),
-`.vscode/tasks.json`, `settings.json` and top-level `*.code-workspace` files, `.claude/settings.json` and
-`settings.local.json` (Claude Code's hooks and rules on your computer), `.mcp.json` (project MCP servers),
-`package.json` (its install-time scripts — `preinstall`, `install`, `postinstall`, `prepare` and the like — and the
-keys git hook tools read, `husky`, `simple-git-hooks`, `lint-staged`, `pre-commit`; and every script once a git hook
-or hook manager here calls npm, pnpm, yarn, npx or bun, since a hook's `npm test` runs it — otherwise a dependency or
-a `test` script is not flagged), `.npmrc`, `.yarnrc.yml` and `.pnpmfile.cjs` (they can run code at install or change
-what runs), and dev container files (`.devcontainer.json`, `.devcontainer/devcontainer.json`,
-`.devcontainer/*/devcontainer.json`: `initializeCommand` runs on your computer). Not on the list: `Makefile`,
-`pyproject.toml`, `.tool-versions`/`.nvmrc`, `.env`, `.idea` — they run only when you run them, or change too often
-for a card to mean anything. The spawn server (`ws.sensitive`) lists them — the hook folders first, at most 256
-entries and 64 files per hook folder, a SHA-256 of each (files over 8 MiB by size and time), a copy of each up to 1
-MiB (2 MiB in all, which the code container enforces again), never through a link and never a path with a `.` or `..`
-part; when it leaves anything out (more includes, hook files, submodules or entries than these limits, or more than
-the 300 entries the code container takes) it says so, and the cards say that not every file could be checked (once on
-its own, then on every card) — never a silent cut — when a turn starts (before its first prompt is sent, ≤ 5 s) and
-when it ends; the code container compares the two (and the end of the last turn with the start of the next: a
-background command, the terminal, you) and decides what changed and why it matters — from the path, or for git's own
-files only the sandbox can place (a gitdir, a hooks path, an include, an fsmonitor program) from their git kind —
-then shows a card: each file, why, the diff, and **Revert** — the copy from the turn's start written back with its
-mode (a file that was not there goes to the workspace trash; `ws.restore`, for paths the spawn server itself counts
-as watched at that moment, never through a linked folder), only while the file is still exactly as the turn's end saw
-it; *Revert all* puts git's configs back last (one may name the hook folder the others are in) and tries a file the
-spawn server no longer counts as watched once more. It catches what rules cannot: a hook written by `echo >` in Bash,
-in any mode. It is a detector, not a boundary: a compromised sandbox can lie to it (as to everything it shows), and
-Node has no `openat`, so its checks race anything running as the same user in the sandbox — which could write these
-files directly anyway. The copies Revert writes back are kept in the code container's memory (the last 10 cards per
-session, 4 MiB), gone with a restart.
+followed, with its `commondir`, when it points into the workspace), the hook folders git may use — every folder a
+`core.hooksPath` value names in the workspace (husky v9's `.husky/_`, `.githooks/` …; git takes the last value whose
+include applies, and the watcher does not evaluate `includeIf` conditions, so all of them count: up to 4 distinct
+values, beyond that the cards say not everything was checked), and `.git/hooks/*` (not git's `*.sample`) either way
+—, `.git/config`, `config.worktree` (with `extensions.worktreeConfig`) and the files their `include.path` /
+`includeIf` name inside the workspace (3 levels, 16 in all; read as git reads them: a `#` or `;` inside quotes is
+part of the value), the `core.fsmonitor` programs inside the workspace (every distinct value, up to 4; git runs it at
+every `git status`), and submodules (`.git/modules/*/config`, `…/hooks/*`, listed last); a hook that is a link counts
+with the content of what it points to when that is in the workspace (read without blocking: a FIFO there is not
+read). Then `.husky/*` and the git hook managers' configuration (`.pre-commit-config.yaml`, `lefthook*.yml`,
+`.lintstagedrc*`, `lint-staged.config.*`), `.envrc` (direnv), `.vscode/tasks.json`, `settings.json` and top-level
+`*.code-workspace` files, `.claude/settings.json` and `settings.local.json` (Claude Code's hooks and rules on your
+computer), `.mcp.json` (project MCP servers), `package.json` (its install-time scripts — `preinstall`, `install`,
+`postinstall`, `prepare` and the like — and the keys git hook tools read, `husky`, `simple-git-hooks`, `lint-staged`,
+`pre-commit`; and every script once a git hook or hook manager here calls npm, pnpm, yarn, npx or bun, since a hook's
+`npm test` runs it — otherwise a dependency or a `test` script is not flagged), `.npmrc`, `.yarnrc.yml` and
+`.pnpmfile.cjs` (they can run code at install or change what runs), and dev container files (`.devcontainer.json`,
+`.devcontainer/devcontainer.json`, `.devcontainer/*/devcontainer.json`: `initializeCommand` runs on your computer).
+Not on the list: `Makefile`, `pyproject.toml`, `.tool-versions`/`.nvmrc`, `.env`, `.idea` — they run only when you
+run them, or change too often for a card to mean anything. The spawn server (`ws.sensitive`) lists them — the hook
+folders first, at most 256 entries and 64 files per hook folder, a SHA-256 of each (files over 8 MiB by size and
+time), a copy of each up to 1 MiB (2 MiB in all, which the code container enforces again), never through a link and
+never a path with a `.` or `..` part; when it leaves anything out (more includes, hook files, submodules or entries
+than these limits, or more than the 300 entries the code container takes) it says so, and the cards say that not
+every file could be checked (once on its own, then on every card) — never a silent cut — when a turn starts (before
+its first prompt is sent, ≤ 5 s) and when it ends; the code container compares the two (and the end of the last turn
+with the start of the next: a background command, the terminal, you) and decides what changed and why it matters —
+from the path, or for git's own files only the sandbox can place (a gitdir, a hooks path, an include, an fsmonitor
+program) from their git kind — then shows a card: each file, why, the diff, and **Revert** — the copy from the turn's
+start written back with its mode (a file that was not there goes to the workspace trash; `ws.restore`, for paths the
+spawn server itself counts as watched at that moment, never through a linked folder), only while the file is still
+exactly as the turn's end saw it; *Revert all* puts git's configs back last (one may name the hook folder the others
+are in) and tries a file the spawn server no longer counts as watched once more. It catches what rules cannot: a hook
+written by `echo >` in Bash, in any mode. It is a detector, not a boundary: a compromised sandbox can lie to it (as
+to everything it shows), and Node has no `openat`, so its checks race anything running as the same user in the
+sandbox — which could write these files directly anyway. The copies Revert writes back are kept in the code
+container's memory (the last 10 cards per session, 4 MiB), gone with a restart.
 
 ## Code provenance
 

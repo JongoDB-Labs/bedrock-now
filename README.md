@@ -439,7 +439,7 @@ per browser.
   runs at a time (pressed again meanwhile, the last one goes next), and a switch Claude Code refuses is taken back in
   the page. Details: [docs/security.md](docs/security.md#bypass-permissions).
 - **Files that run on your computer.** In every mode, the page checks a list of files of your folder after each turn
-  — git's own (hooks, also in the folder the last `core.hooksPath` names, such as husky's `.husky/_` or `.githooks/`;
+  — git's own (hooks, also in the folders `core.hooksPath` names, such as husky's `.husky/_` or `.githooks/`;
   `.git/config` and the files it includes; a `core.fsmonitor` program; a `.git` file and the git folder it points to;
   submodules), husky
   hooks and the configuration of `pre-commit`, lefthook and lint-staged, `.envrc`, VS Code's `tasks.json`,

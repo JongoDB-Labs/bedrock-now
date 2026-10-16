@@ -68,8 +68,9 @@ All notable changes to bedrock-now are documented here. The format follows
   hook tools' keys; every script once a git hook here runs package scripts), `.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs`
   and dev container files are hashed (with a copy up to 1 MiB, 2 MiB in all) when a turn starts and ends; a change — by
   an edit, by Bash, or between turns — shows a card with why it matters, the diff and **Revert** (only while the file
-  is still as the turn left it; a new file goes to the workspace trash). Git's last `core.hooksPath` counts, as in
-  git; includes are followed 16 deep in all; more than it lists (256 entries) is said on the cards, never cut silently.
+  is still as the turn left it; a new file goes to the workspace trash). Every `core.hooksPath` and `core.fsmonitor`
+  value counts (up to 4 each: which one git applies can depend on an `includeIf`); includes are followed 16 deep in
+  all; more than it lists (256 entries) is said on the cards, never cut silently.
 
 ### Changed
 

