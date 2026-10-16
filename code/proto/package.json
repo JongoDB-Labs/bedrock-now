@@ -1,0 +1,10 @@
+{
+  "name": "bedrock-now-code-proto",
+  "private": true,
+  "description": "PROTOTYPE (code-page spike): the Code page's backend. Agent SDK pinned to Claude Code 2.1.296 (its claudeCodeVersion); npm ci checks every tarball against package-lock.json",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "ws": "8.22.0"
+  }
+}

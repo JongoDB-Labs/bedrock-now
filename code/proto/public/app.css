@@ -1,0 +1,17 @@
+:root { color-scheme: dark; --bg: #111820; --fg: #e4e9ee; --muted: #93a0ae; --accent: #73b6cd; --card: #18212b; }
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; height: 100vh; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; background: var(--card); }
+main { flex: 1; display: flex; min-height: 0; }
+#log { flex: 2; overflow: auto; padding: 12px; white-space: pre-wrap; }
+#side { flex: 1; overflow: auto; padding: 12px; border-left: 1px solid #2c3a47; white-space: pre-wrap; font: 12px ui-monospace, monospace; }
+.muted { color: var(--muted); }
+.msg { margin: 6px 0; }
+.user { color: var(--accent); }
+.tool { background: var(--card); border-radius: 6px; padding: 6px 8px; font: 12px ui-monospace, monospace; }
+.err { color: #f08080; }
+#perm { position: fixed; bottom: 90px; left: 12px; right: 12px; background: #24323f; border: 1px solid var(--accent); border-radius: 8px; padding: 12px; }
+#perm pre { max-height: 30vh; overflow: auto; }
+#ask { display: flex; gap: 8px; padding: 8px 12px; background: var(--card); }
+#ask textarea { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid #2c3a47; border-radius: 6px; padding: 6px; }
+button, select { background: #24323f; color: var(--fg); border: 1px solid #2c3a47; border-radius: 6px; padding: 4px 8px; }
+@media (max-width: 700px) { #side { display: none; } }
