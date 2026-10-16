@@ -1532,6 +1532,154 @@ def previews_phone(browser):
     p.close()
 
 
+# --- dev-server previews (components/DevPreview.tsx): the mock's fake preview site, ports, launch.json ---------
+
+def devpreview_frame(page):
+    return page.frame_locator("[data-testid=preview-pane]:not(.hidden) iframe[data-testid=preview-frame]")
+
+
+@check("dev-server previews: chip in Bash output, preview tab (chat | preview), viewports, path, new tab, Ports panel, Stop, launch.json")
+def devpreviews(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews", **DESKTOP)
+    page = p.open()
+    expect(page.get_by_test_id("ports-status")).to_contain_text("Ports")
+    send(page, "start the vite dev server")
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("perm-once").click()
+    wait_turns(page, 1)
+    # the Bash card offers the preview of the URL Vite printed; Claude's answer links to it as a preview too
+    chip = page.locator(".tool[data-tool='Bash'] [data-testid=preview-chip]")
+    expect(chip).to_have_text("Preview :5173")
+    link = page.locator(".msg-claude a.md-preview")
+    expect(link).to_have_attribute("href", "/.bn/preview?port=5173")
+    # a new server appeared: the toast offers its preview
+    expect(page.get_by_test_id("toast-action").first).to_have_text("Preview", timeout=10_000)
+    chip.click()
+    pane = page.locator("[data-testid=preview-pane]:not(.hidden)")
+    expect(pane).to_have_attribute("data-port", "5173")
+    frame = page.locator("[data-testid=preview-pane]:not(.hidden) iframe[data-testid=preview-frame]")
+    # the frame: its own site, no top navigation, no referrer, nothing delegated
+    sb = frame.get_attribute("sandbox")
+    assert sb and "allow-top-navigation" not in sb and "allow-scripts" in sb and "allow-same-origin" in sb, sb
+    assert frame.get_attribute("referrerpolicy") == "no-referrer"
+    assert re.match(r"^http://p5173-[a-z2-7]{33}\.localhost:\d+/$", frame.get_attribute("src")), frame.get_attribute("src")
+    expect(devpreview_frame(page).locator("h1")).to_have_text("Hello from the dev server on :5173", timeout=10_000)
+    expect(page.locator(".etab.on")).to_contain_text(":5173")
+    page.mouse.move(0, 0)
+    p.shot("preview-desktop-split.png")
+    # viewports: phone and tablet are drawn at their size (scaled to fit), Fit fills the pane again
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=viewport-phone]").click()
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden) .pv-foot")).to_contain_text("Phone 390 × 844")
+    page.wait_for_timeout(200)
+    box = page.evaluate("() => { const b = document.querySelector('[data-testid=preview-pane]:not(.hidden) .pv-box').getBoundingClientRect(); return [b.width, b.height]; }")
+    assert 300 < box[0] <= 390 and 640 < box[1] <= 844, box
+    p.shot("preview-desktop-phone-viewport.png")
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=viewport-tablet]").click()
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden) .pv-foot")).to_contain_text("Tablet 768 × 1024")
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=viewport-fill]").click()
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden) .pv-foot")).to_have_count(0)
+    # a path on the server; something that is not a path is refused
+    addr = page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-path]")
+    addr.fill("about?x=1")
+    addr.press("Enter")
+    expect(devpreview_frame(page).locator("code")).to_have_text("/about?x=1", timeout=10_000)
+    addr.fill("http://evil.example/")
+    addr.press("Enter")
+    expect(page.locator(".pv-addr.bad")).to_have_count(1)
+    expect(devpreview_frame(page).locator("code")).to_have_text("/about?x=1")
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-reload]").click()
+    expect(devpreview_frame(page).locator("h1")).to_be_visible()
+    nt = page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-new-tab]")
+    expect(nt).to_have_attribute("href", "/.bn/preview?port=5173&path=%2Fabout%3Fx%3D1")
+    expect(nt).to_have_attribute("target", "_blank")
+    expect(nt).to_have_attribute("rel", "noopener noreferrer")
+    with page.context.expect_page() as newp:
+        nt.click()
+    tab = newp.value
+    tab.wait_for_load_state()
+    assert re.match(r"^http://p5173-[a-z2-7]{33}\.localhost:\d+/about\?x=1$", tab.url), tab.url
+    tab.screenshot(path=f"{OUT}/preview-new-tab.png")
+    tab.close()
+    # the Ports panel: the server, Preview / new tab / Stop, another port, launch.json's entries
+    page.get_by_test_id("ports-status").click()
+    panel = page.get_by_test_id("ports-panel")
+    expect(panel.get_by_test_id("port-row")).to_have_count(1)
+    expect(panel.get_by_test_id("port-row")).to_contain_text("vite")
+    expect(panel.get_by_test_id("launch-row")).to_have_count(3)
+    expect(panel.get_by_test_id("launch-row").nth(2)).to_contain_text("port: a number")
+    p.shot("preview-ports-panel.png")
+    # Start an entry of .claude/launch.json: its preview opens once its port listens
+    panel.get_by_test_id("launch-start").nth(1).click()
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden)")).to_have_attribute("data-port", "8787", timeout=15_000)
+    expect(devpreview_frame(page).locator("h1")).to_have_text("Hello from the dev server on :8787", timeout=10_000)
+    # Stop asks once more, then the server is gone and the preview says nothing listens
+    page.get_by_test_id("ports-status").click()
+    row = page.locator("[data-testid=port-row][data-port='8787']")
+    row.get_by_test_id("port-stop").click()
+    expect(row.get_by_test_id("port-stop")).to_have_text("Stop it?")
+    row.get_by_test_id("port-stop").click()
+    expect(page.locator("[data-testid=port-row][data-port='8787']")).to_have_count(0, timeout=10_000)
+    page.keyboard.press("Escape")
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-not-listening]")).to_be_visible(timeout=10_000)
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-reload]").click()
+    expect(devpreview_frame(page).locator("h1")).to_contain_text("Nothing is listening on port 8787", timeout=10_000)
+    # another port by hand
+    page.get_by_test_id("ports-status").click()
+    page.get_by_test_id("port-other").fill("5173")
+    page.get_by_test_id("port-other-go").click()
+    expect(page.locator("[data-testid=preview-pane]:not(.hidden)")).to_have_attribute("data-port", "5173")
+    page.emulate_media(color_scheme="dark")
+    page.wait_for_timeout(300)
+    p.shot("preview-desktop-dark.png")
+    page.emulate_media(color_scheme="light")
+    # (expected: the 502 of bn-preview's "nothing is listening" page, in the frame)
+    p.errors = [e for e in p.errors if "status of 502" not in e]
+    p.assert_clean()
+    p.close()
+
+
+@check("dev-server previews on a phone: Ports & previews sheet, previews open in a new tab")
+def devpreviews_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/port?port=3000&cmd=python3%20-m%20http.server%203000")
+    p = Page(browser, NORMAL, "previews-phone", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    page = p.open()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-ports").click()
+    sheet = page.get_by_test_id("sheet-ports")
+    expect(sheet.get_by_test_id("port-row")).to_have_count(1, timeout=10_000)
+    prev = sheet.get_by_test_id("port-preview")
+    expect(prev).to_have_attribute("href", "/.bn/preview?port=3000")
+    expect(prev).to_have_attribute("target", "_blank")
+    p.shot("preview-phone-ports.png")
+    with page.context.expect_page() as newp:
+        prev.click()
+    tab = newp.value
+    tab.wait_for_load_state()
+    assert re.match(r"^http://p3000-[a-z2-7]{33}\.localhost:\d+/$", tab.url), tab.url
+    tab.screenshot(path=f"{OUT}/preview-phone-new-tab.png")
+    tab.close()
+    p.assert_clean()
+    p.close()
+
+
+@check("dev-server previews from a hostile sandbox: bad ports dropped, process names as text")
+def devpreviews_hostile(browser):
+    p = Page(browser, HOSTILE, "previews-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("ports-status").click()
+    panel = page.get_by_test_id("ports-panel")
+    rows = panel.get_by_test_id("port-row")
+    expect(rows).to_have_count(1, timeout=10_000)
+    expect(rows).to_contain_text("<script>")
+    expect(rows.get_by_test_id("port-stop")).to_be_disabled()   # (pid 1 is never offered)
+    n = page.evaluate("() => document.querySelector('[data-testid=ports-panel]').querySelectorAll('script, img, iframe').length")
+    assert n == 0, n
+    p.assert_clean()
+    p.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     procs = start_mocks()

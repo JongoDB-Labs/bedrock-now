@@ -767,3 +767,47 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
   .sess-main { min-height: 48px; }
   .btn kbd { display: none; }
 }
+
+/* ---- previews of dev servers in the sandbox (components/Preview.tsx) ---- */
+.toast { display: flex; align-items: center; gap: 10px; pointer-events: auto; }
+.toast-action { flex: none; height: 24px; border-color: transparent; background: color-mix(in srgb, var(--surface) 22%, transparent); color: inherit; }
+.preview-pane { background: var(--surface-2); }
+.pv-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); background: var(--surface); min-width: 0; }
+.pv-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border-radius: 11px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); cursor: help; }
+.pv-addr { flex: 1; min-width: 80px; display: flex; align-items: center; height: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); overflow: hidden; }
+.pv-addr:focus-within { border-color: var(--accent); }
+.pv-addr.bad { border-color: var(--bad); }
+.pv-host { flex: none; padding: 0 2px 0 11px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.pv-addr input { flex: 1; min-width: 0; height: 100%; padding: 0 10px 0 0; border: 0; background: none; outline: none; font-family: var(--mono); font-size: 12px; }
+.pv-vp button { height: 26px; padding: 0 7px; }
+.pv-area { position: relative; flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.pv-area.fixed { align-items: flex-start; justify-content: center; padding-top: 12px; background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 14px 14px; }
+.pv-box { flex: 1; display: flex; min-width: 0; }
+.pv-area.fixed .pv-box { flex: none; transform-origin: top center; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; box-shadow: var(--shadow); background: #fff; }
+.pv-frame { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
+.pv-foot { flex: none; padding: 3px 10px; border-top: 1px solid var(--line-soft); text-align: center; }
+.tab-preview { color: var(--warn); }
+.chips { display: inline-flex; gap: 4px; flex: none; }
+.chip-preview { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 11px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface)); color: var(--accent); font-size: 11.5px; font-weight: 600; white-space: nowrap; text-decoration: none; }
+.chip-preview:hover { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
+.md a.md-preview { text-decoration-style: dashed; }
+.sb-ports .dd-trigger { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: inherit; }
+.sb-ports .dd-trigger:hover { background: var(--hover); color: var(--ink); }
+.ports-panel { width: min(460px, calc(100vw - 16px)); padding: 8px 10px; }
+.ports-panel-body { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.sheet-body > .ports-panel-body { padding: 12px 14px; overflow-y: auto; font-size: 14px; }
+.pp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.pp-empty { margin: 2px 0 4px; }
+.port-list, .launch-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.port-row, .launch-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 6px; border-radius: 6px; min-width: 0; }
+.port-row:hover, .launch-row:hover { background: var(--hover); }
+.port-num { flex: none; min-width: 52px; font-family: var(--mono); font-weight: 600; }
+.port-cmd, .launch-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.launch-name { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.port-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.pp-other { display: flex; align-items: center; gap: 8px; padding: 4px 6px; }
+.pp-other label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.pp-other input { width: 80px; height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font-family: var(--mono); }
+.banner.small { padding: 5px 8px; border-radius: 6px; border-bottom: 0; font-size: 12px; }

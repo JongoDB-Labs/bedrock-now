@@ -4,7 +4,9 @@
 import { h, type ComponentChildren, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import { renderMarkdown, type MdNode } from '../markdown';
-import { openFile } from '../app';
+import { openFile, openPreview } from '../app';
+import { previewTabUrl } from '../api';
+import { localLink } from '../devpreview';
 import { copyText, memo } from './ui';
 import { Icon } from './icons';
 
@@ -68,6 +70,20 @@ function toVNode(n: MdNode, key: number, img?: ImageFn): ComponentChildren {
     };
   } else if (n.tag === 'a' && !(typeof props.href === 'string' && /^https?:\/\//.test(props.href))) {
     delete props.href;
+  } else if (n.tag === 'a') {
+    // a localhost address in Claude's answer is the sandbox's: its preview (on your computer it would be something else)
+    const local = localLink(props.href as string);
+    if (local) {
+      props.href = previewTabUrl(local.port, local.path);
+      props.class = 'md-preview';
+      props.rel = 'noopener noreferrer';
+      props.title = `Open the preview of localhost:${local.port} (the sandbox's)`;
+      props.onClick = (e: MouseEvent) => {
+        if (matchMedia('(max-width: 699.98px)').matches || e.metaKey || e.ctrlKey || e.shiftKey) return;   // a new tab
+        e.preventDefault();
+        void openPreview(local.port, local.path.startsWith('/') ? local.path : '/');
+      };
+    }
   }
   if (n.tag === 'input') props.readOnly = true;
   return h(n.tag, props, n.children.length ? kids(n.children) : null) as VNode;

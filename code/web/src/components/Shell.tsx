@@ -20,6 +20,7 @@ import {
   toggleTerminal,
   socket,
   defaultModel,
+  dismissToast,
 } from '../app';
 import { BOUNDS } from '../prefs';
 import { basename, label } from '../text';
@@ -34,6 +35,7 @@ import { PluginsDialog } from './Plugins';
 import { McpPanel } from './Mcp';
 import { MemoryDialog } from './Memory';
 import { Icon, Spinner } from './icons';
+import { PortsPanel } from './DevPreview';
 
 // ---------------------------------------------------------------- pieces
 
@@ -66,6 +68,9 @@ function MoreMenu() {
           </MenuItem>
           <MenuItem icon="book" onSelect={() => (close(), setDialog('memory'))} testid="menu-memory">
             Memory (CLAUDE.md)…
+          </MenuItem>
+          <MenuItem icon="port" onSelect={() => (close(), setDialog('ports'))} testid="menu-ports">
+            Ports & previews…
           </MenuItem>
           <MenuItem icon="refresh" onSelect={() => (close(), reloadPlugins())}>
             Reload plugins & skills
@@ -266,10 +271,32 @@ function StatusBar() {
         </span>
       )}
       {activeTab?.kind === 'file' && activeTab.dirty && <span class="sb-item">● unsaved</span>}
+      <PortsStatus />
       {v && <span class="sb-item">{modeName(v.mode)}</span>}
       {modelName && <span class="sb-item">{modelName}</span>}
       {server?.cli && <span class="sb-item muted">Claude Code {server.cli}</span>}
     </footer>
+  );
+}
+
+/** "Ports (n)": the servers listening in the sandbox, their previews and the workspace's launch.json entries. */
+function PortsStatus() {
+  const n = useSel(store, (s) => s.ports.length);
+  return (
+    <Dropdown
+      title="Servers in the sandbox and their previews"
+      class="sb-ports"
+      panelClass="ports-panel"
+      align="right"
+      testid="ports-status"
+      trigger={
+        <>
+          <Icon name="port" size={13} /> Ports{n ? ` (${n})` : ''}
+        </>
+      }
+    >
+      {(close) => <PortsPanel onDone={close} />}
+    </Dropdown>
   );
 }
 
@@ -278,8 +305,21 @@ function Toasts() {
   return (
     <div class="toasts" aria-live="polite">
       {toasts.map((t) => (
-        <div key={t.id} class={`toast toast-${t.level}`} role={t.level === 'error' ? 'alert' : 'status'}>
-          {t.text}
+        <div key={t.id} class={`toast toast-${t.level}`} role={t.level === 'error' ? 'alert' : 'status'} data-testid="toast">
+          <span>{t.text}</span>
+          {t.action && (
+            <button
+              type="button"
+              class="btn small toast-action"
+              onClick={() => {
+                dismissToast(t.id);
+                t.action?.run();
+              }}
+              data-testid="toast-action"
+            >
+              {t.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -322,6 +362,13 @@ function Dialogs() {
   if (dialog === 'plugins') return <PluginsDialog onClose={close} />;
   if (dialog === 'mcp') return <McpPanel onClose={close} />;
   if (dialog === 'memory') return <MemoryDialog onClose={close} />;
+  if (dialog === 'ports') {
+    return (
+      <Dialog title="Ports & previews" onClose={close} testid="ports-dialog">
+        <PortsPanel onDone={close} />
+      </Dialog>
+    );
+  }
   return null;
 }
 
@@ -466,6 +513,9 @@ function PhoneMenu() {
             <Icon name="terminal" /> Open the terminal
           </a>
         )}
+        <button type="button" class="pm-link" onClick={() => setSheet('ports')} data-testid="phone-menu-ports">
+          <Icon name="port" /> Ports & previews
+        </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('mcp'))}>
           <Icon name="server" /> MCP servers
         </button>
@@ -532,6 +582,11 @@ function Phone() {
         </Sheet>
       )}
       {sheet === 'menu' && <PhoneMenu />}
+      {sheet === 'ports' && (
+        <Sheet title="Ports & previews" onClose={() => setSheet(null)} testid="sheet-ports">
+          <PortsPanel />
+        </Sheet>
+      )}
     </div>
   );
 }

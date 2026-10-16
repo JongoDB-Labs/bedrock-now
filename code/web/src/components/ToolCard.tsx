@@ -11,6 +11,8 @@ import { openDiff, openFile } from '../app';
 import { previewableName } from '../preview/sniff';
 import { Icon, Spinner } from './icons';
 import { MarkdownView } from './MarkdownView';
+import { PreviewChip } from './DevPreview';
+import { localPorts } from '../devpreview';
 import { memo } from './ui';
 
 type ToolItem = Extract<Item, { t: 'tool' }>;
@@ -129,14 +131,20 @@ interface Head {
   open: boolean;
 }
 
+/** "Preview :5173" chips for the local URLs a command printed (a dev server's "➜ Local: http://localhost:5173/"). */
+function chips(it: ToolItem): ComponentChildren {
+  const ports = it.result ? localPorts(it.result.text) : [];
+  return ports.length ? <span class="chips">{ports.map((p) => <PreviewChip key={p} port={p} />)}</span> : undefined;
+}
+
 function head(it: ToolItem): Head {
   const i = obj(it.input);
   const err = it.status === 'error';
   switch (it.name) {
     case 'Bash':
-      return { verb: 'Bash', subject: <code class="one">{label(i.command, 300)}</code>, open: err };
+      return { verb: 'Bash', subject: <code class="one">{label(i.command, 300)}</code>, extra: chips(it), open: err };
     case 'BashOutput':
-      return { verb: 'Output', subject: <code class="one">{label(i.bash_id, 80)}</code>, open: false };
+      return { verb: 'Output', subject: <code class="one">{label(i.bash_id, 80)}</code>, extra: chips(it), open: false };
     case 'Edit':
     case 'MultiEdit':
     case 'Write': {

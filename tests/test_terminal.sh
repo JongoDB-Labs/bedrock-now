@@ -527,7 +527,8 @@ test_caddy_terminal_site_gateway_and_remote_gating() {
   # the gateway's file: only its two networks' names, an allowlist with 404 for the rest, a loopback health check
   gw="$(cat "$STACK_DIR/caddy/terminal-gateway.caddy")"
   assert_contains "$gw" "admin off"
-  assert_eq "$(printf '%s\n' "$gw" | grep -c '^	bind ')" 3
+  assert_eq "$(printf '%s\n' "$gw" | grep -c '^	bind ')" 4   # (:8091 gateway, :7681 and :7682 terminal-upstream, health)
+  assert_eq "$(printf '%s\n' "$gw" | grep -c '^	bind terminal-upstream$')" 2
   assert_contains "$gw" "bind gateway"
   assert_contains "$gw" "bind terminal-upstream"
   assert_contains "$gw" "bind 127.0.0.1"
@@ -659,7 +660,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
       *"exec -T terminal sh -c g="*) printf '200 404 404 404 404 404 ' ;;
       *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
-      *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 ' ;;
+      *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
   }
   dc() { ok_dc "$@"; }

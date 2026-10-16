@@ -9,6 +9,8 @@
 # with the main Caddy alone, which asks the portal first (session, a fresh unlock, the Origin) and then adds the secret
 # header (CODE_PROXY_SECRET) the code container requires. It reaches nothing else: not the internet, not LiteLLM, not
 # the portal, not the sandbox's network. Everything that comes back from the sandbox is treated as untrusted data.
+# Its previews of dev servers in the sandbox (caddy/preview-on.caddy, local only) do not pass through the code
+# container: the main Caddy reaches bn-preview in the sandbox through the terminal's gateway (:7682).
 services:
   code:
     build:
@@ -51,13 +53,21 @@ services:
       # Remote access (REMOTE_TERMINAL=true and ./stack remote): lib/code.sh writes this name; blank, the remote site's
       # code block matches nothing.
       REMOTE_CODE_HOST: ${REMOTE_CODE_HOST:-code.remote.invalid}
+      # Its previews of dev servers in the sandbox (caddy/preview-on.caddy; local only): their own site,
+      # p<port>-<capability>.PREVIEW_DOMAIN (lib/code.sh derives it from PORTAL_HOST: bedrock-now-preview.localhost), and
+      # the header the terminal's gateway requires before bn-preview (new at every ./stack code enable).
+      PREVIEW_MODE: "on"
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-bedrock-now-preview.localhost}
+      PREVIEW_PROXY_SECRET: ${PREVIEW_PROXY_SECRET:-}
 
-  # The portal: the Code tab, the unlock, the code host's checks, its models and spend (/.bn/models, /.bn/spend).
+  # The portal: the Code tab, the unlock, the code host's checks, its models and spend (/.bn/models, /.bn/spend), and
+  # the previews' links (/.bn/preview) and their checks.
   portal:
     environment:
       CODE_ENABLED: "true"
       CODE_HOST: ${CODE_HOST:-}
       REMOTE_CODE_HOST: ${REMOTE_CODE_HOST:-}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-bedrock-now-preview.localhost}
 
 networks:
   code-link:

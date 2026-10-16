@@ -45,6 +45,8 @@ RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error \
 
 # The Code page's spawn server (bin/bn-coded.mjs: Node built-ins only) listens in /run/bn-code — the code-socket volume
 # (compose.terminal.yaml), shared with the code container alone while ./stack code is on; bn-terminal always starts it.
+# Its preview proxy (bin/bn-preview.mjs, likewise) listens in /run/bn-preview — the preview-socket volume, shared with
+# the terminal's gateway alone.
 # You, inside: the same uid/gid as on your computer (TERMINAL_UID/GID from ./stack), so files in the workspace
 # folder stay yours. The node image's own user (uid 1000) goes first. The home folder is the terminal-home volume
 # (Claude Code's settings and history, shell history); it starts empty: the settings below live in /etc.
@@ -53,8 +55,9 @@ ARG BN_GID=10104
 RUN set -eu; userdel -r node 2>/dev/null || true; \
     getent group "$BN_GID" >/dev/null || groupadd -g "$BN_GID" claude; \
     useradd -o -M -d /home/claude -s /bin/bash -u "$BN_UID" -g "$BN_GID" claude; \
-    mkdir -p /home/claude /workspace /run/bn-ttyd /run/bn-code; chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd /run/bn-code; \
-    chmod 700 /home/claude /run/bn-ttyd /run/bn-code
+    mkdir -p /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview; \
+    chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview; \
+    chmod 700 /home/claude /run/bn-ttyd /run/bn-code /run/bn-preview
 COPY tmux.conf /etc/tmux.conf
 COPY bashrc /etc/bedrock-now.bashrc
 COPY bin/ /usr/local/bin/
@@ -64,7 +67,7 @@ COPY bin/ /usr/local/bin/
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 RUN chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.json \
  && chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
-      /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs \
+      /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs /usr/local/bin/bn-preview.mjs \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc
 
 ENV LANG=C.UTF-8 HOME=/home/claude SHELL=/bin/bash NPM_CONFIG_PREFIX=/home/claude/.local \

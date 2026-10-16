@@ -440,6 +440,27 @@ per browser.
   SHA-256, and only **Run this command and install** lets it run (Claude Code's `--accept-command <sha256>`; never
   `-y`). After a change the open sessions reload their plugins, so new commands and skills are in the `/` palette at
   once (that rewrites their prompt cache on the next turn).
+- **Preview** (local only for now). A web server running in the sandbox — `npm run dev`, Vite, Next,
+  `python -m http.server`, started by Claude, a background task or you in the terminal — shows in a tab beside the
+  chat (*chat | preview*), with reload, an address field for its paths, desktop / tablet / phone sizes and **Open in
+  a new tab** (its own developer tools, full size); on a phone it opens in a new tab. You get there from the
+  **Preview :5173** chip on a command whose output names a `localhost` address (Vite's "➜ Local:
+  http://localhost:5173/"), from a `localhost` link in Claude's answer (in the sandbox those addresses are the
+  sandbox's, not your computer's), from the toast when a new server starts listening, or from **Ports** in the status
+  bar (⋯ → *Ports & previews* on a phone): every server listening in the sandbox with its process, **Preview**, a new
+  tab, **Stop** (asks once more), and any other port by hand. If the workspace has a `.claude/launch.json` — the
+  Claude Code desktop app's dev-server list, same format (`name`, `runtimeExecutable` + `runtimeArgs` or `program` +
+  `args`, `port`, `cwd`, `env`, `url`; comments allowed) — its entries are there too: **Start** runs one in a new
+  window of the terminal (with `PORT` set; `autoPort` is not applied) and opens its preview once it listens. The
+  server must listen on the sandbox's `localhost`, `127.0.0.1` or `0.0.0.0` (no `--host` needed); its own host checks
+  pass unchanged (it is asked as `localhost:<port>`), and hot reload works. A preview is **sandbox content** on a
+  site of its own (`p<port>-<capability>.bedrock-now-preview.localhost`): it gets none of bedrock-now's cookies,
+  cannot take the Code page away, and its link (with its capability) works until the Code page's unlock ends — Sign
+  out or a new password end it. In the pane it is a frame from another site, so a browser that blocks third-party
+  cookies (Safari; Chrome when you chose that) keeps none of *the app's own* cookies there — an app you sign in to
+  works in **Open in a new tab**. Calls to *another* port from the app's page (`fetch('http://localhost:3000')`)
+  reach your computer, not the sandbox: use the dev server's proxy. Not over remote access yet. Details:
+  [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox).
 - **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's
   `bedrock-shared` included); **Reconnect**, or switch one off and on for this session. Servers of your own (stdio,
   HTTP or SSE) are added to or removed from the sandbox's Claude Code user configuration — a stdio server's command
@@ -1025,8 +1046,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   command, re-attach and resume, files, spend; then the page itself as a person uses it — a Bash prompt allowed in
   its card, an @-mentioned file edited and its diff, the palette, an upload, a reload without duplicates, an
   AskUserQuestion answered, plugins from a marketplace in the workspace with the install command confirmed by its
-  SHA-256, the MCP panel, a phone, the Settings row — each with zero CSP violations; isolation; a hostile stand-in
-  on its spawn socket; ~$0.03). Its unit tests (frontend and backend) run in its image's test stage:
+  SHA-256, the MCP panel, a phone, the Settings row — each with zero CSP violations; previews of a dev server in the
+  sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`, isolation checked from inside
+  the preview, refused capabilities, a hot update over Vite's WebSocket; isolation; a hostile stand-in on its spawn
+  socket; ~$0.03). Its unit tests (frontend and backend) run in its image's test stage:
   `code/test.sh`; the page's browser checks against a mock: `sh code/web/e2e/run.sh`. `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
   in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and

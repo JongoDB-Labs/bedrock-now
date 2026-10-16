@@ -51,6 +51,12 @@ const P: Record<string, string> = {
   download: 'M10 3v10M6 9l4 4 4-4M4 16h12',
   trash: 'M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10',
   code: 'M7 6l-4 4 4 4M13 6l4 4-4 4M11.5 4l-3 12',
+  // previews: a browser window, the viewport presets, and a listening port
+  window: 'M2.5 4h15v12h-15zM2.5 7.5h15M5 5.75h.01M7 5.75h.01',
+  monitor: 'M2.5 4h15v9h-15zM7 16.5h6M10 13v3.5',
+  tablet: 'M5 2.5h10v15H5zM9 15h2',
+  phone: 'M6.5 2.5h7v15h-7zM9.25 15h1.5',
+  port: 'M10 3v4M6 7h8v4a4 4 0 0 1-8 0zM10 15v2.5M7.5 17.5h5',
 };
 
 export type IconName = keyof typeof P;

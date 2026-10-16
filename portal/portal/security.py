@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -444,3 +445,78 @@ def terminal_same_origin(headers, settings: Settings, remote: bool, app: str = T
         return origin == want
     referer = headers.get("referer")
     return bool(referer) and (referer == want or referer.startswith(want + "/"))
+
+
+# --- the Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy; local only) ---
+
+B32 = "abcdefghijklmnopqrstuvwxyz234567"   # RFC 4648's alphabet, lower case (host names ignore case)
+
+
+def b32_int(n: int, width: int) -> str:
+    """n in base 32 (B32), big-endian, exactly width characters."""
+    out = []
+    for _ in range(width):
+        out.append(B32[n & 31])
+        n >>= 5
+    if n:
+        raise ValueError("too large")
+    return "".join(reversed(out))
+
+
+def b32_parse(s: str) -> int | None:
+    n = 0
+    for c in s:
+        i = B32.find(c)
+        if i < 0:
+            return None
+        n = n * 32 + i
+    return n
+
+
+class PreviewCaps:
+    """The capability in a preview's host name: p<port>-<iat><mac>.<PREVIEW_DOMAIN>, minted on the code host for the
+    Code page's unlock (app.py code_preview) and checked on every request to the preview site (app.py verify,
+    ?app=preview). No cookie at all: the preview site is another site than the portal's, where the portal's cookies
+    never go, and a frame of it works even where third-party cookies are blocked.
+
+    iat: when the Code page was unlocked (milliseconds, 9 base-32 characters); mac: HMAC-SHA256 over "v1|port|iat|
+    password fingerprint" with a key of its own derived from PORTAL_SECRET, 24 base-32 characters (120 bits). So a link
+    names one port, lives exactly as long as the unlock it came from (12 hours), and dies with Sign out (the unlock's
+    time must come after the last one) or a new password or secret (the fingerprint, the key). A label is at most
+    1 + 5 + 1 + 9 + 24 = 40 characters (a DNS label may have 63). Minting the same port twice in one unlock gives the
+    same link: a preview's address stays put while the unlock lasts."""
+
+    IAT_CHARS = 9
+    MAC_CHARS = 24
+    LABEL = re.compile(r"p([1-9][0-9]{0,4})-([a-z2-7]{9})([a-z2-7]{24})")
+
+    def __init__(self, secret: str, sessions: Sessions, clock=time.time):
+        self._key = hmac.new(secret.encode(), b"bedrock-now.portal.preview", hashlib.sha256).digest()
+        self._sessions = sessions
+        self._clock = clock
+
+    def _mac(self, port: int, iat_ms: int) -> str:
+        msg = f"v1|{port}|{iat_ms}|{self._sessions.fingerprint}".encode()
+        d = hmac.new(self._key, msg, hashlib.sha256).digest()
+        return base64.b32encode(d).decode("ascii").lower()[: self.MAC_CHARS]
+
+    def label(self, port: int, unlock_iat: float) -> str:
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("port")
+        iat_ms = int(unlock_iat * 1000)
+        return f"p{port}-{b32_int(iat_ms, self.IAT_CHARS)}{self._mac(port, iat_ms)}"
+
+    def check(self, label: str) -> dict | None:
+        """{port, iat, expires} for a valid label (signature, port, the unlock's 12 hours, no Sign out since), else None."""
+        m = self.LABEL.fullmatch(label or "")
+        if not m:
+            return None
+        port, iat_ms = int(m.group(1)), b32_parse(m.group(2))
+        if port > 65535 or iat_ms is None:
+            return None
+        if not hmac.compare_digest(m.group(3), self._mac(port, iat_ms)):
+            return None
+        iat = iat_ms / 1000
+        if iat <= self._sessions.not_before or not 0 <= self._clock() - iat <= TERMINAL_MAX_AGE:
+            return None
+        return {"port": port, "iat": iat, "expires": iat + TERMINAL_MAX_AGE}

@@ -61,8 +61,8 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
   assert_contains "$calls" "dc build -q code"
   # after the terminal's own steps: terminal, portal, Caddy, then the code container
-  assert_eq "$(printf '%s\n' "$calls" | grep '^dc up' | tail -n 4 | tr '\n' '|')" \
-    "dc up -d --wait terminal|dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait code|"
+  assert_eq "$(printf '%s\n' "$calls" | grep '^dc up' | tail -n 5 | tr '\n' '|')" \
+    "dc up -d --wait terminal|dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait terminal-gateway|dc up -d --wait code|"
   out="$(cat "$TMP/out")"
   assert_contains "$out" "turning the terminal on first"
   assert_contains "$out" "Code page: on — http://code.bedrock-now.localhost"
@@ -75,9 +75,10 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   [ "$(get_env CODE_PROXY_SECRET)" != "$s1" ] || { echo "enable kept the secret" >&2; return 1; }
   assert_not_contains "$(cat "$TMP/out")" "restarts once"
   assert_not_contains "$(cat "$TMP/out")" "turning the terminal on first"
-  assert_eq "$(grep -E '^dc (build|up|rm|stop|restart).*terminal' "$TMP/dc")" ""   # (only asked whether bn-coded listens)
+  assert_eq "$(grep -E '^dc (build|up|rm|stop|restart).*terminal( |$)' "$TMP/dc")" ""   # (only asked whether bn-coded listens)
   assert_contains "$(cat "$TMP/dc")" "dc exec -T terminal test -S /run/bn-code/coded.sock"
-  assert_eq "$(grep '^dc up' "$TMP/dc" | tr '\n' '|')" "dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait code|"
+  # (the gateway: recreated by compose only because the previews' secret is new)
+  assert_eq "$(grep '^dc up' "$TMP/dc" | tr '\n' '|')" "dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait terminal-gateway|dc up -d --wait code|"
   # a terminal started by a version without the spawn server: recreated once (and says so)
   dc() { echo "dc $*" >> "$TMP/dc"; case "$*" in *"test -S /run/bn-code/coded.sock"*) return 1 ;; esac; return 0; }
   : > "$TMP/dc"
@@ -142,6 +143,7 @@ test_status_names_address_container_sandbox_and_remote() {
   assert_contains "$out" "Container  running healthy"
   assert_contains "$out" "Sandbox    the terminal's: $(get_env TERMINAL_WORKSPACE) → /workspace, key claude-code-terminal (budget \$50), internet on"
   assert_contains "$out" "Remote     off (with the terminal's: REMOTE_TERMINAL=true"
+  assert_contains "$out" "Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.bedrock-now-preview.localhost — this computer only"
   assert_eq "$(status_url code)" "http://code.bedrock-now.localhost   (the Code tab; ./stack code status)"
   assert_contains "$(code_summary_line)" "Code page       http://code.bedrock-now.localhost"
   set_env CODE_HOST ide.localhost
@@ -206,7 +208,7 @@ test_setup_hook_builds_and_starts_it_and_never_stops_setup() {
   code_enable > /dev/null 2>&1 || return 1
   : > "$TMP/dc"
   code_setup_hook > "$TMP/out" 2>&1 || return 1
-  assert_eq "$(cat "$TMP/dc" | tr '\n' '|')" "dc build -q code|dc up -d --wait code|"
+  assert_eq "$(cat "$TMP/dc" | tr '\n' '|')" "dc build -q code|dc up -d --wait terminal-gateway|dc up -d --wait code|"
   dc() { echo "boom"; return 1; }
   code_setup_hook > "$TMP/out" 2>&1 || return 1
   assert_contains "$(cat "$TMP/out")" "Code page: setup goes on without it"
@@ -323,13 +325,14 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   done
   pt="$(awk '/^\(code_portal\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   assert_contains "$pt" "@bn_code_terminal path /.bn/terminal"
+  assert_contains "$pt" "rewrite /auth/code-preview?{query}"
   assert_contains "$pt" "rewrite /auth/code-terminal"
   assert_contains "$pt" "rewrite /auth/code-models"
   assert_contains "$pt" "rewrite /auth/code-spend?{query}"
   assert_contains "$pt" "respond /.bn/* 404"
   assert_contains "$(awk '/^\(code_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/code-unlock"
   pg="$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker\""
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* http://*.{\$PREVIEW_DOMAIN:preview.invalid}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker\""
   for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
            Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
     assert_contains "$pg" "header_down -$d"
@@ -406,6 +409,7 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
       *"exec -T code node"*"sessions.list"*) printf 'ok\n' ;;
       *"exec -T code node"*) printf 'closed closed closed closed closed closed\n' ;;
+      *"exec -T terminal sh"*"bn-preview"*) printf '700 socket\n' ;;
       *"exec -T terminal sh"*) printf '000 700 socket\n' ;;
     esac
   }
@@ -417,11 +421,21 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
       " code /") printf 302 ;;
       "x code /") printf '<form method="post" action="/.bn/unlock"> 401' ;;
       "x code /ws") printf 403 ;;
+      "x code /.bn/unlock") printf 303 ;;
+      "x code /.bn/preview?port=9&format=json") printf '{"url": "http://p9-%s.bedrock-now-preview.localhost/", "port": 9}' "$(printf 'a%.0s' $(seq 1 33))" ;;
+    esac
+  }
+  curl() {
+    case "$*" in
+      *"http://p5173-"*) printf 403 ;;
+      *"http://p9-"*) printf '<h1>Nothing is listening on port 9 in the sandbox</h1> 502' ;;
     esac
   }
   fails=0
   out="$(code_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 8
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 12
+  assert_contains "$out" "ok    a preview link goes through Caddy, the portal's check and the gateway to bn-preview"
+  assert_contains "$out" "ok    a forged preview link is refused"
   assert_contains "$out" "ok    the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)"
   dc() { case "$*" in *"sessions.list"*) printf 'error ENOENT\n' ;; *"exec -T code node"*) printf 'open closed closed closed closed closed\n' ;; *"exec -T terminal sh"*) printf '200 755 socket\n' ;; *) ok_dc "$@" ;; esac; }
   out="$(code_test_checks)"

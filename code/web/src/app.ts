@@ -8,7 +8,8 @@ import { exportName, toMarkdown } from './transcript';
 import { appendMemory, memoryLine } from './palette';
 import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
-import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, Mode, ServerMsg, ServerState, SessionInfo } from './types';
+import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
+import type { Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
@@ -18,6 +19,8 @@ export interface Toast {
   id: number;
   text: string;
   level: 'info' | 'ok' | 'error';
+  /** a button on the toast ("Preview" when a new server listens) */
+  action?: { label: string; run: () => void };
 }
 
 export interface DirState {
@@ -67,10 +70,26 @@ export interface DiffTab {
   hunks: Hunk[];
   tool: string;
 }
-export type Tab = FileTab | DiffTab;
+/** A preview of a dev server in the sandbox (its port), framed from the preview site (caddy/preview-on.caddy). */
+export interface PreviewTab {
+  kind: 'devserver';
+  key: string;
+  /** what the tab shows as its name: localhost:<port> (the address in the sandbox) */
+  path: string;
+  port: number;
+  /** the preview link (with its capability) once the portal gave one */
+  link: PreviewLink | null;
+  /** the path the frame loads (the address field) */
+  at: string;
+  /** bumped by Reload and a new path: the frame loads again */
+  n: number;
+  viewport: Viewport;
+  error: string | null;
+}
+export type Tab = FileTab | DiffTab | PreviewTab;
 
-export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory';
+export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports';
 
 /** "Restore files to here" on a prompt: what a dry run found, then the restore. */
 export interface RewindState {
@@ -121,6 +140,13 @@ export interface AppState {
   /** a request was refused for the budget (until /.bn/spend shows room again) */
   budgetHit: boolean;
   rewind: RewindState | null;
+  /** the servers listening in the sandbox (polled while the page is visible) */
+  ports: PortInfo[];
+  portsError: string | null;
+  /** whether previews work here (null: not asked yet) */
+  preview: PreviewInfo | null;
+  /** the workspace's .claude/launch.json (null: not read yet) */
+  launch: LaunchList | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -152,6 +178,10 @@ export const store: Store<AppState> = createStore<AppState>({
   budget: null,
   budgetHit: false,
   rewind: null,
+  ports: [],
+  portsError: null,
+  preview: null,
+  launch: null,
 });
 
 const set = store.set;
@@ -160,10 +190,13 @@ const get = store.get;
 // ---------------------------------------------------------------- small helpers
 
 let toastId = 1;
-export function toast(text: string, level: Toast['level'] = 'info'): void {
+export function toast(text: string, level: Toast['level'] = 'info', action?: Toast['action']): void {
   const id = toastId++;
-  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level }] }));
-  setTimeout(() => set((s) => ({ ...s, toasts: s.toasts.filter((t) => t.id !== id) })), level === 'error' ? 8000 : 4000);
+  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level, ...(action ? { action } : {}) }] }));
+  setTimeout(() => dismissToast(id), level === 'error' || action ? 8000 : 4000);
+}
+export function dismissToast(id: number): void {
+  set((s) => ({ ...s, toasts: s.toasts.filter((t) => t.id !== id) }));
 }
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : 'Something went wrong.';
@@ -636,6 +669,7 @@ export async function boot(): Promise<void> {
   } else set((s) => ({ ...s, serverError: errText(st.reason) }));
   void loadDir('');
   announce();
+  startPortWatch();
 }
 
 export async function refreshSessions(query = get().sessionsQuery): Promise<void> {
@@ -1109,6 +1143,164 @@ export async function openFile(path: string, view?: FileView): Promise<void> {
   savePrefs(get().prefs);
   if (existing && (existing.kind !== 'file' || !existing.error)) return;
   await loadFile(key, p);
+}
+
+// ---------------------------------------------------------------- previews of dev servers in the sandbox
+
+/** Ports seen by the last poll (a new one gets a toast); null until the first poll (what runs already is no news). */
+let knownPorts: Set<number> | null = null;
+/** A port a launch.json Start waits for: its preview opens once it listens (within two minutes). */
+let awaited: { port: number; until: number } | null = null;
+let portTimer: ReturnType<typeof setTimeout> | null = null;
+let portFails = 0;
+
+/** The sandbox's listening ports, every 3 s while the page is visible and connected (slower after errors). */
+export function startPortWatch(): void {
+  if (portTimer) return;
+  const tick = async () => {
+    portTimer = null;
+    if (!document.hidden && get().conn === 'open') await refreshPorts();
+    portTimer = setTimeout(() => void tick(), portFails ? Math.min(30_000, 3000 * 2 ** portFails) : 3000);
+  };
+  void tick();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && portTimer) {
+      clearTimeout(portTimer);
+      void tick();
+    }
+  });
+}
+
+export async function refreshPorts(): Promise<void> {
+  let ports: PortInfo[];
+  try {
+    ports = await api.getPorts();
+  } catch (e) {
+    portFails = Math.min(portFails + 1, 4);
+    set((s) => ({ ...s, portsError: errText(e) }));
+    return;
+  }
+  portFails = 0;
+  const now = new Set(ports.map((p) => p.port));
+  const fresh = knownPorts ? ports.filter((p) => !knownPorts!.has(p.port)) : [];
+  knownPorts = now;
+  set((s) => (sameList(s.ports, ports) && !s.portsError ? s : { ...s, ports, portsError: null }));
+  for (const p of fresh) {
+    if (awaited && awaited.port === p.port && Date.now() < awaited.until) {
+      awaited = null;
+      if (!isPhone()) {
+        void openPreview(p.port);
+        continue;
+      }
+    }
+    toast(`A server is listening on :${p.port}${p.cmd ? ` (${label(p.cmd, 60)})` : ''}`, 'info', previewAction(p.port));
+  }
+}
+const sameList = (a: PortInfo[], b: PortInfo[]) =>
+  a.length === b.length && a.every((x, i) => x.port === b[i].port && x.pid === b[i].pid && x.cmd === b[i].cmd && x.addrs.join() === b[i].addrs.join());
+
+/** "Preview" on a toast: the preview tab (a new browser tab on a phone, where a pane has no room). */
+function previewAction(port: number): Toast['action'] {
+  return { label: 'Preview', run: () => (isPhone() ? window.open(api.previewTabUrl(port), '_blank', 'noopener,noreferrer') : void openPreview(port)) };
+}
+
+/** Whether previews work here (asked once; the portal says no over remote access). */
+export async function loadPreviewInfo(force = false): Promise<PreviewInfo | null> {
+  if (get().preview && !force) return get().preview;
+  try {
+    const info = await api.getPreviewInfo();
+    set((s) => ({ ...s, preview: info }));
+    return info;
+  } catch (e) {
+    const info = { available: false, reason: `Could not ask the portal: ${errText(e)}` };
+    set((s) => ({ ...s, preview: info }));
+    return null;
+  }
+}
+
+/** The preview of `port` in a tab of the editor area (desktop and tablet: chat | preview); one tab per port. */
+export async function openPreview(port: number, path = '/'): Promise<void> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+  const key = `preview:${port}`;
+  const existing = get().tabs.find((t) => t.key === key);
+  set((s) => ({
+    ...s,
+    tabs: existing ? s.tabs.map((t) => (t.key === key && t.kind === 'devserver' ? { ...t, at: path, n: t.n + 1 } : t))
+      : [...s.tabs, { kind: 'devserver', key, path: `localhost:${port}`, port, link: null, at: path, n: 0, viewport: 'fill', error: null }],
+    activeTab: key,
+    sheet: isPhone() ? 'editor' : s.sheet,
+    prefs: s.prefs.layout.tabletPane === 'editor' ? s.prefs : { ...s.prefs, layout: { ...s.prefs.layout, tabletPane: 'editor' } },
+  }));
+  savePrefs(get().prefs);
+  if (existing?.kind === 'devserver' && existing.link && !existing.error) return;
+  await linkPreview(key, port);
+}
+
+async function linkPreview(key: string, port: number): Promise<void> {
+  const info = await loadPreviewInfo();
+  if (info && !info.available) {
+    updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, error: info.reason || 'Previews are off here.' } : t));
+    return;
+  }
+  try {
+    const link = await api.getPreviewLink(port);
+    updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, link, error: null } : t));
+  } catch (e) {
+    updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, error: errText(e) } : t));
+  }
+}
+
+/** Reload the preview (at the address field's path); a link that failed is asked for again. */
+export function reloadPreview(key: string): void {
+  const t = get().tabs.find((x) => x.key === key);
+  if (t?.kind !== 'devserver') return;
+  if (!t.link) {
+    updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, error: null } : x));
+    void linkPreview(key, t.port);
+    return;
+  }
+  updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, n: x.n + 1 } : x));
+}
+export function navigatePreview(key: string, path: string): void {
+  updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, at: path, n: x.n + 1 } : x));
+}
+export function setPreviewViewport(key: string, viewport: Viewport): void {
+  updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, viewport } : x));
+}
+
+/** Stop the server on `port` (its process, SIGTERM; `force`: SIGKILL); the list follows. */
+export async function stopServer(p: PortInfo, force = false): Promise<void> {
+  if (!p.pid) return toast(`The process listening on :${p.port} is not known: stop it in the terminal.`, 'error');
+  try {
+    await api.stopPort(p.pid, p.port, force);
+    toast(`Stopped :${p.port}${force ? ' (killed)' : ''}`, 'ok');
+  } catch (e) {
+    toast(`Could not stop :${p.port}: ${errText(e)}`, 'error');
+  }
+  setTimeout(() => void refreshPorts(), 600);
+}
+
+/** The workspace's .claude/launch.json, read again. */
+export async function loadLaunch(): Promise<void> {
+  try {
+    const launch = await api.getLaunch();
+    set((s) => ({ ...s, launch }));
+  } catch (e) {
+    set((s) => ({ ...s, launch: { exists: false, error: errText(e), entries: [] } }));
+  }
+}
+
+/** Start a launch.json entry: its command (the file's) in a new window of the terminal's tmux session; once its port
+ *  listens, its preview opens. */
+export async function startLaunchEntry(name: string): Promise<void> {
+  try {
+    const r = await api.startLaunch(name);
+    if (r.port) awaited = { port: r.port, until: Date.now() + 120_000 };
+    const msg = `Started "${label(name, 60)}" in the terminal (window ${r.window})${r.port ? `: its preview opens once :${r.port} listens` : ''}.`;
+    toast(msg, 'ok', isPhone() ? undefined : { label: 'Show the terminal', run: () => setLayout({ terminal: true }) });
+  } catch (e) {
+    toast(`Could not start "${label(name, 60)}": ${errText(e)}`, 'error');
+  }
 }
 
 async function loadFile(key: string, path: string): Promise<void> {

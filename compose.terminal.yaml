@@ -62,6 +62,9 @@ services:
       # it (compose.code.yaml, read-only: it connects, never listens). Always here, so turning the Code page on or off
       # never recreates this container (and never ends its tmux session); with no code container nothing connects.
       - code-socket:/run/bn-code
+      # The Code page's preview proxy (bn-preview, started by bn-terminal) listens here; only the gateway shares it
+      # (read-only: it connects). Always here too, for the same reason.
+      - preview-socket:/run/bn-preview
       # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
       - type: bind
         source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}
@@ -77,7 +80,8 @@ services:
   # The terminal's only peer (caddy/terminal-gateway.caddy; the same pinned image as the main Caddy). On "terminal" it
   # is "gateway" (:8091, bound there alone): LiteLLM's /v1/messages(/count_tokens), /v1/models…, /key/info,
   # /model/info and /health/liveliness and shared-mcp's /mcp; 404 for anything else. On "terminal-link" it is
-  # "terminal-upstream" (:7681, bound there alone): ttyd's socket, for the main Caddy, only with the secret header.
+  # "terminal-upstream" (:7681, bound there alone): ttyd's socket, for the main Caddy, only with the secret header; and
+  # :7682 there: bn-preview's socket (the Code page's previews), only with the preview's own secret header.
   # It runs as the terminal's user: ttyd's socket is that user's alone (mode 700).
   terminal-gateway:
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
@@ -97,10 +101,13 @@ services:
       # Required (X-Bn-Terminal-0<this>) before ttyd and removed on the way; only the main Caddy adds it. In the
       # environment only, never on a command line (those are readable by every user of the machine).
       TERMINAL_PROXY_SECRET: ${TERMINAL_PROXY_SECRET:-}
+      # Likewise for the Code page's previews (X-Bn-Preview-0<this>, :7682 → bn-preview): ./stack code enable makes it.
+      PREVIEW_PROXY_SECRET: ${PREVIEW_PROXY_SECRET:-}
     # Directory mount, like the main Caddy's (a file replaced by git is seen after a restart).
     volumes:
       - ./caddy:/etc/caddy:ro,z
       - terminal-socket:/run/bn-ttyd:ro   # connecting to the socket needs no write access
+      - preview-socket:/run/bn-preview:ro
     networks:
       terminal-link:
         aliases: [terminal-upstream]
@@ -151,3 +158,4 @@ volumes:
   terminal-home:
   terminal-socket:
   code-socket:
+  preview-socket:

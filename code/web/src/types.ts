@@ -304,3 +304,51 @@ export interface ImageBlock {
   media_type: string;
   data: string;
 }
+
+// ---------------------------------------------------------------- previews (ports in the sandbox, launch.json)
+
+/** A server listening in the sandbox (bn-coded reads /proc there): what a preview can show. */
+export interface PortInfo {
+  port: number;
+  /** 127.0.0.1, 0.0.0.0, ::1, :: — where it listens */
+  addrs: string[];
+  /** its process (null: not found) */
+  pid: number | null;
+  /** its command line (text from the sandbox) */
+  cmd: string;
+}
+
+/** An entry of the workspace's .claude/launch.json (the Claude Code desktop app's dev-server list). */
+export interface LaunchEntry {
+  name: string;
+  port: number | null;
+  /** what Start runs (null: an entry that only names a running server, by its url) */
+  command: string | null;
+  cwd: string;
+  url: string | null;
+  /** names of the variables it sets (never their values) */
+  env: string[];
+  /** why the entry cannot be used (then the rest is empty) */
+  error: string | null;
+}
+
+export interface LaunchList {
+  exists: boolean;
+  error: string | null;
+  entries: LaunchEntry[];
+}
+
+/** Whether previews work on this site (the portal says: local only for now). */
+export interface PreviewInfo {
+  available: boolean;
+  reason: string;
+}
+
+/** A preview link from the portal: the preview's own origin, p<port>-<capability>.<preview domain>. */
+export interface PreviewLink {
+  url: string;
+  origin: string;
+  port: number;
+  /** when the link stops working (the Code page's unlock ends), ms */
+  expires: number | null;
+}

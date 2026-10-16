@@ -28,6 +28,11 @@ fi
 # detached twice, so tini (PID 1), not ttyd, is the loop's parent and reaps it. Without the MCP token: the Claude Code
 # it starts reads it from mcp.json, like claude-bedrock.
 ( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-coded.mjs; sleep 2; done ) </dev/null & )
+# The Code page's browser previews, bn-preview: an HTTP/WebSocket proxy on a socket in the preview-socket volume, which
+# only the terminal's gateway shares (it connects; the main Caddy reaches it there with the preview's secret header,
+# after the portal checked the preview link). It connects only to this container's loopback: the dev servers started
+# in here. Always running and restarted like bn-coded (with the Code page off nothing reaches it).
+( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-preview.mjs; sleep 2; done ) </dev/null & )
 # ttyd: -i on a path ending in .sock is a UNIX socket (no TCP port); -W lets keystrokes through; -O refuses a
 # WebSocket whose Origin is not this host (another website cannot drive the terminal with your cookies); URL
 # arguments stay off. --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at

@@ -16,6 +16,13 @@
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title
 //                   this sandbox's Claude Code transcripts for /workspace (~/.claude/projects/-workspace/*.jsonl)
+//   ports.list / ports.stop
+//                   the servers listening on the sandbox's loopback or all addresses (/proc/net/tcp, tcp6) with their
+//                   process, for the page's previews (bn-preview); stop: SIGTERM/SIGKILL to such a server's process only
+//   launch.list / launch.start
+//                   the workspace's .claude/launch.json (the Claude Code desktop app's dev-server list): its entries,
+//                   and one of them started by name in a new window of the terminal's tmux session — the command is the
+//                   file's, never the page's
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
 // Nothing here is a secret boundary for the sandbox (anything in it can run claude itself); the allowlist keeps the
 // socket from being a general "run anything" primitive, and keeps paths inside /workspace. The code container treats
@@ -502,6 +509,187 @@ export function fsFind(q, limit) {
   return { paths, truncated };
 }
 
+// --- ports: what listens in the sandbox (as VS Code's port finder reads it), for the page's previews ---
+// /proc/net/tcp{,6}: "sl local_address rem_address st … uid timeout inode"; addresses are hex, IPv4 a little-endian
+// 32-bit word, IPv6 four of them; st 0A is LISTEN. Only what bn-preview can reach counts: 127.0.0.1, ::1 (also as
+// ::ffff:127.0.0.1) and the any-addresses 0.0.0.0 / ::.
+const MAX_PORTS = 50;
+const ADDR = {
+  '0100007F': '127.0.0.1', '00000000': '0.0.0.0',
+  '00000000000000000000000001000000': '::1', '00000000000000000000000000000000': '::',
+  '0000000000000000FFFF00000100007F': '127.0.0.1', '0000000000000000FFFF000000000000': '0.0.0.0',
+};
+// parseProcNet(text) -> [{port, addr, inode}] of the LISTEN sockets on a reachable address
+export function parseProcNet(text) {
+  const out = [];
+  for (const line of String(text).split('\n').slice(1)) {
+    const f = line.trim().split(/\s+/);
+    if (f.length < 10 || f[3] !== '0A') continue;
+    const [hex, portHex] = f[1].split(':');
+    const addr = ADDR[String(hex).toUpperCase()];
+    const port = parseInt(portHex, 16);
+    if (!addr || !/^[0-9A-Fa-f]{4}$/.test(portHex || '') || !(port > 0) || !/^[0-9]{1,12}$/.test(f[9])) continue;
+    out.push({ port, addr, inode: f[9] });
+  }
+  return out;
+}
+// socketOwners(inodes) -> Map(inode -> pid): /proc/<pid>/fd/* links "socket:[inode]" (this user's processes; a bounded walk)
+function socketOwners(inodes, procDir = '/proc') {
+  const want = new Set(inodes), found = new Map();
+  let seen = 0;
+  let pids = [];
+  try { pids = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)); } catch { return found; }
+  for (const pid of pids) {
+    let fds;
+    try { fds = fs.readdirSync(`${procDir}/${pid}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      if (++seen > 200000) return found;
+      let l;
+      try { l = fs.readlinkSync(`${procDir}/${pid}/fd/${fd}`); } catch { continue; }
+      const m = l.match(/^socket:\[([0-9]+)\]$/);
+      if (m && want.has(m[1]) && !found.has(m[1])) { found.set(m[1], Number(pid)); if (found.size === want.size) return found; }
+    }
+  }
+  return found;
+}
+const cmdOf = (pid, procDir = '/proc') => {
+  try { return printable(fs.readFileSync(`${procDir}/${pid}/cmdline`).toString('utf8').split('\0').filter(Boolean).join(' '), 300); } catch { return ''; }
+};
+// portsList() -> {ports: [{port, addrs, pid, cmd}]}: one row per port (a server on 127.0.0.1 and ::1 alike), by port
+export function portsList(procDir = '/proc') {
+  const socks = [];
+  for (const f of ['tcp', 'tcp6']) {
+    try { socks.push(...parseProcNet(fs.readFileSync(`${procDir}/net/${f}`, 'utf8'))); } catch { /* no IPv6 */ }
+  }
+  const owners = socketOwners(socks.map((s) => s.inode), procDir);
+  const byPort = new Map();
+  for (const s of socks) {
+    const row = byPort.get(s.port) || { port: s.port, addrs: [], pid: null, cmd: '' };
+    if (!row.addrs.includes(s.addr)) row.addrs.push(s.addr);
+    const pid = owners.get(s.inode);
+    if (pid && !row.pid) { row.pid = pid; row.cmd = cmdOf(pid, procDir); }
+    byPort.set(s.port, row);
+  }
+  const rows = [...byPort.values()].sort((a, b) => a.port - b.port);
+  return { ports: rows.slice(0, MAX_PORTS), truncated: rows.length > MAX_PORTS };
+}
+// portsStop(pid, port, signal) — only the process that listens on that port now (never PID 1, never this one)
+export function portsStop(pid, port, signal = 'SIGTERM', { kill = process.kill, procDir = '/proc' } = {}) {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('bad pid or port');
+  if (!['SIGTERM', 'SIGKILL'].includes(signal)) throw new Error('bad signal');
+  const row = portsList(procDir).ports.find((r) => r.port === port);
+  if (!row || row.pid !== pid) throw new Error('that process does not listen on that port (it stopped already?)');
+  kill(pid, signal);
+  return { ok: true, pid, port, signal };
+}
+
+// --- .claude/launch.json: the desktop app's dev servers ({version, configurations: [{name, runtimeExecutable,
+// --- runtimeArgs, program, args, port, cwd, env, autoPort, url}]}, JSON with comments) ---
+const LAUNCH_FILE = '.claude/launch.json';
+const MAX_LAUNCH = 64 << 10;
+const ONE_LINE = /^[^\x00-\x1f\x7f]*$/;
+// stripJsonc(text) -> JSON: // and /* */ comments outside strings removed, and commas before } or ]
+export function stripJsonc(s) {
+  let out = '', i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
+      out += s.slice(i, j + 1); i = j + 1;
+    } else if (c === '/' && s[i + 1] === '/') {
+      while (i < s.length && s[i] !== '\n') i++;
+    } else if (c === '/' && s[i + 1] === '*') {
+      const j = s.indexOf('*/', i + 2);
+      i = j < 0 ? s.length : j + 2;
+    } else { out += c; i++; }
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+const strList = (v, n, len) => v === undefined || (Array.isArray(v) && v.length <= n && v.every((x) => typeof x === 'string' && x.length <= len && ONE_LINE.test(x)));
+// launchConfig(raw) -> {name, argv, port, cwd, env, url, autoPort, command} or {name?, error}
+export function launchConfig(c) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return { error: 'not an object' };
+  const name = typeof c.name === 'string' && /^[^\x00-\x1f\x7f]{1,100}$/.test(c.name) ? c.name : null;
+  if (!name) return { error: 'no name' };
+  const bad = (why) => ({ name, error: why });
+  if (c.port !== undefined && !(Number.isInteger(c.port) && c.port >= 1 && c.port <= 65535)) return bad('port: a number from 1 to 65535');
+  if (c.runtimeExecutable !== undefined && !(typeof c.runtimeExecutable === 'string' && c.runtimeExecutable.length >= 1 && c.runtimeExecutable.length <= 500 && ONE_LINE.test(c.runtimeExecutable))) return bad('runtimeExecutable: one line');
+  if (c.program !== undefined && !(typeof c.program === 'string' && c.program.length >= 1 && c.program.length <= 1000 && ONE_LINE.test(c.program))) return bad('program: one line');
+  if (!strList(c.runtimeArgs, 64, 2000) || !strList(c.args, 64, 2000)) return bad('runtimeArgs / args: a list of one-line strings');
+  if (c.env !== undefined && !(c.env && typeof c.env === 'object' && !Array.isArray(c.env) && Object.keys(c.env).length <= 32
+    && Object.entries(c.env).every(([k, v]) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k) && typeof v === 'string' && v.length <= 4000 && ONE_LINE.test(v)))) return bad('env: names and one-line values');
+  if (c.url !== undefined && !(typeof c.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(c.url))) return bad('url: http(s)');
+  if (c.cwd !== undefined && !(typeof c.cwd === 'string' && c.cwd.length <= 1000 && ONE_LINE.test(c.cwd))) return bad('cwd: one line');
+  const argv = c.runtimeExecutable ? [c.runtimeExecutable, ...(c.runtimeArgs || [])] : c.program ? ['node', c.program, ...(c.args || [])] : null;
+  let port = c.port ?? null;
+  if (port === null && c.url) { try { const u = new URL(c.url); port = u.port ? Number(u.port) : null; } catch { /* below */ } }
+  if (port === null && argv) port = 3000;   // (the desktop app's default)
+  const cwd = (c.cwd ?? '').replace(/^\$\{workspaceFolder\}\/?/, '') || '.';
+  const quote = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
+  return { name, argv, port, cwd, env: c.env ? { ...c.env } : {}, url: c.url ?? null, autoPort: c.autoPort === true ? true : c.autoPort === false ? false : null,
+    command: argv ? argv.map(quote).join(' ') : null };
+}
+// launchList() -> {exists, configurations, error}: the file's entries, checked (a broken one says why)
+export function launchList() {
+  const real = confine(LAUNCH_FILE);
+  if (!real) return { exists: false, configurations: [] };
+  let fd;
+  try { fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW); } catch { return { exists: false, configurations: [] }; }
+  let text;
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { exists: true, configurations: [], error: 'not a file' };
+    if (st.size > MAX_LAUNCH) return { exists: true, configurations: [], error: 'larger than 64 KiB' };
+    text = readSlice(fd, 0, st.size).toString('utf8');
+  } finally { fs.closeSync(fd); }
+  let j;
+  try { j = JSON.parse(stripJsonc(text)); } catch { return { exists: true, configurations: [], error: 'not valid JSON (comments are fine)' }; }
+  const list = Array.isArray(j?.configurations) ? j.configurations.slice(0, 20) : null;
+  if (!list) return { exists: true, configurations: [], error: 'no "configurations" list' };
+  const names = new Set();
+  return { exists: true, configurations: list.map(launchConfig).map((c) => (c.name && names.has(c.name) ? { name: c.name, error: 'the name is used twice' } : (names.add(c.name), c))) };
+}
+const TMUX_SESSION = 'claude';   // bn-session's: the terminal panel shows this session's windows
+const TMUX = process.env.BN_TMUX_BIN || 'tmux';
+function run(cmd, args, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    let c;
+    try { c = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message }); return; }
+    let err = '';
+    c.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
+    const t = setTimeout(() => c.kill('SIGKILL'), timeoutMs);
+    c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, err: e.code || e.message }); });
+    c.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
+  });
+}
+// launchStart(name) — that entry (read from the file now) in a new tmux window of the terminal's session, named after
+// it, in its folder, with PORT=<port> and its env; when the command ends, a shell stays in the window (with its exit
+// status). The session is created as bn-session would (Claude Code in its first window) when none runs yet.
+export async function launchStart(name, { tmux = TMUX } = {}) {
+  const c = launchList().configurations.find((x) => x.name === name);
+  if (!c) throw new Error('no such entry in .claude/launch.json');
+  if (c.error) throw new Error(`.claude/launch.json: ${c.name}: ${c.error}`);
+  if (!c.argv) throw new Error('that entry has no command (runtimeExecutable or program): it only names a running server');
+  const cwd = confine(c.cwd);
+  if (!cwd) throw new Error('cwd: not a folder in the workspace');
+  try { if (!fs.statSync(cwd).isDirectory()) throw new Error('x'); } catch { throw new Error('cwd: not a folder in the workspace'); }
+  if ((await run(tmux, ['has-session', '-t', `=${TMUX_SESSION}`])).code !== 0) {
+    const r = await run(tmux, ['new-session', '-d', '-s', TMUX_SESSION, '-n', 'claude', '-c', WORKSPACE, 'claude-bedrock; exec bash']);
+    if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
+  }
+  const env = { ...c.env, ...(c.port ? { PORT: String(c.port) } : {}) };
+  const window = c.name.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40) || 'server';
+  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd];
+  for (const [k, v] of Object.entries(env)) args.push('-e', `${k}=${v}`);
+  // the command as its own arguments (no shell parses them); bash only runs it and then stays
+  args.push('--', 'bash', '-c', '"$@"; s=$?; printf "\\n[%s exited with status %s — this window stays: a shell in its folder]\\n" "$0" "$s"; exec bash',
+    `launch.json "${c.name}"`.slice(0, 120), ...c.argv);
+  const r = await run(tmux, args);
+  if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
+  return { ok: true, name: c.name, window, port: c.port, command: c.command };
+}
+
 function fsWriteAbort(w) {
   if (!w) return;
   try { if (w.fd !== null) fs.closeSync(w.fd); } catch { /* closed */ }
@@ -598,6 +786,13 @@ export function serve(sock) {
         case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit));
         case 'memory.read': return finish(T.RESULT, memoryRead(send));
         case 'memory.write': writer = memoryWriteBegin(req); return undefined;   // the data follows as STDIN frames
+        case 'ports.list': return finish(T.RESULT, portsList());
+        case 'ports.stop': return finish(T.RESULT, portsStop(req.pid, req.port, req.signal ?? 'SIGTERM'));
+        case 'launch.list': return finish(T.RESULT, launchList());
+        case 'launch.start':
+          if (typeof req.name !== 'string') return fail('bad name');
+          launchStart(req.name).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
         default: return fail('unknown op');
       }
     } catch (e) { return fail(e.code || e.message); }

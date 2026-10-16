@@ -8,7 +8,8 @@
 #            code/web exists; otherwise an empty dist, and the backend serves the plain page (code/plain)
 #   webtest  the frontend's checks on that same install: npm test (tsc --noEmit, then its unit tests)
 #   deps     the backend's node_modules, checked: no native binaries, no peer dependencies, the SDK imports
-#   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal)
+#   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
+#            the backend and the sandbox's bn-coded and bn-preview
 #   (last)   the runtime image
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS web
 WORKDIR /src
@@ -34,7 +35,7 @@ COPY --from=webtest /tmp/web-tested /tmp/web-tested
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
-COPY --from=terminal bin/bn-coded.mjs /opt/terminal/bin/bn-coded.mjs
+COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs /opt/terminal/bin/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json
 ENV BN_TERMINAL_DIR=/opt/terminal
 RUN node --test --test-reporter=spec test/*.test.mjs

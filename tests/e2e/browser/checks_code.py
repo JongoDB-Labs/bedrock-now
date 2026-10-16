@@ -55,7 +55,7 @@ def csp_problems(csp: str) -> list[str]:
     """What the code host's Content-Security-Policy (the main Caddy's code_page) lacks."""
     want = ["default-src 'none'", "script-src 'self'", f"connect-src 'self' ws://code.{HOST}:* wss://code.{HOST}:*",
             "img-src 'self' data: blob:", "media-src blob:", "worker-src 'self'", "base-uri 'none'", "form-action 'none'", "object-src 'none'", f"frame-ancestors {origin()}",
-            f"frame-src 'self' http://terminal.{HOST}:* https://terminal.{HOST}:*", "require-trusted-types-for 'script'", "trusted-types bn-worker"]
+            f"frame-src 'self' http://terminal.{HOST}:* https://terminal.{HOST}:* http://*.{ENV.get('PREVIEW_DOMAIN') or 'preview.invalid'}:*", "require-trusted-types-for 'script'", "trusted-types bn-worker"]
     parts = [p.strip() for p in csp.split(";")]
     probs = [w for w in want if w not in parts]
     if not any(re.fullmatch(r"style-src 'self' 'nonce-[0-9a-f-]{36}'", p) for p in parts):

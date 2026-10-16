@@ -13,9 +13,10 @@ import checks_api  # noqa: F401 — registers checks
 import checks_browser  # noqa: F401
 import checks_code  # noqa: F401
 import checks_http  # noqa: F401
+import checks_preview  # noqa: F401
 import checks_terminal  # noqa: F401
 import checks_voice  # noqa: F401
-from common import CHECKS, HOST, RESULTS, TARGET_IP, origin, portal_login, run_all
+from common import CHECKS, ENV, HOST, RESULTS, TARGET_IP, origin, portal_login, run_all
 from checks_browser import Recorder
 
 DEVICES = {
@@ -85,7 +86,9 @@ def main() -> int:
     with sync_playwright() as p:
         # *.localhost always means loopback in Chromium: point the throwaway's names at the host instead.
         # A fake microphone (Chromium's test tone, no prompt) so Open WebUI's Call can start without a device.
-        browser = p.chromium.launch(args=[f"--host-resolver-rules=MAP {HOST} {TARGET_IP}, MAP *.{HOST} {TARGET_IP}",
+        # (and the Code page's previews: their own site, PREVIEW_DOMAIN)
+        preview = f", MAP *.{ENV['PREVIEW_DOMAIN']} {TARGET_IP}" if ENV.get("PREVIEW_DOMAIN") else ""
+        browser = p.chromium.launch(args=[f"--host-resolver-rules=MAP {HOST} {TARGET_IP}, MAP *.{HOST} {TARGET_IP}{preview}",
                                           "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
         fails = run_all(Ctx(browser))
         browser.close()

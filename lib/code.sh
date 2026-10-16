@@ -9,7 +9,9 @@
 #   status                     on/off, the address, the container, the sandbox it uses, remote access
 #
 # .env: CODE_ENABLED, CODE_HOST (default code.PORTAL_HOST), and generated: CODE_PROXY_SECRET (the header the main Caddy
-# adds and the code container requires; new at every enable) and REMOTE_CODE_HOST (written here while REMOTE_TERMINAL=
+# adds and the code container requires; new at every enable), PREVIEW_PROXY_SECRET (likewise, the header the terminal's
+# gateway requires before bn-preview: the page's previews of dev servers in the sandbox), PREVIEW_DOMAIN (the previews'
+# own site, derived from PORTAL_HOST: code_preview_domain) and REMOTE_CODE_HOST (written here while REMOTE_TERMINAL=
 # true and remote access is on: one switch for "the sandbox from outside"). Only .env counts: dc() drops CODE_* from
 # your shell.
 #
@@ -59,17 +61,41 @@ cmd_code() {
 }
 
 # code_secrets [rotate] — CODE_PROXY_SECRET (32 hex characters): the header the main Caddy adds after the portal's
-# check and the code container requires on every request; generated when missing or weak, and anew with "rotate"
+# check and the code container requires on every request; PREVIEW_PROXY_SECRET likewise, the header the main Caddy adds
+# to a preview's requests and the terminal's gateway requires before bn-preview; generated when missing or weak, and
+# anew with "rotate". And the previews' site (code_preview_domain).
 code_secrets() {
-  local v; v="$(get_env CODE_PROXY_SECRET)"
-  case "$v" in *[!0-9a-f]* | '') v='' ;; *) [ "${#v}" -ge 32 ] || v='' ;; esac
-  [ -n "$v" ] && [ "${1:-}" != rotate ] || set_env CODE_PROXY_SECRET "$(gen_hex 16)"
+  local k v
+  for k in CODE_PROXY_SECRET PREVIEW_PROXY_SECRET; do
+    v="$(get_env "$k")"
+    case "$v" in *[!0-9a-f]* | '') v='' ;; *) [ "${#v}" -ge 32 ] || v='' ;; esac
+    [ -n "$v" ] && [ "${1:-}" != rotate ] || set_env "$k" "$(gen_hex 16)"
+  done
+  code_preview_domain
+}
+
+# code_preview_domain — PREVIEW_DOMAIN in .env: the previews' own site, p<port>-<capability>.PREVIEW_DOMAIN, derived
+# from PORTAL_HOST at every enable/up (like PORTAL_ORIGIN): <its site's first label>-preview.localhost —
+# bedrock-now.localhost → bedrock-now-preview.localhost, bn-dev.localhost → bn-dev-preview.localhost. Browsers count
+# a .localhost name's last two labels as its site, so a preview there is another site than the portal's: none of the
+# portal's cookies reach it (docs/security.md "Previews"). A PORTAL_HOST outside .localhost (BEDROCK_NOW_ALLOW_PUBLIC_
+# HOST) gets <project>-preview.localhost: previews are local only, and *.localhost is this computer in every browser.
+code_preview_domain() {
+  local h d
+  h="$(portal_host)"
+  case "$h" in
+    *.localhost) h="${h%.localhost}"; d="${h##*.}-preview.localhost" ;;
+    *) d="$(project_name | tr '_' '-' | sed 's/-*$//')-preview.localhost" ;;
+  esac
+  [ "$(get_env PREVIEW_DOMAIN)" = "$d" ] || set_env PREVIEW_DOMAIN "$d"
 }
 
 code_build() { dc build -q code; }
-# The portal (the Code tab, the unlock), the main Caddy (the code site: a changed Caddyfile is read only at start), then
-# the code container. The terminal is not touched: it runs bn-coded already.
-_code_up() { _code_front && dc up -d --wait code; }
+# The portal (the Code tab, the unlock), the main Caddy (the code site: a changed Caddyfile is read only at start), the
+# terminal's gateway (it is recreated only when its PREVIEW_PROXY_SECRET changed: at enable — ttyd's connections then
+# drop for a moment and reconnect), then the code container. The terminal is not touched: it runs bn-coded and
+# bn-preview already.
+_code_up() { _code_front && dc up -d --wait terminal-gateway && dc up -d --wait code; }
 _code_front() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy; }
 # code_spawn_ready — bn-coded listens in the running terminal (a terminal container started by a version without it
 # has to be recreated once)
@@ -176,7 +202,8 @@ code_setup_hook() {
   code_ready || return 0
   code_secrets
   out="$(mktemp)"; start="$(_now)"
-  if { code_build && dc up -d --wait code; } > "$out" 2>&1; then
+  # (the gateway again: a no-op, unless the previews' secret was made just now — the first setup after an update)
+  if { code_build && dc up -d --wait terminal-gateway && dc up -d --wait code; } > "$out" 2>&1; then
     rm -f "$out"; log "$(phase_line "Code page" $(($(_now) - start)))"; return 0
   fi
   warn "Code page: could not build or start it — its last messages:"
@@ -198,6 +225,8 @@ code_status() {
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
   printf '  Sandbox    the terminal'"'"'s: %s → /workspace, key claude-code-terminal (budget $%s), internet %s\n' \
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_on && echo on || echo off)"
+  printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s — this computer only\n' \
+    "$(get_env PREVIEW_DOMAIN)"
   if [ -n "$(get_env REMOTE_CODE_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_CODE_HOST)"
   else printf '  Remote     off (with the terminal'"'"'s: REMOTE_TERMINAL=true in .env, then ./stack up)\n'; fi
   printf '  Off again  ./stack code disable\n'
@@ -212,7 +241,7 @@ code_summary_line() {
 # host's checks (login, the unlock form, another site's Origin), the code container refusing requests without the
 # secret header, one round trip to bn-coded (sessions.list, the frames code/server/frames.mjs speaks), and what each
 # side must not reach: the code container nothing but Caddy, the sandbox not the code container; the socket folder
-# the sandbox user's alone.
+# the sandbox user's alone; then the previews (code_preview_checks).
 code_test_checks() {
   local code out got
   code_ready || return 0
@@ -252,6 +281,35 @@ code_test_checks() {
   # shellcheck disable=SC2016  # expanded in the container
   out="$(dc exec -T terminal sh -c 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
   _check "the sandbox cannot reach the code container; bn-coded listens in its own folder (mode 700)" "$out" "000 700 socket"
+  code_preview_checks
+}
+
+# code_preview_checks — the previews (part of code_test_checks): bn-preview in its own socket folder, the gateway's
+# :7682 refusing requests without the preview's secret, a forged preview link refused by the portal's check, and one
+# real link (the Code page unlocked with the portal password, as the page does) through the whole chain — Caddy, the
+# portal's check, the gateway, bn-preview — to a port nothing listens on: bn-preview's own "nothing is listening" page.
+code_preview_checks() {
+  local d p out url host fake
+  d="$(get_env PREVIEW_DOMAIN)"; p="$(portal_port)"
+  # shellcheck disable=SC2016  # expanded in the container
+  out="$(dc exec -T terminal sh -c 'printf "%s" "$(stat -c %a /run/bn-preview)"; test -S /run/bn-preview/preview.sock && printf " socket"' 2>/dev/null || true)"
+  _check "bn-preview listens in its own folder in the sandbox (mode 700)" "$out" "700 socket"
+  out="$(dc exec -T caddy wget -S -O /dev/null -T 10 http://terminal-upstream:7682/ 2>&1 || true)"
+  _check "the terminal's gateway refuses preview requests without the secret header" "$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')" 407
+  fake="p5173-aaaaaaaaa$(printf 'a%.0s' $(seq 1 24)).$d"
+  out="$(curl -s -m 10 -o /dev/null -w '%{http_code}' --resolve "$fake:$p:127.0.0.1" "http://$fake:$p/" || true)"
+  _check "a forged preview link is refused" "$out" 403
+  # shellcheck disable=SC2034  # read by portal_curl
+  PORTAL_JAR=''
+  if ! portal_session_start; then _skip "a preview through the whole chain" "portal login failed"; return 0; fi
+  out="$(printf '%s' "$(get_env PORTAL_PASSWORD)" | portal_curl code /.bn/unlock -s -m 15 -o /dev/null -w '%{http_code}' -c "$PORTAL_JAR" \
+    -H "Origin: $(portal_url code)" --data-urlencode 'password@-' 2>/dev/null || true)"
+  url="$(portal_curl code '/.bn/preview?port=9&format=json' -s -m 10 -H 'Sec-Fetch-Site: same-origin' 2>/dev/null | sed -n 's/.*"url": *"\([^"]*\)".*/\1/p')"
+  portal_session_end
+  host="${url#http://}"; host="${host%%/*}"; host="${host%:*}"
+  case "$host" in p9-*."$d") out="$(curl -s -m 15 --resolve "$host:$p:127.0.0.1" "$url" -w ' %{http_code}' || true)" ;; *) out="no link (unlock $out)" ;; esac
+  case "$out" in *"Nothing is listening on port 9 in the sandbox"*" 502") out=yes ;; esac
+  _check "a preview link goes through Caddy, the portal's check and the gateway to bn-preview" "$out" yes
 }
 
 # code_image_refs -> its local build while it is on (lib/images.sh keeps it as :previous for rollback)

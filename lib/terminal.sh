@@ -217,8 +217,8 @@ terminal_disable() {
   run_phase "Portal + Caddy (terminal off)" "portal caddy litellm shared-mcp" _terminal_front
   code_network_cleanup   # (lib/code.sh: its network, now that nothing uses it)
   terminal_network_cleanup
-  # ttyd's and bn-coded's sockets: nothing to keep
-  docker volume rm "$(project_name)_terminal-socket" "$(project_name)_code-socket" >/dev/null 2>&1 || true
+  # ttyd's, bn-coded's and bn-preview's sockets: nothing to keep
+  docker volume rm "$(project_name)_terminal-socket" "$(project_name)_code-socket" "$(project_name)_preview-socket" >/dev/null 2>&1 || true
   [ "$own" = 0 ] || stack_unlock
   log "the terminal is off: no Terminal tab, no terminal host, no container"
   log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE), Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them) and its LiteLLM key claude-code-terminal (spend history; delete it in Admin to revoke it)"
@@ -378,9 +378,9 @@ terminal_test_checks() {
   out="$(dc exec -T terminal sh -c 'curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}" http://gateway:8091/mcp' 2>/dev/null || true)"
   case "$out" in *search_knowledge*) got=yes ;; *) got=no ;; esac
   _check "terminal gateway: the shared MCP server's tools" "$got" yes
-  out="$(dc exec -T terminal sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/; do curl -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
+  out="$(dc exec -T terminal sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/ http://gateway:7682/; do curl -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
   _check "terminal cannot reach the portal, Open WebUI, LiteLLM/shared-mcp directly, RustFS, the main Caddy or the gateway's other ports" \
-    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000 000 000 000 000"
+    "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000 000 000 000 000 000"
 }
 
 # terminal_image_refs -> the terminal's local build while it is on (lib/images.sh keeps it as :previous for rollback)
@@ -404,7 +404,7 @@ terminal_rollback_cleanup() {
 # on): its volume, networks and images by their exact names, whether or not it is on now. The workspace folder stays.
 terminal_uninstall_cleanup() {
   local p; p="$(project_name)"
-  docker volume rm "${p}_terminal-home" "${p}_terminal-socket" "${p}_code-socket" >/dev/null 2>&1 || true
+  docker volume rm "${p}_terminal-home" "${p}_terminal-socket" "${p}_code-socket" "${p}_preview-socket" >/dev/null 2>&1 || true
   terminal_network_cleanup
   docker image rm "$p/terminal:local" "$p/terminal:previous" >/dev/null 2>&1 || true
 }

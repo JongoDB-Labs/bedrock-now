@@ -280,8 +280,13 @@ http://{$FILES_HOST} {
 # After the check, the portal answers for the page what the code container must not hold: the models with this
 # stack's prices (/.bn/models), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the
 # portal) and the hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect
-# to that host's /.bn/unlock-callback, terminal_callback). Any other /.bn/ path is nobody's.
+# to that host's /.bn/unlock-callback, terminal_callback), and a preview link for a port in the sandbox (/.bn/preview:
+# its capability, from this unlock; caddy/preview-on.caddy). Any other /.bn/ path is nobody's.
 (code_portal) {
+	@bn_code_preview path /.bn/preview
+	reverse_proxy @bn_code_preview portal:8000 {
+		rewrite /auth/code-preview?{query}
+	}
 	@bn_code_terminal path /.bn/terminal
 	reverse_proxy @bn_code_terminal portal:8000 {
 		rewrite /auth/code-terminal
@@ -314,9 +319,10 @@ http://{$FILES_HOST} {
 # From the code container — or whatever answers in its place: this Caddy sets the code host's policy. Scripts and
 # styles only from the code host itself (styles also with this request's nonce), connections only to it, images also
 # data:/blob:, audio and video only from blob: (the file previews play workspace files from bytes the page fetched),
-# workers only from itself, frames only the terminal host ({args[1]}) and itself (the terminal panel starts at
-# /.bn/terminal, which redirects there), no forms, no plugins, framed only by the portal ({args[0]}), and Trusted
-# Types: no HTML-string sink can run at all, and the one policy allowed, bn-worker (code/web/src/preview/tt.ts), turns
+# workers only from itself, frames only the terminal host ({args[1]}), itself (the terminal panel starts at
+# /.bn/terminal, which redirects there) and the dev-server previews' hosts (caddy/preview-on.caddy), no forms, no
+# plugins, framed only by the portal ({args[0]}), and Trusted Types: no HTML-string sink can run at all, and the one
+# policy allowed, bn-worker (code/web/src/preview/tt.ts), turns
 # only the build's own worker paths into script URLs. The policy applies to the workers' own scripts too (Caddy sets
 # it on every response). Headers that could plant or clear cookies, redirect, preload, widen a service worker, open
 # CORS or send reports go.
@@ -335,7 +341,7 @@ http://{$FILES_HOST} {
 	header_down -NEL
 	header_down X-Content-Type-Options nosniff
 	header_down Referrer-Policy same-origin
-	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
+	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* http://*.{$PREVIEW_DOMAIN:preview.invalid}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
 }
 
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
@@ -373,6 +379,9 @@ import terminal-{$TERMINAL_MODE:off}.caddy
 
 # The Code page: code-off.caddy (nothing; the default) or code-on.caddy (compose.code.yaml).
 import code-{$CODE_MODE:off}.caddy
+
+# The Code page's previews: preview-off.caddy (nothing; the default) or preview-on.caddy (compose.code.yaml). Local only.
+import preview-{$PREVIEW_MODE:off}.caddy
 
 # Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.
 import remote-{$REMOTE_MODE}.caddy

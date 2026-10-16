@@ -67,6 +67,26 @@ http://:7681 {
 	}
 }
 
+# On "terminal-link" alone too: the Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy), for the
+# main Caddy — bn-preview on its UNIX socket. The same scheme as ttyd's above, with a secret of its own
+# (X-Bn-Preview-0<PREVIEW_PROXY_SECRET>), added by the main Caddy only after the portal has checked the preview link;
+# without it — or without a real secret here — bn-preview is not asked at all, and the header is removed before it
+# (X-Bn-Preview-Port, the port the portal's answer named, goes on: bn-preview connects to that port on its loopback).
+# WebSockets (a dev server's hot reload) pass as they come.
+http://:7682 {
+	bind terminal-upstream
+	route {
+		@weak expression `!'{$PREVIEW_PROXY_SECRET}'.matches('^[0-9a-f]+$') || '{$PREVIEW_PROXY_SECRET}'.size() < 32`
+		respond @weak "no PREVIEW_PROXY_SECRET: ./stack code enable" 503
+		@proxied header X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1
+		handle @proxied {
+			request_header -X-Bn-Preview-0*
+			reverse_proxy unix//run/bn-preview/preview.sock
+		}
+		respond 407
+	}
+}
+
 # The container's health check (its own loopback only).
 http://127.0.0.1:8092 {
 	bind 127.0.0.1

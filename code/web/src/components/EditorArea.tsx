@@ -15,6 +15,7 @@ import { Icon, Spinner } from './icons';
 import { DiffLines } from './ToolCard';
 import { useMedia } from './ui';
 import { Preview, PreviewBar } from '../preview/Preview';
+import { PreviewPane } from './DevPreview';
 
 let cmPromise: Promise<typeof import('../editor/cm')> | null = null;
 function loadCm() {
@@ -262,6 +263,15 @@ function DiffPane({ tab, active }: { tab: DiffTab; active: boolean }) {
 }
 
 function TabTitle({ tab, all }: { tab: Tab; all: Tab[] }) {
+  if (tab.kind === 'devserver') {
+    return (
+      <>
+        <Icon name="window" size={14} class="tab-preview" />
+        <span class="tab-name">:{tab.port}</span>
+        <span class="tab-dir">preview</span>
+      </>
+    );
+  }
   const name = label(basename(tab.path), 120);
   const dup = all.filter((t) => basename(t.path) === name && t.kind === tab.kind).length > 1;
   return (
@@ -290,7 +300,7 @@ export function EditorTabs() {
           class={`etab${t.key === active ? ' on' : ''}${t.kind === 'file' && t.dirty ? ' dirty' : ''}`}
           role="tab"
           aria-selected={t.key === active}
-          title={t.path}
+          title={t.kind === 'devserver' ? `Preview of localhost:${t.port} in the sandbox` : t.path}
           onMouseDown={(e) => {
             if (e.button === 1) {
               e.preventDefault();
@@ -301,7 +311,7 @@ export function EditorTabs() {
           <button type="button" class="etab-main" onClick={() => setActiveTab(t.key)}>
             <TabTitle tab={t} all={tabs} />
           </button>
-          <button type="button" class="etab-x" title="Close" aria-label={`Close ${basename(t.path)}`} onClick={() => closeTab(t.key)}>
+          <button type="button" class="etab-x" title="Close" aria-label={`Close ${t.kind === 'devserver' ? `the preview of :${t.port}` : basename(t.path)}`} onClick={() => closeTab(t.key)}>
             <span class="etab-dot" aria-hidden="true" />
             <Icon name="close" size={13} />
           </button>
@@ -317,7 +327,11 @@ export function EditorPanes() {
   if (!tabs.length) return <EditorWelcome />;
   return (
     <div class="panes">
-      {tabs.map((t) => (t.kind === 'file' ? <FilePane key={t.key} tab={t} active={t.key === active} /> : <DiffPane key={t.key} tab={t} active={t.key === active} />))}
+      {tabs.map((t) =>
+        t.kind === 'file' ? <FilePane key={t.key} tab={t} active={t.key === active} />
+          : t.kind === 'devserver' ? <PreviewPane key={t.key} tab={t} active={t.key === active} />
+            : <DiffPane key={t.key} tab={t} active={t.key === active} />,
+      )}
     </div>
   );
 }

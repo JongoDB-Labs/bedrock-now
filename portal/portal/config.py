@@ -19,6 +19,15 @@ def valid_openrouter_key(key: str) -> bool:
 def openrouter_key(key: str) -> str:
     return key if valid_openrouter_key(key) else ""
 
+
+def site_of(host: str) -> str:
+    """A host's site as browsers see it for a name under .localhost (not on the public suffix list: its last label
+    counts as the registry): the last two labels."""
+    return ".".join(host.split(".")[-2:])
+
+
+_PREVIEW_DOMAIN = re.compile(r"(?=.{1,200}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+")
+
 # The apps the portal fronts and their start paths (Caddy routes them; see caddy/Caddyfile). Each has its own host
 # name: CHAT_HOST / ADMIN_HOST / FILES_HOST, by default chat./admin./files. under PORTAL_HOST.
 APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
@@ -105,6 +114,9 @@ class Settings:
     terminal: bool = False         # TERMINAL_ENABLED=true: the Terminal tab and terminal host (./stack terminal)
     remote_terminal: bool = False  # REMOTE_TERMINAL=true: also on the remote site (remote_app_hosts["terminal"])
     code: bool = False             # CODE_ENABLED=true (with the terminal): the Code tab and code host (./stack code)
+    # The Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy): their own site,
+    # p<port>-<capability>.PREVIEW_DOMAIN (compose.code.yaml; lib/code.sh derives it from PORTAL_HOST). Local only.
+    preview_domain: str = ""
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -161,6 +173,10 @@ class Settings:
     def code_origins(self) -> list[str]:
         return [self.origin(CODE, remote=rem) for rem in (False, True) if self.code_on(rem)]
 
+    def preview_on(self, remote: bool = False) -> bool:
+        """Previews: with the Code page, on this computer only (remote access to them is a later step)."""
+        return not remote and self.code_on(False) and bool(self.preview_domain)
+
     def locked_on(self, app: str, remote: bool = False) -> bool:
         """The terminal / the Code page: on, and usable on this site."""
         return self.terminal_on(remote) if app == TERMINAL else self.code_on(remote) if app == CODE else False
@@ -210,6 +226,12 @@ def from_env(env: dict | None = None) -> Settings:
         remote_app_hosts[TERMINAL] = env["REMOTE_TERMINAL_HOST"].strip().lower()
     if code and remote_terminal and (env.get("REMOTE_CODE_HOST") or "").strip():
         remote_app_hosts[CODE] = env["REMOTE_CODE_HOST"].strip().lower()
+    # a preview domain must be another *site* than the portal's (its last two labels differ: browsers count
+    # x.bedrock-now.localhost and bedrock-now.localhost as one site), or the portal's cookies would reach the previews
+    preview = (env.get("PREVIEW_DOMAIN") or "").strip().lower() if code else ""
+    host = (env.get("PORTAL_HOST") or "bedrock-now.localhost").lower()
+    if preview and (not _PREVIEW_DOMAIN.fullmatch(preview) or site_of(preview) == site_of(host)):
+        preview = ""
     return Settings(
         password_hash=password_hash,
         secret=secret,
@@ -250,6 +272,7 @@ def from_env(env: dict | None = None) -> Settings:
         terminal=terminal,
         remote_terminal=remote_terminal,
         code=code,
+        preview_domain=preview,
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),

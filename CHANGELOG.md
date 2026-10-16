@@ -20,12 +20,32 @@ All notable changes to bedrock-now are documented here. The format follows
   cards offer **Preview**. Word, Excel, PowerPoint, HTML and Mermaid previews come later (Download meanwhile).
   New pinned dependencies of `code/web`: `pdfjs-dist` 6.4.299, `papaparse` 5.7.0, `yaml` 2.9.1 (its optional native
   `@napi-rs/canvas` is replaced by an empty local package: no native binary is downloaded).
+- **Previews of dev servers in the Code page** (local only for now): a web server running in the sandbox shows in a
+  tab beside the chat (*chat | preview*) with reload, an address field, desktop / tablet / phone sizes and **Open in
+  a new tab** (a new tab on a phone). **Preview :5173** chips on commands whose output names a `localhost` address,
+  `localhost` links in Claude's answers opening the preview, a toast when a new server listens, and **Ports** in the
+  status bar (⋯ → *Ports & previews* on a phone): the sandbox's listening servers with their process, Preview, Stop,
+  any other port, and the entries of the workspace's `.claude/launch.json` (the Claude Code desktop app's format) with
+  **Start** (in a new window of the terminal, `PORT` set; its preview opens once it listens). Hot reload works (Vite,
+  Next, webpack: their host and origin checks see `localhost:<port>`). Each preview is on a site of its own,
+  `p<port>-<capability>.<PREVIEW_DOMAIN>` (`bedrock-now-preview.localhost`, derived from `PORTAL_HOST`): no
+  bedrock-now cookie reaches it, its requests to the other hosts are cross-site, and the capability — minted by the
+  portal for the Code page's unlock — names one port and ends with that unlock, Sign out or a new password. The path:
+  the main Caddy (`caddy/preview-on.caddy`, the portal's check on every request) → the terminal's gateway (`:7682`,
+  a secret header of its own, `PREVIEW_PROXY_SECRET`) → `bn-preview` in the sandbox (`terminal/bin/bn-preview.mjs`,
+  an HTTP/WebSocket proxy on a UNIX socket, the `preview-socket` volume) → `127.0.0.1:<port>`. New bn-coded ops
+  `ports.list`, `ports.stop`, `launch.list`, `launch.start`; `./stack test` checks the chain; the e2e suite checks a
+  real preview (an HTTP + WebSocket echo server, isolation from inside the preview, refused capabilities, a Vite hot
+  update). docs/security.md: "Previews of dev servers in the sandbox". The terminal container gets one more volume
+  (bn-preview's socket; always there, like bn-coded's), so the next `./stack update` recreates it as it does for a new
+  image anyway.
 
 ### Changed
 
 - **The Code page's CSP** (`caddy/Caddyfile`, `code_page`) allows one Trusted Types policy, `trusted-types
   bn-worker` (was `'none'`): it turns exactly the build's own worker scripts into script URLs and nothing else, and a
-  second policy is refused. It also allows audio and video from `blob:` (`media-src blob:`). See
+  second policy is refused. It also allows audio and video from `blob:` (`media-src blob:`), and frames from the
+  dev-server previews' hosts (`frame-src` gains `http://*.<PREVIEW_DOMAIN>:*`). See
   [docs/security.md](docs/security.md#the-code-page).
 
 ## [0.5.0] - 2026-10-16

@@ -19,7 +19,9 @@
 // Test hooks (development only): POST /__mock/drop closes every WebSocket; /__mock/close?code=4008 closes them with
 // that code; /__mock/lock makes the code host refuse this browser (the unlock expired) until /__mock/unlock;
 // /__mock/budget?spend=&max= sets the key's budget; /__mock/clear?session= resets that session's conversation as
-// Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/reset restores the fixtures.
+// Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
+// in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/reset
+// restores the fixtures.
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
@@ -625,6 +627,7 @@ async function runScenario(s, text, images) {
   if (t.includes('multiedit') || t.includes('many edits')) return multiEdit(s);
   if (t.includes('ask me two') || t.includes('ask me several')) return questions(s);
   if (t.includes('ask me')) return question(s);
+  if (t.includes('vite') || t.includes('preview')) return viteServer(s);
   if (t.includes('background') || t.includes('dev server')) return background(s);
   if (t.includes('agent') || t.includes('explore')) return agent(s);
   if ((t.includes('write') || t.includes('create')) && t.includes('markdown')) return writeMarkdown(s);
@@ -755,6 +758,18 @@ async function bash(s) {
     return { text: '\u001b[32m✓\u001b[0m tests/retry.test.ts (1 test) 4ms\n\n Test Files  1 passed (1)\n      Tests  1 passed (1)\n   Start at  10:42:17\n   Duration  412ms' };
   });
   await s.stream(r.ok ? 'All tests pass (1 file, 1 test).' : "I didn't run the tests.");
+  return 2;
+}
+
+// a dev server started in the foreground (Vite's banner in its output: the page offers its preview), then listening
+async function viteServer(s) {
+  await s.stream('Starting Vite for the app.');
+  await s.tool('Bash', { command: 'npx vite --port 5173', description: 'Start the dev server', timeout: 10000 }, async () => {
+    await sleep(400);
+    addPort(5173, 'node /workspace/node_modules/.bin/vite --port 5173');
+    return { text: '\n  VITE v7.1.5  ready in 312 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n  ➜  press h + enter to show help\n' };
+  });
+  await s.stream('The dev server is up at http://localhost:5173/ — open its preview to see the page.');
   return 2;
 }
 
@@ -956,7 +971,7 @@ function csp(req) {
     "base-uri 'none'",
     "form-action 'none'",
     "object-src 'none'",
-    "frame-src 'self'",
+    "frame-src 'self' http://*.localhost:*",
     "frame-ancestors 'self'",
     "require-trusted-types-for 'script'",
     "trusted-types bn-worker",
@@ -1004,6 +1019,10 @@ function download(res, f, e) {
 async function api(req, res, url) {
   const p = url.pathname;
   const m = req.method;
+  if (p.startsWith('/api/ports') || p.startsWith('/api/launch')) {
+    const done = await previewApi(req, res, p);
+    if (done !== null) return done;
+  }
   if (p === '/api/state') {
     return json(res, 200, {
       versions: { cli: '2.1.296', sdk: '0.3.296' },
@@ -1278,7 +1297,83 @@ async function api(req, res, url) {
   return json(res, 404, { error: 'not found' });
 }
 
+// ------------------------------------------------------------------ previews (ports in the "sandbox", launch.json)
+
+const mockPorts = new Map();
+const PREVIEW_PORT = PORT + 100;   // the fake preview site: p<port>-<capability>.localhost:<this> (Chromium: *.localhost is loopback)
+let pidN = 4000;
+function addPort(port, cmd) {
+  mockPorts.set(port, { port, addrs: ['127.0.0.1'], pid: pidN++, cmd });
+}
+const CAP = 'a'.repeat(9) + 'b'.repeat(24);
+const previewOrigin = (port) => `http://p${port}-${CAP}.localhost:${PREVIEW_PORT}`;
+const LAUNCH = [
+  { name: 'web', port: 5173, command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: ['NODE_ENV'] },
+  { name: 'api', port: 8787, command: 'node server.js --verbose', cwd: 'api', url: null, autoPort: false, env: [] },
+  { name: 'broken', error: 'port: a number from 1 to 65535' },
+];
+
+async function previewApi(req, res, p) {
+  const m = req.method;
+  if (p === '/api/ports' && m === 'GET') {
+    return json(res, 200, { ports: [...mockPorts.values()].sort((a, b) => a.port - b.port).concat(HOSTILE_MODE ? [{ port: 70000 }, { port: 9999, addrs: ['<x>'], pid: 1, cmd: HOSTILE.script }] : []), truncated: false });
+  }
+  if (p === '/api/ports/stop' && m === 'POST') {
+    const b = await jsonBody(req);
+    const row = mockPorts.get(b.port);
+    if (!row || row.pid !== b.pid) return json(res, 400, { error: 'that process does not listen on that port (it stopped already?)' });
+    mockPorts.delete(b.port);
+    return json(res, 200, { ok: true, pid: b.pid, port: b.port, signal: b.force ? 'SIGKILL' : 'SIGTERM' });
+  }
+  if (p === '/api/launch' && m === 'GET') return json(res, 200, { exists: true, error: null, configurations: LAUNCH });
+  if (p === '/api/launch/start' && m === 'POST') {
+    const b = await jsonBody(req);
+    const e = LAUNCH.find((x) => x.name === b.name && !x.error);
+    if (!e) return json(res, 400, { error: 'no such entry in .claude/launch.json' });
+    setTimeout(() => addPort(e.port, e.command), FAST ? 50 : 1200);
+    return json(res, 200, { ok: true, name: e.name, window: e.name, port: e.port, command: e.command });
+  }
+  return null;
+}
+
+function previewLink(res, url) {
+  const raw = url.searchParams.get('port');
+  if (raw === null) return json(res, 200, { available: true, domain: 'localhost', reason: '' });
+  const port = Number(raw);
+  if (!/^[1-9][0-9]{0,4}$/.test(raw) || port > 65535) return json(res, 400, { error: 'port: a number from 1 to 65535' });
+  const path = url.searchParams.get('path') || '/';
+  const origin = previewOrigin(port);
+  if (url.searchParams.get('format') === 'json') return json(res, 200, { url: origin + path, origin, port, expires: Math.floor(Date.now() / 1000) + 43200 });
+  res.writeHead(303, { location: origin + path, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+  return res.end();
+}
+
+// the fake preview site: what bn-preview would pass on from the dev server (a page per port), or its 502 page
+const previewServer = http.createServer((req, res) => {
+  const host = String(req.headers.host || '');
+  const m = /^p([0-9]{1,5})-[a-z2-7]{33}\.localhost(:[0-9]+)?$/.exec(host);
+  const port = m ? Number(m[1]) : 0;
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  if (!m) { res.writeHead(403, { 'content-type': 'text/plain' }); return res.end('preview refused: not a valid preview link'); }
+  if (!mockPorts.has(port)) {
+    res.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(`<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=3><body style="font:15px system-ui;margin:3rem auto;max-width:34rem;color:#334"><h1 style="font-size:1.15rem">Nothing is listening on port ${port} in the sandbox</h1><p>Start your dev server there; this page loads it by itself.</p>`);
+  }
+  const u = new URL(req.url, 'http://x');
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors http://127.0.0.1:* http://localhost:*" });
+  res.end(`<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Acme (mock :${port})</title>
+<body style="margin:0;font:16px/1.5 system-ui,sans-serif;color:#1d2733;background:linear-gradient(135deg,#f4f7fb,#e6eef7)">
+<header style="display:flex;align-items:center;gap:10px;padding:14px 22px;background:#1d2733;color:#fff"><b>Acme</b><span style="opacity:.6">dashboard</span>
+<nav style="margin-left:auto;display:flex;gap:16px;font-size:14px"><a style="color:#9fd3e6" href="/">Home</a><a style="color:#9fd3e6" href="/about">About</a></nav></header>
+<main style="padding:28px 22px;max-width:760px"><h1 style="margin:0 0 6px;font-size:28px">Hello from the dev server on :${port}</h1>
+<p style="margin:0 0 18px;color:#556">This page comes from the sandbox (mock) — path <code>${esc(u.pathname + u.search)}</code>.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">${['Visitors 1,284', 'Signups 92', 'Revenue $4.2k'].map((x) => `<div style="padding:16px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgb(0 0 0/.08)">${x}</div>`).join('')}</div></main>`);
+});
+previewServer.on('error', (e) => log(`preview listener: ${e.message}`));
+previewServer.listen(PREVIEW_PORT, HOST);
+
 function bn(req, res, url) {
+  if (url.pathname === '/.bn/preview') return previewLink(res, url);
   if (url.pathname === '/.bn/models') {
     if (!HOSTILE_MODE) return json(res, 200, MODELS);
     return json(res, 200, { ...MODELS, models: [...MODELS.models, { id: HOSTILE.img, name: HOSTILE.script, input_per_mtok: -1, output_per_mtok: 'NaN' }] });
@@ -1370,7 +1465,14 @@ const server = http.createServer(async (req, res) => {
         writeFile(f, e.data.toString() + '\n// changed on disk by someone else\n');
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/port') {
+        const port = Number(url.searchParams.get('port'));
+        if (url.searchParams.get('del') === '1') mockPorts.delete(port);
+        else addPort(port, url.searchParams.get('cmd') || `python3 -m http.server ${port}`);
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === '/__mock/reset') {
+        mockPorts.clear();
         checkpoints.clear();
         beacons.length = 0;
         resetFs();

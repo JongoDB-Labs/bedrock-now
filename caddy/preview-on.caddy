@@ -1,0 +1,58 @@
+# The Code page's browser previews of dev servers in the sandbox (README "Preview"; docs/security.md "Previews"): on
+# with the Code page (compose.code.yaml sets PREVIEW_MODE=on; preview-off.caddy otherwise). Imported by Caddyfile.
+#
+# Local only. This site is on the local listener (127.0.0.1:PORTAL_PORT) alone; the remote sites (remote-*.caddy, on
+# :8081 / :8443) have no preview block, and the portal refuses previews for remote requests too.
+#
+# Every preview has a host of its own, p<port>-<capability>.<PREVIEW_DOMAIN> (p5173-<capability>.bedrock-now-preview.
+# localhost): a different *site* from the portal's (bedrock-now.localhost), so a preview — whatever script the sandbox
+# serves — never receives the portal's cookies (the session's is Domain=PORTAL_HOST), its
+# requests to the portal, Chat, Admin, Files, the terminal or the Code page are cross-site (SameSite=Strict cookies stay
+# home), and it cannot plant cookies on them. lib/code.sh derives PREVIEW_DOMAIN from PORTAL_HOST.
+#
+# The capability in the host name (the portal mints it on the code host, /.bn/preview, from the Code page's unlock)
+# replaces cookies: the portal checks it on every request (/auth/verify?app=preview: the signature, the port, the
+# unlock's 12 hours, Sign out, the password; and no Origin but this preview's own) and answers with the port.
+(preview_upstream) {
+	# towards bn-preview: none of what only Caddy, the portal or the sidecar may set, no bedrock-now cookie (a browser
+	# sends none here: another site), no Referer (it names the capability); Host and Origin as the dev server expects
+	# them for its own address (Vite's, Next's and webpack's host checks pass unchanged); the preview's secret header,
+	# which the gateway requires before bn-preview and removes
+	header_up -X-Portal-Proxy
+	header_up -X-Portal-User
+	header_up -Referer
+	header_up Cookie "(^|;\s*)(__Host-)?bn_[^=;]*=[^;]*" ""
+	header_up Host localhost:{http.request.header.X-Bn-Preview-Port}
+	header_up Origin ".+" "http://localhost:{http.request.header.X-Bn-Preview-Port}"
+	header_up X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1
+	# back: the app's own headers, but no cookie for the whole preview domain (Domain= dropped: host-only), no framing
+	# refusal of its own (the CSP below decides), nothing that clears site data, widens a service worker or sends
+	# reports; the Referer of its own requests never leaves (no-referrer); and a CSP added beside the app's own (both
+	# apply): only the Code page (in the portal) may frame it, and it frames nothing on bedrock-now's hosts (or this
+	# computer's localhost: only https, its own previews, data: and blob:)
+	header_down -X-Frame-Options
+	header_down -Clear-Site-Data
+	header_down -Service-Worker-Allowed
+	header_down -Content-Security-Policy-Report-Only
+	header_down -Report-To
+	header_down -Reporting-Endpoints
+	header_down -NEL
+	header_down Set-Cookie "(?i);\s*domain=[^;]*" ""
+	header_down Referrer-Policy no-referrer
+	header_down +Content-Security-Policy "frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}; frame-src 'self' https: data: blob: http://*.{$PREVIEW_DOMAIN}:*"
+}
+
+http://*.{$PREVIEW_DOMAIN} {
+	route {
+		import local_request
+		# (only the portal's answer below may name the port: client copies go first, in a step of their own)
+		request_header -X-Bn-Preview-*
+		forward_auth portal:8000 {
+			uri /auth/verify?app=preview
+			copy_headers X-Bn-Preview-Port
+		}
+		reverse_proxy terminal-upstream:7682 {
+			import preview_upstream
+		}
+	}
+}

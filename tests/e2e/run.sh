@@ -246,7 +246,7 @@ terminal_probe() {
   docker exec -i -e HG="$2" -e LP="$(get_env LITELLM_PORT)" "$1" bash -s <<'SH'
 tcp() { if timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo open; else echo closed; fi; }
 for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
-         gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
+         gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:7682 gateway:80; do
   printf '%s\t%s\n' "$t" "$(tcp "${t%%:*}" "${t##*:}")"
 done
 g=http://gateway:8091
@@ -280,6 +280,9 @@ printf 'loopback-litellm\t%s\n' "$(code -H "Authorization: Bearer $ANTHROPIC_AUT
 printf 'ttyd-tcp\t%s\n' "$(code http://127.0.0.1:7681/)"
 printf 'tcp-listeners\t%s\n' "$(awk '$4 == "0A" && $2 !~ /^0B00007F:/' /proc/net/tcp /proc/net/tcp6 | wc -l | tr -d ' ')"
 printf 'ttyd-socket\t%s\n' "$(code --unix-socket /run/bn-ttyd/ttyd.sock http://terminal/)"
+# bn-preview (the Code page's previews) on its socket in here, no TCP listener; without a port it answers 400
+printf 'preview-socket\t%s\n' "$(code --unix-socket /run/bn-preview/preview.sock http://preview/)"
+printf 'preview-secret-in-env\t%s\n' "$(cat /proc/1/environ /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep -c PREVIEW_PROXY_SECRET || true)"
 printf 'proxy-secret-in-env\t%s\n' "$(cat /proc/1/environ /proc/self/environ 2>/dev/null | tr '\0' '\n' | grep -c TERMINAL_PROXY_SECRET || true)"
 # (getent hosts asks for IPv6 first, from /etc/hosts or else Docker's DNS; ahostsv4 for IPv4)
 printf 'host-docker-internal\t%s\n' "$(for h in host.docker.internal gateway.docker.internal; do getent hosts "$h"; getent ahostsv4 "$h"; done | awk '{ print $1 }' | sort -u | tr '\n' ' ')"
@@ -309,12 +312,13 @@ if [ "$TERMINAL" = 1 ]; then
     probe="$(terminal_probe "$tc" "${hg:-192.0.2.1}" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/terminal-isolation.log"; redact "$LOGS/terminal-isolation.log"
     bad=''
     for k in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
-             gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:80; do
+             gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:7682 gateway:80; do
       printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
     done
     for kv in gateway-litellm=200 gateway-mcp-no-token=401 gateway-mcp-tools=1 gateway-key=200 gateway-models=200 gateway-count-tokens=200 gateway-ui=404 \
               gateway-key-generate=404 gateway-bedrock=404 gateway-spend-logs=404 gateway-chat-completions=404 \
               gateway-unclean="404 404 404 404 404 " ttyd-tcp=000 tcp-listeners=0 ttyd-socket=200 proxy-secret-in-env=0 \
+              preview-socket=400 preview-secret-in-env=0 \
               host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
@@ -365,13 +369,16 @@ if [ "$TERMINAL" = 1 ]; then
     [ "$tm:$cm" != off:on ] || continue                    # the Code page only with the terminal
     [ "$cm" = off ] || [ "$CODE" = 1 ] || continue           # (its snippets need CODE_* only while it is on)
     # (the code site's names: this runs before ./stack code enable gives the container its own)
-    docker exec -e TERMINAL_MODE="$tm" -e CODE_MODE="$cm" -e REMOTE_MODE="$rm" -e CODE_HOST="code.$HOST" -e CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef \
+    # (the previews' site comes with the Code page: preview-on.caddy)
+    docker exec -e TERMINAL_MODE="$tm" -e CODE_MODE="$cm" -e PREVIEW_MODE="$cm" -e REMOTE_MODE="$rm" -e CODE_HOST="code.$HOST" \
+      -e CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef -e PREVIEW_PROXY_SECRET=0123456789abcdef0123456789abcdef \
+      -e PREVIEW_DOMAIN="$PROJECT-preview.localhost" -e CODE_ORIGIN="http://code.$HOST" \
       "$cad" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
       > "$LOGS/terminal-caddy-$tm-$cm-$rm.log" 2>&1 || bad="$bad terminal-$tm/code-$cm/remote-$rm"
   done; done; done
   docker exec "$tgw" caddy validate --config /etc/caddy/terminal-gateway.caddy --adapter caddyfile > "$LOGS/terminal-caddy-gateway.log" 2>&1 ||
     bad="$bad gateway"
-  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on$( [ "$CODE" = 1 ] && echo ' × the Code page off/on') × remote off/tailscale, and terminal-gateway.caddy"
+  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on$( [ "$CODE" = 1 ] && echo ' × the Code page (and its previews) off/on') × remote off/tailscale, and terminal-gateway.caddy"
   else record terminal caddy-configs-validate FAIL "$(( $(now) - t0 ))" "caddy validate failed for:$bad (logs $LOGS/terminal-caddy-*.log)"; fi
 fi
 

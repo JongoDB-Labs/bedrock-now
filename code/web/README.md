@@ -66,7 +66,10 @@ every prompt ends in a plan to approve. Test hooks: `POST /__mock/drop|close?cod
 clear?session=|touch?path=|reset`. Plugins: one marketplace with a few plugins; adding any other
 (`/workspace/name`, `owner/repo`) gives one plain plugin and one installed by a command, which answers
 `needs_confirmation {command, sha256}` until that hash comes back; installs reload the open sessions' commands. MCP:
-`bedrock-shared` plus servers you add (they load when a session starts), off/on per session, reconnect.
+`bedrock-shared` plus servers you add (they load when a session starts), off/on per session, reconnect. Previews:
+`/api/ports`, `/api/launch` (three entries, one broken) and `/.bn/preview`, whose links point at a fake preview site
+on the mock's port + 100 (`p<port>-<capability>.localhost`: Chromium's loopback); a *vite* or *preview* prompt runs a
+dev server that prints Vite's banner; `POST /__mock/port?port=&cmd=` adds a listening server (`&del=1` removes it).
 
 ## Tests
 

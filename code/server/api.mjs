@@ -353,8 +353,55 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return action(['mcp', 'remove', name, '--scope=user'], 60000);
   }
 
+  // --- previews: the servers listening in the sandbox (bn-coded reads /proc there), stopping one, and the workspace's
+  // .claude/launch.json (its entries; one started by name in the terminal's tmux, with the file's own command) ---
+  async function ports() {
+    const { result } = await call({ op: 'ports.list' });
+    const rows = (Array.isArray(result.ports) ? result.ports : []).slice(0, 50).map(portRow).filter(Boolean);
+    return { ports: rows, truncated: result.truncated === true };
+  }
+  async function stopPort(body) {
+    const pid = int(body?.pid, 2, 4194304), port = int(body?.port, 1, 65535);
+    if (pid === null || port === null) throw new HttpError(400, 'pid and port, please');
+    const signal = body.force === true ? 'SIGKILL' : 'SIGTERM';
+    await call({ op: 'ports.stop', pid, port, signal });
+    return { ok: true, pid, port, signal };
+  }
+  async function launch() {
+    const { result } = await call({ op: 'launch.list' });
+    return { exists: result.exists === true, error: short(result.error, 200) || null,
+      configurations: (Array.isArray(result.configurations) ? result.configurations : []).slice(0, 20).map(launchRow).filter(Boolean) };
+  }
+  async function launchStart(body) {
+    const name = body?.name;
+    if (typeof name !== 'string' || !/^[^\x00-\x1f\x7f]{1,100}$/.test(name)) throw new HttpError(400, 'bad name');
+    const { result } = await call({ op: 'launch.start', name }, { timeoutMs: 30000 });
+    return { ok: result.ok === true, name: short(result.name, 100), window: short(result.window, 60), port: int(result.port, 1, 65535),
+      command: str(typeof result.command === 'string' ? result.command : '', 4000) };
+  }
+
   return { listSessions, messages, parentOf, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, memory, memoryWrite, plugins, available, pluginAction,
-    marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove };
+    marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
+    ports, stopPort, launch, launchStart };
+}
+
+// --- what bn-coded answers about ports and launch.json, checked for the page (the sandbox can say anything) ---
+const ADDRS = ['127.0.0.1', '0.0.0.0', '::1', '::'];
+export function portRow(x) {
+  if (!x || typeof x !== 'object') return null;
+  const port = int(x.port, 1, 65535);
+  if (port === null) return null;
+  return { port, addrs: (Array.isArray(x.addrs) ? x.addrs : []).filter((a) => ADDRS.includes(a)).slice(0, 4), pid: int(x.pid, 2, 4194304), cmd: short(x.cmd, 300) };
+}
+export function launchRow(x) {
+  if (!x || typeof x !== 'object') return null;
+  const name = short(x.name, 100);
+  if (typeof x.error === 'string') return { name: name || null, error: short(x.error, 200) };
+  if (!name) return null;
+  const url = typeof x.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(x.url) ? x.url : null;
+  return { name, port: int(x.port, 1, 65535), command: typeof x.command === 'string' ? str(x.command, 4000) : null,
+    cwd: short(x.cwd, 1000) || '.', url, autoPort: typeof x.autoPort === 'boolean' ? x.autoPort : null,
+    env: x.env && typeof x.env === 'object' && !Array.isArray(x.env) ? Object.keys(x.env).slice(0, 32).map((k) => short(k, 64)) : [] };
 }
 
 // --- what the CLI answers, checked for the page ---

@@ -39,9 +39,14 @@ import type {
   Marketplace,
   McpServer,
   Mode,
+  LaunchEntry,
+  LaunchList,
   OpenSession,
   Outcome,
   PermissionReq,
+  PortInfo,
+  PreviewInfo,
+  PreviewLink,
   ServerMsg,
   ServerState,
   SessionInfo,
@@ -1041,6 +1046,91 @@ export async function getSpend(session: string): Promise<{ rows: SpendRow[]; key
   const k = obj(o.key);
   const key = k ? { spend: nonneg(k.spend), max: nonneg(k.max_budget ?? k.maxBudget), resetAt: time(k.reset_at ?? k.resetAt) || null } : null;
   return { rows, key };
+}
+
+// ---------------------------------------------------------------- previews
+
+const ADDRS = ['127.0.0.1', '0.0.0.0', '::1', '::'];
+export function normPort(v: unknown): PortInfo | null {
+  const o = obj(v);
+  if (!o || typeof o.port !== 'number' || !Number.isInteger(o.port) || o.port < 1 || o.port > 65535) return null;
+  const pid = typeof o.pid === 'number' && Number.isInteger(o.pid) && o.pid > 1 && o.pid <= 4194304 ? o.pid : null;
+  return { port: o.port, addrs: arr(o.addrs, 4).filter((a): a is string => typeof a === 'string' && ADDRS.includes(a)), pid, cmd: label(o.cmd, 300) };
+}
+
+/** The servers listening in the sandbox (one row per port, by port). */
+export async function getPorts(): Promise<PortInfo[]> {
+  const o = await request('GET', '/api/ports');
+  const seen = new Set<number>();
+  return arr(o.ports, 50)
+    .map(normPort)
+    .filter((p): p is PortInfo => p !== null && !seen.has(p.port) && (seen.add(p.port), true))
+    .sort((a, b) => a.port - b.port);
+}
+
+/** Stop the process that listens on `port` (SIGTERM; `force`: SIGKILL). */
+export async function stopPort(pid: number, port: number, force = false): Promise<void> {
+  await request('POST', '/api/ports/stop', { pid, port, force });
+}
+
+export function normLaunchEntry(v: unknown): LaunchEntry | null {
+  const o = obj(v);
+  if (!o) return null;
+  const name = label(o.name, 100);
+  const error = typeof o.error === 'string' ? label(o.error, 200) : null;
+  if (!name && !error) return null;
+  const port = typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535 ? o.port : null;
+  const url = typeof o.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(o.url) ? o.url : null;
+  return { name: name || '(no name)', port: error ? null : port, command: !error && typeof o.command === 'string' ? safe(o.command, 4000) : null,
+    cwd: label(o.cwd, 500) || '.', url: error ? null : url, env: error ? [] : arr(o.env, 32).map((k) => label(k, 64)).filter(Boolean), error };
+}
+
+/** The workspace's .claude/launch.json, as bn-coded read and checked it. */
+export async function getLaunch(): Promise<LaunchList> {
+  const o = await request('GET', '/api/launch');
+  return { exists: o.exists === true, error: typeof o.error === 'string' ? label(o.error, 200) : null,
+    entries: arr(o.configurations, 20).map(normLaunchEntry).filter((e): e is LaunchEntry => e !== null) };
+}
+
+/** Start a launch.json entry by name (in a new window of the terminal's tmux session; the command is the file's). */
+export async function startLaunch(name: string): Promise<{ window: string; port: number | null }> {
+  const o = await request('POST', '/api/launch/start', { name });
+  return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
+}
+
+/** Whether previews work here (the portal: on this computer, not over remote access yet). */
+export async function getPreviewInfo(): Promise<PreviewInfo> {
+  const o = await request('GET', '/.bn/preview' + q({ format: 'json' }));
+  return { available: o.available === true, reason: label(o.reason, 300) };
+}
+
+/** A preview link only when it is one: http, a host p<port>-<capability>.<domain> for this port, no credentials. */
+export function previewLinkOk(v: unknown, port: number): PreviewLink | null {
+  const o = obj(v);
+  if (!o || typeof o.url !== 'string' || typeof o.origin !== 'string' || o.url.length > 2500) return null;
+  let u: URL;
+  try {
+    u = new URL(o.url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'http:' || u.username || u.password || u.origin !== o.origin) return null;
+  if (!new RegExp(`^p${port}-[a-z2-7]{33}\\.[a-z0-9.-]{1,200}$`).test(u.hostname)) return null;
+  const expires = typeof o.expires === 'number' && Number.isFinite(o.expires) ? o.expires * 1000 : null;
+  return { url: u.href, origin: u.origin, port, expires };
+}
+
+/** A preview link for `port` (at `path` on it), minted by the portal for this unlock. */
+export async function getPreviewLink(port: number, path = '/'): Promise<PreviewLink> {
+  const o = await request('GET', '/.bn/preview' + q({ port, path: path === '/' ? undefined : path, format: 'json' }));
+  const link = previewLinkOk(o, port);
+  if (!link) throw new ApiError(502, 'The portal answered with something that is not a preview link.');
+  return link;
+}
+
+/** Where "Open in new tab" goes: the portal's redirect to the preview (no popup blocker: it is a plain link). */
+export function previewTabUrl(port: number, path = '/'): string {
+  return '/.bn/preview' + q({ port, path: path === '/' ? undefined : path });
 }
 
 /** The key is spent: its budget reached (the next request is refused until it resets or the budget goes up). */
