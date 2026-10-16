@@ -6,7 +6,9 @@ prompts (the rules Always applies, the workspace option, partially shown prompts
 MultiEdit), plan approval, diffs in the editor, the slash and @ pickers, uploads, background tasks, interrupt,
 prompts queued below the stream and refused ones taken back, /clear and a reset from the CLI, fork from a prompt,
 "load earlier", reconnect with replay and close codes, an expired unlock, the budget banner, save conflicts, layout
-memory, and a hostile session (markup, bidi, control characters, giant strings, bad ids).
+memory, a hostile session (markup, bidi, control characters, giant strings, bad ids), and previews of dev servers (the
+"Preview :5173" chip, the preview tab with viewports, its address field and a new tab, the Ports panel with Stop and
+.claude/launch.json's Start, the phone's sheet, a hostile port list) against the mock's fake preview site.
 Every page runs under the CSP the main Caddy will send (the mock sets it); any CSP violation, page error or dialog
 fails the check. Screenshots go to /out. Exit code 0 only when every check passed.
 """
