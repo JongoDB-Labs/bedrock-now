@@ -31,7 +31,7 @@ export type Item =
       parent: string | null;
     }
   | { t: 'local'; k: number; text: string }
-  | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number }
+  | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number; models?: string[]; picked?: string }
   | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' };
 
 export interface Turn {
@@ -278,7 +278,8 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
       }
       const done = push(
         { ...next, items, nextKey, queued: next.queued.filter((q) => !folded.includes(q)) },
-        { t: 'result', k: nextKey, subtype: ev.subtype, turns: ev.turns, durationMs: ev.durationMs, usage: ev.usage, isError: ev.isError, turn: Math.max(0, turns.length - 1) },
+        { t: 'result', k: nextKey, subtype: ev.subtype, turns: ev.turns, durationMs: ev.durationMs, usage: ev.usage, isError: ev.isError, turn: Math.max(0, turns.length - 1),
+          models: turnModels(items), picked: v.model },
       );
       // the prompts that waited for this turn: Claude takes them next, as one turn
       if (!done.queued.length) return done;
@@ -289,6 +290,18 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
     case 'error':
       return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
   }
+}
+
+/** The models Claude's own answers in the turn now ending came from (the assistant frames' model; subagents left out):
+ *  what actually ran, shown when it is not the model picked. */
+export function turnModels(items: Item[]): string[] {
+  const out: string[] = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.t === 'result') break;
+    if (it.t === 'assistant' && !it.parent && it.model && !out.includes(it.model) && out.length < 4) out.push(it.model);
+  }
+  return out.reverse();
 }
 
 /** A turn is running: its prompt is in, its result not yet. */

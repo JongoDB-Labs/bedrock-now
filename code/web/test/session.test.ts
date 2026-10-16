@@ -266,3 +266,19 @@ test('a transcript folded in never makes the view look busy: its state stays the
     assert.ok(m.turns.every((t) => t.end !== null));
   }
 });
+
+test('a turn records which models answered (subagents left out) and the model picked then', () => {
+  let v: SessionView = { ...newView(ID), model: 'claude-haiku-5-5' };
+  v = applyEvent(v, { kind: 'user', text: 'plan it', uuid: U1, images: 0 });
+  v = applyEvent(v, { kind: 'text', text: 'sub', model: 'claude-haiku-5-5', parent: 'toolu_9' });
+  v = applyEvent(v, { kind: 'text', text: 'the plan', model: 'claude-sonnet-5-5', parent: null });
+  v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false });
+  const r = v.items.at(-1);
+  assert.ok(r && r.t === 'result');
+  assert.deepEqual([r.models, r.picked], [['claude-sonnet-5-5'], 'claude-haiku-5-5']);
+  v = applyEvent(v, { kind: 'user', text: 'again', uuid: U2, images: 0 });
+  v = applyEvent(v, { kind: 'text', text: 'ok', model: 'claude-haiku-5-5', parent: null });
+  v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false });
+  const r2 = v.items.at(-1);
+  assert.deepEqual(r2 && r2.t === 'result' && r2.models, ['claude-haiku-5-5'], 'only this turn');
+});

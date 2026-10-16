@@ -213,3 +213,32 @@ test('focus: an arriving card leaves the focus in anything you type into, empty 
     assert.equal(typingIn(el), false, JSON.stringify(el));
   }
 });
+
+test('models: sessions run a model named in full — aliases mapped through /.bn/models, /model typed switches by id', async () => {
+  const { fullModel, isAlias, modelCommand, otherModels, sameModel } = await import('../src/models');
+  const bn = {
+    models: [
+      { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', alias: 'haiku', input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
+      { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', alias: 'sonnet', input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+    ],
+    aliases: { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5' },
+    defaultModel: 'claude-sonnet-5-5',
+  };
+  assert.equal(fullModel('haiku', bn), 'claude-haiku-5-5');
+  assert.equal(fullModel('Sonnet', bn), 'claude-sonnet-5-5');
+  assert.equal(fullModel('claude-haiku-5-5', bn), 'claude-haiku-5-5');
+  assert.equal(fullModel('opus', bn), '', 'an alias bedrock-now does not map is never sent');
+  assert.equal(fullModel('haiku', null), '');
+  assert.equal(fullModel('', bn), '');
+  for (const a of ['haiku', 'opusplan', 'opus[1m]', 'default', 'best']) assert.ok(isAlias(a), a);
+  assert.ok(!isAlias('claude-haiku-5-5'));
+  assert.equal(modelCommand('/model haiku', bn), 'claude-haiku-5-5');
+  assert.equal(modelCommand('/model claude-sonnet-5-5', bn), 'claude-sonnet-5-5');
+  assert.equal(modelCommand('/model Claude Sonnet 5.5', bn), 'claude-sonnet-5-5');
+  assert.equal(modelCommand('/model gpt-4', bn), null, 'unknown: sent to Claude Code as typed');
+  assert.equal(modelCommand('/model', bn), null);
+  assert.equal(modelCommand('/models haiku', bn), null);
+  assert.ok(sameModel('us.anthropic.claude-haiku-5-5-v1:0', 'claude-haiku-5-5'));
+  assert.deepEqual(otherModels(['claude-haiku-5-5', 'claude-sonnet-5-5'], 'claude-haiku-5-5'), ['claude-sonnet-5-5']);
+  assert.deepEqual(otherModels(['claude-sonnet-5-5'], ''), [], 'no pick known: nothing claimed');
+});

@@ -57,7 +57,7 @@ test('a sandbox that stops reading its stdin while the SDK answers its requests:
     call: (req, o) => sandboxCall(req, { ...o, sock }) });
   const rss0 = process.memoryUsage().rss;
   try {
-    const { id } = mgr.open({ model: 'haiku', mode: 'default' });
+    const { id } = mgr.open({ model: 'claude-haiku-5-5', mode: 'default' });
     mgr.get(id).prompt({ text: 'hi' });
     const t0 = Date.now();
     while (!errors.length && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 50));

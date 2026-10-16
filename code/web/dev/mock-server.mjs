@@ -26,6 +26,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { HOSTILE, hostileMarkdown, workspace, hostileFiles, MODELS, CLI_MODELS, COMMANDS, TOOLS } from './fixtures.mjs';
+const ALIAS = /^(haiku|sonnet|opus|fable|opusplan|best|default)(\[1m\])?$/i;   // Claude Code's model aliases
 
 const args = process.argv.slice(2);
 const opt = (name, d) => {
@@ -406,6 +407,9 @@ class Session {
     return { type: 'session_state', session: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, error: null };
   }
   resolvedModel() {
+    if (this.overrideModel) return this.overrideModel;
+    // as Claude Code: given the alias "haiku", Plan mode plans on Sonnet (the backend refuses aliases; the page never sends one)
+    if (this.model === 'haiku' && this.mode === 'plan') return MODELS.aliases.sonnet;
     return MODELS.aliases[this.model] ?? (this.model === 'default' ? MODELS.aliases.sonnet : this.model);
   }
   init() {
@@ -594,6 +598,12 @@ async function runScenario(s, text, images) {
   }
   if (t.startsWith('/')) return slash(s, text.trim());
   if (s.mode === 'plan') return plan(s);
+  if (t.includes('another model')) {
+    // a turn Claude Code ran on a model other than the one picked: the page says what ran
+    s.overrideModel = s.resolvedModel() === MODELS.aliases.haiku ? MODELS.aliases.sonnet : MODELS.aliases.haiku;
+    try { await s.stream('Answered on another model than the one picked.'); } finally { s.overrideModel = null; }
+    return 1;
+  }
   if (t.includes('hostile')) return hostile(s);
   if (t.includes('huge command')) return hugeCommand(s);
   if (t.includes('padded')) return padded(s);
@@ -981,6 +991,7 @@ async function api(req, res, url) {
       title = saved.get(b.resume)?.title ?? '';
     }
     if (sessions.size >= 4) return json(res, 409, { error: '4 sessions are working or waiting for you: stop or close one first' });
+    if (typeof b.model === 'string' && ALIAS.test(b.model)) return json(res, 400, { error: 'name the model in full (claude-…), not by an alias' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
     const src = b.fork ? (sessions.get(b.resume)?.transcript ?? saved.get(b.resume)?.transcript) : null;
     let fresh;
@@ -1432,6 +1443,7 @@ server.on('upgrade', (req, sock, head) => {
         case 'interrupt':
           return s.interrupt();
         case 'set_model':
+          if (ALIAS.test(String(m.model))) return log('set_model refused (an alias):', m.model);   // as the backend
           s.model = String(m.model || '').slice(0, 128);
           return;
         case 'set_mode':

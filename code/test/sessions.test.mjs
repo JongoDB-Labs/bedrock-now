@@ -19,7 +19,7 @@ function manager(opts = {}) {
 
 test('a new session: the SDK options the spike settled on, a prompt with a human origin, its events', async () => {
   const { mgr, queries, events, sent } = manager();
-  const { id, existing } = mgr.open({ model: 'haiku', mode: 'acceptEdits', effort: 'low' });
+  const { id, existing } = mgr.open({ model: 'claude-haiku-5-5', mode: 'acceptEdits', effort: 'low' });
   assert.equal(existing, false);
   const o = queries[0].options;
   assert.deepEqual(o.systemPrompt, { type: 'preset', preset: 'claude_code' });
@@ -28,7 +28,7 @@ test('a new session: the SDK options the spike settled on, a prompt with a human
   assert.deepEqual(o.settingSources, ['user', 'project', 'local']);
   assert.equal(o.includePartialMessages, true);
   assert.equal(o.sessionId, id); assert.equal(o.resume, undefined);
-  assert.equal(o.model, 'haiku'); assert.equal(o.effort, 'low');
+  assert.equal(o.model, 'claude-haiku-5-5'); assert.equal(o.effort, 'low');
   assert.equal(o.pathToClaudeCodeExecutable, '/usr/local/bin/claude');
   assert.equal(o.perTaskStopAffordance, undefined, 'without a per-task Stop, an interrupt ends background tasks (fail closed)');
   mgr.open({ taskStop: true });
@@ -58,13 +58,17 @@ test('prompts: images checked, empty and oversized refused; set model/mode/effor
   s.prompt({ text: 'look', images: [{ media_type: 'image/png', data: 'iVBORw0KGgo=' }] });
   await tick();
   assert.deepEqual(sent[0].message.content, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }, { type: 'text', text: 'look' }]);
-  await s.setModel('sonnet'); await s.setMode('plan'); await s.setEffort('high');
+  await s.setModel('claude-sonnet-5-5'); await s.setMode('plan'); await s.setEffort('high');
   await assert.rejects(s.setModel('a b'), /bad model/);
+  for (const alias of ['haiku', 'Sonnet', 'opus', 'opusplan', 'opus[1m]', 'default', 'best']) {
+    await assert.rejects(s.setModel(alias), /in full/, alias);   // an alias lets Claude Code pick (Plan on Haiku → Sonnet)
+    assert.throws(() => mgr.open({ model: alias }), /in full/, alias);
+  }
   await assert.rejects(s.setMode('bypassPermissions'), /bad mode/);
   await assert.rejects(s.setMode('auto'), /bad mode/);
   await assert.rejects(s.setEffort('ultra'), /bad effort/);
-  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], ['setModel', 'sonnet'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
-  assert.deepEqual([s.model, s.mode, s.effort], ['sonnet', 'plan', 'high']);
+  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], ['setModel', 'claude-sonnet-5-5'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
+  assert.deepEqual([s.model, s.mode, s.effort], ['claude-sonnet-5-5', 'plan', 'high']);
   mgr.closeAll();
 });
 
@@ -105,7 +109,7 @@ test('at most 4 processes: the least recently used idle one makes room; busy or 
 
 test('idle close after 30 minutes, then a prompt resumes the same session', async () => {
   const { mgr, queries, events } = manager();
-  const id = mgr.open({ model: 'haiku' }).id;
+  const id = mgr.open({ model: 'claude-haiku-5-5' }).id;
   const s = mgr.get(id);
   s.prompt({ text: 'one' });
   await tick();
@@ -119,7 +123,7 @@ test('idle close after 30 minutes, then a prompt resumes the same session', asyn
   assert.equal(queries.length, 2);
   assert.equal(queries[1].options.resume, id);
   assert.equal(queries[1].options.sessionId, undefined);
-  assert.equal(queries[1].options.model, 'haiku');
+  assert.equal(queries[1].options.model, 'claude-haiku-5-5');
   assert.equal(events.at(-2)[2].text, 'pong:two');
   mgr.closeAll();
 });
@@ -155,7 +159,7 @@ test('commands etc. need a running process; interrupt reaches the SDK', async ()
 
 test('a session without a transcript is never --resumed: it starts with its id until its first prompt (I3)', async () => {
   const { mgr, queries } = manager();
-  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
   assert.equal(s.hasTranscript, false);
   s.close();
   mgr.open({ resume: s.id });   // reopened before any prompt (a page revived it)
@@ -192,13 +196,13 @@ test('epoch: every process of a session has its own (a page tells a restart from
 
 test('switches on a session without a process are kept for its next start; Claude Code\'s own mode changes are followed', async () => {
   const { mgr, queries } = manager();
-  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
   s.close();
-  await s.setModel('sonnet'); await s.setMode('plan'); await s.setEffort('high');
-  assert.deepEqual([s.model, s.mode, s.effort], ['sonnet', 'plan', 'high']);
+  await s.setModel('claude-sonnet-5-5'); await s.setMode('plan'); await s.setEffort('high');
+  assert.deepEqual([s.model, s.mode, s.effort], ['claude-sonnet-5-5', 'plan', 'high']);
   s.prompt({ text: 'hi' });
   const o = queries.at(-1).options;
-  assert.deepEqual([o.model, o.permissionMode, o.effort], ['sonnet', 'plan', 'high']);
+  assert.deepEqual([o.model, o.permissionMode, o.effort], ['claude-sonnet-5-5', 'plan', 'high']);
   await tick();
   s.prompt({ text: 'mode:acceptEdits' });   // e.g. a plan approved with "accept edits"
   await tick();
@@ -209,7 +213,7 @@ test('switches on a session without a process are kept for its next start; Claud
 test('a new conversation (conversation_reset): after the turn the old process ends, a session for the new id takes over', async () => {
   const resets = [], exists = [];
   const { mgr, queries, events } = manager({ onReset: (a, b) => resets.push([a.id, b.id]), transcriptExists: async (id) => { exists.push(id); return false; } });
-  const s = mgr.get(mgr.open({ model: 'haiku', mode: 'acceptEdits', taskStop: true }).id);
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5', mode: 'acceptEdits', taskStop: true }).id);
   const N = '00000000-0000-4000-8000-0000000000aa';
   s.prompt({ text: `reset:${N}` });
   await tick(60);
@@ -217,7 +221,7 @@ test('a new conversation (conversation_reset): after the turn the old process en
   assert.equal(s.open, false);
   assert.ok(events.some(([id, , ev]) => id === s.id && ev.type === 'local' && /new session/.test(ev.text)));
   const ns = mgr.get(N);
-  assert.deepEqual([ns.model, ns.mode, ns.taskStop, ns.open, ns.hasTranscript], ['haiku', 'acceptEdits', true, true, false]);
+  assert.deepEqual([ns.model, ns.mode, ns.taskStop, ns.open, ns.hasTranscript], ['claude-haiku-5-5', 'acceptEdits', true, true, false]);
   assert.deepEqual([queries.at(-1).options.sessionId, queries.at(-1).options.resume], [N, undefined]);
   assert.deepEqual(exists, [N]);
   assert.throws(() => { s.resetTo = N; s.prompt({ text: 'x' }); }, /new session/);
@@ -228,8 +232,8 @@ test('a new conversation (conversation_reset): after the turn the old process en
 test('a new conversation under the id of a session here is not taken over', async () => {
   const resets = [];
   const { mgr, events } = manager({ onReset: (a, b) => resets.push([a.id, b.id]), transcriptExists: async () => true });
-  const other = mgr.get(mgr.open({ model: 'haiku' }).id);
-  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const other = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
   s.prompt({ text: `reset:${other.id}` });
   await tick(60);
   assert.deepEqual(resets, []);
@@ -245,7 +249,7 @@ test('a new conversation under the id of a session here is not taken over', asyn
 
 test('file checkpoints: a session whose process ended starts one (no prompt) to restore; never during a turn', async () => {
   const { mgr, queries, sent } = manager();
-  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
   const M = '00000000-0000-4000-8000-0000000000c1';
   await assert.rejects(() => { s.close(); return s.rewindFiles(M, { dryRun: true }); }, /no prompts yet/);
   s.prompt({ text: 'one' });
@@ -301,7 +305,7 @@ test('auto mode is off before Claude Code reads the first prompt (Plan asks agai
         return q;
       },
     });
-    const s = mgr.get(mgr.open({ model: 'haiku', mode: 'plan' }).id);
+    const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5', mode: 'plan' }).id);
     assert.deepEqual(queries[0].calls[0], ['applyFlagSettings', { disableAutoMode: 'disable' }]);
     s.prompt({ text: 'make a plan' });
     await tick(50);

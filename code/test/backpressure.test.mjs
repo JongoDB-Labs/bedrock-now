@@ -64,7 +64,7 @@ test('a page that stops reading is cut off past the buffer limit, not queued for
   const port = server.address().port;
   const cl = net.connect(port, '127.0.0.1');
   try {
-    const { id } = mgr.open({ model: 'haiku', mode: 'default' });
+    const { id } = mgr.open({ model: 'claude-haiku-5-5', mode: 'default' });
     await new Promise((r) => cl.once('connect', r));
     const key = crypto.randomBytes(16).toString('base64');
     cl.write(`GET /ws HTTP/1.1\r\nHost: code.example:8080\r\nOrigin: http://code.example:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\nX-Bn-Code-Proxy: ${SECRET}\r\n\r\n`);

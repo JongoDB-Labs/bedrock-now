@@ -113,7 +113,10 @@
 //   {type: "interrupt", session}
 //   {type: "set_model", session, model} · {type: "set_mode", session, mode} · {type: "set_effort", session, effort}
 //                                               (effort null = the model's default); each answered by a status event.
-//                                               A session without a running process keeps them for its next start
+//                                               A session without a running process keeps them for its next start.
+//                                               model (here and in POST /api/sessions): a full model id (claude-…);
+//                                               Claude Code's aliases (haiku, sonnet, opus, opusplan …) are refused —
+//                                               with one Claude Code may run another model (Plan on Haiku → Sonnet)
 //   {type: "permission", id, session, decision: "once"|"always"|"always_project"|"deny", message?, mode?}
 //                                               session: the prompt's own (else refused). always: the prompt's `rules`;
 //                                               always_project: its `projectRules`; mode (ExitPlanMode only:

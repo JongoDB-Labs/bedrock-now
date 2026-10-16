@@ -6,10 +6,11 @@ import crypto from 'node:crypto';
 import { LIMITS, MODES, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
 import { Ring } from './ring.mjs';
 import { fromSdk, errorEvent } from './normalize.mjs';
-import { isUuid, isModel, str, short } from './validate.mjs';
+import { isUuid, isModel, isFullModel, str, short } from './validate.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
+const ALIAS_REFUSED = 'name the model in full (claude-…), not by an alias: with an alias Claude Code may run another model (Plan mode on Haiku plans on Sonnet)';
 const AUTO_OFF_MS = 15000;   // how long the first prompt waits for "auto mode off" to be accepted (then it goes anyway)
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
@@ -231,6 +232,7 @@ export class Session {
   status() { this.emit({ type: 'status', status: '', permissionMode: this.mode, model: this.model, effort: this.effort }); this.mgr.onState(this); }
   async setModel(model) {
     if (!isModel(model)) throw new SessionError('bad model');
+    if (!isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
     if (this.q) { await this.q.setModel(model); this.modelSet = true; }
     this.model = model; this.status();
   }
@@ -316,6 +318,7 @@ export class SessionManager {
   /** POST /api/sessions -> {id, existing} */
   open({ model, mode, effort, resume, fork, at, taskStop } = {}) {
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
+    if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
     if (mode !== undefined && !MODES.includes(mode)) throw new SessionError('bad mode (default, acceptEdits, plan, dontAsk)');
     if (effort !== undefined && effort !== null && !EFFORTS.includes(effort)) throw new SessionError('bad effort');
     if (resume !== undefined && resume !== null && !isUuid(resume)) throw new SessionError('bad session id');

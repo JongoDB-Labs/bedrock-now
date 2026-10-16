@@ -293,6 +293,12 @@ claude.ai plan that is invisible; billed per token it is not. So:
   suggests the picker (`claude-bedrock --resume`) when several sessions wrote in that folder meanwhile. There is no
   such line for `-p`, with `CLAUDE_BEDROCK_QUIET=1`, or when stderr is not a terminal: use `claude-bedrock --resume`
   (the picker) or `claude-bedrock --continue` then.
+- **Auto mode and model aliases on your computer.** Claude Code 2.1.283 and later counts its *auto* mode (a
+  classifier model approving actions for you, on your key) as available behind this stack's API address, and may
+  start in it; when the classifier cannot answer, it blocks the action. The browser terminal and the Code page turn
+  it off; for `claude-bedrock` on your computer, add `"disableAutoMode": "disable"` to
+  `~/.claude-bedrock/settings.json` to do the same. Name models in full (`CLAUDE_BEDROCK_MODEL=claude-haiku-5-5`, as
+  above): with the alias `haiku`, Claude Code plans on Sonnet in *Plan* mode.
 
 More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
@@ -444,7 +450,9 @@ a few seconds after each turn (LiteLLM writes its logs in batches). Two things c
 look: a **new session** and every **model switch within a session** make the next request write the prompt cache
 for that model again — Claude Code's system prompt, tools and the conversation so far, ~26-30k tokens: about
 $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5 (the model list shows this per model). The cache
-lives 5 minutes, so the first turn after a longer pause writes it again too.
+lives 5 minutes, so the first turn after a longer pause writes it again too. Haiku, Sonnet and Opus run exactly as
+picked: the page names the model in full (with Claude Code's `haiku` alias, *Plan* mode would plan on Sonnet), and a
+turn Claude Code ran on another model says so on its line; switching mid-session rewrites the prompt cache.
 
 What the sandbox can do is what the terminal can (see above); on top, a compromised sandbox could show misleading
 *text* in the Code page (fake tool output or diffs, a misleading permission sentence, a fake plugin catalog) but

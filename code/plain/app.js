@@ -201,10 +201,10 @@
       const sel = $("model");
       sel.textContent = "";
       for (const m of models) {
-        sel.append(new Option(`${m.name}${m.input_per_mtok != null ? ` ($${m.input_per_mtok}/$${m.output_per_mtok} per Mtok)` : ""}`, m.alias || m.id));
+        sel.append(new Option(`${m.name}${m.input_per_mtok != null ? ` ($${m.input_per_mtok}/$${m.output_per_mtok} per Mtok)` : ""}`, m.id));   // the full id: an alias lets Claude Code pick
       }
       const def = models.find((m) => m.alias === "sonnet") || models[0];
-      if (def) sel.value = def.alias || def.id;
+      if (def) sel.value = def.id;
       note(r.note || "");
     } catch (e) { note(`models: ${e.message}`); }
   }

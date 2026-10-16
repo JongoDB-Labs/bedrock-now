@@ -10,6 +10,8 @@ import { forkFrom, loadEarlier, rewindCancel, rewindConfirm, rewindPreview, send
 import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
+import { modelLabel } from './Pickers';
+import { otherModels } from '../models';
 import { Icon, Spinner } from './icons';
 import { memo } from './ui';
 
@@ -187,6 +189,10 @@ const Thinking = memo(function Thinking({ it }: { it: Extract<Item, { t: 'thinki
 
 function ResultLine({ it, cost }: { it: Extract<Item, { t: 'result' }>; cost: number | null | undefined }) {
   const interrupted = it.subtype === 'error_during_execution';
+  const bn = useSel(store, (s) => s.models?.models);
+  // what ran when it is not the model picked (Claude Code chose another one): bedrock-now's name for it, never the
+  // string the sandbox reported
+  const other = otherModels(it.models, it.picked);
   return (
     <div class={`turn-end${it.isError && !interrupted ? ' err' : ''}`} data-testid="turn-end">
       <span>{interrupted ? 'Stopped' : it.isError && it.subtype === 'success' ? 'Failed' : it.isError ? `Ended: ${it.subtype}` : 'Done'}</span>
@@ -194,6 +200,11 @@ function ResultLine({ it, cost }: { it: Extract<Item, { t: 'result' }>; cost: nu
       {(it.usage.input || it.usage.output) > 0 && (
         <span title={`input ${it.usage.input} · output ${it.usage.output} · cache read ${it.usage.cacheRead} · cache write ${it.usage.cacheWrite}`}>
           {tokens(it.usage.input + it.usage.cacheRead + it.usage.cacheWrite)} in · {tokens(it.usage.output)} out
+        </span>
+      )}
+      {other.length > 0 && (
+        <span class="turn-model" title="Claude Code ran this turn on another model than the one picked" data-testid="turn-model">
+          ran on {other.map((m) => modelLabel(bn, m) || 'another model').join(', ')}
         </span>
       )}
       <span class="turn-cost" title="From bedrock-now's spend logs (what this turn cost on Bedrock)">{cost === undefined ? '' : money(cost)}</span>

@@ -6,6 +6,7 @@ import { createStore, type Store } from './store';
 import { addPrompt, applySeq, dropPrompt, endedMidTurn, idleWithoutResult, mergeHistory, newView, pendingCount, prependHistory, withEarlier, type SessionView } from './session';
 import { exportName, toMarkdown } from './transcript';
 import { appendMemory, memoryLine } from './palette';
+import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
 import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, Mode, ServerMsg, ServerState, SessionInfo } from './types';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
@@ -185,13 +186,21 @@ export function activeView(s: AppState = get()): SessionView | undefined {
   return s.active ? s.views[s.active] : undefined;
 }
 
-/** The model to use for new sessions: the browser's last choice, else bedrock-now's default, else the first. */
+/** The model to use for new sessions, by its full id: the browser's last choice, else bedrock-now's default, else the
+ *  first (an alias remembered from before becomes its id). */
 export function defaultModel(s: AppState = get()): string {
-  if (s.prefs.model) return s.prefs.model;
   const m = s.models;
-  if (m?.defaultModel) return m.defaultModel;
-  const first = m?.models[0];
-  return first ? first.alias ?? first.id : '';
+  const pref = fullModel(s.prefs.model, m);
+  if (pref) return pref;
+  const def = fullModel(m?.defaultModel, m);
+  if (def) return def;
+  return m?.models[0]?.id ?? '';
+}
+
+/** A model as it goes to the backend: its full id (an alias the page holds from a session or an older version is
+ *  mapped; one bedrock-now does not map is left out, so the backend's default — never an alias — applies). */
+function sendModel(m: string | null | undefined, s: AppState = get()): string | undefined {
+  return fullModel(m, s.models) || undefined;
 }
 
 // ---------------------------------------------------------------- WebSocket
@@ -698,10 +707,10 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
   if (s.opening) return null;
   set((x) => ({ ...x, opening: true }));
   try {
-    const model = opts.model || defaultModel(s);
+    const model = sendModel(opts.model, s) || defaultModel(s);
     const mode = opts.mode ?? s.prefs.mode;
     const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
-    const { id } = await api.openSession({ model: model || undefined, mode, effort });
+    const { id } = await api.openSession({ model: sendModel(model, s), mode, effort });
     loadedHistory.add(id);
     ensureView(id, { state: 'idle', model, mode, effort });
     set((x) => ({ ...x, active: id, sheet: null }));
@@ -738,8 +747,8 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
   try {
     const info = s.sessions.find((x) => x.id === id);
     const src = s.views[id];
-    const model = (fork && src?.model) || defaultModel(s);
-    const { id: newId, existing, fresh } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, before });
+    const model = (fork && sendModel(src?.model, s)) || defaultModel(s);
+    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, before });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -810,7 +819,7 @@ async function revive(id: string): Promise<string | null> {
   const s = get();
   try {
     const v = s.views[id];
-    const { id: newId } = await api.openSession({ model: v?.model || defaultModel(s) || undefined, mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort, resume: id });
+    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort, resume: id });
     if (newId !== id) {
       // the backend gave the resumed process a new id: carry the conversation over to it
       loadedHistory.add(newId);
@@ -883,6 +892,13 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
     showSessions();
     return true;
   }
+  // /model with a model bedrock-now serves: switched by its full id (Claude Code given an alias may run another model)
+  const picked = images.length ? null : modelCommand(t, get().models);
+  if (picked) {
+    setModel(picked);
+    toast(`Model: ${get().models?.models.find((m) => m.id === picked)?.name ?? picked}`, 'ok');
+    return true;
+  }
   const mem = memoryLine(text);
   if (mem !== null && !images.length) return addMemoryLine(mem);
   let id = get().active;
@@ -918,7 +934,12 @@ export function interrupt(): void {
   if (id) socket.send({ type: 'interrupt', session: id });
 }
 
-export function setModel(model: string): void {
+export function setModel(name: string): void {
+  const model = sendModel(name);
+  if (!model) {
+    toast(`"${label(name, 40)}" is not a model bedrock-now serves here.`, 'error');
+    return;
+  }
   setPrefs((p) => ({ ...p, model }));
   const v = activeView();
   if (v && v.state !== 'closed') {

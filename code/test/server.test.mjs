@@ -357,7 +357,7 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   await assert.rejects(wsOpen('http://evil.example'), /403/);
   const a = await wsOpen();
   await until(a.inbox, (m) => m.type === 'hello');
-  const { json } = await req('POST', '/api/sessions', { body: { model: 'haiku', mode: 'default' } });
+  const { json } = await req('POST', '/api/sessions', { body: { model: 'claude-haiku-5-5', mode: 'default' } });
   a.send({ type: 'attach', session: json.id, req: 'r1' });
   await until(a.inbox, (m) => m.type === 'reply' && m.req === 'r1' && m.ok);
   a.send({ type: 'prompt', session: json.id, text: 'hi', req: 'r2' });
@@ -498,7 +498,7 @@ test('the @-picker over the workspace, memory files, a never-prompted session\'s
 
 test('a new conversation in a session (/clear …): its pages get `reset` and follow the new session', async () => {
   const a = await wsOpen();
-  const { json } = await req('POST', '/api/sessions', { body: { model: 'haiku', mode: 'plan' } });
+  const { json } = await req('POST', '/api/sessions', { body: { model: 'claude-haiku-5-5', mode: 'plan' } });
   a.send({ type: 'attach', session: json.id, req: 'at' });
   await until(a.inbox, (m) => m.req === 'at');
   const N = '00000000-0000-4000-8000-0000000000bb';
@@ -506,7 +506,7 @@ test('a new conversation in a session (/clear …): its pages get `reset` and fo
   const r = await until(a.inbox, (m) => m.type === 'reset');
   assert.deepEqual(r, { type: 'reset', session: json.id, new_session: N });
   const ns = srv.mgr.get(N);
-  assert.deepEqual([ns.model, ns.mode, ns.open, ns.hasTranscript], ['haiku', 'plan', true, true], 'resumed: the sandbox has its transcript');
+  assert.deepEqual([ns.model, ns.mode, ns.open, ns.hasTranscript], ['claude-haiku-5-5', 'plan', true, true], 'resumed: the sandbox has its transcript');
   assert.equal(srv.mgr.get(json.id).open, false);
   // the page now gets the new session's events without attaching again
   a.send({ type: 'prompt', session: N, text: 'next' });

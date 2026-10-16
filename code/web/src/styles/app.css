@@ -421,6 +421,7 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .turn-end > span:first-child { font-weight: 600; }
 .turn-end.err > span:first-child { color: var(--bad); }
 .turn-cost { margin-left: auto; font-family: var(--figures); font-size: 13px; color: var(--ink); }
+.turn-model { color: var(--warn); font-weight: 600; }
 .notice { display: flex; align-items: center; gap: 6px; align-self: center; max-width: 100%; padding: 3px 10px; border-radius: 10px; background: var(--hover); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .notice-error { align-self: stretch; border-radius: 6px; padding: 7px 10px; background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
 .notice-warn { color: var(--warn); }

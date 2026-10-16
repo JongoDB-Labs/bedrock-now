@@ -829,6 +829,59 @@ def plan_approval(browser):
     p.close()
 
 
+@check("models: by full id (picker, /model typed); Plan on Haiku stays on Haiku; a turn on another model says so")
+def models_full_id(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "models", **DESKTOP)
+    page = p.open()
+
+    def models():
+        st = json.loads(urllib.request.urlopen(NORMAL + "/api/state", timeout=5).read())
+        return [x["model"] for x in st["sessions"]]
+
+    def wait_model(want):
+        for _ in range(50):
+            if models() == [want]:
+                return
+            page.wait_for_timeout(100)
+        raise AssertionError(f"the session's model: {models()} (want {want})")
+
+    send(page, "hello there")
+    wait_turns(page, 1)
+    wait_model("claude-sonnet-5-5")   # bedrock-now's default named by an alias ("sonnet"): sent by its id
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    wait_model("claude-haiku-5-5")
+    # /model with an alias: switched by the full id, not sent to Claude Code
+    n = page.get_by_test_id("msg-user").count()
+    send(page, "/model sonnet")
+    expect(page.locator(".toast").last).to_contain_text("Model: Claude Sonnet 5.5")
+    wait_model("claude-sonnet-5-5")
+    expect(page.get_by_test_id("msg-user")).to_have_count(n)
+    # Plan mode on Haiku, picked by its id: planned on Haiku (with the alias Claude Code plans on Sonnet)
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "and the post() method?")
+    page.get_by_test_id("plan-keep").click(timeout=10_000)
+    page.locator(".perm-plan textarea").fill("not yet")
+    page.get_by_test_id("plan-keep-send").click()
+    wait_turns(page, 2)
+    expect(page.get_by_test_id("turn-model")).to_have_count(0)
+    # a turn Claude Code ran on a model other than the one picked: its line says which (bedrock-now's name)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-default").click()
+    send(page, "answer on another model")
+    wait_turns(page, 3)
+    expect(page.get_by_test_id("turn-model")).to_have_count(1)
+    expect(page.get_by_test_id("turn-model")).to_contain_text("ran on Claude Sonnet 5.5")
+    page.mouse.move(0, 0)
+    p.shot("desktop-turn-model.png")
+    p.assert_clean()
+    p.close()
+
+
 @check("prompts: queued below the stream; a refused one comes back; /clear, /resume; a reset from the CLI")
 def prompts(browser):
     post(NORMAL + "/__mock/reset")

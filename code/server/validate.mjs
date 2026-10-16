@@ -96,3 +96,7 @@ export function fileName(v) {
 }
 
 export const isModel = (v) => typeof v === 'string' && MODEL_RE.test(v);
+// Claude Code's model aliases: given one, Claude Code picks the model itself — and with "haiku" it plans on Sonnet (its
+// "haiku plan upgrade"), with "opusplan" on Opus. A session runs exactly the model picked, so it is named in full.
+export const MODEL_ALIAS = /^(haiku|sonnet|opus|fable|opusplan|best|default)(\[1m\])?$/i;
+export const isFullModel = (v) => isModel(v) && !MODEL_ALIAS.test(v);

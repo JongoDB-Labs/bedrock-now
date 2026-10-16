@@ -52,7 +52,7 @@ test('a flood of permission requests: 8 wait, the rest are denied at once; over 
   const onAsk = broker.onAsk;
   broker.onAsk = (pr) => { asked.push(pr); onAsk(pr); };
   try {
-    const { id } = mgr.open({ model: 'haiku', mode: 'default' });
+    const { id } = mgr.open({ model: 'claude-haiku-5-5', mode: 'default' });
     mgr.get(id).prompt({ text: 'hi' });
     const t0 = Date.now();
     while (denied.length < N + 1 - LIMITS.maxPendingPerSession && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));

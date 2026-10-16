@@ -86,6 +86,10 @@ All notable changes to bedrock-now are documented here. The format follows
   start in it and the Code page's *Plan* mode handed writing commands to the classifier instead of asking (and blocked
   them when it failed). The terminal image's managed settings (`/etc/claude-code/managed-settings.json`) and the Code
   page (at every session's start) turn it off: both start in the ordinary asking mode again.
+- **The Code page runs exactly the model you pick**: it names models in full (`claude-haiku-5-5`, not `haiku`) for new
+  sessions, switches, resume, fork and a typed `/model haiku` (switched by the page), and the code backend refuses
+  Claude Code's aliases — with the alias `haiku`, Claude Code 2.1.296 planned on Sonnet in *Plan* mode (~$0.08 an
+  uncached turn). A turn Claude Code ran on another model than the one picked says so on its line.
 
 ## [0.4.1] - 2026-10-15
 

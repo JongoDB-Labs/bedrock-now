@@ -654,7 +654,9 @@ spawn server, Claude Code or any file at will.
   behind this stack's own API address, and would then start in it or hand *Plan* mode's writing commands to the
   classifier instead of asking. The code container turns it off at every session's start, before the first prompt, and
   the sandbox image's managed settings (`/etc/claude-code/managed-settings.json`, root's) turn it off for every
-  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode.
+  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode. Sessions
+  name their model in full: the code container refuses Claude Code's aliases (`haiku`, `sonnet`, `opus` …), with
+  which Claude Code picks the model itself (with `haiku`, *Plan* mode plans on Sonnet).
   Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
   you type in, the editor or the terminal panel, and its keys (1 *Allow once*, 2 *Always*, 3 *Deny*) answer only after
   you clicked or tabbed into it: a keystroke meant for something else never answers a prompt.

@@ -41,7 +41,7 @@ export function ModelPicker({ compact }: { compact?: boolean }) {
   const models = bn?.models ?? [];
   // the sandbox reports the session's model (init); only bedrock-now's own names are shown in the page's chrome
   const cur = currentModel(models, viewModel) ?? currentModel(models, prefModel);
-  const current = cur ? (cur.alias ?? cur.id) : '';
+  const current = cur?.id ?? '';
   const name = cur?.name ?? (models.length ? 'Choose a model' : 'Model');
   return (
     <Dropdown
@@ -72,7 +72,7 @@ export function ModelPicker({ compact }: { compact?: boolean }) {
               checked={matches(m, current)}
               testid={`model-${m.alias ?? m.id}`}
               onSelect={() => {
-                setModel(m.alias ?? m.id);
+                setModel(m.id);   // by its full id: Claude Code runs exactly this model (an alias may let it run another)
                 close();
               }}
               hint={m.input !== null ? `${perMtok(m.input)} / ${perMtok(m.output)}` : undefined}

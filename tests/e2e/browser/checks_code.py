@@ -169,7 +169,8 @@ class Code:
         self.wait(lambda m: m.get("type") == "event" and m.get("session") == session and m["ev"]["type"] == "result", "result", timeout, since=n)
         return self.events(session, n)
 
-    def new_session(self, model="haiku", mode="default"):
+    def new_session(self, model=None, mode="default"):
+        model = model or HAIKU   # by its full name: the backend refuses Claude Code's aliases
         r = self.api("POST", "/api/sessions", {"model": model, "mode": mode})
         expect(r["status"] == 200, f"POST /api/sessions: {r['status']} {r['text']}")
         sid = r["json"]["id"]
@@ -276,7 +277,7 @@ def host(ctx):
 def stream(ctx):
     need_haiku()
     c = Code(ctx, "code-stream")
-    sid = c.new_session("haiku", "default")
+    sid = c.new_session(HAIKU, "default")
     evs = c.turn(sid, "Reply with exactly the word: pong")
     init = next((e for e in evs if e["type"] == "init"), None)
     res = [e for e in evs if e["type"] == "result"][-1]
@@ -417,7 +418,7 @@ def reattach(ctx):
 def ask_user_question(ctx):
     need_haiku()
     c = Code(ctx, "code-question")
-    sid = c.new_session("haiku", "default")
+    sid = c.new_session(HAIKU, "default")
     n = len(c.msgs())
     c.request({"type": "prompt", "session": sid, "text": "Use the AskUserQuestion tool to ask me one question: \"Tea or coffee?\" with the two "
                "options Tea and Coffee. After my answer, reply with exactly the option I chose and nothing else."})
@@ -451,7 +452,6 @@ def plan_asks(ctx):
     "no plan, run it" (twice at most); when it still runs nothing, a skip."""
     need_haiku()
     c = Code(ctx, "code-plan-asks")
-    # the model by its full name: with the alias "haiku", Claude Code plans on Sonnet ("haiku plan upgrade"), ~$0.08 a turn
     sid = c.new_session(HAIKU, "plan")
     n = len(c.msgs())
     target = f"e2e-plan-{int(time.time())}.txt"
@@ -548,7 +548,7 @@ def plain_page(ctx):
         rec.save()
         raise Skip("this image serves the frontend build (code/web), not the plain page")
     page.wait_for_function("() => document.querySelector('#model option') !== null", timeout=20000)
-    page.select_option("#model", "haiku")
+    page.select_option("#model", HAIKU)   # (the plain page's options are full model ids)
     page.fill("#prompt", "Reply with exactly the word: pong")
     page.click("#ask button[type=submit]")
     page.locator("#log .assistant", has_text=re.compile("pong", re.I)).wait_for(timeout=120000)
@@ -737,7 +737,7 @@ def ui_desktop(ctx):
                            " return s.length === 36 && s !== old; }", arg=old, timeout=10000)
     sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
     ctx.code_ui_session = sid
-    expect(state_of(c, sid).get("model") == "haiku", f"model {state_of(c, sid)}")
+    expect(state_of(c, sid).get("model") == HAIKU, f"model {state_of(c, sid)} (the picker sends the full id, not the alias)")
     # a Bash permission prompt in its card: Allow once, the command runs in the sandbox
     ask(page, f"Use the Bash tool to run exactly this command, then reply with the word done: echo ui-ok > {UI}/bash.txt")
     card = page.get_by_test_id("permission")
@@ -789,11 +789,14 @@ def ui_desktop(ctx):
     page.get_by_test_id("model-picker").click()
     if page.get_by_test_id("model-sonnet").count():
         page.get_by_test_id("model-sonnet").click()
-        wait_state(c, sid, "model", "sonnet")
+        t0 = time.time()
+        while time.time() - t0 < 20 and not str(state_of(c, sid).get("model", "")).startswith("claude-sonnet"):
+            page.wait_for_timeout(300)
+        expect(str(state_of(c, sid).get("model", "")).startswith("claude-sonnet"), f"model {state_of(c, sid)} (Sonnet by its full id)")
         see(page.get_by_test_id("model-picker")).to_contain_text("Sonnet")
         page.get_by_test_id("model-picker").click()
     page.get_by_test_id("model-haiku").click()
-    wait_state(c, sid, "model", "haiku")
+    wait_state(c, sid, "model", HAIKU)
     # an interrupt: the stop button while it streams
     ask(page, "Count from 1 to 400, one number per line, nothing else.")
     see(page.locator(".msg-claude.streaming")).to_have_count(1, timeout=120000)
@@ -1056,8 +1059,18 @@ def ui_plan(ctx):
         page.wait_for_timeout(1000)
     expect(r and r["status"] == 200 and "planned" in r["json"]["text"], f"after approving the plan: {r and r['status']}")
     see(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    # Haiku picked (by its full id): the plan ran on Haiku — no turn says it ran on another model (with the alias
+    # "haiku" Claude Code plans on Sonnet)
+    answered(page)
+    see(page.get_by_test_id("turn-model")).to_have_count(0)
+    n = len(c.msgs())
+    c.request({"type": "attach", "session": sid, "since": 0})   # (this client's own replay of the session's events)
+    page.wait_for_timeout(1500)
+    ran = sorted({e.get("model", "") for e in c.events(sid, n) if e.get("type") == "text"})
+    expect(ran and all("haiku" in m for m in ran), f"the plan session's answers came from {ran}")
     csp_clean(page, rec, [r"^404 GET .*/api/fs/file\?path=" + re.escape(target) + "$"])   # (polled until Claude wrote it)
-    return f"Plan mode → the plan card (approve + accept edits / approve + ask / keep planning) → approved with Accept edits → {target} written, mode Accept edits"
+    return (f"Plan mode → the plan card (approve + accept edits / approve + ask / keep planning) → approved with Accept edits → "
+            f"{target} written, mode Accept edits; every answer from Haiku as picked ({', '.join(ran)})")
 
 
 @check("browser", "code-ui-fork-from-message")
@@ -1092,7 +1105,7 @@ def ui_fork(ctx):
     c = Code.on(page, rec, goto=False)
     users = [e for e in c.api("GET", f"/api/sessions/{fork}/messages?offset=0&limit=2000")["json"]["messages"] if e.get("type") == "user"]
     expect(len(users) >= 2 and users[0].get("uuid"), f"the fork's transcript: {[u.get('text', '')[:30] for u in users]}")
-    r = c.api("POST", "/api/sessions", {"resume": fork, "fork": True, "before": users[-1]["uuid"], "mode": "default", "model": "haiku"})
+    r = c.api("POST", "/api/sessions", {"resume": fork, "fork": True, "before": users[-1]["uuid"], "mode": "default", "model": HAIKU})
     expect(r["status"] == 200 and r["json"]["id"] not in (fork, sid), f"fork of the fork: {r['status']} {r['text'][:200]}")
     c.api("DELETE", f"/api/sessions/{r['json']['id']}")
     rw = c.request({"type": "rewind_files", "session": fork, "message": users[0]["uuid"], "dryRun": True})   # (ok: asserted)
@@ -1302,7 +1315,7 @@ def hostile(ctx):
     expect(any("<img" in r["title"] for r in rows["json"]["sessions"]), "the stand-in's markup title is not there as text")
     big = c.api("GET", "/api/fs?path=big")
     expect(big["status"] == 502, f"a 9 MiB answer: {big['status']}")
-    sid = c.new_session("haiku", "default")
+    sid = c.new_session(HAIKU, "default")
     n = len(c.msgs())
     c.request({"type": "prompt", "session": sid, "text": "hello"})
     end = c.wait(lambda m: m.get("type") == "session_state" and m["session"] == sid and m["state"] in ("error", "ended"), "the hostile session's end", 60, since=n)
