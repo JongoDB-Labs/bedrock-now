@@ -219,7 +219,8 @@ def test_the_preview_site_needs_a_valid_capability_and_its_own_origin(ps):
         assert c.get("/auth/verify?app=preview", headers={**h, "Origin": origin, "Sec-Fetch-Site": "same-origin"}).status_code == 200
         # missing, forged, on another domain, or for another port: 403 (a page load gets a page that says why)
         lab = host.split(".", 1)[0]
-        for h in (DOMAIN, f"x.{DOMAIN}", f"p5173.{DOMAIN}", f"{lab[:-1]}x.{DOMAIN}", f"{lab}.bedrock-now.localhost",
+        forged = lab[:-1] + ("y" if lab.endswith("x") else "x")    # one character changed (a real label may end in x)
+        for h in (DOMAIN, f"x.{DOMAIN}", f"p5173.{DOMAIN}", f"{forged}.{DOMAIN}", f"{lab}.bedrock-now.localhost",
                   f"{lab}.evil.localhost", f"{lab.replace('p5173-', 'p5174-')}.{DOMAIN}", "", f"a.{lab}.{DOMAIN}"):
             r = check(c, h)
             assert r.status_code == 403, h
