@@ -53,6 +53,7 @@ import type {
   SessionState,
   SpendRow,
   Suggestion,
+  WatchChange,
 } from './types';
 import { MODES } from './types';
 
@@ -61,7 +62,28 @@ const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.is
 const arr = (v: unknown, max = 5000): unknown[] => (Array.isArray(v) ? v.slice(0, max) : []);
 const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 const kindOf = (o: Obj): string => str(o.type ?? o.t);
-const mode = (v: unknown): Mode | null => (MODES.includes(v as Mode) ? (v as Mode) : null);
+/** A page mode (an older backend's dontAsk is Read only now). */
+const mode = (v: unknown): Mode | null => (v === 'dontAsk' ? 'readOnly' : MODES.includes(v as Mode) ? (v as Mode) : null);
+const WATCH_CHANGES = ['added', 'changed', 'removed'] as const;
+function normWatchChange(v: unknown): WatchChange | null {
+  const o = obj(v);
+  const path = cleanPath(o?.path);
+  if (!o || !path) return null;
+  const change = WATCH_CHANGES.includes(o.change as WatchChange['change']) ? (o.change as WatchChange['change']) : 'changed';
+  const text = (t: unknown) => (typeof t === 'string' ? cap(t, 70_000) : null);
+  return {
+    path,
+    kind: label(o.kind, 40),
+    why: label(o.why, 500),
+    change,
+    before: text(o.before),
+    after: text(o.after),
+    binary: o.binary === true,
+    cut: o.cut === true,
+    revertable: o.revertable === true,
+    exec: o.exec === true,
+  };
+}
 const STATES: SessionState[] = ['starting', 'busy', 'idle', 'ended', 'error', 'closed'];
 const sessionState = (v: unknown): SessionState | null => (STATES.includes(v as SessionState) ? (v as SessionState) : null);
 const optId = (v: unknown): string | null => (isId(v) ? v : null);
@@ -269,6 +291,11 @@ export function normEvent(v: unknown): Ev | null {
       };
     case 'error':
       return { kind: 'error', text: label(o.message ?? o.text, LIMITS.short) };
+    case 'watch': {
+      if (!isUuid(o.id)) return null;
+      const changes = arr(o.changes, 50).map(normWatchChange).filter((c): c is WatchChange => c !== null);
+      return changes.length ? { kind: 'watch', id: o.id.toLowerCase(), when: o.when === 'between' ? 'between' : 'turn', changes } : null;
+    }
     default:
       return null;
   }
@@ -581,6 +608,9 @@ export async function getState(): Promise<ServerState> {
     pending: Math.floor(nonneg(o.pending) ?? 0),
     terminalUrl: httpUrl(o.terminal_url ?? o.terminalUrl),
     portalOrigin: httpUrl(o.portal_origin ?? o.portalOrigin),
+    allowBypass: obj(o.bypass)?.allowed === true,
+    egress: typeof obj(o.sandbox)?.egress === 'boolean' ? (obj(o.sandbox)?.egress as boolean) : null,
+    workspace: typeof obj(o.sandbox)?.workspace === 'string' ? label(obj(o.sandbox)?.workspace, 1000) || null : null,
   };
 }
 
@@ -1159,7 +1189,8 @@ export type ClientMsg =
   | { type: 'rewind_files'; session: string; message: string; dryRun: boolean; req: string }
   | { type: 'interrupt'; session: string }
   | { type: 'set_model'; session: string; model: string }
-  | { type: 'set_mode'; session: string; mode: Mode }
+  | { type: 'set_mode'; session: string; mode: Mode; confirmed?: boolean; req?: string }
+  | { type: 'watch_revert'; session: string; id: string; path?: string; req: string }
   | { type: 'set_effort'; session: string; effort: string | null }
   | { type: 'permission'; id: string; session: string; decision: Decision; message?: string; mode?: 'default' | 'acceptEdits' }
   | { type: 'permission'; id: string; session: string; decision: 'answer'; answers: Record<string, string> }

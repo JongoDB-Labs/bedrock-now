@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.request
 
 import playwright
@@ -235,6 +236,170 @@ def modes(browser):
     expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan")
     p.assert_clean()
     p.close()
+
+
+@check("modes: the picker next to Send (the desktop app's names + Read only), Alt+M; Read only denies without a card; Plan is for one session")
+def modes_picker(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "modes-picker", **DESKTOP)
+    page = p.open()
+    expect(page.get_by_test_id("composer").get_by_test_id("mode-picker")).to_be_visible()
+    expect(page.get_by_test_id("topbar").get_by_test_id("mode-picker")).to_have_count(0)
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Alt+m")   # the menu, from the keyboard
+    panel = page.locator(".mode-panel")
+    expect(panel).to_be_visible()
+    names = panel.locator(".mi-title").all_inner_texts()
+    assert [n.strip() for n in names] == ["Read only", "Plan", "Manual", "Accept edits"], names
+    expect(page.get_by_test_id("mode-bypassPermissions")).to_have_count(0)
+    expect(page.get_by_test_id("mode-bypass-off")).to_contain_text("Settings")
+    p.shot("desktop-mode-picker.png")
+    page.get_by_test_id("mode-readOnly").click()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Read only")
+    # Read only: a write is denied by the rules, with no card to answer
+    send(page, "create the errors module")
+    wait_turns(page, 1)
+    expect(page.get_by_test_id("permission")).to_have_count(0)
+    expect(page.locator(".tool[data-tool='Write'] .tool-status")).to_have_attribute("title", "error")
+    # Shift+Tab from Read only (outside the cycle, like the CLI's dontAsk) goes to Manual
+    page.get_by_test_id("prompt").click()
+    page.get_by_test_id("prompt").press("Shift+Tab")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-readOnly").click()
+    # Plan applies to this session only: a new session starts in the remembered mode (Read only)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan")
+    page.get_by_test_id("chat-new").click()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Read only")
+    stored = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1') || '{}').mode")
+    assert stored == "readOnly", stored
+    p.assert_clean()
+    p.close()
+
+
+@check("bypass: off unless Settings allow it; its dialog names the risks (folder, internet, budget); the red strip; never kept")
+def bypass(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/bypass?allow=1&egress=1")
+    p = Page(browser, NORMAL, "bypass", **DESKTOP)
+    page = p.open()
+    send(page, "hello")   # (a session: the dialog names its key's budget)
+    wait_turns(page, 1)
+    page.get_by_test_id("mode-picker").click()
+    expect(page.get_by_test_id("mode-bypassPermissions")).to_contain_text("Bypass permissions")
+    expect(page.get_by_test_id("mode-bypass-off")).to_have_count(0)
+    page.get_by_test_id("mode-bypassPermissions").click()
+    dlg = page.get_by_test_id("bypass-dialog")
+    expect(dlg).to_be_visible()
+    expect(dlg.get_by_test_id("bypass-risk-folder")).to_contain_text("/home/you/projects/acme-api")
+    expect(dlg.get_by_test_id("bypass-risk-egress")).to_contain_text("has internet access")
+    expect(dlg.get_by_test_id("bypass-risk-budget")).to_contain_text("left this period")
+    p.shot("desktop-bypass-dialog.png")
+    dlg.get_by_test_id("bypass-cancel").click()
+    expect(dlg).to_have_count(0)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    expect(page.get_by_test_id("bypass-banner")).to_have_count(0)
+    # Shift+Tab: Manual → Accept edits → Plan → Bypass (its dialog again) → confirmed
+    box = page.get_by_test_id("prompt")
+    box.click()
+    for _ in range(3):
+        box.press("Shift+Tab")
+    expect(page.get_by_test_id("bypass-dialog")).to_be_visible()
+    page.get_by_test_id("bypass-confirm").click()
+    expect(page.get_by_test_id("bypass-banner")).to_be_visible()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Bypass permissions")
+    page.wait_for_function("() => document.title.startsWith('⏵⏵ ')", timeout=5_000)
+    # nothing asks: a file edit in src/ runs without a card
+    send(page, "fix get() please")
+    wait_turns(page, 2)
+    expect(page.get_by_test_id("permission")).to_have_count(0)
+    expect(page.locator(".tool[data-tool='Edit'] .tool-status")).to_have_attribute("title", "done")
+    p.shot("desktop-bypass-on.png")
+    # never remembered (the cycle passed Accept edits, which is)
+    stored = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1') || '{}').mode")
+    assert stored == "acceptEdits", stored
+    page.get_by_test_id("bypass-off").click()
+    expect(page.get_by_test_id("bypass-banner")).to_have_count(0)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    page.wait_for_function("() => !document.title.startsWith('⏵⏵')", timeout=5_000)
+    # without internet access the dialog says so; a reload shows the mode the session is in now (Manual), not the one of
+    # its last turn's start
+    post(NORMAL + "/__mock/bypass?egress=0")
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.wait_for_timeout(1000)   # (the transcript merged after the replay)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    expect(page.get_by_test_id("bypass-banner")).to_have_count(0)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-bypassPermissions").click()
+    expect(page.get_by_test_id("bypass-risk-egress")).to_contain_text("no internet access")
+    page.get_by_test_id("bypass-cancel").click()
+    # Settings turned it off meanwhile: the switch is refused, nothing changes
+    post(NORMAL + "/__mock/bypass?allow=0")
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.get_by_test_id("mode-picker").click()
+    expect(page.get_by_test_id("mode-bypassPermissions")).to_have_count(0)
+    page.keyboard.press("Escape")
+    p.assert_clean()
+    p.close()
+    post(NORMAL + "/__mock/bypass?allow=0&egress=1")
+
+
+@check("watchlist: a git hook planted with Bash gives a card (why, diff, Revert); Revert puts the files back")
+def watchlist(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "watch", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    send(page, "add a pre-commit hook that runs the tests")
+    page.get_by_test_id("perm-once").click(timeout=15_000)   # (Bash asks in Accept edits)
+    wait_turns(page, 1)
+    card = page.get_by_test_id("watch-card")
+    expect(card).to_be_visible()
+    expect(card.get_by_test_id("watch-item")).to_have_count(2)
+    expect(card).to_contain_text(".git/hooks/pre-commit")
+    expect(card).to_contain_text("git runs it on your computer")
+    expect(card).to_contain_text("executable")
+    card.get_by_test_id("watch-item").nth(1).get_by_test_id("watch-diff").click()
+    expect(card.locator(".watch-diff")).to_contain_text("npm test")
+    p.shot("desktop-watch-card.png")
+    card.get_by_test_id("watch-revert-all").click()
+    expect(card.get_by_test_id("watch-result")).to_have_count(2)
+    expect(card).to_contain_text("Moved to the workspace trash")
+    p.shot("desktop-watch-reverted.png")
+    try:
+        urllib.request.urlopen(NORMAL + "/api/fs/file?path=.git/hooks/pre-commit", timeout=5).read()
+        raise AssertionError("the hook is still there after Revert")
+    except urllib.error.HTTPError as e:
+        assert e.code == 404, e.code
+    p.assert_clean()
+    p.close()
+
+
+@check("phone: the mode picker in the prompt box; the Bypass strip fits")
+def phone_modes(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/bypass?allow=1")
+    p = Page(browser, NORMAL, "phone-modes", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    expect(page.get_by_test_id("composer").get_by_test_id("mode-picker")).to_be_visible()
+    page.get_by_test_id("mode-picker").click()
+    expect(page.locator(".mode-panel")).to_be_visible()
+    p.shot("phone-mode-picker.png")
+    assert page.evaluate("(() => { const d = document.querySelector('.mode-panel').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "the menu is wider than the phone"
+    page.get_by_test_id("mode-bypassPermissions").click()
+    page.get_by_test_id("bypass-confirm").click()
+    expect(page.get_by_test_id("bypass-banner")).to_be_visible()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Bypass")
+    p.shot("phone-bypass-on.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.assert_clean()
+    p.close()
+    post(NORMAL + "/__mock/bypass?allow=0")
 
 
 @check("deny with a reason; always allow; model switch note")
@@ -627,7 +792,7 @@ def layout(browser):
     page.evaluate("localStorage.setItem('bn.code.v1', '{\"layout\":{\"left\":-5,\"right\":\"x\"},\"model\":\"<img>\",\"mode\":\"bypassPermissions\"}')")
     page.reload()
     expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
-    expect(page.get_by_test_id("mode-picker")).to_contain_text("Ask")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")   # (a stored Bypass is never remembered)
     p.assert_clean()
     p.close()
 

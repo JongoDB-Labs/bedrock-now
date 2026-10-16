@@ -728,6 +728,23 @@ def test_code_page_turns_on_here_with_or_without_the_terminal_and_off_from_anywh
     assert st.policy_error(row("CODE_ENABLED", policy="widen-local", validator="bool", value="true"), "false", local=False) is None
 
 
+def test_code_allow_bypass_on_only_here_off_from_anywhere(make, dirs):
+    sd, rq = dirs
+    rows = KEYS + [row("CODE_ALLOW_BYPASS", "advanced", "-", "widen-local", "bool", "code-env", value="false")]
+    write_snapshot(sd, keys=rows); helper_up(sd)
+    r = apply(make(), {"CODE_ALLOW_BYPASS": "true"})
+    assert r.status_code == 202, r.text
+    assert f"set CODE_ALLOW_BYPASS {base64.b64encode(b'true').decode()}\n" in (rq / f"cfg-{r.json()['id']}.req").read_text()
+    for f in files(rq):
+        (rq / f).unlink()
+    c = remote_client(make, True)
+    r = apply(c, {"CODE_ALLOW_BYPASS": "true"}, headers=RH)
+    assert r.status_code == 400 and "computer running bedrock-now" in r.json()["fields"]["CODE_ALLOW_BYPASS"]
+    write_snapshot(sd, keys=KEYS + [row("CODE_ALLOW_BYPASS", "advanced", "-", "widen-local", "bool", "code-env", value="true")])
+    r = apply(c, {"CODE_ALLOW_BYPASS": "false"}, headers=RH)
+    assert r.status_code == 202, r.text
+
+
 def test_snapshot_names_the_code_pages_folder_as_text_only(dirs):
     sd, _ = dirs
     write_snapshot(sd, choices={**CHOICES, "code_workspace": "/home/u/bedrock-now-workspace"})
@@ -752,7 +769,9 @@ def test_code_page_from_remote_access_only_off(make, dirs):
 def test_settings_page_has_the_code_page_row_and_its_read_only_workspace():
     from portal.app import STATIC
     js = (STATIC / "settings.js").read_text(encoding="utf-8")
-    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED"]' in js
+    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS"]' in js
+    # Bypass permissions: its own switch in the same card (widen-local: on only from this computer)
+    assert 'if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));' in js
     assert 'if (g === "code") { codeRow(body); return c; }' in js
     # the workspace shown, never changed here: the command that changes it, with Copy
     assert "Workspace (read-only here): " in js and '"./stack terminal enable --workspace DIR"' in js

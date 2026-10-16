@@ -59,7 +59,7 @@ test('a page that stops reading is cut off past the buffer limit, not queued for
   });
   await new Promise((r) => srv.listen(sock, r));
   const { server, mgr, wss } = createServer({ secret: SECRET, query, spawn: (o, x) => sandboxProcess(o, { ...x, sock }),
-    call: (req, o) => sandboxCall(req, { ...o, sock }), logger: () => {}, maxBufferedBytes: 2 << 20 });
+    call: (req, o) => sandboxCall(req, { ...o, sock }), logger: () => {}, maxBufferedBytes: 2 << 20, watch: false });   // (this stand-in speaks no ops)
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   const cl = net.connect(port, '127.0.0.1');

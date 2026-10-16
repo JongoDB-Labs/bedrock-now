@@ -9,7 +9,9 @@ import { cap, cleanName, cleanPath, commandShape, isId, isUuid, label, money, pe
 import { createStore } from '../src/store';
 import { exportName, latestTodos, toMarkdown } from '../src/transcript';
 import { typingIn } from '../src/focus';
-import { newView, type Item } from '../src/session';
+import { applyEvent, newView, type Item } from '../src/session';
+import { MODE_INFO, modeName, nextMode, offeredModes, remembered, startMode } from '../src/modes';
+import { MODES } from '../src/types';
 
 test('text: caps, visible controls, ids, paths', () => {
   assert.equal(cap('abcdef', 3), 'abc\n… (3 more characters not shown)');
@@ -127,6 +129,33 @@ test('prefs: anything stored is validated and clamped', () => {
   assert.equal(p.effort, 'max');
   assert.equal(p.lastSession, null);
   assert.equal(parsePrefs({ model: 'claude-sonnet-5-5[1m]' }).model, 'claude-sonnet-5-5[1m]');
+  // the mode new sessions start in: Read only, Manual, Accept edits — never Plan or Bypass (those are per session)
+  for (const m of ['readOnly', 'default', 'acceptEdits']) assert.equal(parsePrefs({ mode: m }).mode, m);
+  for (const m of ['plan', 'bypassPermissions', 'auto', 'yolo']) assert.equal(parsePrefs({ mode: m }).mode, 'default', m);
+  assert.equal(parsePrefs({ mode: 'dontAsk' }).mode, 'readOnly', 'the former "Don\'t ask" is Read only now');
+});
+
+test('modes: the desktop app\'s names and order, plus Read only; the Shift+Tab cycle; what is remembered; what starts', () => {
+  assert.deepEqual(MODES.map(modeName), ['Read only', 'Plan', 'Manual', 'Accept edits', 'Auto', 'Bypass permissions']);
+  assert.equal(modeName('<img>'), '<img>');
+  assert.deepEqual(offeredModes(false), ['readOnly', 'plan', 'default', 'acceptEdits']);
+  assert.deepEqual(offeredModes(true), ['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions']);
+  // the CLI's cycle: Manual → Accept edits → Plan → [Bypass] → Manual; Read only (like dontAsk) is outside it
+  const cycle = (allow: boolean) => { const seen = []; let m: (typeof MODES)[number] = 'default'; for (let i = 0; i < 5; i++) { seen.push(m); m = nextMode(m, allow); } return seen; };
+  assert.deepEqual(cycle(false), ['default', 'acceptEdits', 'plan', 'default', 'acceptEdits']);
+  assert.deepEqual(cycle(true), ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'default']);
+  assert.equal(nextMode('readOnly', true), 'default');
+  assert.deepEqual(MODES.filter(remembered), ['readOnly', 'default', 'acceptEdits', 'auto']);
+  assert.deepEqual(MODES.map((m) => startMode(m)), ['readOnly', 'plan', 'default', 'acceptEdits', 'default', 'default']);
+  assert.equal(startMode(null, 'acceptEdits'), 'acceptEdits');
+  assert.equal(startMode('bypassPermissions', 'bypassPermissions'), 'default');
+  assert.deepEqual(['readOnly', 'default', 'plan', 'acceptEdits', 'bypassPermissions'].map((m) => MODE_INFO[m as (typeof MODES)[number]].tone), ['slate', 'grey', 'grey', 'blue', 'red']);
+});
+
+test('session: a watch event becomes one card (a replay adds none)', () => {
+  const ev = { kind: 'watch' as const, id: 'w1', when: 'turn' as const, changes: [{ path: '.envrc', kind: 'direnv', why: 'x', change: 'changed' as const, before: 'a', after: 'b', binary: false, cut: false, revertable: true, exec: false }] };
+  const v = applyEvent(applyEvent(newView('s'), ev), ev);
+  assert.deepEqual(v.items.map((i) => i.t), ['watch']);
 });
 
 test('store: changes coalesce into one notification', () => {

@@ -282,3 +282,11 @@ test('a turn records which models answered (subagents left out) and the model pi
   const r2 = v.items.at(-1);
   assert.deepEqual(r2 && r2.t === 'result' && r2.models, ['claude-haiku-5-5'], 'only this turn');
 });
+
+test('history merged after a reload keeps the mode the backend says now, not the one of the last turn\'s init', () => {
+  let v = newView('s', { mode: 'bypassPermissions' });
+  v = applyEvent(v, { kind: 'init', init: { model: 'm', mode: 'bypassPermissions', cwd: '/workspace', cliVersion: '2.1.296', tools: [], commands: [], plugins: [], mcp: [] } });
+  v = { ...v, mode: 'default' };   // session_state after the replay: switched to Manual since that turn
+  const merged = mergeHistory(v, [{ kind: 'user', text: 'hi', uuid: null, images: 0 }]);
+  assert.equal(merged.mode, 'default');
+});

@@ -3,6 +3,7 @@
 // unknown is dropped — never passed through. Costs are dropped too (the page asks LiteLLM through the portal).
 import { str, short, num, int, plain, idOr, uuidOr } from './validate.mjs';
 import { LIMITS } from './protocol.mjs';
+import { pageMode } from './modes.mjs';
 
 const TEXT = 200000, DELTA = 100000, RESULT_TEXT = 100000, LABEL = 200;
 
@@ -91,7 +92,7 @@ const list = (v, n, max = LABEL) => (Array.isArray(v) ? v.slice(0, n).map((x) =>
 
 export function initEvent(m) {
   return {
-    type: 'init', model: short(m.model, 128), cwd: short(m.cwd, 4096), permissionMode: short(m.permissionMode, 40),
+    type: 'init', model: short(m.model, 128), cwd: short(m.cwd, 4096), permissionMode: pageMode(m.permissionMode),   // the page mode (dontAsk: readOnly), null when unknown
     cliVersion: short(m.claude_code_version, 40), tools: list(m.tools, 300), commands: list(m.slash_commands, 500),
     skills: list(m.skills, 500),
     plugins: (Array.isArray(m.plugins) ? m.plugins : []).slice(0, 200).filter((p) => p && typeof p === 'object')
@@ -103,7 +104,6 @@ export function initEvent(m) {
 }
 // An error of the session (the page shows `message`; `text` is the same, for older readers)
 export const errorEvent = (message) => ({ type: 'error', message: str(message, 2000), text: str(message, 2000) });
-const MODE_NAMES = ['default', 'acceptEdits', 'plan', 'dontAsk'];
 
 const TASK = ['pending', 'running', 'completed', 'failed', 'stopped', 'killed', 'paused'];
 
@@ -138,7 +138,8 @@ export function fromSdk(m) {
         case 'local_command_output': return [{ type: 'local', text: str(m.content, TEXT) }];
         case 'status': {
           const ev = { type: 'status', status: ['compacting', 'requesting'].includes(m.status) ? m.status : '' };
-          if (MODE_NAMES.includes(m.permissionMode)) ev.permissionMode = m.permissionMode;
+          const mode = pageMode(m.permissionMode);   // (as the page names it: Claude Code's dontAsk is readOnly)
+          if (mode) ev.permissionMode = mode;
           return [ev];
         }
         case 'compact_boundary': {

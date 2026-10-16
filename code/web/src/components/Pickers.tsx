@@ -3,18 +3,11 @@
 import { useSel } from '../store';
 import { store, setModel, setMode, setEffort, activeView, defaultModel, refreshSpend } from '../app';
 import { meter } from '../spend';
-import { MODES, type BnModel, type Mode } from '../types';
-import { modeName } from '../permission';
+import type { BnModel } from '../types';
+import { MODE_INFO, offeredModes } from '../modes';
 import { money, perMtok, tokens } from '../text';
 import { Dropdown, MenuItem } from './ui';
 import { Icon } from './icons';
-
-const MODE_INFO: Record<Mode, string> = {
-  default: 'Asks before commands and file edits',
-  acceptEdits: 'Edits files without asking; asks before commands',
-  plan: 'Reads and plans; changes nothing until you approve the plan',
-  dontAsk: 'Never asks: anything not already allowed is denied',
-};
 
 /** ~30k tokens are written to the prompt cache on a new session or a model switch (measured on Bedrock). */
 const CACHE_TOKENS = 30_000;
@@ -98,17 +91,25 @@ export function ModelPicker({ compact }: { compact?: boolean }) {
   );
 }
 
+/** The permission mode, next to Send as in Claude Code's desktop app: Read only · Plan · Manual · Accept edits ·
+ *  Bypass permissions (when Settings allow it). Shift+Tab in the prompt box cycles, Alt+M opens it. */
 export function ModePicker({ compact }: { compact?: boolean }) {
-  const mode = useSel(store, (s) => activeView(s)?.mode ?? s.prefs.mode);
+  const mode = useSel(store, (s) => activeView(s)?.mode ?? s.startWith ?? s.prefs.mode);
+  const allowBypass = useSel(store, (s) => s.server?.allowBypass === true);
+  const signal = useSel(store, (s) => s.modeMenu);
+  const info = MODE_INFO[mode] ?? MODE_INFO.default;
+  const name = compact && mode === 'bypassPermissions' ? 'Bypass' : info.label;
   return (
     <Dropdown
-      title="Permission mode (Shift+Tab)"
-      class={`picker mode-${mode}`}
+      title={`Permission mode: ${info.label} (Shift+Tab cycles, Alt+M opens)`}
+      class={`picker mode-picker tone-${info.tone}`}
+      panelClass="mode-panel"
       testid="mode-picker"
+      openSignal={signal}
       trigger={
         <>
-          <Icon name="shield" size={15} />
-          <span class="picker-value">{compact ? modeName(mode) : `${modeName(mode)}`}</span>
+          <Icon name={info.icon} size={14} />
+          <span class="picker-value">{name}</span>
           <Icon name="chevronDown" size={13} class="picker-chev" />
         </>
       }
@@ -116,21 +117,35 @@ export function ModePicker({ compact }: { compact?: boolean }) {
       {(close) => (
         <>
           <div class="panel-head">Permission mode</div>
-          {MODES.map((m) => (
-            <MenuItem
-              key={m}
-              checked={m === mode}
-              testid={`mode-${m}`}
-              onSelect={() => {
-                setMode(m);
-                close();
-              }}
-            >
-              <span class="mi-title">{modeName(m)}</span>
-              <span class="mi-desc">{MODE_INFO[m]}</span>
-            </MenuItem>
-          ))}
-          <div class="panel-note">Shift+Tab in the prompt box cycles modes. Bypass and auto modes are not offered here.</div>
+          {offeredModes(allowBypass).map((m) => {
+            const mi = MODE_INFO[m];
+            return (
+              <MenuItem
+                key={m}
+                checked={m === mode}
+                testid={`mode-${m}`}
+                onSelect={() => {
+                  close();
+                  setMode(m);
+                }}
+              >
+                <span class={`mi-title mode-title tone-${mi.tone}`}>
+                  <Icon name={mi.icon} size={13} /> {mi.label}
+                </span>
+                <span class="mi-desc">{mi.desc}</span>
+                <span class="mi-desc mi-runs">{mi.runs}</span>
+              </MenuItem>
+            );
+          })}
+          {!allowBypass && (
+            <div class="panel-note" data-testid="mode-bypass-off">
+              Bypass permissions is off. Settings › Code page turns it on (from the computer running bedrock-now).
+            </div>
+          )}
+          <div class="panel-note">
+            Shift+Tab in the prompt box cycles Manual → Accept edits → Plan{allowBypass ? ' → Bypass' : ''}; Alt+M opens this menu. Read only, Manual and
+            Accept edits are remembered for new sessions; Plan and Bypass permissions are for this session only.
+          </div>
         </>
       )}
     </Dropdown>

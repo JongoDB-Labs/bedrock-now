@@ -69,7 +69,9 @@ test('live messages: text, deltas, tools, results — capped, ids checked, costs
   assert.deepEqual(fromSdk({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', summary: 'ok', tool_use_id: 'toolu_9' }),
     [{ type: 'task', id: 't1', status: 'completed', summary: 'ok', description: '', toolUseId: 'toolu_9' }]);
   assert.deepEqual(fromSdk({ type: 'system', subtype: 'task_started', task_id: '../t' }), []);
-  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '<b>', permissionMode: 'bypassPermissions' }), [{ type: 'status', status: '' }]);
+  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '<b>', permissionMode: 'bypassPermissions' }), [{ type: 'status', status: '', permissionMode: 'bypassPermissions' }]);
+  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '', permissionMode: 'dontAsk' }), [{ type: 'status', status: '', permissionMode: 'readOnly' }], 'the page mode');
+  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '', permissionMode: '<img>' }), [{ type: 'status', status: '' }]);
   assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: 'compacting', permissionMode: 'plan' }), [{ type: 'status', status: 'compacting', permissionMode: 'plan' }]);
   assert.deepEqual(fromSdk({ type: 'assistant', message: { content: [] }, error: 'rate_limit' }), [{ type: 'error', message: 'Claude Code reported: rate_limit', text: 'Claude Code reported: rate_limit' }]);
   assert.equal(fromSdk({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, error: 'overloaded' })[0].type, 'status');

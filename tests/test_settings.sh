@@ -64,8 +64,8 @@ test_every_env_key_is_in_the_settings_table_once() {
   assert_eq "$dup" ""
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
-  # Chat's origin and the Code page's 4, + its previews' 2)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 116
+  # Chat's origin and the Code page's 5, + its previews' 2)
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 117
 }
 
 test_table_columns_are_valid() {
@@ -194,7 +194,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 117; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 118; assert d["last_change"] is None' "$f"
   fi
 }
 
@@ -490,6 +490,34 @@ test_code_page_policy_on_only_locally_off_from_anywhere() {
   setting_allowed CODE_ENABLED false local
   setting_validate CODE_ENABLED true
   if setting_validate CODE_ENABLED yes; then return 1; fi
+}
+
+test_code_allow_bypass_on_only_locally_and_it_recreates_the_code_container() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  assert_eq "$(setting_field CODE_ALLOW_BYPASS 4)/$(setting_field CODE_ALLOW_BYPASS 5)/$(setting_field CODE_ALLOW_BYPASS 6)" "widen-local/bool/code-env"
+  set_env CODE_ALLOW_BYPASS false
+  if setting_allowed CODE_ALLOW_BYPASS true remote; then return 1; fi
+  assert_contains "$SV_ERR" "CODE_ALLOW_BYPASS can only be turned on from the computer running bedrock-now"
+  setting_allowed CODE_ALLOW_BYPASS true local
+  if setting_validate CODE_ALLOW_BYPASS yes; then return 1; fi
+  # remotely: refused, nothing changes
+  cp "$ENV_FILE" "$TMP/before"
+  if out="$( (_lines CODE_ALLOW_BYPASS=true | _apply --origin remote) 2>&1)"; then return 1; fi
+  assert_contains "$out" "can only be turned on from the computer running bedrock-now"
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  # here, with the Code page on: .env, then the code container recreated (it reads the value at its start), nothing else
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED true
+  : > "$TMP/calls"
+  _lines CODE_ALLOW_BYPASS=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env CODE_ALLOW_BYPASS)" true
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait code"
+  assert_not_contains "$(cat "$TMP/calls")" "code enable"
+  # off from anywhere; with the Code page off only .env changes
+  set_env CODE_ENABLED false
+  : > "$TMP/calls"
+  _lines CODE_ALLOW_BYPASS=false | _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null
+  assert_eq "$(get_env CODE_ALLOW_BYPASS)" false
+  assert_not_contains "$(cat "$TMP/calls")" "wait code"
 }
 
 test_apply_code_page_on_runs_code_enable() {

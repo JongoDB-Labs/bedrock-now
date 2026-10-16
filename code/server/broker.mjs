@@ -5,15 +5,19 @@
 // offers anyway — never to bypassPermissions or auto, never another folder (addDirectories). The page is told
 // exactly what it approves: the input as shown (and whether that is all of it), and the rules "Always" writes.
 import crypto from 'node:crypto';
-import { LIMITS, MODES } from './protocol.mjs';
+import { LIMITS } from './protocol.mjs';
 import { short, str, capped } from './validate.mjs';
 
 const DESTINATIONS = ['session', 'localSettings', 'projectSettings', 'userSettings'];
 // files in /workspace/.claude: your folder, which Claude Code on your computer reads too
 const WORKSPACE_FILES = ['localSettings', 'projectSettings'];
 
-// safeSuggestions(list) -> the suggestions "Always" may apply: addRules with behavior allow, and setMode to a mode of
-// MODES other than dontAsk; each rule a tool name and an optional one-line content
+// The modes an "Always" may switch this session to (Claude Code's own names; a plan approval offers acceptEdits or
+// default too): never bypassPermissions or auto, never dontAsk — those only through the page's own set_mode
+const SUGGESTED_MODES = ['default', 'acceptEdits', 'plan'];
+
+// safeSuggestions(list) -> the suggestions "Always" may apply: addRules with behavior allow, and setMode to one of
+// SUGGESTED_MODES; each rule a tool name and an optional one-line content
 export function safeSuggestions(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -24,7 +28,7 @@ export function safeSuggestions(list) {
         && (r.ruleContent === undefined || (typeof r.ruleContent === 'string' && /^[^\x00-\x1f\x7f]{0,2000}$/u.test(r.ruleContent))))
         .map((r) => (r.ruleContent === undefined ? { toolName: r.toolName } : { toolName: r.toolName, ruleContent: r.ruleContent }));
       if (rules.length) out.push({ type: 'addRules', rules, behavior: 'allow', destination: s.destination });
-    } else if (s.type === 'setMode' && MODES.includes(s.mode) && s.mode !== 'dontAsk') {
+    } else if (s.type === 'setMode' && SUGGESTED_MODES.includes(s.mode)) {
       out.push({ type: 'setMode', mode: s.mode, destination: s.destination });
     }
   }

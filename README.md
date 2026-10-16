@@ -293,12 +293,16 @@ claude.ai plan that is invisible; billed per token it is not. So:
   suggests the picker (`claude-bedrock --resume`) when several sessions wrote in that folder meanwhile. There is no
   such line for `-p`, with `CLAUDE_BEDROCK_QUIET=1`, or when stderr is not a terminal: use `claude-bedrock --resume`
   (the picker) or `claude-bedrock --continue` then.
-- **Auto mode and model aliases on your computer.** Claude Code 2.1.283 and later counts its *auto* mode (a
-  classifier model approving actions for you, on your key) as available behind this stack's API address, and may
-  start in it; when the classifier cannot answer, it blocks the action. The browser terminal and the Code page turn
-  it off; for `claude-bedrock` on your computer, add `"disableAutoMode": "disable"` to
-  `~/.claude-bedrock/settings.json` to do the same. Name models in full (`CLAUDE_BEDROCK_MODEL=claude-haiku-5-5`, as
-  above): with the alias `haiku`, Claude Code plans on Sonnet in *Plan* mode.
+- **Auto mode off, models in full.** Claude Code 2.1.283 and later counts its *auto* mode (a classifier model
+  approving actions for you, on your key) as available behind this stack's API address, and may start in it; its
+  classifier asks for a model LiteLLM does not serve, so it runs on your session's model and blocks what it cannot
+  judge. `claude-bedrock` turns it off in its lean folder's sessions, as the browser terminal and the Code page do:
+  one `--settings={"disableAutoMode":"disable"}` argument (Claude Code's flag tier, above every settings file —
+  nothing of yours is written; a `--settings` of your own replaces it). `CLAUDE_BEDROCK_AUTO_MODE=1` leaves auto mode
+  to Claude Code; with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` your own settings decide (add `"disableAutoMode": "disable"`
+  to them for the same). `CLAUDE_BEDROCK_MODEL=haiku` (or `sonnet`, `opus`) is passed as that slot's full id
+  (`claude-haiku-5-5`): with the alias, Claude Code plans on Sonnet in *Plan* mode. A `--model haiku` or a `/model
+  haiku` typed in a session still goes to Claude Code as an alias: name the model in full there.
 
 More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
@@ -398,21 +402,47 @@ per browser.
   again, without a prompt), never while Claude is working, and with a fresh dry run if Claude worked since. *Fork* on
   a prompt starts a new session with the conversation before it and puts the prompt back in the box to change, as the
   terminal's rewind does.
-- **Permission prompts.** In the *Ask* mode a command or file change Claude wants to make asks first (reading the
+- **Permission prompts.** In *Manual* mode a command or file change Claude wants to make asks first (reading the
   workspace and read-only commands such as `ls` or `git status` do not; in *Accept edits* file changes do not either),
   in a card that says what would run or change — **Allow once**, **Always** (the rule, shown before you click, saved
   in the sandbox's own Claude Code settings; never "skip all permissions"; where Claude Code proposes one for the
   workspace, a separate **Always, in this workspace's settings**, which Claude Code on your computer honours too) or
   **Deny** (with an optional note for Claude). In *Plan* mode Claude asks you to approve its plan: approve and let it
-  edit (*Accept edits*), approve and keep asking (*Ask*), or keep planning with a note. A card shown only in part
+  edit (*Accept edits*), approve and keep asking (*Manual*), or keep planning with a note. A card shown only in part
   (very large input) can only be denied. A new card never takes the focus from the prompt box, the editor or the
   terminal panel, and its keys **1**/**2**/**3** answer only once you have clicked or tabbed into it. While a prompt
   waits the Code tab shows a badge (in a browser that has used the Code page, also before you open the tab); nobody
   answering for 30 minutes counts as Deny. When Claude asks *you* something (its AskUserQuestion tool), the card is a
   small form — one choice, several, or **Other** with your own words — and your answers go back to Claude as answers.
-- **Model, mode, effort, cost.** You pick the model (this stack's models and prices), the permission mode (*Ask*,
-  *Accept edits*, *Plan*, *Don't ask*; `Shift+Tab` cycles) and the effort; the meter shows each turn's and the
-  session's cost and the context window's use.
+- **Permission modes**, next to **Send** as in Claude Code's desktop app (`Shift+Tab` cycles *Manual → Accept edits →
+  Plan → Bypass permissions* when allowed, as the CLI does; `Alt+M` opens the menu). The desktop app's names and
+  Claude Code's own modes underneath, plus one of bedrock-now's own, *Read only*:
+
+  | Mode | Claude Code underneath | Without asking | Your words |
+  |---|---|---|---|
+  | **Read only** | `dontAsk`, with Edit, Write and NotebookEdit denied | reading, searching, read-only commands (`ls`, `cat`, `git status` …) and commands you *Always* allowed; everything else is **denied** (no card) | read-only |
+  | **Plan** | `plan` | reading and read-only commands; it asks before anything else, then shows its plan to approve | read-only, then a plan |
+  | **Manual** | `default` | reading and read-only commands; every edit and other command asks | read-write-execute, each approved |
+  | **Accept edits** | `acceptEdits` | file edits in the workspace and file commands there (`mkdir`, `touch`, `mv`, `cp`, `rm`, `sed`); other commands ask | read-write (execute approved) |
+  | **Bypass permissions** | `bypassPermissions` | everything — but edits of `.git`, `.claude`, `.vscode`, `.husky`, `.envrc` and `.mcp.json` still ask, and your deny rules still deny | read-write-execute, no prompts |
+
+  *Read only*, *Manual* and *Accept edits* are remembered for new sessions (per browser); *Plan* and *Bypass
+  permissions* apply to the session they were picked in only, as in the desktop app and VS Code. *Auto* (a reviewer
+  model approving routine actions) is not offered yet: Claude Code's auto mode is off in the sandbox. **Bypass
+  permissions** is off unless **Settings → Code page → Allow Bypass permissions** is on (`CODE_ALLOW_BYPASS`; turning it
+  on works only from the computer running bedrock-now), and every switch to it asks first, in a dialog that names
+  what it means here: the workspace is your real folder (git hooks, package scripts and editor settings in it run on
+  your computer later), the sandbox's internet access, and the budget. While it is on a red strip sits above the prompt
+  box (*Switch to Manual*), the tab title starts with ⏵⏵ and the portal's Code badge turns red; it ends with the
+  session's process (an idle stop, a resume: *Manual* again). Details: [docs/security.md](docs/security.md#bypass-permissions).
+- **Files that run on your computer.** In every mode, the page checks a short list of files of your folder after each
+  turn — git hooks and `.git/config`, husky hooks, `.envrc`, `.vscode/tasks.json` and `settings.json`, Claude Code's
+  `.claude/settings*.json`, `.mcp.json`, `package.json`'s install scripts, dev container files: these run on your
+  computer, not in the sandbox, when you use the folder there. If a turn (or something between turns) changed one, a
+  red card says which, why it matters, shows the diff, and **Revert** puts it back as it was (a new file goes to the
+  workspace trash) — as long as nothing changed it again since.
+- **Model, effort, cost.** You pick the model (this stack's models and prices) and the effort; the meter shows each
+  turn's and the session's cost and the context window's use.
 - **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
@@ -561,7 +591,7 @@ last four characters of generated keys and the `AKIA…` ends of the AWS key ID)
   files stay;
 - `REMOTE_ADMIN_ACTIONS` (off from anywhere, on only from this computer) and the allowed Tailscale login; the
   same rule for anything that would protect less (storing prompts, nightly backups off, fewer kept, longer
-  sign-ins): only from this computer;
+  sign-ins, the Code page and its *Allow Bypass permissions*): only from this computer;
 - **Diagnostics** (the password again): the smoke test (~$0.0001), a restart of one service, a status report to
   copy (your home folder shown as `~`; no secrets, emails, tailnet names or account numbers).
 
@@ -1087,7 +1117,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - The Code page is off by default too, and runs Claude Code in that same sandbox. Its page comes from a container
   with no LiteLLM key, no folder of yours and no network but the one it shares with Caddy; it needs its own
   password unlock, treats everything from the sandbox as untrusted text (a strict CSP with Trusted Types, set by
-  Caddy whoever answers), and takes models, prices and costs from the portal, never from the sandbox.
+  Caddy whoever answers), and takes models, prices and costs from the portal, never from the sandbox. Its *Bypass
+  permissions* mode is off unless allowed in Settings (from this computer only) and asks in every session; in every
+  mode it flags changes to files of your folder that run on your computer (git hooks, `.envrc`, editor and Claude
+  Code settings …), with Revert.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale

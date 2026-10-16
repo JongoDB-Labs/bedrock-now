@@ -23,6 +23,12 @@
 //                   the workspace's .claude/launch.json (the Claude Code desktop app's dev-server list): its entries,
 //                   and one of them started by name in a new window of the terminal's tmux session — the command is the
 //                   file's, never the page's, and only while it is still what the page showed (its digest)
+//   ws.sensitive / ws.restore
+//                   the watchlist: the files of /workspace that run on your computer later (git hooks and config,
+//                   husky hooks, .envrc, VS Code tasks and settings, Claude Code's workspace settings, .mcp.json,
+//                   package.json, dev container files) with their SHA-256 and a copy up to 1 MiB; and one of them put
+//                   back as a turn's start saw it, only while it is still as its end saw it (the code container decides
+//                   what changed: code/server/watch.mjs)
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
 // Nothing here is a secret boundary for the sandbox (anything in it can run claude itself); the allowlist keeps the
 // socket from being a general "run anything" primitive, and keeps paths inside /workspace. The code container treats
@@ -93,10 +99,14 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
 const RULES = /^[\x20-\x7e]{1,4000}$/;   // tool rules (Bash(npm test:*) …): printable ASCII, one line
 const oneOf = (...v) => (x) => v.includes(x);
-const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events']);
+// --allow-dangerously-skip-permissions: the code container passes it while CODE_ALLOW_BYPASS is on, so the page can switch a
+// session to Bypass permissions (Claude Code refuses that switch otherwise); it changes no other mode. A process still
+// starts in one of --permission-mode's modes below.
+const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events', '--allow-dangerously-skip-permissions']);
 // Refused on purpose (tests: code/test/bn-coded.test.mjs): --settings, --mcp-config, --plugin-dir, --debug-file,
 // --betas (Bedrock refuses beta headers), --task-budget (adds one), --managed-settings, --add-dir,
-// --dangerously-skip-permissions and the modes bypassPermissions / auto (not in this version of the Code page).
+// --dangerously-skip-permissions and the starting modes bypassPermissions / auto (a session is switched to Bypass
+// permissions over the control channel, after the page's confirmation; auto is not offered).
 const VALUED = {
   '--model': (v) => MODEL.test(v),
   '--fallback-model': (v) => MODEL.test(v),
@@ -702,6 +712,115 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
   return { ok: true, name: c.name, window, port: c.port, command: c.command };
 }
+// --- the watchlist (ws.sensitive / ws.restore): files of /workspace that run on your computer later. Never through a
+// --- link: every folder on the way must be a real folder, a watched link is reported as a link (its target), and
+// --- nothing here follows one.
+const WATCH_FILES = ['.git/config', '.envrc', '.vscode/tasks.json', '.vscode/settings.json', '.claude/settings.json',
+  '.claude/settings.local.json', '.mcp.json', 'package.json', '.devcontainer.json', '.devcontainer/devcontainer.json'];
+const WATCH_DIRS = ['.git/hooks', '.husky'];   // and their files (not git's *.sample hooks, not deeper)
+const WATCH_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+const WATCH_MAX_FILE = 1 << 20, WATCH_MAX_DATA = 2 << 20, WATCH_MAX_DIR = 64, WATCH_MAX_HASH = 64 << 20;
+export function isWatched(rel) {
+  if (typeof rel !== 'string') return false;
+  if (WATCH_FILES.includes(rel) || WATCH_DIRS.includes(rel)) return true;
+  const i = rel.lastIndexOf('/');
+  return i > 0 && WATCH_DIRS.includes(rel.slice(0, i)) && WATCH_NAME.test(rel.slice(i + 1)) && !rel.endsWith('.sample');
+}
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+// watchPath(rel, create) -> the absolute path when every folder on the way is a real folder (create: missing ones are
+// made, never through a link), else null
+function watchPath(rel, create = false) {
+  let p = WORKSPACE;
+  for (const seg of rel.split('/').slice(0, -1)) {
+    p = path.join(p, seg);
+    let st;
+    try { st = fs.lstatSync(p); } catch {
+      if (!create) return null;
+      try { fs.mkdirSync(p, { mode: 0o755 }); st = fs.lstatSync(p); } catch { return null; }
+    }
+    if (!st.isDirectory()) return null;
+  }
+  return path.join(WORKSPACE, rel);
+}
+// watchEntry(rel, budget) -> {path, type: file|symlink|dir, size, mode, sha256, data?, target?} or null (not there)
+function watchEntry(rel, budget) {
+  const abs = watchPath(rel);
+  if (!abs) return null;
+  let st;
+  try { st = fs.lstatSync(abs); } catch { return null; }
+  if (st.isSymbolicLink()) {
+    let target = '';
+    try { target = fs.readlinkSync(abs); } catch { /* gone */ }
+    return { path: rel, type: 'symlink', size: 0, mode: 0, sha256: sha256(`link:${target}`), target: target.slice(0, 4096) };
+  }
+  if (st.isDirectory()) return { path: rel, type: 'dir', size: 0, mode: st.mode & 0o7777, sha256: sha256('dir') };
+  if (!st.isFile()) return { path: rel, type: 'file', size: 0, mode: st.mode & 0o7777, sha256: sha256(`other:${st.mode}`) };
+  let fd;
+  try { fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return null; }
+  try {
+    const f = fs.fstatSync(fd);
+    const h = crypto.createHash('sha256');
+    const keep = f.size <= WATCH_MAX_FILE && f.size <= budget.left ? [] : null;
+    let pos = 0;
+    if (f.size > WATCH_MAX_HASH) h.update(`large:${f.size}:${f.mtimeMs}`);
+    else {
+      while (pos < f.size) {
+        const b = readSlice(fd, pos, Math.min(1 << 20, f.size - pos));
+        if (!b.length) break;
+        h.update(b); keep?.push(b); pos += b.length;
+      }
+    }
+    const e = { path: rel, type: 'file', size: f.size, mode: f.mode & 0o7777, sha256: h.digest('hex') };
+    if (keep) { const data = Buffer.concat(keep); e.data = data.toString('base64'); budget.left -= data.length; }
+    return e;
+  } finally { fs.closeSync(fd); }
+}
+export function wsSensitive() {
+  const files = [], budget = { left: WATCH_MAX_DATA };
+  for (const rel of WATCH_FILES) { const e = watchEntry(rel, budget); if (e) files.push(e); }
+  for (const dir of WATCH_DIRS) {
+    const d = watchEntry(dir, budget);
+    if (!d) continue;
+    files.push(d);
+    if (d.type !== 'dir') continue;
+    let names = [];
+    try { names = fs.readdirSync(path.join(WORKSPACE, dir)).filter((n) => WATCH_NAME.test(n) && !n.endsWith('.sample')).sort().slice(0, WATCH_MAX_DIR); } catch { /* gone */ }
+    for (const n of names) { const e = watchEntry(`${dir}/${n}`, budget); if (e && e.type !== 'dir') files.push(e); }
+  }
+  return { files };
+}
+// ws.restore {path, ifSha256, data: base64 | null, mode}: a watched file put back — data null: it was not there, so it
+// goes to the workspace trash — only while its SHA-256 is still ifSha256 (null: still not there)
+export function wsRestore(req) {
+  const rel = req?.path;
+  if (!isWatched(rel) || WATCH_DIRS.includes(rel)) throw new Error('not a watched file');
+  const cur = watchEntry(rel, { left: 0 });
+  if (cur?.type === 'dir') throw new Error('a folder is there now');
+  if ((req.ifSha256 ?? null) !== (cur ? cur.sha256 : null)) throw new Error('it changed again since: not put back');
+  if (req.data === null || req.data === undefined) {
+    if (!cur) return { path: rel, action: 'none' };
+    const trash = path.join(WORKSPACE, TRASH);
+    const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.writeFileSync(path.join(trash, '.gitignore'), '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
+    const dest = path.join(dir, path.basename(rel));
+    fs.renameSync(watchPath(rel), dest);   // the entry itself (a link stays a link): never what it points to
+    return { path: rel, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
+  }
+  if (typeof req.data !== 'string' || req.data.length > Math.ceil(WATCH_MAX_FILE / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(req.data)) throw new Error('bad data');
+  const mode = Number.isInteger(req.mode) && req.mode >= 0 && req.mode <= 0o777 ? req.mode : 0o644;
+  const abs = watchPath(rel, true);
+  if (!abs) throw new Error('a folder on its way is a link');
+  const tmp = path.join(path.dirname(abs), `.bn-upload-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    const buf = Buffer.from(req.data, 'base64');
+    for (let off = 0; off < buf.length;) off += fs.writeSync(fd, buf, off);
+    fs.fchmodSync(fd, mode);
+  } finally { fs.closeSync(fd); }
+  try { fs.renameSync(tmp, abs); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  return { path: rel, action: 'restored' };
+}
 
 function fsWriteAbort(w) {
   if (!w) return;
@@ -798,6 +917,8 @@ export function serve(sock) {
         case 'fs.write': writer = fsWriteBegin(req); return undefined;   // the data follows as STDIN frames
         case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit));
         case 'memory.read': return finish(T.RESULT, memoryRead(send));
+        case 'ws.sensitive': return finish(T.RESULT, wsSensitive());
+        case 'ws.restore': return finish(T.RESULT, wsRestore(req));
         case 'memory.write': writer = memoryWriteBegin(req); return undefined;   // the data follows as STDIN frames
         case 'ports.list': return finish(T.RESULT, portsList());
         case 'ports.stop': return finish(T.RESULT, portsStop(req.pid, req.port, req.signal ?? 'SIGTERM'));

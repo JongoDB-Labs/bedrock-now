@@ -26,7 +26,7 @@
     voice: ["STT_PROVIDER"],
     openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MODELS", "OPENROUTER_MAX_MODELS", "OPENROUTER_INCLUDE_ALIASES"],
     files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
-    code: ["CODE_ENABLED"],
+    code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS"],
     updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
     remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN"],
   };
@@ -311,6 +311,8 @@
     b.addEventListener("click", () => copy(cmd, "the command"));
     r.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: terminalOn() ? "Another folder, in a terminal: " : "In a terminal: " }), el("code", { text: cmd }), " ", b));
     body.append(r);
+    // Bypass permissions in the Code page's mode picker: on only from this computer (widen-local), off from anywhere
+    if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));
   }
 
   function modelName(id) {

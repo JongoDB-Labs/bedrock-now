@@ -30,6 +30,13 @@ services:
       # command line; never in the sandbox.
       CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}
       HOME: /tmp
+      # Settings › Code page › Allow Bypass permissions (only this container enforces it: sessions start allowing the
+      # switch, and set_mode accepts it after the page's confirmation). A change recreates this container.
+      CODE_ALLOW_BYPASS: ${CODE_ALLOW_BYPASS:-false}
+      # What the page's Bypass dialog says about the sandbox: its internet access, and the folder of yours it sees (a
+      # label only: this container mounts no folder)
+      TERMINAL_EGRESS: ${TERMINAL_EGRESS:-}
+      CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}
     volumes:
       - code-socket:/run/bn-code:ro   # (the terminal's volume) connecting needs no write access; it never listens there
     networks:

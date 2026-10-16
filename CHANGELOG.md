@@ -43,6 +43,27 @@ All notable changes to bedrock-now are documented here. The format follows
   update). docs/security.md: "Previews of dev servers in the sandbox". The terminal container gets one more volume
   (bn-preview's socket; always there, like bn-coded's), so the next `./stack update` recreates it as it does for a new
   image anyway.
+- **Permission modes like Claude Code's desktop app** in the Code page: a mode picker next to **Send** (`Shift+Tab`
+  cycles *Manual → Accept edits → Plan* as the CLI does, `Alt+M` opens it) with the desktop app's names and Claude
+  Code's own modes underneath — *Plan*, *Manual* (formerly *Ask*), *Accept edits* — and one of bedrock-now's own,
+  **Read only** (Claude Code's `dontAsk` with Edit, Write and NotebookEdit denied: reads and read-only commands run,
+  anything else is denied without a card; it replaces *Don't ask*). *Read only*, *Manual* and *Accept edits* are
+  remembered for new sessions; *Plan* (and *Bypass*) apply to one session only. A mode's rules go to Claude Code's
+  flag-settings layer as one composed `permissions` object, never fewer rules than either mode needs mid-switch.
+- **Bypass permissions** (opt-in): **Settings → Code page → Allow Bypass permissions** (`CODE_ALLOW_BYPASS`, on only
+  from the computer running bedrock-now; the code container restarts) adds it to the picker. Every switch to it asks
+  in a dialog naming the risks here (your real workspace folder — its git hooks, package scripts and editor settings
+  run on your computer later —, the sandbox's internet access, the budget); while it is on a red strip sits above the
+  prompt box, the tab title starts with ⏵⏵ and the portal's Code badge turns red; it ends with the session's process
+  (new and resumed sessions start in *Manual*). Edits of `.git`, `.claude`, `.vscode`, `.husky`, `.envrc` and
+  `.mcp.json` still ask, deny rules still deny. Sessions start with `--allow-dangerously-skip-permissions` only while
+  it is allowed (never in bypass); the code container refuses the switch without the setting and the page's
+  confirmation.
+- **A watchlist of files that run on your computer**, in every mode: git hooks and `.git/config`, husky hooks,
+  `.envrc`, `.vscode/tasks.json` and `settings.json`, `.claude/settings*.json`, `.mcp.json`, `package.json`'s install
+  scripts and dev container files are hashed (with a copy up to 1 MiB) when a turn starts and ends; a change — by an
+  edit, by Bash, or between turns — shows a card with why it matters, the diff and **Revert** (only while the file is
+  still as the turn left it; a new file goes to the workspace trash).
 
 ### Changed
 
@@ -51,6 +72,18 @@ All notable changes to bedrock-now are documented here. The format follows
   second policy is refused. It also allows audio and video from `blob:` (`media-src blob:`), and frames from the
   dev-server previews' hosts (`frame-src` gains `http://*.<PREVIEW_DOMAIN>:*`). See
   [docs/security.md](docs/security.md#the-code-page).
+- **`claude-bedrock` turns Claude Code's auto mode off** in its lean folder's sessions
+  (`--settings={"disableAutoMode":"disable"}`, Claude Code's flag tier; nothing of yours is written), as the browser
+  terminal and the Code page do: its classifier would run on your session's model behind this stack and block what it
+  cannot judge. `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code; with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` your own
+  settings decide. `CLAUDE_BEDROCK_MODEL=haiku` (`sonnet`, `opus`) is passed as that slot's full id — with the alias,
+  Claude Code 2.1.296 plans on Sonnet in *Plan* mode (probed: with the full id, Plan stays on Haiku) — in the browser
+  terminal's `claude-bedrock` too.
+- The Code page's plan approval says *Approve, Manual* / *Approve, Accept edits*.
+
+### Fixed
+
+- The Code page showed the mode of a session's last turn start after a reload instead of the mode it is in now.
 
 ## [0.5.0] - 2026-10-16
 

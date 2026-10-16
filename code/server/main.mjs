@@ -84,8 +84,11 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
+// allowBypass: CODE_ALLOW_BYPASS (Settings › Code page). sandbox: {egress, workspace} what the page's Bypass dialog says
+// about the sandbox (TERMINAL_EGRESS, the folder of yours it sees — a label). watch: false turns the watchlist off.
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
-  reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {} }) {
+  reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
+  allowBypass = false, sandbox = {}, watch = true }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -121,8 +124,15 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     onCount: (count) => toAll({ type: 'pending', count }),
   });
   const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error });
+  // the watchlist's two ops in the sandbox (bn-coded): the watched files (hashes, copies ≤ 1 MiB), and one put back
+  const watcher = watch === false ? null : {
+    snapshot: async () => (await call({ op: 'ws.sensitive' }, { timeoutMs: 15000 })).result,
+    restore: async (r) => (await call({ op: 'ws.restore', ...r }, { timeoutMs: 20000 })).result,
+  };
+  const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
+    workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
-    query, spawn, broker, log: logger,
+    query, spawn, broker, log: logger, allowBypass: allowBypass === true, watcher,
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
@@ -187,6 +197,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         versions: { cli: versions.claudeCode, sdk: versions.sdk, claudeCode: versions.claudeCode },
         limits: { ...LIMITS, sessions: LIMITS.maxOpen, upload: LIMITS.maxUploadBytes, image: LIMITS.maxImageBytes },
         sessions: mgr.list(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
+        bypass: { allowed: mgr.allowBypass }, sandbox: sandboxInfo,
       });
     }
     if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
@@ -371,7 +382,17 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       }
       case 'interrupt': await sessionOf(m).interrupt(); return reply({});
       case 'set_model': await sessionOf(m).setModel(m.model); return reply({ model: m.model });
-      case 'set_mode': await sessionOf(m).setMode(m.mode); return reply({ mode: m.mode });
+      case 'set_mode': {
+        const s = sessionOf(m);
+        await s.setMode(m.mode, { confirmed: m.confirmed === true });
+        return reply({ mode: s.mode });
+      }
+      // the watched files of a `watch` event (or one of them) put back as they were before it
+      case 'watch_revert': {
+        if (!isUuid(m.id)) throw new SessionError('bad change id');
+        if (m.path !== undefined && (typeof m.path !== 'string' || m.path.length > 4096)) throw new SessionError('bad path');
+        return reply({ results: await sessionOf(m).revertWatch(m.id, m.path) });
+      }
       case 'set_effort': await sessionOf(m).setEffort(m.effort ?? null); return reply({ effort: m.effort ?? null });
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');
@@ -447,7 +468,13 @@ function readVersions() {
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
   const { sandboxProcess, sandboxCall } = await import('./spawn-client.mjs');
-  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions() });
+  const on = (v) => /^(true|1|yes|on)$/i.test(String(v ?? '').trim());
+  const off = (v) => /^(false|0|no|off)$/i.test(String(v ?? '').trim());
+  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(),
+    // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
+    allowBypass: on(process.env.CODE_ALLOW_BYPASS),
+    sandbox: { egress: !off(process.env.TERMINAL_EGRESS), workspace: process.env.CODE_WORKSPACE_LABEL || '' } });
+  log(`code: Bypass permissions ${mgr.allowBypass ? 'allowed (CODE_ALLOW_BYPASS)' : 'off'}`);
   const port = Number(process.env.CODE_PORT || 8095);
   server.listen(port, '0.0.0.0', () => log(`code: listening on :${port}`));
   const stop = () => { log('code: stopping'); mgr.closeAll(); server.close(); setTimeout(() => process.exit(0), 3000).unref(); };

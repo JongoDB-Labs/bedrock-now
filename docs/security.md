@@ -614,13 +614,14 @@ spawn server, Claude Code or any file at will.
   backups in the sandbox (`rewindFiles`), restored only after a dry run you saw — never while Claude is working, and
   checked again when Claude worked since that dry run.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
-  a `claude plugin|mcp` listing or change, the file ops, the session ops, and the previews' ops (below: the listening
-  ports, stopping one, the workspace's `.claude/launch.json`). Claude Code's arguments must start with
-  the SDK's fixed stream-json prefix and every other one must be on an allowlist in `--name=value` form
-  (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …); refused, among others:
-  `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
-  `--betas` (Bedrock refuses beta headers), `--dangerously-skip-permissions` and the modes `bypassPermissions` and
-  `auto`. Plugin commands never get `-y`. Claude Code gets the container's environment without the MCP token, the
+  a `claude plugin|mcp` listing or change, the file ops, the session ops, the previews' ops (below: the listening
+  ports, stopping one, the workspace's `.claude/launch.json`) and the watchlist's two ops (below). Claude Code's
+  arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
+  `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
+  a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*); refused, among
+  others: `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
+  `--betas` (Bedrock refuses beta headers), `--dangerously-skip-permissions` and the starting modes
+  `bypassPermissions` and `auto` (a process never starts in them). Plugin commands never get `-y`. Claude Code gets the container's environment without the MCP token, the
   SDK's own few variables (checked), and a LiteLLM session tag `code-<uuid>` built from a checked UUID. It is not a
   boundary for the sandbox (anything there can run `claude` itself); it keeps the socket from being a general
   "run anything" primitive. At most 6 Claude Code processes and 32 connections; a 4 MiB frame limit both ways.
@@ -643,24 +644,34 @@ spawn server, Claude Code or any file at will.
   and a cut one says so and can only be denied — the code container refuses *Allow* and *Always* for it, whatever a
   page sends; a `MultiEdit` with more edits than a card lists (20) counts as cut. *Allow once* returns the tool input
   exactly as Claude Code sent it; *Always* applies only the CLI's suggestions that add **allow** rules or switch to
-  *Accept edits*/*Plan* — never `bypassPermissions` or `auto`, never another folder (`addDirectories`), never a
+  *Manual*/*Accept edits*/*Plan* — never `bypassPermissions`, `auto` or `dontAsk`, never another folder (`addDirectories`), never a
   removal — at most 50 rule lines (what a card lists; the rest are not applied), and the page shows exactly those
   rules before you click. They land in the sandbox's own `~/.claude/settings.json` (they affect only it): a rule
   Claude Code proposes for the workspace's `.claude/settings.json` or `settings.local.json` goes there instead.
   Writing it into the workspace's file is a separate, explicit button (**Always, in this workspace's settings**) with
   the warning that the file is in your folder and Claude Code on your computer honours it too. A prompt that asks for
   no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's *Plan* mode) switches the
-  session to *Accept edits* or *Ask* — the only two modes it may set — and "keep planning" is a Deny with your note.
+  session to *Accept edits* or *Manual* — the only two modes it may set — and "keep planning" is a Deny with your note.
   Claude Code's *auto* mode (a classifier model deciding instead of you) is off: Claude Code counts it as available
   behind this stack's own API address, and would then start in it or hand *Plan* mode's writing commands to the
   classifier instead of asking. The code container turns it off at every session's start, before the first prompt, and
   the sandbox image's managed settings (`/etc/claude-code/managed-settings.json`, root's) turn it off for every
-  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode. Sessions
+  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode. On your
+  computer `claude-bedrock` does the same in its lean folder (`--settings={"disableAutoMode":"disable"}`, Claude
+  Code's flag tier; `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code). Sessions
   name their model in full: the code container refuses Claude Code's aliases (`haiku`, `sonnet`, `opus` …), with
   which Claude Code picks the model itself (with `haiku`, *Plan* mode plans on Sonnet).
   Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
   you type in, the editor or the terminal panel, and its keys (1 *Allow once*, 2 *Always*, 3 *Deny*) answer only after
   you clicked or tabbed into it: a keystroke meant for something else never answers a prompt.
+- [x] **Modes are Claude Code's own.** The mode picker's *Plan*, *Manual* and *Accept edits* are Claude Code's `plan`,
+  `default` and `acceptEdits`; *Read only* (the page's own) is its `dontAsk` with `Edit`, `Write` and `NotebookEdit`
+  denied by rules: what is not allowed already is denied without a prompt (read-only commands and rules you *Always*
+  allowed still run). The rules a mode needs go into Claude Code's flag-settings layer (above user, project and local
+  settings) as **one** `permissions` object, sent whole on every switch — Claude Code merges that layer's keys
+  shallowly, so a partial one would drop the others — and a switch applies both modes' rules first, then the mode,
+  then the new mode's rules alone: never a moment with fewer rules than either mode needs. *Bypass permissions* and
+  the watchlist of files that run on your computer: [below](#bypass-permissions).
 - [x] **Connections end.** A page that stops reading (more than 16 MiB waiting unsent to it) is disconnected (close
   code 4008) and forgotten at once; every WebSocket is closed after 2 hours (4009) and the page reconnects through
   Caddy's check again — a connection outlives the end of the unlock it was opened with (Sign out, a new password, 12
@@ -807,7 +818,8 @@ spawn server, Claude Code or any file at will.
   Turning it off — the safer direction — works from anywhere the settings can be changed. The update helper runs
   `./stack code enable` or `disable`; neither restarts the terminal container (its tmux session goes on). A change
   that fails is rolled back, and a terminal it had turned on is turned off again (the failure says so, or says how to
-  do it when that fails too).
+  do it when that fails too). `CODE_ALLOW_BYPASS` (*Bypass permissions* above) is *widen-local* the same way; a
+  change recreates the code container only.
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
@@ -950,6 +962,56 @@ Remaining risks:
   other hosts. Apps that need cross-origin isolation (`SharedArrayBuffer`) work in a new tab, not in the frame. An app
   whose page calls another port (`fetch('http://localhost:3000')`) reaches your computer's localhost, not the
   sandbox's: use the dev server's proxy (Vite's `server.proxy`) or a relative URL.
+
+### Bypass permissions
+
+**Opt-in, per session, visible, never remembered.** It adds no capability the sandbox lacks (anything there can start
+`claude --dangerously-skip-permissions`, and the terminal tab lets you); what it removes is your check of each
+action, including those a file, a web page or a tool's output talks Claude into. So:
+
+- **Off unless you allow it.** `CODE_ALLOW_BYPASS` (Settings → Code page → *Allow Bypass permissions*) is
+  *widen-local*: on only from the computer running bedrock-now, off from anywhere. The code container reads it at
+  its start (a change recreates it) and is the only place it is enforced: with it, Claude Code processes start with
+  `--allow-dangerously-skip-permissions` — still in one of the asking modes; Claude Code refuses a switch to bypass
+  in a process started without it — and `set_mode` accepts `bypassPermissions` only with it **and** `confirmed`
+  from the page's dialog. A process from before the setting is restarted (resumed) for it, never mid-turn. Without
+  the setting the page offers no Bypass, and the code container refuses it whatever a page sends.
+- **A dialog every time** you switch to it, naming the real risks: the workspace is your folder (git hooks, git
+  config, package scripts, `.vscode/tasks.json`, `.envrc` and Claude Code settings in it run on your computer when
+  you use it there), the sandbox's internet access (`TERMINAL_EGRESS`; with it on, anything in the workspace can be
+  sent anywhere), and the key's budget, spent without pauses.
+- **Visible while on**: a red strip above the prompt box with *Switch to Manual*, ⏵⏵ in the tab title, the portal's
+  Code badge red.
+- **Never kept.** Not remembered for new sessions; it ends with the session's process — an idle stop, a resume, a
+  new conversation start in *Manual* — and the page can only start a session in *Read only*, *Plan*, *Manual* or
+  *Accept edits*. *Always* on a card never switches to it (nor to `auto` or `dontAsk`).
+- **Still asked, still denied.** In bypass Claude Code still asks for its ask rules and still applies deny rules
+  (verified, 2.1.296). The code container adds ask rules for edits of `//workspace/.git/**`, `.claude/**`,
+  `.vscode/**`, `.husky/**`, `.devcontainer/**`, `.envrc`, `.mcp.json` and `.devcontainer.json` (absolute paths:
+  probed for absolute and relative tool paths). A speed bump only — Bash can still write them — which the watchlist
+  catches.
+- *Auto* mode (a classifier deciding instead of you) stays off and is not offered (see above).
+
+### The watchlist: files that run on your computer
+
+**Checked after every turn, in every mode.** Writes to these files in the workspace run **on your computer** later,
+not in the sandbox (threat 1 of the browser terminal): `.git/hooks/*` (not git's `*.sample`), `.git/config`
+(`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, aliases, filters), `.husky/*`, `.envrc` (direnv),
+`.vscode/tasks.json` and `settings.json`, `.claude/settings.json` and `settings.local.json` (Claude Code's hooks and
+rules on your computer), `.mcp.json` (project MCP servers), `package.json` (only its install-time scripts:
+`preinstall`, `install`, `postinstall`, `prepare` and the like — a dependency or a `test` script is not flagged),
+`.devcontainer.json` and `.devcontainer/devcontainer.json` (`initializeCommand` runs on your computer). A `Makefile`
+is not on the list: it runs only when you run `make`, and Claude changes Makefiles too often for a card to mean
+anything. The spawn server (`ws.sensitive`) lists them — a SHA-256 of each, a copy of each up to 1 MiB (2 MiB in
+all), never through a link (a watched link is reported as a link) — when a turn starts (before its first prompt is
+sent, ≤ 5 s) and when it ends; the code container compares the two (and the end of the last turn with the start of
+the next: a background command, the terminal, you) and decides from the path alone what changed and why it matters,
+then shows a card: each file, why, the diff, and **Revert** — the copy from the turn's start written back with its
+mode (a file that was not there goes to the workspace trash; `ws.restore`, for these paths only, never through a
+linked folder), only while the file is still exactly as the turn's end saw it. It catches what rules cannot: a hook
+written by `echo >` in Bash, in any mode. It is a detector, not a boundary: a compromised sandbox can lie to it (as
+to everything it shows); the copies Revert writes back are kept in the code container's memory (the last 10 cards per
+session, 4 MiB), gone with a restart.
 
 ## Code provenance
 

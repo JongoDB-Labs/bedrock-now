@@ -11,6 +11,7 @@ import { duration, label, money } from '../text';
 import { MessageList } from './MessageList';
 import { PermissionCard } from './PermissionCard';
 import { Composer } from './Composer';
+import { BypassBanner } from './Bypass';
 import { Icon, Spinner } from './icons';
 
 function TaskList() {
@@ -176,6 +177,7 @@ export function ChatPane({ composerFooter, header = true, headerActions }: { com
       {v?.gap && <div class="banner subtle">Reconnected: reloading what was missed…</div>}
       <MessageList view={v} />
       <div class="chat-foot">
+        <BypassBanner />
         <Permissions />
         <TodoPanel />
         <TaskList />

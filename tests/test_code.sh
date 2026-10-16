@@ -44,7 +44,7 @@ test_dc_never_takes_code_settings_from_the_shell() {
   mkdir -p "$TMP/bin"
   printf '#!/bin/sh\nenv | grep -E "^(CODE_|REMOTE_CODE)" || true\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"
   : > "$ENV_FILE"
-  out="$(PATH="$TMP/bin:$PATH" CODE_ENABLED=true CODE_HOST=x.localhost CODE_PROXY_SECRET=abc REMOTE_CODE_HOST=evil.example dc ps)"
+  out="$(PATH="$TMP/bin:$PATH" CODE_ENABLED=true CODE_HOST=x.localhost CODE_PROXY_SECRET=abc REMOTE_CODE_HOST=evil.example CODE_ALLOW_BYPASS=true dc ps)"
   assert_eq "$out" ""
 }
 
@@ -248,10 +248,14 @@ test_compose_code_is_a_sandboxed_container_on_its_own_network() {
               'CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}' "terminal: { condition: service_healthy }"; do
     assert_contains "$c" "$want"
   done
+  # (the folder's path reaches it only as a label for the Bypass dialog: never a mount)
+  assert_contains "$c" '      CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}'
+  c="$(printf '%s\n' "$c" | grep -vxF '      CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}')"
   for bad in docker.sock privileged "ports:" "network_mode" "LITELLM" "MASTER_KEY" "AWS_" "PORTAL_PASSWORD" "/workspace" \
              "TERMINAL_WORKSPACE" "type: bind" "cap_add" "default:" "SHARED_MCP_TOKEN" "terminal-link"; do
     assert_not_contains "$c" "$bad"
   done
+  assert_contains "$c" 'CODE_ALLOW_BYPASS: ${CODE_ALLOW_BYPASS:-false}'
   # the terminal is not changed by this file (turning the Code page on or off never recreates it): the socket volume
   # and the spawn server are the terminal's own
   assert_not_contains "$(cat "$STACK_DIR/compose.code.yaml")" "  terminal:
@@ -279,8 +283,11 @@ assert list(c["networks"]) == ["code-link"] and c["networks"]["code-link"]["alia
 assert d["networks"]["code-link"]["internal"] is True
 assert c["user"] == "501:20" and c["read_only"] and c["cap_drop"] == ["ALL"] and "ports" not in c
 assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] == [("code-socket", "/run/bn-code", True)], c["volumes"]
-assert sorted(c["environment"]) == ["CODE_PROXY_SECRET", "HOME"], c["environment"]
+assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "HOME", "TERMINAL_EGRESS"], c["environment"]
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
+# Bypass permissions: off unless .env allows it; the folder only as a label (no volume of it)
+assert c["environment"]["CODE_ALLOW_BYPASS"] == "false" and c["environment"]["TERMINAL_EGRESS"] == ""
+assert c["environment"]["CODE_WORKSPACE_LABEL"].endswith("/ws"), c["environment"]["CODE_WORKSPACE_LABEL"]
 assert "sk-term" not in json.dumps(c) and "sk-cc" not in json.dumps(c) and "/ws" not in json.dumps(c["volumes"])
 # the sandbox: the socket volume writable (the spawn server always runs there), never the secret
 assert "BN_CODE" not in t["environment"]
@@ -371,7 +378,12 @@ test_spawn_server_in_the_terminal_image() {
   c="$(cat "$STACK_DIR/terminal/bin/bn-coded.mjs")"
   # Node built-ins only; never connects out; never a shell
   if printf '%s\n' "$c" | grep -E "^import " | grep -v "from 'node:" >/dev/null; then echo "bn-coded imports a package" >&2; return 1; fi
-  for bad in "net.connect" "shell: true" "execSync" "exec(" "'-y'" "dangerously"; do assert_not_contains "$(printf '%s\n' "$c" | grep -v '^//')" "$bad"; done
+  for bad in "net.connect" "shell: true" "execSync" "exec(" "'-y'" "'--dangerously-skip-permissions'" "bypassPermissions'" "'auto'"; do
+    assert_not_contains "$(printf '%s\n' "$c" | grep -v '^//')" "$bad"
+  done
+  # a session may be switched to Bypass permissions (CODE_ALLOW_BYPASS), never started in it
+  assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions']"
+  assert_contains "$c" "'--permission-mode': oneOf('default', 'acceptEdits', 'plan', 'dontAsk'),"
   assert_contains "$c" "server.maxConnections = MAX_CONNECTIONS"
   assert_contains "$c" "process.umask(0o077)"
 }

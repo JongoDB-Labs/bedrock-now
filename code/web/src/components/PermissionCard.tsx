@@ -4,7 +4,7 @@
 // card yourself (a click on it, or Tab into it) — never a keystroke that reached it because it took the focus — and
 // not in its first 400 ms, nor at all when the prompt asks to default to no. A card that appears takes the focus only
 // from nothing you type into (a field, the editor, the terminal keep it). A prompt whose input could not be shown in
-// full can only be denied. ExitPlanMode is a plan to approve: with auto-accepted edits, asking for each edit, or not
+// full can only be denied. ExitPlanMode is a plan to approve: then Accept edits, or Manual (asking for each edit), or not
 // yet (keep planning, with a message).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PermissionReq, RuleLine } from '../types';
@@ -268,10 +268,10 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
             Keep planning…
           </button>
           <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'default')} data-testid="plan-approve-ask">
-            Approve, ask before edits
+            Approve, Manual
           </button>
           <button type="button" class="btn primary" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'acceptEdits')} data-testid="plan-approve-edits">
-            Approve, accept edits
+            Approve, Accept edits
           </button>
         </div>
       )}

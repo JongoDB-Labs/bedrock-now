@@ -3,6 +3,7 @@
 // suggestions. All of it is untrusted text (the sandbox chooses the tool name and input); it is only ever shown as
 // text, inside the card.
 import type { Suggestion } from './types';
+import { modeName } from './modes';
 import { cleanPath, label } from './text';
 
 type Obj = Record<string, unknown>;
@@ -108,17 +109,5 @@ export function rulePreview(suggestions: Suggestion[]): string[] {
   return out;
 }
 
-export function modeName(m: string): string {
-  switch (m) {
-    case 'default':
-      return 'Ask';
-    case 'acceptEdits':
-      return 'Accept edits';
-    case 'plan':
-      return 'Plan';
-    case 'dontAsk':
-      return "Don't ask";
-    default:
-      return m;
-  }
-}
+/** A mode's name as the page shows it (modes.ts). */
+export { modeName } from './modes';

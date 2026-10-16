@@ -11,7 +11,10 @@ card, Accept edits mode and an @-mentioned file edited (the diff opens in the ed
 model switch (no turn on the other model), an interrupt, the terminal panel, a reload without duplicates,
 AskUserQuestion answered in its card, plugins from a marketplace in the workspace (one installed by a command shown
 with its SHA-256 first; its commands in the palette), the MCP panel, and a phone — each with zero CSP violations
-(Trusted Types enforced). With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
+(Trusted Types enforced). Read only denies a write without a card while a read-only command runs; with the update
+helper (settings/*), Bypass permissions is allowed in Settings, then runs a command without a card, while a deny rule
+still denies, an ask rule on .git still asks, and a git hook written by Bash shows the watchlist's card, whose Revert
+puts it back — then it is turned off again. With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
 in the sandbox could start one) the page stays safe. Every check skips while the Code page is off (but the first two,
 which check that state)."""
 
@@ -28,7 +31,7 @@ from urllib.parse import urlencode
 from playwright.sync_api import expect as see
 
 from common import ENV, HOST, PORT, SHOTS, Skip, check, expect, http, origin
-from checks_browser import login, open_settings, shot
+from checks_browser import _confirm, _need_helper, _wait_job, login, open_settings, shot
 
 ON = ENV.get("CODE_ENABLED") == "true" and ENV.get("TERMINAL_ENABLED") == "true"
 HOSTILE = os.environ.get("E2E_CODE_HOSTILE") == "1"
@@ -1572,3 +1575,180 @@ def hostile(ctx):
     rec.save()
     expect(not dialogs and injected == 0 and state["status"] == 200 and not probs, f"dialogs {dialogs}, injected {injected}, state {state['status']}, errors {probs}")
     return f"bogus ids dropped, markup kept as text, 9 MiB answer refused (502), hostile session → {end['state']} ({[e['type'] for e in evs][:6]}); no dialogs, nothing injected, the backend answers"
+
+
+# --- permission modes (UX-2/UX-3): Read only, Bypass permissions, the watchlist ---
+
+def tool_result(evs, tool_id):
+    return next((e for e in evs if e["type"] == "tool_result" and e["id"] == tool_id), None)
+
+
+@check("browser", "code-read-only-mode")
+def read_only(ctx):
+    """Read only (Claude Code's dontAsk, the edit tools denied by rules): a read-only command runs and a file Claude
+    wants to write is denied by the rules — no permission card either way."""
+    need_haiku()
+    c = Code(ctx, "code-read-only")
+    sid = c.new_session(HAIKU, "readOnly")
+    wait_state(c, sid, "mode", "readOnly")
+    n0 = len(c.msgs())
+    evs = c.turn(sid, "Run exactly this shell command with the Bash tool and show me its output, nothing else: ls -a")
+    bash = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
+    if not bash:
+        raise Skip("Haiku ran no command this time")
+    res = tool_result(evs, bash[0]["id"])
+    expect(res is not None and not res["is_error"], f"the read-only command was not run: {res and res['text'][:200]}")
+    target = f"e2e-readonly-{int(time.time())}.txt"
+    evs2 = c.turn(sid, f"Use the Write tool to create the file /workspace/{target} containing the word hi. Do not use Bash.")
+    perms = [m for m in c.msgs()[n0:] if m.get("type") == "permission" and m.get("session") == sid]
+    expect(not perms, f"permission cards in Read only: {[p['tool'] for p in perms]}")
+    writes = [e for e in evs2 if e["type"] == "tool_use" and e["name"] in ("Write", "Edit")]
+    if not writes:
+        raise Skip("Haiku did not try to write the file this time (ls ran without a card)")
+    w = tool_result(evs2, writes[0]["id"])
+    expect(w is not None and w["is_error"] and "denied" in w["text"].lower(), f"the write was not denied: {w and w['text'][:200]}")
+    r = c.api("GET", f"/api/fs/file?path={target}")
+    expect(r["status"] == 404, f"the file was written in Read only: {r['status']}")
+    inits = [e for e in c.events(sid) if e["type"] == "init"]
+    expect(inits and inits[-1]["permissionMode"] == "readOnly", f"init says {inits and inits[-1]['permissionMode']}")
+    expect(state_of(c, sid).get("mode") == "readOnly", f"the session's mode: {state_of(c, sid).get('mode')}")
+    c.api("DELETE", f"/api/sessions/{sid}")
+    rec_problems = c.rec.problems(allow=LOCKED_OK + [r"^404 GET .*/api/fs/file\?path=e2e-readonly-", r"console.error Failed to load resource.*404"])
+    c.rec.save()
+    expect(not rec_problems, f"errors: {rec_problems[:4]}")
+    return f"Read only: `{bash[0]['input'].get('command', '')[:40]}` ran, {writes[0]['name']} denied by the rules ({w['text'][:60]}), no card, no file"
+
+
+def _bypass_setting(ctx, on: bool):
+    """Settings › Code page › Allow Bypass permissions, through the page and the update helper."""
+    page, rec = ctx.page(f"settings-code-bypass-{'on' if on else 'off'}")
+    login(page)
+    open_settings(page)
+    row = page.locator("#settings .set-row[data-key=CODE_ALLOW_BYPASS]")
+    expect(row.count() == 1, "no Allow Bypass permissions row in the Code page card")
+    chip = row.locator(".chip", has_text="On" if on else "Off")
+    if chip.get_attribute("aria-pressed") != "true":
+        chip.click()
+        _confirm(page)
+        ok, msg = _wait_job(page)
+        expect(ok, f"CODE_ALLOW_BYPASS={'true' if on else 'false'}: {msg}")
+    row.scroll_into_view_if_needed()
+    shot(page, f"68-settings-code-bypass-{'on' if on else 'off'}", mask=[".set-value", ".set-adv-value"])
+    rec.save()
+
+
+@check("settings", "settings-code-bypass")
+def settings_code_bypass(ctx):
+    """Bypass permissions, end to end: allowed in Settings (the helper recreates the code container), refused without
+    the page's confirmation, then a command runs without a card; a deny rule of the workspace still denies; the ask
+    rule on .git still asks; a git hook written with Bash shows the watchlist's card and its Revert puts it back;
+    Manual again; the setting off again."""
+    need_haiku()
+    _need_helper(ctx)
+    _bypass_setting(ctx, True)
+    c = Code(ctx, "code-bypass")
+    t0 = time.time()
+    while not ((c.api("GET", "/api/state")["json"] or {}).get("bypass") or {}).get("allowed"):
+        expect(time.time() - t0 < 60, "the code container does not say Bypass permissions is allowed")
+        c.page.wait_for_timeout(1000)
+    ts = int(time.time())
+    # a deny rule in the workspace's local settings (read at the session's start), and a .git/hooks folder
+    old = c.api("GET", "/api/fs/file?path=.claude/settings.local.json")
+    had = old["status"] == 200
+    cfg = {}
+    if had:
+        try:
+            cfg = json.loads(old["json"]["text"] or "{}")
+        except Exception:  # noqa: BLE001
+            cfg = {}
+    deny = [f"Bash(touch e2e-denied-{ts}*)", f"Bash(touch /workspace/e2e-denied-{ts}*)"]
+    new_cfg = {**cfg, "permissions": {**(cfg.get("permissions") or {}), "deny": [*((cfg.get("permissions") or {}).get("deny") or []), *deny]}}
+    c.api("POST", "/api/fs/mkdir", {"path": ".claude"})
+    r = c.api("PUT", "/api/fs/file?path=.claude/settings.local.json", {"text": json.dumps(new_cfg, indent=1)})
+    expect(r["status"] == 200, f"write .claude/settings.local.json: {r['status']} {r['text'][:100]}")
+    made_git = c.api("GET", "/api/fs?path=.git")["status"] != 200
+    for d in (".git", ".git/hooks"):
+        c.api("POST", "/api/fs/mkdir", {"path": d})
+    notes = []
+    try:
+        sid = c.new_session(HAIKU, "default")
+        # not without the page's confirmation, then switched
+        n = len(c.msgs())
+        c.send({"type": "set_mode", "session": sid, "mode": "bypassPermissions", "req": "nb"})
+        r = c.wait(lambda m: m.get("type") == "reply" and m.get("req") == "nb", "reply", 30, since=n)
+        expect(not r["ok"] and "confirmation" in (r.get("error") or ""), f"switched without confirmation: {r}")
+        expect(c.request({"type": "set_mode", "session": sid, "mode": "bypassPermissions", "confirmed": True}, timeout=120) == {"mode": "bypassPermissions"}, "set_mode reply")
+        wait_state(c, sid, "mode", "bypassPermissions")
+        n0 = len(c.msgs())
+        # 1. a command runs without a card
+        target = f"e2e-bypass-{ts}.txt"
+        evs = c.turn(sid, f"Run exactly this shell command with the Bash tool, nothing else: touch {target}")
+        expect(c.api("GET", f"/api/fs/file?path={target}")["status"] == 200, f"{target} was not created in Bypass permissions")
+        perms = [m for m in c.msgs()[n0:] if m.get("type") == "permission" and m.get("session") == sid]
+        expect(not perms, f"a permission card in Bypass permissions: {[p['tool'] for p in perms]}")
+        # 2. a deny rule still denies (no card)
+        denied = f"e2e-denied-{ts}.txt"
+        evs = c.turn(sid, f"Run exactly this shell command with the Bash tool, nothing else: touch {denied}")
+        bash = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
+        expect(c.api("GET", f"/api/fs/file?path={denied}")["status"] == 404, f"{denied} was created: the deny rule did not hold in Bypass permissions")
+        if bash:
+            res = tool_result(evs, bash[0]["id"])
+            expect(res and res["is_error"] and "denied" in res["text"].lower(), f"not denied: {res and res['text'][:200]}")
+        else:
+            notes.append("deny: Haiku ran no command")
+        # 3. the ask rule on .git still asks (a Write there), even in Bypass permissions
+        asked = f".git/e2e-ask-{ts}.txt"
+        n1 = len(c.msgs())
+        c.request({"type": "prompt", "session": sid, "text": f"Use the Write tool (not Bash) to create the file /workspace/{asked} containing the word hi."})
+        m = c.wait(lambda x: (x.get("type") == "permission" and x.get("session") == sid) or
+                   (x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "result"), "a card or the turn's end", 150, since=n1)
+        if m.get("type") == "permission":
+            expect(m["tool"] in ("Write", "Edit") and ".git/" in json.dumps(m["input"]), f"the card: {m['tool']} {json.dumps(m['input'])[:200]}")
+            c.request({"type": "permission", "id": m["id"], "session": sid, "decision": "deny", "message": "e2e: no"})
+            c.wait(lambda x: x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "result", "result", 150, since=n1)
+        else:
+            writes = [e for e in c.events(sid, n1) if e["type"] == "tool_use" and e["name"] in ("Write", "Edit")]
+            expect(not writes, f"{writes[0]['name']} to .git ran without the ask rule's card" if writes else "")
+            notes.append("ask: Haiku did not use Write")
+        expect(c.api("GET", f"/api/fs/file?path={asked}")["status"] == 404 or "ask: Haiku did not use Write" in notes, f"{asked} was written")
+        # 4. the watchlist: a git hook written with Bash (no rule covers that), then its card, and Revert in the page
+        n2 = len(c.msgs())
+        c.turn(sid, "Run exactly this shell command with the Bash tool, nothing else: echo 'echo e2e' > .git/hooks/pre-commit")
+        w = c.wait(lambda x: x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "watch", "the watchlist's card", 30, since=n2)["ev"]
+        paths = {ch["path"]: ch for ch in w["changes"]}
+        expect(".git/hooks/pre-commit" in paths and paths[".git/hooks/pre-commit"]["change"] == "added", f"watch: {list(paths)}")
+        expect("git runs it on your computer" in paths[".git/hooks/pre-commit"]["why"], paths[".git/hooks/pre-commit"]["why"])
+        # the page: the red strip and the card; Revert there
+        page, rec = ui_page(ctx, "code-bypass-ui", session=sid)
+        see(page.get_by_test_id("bypass-banner")).to_be_visible(timeout=20000)
+        card = page.get_by_test_id("watch-card").last
+        see(card).to_contain_text(".git/hooks/pre-commit", timeout=20000)
+        see(page.get_by_test_id("mode-picker")).to_contain_text("Bypass permissions")
+        shot(page, "69-code-bypass-watch-card")
+        item = card.get_by_test_id("watch-item").filter(has_text=".git/hooks/pre-commit")
+        item.get_by_test_id("watch-revert-one").click()
+        see(item.get_by_test_id("watch-result")).to_contain_text("workspace trash", timeout=20000)
+        c2 = Code.on(page, rec, goto=False)
+        expect(c2.api("GET", "/api/fs/file?path=.git/hooks/pre-commit")["status"] == 404, "the hook is still there after Revert")
+        # Manual again, from the strip
+        page.get_by_test_id("bypass-off").click()
+        see(page.get_by_test_id("bypass-banner")).to_have_count(0, timeout=15000)
+        wait_state(c2, sid, "mode", "default")
+        csp_clean(page, rec, allow=[r"^404 GET .*/api/fs/file\?path=\.git/hooks/pre-commit$", r"console.error Failed to load resource.*404"])
+        c2.api("DELETE", f"/api/sessions/{sid}")
+        cleanup = c2
+    finally:
+        cc = locals().get("cleanup") or c
+        try:
+            if had:
+                cc.api("PUT", "/api/fs/file?path=.claude/settings.local.json", {"text": old["json"]["text"]})
+            else:
+                cc.api("DELETE", "/api/fs?path=.claude/settings.local.json")
+            if made_git:
+                cc.api("DELETE", "/api/fs?path=.git")
+        except Exception:  # noqa: BLE001 — the throwaway goes anyway
+            pass
+        _bypass_setting(ctx, False)
+    return ("Bypass permissions: allowed in Settings (code container recreated), refused without confirmation; `touch` ran without a card; "
+            "the workspace's deny rule still denied; the .git ask rule asked (denied); a hook written with Bash → the watchlist's card → Revert (trash); "
+            f"Manual from the strip; the setting off again{'; ' + '; '.join(notes) if notes else ''}")

@@ -14,10 +14,20 @@ export function Dropdown(props: {
   align?: 'left' | 'right';
   disabled?: boolean;
   testid?: string;
+  /** a change opens it (a keyboard shortcut elsewhere) */
+  openSignal?: number;
+  /** a class on the trigger button itself */
+  triggerClass?: string;
 }) {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const signal = useRef(props.openSignal);
+  useEffect(() => {
+    if (props.openSignal === signal.current) return;
+    signal.current = props.openSignal;
+    if (!props.disabled) setOpen(true);
+  }, [props.openSignal]);
   const close = () => {
     setOpen(false);
     btn.current?.focus();
@@ -81,7 +91,7 @@ export function Dropdown(props: {
       <button
         ref={btn}
         type="button"
-        class="dd-trigger"
+        class={`dd-trigger${props.triggerClass ? ' ' + props.triggerClass : ''}`}
         title={props.title}
         aria-label={props.title}
         aria-haspopup="true"

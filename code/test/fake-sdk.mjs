@@ -9,8 +9,17 @@ export function fakeQuery(log = []) {
       options, calls: [],
       async interrupt() { q.calls.push('interrupt'); push({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1, duration_ms: 5 }); },
       async setModel(m) { q.calls.push(['setModel', m]); },
-      async setPermissionMode(m) { q.calls.push(['setPermissionMode', m]); },
-      async applyFlagSettings(s) { q.calls.push(['applyFlagSettings', s]); },
+      // the flag-settings layer as Claude Code keeps it: top-level keys merged shallowly, null clears one
+      flags: {},
+      async setPermissionMode(m) {
+        q.calls.push(['setPermissionMode', m]);
+        if (q.refuseMode) throw new Error(q.refuseMode);
+        if (q.echoMode) push({ type: 'system', subtype: 'status', status: null, permissionMode: m });
+      },
+      async applyFlagSettings(s) {
+        q.calls.push(['applyFlagSettings', s]);
+        for (const [k, v] of Object.entries(s)) { if (v === null) delete q.flags[k]; else q.flags[k] = v; }
+      },
       async supportedCommands() { return [{ name: 'context', description: 'ctx <b>', argumentHint: '' }, { name: 7 }, null]; },
       async supportedModels() { return [{ value: 'haiku', displayName: 'Haiku', description: 'd', supportedEffortLevels: ['low', 'bogus'] }]; },
       mcp: { 'bedrock-shared': 'connected', 'mine': 'failed' },

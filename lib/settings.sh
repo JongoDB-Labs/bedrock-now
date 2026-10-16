@@ -823,6 +823,8 @@ _cfg_post() {
   if _cfg_on litellm-pw && [ "$(get_env LITELLM_DB_ADMIN_READY)" != true ]; then svc="$svc litellm"; fi
   if _cfg_on email; then svc="$svc open-webui"; fi
   if _cfg_on portal || _cfg_on portal-pw || _cfg_on email || _cfg_on litellm-pw || _cfg_on openrouter || _cfg_on mcp || _cfg_on pins || _cfg_on alert-pct; then svc="$svc portal"; fi
+  # the code container reads CODE_ALLOW_BYPASS at its start (compose recreates it for the new value); off: nothing runs
+  if _cfg_on code-env && code_ready && ! _cfg_on code; then svc="$svc code"; fi
   svc="$(printf '%s\n' $svc | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
   # shellcheck disable=SC2086  # word-split the service list on purpose
   [ -z "$svc" ] || run_phase "Restart:$svc" "${svc# }" dc up -d --no-deps --wait $svc

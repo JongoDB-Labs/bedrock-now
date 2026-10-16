@@ -153,6 +153,9 @@ def test_code_tabs_frame_is_made_when_idle_on_big_screens_for_its_badge():
     check, rest = handler.split("return;", 1)
     assert "e.origin !== codeOrigin" in check and rest.lstrip().startswith("markUsed();")
     assert 'const USED = "bn.code.used";' in js and 'localStorage.getItem(USED) === "1"' in js and 'localStorage.setItem(USED, "1")' in js
+    # a session in Bypass permissions: the badge turns red with the CLI's marker (text only)
+    assert 'badge.classList.toggle("bypass", bypass);' in rest and 'bypass ? "⏵⏵" : ""' in rest and "e.data.bypass === true" in rest
+    assert ".tab-badge.bypass" in open("portal/static/app.css", encoding="utf-8").read()
     assert "requestIdleCallback(make" in pre and 'appFrame("code")' in pre
     assert 'window.addEventListener("load", preload, { once: true })' in js.rsplit("if (here) {", 1)[1].split("\n", 1)[0]
 

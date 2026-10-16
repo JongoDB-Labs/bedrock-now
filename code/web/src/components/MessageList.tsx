@@ -10,6 +10,7 @@ import { forkFrom, loadEarlier, rewindCancel, rewindConfirm, rewindPreview, send
 import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
+import { WatchCard } from './WatchCard';
 import { modelLabel } from './Pickers';
 import { otherModels } from '../models';
 import { Icon, Spinner } from './icons';
@@ -320,6 +321,8 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
         );
       case 'result':
         return <ResultLine key={it.k} it={it} cost={costs ? shownCost(view?.turns[it.turn], costs[it.turn]) : null} />;
+      case 'watch':
+        return <WatchCard key={it.k} session={view?.id ?? ''} id={it.id} when={it.when} changes={it.changes} />;
       case 'notice':
         return (
           <div key={it.k} class={`notice notice-${it.level}`}>

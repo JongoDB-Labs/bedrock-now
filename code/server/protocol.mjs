@@ -8,7 +8,9 @@
 // Requests other than GET/HEAD must carry the page's own Origin (browsers add it to fetch() by themselves).
 //   GET    /api/state                      {versions: {cli, sdk}, limits: {sessions, upload, image, …}, sessions:
 //                                           [{id, state, model, mode, effort, title, pending, open, error}], pending,
-//                                           portal_origin, terminal_url}
+//                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
+//                                           sandbox: {egress: true|false (TERMINAL_EGRESS), workspace: the folder of
+//                                           yours the sandbox sees (a label: this container mounts nothing) | null}}
 //   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}
 //                                           the sandbox's transcripts for /workspace, newest first (at most 200)
 //   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000) | ?tail=N (≤ 2000)
@@ -20,7 +22,9 @@
 //                                           truncated: only the transcript's last 3 MiB (and at most 20,000 entries,
 //                                           50 compaction boundaries) was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, before?: PROMPT_UUID,
-//                                           taskStop?: bool}
+//                                           taskStop?: bool}   mode: readOnly | plan | default | acceptEdits (the
+//                                           former dontAsk is readOnly) — never bypassPermissions or auto: a process
+//                                           always starts in one of these
 //                                           -> {id, existing, fresh?}: opens a session (new, resume, fork, resume-at).
 //                                           before (with resume + fork): a fork of the conversation BEFORE that prompt
 //                                           of yours (resumed at the message it answered to); its first prompt gives a
@@ -115,9 +119,15 @@
 //                                               Refused (empty, too long, bad image, the session gone …): reply ok false
 //                                               with req, and nothing was queued
 //   {type: "interrupt", session}
-//   {type: "set_model", session, model} · {type: "set_mode", session, mode} · {type: "set_effort", session, effort}
-//                                               (effort null = the model's default); each answered by a status event.
-//                                               A session without a running process keeps them for its next start.
+//   {type: "set_model", session, model} · {type: "set_mode", session, mode, confirmed?} · {type: "set_effort", session,
+//                                               effort} (effort null = the model's default); each answered by a status
+//                                               event. A session without a running process keeps them for its next start.
+//                                               mode: a page mode of MODES but auto (modes.mjs); bypassPermissions only
+//                                               with CODE_ALLOW_BYPASS on and confirmed: true (the page's dialog), never
+//                                               kept for a next start: a process that ends (idle, closed, restarted)
+//                                               leaves it, and the session goes on in default. A process started before the
+//                                               setting allowed it is restarted first (resumed; the next turn writes the
+//                                               prompt cache again); refused while a turn runs there
 //                                               model (here and in POST /api/sessions): a full model id (claude-…);
 //                                               Claude Code's aliases (haiku, sonnet, opus, opusplan …) are refused —
 //                                               with one Claude Code may run another model (Plan on Haiku → Sonnet)
@@ -134,6 +144,10 @@
 //   {type: "commands"|"models"|"mcp"|"context", session}   answered by a message of the same type (below)
 //   {type: "reload_plugins", session} · {type: "stop_task", session, task}
 //   {type: "mcp_reconnect", session, server} · {type: "mcp_toggle", session, server, enabled}   answered by "mcp"
+//   {type: "watch_revert", session, id, path?, req}   the watched files a `watch` event reported (or just `path`) put
+//                                               back as they were at its start (a file that was not there goes to the
+//                                               workspace trash) -> reply data {results: [{path, ok, action|error}]}; each
+//                                               only while it is still as the event saw it (else that one is refused)
 //   {type: "rewind_files", session, message: USER_MESSAGE_UUID, dryRun?, req}   file checkpoints: the files Claude
 //                                               changed since that prompt of yours put back (dryRun: only what would
 //                                               change) -> reply data {canRewind, error, filesChanged, insertions,
@@ -165,7 +179,8 @@
 //   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
 //                                                             timeout|cancelled
 //   {type: "session_state", session, state, model, mode, effort, error}   state: starting|idle|busy|ended
-//                                                             (ended with `error` when the process failed)
+//                                                             (ended with `error` when the process failed); mode: a
+//                                                             page mode (MODES)
 //   {type: "reset", session, new_session}                     Claude Code started a new conversation (/clear, a plan
 //                                                             approved with "clear context" …): the old session's
 //                                                             process ended after its turn; new_session (same model,
@@ -186,7 +201,8 @@
 // ev (every string capped, every id checked; anything else from the sandbox is dropped; `parent`: the Task tool use
 // an event belongs to, or null):
 //   {type: "init", model, cwd, permissionMode, cliVersion, tools, commands, skills, plugins: [{name, version}],
-//          mcp: [{name, status}], effort}
+//          mcp: [{name, status}], effort}   permissionMode (here and in status): the page mode (Claude Code's dontAsk
+//          is readOnly)
 //   {type: "user", text, uuid, images}                         your prompt (uuid: the client's, or a new one; images:
 //                                                              how many) — in the transcript with the same uuid
 //   {type: "delta", text, parent} · {type: "thinking_delta", text, parent}      streaming
@@ -205,6 +221,12 @@
 //                                                              while it ran that Claude Code folded into it between
 //                                                              tool rounds (it then gets no turn of its own)
 //   {type: "error", message}                                   the session's process failed (text: the same)
+//   {type: "watch", id, when: "turn"|"between", changes: [{path, kind, why, change: added|changed|removed, before,
+//          after, binary, cut, revertable}]}   files of your folder that run on your computer later (git hooks and
+//          config, husky hooks, .envrc, VS Code tasks and settings, Claude Code's workspace settings, .mcp.json,
+//          package.json's lifecycle scripts, dev container commands) changed during a turn ("turn") or since the last
+//          one ended ("between": a background command, the terminal, you); in every mode. before/after: the texts to
+//          diff (≤ LIMITS.watchShownChars each; cut: more), null for a file that is not there or not text
 // No cost is ever taken from the sandbox: the page asks /.bn/spend (LiteLLM's spend logs, through the portal).
 
 export const LIMITS = Object.freeze({
@@ -227,9 +249,11 @@ export const LIMITS = Object.freeze({
   maxUploadBytes: 25 << 20,
   maxTextFileBytes: 2 << 20,      // what the editor gets of a file
   maxDownloadBytes: 25 << 20,
+  watchShownChars: 65536,         // a watched file's text in a `watch` event (each side of its diff)
 });
 
-export const MODES = Object.freeze(['default', 'acceptEdits', 'plan', 'dontAsk']);   // not bypassPermissions / auto
+// The page modes (modes.mjs: what each one is in Claude Code's terms; auto is not offered yet)
+export const MODES = Object.freeze(['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions']);
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 export const DECISIONS = Object.freeze(['once', 'always', 'always_project', 'deny', 'answer']);   // answer: AskUserQuestion only
 export const IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

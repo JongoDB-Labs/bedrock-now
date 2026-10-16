@@ -57,6 +57,10 @@ const P: Record<string, string> = {
   tablet: 'M5 2.5h10v15H5zM9 15h2',
   phone: 'M6.5 2.5h7v15h-7zM9.25 15h1.5',
   port: 'M10 3v4M6 7h8v4a4 4 0 0 1-8 0zM10 15v2.5M7.5 17.5h5',
+  eye: 'M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10zM10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  pause: 'M7.5 5v10M12.5 5v10',
+  forward: 'M3 5l6 5-6 5zM10.5 5l6 5-6 5z',
+  undo: 'M7 4L3 8l4 4M3 8h9.5a4.5 4.5 0 0 1 0 9H9',
 };
 
 export type IconName = keyof typeof P;

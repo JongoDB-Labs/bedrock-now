@@ -1,5 +1,6 @@
 // The prompt box, keyed like Claude Code: Enter sends, Shift+Enter is a new line, Esc stops Claude, Shift+Tab
-// cycles the permission mode (Ask → Accept edits → Plan), ↑ in an empty box recalls the last prompt. "/" at the
+// cycles the permission mode (Manual → Accept edits → Plan → Bypass when allowed; the mode picker sits next to Send,
+// as in the desktop app), ↑ in an empty box recalls the last prompt. "/" at the
 // start opens the command palette (built-ins, skills, plugin commands from the session), "@" opens the file picker
 // (what the explorer has listed, and from two characters on a search of the whole workspace). "# text" on one line
 // adds a line to the project's CLAUDE.md. Images (paste, drop or 📎) become image blocks — scaled down to 1568 px on the long edge
@@ -11,9 +12,12 @@ import { useSel } from '../store';
 import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast } from '../app';
 import { fsFind } from '../api';
 import { findTrigger, mergeCommands, rankCommands, rankPaths, type Trigger } from '../palette';
-import type { ImageBlock, Mode } from '../types';
+import type { ImageBlock } from '../types';
+import { nextMode } from '../modes';
 import { bytes, cleanPath, dirname } from '../text';
 import { Icon } from './icons';
+import { ModePicker } from './Pickers';
+import { useMedia } from './ui';
 
 interface Attachment {
   id: number;
@@ -26,8 +30,6 @@ interface Attachment {
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const history: string[] = [];
 let attachId = 1;
-/** Shift+Tab cycles these (Don't ask stays in the mode menu) */
-const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
 /** Claude reads images at up to this many pixels on the long edge; larger ones only cost upload time */
 export const MAX_EDGE = 1568;
 
@@ -76,6 +78,8 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const imageMax = useSel(store, (s) => s.server?.imageMax ?? 5 * 1024 * 1024);
   const maxImages = useSel(store, (s) => s.server?.maxImages ?? 4);
   const restore = useSel(store, (s) => s.restore);
+  const allowBypass = useSel(store, (s) => s.server?.allowBypass === true);
+  const narrow = useMedia('(max-width: 699.98px)');
   const dirs = useSel(store, (s) => s.fs.dirs);
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
@@ -274,8 +278,10 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       interrupt();
     } else if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
-      const cur = view?.mode ?? store.get().prefs.mode;
-      setMode(CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length]);
+      // (from the store, not this render: presses in a row each see the mode the one before set)
+      const st = store.get();
+      const cur = (st.active ? st.views[st.active]?.mode : undefined) ?? st.startWith ?? st.prefs.mode;
+      setMode(nextMode(cur, allowBypass));   // (into Bypass: its confirmation first)
     } else if (e.key === 'ArrowUp' && (el.value === '' || hIndex >= 0) && history.length && el.selectionStart === 0) {
       e.preventDefault();
       const i = hIndex < 0 ? history.length - 1 : Math.max(0, hIndex - 1);
@@ -420,6 +426,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           </button>
           <div class="composer-extra">{footer}</div>
           {conn !== 'open' && <span class="composer-conn">reconnecting…</span>}
+          <ModePicker compact={narrow} />
           {busy ? (
             <button type="button" class="send stop" title="Stop (Esc)" aria-label="Stop" onClick={interrupt} data-testid="stop">
               <Icon name="stop" />

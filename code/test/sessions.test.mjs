@@ -64,8 +64,9 @@ test('prompts: images checked, empty and oversized refused; set model/mode/effor
     await assert.rejects(s.setModel(alias), /in full/, alias);   // an alias lets Claude Code pick (Plan on Haiku → Sonnet)
     assert.throws(() => mgr.open({ model: alias }), /in full/, alias);
   }
-  await assert.rejects(s.setMode('bypassPermissions'), /bad mode/);
-  await assert.rejects(s.setMode('auto'), /bad mode/);
+  await assert.rejects(s.setMode('bypassPermissions', { confirmed: true }), /Bypass permissions is off/);
+  await assert.rejects(s.setMode('auto'), /not offered/);
+  await assert.rejects(s.setMode('dontAskx'), /bad mode/);
   await assert.rejects(s.setEffort('ultra'), /bad effort/);
   assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], ['setModel', 'claude-sonnet-5-5'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
   assert.deepEqual([s.model, s.mode, s.effort], ['claude-sonnet-5-5', 'plan', 'high']);
@@ -74,7 +75,7 @@ test('prompts: images checked, empty and oversized refused; set model/mode/effor
 
 test('open: bad values refused; resuming an open session returns it (never a second process); fork gets a new id', () => {
   const { mgr, queries } = manager();
-  for (const bad of [{ mode: 'bypassPermissions' }, { mode: 'auto' }, { model: '-rm' }, { resume: '../../etc' }, { effort: 'x' }, { fork: true }, { at: 'x', resume: undefined }]) {
+  for (const bad of [{ mode: 'bypassPermissions' }, { mode: 'auto' }, { mode: 'manual' }, { model: '-rm' }, { resume: '../../etc' }, { effort: 'x' }, { fork: true }, { at: 'x', resume: undefined }]) {
     assert.throws(() => mgr.open(bad), undefined, JSON.stringify(bad));
   }
   const R = '3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8';

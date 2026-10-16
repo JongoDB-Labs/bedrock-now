@@ -15,10 +15,10 @@
   <button id="new" type="button">New session</button>
   <label>Model <select id="model"></select></label>
   <label>Mode <select id="mode">
-    <option value="default">Ask before changes</option>
-    <option value="acceptEdits">Accept edits</option>
+    <option value="readOnly">Read only</option>
     <option value="plan">Plan</option>
-    <option value="dontAsk">Don't ask (deny what is not allowed)</option>
+    <option value="default" selected>Manual (asks first)</option>
+    <option value="acceptEdits">Accept edits</option>
   </select></label>
   <label>Effort <select id="effort"><option value="">default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
   <button id="stop" type="button">Stop</button>

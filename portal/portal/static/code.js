@@ -47,8 +47,9 @@
       rel: "noopener" }, "Code", el("span", { text: "Claude Code with a chat and your files, full screen" }))));
   }
 
-  // The framed page says how many permission prompts wait ({type: "bn-code-status", pending: N, busy}, or the plain
-  // page's {bn: "code", pending: N}); only the code host may.
+  // The framed page says how many permission prompts wait ({type: "bn-code-status", pending: N, busy, bypass}, or the
+  // plain page's {bn: "code", pending: N}); only the code host may. bypass: a session runs without asking (Bypass
+  // permissions) — the badge turns red and says ⏵⏵ (the CLI's marker) while nothing waits.
   function listen() {
     let codeOrigin = "";
     try { codeOrigin = new URL(appUrl("code")).origin; } catch (_) { return; }
@@ -56,8 +57,11 @@
       if (e.origin !== codeOrigin || !e.data || (e.data.type !== "bn-code-status" && e.data.bn !== "code") || !badge) return;
       markUsed();
       const n = Number.isInteger(e.data.pending) && e.data.pending > 0 ? Math.min(e.data.pending, 99) : 0;
-      badge.textContent = n ? String(n) : "";
-      badge.hidden = !n;
+      const bypass = e.data.bypass === true;
+      badge.textContent = n ? String(n) : bypass ? "⏵⏵" : "";
+      badge.hidden = !n && !bypass;
+      badge.classList.toggle("bypass", bypass);
+      badge.title = bypass ? "A Code session runs without asking (Bypass permissions)" : "";
       document.title = n ? `(${n}) bedrock-now` : "bedrock-now";
     });
   }

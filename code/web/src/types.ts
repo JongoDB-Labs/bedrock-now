@@ -1,8 +1,9 @@
 // The page's own model of what the backend sends. api.ts turns the wire format (code/server/protocol.mjs) into these
 // shapes, validating ids and capping strings on the way; nothing else in the page reads raw server JSON.
 
-export type Mode = 'default' | 'acceptEdits' | 'plan' | 'dontAsk';
-export const MODES: readonly Mode[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
+/** The page's permission modes (modes.ts names them; code/server/modes.mjs maps them to Claude Code's). */
+export type Mode = 'readOnly' | 'plan' | 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions';
+export const MODES: readonly Mode[] = ['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions'];
 
 export type SessionState = 'starting' | 'busy' | 'idle' | 'ended' | 'error' | 'closed';
 
@@ -54,7 +55,25 @@ export type Ev =
   | { kind: 'local'; text: string }
   | { kind: 'status'; text: string; mode: Mode | null; model: string | null }
   | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; consumed?: string[] }
-  | { kind: 'error'; text: string };
+  | { kind: 'error'; text: string }
+  /** files of the workspace that run on your computer changed (in a turn, or between turns) */
+  | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[] };
+
+/** One watched file that changed (code/server/watch.mjs): what it is, and the texts for a diff. */
+export interface WatchChange {
+  path: string;
+  kind: string;
+  why: string;
+  change: 'added' | 'changed' | 'removed';
+  /** its text before / after (null: not there, or not text); `cut`: only the first part */
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+  cut: boolean;
+  revertable: boolean;
+  /** executable afterwards (a git hook git will run) */
+  exec: boolean;
+}
 
 /** PermissionUpdate suggestions from canUseTool (what "Always allow" would write). */
 export interface Suggestion {
@@ -235,6 +254,12 @@ export interface ServerState {
   pending: number;
   terminalUrl: string | null;
   portalOrigin: string | null;
+  /** Settings › Code page allows Bypass permissions (CODE_ALLOW_BYPASS) */
+  allowBypass: boolean;
+  /** the sandbox reaches the internet (TERMINAL_EGRESS); null: not known */
+  egress: boolean | null;
+  /** the folder of yours the sandbox sees (a label), when known */
+  workspace: string | null;
 }
 
 export interface FsEntry {

@@ -21,10 +21,16 @@
 // /__mock/budget?spend=&max= sets the key's budget; /__mock/clear?session= resets that session's conversation as
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
 // in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
-// name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures.
+// name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures;
+// /__mock/bypass?allow=1|0&egress=1|0 sets what Settings allow (CODE_ALLOW_BYPASS) and the sandbox's internet access.
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
+//
+// Permission modes as the backend has them (code/server/modes.mjs): readOnly denies edits and other commands without a
+// prompt, bypassPermissions (allowed + confirmed only, never at a start) asks only for files under .git, .claude,
+// .vscode, .husky, .envrc, .mcp.json. "hook" plants a git hook with Bash: the turn ends with a `watch` event
+// (the watchlist) and watch_revert puts the files back.
 import http from 'node:http';
 import { isUtf8 } from 'node:buffer';
 import fs from 'node:fs';
@@ -50,6 +56,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? Math.min(ms, 5) : 
 // protocol.mjs LIMITS (the ones the page sees)
 const LIMITS = { maxImages: 4, maxPendingPerSession: 8, maxPendingTotal: 32, permissionInputMax: 1 << 20, permissionShownChars: 262144, permissionShownString: 131072, maxPromptChars: 200000 };
 let locked = false;
+let allowBypass = process.env.MOCK_BYPASS === '1';
+let egress = true;
 let keyBudget;
 const resetBudget = () => (keyBudget = { alias: 'claude-code-terminal', spend: 1.23, max_budget: 50, reset_at: new Date(Date.now() + 9 * 86400e3).toISOString() });
 resetBudget();
@@ -127,6 +135,13 @@ function find(q, limit) {
   const hits = [...all].filter((p) => p.toLowerCase().includes(needle)).sort();
   return { paths: hits.slice(0, limit), truncated: hits.length > limit };
 }
+// the watchlist's files (code/server/watch.mjs) in the in-memory workspace
+const WATCHED = /^(\.git\/(hooks\/[^/]+|config)|\.husky\/[^/]+|\.envrc|\.vscode\/(tasks|settings)\.json|\.claude\/settings(\.local)?\.json|\.mcp\.json|package\.json|\.devcontainer(\/devcontainer)?\.json)$/;
+const WATCH_WHY = (p) => (p.startsWith('.git/hooks/') ? 'a git hook: git runs it on your computer when you commit, push, merge or check out in this folder'
+  : p === '.git/config' ? "git's configuration: it can name commands git runs on your computer (core.hooksPath, core.fsmonitor, core.sshCommand, aliases, filters)"
+    : 'it runs on your computer when you use the folder there');
+const watchSnap = () => new Map([...fsState].filter(([p]) => WATCHED.test(p) && !p.endsWith('.sample')).map(([p, e]) => [p, e.data.toString()]));
+
 function writeFile(p, text) {
   const prev = fsState.get(p);
   fsState.set(p, { data: Buffer.from(text), mtimeMs: Math.max(Date.now(), (prev?.mtimeMs ?? 0) + 1), bin: false });
@@ -350,7 +365,8 @@ class Session {
   constructor({ id, model, mode, effort, title }) {
     this.id = id;
     this.model = model || 'sonnet';
-    this.mode = ['default', 'acceptEdits', 'plan', 'dontAsk'].includes(mode) ? mode : 'default';
+    this.mode = mode === 'dontAsk' ? 'readOnly' : ['readOnly', 'plan', 'default', 'acceptEdits'].includes(mode) ? mode : 'default';
+    this.reverts = new Map();
     this.effort = effort || null;
     this.title = title || '';
     this.state = 'idle';
@@ -490,8 +506,12 @@ class Session {
       broadcastAll({ type: 'pending', count: totalPending() });
     });
   }
-  needsPermission(tool) {
-    if (this.mode === 'dontAsk') return 'deny';
+  needsPermission(tool, input = {}) {
+    const edit = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(tool);
+    // Read only (dontAsk + the edit tools denied): reads run, anything else is denied without a prompt
+    if (this.mode === 'readOnly') return ['Read', 'Grep', 'Glob', 'TodoWrite'].includes(tool) ? false : 'deny';
+    // Bypass: nothing asks but edits of the files that run on your computer (the backend's ask rules)
+    if (this.mode === 'bypassPermissions') return edit && WATCHED.test(clean(String(input.file_path ?? input.notebook_path ?? '')) ?? '');
     if (this.mode === 'acceptEdits' && ['Edit', 'Write', 'MultiEdit'].includes(tool)) return false;
     if (this.mode === 'plan' && tool !== 'ExitPlanMode') return ['Read', 'Grep', 'Glob'].includes(tool) ? false : 'deny';
     if (this.allow?.has(tool)) return false;
@@ -500,7 +520,7 @@ class Session {
   async tool(name, input, run, { parent, suggestions, defaultNo, noAlways } = {}) {
     const id = 'toolu_' + crypto.randomBytes(10).toString('hex');
     this.emit({ type: 'tool_use', id, name, input, ...(parent ? { parent } : {}) });
-    const need = this.needsPermission(name);
+    const need = this.needsPermission(name, input);
     if (need === 'deny') {
       this.emit({ type: 'tool_result', id, text: `Permission to use ${name} was denied (${this.mode} mode).`, is_error: true, ...(parent ? { parent } : {}) });
       return { ok: false, id };
@@ -533,6 +553,7 @@ class Session {
     this.emit({ type: 'user', text, uuid, images: Array.isArray(images) ? images.length : 0 });
     if (!this.title) this.title = String(text).slice(0, 80);
     this.init();
+    const watchBase = watchSnap();
     let turns = 1;
     let failed = false;
     if (overBudget()) {
@@ -552,6 +573,7 @@ class Session {
     const out = 200 + Math.floor(Math.random() * 900);
     const usage = { input_tokens: 900 + text.length, output_tokens: out, cache_read_input_tokens: this.turns > 1 ? 29000 : 0, cache_creation_input_tokens: this.turns > 1 ? 400 : 28500 };
     this.emit({ type: 'result', subtype: interrupted ? 'error_during_execution' : 'success', turns, duration: dur, usage, is_error: interrupted || failed });
+    this.watch(watchBase, watchSnap());
     // what LiteLLM would bill, a little later (spend logs are batched)
     const price = MODELS.models.find((m) => m.id === this.resolvedModel()) ?? MODELS.models[1];
     const spend = (usage.input_tokens * price.input_per_mtok + out * price.output_per_mtok + usage.cache_read_input_tokens * price.cache_read_per_mtok + usage.cache_creation_input_tokens * price.cache_write_per_mtok) / 1e6;
@@ -565,6 +587,20 @@ class Session {
     this.setState('idle');
     const next = this.queue.shift();
     if (next) setTimeout(() => void this.prompt(next), 50);
+  }
+  /** The watchlist: the watched files that changed in the turn, as a `watch` event (Revert: watch_revert). */
+  watch(before, after) {
+    const changes = [];
+    for (const p of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+      const a = before.get(p) ?? null, b = after.get(p) ?? null;
+      if (a === b) continue;
+      changes.push({ path: p, kind: p.startsWith('.git/hooks/') ? 'git-hook' : 'other', why: WATCH_WHY(p), change: a === null ? 'added' : b === null ? 'removed' : 'changed',
+        before: a, after: b, binary: false, cut: false, revertable: true, exec: p.startsWith('.git/hooks/') && b !== null });
+    }
+    if (!changes.length) return;
+    const id = crypto.randomUUID();
+    this.reverts.set(id, changes.map((c) => ({ path: c.path, before: c.before, after: c.after })));
+    this.emit({ type: 'watch', id, when: 'turn', changes }, { record: false });
   }
   interrupt() {
     if (this.state !== 'busy') return;
@@ -621,6 +657,7 @@ async function runScenario(s, text, images) {
     return 1;
   }
   if (t.includes('hostile')) return hostile(s);
+  if (t.includes('hook')) return hook(s);
   if (t.includes('huge command')) return hugeCommand(s);
   if (t.includes('padded')) return padded(s);
   if (t.includes('risky')) return risky(s);
@@ -748,6 +785,19 @@ async function writeMarkdown(s) {
     return { text: `File created successfully at: /workspace/${p}`, edit: { path: p, original: existed ?? '', hunks: hunks(existed ?? '', content) } };
   });
   await s.stream(r.ok ? 'Wrote `docs/report.md`.' : 'Skipped.');
+  return 2;
+}
+
+// a git hook planted with Bash (no Edit rule asks for that): the watchlist tells after the turn
+async function hook(s) {
+  await s.stream('Adding a pre-commit hook that runs the tests.');
+  const r = await s.tool('Bash', { command: "printf 'npm test\\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit", description: 'Add a pre-commit hook' }, async () => {
+    await sleep(300);
+    writeFile('.git/hooks/pre-commit', '#!/bin/sh\nnpm test\n');
+    writeFile('.git/config', (fsState.get('.git/config')?.data.toString() ?? '[core]\n') + '\thooksPath = .git/hooks\n');
+    return { text: '' };
+  });
+  await s.stream(r.ok ? 'Done: `.git/hooks/pre-commit` runs `npm test` before each commit.' : 'Skipped.');
   return 2;
 }
 
@@ -1029,6 +1079,8 @@ async function api(req, res, url) {
       limits: { sessions: 4, upload: 25 * 1024 * 1024, image: 5 * 1024 * 1024, maxImages: LIMITS.maxImages },
       sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null })),
       pending: totalPending(),
+      bypass: { allowed: allowBypass },
+      sandbox: { egress, workspace: '/home/you/projects/acme-api' },
     });
   }
   if (p === '/api/sessions' && m === 'GET') {
@@ -1049,6 +1101,7 @@ async function api(req, res, url) {
     }
     if (sessions.size >= 4) return json(res, 409, { error: '4 sessions are working or waiting for you: stop or close one first' });
     if (typeof b.model === 'string' && ALIAS.test(b.model)) return json(res, 400, { error: 'name the model in full (claude-…), not by an alias' });
+    if (b.mode === 'bypassPermissions' || b.mode === 'auto') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits): a session never starts in bypassPermissions or auto' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
     const src = b.fork ? (sessions.get(b.resume)?.transcript ?? saved.get(b.resume)?.transcript) : null;
     let fresh;
@@ -1446,6 +1499,11 @@ const server = http.createServer(async (req, res) => {
         if (locked) for (const ws of wss.clients) ws.terminate();
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/bypass') {
+        if (url.searchParams.has('allow')) allowBypass = url.searchParams.get('allow') === '1';
+        if (url.searchParams.has('egress')) egress = url.searchParams.get('egress') !== '0';
+        return json(res, 200, { ok: true, allowBypass, egress });
+      }
       if (url.pathname === '/__mock/budget') {
         keyBudget.spend = Number(url.searchParams.get('spend') ?? keyBudget.spend);
         keyBudget.max_budget = url.searchParams.get('max') === 'none' ? null : Number(url.searchParams.get('max') ?? keyBudget.max_budget);
@@ -1494,6 +1552,8 @@ const server = http.createServer(async (req, res) => {
         resetPlugins();
         resetBudget();
         locked = false;
+        allowBypass = process.env.MOCK_BYPASS === '1';
+        egress = true;
         userMemory = null;
         for (const s of sessions.values()) s.interrupt();
         sessions.clear();
@@ -1611,10 +1671,42 @@ server.on('upgrade', (req, sock, head) => {
           if (ALIAS.test(String(m.model))) return log('set_model refused (an alias):', m.model);   // as the backend
           s.model = String(m.model || '').slice(0, 128);
           return;
-        case 'set_mode':
-          s.mode = m.mode;
-          s.emit({ type: 'status', permissionMode: m.mode }, { record: false });
-          return s.broadcast(s.stateMsg());
+        case 'set_mode': {
+          // as the backend: Bypass only where Settings allow it and with the page's confirmation; Auto not offered
+          const mode = m.mode === 'dontAsk' ? 'readOnly' : m.mode;
+          const no = !['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions', 'auto'].includes(mode) ? 'bad mode'
+            : mode === 'auto' ? 'Auto mode is not offered in the Code page yet'
+              : mode === 'bypassPermissions' && !allowBypass ? 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now'
+                : mode === 'bypassPermissions' && m.confirmed !== true ? 'Bypass permissions needs your confirmation in the Code page (confirmed: true)' : '';
+          if (no) {
+            if (req) reply({ type: 'reply', req, ok: false, error: no });
+            return reply({ type: 'error', session: s.id, req, message: no });
+          }
+          s.mode = mode;
+          s.emit({ type: 'status', permissionMode: mode }, { record: false });
+          s.broadcast(s.stateMsg());
+          return req ? reply({ type: 'reply', req, ok: true, data: { mode } }) : undefined;
+        }
+        case 'watch_revert': {
+          const list = s.reverts.get(m.id);
+          if (!list) {
+            const e = "that change is no longer known here (the Code page's server restarted, or it is old): put the file back in the editor or the terminal";
+            if (req) reply({ type: 'reply', req, ok: false, error: e });
+            return reply({ type: 'error', session: s.id, req, message: e });
+          }
+          await sleep(200);
+          const results = [];
+          for (const c of list.filter((x) => m.path === undefined || x.path === m.path)) {
+            if (c.done) { results.push({ path: c.path, ok: true, action: 'already' }); continue; }
+            if ((fsState.get(c.path)?.data.toString() ?? null) !== c.after) { results.push({ path: c.path, ok: false, error: 'it changed again since: not put back' }); continue; }
+            if (c.before === null) fsState.delete(c.path); else writeFile(c.path, c.before);
+            c.done = true;
+            results.push({ path: c.path, ok: true, action: c.before === null ? 'trashed' : 'restored' });
+          }
+          const done = results.filter((x) => x.ok && x.action !== 'already').map((x) => x.path);
+          if (done.length) s.emit({ type: 'local', text: `Put back as before the change: ${done.join(', ')}.` }, { record: false });
+          return req ? reply({ type: 'reply', req, ok: true, data: { results } }) : undefined;
+        }
         case 'set_effort':
           s.effort = m.effort;
           return;

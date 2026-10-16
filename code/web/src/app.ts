@@ -8,6 +8,7 @@ import { exportName, toMarkdown } from './transcript';
 import { appendMemory, memoryLine } from './palette';
 import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
+import { remembered, startMode } from './modes';
 import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
 import { approveLaunch, approvedLaunch, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
@@ -149,6 +150,12 @@ export interface AppState {
   launch: LaunchList | null;
   /** a launch.json entry shown in full before it starts (the Start confirmation) */
   launchConfirm: LaunchEntry | null;
+  /** the session whose switch to Bypass permissions waits for the dialog's confirmation */
+  bypassAsk: string | null;
+  /** bumped to open the mode menu (Alt+M) */
+  modeMenu: number;
+  /** a mode picked while no session is open: the next new session starts in it (Plan too, which is not remembered) */
+  startWith: Mode | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -185,6 +192,9 @@ export const store: Store<AppState> = createStore<AppState>({
   preview: null,
   launch: null,
   launchConfirm: null,
+  bypassAsk: null,
+  modeMenu: 0,
+  startWith: null,
 });
 
 const set = store.set;
@@ -371,8 +381,10 @@ function requestContext(id: string, ms = 1500): void {
 const pendingReplies = new Map<string, (r: { ok: boolean; data: unknown; error: string }) => void>();
 let requestN = 0;
 
+/** A client message without its request id (wsRequest adds one). */
+type WithoutReq<T> = T extends unknown ? Omit<T, 'req'> : never;
 /** A WebSocket request and its reply (an error when none comes within `ms`). */
-function wsRequest(msg: Omit<Extract<api.ClientMsg, { type: 'rewind_files' }>, 'req'>, ms = 60_000): Promise<{ ok: boolean; data: unknown; error: string }> {
+function wsRequest(msg: WithoutReq<api.ClientMsg>, ms = 60_000): Promise<{ ok: boolean; data: unknown; error: string }> {
   const req = `r${Date.now().toString(36)}${(requestN++).toString(36)}`;
   return new Promise((resolve) => {
     const t = setTimeout(() => {
@@ -384,7 +396,7 @@ function wsRequest(msg: Omit<Extract<api.ClientMsg, { type: 'rewind_files' }>, '
       pendingReplies.delete(req);
       resolve(r);
     });
-    socket.send({ ...msg, req });
+    socket.send({ ...msg, req } as api.ClientMsg);
   });
 }
 
@@ -556,7 +568,7 @@ function onReset(old: string, next: string): void {
   set((s) => {
     const views = { ...s.views };
     if (!views[next]) {
-      views[next] = newView(next, { state: 'idle', model: v?.model ?? '', mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort,
+      views[next] = newView(next, { state: 'idle', model: v?.model ?? '', mode: startMode(v?.mode, s.prefs.mode), effort: v?.effort ?? s.prefs.effort,
         title: v?.title ? label(`${v.title} (cleared)`, 200) : '' });
     }
     if (views[old]) views[old] = { ...views[old], state: 'ended', seq: 0, permissions: [] };
@@ -636,11 +648,13 @@ function announce(): void {
   // the backend's count covers sessions this page shows no view of (other tabs, devices)
   const pending = Math.max(s.pendingTotal, Object.values(s.views).reduce((n, v) => n + pendingCount(v), 0));
   const busy = Object.values(s.views).some((v) => v.state === 'busy');
-  document.title = `${pending ? `(${pending}) ` : ''}Code · bedrock-now`;
+  // a session running without asking: the tab title says so (⏵⏵, the CLI's marker), and the portal's Code tab
+  const bypass = Object.values(s.views).some((v) => v.mode === 'bypassPermissions' && v.state !== 'closed' && v.state !== 'ended');
+  document.title = `${bypass ? '⏵⏵ ' : ''}${pending ? `(${pending}) ` : ''}Code · bedrock-now`;
   const origin = s.server?.portalOrigin;
   if (origin && window.parent !== window) {
     try {
-      window.parent.postMessage({ type: 'bn-code-status', pending, busy }, new URL(origin).origin);
+      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass }, new URL(origin).origin);
     } catch {
       /* not framed by the portal */
     }
@@ -753,9 +767,10 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
   set((x) => ({ ...x, opening: true }));
   try {
     const model = sendModel(opts.model, s) || defaultModel(s);
-    const mode = opts.mode ?? s.prefs.mode;
+    const mode = startMode(opts.mode ?? s.startWith, s.prefs.mode);   // never Bypass (nor Auto): those are switched to, per session
     const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
     const { id } = await api.openSession({ model: sendModel(model, s), mode, effort });
+    set((x) => ({ ...x, startWith: null }));
     loadedHistory.add(id);
     ensureView(id, { state: 'idle', model, mode, effort });
     set((x) => ({ ...x, active: id, sheet: null }));
@@ -793,7 +808,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
     const info = s.sessions.find((x) => x.id === id);
     const src = s.views[id];
     const model = (fork && sendModel(src?.model, s)) || defaultModel(s);
-    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, before });
+    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: startMode(s.prefs.mode), effort: s.prefs.effort, resume: id, fork, before });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -813,7 +828,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
       const views = { ...x.views };
       delete views[newId];
       const name = info?.title || src?.title || info?.firstPrompt || id.slice(0, 8);
-      views[newId] = newView(newId, { state: 'idle', model, mode: x.prefs.mode, title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
+      views[newId] = newView(newId, { state: 'idle', model, mode: startMode(x.prefs.mode), title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
       return { ...x, views, active: newId, sheet: null };
     });
     setPrefs((p) => ({ ...p, lastSession: newId }));
@@ -864,7 +879,8 @@ async function revive(id: string): Promise<string | null> {
   const s = get();
   try {
     const v = s.views[id];
-    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort, resume: id });
+    // (the same session: Plan goes on; Bypass ended with its process — Manual)
+    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: startMode(v?.mode, s.prefs.mode), effort: v?.effort ?? s.prefs.effort, resume: id });
     if (newId !== id) {
       // the backend gave the resumed process a new id: carry the conversation over to it
       loadedHistory.add(newId);
@@ -876,7 +892,7 @@ async function revive(id: string): Promise<string | null> {
         return { ...x, views, active: x.active === id ? newId : x.active };
       });
       setPrefs((p) => ({ ...p, lastSession: newId }));
-    } else updateView(id, (x) => ({ ...x, state: 'idle', seq: 0, gap: false }));
+    } else updateView(id, (x) => ({ ...x, state: 'idle', seq: 0, gap: false, mode: startMode(x.mode, s.prefs.mode) }));
     attach(newId);
     return newId;
   } catch (e) {
@@ -931,7 +947,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   if (CLEAR.test(t)) {
     // a fresh conversation, with this one's model, mode and effort (the old one stays in the list)
     const cur = activeView();
-    return (await newSession(cur ? { model: cur.model || undefined, mode: cur.mode, effort: cur.effort } : {})) !== null;
+    return (await newSession(cur ? { model: cur.model || undefined, mode: startMode(cur.mode, get().prefs.mode), effort: cur.effort } : {})) !== null;
   }
   if (RESUME.test(t)) {
     showSessions();
@@ -952,7 +968,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
     // a session that never got a prompt has no transcript to resume: a new one takes its place
     if (!v.items.some((it) => it.t === 'user')) {
       const old = id;
-      id = await newSession({ model: v.model || undefined, mode: v.mode, effort: v.effort });
+      id = await newSession({ model: v.model || undefined, mode: startMode(v.mode, get().prefs.mode), effort: v.effort });
       if (id) set((s) => {
         const views = { ...s.views };
         delete views[old];
@@ -992,13 +1008,69 @@ export function setModel(name: string): void {
     updateView(v.id, (x) => ({ ...x, model }));
   }
 }
+/** Switch the permission mode. Read only, Manual and Accept edits are remembered for new sessions too; Plan and Bypass
+ *  are for this session only. Bypass permissions first asks (the dialog: confirmBypass), and only where Settings allow it. */
 export function setMode(mode: Mode): void {
-  setPrefs((p) => ({ ...p, mode }));
+  if (mode === 'auto') return;
   const v = activeView();
+  if (mode === 'bypassPermissions') {
+    if (!get().server?.allowBypass) {
+      toast('Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now.', 'error');
+      return;
+    }
+    if (v?.mode !== 'bypassPermissions') {
+      set((s) => ({ ...s, bypassAsk: v?.id ?? '' }));
+      if (v) void refreshSpend(v.id);   // (the dialog names the budget left)
+    }
+    return;
+  }
+  if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
   if (v && v.state !== 'closed') {
     socket.send({ type: 'set_mode', session: v.id, mode });
     updateView(v.id, (x) => ({ ...x, mode }));
+  } else if (v) updateView(v.id, (x) => ({ ...x, mode }));   // closed here: its next start (revive) takes it
+  else set((s) => ({ ...s, startWith: mode }));              // no session yet: the next one starts in it
+  announce();
+}
+
+/** The dialog's "Bypass permissions for this session": the switch, confirmed (a session is started first when none is
+ *  open). The backend may start Claude Code again for it (resumed). */
+export async function confirmBypass(): Promise<void> {
+  const asked = get().bypassAsk;
+  set((s) => ({ ...s, bypassAsk: null }));
+  if (asked === null) return;
+  let id: string | null = asked || null;
+  const v = id ? get().views[id] : undefined;
+  if (!id || !v) id = await newSession();
+  else if (v.state === 'closed') id = await revive(id);
+  if (!id) return;
+  const r = await wsRequest({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true }, 120_000);
+  if (!r.ok) {
+    toast(`Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error');
+    return;
   }
+  updateView(id, (x) => ({ ...x, mode: 'bypassPermissions' }));
+  announce();
+}
+export function cancelBypass(): void {
+  set((s) => ({ ...s, bypassAsk: null }));
+}
+/** Alt+M: the mode menu opens. */
+export function openModeMenu(): void {
+  set((s) => ({ ...s, modeMenu: s.modeMenu + 1 }));
+}
+
+/** Revert of a watch card: the watched files (or one) put back as they were before the change. -> each file's outcome */
+export async function revertWatch(session: string, id: string, path?: string): Promise<{ ok: boolean; error: string; results: { path: string; ok: boolean; text: string }[] }> {
+  const r = await wsRequest({ type: 'watch_revert', session, id, ...(path ? { path } : {}) }, 60_000);
+  if (!r.ok) return { ok: false, error: r.error || 'No answer from the Code page server.', results: [] };
+  const list = Array.isArray((r.data as { results?: unknown })?.results) ? ((r.data as { results: unknown[] }).results) : [];
+  const results = list.slice(0, 60).map((x) => {
+    const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+    return { path: label(o.path, 500), ok: o.ok === true, text: o.ok === true ? label(o.action, 20) : label(o.error, 300) };
+  });
+  refreshExpandedDirs();
+  return { ok: true, error: '', results };
 }
 export function setEffort(effort: string | null): void {
   setPrefs((p) => ({ ...p, effort }));

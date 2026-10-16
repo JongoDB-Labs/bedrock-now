@@ -14,6 +14,7 @@ import type {
   SpendRow,
   Task,
   Usage,
+  WatchChange,
 } from './types';
 
 export type Item =
@@ -32,7 +33,9 @@ export type Item =
     }
   | { t: 'local'; k: number; text: string }
   | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number; models?: string[]; picked?: string }
-  | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' };
+  | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' }
+  /** files that run on your computer changed: the card with diffs and Revert */
+  | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[] };
 
 export interface Turn {
   start: number;
@@ -289,6 +292,9 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
     }
     case 'error':
       return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
+    case 'watch':
+      if (v.items.some((it) => it.t === 'watch' && it.id === ev.id)) return v;   // replayed
+      return push(v, { t: 'watch', k: v.nextKey, id: ev.id, when: ev.when, changes: ev.changes });
   }
 }
 
@@ -400,7 +406,8 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now(), wi
     turns: [...base.turns, ...v.turns],
     init: v.init ?? base.init,
     model: v.model || base.model,
-    mode: v.init?.mode ?? base.mode,
+    // the mode the backend says now (session_state, status): a turn's init may be older than a switch since
+    mode: v.mode,
     gap: false,
   };
 }

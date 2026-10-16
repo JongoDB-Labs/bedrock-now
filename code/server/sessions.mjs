@@ -3,15 +3,21 @@
 // LIMITS.maxOpen processes run at once (the least recently used idle one makes room); an idle process ends after
 // LIMITS.idleMinutes, and the next prompt resumes the session. A session open here is never resumed a second time.
 import crypto from 'node:crypto';
-import { LIMITS, MODES, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
+import { LIMITS, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
 import { Ring } from './ring.mjs';
 import { fromSdk, errorEvent } from './normalize.mjs';
 import { isUuid, isModel, isFullModel, str, short } from './validate.mjs';
+import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions } from './modes.mjs';
+import { checkSnapshot, diffSnapshots, watchEvent, revertOf } from './watch.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
 const ALIAS_REFUSED = 'name the model in full (claude-…), not by an alias: with an alias Claude Code may run another model (Plan mode on Haiku plans on Sonnet)';
 const AUTO_OFF_MS = 15000;   // how long the first prompt waits for "auto mode off" to be accepted (then it goes anyway)
+const WATCH_MS = 5000;       // how long a turn's first prompt waits for the watched files' snapshot (then it goes anyway)
+const REVERTS_KEPT = 10;     // watch events per session whose Revert stays possible (the oldest go) …
+const REVERT_BYTES = 4 << 20; // … and at most this much of their copies
+const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now';
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
   p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
@@ -31,8 +37,14 @@ export class Session {
     this.id = id;
     this.taskStop = taskStop === true;   // the page stops background tasks one by one (stop_task)
     this.model = model || null;
-    this.mode = mode || 'default';
+    this.mode = START_MODES.includes(normMode(mode)) ? normMode(mode) : 'default';   // a page mode (modes.mjs)
     this.effort = effort || null;
+    this.bypassable = false;  // this process was started with --allow-dangerously-skip-permissions
+    this.flagPerms = null;    // the `permissions` object this process's flag settings hold (ours: modes.mjs)
+    this.switching = false;   // a mode switch is under way (it sets the flag settings itself)
+    // the watchlist (watch.mjs): the watched files at this turn's start, at the last turn's end, and the Reverts kept
+    this.watchBase = null; this.watchLast = null; this.watchChain = Promise.resolve(); this.watchOff = false;
+    this.reverts = new Map();
     // Whether Claude Code has written this session's transcript: a resumed or forked one has; a new one once it got its
     // first prompt. A process for a session without one starts with --session-id (a --resume would find nothing).
     this.hasTranscript = hasTranscript ?? Boolean(resume);
@@ -73,6 +85,10 @@ export class Session {
   // {resume}), fork (a new id from another one's transcript), resume-at (up to one message).
   start({ resume, fork, at } = {}) {
     this.mgr.makeRoom(this);
+    // a process never starts in Bypass permissions (nor auto): those are switched to, per process, by the page
+    if (!START_MODES.includes(this.mode)) this.mode = 'default';
+    this.bypassable = this.mgr.allowBypass === true;
+    this.flagPerms = null;
     // A page that saw this session end starts counting again from 0: the new process's events are numbered from 1
     // (what earlier processes said is in the transcript: GET /api/sessions/ID/messages).
     this.ring = new Ring();
@@ -88,12 +104,15 @@ export class Session {
       settingSources: ['user', 'project', 'local'],            // the sandbox's plugins, skills, CLAUDE.md
       includePartialMessages: true,
       enableFileCheckpointing: true,                           // backups in the sandbox: rewind_files can put files back
-      permissionMode: this.mode,                               // explicit: omitted, the CLI may start in auto
+      permissionMode: cliMode(this.mode),                      // explicit: omitted, the CLI may start in auto
       canUseTool: (tool, input, o) => this.mgr.broker.ask(this.id, tool, input, o),
       stderr: (s) => this.mgr.logStderr(this.id, `sdk ${this.id.slice(0, 8)}: ${short(s, 300)}`),
     };
     if (this.model) options.model = this.model;
     if (this.effort) options.effort = this.effort;
+    // CODE_ALLOW_BYPASS on: Bypass permissions can be switched to in this process (--allow-dangerously-skip-permissions;
+    // never --dangerously-skip-permissions: it starts in its own mode, as before)
+    if (this.bypassable) options.allowDangerouslySkipPermissions = true;
     // Declared only by a page with a per-task Stop: then an interrupt spares background tasks. Without it (the plain
     // page) the CLI fails closed: an interrupt ends them too.
     if (this.taskStop) options.perTaskStopAffordance = true;
@@ -111,8 +130,17 @@ export class Session {
       // Auto mode off before the first prompt is read: Claude Code treats it as available behind our base URL, and
       // then Plan mode hands writing commands to its classifier (which fails closed here) instead of asking. A
       // control message, not an argument (bn-coded refuses --settings); the sandbox's managed settings say the same.
-      feed.ready = withTimeout(Promise.resolve(this.q.applyFlagSettings?.({ disableAutoMode: 'disable' })), AUTO_OFF_MS)
-        .catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: auto mode not turned off: ${short(e?.message || String(e), 200)}`));
+      // With it, the rules the starting mode needs (Read only: the edit tools denied).
+      const perms = permissionsFor(this.mode);
+      const flags = perms ? { disableAutoMode: 'disable', permissions: perms } : { disableAutoMode: 'disable' };
+      const q = this.q;
+      this.flagPerms = perms;   // (sent first, before any switch: control messages are taken in order)
+      feed.ready = withTimeout(Promise.resolve(q.applyFlagSettings?.(flags)), AUTO_OFF_MS)
+        .catch((e) => {
+          this.mgr.log(`session ${this.id.slice(0, 8)}: auto mode not turned off: ${short(e?.message || String(e), 200)}`);
+          if (this.q === q && samePermissions(this.flagPerms, perms)) this.flagPerms = null;
+          if (perms && this.q === q) this.emit({ type: 'local', text: 'Read only: its rules could not be set in Claude Code; anything not allowed already is still denied (dontAsk).' });
+        });
     } catch (e) {
       this.q = null;
       this.setState('error', short(e.message, 300));
@@ -143,8 +171,11 @@ export class Session {
   observe(m) {
     if (!m || typeof m !== 'object') return;
     let changed = false;
-    if (m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status') && MODES.includes(m.permissionMode) && m.permissionMode !== this.mode) {
-      this.mode = m.permissionMode; changed = true;
+    // Claude Code's own mode (a plan approved with a mode, a switch): as the page names it, with the rules it needs
+    const mode = m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status') ? pageMode(m.permissionMode) : null;
+    if (mode && mode !== this.mode && !this.switching) {
+      this.mode = mode; changed = true;
+      this.syncFlags();
     }
     if (m.type === 'system' && m.subtype === 'init') {
       if (isModel(m.model)) {
@@ -181,6 +212,7 @@ export class Session {
         for (const ev of fromSdk(m)) this.emit(ev);
         if (m?.type === 'result') {
           this.setState('idle');
+          this.watchEnd();
           if (this.resetTo) void this.mgr.handover(this);
         }
       }
@@ -192,6 +224,7 @@ export class Session {
 
   ended(error) {
     this.q = null; this.endFeed();
+    this.forgetProcess();
     this.mgr.broker.cancelSession(this.id);
     if (error) this.emit(errorEvent(error));
     this.setState('ended', error);   // (ended either way: the next prompt starts a new process, and a new ring)
@@ -215,9 +248,18 @@ export class Session {
     const id = isUuid(uuid) ? uuid : crypto.randomUUID();
     // typed in the page: a human origin, stamped explicitly (absent, the CLI's strict trust gates fail closed)
     const feed = this.feed;
-    feed.inbox.push({ type: 'user', message: { role: 'user', content: images.length ? content : text }, parent_tool_use_id: null,
-      session_id: '', uuid: id, origin: { kind: 'human' } });
-    feed.wake?.(); feed.wake = null;
+    const msg = { type: 'user', message: { role: 'user', content: images.length ? content : text }, parent_tool_use_id: null,
+      session_id: '', uuid: id, origin: { kind: 'human' } };
+    const deliver = () => {
+      if (feed.closed) { this.emit({ type: 'local', text: 'That prompt was not delivered: the session\'s process ended meanwhile. Send it again.' }); return; }
+      feed.inbox.push(msg); feed.wake?.(); feed.wake = null;
+    };
+    // A prompt that starts a turn waits (≤ WATCH_MS) for the watched files' snapshot: what the turn changes is told
+    // after it. Prompts behind it keep their order.
+    if (this.mgr.watcher && !this.watchOff) {
+      const startsTurn = this.state !== 'busy';
+      this.watchChain = this.watchChain.then(() => (startsTurn ? this.watchStart() : null)).then(deliver, deliver);
+    } else deliver();
     this.hasTranscript = true;   // (Claude Code writes the transcript with its first prompt)
     this.lastActive = Date.now();
     if (!this.title) this.title = short(text, 80);
@@ -236,10 +278,137 @@ export class Session {
     if (this.q) { await this.q.setModel(model); this.modelSet = true; }
     this.model = model; this.status();
   }
-  async setMode(mode) {
-    if (!MODES.includes(mode)) throw new SessionError('bad mode');
-    if (this.q) await this.q.setPermissionMode(mode);
+  /** A page mode (modes.mjs). bypassPermissions: only with CODE_ALLOW_BYPASS, confirmed (the page's dialog), and in a
+   *  process started allowing it — one that was not (or none) is started again first, resumed; never mid-turn. */
+  async setMode(raw, { confirmed = false } = {}) {
+    const mode = normMode(raw);
+    if (mode === 'auto') throw new SessionError('Auto mode is not offered in the Code page yet');
+    if (!SET_MODES.includes(mode)) throw new SessionError('bad mode');
+    if (mode === 'bypassPermissions' && this.mode !== 'bypassPermissions') {
+      if (this.mgr.allowBypass !== true) throw new SessionError(BYPASS_OFF, 403);
+      if (confirmed !== true) throw new SessionError('Bypass permissions needs your confirmation in the Code page (confirmed: true)', 400);
+      if (!this.q || !this.bypassable) {
+        if (this.q && (this.state === 'busy' || this.state === 'starting')) {
+          throw new SessionError('Claude is working in this session: wait for the turn to end (or stop it), then switch to Bypass permissions', 409);
+        }
+        if (this.resetTo) throw new SessionError('this conversation continues in a new session (Claude Code started one)', 409);
+        if (this.q) this.close('bypass');
+        this.start({ resume: this.id });
+      }
+    }
+    if (!this.q) { this.mode = mode; return this.status(); }   // kept for the next start (never bypass: refused above)
+    return this.switchMode(mode);
+  }
+
+  // A running process to another mode: both modes' rules first, then Claude Code's mode, then the new mode's rules
+  // alone — never a moment with fewer rules than either mode needs. A refused switch puts the old mode's rules back.
+  async switchMode(mode) {
+    const q = this.q, from = permissionsFor(this.mode), to = permissionsFor(mode), both = unionPermissions(from, to);
+    this.switching = true;
+    try {
+      if (!samePermissions(both, this.flagPerms)) { await q.applyFlagSettings({ permissions: both }); this.flagPerms = both; }
+      try {
+        await q.setPermissionMode(cliMode(mode));
+      } catch (e) {
+        if (!samePermissions(from, this.flagPerms)) {
+          await q.applyFlagSettings({ permissions: from }).then(() => { this.flagPerms = from; }, () => {});
+        }
+        throw e;
+      }
+      if (!samePermissions(to, this.flagPerms)) { await q.applyFlagSettings({ permissions: to }); this.flagPerms = to; }
+    } finally { this.switching = false; }
+    if (this.q !== q) return undefined;
     this.mode = mode; this.status();
+    return undefined;
+  }
+
+  // Claude Code switched mode by itself (a plan approved with a mode): the flag settings follow (best effort)
+  syncFlags() {
+    const q = this.q, want = permissionsFor(this.mode);
+    if (!q || samePermissions(want, this.flagPerms)) return;
+    Promise.resolve(q.applyFlagSettings({ permissions: want })).then(() => { if (this.q === q) this.flagPerms = want; },
+      (e) => this.mgr.log(`session ${this.id.slice(0, 8)}: mode rules not set: ${short(e?.message || String(e), 200)}`));
+  }
+
+  // The process is gone: what was its alone goes with it — Bypass permissions above all (the next start is in Manual)
+  forgetProcess() {
+    this.flagPerms = null; this.bypassable = false;
+    if (this.mode === 'bypassPermissions' || this.mode === 'auto') this.mode = 'default';
+  }
+
+  // --- the watchlist (watch.mjs) ---
+  async snapshot() {
+    const snap = checkSnapshot(await this.mgr.watcher.snapshot());
+    if (!snap) throw new Error('not a snapshot');
+    return snap;
+  }
+  watchFailed(e) {
+    const msg = short(e?.message || String(e), 200);
+    this.mgr.log(`session ${this.id.slice(0, 8)}: watched files not checked: ${msg}`);
+    this.watchFails = (this.watchFails || 0) + 1;
+    // a sandbox from before the watchlist (./stack up restarts it), or one that keeps failing: a turn's first prompt
+    // does not wait for it again in this session
+    const old = /unknown op/.test(msg);
+    if ((old || this.watchFails >= 2) && !this.watchOff) {
+      this.watchOff = true;
+      this.emit({ type: 'local', text: old
+        ? 'Changes to files that run on your computer (git hooks, .envrc …) are not checked in this session: the sandbox is older than this Code page (./stack up restarts it).'
+        : `Changes to files that run on your computer (git hooks, .envrc …) are not checked in this session: the sandbox did not list them (${msg}).` });
+    }
+  }
+  // a turn starts: the watched files as they are now (and what changed since the last turn ended)
+  async watchStart() {
+    try {
+      const snap = await withTimeout(this.snapshot(), WATCH_MS);
+      this.watchFails = 0;
+      if (this.watchLast) this.reportWatch(this.watchLast, snap, 'between');
+      this.watchBase = snap; this.watchLast = snap;
+    } catch (e) { this.watchFailed(e); }
+  }
+  // a turn ended: what changed since its start (the next turn without a prompt of its own starts from here)
+  watchEnd() {
+    if (!this.mgr.watcher || this.watchOff) return;
+    this.watchChain = this.watchChain.then(async () => {
+      const base = this.watchBase;
+      try {
+        const snap = await withTimeout(this.snapshot(), WATCH_MS * 2);
+        if (base) this.reportWatch(base, snap, 'turn');
+        this.watchBase = snap; this.watchLast = snap;
+      } catch (e) { this.watchFailed(e); }
+    });
+  }
+  reportWatch(before, after, when) {
+    const changes = diffSnapshots(before, after);
+    if (!changes.length) return;
+    const id = crypto.randomUUID();
+    this.reverts.set(id, changes.map(revertOf));
+    const bytes = () => [...this.reverts.values()].flat().reduce((n, c) => n + (c.before?.data?.length ?? 0), 0);
+    while (this.reverts.size > 1 && (this.reverts.size > REVERTS_KEPT || bytes() > REVERT_BYTES)) this.reverts.delete(this.reverts.keys().next().value);
+    this.emit(watchEvent(id, when, changes));
+  }
+  /** Revert: the watched files of a `watch` event (or one of them) put back as they were at its start — each only
+   *  while it is still as the event saw it (bn-coded checks the hash). -> [{path, ok, action | error}] */
+  async revertWatch(id, path) {
+    const list = this.reverts.get(id);
+    if (!list) throw new SessionError('that change is no longer known here (the Code page\'s server restarted, or it is old): put the file back in the editor or the terminal', 404);
+    if (!this.mgr.watcher?.restore) throw new SessionError('reverting is not available here', 501);
+    const out = [];
+    for (const c of list.filter((x) => path === undefined || x.path === path)) {
+      if (c.done) { out.push({ path: c.path, ok: true, action: 'already' }); continue; }
+      if (!c.ok) { out.push({ path: c.path, ok: false, error: 'not revertable here (a link, a folder, or larger than 1 MiB): put it back in the terminal' }); continue; }
+      try {
+        const r = await this.mgr.watcher.restore({ path: c.path, ifSha256: c.afterSha,
+          data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null });
+        c.done = true;
+        out.push({ path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
+      } catch (e) { out.push({ path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
+    }
+    if (!out.length) throw new SessionError('no such file in that change', 404);
+    const done = out.filter((r) => r.ok && r.action !== 'already').map((r) => r.path);
+    if (done.length) this.emit({ type: 'local', text: `Put back as before the change: ${done.join(', ')}.` });
+    // the next turn compares with the files as they are now
+    if (this.watchLast && done.length && !this.watchOff) this.watchChain = this.watchChain.then(() => this.snapshot().then((s) => { this.watchLast = s; this.watchBase = s; }, () => {}));
+    return out;
   }
   // effort null: back to the model's default
   async setEffort(effort) {
@@ -281,19 +450,26 @@ export class Session {
     const q = this.q;
     if (!q) return;
     this.q = null; this.endFeed();
+    const wasBypass = this.mode === 'bypassPermissions';
+    this.forgetProcess();
     this.mgr.broker.cancelSession(this.id);
     try { q.close(); } catch { /* already */ }
-    const text = reason === 'idle' ? `Closed after ${LIMITS.idleMinutes} idle minutes; your next prompt resumes it.`
-      : reason === 'reset' ? 'This conversation continues in a new session.' : 'Session closed; a prompt resumes it.';
+    const text = reason === 'idle' ? `Closed after ${LIMITS.idleMinutes} idle minutes; your next prompt resumes it${wasBypass ? ' (in Manual: Bypass permissions ends with its process)' : ''}.`
+      : reason === 'reset' ? 'This conversation continues in a new session.'
+        : reason === 'bypass' ? 'Restarting Claude Code for this session so it can run without asking (its next turn writes the prompt cache again).'
+          : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
     this.emit({ type: 'local', text });
     this.setState('ended');
   }
 }
 
 export class SessionManager {
+  // allowBypass: CODE_ALLOW_BYPASS (processes start allowing Bypass permissions; set_mode may switch to it)
+  // watcher: {snapshot() -> ws.sensitive's RESULT, restore({path, ifSha256, data, mode}) -> ws.restore's} (bn-coded),
+  //          or null (no watchlist)
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
-    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000 }) {
-    Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs });
+    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, watcher = null }) {
+    Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true, watcher });
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
     this.timer = setInterval(() => this.sweepIdle(), 60000);
@@ -319,7 +495,9 @@ export class SessionManager {
   open({ model, mode, effort, resume, fork, at, taskStop } = {}) {
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
     if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
-    if (mode !== undefined && !MODES.includes(mode)) throw new SessionError('bad mode (default, acceptEdits, plan, dontAsk)');
+    if (mode !== undefined && mode !== null && !START_MODES.includes(normMode(mode))) {
+      throw new SessionError('bad mode (readOnly, plan, default, acceptEdits): a session never starts in bypassPermissions or auto');
+    }
     if (effort !== undefined && effort !== null && !EFFORTS.includes(effort)) throw new SessionError('bad effort');
     if (resume !== undefined && resume !== null && !isUuid(resume)) throw new SessionError('bad session id');
     if (at !== undefined && at !== null && !isUuid(at)) throw new SessionError('bad message id');
@@ -328,7 +506,7 @@ export class SessionManager {
       const s = this.sessions.get(resume);
       if (s && s.open) return { id: s.id, existing: true };   // never two processes on one transcript
       if (s) {
-        if (model) s.model = model; if (mode) s.mode = mode; if (effort) s.effort = effort; if (taskStop === true) s.taskStop = true;
+        if (model) s.model = model; if (mode) s.mode = normMode(mode); if (effort) s.effort = effort; if (taskStop === true) s.taskStop = true;
         s.start({ resume, at });
         return { id: s.id, existing: false };
       }
