@@ -30,7 +30,7 @@ if [ "$(uname -s)" = Linux ]; then
 else
   target="host-gateway"
 fi
-for h in "$host" "chat.$host" "admin.$host" "files.$host" "terminal.$host"; do opts+=(--add-host "$h:$target"); done
+for h in "$host" "chat.$host" "admin.$host" "files.$host" "terminal.$host" "code.$host"; do opts+=(--add-host "$h:$target"); done
 
 docker rm -f "$project-playwright" >/dev/null 2>&1 || true
 docker run --rm --name "$project-playwright" --init --shm-size=1g "${opts[@]}" \
@@ -38,7 +38,7 @@ docker run --rm --name "$project-playwright" --init --shm-size=1g "${opts[@]}" \
   -e E2E_MCP_PORT="$(get SHARED_MCP_PORT)" -e E2E_FILTER="$filter" -e E2E_OS="$(uname -s)" \
   -e E2E_OWUI_TAG="$(image_tag open-webui/open-webui)" -e E2E_LITELLM_TAG="$(image_tag berriai/litellm)" \
   -e E2E_RUSTFS_TAG="$(image_tag rustfs/rustfs)" -e E2E_TAG="${E2E_TAG:-}" -e E2E_TERMINAL_CLAUDE="${E2E_TERMINAL_CLAUDE:-0}" \
-  -e E2E_TERMINAL_HOSTILE="${E2E_TERMINAL_HOSTILE:-0}" -e E2E_HELPER_ON="${E2E_HELPER_ON:-0}" \
+  -e E2E_TERMINAL_HOSTILE="${E2E_TERMINAL_HOSTILE:-0}" -e E2E_CODE_HOSTILE="${E2E_CODE_HOSTILE:-0}" -e E2E_HELPER_ON="${E2E_HELPER_ON:-0}" \
   -v "$stack/.env:/run/e2e/env:ro" \
   -v "$here/browser:/suite:ro" \
   -v "$out/browser:/out" \

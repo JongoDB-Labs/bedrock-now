@@ -570,6 +570,102 @@ weigh:
 
 Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need your whole machine.
 
+## The Code page
+
+`./stack code enable` (off by default) puts Claude Code into the portal's Code tab as a chat: streamed answers,
+tool cards, permission prompts, models, sessions and the workspace's files. It adds no new place where code runs:
+Claude Code runs in the browser terminal's sandbox (above), with its workspace, key, budget, internet and remote
+switches. What is new is a page that shows what the sandbox says and lets you answer it, and the page's own
+container. The design treats everything that comes out of the sandbox as untrusted: the sandbox can replace the
+spawn server, Claude Code or any file at will.
+
+**Trust boundaries.**
+
+1. *Browser ⇄ main Caddy*: the portal session **and** a fresh unlock of its own, and the code host's own `Origin`.
+2. *Caddy ⇄ code container*: the `code-link` network (internal; Caddy and the code container only) and the
+   `X-Bn-Code-Proxy` header (`CODE_PROXY_SECRET`, 128 random bits, new at every `./stack code enable`), which only
+   the main Caddy adds, after the portal's yes. Cookies never reach the code container.
+3. *Code container ⇄ sandbox*: one UNIX socket in the `code-socket` volume; everything inbound is untrusted data.
+4. *Sandbox ⇄ LiteLLM and shared-mcp*: the terminal's gateway, key routes and budget — unchanged.
+
+- [x] **A container that holds nothing worth taking.** The code container (`code/`, built locally on the
+  terminal's pinned Node base; the Agent SDK pinned by version and SHA-512 in lock-step with the terminal's Claude
+  Code — 0.3.N ↔ 2.1.N, a test enforces it — and `ws`; no peer dependencies and no bundled Claude Code binaries,
+  which the image build checks) runs as your user id, read-only, `cap_drop: ALL`, `no-new-privileges`, 768 MB, 128
+  processes. It holds **no LiteLLM key** (not the terminal's, not the master key), **mounts no folder of yours**
+  and is on **no network but `code-link`**: no internet, no LiteLLM, no portal, no sandbox network. Its one secret
+  is `CODE_PROXY_SECRET`, in its environment only. Prices and spend come from the portal (`/.bn/models`,
+  `/.bn/spend` on the code host, answered after the same check; the master key stays in the portal, and a
+  session's spend is filtered to the terminal key's rows). It can reach the main Caddy (its only peer): with no
+  cookie, only the portal's login page and Caddy's internal speech-to-text site — the same reach as Open WebUI's.
+- [x] **Files only through the sandbox.** The editor, the file tree, uploads, downloads and the session history are
+  ops of the spawn server (`bn-coded`), which resolves paths in the sandbox's own view and keeps them under
+  `/workspace` (Node has no `openat`/`RESOLVE_BENEATH`: a check-then-open in the code container would race a sandbox
+  that swaps a folder for a symlink; in there, a symlink only leads where the sandbox can go anyway). Reads are
+  regular files only (`O_NONBLOCK`, `O_NOFOLLOW`: a FIFO or device cannot hang or feed it), writes go through a
+  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`.
+- [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
+  a `claude plugin|mcp` listing or change, the file ops, the session ops. Claude Code's arguments must start with
+  the SDK's fixed stream-json prefix and every other one must be on an allowlist in `--name=value` form
+  (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …); refused, among others:
+  `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
+  `--betas` (Bedrock refuses beta headers), `--dangerously-skip-permissions` and the modes `bypassPermissions` and
+  `auto`. Plugin commands never get `-y`. Claude Code gets the container's environment without the MCP token, the
+  SDK's own few variables (checked), and a LiteLLM session tag `code-<uuid>` built from a checked UUID. It is not a
+  boundary for the sandbox (anything there can run `claude` itself); it keeps the socket from being a general
+  "run anything" primitive. At most 6 Claude Code processes and 32 connections; a 4 MiB frame limit both ways.
+- [x] **Everything from the sandbox is data.** The code container caps every frame (4 MiB; a larger header ends
+  the connection), every answer (8 MiB), every stdout line (32 MiB without a newline, which the SDK would otherwise
+  buffer whole) and every op's time; it checks every id (a session id `../../etc`, a tool id, a task id), every
+  number (no `NaN`, nothing negative), caps every string and drops every field it does not know. Costs from Claude
+  Code itself (`total_cost_usd`, which a stand-in set to −1 in the spike) are never shown. Of the SDK's host
+  callbacks only `canUseTool` is registered: forged `hook_callback`/`mcp_message` requests get errors from the SDK.
+  The e2e suite starts a hostile stand-in on the socket (markup everywhere, bogus ids, an oversized frame, an
+  endless line, forged control requests) and checks the page and the container.
+- [x] **Permission prompts stay yours.** A prompt waits in the code container (never in the sandbox) until a page
+  answers; nobody answering for 10 minutes counts as Deny. *Allow once* returns the tool input exactly as Claude Code
+  sent it; *Always* applies only the CLI's suggestions that add **allow** rules or switch to *Accept edits*/*Plan*
+  — never `bypassPermissions` or `auto`, never another folder (`addDirectories`), never a removal — and the page
+  shows those rules before you click. The rules land in the sandbox's own settings (they affect only it).
+  Prompts typed in the page carry Claude Code's human origin.
+- [x] **The page's policy is the main Caddy's, whoever answers.** Every answer from the code container gets
+  `code_page` (`caddy/Caddyfile`): `default-src 'none'`, scripts only from the code host itself, styles from it plus
+  a per-request nonce (`{http.request.uuid}`, which the page reads from a meta tag), connections only to the code
+  host, images also `data:`/`blob:`, frames only the terminal host, no forms, no plugins, `base-uri 'none'`, framed
+  only by the portal, and **Trusted Types** (`require-trusted-types-for 'script'; trusted-types 'none'`: no
+  HTML-string sink can run at all, in browsers that enforce it); plus `nosniff`, `Referrer-Policy: same-origin`, and
+  none of the upstream's `Set-Cookie`, `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`,
+  CORS or reporting headers. The page renders sandbox text with `textContent` only, never as HTML, and keeps it
+  inside messages and cards (never in its chrome); it never asks for a password (the unlock is the portal's page).
+- [x] **A fresh password, its own unlock, its own Origin.** The code host (`code.PORTAL_HOST`) needs the session
+  and an unlock typed on that host (`bn_code`, remote `__Host-bn_code`: host-only, `HttpOnly`, `SameSite=Strict`, 12
+  hours, signed with a salt of its own — the terminal's unlock never opens the Code page, nor the other way round;
+  voided by Sign out and by a new password). Caddy asks `/auth/verify?app=code`, fixed in the Caddyfile. A WebSocket
+  and every request that changes something must carry the code host's own `Origin` — checked by the portal and
+  again by the code container; client copies of the headers only Caddy may set are deleted first.
+- [x] **Remote: with the terminal's switch.** The remote sites route the code host only while `REMOTE_TERMINAL` is
+  on (one switch for "the sandbox from outside"): `lib/code.sh` writes `REMOTE_CODE_HOST` (`<base>-code.<tailnet>`,
+  a sixth Tailscale Service, or `code.<your domain>`); otherwise the remote blocks match nothing and the portal
+  refuses it.
+- [x] **Orphans and resumes.** A killed spawn server leaves its Claude Code processes running (reparented to the
+  container's init): they finish what was already approved, but nothing new can be approved. The spawn server
+  records its children and, when it starts again, ends the ones still running Claude Code's stream-json mode; the
+  code container never opens a second process on a session it has open.
+
+**What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
+page — fake tool output, fake diffs, misleading permission sentences, wrong session titles — deny service (kill the
+spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission rules into its own settings
+through *Always* (only for itself). It cannot run script in your browser, reach the code container over the
+network, read its files, make it open or follow a path, call host callbacks other than `canUseTool`, obtain
+`CODE_PROXY_SECRET`, the master key or the unlock cookie, change the prices or costs shown, or answer a permission
+prompt. *Project settings*: sessions load `/workspace/.claude` settings (hooks included) like the terminal does once
+you trust the folder; they run in the sandbox either way.
+
+**What a compromised code container gains** (a bug in the SDK, `ws` or the page): it can drive the sandbox (as
+above) and serve script on the code origin — the same standing as the other app hosts: the cookies it could
+target are `HttpOnly`, the portal checks the Origin of every change, and only the portal may frame it. Pinning the
+page's script hashes in Caddy's CSP would take even that away (an open question).
+
 ## Code provenance
 
 `./stack update` runs the code it downloads: on a release install, the newest `vX.Y.Z` tag of the `origin`

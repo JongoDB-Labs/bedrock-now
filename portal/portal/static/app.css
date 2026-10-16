@@ -217,5 +217,10 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 .app-note img { border-radius: 7px; }
 .app-note > div { flex-basis: 200px; }   /* the icon stays beside the text on a phone */
 
+/* The Code tab's badge (code.js): permission prompts waiting in the Code page. */
+.tab-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent);
+  color: var(--bg, #fff); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
+.tab-badge[hidden] { display: none; }
+
 /* The browser terminal's line on the Claude Code card (terminal.js): a button that reads like a link. */
 .linkish { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; text-underline-offset: 2px; }

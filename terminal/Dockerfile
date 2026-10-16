@@ -43,6 +43,8 @@ COPY claude-code/package.json claude-code/package-lock.json /opt/claude-code/
 RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error \
  && ln -s /opt/claude-code/node_modules/.bin/claude /usr/local/bin/claude && claude --version
 
+# The Code page's spawn server (bin/bn-coded.mjs: Node built-ins only) listens in /run/bn-code — the code-socket volume
+# while ./stack code is on (compose.code.yaml), shared with the code container alone; bn-terminal starts it then.
 # You, inside: the same uid/gid as on your computer (TERMINAL_UID/GID from ./stack), so files in the workspace
 # folder stay yours. The node image's own user (uid 1000) goes first. The home folder is the terminal-home volume
 # (Claude Code's settings and history, shell history); it starts empty: the settings below live in /etc.
@@ -51,13 +53,13 @@ ARG BN_GID=10104
 RUN set -eu; userdel -r node 2>/dev/null || true; \
     getent group "$BN_GID" >/dev/null || groupadd -g "$BN_GID" claude; \
     useradd -o -M -d /home/claude -s /bin/bash -u "$BN_UID" -g "$BN_GID" claude; \
-    mkdir -p /home/claude /workspace /run/bn-ttyd; chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd; \
-    chmod 700 /home/claude /run/bn-ttyd
+    mkdir -p /home/claude /workspace /run/bn-ttyd /run/bn-code; chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd /run/bn-code; \
+    chmod 700 /home/claude /run/bn-ttyd /run/bn-code
 COPY tmux.conf /etc/tmux.conf
 COPY bashrc /etc/bedrock-now.bashrc
 COPY bin/ /usr/local/bin/
 RUN chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
-      /usr/local/bin/bn-session \
+      /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc
 
 ENV LANG=C.UTF-8 HOME=/home/claude SHELL=/bin/bash NPM_CONFIG_PREFIX=/home/claude/.local \

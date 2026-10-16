@@ -17,3 +17,6 @@ tailscale/*
 !tailscale/.gitkeep
 tests/e2e/out/
 tests/e2e/work/
+# node (code/, code/web/: npm ci from their lockfiles; code/web builds into dist/ inside the image)
+node_modules/
+code/web/dist/

@@ -1,0 +1,71 @@
+# The optional Code page (./stack code enable; lib/code.sh adds this file to every docker compose call while
+# CODE_ENABLED=true and the browser terminal is on — after compose.terminal.yaml, whose sandbox it uses).
+#
+# The code container serves the page and runs the Agent SDK; Claude Code itself runs in the terminal's sandbox, started
+# by bn-coded (terminal/bin/bn-coded.mjs) on a UNIX socket in the code-socket volume. The code container mounts no
+# folder of yours and holds no LiteLLM key: files, sessions and plugins are ops of bn-coded, spend and model prices
+# come from the portal (/.bn/spend, /.bn/models on the code host). Its only network, code-link (internal), it shares
+# with the main Caddy alone, which asks the portal first (session, a fresh unlock, the Origin) and then adds the secret
+# header (CODE_PROXY_SECRET) the code container requires. It reaches nothing else: not the internet, not LiteLLM, not
+# the portal, not the sandbox's network. Everything that comes back from the sandbox is treated as untrusted data.
+services:
+  code:
+    build:
+      context: ./code
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/code:local   # per project, like portal
+    restart: unless-stopped
+    user: "${TERMINAL_UID:-10104}:${TERMINAL_GID:-10104}"   # bn-coded's socket folder is that user's alone (mode 700)
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    mem_limit: 768m
+    pids_limit: 128
+    init: true
+    environment:
+      # Required on every request (X-Bn-Code-Proxy); only the main Caddy adds it. In the environment only, never on a
+      # command line; never in the sandbox.
+      CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}
+      HOME: /tmp
+    volumes:
+      - code-socket:/run/bn-code:ro   # connecting to bn-coded's socket needs no write access; it never listens there
+    networks:
+      code-link:
+        aliases: [code-upstream]
+    depends_on:
+      terminal: { condition: service_healthy }
+    logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # The sandbox: bn-coded runs beside ttyd (bn-terminal starts it with BN_CODE=1), listening in the shared volume.
+  terminal:
+    environment:
+      BN_CODE: "1"
+    volumes:
+      - code-socket:/run/bn-code
+
+  # The main Caddy: the code site (caddy/code-on.caddy, CODE_HOST), proxied to code-upstream:8095.
+  caddy:
+    networks: [default, terminal-link, code-link]
+    environment:
+      CODE_MODE: "on"   # caddy/code-on.caddy (code-off.caddy otherwise: no code site)
+      CODE_HOST: ${CODE_HOST:-code.${PORTAL_HOST:-bedrock-now.localhost}}
+      CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}
+      # Remote access (REMOTE_TERMINAL=true and ./stack remote): lib/code.sh writes this name; blank, the remote site's
+      # code block matches nothing.
+      REMOTE_CODE_HOST: ${REMOTE_CODE_HOST:-code.remote.invalid}
+
+  # The portal: the Code tab, the unlock, the code host's checks, its models and spend (/.bn/models, /.bn/spend).
+  portal:
+    environment:
+      CODE_ENABLED: "true"
+      CODE_HOST: ${CODE_HOST:-}
+      REMOTE_CODE_HOST: ${REMOTE_CODE_HOST:-}
+
+networks:
+  code-link:
+    internal: true
+
+volumes:
+  code-socket:

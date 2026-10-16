@@ -7,6 +7,8 @@
 #                                           signs S3 requests with it; signed in by the portal: app_sso below)
 #   {$TERMINAL_HOST} the browser terminal   (only with ./stack terminal enable: terminal-on.caddy; default
 #                                           terminal.PORTAL_HOST; a session AND a fresh password unlock)
+#   {$CODE_HOST}     the Code page          (only with ./stack code enable: code-on.caddy; default code.PORTAL_HOST;
+#                                           a session AND a fresh password unlock of its own)
 # The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
 # Every host first deletes any client-supplied X-Portal-User (and the rest of local_request), then asks the portal
 # (forward_auth) whether the bn_session cookie is valid; only the portal's answer can set X-Portal-User.
@@ -238,6 +240,81 @@ http://{$FILES_HOST} {
 	header_down Content-Security-Policy "default-src 'none'; script-src 'sha256-qpCL1JTmm6ktW0DnjpSILM7GnS2fO8/e+XjSlYJuQzQ='; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]}"
 }
 
+# The Code page (./stack code; code-on.caddy and the remote sites): the same scheme as the terminal's. Its unlock form
+# posts to /.bn/unlock on the code host, answered by the portal before the check (a host-only cookie of its own,
+# bn_code). Everything else needs the portal's yes for the Code page (?app=code, fixed here): a session, a fresh
+# unlock, and no Origin but the code host's own. The code container (code-upstream:8095, compose.code.yaml) answers
+# only requests carrying CODE_PROXY_SECRET, added below after the check; client copies of the headers only this Caddy
+# may set go first, in a step of their own.
+(code_unlock) {
+	request_body /.bn/unlock {
+		max_size 16KB
+	}
+	@bn_code_unlock path /.bn/unlock
+	reverse_proxy @bn_code_unlock portal:8000 {
+		rewrite /auth/code-unlock
+	}
+}
+
+(code_auth) {
+	request_header -X-Bn-Code-Proxy
+	request_header -X-Bn-Csp-Nonce
+	request_header -X-Bn-Portal-Origin
+	forward_auth portal:8000 {
+		uri /auth/verify?app=code
+	}
+}
+
+# After the check, the portal answers for the page what the code container must not hold: the models with this
+# stack's prices (/.bn/models) and a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the
+# portal). Any other /.bn/ path is nobody's.
+(code_portal) {
+	@bn_code_models path /.bn/models
+	reverse_proxy @bn_code_models portal:8000 {
+		rewrite /auth/code-models
+	}
+	@bn_code_spend path /.bn/spend
+	reverse_proxy @bn_code_spend portal:8000 {
+		rewrite /auth/code-spend?{query}
+	}
+	respond /.bn/* 404
+}
+
+# Towards the code container: none of the browser's cookies or the headers only Caddy and the portal may set; the
+# secret header; the per-request nonce the CSP below allows for <style> (the page reads it from a meta tag the
+# backend adds); and the portal origin that frames the page ({args[0]}: where its badge messages go).
+(code_upstream) {
+	header_up -Cookie
+	header_up -X-Portal-Proxy
+	header_up -X-Portal-User
+	header_up X-Bn-Code-Proxy {$CODE_PROXY_SECRET}
+	header_up X-Bn-Csp-Nonce {http.request.uuid}
+	header_up X-Bn-Portal-Origin {args[0]}
+}
+
+# From the code container — or whatever answers in its place: this Caddy sets the code host's policy. Scripts and
+# styles only from the code host itself (styles also with this request's nonce), connections only to it, images also
+# data:/blob:, frames only the terminal host ({args[1]}), no forms, no plugins, framed only by the portal
+# ({args[0]}), and Trusted Types: no HTML-string sink can run at all. Headers that could plant or clear cookies,
+# redirect, preload, widen a service worker, open CORS or send reports go.
+(code_page) {
+	header_down -X-Frame-Options
+	header_down -Set-Cookie
+	header_down -Clear-Site-Data
+	header_down -Refresh
+	header_down -Link
+	header_down -Location
+	header_down -Service-Worker-Allowed
+	header_down -Access-Control-*
+	header_down -Content-Security-Policy-Report-Only
+	header_down -Report-To
+	header_down -Reporting-Endpoints
+	header_down -NEL
+	header_down X-Content-Type-Options nosniff
+	header_down Referrer-Policy same-origin
+	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types 'none'"
+}
+
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
 # through this site, so stt itself shares no network with Open WebUI — which trusts X-Portal-User from any peer —
 # or the portal: a one-way hop. Port 8090 is not published (compose.yaml publishes 8080 only); it answers on
@@ -270,6 +347,9 @@ http:// {
 
 # The browser terminal: terminal-off.caddy (nothing; the default) or terminal-on.caddy (compose.terminal.yaml).
 import terminal-{$TERMINAL_MODE:off}.caddy
+
+# The Code page: code-off.caddy (nothing; the default) or code-on.caddy (compose.code.yaml).
+import code-{$CODE_MODE:off}.caddy
 
 # Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.
 import remote-{$REMOTE_MODE}.caddy

@@ -9,6 +9,8 @@
 #   {$REMOTE_ADMIN_HOST}  LiteLLM    {$REMOTE_FILES_HOST}  RustFS console
 #   {$REMOTE_TERMINAL_HOST} the browser terminal — only with REMOTE_TERMINAL=true (lib/terminal.sh writes the name;
 #                          otherwise it is terminal.remote.invalid, which matches nothing)
+#   {$REMOTE_CODE_HOST}   the Code page — only with the Code page on and REMOTE_TERMINAL=true (lib/code.sh; otherwise
+#                          code.remote.invalid)
 # Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
 # the remote origin and a host-only cookie per remote host (__Host-bn_session; app hosts get theirs via the
 # hand-off).
@@ -98,6 +100,20 @@ http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 		reverse_proxy terminal-upstream:7681 {
 			import terminal_upstream
 			import terminal_page {$REMOTE_ORIGIN}
+		}
+	}
+}
+
+http://{$REMOTE_CODE_HOST:code.remote.invalid}:8081 {
+	route {
+		import remote_request
+		import handoff_callback
+		import code_unlock
+		import code_auth
+		import code_portal
+		reverse_proxy code-upstream:8095 {
+			import code_upstream {$REMOTE_ORIGIN}
+			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
 		}
 	}
 }

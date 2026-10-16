@@ -139,6 +139,12 @@ cmd_rollback() {
   if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/Dockerfile" 2>/dev/null; then
     no_terminal=1; terminal_rollback_cleanup
   fi
+  # A version from before the Code page, while it is on: its container goes (lib/code.sh); its network and volume
+  # after the up.
+  no_code=0
+  if declare -F code_on >/dev/null && code_on && ! git -C "$STACK_DIR" cat-file -e "$from:code/server/main.mjs" 2>/dev/null; then
+    no_code=1; code_rollback_cleanup
+  fi
   _rollback_local_builds
   log "rollback: 2/3 data (./stack restore $backup, run by the restored code)"
   _rollback_redate_backup_files "$backup" "${fromv:-$from}"
@@ -152,6 +158,7 @@ cmd_rollback() {
   env BEDROCK_NOW_NO_OPEN=1 ${quiet[@]+"${quiet[@]}"} "$STACK_DIR/stack" up --yes ||
     die "the code and data are back, but ./stack up failed (see above) — run it again"
   [ "$no_stt" = 0 ] || stt_rollback_network_cleanup
+  [ "$no_code" = 0 ] || code_network_cleanup
   [ "$no_terminal" = 0 ] || terminal_network_cleanup
   _record_set result rolled-back
   # The images of the version rolled back from are now the "previous version": kept until the next update

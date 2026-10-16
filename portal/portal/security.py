@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from .config import APPS, TERMINAL, Settings
+from .config import APPS, CODE, TERMINAL, Settings
 
 log = logging.getLogger("portal")
 
@@ -223,7 +223,7 @@ def safe_next(raw: str | None, settings: Settings) -> str:
 
 
 def _site_hosts(settings: Settings, remote: bool) -> set[str]:
-    subs = list(APPS) + ([TERMINAL] if settings.terminal_on(remote) else [])
+    subs = list(APPS) + ([TERMINAL] if settings.terminal_on(remote) else []) + ([CODE] if settings.code_on(remote) else [])
     return {h for h in [settings.app_host(None, remote)] + [settings.app_host(sub, remote) for sub in subs] if h}
 
 
@@ -359,26 +359,36 @@ class Handoff:
         return data
 
 
-# --- the browser terminal (./stack terminal): a fresh password unlock on top of the session ---
+# --- the browser terminal (./stack terminal) and the Code page (./stack code): a fresh password unlock on top of the
+# --- session, one per app (its own cookie and its own signing salt: one never opens the other)
 
-# Host-only on the terminal host (no Domain), so no other host — not the portal, not an app — ever receives it;
-# remote: __Host- (Secure, Path=/). Caddy strips every cookie before ttyd (caddy/Caddyfile terminal_upstream).
+# Host-only on the app's host (no Domain), so no other host — not the portal, not an app — ever receives it; remote:
+# __Host- (Secure, Path=/). Caddy strips every cookie before ttyd and the code container (caddy/Caddyfile).
 TERMINAL_COOKIE = "bn_terminal"
 REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"
+CODE_COOKIE = "bn_code"
+REMOTE_CODE_COOKIE = "__Host-bn_code"
 TERMINAL_MAX_AGE = 12 * 3600
+UNLOCK_COOKIES = {TERMINAL: (TERMINAL_COOKIE, REMOTE_TERMINAL_COOKIE), CODE: (CODE_COOKIE, REMOTE_CODE_COOKIE)}
+
+
+def unlock_cookie_params(app: str, remote: bool) -> dict:
+    local, rem = UNLOCK_COOKIES[app]
+    return {"key": rem if remote else local, "domain": None, "secure": remote}
 
 
 def terminal_cookie_params(remote: bool) -> dict:
-    return {"key": REMOTE_TERMINAL_COOKIE if remote else TERMINAL_COOKIE, "domain": None, "secure": remote}
+    return unlock_cookie_params(TERMINAL, remote)
 
 
 class TerminalUnlocks:
-    """Signed proof that the portal password was typed again for the terminal, valid for TERMINAL_MAX_AGE. Like a
-    session it carries the password fingerprint (a new PORTAL_PASSWORD or PORTAL_SECRET voids it), counts only if
-    issued after the last Sign out (Sessions.not_before), and is bound to the Tailscale login where sessions are."""
+    """Signed proof that the portal password was typed again for an app (the terminal by default; the Code page has
+    its own instance, app=CODE), valid for TERMINAL_MAX_AGE. Like a session it carries the password fingerprint (a new
+    PORTAL_PASSWORD or PORTAL_SECRET voids it), counts only if issued after the last Sign out (Sessions.not_before),
+    and is bound to the Tailscale login where sessions are."""
 
-    def __init__(self, secret: str, sessions: Sessions, clock=time.time):
-        self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.terminal")
+    def __init__(self, secret: str, sessions: Sessions, clock=time.time, app: str = TERMINAL):
+        self._ser = URLSafeTimedSerializer(secret, salt=f"bedrock-now.portal.{app}")
         self._sessions = sessions
         self._clock = clock
 
@@ -402,18 +412,20 @@ class TerminalUnlocks:
         return isinstance(bound, str) and hmac.compare_digest(bound.encode(), (login or "").encode())
 
 
-def terminal_origin_ok(headers, settings: Settings, remote: bool, websocket: bool) -> bool:
-    """Requests to the terminal host carry no Origin, or the terminal host's own: never another site's (which could
-    otherwise drive the shell with your cookies). ttyd's WebSocket must send it (browsers always do)."""
+def terminal_origin_ok(headers, settings: Settings, remote: bool, websocket: bool, app: str = TERMINAL,
+                       method: str = "GET") -> bool:
+    """Requests to the terminal (or code) host carry no Origin, or that host's own: never another site's (which could
+    otherwise drive the shell with your cookies). A WebSocket must send it (browsers always do); on the code host so
+    must every request that changes something (browsers send it with every non-GET fetch and form)."""
     origin = headers.get("origin")
     if origin is None:
-        return not websocket
-    return origin == settings.origin(TERMINAL, remote)
+        return not websocket and (app != CODE or method in ("GET", "HEAD"))
+    return origin == settings.origin(app, remote)
 
 
-def terminal_same_origin(headers, settings: Settings, remote: bool) -> bool:
-    """CSRF check for the unlock form: Origin (or, without it, Referer) must be the terminal host itself."""
-    want = settings.origin(TERMINAL, remote)
+def terminal_same_origin(headers, settings: Settings, remote: bool, app: str = TERMINAL) -> bool:
+    """CSRF check for the unlock form: Origin (or, without it, Referer) must be the app's host itself."""
+    want = settings.origin(app, remote)
     origin = headers.get("origin")
     if origin is not None:
         return origin == want

@@ -1,0 +1,13 @@
+{
+  "name": "bedrock-now-code",
+  "private": true,
+  "description": "The Code page's backend (./stack code). The Agent SDK moves in lock-step with the terminal's Claude Code pin (its claudeCodeVersion = terminal/claude-code's version; code/test/pins.test.mjs checks it). npm ci checks every tarball against package-lock.json",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "ws": "8.22.0"
+  }
+}

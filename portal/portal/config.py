@@ -29,6 +29,10 @@ REMOTE_MODES = ("tailscale", "domain")
 # TERMINAL_HOST (default terminal.PORTAL_HOST), behind the session AND a fresh password unlock; on the remote site
 # only with REMOTE_TERMINAL=true (REMOTE_TERMINAL_HOST, written by lib/terminal.sh).
 TERMINAL = "terminal"
+# The optional Code page (./stack code; compose.code.yaml passes CODE_ENABLED=true): Claude Code with a chat, in the
+# terminal's sandbox — so only while the terminal is on. Its own host, CODE_HOST (default code.PORTAL_HOST), behind the
+# session AND a fresh password unlock of its own; remote with the terminal's switch (REMOTE_CODE_HOST, lib/code.sh).
+CODE = "code"
 
 # LiteLLM virtual keys shown on Home: (env var, key alias, label)
 KEYS = (
@@ -100,6 +104,7 @@ class Settings:
     stt_url: str = "http://caddy:8090"   # Caddy's internal speech-to-text site (no network is shared with stt)
     terminal: bool = False         # TERMINAL_ENABLED=true: the Terminal tab and terminal host (./stack terminal)
     remote_terminal: bool = False  # REMOTE_TERMINAL=true: also on the remote site (remote_app_hosts["terminal"])
+    code: bool = False             # CODE_ENABLED=true (with the terminal): the Code tab and code host (./stack code)
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -128,13 +133,16 @@ class Settings:
 
     def app_origins(self) -> list[str]:
         local = [self.origin(sub) for sub in APPS]
-        return local + ([self.origin(sub, remote=True) for sub in APPS] if self.remote_on() else []) + self.terminal_origins()
+        return (local + ([self.origin(sub, remote=True) for sub in APPS] if self.remote_on() else []) + self.terminal_origins()
+                + self.code_origins())
 
     def app_urls(self, remote: bool = False) -> dict:
         """{"chat": "https://…/", …}: where Home opens each app on this site (the terminal only where it is on)."""
         urls = {sub: self.origin(sub, remote) + path for sub, path in APPS.items()}
         if self.terminal_on(remote):
             urls[TERMINAL] = self.origin(TERMINAL, remote) + "/"
+        if self.code_on(remote):
+            urls[CODE] = self.origin(CODE, remote) + "/"
         return urls
 
     def terminal_on(self, remote: bool = False) -> bool:
@@ -145,6 +153,17 @@ class Settings:
 
     def terminal_origins(self) -> list[str]:
         return [self.origin(TERMINAL, remote=rem) for rem in (False, True) if self.terminal_on(rem)]
+
+    def code_on(self, remote: bool = False) -> bool:
+        """The Code page is enabled and so is the terminal (its sandbox) on this site; remotely also its own name."""
+        return self.code and self.terminal_on(remote) and (not remote or bool(self.remote_app_hosts.get(CODE)))
+
+    def code_origins(self) -> list[str]:
+        return [self.origin(CODE, remote=rem) for rem in (False, True) if self.code_on(rem)]
+
+    def locked_on(self, app: str, remote: bool = False) -> bool:
+        """The terminal / the Code page: on, and usable on this site."""
+        return self.terminal_on(remote) if app == TERMINAL else self.code_on(remote) if app == CODE else False
 
 
 def _on(value: str | None) -> bool:
@@ -180,12 +199,17 @@ def from_env(env: dict | None = None) -> Settings:
     keys = tuple((alias, label, env.get(var, "")) for var, alias, label in KEYS if var not in OPTIONAL_KEYS or env.get(var))
     terminal = _on(env.get("TERMINAL_ENABLED"))
     remote_terminal = terminal and _on(env.get("REMOTE_TERMINAL"))
+    code = terminal and _on(env.get("CODE_ENABLED"))
     app_hosts = {sub: env.get(var, "").strip().lower() for sub, var in APP_HOST_ENV.items() if env.get(var, "").strip()}
     if (env.get("TERMINAL_HOST") or "").strip():
         app_hosts[TERMINAL] = env["TERMINAL_HOST"].strip().lower()
+    if (env.get("CODE_HOST") or "").strip():
+        app_hosts[CODE] = env["CODE_HOST"].strip().lower()
     remote_app_hosts = {sub: (env.get(var) or "").strip().lower() for sub, var in REMOTE_APP_HOST_ENV.items()}
     if remote_terminal and (env.get("REMOTE_TERMINAL_HOST") or "").strip():
         remote_app_hosts[TERMINAL] = env["REMOTE_TERMINAL_HOST"].strip().lower()
+    if code and remote_terminal and (env.get("REMOTE_CODE_HOST") or "").strip():
+        remote_app_hosts[CODE] = env["REMOTE_CODE_HOST"].strip().lower()
     return Settings(
         password_hash=password_hash,
         secret=secret,
@@ -225,6 +249,7 @@ def from_env(env: dict | None = None) -> Settings:
         remote_app_hosts=remote_app_hosts,
         terminal=terminal,
         remote_terminal=remote_terminal,
+        code=code,
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),

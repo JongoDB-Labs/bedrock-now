@@ -190,6 +190,7 @@ terminal_enable() {
   [ "${ids% *}" != 10104 ] || [ "$(id -u)" != 0 ] || warn "running as root: the terminal runs as uid 10104 — give it $real (chown -R 10104:10104 $real)"
   set_env TERMINAL_ENABLED true
   terminal_remote_sync
+  code_remote_sync   # lib/code.sh: the Code page's remote name follows the terminal's switch
   log "LiteLLM and shared-mcp restart once as they join the terminal's gateway network (the first enable): Chat" \
     "answers, claude-bedrock requests and MCP sessions in progress drop for a few seconds"
   run_phase "Terminal image (build; the first one takes a few minutes)" terminal terminal_build
@@ -207,12 +208,14 @@ terminal_disable() {
   ! stack_lock_ours || own=0
   stack_lock terminal
   check_prereqs
+  code_terminal_off   # lib/code.sh: the Code page runs in this sandbox, so it goes off too
   dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true   # with the overlay still on: compose knows them
   set_env TERMINAL_ENABLED false
   terminal_remote_sync
   log "LiteLLM and shared-mcp restart once as they leave the terminal's gateway network: Chat answers," \
     "claude-bedrock requests and MCP sessions in progress drop for a few seconds"
   run_phase "Portal + Caddy (terminal off)" "portal caddy litellm shared-mcp" _terminal_front
+  code_network_cleanup   # (lib/code.sh: its network and socket volume, now that nothing uses them)
   terminal_network_cleanup
   docker volume rm "$(project_name)_terminal-socket" >/dev/null 2>&1 || true   # ttyd's socket: nothing to keep
   [ "$own" = 0 ] || stack_unlock

@@ -351,6 +351,47 @@ key in Admin to revoke it). The first `enable`, and `disable`, restart LiteLLM a
 join or leave the terminal's gateway network): Chat answers, `claude-bedrock` requests and MCP sessions in progress
 drop for a few seconds. Details and what was weighed: [docs/security.md](docs/security.md#the-browser-terminal).
 
+### The Code page (optional)
+
+```bash
+./stack code enable                        # turns the browser terminal on too when it is off
+./stack code enable --workspace ~/projects # its sandbox's folder, as for ./stack terminal enable
+./stack code status                        # ./stack code disable turns it off again (the terminal stays)
+```
+
+This adds a **Code** tab to the portal, directly under Chat (on a phone: **More → Code**, full screen): Claude Code
+with a chat instead of a terminal. You type a prompt, the answer streams in, tool calls show as cards, and every
+command or file change Claude wants to make asks first — **Allow once**, **Always** (the rule Claude Code proposes,
+shown before you click; never "skip all permissions") or **Deny**. While a prompt waits, the Code tab shows a badge;
+nobody answering for 10 minutes counts as Deny. You pick the model (with this stack's prices), the permission mode
+(*Ask before changes*, *Accept edits*, *Plan*, *Don't ask*) and the effort; **Stop** interrupts a turn; slash
+commands work as typed (`/context`, `/cost`, `/compact`, skills and plugin commands); your sessions are listed and
+can be resumed — also from the Terminal tab's `claude --resume`, which shares them. Files: the workspace's tree,
+open, edit and save (with a "changed on disk" check), upload. A session keeps working when you close the tab or
+reload: the page re-attaches and shows what it missed. At most 4 sessions run at once (each Claude Code process
+takes ~220 MB of the sandbox's memory); an idle one stops after 30 minutes and your next prompt resumes it.
+
+It runs in the [browser terminal's](#claude-code-in-the-browser-optional) sandbox — the same container, workspace
+folder, key (`claude-code-terminal`) and budget (`BUDGET_TERMINAL`), internet switch (`TERMINAL_EGRESS`) and
+remote switch (`REMOTE_TERMINAL`) — so `enable` turns the terminal on when it is off, and `./stack terminal
+disable` turns the Code page off with it. The page itself comes from a separate container that holds no LiteLLM
+key and mounts no folder of yours: Claude Code runs in the sandbox (started there by a small spawn server on a
+socket only the two containers share), the files you see are read and written there, and the costs it shows come
+from LiteLLM's spend logs through the portal. Opening it asks for the portal password again (12 hours per
+browser, its own unlock, separate from the terminal's); Sign out locks it.
+
+**Costs.** Every prompt is billed like `claude-bedrock`, on the terminal's key; the page shows the turn's and the
+session's cost a few seconds after each turn (LiteLLM writes its logs in batches). Two things cost more than they
+look: a **new session** and every **model switch within a session** make the next request write the prompt cache
+for that model again — Claude Code's system prompt, tools and the conversation so far, ~26-30k tokens: about
+$0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5 (the model list shows this per model). The cache
+lives 5 minutes, so the first turn after a longer pause writes it again too.
+
+What the sandbox can do is what the terminal can (see above); on top, a compromised sandbox could show misleading
+*text* in the Code page (fake tool output or diffs, a misleading permission sentence) but cannot run script in your
+browser, reach the page's container, change the prices or costs shown, or answer a permission prompt itself.
+Details: [docs/security.md](docs/security.md#the-code-page).
+
 ### Claude Code from your phone
 
 SSH into the machine from a phone SSH app (Blink or Termius on iOS, Termius or JuiceSSH on Android), start
@@ -709,7 +750,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack up` / `down` | Start / stop (data is kept) | none |
 | `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups, and old images `./stack clean` would remove, if any; reused for 5 minutes, `--disk` measures now) | none |
 | `./stack open` | The installed bedrock-now app, else the portal in a browser tab | none |
-| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`, `stt`, `terminal`) | none |
+| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`, `stt`, `terminal`, `code`) | none |
 | `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
 | `./stack costs` | Prices for your enabled models + spend per key | none |
 | `./stack prices [--accept]` | Check prices now; `--accept` applies a refused change | none |
@@ -728,6 +769,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack terminal status\|enable [--workspace DIR]\|disable` | Optional: Claude Code in the browser, a sandbox that sees one folder ([above](#claude-code-in-the-browser-optional)) | none (its sessions: per token) |
+| `./stack code status\|enable [--workspace DIR]\|disable` | Optional: the Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox ([above](#the-code-page-optional)) | none (its sessions: per token) |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
@@ -884,7 +926,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is printed);
   results as a table and JUnit XML in `tests/e2e/out/`. `--terminal` (or `E2E_TERMINAL=1`) also turns on the
   browser terminal and checks it (lock, unlock, tmux, Origin, isolation; with the claude part one
-  `claude-bedrock -p` inside it, ~$0.02). `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
+  `claude-bedrock -p` inside it, ~$0.02). `--code` (or `E2E_CODE=1`) also turns on the Code page and checks it
+  (unlock, CSP, a Haiku session: streaming, permission allow/deny and the badge, model switch, interrupt, a slash
+  command, re-attach and resume, files, spend; isolation; a hostile stand-in on its spawn socket; ~$0.02).
+  Its backend's unit tests run in its image's test stage: `code/test.sh`. `--helper` (or `E2E_HELPER=1`) also runs the throwaway's update helper
   in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).
@@ -914,6 +959,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   Claude Code's few LiteLLM paths and the shared MCP server; opening it needs the portal password again, it refuses
   other sites' connections, and remote access leaves it out unless `REMOTE_TERMINAL=true`. What it writes into
   the workspace can run on your computer when you open that folder there.
+- The Code page is off by default too, and runs Claude Code in that same sandbox. Its page comes from a container
+  with no LiteLLM key, no folder of yours and no network but the one it shares with Caddy; it needs its own
+  password unlock, treats everything from the sandbox as untrusted text (a strict CSP with Trusted Types, set by
+  Caddy whoever answers), and takes models, prices and costs from the portal, never from the sandbox.
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale
@@ -931,11 +980,16 @@ compose.yaml                  all services (images pinned)
 compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
 compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin
 compose.terminal*.yaml        the optional browser terminal and its gateway (only while ./stack terminal is on)
+compose.code.yaml             the optional Code page (only while ./stack code is on, with the terminal)
 caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site,
-                              caddy/terminal-*.caddy the terminal's site and its gateway
+                              caddy/terminal-*.caddy the terminal's site and its gateway, caddy/code-*.caddy
+                              the Code page's site
 tailscale/                    the sidecar's serve config (written by ./stack remote)
 portal/                       login + Home service (Python; tests: docker build --target test portal)
-terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux
+terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux, the Code page's
+                              spawn server (bin/bn-coded.mjs)
+code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code; tests:
+                              code/test.sh), the plain page (plain/) and the frontend build (web/, when present)
 shared-mcp/                   MCP server for shared files and knowledge (Python; tests: docker build --target test shared-mcp)
 owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map

@@ -1,0 +1,17 @@
+# The Code page on (./stack code enable; compose.code.yaml sets CODE_MODE=on). Imported by Caddyfile; the snippets
+# (code_unlock, code_auth, code_portal, code_upstream, code_page) are defined there. The code container shares only the
+# code-link network with this Caddy (code-upstream:8095) and requires the secret header added here.
+
+# code.PORTAL_HOST (CODE_HOST): the Code page, framed by the portal's Code tab — or full screen on a phone.
+http://{$CODE_HOST} {
+	route {
+		import local_request
+		import code_unlock
+		import code_auth
+		import code_portal
+		reverse_proxy code-upstream:8095 {
+			import code_upstream {$PORTAL_ORIGIN}
+			import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST}
+		}
+	}
+}

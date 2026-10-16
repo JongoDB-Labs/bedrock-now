@@ -6,6 +6,34 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The Code page** (optional, off by default): `./stack code enable` adds a **Code** tab directly under Chat (on a
+  phone under More, full screen) with Claude Code as a chat — streamed answers, tool calls, permission prompts
+  (*Allow once*, *Always* with the proposed rule shown, *Deny*; a badge on the tab while one waits; denied after 10
+  minutes without an answer), model, permission mode and effort switches, Stop, slash commands, sessions that keep
+  working with the tab closed (a reload re-attaches; idle ones stop after 30 minutes and resume on the next prompt;
+  at most 4 at once) and resume from the list, and the workspace's files (tree, read, edit with a "changed on disk"
+  check, upload, download). It runs Claude Code in the browser terminal's sandbox — same container, workspace, key
+  (`claude-code-terminal`) and budget — so `enable` turns the terminal on when it is off (`--workspace DIR` as
+  there) and `./stack terminal disable` turns it off too; `./stack code disable` keeps the terminal. The page comes
+  from a new `code` container (Node; the TypeScript Agent SDK 0.3.296, pinned in lock-step with the terminal's
+  Claude Code 2.1.296) that holds no LiteLLM key, mounts no folder of yours and shares one internal network with
+  Caddy only: Claude Code is started in the sandbox by a small spawn server (`terminal/bin/bn-coded.mjs`, Node
+  built-ins only, an argument allowlist) on a socket only the two containers share, and files, sessions and
+  plugins go through it too; everything coming back is treated as untrusted (capped, every id checked, rendered as
+  text). Its host needs the portal session and a password unlock of its own; the main Caddy sets its page policy (a
+  strict CSP with a per-request style nonce and Trusted Types) whoever answers. Models with this stack's prices and
+  each session's cost (LiteLLM's spend logs, the terminal key's rows) come from the portal (`/.bn/models`,
+  `/.bn/spend`). A new session or a model switch makes the next turn write that model's prompt cache again
+  (~30k tokens: about $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5); the model list says so. Remote
+  access follows the terminal's `REMOTE_TERMINAL` (a sixth Tailscale Service, or `code.<your domain>`). This
+  release serves a plain page; a richer frontend (`code/web`, built into the image when present) follows. Home's
+  Claude Code card and the walkthrough mention the Code tab. `./stack test` checks it (health, the unlock, other
+  Origins, the secret header, isolation of both sides); the e2e suite gains `--code`; the backend's unit tests run
+  in its image's test stage (`code/test.sh`). How it is built and what it trusts: README › The Code page,
+  docs/security.md › The Code page.
+
 ## [0.4.1] - 2026-10-15
 
 ### Added

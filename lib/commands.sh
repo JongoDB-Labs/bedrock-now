@@ -7,8 +7,9 @@ STACK_SERVICES="$STACK_BASE_SERVICES"
 # stack_services -> the stack's own services plus the optional ones .env turns on (stt: Bedrock speech-to-text).
 # Built from STACK_BASE_SERVICES: callers keep a local STACK_SERVICES, which must not be extended twice.
 stack_services() { local extra; extra="$(optional_services)"; printf '%s\n' "$STACK_BASE_SERVICES${extra:+ $extra}"; }
-# optional_services -> the services .env turns on besides those: stt (Bedrock speech-to-text), terminal (./stack terminal)
-optional_services() { local s t; s="$(stt_services)"; t="$(terminal_services)"; printf '%s\n' "$s${s:+${t:+ }}$t"; }
+# optional_services -> the services .env turns on besides those: stt (Bedrock speech-to-text), terminal (./stack terminal),
+# code (./stack code)
+optional_services() { local s t c; s="$(stt_services)"; t="$(terminal_services)"; c="$(code_services)"; printf '%s\n' "$s${s:+${t:+ }}$t${c:+ $c}"; }
 
 cmd_help() {
   cat <<'EOF'
@@ -21,7 +22,7 @@ Usage: ./stack <command> [--yes]
   open         The installed bedrock-now app, else the portal in your browser, where
                "Install app" installs it (setup and up open it too; BEDROCK_NOW_NO_OPEN=1
                turns that off)
-  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy, stt, terminal)
+  logs [svc]   Follow logs (litellm, open-webui, rustfs, postgres, shared-mcp, portal, caddy, stt, terminal, code)
   test         Smoke-test every service end to end (~$0.0001 Bedrock)
   costs        Bedrock prices for your enabled models + spend per key
   prices       Check Bedrock prices now (public price lists; daily anyway)
@@ -55,6 +56,9 @@ Usage: ./stack <command> [--yes]
                on by default when your AWS key can use it) or OpenAI/Groq (outside Bedrock):
                status | set bedrock [small|mini] | set openai|groq [model] | remove   (see docs/voice.md)
   terminal     Claude Code in the browser: a Terminal tab, a sandbox that sees only one folder of yours
+               status | enable [--workspace DIR] | disable   (asks for the portal password again)
+  code         Claude Code in the browser with a chat: a Code tab with permission prompts, models and
+               your files, in the terminal's sandbox (turned on too)
                status | enable [--workspace DIR] | disable   (asks for the portal password again)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
@@ -201,7 +205,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local | */terminal:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local | */terminal:local | */code:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
@@ -419,6 +423,7 @@ cmd_setup() {
   setup_keys_and_ui
   write_mcp_config
   terminal_setup_hook   # lib/terminal.sh: the browser terminal, when on — rebuilt with the current keys; never fatal
+  code_setup_hook       # lib/code.sh: the Code page, when on (after the terminal: its sandbox) — rebuilt; never fatal
   cmd_test
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
@@ -775,6 +780,7 @@ SUMMARY
   openrouter_summary_line
   stt_summary_line
   terminal_summary_line
+  code_summary_line
   remote_summary_line
   printf '\n  All credentials live in .env (mode 600).\n'
 }
@@ -845,6 +851,7 @@ cmd_up() {
   check_portal_host "$(portal_host)"
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
   terminal_up_hook     # lib/terminal.sh: its remote name, and a missing workspace folder said out loud
+  code_up_hook         # lib/code.sh: its remote name and secret; left out (said) while the terminal is
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_password_hash   # lib/settings.sh: PORTAL_PASSWORD edited by hand gets a new hash
   owner_email_lowercase         # lib/settings.sh: as Chat keeps it
@@ -914,6 +921,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
     tailscale) if [ -n "$(remote_url)" ]; then echo "$(remote_url)   (your devices; ./stack remote status)"; else echo "- (./stack remote status)"; fi ;;
     terminal) echo "$(portal_url terminal)   (the Terminal tab; ./stack terminal status)" ;;
     terminal-gateway) echo "- (the terminal's only way into the stack)" ;;
+    code) echo "$(portal_url code)   (the Code tab; ./stack code status)" ;;
     *) echo "- (internal only)" ;;
   esac
 }
@@ -1064,6 +1072,7 @@ cmd_test() {
   _check "shared-mcp lists tools" "$code" '"search_knowledge"'
   stt_test_checks   # lib/stt.sh: Bedrock speech-to-text, when on (~$0.00005)
   terminal_test_checks   # lib/terminal.sh: the browser terminal's checks, when on (no Bedrock calls)
+  code_test_checks       # lib/code.sh: the Code page's checks, when on (no Bedrock calls)
   rm -f "$tmp"
   [ "$fails" -eq 0 ] || die "$fails check(s) failed — see ./stack logs"
   log "all checks passed"
@@ -1579,6 +1588,7 @@ cmd_uninstall() {
   [ "$(ask "Type 'bedrock-now' to confirm" "")" = bedrock-now ] || die "aborted — nothing was removed"
   if confirm "Take a backup first?"; then cmd_backup; fi
   dc down -v --remove-orphans
+  code_uninstall_cleanup       # lib/code.sh: its network, socket volume and image (before the terminal's)
   terminal_uninstall_cleanup   # lib/terminal.sh: its volume, networks and image, also while it is off
   local_builds_remove          # lib/images.sh: <project>/portal:local, …:previous, by exact name (never a prune)
   ! helper_installed || helper_uninstall
@@ -1620,5 +1630,7 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/remote.sh"
 # The optional browser terminal (./stack terminal; Claude Code in a sandbox container, the portal's Terminal tab).
 . "$STACK_DIR/lib/terminal.sh"
+# The optional Code page (./stack code; Claude Code with a chat and files, in the terminal's sandbox; the Code tab).
+. "$STACK_DIR/lib/code.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
 . "$STACK_DIR/lib/claude_config.sh"

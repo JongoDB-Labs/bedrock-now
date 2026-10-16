@@ -45,10 +45,10 @@ valid_ts_label() {
 }
 
 # ts_service_names -> "svc:<base> svc:<base>-chat svc:<base>-admin svc:<base>-files" (+ svc:<base>-terminal while the
-# browser terminal is shared remotely: REMOTE_TERMINAL=true, lib/terminal.sh)
+# browser terminal is shared remotely: REMOTE_TERMINAL=true, lib/terminal.sh; + svc:<base>-code with the Code page)
 ts_service_names() {
   local b a out; b="$(ts_base)"; out="svc:$b"
-  for a in $REMOTE_APPS $(terminal_remote_app); do out="$out svc:$b-$a"; done
+  for a in $REMOTE_APPS $(terminal_remote_app) $(code_remote_app); do out="$out svc:$b-$a"; done
   printf '%s\n' "$out"
 }
 
@@ -160,6 +160,7 @@ remote_app_host() {
     admin) get_env REMOTE_ADMIN_HOST ;;
     files) get_env REMOTE_FILES_HOST ;;
     terminal) get_env REMOTE_TERMINAL_HOST ;;
+    code) get_env REMOTE_CODE_HOST ;;
     *) return 1 ;;
   esac
   echo
@@ -178,6 +179,7 @@ remote_set_hosts() {
   set_env REMOTE_HOST "$1"; set_env REMOTE_CHAT_HOST "$2"; set_env REMOTE_ADMIN_HOST "$3"; set_env REMOTE_FILES_HOST "$4"
   if [ -n "$1" ]; then set_env REMOTE_ORIGIN "https://$1"; else set_env REMOTE_ORIGIN ""; fi
   terminal_remote_sync   # lib/terminal.sh: the terminal's remote name follows (only with REMOTE_TERMINAL=true)
+  code_remote_sync       # lib/code.sh: the Code page's too (the same switch)
 }
 # remote_hosts_tailscale TAILNET — <base>.<tailnet>, <base>-chat.<tailnet>, … (ts.net is a public suffix, so all
 # four share the "site" <tailnet>.ts.net: same-site for SameSite cookies; each cookie stays host-only).
@@ -217,14 +219,15 @@ ts_serve_file() { printf '%s/serve.json\n' "${TS_SERVE_DIR:-$STACK_DIR/$TS_SERVE
 #              for devices owned by a user (not tagged ones), Tailscale-User-Login.
 #   domain:    no Services; the node forwards TCP 443 untouched to Caddy, which terminates TLS itself.
 ts_serve_config() {
-  local mode="$1" t="${2:-}" b s first=1 term=''
+  local mode="$1" t="${2:-}" b s first=1 term='' codes=''
   case "$mode" in
     tailscale)
       valid_tailnet "$t" || return 1
       b="$(ts_base)"
       [ -z "$(terminal_remote_app)" ] || term="$b-terminal"
+      [ -z "$(code_remote_app)" ] || codes="$b-code"
       printf '{\n  "Services": {'
-      for s in "$b" "$b-chat" "$b-admin" "$b-files" ${term:+"$term"}; do
+      for s in "$b" "$b-chat" "$b-admin" "$b-files" ${term:+"$term"} ${codes:+"$codes"}; do
         [ "$first" = 1 ] || printf ','
         first=0
         printf '\n    "svc:%s": {\n      "TCP": { "443": { "HTTPS": true } },\n      "Web": { "%s.%s:443": { "Handlers": { "/": { "Proxy": "http://caddy:8081" } } } }\n    }' "$s" "$s" "$t"
@@ -554,7 +557,7 @@ remote_status() {
     printf '  not finished — the sidecar has not logged in yet: ./stack remote enable %s\n' "$mode"
   else
     printf '  Portal   %s\n' "$(remote_url)"
-    for s in $REMOTE_APPS $(terminal_remote_app); do printf '  %-8s %s\n' "$s" "$(remote_url "$s")"; done
+    for s in $REMOTE_APPS $(terminal_remote_app) $(code_remote_app); do printf '  %-8s %s\n' "$s" "$(remote_url "$s")"; done
   fi
   printf '  Local    %s (unchanged)\n' "$(portal_url)"
   sj="$(_ts status --json || true)"

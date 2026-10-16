@@ -25,6 +25,10 @@
 #   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
 #                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
 #                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
+#   --code           also turn on the Code page (./stack code enable; E2E_CODE=1 does the same; implies --terminal):
+#                    its isolation probe, its Caddy combinations, the browser suite's code checks (a few Haiku turns,
+#                    ~$0.02 on the terminal's key, whose budget becomes $0.15) and, after the suite, a hostile stand-in
+#                    on bn-coded's socket
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -52,6 +56,7 @@ NOTTY="$HERE/notty"
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
 SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,mutating"
 TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
+CODE=0; [ "${E2E_CODE:-0}" != 1 ] || { CODE=1; TERMINAL=1; }
 HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +71,7 @@ while [ $# -gt 0 ]; do
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
     --terminal) TERMINAL=1; shift ;;
+    --code) CODE=1; TERMINAL=1; shift ;;
     --helper) HELPER=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
@@ -84,6 +90,8 @@ done
 part_on() { case ",$ONLY," in *",$1,"*) return 0 ;; esac; return 1; }   # part_on PART -> 0 when --only includes it
 # The terminal's claude-bedrock -p (browser suite) is a second Claude Code run, on the terminal's own key.
 if [ "$TERMINAL" = 1 ]; then BUDGETS="$BUDGETS BUDGET_TERMINAL=0.06"; SPEND_LIMIT="0.16"; fi
+# The Code page's checks: a handful of Haiku turns (each new session writes ~26k tokens of prompt cache) on that key.
+if [ "$CODE" = 1 ]; then BUDGETS="${BUDGETS% BUDGET_TERMINAL=*} BUDGET_TERMINAL=0.15"; SPEND_LIMIT="0.25"; fi
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
 
 mkdir -p "$OUT" || exit 2
@@ -352,14 +360,80 @@ if [ "$TERMINAL" = 1 ]; then
   t0="$(now)"; bad=''
   cad="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)"
   tgw="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal-gateway)"
-  for tm in off on; do for rm in off tailscale; do
-    docker exec -e TERMINAL_MODE="$tm" -e REMOTE_MODE="$rm" "$cad" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
-      > "$LOGS/terminal-caddy-$tm-$rm.log" 2>&1 || bad="$bad terminal-$tm/remote-$rm"
-  done; done
+  for tm in off on; do for cm in off on; do for rm in off tailscale; do
+    [ "$tm:$cm" != off:on ] || continue                    # the Code page only with the terminal
+    [ "$cm" = off ] || [ "$CODE" = 1 ] || continue           # (its snippets need CODE_* only while it is on)
+    # (the code site's names: this runs before ./stack code enable gives the container its own)
+    docker exec -e TERMINAL_MODE="$tm" -e CODE_MODE="$cm" -e REMOTE_MODE="$rm" -e CODE_HOST="code.$HOST" -e CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef \
+      "$cad" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
+      > "$LOGS/terminal-caddy-$tm-$cm-$rm.log" 2>&1 || bad="$bad terminal-$tm/code-$cm/remote-$rm"
+  done; done; done
   docker exec "$tgw" caddy validate --config /etc/caddy/terminal-gateway.caddy --adapter caddyfile > "$LOGS/terminal-caddy-gateway.log" 2>&1 ||
     bad="$bad gateway"
-  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on × remote off/tailscale, and terminal-gateway.caddy"
+  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on$( [ "$CODE" = 1 ] && echo ' × the Code page off/on') × remote off/tailscale, and terminal-gateway.caddy"
   else record terminal caddy-configs-validate FAIL "$(( $(now) - t0 ))" "caddy validate failed for:$bad (logs $LOGS/terminal-caddy-*.log)"; fi
+fi
+
+# --- 1c. the Code page (--code): on, in the terminal's sandbox ---
+# code_probe CONTAINER — inside the code container (its own node): what it reaches and what it holds. "name<TAB>result".
+code_probe() {
+  docker exec -i "$1" node --input-type=module - <<'JS'
+import net from 'node:net';
+import fs from 'node:fs';
+const tcp = (host, port) => new Promise((r) => { const s = net.connect({ host, port, timeout: 4000 });
+  const d = (x) => { s.destroy(); r(x); }; s.on('connect', () => d('open')); s.on('timeout', () => d('closed')); s.on('error', () => d('closed')); });
+for (const [h, p] of [['litellm', 4000], ['portal', 8000], ['open-webui', 8080], ['postgres', 5432], ['rustfs', 9000], ['shared-mcp', 8000],
+  ['stt', 8000], ['terminal', 7681], ['gateway', 8091], ['terminal-upstream', 7681], ['1.1.1.1', 443], ['host.docker.internal', 80], ['caddy', 8080]]) {
+  console.log(`${h}:${p}\t${await tcp(h, p)}`);
+}
+console.log(`secrets-in-env\t${Object.keys(process.env).filter((k) => /KEY|TOKEN|SECRET|PASSWORD/.test(k)).sort().join(',')}`);
+console.log(`workspace\t${fs.existsSync('/workspace') ? 'present' : 'absent'}`);
+const mounts = fs.readFileSync('/proc/self/mounts', 'utf8').split('\n').map((l) => l.split(' ')[1]).filter(Boolean);
+console.log(`mounts\t${mounts.filter((m) => !/^\/(proc|sys|dev)(\/|$)/.test(m) && !['/', '/etc/hosts', '/etc/hostname', '/etc/resolv.conf'].includes(m)).sort().join(',')}`);
+let w = 'no'; try { fs.writeFileSync('/opt/code/x', 'x'); w = 'yes'; } catch { /* read-only */ }
+console.log(`rootfs-writable\t${w}`);
+let s = 'no'; try { fs.writeFileSync('/run/bn-code/x', 'x'); s = 'yes'; } catch { /* :ro */ }
+console.log(`socket-dir-writable\t${s}`);
+console.log(`uid\t${process.getuid()}`);
+console.log(`claude-binary\t${fs.existsSync('/usr/local/bin/claude') || fs.readdirSync('/opt/code/node_modules/@anthropic-ai').some((n) => n !== 'claude-agent-sdk') ? 'present' : 'absent'}`);
+JS
+}
+if [ "$CODE" = 1 ]; then
+  if [ "$(get_env CODE_ENABLED)" != true ]; then
+    say "code: ./stack code enable (its image is built the first time)"
+    cli code-enable 0 'Code page: on' code enable || die "code enable failed — see $LOGS/cli-code-enable.log"
+  fi
+  cli code-status 0 'Container  running' code status
+  t0="$(now)"; bad=''
+  cc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=code)"
+  tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
+  cad="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)"
+  if [ -z "$cc" ] || [ -z "$tc" ]; then record code code-isolation FAIL 0 "no running code or terminal container"
+  else
+    probe="$(code_probe "$cc" 2>&1)"; printf '%s\n' "$probe" > "$LOGS/code-isolation.log"; redact "$LOGS/code-isolation.log"
+    for k in litellm:4000 portal:8000 open-webui:8080 postgres:5432 rustfs:9000 shared-mcp:8000 stt:8000 terminal:7681 gateway:8091 \
+             terminal-upstream:7681 1.1.1.1:443 host.docker.internal:80; do
+      printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
+    done
+    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/run/bn-code,/tmp,/usr/sbin/docker-init rootfs-writable=no \
+              socket-dir-writable=no claude-binary=absent; do
+      printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
+    done
+    [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "uid" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
+    # From the sandbox: no route to the code container; bn-coded's socket in a folder of its own (mode 700)
+    out="$(docker exec "$tc" sh -c 'curl -s -m 4 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>&1)"
+    [ "$out" = "000 700 socket" ] || bad="$bad sandbox:$out"
+    # The main Caddy reaches it, but it answers nothing without the secret header
+    out="$(docker exec "$cad" sh -c 'wget -S -T 10 -O /dev/null http://code-upstream:8095/api/state 2>&1 | awk "/^  HTTP\// { print \$2; exit }"' 2>&1)"
+    [ "$out" = 407 ] || bad="$bad no-secret:$out"
+    # its LiteLLM-free, key-free environment
+    ins="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cc" 2>/dev/null)"
+    for k in LITELLM_KEY_TERMINAL LITELLM_KEY_CLAUDE_CODE LITELLM_MASTER_KEY SHARED_MCP_TOKEN TERMINAL_PROXY_SECRET; do ! env_has "$k" "$ins" || bad="$bad has-$k"; done
+    unset ins
+    if [ -z "$bad" ]; then
+      record code code-isolation PASS "$(( $(now) - t0 ))" "code container: only Caddy (code-link), no LiteLLM, portal, Open WebUI, data, stt, sandbox, gateway or internet; no workspace mount (mounts: the socket folder :ro, /tmp, Docker's init), read-only, no Claude Code binary, its only secret CODE_PROXY_SECRET, your uid; 407 without the secret; the sandbox cannot reach it; bn-coded's socket folder 700"
+    else record code code-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/code-isolation.log)"; fi
+  fi
 fi
 
 # --- 2. read-only CLI checks ---
@@ -417,7 +491,7 @@ browser_run() {
   t0="$(now)"
   # the terminal's one real Claude Code call (browser/terminal-claude-bedrock-inside) only with the claude part
   E2E_TERMINAL_CLAUDE="$( [ "$TERMINAL" = 1 ] && part_on claude && [ "$NO_CLAUDE" = 0 ] && echo 1 || echo 0)" \
-    E2E_TERMINAL_HOSTILE="${HOSTILE:-0}" E2E_HELPER_ON="${HELPER_ON:-0}" E2E_TAG="$tag" \
+    E2E_TERMINAL_HOSTILE="${HOSTILE:-0}" E2E_CODE_HOSTILE="${CODE_HOSTILE:-0}" E2E_HELPER_ON="${HELPER_ON:-0}" E2E_TAG="$tag" \
     "$HERE/browser.sh" "$STACK" "$OUT" "$PROJECT" "$PW_IMAGE" "$filter"; rc=$?
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
@@ -480,6 +554,34 @@ if part_on browser; then
     case "$page" in *'<title>ttyd'*) record terminal stand-in-removed PASS "$(( $(now) - t0 ))" "ttyd answers on its socket again" ;;
       *) record terminal stand-in-removed FAIL "$(( $(now) - t0 ))" "ttyd's socket not back (docker exec $tc ls -la /run/bn-ttyd)" ;; esac
     unset page
+  fi
+  # The code host whoever answers on bn-coded's socket: a stand-in (code-stub.mjs, run with the sandbox's own node)
+  # moves bn-coded's socket aside and answers with markup, bogus ids, an oversized frame and an endless line; the
+  # browser check then runs against it, and the stand-in puts bn-coded's socket back.
+  if [ "$CODE" = 1 ]; then
+    tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
+    cc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=code)"
+    t0="$(now)"
+    if [ -n "$tc" ] && docker exec -i "$tc" sh -c 'cat > /tmp/code-stub.mjs' < "$HERE/code-stub.mjs" &&
+       docker exec -d "$tc" node /tmp/code-stub.mjs /run/bn-code/coded.sock; then
+      for _ in $(seq 1 20); do docker exec "$tc" test -S /run/bn-code/coded.real && break; sleep 0.5; done
+      CODE_HOSTILE=1; browser_run "code: a stand-in on bn-coded's socket" 'browser/code-hostile-sandbox$' hostile-code; CODE_HOSTILE=0
+    else record browser code-hostile-sandbox@hostile-code FAIL "$(( $(now) - t0 ))" "could not start the stand-in on bn-coded's socket"; fi
+    t0="$(now)"
+    docker exec "$tc" pkill -f 'code-stub[.]mjs' >/dev/null 2>&1
+    for _ in $(seq 1 20); do docker exec "$tc" test -e /run/bn-code/coded.real || break; sleep 0.5; done
+    st="$(docker inspect -f '{{.State.Health.Status}}' "$cc" 2>/dev/null)"
+    mem="$(docker stats --no-stream --format '{{.MemUsage}}' "$cc" 2>/dev/null | awk '{ print $1 }')"
+    back="$(docker exec "$tc" node -e 'const s = require("net").connect("/run/bn-code/coded.sock"); s.on("connect", () => { console.log("ok"); s.destroy(); }); s.on("error", () => console.log("no"))' 2>&1)"
+    if [ "$st" = healthy ] && [ "$back" = ok ] && ! docker exec "$tc" test -e /run/bn-code/coded.real; then
+      record code stand-in-removed PASS "$(( $(now) - t0 ))" "bn-coded answers on its socket again; the code container healthy, using $mem (limit 768 MiB)"
+    else record code stand-in-removed FAIL "$(( $(now) - t0 ))" "code container $st, bn-coded's socket: $back"; fi
+    # The code container's secret never reached the main Caddy's log
+    sec="$(get_env CODE_PROXY_SECRET)"
+    n="$(docker logs "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=caddy)" 2>&1 | grep -c "$sec" || true)"
+    unset sec
+    if [ "$n" = 0 ]; then record code caddy-log-no-secret PASS 0 "CODE_PROXY_SECRET appears 0 times in the main Caddy's log"
+    else record code caddy-log-no-secret FAIL 0 "CODE_PROXY_SECRET appears $n times in the main Caddy's log"; fi
   fi
 fi
 

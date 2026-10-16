@@ -1,0 +1,346 @@
+"""The optional Code page (./stack code): it needs the terminal (its sandbox); its host needs the session AND a fresh
+password unlock of its own (bn_code: a terminal unlock never opens it, nor the other way round), refuses other sites'
+Origins (and state changes without one), stays off remotely unless REMOTE_TERMINAL=true and it has a remote name; the
+portal answers its models (this stack's prices) and a session's spend (LiteLLM's logs, the terminal key's rows only),
+and offers the Code tab only while it is on."""
+
+import hashlib
+import html
+import json
+import re
+from dataclasses import replace
+
+import httpx
+import pytest
+from starlette.testclient import TestClient
+
+from portal.app import create_app
+from portal.config import from_env
+from portal.security import COOKIE, CODE_COOKIE, REMOTE_CODE_COOKIE, TERMINAL_COOKIE, TerminalUnlocks, Sessions, safe_next
+
+SECRET = "s" * 64
+PW = "correct horse"
+PORTAL = "http://bedrock-now.localhost"
+CODE_HOST = "code.bedrock-now.localhost"
+CODE = f"http://{CODE_HOST}"
+TERM_HOST = "terminal.bedrock-now.localhost"
+NAV = {"Accept": "text/html,application/xhtml+xml", "X-Forwarded-Method": "GET", "X-Forwarded-Host": CODE_HOST, "X-Forwarded-Uri": "/"}
+API = {"X-Forwarded-Method": "GET", "X-Forwarded-Host": CODE_HOST, "X-Forwarded-Uri": "/api/state"}
+WS = {"X-Forwarded-Method": "GET", "X-Forwarded-Host": CODE_HOST, "X-Forwarded-Uri": "/ws", "Origin": CODE}
+VERIFY = "/auth/verify?app=code"
+TN = "tail1234.ts.net"
+R_PORTAL, R_CODE_HOST = f"bn.{TN}", f"bn-code.{TN}"
+PROXY = "p" * 64
+REMOTE = {"X-Portal-Remote": "1", "X-Portal-Proxy": PROXY, "Tailscale-User-Login": "me@example.com"}
+SID = "3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8"
+TERM_KEY = "sk-terminal-key"
+
+
+def offline(request):
+    raise httpx.ConnectError("offline in tests")
+
+
+@pytest.fixture
+def cs(settings):
+    return replace(settings, terminal=True, code=True,
+                   keys=settings.keys + (("claude-code-terminal", "Terminal (browser)", TERM_KEY),))
+
+
+def _client(s, transport=None, base=PORTAL):
+    return TestClient(create_app(s, transport=transport or httpx.MockTransport(offline)), base_url=base, follow_redirects=False)
+
+
+@pytest.fixture
+def cc(cs):
+    with _client(cs) as c:
+        yield c
+
+
+def _cookie(resp, name):
+    return next((c for c in resp.headers.get_list("set-cookie") if c.startswith(name + "=")), None)
+
+
+def session(c):
+    r = c.post("/login", data={"password": PW, "next": "/"}, headers={"Origin": PORTAL})
+    assert r.status_code == 303, r.text
+    c.cookies.clear()
+    return _cookie(r, COOKIE).split(";", 1)[0].split("=", 1)[1]
+
+
+def unlock(c, tok, password=PW, origin=CODE, host=CODE_HOST, headers=None):
+    r = c.post("/auth/code-unlock", data={"password": password},
+               headers={"Host": host, "Origin": origin, "Cookie": f"{COOKIE}={tok}", **(headers or {})})
+    c.cookies.clear()
+    return r
+
+
+def unlocked(c):
+    tok = session(c)
+    r = unlock(c, tok)
+    assert r.status_code == 303, r.text
+    return tok, _cookie(r, CODE_COOKIE).split(";", 1)[0].split("=", 1)[1]
+
+
+def verify(c, cookies, headers=NAV):
+    return c.get(VERIFY, headers={**headers, "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items())})
+
+
+# --- settings ---
+
+def test_code_needs_the_terminal_and_has_its_own_host():
+    base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "x" * 40, "PORTAL_HOST": "bn.localhost", "PORTAL_PORT": "8800"}
+    assert not from_env({**base, "CODE_ENABLED": "true"}).code_on()       # no terminal: no Code page
+    s = from_env({**base, "CODE_ENABLED": "true", "TERMINAL_ENABLED": "true"})
+    assert s.code_on() and s.app_urls()["code"] == "http://code.bn.localhost:8800/"
+    assert "http://code.bn.localhost:8800" in s.app_origins()
+    assert from_env({**base, "TERMINAL_ENABLED": "true", "CODE_ENABLED": "true", "CODE_HOST": "IDE.localhost"}).origin("code") == "http://ide.localhost:8800"
+    off = from_env({**base, "TERMINAL_ENABLED": "true"})
+    assert not off.code_on() and "code" not in off.app_urls()
+
+
+def test_remote_code_needs_the_terminals_switch_and_its_name():
+    base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "x" * 40, "REMOTE_MODE": "tailscale", "REMOTE_HOST": R_PORTAL,
+            "TERMINAL_ENABLED": "true", "REMOTE_TERMINAL_HOST": f"bn-terminal.{TN}", "CODE_ENABLED": "true", "REMOTE_CODE_HOST": R_CODE_HOST}
+    assert not from_env(base).code_on(remote=True)
+    on = from_env({**base, "REMOTE_TERMINAL": "true"})
+    assert on.code_on(remote=True) and on.app_urls(remote=True)["code"] == f"https://{R_CODE_HOST}/"
+    assert not from_env({**base, "REMOTE_TERMINAL": "true", "REMOTE_CODE_HOST": ""}).code_on(remote=True)
+    assert not from_env({**base, "REMOTE_TERMINAL": "true", "REMOTE_TERMINAL_HOST": ""}).code_on(remote=True)
+
+
+def test_login_may_return_to_the_code_host_only_while_it_is_on(settings, cs):
+    assert safe_next(f"{CODE}/", cs) == f"{CODE}/"
+    assert safe_next(f"{CODE}/", settings) == "/"
+
+
+def _meta(page, name):
+    m = re.search(rf'<meta name="{name}" content="([^"]*)">', page)
+    return json.loads(html.unescape(m.group(1)))
+
+
+def test_tab_is_offered_only_when_on(settings, cs):
+    for s, want in ((settings, False), (replace(settings, terminal=True), False), (cs, True)):
+        with _client(s) as c:
+            tok = session(c)
+            r = c.get("/", headers={"Cookie": f"{COOKIE}={tok}"})
+            assert ("code" in _meta(r.text, "bn-apps")) is want
+            assert _meta(r.text, "bn-code") == {"enabled": s.code, "here": want}
+            assert 'src="/static/code.js"' in r.text
+            assert (CODE in r.headers["content-security-policy"]) is want   # frame-src: the Code tab's frame
+            summary = c.get("/api/summary", headers={"Cookie": f"{COOKIE}={tok}", "X-Requested-With": "bedrock-now"}).json()
+            assert summary["code"] == {"enabled": s.code, "here": want} and ("code" in summary["apps"]) is want
+
+
+def test_code_tab_sits_under_chat_and_under_more_on_phones():
+    js = open("portal/static/code.js", encoding="utf-8").read()
+    assert '.tabs .tab[data-tab=chat]' in js and "after.after(" in js
+    assert '#more-sheet .sheet-links' in js and "e.origin !== codeOrigin" in js
+    assert '"code"' in open("portal/static/mobile.js", encoding="utf-8").read().split("DESKTOP_ONLY", 1)[1].split("\n", 1)[0]
+    assert ".tabs .code-item" in open("portal/static/mobile.css", encoding="utf-8").read()
+    assert "innerHTML" not in js
+
+
+# --- /auth/verify?app=code ---
+
+def test_code_host_is_404_while_off(settings):
+    with _client(replace(settings, terminal=True)) as c:
+        r = verify(c, {COOKIE: session(c)})
+        assert r.status_code == 404 and "./stack code enable" in r.text
+
+
+def test_without_a_session_the_login(cc):
+    r = verify(cc, {})
+    assert r.status_code == 302 and r.headers["location"].startswith(f"{PORTAL}/login?next=http%3A%2F%2Fcode.")
+    assert verify(cc, {}, API).status_code == 401
+
+
+def test_a_session_alone_shows_the_code_pages_unlock_form(cc):
+    tok = session(cc)
+    r = verify(cc, {COOKIE: tok})
+    assert r.status_code == 401 and "Unlock the Code page" in r.text and 'action="/.bn/unlock"' in r.text
+    csp = r.headers["content-security-policy"]
+    assert f"frame-ancestors {PORTAL}" in csp and "default-src 'none'" in csp
+    r = verify(cc, {COOKIE: tok}, API)
+    assert r.status_code == 401 and "Code page locked" in r.text
+
+
+def test_session_and_unlock_open_it_and_the_websocket(cc):
+    tok, ut = unlocked(cc)
+    for h in (NAV, API, WS):
+        r = verify(cc, {COOKIE: tok, CODE_COOKIE: ut}, h)
+        assert r.status_code == 200 and r.headers["x-portal-user"] == "admin@example.com"
+    assert verify(cc, {CODE_COOKIE: ut}, API).status_code == 401   # never instead of the session
+
+
+def test_the_terminals_unlock_never_opens_the_code_page_and_back(cc):
+    tok = session(cc)
+    # a terminal unlock issued by this very portal, under the code cookie's name: refused (another salt)
+    term = cc.post("/auth/terminal-unlock", data={"password": PW},
+                   headers={"Host": TERM_HOST, "Origin": f"http://{TERM_HOST}", "Cookie": f"{COOKIE}={tok}"})
+    cc.cookies.clear()
+    tt = _cookie(term, TERMINAL_COOKIE).split(";", 1)[0].split("=", 1)[1]
+    assert verify(cc, {COOKIE: tok, CODE_COOKIE: tt}, API).status_code == 401
+    _, ct = unlocked(cc)
+    r = cc.get("/auth/verify?app=terminal", headers={"X-Forwarded-Method": "GET", "X-Forwarded-Host": TERM_HOST, "X-Forwarded-Uri": "/",
+                                                    "Cookie": f"{COOKIE}={tok}; {TERMINAL_COOKIE}={ct}"})
+    assert r.status_code == 401
+
+
+def test_other_sites_origins_and_bare_state_changes_are_refused(cc):
+    tok, ut = unlocked(cc)
+    jar = {COOKIE: tok, CODE_COOKIE: ut}
+    for origin in ("http://evil.example", PORTAL, f"http://{TERM_HOST}", "null", f"{CODE}:8080"):
+        assert verify(cc, jar, {**WS, "Origin": origin}).status_code == 403, origin
+        assert verify(cc, jar, {**API, "Origin": origin}).status_code == 403, origin
+    ws = dict(WS); del ws["Origin"]
+    assert verify(cc, jar, ws).status_code == 403          # a WebSocket without an Origin
+    for m in ("POST", "PUT", "DELETE"):                     # a change without one
+        assert verify(cc, jar, {**API, "X-Forwarded-Method": m}).status_code == 403, m
+        assert verify(cc, jar, {**API, "X-Forwarded-Method": m, "Origin": CODE}).status_code == 200, m
+    assert verify(cc, jar, API).status_code == 200          # a GET without one (fetch sends none for same-origin GETs)
+
+
+def test_unlock_checks_host_origin_session_and_password(cc):
+    tok = session(cc)
+    assert unlock(cc, tok, origin="http://evil.example").status_code == 403
+    # only on the code host itself (the terminal host has its own form, /auth/terminal-unlock)
+    assert unlock(cc, tok, host=TERM_HOST, origin=f"http://{TERM_HOST}").status_code == 404
+    assert unlock(cc, tok, host="chat.bedrock-now.localhost").status_code == 404
+    r = unlock(cc, tok, password="wrong")
+    assert r.status_code == 401 and "not right" in r.text and "Unlock the Code page" in r.text
+    r = cc.post("/auth/code-unlock", data={"password": PW}, headers={"Host": CODE_HOST, "Origin": CODE})
+    assert r.status_code == 302 and "/login" in r.headers["location"]
+    r = unlock(cc, tok)
+    c = _cookie(r, CODE_COOKIE)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert "HttpOnly" in c and "SameSite=strict" in c and "Domain" not in c and "Max-Age=43200" in c
+
+
+def test_unlock_is_off_while_the_code_page_is(settings):
+    with _client(replace(settings, terminal=True)) as c:
+        assert unlock(c, session(c)).status_code == 404
+
+
+def test_sign_out_locks_it_again(cc):
+    tok, ut = unlocked(cc)
+    assert verify(cc, {COOKIE: tok, CODE_COOKIE: ut}, API).status_code == 200
+    cc.post("/logout", headers={"Origin": PORTAL, "Cookie": f"{COOKIE}={tok}"})
+    tok2 = session(cc)
+    assert verify(cc, {COOKIE: tok2, CODE_COOKIE: ut}, API).status_code == 401
+
+
+def test_remote_off_unless_shared_and_its_own_cookie_there(settings):
+    rs = replace(settings, terminal=True, code=True, remote_mode="tailscale", remote_host=R_PORTAL, proxy_secret=PROXY,
+                 remote_app_hosts={"terminal": f"bn-terminal.{TN}"}, remote_terminal=True)
+    with _client(rs) as c:
+        r = c.get(VERIFY, headers={**API, **REMOTE, "X-Forwarded-Host": R_CODE_HOST})
+        assert r.status_code == 403 and "REMOTE_TERMINAL" in r.text
+    on = replace(rs, remote_app_hosts={"terminal": f"bn-terminal.{TN}", "code": R_CODE_HOST})
+    with _client(on) as c:
+        r = c.post("/login", data={"password": PW, "next": "/"}, headers={"Origin": f"https://{R_PORTAL}", "Host": R_PORTAL, **REMOTE})
+        tok = _cookie(r, "__Host-bn_session").split(";", 1)[0].split("=", 1)[1]
+        c.cookies.clear()
+        r = c.post("/auth/code-unlock", data={"password": PW}, headers={"Host": R_CODE_HOST, "Origin": f"https://{R_CODE_HOST}",
+                                                                      "Cookie": f"__Host-bn_session={tok}", **REMOTE})
+        c.cookies.clear()
+        ck = _cookie(r, REMOTE_CODE_COOKIE)
+        assert r.status_code == 303 and "Secure" in ck and "Domain" not in ck
+        ut = ck.split(";", 1)[0].split("=", 1)[1]
+        r = c.get(VERIFY, headers={**API, **REMOTE, "X-Forwarded-Host": R_CODE_HOST, "Cookie": f"__Host-bn_session={tok}; {REMOTE_CODE_COOKIE}={ut}"})
+        assert r.status_code == 200
+
+
+# --- /.bn/models and /.bn/spend (Caddy → /auth/code-models, /auth/code-spend) ---
+
+def _guarded(c, path, tok, ut, host=CODE_HOST, origin=None):
+    h = {"Host": host, "Cookie": f"{COOKIE}={tok}; {CODE_COOKIE}={ut}"}
+    if origin:
+        h["Origin"] = origin
+    return c.get(path, headers=h)
+
+
+def test_models_and_spend_need_the_code_host_a_session_and_its_unlock(cc):
+    tok, ut = unlocked(cc)
+    for path in ("/auth/code-models", f"/auth/code-spend?session={SID}"):
+        assert cc.get(path, headers={"Host": CODE_HOST, "Cookie": f"{COOKIE}={tok}"}).status_code == 401
+        assert _guarded(cc, path, tok, ut, host="bedrock-now.localhost").status_code == 404
+        assert _guarded(cc, path, tok, ut, origin="http://evil.example").status_code == 403
+
+
+def test_models_are_this_stacks_claude_models_with_its_prices(cs):
+    (cs.litellm_dir / "probe-results.tsv").write_text(
+        "claude-opus-5-5\tchat\tENABLED\tok\t$4.40/$22\t2026-10-15\n"
+        "claude-haiku-5-5\tchat\tENABLED\tok\t$0.11/$0.55\t2026-10-15\n"
+        "claude-sonnet-4-5\tchat\tDISABLED\tno model access\t-\t2026-10-15\n"
+        "gpt-6-sol\tchat\tENABLED\tok\t-\t2026-10-15\n"
+        "cohere-embed-v4\tembedding\tENABLED\tok\t-\t2026-10-15\n", encoding="utf-8")
+    (cs.catalog_dir / "prices.tsv").write_text(
+        "# as_of: 2026-10-12\nclaude-opus-5-5\t4.40\t22.00\t0.22\t5.50\t-\t-\nclaude-haiku-5-5\t0.11\t0.55\t0.011\t0.1375\t-\t-\n", encoding="utf-8")
+    s = replace(cs, claude_models={"opus": "claude-opus-5-5", "sonnet": "", "haiku": "claude-haiku-5-5"})
+    with _client(s) as c:
+        tok, ut = unlocked(c)
+        r = _guarded(c, "/auth/code-models", tok, ut)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+        d = r.json()
+        assert [m["id"] for m in d["models"]] == ["claude-opus-5-5", "claude-haiku-5-5"]
+        opus = d["models"][0]
+        assert opus["alias"] == "opus" and opus["prices"] == {"in": 4.4, "out": 22.0, "cache_read": 0.22, "cache_write": 5.5}
+        assert opus["cache_write_30k"] == 0.165
+        assert d["aliases"] == {"opus": "claude-opus-5-5", "haiku": "claude-haiku-5-5"} and d["default"] == "claude-opus-5-5"
+        assert "(claude-opus-5-5 $0.165, claude-haiku-5-5 $0.004)" in d["note"], d["note"]
+
+
+def _litellm(pages, calls):
+    def handler(request):
+        calls.append(request)
+        if request.url.path == "/key/info":
+            assert request.headers["authorization"] == f"Bearer {TERM_KEY}"
+            return httpx.Response(200, json={"info": {"spend": 1.25, "max_budget": 50, "budget_reset_at": "2026-11-01T00:00:00Z"}})
+        assert request.url.path == "/spend/logs/session/ui" and request.headers["authorization"] == "Bearer sk-master"
+        page = int(request.url.params["page"])
+        return pages(page, request)
+    return httpx.MockTransport(handler)
+
+
+def test_spend_is_the_sessions_rows_of_the_terminal_key_only(cs):
+    mine = hashlib.sha256(TERM_KEY.encode()).hexdigest()
+    rows = {1: [{"api_key": mine, "spend": 0.0039, "model": "claude-haiku-5-5", "startTime": "2026-10-15T10:00:01Z", "prompt_tokens": 3,
+                 "completion_tokens": 5, "total_tokens": 8, "status": "success", "metadata": {"usage_object": {"cache_creation_input_tokens": 26000}}},
+                {"api_key": "someone-elses-hash", "spend": 9.99, "model": "x", "startTime": "2026-10-15T10:00:00Z"}],
+            2: [{"api_key": mine, "spend": 0.0004, "model": "claude-haiku-5-5", "startTime": "2026-10-15T10:00:00Z", "total_tokens": "NaN",
+                 "prompt_tokens": -3}]}
+    calls = []
+    t = _litellm(lambda p, req: httpx.Response(200, json={"data": rows[p], "total": 3, "page": p, "page_size": 100, "total_pages": 2}), calls)
+    with _client(cs, transport=t) as c:
+        tok, ut = unlocked(c)
+        r = _guarded(c, f"/auth/code-spend?session={SID}", tok, ut)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["session"] == SID and d["requests"] == 2 and d["total"] == 0.0043
+        assert [x["startTime"] for x in d["rows"]] == ["2026-10-15T10:00:00+00:00", "2026-10-15T10:00:01+00:00"]
+        assert d["rows"][1]["tokens"] == {"input": 3, "output": 5, "total": 8, "cache_read": 0, "cache_write": 26000}
+        assert d["rows"][0]["tokens"]["total"] == 0 and d["rows"][0]["tokens"]["input"] == 0
+        assert d["key"] == {"alias": "claude-code-terminal", "spend": 1.25, "max_budget": 50, "reset_at": "2026-11-01T00:00:00Z", "error": None}
+        q = [x for x in calls if x.url.path.startswith("/spend")][0]
+        assert q.url.params["session_id"] == f"code-{SID}"
+        for bad in ("../../etc", "", f"{SID}x", SID.upper()):
+            assert _guarded(c, f"/auth/code-spend?session={bad}", tok, ut).status_code == 400, bad
+
+
+def test_spend_says_when_litellm_fails(cs):
+    for resp in (httpx.Response(500, text="boom"), httpx.Response(200, text="not json"), httpx.Response(200, json={"nodata": 1})):
+        t = _litellm(lambda p, req, resp=resp: resp, [])
+        with _client(cs, transport=t) as c:
+            tok, ut = unlocked(c)
+            r = _guarded(c, f"/auth/code-spend?session={SID}", tok, ut)
+            assert r.status_code == 502 and r.json()["error"]
+    with _client(replace(cs, keys=cs.keys[:-1])) as c:
+        tok, ut = unlocked(c)
+        assert _guarded(c, f"/auth/code-spend?session={SID}", tok, ut).status_code == 503
+
+
+def test_unlock_tokens_are_bound_to_their_app():
+    s = Sessions(SECRET, "pw-hash")
+    term, code = TerminalUnlocks(SECRET, s), TerminalUnlocks(SECRET, s, app="code")
+    assert code.valid(code.issue()) and term.valid(term.issue())
+    assert not code.valid(term.issue()) and not term.valid(code.issue())

@@ -11,6 +11,7 @@ from playwright.sync_api import sync_playwright
 
 import checks_api  # noqa: F401 — registers checks
 import checks_browser  # noqa: F401
+import checks_code  # noqa: F401
 import checks_http  # noqa: F401
 import checks_terminal  # noqa: F401
 import checks_voice  # noqa: F401

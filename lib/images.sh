@@ -64,8 +64,9 @@ _local_build() { case "$1" in "$(project_name)/"*:local) return 0 ;; esac; retur
 images_snapshot_before() {
   local d ref
   d="$(images_dir)"; mkdir -p "$d" 2>/dev/null || return 0
-  # + the browser terminal's local build while it is on (its overlay, compose.terminal.yaml, is not compose.yaml)
-  { project_refs "${1:-}"; ! declare -F terminal_image_refs >/dev/null || terminal_image_refs; } |
+  # + the browser terminal's and the Code page's local builds while they are on (their overlays are not compose.yaml)
+  { project_refs "${1:-}"; ! declare -F terminal_image_refs >/dev/null || terminal_image_refs
+    ! declare -F code_image_refs >/dev/null || code_image_refs; } |
     snapshot_refs > "$d/before.tsv.new" 2>/dev/null || true
   mv "$d/before.tsv.new" "$d/before.tsv" 2>/dev/null || true
   while IFS= read -r ref; do
@@ -215,7 +216,7 @@ EOF
 
 # LOCAL_BUILDS — the images this project builds itself: <project>/<name>:local (and :previous, the build before the
 # last update's, kept for ./stack rollback); caddy-dns only with the own-domain overlay, and never a :previous
-LOCAL_BUILDS="portal shared-mcp stt terminal caddy-dns"
+LOCAL_BUILDS="portal shared-mcp stt terminal code caddy-dns"
 
 # local_builds_remove — ./stack uninstall, after compose's down: this install's built images by their exact names,
 # only those that exist. Never forced and never a prune: an image something still uses stays (and is named).

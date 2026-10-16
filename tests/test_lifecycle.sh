@@ -291,8 +291,10 @@ test_uninstall_removes_this_installs_built_images_by_exact_name() {
     return 0
   }
   cmd_uninstall 2> "$TMP/err"
-  # each one by its name, only those that exist (the terminal's as before: lib/terminal.sh); never forced or pruned
-  assert_eq "$(grep '^docker image rm' "$TMP/calls")" "docker image rm bn-x/terminal:local bn-x/terminal:previous
+  # each one by its name, only those that exist (the Code page's and the terminal's as before: lib/code.sh,
+  # lib/terminal.sh); never forced or pruned
+  assert_eq "$(grep '^docker image rm' "$TMP/calls")" "docker image rm bn-x/code:local bn-x/code:previous
+docker image rm bn-x/terminal:local bn-x/terminal:previous
 docker image rm bn-x/portal:local
 docker image rm bn-x/portal:previous
 docker image rm bn-x/shared-mcp:local

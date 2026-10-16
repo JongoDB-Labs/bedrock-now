@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Code · bedrock-now</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <strong class="brand">Code</strong>
+  <label>Session <select id="session"><option value="">—</option></select></label>
+  <button id="new" type="button">New session</button>
+  <label>Model <select id="model"></select></label>
+  <label>Mode <select id="mode">
+    <option value="default">Ask before changes</option>
+    <option value="acceptEdits">Accept edits</option>
+    <option value="plan">Plan</option>
+    <option value="dontAsk">Don't ask (deny what is not allowed)</option>
+  </select></label>
+  <label>Effort <select id="effort"><option value="">default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+  <button id="stop" type="button">Stop</button>
+  <span id="cost" class="muted" title="From LiteLLM's spend logs (through the portal); appears a few seconds after each turn"></span>
+  <span id="status" class="muted">connecting…</span>
+</header>
+<p id="note" class="note muted"></p>
+<main>
+  <section id="log" class="log" aria-live="polite" aria-label="Conversation"></section>
+  <aside class="side">
+    <nav class="side-tabs">
+      <button type="button" data-side="sessions" aria-pressed="true">Sessions</button>
+      <button type="button" data-side="files" aria-pressed="false">Files</button>
+      <button type="button" data-side="info" aria-pressed="false">Info</button>
+    </nav>
+    <div id="side-sessions" class="side-pane">
+      <input id="find" type="search" placeholder="Search sessions">
+      <ul id="sessions" class="list"></ul>
+    </div>
+    <div id="side-files" class="side-pane" hidden>
+      <p class="crumbs"><span id="cwd">/workspace</span> <button id="up" type="button">Up</button> <button id="refresh" type="button">Refresh</button></p>
+      <ul id="files" class="list"></ul>
+      <p><label>Upload <input id="upload" type="file" multiple></label></p>
+      <div id="editor" hidden>
+        <p class="crumbs"><strong id="editing"></strong> <button id="save" type="button">Save</button> <button id="close-file" type="button">Close</button> <span id="file-note" class="muted"></span></p>
+        <textarea id="text" spellcheck="false" aria-label="File contents"></textarea>
+      </div>
+    </div>
+    <div id="side-info" class="side-pane" hidden>
+      <p><button id="cmds" type="button">Commands</button> <button id="mcp" type="button">MCP</button> <button id="context" type="button">Context</button></p>
+      <pre id="info" class="info"></pre>
+    </div>
+  </aside>
+</main>
+<section id="perms" class="perms" aria-live="assertive"></section>
+<form id="ask" class="ask">
+  <textarea id="prompt" rows="3" placeholder="Ask Claude… (/ for commands: /context, /cost, /model sonnet …; @path mentions a file)"></textarea>
+  <button type="submit">Send</button>
+</form>
+</body>
+</html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Unlock the Code page · bedrock-now</title>
+<link rel="icon" href="{{portal}}/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{portal}}/static/login.css">
+</head>
+<body class="login unlock">
+<main class="login-panel">
+  <div class="brand"><img src="{{portal}}/static/logo.svg" alt="" width="36" height="36"><span>bedrock-now</span></div>
+  <h1>Unlock the Code page</h1>
+  <p class="lede">Claude Code with a chat, your workspace's files and permission prompts. It runs in the terminal's sandbox, which sees only your workspace folder. Type the portal password again to open it in this browser for 12 hours.</p>
+  {{error}}
+  <form method="post" action="/.bn/unlock">
+    <label for="password">Portal password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Unlock</button>
+  </form>
+  <p class="hint">Sign out locks it again. Closing the tab does not stop Claude: a session keeps working, and asks for permissions when you come back (unanswered ones are denied after 10 minutes).</p>
+</main>
+</body>
+</html>

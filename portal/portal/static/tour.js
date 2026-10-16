@@ -115,7 +115,8 @@
         p("How the pieces fit together:"),
         list("ul", [
           [b("Chat"), " (Open WebUI): conversations, voice and your documents."],
-          [b("Claude Code"), " in your terminal (", code("claude-bedrock"), "): coding."],
+          [b("Claude Code"), " in your terminal (", code("claude-bedrock"), "): coding",
+            ...(APP_URLS.code ? [" — or in the ", b("Code"), " tab, with a chat, your files and permission prompts."] : ["."])],
           [b("Files"), " (RustFS): the shared store both of them use."],
           [b("Admin"), " (LiteLLM): keys, budgets, logs."]]),
         p("One sign-in, the portal's, opens all of them. Every model call goes through one gateway to your AWS Bedrock account (plus OpenRouter, if you add it), and every answer shows what it cost."),

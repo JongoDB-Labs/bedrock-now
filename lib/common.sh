@@ -261,14 +261,15 @@ dc() {
       OWUI_STT_BASE_URL STT_BEDROCK_MODEL COMPOSE_PROFILES \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME \
       TERMINAL_ENABLED TERMINAL_WORKSPACE TERMINAL_EGRESS TERMINAL_HOST TERMINAL_UID TERMINAL_GID TERMINAL_MEM_LIMIT \
-      REMOTE_TERMINAL REMOTE_TERMINAL_HOST
+      REMOTE_TERMINAL REMOTE_TERMINAL_HOST CODE_ENABLED CODE_HOST CODE_PROXY_SECRET REMOTE_CODE_HOST
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }
 
 # compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)
 # adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin; the browser terminal
-# (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet unless TERMINAL_EGRESS=off.
+# (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet unless TERMINAL_EGRESS=off;
+# the Code page (CODE_ENABLED=true, lib/code.sh) its container, only together with the terminal (its sandbox).
 compose_overlays() {
   if [ "${REMOTE_DEGRADED:-0}" != 1 ]; then   # remote network unusable this run (lib/remote.sh remote_net_preflight)
     case "$(get_env REMOTE_MODE)" in
@@ -281,6 +282,7 @@ compose_overlays() {
   if flag_on "$(get_env TERMINAL_ENABLED)" && [ -n "$(get_env TERMINAL_WORKSPACE)" ]; then
     echo compose.terminal.yaml
     flag_off "$(get_env TERMINAL_EGRESS)" || echo compose.terminal-egress.yaml
+    ! flag_on "$(get_env CODE_ENABLED)" || echo compose.code.yaml
   fi
   return 0
 }

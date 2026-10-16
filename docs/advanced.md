@@ -319,6 +319,15 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   limit is then $0.16). The probe also checks the gateway's 404s (`..` paths included), its secret header before
   ttyd's socket (and that a failed request logs no secret), the terminal key's 403s on LiteLLM past the gateway,
   the gateway's neighbours and `caddy validate` of every terminal/remote combination.
+- **The Code page:** `--code` (or `E2E_CODE=1`; implies `--terminal`) also runs `./stack code enable`: its
+  isolation probe (the code container reaches only Caddy, mounts no workspace, holds no key; the sandbox cannot
+  reach it), `./stack test`'s code checks, `caddy validate` with the Code page on, and the browser suite's code
+  checks — the tab under Chat, the unlock, the code host's CSP and Origin rules, and through the page's own API
+  and WebSocket a Haiku session: streaming, a Bash permission prompt allowed and denied (with the tab's badge), a
+  model switch, an interrupt, a slash command, re-attach after a reload and resume after a close, the files API
+  and the session's spend from LiteLLM (~$0.02 on the terminal's key, whose budget becomes $0.15; the run's limit
+  $0.25). After the suite a hostile stand-in takes bn-coded's socket (markup, bogus ids, an oversized frame, an
+  endless line, forged control requests) for one more browser check, then gives it back.
 - **The update helper:** the `settings/*` checks (Settings changes through the helper: a budget, the Admin and
   portal passwords, the owner email, a new RustFS key pair, Back up now, nightly backups, the helper's refusals)
   need it running. `--helper` (or `E2E_HELPER=1`) runs the throwaway's own `bin/bedrock-now-helper` in the

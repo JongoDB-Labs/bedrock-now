@@ -1,0 +1,326 @@
+// The Code page's backend (./stack code enable; compose.code.yaml). Serves the page (code/web/dist when a build is
+// there, else code/plain), the REST API and the WebSocket of protocol.mjs, and runs Claude Code sessions with the Agent
+// SDK, whose CLI runs in the sandbox (spawnClaudeCodeProcess -> bn-coded over the code-socket volume).
+// Holds no LiteLLM key and mounts no folder of yours; its only network is code-link, shared with the main Caddy. Every
+// request must carry X-Bn-Code-Proxy (CODE_PROXY_SECRET), which only the main Caddy adds — after the portal's check
+// (session, a fresh unlock, the Origin). Everything that comes from the sandbox is data, checked before the page sees it.
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { WebSocketServer } from 'ws';
+import { LIMITS, DECISIONS } from './protocol.mjs';
+import { PermissionBroker } from './broker.mjs';
+import { SessionManager, SessionError } from './sessions.mjs';
+import { makeApi, HttpError, sandboxStatus, attachment } from './api.mjs';
+import { str, short, plain, isUuid, isId } from './validate.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.map': 'application/json', '.txt': 'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json', '.wasm': 'application/wasm' };
+
+// loadSite(dir) -> {files: Map(urlPath -> {body, type, etag}), index} for the page: code/web/dist (the frontend's build:
+// index.html + hashed assets) when it has an index.html, else the plain page. Read once (a read-only image).
+export function loadSite(distDir, plainDir) {
+  const dir = fs.existsSync(path.join(distDir, 'index.html')) ? distDir : plainDir;
+  const files = new Map();
+  let total = 0;
+  const walk = (d, prefix) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name.startsWith('.')) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p, `${prefix}${e.name}/`); continue; }
+      if (!e.isFile()) continue;
+      const body = fs.readFileSync(p);
+      total += body.length;
+      if (total > 64 << 20) throw new Error(`${dir}: more than 64 MiB`);
+      files.set(`/${prefix}${e.name}`, { body, type: MIME[path.extname(e.name).toLowerCase()] || 'application/octet-stream',
+        etag: `"${crypto.createHash('sha256').update(body).digest('base64url').slice(0, 22)}"` });
+    }
+  };
+  walk(dir, '');
+  return { dir, files, built: dir === distDir, index: files.get('/index.html')?.body.toString('utf8') || '' };
+}
+
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export function withMeta(html, { nonce, portal }) {
+  const meta = `<meta name="bn-csp-nonce" content="${esc(nonce)}">\n<meta name="bn-portal-origin" content="${esc(portal)}">\n`;
+  const i = html.search(/<\/head>/i);
+  return i < 0 ? meta + html : html.slice(0, i) + meta + html.slice(i);
+}
+
+const NONCE = /^[A-Za-z0-9_-]{16,64}$/;
+const ORIGIN = /^https?:\/\/[a-z0-9.-]{1,253}(:[0-9]{1,5})?$/;
+const HOST = /^[a-z0-9.-]{1,253}(:[0-9]{1,5})?$/i;
+
+// ownOrigin(req) -> the page's origin as the browser names it: Caddy's X-Forwarded-Proto (it replaces a client's) and
+// the Host Caddy routed on
+export function ownOrigin(req) {
+  const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  const host = String(req.headers.host || '').toLowerCase();
+  return HOST.test(host) ? `${proto}://${host}` : null;
+}
+
+export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log }) {
+  if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
+  const want = Buffer.from(secret);
+  const proxied = (req) => {
+    const got = Buffer.from(String(req.headers['x-bn-code-proxy'] || ''));
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
+  };
+  const site = loadSite(distDir, plainDir);
+  logger(`page: ${site.built ? 'the frontend build (code/web/dist)' : 'the plain page (no code/web build in this image)'}, ${site.files.size} files`);
+
+  // --- sockets, sessions, prompts ---
+  const clients = new Set();   // {ws, attached: Set(sessionId)}
+  const sendTo = (c, m) => { if (c.ws.readyState === 1) c.ws.send(JSON.stringify(m)); };
+  const toAttached = (session, m) => { for (const c of clients) if (c.attached.has(session)) sendTo(c, m); };
+  const toAll = (m) => { for (const c of clients) sendTo(c, m); };
+  const broker = new PermissionBroker({
+    onAsk: (p) => toAttached(p.session, { type: 'permission', ...p }),
+    onDone: (d) => toAttached(d.session, { type: 'permission_done', ...d }),
+    onCount: (count) => toAll({ type: 'pending', count }),
+  });
+  const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error });
+  const mgr = new SessionManager({
+    query, spawn, broker, log: logger,
+    onEvent: (s, seq, ev) => toAttached(s.id, { type: 'event', session: s.id, seq, ev }),
+    onState: (s) => toAll(stateMsg(s)),
+  });
+  const api = makeApi({ call, sessions: mgr });
+
+  // --- HTTP ---
+  const send = (res, code, body, headers = {}) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
+    res.end(JSON.stringify(body));
+  };
+  const readBody = (req, max) => new Promise((resolve, reject) => {
+    const len = req.headers['content-length'];
+    if (len !== undefined && (!/^[0-9]{1,12}$/.test(len) || Number(len) > max)) { reject(new HttpError(413, 'request too large')); req.resume(); return; }
+    const chunks = []; let size = 0;
+    req.on('data', (c) => { size += c.length; if (size > max) { reject(new HttpError(413, 'request too large')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+  const readJson = async (req, max = 64 << 10) => {
+    const b = await readBody(req, max);
+    try { const v = JSON.parse(b.toString('utf8') || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) return v; } catch { /* below */ }
+    throw new HttpError(400, 'a JSON object, please');
+  };
+
+  async function route(req, res, url) {
+    const m = req.method, p = url.pathname, q = url.searchParams;
+    let mm;
+    if (p === '/api/state' && m === 'GET') {
+      return send(res, 200, { versions, limits: LIMITS, sessions: mgr.list(), pending: broker.count });
+    }
+    if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
+    if (p === '/api/sessions' && m === 'POST') {
+      const b = await readJson(req);
+      return send(res, 200, mgr.open({ model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined,
+        resume: b.resume ?? undefined, fork: b.fork === true, at: b.at ?? undefined, taskStop: b.taskStop === true }));
+    }
+    if ((mm = /^\/api\/sessions\/([^/]+)\/messages$/.exec(p)) && m === 'GET') {
+      const n = (k) => (q.has(k) && /^[0-9]{1,7}$/.test(q.get(k)) ? Number(q.get(k)) : undefined);
+      return send(res, 200, await api.messages(mm[1], n('offset'), n('limit')));
+    }
+    if ((mm = /^\/api\/sessions\/([^/]+)\/title$/.exec(p)) && m === 'POST') return send(res, 200, await api.title(mm[1], await readJson(req)));
+    if ((mm = /^\/api\/sessions\/([^/]+)$/.exec(p)) && m === 'DELETE') {
+      const s = mgr.get(mm[1]);
+      if (!s) throw new HttpError(404, 'no such open session');
+      s.close();
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/fs' && m === 'GET') return send(res, 200, await api.list(q.get('path') ?? ''));
+    if (p === '/api/fs' && m === 'DELETE') return send(res, 200, await api.remove(q.get('path')));
+    if (p === '/api/fs/file' && m === 'GET') return send(res, 200, await api.readFile(q.get('path')));
+    if (p === '/api/fs/file' && m === 'PUT') return send(res, 200, await api.writeFile(q.get('path'), await readJson(req, (LIMITS.maxUploadBytes * 2) + (64 << 10))));
+    if (p === '/api/fs/download' && m === 'GET') {
+      const data = await api.download(q.get('path'));
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': attachment(q.get('path') || ''),
+        'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-length': data.length });
+      return res.end(data);
+    }
+    if (p === '/api/fs/upload' && m === 'POST') {
+      if (req.headers['content-length'] === undefined) throw new HttpError(411, 'Content-Length required');
+      let name;
+      try { name = decodeURIComponent(String(req.headers['x-filename'] || '')); } catch { throw new HttpError(400, 'bad X-Filename'); }
+      const data = await readBody(req, LIMITS.maxUploadBytes);
+      return send(res, 200, await api.upload(q.get('dir') ?? '', name, data));
+    }
+    if (p === '/api/fs/mkdir' && m === 'POST') return send(res, 200, await api.mkdir(await readJson(req)));
+    if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));
+    if (p === '/api/plugins' && m === 'GET') return send(res, 200, await api.plugins(q.get('available') === '1'));
+    if ((mm = /^\/api\/plugins\/([a-z]+)$/.exec(p)) && m === 'POST') return send(res, 200, await api.pluginAction(mm[1], await readJson(req)));
+    if (p === '/api/marketplaces' && m === 'GET') return send(res, 200, await api.marketplaces());
+    if (p === '/api/marketplaces' && m === 'POST') return send(res, 200, await api.marketplaceAdd(await readJson(req)));
+    if (p === '/api/marketplaces' && m === 'DELETE') return send(res, 200, await api.marketplaceRemove(q.get('name')));
+    if (p.startsWith('/api/')) throw new HttpError(404, 'not found');
+    return page(req, res, p);
+  }
+
+  function page(req, res, p) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method not allowed');
+    let f = site.files.get(p === '/' ? '/index.html' : p);
+    // the page's own routes (no dot in the last segment) get index.html
+    if (!f && !/\.[A-Za-z0-9]{1,8}$/.test(p)) f = site.files.get('/index.html');
+    if (!f) throw new HttpError(404, 'not found');
+    const headers = { 'content-type': f.type, 'x-content-type-options': 'nosniff' };
+    if (f === site.files.get('/index.html')) {
+      const nonce = String(req.headers['x-bn-csp-nonce'] || '');
+      const portal = String(req.headers['x-bn-portal-origin'] || '');
+      const body = withMeta(site.index, { nonce: NONCE.test(nonce) ? nonce : '', portal: ORIGIN.test(portal) ? portal : '' });
+      res.writeHead(200, { ...headers, 'cache-control': 'no-store' });
+      return res.end(req.method === 'HEAD' ? undefined : body);
+    }
+    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, { etag: f.etag, 'cache-control': 'no-cache' }); return res.end(); }
+    res.writeHead(200, { ...headers, etag: f.etag, 'cache-control': 'no-cache', 'content-length': f.body.length });
+    return res.end(req.method === 'HEAD' ? undefined : f.body);
+  }
+
+  const server = http.createServer(async (req, res) => {
+    let url;
+    try { url = new URL(req.url, 'http://code'); } catch { res.writeHead(400); return res.end(); }
+    // The container's health check: its own loopback only, nothing else answered there without the secret
+    if (url.pathname === '/healthz' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) {
+      return send(res, 200, { ok: true });
+    }
+    if (!proxied(req)) { res.writeHead(407, { 'content-type': 'text/plain' }); return res.end('only through the main Caddy'); }
+    // state changes only from the page itself (the portal checked this too; fetch() sends Origin on these)
+    if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== ownOrigin(req)) {
+      return send(res, 403, { error: 'cross-site request refused' });
+    }
+    try {
+      return await route(req, res, url);
+    } catch (e) {
+      const [status, msg] = e instanceof HttpError ? [e.status, e.message] : sandboxStatus(e);
+      if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
+      if (res.headersSent) return res.destroy();
+      return send(res, status, { error: short(msg, 500) });
+    }
+  });
+  server.requestTimeout = 180000;
+
+  // --- WebSocket ---
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 32 << 20 });
+  server.on('upgrade', (req, sock, head) => {
+    let pathname = '';
+    try { pathname = new URL(req.url, 'http://code').pathname; } catch { /* refused below */ }
+    if (!proxied(req) || pathname !== '/ws' || !req.headers.origin || req.headers.origin !== ownOrigin(req)) {
+      sock.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return sock.destroy();
+    }
+    wss.handleUpgrade(req, sock, head, (ws) => connection(ws));
+  });
+
+  function connection(ws) {
+    const c = { ws, attached: new Set() };
+    clients.add(c);
+    sendTo(c, { type: 'hello', pending: broker.count, limits: LIMITS });
+    ws.on('message', async (raw, isBinary) => {
+      if (isBinary) return;
+      let m;
+      try { m = JSON.parse(raw.toString('utf8')); } catch { return sendTo(c, { type: 'error', error: 'not JSON' }); }
+      if (!m || typeof m !== 'object' || typeof m.type !== 'string') return sendTo(c, { type: 'error', error: 'no type' });
+      const req = typeof m.req === 'string' && m.req.length <= 64 ? m.req : undefined;
+      const reply = (data) => sendTo(c, { type: 'reply', req, ok: true, data });
+      try {
+        await handle(c, m, reply);
+      } catch (e) {
+        const msg = e instanceof SessionError || e instanceof HttpError ? e.message : `Claude Code: ${short(e?.message || String(e), 300)}`;
+        sendTo(c, { type: 'reply', req, ok: false, error: short(msg, 500) });
+      }
+      return undefined;
+    });
+    ws.on('close', () => clients.delete(c));
+    ws.on('error', () => clients.delete(c));
+  }
+
+  const sessionOf = (m) => {
+    const s = mgr.get(m.session);
+    if (!s) throw new SessionError(isUuid(m.session) ? 'no such session here (open it: POST /api/sessions)' : 'bad session id', 404);
+    return s;
+  };
+
+  async function handle(c, m, reply) {
+    switch (m.type) {
+      case 'attach': {
+        const s = sessionOf(m);
+        c.attached.add(s.id);
+        const since = Number.isInteger(m.since) && m.since >= 0 ? m.since : 0;
+        const { events, gap } = s.ring.since(since);
+        sendTo(c, { type: 'attached', session: s.id, state: s.state, from: s.ring.first, last: s.ring.last, gap });
+        for (const e of events) sendTo(c, { type: 'event', session: s.id, seq: e.seq, ev: e.ev });
+        for (const p of broker.forSession(s.id)) sendTo(c, { type: 'permission', ...p });
+        sendTo(c, stateMsg(s));
+        return reply({ attached: s.id });
+      }
+      case 'detach': c.attached.delete(m.session); return reply({});
+      case 'prompt': {
+        const s = sessionOf(m);
+        s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
+        c.attached.add(s.id);
+        return reply({});
+      }
+      case 'interrupt': await sessionOf(m).interrupt(); return reply({});
+      case 'set_model': await sessionOf(m).setModel(m.model); return reply({ model: m.model });
+      case 'set_mode': await sessionOf(m).setMode(m.mode); return reply({ mode: m.mode });
+      case 'set_effort': await sessionOf(m).setEffort(m.effort); return reply({ effort: m.effort });
+      case 'permission': {
+        if (!isUuid(m.id) || !DECISIONS.includes(m.decision)) throw new SessionError('bad permission answer');
+        if (!broker.answer(m.id, m.decision, typeof m.message === 'string' ? m.message : undefined)) throw new SessionError('that prompt is no longer waiting', 409);
+        return reply({});
+      }
+      case 'commands': {
+        const list = await sessionOf(m).need().supportedCommands();
+        return reply((Array.isArray(list) ? list : []).slice(0, 1000).filter((x) => x && typeof x === 'object')
+          .map((x) => ({ name: short(x.name, 200), description: str(x.description, 500), argumentHint: short(x.argumentHint, 200) })));
+      }
+      case 'models': {
+        const list = await sessionOf(m).need().supportedModels();
+        return reply((Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
+          .map((x) => ({ value: short(x.value, 128), displayName: short(x.displayName, 200), description: str(x.description, 500),
+            supportedEffortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels.filter((e) => ['low', 'medium', 'high', 'xhigh', 'max'].includes(e)) : [] })));
+      }
+      case 'mcp': {
+        const list = await sessionOf(m).need().mcpServerStatus();
+        return reply((Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
+          .map((x) => ({ name: short(x.name, 200), status: short(x.status, 40), error: str(x.error ?? '', 500), scope: short(x.scope, 40),
+            tools: Array.isArray(x.tools) ? x.tools.length : null })));
+      }
+      case 'context': return reply(plain(await sessionOf(m).need().getContextUsage(), 256 << 10, 2000));
+      case 'reload_plugins': return reply(plain(await sessionOf(m).need().reloadPlugins(), 256 << 10, 2000));
+      case 'stop_task': {
+        if (!isId(m.task)) throw new SessionError('bad task id');
+        await sessionOf(m).need().stopTask(m.task);
+        return reply({});
+      }
+      default: throw new SessionError(`unknown message type ${short(m.type, 40)}`);
+    }
+  }
+
+  return { server, wss, mgr, broker, site };
+}
+
+// --- the container's entry point ---
+function readVersions() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(HERE, '../node_modules/@anthropic-ai/claude-agent-sdk/package.json'), 'utf8'));
+    return { sdk: short(pkg.version, 40), claudeCode: short(pkg.claudeCodeVersion, 40) };
+  } catch { return {}; }
+}
+
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  const { sandboxProcess, sandboxCall } = await import('./spawn-client.mjs');
+  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions() });
+  const port = Number(process.env.CODE_PORT || 8095);
+  server.listen(port, '0.0.0.0', () => log(`code: listening on :${port}`));
+  const stop = () => { log('code: stopping'); mgr.closeAll(); server.close(); setTimeout(() => process.exit(0), 3000).unref(); };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+}

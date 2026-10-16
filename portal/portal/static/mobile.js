@@ -5,7 +5,7 @@
 
 (() => {
   const PHONE = window.matchMedia("(max-width: 767.98px)");
-  const DESKTOP_ONLY = new Set(["admin", "files", "terminal"]);   // the terminal: More → full screen (terminal.js)
+  const DESKTOP_ONLY = new Set(["admin", "files", "terminal", "code"]);   // terminal, Code: More → full screen (terminal.js, code.js)
   const HINT_KEY = "bn.voiceHint";
   let current = null;
 
@@ -19,7 +19,7 @@
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
   window.bnMobile = {
-    // Admin, Files and the Terminal are desktop apps: on a phone they open from the More sheet in a new tab instead.
+    // Admin, Files, the Terminal and Code are desktop apps: on a phone they open from the More sheet in a new tab instead.
     allowTab: (tab) => (PHONE.matches && DESKTOP_ONLY.has(tab) ? "chat" : tab),
     defaultTab: () => (PHONE.matches ? "chat" : "home"),
   };
