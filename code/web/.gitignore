@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.test-build/
+e2e/out/
