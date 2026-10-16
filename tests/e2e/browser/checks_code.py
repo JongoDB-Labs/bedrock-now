@@ -364,8 +364,8 @@ def switch(ctx):
     expect(len(typed["commands"]) == len(cmds), "typed commands")
     ctxu = c.request({"type": "context", "session": sid})
     expect(ctxu["totalTokens"] > 0 and ctxu["maxTokens"] > 0 and ctxu["categories"], f"context {ctxu}")
-    models = c.request({"type": "models", "session": sid})
-    expect(models and all("supportedEffortLevels" in m for m in models), f"models {models[:2]}")
+    cli_models = c.request({"type": "models", "session": sid})
+    expect(cli_models and all("supportedEffortLevels" in m for m in cli_models), f"models {cli_models[:2]}")
     c.rec.save()
     return f"set_model {HAIKU} → text from {models}; interrupt → {res['subtype']}, process kept; /cost → {local[0]['text'][:60]!r}; {len(cmds)} commands (also as a typed message); context {ctxu['totalTokens']}/{ctxu['maxTokens']}"
 
