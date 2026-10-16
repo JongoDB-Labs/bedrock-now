@@ -40,10 +40,20 @@
   function openApp(app) {
     const label = `Open ${NAMES[app]}`;
     if (window.bnMobile && window.bnMobile.allowTab(app) !== app) {
-      return el("a", { class: "action", href: appUrl(app), target: "_blank", rel: "noopener", "data-k": `open-${app}` },
+      const a = el("a", { class: "action", href: appUrl(app), target: "_blank", rel: "noopener", "data-k": `open-${app}` },
         label, el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
+      a.addEventListener("click", () => opened(app));
+      return a;
     }
     return button(label, `open-${app}`, () => { showTab(app); away(); });
+  }
+  // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
+  function opened(app) {
+    const id = `signin-${app}`;
+    if (!has(NAMES, app) || isDone(id)) return;
+    mark(id, "done");
+    if (st.open && st.cur === id) announce(`${NAMES[app]} opened: signed in, done.`);
+    commit();
   }
   // "Show spend/services/models": Home, scrolled to that card, which lights up briefly.
   function showOnHome(where, label) {
@@ -63,22 +73,31 @@
       });
     });
   }
-  // Admin / Files sign-in: the user name as text (masked in the e2e screenshots), the password only through Copy;
-  // its Open button next to the Copy buttons. app.js loads the sign-ins at start-up (the panel redraws once they are
-  // in, see "wiring"); Copy asks for them only if that failed.
-  function signIn(app, nameLabel, userCopy, passCopy) {
+  // Admin / Files sign you in automatically (the portal signs in for you); their own sign-in stays for the API and in
+  // case that fails, folded away: the user name as text (masked in the e2e screenshots), the password only through
+  // Copy, and the app's own form (?sso=off). app.js loads the sign-ins at start-up (the panel redraws once they are in,
+  // see "wiring"); Copy asks for them only if that failed. A redraw keeps the fold open.
+  const unfolded = new Set();
+  function fallback(app, nameLabel, userCopy, passCopy, hint) {
     const user = logins && logins[app] && logins[app].username;
+    const form = logins && logins[app] && logins[app].manual;
     const grab = (field, what) => async () => {
       if (!logins) await loadLogins();
       const v = logins && logins[app] && logins[app][field];
       if (v) copy(v, what); else toast("Not available yet: run ./stack setup");
     };
-    return [
+    const fold = el("details", { class: "tour-fallback", "data-k": `fallback-${app}` },
+      el("summary", { text: "If it ever shows its own sign-in form" }),
       el("p", { class: "tour-login" }, `${nameLabel} `, el("span", { class: "tour-cred", text: user || "–" })),
       el("div", { class: "tour-actions" },
         button(userCopy, `copy-${app}-user`, grab("username", userCopy.replace(/^Copy /, "")), "copy"),
-        button(passCopy, `copy-${app}-pass`, grab("password", passCopy.replace(/^Copy /, "")), "copy"), openApp(app)),
-    ];
+        button(passCopy, `copy-${app}-pass`, grab("password", passCopy.replace(/^Copy /, "")), "copy"),
+        form ? el("a", { class: "copy", href: form, target: "_blank", rel: "noopener", "data-k": `form-${app}` },
+          "Its sign-in form", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" })) : null),
+      note(...hint));
+    fold.open = unfolded.has(app);
+    fold.addEventListener("toggle", () => { if (fold.open) unfolded.add(app); else unfolded.delete(app); });
+    return fold;
   }
   const spendOf = (alias) => {
     const k = sum && sum.spend && (sum.spend.keys || []).find((r) => r.alias === alias);
@@ -227,20 +246,24 @@
       actions: () => [openApp("chat")],
     },
     "signin-admin": {
-      title: "Admin (LiteLLM)", badges: ["Sign-in: Own sign-in"],
+      title: "Admin (LiteLLM)", badges: ["Sign-in: Automatic"],
       body: () => [
-        ...signIn("admin", "Username", "Copy username", "Copy password"),
-        p("Paste them into LiteLLM's sign-in form (", b("Username"), ", ", b("Password"), ") and click ", b("Login"), "."),
-        note("If you change the password inside LiteLLM, Home still shows the initial one."),
+        p("Admin signs you in to LiteLLM with your portal session: no second password. Sign out ends it."),
+        fallback("admin", "Username", "Copy username", "Copy password",
+          ["Paste them into LiteLLM's form (", b("Username"), ", ", b("Password"), ", ", b("Login"),
+            "). A password changed inside LiteLLM is not known here: set it in ", settings("Account & security"),
+            " so the automatic sign-in works again."]),
       ],
+      actions: () => [openApp("admin")],
     },
     "signin-files": {
-      title: "Files (RustFS)", badges: ["Sign-in: Own sign-in"],
+      title: "Files (RustFS)", badges: ["Sign-in: Automatic"],
       body: () => [
-        ...signIn("files", "Access key", "Copy access key", "Copy secret key"),
-        p("Paste the access key into ", b("Account"), " and the secret key into ", b("Key"), ", then click ", b("Login"), "."),
-        note("A “Your session has expired” notice on the very first visit is RustFS's own quirk and harmless."),
+        p("Files signs you in to RustFS with your portal session: no second password. Sign out ends it."),
+        fallback("files", "Access key", "Copy access key", "Copy secret key",
+          ["Paste the access key into ", b("Account"), " and the secret key into ", b("Key"), ", then ", b("Login"), "."]),
       ],
+      actions: () => [openApp("files")],
     },
     home: {
       title: "Home: your dashboard", info: true,
@@ -636,12 +659,7 @@
   const updated = $("#updated");
   if (updated) new MutationObserver(() => onSummary(lastSummary)).observe(updated, { childList: true, characterData: true, subtree: true });
 
-  document.addEventListener("bn:tab", (e) => {
-    if (e.detail !== "chat" || isDone("signin-chat")) return;
-    mark("signin-chat", "done");
-    if (st.open && st.cur === "signin-chat") announce("Chat opened: signed in, done.");
-    commit();
-  });
+  document.addEventListener("bn:tab", (e) => opened(e.detail));
   document.addEventListener("DOMContentLoaded", () => setTimeout(poll, homeOwns() ? 10000 : 0));   // after app.js's
   // Back on the page: with Home on screen, app.js refreshes it at once and the #updated observer hands that over (the
   // panel asks only if it did not come); otherwise the panel asks itself if its summary is old.

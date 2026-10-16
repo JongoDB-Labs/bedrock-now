@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from common import ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, need, origin, real_helper_running, redact
+from common import (ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, host_of, need, origin, real_helper_running, redact,
+                    url_path)
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
@@ -195,8 +196,15 @@ def home(ctx):
     vis = page.locator("#models tr:visible").count()
     expect(vis == enabled, f"Enabled only shows {vis} rows, {enabled} models are enabled")
     page.click("#enabled-only")
+    # Admin and Files sign you in automatically: their own sign-ins are folded away under Credentials (the fallback)
+    title = page.inner_text("#logins-title")
+    expect("sign you in automatically" in title and page.locator("#logins").is_hidden(), f"sign-ins card: {title!r}, not folded")
+    page.click("#logins-more summary")
     creds = page.eval_on_selector_all(".cred", "els => els.map(e => e.textContent)")
     expect(creds == [ENV["LITELLM_UI_USER"], ENV["RUSTFS_ACCESS_KEY"]], "sign-ins do not show the .env users")
+    forms = page.eval_on_selector_all("a.form-link", "els => els.map(e => e.getAttribute('href'))")
+    expect(forms == [origin("admin") + "/ui/login/?sso=off", origin("files") + "/rustfs/console/auth/login/?sso=off"],
+           f"links to the apps' own forms: {forms}")
     expect(page.inner_text("#claude-cmd") == "claude-bedrock", "claude command")
     expect(page.locator("#update-card").is_hidden(), "update card visible without an update")
     # The four Copy buttons put each sign-in on the clipboard (granted); the passwords are never in the page.
@@ -219,7 +227,7 @@ def home(ctx):
     rec.save()
     expect(not probs, f"errors: {probs}")
     return (f"{want_svc}/{want_svc} services, {len(labels)} meters, total {tot}, {len(want_rows)} models (names, prices, logos; Enabled only → {enabled}), "
-            "4 Copy buttons")
+            "automatic sign-in card with the credentials folded away: 4 Copy buttons, 2 links to the apps' own forms")
 
 
 def _write_json(path: Path, data: dict):
@@ -814,7 +822,48 @@ def chat_rag(ctx):
     return f"uploaded a .txt (processed: embedded with {ENV['OWUI_EMBED_MODEL']}), {model} answered {code}"
 
 
-# --- Admin (LiteLLM UI) ---
+# --- Admin (LiteLLM UI) and Files (RustFS console): the portal signs you in (portal/portal/appsso.py) ---
+
+SSO_DONE = {"admin": "text=Virtual Keys", "files": "text=Create Bucket"}
+SSO_FORM = {"admin": "input[name=username]", "files": "input[placeholder='Please enter account']"}
+
+
+def sso_signed_in(page, scope, rec, app: str, where: str, label: str = "") -> str:
+    """APP in SCOPE (its frame, or its own page), signed in by the portal: its dashboard appears and its own sign-in
+    form never does, the hand-off went through /.bn/sso on the app's own host, and no password, key or app session is
+    in any URL the browser loaded. Returns a short description."""
+    done, form = scope.locator(SSO_DONE[app]).first, scope.locator(SSO_FORM[app]).first
+    t0 = time.time()
+    while True:
+        if form.count() and form.is_visible():
+            shot(page, f"{label or app}-own-form", mask_locators=[scope.locator("input")])
+            raise AssertionError(f"[{where}] {app}'s own sign-in form showed (see shots/{label or app}-own-form.png)")
+        if done.count() and done.is_visible():
+            break
+        if time.time() - t0 > 45:
+            shot(page, f"{label or app}-not-signed-in", mask_locators=[scope.locator("input")])
+            raise AssertionError(f"[{where}] not signed in within 45 s (see shots/{label or app}-not-signed-in.png)")
+        page.wait_for_timeout(250)
+    hops = [e for e in rec.responses("^" + re.escape(origin(app)) + r"/\.bn/sso\?") if e["method"] == "GET"]
+    expect(not hops or hops[-1]["status"] in (200, 303), f"[{where}] the automatic sign-in on {origin(app)} answered {hops[-1:]}")
+    secrets = [ENV["LITELLM_UI_PASSWORD"], ENV["RUSTFS_SECRET_KEY"], ENV["PORTAL_PASSWORD"]]
+    secrets += [c["value"] for c in page.context.cookies(origin(app)) if c["name"] == "token"]
+    if app == "files":   # the console's credentials from the hand-off (temporary ones), where it keeps its own
+        f = frame_of(page, "files") if scope is not page else page
+        creds = f.evaluate("JSON.parse(localStorage.getItem('auth.credentials') || '{}')")
+        expect(creds.get("SessionToken") and creds.get("Expiration") and creds.get("AccessKeyId") != ENV["RUSTFS_ACCESS_KEY"],
+               f"[{where}] no temporary console credentials stored")
+        secrets += [creds["SecretAccessKey"], creds["SessionToken"]]
+        trace = "temporary credentials in the console's storage"
+    else:   # the marker only /.bn/sso sets
+        trace = "the bn_sso marker" if any(c["name"] == "bn_sso" for c in page.context.cookies(origin(app))) else ""
+    # A new window's first requests come before its recorder is attached: then the hand-off's own trace has to do.
+    expect(hops or trace, f"[{where}] no automatic sign-in on {origin(app)} (no /.bn/sso, no trace of one)")
+    leaked = [e["url"][:80] for e in rec.events if e.get("url") and any(v and v in e["url"] for v in secrets)]
+    expect(not leaked, f"[{where}] a password, key or session in a URL: {leaked}")
+    how = f"{len(hops)} hand-off{'s' if len(hops) != 1 else ''}" if hops else f"before the window was watched: {trace}"
+    return f"{where}: signed in by the portal ({how}), no form"
+
 
 @check("browser", "admin-litellm-ui")
 def admin_ui(ctx):
@@ -823,12 +872,13 @@ def admin_ui(ctx):
     login(page)
     page.click(".tab[data-tab=admin]")
     fl = page.frame_locator("iframe[data-app=admin]")
-    fl.locator("input[name=username]").wait_for(timeout=45000)
-    fl.locator("input[name=username]").fill(ENV["LITELLM_UI_USER"])
-    fl.locator("input[name=password]").fill(ENV["LITELLM_UI_PASSWORD"])
-    shot(page, "11-admin-login", mask=["iframe[data-app=admin]"])
-    fl.locator("button[type=submit]").click()
-    fl.locator("text=Virtual Keys").first.wait_for(timeout=45000)
+    how = sso_signed_in(page, fl, rec, "admin", "Admin tab (portal frame)", "admin-frame")
+    tok = [c for c in page.context.cookies(origin("admin")) if c["name"] == "token"]
+    expect(tok and not tok[0]["httpOnly"] and tok[0]["sameSite"] == "Lax" and tok[0]["domain"] == host_of("admin"),
+           f"LiteLLM's token cookie: {[(c['domain'], c['httpOnly'], c['sameSite']) for c in tok]}")
+    mark = [c for c in page.context.cookies(origin("admin")) if c["name"] == "bn_sso"]
+    expect(mark and mark[0]["httpOnly"] and mark[0]["sameSite"] == "Strict", f"sign-in marker: {mark}")
+    shot(page, "11-admin-signed-in")
     f = frame_of(page, "admin")
     t0 = time.time()
     while time.time() - t0 < 30 and "claude-code" not in f.inner_text("body"):
@@ -844,10 +894,68 @@ def admin_ui(ctx):
         ok = bool(shown) and (abs(float(shown) - float(budget)) < 1e-9 if "." in shown else abs(float(shown) - float(budget)) < 1)
         expect(ok, f"{alias}: budget shown {shown or 'nowhere'}, want {budget}")
     shot(page, "12-admin-keys")
+    # LiteLLM's own Logout ends its session and shows its own form (PROXY_LOGOUT_URL: ?sso=off), not a new sign-in
+    keys_before = tok[0]["value"]
+    fl.get_by_role("button", name=re.compile(r"^Account menu")).click()
+    fl.get_by_text(re.compile(r"^(Log ?out|Sign ?out)$", re.I)).first.click()
+    fl.locator(SSO_FORM["admin"]).wait_for(timeout=30000)
+    expect("sso=off" in frame_of(page, "admin").url, f"after LiteLLM's Logout: {frame_of(page, 'admin').url}")
+    after = [c["value"] for c in page.context.cookies(origin("admin")) if c["name"] == "token"]
+    expect(keys_before not in after, "LiteLLM's Logout left its session cookie")
+    shot(page, "12a-admin-own-logout", mask_locators=[fl.locator("input")])
+    probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch",
+                                                      r"401 (GET|POST) .*/(key|user|team|global|model|sso|session)/"])
+    rec.save()
+    expect(not probs, f"errors: {probs}")
+    return (f"{how}; token cookie host-only, Lax, readable by the dashboard; marker HttpOnly, Strict; Virtual Keys with "
+            "claude-code/open-webui/setup and their budgets; LiteLLM's Logout → its own form")
+
+
+@check("browser", "admin-litellm-popout")
+def admin_popout(ctx):
+    need("litellm")
+    page, rec = ctx.page("admin-popout")
+    login(page)
+    with page.context.expect_page() as pop:
+        page.click("a.popout[data-app=admin]")
+    win = rec.attach(pop.value)
+    how = sso_signed_in(win, win, rec, "admin", "Admin pop-out window", "admin-popout")
+    shot(win, "12b-admin-popout")
     probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch"])
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return "LiteLLM UI in the Admin frame: sign-in, Virtual Keys with claude-code/open-webui/setup and their budgets"
+    return how
+
+
+@check("browser", "admin-litellm-own-sign-in-form")
+def admin_form(ctx):
+    """The fallback: Home's Credentials fold links LiteLLM's own form (?sso=off), which still signs in with the pair in
+    .env, as the walkthrough names it (Username, Password, Login)."""
+    need("litellm")
+    page, rec = ctx.page("admin-form")
+    login(page)
+    page.click("#logins-more summary")
+    link = page.locator("a.form-link[data-form=admin]")
+    link.wait_for(timeout=10000)
+    href = link.get_attribute("href")
+    expect(href == origin("admin") + "/ui/login/?sso=off" and link.get_attribute("target") == "_blank", f"Its sign-in form → {href}")
+    shot(page, "13-home-credentials")
+    with page.context.expect_page() as pop:
+        link.click()
+    win = rec.attach(pop.value)
+    win.locator(SSO_FORM["admin"]).wait_for(timeout=45000)
+    expect(not rec.responses(r"/\.bn/sso\?"), "LiteLLM's own form went through the automatic sign-in")
+    labels = " ".join(win.locator("label").all_inner_texts())
+    submit = win.locator("button[type=submit]").first.inner_text().strip()
+    expect("Username" in labels and "Password" in labels and re.fullmatch(r"(?i)log ?in", submit),
+           f"LiteLLM's sign-in form: labels {labels!r}, button {submit!r}")
+    win.fill(SSO_FORM["admin"], ENV["LITELLM_UI_USER"])
+    win.fill("input[name=password]", ENV["LITELLM_UI_PASSWORD"])
+    shot(win, "13a-admin-own-form", mask=["input"])
+    win.click("button[type=submit]")
+    win.locator(SSO_DONE["admin"]).first.wait_for(timeout=45000)
+    rec.save()
+    return f"Home → Credentials → {url_path(href)}: LiteLLM's form ({labels!r}, {submit!r}) signs in with the .env pair"
 
 
 # --- Files (RustFS console) ---
@@ -863,22 +971,14 @@ RUSTFS_BODY = b"hello from the bedrock-now e2e suite (rustfs console)"
 
 
 def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
-    """The full RustFS console flow in SCOPE (the page or the Files frame): sign in, buckets, open shared, upload,
-    download, delete, sign out. Returns the steps done; raises on the first failing step."""
+    """The full RustFS console flow in SCOPE (the page or the Files frame): signed in by the portal, buckets, open
+    shared, upload, download, delete, the console's own Logout (its form), then a reload signs in again. Returns the
+    steps done; raises on the first failing step."""
     steps = []
-    acct = scope.locator("input[placeholder='Please enter account']")
-    acct.wait_for(timeout=45000)
-    rec.mark("rustfs: login form")
-    acct.fill(ENV["RUSTFS_ACCESS_KEY"])
-    scope.locator("input[placeholder='Please enter key']").fill(ENV["RUSTFS_SECRET_KEY"])
-    scope.get_by_role("button", name="Login", exact=True).click()
-    rec.mark("rustfs: login submitted")
-    try:
-        scope.locator("text=Create Bucket").first.wait_for(timeout=30000)
-    except Exception:
-        rshot(page, scope, f"{label}-login-failed")
-        raise AssertionError(f"[{where}] no bucket list after login (see shots/{label}-login-failed.png)")
-    steps.append("login")
+    acct = scope.locator(SSO_FORM["files"])
+    rec.mark("rustfs: automatic sign-in")
+    sso_signed_in(page, scope, rec, "files", where, label)
+    steps.append("signed in by the portal")
     for bucket in ("openwebui", "shared"):   # the list loads after the "Create Bucket" button: wait for each row
         try:
             scope.locator("tr", has_text=bucket).first.wait_for(timeout=20000)
@@ -923,8 +1023,14 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
     scope.get_by_label("User menu").click()
     scope.get_by_role("menuitem", name=re.compile(r"Log ?out|Sign ?out", re.I)).click()
     rec.mark("rustfs: logout")
-    acct.wait_for(timeout=20000)
-    steps.append("logout")
+    acct.wait_for(timeout=20000)   # the console's own Logout: its own form (client-side, no new sign-in)
+    steps.append("logout (its form)")
+    f = frame_of(page, "files") if scope is not page else page
+    page.context.clear_cookies(name="bn_sso_pass")   # (a reload seconds after a hand-off would go straight through)
+    f.goto(f.url)   # a reload of that page: the portal signs in again
+    rec.mark("rustfs: reload")
+    sso_signed_in(page, scope, rec, "files", where + " after a reload", label + "-again")
+    steps.append("reload: signed in again")
     return steps
 
 
@@ -951,7 +1057,10 @@ def _rustfs_check(ctx, name: str, in_frame: bool):
         rshot(page, scope, f"{name}-end")
     # Every request to the files host must have worked: no CORS, Host or signature errors, no 4xx/5xx.
     probs = rec.problems(host_filter="files.", allow=[
-        r"401 GET .*/rustfs/admin/v3/.*",  # the console probes its session before login
+        r"401 GET .*/rustfs/admin/v3/.*",  # the console probes its session (after its own Logout)
+        # its own sign-in page (after its Logout) prefetches its server-config page, which RustFS answers 401 without
+        # credentials (upstream)
+        r"401 GET .*/rustfs/console/config/__next\..*\.txt\?_rsc=",
         r"400 GET .*\?(retention|legal-hold)=$",  # object details on a bucket without object lock (upstream)
     ])
     expect(not probs, f"[{where}] after {'/'.join(steps)}: {probs[:6]}")
@@ -975,18 +1084,14 @@ RUSTFS_PAGES = ("browser", "table-catalog", "access-keys", "policies", "users", 
 
 @check("browser", "files-rustfs-console-pages")
 def files_pages(ctx):
-    """After signing in to the console (Files tab): every page of its sidebar, and browsing the openwebui bucket
-    (the files Open WebUI stored, e.g. the RAG upload) down to an object's details."""
+    """Signed in to the console by the portal (Files tab): every page of its sidebar, and browsing the openwebui
+    bucket (the files Open WebUI stored, e.g. the RAG upload) down to an object's details."""
     need("rustfs")
     page, rec = ctx.page("files-pages")
     login(page)
     page.click(".tab[data-tab=files]")
     fl = page.frame_locator("iframe[data-app=files]")
-    fl.locator("input[placeholder='Please enter account']").wait_for(timeout=45000)
-    fl.locator("input[placeholder='Please enter account']").fill(ENV["RUSTFS_ACCESS_KEY"])
-    fl.locator("input[placeholder='Please enter key']").fill(ENV["RUSTFS_SECRET_KEY"])
-    fl.get_by_role("button", name="Login", exact=True).click()
-    fl.locator("text=Create Bucket").first.wait_for(timeout=30000)
+    sso_signed_in(page, fl, rec, "files", "Files tab (portal frame)", "files-pages")
     empty, visited = [], 0
     for name in RUSTFS_PAGES:
         link = fl.locator(f"a[href$='/rustfs/console/{name}/'], a[href$='/rustfs/console/{name}']")
@@ -1033,6 +1138,58 @@ def files_pages(ctx):
     expect(not empty, f"pages without content: {empty}")
     expect(not probs, f"errors: {probs[:6]}")
     return f"{visited} console pages load without errors; {detail}"
+
+
+@check("browser", "files-rustfs-own-sign-in-form")
+def files_form(ctx):
+    """The fallback: the console's own form (?sso=off, linked from Home's Credentials) still signs in with the key
+    pair from .env, as the walkthrough names it (Account, Key, Login)."""
+    need("rustfs")
+    page, rec = ctx.page("files-form")
+    login(page)
+    page.click("#logins-more summary")
+    link = page.locator("a.form-link[data-form=files]")
+    link.wait_for(timeout=10000)
+    href = link.get_attribute("href")
+    expect(href == origin("files") + "/rustfs/console/auth/login/?sso=off", f"Its sign-in form → {href}")
+    page.goto(href)
+    acct = page.locator(SSO_FORM["files"])
+    acct.wait_for(timeout=45000)
+    expect(not rec.responses(r"/\.bn/sso\?"), "the console's own form went through the automatic sign-in")
+    expect(page.get_by_role("button", name="Login", exact=True).count() == 1, "RustFS has no Login button")
+    labels = page.locator("label").all_inner_texts()
+    expect("Account" in labels and "Key" in labels, f"RustFS's sign-in labels {labels}")
+    acct.fill(ENV["RUSTFS_ACCESS_KEY"])
+    page.locator("input[placeholder='Please enter key']").fill(ENV["RUSTFS_SECRET_KEY"])
+    rshot(page, page, "files-own-form")
+    page.get_by_role("button", name="Login", exact=True).click()
+    page.locator(SSO_DONE["files"]).first.wait_for(timeout=30000)
+    rec.save()
+    return f"{url_path(href)}: the console's form (Account, Key, Login) signs in with the .env key pair"
+
+
+@check("browser", "apps-portal-login-first")
+def apps_portal_login_first(ctx):
+    """A browser without a portal session gets the portal's login on the Admin and Files hosts (never the apps' own
+    forms); signing in there returns to the app, signed in to it as well."""
+    need("litellm")
+    need("rustfs")
+    page, rec = ctx.page("apps-portal-login-first")
+    seen = []
+    for app, path in (("admin", "/ui/"), ("files", "/rustfs/console/")):
+        page.goto(origin(app) + path)
+        page.wait_for_url(re.compile("^" + re.escape(origin()) + r"/login\?next="), timeout=20000)
+        expect(page.locator("#password").count() == 1 and page.locator(SSO_FORM[app]).count() == 0, f"{app}: not the portal's login")
+        seen.append(app)
+    shot(page, "14-apps-portal-login-first")
+    page.fill("#password", ENV["PORTAL_PASSWORD"])   # on files' redirect: back to the console afterwards
+    page.click("form[action='/login'] button[type=submit]")
+    page.wait_for_url(re.compile("^" + re.escape(origin("files"))), timeout=30000)
+    a = sso_signed_in(page, page, rec, "files", "Files after the portal's login", "files-after-login")
+    page.goto(origin("admin") + "/ui/")
+    b = sso_signed_in(page, page, rec, "admin", "Admin, same browser", "admin-after-login")
+    rec.save()
+    return f"no session → portal login on {' and '.join(seen)}; then {a}; {b}"
 
 
 # --- phone / tablet ---
@@ -1185,25 +1342,29 @@ def walkthrough(ctx):
     expect(frame["x"] >= side["x"] + side["width"] - 1, f"chat frame at x={frame['x']} under the sidebar ({side})")
     shot(page, "w03-walkthrough-chat")
 
-    # Admin and Files: the user name / access key as text, user and password through Copy (never in the page).
+    # Admin and Files: "Automatic" — Open signs in and the step is done by itself, like Chat. Their own sign-in is
+    # folded away (the fallback): the user name / access key as text, user and password through Copy (never in the
+    # page), and a link to the app's own form.
     page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
     page.click("#tour [data-k=next]")
     _to_step(page, "signin-admin")
+    badge = page.inner_text("#tour .tour-step.cur .tour-badges")
+    expect("Automatic" in badge, f"Admin's badge {badge!r}")
+    expect(page.locator("#tour .tour-step.cur .tour-cred").is_hidden(), "the Admin sign-in is not folded away")
+    page.click("#tour [data-k=fallback-admin] summary")
     page.locator("#tour .tour-cred", has_text=ENV["LITELLM_UI_USER"]).wait_for(timeout=10000)
     expect(_clipboard_after(page, "#tour [data-k=copy-admin-user]") == ENV["LITELLM_UI_USER"], "Copy username")
     expect(_clipboard_after(page, "#tour [data-k=copy-admin-pass]") == ENV["LITELLM_UI_PASSWORD"], "Copy password")
+    form = page.get_attribute("#tour a[data-k=form-admin]", "href")
+    expect(form == origin("admin") + "/ui/login/?sso=off", f"Its sign-in form → {form}")
     page.click("#tour [data-k=open-admin]")
     need("litellm")
-    fl = page.frame_locator("iframe[data-app=admin]")
-    fl.locator("input[name=username]").wait_for(timeout=45000)
-    # The walkthrough names LiteLLM's form as it is: Username, Password, Login.
-    labels = " ".join(fl.locator("label").all_inner_texts())
-    submit = fl.locator("button[type=submit]").first.inner_text().strip()
-    expect("Username" in labels and "Password" in labels and re.fullmatch(r"(?i)log ?in", submit),
-           f"LiteLLM's sign-in form: labels {labels!r}, button {submit!r}")
+    sso_signed_in(page, page.frame_locator("iframe[data-app=admin]"), rec, "admin", "walkthrough: Open Admin", "w-admin")
+    page.locator("#tour .tour-step.cur.done").wait_for(timeout=5000)
     shot(page, "w04-walkthrough-admin")
-    page.click("#tour [data-k=mark]")   # Mark as done moves on
+    page.click("#tour [data-k=next]")
     _to_step(page, "signin-files")
+    page.click("#tour [data-k=fallback-files] summary")
     page.locator("#tour .tour-cred", has_text=ENV["RUSTFS_ACCESS_KEY"]).wait_for(timeout=10000)
     expect(_clipboard_after(page, "#tour [data-k=copy-files-user]") == ENV["RUSTFS_ACCESS_KEY"], "Copy access key")
     expect(_clipboard_after(page, "#tour [data-k=copy-files-pass]") == ENV["RUSTFS_SECRET_KEY"], "Copy secret key")
@@ -1212,13 +1373,10 @@ def walkthrough(ctx):
     expect(ENV["RUSTFS_SECRET_KEY"] not in html and ENV["LITELLM_UI_PASSWORD"] not in html, "a password is in the page")
     page.click("#tour [data-k=open-files]")
     need("rustfs")
-    ff = page.frame_locator("iframe[data-app=files]")
-    ff.locator("input[placeholder='Please enter account']").wait_for(timeout=45000)
-    expect(ff.get_by_role("button", name="Login", exact=True).count() == 1, "RustFS has no Login button")
-    labels = ff.locator("label").all_inner_texts()
-    expect("Account" in labels and "Key" in labels, f"RustFS's sign-in labels {labels}")
+    sso_signed_in(page, page.frame_locator("iframe[data-app=files]"), rec, "files", "walkthrough: Open Files", "w-files")
+    page.locator("#tour .tour-step.cur.done").wait_for(timeout=5000)
     page.emulate_media(color_scheme="dark")
-    shot(page, "w05-walkthrough-files-dark")
+    shot(page, "w05-walkthrough-files-dark", mask=["iframe[data-app=files]"])
     page.emulate_media(color_scheme="light")
 
     # Reload: still open, on the same step, with the same progress.
@@ -1283,8 +1441,8 @@ def walkthrough(ctx):
     rec.save()
     expect(not probs, f"errors: {probs[:6]}")
     return (f"opens on a first visit as a section of the {open_w:.0f} px sidebar (closed: {side['width']:.0f} px), beside the frames; {aws.strip()!r}; "
-            f"{asked} summaries in 65 s; Next through Set up; Open Chat → done; Admin/Files sign-ins shown and copied "
-            f"(LiteLLM: Username/Password/{submit}); reload keeps the step; closed → {label!r}, stays closed; reload on Chat → "
+            f"{asked} summaries in 65 s; Next through Set up; Open Chat/Admin/Files → signed in automatically, done; their "
+            f"own sign-ins folded away, shown and copied; reload keeps the step; closed → {label!r}, stays closed; reload on Chat → "
             f"{chat_status.strip()[:40]!r}; skip/undo/finish/start over")
 
 
@@ -1303,7 +1461,7 @@ def walkthrough_tablet(ctx):
     page.keyboard.press("Escape")
     page.wait_for_selector("#tour", state="hidden")
     expect(page.evaluate("document.activeElement.id") == "tour-btn", "focus did not return to the button")
-    # Open Admin from the card: the card steps aside, so it does not cover LiteLLM's sign-in form.
+    # Open Admin from the card: the card steps aside, so it does not cover LiteLLM (signed in by the portal).
     page.click("#tour-btn")
     page.wait_for_selector("#tour:not([hidden]) #tour-cur")
     page.click("#tour [data-k=sec-1]")
@@ -1313,15 +1471,15 @@ def walkthrough_tablet(ctx):
     page.locator("#toast.show", has_text="compass button").wait_for(timeout=3000)
     page.wait_for_selector("#tour", state="hidden", timeout=5000)
     need("litellm")
-    field = page.frame_locator("iframe[data-app=admin]").locator("input[name=username]")
-    field.wait_for(timeout=45000)
-    box = field.bounding_box()
+    keys = page.frame_locator("iframe[data-app=admin]").locator(SSO_DONE["admin"]).first
+    sso_signed_in(page, page.frame_locator("iframe[data-app=admin]"), rec, "admin", "tablet: Open Admin", "w-tablet-admin")
+    box = keys.bounding_box()
     covered = page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); return !e || !!e.closest('#tour'); }",
                            [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
-    expect(not covered, "the walkthrough covers LiteLLM's username field")
+    expect(not covered, "the walkthrough covers LiteLLM")
     rec.save()
     return (f"a {card['width']:.0f}×{card['height']:.0f} card next to the {rail['width']:.0f} px rail; Escape closes it; "
-            "Open Admin moves it aside (the username field is free)")
+            "Open Admin moves it aside (LiteLLM, signed in, is free)")
 
 
 @check("browser", "walkthrough-phone")
@@ -1349,8 +1507,18 @@ def walkthrough_phone(ctx):
     expect(a.count() == 1, "Open Admin is not a link on a phone")
     href, target = a.get_attribute("href"), a.get_attribute("target")
     expect(href == origin("admin") + "/ui/" and target == "_blank", f"Open Admin → {href} ({target})")
+    page.click("#tour [data-k=fallback-admin] summary")
     page.locator("#tour .tour-cred", has_text=ENV["LITELLM_UI_USER"]).wait_for(timeout=10000)
     shot(page, "w09-walkthrough-phone-admin")
+    # the new tab lands in LiteLLM signed in, and the step is done
+    need("litellm")
+    with page.context.expect_page() as pop:
+        a.click()
+    win = rec.attach(pop.value)
+    sso_signed_in(win, win, rec, "admin", "phone: Open Admin (new tab)", "w-phone-admin")
+    shot(win, "w09b-walkthrough-phone-admin-tab")
+    win.close()
+    page.locator("#tour .tour-step.cur.done").wait_for(timeout=5000)
     page.keyboard.press("Escape")
     page.wait_for_selector("#tour", state="hidden")
     # Left open, it still starts closed on the next load (a phone starts on Chat).
@@ -1363,7 +1531,7 @@ def walkthrough_phone(ctx):
     expect(page.locator("#tour").is_hidden(), "the walkthrough opened by itself after a reload on a phone")
     rec.save()
     return ("closed at first and after a reload; More → Walkthrough opens a sheet above the tab bar; Open Admin is a "
-            "new-tab link; Escape closes")
+            "new-tab link that lands signed in (step done); Escape closes")
 
 
 @check("browser", "walkthrough-storage")
@@ -1606,17 +1774,13 @@ def settings_litellm_password(ctx):
     bad = lite("POST", "/v2/login", body={"username": ENV["LITELLM_UI_USER"], "password": old})
     expect(good.status == 200, f"new password: HTTP {good.status}")
     expect(bad.status != 200, "the old password still signs in")
-    # and in the Admin tab
+    # and the Admin tab still signs in by itself: the portal restarted with the new password
     page.click(".tab[data-tab=admin]")
-    fl = page.frame_locator("iframe[data-app=admin]")
-    fl.locator("input[name=username]").wait_for(timeout=45000)
-    fl.locator("input[name=username]").fill(ENV["LITELLM_UI_USER"])
-    fl.locator("input[name=password]").fill(new)
-    fl.locator("button[type=submit]").click()
-    fl.locator("text=Virtual Keys").first.wait_for(timeout=45000)
+    sso_signed_in(page, page.frame_locator("iframe[data-app=admin]"), rec, "admin", "Admin after the change", "settings-admin")
     shot(page, "24-settings-admin-new-password", mask=["iframe[data-app=admin]"])
     rec.save()
-    return f"LITELLM_UI_PASSWORD changed in LiteLLM at once: the new one signs in (API and Admin tab), the old one is refused; {msg}"
+    return (f"LITELLM_UI_PASSWORD changed in LiteLLM at once: the new one signs in, the old one is refused; the Admin tab "
+            f"still signs in automatically; {msg}")
 
 
 @check("settings", "settings-owner-email")
@@ -1751,8 +1915,11 @@ def settings_regen_rustfs(ctx):
     expect(got["status"] == 200 and got["body"] == text, f"the file uploaded before: HTTP {got['status']}")
     up2 = _owui_upload(f2, "e2e-regen-after.txt", "a new upload with the new pair")
     expect(up2["status"] == 200, f"upload after: {up2['status']} {up2['body'][:120]}")
+    page2.click(".tab[data-tab=files]")   # Files signs in by itself with the new pair
+    sso_signed_in(page2, page2.frame_locator("iframe[data-app=files]"), rec2, "files", "Files after the new pair", "settings-files")
     rec.save(); rec2.save()
-    return f"new RustFS pair ({msg}); a file stored before still downloads, a new Chat upload works, Home shows the new sign-in"
+    return (f"new RustFS pair ({msg}); a file stored before still downloads, a new Chat upload works, Home shows the new "
+            "sign-in, Files still signs in automatically")
 
 
 def _local_hour_of_helper() -> int:
@@ -1842,10 +2009,23 @@ def settings_portal_password(ctx):
 
 @check("final", "sign-out-all-hosts")
 def sign_out(ctx):
+    import base64
+    from checks_api import lite
     page, rec = ctx.page("sign-out")
     login(page)
     page.click(".tab[data-tab=chat]")
     frame_of(page, "chat")
+    # Admin and Files opened (signed in by the portal) before signing out
+    page.click(".tab[data-tab=admin]")
+    page.frame_locator("iframe[data-app=admin]").locator(SSO_DONE["admin"]).first.wait_for(timeout=45000)
+    page.click(".tab[data-tab=files]")
+    page.frame_locator("iframe[data-app=files]").locator(SSO_DONE["files"]).first.wait_for(timeout=45000)
+    tok = [c["value"] for c in page.context.cookies(origin("admin")) if c["name"] == "token"]
+    expect(tok, "no LiteLLM session from the automatic sign-in")
+    body = tok[0].split(".")[1]
+    ui_key = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["key"]
+    expect(lite("GET", "/key/info", key=ui_key).status == 200, "the Admin session's key does not work before Sign out")
+    page.click(".tab[data-tab=chat]")
     page.click(".sidebar .logout button")
     page.wait_for_url(re.compile(r"/login$"))
     bad = []
@@ -1854,8 +2034,13 @@ def sign_out(ctx):
         if "/login" not in page.url or not page.url.startswith(origin()):
             bad.append(f"{sub or 'portal'} → {page.url}")
     expect(not bad, "still reachable after Sign out: " + ", ".join(bad))
+    t0, st = time.time(), 0
+    while time.time() - t0 < 15 and (st := lite("GET", "/key/info", key=ui_key).status) == 200:
+        time.sleep(1)
+    expect(st in (401, 403), f"the Admin session's LiteLLM key still works after Sign out (HTTP {st})")
     shot(page, "16-signed-out")
     rec.save()
     ctx.reset_session()
-    return "Sign out → login; portal, chat, admin and files all send the browser back to the login"
+    return ("Sign out → login; portal, chat, admin and files (opened and signed in before) all send the browser back to "
+            f"the login; the Admin session the portal created is revoked in LiteLLM (HTTP {st})")
 

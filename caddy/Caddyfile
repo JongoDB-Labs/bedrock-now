@@ -2,9 +2,9 @@
 # Values come from the environment ({$VAR}, set in compose.yaml from .env) — nothing secret lives here.
 #   {$PORTAL_HOST}   portal: login + Home   (default bedrock-now.localhost)
 #   {$CHAT_HOST}     Open WebUI             (default chat.PORTAL_HOST; logged in via the trusted X-Portal-User header)
-#   {$ADMIN_HOST}    LiteLLM admin UI       (default admin.PORTAL_HOST)
+#   {$ADMIN_HOST}    LiteLLM admin UI       (default admin.PORTAL_HOST; signed in by the portal: app_sso below)
 #   {$FILES_HOST}    RustFS console         (default files.PORTAL_HOST; Host passed through unchanged: the console
-#                                           signs S3 requests with it)
+#                                           signs S3 requests with it; signed in by the portal: app_sso below)
 #   {$TERMINAL_HOST} the browser terminal   (only with ./stack terminal enable: terminal-on.caddy; default
 #                                           terminal.PORTAL_HOST; a session AND a fresh password unlock)
 # The apps must keep distinct host names: Open WebUI and LiteLLM both use a host-only cookie named "token".
@@ -51,11 +51,29 @@
 	}
 }
 
-# The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it.
+# The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it, nor are the markers of
+# the automatic sign-in (app_sso below; they are only the portal's).
 (drop_session_cookie) {
 	header_up Cookie "bn_session=[^;]*;?\s*" ""
 	header_up Cookie "bn_session_next=[^;]*;?\s*" ""
+	header_up Cookie "bn_sso(_n|_pass)?=[^;]*;?\s*" ""
 	header_up -X-Portal-Proxy
+}
+
+# Automatic sign-in to Admin and Files (portal/portal/appsso.py): the portal's check above sends a page load that
+# needs the app's own session to /.bn/sso on the same host, which the portal answers (after that check, so only a
+# signed-in browser gets here): it signs in to LiteLLM / RustFS with the sign-in it holds and hands this browser the
+# app's session on this host only — LiteLLM's token cookie, or the RustFS console's credentials through a page that
+# stores them. Nothing secret is ever in a URL. Imported by the admin and files site blocks here and in remote-*.caddy.
+# Page loads also always come back through the check: LiteLLM's UI sends no Cache-Control, so a browser would take a
+# page from its cache for hours without asking, after Sign out too (scripts and styles keep their caching).
+(app_sso) {
+	@bn_sso path /.bn/sso
+	reverse_proxy @bn_sso portal:8000 {
+		rewrite /auth/app-sso?{query}
+	}
+	@bn_page header Sec-Fetch-Mode navigate
+	header @bn_page ?Cache-Control "no-cache"
 }
 
 # Replaces whatever framing policy the app sends (LiteLLM: X-Frame-Options DENY + CSP frame-ancestors 'none';
@@ -119,6 +137,7 @@ http://{$ADMIN_HOST} {
 	route {
 		import local_request
 		import portal_auth
+		import app_sso
 		reverse_proxy litellm:4000 {
 			import drop_session_cookie
 			# LiteLLM's CSP holds nothing but frame-ancestors 'none', so replacing it loses nothing else.
@@ -131,6 +150,7 @@ http://{$FILES_HOST} {
 	route {
 		import local_request
 		import portal_auth
+		import app_sso
 		reverse_proxy rustfs:9001 {
 			import drop_session_cookie
 			import frame_by_portal_only

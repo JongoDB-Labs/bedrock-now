@@ -34,3 +34,7 @@ body.login { min-height: 100vh; display: grid; place-items: center; padding: 24p
 .login button[type=submit] { margin-top: 8px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .login .error { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; border-left: 3px solid var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .hint { color: var(--muted); font-size: 13px; margin: 20px 0 0; }
+/* The automatic sign-in pages on the Admin / Files hosts (portal/appsso.py): its fallback links. */
+.app-signin a { color: var(--accent); }
+.sso-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0; }
+.app-signin a.sso-primary { padding: 10px 14px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none; }

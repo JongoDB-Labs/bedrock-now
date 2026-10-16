@@ -78,9 +78,25 @@ your browser.
 |---|---|---|
 | **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command. Refreshes every 30 s; makes no Bedrock calls. | the portal |
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
-| **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | LiteLLM's own sign-in (copy it from Home) |
-| **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | RustFS's own sign-in (copy it from Home) |
+| **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
+| **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | automatic |
 | **Settings** | Every setting of `.env`, secrets masked; change passwords, the owner email, the AWS key, budgets, voice, OpenRouter and updates; backups and diagnostics ([Settings](#settings)) | the portal (each change asks for the password again) |
+
+One sign-in is all there is: the portal signs you in to every app, in its tab, a pop-out window, on the remote
+site and on a phone. Chat trusts the portal's word for who you are; for Admin and Files, which cannot, the portal
+signs in to LiteLLM and RustFS for you with the sign-ins it already holds and hands the app's own session to your
+browser on that app's address ([how](docs/security.md#automatic-sign-in-to-admin-and-files)). **Sign out** ends
+them all. LiteLLM's and RustFS's own sign-ins still exist, as a fallback and for the API, under **Credentials** on
+Home:
+
+| Fallback sign-in | User | Password |
+|---|---|---|
+| Admin (LiteLLM's form, `admin.…/ui/login/?sso=off`) | `OPENWEBUI_ADMIN_EMAIL` (`admin` before the first setup) | `LITELLM_UI_PASSWORD` |
+| Files (the console's form, `files.…/rustfs/console/auth/login/?sso=off`) | `RUSTFS_ACCESS_KEY` | `RUSTFS_SECRET_KEY` |
+
+Home's **Credentials** copies them and opens each app's own form; an app's own **Logout** shows that form too
+(opening the app from Home again signs you in). A password changed inside LiteLLM's own UI is not known to the
+portal: set it in Settings as well, or the automatic sign-in to Admin stops (it then says so, with a link to the form).
 
 Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. If port 80
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
@@ -104,13 +120,13 @@ instead of covering an app, on a tablet it is a card next to the icons, and on a
 1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models, voice,
    Claude Code, each app's budget, and extras (the desktop app, one-click updates, use from your phone). Each
    step shows its live status from Home and the commands to run, with Copy buttons.
-2. **Sign in to each app:** the portal and Chat sign you in; Admin and Files have their own sign-in, which the
-   step shows with Copy buttons for the user name and password.
+2. **Sign in to each app:** the portal signs you in to Chat, Admin and Files; opening each one ticks its step off.
+   Their own sign-ins are folded away there, with Copy buttons, in case one is ever needed.
 3. **Use it together:** Home, a chat with its cost line, voice, your documents, Claude Code writing to the shared
    store and Chat answering from that file, and where the money went in Admin.
 
-Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat opened, a
-key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
+Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat, Admin or
+Files opened, a key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
 closing the walkthrough leaves the button with your progress, and **Start over** at the end resets it.
 
 ### Desktop app
@@ -169,7 +185,7 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   **Enabled only** filter (on by default on a phone). Chat fills the screen and shrinks above the keyboard, so
   the message box stays visible.
 - **Admin and Files** are desktop apps: on a phone they sit under **More** in the tab bar and open in a new
-  browser tab (they still ask for their own sign-in, copied from the bottom of Home). **Sign out** is there too.
+  browser tab, already signed in. **Sign out** is there too.
   Update, Rollback and Clean are off from a phone unless `REMOTE_ADMIN_ACTIONS=true`; Home then says to use a
   desktop browser on the computer running bedrock-now.
 - **Tablets** get the sidebar as a row of icons.
@@ -829,7 +845,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#voice-speech-to-text) works there: `./stack stt set bedrock`. |
 | "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#voice-speech-to-text): `./stack stt set bedrock` (no key; `./stack stt status` says why it is off), or `openai` / `groq`. |
 | "Error transcribing chunk: External: …" | The message after it says what failed (budget, model access, throttling, a too-long recording); see [docs/voice.md](docs/voice.md#troubleshooting). |
-| LiteLLM UI login fails with `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (Home shows both); the shared `admin` login is off. |
+| Admin says "automatic sign-in did not work" | It names the reason (LiteLLM not running, or it refused the password the portal has). If you changed the Admin password inside LiteLLM, set it in **Settings → Account & security** too; meanwhile **Sign in with the password instead** opens LiteLLM's own form. Files likewise (RustFS not running, or a key pair edited by hand: `./stack config regenerate rustfs`). |
+| LiteLLM's own form refuses `admin` | Once setup has created the database admin, sign in with `OPENWEBUI_ADMIN_EMAIL` / `LITELLM_UI_PASSWORD` (Home → Credentials shows both); the shared `admin` login is off. |
 | Forgot the LiteLLM admin password (you changed it in the LiteLLM UI) | Set a new one in **Settings → Account & security** (or `./stack config set LITELLM_UI_PASSWORD`): it is changed in LiteLLM itself, with the master key when the old one no longer works. Editing `LITELLM_UI_PASSWORD` in `.env` alone does nothing once the admin exists (`./stack up` then warns and repairs it). |
 | Home warns about prices (refused change, stale, LiteLLM/AWS gap) | See [docs/prices.md](docs/prices.md#guards). After checking a refused change: `./stack prices --accept`, then `./stack up`. |
 | A service doesn't come up during setup | Setup prints its last log lines; run `./stack logs <service>`, or re-run with `BEDROCK_NOW_VERBOSE=1 ./stack setup`. |
@@ -871,7 +888,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 
 - One way in for browsers: Caddy on `127.0.0.1`, which asks the portal to check a signed, `HttpOnly`,
   `SameSite=Strict` session cookie before every request. Open WebUI trusts a sign-in header that only Caddy
-  can set; the apps may be framed only by the portal.
+  can set; LiteLLM and RustFS get their own sessions from the portal, handed over on their own host names and
+  never in a URL; the apps may be framed only by the portal.
 - Every host port binds to `127.0.0.1`. AWS credentials reach only the LiteLLM container and never appear on a
   command line; all secrets live in `.env` (mode 600). On EC2 with an IAM role there are no AWS keys at all, but
   every container on the VM can fetch the role's temporary credentials from the metadata service unless you

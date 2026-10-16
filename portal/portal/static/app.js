@@ -693,6 +693,8 @@ async function loadLogins() {
   try {
     logins = await api("/api/logins");
     for (const s of document.querySelectorAll(".cred")) s.textContent = logins[s.dataset.login][s.dataset.field] || "–";
+    // each app's own sign-in form, without the automatic sign-in (?sso=off): the fallback
+    for (const a of document.querySelectorAll("a.form-link[data-form]")) a.href = logins[a.dataset.form].manual || "";
   } catch (_) { /* the copy buttons explain it */ }
 }
 

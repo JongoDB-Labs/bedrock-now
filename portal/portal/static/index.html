@@ -62,7 +62,7 @@
 <div id="more-sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="more-title" hidden>
   <div class="sheet-panel">
     <h2 id="more-title">Desktop site</h2>
-    <p class="note">Admin and Files are made for a big screen, so on a phone they open in a new tab. They ask for their own sign-in: copy it from the bottom of Home.</p>
+    <p class="note">Admin and Files are made for a big screen, so on a phone they open in a new tab, already signed in.</p>
     <ul class="sheet-links">
       <li><a class="sheet-link" data-app="admin" target="_blank" rel="noopener">Admin <span>LiteLLM: keys, budgets, logs</span></a></li>
       <li><a class="sheet-link" data-app="files" target="_blank" rel="noopener">Files <span>RustFS: stored uploads</span></a></li>
@@ -174,13 +174,16 @@
       </section>
 
       <section class="logins" aria-labelledby="logins-title">
-        <h2 id="logins-title">Sign-ins inside Admin and Files</h2>
-        <p class="note">LiteLLM and RustFS still ask for their own sign-in. Copy it from here.</p>
-        <dl id="logins" class="logins-list">
-          <div><dt>Admin (LiteLLM)</dt><dd><span class="cred" data-login="admin" data-field="username">–</span> <button type="button" class="copy" data-login="admin" data-field="username">Copy user</button> <button type="button" class="copy" data-login="admin" data-field="password">Copy password</button></dd></div>
-          <div><dt>Files (RustFS)</dt><dd><span class="cred" data-login="files" data-field="username">–</span> <button type="button" class="copy" data-login="files" data-field="username">Copy access key</button> <button type="button" class="copy" data-login="files" data-field="password">Copy secret key</button></dd></div>
-        </dl>
-        <p class="note">Change them in <a href="#settings">Settings</a>. A password changed inside LiteLLM's own UI is not known here.</p>
+        <h2 id="logins-title">Admin and Files sign you in automatically</h2>
+        <p class="note">Opening Admin or Files signs you in to LiteLLM and RustFS with your portal session: no second password. Sign out ends it.</p>
+        <details class="logins-more" id="logins-more">
+          <summary>Credentials (for the API or if automatic sign-in fails)</summary>
+          <dl id="logins" class="logins-list">
+            <div><dt>Admin (LiteLLM)</dt><dd><span class="cred" data-login="admin" data-field="username">–</span> <button type="button" class="copy" data-login="admin" data-field="username">Copy user</button> <button type="button" class="copy" data-login="admin" data-field="password">Copy password</button> <a class="copy form-link" data-form="admin" target="_blank" rel="noopener">Its sign-in form <span aria-hidden="true">↗</span></a></dd></div>
+            <div><dt>Files (RustFS)</dt><dd><span class="cred" data-login="files" data-field="username">–</span> <button type="button" class="copy" data-login="files" data-field="username">Copy access key</button> <button type="button" class="copy" data-login="files" data-field="password">Copy secret key</button> <a class="copy form-link" data-form="files" target="_blank" rel="noopener">Its sign-in form <span aria-hidden="true">↗</span></a></dd></div>
+          </dl>
+          <p class="note">Change them in <a href="#settings">Settings</a>. A password changed inside LiteLLM's own UI is not known here: set it in Settings too, or the automatic sign-in to Admin stops working.</p>
+        </details>
       </section>
 
       <section class="maint" id="maint" aria-labelledby="maint-title" hidden>

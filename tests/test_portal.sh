@@ -205,6 +205,43 @@ test_caddy_public_paths_have_one_definition_in_a_snippet() {
   assert_contains "$(sed -n '/@portal host {\$REMOTE_HOST}/,/^	}/p' "$STACK_DIR/caddy/remote-domain.caddy")" "import portal_routes"
 }
 
+# _sso_block_ok "BLOCK" UPSTREAM — in a site block: Caddy's session check, then /.bn/sso (the portal), then the app
+_sso_block_ok() {
+  local a s u
+  a="$(printf '%s\n' "$1" | grep -n 'import portal_auth' | cut -d: -f1)"
+  s="$(printf '%s\n' "$1" | grep -n 'import app_sso' | cut -d: -f1)"
+  u="$(printf '%s\n' "$1" | grep -n "reverse_proxy $2 {" | cut -d: -f1)"
+  if [ -z "$a" ] || [ -z "$s" ] || [ -z "$u" ] || [ "$a" -ge "$s" ] || [ "$s" -ge "$u" ]; then
+    printf 'app_sso is not between portal_auth and %s in:\n%s\n' "$2" "$1" >&2; return 1
+  fi
+}
+
+test_caddy_app_sso_only_on_admin_and_files_after_the_session_check() {
+  # Automatic sign-in (portal/portal/appsso.py): /.bn/sso is the portal's on the Admin and Files hosts only, after
+  # Caddy's session check, in the local site and in both remote sites; one definition, in the Caddyfile.
+  local f="$STACK_DIR/caddy/Caddyfile" t="$STACK_DIR/caddy/remote-tailscale.caddy" d="$STACK_DIR/caddy/remote-domain.caddy" r
+  assert_eq "$(grep -c '^(app_sso) {' "$f" | tr -d ' ')" 1
+  assert_contains "$(sed -n '/^(app_sso) {/,/^}/p' "$f")" "rewrite /auth/app-sso?{query}"
+  assert_contains "$(sed -n '/^(app_sso) {/,/^}/p' "$f")" "@bn_sso path /.bn/sso"
+  # their page loads are never taken from the browser's cache without Caddy's check (LiteLLM sends no Cache-Control)
+  assert_contains "$(sed -n '/^(app_sso) {/,/^}/p' "$f")" 'header @bn_page ?Cache-Control "no-cache"'
+  _sso_block_ok "$(sed -n '/^http:\/\/{\$ADMIN_HOST} {/,/^}/p' "$f")" litellm:4000
+  _sso_block_ok "$(sed -n '/^http:\/\/{\$FILES_HOST} {/,/^}/p' "$f")" rustfs:9001
+  _sso_block_ok "$(sed -n '/^http:\/\/{\$REMOTE_ADMIN_HOST}:8081 {/,/^}/p' "$t")" litellm:4000
+  _sso_block_ok "$(sed -n '/^http:\/\/{\$REMOTE_FILES_HOST}:8081 {/,/^}/p' "$t")" rustfs:9001
+  _sso_block_ok "$(sed -n '/@admin host {\$REMOTE_ADMIN_HOST}/,/^	}/p' "$d")" litellm:4000
+  _sso_block_ok "$(sed -n '/@files host {\$REMOTE_FILES_HOST}/,/^	}/p' "$d")" rustfs:9001
+  for r in "$f" "$t" "$d"; do
+    assert_eq "$(grep -c 'import app_sso' "$r" | tr -d ' ')" 2   # admin and files; never chat, the portal or the terminal
+  done
+  assert_eq "$(grep -c '(app_sso)' "$t" "$d" | awk -F: '{ n += $2 } END { print n }')" 0
+  # the markers are the portal's: kept from the apps, like the session cookie
+  assert_contains "$(sed -n '/^(drop_session_cookie) {/,/^}/p' "$f")" 'header_up Cookie "bn_sso(_n|_pass)?=[^;]*;?\s*" ""'
+  for r in "$t" "$d"; do
+    assert_contains "$(sed -n '/^(remote_upstream) {/,/^}/p' "$r")" 'header_up Cookie "__Host-bn_sso(_n|_pass)?=[^;]*;?\s*" ""'
+  done
+}
+
 test_check_port_allows_80_only_for_the_portal() {
   (check_port PORTAL_PORT 80) || return 1
   if (check_port LITELLM_PORT 80) 2>/dev/null; then return 1; fi

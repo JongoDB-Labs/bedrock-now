@@ -86,6 +86,59 @@ def auth_required(ctx):
     return "portal, chat, admin, files: browser navigations → login (with next=), API/XHR/POST → 401"
 
 
+@check("http", "apps-sso-handoff")
+def apps_sso(ctx):
+    """The automatic sign-in to Admin and Files (portal/portal/appsso.py) at the HTTP level: which requests Caddy's check
+    sends to /.bn/sso, what the hand-off answers (never anything secret in a URL), and what it refuses."""
+    s = ctx.session()
+    nav = {"Accept": "text/html", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "same-site"}
+    secrets = [ENV["LITELLM_UI_PASSWORD"], ENV["RUSTFS_SECRET_KEY"], ENV["LITELLM_MASTER_KEY"]]
+    # a page load without an app session goes to /.bn/sso on the same host first; a script's request does not
+    r = http("GET", "admin", "/ui/", nav, cookie=s)
+    expect(r.status == 302 and r.header("location") == "/.bn/sso?next=%2Fui%2F", f"admin /ui/: {r.status} {r.header('location')}")
+    r = http("GET", "files", "/rustfs/console/", nav, cookie=s)
+    expect(r.status == 302 and r.header("location") == "/.bn/sso?next=%2Frustfs%2Fconsole%2F", f"files: {r.status} {r.header('location')}")
+    r = http("GET", "admin", "/ui/", {"Accept": "*/*", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}, cookie=s)
+    expect(r.status == 200, f"a script's request to /ui/: {r.status}")
+    # LiteLLM's own session (its form) goes through, and the page is never taken from the cache without the check
+    r = http("GET", "admin", "/ui/", nav, cookie=s + "; token=from-its-form")
+    expect(r.status == 200 and r.header("cache-control") == "no-cache", f"/ui/ with LiteLLM's cookie: {r.status} {r.header('cache-control')}")
+    # Admin: LiteLLM's session cookie on its host, the marker, nothing in the URL
+    r = http("GET", "admin", "/.bn/sso?next=%2Fui%2F%3Fpage%3Dlogs", nav, cookie=s)
+    cks = {c.split("=", 1)[0]: c for c in r.headers_all("set-cookie")}
+    expect(r.status == 303 and r.header("location") == "/ui/?page=logs", f"admin hand-off: {r.status} {r.header('location')}")
+    tok = cks.get("token", "")
+    expect(tok and "httponly" not in tok.lower() and "samesite=lax" in tok.lower() and "domain=" not in tok.lower(),
+           "LiteLLM's token cookie: missing, HttpOnly, not Lax or with a Domain")
+    expect("httponly" in cks.get("bn_sso", "").lower() and "samesite=strict" in cks.get("bn_sso", "").lower(), "marker not HttpOnly/Strict")
+    expect(r.header("cache-control") == "no-store" and r.header("referrer-policy") == "no-referrer", "hand-off cacheable or with a referrer")
+    jwt = tok.split("=", 1)[1].split(";", 1)[0] if tok else ""
+    expect(not any(v and v in (r.header("location") or "") for v in secrets + [jwt]), "a secret in the hand-off's Location")
+    # Files: a page storing the console's credentials (its only script allowed by hash), a short pass, no-store
+    r = http("GET", "files", "/.bn/sso?next=%2Frustfs%2Fconsole%2F", nav, cookie=s)
+    csp = r.header("content-security-policy") or ""
+    expect(r.status == 200 and "text/html" in (r.header("content-type") or "") and r.header("cache-control") == "no-store",
+           f"files hand-off: {r.status} {r.header('content-type')} {r.header('cache-control')}")
+    expect("script-src 'sha256-" in csp and "unsafe" not in csp and f"frame-ancestors {origin()}" in csp, f"files hand-off CSP: {csp}")
+    expect('id="bn-sso"' in r.text and "auth.credentials" in r.text and ENV["RUSTFS_SECRET_KEY"] not in r.text,
+           "the page does not store the console's credentials, or holds the RustFS secret key itself")
+    expect(any(c.startswith("bn_sso_pass=") and "max-age=15" in c.lower() for c in r.headers_all("set-cookie")), "no pass cookie")
+    # refused: a script's request, another site's link, no session (the portal's login), another host
+    for h, what in (({"Accept": "*/*", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Sec-Fetch-Site": "same-site"}, "fetch()"),
+                    ({**nav, "Sec-Fetch-Site": "cross-site"}, "another site's link"),
+                    ({"Accept": "*/*", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "script", "Sec-Fetch-Site": "same-site"}, "<script src>")):
+        for sub, nxt in (("admin", "%2Fui%2F"), ("files", "%2Frustfs%2Fconsole%2F")):
+            r = http("GET", sub, f"/.bn/sso?next={nxt}", h, cookie=s)
+            expect(r.status == 403 and not r.headers_all("set-cookie"), f"{sub} /.bn/sso from {what}: {r.status}")
+    r = http("GET", "admin", "/.bn/sso?next=%2Fui%2F", nav)
+    expect(r.status == 302 and (r.header("location") or "").startswith(origin() + "/login?next="), f"no session: {r.status} {r.header('location')}")
+    r = http("GET", "chat", "/.bn/sso?next=%2F", nav, cookie=s)
+    expect(r.status != 200 or "auth.credentials" not in r.text, "chat host answers /.bn/sso")
+    return ("page loads → /.bn/sso (scripts not); admin: 303 + LiteLLM's token cookie (host-only, Lax) + HttpOnly marker; "
+            "files: no-store page, hash-only script, 15 s pass; fetch/cross-site/<script> 403, no session → login; "
+            "LiteLLM's own session kept, pages revalidated (no-cache)")
+
+
 @check("http", "unknown-host-and-internal-paths")
 def unknown_host(ctx):
     r = http("GET", None, "/", host_header=f"evil.example:{PORT}")
@@ -239,8 +292,10 @@ def headers(ctx):
                 "referrer same-origin": r.header("referrer-policy") == "same-origin",
                 "frame-src apps": all(origin(a) in csp for a in APPS)}
         bad += [f"portal {path}: {k}" for k, ok in want.items() if not ok]
+    # past the automatic sign-in (LiteLLM's own session cookie; Files' pass right after a hand-off): the app's answer
+    past_sso = {"admin": "; token=e2e-not-a-session", "files": "; bn_sso_pass=1"}
     for sub, path in APPS.items():
-        r = http("GET", sub, path, HTML, cookie=s)
+        r = http("GET", sub, path, HTML, cookie=s + past_sso.get(sub, ""))
         if r.status not in (200, 301, 302, 307, 308):
             bad.append(f"{sub}: HTTP {r.status}")
         if r.header("content-security-policy") != f"frame-ancestors {origin()}":

@@ -25,11 +25,12 @@
 	request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}
 }
 
-# Towards the apps: no portal cookie, no proxy secret; only the remote portal may frame them; and their cookies
-# (set over plain http inside the stack, so without Secure) get Secure on this https site.
+# Towards the apps: no portal cookie or sign-in marker, no proxy secret; only the remote portal may frame them; and
+# their cookies (set over plain http inside the stack, so without Secure) get Secure on this https site.
 (remote_upstream) {
 	header_up Cookie "__Host-bn_session=[^;]*;?\s*" ""
 	header_up Cookie "__Host-bn_session_next=[^;]*;?\s*" ""
+	header_up Cookie "__Host-bn_sso(_n|_pass)?=[^;]*;?\s*" ""
 	header_up -X-Portal-Proxy
 	header_down -X-Frame-Options
 	header_down Content-Security-Policy "frame-ancestors {$REMOTE_ORIGIN}"
@@ -73,6 +74,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import remote_request
 		import handoff_callback
 		import portal_auth
+		import app_sso
 		reverse_proxy litellm:4000 {
 			import remote_upstream
 		}
@@ -83,6 +85,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import remote_request
 		import handoff_callback
 		import portal_auth
+		import app_sso
 		reverse_proxy rustfs:9001 {
 			import remote_upstream
 		}

@@ -73,8 +73,65 @@ session you get the login page.
   `./stack` writes like `PORTAL_ORIGIN`, and the remote chat host while remote access is on). Its default, `*`, is
   answered with credentials allowed for any `Origin`: a page on another of the portal's hosts — the terminal's
   among them — could otherwise have read your chats with your cookies.
-- The LiteLLM and RustFS sign-ins shown on Home come from the portal's API with copy buttons; the values never
-  appear in the page source.
+- Admin and Files sign you in from the portal session too (next section). Their own sign-ins, folded away under
+  **Credentials** on Home, come from the portal's API with copy buttons; the values never appear in the page source.
+
+## Automatic sign-in to Admin and Files
+
+LiteLLM's UI and RustFS's console cannot take a trusted header the way Open WebUI does, so the portal signs in to
+them for you, server-side, with the sign-ins it already holds (`LITELLM_UI_USER` / `LITELLM_UI_PASSWORD`, and
+`RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY`), and hands the app's own session to your browser on that app's own host
+name (`portal/portal/appsso.py`).
+
+Why not OIDC: LiteLLM 1.105.0's generic SSO refuses to sign anyone in once there are more than five users without an
+Enterprise license, and would make the portal an identity provider (signing keys, discovery, a token endpoint) for
+one person; RustFS's OIDC hands the console its credentials in the URL fragment, which stays in the browser's
+history. Each app's own sign-in call already yields exactly the session its UI uses, so the portal makes that call
+and delivers the result.
+
+- **When.** Caddy's check (`/auth/verify`) acts on page loads only (`Sec-Fetch-Mode: navigate`, or `Accept:
+  text/html` from a browser without it); a script's requests are never redirected. Admin: a page under `/ui` with
+  no LiteLLM session in the browser (its `token` cookie), or one handed out for an earlier portal session or other
+  credentials, or LiteLLM's sign-in page. Which session and credentials an Admin session came from is in a signed
+  `bn_sso` marker (`HttpOnly`, `SameSite=Strict`, host-only), bound to the portal session's start, the Tailscale
+  login and a keyed fingerprint of the credentials, so a new sign-in, a new LiteLLM password or a regenerated
+  RustFS pair takes effect at the next page load. Files: every console page load, because the console keeps its
+  session in `localStorage`, which no server sees (its own Logout clears it); the hand-off's own next page load
+  passes on a `bn_sso_pass` cookie that lasts 15 seconds. Such a page load is redirected to `/.bn/sso?next=<path>`
+  on the same host, which Caddy routes to the portal after its session check (no session: the portal's login).
+- **What.** `/auth/app-sso` checks the session, the Tailscale login, and that the request is a page load from this
+  site where the browser says so (`Sec-Fetch-Site` not `cross-site`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest`
+  a document or frame): a script's `fetch`, an `<img>` or `<script>`, or another site's link gets 403. Then:
+  - Admin: `POST litellm:4000/v2/login`, the call LiteLLM's own form makes (it creates a UI session key for 24
+    hours, `LITELLM_UI_SESSION_DURATION`), and a 303 to the page with the session as LiteLLM's own `token` cookie:
+    host-only (no `Domain`), `Path=/`, `SameSite=Lax`, `Secure` on the remote site, expiring with the session, and
+    not `HttpOnly` because LiteLLM's dashboard reads it from its script (LiteLLM sets it the same way).
+  - Files: STS `AssumeRole` on `rustfs:9000`, signed (SigV4) with the key pair — the call the console makes — for
+    12-hour temporary credentials (stateless: nothing is stored in RustFS), and a `no-store` page on the files host
+    whose only script (allowed by its hash under `default-src 'none'`) writes them where the console keeps its own
+    (`localStorage["auth.credentials"]`) and opens the console page. The credentials exist only in that page's body.
+  - Nothing secret is ever in a URL (only `next=<path>`, which must stay inside the app and never be its sign-in
+    page, `//`, `\` or `..`), a `Referer` (`no-referrer`) or the log.
+- **Limits.** At most 20 hand-offs a minute in all. One that comes back to the same host five times within seconds
+  (a refused cookie, blocked site data, an app version the portal does not know) stops with an explanation, as
+  does any refusal (LiteLLM or RustFS not running, a password changed inside LiteLLM, a key pair edited by hand):
+  the page says why and links the app's own form.
+- **Trust.** A browser with a portal session opens Admin and Files as their administrator, which is what it could
+  already do with the sign-ins Home shows it. Every request to those hosts, `/.bn/sso` included, passes the
+  portal's session check first. The portal used to hold LiteLLM's admin password and the RustFS root pair only to
+  show them; it now also signs in with them, from inside the stack.
+- **Sign out** ends the portal session everywhere, so every request to the app hosts goes to the login again;
+  page loads on Admin and Files are never taken from the browser's cache without that check (Caddy adds
+  `Cache-Control: no-cache` where the app sends none, as LiteLLM's UI does). It also deletes the LiteLLM UI keys the
+  portal's sign-ins created (with the master key; the portal keeps that list in memory, so keys from before a
+  portal restart run out by themselves within 24 hours). The console's temporary credentials stay in that
+  browser's storage until they expire (12 hours), unusable without a portal session (RustFS publishes no port; its
+  only way in is the files host), and the next automatic sign-in replaces them.
+- **The fallback.** `?sso=off` on an app's sign-in page shows its own form (Home → Credentials links it); LiteLLM's
+  own Logout goes there (`PROXY_LOGOUT_URL`), RustFS's shows its form by itself. Caddy strips the marker, pass and
+  loop cookies before the apps, like the session cookie.
+- **Remote access.** The same on the remote app hosts: their session comes from the hand-off (below), the marker,
+  pass and loop cookies are `__Host-` cookies, and LiteLLM's `token` cookie is `Secure`.
 
 ## Settings
 
@@ -227,7 +284,8 @@ Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](
   if minted before the portal last started (their nonces are kept in memory). A browser that keeps refusing an
   app host's cookie gets an explanation after four hand-offs a minute instead of a redirect loop.
 - **App cookies.** Open WebUI keeps `WEBUI_AUTH_COOKIE_SECURE=false` (the local site is http); Caddy appends
-  `Secure` to every cookie the apps set on the remote https site.
+  `Secure` to every cookie the apps set on the remote https site. The automatic sign-in to Admin and Files sets its
+  cookies there itself, all `Secure` ([above](#automatic-sign-in-to-admin-and-files)).
 - **Own-domain token.** `CLOUDFLARE_API_TOKEN` should have Zone:Read + DNS:Edit for one zone only (ideally a
   dedicated subzone): a leaked token can rewrite that zone's DNS until revoked. See docs/remote.md.
 

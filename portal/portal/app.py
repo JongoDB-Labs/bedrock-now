@@ -15,13 +15,14 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import httpx
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, appicons, icons, prices, settings_api, summary, updates, webapp
+from . import admin, appicons, appsso, icons, prices, settings_api, summary, updates, webapp
 from .config import TERMINAL, Settings
 from .security import (
     TERMINAL_MAX_AGE, Handoff, LoginThrottle, Sessions, TerminalUnlocks, cookie_params, is_remote, remote_identity_ok,
@@ -152,6 +153,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
 
     handoff = Handoff(settings.secret, sessions.fingerprint)
     unlocks = TerminalUnlocks(settings.secret, sessions)   # the browser terminal's password-again cookie
+    # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
+    # a cap on hand-offs, and the LiteLLM UI keys they created (Sign out deletes them).
+    markers, sso_budget, minted = appsso.Markers(settings.secret), appsso.Budget(), appsso.MintedKeys()
     if settings.remote_on() and len(settings.proxy_secret) < 32:
         # Without Caddy's proxy secret no request can count as remote: remote access would show local behaviour.
         log.warning("remote access is on but PORTAL_PROXY_SECRET is missing or shorter than 32 characters — remote "
@@ -245,9 +249,32 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         fwd_host = request.headers.get("x-forwarded-host", "").split(":")[0].lower()
         if request.query_params.get("app") == TERMINAL or (fwd_host and fwd_host == settings.app_host(TERMINAL, rem)):
             return terminal_verify(request, rem)
-        if authed(request):
+        claims = session_claims(request)
+        if claims is not None:
+            if (go := app_sso_redirect(request, rem, fwd_host, claims)) is not None:
+                return go
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         return need_login(request)
+
+    def sso_app(host: str, rem: bool) -> str | None:
+        """admin / files when HOST is that app's host on this site."""
+        return next((a for a in appsso.APPS if host and host == settings.app_host(a, rem)), None)
+
+    def app_sso_redirect(request: Request, rem: bool, host: str, claims: dict) -> Response | None:
+        """On the Admin / Files host: a page load that needs the app's own session from the portal first goes to
+        /.bn/sso on the same host (portal/appsso.py target); None lets it through."""
+        app = sso_app(host, rem)
+        if app is None or not appsso.available(settings, app):
+            return None
+        if request.headers.get("x-forwarded-method", "GET").upper() != "GET" or not appsso.is_navigation(request.headers):
+            return None
+        mark_name, _, pass_name = appsso.cookie_names(rem)
+        mark = "none" if app != "admin" else markers.state(
+            request.cookies.get(mark_name), app, claims["iat"], appsso.fingerprint(settings, app),
+            session_login(request.headers, settings))
+        to = appsso.target(app, request.headers.get("x-forwarded-uri", "/"), host, mark, bool(request.cookies.get("token")),
+                           bool(request.cookies.get(pass_name)))
+        return None if to is None else _no_store(RedirectResponse(to, status_code=302))
 
     def need_login(request: Request) -> Response:
         method = request.headers.get("x-forwarded-method", "GET").upper()
@@ -436,13 +463,79 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
 
+    async def app_sso(request: Request) -> Response:
+        """GET /.bn/sso on the Admin / Files host (Caddy → here, after its session check): signs in to the app with the
+        sign-in the portal holds and hands the app's own session to this browser, on this host only: LiteLLM's `token`
+        cookie, or the RustFS console's credentials through a page that stores them (portal/appsso.py)."""
+        rem = remote(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        app = sso_app(host, rem)
+        if app is None:
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        portal, manual = settings.origin(remote=rem), appsso.manual_url(settings, app, rem)
+        if not appsso.request_ok(request.headers):
+            log.warning("automatic sign-in to %s: refused a request that is not a page load from this site", appsso.NAME[app])
+            return appsso.error_page(portal, app, "This address works only when Admin or Files is opened from Home.", manual, 403)
+        claims = session_claims(request)
+        if claims is None:   # Caddy's check runs first: only a request that went around it gets here
+            return _no_store(PlainTextResponse("login required", status_code=401))
+        mark_name, loop_name, pass_name = appsso.cookie_names(rem)
+        raw = request.cookies.get(loop_name, "0")
+        count = int(raw) if raw.isdigit() and len(raw) < 4 else 0
+        if count >= appsso.LOOP_MAX:
+            return appsso.error_page(portal, app, f"{appsso.NAME[app]} keeps going back to its sign-in page right after the "
+                                     "automatic sign-in (blocked cookies or site data, or an app version this portal does not "
+                                     "know). Try again shortly, or sign in by hand.", manual, 409)
+        if not appsso.available(settings, app):
+            return appsso.error_page(portal, app, "The portal does not have this sign-in yet: run ./stack setup.", manual, 503)
+        if not sso_budget.take():
+            return appsso.error_page(portal, app, "Too many automatic sign-ins in the last minute. Try again shortly.", manual, 429)
+        nxt = appsso.safe_path(app, request.query_params.get("next"))
+        try:
+            if app == "admin":
+                token, exp, key = await appsso.litellm_session(request.app.state.http, settings)
+                minted.add(key, exp)
+                resp = RedirectResponse(nxt, status_code=303)
+                # LiteLLM's own cookie as its sign-in sets it (host-only, Lax, readable by the dashboard's script)
+                resp.set_cookie("token", token, max_age=int(exp - time.time()), path="/", httponly=False, samesite="lax",
+                                secure=rem)
+                resp.delete_cookie("litellm_return_url", path="/")
+                mark = markers.issue(app, claims["iat"], appsso.fingerprint(settings, app),
+                                     session_login(request.headers, settings), exp - appsso.MARGIN)
+                resp.set_cookie(mark_name, mark, max_age=max(60, int(exp - appsso.MARGIN - time.time())), path="/",
+                                httponly=True, samesite="strict", secure=rem)
+            else:
+                creds, exp = await appsso.rustfs_session(request.app.state.http, settings)
+                resp = appsso.files_page(portal, creds, nxt, manual)
+                # its next step (the console page it opens) goes straight through
+                resp.set_cookie(pass_name, "1", max_age=appsso.PASS_SECONDS, path="/", httponly=True, samesite="strict",
+                                secure=rem)
+        except appsso.SignInError as e:
+            log.warning("automatic sign-in to %s failed: %s", appsso.NAME[app], e)
+            return appsso.error_page(portal, app, str(e), manual, e.status)
+        resp.set_cookie(loop_name, str(count + 1), max_age=appsso.LOOP_WINDOW, path="/", httponly=True, samesite="strict",
+                        secure=rem)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        log.info("signed in to %s automatically%s", appsso.NAME[app], " (remote)" if rem else "")
+        return _no_store(resp)
+
+    async def revoke_minted(http: httpx.AsyncClient, keys: list[str]) -> None:
+        gone = await appsso.revoke_litellm_keys(http, settings, keys)
+        log.info("Sign out: ended %d of %d Admin (LiteLLM) sessions from automatic sign-in", gone, len(keys))
+
     async def logout(request: Request) -> Response:
         if not same_origin(request.headers, settings):
             return _no_store(PlainTextResponse("cross-site logout refused", status_code=403))
+        keys = []
         if authed(request):
             sessions.revoke_all()
+            keys = minted.take()
         resp = RedirectResponse(settings.origin(remote=remote(request)) + "/login", status_code=303)
         clear_session(resp, remote(request))
+        if keys:   # after the answer: Sign out never waits for LiteLLM
+            resp.background = BackgroundTask(revoke_minted, request.app.state.http, keys)
         return _no_store(resp)
 
     async def index(request: Request) -> Response:
@@ -484,12 +577,14 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def api_logins(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
             return deny
-        urls = settings.app_urls(remote(request))
+        rem = remote(request)
+        urls = settings.app_urls(rem)
+        # manual: the app's own sign-in form, for when automatic sign-in does not work (portal/appsso.py)
         return _no_store(JSONResponse({
             "admin": {"url": urls["admin"], "username": settings.litellm_ui_user,
-                      "password": settings.litellm_ui_password},
+                      "password": settings.litellm_ui_password, "manual": appsso.manual_url(settings, "admin", rem)},
             "files": {"url": urls["files"], "username": settings.rustfs_access_key,
-                      "password": settings.rustfs_secret_key},
+                      "password": settings.rustfs_secret_key, "manual": appsso.manual_url(settings, "files", rem)},
         }))
 
     def admin_allowed(request: Request) -> bool:
@@ -624,6 +719,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/verify", verify, methods=["GET", "HEAD"]),
             Route("/auth/handoff", auth_handoff, methods=["GET"]),
             Route("/auth/callback", auth_callback, methods=["GET"]),
+            Route("/auth/app-sso", app_sso, methods=["GET"]),
             Route("/auth/terminal-unlock", terminal_unlock, methods=["POST"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),

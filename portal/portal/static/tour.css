@@ -68,6 +68,11 @@
 .tour-login { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .tour-cred { font-family: var(--mono); font-size: 13px; }
 .tour-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
+.tour-fallback { margin: 2px 0 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.tour-fallback summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tour-fallback[open] summary { margin-bottom: 6px; }
+.tour-fallback .tour-actions, .tour-fallback .note { margin-bottom: 4px; }
+.tour a.copy { text-decoration: none; display: inline-flex; align-items: center; color: var(--ink); }
 .tour .action { font-size: 13.5px; text-decoration: none; display: inline-flex; align-items: center; }
 .tour .action.primary { color: var(--accent-ink); }
 .tour .action:not(.primary), .tour .copy, .tour .quiet { background: var(--tour-well); }

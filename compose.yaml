@@ -71,6 +71,9 @@ services:
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?run ./stack setup}
       UI_USERNAME: admin
       UI_PASSWORD: ${LITELLM_UI_PASSWORD:?run ./stack setup}
+      # The portal signs you in to the UI (portal/portal/appsso.py); the UI's own Logout then shows its own form
+      # (?sso=off: no automatic sign-in there) rather than reloading into a fresh automatic one.
+      PROXY_LOGOUT_URL: /ui/login/?sso=off
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch; the config carries our prices (lib/prices.sh)
       # An access key from .env, passed only when set (no value here = taken from .env, else left out). Without

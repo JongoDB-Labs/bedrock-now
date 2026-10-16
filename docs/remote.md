@@ -101,13 +101,16 @@ tailnet: `./stack remote test`'s checklist covers it.
 
 All four names live under `<tailnet>.ts.net`, next to every other machine of your tailnet. A cookie scoped to
 that domain would be sent to all of them, so none is: every session cookie is host-only (`__Host-`), each app
-host gets its own through the hand-off, and Caddy never forwards them to the apps. Own-domain mode works the
-same way (nothing is scoped to `bedrock.example.com` either).
+host gets its own through the hand-off, and Caddy never forwards them to the apps. Admin and Files then get their
+own app session from the portal on their own name, host-only as well
+([automatic sign-in](security.md#automatic-sign-in-to-admin-and-files)). Own-domain mode works the same way
+(nothing is scoped to `bedrock.example.com` either).
 
 The reverse direction, **cookie tossing**, is limited too: another machine under the same parent (or, in
 own-domain mode, any host you run under your domain) could set cookies scoped to the parent that browsers would
 then send to bedrock-now. It cannot forge or overwrite the `__Host-` session cookies (browsers refuse that
-prefix with a `Domain`), but it could plant other cookies the apps read (for example Open WebUI's `token`). Only
+prefix with a `Domain`), but it could plant other cookies the apps read (for example Open WebUI's or LiteLLM's
+`token`; one LiteLLM did not sign sends its UI back to the automatic sign-in). Only
 run machines you trust under the same tailnet or parent domain, or give bedrock-now a dedicated subdomain.
 
 ## Tailscale mode, step by step
@@ -235,6 +238,7 @@ and Open WebUI. The sidecar's login stays in the `tailscale-state` volume for a 
 | "not shared with your Tailscale login" | you are signed in to Tailscale as someone else than `TAILSCALE_ALLOWED_LOGIN`, or the device is tagged (no login header) |
 | "sign-in link has expired or was already used" | reload the page (the hand-off token lives 60 s and works once) |
 | "keeps refusing the sign-in cookie" | the browser blocks cookies for that app's name (private mode, a strict blocker) — allow them |
+| Admin or Files: "automatic sign-in did not work" | the page says why and links the app's own form; the causes are those on this computer (README › Troubleshooting) |
 | `./stack up` warns the sidecar is not logged in | `./stack remote status`; re-run `./stack remote enable …` with a new auth key |
 | "REMOTE_SUBNET … overlaps Docker network …" (or Docker: "Pool overlaps") | set `REMOTE_SUBNET` in `.env` to a free /29 (e.g. `10.254.254.248/29`), then `./stack up` |
 | `./stack logs portal`: "PORTAL_PROXY_SECRET is missing" | `./stack up` generates it (remote requests count as local until then) |

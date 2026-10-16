@@ -197,7 +197,8 @@ def test_api_requires_session_and_header(client):
     r = client.get("/api/logins", headers=API)
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     d = r.json()
-    assert d["admin"] == {"url": "http://admin.bedrock-now.localhost/ui/", "username": "admin", "password": "ui-pass"}
+    assert d["admin"] == {"url": "http://admin.bedrock-now.localhost/ui/", "username": "admin", "password": "ui-pass",
+                          "manual": "http://admin.bedrock-now.localhost/ui/login/?sso=off"}
     assert d["files"]["username"] == "bn-access" and d["files"]["password"] == "rustfs-secret"
 
 

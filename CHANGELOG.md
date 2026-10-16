@@ -6,6 +6,26 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **One sign-in for every app.** Admin (LiteLLM's UI) and Files (RustFS's console) now open already signed in —
+  in their tabs, pop-out windows, on the remote site and in a phone's new tab — so the portal password is the only
+  one you type. The portal signs in to each app for you with the sign-in it already holds and hands the app's own
+  session to your browser on that app's address, never in a URL: LiteLLM's session cookie (from its own sign-in
+  call), or 12-hour RustFS console credentials (from STS, stored where the console keeps them). Caddy's check
+  decides when (page loads only; Admin when it has no LiteLLM session from this portal session and these
+  credentials, Files on each console page load) and routes `/.bn/sso` on the Admin and Files hosts to the portal.
+  It keeps working after a new LiteLLM password or a regenerated RustFS pair in Settings. **Sign out** also deletes
+  the LiteLLM sessions it created, and Admin and Files page loads are never taken from the browser's cache without
+  the portal's check (LiteLLM sends no `Cache-Control`). The apps' own forms stay as a fallback: Home's card is now
+  "Admin and Files sign you in automatically", with the credentials folded under *Credentials (for the API or if
+  automatic sign-in fails)* plus a link to each app's own form (`?sso=off`); an app's own Logout shows its form
+  (LiteLLM: `PROXY_LOGOUT_URL`). When automatic sign-in cannot work (an app down, a password changed inside
+  LiteLLM, a redirect loop), the page says why and links the form. The walkthrough's Admin and Files steps say
+  "Automatic" and tick off when the app opens. How it works and what it trusts: docs/security.md › Automatic
+  sign-in to Admin and Files. OIDC was considered and not used: LiteLLM's needs an Enterprise license beyond five
+  users, and RustFS's puts its credentials in the URL.
+
 ### Changed
 
 - **`claude-bedrock` no longer loads your `~/.claude` plugins, hooks and MCP servers by default.** It runs Claude
