@@ -1883,7 +1883,7 @@ def previews2_desktop(browser):
     pane = preview(page, "previews/math.md", "markdown")
     md = pane.get_by_test_id("preview-md")
     expect(md.locator("[data-testid=math] .katex").first).to_be_visible(timeout=10_000)
-    expect(md.get_by_test_id("math-error")).to_have_count(1)
+    expect(md.get_by_test_id("math-error")).to_have_count(2)   # (the one that does not parse; the endless \\def)
     expect(md.locator("code", has_text="echo $HOME $PATH")).to_have_count(1)
     decoded(page, ".pane:not(.hidden) [data-testid=diagram] img", timeout=30_000)
     p.shot("preview2-math-diagram.png")

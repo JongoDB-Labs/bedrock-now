@@ -416,5 +416,6 @@ graph LR
 \`\`\`
 
 Hostile: $\\href{javascript:alert(1)}{x}$ $\\url{http://127.0.0.1:9/md-url}$ $\\includegraphics{http://127.0.0.1:9/md-graphic.png}$ $\\htmlStyle{color:red}{x}$
+$\\def\\a{\\a\\a}\\a$; and two that would set style attributes in MathML: $\\pmb{x}$ $\\fcolorbox{red}{blue}{y}$
 and a formula that does not parse: $\\frac{1}{$.
 `;

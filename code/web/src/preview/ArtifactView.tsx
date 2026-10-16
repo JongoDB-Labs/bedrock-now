@@ -95,7 +95,10 @@ export function HtmlView({ tab, data }: ViewerProps) {
         <span class="pv-badge" title="Shown from a sandboxed site of its own: its scripts run there, with no network, no cookies and no storage">
           sandbox
         </span>
-        <span class="muted small pv-note">Its scripts run in a sandbox with no network: links, forms, pop-ups and files next to it do not load.</span>
+        <span class="muted small pv-note" title={`To see it with the files next to it: in the terminal, cd to its folder and run python3 -m http.server 8000, then open the preview of :8000 (Ports)`}>
+          Its scripts run in a sandbox with no network: links, forms, pop-ups and files next to it do not load (for those, serve its folder in the
+          terminal — <code>python3 -m http.server 8000</code> — and open the preview of :8000).
+        </span>
       </div>
       <SandboxFrame html={html.length > HTML_MAX ? html.slice(0, HTML_MAX) : html} title={`Preview of ${tab.path}`} fill />
     </div>

@@ -4,7 +4,8 @@
 // from the code host, font-src 'self'). Options for untrusted input: trust off (\href, \url, \includegraphics, \html*
 // do nothing), maxSize 20 em, at most 1,000 macro expansions, 10,000 characters per formula; a formula that does not
 // parse is shown as its source (KaTeX's own error rendering would set a style attribute). \pmb and \fcolorbox are
-// mapped to \boldsymbol and \colorbox: their MathML would set style attributes, which this page's policy refuses.
+// mapped to \boldsymbol and \colorbox (its frame colour dropped): their MathML would set style attributes, which this
+// page's policy refuses.
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 type Katex = typeof import('katex').default;
@@ -36,7 +37,7 @@ export const KATEX_OPTIONS = {
   maxSize: 20,
   maxExpand: 1000,
   output: 'htmlAndMathml' as const,
-  macros: { '\\pmb': '\\boldsymbol{#1}', '\\fcolorbox': '\\colorbox{#2}{#3}' },
+  macros: { '\\pmb': '\\boldsymbol{#1}', '\\fcolorbox': '\\@secondoftwo{#1}{\\colorbox{#2}{#3}}' },
 };
 
 export function MathTex({ tex, display }: { tex: string; display: boolean }) {

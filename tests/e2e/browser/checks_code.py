@@ -1374,8 +1374,11 @@ def tree_click(page, path):
     page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s) s.scrollTop = 0; }")
     for _ in range(150):
         if row.count():
-            row.click()
-            return
+            try:
+                row.click(timeout=5000)
+                return
+            except Exception:   # (the explorer scrolled it away first: it reveals the file of the tab just opened)
+                continue
         # down a screen at a time; from the top again at the end (the folder may still be loading)
         page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) s.scrollTop = 0; else s.scrollTop += s.clientHeight * 0.7; }")
         page.wait_for_timeout(60)
