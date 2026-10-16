@@ -910,12 +910,15 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   in a new window of the terminal's tmux session, with `PORT` set. The file is the workspace's, which anything in the
   sandbox can write — Claude in *Accept edits* too — so Start shows the entry in full first: the program and every
   argument, the folder, and every environment variable **with its value**, with a warning on the ones that run or
-  load code before the command (`BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `PATH`, `PYTHONSTARTUP`,
-  `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `npm_config_*`: warned, not refused). The page sends the entry's name and a
-  SHA-256 of exactly what it showed (arguments, folder, environment, port), computed by the code container; bn-coded
-  reads the file again and refuses an entry that no longer matches ("changed since it was shown: review it again"),
-  so a file swapped between seeing it and clicking does not run. The confirmation comes again whenever the entry
-  changes (the page remembers the digests you started, in this browser).
+  load code before the command (`BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `PATH`, `HOME`,
+  `PYTHONSTARTUP`, `PYTHONPATH`, `PERL5OPT`, `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`,
+  `JDK_JAVA_OPTIONS`, `npm_config_*` in any case, `GIT_*`, `BROWSER`: warned, not refused). The page sends the
+  entry's name and a SHA-256 of exactly what it showed (arguments, folder, environment, port), computed by the code
+  container; bn-coded reads the file again and refuses an entry that no longer matches ("changed since it was shown:
+  review it again"), so a file swapped between seeing it and clicking does not run. The confirmation comes again whenever the entry
+  changes (the page remembers the digests you started, in this browser). The confirmation binds the command line,
+  not what the program then reads or which binary it is: `npm run dev` runs whatever the workspace's `package.json`
+  says at that moment, and the sandbox's `PATH` decides which `npm` runs — both are the sandbox's to change.
 - [x] **Local only, for now.** The preview site exists only on the local listener (`127.0.0.1:PORTAL_PORT`); the
   remote sites have no preview block, and the portal refuses to mint or check a preview for a remote request (the
   Code page says so). Remote previews need their own design: every Tailscale Service of a tailnet is one site
@@ -929,8 +932,8 @@ Remaining risks:
   what you or Claude started, as you would open a local web app.
 - **A link is a key for 12 hours.** It works for that port from any browser on this computer until the unlock ends,
   Sign out or a new password; it is in the browser's history. A tab left open, or a service worker the app installed
-  (allowed: PWA development needs them), can keep showing what it already has of a preview after Sign out; anything
-  new needs a new link, as the origin changes with each unlock.
+  (allowed: PWA development needs them), can keep serving and running the app's script on that origin after Sign
+  out; anything new from the sandbox needs a new link, as the origin changes with each unlock.
 - **A link can reach DNS.** Browsers answer `*.localhost` names themselves, but Safari on macOS 15, `curl`, `wget`
   and Python ask the system's resolver, which may pass the name — the capability with it — to your DNS server. Paste
   a link (*Copy address*) only into a browser that resolves `.localhost` itself (Chrome, Firefox, Safari on macOS 26).

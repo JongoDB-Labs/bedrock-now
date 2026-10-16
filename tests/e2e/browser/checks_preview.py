@@ -4,8 +4,8 @@ workspace's .claude/launch.json (the Ports panel's Start: a window of the termin
 
   - its preview loads in the Code page (chat | preview), the dev server sees Host and Origin = localhost:<port> and no
     forwarding headers, its WebSocket echoes, a Location back to itself stays on the preview, Set-Cookie loses Domain=,
-    the preview answers with frame-ancestors = the Code page (and the portal) and no-referrer; a phone viewport, a new
-    tab and the Ports panel are screenshotted; Stop ends it;
+    the preview answers with frame-ancestors = the Code page (and the portal) and Referrer-Policy: same-origin; a
+    phone viewport, a new tab and the Ports panel are screenshotted; Stop ends it;
   - isolation: from the preview's own origin, fetches to the code, portal, chat and terminal hosts carry no cookie
     (Sec-Fetch-Site: cross-site), while the Code page's own carry its cookies; Domain= cookies for bedrock-now's hosts
     are refused; the preview cannot navigate the top window; a missing, forged, expired or other-port capability and
@@ -314,13 +314,14 @@ def preview_headers(ctx):
     code_origin = f"{CODE}:80" if PORT == 80 else CODE
     expect(any(f"frame-ancestors {code_origin} {origin()}" in x for x in csps), f"CSP: {csps}")
     expect(any("frame-src 'self' https: data: blob:" in x for x in csps), f"CSP frame-src: {csps}")
-    expect(r.header("referrer-policy") == "no-referrer" and r.header("x-frame-options") is None, "Referrer-Policy / X-Frame-Options")
+    expect(r.header("referrer-policy") == "same-origin" and r.header("x-frame-options") is None,
+           f"Referrer-Policy {r.header('referrer-policy')!r} / X-Frame-Options {r.header('x-frame-options')!r}")
     red = http("GET", None, "/redirect", host_header=host)
     expect(red.status == 302 and red.header("location") == "/landed?x=1", f"Location {red.header('location')}")
     # the minting itself: only from the page (Sec-Fetch-Site), only with the unlock
     s = ctx.session()
     expect(http("GET", "code", f"/.bn/preview?port={ECHO_PORT}&format=json", cookie=s).status == 401, "mint without the unlock")
-    return f"Set-Cookie without Domain=, CSP frame-ancestors {code_origin} {origin()} + frame-src, no-referrer, Location /landed?x=1"
+    return f"Set-Cookie without Domain=, CSP frame-ancestors {code_origin} {origin()} + frame-src, Referrer-Policy same-origin, Location /landed?x=1"
 
 
 @check("browser", "code-preview-isolation")

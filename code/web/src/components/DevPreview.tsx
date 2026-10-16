@@ -367,7 +367,7 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
       </ol>
       <h3>Folder</h3>
       <p>
-        <code>/workspace{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
+        <code class="launch-cwd" data-testid="launch-cwd">/workspace{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
       </p>
       <h3>Environment</h3>
       <ul class="launch-env" data-testid="launch-env">

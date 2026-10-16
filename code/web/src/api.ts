@@ -1089,11 +1089,12 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const argv = argvIn && argvIn.length && argvIn.length <= 66 && argvIn.every((a) => typeof a === 'string' && a.length <= 2000) ? (argvIn as string[]) : null;
   const env = arr(o.env, 33).map((p) => obj(p)).filter((p): p is Obj => !!p && typeof p.name === 'string' && typeof p.value === 'string')
     .map((p) => ({ name: String(p.name), value: String(p.value) }));
-  const whole = env.length <= 32 && env.every((p) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(p.name) && p.value.length <= 4000);
+  const cwd = typeof o.cwd === 'string' && o.cwd ? o.cwd : '.';
+  const whole = env.length <= 32 && env.every((p) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(p.name) && p.value.length <= 4000) && cwd.length <= 1000;
   if ((argvIn && !argv) || !whole) return { ...none, error: 'It cannot be shown here in full: start it in the terminal.' };
   const digest = typeof o.digest === 'string' && SHA.test(o.digest) ? o.digest : null;
   return { name: name || '(no name)', port, command: argv && typeof o.command === 'string' ? safe(o.command, 4000) : null, argv: digest ? argv : null,
-    cwd: label(o.cwd, 1000) || '.', url, env, digest: argv ? digest : null, error: null };
+    cwd: safe(cwd, 1000), url, env, digest: argv ? digest : null, error: null };   // (as it is: the digest binds it)
 }
 
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */

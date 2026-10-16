@@ -813,6 +813,6 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .banner.small { padding: 5px 8px; border-radius: 6px; border-bottom: 0; font-size: 12px; }
 .launch-argv, .launch-env { margin: 0 0 6px; padding-left: 22px; display: flex; flex-direction: column; gap: 3px; }
 .launch-env { list-style: none; padding-left: 0; }
-.launch-argv code, .launch-env code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.launch-argv code, .launch-env code, .launch-cwd { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .launch-env li.loader { padding: 3px 6px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border-radius: 3px; }
 .loader-why { display: flex; align-items: center; gap: 4px; margin-top: 2px; color: var(--warn); font-size: 12px; }

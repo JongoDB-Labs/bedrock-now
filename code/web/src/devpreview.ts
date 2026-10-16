@@ -75,8 +75,14 @@ const LOADERS: [RegExp, string][] = [
   [/^PATH$/, 'decides which program each command name runs'],
   [/^PYTHON(STARTUP|PATH)$/, 'Python runs or imports code from here'],
   [/^PERL5OPT$/, 'Perl adds these options (-M loads modules)'],
+  [/^PERL5LIB$/, 'Perl loads modules from here first'],
   [/^RUBYOPT$/, 'Ruby adds these options (-r loads files)'],
-  [/^(npm_config_|NPM_CONFIG_)/, 'changes npm\'s settings (its scripts\' shell, registry, hooks)'],
+  [/^RUBYLIB$/, 'Ruby loads files from here first'],
+  [/^(JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS)$/, 'Java takes these options first: -javaagent loads code before the program'],
+  [/^npm_config_/i, 'changes npm\'s settings (its scripts\' shell, registry, hooks)'],
+  [/^HOME$/, 'programs read their settings from here: npm\'s .npmrc (its scripts\' shell), shells\' and git\'s start-up files'],
+  [/^GIT_/, 'changes what git runs (GIT_SSH_COMMAND, GIT_EXEC_PATH, GIT_CONFIG_*: hooks, aliases, helpers)'],
+  [/^BROWSER$/, 'dev servers run this program to open a page (Vite, Create React App with --open)'],
 ];
 export function loaderWhy(name: string): string | null {
   for (const [re, why] of LOADERS) if (re.test(name)) return why;

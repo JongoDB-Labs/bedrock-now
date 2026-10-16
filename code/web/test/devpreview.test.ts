@@ -76,14 +76,20 @@ test('ports and launch.json entries from the backend: checked again', () => {
 test('launch.json: loaders flagged; an entry shown whole or not at all; approvals by digest', async () => {
   const { loaderWhy, approvedLaunch, approveLaunch } = await import('../src/devpreview');
   for (const n of ['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PATH', 'PYTHONSTARTUP', 'PYTHONPATH', 'PERL5OPT', 'RUBYOPT',
-    'npm_config_script_shell', 'NPM_CONFIG_REGISTRY']) {
+    'npm_config_script_shell', 'NPM_CONFIG_REGISTRY', 'Npm_Config_Script_Shell', 'HOME', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS',
+    'PERL5LIB', 'RUBYLIB', 'GIT_SSH_COMMAND', 'GIT_CONFIG_COUNT', 'GIT_EXEC_PATH', 'BROWSER']) {
     assert.ok(loaderWhy(n), n);
   }
-  for (const n of ['NODE_ENV', 'PORT', 'DEBUG', 'HOST', 'MYPATH', 'ENVIRONMENT']) assert.equal(loaderWhy(n), null, n);
+  for (const n of ['NODE_ENV', 'PORT', 'DEBUG', 'HOST', 'MYPATH', 'ENVIRONMENT', 'GITHUB_TOKEN', 'HOMEPAGE', 'BROWSERSLIST', 'JAVA_HOME']) assert.equal(loaderWhy(n), null, n);
   const d = 'a'.repeat(64);
   const ok = normLaunchEntry({ name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', env: [{ name: 'A', value: 'b c' }], digest: d });
   assert.deepEqual(ok, { name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', url: null, env: [{ name: 'A', value: 'b c' }], digest: d, error: null });
   assert.equal(normLaunchEntry({ name: 'web', argv: ['npm'], digest: 'x', env: [] })?.argv, null);   // no digest: no Start
+  // the folder as it is (the digest binds the real path): whitespace kept, never collapsed or trimmed
+  assert.equal(normLaunchEntry({ name: 'w', argv: ['n'], cwd: 'app ', digest: d, env: [] })?.cwd, 'app ');
+  assert.equal(normLaunchEntry({ name: 'w', argv: ['n'], cwd: 'a  b', digest: d, env: [] })?.cwd, 'a  b');
+  assert.equal(normLaunchEntry({ name: 'w', argv: ['n'], digest: d, env: [] })?.cwd, '.');
+  assert.match(normLaunchEntry({ name: 'w', argv: ['n'], cwd: 'x'.repeat(1001), digest: d, env: [] })?.error ?? '', /in full/);
   assert.match(normLaunchEntry({ name: 'w', argv: ['x'.repeat(2001)], digest: d, env: [] })?.error ?? '', /in full/);
   assert.match(normLaunchEntry({ name: 'w', argv: ['n'], digest: d, env: Array.from({ length: 33 }, (_, i) => ({ name: `V${i}`, value: '' })) })?.error ?? '', /in full/);
   // approvals: this browser's (localStorage); none without storage
