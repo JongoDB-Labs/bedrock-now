@@ -168,10 +168,15 @@ test('fs ops over the socket: list, read, write (precondition, unique names), mk
   assert.equal(r.size, 7);
   assert.equal(fs.statSync(path.join(WS, 'f/run.sh')).mode & 0o777, 0o750);
   assert.equal(fs.readFileSync(path.join(WS, 'f/run.sh'), 'utf8'), 'echo 2\n');
-  // fs.find: the @-picker over the whole workspace — bounded, no links followed, .git / node_modules / the trash skipped
+  // fs.find: the @-picker over the whole workspace — bounded, no links followed, .git / the trash / dependencies and
+  // build output skipped
   fs.mkdirSync(path.join(WS, 'f/deep/er/node_modules/pkg'), { recursive: true });
   fs.writeFileSync(path.join(WS, 'f/deep/er/Target.md'), 'x');
   fs.writeFileSync(path.join(WS, 'f/deep/er/node_modules/pkg/target.js'), 'x');
+  for (const d of ['.venv/lib', 'dist', 'build', 'target/debug', '__pycache__', '.next', '.cache']) {
+    fs.mkdirSync(path.join(WS, 'f', d), { recursive: true });
+    fs.writeFileSync(path.join(WS, 'f', d, 'target.txt'), 'x');
+  }
   r = result(await talk(SOCK, [open({ op: 'fs.find', q: 'TARGET', limit: 10 })]));
   assert.deepEqual(r, { paths: ['f/deep/er/Target.md'], truncated: false });
   r = result(await talk(SOCK, [open({ op: 'fs.find', q: 'deep', limit: 2 })]));

@@ -585,8 +585,8 @@ _caddy_remote_get() {
   [ "$from" != caddy ] || url=http://127.0.0.1:8081
   out="$(dc exec -T "$from" wget -S -O /dev/null -T 10 --header "Host: $2" --header "Accept: text/html" \
     ${4:+--header "$4"} "$url$3" 2>&1 || true)"
-  code="$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')"
-  loc="$(printf '%s\n' "$out" | awk 'tolower($1) == "location:" { print $2; exit }' | tr -d '\r')"
+  code="$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')"
+  loc="$(printf '%s\n' "$out" | awk '!f && tolower($1) == "location:" { print $2; f = 1 }' | tr -d '\r')"
   printf '%s|%s\n' "${code:-000}" "$loc"
 }
 

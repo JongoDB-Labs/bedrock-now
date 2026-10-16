@@ -16,7 +16,9 @@ RESTART_SERVICES="litellm open-webui shared-mcp stt rustfs caddy"   # ./stack re
 
 settings_rows() { tr -d '\r' < "$SETTINGS_TSV" | awk -F'\t' '!/^#/ && NF >= 9 && $1 != "key"'; }
 # setting_field KEY COLUMN(1-9) -> that column of KEY's row ("" for an unknown key)
-setting_field() { settings_rows | K="$1" awk -F'\t' -v c="$2" '$1 == ENVIRON["K"] { print $c; exit }'; }
+# (the first match only, but read to the end: an awk that exits early can kill the writer with SIGPIPE, which pipefail
+# turns into a failure — at random, depending on how far the writer got)
+setting_field() { settings_rows | K="$1" awk -F'\t' -v c="$2" '!f && $1 == ENVIRON["K"] { print $c; f = 1 }'; }
 setting_known() { [ -n "$(setting_field "$1" 1)" ]; }
 settings_dir() { printf '%s/config\n' "$STATE_DIR"; }
 settings_audit_file() { printf '%s/helper/settings-audit.log\n' "$STATE_DIR"; }
@@ -415,7 +417,7 @@ _settings_choices() {
 
 # _settings_display NAME -> its friendly name from catalog/display.tsv (the name itself without one); no quotes
 _settings_display() {
-  local d; d="$(tr -d '\r' < "$STACK_DIR/catalog/display.tsv" 2>/dev/null | N="$1" awk -F'\t' '!/^#/ && $1 == ENVIRON["N"] && $2 != "-" { print $2; exit }')"
+  local d; d="$(tr -d '\r' < "$STACK_DIR/catalog/display.tsv" 2>/dev/null | N="$1" awk -F'\t' '!f && !/^#/ && $1 == ENVIRON["N"] && $2 != "-" { print $2; f = 1 }')"
   printf '%s\n' "${d:-$1}" | tr -d '"\\'
 }
 
@@ -605,6 +607,7 @@ cmd_config() {
 # on failure: old values back, pre-steps reversed, restarted again · 9 snapshot and audit line.
 
 CFG_VIA=''; CFG_KEYS_TEXT=''; CFG_CLASSES=''; CFG_PRE_LPW=0; CFG_PRE_EMAIL=0; CFG_OWUI_OWNER=''; CFG_OWUI_STRAY=''
+CFG_TERMINAL_WAS_OFF=0
 
 _cfg_refuse() {   # _cfg_refuse MESSAGE — before anything changed
   settings_audit refused "$CFG_VIA" "$CFG_ORDER" "$1"
@@ -629,6 +632,8 @@ config_apply() {
   _cfg_live_checks
   log "config: 2/4 saving"
   _cfg_save_old
+  # the Code page on with the terminal off turns the terminal on too (_cfg_code): a rollback turns it off again
+  if _cfg_on code && [ "$(cfg_new CODE_ENABLED)" = true ] && ! terminal_on; then CFG_TERMINAL_WAS_OFF=1; fi
   _cfg_pre || _cfg_rollback "changing the sign-ins" "$CFG_ERR"
   _cfg_step _cfg_write || _cfg_rollback "saving .env" "$CFG_ERR"
   log "config: 3/4 restarting what the change needs"
@@ -703,10 +708,10 @@ _cfg_email_check() {
   _cfg_stack_running || return 0   # stopped: .env only; ./stack up reconciles both apps
   portal_session_start || _cfg_refuse "could not sign in to the portal to check the new email"
   users="$(_owui_users_tsv)" || _cfg_refuse "could not list Chat's accounts (is Open WebUI up? ./stack status)"
-  owner="$(printf '%s\n' "$users" | awk -F'\t' -v e="$old" 'tolower($2) == tolower(e) && $3 == "admin" { print $1; exit }')"
+  owner="$(printf '%s\n' "$users" | awk -F'\t' -v e="$old" '!f && tolower($2) == tolower(e) && $3 == "admin" { print $1; f = 1 }')"
   [ -n "$owner" ] || _cfg_refuse "could not find your Chat account ($old): ./stack up repairs the owner account first"
   owner_id_record "$owner"
-  held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$new" 'tolower($2) == tolower(e) { print $1 "\t" $3; exit }')"
+  held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$new" '!f && tolower($2) == tolower(e) { print $1 "\t" $3; f = 1 }')"
   if [ -n "$held" ]; then
     role="${held#*	}"; held="${held%%	*}"
     [ "$role" = pending ] && [ "$(_owui_chat_count "$held")" = 0 ] ||
@@ -846,9 +851,10 @@ _cfg_post() {
 
 # _cfg_code — CODE_ENABLED: ./stack code enable | disable (lib/code.sh), which write CODE_ENABLED themselves, build or
 # remove the code container and restart the portal and Caddy (never the terminal); enabling turns the terminal on
-# first when it is off (its folder checked by settings_check_batch), disabling leaves it on. With the stack stopped
-# only .env changes (./stack up applies it). On a rollback (CFG_ROLLBACK=1) .env already holds the previous value again: the
-# Code page follows it (code_disable needs CODE_ENABLED on to find what a failed enable started).
+# first when it is off (its folder checked by settings_check_batch; a failed change turns it off again), disabling
+# leaves it on. With the stack stopped only .env changes (./stack up applies it). On a rollback (CFG_ROLLBACK=1) .env
+# already holds the previous value again: the Code page follows it (code_disable needs CODE_ENABLED on to find what a
+# failed enable started).
 _cfg_code() {
   local v back="${CFG_ROLLBACK:-0}"
   if [ "$back" = 1 ]; then v="$(get_env CODE_ENABLED)"; else v="$(cfg_new CODE_ENABLED)"; fi
@@ -901,7 +907,8 @@ _mcp_token_works() {
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "http://127.0.0.1:$(get_env SHARED_MCP_PORT)/mcp" 2>/dev/null | grep -q '"search_knowledge"'
 }
 
-# _cfg_rollback WHAT WHY — old values back in .env, pre-steps reversed, restarted with them; then dies
+# _cfg_rollback WHAT WHY — old values back in .env, pre-steps reversed, restarted with them, a terminal that turning
+# the Code page on had turned on off again; then dies (saying so)
 _cfg_rollback() {
   local k args=()
   warn "the change failed while $1${2:+ ($2)} — putting the previous settings back"
@@ -923,10 +930,18 @@ _cfg_rollback() {
   if cfg_has STT_PROVIDER || cfg_has STT_API_KEY || cfg_has STT_MODEL; then stt_sync_env || true; fi
   helper_password_sync || true
   ( CFG_ROLLBACK=1; _cfg_post ) >/dev/null 2>&1 || warn "could not restart everything with the previous settings — ./stack up retries"
+  local undone=''
+  if [ "$CFG_TERMINAL_WAS_OFF" = 1 ] && terminal_on; then
+    if ( terminal_disable ) >/dev/null 2>&1; then undone='; the terminal it had turned on is off again'
+    else
+      warn "could not turn off the terminal this change had turned on — ./stack terminal disable"
+      undone='; the terminal it had turned on is still on (./stack terminal disable turns it off)'
+    fi
+  fi
   rm -f "$(settings_dir)/pending.env"
   settings_audit failed "$CFG_VIA" "$CFG_ORDER" "$1"
   settings_snapshot_write
-  die "failed while $1${2:+: $2} — previous settings restored"
+  die "failed while $1${2:+: $2} — previous settings restored$undone"
 }
 
 _cfg_done() {
@@ -1077,7 +1092,7 @@ settings_reconcile() {
   local email users owner held role tmp code
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"; [ -n "$email" ] || return 0
   if [ -n "$(get_env OPENWEBUI_API_KEY)" ] && users="$(_owui_users_tsv 2>/dev/null)" && [ -n "$users" ]; then
-    held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$email" 'tolower($2) == tolower(e) { print $1 "\t" $3; exit }')"
+    held="$(printf '%s\n' "$users" | awk -F'\t' -v e="$email" '!f && tolower($2) == tolower(e) { print $1 "\t" $3; f = 1 }')"
     role="${held#*	}"; held="${held%%	*}"
     # Only the account recorded as the owner (at setup, or when it was last found) is ever moved: never another admin
     owner="$(owner_id_recorded)"

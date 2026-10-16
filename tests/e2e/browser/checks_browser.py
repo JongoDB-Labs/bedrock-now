@@ -25,9 +25,9 @@ class Recorder:
     """Every response >= 400, failed request and console error/page error of one page (and its frames)."""
 
     BENIGN_FAIL = ("net::ERR_ABORTED",)  # navigations and Next.js prefetches cancel requests: not errors
-    # With the Code page on, the portal makes its (hidden) frame once idle, so the Code tab's badge works before a
-    # visit: while the Code page is locked, that frame gets the unlock form, answered 401 — expected on every page.
-    ALWAYS_OK = (r"^401 GET " + re.escape(origin("code")) + r"/$",)
+    # Excused on every page (none now: the portal preloads the Code frame only in a browser that has used the Code page
+    # before, and each check starts a new context; the code checks excuse its locked 401 themselves, LOCKED_OK)
+    ALWAYS_OK = ()
 
     def __init__(self, name: str):
         self.name, self.events = name, []

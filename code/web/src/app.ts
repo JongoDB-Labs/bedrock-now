@@ -3,7 +3,7 @@
 import * as api from './api';
 import type { BnModels, ConnStatus } from './api';
 import { createStore, type Store } from './store';
-import { addPrompt, applySeq, dropPrompt, endedMidTurn, mergeHistory, newView, pendingCount, prependHistory, type SessionView } from './session';
+import { addPrompt, applySeq, dropPrompt, endedMidTurn, idleWithoutResult, mergeHistory, newView, pendingCount, prependHistory, withEarlier, type SessionView } from './session';
 import { exportName, toMarkdown } from './transcript';
 import { appendMemory, memoryLine } from './palette';
 import { sentence } from './permission';
@@ -71,6 +71,10 @@ export interface RewindState {
   phase: 'checking' | 'ready' | 'restoring';
   result: api.Rewind | null;
   error: string;
+  /** a line above the result (the check ran again: Claude worked since the first one) */
+  note: string;
+  /** the session's turn marks when the dry run ran: a restore after another turn checks again first */
+  mark: number;
 }
 
 export interface AppState {
@@ -202,6 +206,7 @@ export const socket = new api.Socket({
   onOpen() {
     attached.clear();
     infoAsked.clear();
+    reattaching.clear();
     // after a reconnect the backend may have restarted: learn which sessions it still has before re-attaching
     const again = opened++ > 0;
     void (async () => {
@@ -239,6 +244,8 @@ async function syncOpenSessions(): Promise<void> {
  * mergeHistory can tell which part of the transcript the live ring buffer already shows (by prompt uuid).
  */
 const needHistory = new Set<string>();
+/** Sessions re-attached after another process's events showed up: their live events wait for the replay (attached). */
+const reattaching = new Set<string>();
 const settle = new Map<string, ReturnType<typeof setTimeout>>();
 function historyAfterReplay(id: string, quietMs: number): void {
   clearTimeout(settle.get(id));
@@ -340,7 +347,7 @@ function handle(m: ServerMsg): void {
   switch (m.kind) {
     case 'event': {
       let v = get().views[m.session];
-      if (!v) return;
+      if (!v || reattaching.has(m.session)) return;
       if (m.epoch && v.epoch !== m.epoch) {
         if (v.epoch && v.seq > 0) {
           // another process of this session (a restart this page did not see end): its events number from 1 again —
@@ -349,7 +356,12 @@ function handle(m: ServerMsg): void {
           needHistory.add(m.session);
           historyAfterReplay(m.session, 250);
           socket.send({ type: 'attach', session: m.session, since: 0, epoch: m.epoch ?? undefined });
-        } else updateView(m.session, (x) => ({ ...x, epoch: m.epoch }));
+          // not this event now, nor the ones before the answer: the re-attach replays the new process's events from its
+          // first, these among them (taken now, their seq would make the replay's earlier ones look already seen)
+          reattaching.add(m.session);
+          return;
+        }
+        updateView(m.session, (x) => ({ ...x, epoch: m.epoch }));
         v = get().views[m.session];
         if (!v) return;
       }
@@ -357,6 +369,7 @@ function handle(m: ServerMsg): void {
       const next = applySeq(v, m.seq, m.ev);
       if (next === v) return;
       updateView(m.session, () => next);
+      if (m.ev.kind === 'user' || m.ev.kind === 'result') turnMarks.set(m.session, (turnMarks.get(m.session) ?? 0) + 1);
       onEvent(m.session, m.ev, v.state === 'busy');
       return;
     }
@@ -364,6 +377,7 @@ function handle(m: ServerMsg): void {
       // Events this page had not seen are gone from the backend's ring (it keeps the recent ones), or it is another
       // process now: start over from what the replay brings next, and put the transcript in front of it once the
       // replay has settled.
+      reattaching.delete(m.session);
       const v = get().views[m.session];
       if (!v) return;
       const otherProcess = !!m.epoch && !!v.epoch && m.epoch !== v.epoch;
@@ -441,7 +455,10 @@ function handle(m: ServerMsg): void {
         const w = over ? endedMidTurn(v) : v;
         return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode };
       });
-      if (m.state === 'idle') updateView(m.session, (v) => ({ ...v, items: v.items.map((it) => ((it.t === 'assistant' || it.t === 'thinking') && it.streaming ? { ...it, streaming: false } : it)) }));
+      if (m.state === 'idle') {
+        updateView(m.session, (v) => ({ ...v, items: v.items.map((it) => ((it.t === 'assistant' || it.t === 'thinking') && it.streaming ? { ...it, streaming: false } : it)) }));
+        closeIdleTurn(m.session);
+      }
       if (over) infoAsked.delete(m.session);
       else askInfo(m.session);
       announce();
@@ -492,10 +509,27 @@ function onReset(old: string, next: string): void {
     if (views[old]) views[old] = { ...views[old], state: 'ended', seq: 0, permissions: [] };
     return { ...s, views, active: s.active === old ? next : s.active };
   });
+  // its transcript, when Claude Code already wrote one (a plan approved with a cleared context starts with the plan),
+  // after the replay of its events
   loadedHistory.add(next);
+  needHistory.add(next);
   if (get().active === next) setPrefs((p) => ({ ...p, lastSession: next }));
   attach(next);
   void refreshSessions();
+}
+
+/** The session went idle: a turn still open a moment later got no result (the result event normally comes first). */
+const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function closeIdleTurn(id: string): void {
+  clearTimeout(idleTimers.get(id));
+  idleTimers.set(
+    id,
+    setTimeout(() => {
+      idleTimers.delete(id);
+      const v = get().views[id];
+      if (v?.state === 'idle') updateView(id, (x) => idleWithoutResult(x));
+    }, 2000),
+  );
 }
 
 /** Notifications (opt-in, More ▸ Notify me): only while the page is hidden, one per session at a time. */
@@ -1242,19 +1276,47 @@ export function toggleExplorer(): void {
   setLayout({ explorer: !get().prefs.layout.explorer });
 }
 
-/** The terminal host: from /api/state, else by the naming the stack uses (code.<host> → terminal.<host>). */
 /** The terminal, through the code host's hand-off: /.bn/terminal unlocks the terminal host with this page's own
  *  unlock (no second password) and sends the browser on to it. */
 export function terminalUrl(_s?: AppState): string | null {
   return '/.bn/terminal';
 }
 
-/** The conversation shown as a Markdown file to keep (a download made here; nothing goes to the server). */
-export function exportTranscript(id = get().active): void {
-  const v = id ? get().views[id] : undefined;
-  if (!v) return;
+/** At most this many of a transcript's messages go into an export (beyond: "earlier messages not included"). */
+const EXPORT_MESSAGES = 20_000;
+
+/** The conversation as a Markdown file to keep (a download made here; nothing goes to the server): all of it — what
+ *  the page has not loaded ("load earlier") is read from the transcript first. */
+export async function exportTranscript(id = get().active): Promise<void> {
+  const shown = id ? get().views[id] : undefined;
+  if (!shown) return;
+  let v = shown;
+  let partial = shown.historyTruncated;
+  const earlier = shown.dropped > 0 ? Infinity : shown.historyOffset ?? 0;
+  if (earlier > 0) {
+    try {
+      const events: Ev[] = [];
+      let end = Math.min(earlier, EXPORT_MESSAGES);
+      for (let off = 0; off < end; off += 1000) {
+        const h = await api.getMessages(shown.id, { offset: off, limit: Math.min(1000, end - off) });
+        if (off === 0 && h.total !== null) {
+          if (Math.min(earlier, h.total) > EXPORT_MESSAGES) partial = true;
+          end = Math.min(end, h.total);
+        }
+        if (h.truncated) partial = true;
+        if (!h.events.length) break;
+        events.push(...h.events);
+      }
+      const w = withEarlier(shown, events);
+      v = w.view;
+      if (w.dropped > 0) partial = true;
+    } catch (e) {
+      partial = true;
+      toast(`Earlier messages could not be read (${errText(e)}): the export has what the page shows.`, 'error');
+    }
+  }
   const title = v.title || get().sessions.find((x) => x.id === v.id)?.title || '';
-  const url = URL.createObjectURL(new Blob([toMarkdown(v, title)], { type: 'text/markdown;charset=utf-8' }));
+  const url = URL.createObjectURL(new Blob([toMarkdown(v, title, new Date(), partial)], { type: 'text/markdown;charset=utf-8' }));
   const a = document.createElement('a');
   a.href = url;
   a.download = exportName(v, title);
@@ -1264,14 +1326,28 @@ export function exportTranscript(id = get().active): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** "Restore files to here": a dry run first (what would change), shown on the prompt; `confirm` then restores. */
-export async function rewindPreview(session: string, message: string): Promise<void> {
+/** Turn starts and ends among each session's live events: a restore checks again when Claude worked since its dry run. */
+const turnMarks = new Map<string, number>();
+const NO_PROCESS = /no running process/i;
+
+/** "Restore files to here": a dry run first (what would change), shown on the prompt; `confirm` then restores. The
+ *  checkpoints are the running process's: a session whose process ended is started again first (no prompt). */
+export async function rewindPreview(session: string, message: string, note = ''): Promise<void> {
   if (!isUuid(message)) return;
-  set((s) => ({ ...s, rewind: { session, message, phase: 'checking', result: null, error: '' } }));
-  const r = await wsRequest({ type: 'rewind_files', session, message, dryRun: true });
+  set((s) => ({ ...s, rewind: { session, message, phase: 'checking', result: null, error: '', note, mark: turnMarks.get(session) ?? 0 } }));
+  let id: string | null = session;
+  const v = get().views[id];
+  if (!v || v.state === 'ended' || v.state === 'closed' || v.state === 'error') id = await revive(id);
+  let r = id ? await wsRequest({ type: 'rewind_files', session: id, message, dryRun: true }) : { ok: false, data: null, error: 'The session could not be started again.' };
+  if (id && !r.ok && NO_PROCESS.test(r.error)) {
+    // (it ended between the look and the check)
+    id = await revive(id);
+    if (id) r = await wsRequest({ type: 'rewind_files', session: id, message, dryRun: true });
+  }
+  const at = id ?? session;
   set((s) =>
     s.rewind?.message === message
-      ? { ...s, rewind: { ...s.rewind, phase: 'ready', result: r.ok ? api.normRewind(r.data) : null, error: r.ok ? '' : r.error || 'The check failed.' } }
+      ? { ...s, rewind: { ...s.rewind, session: at, mark: turnMarks.get(at) ?? 0, phase: 'ready', result: r.ok ? api.normRewind(r.data) : null, error: r.ok ? '' : r.error || 'The check failed.' } }
       : s,
   );
 }
@@ -1283,6 +1359,12 @@ export function rewindCancel(): void {
 export async function rewindConfirm(): Promise<void> {
   const rw = get().rewind;
   if (!rw || rw.phase !== 'ready' || !rw.result?.canRewind) return;
+  const v = get().views[rw.session];
+  if (v && (v.state === 'busy' || v.state === 'starting')) return;
+  // what the check listed is what a restore puts back: after another turn, the check again, not the restore
+  if ((turnMarks.get(rw.session) ?? 0) !== rw.mark) {
+    return rewindPreview(rw.session, rw.message, 'Claude worked in this session since the check: this is what a restore would put back now.');
+  }
   set((s) => ({ ...s, rewind: s.rewind && { ...s.rewind, phase: 'restoring' } }));
   const r = await wsRequest({ type: 'rewind_files', session: rw.session, message: rw.message, dryRun: false });
   const done = r.ok ? api.normRewind(r.data) : null;

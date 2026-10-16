@@ -44,8 +44,9 @@
 //                                           mtimeMs}; an existing name gets -1, -2 … before its extension
 //   GET    /api/fs/find?q=TEXT&limit=N (≤ 200)   {paths: ["src/a.ts", "src/" …], truncated} — paths under the
 //                                           workspace whose relative path contains TEXT (any case); folders end in "/";
-//                                           a bounded walk (20,000 entries, depth 12; .git, node_modules and the trash
-//                                           skipped; links never followed)
+//                                           a bounded walk (20,000 entries, depth 12; .git, the trash, dependencies
+//                                           and build output — node_modules, .venv, venv, __pycache__, dist, build,
+//                                           target, .next, .cache — skipped; links never followed)
 //   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
 //                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
 //                                           (~/.claude/CLAUDE.md); at most 1 MiB
@@ -118,7 +119,8 @@
 //                                               always_project: its `projectRules`; mode (ExitPlanMode only:
 //                                               "acceptEdits" | "default"): the plan approved and this session's mode set
 //                                               (never bypassPermissions, auto or dontAsk); "keep planning" is a deny with
-//                                               a message
+//                                               a message. A prompt that is not complete can only be denied: once,
+//                                               always and always_project are refused for it
 //   {type: "permission", id, session, decision: "answer", answers: {"<question text>": "<chosen label(s)>"}}
 //                                               AskUserQuestion only: the tool's input comes back with these answers
 //                                               (the SDK's channel; multi-select labels comma-separated)
@@ -128,7 +130,10 @@
 //   {type: "rewind_files", session, message: USER_MESSAGE_UUID, dryRun?, req}   file checkpoints: the files Claude
 //                                               changed since that prompt of yours put back (dryRun: only what would
 //                                               change) -> reply data {canRewind, error, filesChanged, insertions,
-//                                               deletions, skippedLinks}; sessions run with file checkpointing
+//                                               deletions, skippedLinks}; sessions run with file checkpointing. A
+//                                               session without a running process is started first (resumed under its
+//                                               id, no prompt); the restore itself (dryRun false) is refused while
+//                                               Claude works in the session
 // server -> client:
 //   {type: "hello", pending, limits}                          once, on connect
 //   {type: "attached", session, epoch, state, from, last, gap}   gap: events after the page's `since` are gone, or
@@ -140,13 +145,15 @@
 //   {type: "permission", id, session, tool, input, complete, reason, blockedPath, rules, projectRules, defaultNo,
 //          noAlways, expiresAt}
 //          input: the tool's input capped at LIMITS.permissionShownChars (strings at permissionShownString); complete:
-//          nothing was cut (the page offers Allow only for a complete one). An input over permissionInputMax never
+//          nothing was cut, and a MultiEdit has at most permissionShownEdits edits (the page offers Allow only for a
+//          complete one; the server refuses it for the others). An input over permissionInputMax never
 //          comes: it is denied at once, as is a prompt beyond maxPendingPerSession / maxPendingTotal waiting.
 //          rules: [{text, destination}] exactly what "Always" adds (destination session | userSettings: the sandbox's
 //          own ~/.claude — rules Claude Code proposed for a workspace file go there instead); projectRules: the same
 //          rules in the workspace file Claude Code proposed (localSettings: /workspace/.claude/settings.local.json,
 //          projectSettings: /workspace/.claude/settings.json — in your folder, which Claude Code on your computer
-//          reads too), only when it proposed one. defaultNo: open on Deny, no one-key approve; noAlways: no persistent
+//          reads too), only when it proposed one. Each at most LIMITS.permissionRules lines of ≤ 2,000 characters
+//          (what is cut is not applied either). defaultNo: open on Deny, no one-key approve; noAlways: no persistent
 //          rule may be offered (rules and projectRules are then empty)
 //   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
 //                                                             timeout|cancelled
@@ -156,7 +163,8 @@
 //                                                             approved with "clear context" …): the old session's
 //                                                             process ended after its turn; new_session (same model,
 //                                                             mode, effort) holds the conversation from here — the
-//                                                             pages attached to the old one are attached to it
+//                                                             pages attached to the old one are attached to it. A
+//                                                             new_session that is already a session here is ignored
 //   {type: "commands", session, commands: [{name, description, argumentHint}]}   (also pushed when Claude Code's
 //                                                             command list changes, and after a plugin reload)
 //   {type: "models", session, models: [{value, displayName, description, resolvedModel, supportsEffort,
@@ -202,8 +210,10 @@ export const LIMITS = Object.freeze({
   permissionShownChars: 262144,   // what a permission prompt shows of the input (JSON characters) …
   permissionShownString: 131072,  // … and of each string in it (the page caps the same)
   editHunkChars: 1 << 20,         // an edit's diff (all hunks) beyond this is cut (edit.complete false)
+  permissionShownEdits: 20,       // a MultiEdit prompt lists this many edits: one with more is complete false
+  permissionRules: 50,            // rule lines "Always" (and the workspace button) apply and show, each ≤ 2,000 characters
   wsMaxBufferedBytes: 16 << 20,   // unsent to one socket: beyond, it is closed (4008) and must re-attach
-  wsMaxAgeHours: 12,              // a socket is closed (4009) after this (the page reconnects through Caddy's check)
+  wsMaxAgeHours: 2,               // a socket is closed (4009) after this (the page reconnects through Caddy's check)
   maxPromptChars: 200000,
   maxImages: 4,
   maxImageBytes: 5 << 20,         // per image, decoded

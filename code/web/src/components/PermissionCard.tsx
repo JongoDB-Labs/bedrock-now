@@ -1,16 +1,19 @@
 // A permission prompt: the sentence built from tool + input (the SDK's title is empty headless), what exactly would
 // run or change, the reason the CLI gave, and Allow once / Always allow (with every rule it writes, as the backend
-// will write it) / Deny (with an optional message for Claude). Keys 1/2/3 answer while the card has focus, like the
-// CLI — not in the first 400 ms (a keystroke meant for the prompt box must not approve), and not at all when the
-// prompt asks to default to no. A prompt whose input could not be shown in full can only be denied. ExitPlanMode is a
-// plan to approve: with auto-accepted edits, asking for each edit, or not yet (keep planning, with a message).
+// will write it) / Deny (with an optional message for Claude). Keys 1/2/3 answer, like the CLI, once you went to the
+// card yourself (a click on it, or Tab into it) — never a keystroke that reached it because it took the focus — and
+// not in its first 400 ms, nor at all when the prompt asks to default to no. A card that appears takes the focus only
+// from nothing you type into (a field, the editor, the terminal keep it). A prompt whose input could not be shown in
+// full can only be denied. ExitPlanMode is a plan to approve: with auto-accepted edits, asking for each edit, or not
+// yet (keep planning, with a message).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PermissionReq, RuleLine } from '../types';
 import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
 import { commandShape, label, prettyJson, safe } from '../text';
 import { answerPermission, answerQuestions } from '../app';
-import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
+import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_EDITS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
+import { typingIn } from '../focus';
 import { buildAnswers, emptyPick, parseQuestions, toggle, type Pick, type Question } from '../questions';
 import { DiffLines } from './ToolCard';
 import { MarkdownView } from './MarkdownView';
@@ -118,7 +121,7 @@ function QuestionCard({ req, qs, index, total }: { req: PermissionReq; qs: Quest
 }
 
 /** What a card shows of the input, in full or not at all: the SAME caps on both sides (protocol.mjs LIMITS). */
-const MAX_EDITS = 20;
+const MAX_EDITS = PERMISSION_SHOWN_EDITS;
 
 function Details({ req }: { req: PermissionReq }) {
   const s = sentence(req.tool, req.input);
@@ -186,13 +189,18 @@ function useArmed(id: string, ms = 400): boolean {
   return armed;
 }
 
-/** The card takes focus when it appears, unless you are typing a prompt. */
+/** The card takes focus when it appears, unless something you type into has it (empty or not). */
 function useFocusOnArrival(ref: { current: HTMLElement | null }, id: string, target?: () => HTMLElement | null): void {
   useEffect(() => {
-    const a = document.activeElement as HTMLElement | null;
-    const typing = a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && !!(a as HTMLTextAreaElement).value;
-    if (!typing) (target?.() ?? ref.current)?.focus({ preventScroll: true });
+    if (!typingIn(document.activeElement)) (target?.() ?? ref.current)?.focus({ preventScroll: true });
   }, [id]);
+}
+
+/** Whether you went to this card yourself — clicked in it, or reached it with Tab — since it appeared: only then do
+ *  1/2/3 answer it. A keystroke that lands on it because it took the focus is never an answer. */
+function useEngaged(id: string): [boolean, () => void] {
+  const [engaged, setEngaged] = useState<string | null>(null);
+  return [engaged === id, () => setEngaged(id)];
 }
 
 function RuleList({ rules, label: what, testid }: { rules: RuleLine[]; label: string; testid?: string }) {
@@ -292,6 +300,7 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
   const rules: RuleLine[] = req.rules.length ? req.rules : req.noAlways ? [] : rulePreview(req.suggestions).map((text) => ({ text, destination: '' }));
   const project = req.projectRules;
   const armed = useArmed(req.id);
+  const [engaged, engage] = useEngaged(req.id);
   const [denying, setDenying] = useState(false);
   const [msg, setMsg] = useState('');
   const ref = useRef<HTMLDivElement>(null);
@@ -316,6 +325,11 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
       aria-label={s.title}
       tabIndex={-1}
       data-testid="permission"
+      data-engaged={engaged ? 'true' : undefined}
+      onPointerDown={engage}
+      onKeyUp={(e) => {
+        if (e.key === 'Tab') engage();
+      }}
       onKeyDown={(e) => {
         if (denying || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
         if (req.defaultNo) {
@@ -325,7 +339,7 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
           }
           return;
         }
-        if (!armed) return;
+        if (!armed || !engaged) return;
         if (e.key === '1') answer('once');
         else if (e.key === '2' && rules.length) answer('always');
         else if (e.key === '3') setDenying(true);

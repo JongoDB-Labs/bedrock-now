@@ -6,7 +6,7 @@ import { useState } from 'preact/hooks';
 import type { Item } from '../session';
 import { compact, countChanges, hunkLines, lineDiff, type DiffLine } from '../diff';
 import { displayPath, mcpParts } from '../permission';
-import { label, prettyJson, preview, safe, LIMITS } from '../text';
+import { cleanPath, label, prettyJson, preview, safe, LIMITS } from '../text';
 import { openDiff, openFile } from '../app';
 import { Icon, Spinner } from './icons';
 import { MarkdownView } from './MarkdownView';
@@ -241,9 +241,12 @@ function Body({ it, nested }: { it: ToolItem; nested?: ComponentChildren }) {
             >
               <Icon name="diff" size={14} /> Open diff
             </button>
-            <button type="button" class="btn small ghost" onClick={() => void openFile(displayPath(path))}>
-              <Icon name="file" size={14} /> Open file
-            </button>
+            {/* (a file outside /workspace — the sandbox's home, /tmp — cannot be opened here) */}
+            {path && cleanPath(path) !== null && (
+              <button type="button" class="btn small ghost" onClick={() => void openFile(displayPath(path))}>
+                <Icon name="file" size={14} /> Open file
+              </button>
+            )}
           </div>
           {r?.isError && <Output text={r.text} class="err" />}
         </>

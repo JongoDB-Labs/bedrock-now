@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { FrameParser, frame, dataFrames, T, MAX_FRAME, CHUNK } from '../server/frames.mjs';
-import { sandboxProcess, sandboxCall, SandboxError, MAX_LINE } from '../server/spawn-client.mjs';
+import { sandboxProcess, sandboxCall, SandboxError, MAX_LINE, MAX_STDIN_BACKLOG } from '../server/spawn-client.mjs';
 import { fakeSandbox, TERMINAL_DIR } from './helpers.mjs';
 
 const coded = await import(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'));
@@ -69,6 +69,27 @@ test('process: a large stdin write (images) goes in frames of at most 1 MiB; kil
   assert.deepEqual(sizes, [CHUNK, CHUNK, 10]);
   assert.equal(signal, 'SIGTERM');
   assert.equal(proc.killed, true);
+  await sb.close();
+});
+
+test('hostile: a sandbox that stops reading its stdin: the backlog stays bounded, the process fails', async () => {
+  let opened;
+  const open = new Promise((r) => { opened = r; });
+  const sb = await standIn((conn, got, [t]) => { if (t === T.OPEN) { conn.pause(); opened(conn); } });
+  const proc = sandboxProcess({ args: [] }, { sock: sb.sock });
+  const err = errorOf(proc), exit = exitOf(proc);
+  const sandbox = await open;
+  // one write as large as the backlog allows goes through
+  await new Promise((r) => proc.stdin.write(Buffer.alloc(MAX_STDIN_BACKLOG >> 1, 97), r));
+  const mb = Buffer.alloc(1 << 20, 98);
+  let refused = 0;
+  for (let i = 0; i < (MAX_STDIN_BACKLOG >> 20) + 8; i++) proc.stdin.write(mb, (e) => { if (e) refused++; });   // write()'s false ignored, as the SDK does
+  const e = await err;
+  assert.ok(e instanceof SandboxError && e.kind === 'too-large' && /stopped reading/.test(e.message), e.message);
+  assert.deepEqual(await exit, [1, null]);
+  assert.ok(refused >= 1);
+  // the sandbox's side sees the connection end once it reads again
+  await new Promise((r) => { sandbox.on('close', r); sandbox.resume(); });
   await sb.close();
 });
 

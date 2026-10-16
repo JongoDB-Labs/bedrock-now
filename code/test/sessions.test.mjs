@@ -225,6 +225,49 @@ test('a new conversation (conversation_reset): after the turn the old process en
   mgr.closeAll();
 });
 
+test('a new conversation under the id of a session here is not taken over', async () => {
+  const resets = [];
+  const { mgr, events } = manager({ onReset: (a, b) => resets.push([a.id, b.id]), transcriptExists: async () => true });
+  const other = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  s.prompt({ text: `reset:${other.id}` });
+  await tick(60);
+  assert.deepEqual(resets, []);
+  assert.equal(s.open, true);
+  assert.equal(s.resetTo, null);
+  assert.ok(events.some(([id, , ev]) => id === s.id && ev.type === 'local' && /another session/.test(ev.text)));
+  // (and a handover finds one that came to exist meanwhile: the old process goes on)
+  s.resetTo = other.id;
+  await mgr.handover(s);
+  assert.deepEqual([resets.length, s.open], [0, true]);
+  mgr.closeAll();
+});
+
+test('file checkpoints: a session whose process ended starts one (no prompt) to restore; never during a turn', async () => {
+  const { mgr, queries, sent } = manager();
+  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  const M = '00000000-0000-4000-8000-0000000000c1';
+  await assert.rejects(() => { s.close(); return s.rewindFiles(M, { dryRun: true }); }, /no prompts yet/);
+  s.prompt({ text: 'one' });
+  await tick();
+  s.close();
+  assert.equal(s.open, false);
+  const n = sent.length;
+  const r = await s.rewindFiles(M, { dryRun: true });
+  assert.equal(r.canRewind, true);
+  assert.equal(s.open, true);
+  assert.deepEqual([queries.at(-1).options.resume, queries.at(-1).options.sessionId], [s.id, undefined], 'resumed under its id');
+  assert.deepEqual(queries.at(-1).calls.at(-1), ['rewindFiles', M, { dryRun: true }]);
+  assert.equal(sent.length, n, 'no prompt was sent');
+  s.state = 'busy';
+  await assert.rejects(() => s.rewindFiles(M, { dryRun: false }), /Claude is working/);
+  await s.rewindFiles(M, { dryRun: true });   // a dry run is fine
+  s.state = 'idle';
+  await s.rewindFiles(M, { dryRun: false });
+  assert.deepEqual(queries.at(-1).calls.at(-1), ['rewindFiles', M, { dryRun: false }]);
+  mgr.closeAll();
+});
+
 test('Claude Code\'s new command list is passed on (commands_changed)', async () => {
   const reloads = [];
   const { mgr } = manager({ onReload: (s, r) => reloads.push(r) });

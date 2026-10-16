@@ -129,6 +129,10 @@ export function boundedJson(v: unknown, budget: Budget = { n: LIMITS.json }, dep
 /** The caps both sides apply to a permission prompt's input (protocol.mjs LIMITS.permissionShownChars / …String). */
 export const PERMISSION_SHOWN_CHARS = 262_144;
 export const PERMISSION_SHOWN_STRING = 131_072;
+/** A MultiEdit card shows this many edits (protocol.mjs LIMITS.permissionShownEdits): one with more is not shown in full. */
+export const PERMISSION_SHOWN_EDITS = 20;
+/** The lines "Always" applies, all shown: a prompt that would apply more offers no Always. */
+export const PERMISSION_SHOWN_RULES = 50;
 /** A permission prompt's input for display, and whether all of it is there. */
 export function permissionInput(v: unknown): { input: unknown; complete: boolean } {
   const budget: Budget = { n: PERMISSION_SHOWN_CHARS, str: PERMISSION_SHOWN_STRING };
@@ -366,7 +370,7 @@ function epochOf(v: unknown): string | null {
 }
 
 function normRules(v: unknown): RuleLine[] {
-  return arr(v, 50)
+  return arr(v, PERMISSION_SHOWN_RULES)
     .map((r): RuleLine | null => {
       if (typeof r === 'string') return r ? { text: label(r, 2000), destination: '' } : null;
       const x = obj(r);
@@ -383,15 +387,20 @@ function normPermission(o: Obj): PermissionReq | null {
   const shown = permissionInput(o.input);
   const noAlways = o.noAlways === true;
   const hasRules = Array.isArray(o.rules) && o.rules.some((r) => obj(r));
+  const tool = label(o.tool ?? o.toolName, LIMITS.name) || 'tool';
+  const edits = obj(o.input)?.edits;
+  // more edits than a card lists, or more rules than it shows: not all of it would be seen, so only Deny (or no Always)
+  const tooManyEdits = tool === 'MultiEdit' && Array.isArray(edits) && edits.length > PERMISSION_SHOWN_EDITS;
+  const over = (v: unknown) => Array.isArray(v) && v.length > PERMISSION_SHOWN_RULES;
   return {
     id,
     session: session.toLowerCase(),
-    tool: label(o.tool ?? o.toolName, LIMITS.name) || 'tool',
+    tool,
     input: shown.input,
-    complete: o.complete !== false && shown.complete,
+    complete: o.complete !== false && shown.complete && !tooManyEdits,
     reason: label(o.reason ?? o.decisionReason, 500),
-    rules: noAlways ? [] : normRules(o.rules),
-    projectRules: noAlways ? [] : normRules(o.projectRules),
+    rules: noAlways || over(o.rules) ? [] : normRules(o.rules),
+    projectRules: noAlways || over(o.projectRules) ? [] : normRules(o.projectRules),
     defaultNo: o.defaultNo === true,
     noAlways,
     // an older backend sends the CLI's suggestions (and `rules` as plain strings): kept for the preview only

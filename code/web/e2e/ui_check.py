@@ -708,7 +708,7 @@ ARM = """() => {
 }"""
 
 
-@check("permission cards: armed after a moment; partially shown; padded command; default-to-no; MultiEdit")
+@check("permission cards: armed after a moment; partially shown; padded command; default-to-no; focus stays in the prompt box; MultiEdit")
 def permission_cards(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "perm-cards", **DESKTOP)
@@ -742,8 +742,9 @@ def permission_cards(browser):
     page.get_by_test_id("perm-deny").click()
     page.get_by_test_id("perm-deny-send").click()
     wait_turns(page, 3)
-    # default to no: Deny has the focus, no one-key approve, no Always
-    send(page, "risky cleanup")
+    # default to no: Deny has the focus (sent with the Send button: no text field has it), no one-key approve, no Always
+    page.get_by_test_id("prompt").fill("risky cleanup")
+    page.get_by_test_id("send").click()
     expect(page.get_by_test_id("permission")).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("perm-deny")).to_be_focused()
     expect(page.get_by_test_id("perm-always")).to_have_count(0)
@@ -757,19 +758,40 @@ def permission_cards(browser):
     page.keyboard.press("Enter")
     wait_turns(page, 4)
     expect(page.locator(".msg-claude").last).to_contain_text("Left it alone")
+    # a card that appears while the (empty) prompt box has the focus leaves it there: "1" is typed, nothing approved;
+    # once you go to the card yourself (a click), "1" answers it
+    send(page, "run the tests")
+    perm = page.get_by_test_id("permission")
+    expect(perm).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("prompt")).to_be_focused()
+    page.wait_for_timeout(600)
+    page.keyboard.press("1")
+    page.wait_for_timeout(300)
+    expect(page.get_by_test_id("prompt")).to_have_value("1")
+    expect(perm).to_have_count(1)
+    page.get_by_test_id("prompt").fill("")
+    perm.locator(".perm-head").click()
+    expect(perm).to_have_attribute("data-engaged", "true")
+    page.keyboard.press("1")
+    wait_turns(page, 5)
+    expect(page.locator(".tool[data-tool='Bash'] .tool-status").last).to_have_attribute("title", "done")
     # MultiEdit: the edits a card lists, the rest counted; replace_all said
     send(page, "rename with many edits")
     expect(page.get_by_test_id("perm-more-edits")).to_contain_text("and 4 more edits", timeout=10_000)
     expect(page.get_by_test_id("perm-replace-all")).to_be_visible()
-    page.get_by_test_id("perm-once").click()
-    wait_turns(page, 5)
+    # (more edits than a card lists: not shown in full, so it can only be denied)
+    expect(page.get_by_test_id("perm-partial")).to_be_visible()
+    expect(page.get_by_test_id("perm-once")).to_be_disabled()
+    page.get_by_test_id("perm-deny").click()
+    page.get_by_test_id("perm-deny-send").click()
+    wait_turns(page, 6)
     expect(page.locator(".tool[data-tool='MultiEdit']")).to_be_visible()
     # "Always, in this workspace's settings": allowed from then on, as Always is
     send(page, "run the tests again")
     page.get_by_test_id("perm-always-project").click(timeout=10_000)
-    wait_turns(page, 6)
-    send(page, "run the tests a third time")
     wait_turns(page, 7)
+    send(page, "run the tests a third time")
+    wait_turns(page, 8)
     expect(page.get_by_test_id("permission")).to_have_count(0)
     p.assert_clean()
     p.close()
@@ -853,7 +875,7 @@ def prompts(browser):
     p.close()
 
 
-@check("sessions: fork from a prompt; a long transcript opens at its end, 'load earlier' the rest")
+@check("sessions: fork from a prompt; a long transcript opens at its end, 'load earlier' the rest; its export is whole")
 def fork_and_history(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "fork", **DESKTOP)
@@ -883,6 +905,13 @@ def fork_and_history(browser):
     expect(page.get_by_test_id("load-earlier")).to_contain_text("60 more", timeout=10_000)
     expect(page.get_by_test_id("msg-user")).to_have_count(150)
     expect(page.get_by_test_id("msg-user").first).to_contain_text("Step 31:")
+    # an export has all of it, also what the page has not loaded
+    with page.expect_download() as dl:
+        page.get_by_test_id("more-menu").click()
+        page.get_by_test_id("menu-export").click()
+    with open(dl.value.path(), encoding="utf-8") as f:
+        text = f.read()
+    assert "Step 1:" in text and "Step 180:" in text and "earlier messages not included" not in text, text[:400]
     page.get_by_test_id("load-earlier").click()
     page.get_by_role("button", name="Show earlier messages (60)").click()
     expect(page.get_by_test_id("msg-user")).to_have_count(180)
@@ -1036,7 +1065,7 @@ def mention_search(browser):
     p.close()
 
 
-@check("checkpoints: restore files to a prompt (a dry run first); nothing to restore")
+@check("checkpoints: restore files to a prompt (a dry run first); nothing to restore; after the process ended; a turn since the check")
 def checkpoints(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "rewind", **DESKTOP)
@@ -1065,6 +1094,30 @@ def checkpoints(browser):
     expect(page.get_by_test_id("rewind-preview")).to_have_count(0)
     f = json.loads(urllib.request.urlopen(f"{NORMAL}/api/fs/file?path=src/http/client.ts", timeout=5).read())
     assert "return retry(async" not in f["text"], "client.ts was not restored"
+    # after the session's process ended: it starts again (no prompt) for the check
+    send(page, "fix get() please")
+    wait_turns(page, 3)
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    urllib.request.urlopen(urllib.request.Request(f"{NORMAL}/api/sessions/{sid}", method="DELETE"), timeout=5).read()
+    expect(page.get_by_test_id("session-state")).to_contain_text("closed", timeout=10_000)
+    third = page.get_by_test_id("msg-user").nth(2)
+    third.hover()
+    third.get_by_test_id("msg-rewind").click()
+    preview = page.get_by_test_id("rewind-preview")
+    expect(preview).to_contain_text("Put back 1 file", timeout=10_000)
+    # a turn after the check: Restore checks again first (what it puts back is what it listed)
+    send(page, "/cost")
+    expect(page.get_by_test_id("turn-end").last).to_be_visible()
+    page.wait_for_timeout(500)
+    page.get_by_test_id("rewind-confirm").click()
+    expect(page.get_by_test_id("rewind-note")).to_contain_text("since the check", timeout=10_000)
+    expect(preview).to_contain_text("Put back 1 file")
+    page.get_by_test_id("rewind-confirm").click()
+    # (the first restore's toast may still show: the panel closing is what says this one is done)
+    expect(page.get_by_test_id("rewind-preview")).to_have_count(0, timeout=10_000)
+    expect(page.locator(".toast").last).to_contain_text("Restored 1 file", timeout=10_000)
+    f = json.loads(urllib.request.urlopen(f"{NORMAL}/api/fs/file?path=src/http/client.ts", timeout=5).read())
+    assert "return retry(async" not in f["text"], "client.ts was not restored the second time"
     p.assert_clean()
     p.close()
 

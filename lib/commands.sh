@@ -935,7 +935,7 @@ status_table() {
   ps="$(cat)"
   printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
   for s in $STACK_SERVICES $(remote_on && echo tailscale); do
-    row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '$1 == s { print $2 "\t" $3; exit }')"
+    row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '!f && $1 == s { print $2 "\t" $3; f = 1 }')"
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
     [ -n "$health" ] || health='-'
@@ -977,7 +977,7 @@ _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
 _skip() { printf '  skip  %s (%s)\n' "$1" "$2"; }
 
 # _hdr NAME < curl -D headers -> the value of header NAME (case-insensitive; CR stripped; empty if absent)
-_hdr() { tr -d '\r' | N="$1" awk -F': ' 'tolower($1) == tolower(ENVIRON["N"]) { sub(/^[^:]*: /, ""); print; exit }'; }
+_hdr() { tr -d '\r' | N="$1" awk -F': ' '!f && tolower($1) == tolower(ENVIRON["N"]) { sub(/^[^:]*: /, ""); print; f = 1 }'; }
 
 # _test_portal — the browser path: Caddy + portal login + the three apps behind it (uses cmd_test's `fails`).
 # Open WebUI publishes no port, so its checks go through Caddy too. The session cookie lives in a mode-600 file

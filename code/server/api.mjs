@@ -264,8 +264,23 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   // The catalog of every added marketplace's plugins (`plugin list --json --available`: thousands of entries, ~2 MB) is
   // read once and searched here; any change through this API reads it again.
   let catalog = null;   // {at, rows}
+  let loading = null;   // the read under way: requests meanwhile share it (one `plugin list --available` at a time)
   const CATALOG_MS = 10 * 60000, CATALOG_BYTES = 24 << 20;   // (the CLI's own directory alone is ~2 MB, 3,500 entries)
-  const invalidate = () => { catalog = null; };
+  const invalidate = () => { catalog = null; loading = null; };
+  const loadCatalog = () => {
+    if (loading) return loading;
+    const p = (async () => {
+      const d = await listing(['plugin', 'list', '--json', '--available'], CATALOG_BYTES);
+      const rows = (Array.isArray(d?.available) ? d.available : []).slice(0, 20000).map(availableRow).filter(Boolean);
+      const installed = new Set((Array.isArray(d?.installed) ? d.installed : []).map((x) => (typeof x?.id === 'string' ? x.id : '')));
+      for (const r of rows) r.installed = installed.has(r.id);
+      return { at: Date.now(), rows };
+    })();
+    loading = p;
+    // a failure is not kept (the next request tries again); a read that an invalidate overtook does not count
+    p.then((c) => { if (loading === p) { catalog = c; loading = null; } }, () => { if (loading === p) loading = null; });
+    return p;
+  };
 
   async function plugins() {
     const [inst, mk] = await Promise.all([listing(['plugin', 'list', '--json']), listing(['plugin', 'marketplace', 'list', '--json'])]);
@@ -274,19 +289,13 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   }
 
   async function available({ q, marketplace, offset, limit } = {}) {
-    if (!catalog || Date.now() - catalog.at > CATALOG_MS) {
-      const d = await listing(['plugin', 'list', '--json', '--available'], CATALOG_BYTES);
-      const rows = (Array.isArray(d?.available) ? d.available : []).slice(0, 20000).map(availableRow).filter(Boolean);
-      const installed = new Set((Array.isArray(d?.installed) ? d.installed : []).map((x) => (typeof x?.id === 'string' ? x.id : '')));
-      for (const r of rows) r.installed = installed.has(r.id);
-      catalog = { at: Date.now(), rows };
-    }
+    const cat = catalog && Date.now() - catalog.at <= CATALOG_MS ? catalog : await loadCatalog();
     const needle = typeof q === 'string' ? q.trim().toLowerCase().slice(0, 200) : '';
     const mk = typeof marketplace === 'string' && marketplace ? marketplace : null;
-    const hits = catalog.rows.filter((r) => (!mk || r.marketplace === mk) && (!needle || `${r.name}\n${r.description}\n${r.marketplace}`.toLowerCase().includes(needle)));
+    const hits = cat.rows.filter((r) => (!mk || r.marketplace === mk) && (!needle || `${r.name}\n${r.description}\n${r.marketplace}`.toLowerCase().includes(needle)));
     const off = int(offset, 0, 1e6) ?? 0, lim = int(limit, 1, 500) ?? 100;
     const counts = {};
-    for (const r of catalog.rows) counts[r.marketplace] = (counts[r.marketplace] || 0) + 1;
+    for (const r of cat.rows) counts[r.marketplace] = (counts[r.marketplace] || 0) + 1;
     return { plugins: hits.slice(off, off + lim), total: hits.length, offset: off, limit: lim, more: off + lim < hits.length,
       marketplaces: Object.entries(counts).slice(0, 100).map(([name, count]) => ({ name, count })) };
   }

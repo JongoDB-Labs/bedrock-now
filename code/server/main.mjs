@@ -409,7 +409,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       // file checkpoints: what Claude changed since a prompt of yours, put back (dryRun: only what would change)
       case 'rewind_files': {
         if (!isUuid(m.message)) throw new SessionError('bad message id');
-        const r = await sessionOf(m).need().rewindFiles(m.message, { dryRun: m.dryRun === true });
+        const r = await sessionOf(m).rewindFiles(m.message, { dryRun: m.dryRun === true });
         const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
         return reply({ canRewind: r?.canRewind === true, error: str(typeof r?.error === 'string' ? r.error : '', 500),
           filesChanged: (Array.isArray(r?.filesChanged) ? r.filesChanged : []).slice(0, 200).filter((x) => typeof x === 'string').map((x) => short(x, 4096)),

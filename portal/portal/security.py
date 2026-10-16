@@ -364,7 +364,8 @@ class Handoff:
 
 
 # --- the browser terminal (./stack terminal) and the Code page (./stack code): a fresh password unlock on top of the
-# --- session, one per app (its own cookie and its own signing salt: one never opens the other)
+# --- session, one per app (its own cookie and its own signing salt: the cookie of one is never accepted by the other;
+# --- the Code page's unlock reaches the terminal only through the single-use hand-off, /auth/code-terminal)
 
 # Host-only on the app's host (no Domain), so no other host — not the portal, not an app — ever receives it; remote:
 # __Host- (Secure, Path=/). Caddy strips every cookie before ttyd and the code container (caddy/Caddyfile).

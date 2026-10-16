@@ -11,7 +11,7 @@ PRICES="${PRICES:-$STACK_DIR/catalog/prices.tsv}"
 
 price_row() { # price_row NAME -> the TAB-separated price fields (2..7) for NAME, or nothing
   [ -r "$PRICES" ] || return 0
-  tr -d '\r' < "$PRICES" | N="$1" awk -F'\t' '!/^[[:space:]]*#/ && $1 == ENVIRON["N"] { print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7; exit }'
+  tr -d '\r' < "$PRICES" | N="$1" awk -F'\t' '!f && !/^[[:space:]]*#/ && $1 == ENVIRON["N"] { print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7; f = 1 }'
 }
 
 price_field() { # price_field NAME in|out|cache_read|cache_write|per_image|per_query -> value, empty if n/a

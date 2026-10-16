@@ -145,9 +145,15 @@ export class Session {
     }
     if (m.type === 'system' && m.subtype === 'commands_changed' && Array.isArray(m.commands)) this.mgr.onReload(this, { commands: m.commands });
     if (m.type === 'conversation_reset' && isUuid(m.new_conversation_id) && m.new_conversation_id !== this.id) {
-      this.resetTo = m.new_conversation_id;
-      this.emit({ type: 'local', text: 'Claude Code started a new conversation: it continues in a new session once this turn ends.' });
-      if (this.state !== 'busy') void this.mgr.handover(this);
+      // (from the sandbox: an id that is already a session here — another conversation — is not taken over)
+      if (this.mgr.sessions.has(m.new_conversation_id)) {
+        this.mgr.log(`new conversation ${m.new_conversation_id.slice(0, 8)} in ${this.id.slice(0, 8)}: already a session here, ignored`);
+        this.emit({ type: 'local', text: 'Claude Code reported a new conversation under the id of another session; it stays in this one.' });
+      } else {
+        this.resetTo = m.new_conversation_id;
+        this.emit({ type: 'local', text: 'Claude Code started a new conversation: it continues in a new session once this turn ends.' });
+        if (this.state !== 'busy') void this.mgr.handover(this);
+      }
     }
     if (changed) this.mgr.onState(this);
   }
@@ -239,6 +245,22 @@ export class Session {
     this.mgr.onReload(this, res);
     return r;
   }
+  // File checkpoints: what Claude changed since a prompt of yours, put back (dryRun: only what would change). A session
+  // whose process ended starts one first (resumed under its id, no prompt: its checkpoints are in the sandbox); the
+  // restore itself is refused while a turn runs (it would race Claude's own edits).
+  async rewindFiles(message, { dryRun = false } = {}) {
+    if (!dryRun && (this.state === 'busy' || this.state === 'starting')) {
+      throw new SessionError('Claude is working in this session: wait for the turn to end, or stop it', 409);
+    }
+    if (!this.open) {
+      if (!this.hasTranscript) throw new SessionError('this session has no prompts yet: nothing to restore', 409);
+      if (this.resetTo) throw new SessionError('this conversation continues in a new session (Claude Code started one)', 409);
+      this.start({ resume: this.id });
+    }
+    const q = this.need();
+    if (typeof q.initializationResult === 'function') await q.initializationResult();
+    return q.rewindFiles(message, { dryRun });
+  }
   async mcpReconnect(name) { await this.need().reconnectMcpServer(name); }
   async mcpToggle(name, enabled) { await this.need().toggleMcpServer(name, enabled === true); }
 
@@ -314,18 +336,15 @@ export class SessionManager {
     s.handingOver = true;
     try {
       s.resetTo = null;
+      // a session here under that id is another conversation: never taken over (the old process goes on)
+      if (this.sessions.has(id)) throw new Error('already a session here');
       s.close('reset');
       let has = false;
       try { has = (await this.transcriptExists(id)) === true; } catch { has = false; }
-      let ns = this.sessions.get(id);
-      if (!ns) {
-        ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has });
-        this.sessions.set(id, ns);
-        this.trim();
-      } else if (!ns.open) {
-        ns.hasTranscript = ns.hasTranscript || has;
-        ns.start({ resume: id });
-      }
+      if (this.sessions.has(id)) throw new Error('already a session here');   // (one opened meanwhile)
+      const ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has });
+      this.sessions.set(id, ns);
+      this.trim();
       this.onReset(s, ns);
     } catch (e) {
       this.log(`new conversation ${id.slice(0, 8)}: ${short(e?.message || String(e), 200)}`);

@@ -248,6 +248,7 @@ function mcpServers(s) {
 
 const sessions = new Map(); // id -> Session (open)
 const saved = new Map(); // id -> {id, title, firstPrompt, branch, modified, transcript}
+const checkpoints = new Map(); // id -> {prompts, changes}: a session's file checkpoints, across its processes
 const spendRows = new Map(); // id -> rows
 
 function seedSaved() {
@@ -347,9 +348,11 @@ class Session {
     this.turns = 0;
     this.transcript = saved.get(id)?.transcript?.slice() ?? [];
     this.tasks = new Map();
-    // file checkpoints: the prompts of this process in order, and what each change replaced ({prompt, path, before})
-    this.prompts = [];
-    this.changes = [];
+    // file checkpoints: the session's prompts in order, and what each change replaced ({prompt, path, before}) — kept
+    // across its processes, as Claude Code keeps them with the transcript (a resumed session can restore too)
+    if (!checkpoints.has(id)) checkpoints.set(id, { prompts: [], changes: [] });
+    this.prompts = checkpoints.get(id).prompts;
+    this.changes = checkpoints.get(id).changes;
     // MCP servers of your own load when a session (process) starts
     this.mcpLoaded = new Set(plug.mcp.map((m) => m.name));
     this.mcpOff = new Set();
@@ -394,7 +397,8 @@ class Session {
     }
     if (!dryRun) {
       for (const [p, before] of first) before === null ? fsState.delete(p) : writeFile(p, before);
-      this.changes = this.changes.filter((c) => !since.has(c.prompt));
+      const kept = this.changes.filter((c) => !since.has(c.prompt));
+      this.changes.splice(0, this.changes.length, ...kept);   // (in place: the list is the session's, across processes)
     }
     return { canRewind: true, error: '', filesChanged: [...first.keys()].map((p) => '/workspace/' + p), insertions, deletions, skippedLinks: 0 };
   }
@@ -1309,6 +1313,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true });
       }
       if (url.pathname === '/__mock/reset') {
+        checkpoints.clear();
         resetFs();
         resetPlugins();
         resetBudget();

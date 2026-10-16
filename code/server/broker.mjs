@@ -46,10 +46,26 @@ export function splitSuggestions(safe) {
   return { always, project };
 }
 
+const lineOf = (r) => `${r.toolName}${r.ruleContent !== undefined ? `(${r.ruleContent})` : ''}`;
 // ruleText(suggestions) -> [{text, destination}]: what they add, one line each ("Bash(npm test:*)", "mode acceptEdits")
 export const ruleText = (sugs) => sugs.flatMap((s) => (s.type === 'addRules'
-  ? s.rules.map((r) => ({ text: `${r.toolName}${r.ruleContent !== undefined ? `(${r.ruleContent})` : ''}`, destination: s.destination }))
+  ? s.rules.map((r) => ({ text: lineOf(r), destination: s.destination }))
   : [{ text: `mode ${s.mode}`, destination: s.destination }]));
+
+// capRules(suggestions, max) -> the suggestions cut to at most `max` lines in all, a rule whose line is longer than
+// RULE_CHARS dropped: what "Always" applies is exactly what the page shows (it lists that many, that long)
+const RULE_CHARS = 2000;
+export function capRules(sugs, max = LIMITS.permissionRules) {
+  const out = [];
+  let n = 0;
+  for (const s of sugs) {
+    if (n >= max) break;
+    if (s.type !== 'addRules') { out.push(s); n++; continue; }
+    const rules = s.rules.filter((r) => lineOf(r).length <= RULE_CHARS).slice(0, max - n);
+    if (rules.length) { out.push({ ...s, rules }); n += rules.length; }
+  }
+  return out;
+}
 
 // questionAnswers(input, answers) -> {question: answer} for AskUserQuestion's own questions only (each answer one line,
 // at most 2,000 characters), or null when nothing valid is left
@@ -90,10 +106,14 @@ export class PermissionBroker {
     }
     const id = crypto.randomUUID();
     const noAlways = opts.suppressAlwaysAllowRule === true;
-    const { always, project } = noAlways ? { always: [], project: [] } : splitSuggestions(safeSuggestions(opts.suggestions));
+    const split = noAlways ? { always: [], project: [] } : splitSuggestions(safeSuggestions(opts.suggestions));
+    const always = capRules(split.always), project = capRules(split.project);
     const shown = capped(input ?? {}, LIMITS.permissionShownChars, LIMITS.permissionShownString);
+    // a MultiEdit lists at most permissionShownEdits of its edits: one with more is not shown in full (deny only)
+    const edits = tool === 'MultiEdit' && Array.isArray(input?.edits) ? input.edits.length : 0;
     const prompt = {
-      id, session, tool: short(tool, 200), input: shown.value, complete: shown.complete, reason: str(opts.decisionReason ?? '', 1000),
+      id, session, tool: short(tool, 200), input: shown.value, complete: shown.complete && edits <= LIMITS.permissionShownEdits,
+      reason: str(opts.decisionReason ?? '', 1000),
       blockedPath: short(opts.blockedPath ?? '', 4096) || null, rules: ruleText(always), projectRules: ruleText(project),
       defaultNo: opts.defaultToNo === true, noAlways, expiresAt: Date.now() + this.timeoutMs,
     };
@@ -113,11 +133,13 @@ export class PermissionBroker {
    *    {answers: {question text: chosen label(s)}} — the SDK's own channel: the tool's input comes back with
    *    `answers`, as Claude Code's permission component fills it; multi-select: comma-separated)
    *    once with `mode` (ExitPlanMode only: acceptEdits | default): the plan approved, and this session's mode set
-   *  `session`, when given, must be the prompt's own session. */
+   *  `session`, when given, must be the prompt's own session. A prompt not shown in full (complete false) can only be
+   *  denied (or, AskUserQuestion, answered: that adds only your answers). */
   answer(id, decision, { message, answers, mode, session } = {}) {
     const p = this.pending.get(id);
     if (!p) return false;
     if (session !== undefined && session !== p.prompt.session) return false;
+    if (!p.prompt.complete && ['once', 'always', 'always_project'].includes(decision)) return false;
     if (decision === 'answer') {
       const a = questionAnswers(p.input, answers);
       if (!a) return false;

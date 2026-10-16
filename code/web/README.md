@@ -60,7 +60,9 @@ sh e2e/run.sh     # browser checks in Docker (needs dist/ and node_modules)
 
 The unit tests cover the markdown renderer (raw HTML stays text, only http(s) links, no images, a newline is a
 break), the wire normaliser (ids, caps, bad shapes, permission inputs capped as the backend caps them), the session
-reducer (streaming, tool pairing, replay and gaps, history merge and "load earlier", prompts queued mid-turn),
+reducer (streaming, tool pairing, replay and gaps, history merge and "load earlier", prompts queued mid-turn or
+folded into the running turn, a turn that went idle without a result, Stop with a prompt queued, the export's earlier
+part), where an arriving permission card may take the focus (never from a field, the editor or the terminal),
 cost attribution per turn, diffs, the pickers, permission sentences and stored-prefs validation, plugin outcomes
 (a confirmation needs a real SHA-256), MCP statuses (no secrets), AskUserQuestion answers (keys exactly as sent, one
 or several choices, Other), and the backend's message shapes (`code/server/protocol.mjs`) as the page reads them.
@@ -69,9 +71,11 @@ or several choices, Other), and the backend's message shapes (`code/server/proto
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the
 page on desktop (light and dark), tablet and phone — streaming, permission prompts (once / always / in the
 workspace's settings / deny with a message; armed after a moment, partially shown, padded commands, default to no,
-MultiEdit), plan approval, prompts queued below the stream and refused ones taken back, /clear and a reset from the
+the focus left in the prompt box and 1/2/3 only once you went to the card, a MultiEdit with more edits than a card
+lists), plan approval, prompts queued below the stream and refused ones taken back, /clear and a reset from the
 CLI, fork from a prompt, "load earlier", close codes, an expired unlock, the budget banner, the to-do panel, the
-Markdown export, the memory dialog and `#`, the @ picker's workspace search, file checkpoints, AskUserQuestion (one choice, several, Other, decline), diffs, the / and @ pickers, uploads and image
+Markdown export (all of a long transcript), the memory dialog and `#`, the @ picker's workspace search, file
+checkpoints (also after the session's process ended, and checked again after a later turn), AskUserQuestion (one choice, several, Other, decline), diffs, the / and @ pickers, uploads and image
 attachments, modes, background tasks, interrupt, reconnect and reload without duplicates, resume/fork/rename, an
 already-open session, editor save conflicts, remembered layout, plugins (a marketplace from the workspace, install,
 a command shown with its SHA-256 before it runs, on/off, update, uninstall, the palette after the reload), the MCP

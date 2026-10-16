@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addPrompt, applyEvent, applySeq, changedFiles, mergeHistory, newView, MAX_ITEMS, type SessionView, dropPrompt, endedMidTurn, prependHistory } from '../src/session';
+import { addPrompt, applyEvent, applySeq, changedFiles, mergeHistory, newView, MAX_ITEMS, type SessionView, dropPrompt, endedMidTurn, prependHistory, idleWithoutResult, withEarlier } from '../src/session';
 import type { Ev } from '../src/types';
 
 const ID = '3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c';
@@ -196,4 +196,60 @@ test('a prompt Claude Code folded into the running turn (the result lists it) ge
   assert.deepEqual(w.items.map((i) => i.t), ['user', 'user', 'result']);
   assert.equal(w.turns.length, 1);
   assert.equal(w.state, 'idle');
+});
+
+test('the Live divider only when the live part has a prompt of its own', () => {
+  const history: Ev[] = [
+    { kind: 'user', text: 'old', uuid: U1, images: 0 },
+    { kind: 'text', text: 'old answer', model: '', parent: null },
+  ];
+  let live = newView(ID);
+  live = applySeq(live, 1, { kind: 'local', text: 'Set model to haiku' });
+  const m = mergeHistory(live, history);
+  assert.ok(!m.items.some((i) => i.t === 'notice' && i.text === 'Live'), 'a status line is no turn');
+  assert.deepEqual(m.items.map((i) => i.t), ['user', 'assistant', 'local']);
+});
+
+test('idle without a result: the open turn ends (prompts typed next do not wait for it); its queued prompt starts', () => {
+  let v = addPrompt(newView(ID), 'first', 0, U1, 10);
+  v = applyEvent(v, { kind: 'delta', text: 'Hal', parent: null });
+  v = applyEvent(v, { kind: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' }, parent: null });
+  const w = idleWithoutResult(v, 50);
+  assert.deepEqual(w.turns.map((t) => [t.start, t.end]), [[10, 50]]);
+  assert.ok(!w.items.some((i) => (i.t === 'assistant' && i.streaming) || (i.t === 'tool' && i.status === 'running')));
+  assert.equal(addPrompt(w, 'next', 0, U2, 60).queued.length, 0, 'the next prompt is a turn of its own');
+  // with a prompt waiting: it starts the next turn, as after a result
+  const q = idleWithoutResult(addPrompt(v, 'waiting', 0, U2, 20), 50);
+  assert.deepEqual(q.turns.map((t) => [t.start, t.end]), [[10, 50], [50, null]]);
+  assert.equal(q.queued.length, 0);
+  // nothing open: unchanged
+  const done = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false }, 30);
+  assert.equal(idleWithoutResult(done, 50), done);
+});
+
+test('Stop with a prompt queued: the stopped turn ends, the queued prompt runs next (Claude Code keeps it)', () => {
+  let v = addPrompt(newView(ID), 'long job', 0, U1, 10);
+  v = applyEvent(v, { kind: 'delta', text: 'working', parent: null });
+  v = addPrompt(v, 'after it', 0, U2, 20);
+  assert.equal(v.queued.length, 1);
+  v = applyEvent(v, { kind: 'result', subtype: 'error_during_execution', turns: 1, durationMs: 5, usage, isError: true }, 30);
+  assert.equal(v.queued.length, 0);
+  const users = v.items.filter((i) => i.t === 'user').map((i) => (i.t === 'user' ? i.text : ''));
+  assert.deepEqual(users, ['long job', 'after it']);
+  assert.deepEqual(v.turns.map((t) => [t.start, t.end]), [[10, 30], [30, null]]);
+  assert.equal(v.state, 'busy');
+});
+
+test('an export holds the transcript before the loaded window, then the view', () => {
+  const history: Ev[] = [
+    { kind: 'user', text: 'one', uuid: U1, images: 0 },
+    { kind: 'text', text: 'first answer', model: '', parent: null },
+    { kind: 'user', text: 'two', uuid: U2, images: 0 },
+    { kind: 'text', text: 'second answer', model: '', parent: null },
+  ];
+  const shown = mergeHistory(newView(ID), history.slice(2), 1000, { offset: 2 });
+  const { view, dropped } = withEarlier(shown, history);
+  assert.equal(dropped, 0);
+  assert.deepEqual(view.items.map((i) => (i.t === 'user' || i.t === 'assistant' ? i.text : i.t)), ['one', 'first answer', 'two', 'second answer']);
+  assert.equal(shown.items.length, 2, 'the view itself is unchanged');
 });

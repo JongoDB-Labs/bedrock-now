@@ -3,7 +3,9 @@
 // after app.js and mobile.js (deferred; shares their $, el, appUrl and APP_URLS) and adds its elements before
 // DOMContentLoaded, so app.js binds the tab like the others. The tab frames code.<host> like any app: while the Code
 // page is locked, that host answers with its own "Unlock the Code page" form (the portal password again). On a big
-// screen the frame is made (hidden) once the portal is idle, so the badge counts prompts before the first visit.
+// screen, in a browser that has used the Code page (its page reported to the portal once), the frame is made (hidden)
+// once the portal is idle, so the badge counts prompts before the tab is opened; a browser that never opened it loads
+// nothing from the code host.
 "use strict";
 
 (() => {
@@ -20,6 +22,10 @@
   const BRACKETS = "M7.5 5.5 3 10l4.5 4.5M12.5 5.5 17 10l-4.5 4.5M11 4l-2 12";
   const POPOUT = "M11 4h5v5M16 4l-7 7M14 12v4H4V6h4";
   let badge = null;
+  // set the first time the Code page's own page (unlocked, running) reports to the portal; kept in this browser
+  const USED = "bn.code.used";
+  const used = () => { try { return localStorage.getItem(USED) === "1"; } catch (_) { return false; } };
+  const markUsed = () => { try { if (!used()) localStorage.setItem(USED, "1"); } catch (_) { /* storage blocked: fine */ } };
 
   // Sidebar: directly under Chat, with a pop-out like the other apps and a badge for permission prompts waiting.
   function addTab() {
@@ -48,6 +54,7 @@
     try { codeOrigin = new URL(appUrl("code")).origin; } catch (_) { return; }
     window.addEventListener("message", (e) => {
       if (e.origin !== codeOrigin || !e.data || (e.data.type !== "bn-code-status" && e.data.bn !== "code") || !badge) return;
+      markUsed();
       const n = Number.isInteger(e.data.pending) && e.data.pending > 0 ? Math.min(e.data.pending, 99) : 0;
       badge.textContent = n ? String(n) : "";
       badge.hidden = !n;
@@ -55,10 +62,11 @@
     });
   }
 
-  // The badge needs the page running: its frame, hidden, once the portal has nothing else to do (not on a phone: there
+  // The badge needs the page running: its frame, hidden, once the portal has nothing else to do — only in a browser
+  // that has used the Code page (else the code host would answer its locked form, unasked), and not on a phone (there
   // the Code page opens in a tab of its own, and an idle frame would only cost battery).
   function preload() {
-    if (window.matchMedia("(max-width: 767.98px)").matches) return;
+    if (!used() || window.matchMedia("(max-width: 767.98px)").matches) return;
     const make = () => { if (!window.matchMedia("(max-width: 767.98px)").matches) appFrame("code"); };
     if ("requestIdleCallback" in window) window.requestIdleCallback(make, { timeout: 5000 });
     else setTimeout(make, 2000);

@@ -17,7 +17,7 @@ LITELLM_DB_ADMIN_ID=bedrock-now-admin
 display_field() {
   [ -r "$DISPLAY_CATALOG" ] || return 0
   tr -d '\r' < "$DISPLAY_CATALOG" | N="$1" awk -F'\t' -v c="$2" \
-    '!/^[[:space:]]*#/ && $1 == ENVIRON["N"] { if ($c != "-") print $c; exit }'
+    '!f && !/^[[:space:]]*#/ && $1 == ENVIRON["N"] { if ($c != "-") print $c; f = 1 }'
 }
 
 display_name() { local d; d="$(display_field "$1" 2)"; printf '%s\n' "${d:-$1}"; }

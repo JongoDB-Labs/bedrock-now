@@ -18,11 +18,17 @@ const PAGE = 300;
 /** "Restore files to here": what a dry run found, and Restore. */
 function RewindPanel() {
   const rw = useSel(store, (s) => s.rewind);
+  // not while Claude works in the session: what it changes meanwhile was not in the check
+  const busy = useSel(store, (s) => {
+    const v = s.rewind ? s.views[s.rewind.session] : undefined;
+    return v?.state === 'busy' || v?.state === 'starting';
+  });
   if (!rw) return null;
   const r = rw.result;
   const nothing = rw.phase === 'ready' && (!r || !r.canRewind || !r.files.length);
   return (
     <div class="rewind" role="group" aria-label="Restore files" data-testid="rewind-preview">
+      {rw.note && rw.phase !== 'checking' && <div class="rewind-line muted" data-testid="rewind-note">{rw.note}</div>}
       {rw.phase === 'checking' ? (
         <div class="rewind-line">
           <Spinner size={12} /> Checking what Claude changed since this prompt…
@@ -54,7 +60,14 @@ function RewindPanel() {
           {nothing ? 'Close' : 'Cancel'}
         </button>
         {!nothing && rw.phase !== 'checking' && (
-          <button type="button" class="btn small danger" disabled={rw.phase === 'restoring'} onClick={() => void rewindConfirm()} data-testid="rewind-confirm">
+          <button
+            type="button"
+            class="btn small danger"
+            disabled={rw.phase === 'restoring' || busy}
+            title={busy ? 'Claude is working in this session: restore once the turn is over' : ''}
+            onClick={() => void rewindConfirm()}
+            data-testid="rewind-confirm"
+          >
             {rw.phase === 'restoring' ? 'Restoring…' : 'Restore'}
           </button>
         )}

@@ -233,7 +233,7 @@ code_test_checks() {
     _skip "code host unlock checks" "portal login failed"
   fi
   out="$(dc exec -T caddy wget -S -O /dev/null -T 10 http://code-upstream:8095/api/state 2>&1 || true)"
-  _check "the code container refuses requests without the secret header" "$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')" 407
+  _check "the code container refuses requests without the secret header" "$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')" 407
   out="$(dc exec -T code node -e 'const net = require("net"); const hosts = [["litellm", 4000], ["portal", 8000], ["terminal", 7681], ["gateway", 8091], ["shared-mcp", 8000], ["1.1.1.1", 443]];
     let left = hosts.length; const res = {};
     for (const [h, p] of hosts) { const s = net.connect({ host: h, port: p, timeout: 3000 }); const done = (r) => { res[h] = r; s.destroy(); if (!--left) console.log(hosts.map(([x]) => res[x]).join(" ")); };

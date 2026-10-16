@@ -1,7 +1,7 @@
 // Permission prompts (broker.mjs) and the re-attach ring (ring.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionBroker, safeSuggestions, splitSuggestions, ruleText, questionAnswers } from '../server/broker.mjs';
+import { PermissionBroker, safeSuggestions, splitSuggestions, ruleText, questionAnswers, capRules } from '../server/broker.mjs';
 import { LIMITS } from '../server/protocol.mjs';
 import { Ring } from '../server/ring.mjs';
 
@@ -88,6 +88,38 @@ test('what the page approves is what it saw: a cut input is flagged; over 1 MiB 
   assert.equal(r.behavior, 'deny');
   assert.match(r.message, /too large/);
   assert.equal(asked.length, 3, 'never shown');
+  b.cancelSession(S);
+});
+
+test('a prompt not shown in full can only be denied; Always applies at most the 50 lines the page lists; a MultiEdit over 20 edits is not complete', async () => {
+  const asked = [];
+  const b = new PermissionBroker({ onAsk: (p) => asked.push(p) });
+  const sug = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'x:*' }], behavior: 'allow', destination: 'session' };
+  const cut = ask(b, { command: 'x'.repeat(LIMITS.permissionShownString + 10) }, { suggestions: [sug] });
+  for (const d of ['once', 'always', 'always_project']) assert.equal(b.answer(asked[0].id, d, { session: S }), false, d);
+  assert.equal(b.answer(asked[0].id, 'deny', { session: S }), true);
+  assert.equal((await cut).behavior, 'deny');
+  const plan = ask(b, { plan: 'p'.repeat(LIMITS.permissionShownString + 10) }, {}, 'ExitPlanMode');
+  assert.equal(b.answer(asked[1].id, 'once', { mode: 'acceptEdits', session: S }), false, 'a plan not shown in full is not approved');
+  b.answer(asked[1].id, 'deny');
+  await plan;
+  // 30 suggestions of 20 rules: 50 lines shown, the same 50 applied; a rule longer than 2,000 characters is dropped
+  const many = Array.from({ length: 30 }, (_, k) => ({ type: 'addRules', behavior: 'allow', destination: 'session',
+    rules: Array.from({ length: 20 }, (_, i) => ({ toolName: 'Bash', ruleContent: `c${k}-${i}:*` })) }));
+  many[0].rules[0] = { toolName: 'Bash', ruleContent: 'l'.repeat(1999) };
+  const p = ask(b, { command: 'ls' }, { suggestions: many });
+  assert.equal(asked[2].rules.length, LIMITS.permissionRules);
+  assert.ok(!asked[2].rules.some((r) => r.text.length > 2000));
+  b.answer(asked[2].id, 'always');
+  const applied = (await p).updatedPermissions;
+  assert.deepEqual(ruleText(applied), asked[2].rules, 'applied exactly what was shown');
+  assert.deepEqual(capRules([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }, ...many], 3).map((x) => x.type === 'setMode' ? 'mode' : x.rules.length), ['mode', 2]);
+  // MultiEdit: 20 edits are listed in full, 21 are not
+  const edits = (n) => ({ file_path: 'a', edits: Array.from({ length: n }, (_, i) => ({ old_string: `a${i}`, new_string: `b${i}` })) });
+  void ask(b, edits(20), {}, 'MultiEdit');
+  void ask(b, edits(21), {}, 'MultiEdit');
+  assert.deepEqual([asked[3].complete, asked[4].complete], [true, false]);
+  assert.equal(b.answer(asked[4].id, 'once'), false);
   b.cancelSession(S);
 });
 

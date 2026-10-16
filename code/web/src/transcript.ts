@@ -52,8 +52,9 @@ function toolLine(it: Extract<Item, { t: 'tool' }>): string {
 }
 
 /** The conversation as Markdown: prompts, answers, tool calls in one line each, local output, turn ends. */
-export function toMarkdown(v: SessionView, title: string, now = new Date()): string {
+export function toMarkdown(v: SessionView, title: string, now = new Date(), partial = false): string {
   const out = [`# ${title.replace(/\n/g, ' ') || 'Claude Code session'}`, '', `Exported from the Code page on ${now.toISOString().slice(0, 16).replace('T', ' ')} UTC · session ${v.id}`, ''];
+  if (partial) out.push('_(earlier messages not included)_', '');
   for (const it of v.items) {
     if ('parent' in it && it.parent) continue;   // a subagent's own steps stay in the page
     switch (it.t) {

@@ -185,7 +185,7 @@ images_remove() {
   sizes="$(image_sizes)"
   while IFS='	' read -r id ref; do
     [ -n "$id" ] || continue
-    b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"
+    b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '!f && $1 == i { print $2; f = 1 }')"
     # Not listed = already gone (removed meanwhile). image_sizes lists untagged images too (-a).
     [ -n "$b" ] || continue
     names="$(_names "$id")"
@@ -299,7 +299,7 @@ cmd_clean() {
   sizes="$(image_sizes)"
   printf 'Would remove these images of this project (none is in use; the previous version is kept):\n'
   while IFS='	' read -r id ref; do
-    b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '$1 == i { print $2; exit }')"; total=$((total + ${b:-0}))
+    b="$(printf '%s\n' "$sizes" | awk -F'\t' -v i="$id" '!f && $1 == i { print $2; f = 1 }')"; total=$((total + ${b:-0}))
     printf '  %-40s %s  %s\n' "$(image_label "$ref" "$(_names "$id")")" "$(fmt_bytes "${b:-0}")" "${id#sha256:}" | cut -c1-100
   done <<EOF
 $plan

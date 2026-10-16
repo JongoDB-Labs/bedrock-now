@@ -366,7 +366,7 @@ terminal_test_checks() {
   # ttyd, as the main Caddy reaches it (through the gateway), without the secret header: a forged X-Portal-User
   # changes nothing
   out="$(dc exec -T caddy wget -S -O /dev/null -T 10 --header 'X-Portal-User: admin@example.com' http://terminal-upstream:7681/ 2>&1 || true)"
-  _check "the terminal's gateway refuses ttyd requests without the secret header" "$(printf '%s\n' "$out" | awk '/^  HTTP\// { print $2; exit }')" 407
+  _check "the terminal's gateway refuses ttyd requests without the secret header" "$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')" 407
   # From inside the sandbox: the gateway's paths, 404 for the rest of LiteLLM (also behind a ../), nothing else
   out="$(dc exec -T terminal sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs" "POST /bedrock/model/x/converse/../../../../v1/messages"; do curl -s -m 10 --path-as-is -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
   _check "terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs, a ../ path" \

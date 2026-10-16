@@ -607,10 +607,12 @@ spawn server, Claude Code or any file at will.
   `/workspace` (Node has no `openat`/`RESOLVE_BENEATH`: a check-then-open in the code container would race a sandbox
   that swaps a folder for a symlink; in there, a symlink only leads where the sandbox can go anyway). Reads are
   regular files only (`O_NONBLOCK`, `O_NOFOLLOW`: a FIFO or device cannot hang or feed it), writes go through a
-  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`. The memory editor reaches two fixed files only
-  (`/workspace/CLAUDE.md` and the sandbox's own `~/.claude/CLAUDE.md`, never through a link, ≤ 1 MiB); the `@`
-  search is a bounded walk of `/workspace` (20,000 entries, depth 12, no links followed); file checkpoints are Claude
-  Code's own backups in the sandbox (`rewindFiles`), restored only after a dry run you saw.
+  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`. The memory editor reaches two fixed
+  files only (`/workspace/CLAUDE.md` and the sandbox's own `~/.claude/CLAUDE.md`, never through a link, ≤ 1 MiB); the
+  `@` search is a bounded walk of `/workspace` (20,000 entries, depth 12, no links followed, build and dependency
+  folders such as `node_modules`, `dist`, `build`, `target`, `.venv` skipped); file checkpoints are Claude Code's own
+  backups in the sandbox (`rewindFiles`), restored only after a dry run you saw — never while Claude is working, and
+  checked again when Claude worked since that dry run.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops. Claude Code's arguments must start with
   the SDK's fixed stream-json prefix and every other one must be on an allowlist in `--name=value` form
@@ -621,34 +623,40 @@ spawn server, Claude Code or any file at will.
   SDK's own few variables (checked), and a LiteLLM session tag `code-<uuid>` built from a checked UUID. It is not a
   boundary for the sandbox (anything there can run `claude` itself); it keeps the socket from being a general
   "run anything" primitive. At most 6 Claude Code processes and 32 connections; a 4 MiB frame limit both ways.
-- [x] **Everything from the sandbox is data.** The code container caps every frame (4 MiB; a larger header ends
-  the connection), every answer (8 MiB), every stdout line (32 MiB without a newline, which the SDK would otherwise
-  buffer whole) and every op's time; it checks every id (a session id `../../etc`, a tool id, a task id), every
-  number (no `NaN`, nothing negative), caps every string and drops every field it does not know. A session's history
-  is read from the end of its transcript only (the last 3 MiB, at most 20,000 entries and 50 compaction boundaries;
-  at most 2,000 messages per request), and the session list stops at 200. Costs from Claude
-  Code itself (`total_cost_usd`, which a stand-in set to −1 in the spike) are never shown. Of the SDK's host
-  callbacks only `canUseTool` is registered: forged `hook_callback`/`mcp_message` requests get errors from the SDK.
-  The e2e suite starts a hostile stand-in on the socket (markup everywhere, bogus ids, an oversized frame, an
+- [x] **Everything from the sandbox is data.** The code container caps every frame (4 MiB; a larger header ends the
+  connection), every answer (8 MiB), every stdout line (32 MiB without a newline, which the SDK would otherwise buffer
+  whole), what it queues towards a Claude Code that stops reading its input (32 MiB, above the largest prompt it sends
+  — four images: the SDK answers every control request it is sent and does not wait for a slow reader, so beyond that
+  the connection is cut and the session's process fails) and every op's time; it checks every id (a session id
+  `../../etc`, a tool id, a task id), every number (no `NaN`, nothing negative), caps every string and drops every
+  field it does not know. A session's history is read from the end of its transcript only (the last 3 MiB, at most
+  20,000 entries and 50 compaction boundaries; at most 2,000 messages per request), and the session list stops at 200.
+  Costs from Claude Code itself (`total_cost_usd`, which a stand-in set to −1 in the spike) are never shown. Of the
+  SDK's host callbacks only `canUseTool` is registered: forged `hook_callback`/`mcp_message` requests get errors from
+  the SDK. The e2e suite starts a hostile stand-in on the socket (markup everywhere, bogus ids, an oversized frame, an
   endless line, forged control requests) and checks the page and the container.
 - [x] **Permission prompts stay yours.** A prompt waits in the code container (never in the sandbox) until a page
   answers; nobody answering for 30 minutes counts as Deny. At most 8 wait per session and 32 in all — one more is
-  denied at once, as is a tool input over 1 MiB of JSON (never shown) — so a sandbox cannot bury the page in
-  prompts. What a card shows of the input is capped (256 Ki characters of JSON, 128 Ki per string, the same caps on
-  both sides) and a cut one says so and offers no *Allow*. *Allow once* returns the tool input exactly as Claude Code
-  sent it; *Always* applies only the CLI's suggestions that add **allow** rules or switch to *Accept edits*/*Plan*
-  — never `bypassPermissions` or `auto`, never another folder (`addDirectories`), never a removal — and the page
-  shows exactly those rules before you click. They land in the sandbox's own `~/.claude/settings.json` (they affect
-  only it): a rule Claude Code proposes for the workspace's `.claude/settings.json` or `settings.local.json` goes
-  there instead. Writing it into the workspace's file is a separate, explicit button (**Always, in this workspace's
-  settings**) with the warning that the file is in your folder and Claude Code on your computer honours it too. A
-  prompt that asks for no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's
-  *Plan* mode) switches the session to *Accept edits* or *Ask* — the only two modes it may set — and "keep planning"
-  is a Deny with your note. Prompts typed in the page carry Claude Code's human origin.
+  denied at once, as is a tool input over 1 MiB of JSON (never shown) — so a sandbox cannot bury the page in prompts.
+  What a card shows of the input is capped (256 Ki characters of JSON, 128 Ki per string, the same caps on both sides)
+  and a cut one says so and can only be denied — the code container refuses *Allow* and *Always* for it, whatever a
+  page sends; a `MultiEdit` with more edits than a card lists (20) counts as cut. *Allow once* returns the tool input
+  exactly as Claude Code sent it; *Always* applies only the CLI's suggestions that add **allow** rules or switch to
+  *Accept edits*/*Plan* — never `bypassPermissions` or `auto`, never another folder (`addDirectories`), never a
+  removal — at most 50 rule lines (what a card lists; the rest are not applied), and the page shows exactly those
+  rules before you click. They land in the sandbox's own `~/.claude/settings.json` (they affect only it): a rule
+  Claude Code proposes for the workspace's `.claude/settings.json` or `settings.local.json` goes there instead.
+  Writing it into the workspace's file is a separate, explicit button (**Always, in this workspace's settings**) with
+  the warning that the file is in your folder and Claude Code on your computer honours it too. A prompt that asks for
+  no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's *Plan* mode) switches the
+  session to *Accept edits* or *Ask* — the only two modes it may set — and "keep planning" is a Deny with your note.
+  Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
+  you type in, the editor or the terminal panel, and its keys (1 *Allow once*, 2 *Always*, 3 *Deny*) answer only after
+  you clicked or tabbed into it: a keystroke meant for something else never answers a prompt.
 - [x] **Connections end.** A page that stops reading (more than 16 MiB waiting unsent to it) is disconnected (close
-  code 4008) and forgotten at once; every WebSocket is closed after 12 hours (4009), the unlock's lifetime, and the
-  page reconnects through Caddy's check again — a connection never outlives the unlock it was opened with by more
-  than that.
+  code 4008) and forgotten at once; every WebSocket is closed after 2 hours (4009) and the page reconnects through
+  Caddy's check again — a connection outlives the end of the unlock it was opened with (Sign out, a new password, 12
+  hours) by at most that.
 - [x] **The page's policy is the main Caddy's, whoever answers.** Every answer from the code container gets
   `code_page` (`caddy/Caddyfile`): `default-src 'none'`, scripts only from the code host itself, styles from it plus
   a per-request nonce (`{http.request.uuid}`, which the page reads from a meta tag), connections only to the code
@@ -684,12 +692,13 @@ spawn server, Claude Code or any file at will.
   never on your computer, and the page says so. Reconnecting a server or switching it off/on applies to one session
   (the SDK's own controls). The status the page shows never includes a server's environment or headers, and an
   address is shown without credentials or query.
-- [x] **A fresh password, its own unlock, its own Origin.** The code host (`code.PORTAL_HOST`) needs the session
-  and an unlock typed on that host (`bn_code`, remote `__Host-bn_code`: host-only, `HttpOnly`, `SameSite=Strict`, 12
-  hours, signed with a salt of its own — the terminal's unlock never opens the Code page, nor the other way round;
-  voided by Sign out and by a new password). Caddy asks `/auth/verify?app=code`, fixed in the Caddyfile. A WebSocket
-  and every request that changes something must carry the code host's own `Origin` — checked by the portal and
-  again by the code container; client copies of the headers only Caddy may set are deleted first.
+- [x] **A fresh password, its own unlock, its own Origin.** The code host (`code.PORTAL_HOST`) needs the session and
+  an unlock typed on that host (`bn_code`, remote `__Host-bn_code`: host-only, `HttpOnly`, `SameSite=Strict`, 12
+  hours, signed with a salt of its own — the terminal's unlock never opens the Code page; the Code page's opens the
+  terminal only through the single-use hand-off below; voided by Sign out and by a new password). Caddy asks
+  `/auth/verify?app=code`, fixed in the Caddyfile. A WebSocket and every request that changes something must carry the
+  code host's own `Origin` — checked by the portal and again by the code container; client copies of the headers only
+  Caddy may set are deleted first.
 - [x] **One unlock for the page and its terminal panel, handed over once.** The panel (and "open in a new tab")
   starts at `/.bn/terminal` on the code host, which Caddy sends to the portal after the code host's check; the portal
   checks the session, the Code page's unlock and `Sec-Fetch-Site: same-origin` (a link from another site, or a typed
@@ -710,15 +719,16 @@ spawn server, Claude Code or any file at will.
   container's init): they finish what was already approved, but nothing new can be approved. The spawn server
   records its children and, when it starts again, ends the ones still running Claude Code's stream-json mode; the
   code container never opens a second process on a session it has open (opening it again returns the open one).
-- [x] **Turned on only where it is local.** In Settings, `CODE_ENABLED` is *widen-local*: turning the Code page on
-  (it adds a host for Claude Code processes with the sandbox's internet access, reachable from the browser) works
-  only from the computer running bedrock-now. With the browser terminal off it turns the terminal on too, with the
+- [x] **Turned on only where it is local.** In Settings, `CODE_ENABLED` is *widen-local*: turning the Code page on (it
+  adds a host for Claude Code processes with the sandbox's internet access, reachable from the browser) works only
+  from the computer running bedrock-now. With the browser terminal off it turns the terminal on too, with the
   terminal's folder (`TERMINAL_WORKSPACE`, or the default `~/bedrock-now-workspace`), which Settings names before you
-  confirm and `./stack` checks first by the same rules as `./stack terminal enable` (never your home folder, a
-  system folder or this bedrock-now folder); another folder is chosen in a terminal (`./stack code enable
-  --workspace DIR`). Turning it off — the safer direction — works from anywhere the settings can be changed. The
-  update helper runs `./stack code enable` or `disable`; neither restarts the terminal container (its tmux session
-  goes on).
+  confirm and `./stack` checks first by the same rules as `./stack terminal enable` (never your home folder, a system
+  folder or this bedrock-now folder); another folder is chosen in a terminal (`./stack code enable --workspace DIR`).
+  Turning it off — the safer direction — works from anywhere the settings can be changed. The update helper runs
+  `./stack code enable` or `disable`; neither restarts the terminal container (its tmux session goes on). A change
+  that fails is rolled back, and a terminal it had turned on is turned off again (the failure says so, or says how to
+  do it when that fails too).
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog

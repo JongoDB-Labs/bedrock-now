@@ -160,7 +160,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     handoff = Handoff(settings.secret, sessions.fingerprint)
     # The Code page's terminal panel: its unlock carried over to the terminal host (one password for both; below)
     unlock_handoff = Handoff(settings.secret, sessions.fingerprint, salt="bedrock-now.portal.code-terminal")
-    # the password-again cookies of the browser terminal and of the Code page: one each, neither opens the other
+    # the password-again cookies of the browser terminal and of the Code page: one each; the terminal's never opens the
+    # Code page, the Code page's opens the terminal only through the single-use hand-off (unlock_handoff, above)
     unlocks = {app: TerminalUnlocks(settings.secret, sessions, app=app) for app in (TERMINAL, CODE)}
     # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
     # a cap on sign-ins per session, and ending the Admin sessions at Sign out (also after a new PORTAL_PASSWORD).

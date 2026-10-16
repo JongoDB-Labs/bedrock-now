@@ -363,7 +363,8 @@ Or from the portal: **Settings → Code page → On** (only on the computer runn
 anywhere). The update helper runs `./stack code enable` / `disable` for you, and neither restarts the terminal (its
 tmux session goes on). With the browser terminal off, **On** turns it on too, with the folder Settings names before
 you confirm (the terminal's `TERMINAL_WORKSPACE`, or `~/bedrock-now-workspace`); another folder is chosen in a
-terminal (`./stack code enable --workspace DIR`, or `./stack terminal enable --workspace DIR` later).
+terminal (`./stack code enable --workspace DIR`, or `./stack terminal enable --workspace DIR` later). If turning it on
+fails, the previous settings come back and a terminal it had turned on is turned off again.
 
 This adds a **Code** tab to the portal, directly under Chat (on a phone: **More → Code**, full screen): Claude Code
 in an IDE-like page instead of a terminal — an explorer of the workspace on the left, an editor (CodeMirror) in the
@@ -374,29 +375,35 @@ per browser.
 - **Chat.** You type a prompt, the answer streams in (markdown, rendered as text-only DOM), thinking folds away, tool
   calls show as cards (Bash with its output, Edit/Write as a diff, Read, Grep, web fetches, subagents nested, MCP
   tools, to-do lists), background tasks get a Stop each, and **Stop** (or `Esc`) interrupts a turn. The `/` palette
-  lists built-in commands, skills and plugin commands; `@` picks a file anywhere in the workspace (it searches it);
-  images can be pasted or dropped (sent to Claude, scaled to 1568 px), other files are uploaded into the workspace
-  and mentioned. A prompt typed while Claude works waits below the answer and runs next (or, when Claude Code takes
-  it into the running turn between tool calls, as the terminal does, it shows there). `/clear` (`/new`, `/reset`)
-  starts a new session with the same model, mode and effort; `/resume` opens the session list. Claude's latest to-do
-  list stays pinned above the prompt; the conversation can be exported as Markdown; notifications when a prompt
-  waits or a turn ends are opt-in (⋯ menu).
+  lists built-in commands, skills and plugin commands; `@` picks a file anywhere in the workspace (it searches it,
+  skipping build and dependency folders such as `node_modules`, `dist`, `build`, `target` and `.venv`); images can be
+  pasted or dropped (sent to Claude, scaled to 1568 px), other files are uploaded into the workspace and mentioned. A
+  prompt typed while Claude works waits below the answer and runs next (or, when Claude Code takes it into the running
+  turn between tool calls, as the terminal does, it shows there). `/clear` (`/new`, `/reset`) starts a new session
+  with the same model, mode and effort; `/resume` opens the session list. Claude's latest to-do list stays pinned
+  above the prompt; the conversation can be exported as Markdown (the whole transcript, not only what the page shows);
+  notifications when a prompt waits or a turn ends are opt-in (⋯ menu).
 - **Memory.** ⋯ → *Memory (CLAUDE.md)* edits this workspace's `CLAUDE.md` and your own in the sandbox
-  (`~/.claude/CLAUDE.md`); a one-line prompt starting with `# ` adds that line to the workspace's `CLAUDE.md`, as in
-  the terminal.
+  (`~/.claude/CLAUDE.md`). A shortcut of the page's own: a one-line prompt starting with `# ` is added to the
+  workspace's `CLAUDE.md` instead of being sent (the terminal's Claude Code has no such shortcut: ask Claude there,
+  or use `/memory`).
 - **Checkpoints.** Claude's file changes are tracked per prompt: *Restore files to here* on one of your prompts shows
-  which files would go back (a dry run), then puts them back. *Fork* on a prompt starts a new session with the
-  conversation before it and puts the prompt back in the box to change, as the terminal's rewind does.
+  which files would go back (a dry run), then puts them back — also in a session whose process has ended (it starts
+  again, without a prompt), never while Claude is working, and with a fresh dry run if Claude worked since. *Fork* on
+  a prompt starts a new session with the conversation before it and puts the prompt back in the box to change, as the
+  terminal's rewind does.
 - **Permission prompts.** In the *Ask* mode a command or file change Claude wants to make asks first (reading the
-  workspace and read-only commands such as `ls` or `git status` do not; in *Accept edits* file changes do not
-  either), in a card that says what would run or change — **Allow once**, **Always** (the rule, shown before you
-  click, saved in the sandbox's own Claude Code settings; never "skip all permissions"; where Claude Code proposes
-  one for the workspace, a separate **Always, in this workspace's settings**, which Claude Code on your computer
-  honours too) or **Deny** (with an optional note for Claude). In *Plan* mode Claude asks you to approve its plan:
-  approve and let it edit (*Accept edits*), approve and keep asking (*Ask*), or keep planning with a note. While a
-  prompt waits the Code tab shows a badge (also before you first open it); nobody answering for 30 minutes counts as
-  Deny. When Claude asks *you* something (its AskUserQuestion tool), the card is a small form — one choice, several,
-  or **Other** with your own words — and your answers go back to Claude as answers.
+  workspace and read-only commands such as `ls` or `git status` do not; in *Accept edits* file changes do not either),
+  in a card that says what would run or change — **Allow once**, **Always** (the rule, shown before you click, saved
+  in the sandbox's own Claude Code settings; never "skip all permissions"; where Claude Code proposes one for the
+  workspace, a separate **Always, in this workspace's settings**, which Claude Code on your computer honours too) or
+  **Deny** (with an optional note for Claude). In *Plan* mode Claude asks you to approve its plan: approve and let it
+  edit (*Accept edits*), approve and keep asking (*Ask*), or keep planning with a note. A card shown only in part
+  (very large input) can only be denied. A new card never takes the focus from the prompt box, the editor or the
+  terminal panel, and its keys **1**/**2**/**3** answer only once you have clicked or tabbed into it. While a prompt
+  waits the Code tab shows a badge (in a browser that has used the Code page, also before you open the tab); nobody
+  answering for 30 minutes counts as Deny. When Claude asks *you* something (its AskUserQuestion tool), the card is a
+  small form — one choice, several, or **Other** with your own words — and your answers go back to Claude as answers.
 - **Model, mode, effort, cost.** You pick the model (this stack's models and prices), the permission mode (*Ask*,
   *Accept edits*, *Plan*, *Don't ask*; `Shift+Tab` cycles) and the effort; the meter shows each turn's and the
   session's cost and the context window's use.

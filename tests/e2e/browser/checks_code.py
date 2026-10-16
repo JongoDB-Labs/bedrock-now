@@ -1049,9 +1049,20 @@ def ui_fork(ctx):
     answered(page)
     expect("pong" in last_answer(page).lower(), f"the fork does not know the first answer: {last_answer(page)!r}")
     shot(page, "68-code-ui-fork")
+    # the prompt ids survive a fork: a fork of the fork (before its own prompt) opens, and a dry-run restore inside the
+    # fork finds the first prompt's checkpoint (no prompt sent: nothing spent)
+    c = Code.on(page, rec, goto=False)
+    users = [e for e in c.api("GET", f"/api/sessions/{fork}/messages?offset=0&limit=2000")["json"]["messages"] if e.get("type") == "user"]
+    expect(len(users) >= 2 and users[0].get("uuid"), f"the fork's transcript: {[u.get('text', '')[:30] for u in users]}")
+    r = c.api("POST", "/api/sessions", {"resume": fork, "fork": True, "before": users[-1]["uuid"], "mode": "default", "model": "haiku"})
+    expect(r["status"] == 200 and r["json"]["id"] not in (fork, sid), f"fork of the fork: {r['status']} {r['text'][:200]}")
+    c.api("DELETE", f"/api/sessions/{r['json']['id']}")
+    rw = c.request({"type": "rewind_files", "session": fork, "message": users[0]["uuid"], "dryRun": True})   # (ok: asserted)
+    expect(isinstance(rw, dict) and "canRewind" in rw, f"a dry-run restore in the fork: {rw}")
     csp_clean(page, rec)
     return (f"Fork from the second prompt → a new session {fork[:8]} (Fork of …) with the conversation before it, the prompt "
-            f"back in the box; it remembers the first answer ({last_answer(page)!r})")
+            f"back in the box; it remembers the first answer ({last_answer(page)!r}); a fork of the fork opens and a dry-run "
+            f"restore in the fork works (the prompt ids survive a fork)")
 
 
 @check("browser", "code-ui-memory-find-rewind")
@@ -1108,7 +1119,11 @@ def ui_memory_find_rewind(ctx):
     ask(page, f"In @{UI}/rewind.txt use the Edit tool to change `rewind = 1` to `rewind = 2`. Change nothing else, run nothing else, then reply with the word done.")
     answered(page)
     expect(c.api("GET", f"/api/fs/file?path={UI}/rewind.txt")["json"]["text"] == "rewind = 2\n", "Claude did not edit the file")
-    prompt = page.get_by_test_id("msg-user").last
+    # the session's process ends first (as when it idles out or another session takes its place): the restore starts it
+    # again, without a prompt
+    c.api("DELETE", f"/api/sessions/{sid}")
+    see(page.get_by_test_id("session-state")).to_contain_text("ended", timeout=20000)
+    prompt = page.get_by_test_id("msg-user").filter(has_text="rewind.txt").last
     prompt.hover()
     prompt.get_by_test_id("msg-rewind").click()
     prev = page.get_by_test_id("rewind-preview")
@@ -1122,7 +1137,7 @@ def ui_memory_find_rewind(ctx):
     expect(after == "rewind = 1\n", f"after Restore: {after!r}")
     csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$", r"^404 DELETE .*/api/fs\?path=CLAUDE\.md$"])
     return (f"memory dialog → /workspace/CLAUDE.md written; `# …` appended a line; the @ picker found {deep}/{needle} unopened in the "
-            f"explorer; Claude's Edit of {UI}/rewind.txt restored by \"Restore files to here\" (dry run listed it first)")
+            f"explorer; Claude's Edit of {UI}/rewind.txt restored by \"Restore files to here\" after its process ended (dry run listed it first)")
 
 
 @check("browser", "code-ui-phone")
@@ -1190,6 +1205,10 @@ def ui_budget(ctx):
         ask(page, "Reply with exactly the word: budget")
         see(page.get_by_test_id("budget-banner")).to_be_visible(timeout=120000)
         see(page.get_by_test_id("budget-banner")).to_contain_text("BUDGET_TERMINAL")
+        # the refused turn ends as failed, and nothing keeps "working"
+        answered(page)
+        see(page.get_by_test_id("turn-end").last).to_contain_text(re.compile(r"Failed|Ended"))
+        see(page.get_by_test_id("working")).to_have_count(0)
         shot(page, "70-code-ui-budget")
         text = page.get_by_test_id("budget-banner").inner_text()
         rec.save()

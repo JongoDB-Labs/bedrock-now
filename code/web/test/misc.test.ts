@@ -8,6 +8,7 @@ import { parsePrefs, DEFAULT_PREFS } from '../src/prefs';
 import { cap, cleanName, cleanPath, commandShape, isId, isUuid, label, money, perMtok, tokens, visible } from '../src/text';
 import { createStore } from '../src/store';
 import { exportName, latestTodos, toMarkdown } from '../src/transcript';
+import { typingIn } from '../src/focus';
 import { newView, type Item } from '../src/session';
 
 test('text: caps, visible controls, ids, paths', () => {
@@ -173,6 +174,8 @@ test('the latest to-do list (not a subagent one); the conversation as Markdown',
   assert.equal(latestTodos(items.slice(0, 1)), null);
   const v = { ...newView('3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c'), items };
   const md = toMarkdown(v, 'My session', new Date('2026-10-16T12:00:00Z'));
+  assert.ok(!md.includes('earlier messages not included'));
+  assert.ok(toMarkdown(v, 'My session', new Date('2026-10-16T12:00:00Z'), true).includes('_(earlier messages not included)_'));
   assert.ok(md.startsWith('# My session\n\nExported from the Code page on 2026-10-16 12:00 UTC'));
   assert.ok(md.includes('## You\n\nplan it'));
   assert.ok(md.includes('## Claude\n\nDone **well**.'));
@@ -200,5 +203,13 @@ test('palette: the page\'s own commands are listed even when the session\'s list
   for (const n of ['clear', 'new', 'reset', 'resume']) {
     assert.ok(all.some((c) => c.name === n), n);
     assert.equal(rankCommands(all, n)[0].name, n);
+  }
+});
+
+test('focus: an arriving card leaves the focus in anything you type into, empty or not', () => {
+  for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT', 'IFRAME', 'textarea']) assert.equal(typingIn({ tagName }), true, tagName);
+  assert.equal(typingIn({ tagName: 'DIV', isContentEditable: true }), true, 'the editor (contenteditable)');
+  for (const el of [null, undefined, { tagName: 'BODY' }, { tagName: 'BUTTON' }, { tagName: 'DIV', isContentEditable: false }, {}]) {
+    assert.equal(typingIn(el), false, JSON.stringify(el));
   }
 });

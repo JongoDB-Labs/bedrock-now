@@ -282,6 +282,12 @@ test('plugins: listings checked; the catalog searched here; a marketplace-declar
   assert.equal((await req('DELETE', '/api/marketplaces?name=../x', { headers: { Origin: origin } })).status, 400);
   await req('POST', '/api/marketplaces/update', { body: { name: 'bn-e2e' } });
   assert.deepEqual(calls.at(-1)[0], { op: 'cli', args: ['plugin', 'marketplace', 'update', 'bn-e2e', '--json'] });
+  // after a change the catalog is read again: requests meanwhile share that one read
+  const reads = () => calls.filter(([c]) => c.op === 'cli' && c.args.includes('--available')).length;
+  const before = reads();
+  const all = await Promise.all([1, 2, 3].map((i) => req('GET', `/api/plugins/available?q=hello&limit=${i}`)));
+  assert.deepEqual(all.map((x) => x.json.total), [2, 2, 2]);
+  assert.equal(reads(), before + 1);
 });
 
 test('outcomes of the CLI: its --json line after human text, else its first (ok) or last (failed) line; confirmations need a SHA-256', () => {
@@ -480,6 +486,13 @@ test('the @-picker over the workspace, memory files, a never-prompted session\'s
   assert.deepEqual(rw.data, { canRewind: true, error: '', filesChanged: ['/workspace/a.txt'], insertions: 2, deletions: 0, skippedLinks: 0 });
   a.send({ type: 'rewind_files', session: json.id, message: 'x', req: 'rw2' });
   assert.match((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'rw2')).error, /bad message id/);
+  // its process ended: a restore starts it again (resumed, no prompt)
+  assert.equal((await req('DELETE', `/api/sessions/${json.id}`, { headers: { Origin: origin } })).status, 200);
+  assert.equal(srv.mgr.get(json.id).open, false);
+  a.send({ type: 'rewind_files', session: json.id, message: '00000000-0000-4000-8000-000000000003', dryRun: true, req: 'rw3' });
+  const rw3 = await until(a.inbox, (m) => m.type === 'reply' && m.req === 'rw3');
+  assert.equal(rw3.ok, true, rw3.error);
+  assert.equal(srv.mgr.get(json.id).open, true);
   a.ws.close();
 });
 

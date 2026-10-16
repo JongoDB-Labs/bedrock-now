@@ -525,7 +525,7 @@ _allowed_uids() {
   echo 10102
   me="$(id -un)"
   f="${HELPER_SUBUID_FILE:-/etc/subuid}"
-  [ -f "$f" ] && [ -r "$f" ] && head -c 65536 "$f" | awk -F: -v n="$me" -v i="$(id -u)" '($1 == n || $1 == i) && $2 ~ /^[0-9]+$/ { print $2 + 10101; exit }'
+  [ -f "$f" ] && [ -r "$f" ] && head -c 65536 "$f" | awk -F: -v n="$me" -v i="$(id -u)" '!f && ($1 == n || $1 == i) && $2 ~ /^[0-9]+$/ { print $2 + 10101; f = 1 }'
   return 0
 }
 

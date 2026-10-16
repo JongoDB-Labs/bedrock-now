@@ -4,7 +4,9 @@
 //   sandboxCall()     one non-process op (fs.*, sessions.*) or a short `claude plugin …`, and its answer
 // Everything that comes back is untrusted: frame and answer sizes are capped, a stdout line longer than MAX_LINE
 // ends the connection (the SDK would otherwise buffer it whole), every op has a timeout, and malformed control frames
-// read as errors. This side only ever connects to the socket; it never listens there.
+// read as errors. What goes in is bounded too: a sandbox that stops reading its stdin while the SDK goes on writing
+// (it answers every control request and ignores write()'s false) ends the connection once MAX_STDIN_BACKLOG waits.
+// This side only ever connects to the socket; it never listens there.
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
@@ -13,6 +15,9 @@ import { T, FrameParser, frame, dataFrames, json } from './frames.mjs';
 export const SOCK = process.env.BN_CODE_SOCK || '/run/bn-code/coded.sock';
 export const MAX_LINE = 32 << 20;      // a stdout line without a newline
 export const MAX_RESULT = 8 << 20;     // a RESULT / ERROR / a cli op's output
+// bytes written to the sandbox's stdin that it has not read yet: more than the largest prompt leaves for a moment
+// (4 images of 5 MiB, base64, and the text: ~28 MiB in one line)
+export const MAX_STDIN_BACKLOG = 32 << 20;
 const SDK_ENV = ['CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_AGENT_SDK_VERSION', 'CLAUDE_CODE_SDK_READS_SESSION_STATE',
   'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_QUESTION_PREVIEW_FORMAT'];
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL'];
@@ -37,12 +42,19 @@ export function sandboxProcess(opts, { litellmSession, onStderr, sock = SOCK } =
     ee.emit('exit', code, signal);
   };
   const fail = (err) => { if (!done) ee.emit('error', err); conn.destroy(); };
+  // Each write goes to the connection at once (its callback does not wait for the sandbox to read it, or the SDK's
+  // later writes would queue in this stream unseen): the connection's backlog is what the sandbox has not read, and
+  // past MAX_STDIN_BACKLOG the process fails. One large write (images) still goes through on a small backlog.
   const stdin = new Writable({
     write(chunk, _enc, cb) {
       if (conn.destroyed) return cb(new Error('sandbox connection closed'));
-      const frames = dataFrames(T.STDIN, chunk);   // the SDK may write a long line (images) in one go
-      frames.forEach((f, i) => (i === frames.length - 1 ? conn.write(f, cb) : conn.write(f)));
-      if (!frames.length) cb();
+      if (conn.writableLength > MAX_STDIN_BACKLOG) {
+        const err = new SandboxError('the sandbox stopped reading its input', 'too-large');
+        fail(err);
+        return cb(err);
+      }
+      for (const f of dataFrames(T.STDIN, chunk)) conn.write(f);   // the SDK may write a long line (images) in one go
+      cb();
       return undefined;
     },
     final(cb) { if (conn.destroyed) return cb(); conn.write(frame(T.STDIN_END, Buffer.alloc(0)), () => cb()); return undefined; },

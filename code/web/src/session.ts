@@ -370,7 +370,9 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now(), wi
     history.slice(0, cut),
     now - 1,
   );
-  if (v.items.length && cut === history.length && history.length) {
+  // the line between the transcript and what came live — only when the live part is a turn of its own (a prompt), not a
+  // status line or the end of a turn the transcript already holds
+  if (v.items.some((i) => i.t === 'user') && cut === history.length && history.length) {
     base = push(base, { t: 'notice', k: base.nextKey, text: 'Live', level: 'info' });
   }
   // re-key the live items after the history so keys stay unique; their turns come after the history's
@@ -413,6 +415,35 @@ function closeOpenTurn(v: SessionView, at: number): SessionView {
   const last = v.turns[v.turns.length - 1];
   if (!last || last.end !== null) return v;
   return { ...v, turns: [...v.turns.slice(0, -1), { ...last, end: at }] };
+}
+
+/** The session went idle and its turn never got a result (a lost event, a process that answered nothing): the turn is
+ *  over all the same — or prompts typed next would wait below it for a result that never comes. Its queued prompts
+ *  then start the next turn, as after a result. Nothing changes when no turn is open. */
+export function idleWithoutResult(v: SessionView, now = Date.now()): SessionView {
+  if (!turnOpen(v)) return v;
+  const closed = endStreaming(closeOpenTurn({ ...v, state: v.state === 'busy' ? 'idle' : v.state }, now));
+  const items = closed.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'error' as const } : it));
+  if (!closed.queued.length) return { ...closed, items };
+  let w: SessionView = { ...closed, items, queued: [] };
+  for (const [i, q] of closed.queued.entries()) w = i === 0 ? startTurn(w, q, now) : push(w, { t: 'user', k: w.nextKey, text: q.text, images: q.images, uuid: q.uuid, queued: false });
+  return w;
+}
+
+/** For an export: the transcript's events before what the view holds, folded, in front of the view's items — without
+ *  the view's cap on items. `dropped`: how many of those earlier items the fold still had to leave out. */
+export function withEarlier(v: SessionView, history: Ev[], now = Date.now()): { view: SessionView; dropped: number } {
+  const have = new Set(v.items.filter((i) => i.t === 'user' && i.uuid).map((i) => (i as { uuid: string }).uuid));
+  let cut = history.length;
+  for (let i = 0; i < history.length; i++) {
+    const e = history[i];
+    if (e.kind === 'user' && e.uuid && have.has(e.uuid)) {
+      cut = i;
+      break;
+    }
+  }
+  const earlier = foldHistory(newView(v.id), history.slice(0, cut), now - 1);
+  return { view: { ...v, items: [...earlier.items, ...v.items] }, dropped: earlier.dropped };
 }
 
 /** An earlier window of the transcript in front of what the view shows ("Load earlier"). */

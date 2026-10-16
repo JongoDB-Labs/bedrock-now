@@ -132,7 +132,7 @@ or_json_flatten() {
 }
 
 # or_field PATH < flattened -> the value at PATH (empty if absent/null)
-or_field() { P="$1" awk -F'\t' '$1 == ENVIRON["P"] { print $2; exit }'; }
+or_field() { P="$1" awk -F'\t' '!f && $1 == ENVIRON["P"] { print $2; f = 1 }'; }
 
 # or_models_tsv < /api/v1/models JSON -> id name context prompt completion cache_read cache_write outputs created
 # (one TAB-separated line per model, unfiltered; outputs = output_modalities joined with ",")

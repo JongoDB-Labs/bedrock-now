@@ -565,6 +565,34 @@ test_apply_code_page_failed_enable_is_taken_back() {
   assert_eq "$(cat "$TMP/calls" | grep '^code' | tr '\n' '|')" "code enable (was false)|code disable (was true)|"
   assert_eq "$(get_env CODE_ENABLED)" false
   assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=failed via=cli keys=CODE_ENABLED"
+  # the terminal was on before the change: it stays on
+  assert_eq "$(get_env TERMINAL_ENABLED)" true
+  assert_not_contains "$out" "the terminal it had turned on"
+}
+
+test_apply_code_page_failed_enable_turns_off_the_terminal_it_turned_on() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env_batch CODE_ENABLED false TERMINAL_ENABLED false
+  TERM_READY=0
+  # ./stack code enable turned the terminal on, then its image build failed
+  code_enable() { echo "code enable" >> "$TMP/calls"; set_env_batch TERMINAL_ENABLED true CODE_ENABLED true; die "code image build failed"; }
+  terminal_disable() { echo "terminal disable (was $(get_env TERMINAL_ENABLED))" >> "$TMP/calls"; [ "${TERM_OFF_FAIL:-}" != 1 ] || die "compose failed"; set_env TERMINAL_ENABLED false; }
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "failed while restarting: code image build failed — previous settings restored; the terminal it had turned on is off again"
+  assert_eq "$(get_env CODE_ENABLED)/$(get_env TERMINAL_ENABLED)" "false/false"
+  assert_eq "$(grep -c '^terminal disable (was true)$' "$TMP/calls")" 1
+  # it could not be turned off: the failure says so, and how
+  set_env TERMINAL_ENABLED false; : > "$TMP/calls"; TERM_OFF_FAIL=1
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "could not turn off the terminal this change had turned on — ./stack terminal disable"
+  assert_contains "$out" "previous settings restored; the terminal it had turned on is still on (./stack terminal disable turns it off)"
+  # a failure before anything started (the .env write): no terminal to turn off
+  set_env_batch TERMINAL_ENABLED false CODE_ENABLED false; : > "$TMP/calls"; TERM_OFF_FAIL=''
+  _cfg_write() { die "disk full"; }
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "previous settings restored"
+  assert_not_contains "$out" "the terminal it had turned on"
+  assert_not_contains "$(cat "$TMP/calls")" "terminal disable"
 }
 
 test_apply_code_page_with_the_stack_stopped_writes_only_env() {

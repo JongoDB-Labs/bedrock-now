@@ -472,8 +472,10 @@ function memoryWriteBegin(req) {
 }
 
 // --- fs.find: paths under /workspace whose relative path contains q (case-insensitive) — a bounded walk that never
-// --- follows links and skips .git, node_modules and the trash
-const FIND_VISIT = 20000, FIND_DEPTH = 12, FIND_SKIP = new Set(['.git', 'node_modules', TRASH]);
+// --- follows links and skips .git, the trash, dependencies and build output (node_modules, .venv, venv, __pycache__,
+// --- dist, build, target, .next, .cache)
+const FIND_VISIT = 20000, FIND_DEPTH = 12;
+const FIND_SKIP = new Set(['.git', TRASH, 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'target', '.next', '.cache']);
 export function fsFind(q, limit) {
   const needle = typeof q === 'string' ? q.toLowerCase().slice(0, 200) : '';
   const max = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50;

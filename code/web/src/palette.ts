@@ -59,8 +59,9 @@ export function rankPaths(paths: string[], query: string, max = 50): string[] {
     .map((x) => x.p);
 }
 
-/** "# text" typed as a prompt: a line for the project's memory, as Claude Code's "#" shortcut — one line only (a
- *  pasted Markdown document that starts with a heading still goes to Claude). The text, or null. */
+/** "# text" typed as a prompt: a line for the project's memory (this page's shortcut; older Claude Code terminals had
+ *  one like it) — one line only (a pasted Markdown document that starts with a heading still goes to Claude). The
+ *  text, or null. */
 export function memoryLine(prompt: string): string | null {
   const m = /^# (\S[^\n]*)$/.exec(prompt.trim());
   return m ? m[1].trim() : null;

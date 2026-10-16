@@ -1,8 +1,8 @@
 """The optional Code page (./stack code): it needs the terminal (its sandbox); its host needs the session AND a fresh
-password unlock of its own (bn_code: a terminal unlock never opens it, nor the other way round), refuses other sites'
-Origins (and state changes without one), stays off remotely unless REMOTE_TERMINAL=true and it has a remote name; the
-portal answers its models (this stack's prices) and a session's spend (LiteLLM's logs, the terminal key's rows only),
-and offers the Code tab only while it is on."""
+password unlock of its own (bn_code: a terminal unlock never opens it; it opens the terminal only through the
+single-use hand-off), refuses other sites' Origins (and state changes without one), stays off remotely unless
+REMOTE_TERMINAL=true and it has a remote name; the portal answers its models (this stack's prices) and a session's
+spend (LiteLLM's logs, the terminal key's rows only), and offers the Code tab only while it is on."""
 
 import hashlib
 import html
@@ -146,7 +146,13 @@ def test_code_tabs_frame_is_made_when_idle_on_big_screens_for_its_badge():
     # one way to make an app's frame (hidden until its tab shows it): the tab and the idle preload share it
     assert "function appFrame(tab)" in app and "f.hidden = true;" in app and 'appFrame(tab).hidden = false' in app
     pre = js.split("function preload()", 1)[1].split("\n  }\n", 1)[0]
-    assert 'matchMedia("(max-width: 767.98px)").matches) return;' in pre      # never on a phone
+    # only in a browser that has used the Code page, never on a phone
+    assert 'if (!used() || window.matchMedia("(max-width: 767.98px)").matches) return;' in pre
+    # "used": set when the code host's own page reports (after the origin check), kept in localStorage
+    handler = js.split('window.addEventListener("message", (e) => {', 1)[1].split("});", 1)[0]
+    check, rest = handler.split("return;", 1)
+    assert "e.origin !== codeOrigin" in check and rest.lstrip().startswith("markUsed();")
+    assert 'const USED = "bn.code.used";' in js and 'localStorage.getItem(USED) === "1"' in js and 'localStorage.setItem(USED, "1")' in js
     assert "requestIdleCallback(make" in pre and 'appFrame("code")' in pre
     assert 'window.addEventListener("load", preload, { once: true })' in js.rsplit("if (here) {", 1)[1].split("\n", 1)[0]
 

@@ -75,7 +75,7 @@ valid_stt_key() {
 
 # stt_row PROVIDER MODEL -> its STT_CATALOG line, or nothing (status 1)
 stt_row() { stt_catalog | P="$1" M="$2" awk -F'\t' '$1 == ENVIRON["P"] && $2 == ENVIRON["M"] { print; f = 1 } END { exit !f }'; }
-stt_default_model() { stt_catalog | P="$1" awk -F'\t' '$1 == ENVIRON["P"] { print $2; exit }'; }
+stt_default_model() { stt_catalog | P="$1" awk -F'\t' '!f && $1 == ENVIRON["P"] { print $2; f = 1 }'; }
 stt_models_of() { stt_catalog | P="$1" awk -F'\t' '$1 == ENVIRON["P"] { printf "%s%s", (n++ ? ", " : ""), $2 } END { print "" }'; }
 
 # stt_bedrock_model_arg small|mini|voxtral-small|voxtral-mini -> the catalog name (status 1 for anything else)

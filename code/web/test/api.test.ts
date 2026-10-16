@@ -114,6 +114,17 @@ test('a permission prompt: the rules Always applies, the workspace option, defau
   // the backend says it cut the input: not complete
   const cut = msg({ type: 'permission', id: 'p3', session: S, tool: 'Bash', input: { command: 'x' }, complete: false });
   assert.ok(cut?.kind === 'permission' && !cut.req.complete);
+  // more rules than a card shows (an older backend): no Always at all, rather than one that applies unseen lines
+  const many = Array.from({ length: 51 }, (_, i) => ({ text: `Bash(cmd${i}:*)`, destination: 'userSettings' }));
+  const r = msg({ type: 'permission', id: 'p4', session: S, tool: 'Bash', input: { command: 'x' }, rules: many, projectRules: many });
+  assert.ok(r?.kind === 'permission' && r.req.rules.length === 0 && r.req.projectRules.length === 0 && r.req.suggestions.length === 0);
+  const fifty = msg({ type: 'permission', id: 'p5', session: S, tool: 'Bash', input: { command: 'x' }, rules: many.slice(0, 50) });
+  assert.ok(fifty?.kind === 'permission' && fifty.req.rules.length === 50);
+  // a MultiEdit with more edits than a card lists: deny only
+  const edits = (n: number) => Array.from({ length: n }, (_, i) => ({ old_string: `a${i}`, new_string: `b${i}` }));
+  const me = (n: number) => msg({ type: 'permission', id: 'p6', session: S, tool: 'MultiEdit', input: { file_path: '/workspace/x', edits: edits(n) } });
+  assert.ok(me(20)?.kind === 'permission' && (me(20) as { req: { complete: boolean } }).req.complete);
+  assert.ok(me(21)?.kind === 'permission' && !(me(21) as { req: { complete: boolean } }).req.complete);
 });
 
 test('permission inputs: the same caps as the backend; anything cut means not complete', () => {

@@ -89,3 +89,14 @@ test_restore_caller_locale_restores_callers_value() {
   out="$(env -u _CALLER_LC_ALL_CAPTURED LC_ALL=en_US.UTF-8 "$BASH" -c '. lib/common.sh; printf "%s|" "$LC_ALL"; restore_caller_locale; printf "%s" "$LC_ALL"')"
   assert_eq "$out" "C|en_US.UTF-8"
 }
+
+# A piped awk that exits at its first match can kill the command writing into it with SIGPIPE, which pipefail makes a
+# failure — at random (it depends on how far the writer got): a settings check once failed 1 run in ~40 that way.
+# Lookups read to the end instead ('!f && … { print; f = 1 }'); an awk reading a file of its own may still exit.
+test_piped_awk_lookups_never_exit_early() {
+  local hits
+  hits="$(grep -nE '(^|[^|])\|[^|]*awk [^|]*(\{|;) *exit *\}' "$T_ROOT"/lib/*.sh "$T_ROOT/stack" "$T_ROOT/setup.sh" 2>/dev/null || true)"
+  assert_eq "$hits" ""
+  # what it guards against, once for real: under pipefail the first match wins and nothing fails
+  ( set -o pipefail; v="$(seq 1 200000 | awk '!f && $1 == 3 { print; f = 1 }')"; [ "$v" = 3 ] )
+}
