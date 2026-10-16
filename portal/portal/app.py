@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import http.cookiejar
 import html
 import json
 import logging
@@ -154,8 +155,10 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     handoff = Handoff(settings.secret, sessions.fingerprint)
     unlocks = TerminalUnlocks(settings.secret, sessions)   # the browser terminal's password-again cookie
     # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
-    # a cap on hand-offs, and the LiteLLM UI keys they created (Sign out deletes them).
-    markers, sso_budget, minted = appsso.Markers(settings.secret), appsso.Budget(), appsso.MintedKeys()
+    # a cap on sign-ins per session, and ending the Admin sessions at Sign out (also after a new PORTAL_PASSWORD).
+    markers, sso_budget = appsso.Markers(settings.secret), appsso.Budget()
+    sweeper = appsso.Sweeper(settings.state_dir)
+    sweeper.password_changed(sessions.fingerprint, settings.state_dir)
     if settings.remote_on() and len(settings.proxy_secret) < 32:
         # Without Caddy's proxy secret no request can count as remote: remote access would show local behaviour.
         log.warning("remote access is on but PORTAL_PROXY_SECRET is missing or shorter than 32 characters — remote "
@@ -466,7 +469,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def app_sso(request: Request) -> Response:
         """GET /.bn/sso on the Admin / Files host (Caddy → here, after its session check): signs in to the app with the
         sign-in the portal holds and hands the app's own session to this browser, on this host only: LiteLLM's `token`
-        cookie, or the RustFS console's credentials through a page that stores them (portal/appsso.py)."""
+        cookie, or the RustFS console's credentials through a page that stores them — after a first page that checks
+        for usable ones in the browser (portal/appsso.py)."""
         rem = remote(request)
         host = (request.headers.get("host") or "").split(":")[0].lower()
         app = sso_app(host, rem)
@@ -474,14 +478,28 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(PlainTextResponse("not found", status_code=404))
         if (deny := foreign_login(request)) is not None:
             return deny
+        if request.method != "GET":   # (Starlette answers HEAD for a GET route: never sign in for one)
+            return _no_store(PlainTextResponse("method not allowed", status_code=405, headers={"Allow": "GET"}))
         portal, manual = settings.origin(remote=rem), appsso.manual_url(settings, app, rem)
         if not appsso.request_ok(request.headers):
-            log.warning("automatic sign-in to %s: refused a request that is not a page load from this site", appsso.NAME[app])
-            return appsso.error_page(portal, app, "This address works only when Admin or Files is opened from Home.", manual, 403)
+            log.warning("automatic sign-in to %s: refused a request that is not a page load from this site, or from a "
+                        "browser that does not say (Sec-Fetch headers)", appsso.NAME[app])
+            return appsso.error_page(portal, app, "The portal signs you in only for a page you open on this site, in a browser "
+                                     "that says where a request comes from (current Chrome, Edge, Firefox and Safari "
+                                     "do) — never for another site's link, a script or an embedded resource.", manual, 403)
         claims = session_claims(request)
         if claims is None:   # Caddy's check runs first: only a request that went around it gets here
             return _no_store(PlainTextResponse("login required", status_code=401))
         mark_name, loop_name, pass_name = appsso.cookie_names(rem)
+        login = session_login(request.headers, settings)
+        nxt = appsso.safe_path(app, request.query_params.get("next"))
+        if app == "files" and appsso.MINT not in request.url.query.split("&"):
+            # first the browser's own credentials, if they are from this session and key pair (no new ones needed)
+            resp = appsso.files_page(portal, None, nxt, manual, appsso.files_mark(settings, claims["iat"], login),
+                                     "/.bn/sso?" + appsso.MINT + "&next=" + quote(nxt, safe=""))
+            resp.set_cookie(pass_name, "1", max_age=appsso.PASS_SECONDS, path="/", httponly=True, samesite="strict",
+                            secure=rem)
+            return _no_store(resp)
         raw = request.cookies.get(loop_name, "0")
         count = int(raw) if raw.isdigit() and len(raw) < 4 else 0
         if count >= appsso.LOOP_MAX:
@@ -490,25 +508,22 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                                      "know). Try again shortly, or sign in by hand.", manual, 409)
         if not appsso.available(settings, app):
             return appsso.error_page(portal, app, "The portal does not have this sign-in yet: run ./stack setup.", manual, 503)
-        if not sso_budget.take():
+        if not sso_budget.take((claims["iat"], login)):
             return appsso.error_page(portal, app, "Too many automatic sign-ins in the last minute. Try again shortly.", manual, 429)
-        nxt = appsso.safe_path(app, request.query_params.get("next"))
         try:
             if app == "admin":
-                token, exp, key = await appsso.litellm_session(request.app.state.http, settings)
-                minted.add(key, exp)
+                token, exp, _key = await appsso.litellm_session(request.app.state.http, settings)
                 resp = RedirectResponse(nxt, status_code=303)
                 # LiteLLM's own cookie as its sign-in sets it (host-only, Lax, readable by the dashboard's script)
                 resp.set_cookie("token", token, max_age=int(exp - time.time()), path="/", httponly=False, samesite="lax",
                                 secure=rem)
                 resp.delete_cookie("litellm_return_url", path="/")
-                mark = markers.issue(app, claims["iat"], appsso.fingerprint(settings, app),
-                                     session_login(request.headers, settings), exp - appsso.MARGIN)
+                mark = markers.issue(app, claims["iat"], appsso.fingerprint(settings, app), login, exp - appsso.MARGIN)
                 resp.set_cookie(mark_name, mark, max_age=max(60, int(exp - appsso.MARGIN - time.time())), path="/",
                                 httponly=True, samesite="strict", secure=rem)
             else:
-                creds, exp = await appsso.rustfs_session(request.app.state.http, settings)
-                resp = appsso.files_page(portal, creds, nxt, manual)
+                creds, _exp = await appsso.rustfs_session(request.app.state.http, settings)
+                resp = appsso.files_page(portal, creds, nxt, manual, appsso.files_mark(settings, claims["iat"], login))
                 # its next step (the console page it opens) goes straight through
                 resp.set_cookie(pass_name, "1", max_age=appsso.PASS_SECONDS, path="/", httponly=True, samesite="strict",
                                 secure=rem)
@@ -521,21 +536,25 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         log.info("signed in to %s automatically%s", appsso.NAME[app], " (remote)" if rem else "")
         return _no_store(resp)
 
-    async def revoke_minted(http: httpx.AsyncClient, keys: list[str]) -> None:
-        gone = await appsso.revoke_litellm_keys(http, settings, keys)
-        log.info("Sign out: ended %d of %d Admin (LiteLLM) sessions from automatic sign-in", gone, len(keys))
+    def end_admin_sessions() -> None:
+        """After a sign-out: every Admin (LiteLLM UI) session made until now goes too (appsso.Sweeper)."""
+        sweeper.request(sessions.not_before or None)
 
     async def logout(request: Request) -> Response:
         if not same_origin(request.headers, settings):
             return _no_store(PlainTextResponse("cross-site logout refused", status_code=403))
-        keys = []
+        rem = remote(request)
         if authed(request):
             sessions.revoke_all()
-            keys = minted.take()
-        resp = RedirectResponse(settings.origin(remote=remote(request)) + "/login", status_code=303)
-        clear_session(resp, remote(request))
-        if keys:   # after the answer: Sign out never waits for LiteLLM
-            resp.background = BackgroundTask(revoke_minted, request.app.state.http, keys)
+            end_admin_sessions()
+        elif sessions.signed(request.cookies.get(cookie_params(settings, rem)["key"])):
+            # a session of this portal that ended meanwhile (expired, or signed out elsewhere): still end its Admin
+            # sessions; a request without one of our cookies changes nothing
+            sweeper.request()
+        resp = RedirectResponse(settings.origin(remote=rem) + "/login", status_code=303)
+        clear_session(resp, rem)
+        if sweeper.pending is not None:   # after the answer, so Sign out never waits for LiteLLM; retried if it fails
+            resp.background = BackgroundTask(sweeper.attempt, request.app.state.http, settings)
         return _no_store(resp)
 
     async def index(request: Request) -> Response:
@@ -696,10 +715,13 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+        # No cookie jar: nothing an upstream sets (LiteLLM's /v2/login sets its session cookie) is kept or sent on.
+        jar = http.cookiejar.CookieJar(policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+        async with httpx.AsyncClient(transport=transport, follow_redirects=False, cookies=jar) as client:
             app.state.http = client
+            # Ending Admin sessions after a sign-out (and a pending one from before a restart), retried until done.
+            tasks = [asyncio.create_task(sweeper.run(client, settings))]
             # Daily price update (public price lists only; no credentials). Never blocks start-up or requests.
-            tasks = []
             if settings.price_updates:
                 tasks.append(asyncio.create_task(prices.daily_loop(summary.price_paths(settings), settings.aws_region)))
             # Daily release check (GitHub's public releases API; nothing about this install is sent).
@@ -731,7 +753,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/admin/request", api_admin_request, methods=["POST"]),
             *settings_api.routes(settings_api.Ctx(
                 settings=settings, sessions=sessions, throttle=throttle, remote=remote, api_guard=api_guard,
-                session_login=lambda r: session_login(r.headers, settings), set_session=set_session)),
+                session_login=lambda r: session_login(r.headers, settings), set_session=set_session,
+                on_signout=end_admin_sessions)),
             Route("/favicon.svg", favicon),
             Route("/favicon.ico", favicon_ico),
             Route("/manifest.webmanifest", manifest),

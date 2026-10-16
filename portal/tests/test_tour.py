@@ -91,3 +91,27 @@ def test_progress_is_stored_in_local_storage_defensively():
         before = js[:m.start()]
         assert before.rfind("try {") > before.rfind("}"), m.group(0)
 
+
+
+def test_one_sign_in_wording():
+    # Single sign-on: the portal's is the only sign-in; Admin and Files are "Automatic", their own sign-ins folded away
+    # under the same heading as on Home, and nothing tells you to sign in to each app or paste a password.
+    js = (STATIC / "tour.js").read_text(encoding="utf-8")
+    assert 'title: "Your apps (one sign-in)"' in js and "Sign in to each app" not in js
+    for sid in ("signin-chat", "signin-admin", "signin-files"):
+        block = js[js.index(f'"{sid}": {{'):]
+        assert 'badges: ["Sign-in: Automatic"]' in block[:200], sid
+    assert "Own sign-in" not in js and "Paste them into" not in js and "own sign-in form" not in js
+    assert 'text: "Credentials (for the API or if automatic sign-in fails)"' in js
+    home = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "<summary>Credentials (for the API or if automatic sign-in fails)</summary>" in home
+    assert "sign in, try each app" not in js + home
+
+
+def test_claude_steps_name_the_lean_config_folder():
+    js = (STATIC / "tour.js").read_text(encoding="utf-8")
+    setup = js[js.index('"claude-setup": {'):js.index("budgets: {")]
+    for words in ("~/.claude-bedrock", "CLAUDE_BEDROCK_USE_MY_CONFIG=1", "claude-bedrock plugin install", "claude-bedrock mcp add",
+                  "#a-lean-config-folder-for-bedrock"):
+        assert words in setup, words
+    assert "resume: claude-bedrock --resume <id>" in js[js.index("    claude: {"):]

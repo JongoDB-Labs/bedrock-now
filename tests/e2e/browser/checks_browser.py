@@ -865,6 +865,13 @@ def sso_signed_in(page, scope, rec, app: str, where: str, label: str = "") -> st
     return f"{where}: signed in by the portal ({how}), no form"
 
 
+def drop_pass(page):
+    """Expires the files host's pass cookie (a load seconds after a hand-off goes straight through) and nothing else.
+    (Not clear_cookies(name=…): Chromium clears every cookie and adds the others back, and requests in flight meanwhile
+    go out without the session.)"""
+    page.context.add_cookies([{"name": "bn_sso_pass", "value": "", "domain": host_of("files"), "path": "/", "expires": 1}])
+
+
 @check("browser", "admin-litellm-ui")
 def admin_ui(ctx):
     need("litellm")
@@ -1026,10 +1033,12 @@ def rustfs_flow(page, scope, rec, label: str, where: str) -> list[str]:
     acct.wait_for(timeout=20000)   # the console's own Logout: its own form (client-side, no new sign-in)
     steps.append("logout (its form)")
     f = frame_of(page, "files") if scope is not page else page
-    page.context.clear_cookies(name="bn_sso_pass")   # (a reload seconds after a hand-off would go straight through)
-    f.goto(f.url)   # a reload of that page: the portal signs in again
+    drop_pass(page)   # (a reload seconds after a hand-off would go straight through)
+    mints = len(rec.responses(r"/\.bn/sso\?mint=1&"))
+    f.goto(f.url)   # a reload of that page: the portal signs in again, with new credentials (Logout cleared them)
     rec.mark("rustfs: reload")
     sso_signed_in(page, scope, rec, "files", where + " after a reload", label + "-again")
+    expect(len(rec.responses(r"/\.bn/sso\?mint=1&")) == mints + 1, f"[{where}] no new credentials after the console's Logout")
     steps.append("reload: signed in again")
     return steps
 
@@ -1092,6 +1101,12 @@ def files_pages(ctx):
     page.click(".tab[data-tab=files]")
     fl = page.frame_locator("iframe[data-app=files]")
     sso_signed_in(page, fl, rec, "files", "Files tab (portal frame)", "files-pages")
+    # a reload uses the credentials it has (from this portal session and key pair): no new ones
+    mints = len(rec.responses(r"/\.bn/sso\?mint=1&"))
+    drop_pass(page)
+    frame_of(page, "files").goto(origin("files") + "/rustfs/console/")
+    sso_signed_in(page, fl, rec, "files", "Files tab reloaded", "files-pages-reload")
+    expect(len(rec.responses(r"/\.bn/sso\?mint=1&")) == mints, "a reload of the console made new credentials")
     empty, visited = [], 0
     for name in RUSTFS_PAGES:
         link = fl.locator(f"a[href$='/rustfs/console/{name}/'], a[href$='/rustfs/console/{name}']")
@@ -1348,8 +1363,12 @@ def walkthrough(ctx):
     page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
     page.click("#tour [data-k=next]")
     _to_step(page, "signin-admin")
+    sec = " ".join(page.inner_text("#tour [data-k=sec-1]").split())
+    expect("Your apps (one sign-in)" in sec, f"the second section reads {sec!r}")
     badge = page.inner_text("#tour .tour-step.cur .tour-badges")
     expect("Automatic" in badge, f"Admin's badge {badge!r}")
+    fold = page.inner_text("#tour [data-k=fallback-admin] summary")
+    expect(fold == "Credentials (for the API or if automatic sign-in fails)", f"Admin's fold reads {fold!r}")
     expect(page.locator("#tour .tour-step.cur .tour-cred").is_hidden(), "the Admin sign-in is not folded away")
     page.click("#tour [data-k=fallback-admin] summary")
     page.locator("#tour .tour-cred", has_text=ENV["LITELLM_UI_USER"]).wait_for(timeout=10000)
@@ -1500,7 +1519,7 @@ def walkthrough_phone(ctx):
     sheet = page.locator("#tour").bounding_box()
     expect(abs(sheet["y"] + sheet["height"] - bar["y"]) <= 2 and sheet["width"] >= 380, f"sheet {sheet} vs tab bar {bar}")
     shot(page, "w08-walkthrough-phone")
-    page.click("#tour [data-k=sec-1]")   # open "Sign in to each app", jump to Admin
+    page.click("#tour [data-k=sec-1]")   # open "Your apps (one sign-in)", jump to Admin
     page.click("#tour [data-k=go-signin-admin]")
     _to_step(page, "signin-admin")
     a = page.locator("#tour a[data-k=open-admin]")
@@ -2025,6 +2044,11 @@ def sign_out(ctx):
     body = tok[0].split(".")[1]
     ui_key = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["key"]
     expect(lite("GET", "/key/info", key=ui_key).status == 200, "the Admin session's key does not work before Sign out")
+    # and a UI session from LiteLLM's own sign-in (its API here) ends too
+    r = lite("POST", "/v2/login", body={"username": ENV["LITELLM_UI_USER"], "password": ENV["LITELLM_UI_PASSWORD"]})
+    body = r.json()["token"].split(".")[1]
+    form_key = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))["key"]
+    expect(lite("GET", "/key/info", key=form_key).status == 200, "LiteLLM's own session does not work before Sign out")
     page.click(".tab[data-tab=chat]")
     page.click(".sidebar .logout button")
     page.wait_for_url(re.compile(r"/login$"))
@@ -2034,13 +2058,15 @@ def sign_out(ctx):
         if "/login" not in page.url or not page.url.startswith(origin()):
             bad.append(f"{sub or 'portal'} → {page.url}")
     expect(not bad, "still reachable after Sign out: " + ", ".join(bad))
-    t0, st = time.time(), 0
-    while time.time() - t0 < 15 and (st := lite("GET", "/key/info", key=ui_key).status) == 200:
+    t0, st, st2 = time.time(), 0, 0
+    while time.time() - t0 < 20 and 200 in ((st := lite("GET", "/key/info", key=ui_key).status),
+                                            (st2 := lite("GET", "/key/info", key=form_key).status)):
         time.sleep(1)
     expect(st in (401, 403), f"the Admin session's LiteLLM key still works after Sign out (HTTP {st})")
+    expect(st2 in (401, 403), f"LiteLLM's own UI session still works after Sign out (HTTP {st2})")
     shot(page, "16-signed-out")
     rec.save()
     ctx.reset_session()
     return ("Sign out → login; portal, chat, admin and files (opened and signed in before) all send the browser back to "
-            f"the login; the Admin session the portal created is revoked in LiteLLM (HTTP {st})")
+            f"the login; every Admin session is revoked in LiteLLM, the portal's and LiteLLM's own (HTTP {st}, {st2})")
 

@@ -96,37 +96,64 @@ and delivers the result.
   `bn_sso` marker (`HttpOnly`, `SameSite=Strict`, host-only), bound to the portal session's start, the Tailscale
   login and a keyed fingerprint of the credentials, so a new sign-in, a new LiteLLM password or a regenerated
   RustFS pair takes effect at the next page load. Files: every console page load, because the console keeps its
-  session in `localStorage`, which no server sees (its own Logout clears it); the hand-off's own next page load
-  passes on a `bn_sso_pass` cookie that lasts 15 seconds. Such a page load is redirected to `/.bn/sso?next=<path>`
-  on the same host, which Caddy routes to the portal after its session check (no session: the portal's login).
-- **What.** `/auth/app-sso` checks the session, the Tailscale login, and that the request is a page load from this
-  site where the browser says so (`Sec-Fetch-Site` not `cross-site`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest`
-  a document or frame): a script's `fetch`, an `<img>` or `<script>`, or another site's link gets 403. Then:
+  session in `localStorage`, which no server sees (its own Logout clears it, and it goes back to its form without
+  asking the server). Such a page load is redirected to `/.bn/sso?next=<path>` on the same host, which Caddy routes to
+  the portal after its session check (no session: the portal's login). For Files that first page checks the
+  browser's own credentials, in the browser: if they carry the mark of this portal session and key pair (an HMAC kept
+  next to them) and are good for ten more minutes, it opens the console; only otherwise does it ask for new ones
+  (`?mint=1`). Its next page load passes on a `bn_sso_pass` cookie that lasts 15 seconds.
+- **What.** `/auth/app-sso` answers `GET` only (a `HEAD` gets 405) and checks the session, the Tailscale login, and
+  that the request is a page load from this site in a browser that says so: `Sec-Fetch-Site` same-origin, same-site
+  or none, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest` a document or frame. A script's `fetch`, an `<img>` or
+  `<script>`, another site's link, or a browser that sends no `Sec-Fetch-*` headers (current Chrome, Edge, Firefox
+  and Safari all do) gets 403 with the way to the app's own form. Then:
   - Admin: `POST litellm:4000/v2/login`, the call LiteLLM's own form makes (it creates a UI session key for 24
-    hours, `LITELLM_UI_SESSION_DURATION`), and a 303 to the page with the session as LiteLLM's own `token` cookie:
-    host-only (no `Domain`), `Path=/`, `SameSite=Lax`, `Secure` on the remote site, expiring with the session, and
-    not `HttpOnly` because LiteLLM's dashboard reads it from its script (LiteLLM sets it the same way).
+    hours, `LITELLM_UI_SESSION_DURATION`, in LiteLLM's `litellm-dashboard` team), and a 303 to the page with the
+    session as LiteLLM's own `token` cookie: host-only (no `Domain`), `Path=/`, `SameSite=Lax`, `Secure` on the
+    remote site, expiring with the session, and not `HttpOnly` because LiteLLM's dashboard reads it from its script
+    (LiteLLM sets it the same way). Caddy never passes that cookie on to LiteLLM: the dashboard sends the session as
+    `Authorization` itself, but LiteLLM 1.105 also accepts the cookie as a credential on a few browser routes (MCP
+    OAuth's `authorize`/`token`, BYOK sessions), which a page on another of the portal's hosts could drive with your
+    cookies. The cost: those LiteLLM browser-redirect flows, which bedrock-now does not use, need an
+    `Authorization` header. The portal's own HTTP client keeps no cookies, so the cookie LiteLLM sets on its
+    `/v2/login` answer goes nowhere.
   - Files: STS `AssumeRole` on `rustfs:9000`, signed (SigV4) with the key pair — the call the console makes — for
-    12-hour temporary credentials (stateless: nothing is stored in RustFS), and a `no-store` page on the files host
-    whose only script (allowed by its hash under `default-src 'none'`) writes them where the console keeps its own
-    (`localStorage["auth.credentials"]`) and opens the console page. The credentials exist only in that page's body.
-  - Nothing secret is ever in a URL (only `next=<path>`, which must stay inside the app and never be its sign-in
-    page, `//`, `\` or `..`), a `Referer` (`no-referrer`) or the log.
-- **Limits.** At most 20 hand-offs a minute in all. One that comes back to the same host five times within seconds
-  (a refused cookie, blocked site data, an app version the portal does not know) stops with an explanation, as
-  does any refusal (LiteLLM or RustFS not running, a password changed inside LiteLLM, a key pair edited by hand):
-  the page says why and links the app's own form.
+    12-hour temporary credentials with the root pair's rights, and a `no-store` page on the files host whose only
+    script (allowed by its hash under `default-src 'none'`) writes them where the console keeps its own
+    (`localStorage["auth.credentials"]`) with the mark, and opens the console page. The credentials exist only in that
+    page's body. RustFS keeps a small identity record per pair (`.rustfs.sys/config/iam/sts/<id>/identity.json` in
+    the data volume) and drops it after it expires; because of the check above, there is a new pair only when this
+    browser has none from this portal session and key pair.
+  - Nothing secret is ever in a URL (only `next=<path>`, which must stay inside the app, never be its sign-in page,
+    and read the same once normalised: no `//`, `\`, `.` or `..`), a `Referer` (`no-referrer`) or the log.
+- **Stored files are inert on the files host.** That host also answers RustFS's S3 API (the console signs its
+  requests for this name), so a stored HTML or SVG file opened there would run on the console's origin, next to the
+  credentials it keeps. Everything there but the console and `/.bn/sso` is sent with `Content-Security-Policy:
+  sandbox; default-src 'none'; frame-ancestors <portal>` and `X-Content-Type-Options: nosniff`: no scripts, an
+  origin of its own, framed only by the portal. Downloads and the console's own requests are unaffected. The shared
+  MCP server stores `.html`, `.svg`, `.xml` and similar files as `text/plain` as well.
+- **Limits.** At most 20 sign-ins a minute per portal session (its start and Tailscale login, so one browser in a
+  loop never holds up another). One that comes back to the same host five times within seconds (a refused cookie,
+  blocked site data, an app version the portal does not know) stops with an explanation, as does any refusal
+  (LiteLLM or RustFS not running, a password changed inside LiteLLM, a key pair edited by hand): the page says why
+  and links the app's own form.
 - **Trust.** A browser with a portal session opens Admin and Files as their administrator, which is what it could
   already do with the sign-ins Home shows it. Every request to those hosts, `/.bn/sso` included, passes the
   portal's session check first. The portal used to hold LiteLLM's admin password and the RustFS root pair only to
   show them; it now also signs in with them, from inside the stack.
 - **Sign out** ends the portal session everywhere, so every request to the app hosts goes to the login again;
   page loads on Admin and Files are never taken from the browser's cache without that check (Caddy adds
-  `Cache-Control: no-cache` where the app sends none, as LiteLLM's UI does). It also deletes the LiteLLM UI keys the
-  portal's sign-ins created (with the master key; the portal keeps that list in memory, so keys from before a
-  portal restart run out by themselves within 24 hours). The console's temporary credentials stay in that
-  browser's storage until they expire (12 hours), unusable without a portal session (RustFS publishes no port; its
-  only way in is the files host), and the next automatic sign-in replaces them.
+  `Cache-Control: no-cache` where the app sends none, as LiteLLM's UI does). It also deletes every LiteLLM UI session
+  key of the Admin user made before it (the `litellm-dashboard` team: the portal's sign-ins and LiteLLM's own form
+  alike, found with `/spend/keys` — LiteLLM's `/key/list` leaves them out — and deleted with the master key) — those keys work on LiteLLM's API at
+  `127.0.0.1:4000` too. **Sign out other devices** and a new `PORTAL_PASSWORD` (noticed when the portal starts; it
+  keeps only a hash of the password fingerprint) do the same, and so does Sign out from a session that ended
+  meanwhile (expired, or signed out elsewhere) as long as its cookie is one this portal issued. The time to sweep up
+  to is kept in the `portal-state` volume and retried with back-off until LiteLLM has done it, also across a
+  restart. LiteLLM itself deletes expired UI keys once a day (`LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED`). The
+  console's temporary credentials stay in that browser's storage until they expire (up to 12 hours); they are no use
+  without a portal session (RustFS publishes no port; its only way in is the files host), and the next sign-in to
+  the portal replaces them.
 - **The fallback.** `?sso=off` on an app's sign-in page shows its own form (Home → Credentials links it); LiteLLM's
   own Logout goes there (`PROXY_LOGOUT_URL`), RustFS's shows its form by itself. Caddy strips the marker, pass and
   loop cookies before the apps, like the session cookie.

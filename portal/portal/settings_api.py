@@ -54,6 +54,7 @@ class Ctx:
     api_guard: Callable[[Request], Response | None]
     session_login: Callable[[Request], str | None]
     set_session: Callable                     # set_session(resp, remote, login, iat)
+    on_signout: Callable[[], None] = lambda: None   # after revoke_all: end the Admin sessions too (appsso.Sweeper)
 
 
 def _no_store(r: Response) -> Response:
@@ -300,6 +301,7 @@ def routes(ctx: Ctx) -> list[Route]:
         if isinstance(got, Response):
             return got
         ctx.sessions.revoke_all()
+        ctx.on_signout()
         resp = _no_store(JSONResponse({"ok": True}))
         rem = ctx.remote(request)
         ctx.set_session(resp, rem, ctx.session_login(request), ctx.sessions.not_before + 0.001)

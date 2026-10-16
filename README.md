@@ -86,8 +86,10 @@ One sign-in is all there is: the portal signs you in to every app, in its tab, a
 site and on a phone. Chat trusts the portal's word for who you are; for Admin and Files, which cannot, the portal
 signs in to LiteLLM and RustFS for you with the sign-ins it already holds and hands the app's own session to your
 browser on that app's address ([how](docs/security.md#automatic-sign-in-to-admin-and-files)). **Sign out** ends
-them all. LiteLLM's and RustFS's own sign-ins still exist, as a fallback and for the API, under **Credentials** on
-Home:
+the portal session that every request to Admin and Files needs, and every Admin (LiteLLM) session made before it
+(also LiteLLM's own form's); the Files console's temporary credentials can stay valid in that browser for up to
+12 hours, of no use without a portal session. LiteLLM's and RustFS's own sign-ins still exist, as a fallback and for
+the API, under **Credentials** on Home:
 
 | Fallback sign-in | User | Password |
 |---|---|---|
@@ -118,10 +120,13 @@ New to the apps? **Walkthrough** at the bottom of the sidebar takes you through 
 instead of covering an app, on a tablet it is a card next to the icons, and on a phone it is under **More**.
 
 1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models, voice,
-   Claude Code, each app's budget, and extras (the desktop app, one-click updates, use from your phone). Each
-   step shows its live status from Home and the commands to run, with Copy buttons.
-2. **Sign in to each app:** the portal signs you in to Chat, Admin and Files; opening each one ticks its step off.
-   Their own sign-ins are folded away there, with Copy buttons, in case one is ever needed.
+   Claude Code (and its lean `~/.claude-bedrock` config folder), each app's budget, and extras (the desktop app,
+   one-click updates, use from your phone). Each step shows its live status from Home and the commands to run, with
+   Copy buttons.
+2. **Your apps (one sign-in):** the portal password is the only one you type; Chat, Admin (on Virtual Keys) and
+   Files (on its buckets) open signed in, and opening each one ticks its step off. Admin's and Files' own sign-ins
+   are folded away under **Credentials**, with Copy buttons and a link to each app's own form, for the API or in
+   case the automatic sign-in ever fails.
 3. **Use it together:** Home, a chat with its cost line, voice, your documents, Claude Code writing to the shared
    store and Chat answering from that file, and where the money went in Admin.
 

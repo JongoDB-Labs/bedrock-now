@@ -242,6 +242,37 @@ test_caddy_app_sso_only_on_admin_and_files_after_the_session_check() {
   done
 }
 
+test_caddy_keeps_litellms_cookie_from_litellm_and_files_objects_inert() {
+  # LiteLLM takes its `token` cookie as a credential on a few routes: it never reaches LiteLLM (its UI sends
+  # Authorization), on every admin block, never elsewhere (Open WebUI's own `token` cookie stays).
+  local f="$STACK_DIR/caddy/Caddyfile" t="$STACK_DIR/caddy/remote-tailscale.caddy" d="$STACK_DIR/caddy/remote-domain.caddy" r b
+  assert_contains "$(sed -n '/^(litellm_upstream) {/,/^}/p' "$f")" 'header_up Cookie "(^|;\s*)token=[^;]*" ""'
+  for b in "$(sed -n '/^http:\/\/{\$ADMIN_HOST} {/,/^}/p' "$f")" "$(sed -n '/^http:\/\/{\$REMOTE_ADMIN_HOST}:8081 {/,/^}/p' "$t")" \
+           "$(sed -n '/@admin host {\$REMOTE_ADMIN_HOST}/,/^	}/p' "$d")"; do
+    assert_contains "$(printf '%s\n' "$b" | sed -n '/reverse_proxy litellm:4000 {/,/}/p')" "import litellm_upstream"
+  done
+  for r in "$f" "$t" "$d"; do assert_eq "$(grep -c 'import litellm_upstream' "$r" | tr -d ' ')" 1; done
+  # (the regex takes the cookie named token only: csrftoken, bn_token=… stay)
+  local re='(^|;\s*)token=[^;]*'
+  assert_eq "$(printf 'a=1; token=x; csrftoken=y\n' | sed -E "s/$(printf '%s' "$re" | sed 's/\\s/[[:space:]]/')//")" "a=1; csrftoken=y"
+  # The files host: everything but the console and the hand-off is sandboxed, framed by the portal only, not sniffed.
+  local inert; inert="$(sed -n '/^(files_inert) {/,/^}/p' "$f")"
+  assert_contains "$inert" "@bn_object not path /rustfs/console /rustfs/console/* /.bn/*"
+  assert_contains "$inert" "Content-Security-Policy \"sandbox; default-src 'none'; frame-ancestors {args[0]}\""
+  assert_contains "$inert" "X-Content-Type-Options nosniff"
+  assert_contains "$inert" "defer"
+  assert_contains "$(sed -n '/^http:\/\/{\$FILES_HOST} {/,/^}/p' "$f")" 'import files_inert {$PORTAL_ORIGIN}'
+  assert_contains "$(sed -n '/^http:\/\/{\$REMOTE_FILES_HOST}:8081 {/,/^}/p' "$t")" 'import files_inert {$REMOTE_ORIGIN}'
+  assert_contains "$(sed -n '/@files host {\$REMOTE_FILES_HOST}/,/^	}/p' "$d")" 'import files_inert {$REMOTE_ORIGIN}'
+  for r in "$f" "$t" "$d"; do assert_eq "$(grep -c 'import files_inert' "$r" | tr -d ' ')" 1; done
+}
+
+test_compose_litellm_ui_sessions_for_the_automatic_sign_in() {
+  local c; c="$(sed -n '/^  litellm:/,/^  [a-z-]*:$/p' "$STACK_DIR/compose.yaml")"
+  assert_contains "$c" "PROXY_LOGOUT_URL: /ui/login/?sso=off"   # LiteLLM's own Logout shows its form
+  assert_contains "$c" 'LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED: "true"'
+}
+
 test_check_port_allows_80_only_for_the_portal() {
   (check_port PORTAL_PORT 80) || return 1
   if (check_port LITELLM_PORT 80) 2>/dev/null; then return 1; fi

@@ -77,6 +77,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import app_sso
 		reverse_proxy litellm:4000 {
 			import remote_upstream
+			import litellm_upstream
 		}
 	}
 
@@ -86,6 +87,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 		import handoff_callback
 		import portal_auth
 		import app_sso
+		import files_inert {$REMOTE_ORIGIN}
 		reverse_proxy rustfs:9001 {
 			import remote_upstream
 		}

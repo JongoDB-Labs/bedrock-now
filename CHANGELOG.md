@@ -8,23 +8,33 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
-- **One sign-in for every app.** Admin (LiteLLM's UI) and Files (RustFS's console) now open already signed in —
-  in their tabs, pop-out windows, on the remote site and in a phone's new tab — so the portal password is the only
-  one you type. The portal signs in to each app for you with the sign-in it already holds and hands the app's own
-  session to your browser on that app's address, never in a URL: LiteLLM's session cookie (from its own sign-in
-  call), or 12-hour RustFS console credentials (from STS, stored where the console keeps them). Caddy's check
-  decides when (page loads only; Admin when it has no LiteLLM session from this portal session and these
-  credentials, Files on each console page load) and routes `/.bn/sso` on the Admin and Files hosts to the portal.
-  It keeps working after a new LiteLLM password or a regenerated RustFS pair in Settings. **Sign out** also deletes
-  the LiteLLM sessions it created, and Admin and Files page loads are never taken from the browser's cache without
-  the portal's check (LiteLLM sends no `Cache-Control`). The apps' own forms stay as a fallback: Home's card is now
-  "Admin and Files sign you in automatically", with the credentials folded under *Credentials (for the API or if
-  automatic sign-in fails)* plus a link to each app's own form (`?sso=off`); an app's own Logout shows its form
-  (LiteLLM: `PROXY_LOGOUT_URL`). When automatic sign-in cannot work (an app down, a password changed inside
-  LiteLLM, a redirect loop), the page says why and links the form. The walkthrough's Admin and Files steps say
-  "Automatic" and tick off when the app opens. How it works and what it trusts: docs/security.md › Automatic
-  sign-in to Admin and Files. OIDC was considered and not used: LiteLLM's needs an Enterprise license beyond five
-  users, and RustFS's puts its credentials in the URL.
+- **One sign-in for every app.** Admin (LiteLLM's UI) and Files (RustFS's console) now open already signed in — in
+  their tabs, pop-out windows, on the remote site and in a phone's new tab — so the portal password is the only one
+  you type. The portal signs in to each app for you with the sign-in it already holds and hands the app's own session
+  to your browser on that app's address, never in a URL: LiteLLM's session cookie (from its own sign-in call; Caddy
+  keeps it from LiteLLM itself, which would also take it as a credential on its MCP OAuth/BYOK routes), or 12-hour
+  RustFS console credentials (from STS, stored where the console keeps them, made only when the browser has none from
+  this portal session and key pair). Caddy's check decides when (page loads only; Admin when it has no LiteLLM session
+  from this portal session and these credentials, Files on each console page load) and routes `/.bn/sso` on the Admin
+  and Files hosts to the portal, which answers only page loads from this site in browsers that say so (`Sec-Fetch-*`),
+  at most 20 sign-ins a minute per portal session. It keeps working after a new LiteLLM password or a regenerated
+  RustFS pair in Settings. **Sign out** (also *Sign out other devices*, a new `PORTAL_PASSWORD`, and Sign out from a
+  session that ended meanwhile) deletes every LiteLLM UI session of the Admin user made before it, retried until
+  LiteLLM has done it, across restarts too; LiteLLM now also deletes expired UI session keys daily
+  (`LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED`). Admin and Files page loads are never taken from the browser's
+  cache without the portal's check (LiteLLM sends no `Cache-Control`), and every stored file on the Files host is
+  inert (`Content-Security-Policy: sandbox`, `nosniff`): it shares an origin with the console's credentials. The
+  shared MCP server stores HTML, SVG and XML files as plain text. The apps' own forms stay as a fallback: Home's card
+  is now "Admin and Files sign you in automatically", with the credentials folded under *Credentials (for the API or
+  if automatic sign-in fails)* plus a link to each app's own form (`?sso=off`); an app's own Logout shows its form
+  (LiteLLM: `PROXY_LOGOUT_URL`). When automatic sign-in cannot work (an app down, a password changed inside LiteLLM, a
+  redirect loop), the page says why and links the form. The walkthrough's second section is now *Your apps (one
+  sign-in)*: the portal step says its password is the only one, and Chat, Admin and Files say "Automatic", tick off
+  when the app opens and keep their own sign-ins in the same Credentials fold as Home; its Claude Code steps now
+  describe the lean `~/.claude-bedrock` folder (plugins and MCP servers added one by one,
+  `CLAUDE_BEDROCK_USE_MY_CONFIG=1`) and the `resume: claude-bedrock --resume <id>` exit line. How it works and what it
+  trusts: docs/security.md › Automatic sign-in to Admin and Files. OIDC was considered and not used: LiteLLM's needs
+  an Enterprise license beyond five users, and RustFS's puts its credentials in the URL.
 
 ### Changed
 

@@ -2,7 +2,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from shared_mcp.storage import MAX_KEY_BYTES, MAX_READ_BYTES, PathError, SharedStore, normalize_key
+from shared_mcp.storage import MAX_KEY_BYTES, MAX_READ_BYTES, PathError, SharedStore, content_type, normalize_key
 
 
 @pytest.fixture
@@ -70,3 +70,19 @@ def test_read_rejects_oversized(store):
     store.s3.put_object(Bucket="shared", Key="big.txt", Body=b"x" * (MAX_READ_BYTES + 1))
     with pytest.raises(ValueError, match="limit"):
         store.read_text("big.txt")
+
+
+@pytest.mark.parametrize("key", ["page.html", "dir/Page.HTM", "a.xhtml", "logo.svg", "feed.xml", "x.xsl", "doc.mhtml",
+                                 "atom.atom", "x.rss"])
+def test_files_a_browser_would_run_are_stored_as_plain_text(store, key):
+    # The files host serves objects on the RustFS console's origin (which keeps its credentials): no page there.
+    store.write_text(key, "<html><script>alert(1)</script></html>")
+    assert store.s3.head_object(Bucket="shared", Key=key)["ContentType"] == "text/plain; charset=utf-8"
+    assert content_type(key) == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize("key,want", [("notes.md", "text/markdown"), ("data.json", "application/json"),
+                                      ("a.txt", "text/plain"), ("noext", "text/plain"), ("t.csv", "text/csv")])
+def test_other_files_keep_their_type(store, key, want):
+    store.write_text(key, "x")
+    assert store.s3.head_object(Bucket="shared", Key=key)["ContentType"] == want

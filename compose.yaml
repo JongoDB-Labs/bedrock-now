@@ -74,6 +74,8 @@ services:
       # The portal signs you in to the UI (portal/portal/appsso.py); the UI's own Logout then shows its own form
       # (?sso=off: no automatic sign-in there) rather than reloading into a fresh automatic one.
       PROXY_LOGOUT_URL: /ui/login/?sso=off
+      # Deletes expired UI session keys (one per sign-in, the portal's included) once a day instead of keeping them.
+      LITELLM_EXPIRED_UI_SESSION_KEY_CLEANUP_ENABLED: "true"
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"   # no runtime price-map fetch; the config carries our prices (lib/prices.sh)
       # An access key from .env, passed only when set (no value here = taken from .env, else left out). Without

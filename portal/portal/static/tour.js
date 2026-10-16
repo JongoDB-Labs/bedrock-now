@@ -1,5 +1,5 @@
 // Walkthrough: takes someone who has never used these apps through all of bedrock-now — what it needs (AWS models,
-// OpenRouter, voice, Claude Code, budgets), signing in to each app, then using them together. It lives at the bottom
+// OpenRouter, voice, Claude Code, budgets), its apps behind the one portal sign-in, then using them together. It lives at the bottom
 // of the sidebar: on desktops a section of the widened sidebar (the apps' frames just get narrower), on tablets a
 // card next to the icon rail, on phones a sheet above the tab bar opened from More.
 // Loaded after app.js and mobile.js (all deferred); uses app.js's globals ($, el, api, showTab, appUrl, copy, toast,
@@ -74,9 +74,9 @@
     });
   }
   // Admin / Files sign you in automatically (the portal signs in for you); their own sign-in stays for the API and in
-  // case that fails, folded away: the user name as text (masked in the e2e screenshots), the password only through
-  // Copy, and the app's own form (?sso=off). app.js loads the sign-ins at start-up (the panel redraws once they are in,
-  // see "wiring"); Copy asks for them only if that failed. A redraw keeps the fold open.
+  // case that fails, folded away as on Home: the user name as text (masked in the e2e screenshots), the password only
+  // through Copy, and the app's own form (?sso=off). app.js loads the sign-ins at start-up (the panel redraws once
+  // they are in, see "wiring"); Copy asks for them only if that failed. A redraw keeps the fold open.
   const unfolded = new Set();
   function fallback(app, nameLabel, userCopy, passCopy, hint) {
     const user = logins && logins[app] && logins[app].username;
@@ -87,7 +87,7 @@
       if (v) copy(v, what); else toast("Not available yet: run ./stack setup");
     };
     const fold = el("details", { class: "tour-fallback", "data-k": `fallback-${app}` },
-      el("summary", { text: "If it ever shows its own sign-in form" }),
+      el("summary", { text: "Credentials (for the API or if automatic sign-in fails)" }),
       el("p", { class: "tour-login" }, `${nameLabel} `, el("span", { class: "tour-cred", text: user || "–" })),
       el("div", { class: "tour-actions" },
         button(userCopy, `copy-${app}-user`, grab("username", userCopy.replace(/^Copy /, "")), "copy"),
@@ -118,7 +118,7 @@
           [b("Claude Code"), " in your terminal (", code("claude-bedrock"), "): coding."],
           [b("Files"), " (RustFS): the shared store both of them use."],
           [b("Admin"), " (LiteLLM): keys, budgets, logs."]]),
-        p("Every model call goes through one gateway to your AWS Bedrock account (plus OpenRouter, if you add it), and every answer shows what it cost."),
+        p("One sign-in, the portal's, opens all of them. Every model call goes through one gateway to your AWS Bedrock account (plus OpenRouter, if you add it), and every answer shows what it cost."),
         note("About 20 minutes; trying everything costs a few cents. Commands here run in a terminal, in your bedrock-now folder."),
       ],
     },
@@ -196,6 +196,11 @@
         p("Setup offers to link it into ", code("~/.local/bin"), ". If your terminal says “command not found”, run ",
           code("./bin/claude-bedrock"), " from your bedrock-now folder, or re-run ", code("./stack setup"), " and answer y."),
         cmd(command()),
+        p("It keeps its own config folder, ", code("~/.claude-bedrock"), ": your ", code("~/.claude"),
+          " plugins, hooks and MCP servers are not loaded, which makes a prompt on Bedrock about 100× cheaper (",
+          ext(`${REPO}#a-lean-config-folder-for-bedrock`, "why"), "). Add only what you want with ",
+          code("claude-bedrock plugin install …"), " or ", code("claude-bedrock mcp add …"), "; ",
+          code("CLAUDE_BEDROCK_USE_MY_CONFIG=1"), " loads your whole setup."),
       ],
     },
     budgets: {
@@ -232,36 +237,37 @@
       },
     },
     "signin-portal": {
-      title: "The portal", badges: ["Sign-in: Done"], info: true,
+      title: "The portal: your one sign-in", badges: ["Sign-in: Done"], info: true,
       body: () => [
-        p("You're signed in with the portal password (", code("PORTAL_PASSWORD"), " in ", code(".env"), "; ",
-          code("./stack password --show"), " prints it; change it in ", settings("Account & security"), ")."),
-        p("It keeps you signed in for 30 days unless you changed the session length there. ", b("Sign out"), PHONE.matches ? " (under More)" : " at the bottom of the sidebar",
-          " ends every session."),
+        p("The portal password (", code("PORTAL_PASSWORD"), " in ", code(".env"), "; ", code("./stack password --show"),
+          " prints it) is the only one you type: Chat, Admin and Files sign you in with it. Change it in ", settings("Account & security"), "."),
+        p("A sign-in lasts 30 days (", code("PORTAL_SESSION_DAYS"), ", also in Account & security). ", b("Sign out"),
+          PHONE.matches ? " (under More)" : " at the bottom of the sidebar", " ends it everywhere, and Admin's and Files' with it."),
       ],
     },
     "signin-chat": {
       title: "Chat (Open WebUI)", badges: ["Sign-in: Automatic"],
-      body: () => [p("Chat signs you in with your portal session: no second password.")],
+      body: () => [p("Chat opens signed in as you: no second password.")],
       actions: () => [openApp("chat")],
     },
     "signin-admin": {
       title: "Admin (LiteLLM)", badges: ["Sign-in: Automatic"],
       body: () => [
-        p("Admin signs you in to LiteLLM with your portal session: no second password. Sign out ends it."),
+        p("Admin opens LiteLLM already signed in, on ", b("Virtual Keys"), ": the portal signs in for you."),
         fallback("admin", "Username", "Copy username", "Copy password",
-          ["Paste them into LiteLLM's form (", b("Username"), ", ", b("Password"), ", ", b("Login"),
-            "). A password changed inside LiteLLM is not known here: set it in ", settings("Account & security"),
-            " so the automatic sign-in works again."]),
+          ["For LiteLLM's API, or its own form (", b("Username"), ", ", b("Password"), ", ", b("Login"),
+            ") if the automatic sign-in ever fails. A password changed inside LiteLLM is not known here: set it in ",
+            settings("Account & security"), " too, or the automatic sign-in stops."]),
       ],
       actions: () => [openApp("admin")],
     },
     "signin-files": {
       title: "Files (RustFS)", badges: ["Sign-in: Automatic"],
       body: () => [
-        p("Files signs you in to RustFS with your portal session: no second password. Sign out ends it."),
+        p("Files opens RustFS's console already signed in, on the list of buckets: the portal signs in for you."),
         fallback("files", "Access key", "Copy access key", "Copy secret key",
-          ["Paste the access key into ", b("Account"), " and the secret key into ", b("Key"), ", then ", b("Login"), "."]),
+          ["For S3 tools, or the console's own form (the access key under ", b("Account"), ", the secret key under ",
+            b("Key"), ", ", b("Login"), ") if the automatic sign-in ever fails."]),
       ],
       actions: () => [openApp("files")],
     },
@@ -310,7 +316,8 @@
       waiting: "Not detected yet: spend can take a minute to show.",
       body: () => [
         p("In a terminal, in a project folder:"), cmd(command()),
-        p("Its first line shows the model's price and your budget; when you exit, it prints what the session cost."),
+        p("Its first line shows the model's price and your budget; when you exit, it prints what the session cost and how to come back: ",
+          code("resume: claude-bedrock --resume <id>"), "."),
         p("Type ", code("/mcp"), ": ", code("bedrock-shared"), " is connected. Then ask:"),
         cmd(PROMPT, "the prompt"),
         PHONE.matches ? note("From a phone, ", code("./stack ssh-info"), " shows how to reach Claude Code over SSH.") : null,
@@ -348,7 +355,7 @@
   };
   const SECTIONS = [
     { title: "Set up", steps: ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras"] },
-    { title: "Sign in to each app", steps: ["signin-portal", "signin-chat", "signin-admin", "signin-files"] },
+    { title: "Your apps (one sign-in)", steps: ["signin-portal", "signin-chat", "signin-admin", "signin-files"] },
     { title: "Use it together", steps: ["home", "chat", "voice-use", "docs", "claude", "shared", "admin", "done"] },
   ];
   const ORDER = SECTIONS.flatMap((s) => s.steps);
@@ -470,7 +477,7 @@
     opener.setAttribute("aria-expanded", String(Boolean(st.open)));
     const words = all ? "Walkthrough: finished" : `Walkthrough: ${n} of ${ORDER.length} steps done`;
     if (TABLET.matches) opener.title = words; else opener.removeAttribute("title");
-    if (moreEntry) $("#more-tour-note").textContent = all ? "Finished ✓ · read it again" : `Set up, sign in, try each app · ${n}/${ORDER.length}`;
+    if (moreEntry) $("#more-tour-note").textContent = all ? "Finished ✓ · read it again" : `Set up, your apps, use them together · ${n}/${ORDER.length}`;
   }
 
   function stepItem(id) {

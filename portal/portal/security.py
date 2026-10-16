@@ -153,6 +153,17 @@ class Sessions:
     def valid(self, token: str | None, login: str | None = None) -> bool:
         return self.claims(token, login) is not None
 
+    def signed(self, token: str | None) -> bool:
+        """The token is one this portal issued (its signature checks out), however old, revoked or from an earlier
+        password: Sign out from a session that ended meanwhile still ends what hangs off it (portal/appsso.py)."""
+        if not token or len(token) > 4096:
+            return False
+        try:
+            data = self._ser.loads(token)
+        except (BadSignature, ValueError, TypeError):
+            return False
+        return isinstance(data, dict) and data.get("v") == 1
+
     def revoke_all(self) -> None:
         self.not_before = self._clock()
         self._save()

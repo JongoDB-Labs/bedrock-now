@@ -7,6 +7,19 @@ from typing import Any
 
 MAX_READ_BYTES = 2_000_000
 MAX_KEY_BYTES = 1024  # S3 object key limit
+# Types a browser would run as a page. The files host serves stored objects on the RustFS console's origin, which
+# keeps the console's credentials, so such files are stored as plain text (Caddy also makes every object there inert).
+ACTIVE_TYPES = frozenset({"text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml"})
+ACTIVE_SUFFIXES = (".html", ".htm", ".xhtml", ".xht", ".svg", ".svgz", ".xml", ".xsl", ".xslt", ".shtml", ".mht", ".mhtml",
+                   ".rss", ".atom")   # (by name too: a system's MIME table may not know them)
+
+
+def content_type(key: str) -> str:
+    """The Content-Type to store KEY with: its usual one, but never one a browser would run."""
+    guessed = mimetypes.guess_type(key)[0] or "text/plain"
+    if guessed in ACTIVE_TYPES or guessed.endswith("+xml") or key.lower().endswith(ACTIVE_SUFFIXES):
+        return "text/plain; charset=utf-8"
+    return guessed
 
 
 class PathError(ValueError):
@@ -61,5 +74,5 @@ class SharedStore:
     def write_text(self, path: str, content: str) -> str:
         key = normalize_key(path)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=content.encode("utf-8"),
-                           ContentType=mimetypes.guess_type(key)[0] or "text/plain")
+                           ContentType=content_type(key))
         return key

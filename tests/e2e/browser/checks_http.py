@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote, urlencode
 
-from common import ENV, HOST, PORT, Skip, check, expect, http, origin, portal_login, real_helper_running
+from common import ENV, HOST, LITELLM_PORT, PORT, Skip, check, expect, http, origin, portal_login, real_helper_running
 
 APPS = {"chat": "/", "admin": "/ui/", "files": "/rustfs/console/"}
 PUBLIC = ["/login", "/healthz", "/favicon.svg", "/static/login.css", "/static/logo.svg", "/manifest.webmanifest", "/sw.js"]
@@ -114,15 +114,39 @@ def apps_sso(ctx):
     expect(r.header("cache-control") == "no-store" and r.header("referrer-policy") == "no-referrer", "hand-off cacheable or with a referrer")
     jwt = tok.split("=", 1)[1].split(";", 1)[0] if tok else ""
     expect(not any(v and v in (r.header("location") or "") for v in secrets + [jwt]), "a secret in the hand-off's Location")
-    # Files: a page storing the console's credentials (its only script allowed by hash), a short pass, no-store
+    # LiteLLM never gets its `token` cookie (it would take it as a credential on its MCP OAuth/BYOK routes): with the
+    # very session just handed out, its MCP OAuth authorize answers 401 through the admin host, not directly
+    probe = "/v1/mcp/server/oauth/e2e-no-such-server/authorize?response_type=code&client_id=e2e&redirect_uri=http%3A%2F%2Fe2e.invalid%2F"
+    xhr = {"Accept": "*/*", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Sec-Fetch-Site": "same-origin"}
+    direct = http("GET", None, probe, {"Cookie": f"token={jwt}"}, port=LITELLM_PORT, host_header=f"127.0.0.1:{LITELLM_PORT}")
+    via = http("GET", "admin", probe, xhr, cookie=f"{s}; token={jwt}")
+    expect(direct.status != 401 and via.status == 401, f"MCP OAuth authorize with LiteLLM's cookie: directly {direct.status}, "
+           f"through the admin host {via.status}")
+    # Files: first a page that checks the browser's own credentials (none made), then ?mint=1 stores new ones; both
+    # with only their own script (allowed by hash), a short pass, no-store
     r = http("GET", "files", "/.bn/sso?next=%2Frustfs%2Fconsole%2F", nav, cookie=s)
+    data = json.loads(r.text.split('id="bn-sso">', 1)[1].split("</script>", 1)[0]) if 'id="bn-sso">' in r.text else {}
+    expect(r.status == 200 and "credentials" not in data and data.get("mint") == "/.bn/sso?mint=1&next=%2Frustfs%2Fconsole%2F",
+           f"files first page: {r.status} {sorted(data)}")
+    r = http("GET", "files", "/.bn/sso?mint=1&next=%2Frustfs%2Fconsole%2F", nav, cookie=s)
     csp = r.header("content-security-policy") or ""
     expect(r.status == 200 and "text/html" in (r.header("content-type") or "") and r.header("cache-control") == "no-store",
            f"files hand-off: {r.status} {r.header('content-type')} {r.header('cache-control')}")
     expect("script-src 'sha256-" in csp and "unsafe" not in csp and f"frame-ancestors {origin()}" in csp, f"files hand-off CSP: {csp}")
-    expect('id="bn-sso"' in r.text and "auth.credentials" in r.text and ENV["RUSTFS_SECRET_KEY"] not in r.text,
+    expect('"credentials"' in r.text and "auth.credentials" in r.text and ENV["RUSTFS_SECRET_KEY"] not in r.text,
            "the page does not store the console's credentials, or holds the RustFS secret key itself")
     expect(any(c.startswith("bn_sso_pass=") and "max-age=15" in c.lower() for c in r.headers_all("set-cookie")), "no pass cookie")
+    # every stored file on the files host is inert (the console's origin); the console itself is not sandboxed
+    r = http("GET", "files", "/shared/e2e-no-such-object.html", nav, cookie=s)
+    expect(r.header("content-security-policy") == f"sandbox; default-src 'none'; frame-ancestors {origin()}"
+           and r.header("x-content-type-options") == "nosniff", f"an object on the files host: {r.status} {r.header('content-security-policy')}")
+    r = http("GET", "files", "/rustfs/console/", nav, cookie=s + "; bn_sso_pass=1")
+    expect(r.status == 200 and r.header("content-security-policy") == f"frame-ancestors {origin()}", f"console: {r.header('content-security-policy')}")
+    # GET only (HEAD would sign in too), and only browsers that send Sec-Fetch-*
+    r = http("HEAD", "admin", "/.bn/sso?next=%2Fui%2F", nav, cookie=s)
+    expect(r.status == 405 and not r.headers_all("set-cookie"), f"HEAD /.bn/sso: {r.status}")
+    r = http("GET", "admin", "/.bn/sso?next=%2Fui%2F", {"Accept": "text/html"}, cookie=s)
+    expect(r.status == 403 and "sso=off" in r.text and not r.headers_all("set-cookie"), f"/.bn/sso without Sec-Fetch-*: {r.status}")
     # refused: a script's request, another site's link, no session (the portal's login), another host
     for h, what in (({"Accept": "*/*", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Sec-Fetch-Site": "same-site"}, "fetch()"),
                     ({**nav, "Sec-Fetch-Site": "cross-site"}, "another site's link"),
@@ -134,9 +158,10 @@ def apps_sso(ctx):
     expect(r.status == 302 and (r.header("location") or "").startswith(origin() + "/login?next="), f"no session: {r.status} {r.header('location')}")
     r = http("GET", "chat", "/.bn/sso?next=%2F", nav, cookie=s)
     expect(r.status != 200 or "auth.credentials" not in r.text, "chat host answers /.bn/sso")
-    return ("page loads → /.bn/sso (scripts not); admin: 303 + LiteLLM's token cookie (host-only, Lax) + HttpOnly marker; "
-            "files: no-store page, hash-only script, 15 s pass; fetch/cross-site/<script> 403, no session → login; "
-            "LiteLLM's own session kept, pages revalidated (no-cache)")
+    return ("page loads → /.bn/sso (scripts not); admin: 303 + LiteLLM's token cookie (host-only, Lax) + HttpOnly marker, "
+            f"never passed to LiteLLM (MCP OAuth: {direct.status} directly, 401 via admin); files: a check page, then ?mint=1 "
+            "stores credentials (no-store, hash-only script, 15 s pass); objects sandboxed + nosniff, the console not; "
+            "HEAD 405, no Sec-Fetch 403, fetch/cross-site/<script> 403, no session → login; LiteLLM's own session kept, pages revalidated")
 
 
 @check("http", "unknown-host-and-internal-paths")

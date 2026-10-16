@@ -76,6 +76,27 @@
 	header @bn_page ?Cache-Control "no-cache"
 }
 
+# Towards LiteLLM: no `token` cookie. Its admin UI keeps its session there but sends it as Authorization itself;
+# LiteLLM also takes the cookie as a credential on a few browser routes (MCP OAuth, BYOK sessions), which a page on
+# another of the portal's hosts could drive with your cookies. The cost: those LiteLLM browser-redirect flows (unused
+# here) need an Authorization header. Only that cookie goes (csrftoken and the like stay).
+(litellm_upstream) {
+	header_up Cookie "(^|;\s*)token=[^;]*" ""
+}
+
+# The files host also answers RustFS's S3 API (the console signs its requests for this name), so a stored file opened
+# there would run on the console's origin, next to the credentials it keeps in localStorage. Everything but the console
+# and the sign-in hand-off is inert there: a sandbox (no scripts, an origin of its own), framed only by the portal
+# ({args[0]}), never content-sniffed. Downloads and the console's own requests are unaffected.
+(files_inert) {
+	@bn_object not path /rustfs/console /rustfs/console/* /.bn/*
+	header @bn_object {
+		Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors {args[0]}"
+		X-Content-Type-Options nosniff
+		defer
+	}
+}
+
 # Replaces whatever framing policy the app sends (LiteLLM: X-Frame-Options DENY + CSP frame-ancestors 'none';
 # Open WebUI and RustFS: none) with "only the portal may frame this".
 (frame_by_portal_only) {
@@ -140,6 +161,7 @@ http://{$ADMIN_HOST} {
 		import app_sso
 		reverse_proxy litellm:4000 {
 			import drop_session_cookie
+			import litellm_upstream
 			# LiteLLM's CSP holds nothing but frame-ancestors 'none', so replacing it loses nothing else.
 			import frame_by_portal_only
 		}
@@ -151,6 +173,7 @@ http://{$FILES_HOST} {
 		import local_request
 		import portal_auth
 		import app_sso
+		import files_inert {$PORTAL_ORIGIN}
 		reverse_proxy rustfs:9001 {
 			import drop_session_cookie
 			import frame_by_portal_only

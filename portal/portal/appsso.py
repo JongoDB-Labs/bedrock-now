@@ -6,27 +6,35 @@ to the browser on the app's own host — never in a URL:
 
 - Admin: POST litellm:4000/v2/login (the dashboard's own sign-in call) → the JWT that LiteLLM's form would have set,
   as the same host-only `token` cookie on the admin host (not HttpOnly: the dashboard reads it from document.cookie).
+  Caddy keeps that cookie from LiteLLM itself (it would take it as a credential on a few browser routes).
 - Files: STS AssumeRole on rustfs:9000 (what the console's form does) → temporary credentials (12 h), written into the
   console's localStorage (auth.credentials) by a small page on the files host; they travel in that page's body only.
+  RustFS keeps a small identity record per pair (.rustfs.sys/config/iam/sts/) until it expires.
 
 /auth/verify (Caddy's check before every request) decides when, for page loads only (a script's requests pass as
 they are), sending them to /.bn/sso on the same host (Caddy → /auth/app-sso):
 - Admin: no LiteLLM session in the browser (its `token` cookie), or one the portal handed out for another portal
   sign-in or other credentials (a signed marker cookie says which), or LiteLLM's own sign-in page.
 - Files: every load of a console page, since the console's session lives in localStorage, out of the server's sight
-  (its own Logout clears it); STS credentials are stateless, so a fresh pair per load costs nothing. Only the hand-off's
-  own next step (a pass cookie for a few seconds) goes straight through.
-?sso=off on the app's sign-in page shows its own form (the fallback).
+  (its own Logout clears it). A first page checks there, in the browser, for credentials from this portal session
+  and these keys; only without them does it ask for new ones (?mint=1). The hand-off's own next step (a pass cookie
+  for a few seconds) goes straight through.
+?sso=off on the app's sign-in page shows its own form (the fallback). Sign out (and a new PORTAL_PASSWORD) deletes every
+LiteLLM UI session of the Admin user (Sweeper), retried until LiteLLM has done it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
 import hashlib
 import hmac
 import html
 import json
+import logging
+import os
+import posixpath
 import re
 import time
 from pathlib import Path
@@ -38,6 +46,7 @@ from starlette.responses import HTMLResponse
 
 from .config import Settings
 
+log = logging.getLogger("portal")
 STATIC = Path(__file__).parent / "static"
 
 APPS = ("admin", "files")
@@ -55,7 +64,10 @@ LOOP_MAX, LOOP_WINDOW = 5, 15   # hand-offs to one host, each within LOOP_WINDOW
 PASS_SECONDS = 15        # Files: page loads right after a hand-off go straight through (its own next step)
 MARGIN = 300            # the marker ends this many seconds before the app session does
 STS_SECONDS = 12 * 3600  # what RustFS's console asks for itself
-MAX_PER_MINUTE = 20      # hand-offs across all browsers (each one is a LiteLLM key or STS credentials)
+MAX_PER_MINUTE = 20      # sign-ins (a LiteLLM key or STS credentials) per portal session and minute
+MINT = "mint=1"          # Files: the browser has no usable credentials, make new ones
+UI_TEAM = "litellm-dashboard"   # LiteLLM puts every UI session key (its form's and ours) in this team
+ENV_ADMIN_ID = "default_user_id"  # LiteLLM's user for UI_USERNAME / UI_PASSWORD (before setup made the DB admin)
 
 _JWT = re.compile(r"[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,1024}")
 _STS_VALUE = re.compile(r"[A-Za-z0-9+/=._~-]{8,4096}")
@@ -126,47 +138,171 @@ class Markers:
 
 
 class Budget:
-    """At most MAX_PER_MINUTE hand-offs a minute in all (one user; this only stops a runaway loop or a flood)."""
+    """At most MAX_PER_MINUTE sign-ins a minute per portal session (its start time and Tailscale login): one browser
+    in a loop, or a flood from it, never uses up another's."""
 
     def __init__(self, clock=time.monotonic):
-        self._clock, self._times = clock, []
+        self._clock, self._times = clock, {}
 
-    def take(self) -> bool:
+    def take(self, session) -> bool:
         now = self._clock()
-        self._times = [t for t in self._times if now - t < 60]
-        if len(self._times) >= MAX_PER_MINUTE:
+        self._times = {k: kept for k, ts in self._times.items() if (kept := [t for t in ts if now - t < 60])}
+        times = self._times.setdefault(session, [])
+        if len(times) >= MAX_PER_MINUTE:
             return False
-        self._times.append(now)
+        times.append(now)
         return True
 
 
-class MintedKeys:
-    """The LiteLLM UI keys the portal's sign-ins created (in memory, until they expire): Sign out deletes them, so
-    an Admin session ends with the portal session (a portal restart forgets them; they then run out after 24 h)."""
+class SweepError(Exception):
+    pass
 
-    MAX = 200
 
-    def __init__(self, clock=time.time):
-        self._clock, self._keys = clock, {}
+async def ui_user_ids(http: httpx.AsyncClient, s: Settings, headers: dict) -> list[str]:
+    """LiteLLM's user ids for the Admin sign-in: the database admin (found by its email) and the UI_USERNAME admin."""
+    ids, user = [ENV_ADMIN_ID], (s.litellm_ui_user or "").strip().lower()
+    if "@" in user:
+        r = await http.get(f"{s.litellm_url}/user/list", params={"user_email": user, "page_size": 100}, headers=headers,
+                           timeout=10)
+        if r.status_code != 200:
+            raise SweepError(f"LiteLLM's /user/list answered HTTP {r.status_code}")
+        users = r.json().get("users") or []
+        ids += [u["user_id"] for u in users if isinstance(u, dict) and isinstance(u.get("user_id"), str)
+                and (u.get("user_email") or "").strip().lower() == user]
+    return ids
 
-    def add(self, key: str, exp: float) -> None:
-        now = self._clock()
-        self._keys = {k: e for k, e in self._keys.items() if e > now}
-        if len(self._keys) >= self.MAX:
-            self._keys.pop(min(self._keys, key=self._keys.get))
-        self._keys[key] = exp
 
-    def take(self) -> list[str]:
-        now = self._clock()
-        keys = [k for k, e in self._keys.items() if e > now]
-        self._keys = {}
-        return keys
+def _created(raw) -> float:
+    try:
+        t = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0   # unreadable: counts as old, so it goes
+    return (t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)).timestamp()
+
+
+async def sweep_ui_keys(http: httpx.AsyncClient, s: Settings, before: float) -> int:
+    """Deletes every LiteLLM UI session key (team litellm-dashboard) of the Admin user made before BEFORE — the
+    portal's hand-offs and LiteLLM's own form alike; returns how many. Raises SweepError when LiteLLM did not do it.
+    (LiteLLM 1.105's /key/list leaves UI session keys out even for the master key; /spend/keys lists every key.)"""
+    if not s.litellm_master_key:
+        return 0
+    headers = {"Authorization": f"Bearer {s.litellm_master_key}"}
+    try:
+        ids = set(await ui_user_ids(http, s, headers))
+        r = await http.get(f"{s.litellm_url}/spend/keys", headers=headers, timeout=20)
+        if r.status_code != 200:
+            raise SweepError(f"LiteLLM's /spend/keys answered HTTP {r.status_code}")
+        rows = r.json()
+        if not isinstance(rows, list):
+            raise SweepError("LiteLLM's /spend/keys answered something else than a list")
+        gone = [k["token"] for k in rows if isinstance(k, dict) and isinstance(k.get("token"), str)
+                and k.get("team_id") == UI_TEAM and k.get("user_id") in ids and _created(k.get("created_at")) < before]
+        for token in gone:   # one by one: a key LiteLLM's own Logout deleted meanwhile is a 404, not a failure
+            d = await http.post(f"{s.litellm_url}/key/delete", json={"keys": [token]}, headers=headers, timeout=10)
+            if d.status_code not in (200, 404):
+                raise SweepError(f"LiteLLM's /key/delete answered HTTP {d.status_code}")
+    except (httpx.HTTPError, ValueError, AttributeError) as e:
+        raise SweepError(f"LiteLLM did not answer ({type(e).__name__})") from None
+    return len(gone)
+
+
+class Sweeper:
+    """Ends every Admin (LiteLLM UI) session made before a sign-out: Sign out, Sign out other devices, and a new
+    PORTAL_PASSWORD (seen at start-up). The time to sweep up to is kept in the state volume until LiteLLM has done it,
+    so a portal restart or LiteLLM being down only delays it (retried with back-off)."""
+
+    BACKOFF = (5, 15, 60, 300)
+
+    def __init__(self, state_dir: Path | None, clock=time.time):
+        self._file = state_dir / "litellm-ui-sweep" if state_dir else None
+        self._clock = clock
+        self.pending = self._load()
+        self._lock = asyncio.Lock()
+        self._wake = asyncio.Event()
+
+    def _load(self) -> float | None:
+        try:
+            return float(self._file.read_text(encoding="ascii").strip()) if self._file else None
+        except (OSError, ValueError):
+            return None
+
+    def _save(self) -> None:
+        if self._file is None:
+            return
+        try:
+            if self.pending is None:
+                self._file.unlink(missing_ok=True)
+            else:
+                tmp = self._file.with_name(f".{self._file.name}.{os.getpid()}.tmp")
+                tmp.write_text(repr(self.pending), encoding="ascii")
+                os.replace(tmp, self._file)
+        except OSError as e:
+            log.warning("cannot save the pending Admin sign-out to %s (%s)", self._file, e)
+
+    def request(self, before: float | None = None) -> None:
+        t = self._clock() if before is None else before
+        self.pending = max(self.pending or 0.0, t)
+        self._save()
+        self._wake.set()
+
+    def password_changed(self, fingerprint: str, state_dir: Path | None) -> None:
+        """At start-up: a new PORTAL_PASSWORD (or PORTAL_SECRET) since the last start ended every portal session, so
+        their Admin sessions go too. Only a hash of the fingerprint is kept."""
+        if state_dir is None:
+            return
+        f, now = state_dir / "portal-fingerprint", hashlib.sha256(fingerprint.encode()).hexdigest()
+        try:
+            before = f.read_text(encoding="ascii").strip()
+        except OSError:
+            before = None
+        if before is not None and before != now:
+            log.info("the portal password changed: ending every Admin (LiteLLM) session from before")
+            self.request()
+        try:
+            f.write_text(now, encoding="ascii")
+        except OSError as e:
+            log.warning("cannot write %s (%s)", f, e)
+
+    async def attempt(self, http: httpx.AsyncClient, s: Settings) -> bool:
+        """One sweep if one is pending; True when nothing is left to do."""
+        async with self._lock:
+            t = self.pending
+            if t is None:
+                return True
+            try:
+                n = await sweep_ui_keys(http, s, t)
+            except SweepError as e:
+                log.warning("ending the Admin (LiteLLM) sessions after a sign-out failed, will retry: %s", e)
+                return False
+            if self.pending == t:
+                self.pending = None
+                self._save()
+            log.info("Sign out: ended %d Admin (LiteLLM) session%s", n, "" if n == 1 else "s")
+            return self.pending is None
+
+    async def run(self, http: httpx.AsyncClient, s: Settings) -> None:
+        """The background loop: a pending sweep now, then whenever one is asked for; failures back off."""
+        tries = 0
+        while True:
+            self._wake.clear()
+            if self.pending is not None and not await self.attempt(http, s):
+                delay = self.BACKOFF[min(tries, len(self.BACKOFF) - 1)]
+                tries += 1
+            else:
+                delay, tries = None, 0
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
 
 
 # --- when (verify) ---
 
 def _path(raw: str) -> str:
-    return re.sub(r"/+", "/", unquote(raw or "/"))
+    """A request path as the browser means it: decoded, single slashes, no . or .. (a trailing slash kept)."""
+    p = re.sub(r"/+", "/", unquote(raw or "/"))
+    n = posixpath.normpath(p)
+    return n + "/" if p.endswith("/") and n != "/" else n
 
 
 def in_app(app: str, path: str) -> bool:
@@ -182,7 +318,8 @@ def is_sign_in(app: str, path: str) -> bool:
 
 
 def is_navigation(headers) -> bool:
-    """A page load (top level or a frame), not a script's request: Sec-Fetch-Mode where the browser sends it."""
+    """A page load (top level or a frame), not a script's request: Sec-Fetch-Mode where the browser sends it (a
+    browser without it is sent on too, and /.bn/sso then explains that it cannot sign it in)."""
     mode = headers.get("sec-fetch-mode")
     if mode is not None:
         return mode == "navigate"
@@ -196,8 +333,9 @@ def safe_path(app: str, raw: str | None) -> str:
         return start
     if any(ord(c) < 33 or ord(c) == 127 or c == "\\" for c in raw):
         return start
-    path = _path(urlsplit(raw).path)
-    if not in_app(app, path) or is_sign_in(app, path) or ".." in path.split("/"):
+    raw_path = unquote(urlsplit(raw).path)
+    path = _path(raw_path)
+    if path != raw_path or not in_app(app, path) or is_sign_in(app, path):   # (/ui/./login would loop)
         return start
     return raw
 
@@ -242,13 +380,19 @@ def target(app: str, uri: str, host: str, mark: str = "none", has_token: bool = 
 
 
 def request_ok(headers) -> bool:
-    """/.bn/sso only as a page load from this site (a frame, a tab, a typed URL): never a script's request, an
-    embedded resource or a link from another site."""
-    if (headers.get("sec-fetch-site") or "same-origin") not in ("same-origin", "same-site", "none"):
-        return False
-    if (headers.get("sec-fetch-mode") or "navigate") != "navigate":
-        return False
-    return (headers.get("sec-fetch-dest") or "document") in ("document", "iframe", "frame")
+    """/.bn/sso only as a page load from this site (a frame, a tab, a typed URL), in a browser that says so with its
+    Sec-Fetch headers: never a script's request, an embedded resource, a link from another site — or a browser that
+    does not say."""
+    return (headers.get("sec-fetch-site") in ("same-origin", "same-site", "none")
+            and headers.get("sec-fetch-mode") == "navigate"
+            and headers.get("sec-fetch-dest") in ("document", "iframe", "frame"))
+
+
+def files_mark(s: Settings, iat: float, login: str | None) -> str:
+    """Files: names the portal session and key pair the console's credentials must come from (kept next to them in
+    the browser; an HMAC, nothing secret)."""
+    msg = f"files\0{iat!r}\0{login or ''}\0{fingerprint(s, 'files')}".encode("utf-8", "surrogatepass")
+    return hmac.new(s.secret.encode(), msg, hashlib.sha256).hexdigest()[:32]
 
 
 # --- LiteLLM ---
@@ -286,19 +430,6 @@ async def litellm_session(http: httpx.AsyncClient, s: Settings, clock=time.time)
     if not isinstance(exp, (int, float)) or exp <= clock() + 60 or not isinstance(key, str) or not key:
         raise SignInError("LiteLLM's sign-in answered without a usable session (a LiteLLM version this portal does not know?).")
     return token, float(exp), key
-
-
-async def revoke_litellm_keys(http: httpx.AsyncClient, s: Settings, keys: list[str]) -> int:
-    """Deletes the portal's UI keys in LiteLLM (master key); returns how many went. Never raises."""
-    gone = 0
-    for key in keys:
-        try:
-            r = await http.post(f"{s.litellm_url}/key/delete", json={"keys": [key]},
-                                headers={"Authorization": f"Bearer {s.litellm_master_key}"}, timeout=5)
-            gone += r.status_code == 200
-        except httpx.HTTPError:
-            pass
-    return gone
 
 
 # --- RustFS ---
@@ -366,11 +497,15 @@ async def rustfs_session(http: httpx.AsyncClient, s: Settings, clock=time.time) 
 
 # --- the pages on the app hosts (styled by the portal's public login.css; framed only by the portal) ---
 
-# Stores the credentials where RustFS's console keeps its own (localStorage of the files host), then opens the console.
-FILES_SCRIPT = ('(function(){var d=JSON.parse(document.getElementById("bn-sso").textContent);'
-                'try{localStorage.setItem("auth.credentials",JSON.stringify(d.credentials));'
-                'localStorage.removeItem("auth.oidcSession");localStorage.removeItem("auth.isAdmin");}catch(e){}'
-                'location.replace(d.next);})();')
+# The files host's hand-off page, two ways. With credentials: stores them where RustFS's console keeps its own
+# (localStorage) with the mark of this portal session and key pair, then opens the console. Without: opens the console
+# if the browser already holds credentials with that mark that are good for 10 more minutes, else asks for new ones.
+FILES_SCRIPT = ('(function(){var d=JSON.parse(document.getElementById("bn-sso").textContent),ok=false;'
+                'try{var s=window.localStorage;if(d.credentials){s.setItem("auth.credentials",JSON.stringify(d.credentials));'
+                's.setItem("bn.sso",d.want);s.removeItem("auth.oidcSession");s.removeItem("auth.isAdmin");ok=true;}'
+                'else{var c=JSON.parse(s.getItem("auth.credentials")||"null");ok=!!(c&&c.SessionToken&&'
+                'new Date(c.Expiration).getTime()>Date.now()+6e5&&s.getItem("bn.sso")===d.want);}}catch(e){ok=!!d.credentials;}'
+                'location.replace(ok?d.next:d.mint);})();')
 FILES_SCRIPT_HASH = "sha256-" + base64.b64encode(hashlib.sha256(FILES_SCRIPT.encode()).digest()).decode()
 
 
@@ -390,8 +525,12 @@ def _page(portal: str, title: str, lede: str, extra: str = "", status: int = 200
     return resp
 
 
-def files_page(portal: str, creds: dict, nxt: str, manual: str) -> HTMLResponse:
-    data = json.dumps({"credentials": creds, "next": nxt}).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+def files_page(portal: str, creds: dict | None, nxt: str, manual: str, want: str = "", mint: str = "") -> HTMLResponse:
+    """CREDS: the page that stores new ones; None: the page that checks the browser's own first (else goes to MINT)."""
+    payload = {"next": nxt, "want": want, "mint": mint or nxt}
+    if creds is not None:
+        payload["credentials"] = creds
+    data = json.dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     extra = (f'<script type="application/json" id="bn-sso">{data}</script>\n<script>{FILES_SCRIPT}</script>\n'
              f'<noscript><p class="hint">Files needs JavaScript. <a href="{html.escape(manual, quote=True)}">'
              "Sign in with the key pair instead</a>.</p></noscript>")
