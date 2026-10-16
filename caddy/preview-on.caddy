@@ -1,51 +1,20 @@
 # The Code page's browser previews of dev servers in the sandbox (README "Previews of dev servers"; docs/security.md
 # "Previews of dev servers in the sandbox"): on with the Code page (compose.code.yaml sets PREVIEW_MODE=on;
-# preview-off.caddy otherwise). Imported by Caddyfile.
+# preview-off.caddy otherwise). Imported by Caddyfile, whose preview_upstream snippet carries the requests on.
 #
-# Local only. This site is on the local listener (127.0.0.1:PORTAL_PORT) alone; the remote sites (remote-*.caddy, on
-# :8081 / :8443) have no preview block, and the portal refuses previews for remote requests too.
+# The local preview site. This site is on the local listener (127.0.0.1:PORTAL_PORT) alone; over remote access the
+# previews have a host of their own on the remote sites (remote_preview in Caddyfile, imported by remote-*.caddy).
 #
 # Every preview has a host of its own, p<port>-<capability>.<PREVIEW_DOMAIN> (p5173-<capability>.bedrock-now-preview.
 # localhost): a different *site* from the portal's (bedrock-now.localhost), so a preview — whatever script the sandbox
 # serves — never receives the portal's cookies (the session's is Domain=PORTAL_HOST), its
 # requests to the portal, Chat, Admin, Files, the terminal or the Code page are cross-site (SameSite=Strict cookies stay
-# home), and it cannot plant cookies on them. lib/code.sh derives PREVIEW_DOMAIN from PORTAL_HOST.
+# home), and it cannot plant cookies on them. lib/code.sh derives PREVIEW_DOMAIN from PORTAL_HOST. (Every app host's
+# not_from_preview refuses a preview's Origin besides.)
 #
 # The capability in the host name (the portal mints it on the code host, /.bn/preview, from the Code page's unlock)
 # replaces cookies: the portal checks it on every request (/auth/verify?app=preview: the signature, the port, the
 # unlock's 12 hours, Sign out, the password; and no Origin but this preview's own) and answers with the port.
-(preview_upstream) {
-	# towards bn-preview: none of what only Caddy, the portal or the sidecar may set, no bedrock-now cookie (a browser
-	# sends none here: another site; a preview's own bn_* go too), no Referer (it names the capability); Host and
-	# Origin as the dev server expects them for its own address (Vite's, Next's and webpack's host checks pass
-	# unchanged); the preview's secret header, which the gateway requires before bn-preview and removes
-	header_up -X-Portal-Proxy
-	header_up -X-Portal-User
-	header_up -Referer
-	header_up Cookie "(^|;\s*)(__Host-)?bn_[^=;]*=[^;]*" ""
-	header_up Cookie "^[;\s]+" ""
-	header_up Host localhost:{http.request.header.X-Bn-Preview-Port}
-	header_up Origin ".+" "http://localhost:{http.request.header.X-Bn-Preview-Port}"
-	header_up X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1
-	# back: the app's own headers, but no cookie for the whole preview domain (Domain= dropped, in any spelling:
-	# host-only), no framing refusal of its own (the CSP below decides; bn-preview drops the app's frame-ancestors),
-	# nothing that clears site data, widens a service worker or sends reports; no Referer to other origins (it would
-	# name the capability) — same-origin keeps it, and with it the Origin of the app's own form posts (no-referrer
-	# makes browsers send "Origin: null" for those); and a CSP added beside the app's own (both apply): only the Code
-	# page (in the portal) may frame it, and it frames nothing on bedrock-now's hosts (or this computer's localhost:
-	# only https, its own previews, data: and blob:)
-	header_down -X-Frame-Options
-	header_down -Clear-Site-Data
-	header_down -Service-Worker-Allowed
-	header_down -Content-Security-Policy-Report-Only
-	header_down -Report-To
-	header_down -Reporting-Endpoints
-	header_down -NEL
-	header_down Set-Cookie "(?i);\s*domain\s*=[^;]*" ""
-	header_down Referrer-Policy same-origin
-	header_down +Content-Security-Policy "frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}; frame-src 'self' https: data: blob: http://*.{$PREVIEW_DOMAIN}:*"
-}
-
 http://*.{$PREVIEW_DOMAIN} {
 	route {
 		import local_request
@@ -56,7 +25,7 @@ http://*.{$PREVIEW_DOMAIN} {
 			copy_headers X-Bn-Preview-Port
 		}
 		reverse_proxy terminal-upstream:7682 {
-			import preview_upstream
+			import preview_upstream "{$CODE_ORIGIN} {$PORTAL_ORIGIN}" "http://*.{$PREVIEW_DOMAIN}:*"
 		}
 	}
 }

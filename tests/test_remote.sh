@@ -50,7 +50,8 @@ test_ts_names_are_per_project() {
   printf 'COMPOSE_PROJECT_NAME=bn_dev\n' > "$ENV_FILE"; assert_eq "$(ts_base)" "bedrock-now-bn-dev"
   printf 'TS_SERVICE=ai\nTS_HOSTNAME=box\n' > "$ENV_FILE"; assert_eq "$(ts_base) $(ts_node_name)" "ai box"
   valid_ts_label bedrock-now || return 1
-  for l in '' -a a- A_b "$(printf 'a%.0s' $(seq 1 58))"; do if valid_ts_label "$l"; then echo "accepted '$l'" >&2; return 1; fi; done
+  valid_ts_label "$(printf 'a%.0s' $(seq 1 54))" || return 1   # + -terminal, the longest suffix: 63, a DNS label's most
+  for l in '' -a a- A_b "$(printf 'a%.0s' $(seq 1 55))"; do if valid_ts_label "$l"; then echo "accepted '$l'" >&2; return 1; fi; done
 }
 
 test_validators() {
@@ -115,6 +116,12 @@ else:
   done
   : > "$ENV_FILE"
   assert_contains "$(ts_policy_snippet tailscale)" '"src": ["autogroup:member"]'
+}
+
+test_admin_steps_without_the_code_page_name_no_preview_service() {
+  : > "$ENV_FILE"
+  assert_not_contains "$(ts_admin_steps tailscale) $(ts_service_names) $(ts_serve_config tailscale "$TN")" "preview"
+  assert_eq "$(remote_app_list)" "chat admin files"
 }
 
 test_admin_steps_name_every_console_page() {
@@ -326,9 +333,9 @@ test_caddy_remote_sites_set_the_marker_after_deleting_it() {
     # only the sidecar's network, checked first
     assert_eq "$(printf '%s\n' "$snippet" | sed -n 2,3p | tr -d '\t')" "$(printf '@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32\nabort @not_sidecar')"
     assert_contains "$snippet" "request_header X-Portal-Proxy {env.PORTAL_PROXY_SECRET}"
-    # every remote site block uses the snippet (the four apps, the browser terminal and the Code page); the
-    # catch-all aborts other callers too
-    assert_eq "$(grep -c 'import remote_request' "$f")" 6
+    # every remote site block uses the snippet (the four apps, the browser terminal, the Code page and its previews);
+    # the catch-all aborts other callers too
+    assert_eq "$(grep -c 'import remote_request' "$f")" 7
     assert_eq "$(grep -c 'abort @' "$f")" 2
     up="$(awk '/^\(remote_upstream\)/,/^}/' "$f")"
     assert_contains "$up" 'header_down Set-Cookie "^(.*)$" "$1; Secure"'

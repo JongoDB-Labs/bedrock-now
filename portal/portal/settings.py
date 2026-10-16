@@ -360,7 +360,12 @@ def weakens(key: str, new: str, old: str) -> bool:
         return new != "on" and old == "on"
     if key == "UPDATE_CHECK":
         return new == "false" and old != "false"
+    if key == "REMOTE_PREVIEW":   # on unless false (blank = on): turning it on again weakens
+        return new.strip().lower() not in _OFF and old.strip().lower() in _OFF
     return new == "true" and old != "true"
+
+
+_OFF = ("false", "0", "no", "off")
 
 
 def policy_error(row: dict, value: str, local: bool) -> str | None:

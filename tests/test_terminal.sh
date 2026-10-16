@@ -502,10 +502,10 @@ test_caddy_terminal_site_gateway_and_remote_gating() {
   assert_contains "$f" 'import terminal-{$TERMINAL_MODE:off}.caddy'
   assert_eq "$(grep -cv '^#' "$STACK_DIR/caddy/terminal-off.caddy")" 0   # off: no site
   site="$(awk '/^http:\/\/\{\$TERMINAL_HOST\}/,/^}/' "$STACK_DIR/caddy/terminal-on.caddy")"
-  # first the local rules, then the Code page's unlock hand-off and the unlock form, then the check — only then ttyd,
-  # through the gateway
+  # first the local rules and the same-site guard, then the Code page's unlock hand-off and the unlock form, then the
+  # check — only then ttyd, through the gateway
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
-    "import local_request import terminal_callback import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
+    "import local_request import not_from_preview import terminal_callback import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
   cb="$(awk '/^\(terminal_callback\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   assert_contains "$cb" "@bn_unlock_callback path /.bn/unlock-callback"
   assert_contains "$cb" "rewrite /auth/terminal-unlock-callback?{query}"

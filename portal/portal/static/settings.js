@@ -28,7 +28,7 @@
     files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
     code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS"],
     updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
-    remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN"],
+    remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"],
   };
   // shown with another key's row (a pair, or a part of a larger form)
   const WITH = { AWS_SECRET_ACCESS_KEY: "AWS_ACCESS_KEY_ID", STT_API_KEY: "STT_PROVIDER", STT_MODEL: "STT_PROVIDER",
@@ -170,8 +170,12 @@
     return k.set ? "set" : "not set";
   }
 
+  // switches that are on unless false (blank = on: the stack reads them so; lib/settings.sh setting_weakens)
+  const ON_UNLESS_FALSE = new Set(["REMOTE_PREVIEW"]);
+  const isOff = (v) => ["false", "0", "no", "off"].includes(String(v || "").trim().toLowerCase());
   function display(k) {
     const v = shown(k);
+    if (ON_UNLESS_FALSE.has(k.key)) return isOff(k.value) ? "Off" : "On";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
     if (k.secret === "S") return k.set ? "••••••••" : "not set";
@@ -190,6 +194,7 @@
     if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP)$/.test(k.key)) return usd(v) > usd(old);
     if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
     if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
+    if (ON_UNLESS_FALSE.has(k.key)) return !isOff(v) && isOff(old);
     return v === "true" && old !== "true";
   }
   function localOnlyHere(k, value) {
@@ -266,7 +271,7 @@
 
   function toggle(k, v) {
     const on = k.validator === "on_off" ? "on" : "true", off = k.validator === "on_off" ? "off" : (k.validator === "true_blank" ? "" : "false");
-    const cur = v === on ? on : off;
+    const cur = ON_UNLESS_FALSE.has(k.key) ? (isOff(k.value) ? off : on) : v === on ? on : off;
     const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
     for (const [val, label] of [[off, "Off"], [on, "On"]]) {
       const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });

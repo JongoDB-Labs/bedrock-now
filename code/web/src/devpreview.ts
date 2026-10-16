@@ -34,6 +34,17 @@ export function localLink(href: string): { port: number; path: string } | null {
   return port >= 1 && port <= 65535 ? { port, path: `${u.pathname}${u.search}${u.hash}` || '/' } : null;
 }
 
+/** Over remote access one preview host serves every port, and its cookie names the one this browser previews: once a
+ *  hand-off for `port` succeeded in the tab `key`, the other preview tabs routed that way show that port too — they
+ *  drop their link and say so (Try again mints theirs anew). Tabs of other kinds, and this computer's previews (a host
+ *  per port), are left alone. */
+export function switchedAway<T extends { kind: string; key: string; port?: number; link?: { handoff: boolean } | null; error?: string | null }>(
+  tabs: T[], key: string, port: number): T[] {
+  return tabs.map((t) => (t.kind === 'devserver' && t.key !== key && t.link?.handoff
+    ? { ...t, link: null, error: `This browser shows :${port} on the preview address now: over remote access it previews one port at a time. Try again to switch back to :${t.port}.` }
+    : t));
+}
+
 export type Viewport = 'fill' | 'desktop' | 'tablet' | 'phone';
 export const VIEWPORTS: { id: Viewport; label: string; w: number; h: number; icon: string }[] = [
   { id: 'fill', label: 'Fit the pane', w: 0, h: 0, icon: 'panelRight' },

@@ -371,15 +371,16 @@ if [ "$TERMINAL" = 1 ]; then
     [ "$cm" = off ] || [ "$CODE" = 1 ] || continue           # (its snippets need CODE_* only while it is on)
     # (the code site's names: this runs before ./stack code enable gives the container its own)
     # (the previews' site comes with the Code page: preview-on.caddy)
+    # (and the remote preview host: remote_preview, with the same-site guard on every app host)
     docker exec -e TERMINAL_MODE="$tm" -e CODE_MODE="$cm" -e PREVIEW_MODE="$cm" -e REMOTE_MODE="$rm" -e CODE_HOST="code.$HOST" \
       -e CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef -e PREVIEW_PROXY_SECRET=0123456789abcdef0123456789abcdef \
-      -e PREVIEW_DOMAIN="$PROJECT-preview.localhost" -e CODE_ORIGIN="http://code.$HOST" \
+      -e PREVIEW_DOMAIN="$PROJECT-preview.localhost" -e CODE_ORIGIN="http://code.$HOST" -e REMOTE_PREVIEW_HOST="$PROJECT-preview.tail0000.ts.net" \
       "$cad" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
       > "$LOGS/terminal-caddy-$tm-$cm-$rm.log" 2>&1 || bad="$bad terminal-$tm/code-$cm/remote-$rm"
   done; done; done
   docker exec "$tgw" caddy validate --config /etc/caddy/terminal-gateway.caddy --adapter caddyfile > "$LOGS/terminal-caddy-gateway.log" 2>&1 ||
     bad="$bad gateway"
-  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on$( [ "$CODE" = 1 ] && echo ' × the Code page (and its previews) off/on') × remote off/tailscale, and terminal-gateway.caddy"
+  if [ -z "$bad" ]; then record terminal caddy-configs-validate PASS "$(( $(now) - t0 ))" "caddy validate: Caddyfile with the terminal off/on$( [ "$CODE" = 1 ] && echo ' × the Code page (and its previews, local and remote) off/on') × remote off/tailscale, and terminal-gateway.caddy (own-domain mode: tests/caddy-validate.sh with the plugin build)"
   else record terminal caddy-configs-validate FAIL "$(( $(now) - t0 ))" "caddy validate failed for:$bad (logs $LOGS/terminal-caddy-*.log)"; fi
 fi
 

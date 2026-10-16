@@ -53,6 +53,41 @@
 	}
 }
 
+# The same-site guard, first thing on every app host — the portal, Chat, Admin, Files, the terminal and the Code page,
+# here and on the remote sites (docs/security.md "The same-site guard"). Cookies with SameSite=Strict or Lax keep out
+# requests from other *sites*, not from other hosts of the same site: every *.PORTAL_HOST here, every Service of a
+# tailnet (ts.net is on the public suffix list: all of <tailnet>.ts.net is one site) and every name under your
+# remote domain is one site — and so is the remote preview host (REMOTE_PREVIEW_HOST), which shows whatever the
+# sandbox serves. Its script could otherwise send requests to these hosts that carry your cookies. Refused:
+#   - anything whose Origin is a preview's (local: any host under PREVIEW_DOMAIN; remote: REMOTE_PREVIEW_HOST): a
+#     preview's fetches, form posts and WebSockets — even from a browser that sends no Sec-Fetch-* headers;
+#   - from any other host of the same site (Sec-Fetch-Site: same-site, which no page can set), everything but a page
+#     load (Sec-Fetch-Mode navigate, GET/HEAD: a link, a frame, a redirect — the portal's frames, its hand-offs and
+#     the Code page → terminal hand-off are all such) and a plain image, style sheet or script (no-cors GET: the
+#     unlock and sign-in pages load the portal's logo and style sheet), whose answer no page can read. So no script on
+#     a sibling host can read an app's answers (fetch, XHR, WebSocket) or change anything (POST, PUT, DELETE …).
+# The stack's own requests between its hosts are only such page loads and assets; an app's own requests are
+# same-origin. Requests without Sec-Fetch-Site (curl, ./stack, older browsers) and from other sites are not this
+# guard's business: the session's SameSite=Strict, the portal's Origin checks and the apps' own handle those.
+(not_from_preview) {
+	@bn_from_preview {
+		header Origin *.{$PREVIEW_DOMAIN:preview.invalid}*
+		header Origin https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}
+	}
+	header @bn_from_preview X-Bn-Refused "same-site guard: from a preview"
+	respond @bn_from_preview "refused: a request from a preview of the sandbox (bedrock-now's same-site guard, docs/security.md)" 403
+	@bn_same_site {
+		header Sec-Fetch-Site same-site
+		not {
+			method GET HEAD
+			header Sec-Fetch-Mode navigate
+			header Sec-Fetch-Mode no-cors
+		}
+	}
+	header @bn_same_site X-Bn-Refused "same-site guard: another host's script"
+	respond @bn_same_site "refused: a script's request from another host of this site (bedrock-now's same-site guard, docs/security.md)" 403
+}
+
 # The portal's session cookie (Domain={$PORTAL_HOST}) is never handed to the apps behind it, nor are the markers of
 # the automatic sign-in (app_sso below; they are only the portal's).
 (drop_session_cookie) {
@@ -117,6 +152,7 @@
 
 # The portal's routes, shared by the local site below and the remote site (remote-*.caddy).
 (portal_routes) {
+	import not_from_preview
 	# Caddy's own check endpoint is internal; browsers never need it.
 	respond /auth/verify 404
 	# The login form is a password and a next= URL; a larger body is refused before it reaches the portal.
@@ -148,6 +184,7 @@ http://{$PORTAL_HOST} {
 http://{$CHAT_HOST} {
 	route {
 		import local_request
+		import not_from_preview
 		import portal_auth
 		reverse_proxy open-webui:8080 {
 			import drop_session_cookie
@@ -159,6 +196,7 @@ http://{$CHAT_HOST} {
 http://{$ADMIN_HOST} {
 	route {
 		import local_request
+		import not_from_preview
 		import portal_auth
 		import app_sso
 		reverse_proxy litellm:4000 {
@@ -173,6 +211,7 @@ http://{$ADMIN_HOST} {
 http://{$FILES_HOST} {
 	route {
 		import local_request
+		import not_from_preview
 		import portal_auth
 		import app_sso
 		import files_inert {$PORTAL_ORIGIN}
@@ -282,7 +321,8 @@ http://{$FILES_HOST} {
 # stack's prices (/.bn/models), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the
 # portal) and the hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect
 # to that host's /.bn/unlock-callback, terminal_callback), and a preview link for a port in the sandbox (/.bn/preview:
-# its capability, from this unlock; caddy/preview-on.caddy). Any other /.bn/ path is nobody's.
+# locally its capability, from this unlock, caddy/preview-on.caddy; remotely a single-use hand-off to the preview
+# host, remote_preview below). Any other /.bn/ path is nobody's.
 (code_portal) {
 	@bn_code_preview path /.bn/preview
 	reverse_proxy @bn_code_preview portal:8000 {
@@ -323,7 +363,8 @@ http://{$FILES_HOST} {
 # styles only from the code host itself (styles also with this request's nonce), connections only to it, images also
 # data:/blob:, audio and video only from blob: (the file previews play workspace files from bytes the page fetched),
 # workers only from itself, frames only the terminal host ({args[1]}), itself (the terminal panel starts at
-# /.bn/terminal, which redirects there) and the dev-server previews' hosts (caddy/preview-on.caddy), no forms, no
+# /.bn/terminal, which redirects there) and the dev-server previews' hosts ({args[2]}: http://*.PREVIEW_DOMAIN:* here,
+# https://REMOTE_PREVIEW_HOST on the remote sites; caddy/preview-on.caddy, remote_preview), no forms, no
 # plugins, framed only by the portal ({args[0]}), and Trusted Types: no HTML-string sink can run at all, and the one
 # policy allowed, bn-worker (code/web/src/preview/tt.ts), turns
 # only the build's own worker paths into script URLs. The policy applies to the workers' own scripts too (Caddy sets
@@ -344,7 +385,72 @@ http://{$FILES_HOST} {
 	header_down -NEL
 	header_down X-Content-Type-Options nosniff
 	header_down Referrer-Policy same-origin
-	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* http://*.{$PREVIEW_DOMAIN:preview.invalid}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
+	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* {args[2]}; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
+}
+
+# The Code page's previews of dev servers in the sandbox (README "Previews of dev servers"; docs/security.md "Previews of
+# dev servers in the sandbox"): towards bn-preview in the sandbox (the terminal's gateway, terminal-upstream:7682),
+# after the portal's check named the port (X-Bn-Preview-Port). Used by the local preview site (caddy/preview-on.caddy)
+# and the remote one (remote_preview below). {args[0]}: who may frame a preview (the Code page and the portal of this
+# site); {args[1]}: the previews' own hosts (a preview may frame its own and other previews).
+(preview_upstream) {
+	# towards bn-preview: none of what only Caddy, the portal or the sidecar may set, no bedrock-now cookie (a browser
+	# sends none here locally: another site; remotely the preview host's own routing cookie; a preview's own bn_* go
+	# too), no Referer (it may name the capability), nothing of your Tailscale identity; Host and Origin as the dev
+	# server expects them for its own address (Vite's, Next's and webpack's host checks pass unchanged); the preview's
+	# secret header, which the gateway requires before bn-preview and removes
+	header_up -X-Portal-Proxy
+	header_up -X-Portal-User
+	header_up -X-Portal-Remote
+	header_up -Tailscale-*
+	header_up -Referer
+	header_up Cookie "(^|;\s*)(__Host-)?bn_[^=;]*=[^;]*" ""
+	header_up Cookie "^[;\s]+" ""
+	header_up Host localhost:{http.request.header.X-Bn-Preview-Port}
+	header_up Origin ".+" "http://localhost:{http.request.header.X-Bn-Preview-Port}"
+	header_up X-Bn-Preview-0{$PREVIEW_PROXY_SECRET} 1
+	# back: the app's own headers, but no cookie for the whole preview domain (Domain= dropped, in any spelling:
+	# host-only), none with bedrock-now's names (the remote preview host's routing cookie stays the portal's: emptied),
+	# no framing refusal of its own (the CSP below decides; bn-preview drops the app's frame-ancestors), nothing that
+	# clears site data, widens a service worker or sends reports; no Referer to other origins (it would name the
+	# capability) — same-origin keeps it, and with it the Origin of the app's own form posts (no-referrer makes browsers
+	# send "Origin: null" for those); and a CSP added beside the app's own (both apply): only the Code page and the
+	# portal ({args[0]}) may frame it, and it frames nothing on bedrock-now's local hosts (or this computer's localhost:
+	# only https, the previews' own hosts, data: and blob:)
+	header_down -X-Frame-Options
+	header_down -Clear-Site-Data
+	header_down -Service-Worker-Allowed
+	header_down -Content-Security-Policy-Report-Only
+	header_down -Report-To
+	header_down -Reporting-Endpoints
+	header_down -NEL
+	header_down Set-Cookie "(?i);\s*domain\s*=[^;]*" ""
+	header_down Set-Cookie "(?i)^\s*(__Host-|__Secure-)?bn_[^=]*=.*$" ""
+	header_down Referrer-Policy same-origin
+	header_down +Content-Security-Policy "frame-ancestors {args[0]}; frame-src 'self' https: data: blob: {args[1]}"
+}
+
+# The remote preview host (REMOTE_PREVIEW_HOST; remote-*.caddy, after remote_request and nothing else: it is not an
+# app host and gets no session): one host for every port, so the port comes from the host's own cookie
+# (__Host-bn_preview), which the portal sets at /.bn/preview-callback — a single-use, 60-second token the code host's
+# /.bn/preview minted for its unlock (answered before the check: the browser has no cookie yet). Then, like the local
+# preview site: the portal's check (the cookie, its unlock's 12 hours, Sign out, a new password, the Tailscale login;
+# no Origin but the preview's own) names the port, and preview_upstream carries the request to bn-preview. The Code
+# page and the portal of the remote site may frame it ({args[0]}).
+(remote_preview) {
+	@bn_preview_callback path /.bn/preview-callback
+	reverse_proxy @bn_preview_callback portal:8000 {
+		rewrite /auth/preview-callback?{query}
+	}
+	# (only the portal's answer below may name the port: client copies go first, in a step of their own)
+	request_header -X-Bn-Preview-*
+	forward_auth portal:8000 {
+		uri /auth/verify?app=preview
+		copy_headers X-Bn-Preview-Port
+	}
+	reverse_proxy terminal-upstream:7682 {
+		import preview_upstream "{args[0]}" "https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}"
+	}
 }
 
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only
@@ -383,7 +489,8 @@ import terminal-{$TERMINAL_MODE:off}.caddy
 # The Code page: code-off.caddy (nothing; the default) or code-on.caddy (compose.code.yaml).
 import code-{$CODE_MODE:off}.caddy
 
-# The Code page's previews: preview-off.caddy (nothing; the default) or preview-on.caddy (compose.code.yaml). Local only.
+# The Code page's previews: preview-off.caddy (nothing; the default) or preview-on.caddy (compose.code.yaml). The remote
+# preview host is remote-*.caddy's (remote_preview above).
 import preview-{$PREVIEW_MODE:off}.caddy
 
 # Remote access: remote-off.caddy (nothing), remote-tailscale.caddy or remote-domain.caddy.

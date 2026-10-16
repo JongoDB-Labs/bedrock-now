@@ -6,6 +6,38 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Previews of dev servers over remote access.** Wherever the Code page is remote (`REMOTE_TERMINAL=true`), its
+  **Preview** and **Open in a new tab** work from your phone and laptop too: one address for the previews,
+  `https://<name>-preview.<tailnet>.ts.net` (one more Tailscale Service: `./stack remote status` and the printed
+  admin-console steps name it, and `./stack up` says when a Service is new) or `preview.<your domain>`. A cookie on it
+  says which port your browser previews (`__Host-bn_preview`: host-only, `Secure`, `HttpOnly`, `SameSite=Strict`,
+  bound to the Code page's unlock and your Tailscale login), set by a single-use, 60-second hand-off from the Code
+  page — so a browser previews one port at a time there (the pane says so when another port takes over). Sign out,
+  a new password or the unlock's 12 hours end it. `REMOTE_PREVIEW=false` (Settings › Remote access, or
+  `./stack config set REMOTE_PREVIEW false`; on again only from the computer running bedrock-now) keeps previews on
+  this computer. Own-domain mode: `REMOTE_PREVIEW_DOMAIN` puts them on a domain of their own (another site; its own
+  certificate and DNS record).
+- **The same-site guard** on every app host — the portal, Chat, Admin, Files, the terminal and the Code page, on this
+  computer and over remote access: a request whose `Origin` is a preview's, and any script request from another host
+  of the same site (`Sec-Fetch-Site: same-site`: `fetch`, XHR, WebSockets, every `POST`), is refused by Caddy (403,
+  `X-Bn-Refused`) before the app; page loads and plain images and style sheets still pass. Every Service of a tailnet
+  is one site for browsers (`ts.net` is on the public suffix list), the preview host included, so `SameSite` cookies
+  alone would not keep a preview's script from acting as you. docs/security.md "The same-site guard".
+- `./stack test` checks the guard (a preview's Origin, another host's `POST` and fetch refused, a page load passes),
+  `./stack remote test` the remote preview host (refused without its cookie) and the guard there.
+- `tests/e2e/remote/run.sh`: remote access without a tailnet — the real portal and Caddyfile in Tailscale mode behind
+  a stand-in sidecar with its own CA, driven by Chromium: the hand-offs, the Code page's unlock, a preview in its pane
+  and in a new tab, the cookie's attributes and single use, one port at a time, Sign out; and, run again with the guard
+  taken out, what it stops (a preview reading a permissive Chat's API and posting to it as you).
+  `tests/caddy-validate.sh`: `caddy validate` of every mode combination (own-domain mode with the DNS-plugin build).
+
+### Changed
+
+- The Code page's previews are no longer "local only": the Code page shows why when they are off over remote access
+  (`REMOTE_PREVIEW=false`, or no address yet).
+
 ## [0.6.0] - 2026-10-16
 
 ### Added

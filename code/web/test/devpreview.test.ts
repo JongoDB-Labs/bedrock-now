@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanPreviewPath, fitScale, localLink, localPorts, VIEWPORTS } from '../src/devpreview';
+import { cleanPreviewPath, fitScale, localLink, localPorts, VIEWPORTS, switchedAway } from '../src/devpreview';
 import { normLaunchEntry, normPort, previewLinkOk, previewTabUrl } from '../src/api';
 
 test('localPorts: the local URLs a dev server prints, colours and all; not other hosts or ports without a number', () => {
@@ -50,7 +50,7 @@ test('viewports and fitting them into the pane', () => {
 test('a preview link from the portal: only http, a p<port>-<capability> host for that port, no credentials', () => {
   const cap = 'a'.repeat(9) + 'b'.repeat(24);
   const ok = { url: `http://p5173-${cap}.bedrock-now-preview.localhost:8800/`, origin: `http://p5173-${cap}.bedrock-now-preview.localhost:8800`, port: 5173, expires: 1800000000 };
-  assert.deepEqual(previewLinkOk(ok, 5173), { url: ok.url, origin: ok.origin, port: 5173, expires: 1800000000000 });
+  assert.deepEqual(previewLinkOk(ok, 5173), { url: ok.url, origin: ok.origin, port: 5173, expires: 1800000000000, handoff: false });
   assert.equal(previewLinkOk(ok, 3000), null);                                                    // another port
   assert.equal(previewLinkOk({ ...ok, url: ok.url.replace('http:', 'https:') }, 5173), null);
   assert.equal(previewLinkOk({ ...ok, origin: 'http://evil.example' }, 5173), null);
@@ -58,8 +58,38 @@ test('a preview link from the portal: only http, a p<port>-<capability> host for
   assert.equal(previewLinkOk({ ...ok, url: `http://u:p@p5173-${cap}.x.localhost/`, origin: `http://p5173-${cap}.x.localhost` }, 5173), null);
   assert.equal(previewLinkOk({ ...ok, url: 'http://code.bedrock-now.localhost/', origin: 'http://code.bedrock-now.localhost' }, 5173), null);
   assert.equal(previewLinkOk(null, 5173), null);
+  assert.equal(previewLinkOk({ ...ok, handoff: false, url: ok.url.replace('http:', 'https:'), origin: ok.origin.replace('http:', 'https:') }, 5173), null);
   assert.equal(previewTabUrl(5173), '/.bn/preview?port=5173');
   assert.equal(previewTabUrl(5173, '/a b?x=1'), '/.bn/preview?port=5173&path=%2Fa+b%3Fx%3D1');
+});
+
+test('over remote access: the preview host\'s single-use hand-off for that port, https only', () => {
+  const host = 'bn-preview.tail1234.ts.net';
+  const ok = { url: `https://${host}/.bn/preview-callback?t=abc.def&next=%2Fx`, origin: `https://${host}`, port: 5173, expires: 1800000000, handoff: true };
+  assert.deepEqual(previewLinkOk(ok, 5173), { url: ok.url, origin: ok.origin, port: 5173, expires: 1800000000000, handoff: true });
+  assert.equal(previewLinkOk(ok, 3000), null);                                                    // another port's
+  assert.equal(previewLinkOk({ ...ok, url: ok.url.replace('https:', 'http:'), origin: `http://${host}` }, 5173), null);
+  assert.equal(previewLinkOk({ ...ok, origin: 'https://evil.example' }, 5173), null);
+  assert.equal(previewLinkOk({ ...ok, url: `https://${host}/x?t=abc` }, 5173), null);             // not the hand-off
+  assert.equal(previewLinkOk({ ...ok, url: `https://${host}/.bn/preview-callback?next=%2F` }, 5173), null);   // no token
+  assert.equal(previewLinkOk({ ...ok, url: `https://u:p@${host}/.bn/preview-callback?t=a` }, 5173), null);
+  assert.equal(previewLinkOk({ ...ok, url: `https://${host}:8443/.bn/preview-callback?t=a`, origin: `https://${host}:8443` }, 5173), null);
+  assert.equal(previewLinkOk({ ...ok, url: 'javascript:alert(1)' }, 5173), null);
+});
+
+test('over remote access a browser previews one port at a time: the other remote preview tabs say so', () => {
+  const link = (handoff: boolean) => ({ url: 'u', origin: 'o', port: 1, expires: null, handoff });
+  const tabs = [
+    { kind: 'devserver', key: 'preview:5173', port: 5173, link: link(true), error: null },
+    { kind: 'devserver', key: 'preview:3000', port: 3000, link: link(true), error: null },
+    { kind: 'devserver', key: 'preview:8080', port: 8080, link: link(false), error: null },   // this computer's: a host per port
+    { kind: 'devserver', key: 'preview:9000', port: 9000, link: null, error: 'x' },
+    { kind: 'file', key: 'file:a', path: 'a' },
+  ];
+  const out = switchedAway(tabs, 'preview:3000', 3000);
+  assert.equal(out[0].link, null);
+  assert.match(out[0].error ?? '', /shows :3000 .*one port at a time.*switch back to :5173/);
+  assert.deepEqual(out.slice(1), tabs.slice(1));                                                   // the rest unchanged
 });
 
 test('ports and launch.json entries from the backend: checked again', () => {

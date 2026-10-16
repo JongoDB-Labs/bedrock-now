@@ -64,8 +64,8 @@ test_every_env_key_is_in_the_settings_table_once() {
   assert_eq "$dup" ""
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
-  # Chat's origin and the Code page's 5, + its previews' 2)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 117
+  # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access)
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 121
 }
 
 test_table_columns_are_valid() {
@@ -194,7 +194,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 118; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 122; assert d["last_change"] is None' "$f"
   fi
 }
 
@@ -518,6 +518,41 @@ test_code_allow_bypass_on_only_locally_and_it_recreates_the_code_container() {
   _lines CODE_ALLOW_BYPASS=false | _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null
   assert_eq "$(get_env CODE_ALLOW_BYPASS)" false
   assert_not_contains "$(cat "$TMP/calls")" "wait code"
+}
+
+test_remote_previews_on_unless_false_on_only_locally_and_they_restart_portal_and_caddy() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  assert_eq "$(setting_field REMOTE_PREVIEW 4)/$(setting_field REMOTE_PREVIEW 5)/$(setting_field REMOTE_PREVIEW 6)" "widen-local/bool/remote-preview"
+  # blank counts as on: blank → false is more protection (anywhere), false → true less (here only); true ↔ blank nothing
+  if setting_weakens REMOTE_PREVIEW false ''; then return 1; fi
+  if setting_weakens REMOTE_PREVIEW true ''; then return 1; fi
+  setting_weakens REMOTE_PREVIEW true false || return 1
+  setting_weakens REMOTE_PREVIEW true OFF || return 1
+  set_env REMOTE_PREVIEW false
+  if setting_allowed REMOTE_PREVIEW true remote; then return 1; fi
+  assert_contains "$SV_ERR" "REMOTE_PREVIEW can only be turned on from the computer running bedrock-now"
+  setting_allowed REMOTE_PREVIEW true local
+  set_env REMOTE_PREVIEW ''
+  setting_allowed REMOTE_PREVIEW false remote
+  # the Code page remote over Tailscale: off from a phone takes the address and the Service away and restarts the
+  # portal and Caddy; on again (here) brings both back, with a word about the Service to define
+  code_on() { return 0; }; terminal_on() { return 0; }
+  _ts() { :; }; remote_net_ok() { :; }
+  export TS_SERVE_DIR="$TMP/tailscale"
+  set_env_batch REMOTE_MODE tailscale REMOTE_HOST bn.tail1234.ts.net TS_TAILNET tail1234.ts.net REMOTE_TERMINAL true \
+    CODE_ENABLED true TERMINAL_ENABLED true TS_SERVICE bn
+  code_remote_sync; remote_serve_sync
+  assert_eq "$(get_env REMOTE_PREVIEW_HOST)" bn-preview.tail1234.ts.net
+  : > "$TMP/calls"
+  _lines REMOTE_PREVIEW=false | _apply --via portal --origin remote --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env REMOTE_PREVIEW)/$(get_env REMOTE_PREVIEW_HOST)" "false/"
+  assert_not_contains "$(cat "$TS_SERVE_DIR/serve.json")" "preview"
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait portal caddy"
+  : > "$TMP/calls"
+  _lines REMOTE_PREVIEW=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env REMOTE_PREVIEW_HOST)" bn-preview.tail1234.ts.net
+  assert_contains "$(cat "$TS_SERVE_DIR/serve.json")" '"svc:bn-preview"'
+  assert_contains "$(cat "$TMP/err")" "new Tailscale Service: svc:bn-preview"
 }
 
 test_apply_code_page_on_runs_code_enable() {

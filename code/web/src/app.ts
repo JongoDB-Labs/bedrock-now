@@ -10,7 +10,7 @@ import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
 import { remembered, startMode } from './modes';
 import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
-import { approveLaunch, approvedLaunch, type Viewport } from './devpreview';
+import { approveLaunch, approvedLaunch, switchedAway, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
@@ -71,14 +71,15 @@ export interface DiffTab {
   hunks: Hunk[];
   tool: string;
 }
-/** A preview of a dev server in the sandbox (its port), framed from the preview site (caddy/preview-on.caddy). */
+/** A preview of a dev server in the sandbox (its port), framed from the preview site (caddy/preview-on.caddy; over remote
+ *  access the remote preview host, remote_preview). */
 export interface PreviewTab {
   kind: 'devserver';
   key: string;
   /** what the tab shows as its name: localhost:<port> (the address in the sandbox) */
   path: string;
   port: number;
-  /** the preview link (with its capability) once the portal gave one */
+  /** the preview link (with its capability, or over remote access its hand-off) once the portal gave one */
   link: PreviewLink | null;
   /** the path the frame loads (the address field) */
   at: string;
@@ -1336,7 +1337,7 @@ function previewAction(port: number): Toast['action'] {
   return { label: 'Preview', run: () => (isPhone() ? window.open(api.previewTabUrl(port), '_blank', 'noopener,noreferrer') : void openPreview(port)) };
 }
 
-/** Whether previews work here (asked once; the portal says no over remote access). */
+/** Whether previews work here, and how (asked once; over remote access one host for every port, or off). */
 export async function loadPreviewInfo(force = false): Promise<PreviewInfo | null> {
   if (get().preview && !force) return get().preview;
   try {
@@ -1344,7 +1345,7 @@ export async function loadPreviewInfo(force = false): Promise<PreviewInfo | null
     set((s) => ({ ...s, preview: info }));
     return info;
   } catch (e) {
-    const info = { available: false, reason: `Could not ask the portal: ${errText(e)}` };
+    const info: PreviewInfo = { available: false, reason: `Could not ask the portal: ${errText(e)}`, routing: 'host' };
     set((s) => ({ ...s, preview: info }));
     return null;
   }
@@ -1357,43 +1358,55 @@ export async function openPreview(port: number, path = '/'): Promise<void> {
   const existing = get().tabs.find((t) => t.key === key);
   set((s) => ({
     ...s,
-    tabs: existing ? s.tabs.map((t) => (t.key === key && t.kind === 'devserver' ? { ...t, at: path, n: t.n + 1 } : t))
+    tabs: existing ? s.tabs.map((t) => (t.key === key && t.kind === 'devserver'
+      ? { ...t, at: path, n: t.n + 1, ...(t.link?.handoff ? { link: null, error: null } : {}) } : t))
       : [...s.tabs, { kind: 'devserver', key, path: `localhost:${port}`, port, link: null, at: path, n: 0, viewport: 'fill', error: null }],
     activeTab: key,
     sheet: isPhone() ? 'editor' : s.sheet,
     prefs: s.prefs.layout.tabletPane === 'editor' ? s.prefs : { ...s.prefs, layout: { ...s.prefs.layout, tabletPane: 'editor' } },
   }));
   savePrefs(get().prefs);
-  if (existing?.kind === 'devserver' && existing.link && !existing.error) return;
-  await linkPreview(key, port);
+  // (over remote access the preview host's cookie may name another port by now: a new hand-off for every opening)
+  if (existing?.kind === 'devserver' && existing.link && !existing.error && !existing.link.handoff) return;
+  await linkPreview(key, port, path);
 }
 
-async function linkPreview(key: string, port: number): Promise<void> {
+async function linkPreview(key: string, port: number, path = '/'): Promise<void> {
   const info = await loadPreviewInfo();
   if (info && !info.available) {
     updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, error: info.reason || 'Previews are off here.' } : t));
     return;
   }
   try {
-    const link = await api.getPreviewLink(port);
+    const link = await api.getPreviewLink(port, path);
     updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, link, error: null } : t));
+    // over remote access one host serves every port, and its cookie names the one this browser previews: the other
+    // preview tabs now show this port too — they say so, and Try again switches back
+    if (link.handoff) set((s) => ({ ...s, tabs: switchedAway(s.tabs, key, port) }));
   } catch (e) {
     updateTab(key, (t) => (t.kind === 'devserver' ? { ...t, error: errText(e) } : t));
   }
 }
 
-/** Reload the preview (at the address field's path); a link that failed is asked for again. */
+/** Reload the preview (at the address field's path); a link that failed is asked for again, and so is a remote one (a
+ *  hand-off works once). */
 export function reloadPreview(key: string): void {
   const t = get().tabs.find((x) => x.key === key);
   if (t?.kind !== 'devserver') return;
-  if (!t.link) {
-    updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, error: null } : x));
-    void linkPreview(key, t.port);
+  if (!t.link || t.link.handoff) {
+    updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, link: null, error: null } : x));
+    void linkPreview(key, t.port, t.at);
     return;
   }
   updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, n: x.n + 1 } : x));
 }
 export function navigatePreview(key: string, path: string): void {
+  const t = get().tabs.find((x) => x.key === key);
+  if (t?.kind === 'devserver' && t.link?.handoff) {
+    updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, at: path, link: null, error: null } : x));
+    void linkPreview(key, t.port, path);
+    return;
+  }
   updateTab(key, (x) => (x.kind === 'devserver' ? { ...x, at: path, n: x.n + 1 } : x));
 }
 export function setPreviewViewport(key: string, viewport: Viewport): void {

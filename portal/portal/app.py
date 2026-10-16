@@ -27,7 +27,8 @@ from . import admin, appicons, appsso, icons, prices, settings_api, summary, upd
 from . import code as codepage
 from .config import CODE, TERMINAL, Settings
 from .security import (
-    TERMINAL_MAX_AGE, Handoff, LoginThrottle, PreviewCaps, Sessions, TerminalUnlocks, cookie_params, is_remote,
+    PREVIEW_COOKIE, TERMINAL_MAX_AGE, Handoff, LoginThrottle, PreviewCaps, PreviewCookies, Sessions, TerminalUnlocks,
+    cookie_params, is_remote,
     remote_identity_ok, safe_next, same_origin, session_login, tailscale_login, terminal_origin_ok, terminal_same_origin,
     unlock_cookie_params, verify_password,
 )
@@ -83,15 +84,15 @@ def _error_page(message: str, status: int, link: str, link_text: str) -> HTMLRes
     return _no_store(resp)
 
 
-def _error_page_preview() -> HTMLResponse:
+def _error_page_preview(status: int = 403, more: str = "") -> HTMLResponse:
     """A preview link that does not (or no longer) work: on the preview's own site, so no link back (its address names no
-    portal) — plain text, no script, no external resources."""
+    portal) — plain text, no script, no external resources. more: a sentence for the remote preview host."""
     page = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'><title>Preview link "
             "expired</title><body style='font-family:system-ui;max-width:32rem;margin:3rem auto;padding:0 1rem'>"
             "<h1 style='font-size:1.15rem'>This preview link does not work (any more)</h1><p>Preview links last as long "
             "as the Code page's unlock (12 hours) and end with Sign out or a new password. Open the preview again from "
-            "the Code page.</p>")
-    resp = HTMLResponse(page, status_code=403)
+            f"the Code page.{(' ' + html.escape(more)) if more else ''}</p>")
+    resp = HTMLResponse(page, status_code=status)
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     return _no_store(resp)
@@ -177,8 +178,11 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     # the password-again cookies of the browser terminal and of the Code page: one each; the terminal's never opens the
     # Code page, the Code page's opens the terminal only through the single-use hand-off (unlock_handoff, above)
     unlocks = {app: TerminalUnlocks(settings.secret, sessions, app=app) for app in (TERMINAL, CODE)}
-    # the Code page's previews: a capability in each preview's host name, from the Code page's unlock (below)
+    # the Code page's previews: a capability in each preview's host name, from the Code page's unlock (below); over remote
+    # access a cookie on the one preview host, set through a single-use hand-off of that unlock
     previews = PreviewCaps(settings.secret, sessions)
+    preview_cookies = PreviewCookies(settings.secret, sessions)
+    preview_handoff = Handoff(settings.secret, sessions.fingerprint, salt="bedrock-now.portal.preview-handoff")
     # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
     # a cap on sign-ins per session, and ending the Admin sessions at Sign out (also after a new PORTAL_PASSWORD).
     markers, sso_budget = appsso.Markers(settings.secret), appsso.Budget()
@@ -472,16 +476,35 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         log.warning("terminal unlocked through the Code page%s", " (remote)" if rem else "")
         return _no_store(resp)
 
-    # --- the Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy; local only). GET /.bn/preview
-    # --- on the code host (Caddy → here, after the code host's check), from the page itself (Sec-Fetch-Site): a link to
-    # --- port N on the preview site, p<port>-<capability>.PREVIEW_DOMAIN, carrying the capability of this unlock
-    # --- (security.PreviewCaps) — JSON for the page (?format=json or Accept: application/json), else a redirect there
-    # --- (a link the page opens in a new tab). Without ?port: whether previews work here at all.
-    PREVIEW_REMOTE = ("Previews of the sandbox's dev servers are not available over remote access yet: open the Code page "
-                      "on the computer that runs bedrock-now.")
+    # --- the Code page's previews of dev servers in the sandbox. GET /.bn/preview on the code host (Caddy → here, after
+    # --- the code host's check), from the page itself (Sec-Fetch-Site): a link to port N — JSON for the page (?format=json
+    # --- or Accept: application/json), else a redirect there (a link the page opens in a new tab). Without ?port:
+    # --- whether previews work here at all, and how they are routed.
+    # ---   local:  p<port>-<capability>.PREVIEW_DOMAIN — the capability of this unlock in the host name (PreviewCaps)
+    # ---   remote: https://REMOTE_PREVIEW_HOST/.bn/preview-callback?t=<single-use 60-second token>&next=<path>, which
+    # ---           sets the preview host's cookie for that port (PreviewCookies; preview_callback below): one host for
+    # ---           every port, so a browser previews one port at a time there
+    def preview_reason(rem: bool) -> str:
+        if settings.preview_on(rem):
+            return ""
+        if not rem:
+            return "previews are off"
+        if not settings.remote_preview:
+            return ("Previews over remote access are turned off (REMOTE_PREVIEW=false): Settings › Remote access on the "
+                    "computer running bedrock-now turns them on.")
+        return ("Previews over remote access have no address yet: ./stack up on the computer running bedrock-now writes "
+                "it (REMOTE_PREVIEW_HOST), and with Tailscale the Service <name>-preview must be defined in its admin console.")
 
     def wants_json(request: Request) -> bool:
         return request.query_params.get("format") == "json" or "application/json" in request.headers.get("accept", "")
+
+    def preview_next(raw: str | None) -> str | None:
+        """A path on the preview itself (?path= / ?next=), else None."""
+        path = raw or "/"
+        if (not path.startswith("/") or path.startswith("//") or len(path) > 2000
+                or any(ord(c) < 33 or ord(c) > 126 or c == "\\" for c in path)):
+            return None
+        return path
 
     async def code_preview(request: Request) -> Response:
         if (deny := code_guard(request)) is not None:
@@ -489,50 +512,97 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         rem = remote(request)
         raw_port = request.query_params.get("port")
         if raw_port is None and wants_json(request):
-            return _no_store(JSONResponse({"available": settings.preview_on(rem), "domain": settings.preview_domain if not rem else "",
-                                           "reason": PREVIEW_REMOTE if rem else "" if settings.preview_on() else "previews are off"}))
+            domain = (settings.remote_preview_host if rem else settings.preview_domain) if settings.preview_on(rem) else ""
+            return _no_store(JSONResponse({"available": settings.preview_on(rem), "domain": domain,
+                                           "routing": "cookie" if rem else "host", "reason": preview_reason(rem)}))
         if not settings.preview_on(rem):
-            return _no_store(JSONResponse({"error": PREVIEW_REMOTE if rem else "previews are off"}, status_code=403 if rem else 404))
+            return _no_store(JSONResponse({"error": preview_reason(rem)}, status_code=403 if rem else 404))
         if request.headers.get("sec-fetch-site") != "same-origin":
             log.warning("preview link refused: not from the Code page (Sec-Fetch-Site %s)", request.headers.get("sec-fetch-site", "none")[:40])
             return _no_store(JSONResponse({"error": "open the preview from the Code page"}, status_code=403))
         port = raw_port or ""
         if not (port.isascii() and port.isdigit() and not port.startswith("0") and len(port) <= 5 and int(port) <= 65535):
             return _no_store(JSONResponse({"error": "port: a number from 1 to 65535"}, status_code=400))
-        path = request.query_params.get("path") or "/"
-        if (not path.startswith("/") or path.startswith("//") or len(path) > 2000
-                or any(ord(c) < 33 or ord(c) > 126 or c == "\\" for c in path)):
+        path = preview_next(request.query_params.get("path"))
+        if path is None:
             return _no_store(JSONResponse({"error": "path: a path on the preview's own address, like /about?x=1"}, status_code=400))
-        unlock = unlocks[CODE].claims(request.cookies.get(unlock_cookie_params(CODE, rem)["key"]), session_login(request.headers, settings))
+        login = session_login(request.headers, settings)
+        unlock = unlocks[CODE].claims(request.cookies.get(unlock_cookie_params(CODE, rem)["key"]), login)
         if unlock is None:   # (code_guard checked it; a race with Sign out)
             return _no_store(JSONResponse({"error": "locked"}, status_code=401))
-        host = f"{previews.label(int(port), unlock['iat'])}.{settings.preview_domain}"
-        origin = f"http://{host}" if settings.port == 80 else f"http://{host}:{settings.port}"
+        if rem:
+            host = settings.remote_preview_host
+            origin = f"https://{host}"
+            token = preview_handoff.issue(host, unlock["iat"], login, p=int(port))
+            url = f"{origin}/.bn/preview-callback?t={quote(token, safe='')}&next={quote(path, safe='')}"
+        else:
+            host = f"{previews.label(int(port), unlock['iat'])}.{settings.preview_domain}"
+            origin = f"http://{host}" if settings.port == 80 else f"http://{host}:{settings.port}"
+            url = origin + path
         if wants_json(request):
-            return _no_store(JSONResponse({"url": origin + path, "origin": origin, "port": int(port),
+            return _no_store(JSONResponse({"url": url, "origin": origin, "port": int(port), "handoff": rem,
                                            "expires": int(unlock["iat"] + TERMINAL_MAX_AGE)}))
-        resp = RedirectResponse(origin + path, status_code=303)
+        resp = RedirectResponse(url, status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
+        return _no_store(resp)
+
+    # --- the remote preview host's hand-off: GET /.bn/preview-callback?t=…&next=… on REMOTE_PREVIEW_HOST (Caddy → here,
+    # --- before the host's check) redeems the token — this host, unused, 60 seconds, this login, minted after the portal
+    # --- started, for the current password — into the host's cookie for that port and unlock, then on to the path.
+    async def preview_callback(request: Request) -> Response:
+        rem = remote(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if not rem or not settings.preview_on(True) or host != settings.remote_preview_host:
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        login = session_login(request.headers, settings)
+        data = preview_handoff.redeem(request.query_params.get("t"), host)
+        port = data.get("p") if data else None
+        if data is None or (data["u"] or None) != login or not isinstance(port, int) or not 1 <= port <= 65535:
+            return _error_page_preview(400, "This link was used already or is older than a minute (each one works once).")
+        cookie = preview_cookies.issue(port, data["iat"], login)
+        if preview_cookies.claims(cookie, login) is None:   # signed out, a new password, or the 12 hours are over since
+            return _error_page_preview(401)
+        nxt = preview_next(request.query_params.get("next")) or "/"
+        resp = RedirectResponse(nxt, status_code=303)
+        same_site = settings.remote_preview_same_site()
+        # Strict where the preview host is on the portal's site (the Code page's frame is first-party there, and a
+        # link from another site never brings it); on a REMOTE_PREVIEW_DOMAIN of its own the frame is third-party, which
+        # needs SameSite=None and Partitioned (CHIPS: the cookie is kept for that top-level site only)
+        resp.set_cookie(PREVIEW_COOKIE, cookie, max_age=max(1, int(data["iat"] + TERMINAL_MAX_AGE - time.time())), path="/",
+                        domain=None, httponly=True, secure=True, samesite="strict" if same_site else "none")
+        if not same_site:   # (Starlette writes Partitioned only on Python 3.14+)
+            resp.raw_headers = [(k, v + b"; Partitioned" if k == b"set-cookie" and v.startswith(PREVIEW_COOKIE.encode() + b"=") else v)
+                                for k, v in resp.raw_headers]
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        log.warning("preview: this browser previews port %d over remote access", port)
         return _no_store(resp)
 
     preview_refusals = {"last": 0.0}
 
     def preview_verify(request: Request, rem: bool) -> Response:
-        """Caddy's check for every request to a preview host (forward_auth ?app=preview): the capability in the host name
-        (its signature, its port, the unlock's 12 hours, no Sign out or new password since) and no Origin but the
-        preview's own (or "null" from it: Sec-Fetch-Site same-origin) — then 200 with X-Bn-Preview-Port, which Caddy hands
-        on to bn-preview. Never for remote requests."""
-        if rem or not settings.preview_on():
+        """Caddy's check for every request to a preview host (forward_auth ?app=preview): locally the capability in the
+        host name (its signature, its port, the unlock's 12 hours, no Sign out or new password since), remotely the
+        preview host's cookie (the same, plus the Tailscale login); and no Origin but the preview's own (or "null" from it:
+        Sec-Fetch-Site same-origin) — then 200 with X-Bn-Preview-Port, which Caddy hands on to bn-preview."""
+        if not settings.preview_on(rem):
             return _no_store(PlainTextResponse("Previews are not available here.", status_code=404))
         fwd = (request.headers.get("x-forwarded-host") or "").lower()
         name = fwd.split(":", 1)[0]
-        suffix = "." + settings.preview_domain
-        cap = previews.check(name[: -len(suffix)]) if name.endswith(suffix) else None
+        if rem:
+            cap = (preview_cookies.claims(request.cookies.get(PREVIEW_COOKIE), session_login(request.headers, settings))
+                   if name == settings.remote_preview_host else None)
+            own_origin = f"https://{settings.remote_preview_host}"
+        else:
+            suffix = "." + settings.preview_domain
+            cap = previews.check(name[: -len(suffix)]) if name.endswith(suffix) else None
+            own_origin = f"http://{fwd}"
         origin = request.headers.get("origin")
         # its own Origin, or none; or "null" from the preview itself — a page with Referrer-Policy no-referrer (an app
         # may set it) makes browsers send that for its own form posts, and Sec-Fetch-Site (which no page can set)
         # says it came from the preview's own origin
-        own = (origin is None or origin == f"http://{fwd}"
+        own = (origin is None or origin == own_origin
                or (origin == "null" and request.headers.get("sec-fetch-site") == "same-origin"))
         why = ("not a valid preview link (expired, signed out, a new password, or not one at all)" if cap is None
                else "a request from another site" if not own else "")
@@ -540,10 +610,11 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             now = time.time()
             if now - preview_refusals["last"] > 60:   # (a stale tab retrying: one line a minute)
                 preview_refusals["last"] = now
-                log.warning("preview: refused %s", why)
+                log.warning("preview: refused %s%s", why, " (remote)" if rem else "")
             if cap is None and request.headers.get("x-forwarded-method", "GET").upper() in ("GET", "HEAD") \
                     and "text/html" in request.headers.get("accept", ""):
-                return _error_page_preview()
+                return _error_page_preview(more="Over remote access a browser previews one port at a time: opening "
+                                           "another port's preview switches it." if rem else "")
             return _no_store(PlainTextResponse(f"preview refused: {why}", status_code=403))
         return Response(status_code=200, headers={"X-Bn-Preview-Port": str(cap["port"]), "Cache-Control": "no-store"})
 
@@ -956,6 +1027,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-spend", code_spend, methods=["GET"]),
             Route("/auth/code-terminal", code_terminal, methods=["GET"]),
             Route("/auth/code-preview", code_preview, methods=["GET"]),
+            Route("/auth/preview-callback", preview_callback, methods=["GET"]),
             Route("/auth/terminal-unlock-callback", terminal_unlock_callback, methods=["GET"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),

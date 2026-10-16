@@ -369,17 +369,24 @@ export interface LaunchList {
   entries: LaunchEntry[];
 }
 
-/** Whether previews work on this site (the portal says: local only for now). */
+/** Whether previews work on this site, and how the portal routes them. */
 export interface PreviewInfo {
   available: boolean;
   reason: string;
+  /** host: each preview's own host carries its capability (this computer); cookie: one preview host for every port, whose
+   *  cookie a single-use hand-off sets (over remote access: a browser previews one port at a time there) */
+  routing: 'host' | 'cookie';
 }
 
-/** A preview link from the portal: the preview's own origin, p<port>-<capability>.<preview domain>. */
+/** A preview link from the portal: the preview's own origin, p<port>-<capability>.<preview domain> — or, over remote
+ *  access, the preview host's hand-off for this port. */
 export interface PreviewLink {
   url: string;
   origin: string;
   port: number;
   /** when the link stops working (the Code page's unlock ends), ms */
   expires: number | null;
+  /** url is a single-use hand-off (https://<preview host>/.bn/preview-callback?t=…): it sets the preview host's cookie
+   *  for this port and goes on to the path — each load of the frame needs a new one */
+  handoff: boolean;
 }

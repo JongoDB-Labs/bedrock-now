@@ -447,7 +447,8 @@ def terminal_same_origin(headers, settings: Settings, remote: bool, app: str = T
     return bool(referer) and (referer == want or referer.startswith(want + "/"))
 
 
-# --- the Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy; local only) ---
+# --- the Code page's previews of dev servers in the sandbox: locally a capability in the host name (caddy/preview-on.
+# --- caddy; PreviewCaps), over remote access one host and a cookie naming the port (remote_preview; PreviewCookies) ---
 
 B32 = "abcdefghijklmnopqrstuvwxyz234567"   # RFC 4648's alphabet, lower case (host names ignore case)
 
@@ -518,5 +519,54 @@ class PreviewCaps:
             return None
         iat = iat_ms / 1000
         if iat <= self._sessions.not_before or not 0 <= self._clock() - iat <= TERMINAL_MAX_AGE:
+            return None
+        return {"port": port, "iat": iat, "expires": iat + TERMINAL_MAX_AGE}
+
+
+# Over remote access every Service of a tailnet is one site (ts.net is on the public suffix list), so a preview cannot
+# get a site of its own per port the way it does locally — and a Tailscale Service is one host name, without wildcards.
+# One preview host per site instead (REMOTE_PREVIEW_HOST), and a cookie on it says which port this browser previews:
+# __Host- (host-only, Secure, Path=/: no other host ever receives it, and no other host can plant it), HttpOnly (a
+# preview's script can neither read nor overwrite it). Caddy strips it before the sandbox (preview_upstream).
+PREVIEW_COOKIE = "__Host-bn_preview"
+
+
+class PreviewCookies:
+    """The remote preview host's cookie: {port, the Code page unlock's time, the Tailscale login}, signed with a salt of
+    its own. Set by the hand-off's callback (app.py preview_callback: a single-use, 60-second token minted on the code
+    host by /.bn/preview, for that unlock), checked on every request to the preview host (app.py verify, ?app=preview).
+    Like the local capability it names one port, lives exactly as long as the unlock it came from (12 hours) and ends
+    with Sign out or a new password or secret; it is also bound to the login it was minted for (TAILSCALE_ALLOWED_LOGIN).
+
+    app: another preview-like site (its own host, cookie and salt) can use this class with a name of its own."""
+
+    def __init__(self, secret: str, sessions: Sessions, clock=time.time, app: str = "preview"):
+        self._ser = URLSafeTimedSerializer(secret, salt=f"bedrock-now.portal.{app}-cookie")
+        self._sessions = sessions
+        self._clock = clock
+
+    def issue(self, port: int, unlock_iat: float, login: str | None) -> str:
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise ValueError("port")
+        return self._ser.dumps({"v": 1, "p": port, "iat": unlock_iat, "u": login or "", "fp": self._sessions.fingerprint})
+
+    def claims(self, token: str | None, login: str | None = None) -> dict | None:
+        """{port, iat, expires} while the cookie is valid for this login, else None."""
+        if not token or len(token) > 1024:
+            return None
+        try:
+            data = self._ser.loads(token)
+        except (BadSignature, ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or data.get("v") != 1:
+            return None
+        port, iat, fp, bound = data.get("p"), data.get("iat"), data.get("fp"), data.get("u")
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            return None
+        if not isinstance(iat, (int, float)) or iat <= self._sessions.not_before or not 0 <= self._clock() - iat <= TERMINAL_MAX_AGE:
+            return None
+        if not isinstance(fp, str) or not hmac.compare_digest(fp.encode(), self._sessions.fingerprint.encode()):
+            return None
+        if not isinstance(bound, str) or not hmac.compare_digest(bound.encode(), (login or "").encode()):
             return None
         return {"port": port, "iat": iat, "expires": iat + TERMINAL_MAX_AGE}

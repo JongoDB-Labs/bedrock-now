@@ -12,8 +12,9 @@
 # adds and the code container requires; new at every enable), PREVIEW_PROXY_SECRET (likewise, the header the terminal's
 # gateway requires before bn-preview: the page's previews of dev servers in the sandbox), PREVIEW_DOMAIN (the previews'
 # own site, derived from PORTAL_HOST: code_preview_domain) and REMOTE_CODE_HOST (written here while REMOTE_TERMINAL=
-# true and remote access is on: one switch for "the sandbox from outside"). Only .env counts: dc() drops CODE_* from
-# your shell.
+# true and remote access is on: one switch for "the sandbox from outside"), with REMOTE_PREVIEW_HOST (and
+# REMOTE_PREVIEW_SITE) for its previews over remote access unless REMOTE_PREVIEW=false. Only .env counts: dc() drops
+# CODE_* from your shell.
 #
 # The terminal always runs bn-coded on the code-socket volume (compose.terminal.yaml, terminal/bin/bn-terminal), so
 # turning the Code page on or off never recreates the terminal container (its tmux session goes on).
@@ -79,7 +80,8 @@ code_secrets() {
 # bedrock-now.localhost → bedrock-now-preview.localhost, bn-dev.localhost → bn-dev-preview.localhost. Browsers count
 # a .localhost name's last two labels as its site, so a preview there is another site than the portal's: none of the
 # portal's cookies reach it (docs/security.md "Previews of dev servers"). A PORTAL_HOST outside .localhost (BEDROCK_NOW_ALLOW_PUBLIC_
-# HOST) gets <project>-preview.localhost: previews are local only, and *.localhost is this computer in every browser.
+# HOST) gets <project>-preview.localhost: this computer's previews are on *.localhost, this computer in every browser
+# (over remote access they have a host of their own: code_remote_sync).
 code_preview_domain() {
   local h d
   h="$(portal_host)"
@@ -170,23 +172,54 @@ code_network_cleanup() {
 # code_remote_sync — REMOTE_CODE_HOST in .env: the Code page's remote name while it is on, the terminal is shared
 # remotely (REMOTE_TERMINAL) and remote access has its names (<base>-code.<tailnet>, or code.<your domain>);
 # otherwise none: the remote site's code block then matches nothing (and the portal refuses it anyway).
+# Its previews follow it there (REMOTE_PREVIEW_HOST; REMOTE_PREVIEW=false leaves them out): <base>-preview.<tailnet>
+# (a Tailscale Service of its own), preview.<your domain>, or REMOTE_PREVIEW_DOMAIN in domain mode — a name on a
+# registrable domain of its own, so the previews are another site than the portal's (REMOTE_PREVIEW_SITE=own: a Caddy
+# site with its own certificate). docs/remote.md "Previews over remote access".
 code_remote_sync() {
-  local h='' r t
+  local h='' r t p='' site='' d
   r="$(get_env REMOTE_HOST)"
   if code_on && terminal_on && terminal_remote_wanted && [ -n "$r" ]; then
     case "$(get_env REMOTE_MODE)" in
-      tailscale) t="$(get_env TS_TAILNET)"; ! valid_tailnet "$t" || h="$(ts_base)-code.$t" ;;
-      domain) h="code.$r" ;;
+      tailscale) t="$(get_env TS_TAILNET)"; ! valid_tailnet "$t" || { h="$(ts_base)-code.$t"; p="$(ts_base)-preview.$t"; } ;;
+      domain) h="code.$r"; p="preview.$r"; d="$(get_env REMOTE_PREVIEW_DOMAIN)"
+              if [ -n "$d" ] && code_preview_domain_ok "$d" "$r" >/dev/null; then p="$d"; site=own; fi ;;
     esac
   fi
+  code_remote_preview_wanted || { p=''; site=''; }
   [ "$(get_env REMOTE_CODE_HOST)" = "$h" ] || set_env REMOTE_CODE_HOST "$h"
+  [ "$(get_env REMOTE_PREVIEW_HOST)" = "$p" ] || set_env REMOTE_PREVIEW_HOST "$p"
+  [ "$(get_env REMOTE_PREVIEW_SITE)" = "$site" ] || set_env REMOTE_PREVIEW_SITE "$site"
 }
 # code_remote_app -> "code" while the remote site serves the Code page (a Tailscale Service of its own)
 code_remote_app() { [ -z "$(get_env REMOTE_CODE_HOST)" ] || echo code; }
+# code_remote_preview_app -> "preview" while the remote site serves its previews (a Tailscale Service of its own)
+code_remote_preview_app() { [ -z "$(get_env REMOTE_PREVIEW_HOST)" ] || echo preview; }
+# code_remote_preview_wanted -> 0 unless REMOTE_PREVIEW is off (false/0/no/off): previews come with the remote Code page
+code_remote_preview_wanted() { ! flag_off "$(get_env REMOTE_PREVIEW)"; }
+
+# code_preview_domain_ok NAME REMOTE_HOST -> 0 for a REMOTE_PREVIEW_DOMAIN the previews can use; else prints why
+code_preview_domain_ok() {
+  valid_hostname "$1" || { echo "is not a host name"; return 1; }
+  case "$1" in
+    *.localhost | *.ts.net | *.invalid) echo "must be a name of a domain you own (with DNS at Cloudflare, like the remote domain)"; return 1 ;;
+    *.*) ;;
+    *) echo "has no dot"; return 1 ;;
+  esac
+  case "$1" in
+    "$2" | *".$2") echo "is the remote domain or under it: leave it blank for preview.$2, or use a domain of its own"; return 1 ;;
+  esac
+  return 0
+}
 
 # code_up_hook — ./stack up, before compose: its remote name, its secret, and why it is left out (the terminal is)
 code_up_hook() {
+  local d why
   code_remote_sync
+  d="$(get_env REMOTE_PREVIEW_DOMAIN)"
+  if [ -n "$d" ] && [ "$(get_env REMOTE_MODE)" = domain ] && ! why="$(code_preview_domain_ok "$d" "$(get_env REMOTE_HOST)")"; then
+    warn "REMOTE_PREVIEW_DOMAIN=$d $why — the previews use preview.$(get_env REMOTE_HOST) meanwhile"
+  fi
   code_on || return 0
   code_secrets
   if ! terminal_on; then warn "the Code page is on, but the terminal is off — it is left out (./stack code enable turns both on)"
@@ -225,8 +258,10 @@ code_status() {
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
   printf '  Sandbox    the terminal'"'"'s: %s → /workspace, key claude-code-terminal (budget $%s), internet %s\n' \
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_on && echo on || echo off)"
-  printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s — this computer only\n' \
-    "$(get_env PREVIEW_DOMAIN)"
+  printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s\n' "$(get_env PREVIEW_DOMAIN)"
+  if [ -n "$(get_env REMOTE_PREVIEW_HOST)" ]; then
+    printf '             remote: https://%s (one port at a time per browser; REMOTE_PREVIEW=false turns it off)\n' "$(get_env REMOTE_PREVIEW_HOST)"
+  elif [ -n "$(get_env REMOTE_CODE_HOST)" ]; then printf '             remote: off (REMOTE_PREVIEW=false)\n'; fi
   if flag_on "$(get_env CODE_ALLOW_BYPASS)"; then
     printf '  Bypass     allowed: the mode picker offers Bypass permissions (per session, after a confirmation)\n'
   else printf '  Bypass     off (Settings › Code page, or ./stack config set CODE_ALLOW_BYPASS, from this computer)\n'; fi
@@ -302,6 +337,15 @@ code_preview_checks() {
   fake="p5173-aaaaaaaaa$(printf 'a%.0s' $(seq 1 24)).$d"
   out="$(curl -s -m 10 -o /dev/null -w '%{http_code}' --resolve "$fake:$p:127.0.0.1" "http://$fake:$p/" || true)"
   _check "a forged preview link is refused" "$out" 403
+  # the same-site guard on every app host (caddy/Caddyfile not_from_preview): a preview's Origin, and another host's
+  # script (Sec-Fetch-Site: same-site, not a page load) — refused by Caddy before the portal; a page load passes
+  # shellcheck disable=SC2034  # read by portal_curl
+  PORTAL_JAR=''
+  out="$(portal_curl '' /api/summary -s -m 10 -o /dev/null -w '%{http_code}' -H "Origin: http://$fake:$p" || true)"
+  out="$out $(portal_curl code /api/state -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: cors' || true)"
+  out="$out $(portal_curl chat /api/config -s -m 10 -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: cors' || true)"
+  out="$out $(portal_curl '' /login -s -m 10 -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: navigate' -H 'Accept: text/html' || true)"
+  _check "the same-site guard: a preview's Origin, another host's POST and fetch refused; a page load passes" "$out" "403 403 403 200"
   # shellcheck disable=SC2034  # read by portal_curl
   PORTAL_JAR=''
   if ! portal_session_start; then _skip "a preview through the whole chain" "portal login failed"; return 0; fi

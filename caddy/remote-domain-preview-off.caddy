@@ -1,0 +1,2 @@
+# Own-domain remote access without a preview domain of its own (the default): the previews are on preview.HOST, inside
+# remote-domain.caddy's wildcard site, or off. Imported by remote-domain.caddy.

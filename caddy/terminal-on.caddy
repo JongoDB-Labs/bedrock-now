@@ -7,6 +7,7 @@
 http://{$TERMINAL_HOST} {
 	route {
 		import local_request
+		import not_from_preview
 		import terminal_callback
 		import terminal_unlock
 		import terminal_auth

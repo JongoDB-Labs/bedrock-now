@@ -6,12 +6,13 @@
 http://{$CODE_HOST} {
 	route {
 		import local_request
+		import not_from_preview
 		import code_unlock
 		import code_auth
 		import code_portal
 		reverse_proxy code-upstream:8095 {
 			import code_upstream {$PORTAL_ORIGIN} {$TERMINAL_HOST} 0
-			import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST}
+			import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:*
 		}
 	}
 }

@@ -1144,13 +1144,15 @@ export async function startLaunch(name: string, digest: string): Promise<{ windo
   return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
 }
 
-/** Whether previews work here (the portal: on this computer, not over remote access yet). */
+/** Whether previews work here, and how they are routed (the portal: a capability per host on this computer, one host
+ *  and a cookie over remote access). */
 export async function getPreviewInfo(): Promise<PreviewInfo> {
   const o = await request('GET', '/.bn/preview' + q({ format: 'json' }));
-  return { available: o.available === true, reason: label(o.reason, 300) };
+  return { available: o.available === true, reason: label(o.reason, 300), routing: o.routing === 'cookie' ? 'cookie' : 'host' };
 }
 
-/** A preview link only when it is one: http, a host p<port>-<capability>.<domain> for this port, no credentials. */
+/** A preview link only when it is one: http, a host p<port>-<capability>.<domain> for this port, no credentials — or,
+ *  over remote access, the hand-off for this port: https, the preview host's /.bn/preview-callback with a token. */
 export function previewLinkOk(v: unknown, port: number): PreviewLink | null {
   const o = obj(v);
   if (!o || typeof o.url !== 'string' || typeof o.origin !== 'string' || o.url.length > 2500) return null;
@@ -1160,10 +1162,16 @@ export function previewLinkOk(v: unknown, port: number): PreviewLink | null {
   } catch {
     return null;
   }
-  if (u.protocol !== 'http:' || u.username || u.password || u.origin !== o.origin) return null;
-  if (!new RegExp(`^p${port}-[a-z2-7]{33}\\.[a-z0-9.-]{1,200}$`).test(u.hostname)) return null;
   const expires = typeof o.expires === 'number' && Number.isFinite(o.expires) ? o.expires * 1000 : null;
-  return { url: u.href, origin: u.origin, port, expires };
+  if (u.username || u.password || u.origin !== o.origin) return null;
+  if (o.handoff === true) {
+    if (u.protocol !== 'https:' || o.port !== port || u.pathname !== '/.bn/preview-callback' || !u.searchParams.get('t')) return null;
+    if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(u.hostname) || u.port) return null;
+    return { url: u.href, origin: u.origin, port, expires, handoff: true };
+  }
+  if (u.protocol !== 'http:') return null;
+  if (!new RegExp(`^p${port}-[a-z2-7]{33}\\.[a-z0-9.-]{1,200}$`).test(u.hostname)) return null;
+  return { url: u.href, origin: u.origin, port, expires, handoff: false };
 }
 
 /** A preview link for `port` (at `path` on it), minted by the portal for this unlock. */

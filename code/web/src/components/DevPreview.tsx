@@ -4,7 +4,9 @@
 //
 // The frame shows sandbox content from a site of its own (p<port>-<capability>.<preview domain>; the portal mints the
 // link): it gets none of bedrock-now's cookies, and its sandbox flags leave out allow-top-navigation, so it cannot
-// take this page away. Nothing here reads from or posts to the frame.
+// take this page away. Nothing here reads from or posts to the frame. Over remote access the frame loads the remote
+// preview host through a single-use hand-off for its port (each load a new one); that host is on the portal's site
+// there, and every app host refuses its requests (the same-site guard, caddy/Caddyfile not_from_preview).
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, navigatePreview, openPreview, reloadPreview, setPreviewViewport, stopServer, loadLaunch, loadPreviewInfo, refreshPorts, requestLaunch,
@@ -58,13 +60,17 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
     setBad(p === null);
     if (p !== null) navigatePreview(tab.key, p);
   };
-  const src = tab.link ? tab.link.origin + tab.at : null;
+  // what the frame loads (over remote access the hand-off, which goes on to the path), and its address (to copy)
+  const src = tab.link ? (tab.link.handoff ? tab.link.url : tab.link.origin + tab.at) : null;
+  const copyUrl = tab.link ? tab.link.origin + tab.at : null;
   return (
     <div class={`pane preview-pane${active ? '' : ' hidden'}`} data-testid="preview-pane" data-port={tab.port}>
       <div class="pv-bar">
         <span
           class="pv-badge"
-          title={`Sandbox content: the server on port ${tab.port} in the sandbox, shown from a site of its own${tab.link ? ` (${new URL(tab.link.origin).host})` : ''} that gets none of bedrock-now's cookies`}
+          title={tab.link?.handoff
+            ? `Sandbox content: the server on port ${tab.port} in the sandbox, shown from the preview address (${new URL(tab.link.origin).host}), which gets none of bedrock-now's cookies; over remote access this browser previews one port at a time`
+            : `Sandbox content: the server on port ${tab.port} in the sandbox, shown from a site of its own${tab.link ? ` (${new URL(tab.link.origin).host})` : ''} that gets none of bedrock-now's cookies`}
         >
           <Icon name="window" size={14} /> sandbox
         </span>
@@ -103,11 +109,13 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
         <button
           type="button"
           class="icon-btn"
-          title="Copy the preview's address (it works in this browser's other tabs, for as long as this unlock lasts)"
+          title={tab.link?.handoff
+            ? "Copy the preview's address (it works in this browser while it previews this port, for as long as this unlock lasts)"
+            : "Copy the preview's address (it works in this browser's other tabs, for as long as this unlock lasts)"}
           aria-label="Copy the preview's address"
-          disabled={!src}
+          disabled={!copyUrl}
           onClick={async () => {
-            if (src && (await copyText(src))) {
+            if (copyUrl && (await copyText(copyUrl))) {
               setCopied(true);
               setTimeout(() => setCopied(false), 1200);
             }
@@ -272,6 +280,11 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
         </button>
       </div>
       {info && !info.available && <div class="banner warn small" data-testid="preview-unavailable">{label(info.reason, 300) || 'Previews are off here.'}</div>}
+      {info?.available && info.routing === 'cookie' && (
+        <p class="muted small" data-testid="preview-one-port">
+          Over remote access a browser previews one port at a time: opening another port's preview switches the one shown.
+        </p>
+      )}
       {error && <div class="banner warn small">Could not list them: {label(error, 200)}</div>}
       {ports.length ? (
         <ul class="port-list">

@@ -9,6 +9,9 @@ services:
     environment:
       CADDY_AUTO_HTTPS: disable_redirects          # certificates for the remote site; no HTTP→HTTPS listener
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?run ./stack remote enable domain HOST}
+      # own: the Code page's previews on REMOTE_PREVIEW_DOMAIN, a site block with a certificate of its own
+      # (caddy/remote-domain-preview-own.caddy); written by lib/code.sh
+      REMOTE_PREVIEW_SITE: ${REMOTE_PREVIEW_SITE:-off}
     tmpfs: !override ["/config:uid=65534,gid=65534,mode=0700"]
     volumes:
       - caddy-data:/data

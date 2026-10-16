@@ -1286,6 +1286,58 @@ def apps_portal_login_first(ctx):
     return f"no session → portal login on {' and '.join(seen)}; then {a}; {b}"
 
 
+# --- the same-site guard (caddy/Caddyfile not_from_preview) ---
+
+@check("browser", "same-site-guard")
+def same_site_guard(ctx):
+    """Every app host refuses a script's request from another host of the same site — what a preview over remote access
+    is (every Service of a tailnet is one site), and what the stack's own hosts are to each other here: the portal page,
+    signed in, sends fetches, a no-cors POST and a form post to Chat, Admin, Files (and the Code page) — each with the
+    session cookie (same-site: SameSite=Strict sends it), each refused by Caddy before the app. Page loads and plain
+    assets from the same hosts still pass (the apps' own flows: every other check here runs with the guard on)."""
+    page, rec = ctx.page("same-site-guard")
+    login(page)
+    reqs, resps = {}, {}
+    page.on("request", lambda r: reqs.setdefault(r.url, r))
+    page.on("response", lambda r: resps.setdefault(r.url, r))
+    targets = {"chat fetch": origin("chat") + "/api/config?bn-guard=1", "files fetch": origin("files") + "/rustfs/console/?bn-guard=1",
+               "admin no-cors POST": origin("admin") + "/key/generate?bn-guard=1"}
+    code = bool(ENV.get("CODE_ENABLED", "").lower() == "true")
+    if code:
+        targets["code fetch"] = origin("code") + "/api/state?bn-guard=1"
+    page.evaluate("""async (t) => {
+        for (const [k, u] of Object.entries(t)) {
+          try { await fetch(u, k.includes('POST') ? { method: 'POST', mode: 'no-cors', credentials: 'include', body: 'x' } : { credentials: 'include' }); }
+          catch (e) { /* refused: no CORS answer */ }
+        }
+        // a form post (a page load, but POST) into a hidden frame
+        const f = document.createElement('iframe'); f.name = 'bnguard'; f.hidden = true; document.body.append(f);
+        const form = document.createElement('form'); form.method = 'post'; form.target = 'bnguard';
+        form.action = t['chat fetch'].replace('/api/config?bn-guard=1', '/api/v1/auths/signout?bn-guard=form'); document.body.append(form); form.submit();
+        // the control: a plain image from another host of the site passes the guard
+        await new Promise((r) => { const i = new Image(); i.onload = i.onerror = r; i.src = '""" + origin("chat") + """/static/favicon.png?bn-guard=img'; });
+    }""", targets)
+    page.wait_for_timeout(2500)
+    form_url = targets["chat fetch"].replace("/api/config?bn-guard=1", "/api/v1/auths/signout?bn-guard=form")
+    seen = {}
+    for what, u in [*targets.items(), ("chat form post", form_url)]:
+        rq, rs = reqs.get(u), resps.get(u)
+        expect(rq is not None and rs is not None, f"{what}: no request/response seen")
+        h = rq.all_headers()
+        expect(h.get("sec-fetch-site") == "same-site", f"{what}: Sec-Fetch-Site {h.get('sec-fetch-site')!r}")
+        expect("bn_session=" in (h.get("cookie") or ""), f"{what}: the session cookie was not even sent (the check would prove nothing)")
+        refused = rs.header_value("x-bn-refused") or ""   # (no body needed: Chromium keeps none of a refused CORS answer)
+        expect(rs.status == 403 and "same-site guard" in refused, f"{what}: {rs.status} X-Bn-Refused {refused!r}")
+        seen[what] = rs.status
+    img_url = origin("chat") + "/static/favicon.png?bn-guard=img"
+    img, img_rq = resps.get(img_url), reqs.get(img_url)
+    expect(img is not None and img_rq is not None and img_rq.all_headers().get("sec-fetch-site") == "same-site" and img.status != 403,
+           f"the control (a same-site image from Chat): {img.status if img else 'not seen'}")
+    rec.save()
+    return (f"same-site, with the session cookie: {', '.join(f'{k} {v}' for k, v in seen.items())} (Caddy's guard); "
+            f"the control, a same-site image from Chat: {img.status}")
+
+
 # --- phone / tablet ---
 
 @check("browser", "phone-layout-390x844")

@@ -218,6 +218,7 @@ setting_weakens() {
       awk -v n="$(_eff_budget "$1" "$2")" -v o="$(_eff_budget "$1" "$3")" 'BEGIN { exit !(n + 0 > o + 0) }' ;;
     BACKUP_NIGHTLY | AUTO_UPDATE) [ "$2" != on ] && [ "$3" = on ] ;;                              # turned off
     UPDATE_CHECK) [ "$2" = false ] && [ "$3" != false ] ;;                                       # no release checks
+    REMOTE_PREVIEW) ! flag_off "$2" && flag_off "$3" ;;                                         # on by default: on again
     *) [ "$2" = true ] && [ "$3" != true ] ;;                                                    # remote admin, stored prompts
   esac
 }
@@ -725,7 +726,8 @@ _cfg_email_check() {
 # so a change cut short (power loss) is noticed and reconciled by the next ./stack up
 # What the steps after the .env write may change besides the keys themselves (restored exactly on a rollback)
 CFG_DERIVED="LITELLM_UI_USER AWS_AUTH PORTAL_PASSWORD_HASH OPENROUTER_MODELS OWUI_DEFAULT_MODEL OWUI_TASK_MODEL
-  CLAUDE_BEDROCK_OPUS_MODEL CLAUDE_BEDROCK_SONNET_MODEL CLAUDE_BEDROCK_HAIKU_MODEL STT_BEDROCK_MODEL"
+  CLAUDE_BEDROCK_OPUS_MODEL CLAUDE_BEDROCK_SONNET_MODEL CLAUDE_BEDROCK_HAIKU_MODEL STT_BEDROCK_MODEL REMOTE_PREVIEW_HOST
+  REMOTE_PREVIEW_SITE"
 _cfg_saved_keys() { printf '%s\n' $CFG_ORDER $CFG_DERIVED | awk 'NF && !seen[$0]++'; }
 
 _cfg_save_old() {
@@ -799,6 +801,7 @@ _cfg_post() {
   local svc='' k cfg="$STACK_DIR/litellm/config.yaml" before=''
   [ ! -f "$cfg" ] || before="$(cat "$cfg")"   # before anything here re-renders it (openrouter_refresh does)
   if _cfg_on openrouter; then _cfg_openrouter; fi
+  if _cfg_on remote-preview; then code_remote_sync; fi   # the remote preview address follows (blank when off)
   # .env first, so ./stack up applies them too when the stack is stopped
   if _cfg_on pins && [ -s "$STACK_DIR/litellm/enabled-models.txt" ]; then choose_defaults; fi
   if [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ ! -f "$cfg" ]; then ! _cfg_on code || _cfg_code; log "saved — ./stack setup applies it"; return 0; fi
@@ -825,6 +828,9 @@ _cfg_post() {
   if _cfg_on portal || _cfg_on portal-pw || _cfg_on email || _cfg_on litellm-pw || _cfg_on openrouter || _cfg_on mcp || _cfg_on pins || _cfg_on alert-pct; then svc="$svc portal"; fi
   # the code container reads CODE_ALLOW_BYPASS at its start (compose recreates it for the new value); off: nothing runs
   if _cfg_on code-env && code_ready && ! _cfg_on code; then svc="$svc code"; fi
+  # previews over remote access: the sidecar's Services (it reads its config again by itself), the portal and Caddy
+  # (both get the address; compose recreates them for it)
+  if _cfg_on remote-preview; then remote_serve_sync; svc="$svc portal caddy"; fi
   svc="$(printf '%s\n' $svc | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
   # shellcheck disable=SC2086  # word-split the service list on purpose
   [ -z "$svc" ] || run_phase "Restart:$svc" "${svc# }" dc up -d --no-deps --wait $svc

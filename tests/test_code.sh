@@ -143,7 +143,8 @@ test_status_names_address_container_sandbox_and_remote() {
   assert_contains "$out" "Container  running healthy"
   assert_contains "$out" "Sandbox    the terminal's: $(get_env TERMINAL_WORKSPACE) → /workspace, key claude-code-terminal (budget \$50), internet on"
   assert_contains "$out" "Remote     off (with the terminal's: REMOTE_TERMINAL=true"
-  assert_contains "$out" "Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.bedrock-now-preview.localhost — this computer only"
+  assert_contains "$out" "Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.bedrock-now-preview.localhost"
+  assert_not_contains "$out" "remote: "
   assert_eq "$(status_url code)" "http://code.bedrock-now.localhost   (the Code tab; ./stack code status)"
   assert_contains "$(code_summary_line)" "Code page       http://code.bedrock-now.localhost"
   set_env CODE_HOST ide.localhost
@@ -166,7 +167,7 @@ test_remote_code_with_the_terminals_switch() {
   set_env REMOTE_TERMINAL true
   remote_hosts_tailscale "$TN"
   assert_eq "$(get_env REMOTE_CODE_HOST)" "bedrock-now-code.$TN"
-  assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal svc:bedrock-now-code"
+  assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal svc:bedrock-now-code svc:bedrock-now-preview"
   ts_serve_config tailscale "$TN" | python3 -c '
 import json, sys
 s = json.load(sys.stdin)["Services"]
@@ -318,9 +319,9 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   site="$(awk '/^http:\/\/\{\$CODE_HOST\}/,/^}/' "$STACK_DIR/caddy/code-on.caddy")"
   # the local rules, the unlock form, the check, the portal's /.bn/ answers — only then the code container
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
-    "import local_request import code_unlock import code_auth import code_portal import code_upstream import code_page "
+    "import local_request import not_from_preview import code_unlock import code_auth import code_portal import code_upstream import code_page "
   assert_contains "$site" 'import code_upstream {$PORTAL_ORIGIN} {$TERMINAL_HOST} 0'
-  assert_contains "$site" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST}'
+  assert_contains "$site" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:*'
   assert_contains "$site" "reverse_proxy code-upstream:8095"
   auth="$(awk '/^\(code_auth\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   assert_eq "$(printf '%s\n' "$auth" | sed -n 2,6p | tr -d '\t' | tr '\n' '|')" "request_header -X-Bn-Code-Proxy|request_header -X-Bn-Csp-Nonce|request_header -X-Bn-Portal-Origin|request_header -X-Bn-Terminal-Host|request_header -X-Bn-Remote|"
@@ -340,7 +341,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   assert_contains "$pt" "respond /.bn/* 404"
   assert_contains "$(awk '/^\(code_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/code-unlock"
   pg="$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* http://*.{\$PREVIEW_DOMAIN:preview.invalid}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker\""
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* {args[2]}; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker\""
   for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
            Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
     assert_contains "$pg" "header_down -$d"
@@ -353,7 +354,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
     r="$(cat "$STACK_DIR/caddy/remote-$m.caddy")"
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import code_auth')" 1
     cb="$(printf '%s\n' "$r" | awk '/reverse_proxy code-upstream:8095/,/^[[:space:]]*}$/' | grep -o 'import .*' | tr '\n' '|')"
-    assert_eq "$cb" 'import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} 1|import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}|'
+    assert_eq "$cb" 'import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} 1|import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}|'
   done
   # the portal's routes and cookie names agree with Caddy's
   a="$(cat "$STACK_DIR/portal/portal/app.py")"

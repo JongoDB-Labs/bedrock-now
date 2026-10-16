@@ -10,7 +10,14 @@
 #                          otherwise it is terminal.remote.invalid, which matches nothing)
 #   {$REMOTE_CODE_HOST}   the Code page — only with the Code page on and REMOTE_TERMINAL=true (lib/code.sh; otherwise
 #                          code.remote.invalid)
+#   {$REMOTE_PREVIEW_HOST} the Code page's previews of dev servers in the sandbox — with the remote Code page unless
+#                          REMOTE_PREVIEW=false: preview.HOST (covered by the wildcard), or REMOTE_PREVIEW_DOMAIN, a name
+#                          on a domain of its own (another site: remote-domain-preview-own.caddy); otherwise
+#                          preview.remote.invalid
 # Tailscale cannot see inside this TLS, so it passes no identity: access is the tailnet grant plus the password.
+# Every name under HOST is one site, preview.HOST too: every app host refuses a preview's requests and other hosts'
+# scripts (not_from_preview, Caddyfile) — and a preview's script can still set cookies for all of HOST's parent
+# domain; REMOTE_PREVIEW_DOMAIN avoids both (docs/remote.md).
 
 (remote_request) {
 	@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32
@@ -64,6 +71,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@chat host {$REMOTE_CHAT_HOST}
 	route @chat {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		reverse_proxy open-webui:8080 {
@@ -74,6 +82,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@admin host {$REMOTE_ADMIN_HOST}
 	route @admin {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		import app_sso
@@ -86,6 +95,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@files host {$REMOTE_FILES_HOST}
 	route @files {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		import app_sso
@@ -98,6 +108,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@terminal host {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
 	route @terminal {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import terminal_callback
 		import terminal_unlock
@@ -111,17 +122,30 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	@code host {$REMOTE_CODE_HOST:code.remote.invalid}
 	route @code {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import code_unlock
 		import code_auth
 		import code_portal
 		reverse_proxy code-upstream:8095 {
 			import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} 1
-			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
+			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}
 		}
+	}
+
+	# the previews' host (preview.HOST): sandbox content, routed by its own cookie (remote_preview, Caddyfile) — never a
+	# session, and not guarded like the app hosts: it is what they are guarded against
+	@preview host {$REMOTE_PREVIEW_HOST:preview.remote.invalid}
+	route @preview {
+		import remote_request
+		import remote_preview "https://{$REMOTE_CODE_HOST:code.remote.invalid} {$REMOTE_ORIGIN}"
 	}
 
 	@other_caller not remote_ip {$REMOTE_SIDECAR_IP}/32
 	abort @other_caller
 	respond "unknown host" 404
 }
+
+# A REMOTE_PREVIEW_DOMAIN of its own (lib/code.sh writes REMOTE_PREVIEW_SITE=own; compose.domain.yaml): a site block
+# with its own certificate. Otherwise remote-domain-preview-off.caddy, nothing.
+import remote-domain-preview-{$REMOTE_PREVIEW_SITE:off}.caddy

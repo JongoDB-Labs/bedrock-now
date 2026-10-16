@@ -1,0 +1,15 @@
+# Own-domain remote access with REMOTE_PREVIEW_DOMAIN (lib/code.sh writes REMOTE_PREVIEW_SITE=own; imported by
+# remote-domain.caddy): the previews on a name of a registrable domain of their own — another *site* than the portal's,
+# so a preview's requests to the portal and the apps are cross-site (no SameSite cookie of theirs goes along), and
+# its script cannot set cookies for the portal's domain. Its own certificate, by DNS-01 like the main one (the
+# Cloudflare token must also cover this domain's zone); DNS: REMOTE_PREVIEW_DOMAIN → the sidecar's 100.x address.
+https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}:8443 {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	header Strict-Transport-Security "max-age=31536000"
+	route {
+		import remote_request
+		import remote_preview "https://{$REMOTE_CODE_HOST:code.remote.invalid} {$REMOTE_ORIGIN}"
+	}
+}

@@ -3,7 +3,8 @@
 #
 #   off        (default) only this computer: http://PORTAL_HOST on 127.0.0.1, exactly as without this file.
 #   tailscale  a tailscale/tailscale sidecar (compose.tailscale.yaml) hosts four Tailscale Services —
-#              svc:<base>, svc:<base>-chat, svc:<base>-admin, svc:<base>-files — each HTTPS on 443 with a
+#              svc:<base>, svc:<base>-chat, svc:<base>-admin, svc:<base>-files (+ -terminal, -code and -preview with the
+#              browser terminal and the Code page shared: REMOTE_TERMINAL=true) — each HTTPS on 443 with a
 #              Tailscale certificate, forwarding to Caddy's internal remote listener (caddy:8081,
 #              caddy/remote-tailscale.caddy). Hosts: <base>[-app].<tailnet>.ts.net.
 #   domain     your own name (REMOTE_HOST=bedrock.example.com plus chat./admin./files.): the sidecar forwards raw
@@ -37,20 +38,23 @@ ts_base() {
   printf '%s\n' "$b"
 }
 
-# valid_ts_label NAME -> 0 for a DNS label Tailscale accepts as a Service name (we add -chat/-admin/-files, so
-# the base stays <= 57 characters)
+# valid_ts_label NAME -> 0 for a DNS label Tailscale accepts as a Service name (we add -chat … -preview and -terminal,
+# the longest, so the base stays <= 54 characters: a DNS label has at most 63)
 valid_ts_label() {
   case "$1" in '' | -* | *- | *[!a-z0-9-]*) return 1 ;; esac
-  [ "${#1}" -le 57 ]
+  [ "${#1}" -le 54 ]
 }
 
 # ts_service_names -> "svc:<base> svc:<base>-chat svc:<base>-admin svc:<base>-files" (+ svc:<base>-terminal while the
-# browser terminal is shared remotely: REMOTE_TERMINAL=true, lib/terminal.sh; + svc:<base>-code with the Code page)
+# browser terminal is shared remotely: REMOTE_TERMINAL=true, lib/terminal.sh; + svc:<base>-code with the Code page, and
+# svc:<base>-preview for its previews of dev servers in the sandbox unless REMOTE_PREVIEW=false, lib/code.sh)
 ts_service_names() {
   local b a out; b="$(ts_base)"; out="svc:$b"
-  for a in $REMOTE_APPS $(terminal_remote_app) $(code_remote_app); do out="$out svc:$b-$a"; done
+  for a in $(remote_app_list); do out="$out svc:$b-$a"; done
   printf '%s\n' "$out"
 }
+# remote_app_list -> the remote site's hosts besides the portal: chat admin files [terminal] [code] [preview]
+remote_app_list() { printf '%s\n' "$REMOTE_APPS $(terminal_remote_app) $(code_remote_app) $(code_remote_preview_app)" | tr -s ' ' | sed 's/ $//'; }
 
 # ts_node_name -> the sidecar's own tailnet machine name (must differ from the Service names: same DNS space)
 ts_node_name() { local h; h="$(get_env TS_HOSTNAME)"; printf '%s\n' "${h:-$(ts_base)-node}"; }
@@ -161,6 +165,7 @@ remote_app_host() {
     files) get_env REMOTE_FILES_HOST ;;
     terminal) get_env REMOTE_TERMINAL_HOST ;;
     code) get_env REMOTE_CODE_HOST ;;
+    preview) get_env REMOTE_PREVIEW_HOST ;;
     *) return 1 ;;
   esac
   echo
@@ -219,15 +224,16 @@ ts_serve_file() { printf '%s/serve.json\n' "${TS_SERVE_DIR:-$STACK_DIR/$TS_SERVE
 #              for devices owned by a user (not tagged ones), Tailscale-User-Login.
 #   domain:    no Services; the node forwards TCP 443 untouched to Caddy, which terminates TLS itself.
 ts_serve_config() {
-  local mode="$1" t="${2:-}" b s first=1 term='' codes=''
+  local mode="$1" t="${2:-}" b s first=1 term='' codes='' prev=''
   case "$mode" in
     tailscale)
       valid_tailnet "$t" || return 1
       b="$(ts_base)"
       [ -z "$(terminal_remote_app)" ] || term="$b-terminal"
       [ -z "$(code_remote_app)" ] || codes="$b-code"
+      [ -z "$(code_remote_preview_app)" ] || prev="$b-preview"
       printf '{\n  "Services": {'
-      for s in "$b" "$b-chat" "$b-admin" "$b-files" ${term:+"$term"} ${codes:+"$codes"}; do
+      for s in "$b" "$b-chat" "$b-admin" "$b-files" ${term:+"$term"} ${codes:+"$codes"} ${prev:+"$prev"}; do
         [ "$first" = 1 ] || printf ','
         first=0
         printf '\n    "svc:%s": {\n      "TCP": { "443": { "HTTPS": true } },\n      "Web": { "%s.%s:443": { "Handlers": { "/": { "Proxy": "http://caddy:8081" } } } }\n    }' "$s" "$s" "$t"
@@ -352,7 +358,9 @@ EOF
   4. Services (https://login.tailscale.com/admin/services): Advertise → Define a Service, once for each
      of these names, each with port tcp:443:  $(ts_service_names | sed 's/svc://g; s/ /   /g')
      The sidecar ($(ts_node_name)) advertises them on start; with the autoApprovers above they are approved
-     at once — otherwise approve it under "Service hosts" of each Service.
+     at once — otherwise approve it under "Service hosts" of each Service.$([ -z "$(code_remote_preview_app)" ] || printf '
+     %s-preview shows the dev servers running in the sandbox: sandbox content, on the same site as the
+     others (every Service of a tailnet is one site), which refuse its requests. REMOTE_PREVIEW=false leaves it out.' "$b")
   5. Your devices: install Tailscale and sign in$( [ -n "$(get_env TAILSCALE_ALLOWED_LOGIN)" ] && printf ' as %s' "$(get_env TAILSCALE_ALLOWED_LOGIN)").
      Clients need v1.94+ (Linux clients up to v1.93: sudo tailscale set --accept-routes).
 EOF
@@ -363,13 +371,30 @@ EOF
   fi
 }
 
-# remote_dns_records IP -> the two DNS records domain mode needs
+# remote_dns_records IP -> the two DNS records domain mode needs (three with a REMOTE_PREVIEW_DOMAIN of its own)
 remote_dns_records() {
   local h ip="${1:-}"
   [ -n "$ip" ] || ip='<the sidecar address: ./stack remote status>'
   h="$(get_env REMOTE_HOST)"
   printf '  %-34s A   %s\n' "$h" "$ip"
   printf '  %-34s A   %s\n' "*.$h" "$ip"
+  [ "$(get_env REMOTE_PREVIEW_SITE)" != own ] || printf '  %-34s A   %s   (the previews: REMOTE_PREVIEW_DOMAIN)\n' "$(get_env REMOTE_PREVIEW_HOST)" "$ip"
+}
+
+# remote_serve_sync — the sidecar's serve config in line with .env (it applies a rewritten file at once), and a word
+# when it names a Service the previous one did not (the Code page or its previews turned on): each must be defined in
+# the Tailscale admin console, and named in your policy's autoApprovers and grants, before it answers
+remote_serve_sync() {
+  local mode old s new=''
+  mode="$(remote_mode)"
+  [ "$mode" != off ] || return 0
+  if [ "$mode" = domain ]; then write_ts_serve_config domain; return 0; fi
+  valid_tailnet "$(get_env TS_TAILNET)" || return 0
+  old="$(cat "$(ts_serve_file)" 2>/dev/null || true)"
+  write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
+  [ -n "$old" ] || return 0
+  for s in $(ts_service_names); do case "$old" in *"\"$s\""*) ;; *) new="$new $s" ;; esac; done
+  [ -z "$new" ] || warn "remote access has a new Tailscale Service:$new — define it in the admin console (Services → Define a Service, tcp:443) and add it to your policy's autoApprovers and grants (docs/remote.md, steps 2 and 4; ./stack remote status lists the Services); until then it does not answer"
 }
 
 # --- ./stack remote ---
@@ -435,7 +460,7 @@ remote_enable() {
   check_prereqs
   [ "$mode" != domain ] || check_remote_domain "$host"
   tag="$(ts_tag)"; valid_ts_tag "$tag" || die "TS_TAG=$tag in .env is not a tag (e.g. tag:bedrock-now)"
-  valid_ts_label "$(ts_base)" || die "TS_SERVICE=$(ts_base) is not a valid Service name (lowercase letters, digits, dashes; at most 57)"
+  valid_ts_label "$(ts_base)" || die "TS_SERVICE=$(ts_base) is not a valid Service name (lowercase letters, digits, dashes; at most 54)"
   why="$(remote_net_ok)" || die "$why"
   set_env REMOTE_SIDECAR_IP "$(remote_sidecar_ip "$(remote_subnet)")"
   remote_ask_login
@@ -557,7 +582,12 @@ remote_status() {
     printf '  not finished — the sidecar has not logged in yet: ./stack remote enable %s\n' "$mode"
   else
     printf '  Portal   %s\n' "$(remote_url)"
-    for s in $REMOTE_APPS $(terminal_remote_app) $(code_remote_app); do printf '  %-8s %s\n' "$s" "$(remote_url "$s")"; done
+    for s in $(remote_app_list); do
+      case "$s" in
+        preview) printf '  %-8s %s   (dev servers in the sandbox, opened from the Code page)\n' "$s" "$(remote_url "$s")" ;;
+        *) printf '  %-8s %s\n' "$s" "$(remote_url "$s")" ;;
+      esac
+    done
   fi
   printf '  Local    %s (unchanged)\n' "$(portal_url)"
   sj="$(_ts status --json || true)"
@@ -591,7 +621,7 @@ _caddy_remote_get() {
 }
 
 remote_test() {
-  local mode fails=0 want got sj st h login id
+  local mode fails=0 want got sj st h login id ph
   mode="$(remote_mode)"
   [ "$mode" != off ] || die "remote access is off — ./stack remote enable tailscale first"
   remote_login_warning
@@ -614,6 +644,12 @@ remote_test() {
     got="$(_caddy_remote_get tailscale "$(get_env REMOTE_CHAT_HOST)" / "$id")"
     _check "remote chat without a session → hand-off on the portal host" "${got%%\?*}" "302|https://$h/auth/handoff"
     _check "unknown remote host refused" "$(_caddy_remote_get tailscale nope.invalid / | cut -d'|' -f1)" 404
+    ph="$(get_env REMOTE_PREVIEW_HOST)"
+    if [ -n "$ph" ]; then
+      _check "remote previews without their cookie (no hand-off from the Code page) → refused" "$(_caddy_remote_get tailscale "$ph" / "$id" | cut -d'|' -f1)" 403
+      _check "the same-site guard: a request from the preview's origin to the portal → refused" \
+        "$(_caddy_remote_get tailscale "$h" /login "Origin: https://$ph" | cut -d'|' -f1)" 403
+    fi
     _check "remote listener refuses other containers" "$(_caddy_remote_get caddy "$h" /login | cut -d'|' -f1)" 000
     if [ -n "$login" ]; then
       _check "no Tailscale login → refused" "$(_caddy_remote_get tailscale "$h" /login | cut -d'|' -f1)" 403
@@ -628,6 +664,8 @@ remote_test() {
     _check "certificate for $h" "$(_yes_if_contains "$got" "/$h.crt")" yes
     _check "wildcard certificate for *.$h" "$(_yes_if_contains "$got" "/wildcard_.$h.crt")" yes
     _check "sidecar forwards 443 to Caddy" "$(_yes_if_contains "$(_ts serve status --json || true)" 'caddy:8443')" yes
+    [ "$(get_env REMOTE_PREVIEW_SITE)" != own ] ||
+      _check "certificate for $(get_env REMOTE_PREVIEW_HOST) (REMOTE_PREVIEW_DOMAIN)" "$(_yes_if_contains "$got" "/$(get_env REMOTE_PREVIEW_HOST).crt")" yes
   fi
   cat <<EOF
 
@@ -639,6 +677,9 @@ Then, from your phone or laptop (Tailscale on, signed in$( [ -n "$(get_env TAILS
   [ ] ./stack remote status → "Identity" names your login (Tailscale-User-Login was sent)
   [ ] a device that is NOT allowed (another tailnet user, or Tailscale off) gets no answer or "not your login"
 EOF
+  [ -z "$(get_env REMOTE_PREVIEW_HOST)" ] ||
+    printf '  [ ] the Code page: a dev server'"'"'s Preview (Ports, in its status bar) loads — in a new tab on a phone\n'
+  [ "$(get_env REMOTE_PREVIEW_SITE)" != own ] || printf '  [ ] DNS: %s points at the sidecar too\n' "$(get_env REMOTE_PREVIEW_HOST)"
   [ "$mode" != domain ] || printf '  [ ] the certificate is for %s / *.%s (Let'"'"'s Encrypt)\n' "$(get_env REMOTE_HOST)" "$(get_env REMOTE_HOST)"
   [ "$fails" -eq 0 ] || die "$fails check(s) failed — ./stack remote status, ./stack logs tailscale, ./stack logs caddy"
 }
@@ -653,8 +694,7 @@ remote_up_hook() {
   local mode st; mode="$(remote_mode)"
   [ "$mode" != off ] || return 0
   [ "$REMOTE_DEGRADED" != 1 ] || return 0   # remote_net_preflight already said why
-  if [ "$mode" = tailscale ] && valid_tailnet "$(get_env TS_TAILNET)"; then write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
-  elif [ "$mode" = domain ]; then write_ts_serve_config domain; fi
+  remote_serve_sync
   dc up -d --no-deps tailscale >/dev/null 2>&1 || { warn "could not start the Tailscale sidecar — remote access is down (./stack logs tailscale); the local portal is fine"; return 0; }
   if st="$(ts_wait_running "$REMOTE_UP_WAIT")"; then log "remote access: $(remote_url)"
   else warn "the Tailscale sidecar is not logged in yet (state: $st) — remote access is down until it is (./stack remote status); the local portal is fine"; fi

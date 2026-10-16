@@ -647,6 +647,20 @@ def test_less_protection_only_from_this_computer():
     assert st.weakens("BUDGET_SETUP", "6", "x") and not st.weakens("BUDGET_SETUP", "4", "x")
 
 
+def test_previews_over_remote_access_are_on_unless_false():
+    """REMOTE_PREVIEW: blank counts as on (as the stack reads it), so only false → true/blank is less protection — from this
+    computer only; turning it off works from anywhere (lib/settings.sh setting_weakens is the same)."""
+    pv = row("REMOTE_PREVIEW", "remote", "-", "widen-local", "bool", "remote-preview", value="false")
+    assert "turned on" in st.policy_error(pv, "true", local=False) and st.policy_error(pv, "true", local=True) is None
+    assert st.policy_error(row("REMOTE_PREVIEW", "remote", "-", "widen-local", "bool", "remote-preview", value=""), "false", local=False) is None
+    assert not st.weakens("REMOTE_PREVIEW", "true", "") and not st.weakens("REMOTE_PREVIEW", "false", "true")
+    assert st.weakens("REMOTE_PREVIEW", "true", "false") and st.weakens("REMOTE_PREVIEW", "true", "OFF")
+    from portal.app import STATIC
+    js = (STATIC / "settings.js").read_text(encoding="utf-8")
+    assert 'const ON_UNLESS_FALSE = new Set(["REMOTE_PREVIEW"]);' in js and '"TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"]' in js
+    assert "if (ON_UNLESS_FALSE.has(k.key)) return !isOff(v) && isOff(old);" in js
+
+
 def test_stale_requests_are_deleted_by_the_portal(tmp_path):
     old, new = tmp_path / ("cfg-" + "a" * 32 + ".req"), tmp_path / ("act-" + "b" * 32 + ".json")
     other = tmp_path / ("req-" + "c" * 32 + ".json")   # Home's update requests: not the portal's settings files

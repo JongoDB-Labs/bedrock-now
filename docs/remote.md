@@ -83,6 +83,51 @@ phone (Tailscale) ──HTTPS──▶ Tailscale Service svc:bedrock-now[-chat|-
   `<base>-terminal.<tailnet>.ts.net` (a fifth Tailscale Service: approve it like the others; `./stack remote
   status` lists it) or `terminal.<your domain>` (the wildcard certificate covers it) — reached through the same
   hand-off, and it still asks for the portal password again ([security](security.md#the-browser-terminal)).
+  With the Code page on, the same switch shares it too (`<base>-code`, a sixth Service), and its previews of dev
+  servers (`<base>-preview`, a seventh: [below](#previews-of-dev-servers-over-remote-access)).
+- Every app host answers only page loads, plain assets and its own pages' requests from the other hosts of the
+  site ([the same-site guard](security.md#the-same-site-guard)): all Services of a tailnet are one *site* for the
+  browser (`ts.net` is on the public suffix list), and so is everything under your own domain.
+
+### Previews of dev servers over remote access
+
+The Code page's previews of a server running in the sandbox ([README](../README.md#the-code-page-optional)) work
+over remote access too, wherever the Code page does (`REMOTE_TERMINAL=true`), unless you turn them off:
+`REMOTE_PREVIEW=false` (Settings › Remote access, or `./stack config set REMOTE_PREVIEW false`; turning them back on
+works only from the computer running bedrock-now).
+
+- **One address for every port.** On this computer each preview has a host of its own,
+  `p<port>-<capability>.bedrock-now-preview.localhost`. A Tailscale Service is one host name — no wildcards, and
+  every name is in public certificate-transparency logs — so remotely there is one, `https://<base>-preview.<tailnet>.
+  ts.net` (`preview.<your domain>` in own-domain mode), and a cookie on it says which port your browser previews:
+  `__Host-bn_preview` (host-only, `Secure`, `HttpOnly`, `SameSite=Strict`, signed: the port, the Code page's unlock
+  and your Tailscale login). The Code page's **Preview** sets it through a hand-off: `/.bn/preview` on the code host
+  mints a single-use, 60-second token for that unlock and port, and the preview host's `/.bn/preview-callback`
+  turns it into the cookie, then shows the path. So a browser previews **one port at a time** there: opening another
+  port's preview switches the open one (its pane says so; *Try again* switches back), in every tab of that browser.
+  On a phone **Preview** opens a new tab, as on this computer.
+- **The cookie ends with the unlock**: 12 hours, **Sign out**, a new password; another Tailscale login gets nothing.
+  It never reaches the sandbox (Caddy strips it, and a dev server's own `Set-Cookie` of that name is dropped), and the
+  preview's script cannot read or overwrite it.
+- **Same site as the portal.** Every Service of a tailnet is one site, so a preview's script *could* send requests to
+  the portal, Chat, Admin, Files, the terminal and the Code page that carry your cookies (`SameSite=Strict` does not
+  stop requests from the same site). Every one of those hosts refuses them before the app sees them — anything with
+  the preview's `Origin`, and any script request from another host of the site — while links, frames and plain
+  images still work ([the same-site guard](security.md#the-same-site-guard)). It can still set cookies for all of
+  `<tailnet>.ts.net` (never the `__Host-` session cookies) — see [Cookies stay on their own host](#cookies-stay-on-their-own-host).
+- **Own domain: give the previews a domain of their own** if you can. `preview.bedrock.example.com` is on the same
+  site as the portal, and a preview's script can set cookies for all of `example.com` — your other sites under it
+  too. With `REMOTE_PREVIEW_DOMAIN=preview.example-usercontent.net` in `.env` (a name of a registrable domain you own,
+  its zone in the same Cloudflare account and the token allowed to edit it; then `./stack up`) the previews are
+  another site: their requests to bedrock-now carry no cookies at all, and they cannot touch `example.com`'s cookies.
+  Caddy gets a certificate for that name by DNS-01 like the others; add its DNS record (`./stack remote enable
+  domain …` and `./stack remote test` print it). The cookie is then a third-party one inside the Code page's pane
+  (`SameSite=None; Partitioned`, kept for that page only), which Chrome and Firefox keep; in a browser that blocks
+  third-party cookies outright (Safari) the pane says the link does not work — use **Open in a new tab** there. (This
+  variant is checked by unit tests and `caddy validate`, not yet in a browser end to end.)
+- **The admin console**: define the Service `<base>-preview` (port `tcp:443`) like the others, and add it to the
+  policy's `autoApprovers` and `grants` (steps 2 and 4 below; `./stack remote enable tailscale` prints them with it,
+  `./stack remote status` lists the Services, and `./stack up` names a Service it has not served before).
 
 ### Your Tailscale login, checked
 
@@ -154,7 +199,9 @@ Requirements (checked against Tailscale's documentation, October 2026):
    `?ephemeral=false` to its secret — but it can mint further keys at any time: revoke or rotate it once the
    sidecar is enrolled; `enable` reminds you.)
 4. **Services**: *Advertise → Define a Service* four times — `bedrock-now`, `bedrock-now-chat`,
-   `bedrock-now-admin`, `bedrock-now-files` — each with port `tcp:443`.
+   `bedrock-now-admin`, `bedrock-now-files` — each with port `tcp:443`. With the browser terminal and the Code page
+   shared (`REMOTE_TERMINAL=true`) also `bedrock-now-terminal`, `bedrock-now-code` and `bedrock-now-preview` (the Code
+   page's previews; not with `REMOTE_PREVIEW=false`) — the printed snippet and steps list them.
 5. Then run `./stack remote enable tailscale`, paste the key (hidden) and your login. As soon as the sidecar
    has logged in, the key is removed from `.env` and the container is recreated without it, so it does not
    linger in `docker inspect` either.
@@ -243,3 +290,6 @@ and Open WebUI. The sidecar's login stays in the `tailscale-state` volume for a 
 | "REMOTE_SUBNET … overlaps Docker network …" (or Docker: "Pool overlaps") | set `REMOTE_SUBNET` in `.env` to a free /29 (e.g. `10.254.254.248/29`), then `./stack up` |
 | `./stack logs portal`: "PORTAL_PROXY_SECRET is missing" | `./stack up` generates it (remote requests count as local until then) |
 | Login page loops | the device's clock; a stale cookie — sign out on Home, or clear site data |
+| Code page: "Previews over remote access have no address yet" | `./stack up` on the computer writes `REMOTE_PREVIEW_HOST`; Tailscale: define and approve the Service `<base>-preview` |
+| A preview: "This preview link does not work (any more)" | open it again from the Code page (Ports › Preview): the unlock ended (12 h, Sign out), or another port's preview took over in this browser |
+| A request refused with "same-site guard" (`X-Bn-Refused`) | a page on another host of the site (a preview, another of your tailnet's web apps) sent a script request to bedrock-now: expected; if one of bedrock-now's own pages does, report it |

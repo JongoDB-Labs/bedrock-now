@@ -28,6 +28,7 @@ def site_of(host: str) -> str:
 
 PREVIEW_SITE_SUFFIX = "-preview.localhost"
 _PREVIEW_DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]{0,52}[a-z0-9])?-preview\.localhost")
+_HOSTNAME = re.compile(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 # The apps the portal fronts and their start paths (Caddy routes them; see caddy/Caddyfile). Each has its own host
 # name: CHAT_HOST / ADMIN_HOST / FILES_HOST, by default chat./admin./files. under PORTAL_HOST.
@@ -116,8 +117,14 @@ class Settings:
     remote_terminal: bool = False  # REMOTE_TERMINAL=true: also on the remote site (remote_app_hosts["terminal"])
     code: bool = False             # CODE_ENABLED=true (with the terminal): the Code tab and code host (./stack code)
     # The Code page's previews of dev servers in the sandbox (caddy/preview-on.caddy): their own site,
-    # p<port>-<capability>.PREVIEW_DOMAIN (compose.code.yaml; lib/code.sh derives it from PORTAL_HOST). Local only.
+    # p<port>-<capability>.PREVIEW_DOMAIN (compose.code.yaml; lib/code.sh derives it from PORTAL_HOST).
     preview_domain: str = ""
+    # ... and over remote access (caddy/remote-*.caddy, remote_preview): one host, REMOTE_PREVIEW_HOST (written by
+    # lib/code.sh: <base>-preview.<tailnet>.ts.net, preview.<REMOTE_HOST> or REMOTE_PREVIEW_DOMAIN), routed by the
+    # __Host-bn_preview cookie a hand-off from the code host sets. Blank: off (REMOTE_PREVIEW=false, or no remote Code
+    # page); remote_preview says which (the Code page's message).
+    remote_preview_host: str = ""
+    remote_preview: bool = True
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -175,8 +182,20 @@ class Settings:
         return [self.origin(CODE, remote=rem) for rem in (False, True) if self.code_on(rem)]
 
     def preview_on(self, remote: bool = False) -> bool:
-        """Previews: with the Code page, on this computer only (remote access to them is a later step)."""
-        return not remote and self.code_on(False) and bool(self.preview_domain)
+        """Previews: with the Code page on this site — locally on PREVIEW_DOMAIN, remotely on REMOTE_PREVIEW_HOST."""
+        if remote:
+            return self.code_on(True) and bool(self.remote_preview_host)
+        return self.code_on(False) and bool(self.preview_domain)
+
+    def remote_preview_same_site(self) -> bool:
+        """The remote preview host is on the remote portal's site (<base>-preview.<tailnet>.ts.net beside <base>.<tailnet>.
+        ts.net — ts.net is a public suffix, so every Service of a tailnet is one site — or preview.<REMOTE_HOST>): its
+        cookie can be SameSite=Strict, and the Code page frames it as a first-party frame. A REMOTE_PREVIEW_DOMAIN on a
+        registrable domain of its own is another site: the frame is a third-party one there."""
+        h, r = self.remote_preview_host, self.remote_host
+        if not h or not r:
+            return False
+        return h.endswith("." + r) or (r.endswith(".ts.net") and h.split(".", 1)[-1] == r.split(".", 1)[-1])
 
     def locked_on(self, app: str, remote: bool = False) -> bool:
         """The terminal / the Code page: on, and usable on this site."""
@@ -235,6 +254,12 @@ def from_env(env: dict | None = None) -> Settings:
     if preview and (not _PREVIEW_DOMAIN.fullmatch(preview) or site_of(preview) == site_of(host)
                     or any(site_of(h).endswith(PREVIEW_SITE_SUFFIX) for h in [host, *app_hosts.values()])):
         preview = ""
+    # the remote preview host: only with the Code page remote, a plain host name, and never one of the remote site's own
+    # (the portal's or an app's: its cookie would be theirs)
+    r_preview = (env.get("REMOTE_PREVIEW_HOST") or "").strip().lower() if remote_app_hosts.get(CODE) else ""
+    if r_preview and (not _HOSTNAME.fullmatch(r_preview) or r_preview in (
+            (env.get("REMOTE_HOST") or "").strip().lower(), *remote_app_hosts.values())):
+        r_preview = ""
     return Settings(
         password_hash=password_hash,
         secret=secret,
@@ -276,6 +301,8 @@ def from_env(env: dict | None = None) -> Settings:
         remote_terminal=remote_terminal,
         code=code,
         preview_domain=preview,
+        remote_preview_host=r_preview,
+        remote_preview=(env.get("REMOTE_PREVIEW") or "true").strip().lower() not in ("false", "0", "no", "off"),
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),

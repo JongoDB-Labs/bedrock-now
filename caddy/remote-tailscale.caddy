@@ -11,9 +11,12 @@
 #                          otherwise it is terminal.remote.invalid, which matches nothing)
 #   {$REMOTE_CODE_HOST}   the Code page — only with the Code page on and REMOTE_TERMINAL=true (lib/code.sh; otherwise
 #                          code.remote.invalid)
+#   {$REMOTE_PREVIEW_HOST} the Code page's previews of dev servers in the sandbox, svc:<name>-preview — with the remote
+#                          Code page unless REMOTE_PREVIEW=false (lib/code.sh; otherwise preview.remote.invalid)
 # Same rules as the local site, plus X-Portal-Remote: 1 (any client copy deleted first): the portal then uses
 # the remote origin and a host-only cookie per remote host (__Host-bn_session; app hosts get theirs via the
-# hand-off).
+# hand-off). Every Service of a tailnet is one site (ts.net is a public suffix), the preview host's too: every app
+# host refuses a preview's requests and other hosts' scripts (not_from_preview, Caddyfile).
 
 (remote_request) {
 	@not_sidecar not remote_ip {$REMOTE_SIDECAR_IP}/32
@@ -57,6 +60,7 @@ http://{$REMOTE_HOST}:8081 {
 http://{$REMOTE_CHAT_HOST}:8081 {
 	route {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		reverse_proxy open-webui:8080 {
@@ -68,6 +72,7 @@ http://{$REMOTE_CHAT_HOST}:8081 {
 http://{$REMOTE_ADMIN_HOST}:8081 {
 	route {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		import app_sso
@@ -81,6 +86,7 @@ http://{$REMOTE_ADMIN_HOST}:8081 {
 http://{$REMOTE_FILES_HOST}:8081 {
 	route {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import portal_auth
 		import app_sso
@@ -94,6 +100,7 @@ http://{$REMOTE_FILES_HOST}:8081 {
 http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 	route {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import terminal_callback
 		import terminal_unlock
@@ -108,14 +115,24 @@ http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 http://{$REMOTE_CODE_HOST:code.remote.invalid}:8081 {
 	route {
 		import remote_request
+		import not_from_preview
 		import handoff_callback
 		import code_unlock
 		import code_auth
 		import code_portal
 		reverse_proxy code-upstream:8095 {
 			import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} 1
-			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
+			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}
 		}
+	}
+}
+
+# The previews' host: sandbox content, routed by its own cookie (remote_preview, Caddyfile) — never a session, and not
+# guarded like the app hosts: it is what they are guarded against.
+http://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}:8081 {
+	route {
+		import remote_request
+		import remote_preview "https://{$REMOTE_CODE_HOST:code.remote.invalid} {$REMOTE_ORIGIN}"
 	}
 }
 

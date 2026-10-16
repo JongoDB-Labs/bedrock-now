@@ -481,7 +481,7 @@ per browser.
   SHA-256, and only **Run this command and install** lets it run (Claude Code's `--accept-command <sha256>`; never
   `-y`). After a change the open sessions reload their plugins, so new commands and skills are in the `/` palette at
   once (that rewrites their prompt cache on the next turn).
-- **Previews of dev servers** (local only for now). A web server running in the sandbox — `npm run dev`, Vite, Next,
+- **Previews of dev servers**. A web server running in the sandbox — `npm run dev`, Vite, Next,
   `python -m http.server`, started by Claude, a background task or you in the terminal — shows in a tab beside the
   chat (*chat | preview*), with reload, an address field for its paths, desktop / tablet / phone sizes and **Open in
   a new tab** (its own developer tools, full size); on a phone it opens in a new tab. You get there from the
@@ -504,8 +504,15 @@ per browser.
   work there (cookies without `SameSite=None` are not sent to a frame from another site, and Safari or Chrome set to
   block third-party cookies keep none) — an app you sign in to works in **Open in a new tab**. Calls to *another*
   port from the app's page (`fetch('http://localhost:3000')`)
-  reach your computer, not the sandbox: use the dev server's proxy. Not over remote access yet. Details:
-  [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox).
+  reach your computer, not the sandbox: use the dev server's proxy. **Over remote access** (wherever the Code page is
+  remote) previews have one address of their own — `https://bedrock-now-preview.<tailnet>.ts.net`, a sixth Tailscale
+  Service to define once, or `preview.<your domain>` — and a browser previews **one port at a time** there (opening
+  another port's preview switches it; *Try again* switches back). There a preview is on the *same site* as the portal
+  (every Service of a tailnet is one site), so every app host refuses its scripts' requests (the
+  [same-site guard](docs/security.md#the-same-site-guard)); `REMOTE_PREVIEW=false` (Settings › Remote access, or
+  `./stack config set REMOTE_PREVIEW false`) keeps previews on this computer only. Details:
+  [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox),
+  [docs/remote.md](docs/remote.md#previews-of-dev-servers-over-remote-access).
 - **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's
   `bedrock-shared` included); **Reconnect**, or switch one off and on for this session. Servers of your own (stdio,
   HTTP or SSE) are added to or removed from the sandbox's Claude Code user configuration — a stdio server's command
@@ -647,8 +654,9 @@ The portal from your phone or laptop, over HTTPS, without opening a port to the 
 A small Tailscale container joins your tailnet and serves four
 [Tailscale Services](https://tailscale.com/kb/1552/tailscale-services) with real certificates; your devices
 need the Tailscale app. Remote requests need your **Tailscale login and the portal password**. The local address
-keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services, a policy snippet
-and an auth key) are printed with your names filled in. Your own domain instead
+keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services — six or seven with the
+browser terminal, the Code page and its previews shared remotely —, a policy snippet and an auth key) are printed with
+your names filled in; when an update or a setting adds a Service, `./stack up` says which one to define. Your own domain instead
 (`./stack remote enable domain bedrock.example.com`, Let's Encrypt wildcard via Cloudflare DNS), how the
 host-only session cookies work, and Cloudflare Tunnel: [docs/remote.md](docs/remote.md).
 
@@ -1099,6 +1107,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   in the foreground (never installed as a service) for the Settings checks. What is covered, and what stays manual:
   [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh --help` and
   [docs/advanced.md](docs/advanced.md#end-to-end-tests).
+- **Remote access without a tailnet** (opt-in, no AWS, about two minutes): `tests/e2e/remote/run.sh` runs the real
+  portal and Caddyfile in Tailscale mode behind a stand-in for the sidecar, in Chromium: the hand-offs, the Code
+  page's previews over remote access and the same-site guard (and, with the guard taken out, what it stops).
+  `tests/caddy-validate.sh` validates the Caddyfile in every mode combination.
 
 ## Security model
 
