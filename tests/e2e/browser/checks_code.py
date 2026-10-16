@@ -1280,9 +1280,10 @@ def open_preview(page, path, kind, timeout=30000):
     return pane
 
 
-def outside(rec):
-    """Requests that left the code host (a hostile file's references point at 127.0.0.1:9)."""
-    return [e["url"] for e in rec.events if e["t"] in ("resp", "failed") and not e["url"].startswith((CODE + "/", "blob:", "data:"))]
+def outside(rec, since=0):
+    """Requests that left the code host after event `since` (the sign-in before it is the portal's); a hostile file's
+    references point at 127.0.0.1:9."""
+    return [e["url"] for e in rec.events[since:] if e["t"] in ("resp", "failed") and not e["url"].startswith((CODE + "/", "blob:", "data:"))]
 
 
 @check("browser", "code-ui-previews")
@@ -1290,6 +1291,8 @@ def outside(rec):
 def ui_previews(ctx):
     need_on()
     page, rec = ui_page(ctx, "code-ui-previews")
+    since = len(rec.events)
+    rec.mark("previews")
     c = Code.on(page, rec, goto=False)
     d = f"e2e-previews-{int(time.time())}"
     put_previews(c, d)
@@ -1399,7 +1402,7 @@ def ui_previews(ctx):
     see(page.locator(f".pane:not(.hidden)[data-path='{d}/fake.png'] .cm-content")).to_contain_text("a png that is HTML", timeout=20000)
     expect(page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined"), "prototype polluted")
     expect(not popups and page.url.startswith(CODE), f"popups {popups}, url {page.url}")
-    out = outside(rec)
+    out = outside(rec, since)
     expect(not out, f"requests that left the code host: {out[:5]}")
     # the worker policy under the real policy: no second policy, no other worker URL
     tt = page.evaluate("""() => { const r = {};
