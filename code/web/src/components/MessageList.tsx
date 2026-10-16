@@ -92,7 +92,7 @@ const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 
         </span>
       )}
       <div class="msg-user-text">{it.text}</div>
-      {(it.images > 0 || it.queued) && (
+      {(it.images > 0 || it.queued || it.folded) && (
         <div class="msg-user-meta">
           {it.images > 0 && (
             <span>
@@ -100,6 +100,7 @@ const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 
             </span>
           )}
           {it.queued && <span>queued — sent when Claude finishes</span>}
+          {it.folded && <span data-testid="msg-folded">sent while Claude worked — taken into this turn</span>}
         </div>
       )}
       {rewinding && <RewindPanel />}

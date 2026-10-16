@@ -47,7 +47,9 @@ test('status: only known permission modes are taken', () => {
 
 test('result: negative or NaN numbers become 0, error subtypes flagged', () => {
   const r = normEvent({ type: 'result', subtype: 'error_during_execution', num_turns: -3, duration_ms: 'NaN', usage: { input_tokens: -1, output_tokens: 12 } });
-  assert.deepEqual(r, { kind: 'result', subtype: 'error_during_execution', turns: 0, durationMs: 0, usage: { input: 0, output: 12, cacheRead: 0, cacheWrite: 0 }, isError: true });
+  assert.deepEqual(r, { kind: 'result', subtype: 'error_during_execution', turns: 0, durationMs: 0, usage: { input: 0, output: 12, cacheRead: 0, cacheWrite: 0 }, isError: true, consumed: [] });
+  const c = normEvent({ type: 'result', subtype: 'success', consumed: ['AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', '../x', 7] });
+  assert.deepEqual(c?.kind === 'result' && c.consumed, ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee']);
 });
 
 test('user events keep a valid uuid only', () => {

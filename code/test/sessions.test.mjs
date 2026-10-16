@@ -43,7 +43,7 @@ test('a new session: the SDK options the spike settled on, a prompt with a human
   assert.deepEqual(events.map(([, seq]) => seq), [1, 2, 3, 4, 5]);
   assert.equal(mgr.get(id).state, 'idle');
   const result = events.find(([, , ev]) => ev.type === 'result')[2];
-  assert.deepEqual(Object.keys(result).sort(), ['duration', 'is_error', 'subtype', 'text', 'turns', 'type', 'usage'], 'the CLI\'s cost is not passed on');
+  assert.deepEqual(Object.keys(result).sort(), ['consumed', 'duration', 'is_error', 'subtype', 'text', 'turns', 'type', 'usage'], 'the CLI\'s cost is not passed on');
   mgr.closeAll();
 });
 

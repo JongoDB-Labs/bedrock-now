@@ -185,7 +185,10 @@
 //   {type: "status", status, permissionMode?, model?, effort?}  compacting | requesting | "Bedrock retry N/M (…)" | ""
 //                                                              (and the switches after set_*, or Claude Code's own)
 //   {type: "result", subtype, is_error, turns, duration, usage: {input_tokens, output_tokens,
-//          cache_read_input_tokens, cache_creation_input_tokens}, text}
+//          cache_read_input_tokens, cache_creation_input_tokens}, text, consumed: [UUID]}
+//                                                              consumed: the prompts the turn took, also one sent
+//                                                              while it ran that Claude Code folded into it between
+//                                                              tool rounds (it then gets no turn of its own)
 //   {type: "error", message}                                   the session's process failed (text: the same)
 // No cost is ever taken from the sandbox: the page asks /.bn/spend (LiteLLM's spend logs, through the portal).
 

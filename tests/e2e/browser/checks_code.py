@@ -932,13 +932,21 @@ def ui_queue_clear(ctx):
     ask(page, "Reply with exactly the word: queued")
     see(page.locator("[data-testid=msg-user].queued")).to_have_count(1, timeout=10000)
     shot(page, "66-code-ui-queued")
-    turns(page, n + 2)
-    see(page.locator("[data-testid=msg-user].queued")).to_have_count(0)
-    order = page.evaluate("""() => [...document.querySelectorAll('[data-testid=msg-user], [data-testid=turn-end]')].slice(-4)
-        .map(e => e.dataset.testid === 'turn-end' ? 'end' : e.innerText.trim().slice(0, 20))""")
-    expect(order[0].startswith("Count from 1") and order[1] == "end" and order[2].startswith("Reply with exactly") and order[3] == "end",
-           f"the queued prompt did not wait for the first turn: {order}")
+    # Claude Code runs it as the next turn, or folds it into this one between tool rounds (the result lists it): then
+    # it is shown in this turn, before the answer that came after it
+    page.wait_for_function("""(n) => { const ends = document.querySelectorAll('[data-testid=turn-end]').length;
+        return !document.querySelector('[data-testid=msg-user].queued')
+          && (ends >= n + 2 || (ends >= n + 1 && !!document.querySelector('[data-testid=msg-folded]'))); }""", arg=n, timeout=150000)
+    order = page.evaluate("""() => [...document.querySelectorAll('[data-testid=msg-user], [data-testid=turn-end]')]
+        .map(e => e.dataset.testid === 'turn-end' ? 'end' : (e.querySelector('[data-testid=msg-folded]') ? 'folded: ' : '') + e.innerText.trim().slice(0, 20))""")
+    own = order[-4:]
+    folded = order[-3:]
+    expect((own[0].startswith("Count from 1") and own[1] == "end" and own[2].startswith("Reply with exactly") and own[3] == "end")
+           or (folded[0].startswith("Count from 1") and folded[1].startswith("folded: Reply with exactly") and folded[2] == "end"),
+           f"the queued prompt neither waited for the first turn nor was taken into it: {order[-4:]}")
     expect("queued" in last_answer(page).lower(), f"answer {last_answer(page)!r}")
+    how = "ran as its own turn" if own[1] == "end" else "was taken into the running turn (shown before its answer)"
+    order = order[-4:] if own[1] == "end" else order[-3:]
     # /clear: a new session with the same model and mode (the old one stays in the list); /resume opens the list
     mode = page.get_by_test_id("mode-picker").inner_text()
     ask(page, "/clear")
@@ -955,7 +963,7 @@ def ui_queue_clear(ctx):
     ask(page, "/resume")
     see(page.get_by_test_id("session-row").first).to_be_visible(timeout=10000)
     csp_clean(page, rec)
-    return (f"a prompt typed while busy waited below the stream (queued), then ran as its own turn ({order}); /clear → a new "
+    return (f"a prompt typed while busy waited below the stream (queued), then {how} ({order}); /clear → a new "
             f"session {new[:8]} with Haiku and {mode!r}, the old one kept; /resume opens the session list")
 
 

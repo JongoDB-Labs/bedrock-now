@@ -53,9 +53,12 @@ test('live messages: text, deltas, tools, results — capped, ids checked, costs
   assert.deepEqual(a, [{ type: 'text', text: MARKUP, model: 'claude-haiku-5-5', parent: null }, { type: 'thinking', text: 'hmm', parent: null },
     { type: 'tool_use', id: 'toolu_01', name: 'Bash', input: { command: 'ls' }, parent: null }]);
   assert.deepEqual(fromSdk({ type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text: '/cost: $0' }] } }), [{ type: 'local', text: '/cost: $0' }]);
-  const r = fromSdk({ type: 'result', subtype: 'success', is_error: false, num_turns: 2, duration_ms: -5, total_cost_usd: -1, usage: { input_tokens: 'many', output_tokens: 7 }, result: 'done' });
+  const r = fromSdk({ type: 'result', subtype: 'success', is_error: false, num_turns: 2, duration_ms: -5, total_cost_usd: -1, usage: { input_tokens: 'many', output_tokens: 7 }, result: 'done',
+    user_message_uuids: ['a0000000-0000-4000-8000-000000000001', '../x', 7, 'a0000000-0000-4000-8000-000000000002'] });
   assert.deepEqual(r, [{ type: 'result', subtype: 'success', is_error: false, turns: 2, duration: null,
-    usage: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, text: 'done' }]);
+    usage: { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, text: 'done',
+    consumed: ['a0000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000002'] }]);
+  assert.deepEqual(fromSdk({ type: 'result', subtype: 'success', user_message_uuids: 'nope' })[0].consumed, []);
   assert.ok(!JSON.stringify(r).includes('cost'));
   assert.deepEqual(fromSdk({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'out' }, { type: 'image' }], is_error: 'yes' }] } }),
     [{ type: 'tool_result', id: 'toolu_01', text: 'out\n[image]', is_error: false, parent: null }]);

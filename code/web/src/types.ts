@@ -53,7 +53,7 @@ export type Ev =
   | { kind: 'task'; id: string; status: string; summary: string; toolUseId: string | null }
   | { kind: 'local'; text: string }
   | { kind: 'status'; text: string; mode: Mode | null; model: string | null }
-  | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean }
+  | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; consumed?: string[] }
   | { kind: 'error'; text: string };
 
 /** PermissionUpdate suggestions from canUseTool (what "Always allow" would write). */

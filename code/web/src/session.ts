@@ -17,7 +17,7 @@ import type {
 } from './types';
 
 export type Item =
-  | { t: 'user'; k: number; text: string; images: number; uuid: string | null; queued: boolean }
+  | { t: 'user'; k: number; text: string; images: number; uuid: string | null; queued: boolean; folded?: boolean }
   | { t: 'assistant'; k: number; text: string; streaming: boolean; model: string; parent: string | null }
   | { t: 'thinking'; k: number; text: string; streaming: boolean; parent: string | null }
   | {
@@ -258,10 +258,27 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
       if (last && last.end === null) turns[turns.length - 1] = { ...last, end: now };
       const next = endStreaming({ ...v, turns, state: v.state === 'busy' ? 'idle' : v.state });
       // tools still "running" when the turn ends were interrupted
-      const items = next.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'error' as const } : it));
+      let items = next.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'error' as const } : it));
+      // prompts sent while it ran that Claude Code took into this turn (between tool rounds): they get no turn of their
+      // own — shown before the turn's last answer, which is what came after them
+      const taken = new Set(ev.consumed ?? []);
+      const folded = v.queued.filter((q) => q.uuid && taken.has(q.uuid));
+      let nextKey = next.nextKey;
+      if (folded.length) {
+        const start = items.map((it) => it.t === 'user').lastIndexOf(true);
+        let at = items.length;
+        for (let i = items.length - 1; i > start; i--) {
+          if (items[i].t === 'assistant' && !(items[i] as Extract<Item, { t: 'assistant' }>).parent) {
+            at = i;
+            break;
+          }
+        }
+        const add: Item[] = folded.map((q) => ({ t: 'user', k: nextKey++, text: q.text, images: q.images, uuid: q.uuid, queued: false, folded: true }));
+        items = [...items.slice(0, at), ...add, ...items.slice(at)];
+      }
       const done = push(
-        { ...next, items },
-        { t: 'result', k: next.nextKey, subtype: ev.subtype, turns: ev.turns, durationMs: ev.durationMs, usage: ev.usage, isError: ev.isError, turn: Math.max(0, turns.length - 1) },
+        { ...next, items, nextKey, queued: next.queued.filter((q) => !folded.includes(q)) },
+        { t: 'result', k: nextKey, subtype: ev.subtype, turns: ev.turns, durationMs: ev.durationMs, usage: ev.usage, isError: ev.isError, turn: Math.max(0, turns.length - 1) },
       );
       // the prompts that waited for this turn: Claude takes them next, as one turn
       if (!done.queued.length) return done;

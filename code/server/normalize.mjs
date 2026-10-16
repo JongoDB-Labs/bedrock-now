@@ -126,8 +126,11 @@ export function fromSdk(m) {
     }
     case 'user': return toolResults(m, parent, true);
     case 'result':
+      // consumed: the prompts this turn took (a prompt sent while it ran may be folded into it between tool rounds
+      // instead of running as the next turn)
       return [{ type: 'result', subtype: short(m.subtype, 60), is_error: m.is_error === true, turns: int(m.num_turns, 0, 1e6),
         duration: num(m.duration_ms, 0, 1e10), usage: usage(m.usage),
+        consumed: (Array.isArray(m.user_message_uuids) ? m.user_message_uuids : []).slice(0, 64).map((u) => uuidOr(u)).filter(Boolean),
         text: str(typeof m.result === 'string' ? m.result : Array.isArray(m.errors) ? m.errors.filter((x) => typeof x === 'string').join('\n') : '', 4000) }];
     case 'system':
       switch (m.subtype) {

@@ -256,6 +256,7 @@ export function normEvent(v: unknown): Ev | null {
         durationMs: nonneg(o.duration ?? o.duration_ms) ?? 0,
         usage: normUsage(o.usage),
         isError: o.is_error === true || (typeof o.subtype === 'string' && o.subtype.startsWith('error')),
+        consumed: Array.isArray(o.consumed) ? o.consumed.slice(0, 64).filter(isUuid).map((u: string) => u.toLowerCase()) : [],
       };
     case 'error':
       return { kind: 'error', text: label(o.message ?? o.text, LIMITS.short) };

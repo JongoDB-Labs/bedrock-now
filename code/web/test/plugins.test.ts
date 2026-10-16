@@ -50,8 +50,8 @@ test('the backend\'s shapes (protocol.mjs) read as meant', () => {
   const init = normEvent({ type: 'init', model: 'claude-haiku-5-5', cwd: '/workspace', permissionMode: 'default', cliVersion: '2.1.296', tools: ['Bash'],
     commands: ['compact'], skills: [], plugins: [{ name: 'p', version: null }], mcp: [{ name: 'bedrock-shared', status: 'connected' }], effort: null });
   assert.deepEqual(init?.kind === 'init' && [init.init.cliVersion, init.init.commands, init.init.mcp[0].status, init.init.mode], ['2.1.296', ['compact'], 'connected', 'default']);
-  const r = normEvent({ type: 'result', subtype: 'success', is_error: false, turns: 2, duration: 1200, usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 6 }, text: 'x' });
-  assert.deepEqual(r, { kind: 'result', subtype: 'success', turns: 2, durationMs: 1200, usage: { input: 3, output: 4, cacheRead: 5, cacheWrite: 6 }, isError: false });
+  const r = normEvent({ type: 'result', subtype: 'success', is_error: false, turns: 2, duration: 1200, usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 6 }, text: 'x', consumed: ['11111111-1111-4111-8111-111111111111'] });
+  assert.deepEqual(r, { kind: 'result', subtype: 'success', turns: 2, durationMs: 1200, usage: { input: 3, output: 4, cacheRead: 5, cacheWrite: 6 }, isError: false, consumed: ['11111111-1111-4111-8111-111111111111'] });
   const e = normEvent({ type: 'error', message: 'Claude Code process exited with code 1', text: 'same' });
   assert.deepEqual(e, { kind: 'error', text: 'Claude Code process exited with code 1' });
   const st = normEvent({ type: 'status', status: '', permissionMode: 'acceptEdits', model: 'haiku', effort: 'low' });

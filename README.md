@@ -376,7 +376,8 @@ per browser.
   tools, to-do lists), background tasks get a Stop each, and **Stop** (or `Esc`) interrupts a turn. The `/` palette
   lists built-in commands, skills and plugin commands; `@` picks a file anywhere in the workspace (it searches it);
   images can be pasted or dropped (sent to Claude, scaled to 1568 px), other files are uploaded into the workspace
-  and mentioned. A prompt typed while Claude works waits below the answer and runs next. `/clear` (`/new`, `/reset`)
+  and mentioned. A prompt typed while Claude works waits below the answer and runs next (or, when Claude Code takes
+  it into the running turn between tool calls, as the terminal does, it shows there). `/clear` (`/new`, `/reset`)
   starts a new session with the same model, mode and effort; `/resume` opens the session list. Claude's latest to-do
   list stays pinned above the prompt; the conversation can be exported as Markdown; notifications when a prompt
   waits or a turn ends are opt-in (⋯ menu).

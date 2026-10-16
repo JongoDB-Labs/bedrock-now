@@ -173,3 +173,27 @@ test('tasks are tracked by id with their first start time', () => {
   v = applyEvent(v, { kind: 'task', id: 'b1', status: 'completed', summary: '', toolUseId: null }, 900);
   assert.deepEqual(v.tasks.b1, { id: 'b1', status: 'completed', summary: 'npm run dev', toolUseId: 't1', started: 100, updated: 900 });
 });
+
+test('a prompt Claude Code folded into the running turn (the result lists it) gets no turn of its own', () => {
+  let v = addPrompt(newView(ID), 'count', 0, U1, 10);
+  v = applyEvent(v, { kind: 'user', text: 'count', uuid: U1, images: 0 });
+  v = applyEvent(v, { kind: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'seq 1 300' }, parent: null });
+  v = addPrompt(v, 'say queued', 0, U2, 20);
+  v = addPrompt(v, 'later', 0, U3, 21);
+  v = applyEvent(v, { kind: 'tool_result', id: 'toolu_1', text: '1\n2', isError: false, parent: null, edit: null });
+  v = applyEvent(v, { kind: 'text', text: 'queued', model: 'm', parent: null });
+  v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 2, durationMs: 5, usage, isError: false, consumed: [U1, U2] }, 30);
+  const order = v.items.map((i) => (i.t === 'user' ? `user:${i.text}${i.folded ? ' (folded)' : ''}` : i.t));
+  assert.deepEqual(order, ['user:count', 'tool', 'user:say queued (folded)', 'assistant', 'result', 'user:later']);
+  // the one not taken starts the next turn, as before
+  assert.deepEqual(v.turns.map((t) => [t.start, t.end]), [[10, 30], [30, null]]);
+  assert.equal(v.queued.length, 0);
+  assert.equal(new Set(v.items.map((i) => i.k)).size, v.items.length, 'keys stay unique');
+  // folded with no answer after it: before the turn's end
+  let w = addPrompt(newView(ID), 'a', 0, U1, 10);
+  w = addPrompt(w, 'b', 0, U2, 11);
+  w = applyEvent(w, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false, consumed: [U1, U2] }, 30);
+  assert.deepEqual(w.items.map((i) => i.t), ['user', 'user', 'result']);
+  assert.equal(w.turns.length, 1);
+  assert.equal(w.state, 'idle');
+});
