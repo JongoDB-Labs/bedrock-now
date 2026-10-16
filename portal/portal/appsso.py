@@ -318,12 +318,10 @@ def is_sign_in(app: str, path: str) -> bool:
 
 
 def is_navigation(headers) -> bool:
-    """A page load (top level or a frame), not a script's request: Sec-Fetch-Mode where the browser sends it (a
-    browser without it is sent on too, and /.bn/sso then explains that it cannot sign it in)."""
-    mode = headers.get("sec-fetch-mode")
-    if mode is not None:
-        return mode == "navigate"
-    return "text/html" in (headers.get("accept") or "")
+    """A page load (top level or a frame), not a script's request, by Sec-Fetch-Mode. A browser that sends no
+    Sec-Fetch headers (Safari < 16.4, Firefox < 90) is never handed off — /.bn/sso refuses it — so it goes straight
+    to the app and its own sign-in form instead of an error page on every load."""
+    return headers.get("sec-fetch-mode") == "navigate"
 
 
 def safe_path(app: str, raw: str | None) -> str:

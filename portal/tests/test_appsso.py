@@ -183,10 +183,12 @@ def test_only_page_loads_of_the_app_pages_are_redirected(client):
         assert verify(client, ADMIN, uri, s).status_code == 200, uri
     assert verify(client, CHAT, "/", s).status_code == 200
     assert verify(client, FILES, "/shared/x.txt", s).status_code == 200   # an object URL, not the console
-    # no Sec-Fetch-* (an older browser): Accept decides
-    r = client.get("/auth/verify", headers={"Accept": "text/html", "X-Forwarded-Host": FILES, "X-Forwarded-Uri": "/rustfs/console/",
-                                            "Cookie": f"{COOKIE}={s}"})
-    assert r.status_code == 302
+    # no Sec-Fetch-* (Safari < 16.4, Firefox < 90): never handed off (/.bn/sso would refuse it) — straight to the
+    # app and its own sign-in form, not an error page on every load
+    for host, uri in ((FILES, "/rustfs/console/"), (ADMIN, "/ui/")):
+        r = client.get("/auth/verify", headers={"Accept": "text/html", "X-Forwarded-Host": host, "X-Forwarded-Uri": uri,
+                                                "Cookie": f"{COOKIE}={s}"})
+        assert r.status_code == 200, host
 
 
 def test_files_console_gets_fresh_credentials_on_every_page_load(client):

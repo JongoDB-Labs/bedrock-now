@@ -128,7 +128,8 @@ and delivers the result.
     and read the same once normalised: no `//`, `\`, `.` or `..`), a `Referer` (`no-referrer`) or the log.
 - **Stored files are inert on the files host.** That host also answers RustFS's S3 API (the console signs its
   requests for this name), so a stored HTML or SVG file opened there would run on the console's origin, next to the
-  credentials it keeps. Everything there but the console and `/.bn/sso` is sent with `Content-Security-Policy:
+  credentials it keeps. Everything there but the console and the portal's own `/.bn/` pages is sent with
+  `Content-Security-Policy:
   sandbox; default-src 'none'; frame-ancestors <portal>` and `X-Content-Type-Options: nosniff`: no scripts, an
   origin of its own, framed only by the portal. Downloads and the console's own requests are unaffected. The shared
   MCP server stores `.html`, `.svg`, `.xml` and similar files as `text/plain` as well.
