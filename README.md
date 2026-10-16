@@ -380,8 +380,8 @@ socket only the two containers share), the files you see are read and written th
 from LiteLLM's spend logs through the portal. Opening it asks for the portal password again (12 hours per
 browser, its own unlock, separate from the terminal's); Sign out locks it.
 
-**Costs.** Every prompt is billed like `claude-bedrock`, on the terminal's key; the page shows the turn's and the
-session's cost a few seconds after each turn (LiteLLM writes its logs in batches). Two things cost more than they
+**Costs.** Every prompt is billed like `claude-bedrock`, on the terminal's key; the page shows the session's cost
+a few seconds after each turn (LiteLLM writes its logs in batches). Two things cost more than they
 look: a **new session** and every **model switch within a session** make the next request write the prompt cache
 for that model again — Claude Code's system prompt, tools and the conversation so far, ~26-30k tokens: about
 $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5 (the model list shows this per model). The cache

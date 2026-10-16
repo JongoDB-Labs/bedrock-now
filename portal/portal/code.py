@@ -36,7 +36,9 @@ def models(s: Settings) -> dict:
             continue
         p = prices.get(r["name"]) or {}
         pr = {f: (float(p[f]) if p.get(f) is not None else None) for f in PRICE_FIELDS}
-        out.append({"id": r["name"], "display": r["display"], "alias": alias_of.get(r["name"]), "prices": pr,
+        out.append({"id": r["name"], "name": r["display"], "display": r["display"], "alias": alias_of.get(r["name"]),
+                    "input_per_mtok": pr["in"], "output_per_mtok": pr["out"], "cache_read_per_mtok": pr["cache_read"],
+                    "cache_write_per_mtok": pr["cache_write"], "prices": pr,
                     "cache_write_30k": round(CACHE_TOKENS * pr["cache_write"] / 1_000_000, 4) if pr["cache_write"] else None})
     rank = {a: i for i, a in enumerate(ALIAS_ORDER)}
     out.sort(key=lambda m: (rank.get(m["alias"], len(rank)), m["id"]))
@@ -64,11 +66,9 @@ def _row(r: dict) -> dict:
     except ValueError:
         start = None
     return {"startTime": start, "model": str(r.get("model") or r.get("model_group") or "")[:128], "spend": _num(r.get("spend")),
-            "status": str(r.get("status") or "")[:20],
-            "tokens": {"input": _int(r.get("prompt_tokens")), "output": _int(r.get("completion_tokens")),
-                       "total": _int(r.get("total_tokens")),
-                       "cache_read": _int(u.get("cache_read_input_tokens")),
-                       "cache_write": _int(u.get("cache_creation_input_tokens"))}}
+            "status": str(r.get("status") or "")[:20], "tokens": _int(r.get("total_tokens")),
+            "input_tokens": _int(r.get("prompt_tokens")), "output_tokens": _int(r.get("completion_tokens")),
+            "cache_read_tokens": _int(u.get("cache_read_input_tokens")), "cache_write_tokens": _int(u.get("cache_creation_input_tokens"))}
 
 
 def terminal_key(s: Settings) -> str:

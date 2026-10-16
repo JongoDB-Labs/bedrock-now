@@ -136,12 +136,14 @@ def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, ret
     /.bn/unlock, same host). Styled by the portal's public login.css; framed only by the portal (its tab), or full
     screen."""
     portal = s.origin(remote=rem)
+    # the terminal's form also inside the Code page (its terminal panel frames the terminal host)
+    framers = portal + (f" {s.origin(CODE, rem)}" if app == TERMINAL and s.code_on(rem) else "")
     page = (STATIC / f"{app}-unlock.html").read_text(encoding="utf-8").replace("{{portal}}", html.escape(portal, quote=True))
     page = page.replace("{{error}}", f'<p class="error" role="alert">{html.escape(error)}</p>' if error else "")
     resp = HTMLResponse(page, status_code=status)
     resp.headers["Content-Security-Policy"] = (
         f"default-src 'none'; style-src {portal}; img-src {portal}; form-action 'self'; base-uri 'none'; "
-        f"frame-ancestors {portal}")
+        f"frame-ancestors {framers}")
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "same-origin"
     if retry_after:

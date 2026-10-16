@@ -1226,6 +1226,8 @@ def phone(ctx):
     want = [["admin", origin("admin") + "/ui/", "_blank"], ["files", origin("files") + "/rustfs/console/", "_blank"]]
     if ENV.get("TERMINAL_ENABLED") == "true":   # the browser terminal (--terminal): full screen from More
         want.append(["terminal", origin("terminal") + "/", "_blank"])
+        if ENV.get("CODE_ENABLED") == "true":   # the Code page (--code): first in More
+            want.insert(0, ["code", origin("code") + "/", "_blank"])
     expect(links == want, f"More links {links}")
     expect(page.locator("#more-sheet .sheet-link[data-page=settings]").is_visible(), "no Settings in More")
     expect(page.locator(".sheet-logout button").is_visible(), "no Sign out in More")

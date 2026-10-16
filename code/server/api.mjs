@@ -74,14 +74,17 @@ export function makeApi({ call, sessions }) {
     return store;
   };
 
+  // A transcript as events: offset/limit count the SDK's messages (total: how many there are), each message gives one
+  // or more events (`messages` and `events` are the same list)
   async function messages(id, offset, limit) {
     if (!isUuid(id)) throw new HttpError(400, 'bad session id');
     const off = int(offset, 0, 1e6) ?? 0, lim = int(limit, 1, 2000) ?? 500;
     const store = storeFor(id);
-    const msgs = await getSessionMessages(id, { dir: '/workspace', sessionStore: store, offset: off, limit: lim, includeSystemMessages: true });
+    const all = await getSessionMessages(id, { dir: '/workspace', sessionStore: store, includeSystemMessages: true });
+    const msgs = Array.isArray(all) ? all : [];
     const events = [];
-    for (const m of Array.isArray(msgs) ? msgs : []) events.push(...fromHistory(m));
-    return { events, offset: off, limit: lim, more: Array.isArray(msgs) && msgs.length === lim, truncated: store.truncated };
+    for (const m of msgs.slice(off, off + lim)) events.push(...fromHistory(m));
+    return { messages: events, events, total: msgs.length, offset: off, limit: lim, more: off + lim < msgs.length, truncated: store.truncated };
   }
 
   async function title(id, body) {

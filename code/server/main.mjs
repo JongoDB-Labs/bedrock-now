@@ -49,7 +49,8 @@ export function loadSite(distDir, plainDir) {
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 export function withMeta(html, { nonce, portal }) {
-  const meta = `<meta name="bn-csp-nonce" content="${esc(nonce)}">\n<meta name="bn-portal-origin" content="${esc(portal)}">\n`;
+  const meta = `<meta name="bn-style-nonce" content="${esc(nonce)}">\n<meta name="bn-csp-nonce" content="${esc(nonce)}">\n`
+    + `<meta name="bn-portal-origin" content="${esc(portal)}">\n`;
   const i = html.search(/<\/head>/i);
   return i < 0 ? meta + html : html.slice(0, i) + meta + html.slice(i);
 }
@@ -57,6 +58,22 @@ export function withMeta(html, { nonce, portal }) {
 const NONCE = /^[A-Za-z0-9_-]{16,64}$/;
 const ORIGIN = /^https?:\/\/[a-z0-9.-]{1,253}(:[0-9]{1,5})?$/;
 const HOST = /^[a-z0-9.-]{1,253}(:[0-9]{1,5})?$/i;
+const HOSTNAME = /^[a-z0-9.-]{1,253}$/;
+// hashed build outputs (esbuild's name.HASH.ext) and everything under chunks/ never change: cached for good
+const IMMUTABLE = /^\/(chunks\/|assets\/)|\.[A-Z0-9]{8}\.[a-z0-9]{1,8}$/;
+
+// portalOrigin(req) / terminalUrl(req): what Caddy says frames this page (X-Bn-Portal-Origin) and the terminal host
+// of this site (X-Bn-Terminal-Host): the terminal's address is the portal's scheme and port with the terminal's name
+export function portalOrigin(req) {
+  const v = String(req.headers['x-bn-portal-origin'] || '');
+  return ORIGIN.test(v) ? v : '';
+}
+export function terminalUrl(req) {
+  const p = portalOrigin(req), h = String(req.headers['x-bn-terminal-host'] || '').toLowerCase();
+  if (!p || !HOSTNAME.test(h) || h.endsWith('.invalid')) return null;
+  const u = new URL(p);
+  return `${u.protocol}//${h}${u.port ? `:${u.port}` : ''}/`;
+}
 
 // ownOrigin(req) -> the page's origin as the browser names it: Caddy's X-Forwarded-Proto (it replaces a client's) and
 // the Host Caddy routed on
@@ -117,7 +134,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     const m = req.method, p = url.pathname, q = url.searchParams;
     let mm;
     if (p === '/api/state' && m === 'GET') {
-      return send(res, 200, { versions, limits: LIMITS, sessions: mgr.list(), pending: broker.count });
+      return send(res, 200, {
+        versions: { cli: versions.claudeCode, sdk: versions.sdk, claudeCode: versions.claudeCode },
+        limits: { ...LIMITS, sessions: LIMITS.maxOpen, upload: LIMITS.maxUploadBytes, image: LIMITS.maxImageBytes },
+        sessions: mgr.list(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
+      });
     }
     if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
     if (p === '/api/sessions' && m === 'POST') {
@@ -138,9 +159,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
     if (p === '/api/fs' && m === 'GET') return send(res, 200, await api.list(q.get('path') ?? ''));
     if (p === '/api/fs' && m === 'DELETE') return send(res, 200, await api.remove(q.get('path')));
-    if (p === '/api/fs/file' && m === 'GET') return send(res, 200, await api.readFile(q.get('path')));
+    if (p === '/api/fs/file' && m === 'GET' && q.get('download') !== '1') return send(res, 200, await api.readFile(q.get('path')));
     if (p === '/api/fs/file' && m === 'PUT') return send(res, 200, await api.writeFile(q.get('path'), await readJson(req, (LIMITS.maxUploadBytes * 2) + (64 << 10))));
-    if (p === '/api/fs/download' && m === 'GET') {
+    if ((p === '/api/fs/download' || p === '/api/fs/file') && m === 'GET') {   // (/api/fs/file?download=1 too)
       const data = await api.download(q.get('path'));
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': attachment(q.get('path') || ''),
         'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-length': data.length });
@@ -178,8 +199,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       res.writeHead(200, { ...headers, 'cache-control': 'no-store' });
       return res.end(req.method === 'HEAD' ? undefined : body);
     }
-    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, { etag: f.etag, 'cache-control': 'no-cache' }); return res.end(); }
-    res.writeHead(200, { ...headers, etag: f.etag, 'cache-control': 'no-cache', 'content-length': f.body.length });
+    const cache = IMMUTABLE.test(p) ? 'public, max-age=31536000, immutable' : 'no-cache';
+    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, { etag: f.etag, 'cache-control': cache }); return res.end(); }
+    res.writeHead(200, { ...headers, etag: f.etag, 'cache-control': cache, 'content-length': f.body.length });
     return res.end(req.method === 'HEAD' ? undefined : f.body);
   }
 
@@ -224,15 +246,19 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
       let m;
-      try { m = JSON.parse(raw.toString('utf8')); } catch { return sendTo(c, { type: 'error', error: 'not JSON' }); }
-      if (!m || typeof m !== 'object' || typeof m.type !== 'string') return sendTo(c, { type: 'error', error: 'no type' });
+      try { m = JSON.parse(raw.toString('utf8')); } catch { return sendTo(c, { type: 'error', message: 'not JSON', error: 'not JSON' }); }
+      if (!m || typeof m !== 'object' || typeof m.type !== 'string') return sendTo(c, { type: 'error', message: 'no type', error: 'no type' });
       const req = typeof m.req === 'string' && m.req.length <= 64 ? m.req : undefined;
-      const reply = (data) => sendTo(c, { type: 'reply', req, ok: true, data });
+      const session = isUuid(m.session) ? m.session : undefined;
+      const reply = (data) => { if (req !== undefined) sendTo(c, { type: 'reply', req, ok: true, data }); };
+      // the answers a page asks for come as a message of the same type (with the session); `reply` only adds `req`
+      const answer = (type, key, data) => { sendTo(c, { type, session, [key]: data }); reply(data); };
       try {
-        await handle(c, m, reply);
+        await handle(c, m, reply, answer);
       } catch (e) {
-        const msg = e instanceof SessionError || e instanceof HttpError ? e.message : `Claude Code: ${short(e?.message || String(e), 300)}`;
-        sendTo(c, { type: 'reply', req, ok: false, error: short(msg, 500) });
+        const msg = short(e instanceof SessionError || e instanceof HttpError ? e.message : `Claude Code: ${short(e?.message || String(e), 300)}`, 500);
+        sendTo(c, { type: 'error', session, req, message: msg, error: msg });
+        if (req !== undefined) sendTo(c, { type: 'reply', req, ok: false, error: msg });
       }
       return undefined;
     });
@@ -246,7 +272,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     return s;
   };
 
-  async function handle(c, m, reply) {
+  async function handle(c, m, reply, answer) {
     switch (m.type) {
       case 'attach': {
         const s = sessionOf(m);
@@ -269,30 +295,42 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'interrupt': await sessionOf(m).interrupt(); return reply({});
       case 'set_model': await sessionOf(m).setModel(m.model); return reply({ model: m.model });
       case 'set_mode': await sessionOf(m).setMode(m.mode); return reply({ mode: m.mode });
-      case 'set_effort': await sessionOf(m).setEffort(m.effort); return reply({ effort: m.effort });
+      case 'set_effort': await sessionOf(m).setEffort(m.effort ?? null); return reply({ effort: m.effort ?? null });
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision)) throw new SessionError('bad permission answer');
-        if (!broker.answer(m.id, m.decision, typeof m.message === 'string' ? m.message : undefined)) throw new SessionError('that prompt is no longer waiting', 409);
+        if (!broker.answer(m.id, m.decision, typeof m.message === 'string' ? m.message : undefined, m.answers)) {
+          throw new SessionError(m.decision === 'answer' ? 'that question is no longer waiting, or the answers do not match it' : 'that prompt is no longer waiting', 409);
+        }
         return reply({});
       }
       case 'commands': {
         const list = await sessionOf(m).need().supportedCommands();
-        return reply((Array.isArray(list) ? list : []).slice(0, 1000).filter((x) => x && typeof x === 'object')
+        return answer('commands', 'commands', (Array.isArray(list) ? list : []).slice(0, 1000).filter((x) => x && typeof x === 'object')
           .map((x) => ({ name: short(x.name, 200), description: str(x.description, 500), argumentHint: short(x.argumentHint, 200) })));
       }
       case 'models': {
         const list = await sessionOf(m).need().supportedModels();
-        return reply((Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
+        const EFF = ['low', 'medium', 'high', 'xhigh', 'max'];
+        return answer('models', 'models', (Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
           .map((x) => ({ value: short(x.value, 128), displayName: short(x.displayName, 200), description: str(x.description, 500),
-            supportedEffortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels.filter((e) => ['low', 'medium', 'high', 'xhigh', 'max'].includes(e)) : [] })));
+            resolvedModel: short(x.resolvedModel, 128), supportsEffort: x.supportsEffort === true,
+            supportedEffortLevels: Array.isArray(x.supportedEffortLevels) ? x.supportedEffortLevels.filter((e) => EFF.includes(e)) : [] })));
       }
       case 'mcp': {
         const list = await sessionOf(m).need().mcpServerStatus();
-        return reply((Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
+        return answer('mcp', 'servers', (Array.isArray(list) ? list : []).slice(0, 100).filter((x) => x && typeof x === 'object')
           .map((x) => ({ name: short(x.name, 200), status: short(x.status, 40), error: str(x.error ?? '', 500), scope: short(x.scope, 40),
             tools: Array.isArray(x.tools) ? x.tools.length : null })));
       }
-      case 'context': return reply(plain(await sessionOf(m).need().getContextUsage(), 256 << 10, 2000));
+      case 'context': {
+        const u = await sessionOf(m).need().getContextUsage();
+        const n = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+        return answer('context', 'usage', {
+          totalTokens: n(u?.totalTokens), maxTokens: n(u?.maxTokens), percentage: n(u?.percentage), model: short(u?.model, 128),
+          categories: (Array.isArray(u?.categories) ? u.categories : []).slice(0, 30).filter((x) => x && typeof x === 'object')
+            .map((x) => ({ name: short(x.name, 80), tokens: n(x.tokens), kind: short(x.kind, 20) })),
+        });
+      }
       case 'reload_plugins': return reply(plain(await sessionOf(m).need().reloadPlugins(), 256 << 10, 2000));
       case 'stop_task': {
         if (!isId(m.task)) throw new SessionError('bad task id');

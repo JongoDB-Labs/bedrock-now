@@ -33,6 +33,19 @@ export const ruleText = (sugs) => sugs.flatMap((s) => (s.type === 'addRules'
   ? s.rules.map((r) => `${r.toolName}${r.ruleContent !== undefined ? `(${r.ruleContent})` : ''} — ${s.destination}`)
   : [`mode ${s.mode} — ${s.destination}`]));
 
+// questionAnswers(input, answers) -> {question: answer} for AskUserQuestion's own questions only (each answer one line,
+// at most 2,000 characters), or null when nothing valid is left
+export function questionAnswers(input, answers) {
+  const qs = Array.isArray(input?.questions) ? input.questions.slice(0, 4).map((q) => (q && typeof q.question === 'string' ? q.question : null)) : [];
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return null;
+  const out = {};
+  for (const q of qs) {
+    const v = q !== null && Object.hasOwn(answers, q) ? answers[q] : undefined;
+    if (typeof v === 'string' && v.length <= 2000 && !/[\x00-\x08\x0b-\x1f\x7f]/.test(v)) out[q] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export class PermissionBroker {
   constructor({ onAsk = () => {}, onDone = () => {}, onCount = () => {}, timeoutMs = LIMITS.permissionMinutes * 60000 } = {}) {
     this.pending = new Map();   // id -> {prompt, resolve, timer, input, suggestions}
@@ -62,10 +75,17 @@ export class PermissionBroker {
     });
   }
 
-  /** A page's answer: once | always | deny. -> false when the prompt is gone (answered elsewhere, timed out). */
-  answer(id, decision, message) {
+  /** A page's answer: once | always | deny | answer. -> false when the prompt is gone (answered elsewhere, timed out).
+   *  "answer" (AskUserQuestion only): {answers: {question text: chosen label(s)}} — the SDK's own channel: the tool's
+   *  input comes back with `answers`, as Claude Code's permission component fills it (multi-select: comma-separated). */
+  answer(id, decision, message, answers) {
     const p = this.pending.get(id);
     if (!p) return false;
+    if (decision === 'answer') {
+      const a = questionAnswers(p.input, answers);
+      if (!a) return false;
+      return this.#finish(id, 'answer', { behavior: 'allow', updatedInput: { ...p.input, answers: a } });
+    }
     // updatedInput: the input exactly as the CLI sent it (what the page showed), never something the page made up
     if (decision === 'once') return this.#finish(id, 'once', { behavior: 'allow', updatedInput: p.input });
     if (decision === 'always') return this.#finish(id, 'always', { behavior: 'allow', updatedInput: p.input, updatedPermissions: p.suggestions });

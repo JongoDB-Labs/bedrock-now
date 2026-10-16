@@ -256,6 +256,8 @@ def api_routes(ctx):
     apps = {"chat": origin("chat") + "/", "admin": origin("admin") + "/ui/", "files": origin("files") + "/rustfs/console/"}
     if ENV.get("TERMINAL_ENABLED") == "true":   # the browser terminal (--terminal)
         apps["terminal"] = origin("terminal") + "/"
+        if ENV.get("CODE_ENABLED") == "true":   # the Code page (--code)
+            apps["code"] = origin("code") + "/"
     expect(d["apps"] == apps, f"apps {d['apps']}")
     expect(d["terminal"] == {"enabled": "terminal" in apps, "here": "terminal" in apps}, f"terminal {d['terminal']}")
     expect(d["remote"]["here"] is False and d["remote"]["on"] is False, f"remote {d['remote']}")

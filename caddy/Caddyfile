@@ -222,7 +222,8 @@ http://{$FILES_HOST} {
 # when ttyd's page changes: TTYD_PAGE_SCRIPT_SHA256, the same value), it talks only to this host, forms post only
 # to the unlock, and only {args[0]} (the portal) may frame it. Headers that could plant or clear cookies (the
 # portal's too), redirect, preload, widen a service worker, open CORS or send reports go. The unlock page and the
-# unlock itself are the portal's answers (forward_auth, terminal_unlock), with the portal's own headers.
+# unlock itself are the portal's answers (forward_auth, terminal_unlock), with the portal's own headers. The Code page
+# ({args[1]}; a name that serves nothing while it is off) may frame it too: its terminal panel.
 (terminal_page) {
 	header_down -X-Frame-Options
 	header_down -Set-Cookie
@@ -237,7 +238,7 @@ http://{$FILES_HOST} {
 	header_down -Reporting-Endpoints
 	header_down -NEL
 	header_down X-Content-Type-Options nosniff
-	header_down Content-Security-Policy "default-src 'none'; script-src 'sha256-qpCL1JTmm6ktW0DnjpSILM7GnS2fO8/e+XjSlYJuQzQ='; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]}"
+	header_down Content-Security-Policy "default-src 'none'; script-src 'sha256-qpCL1JTmm6ktW0DnjpSILM7GnS2fO8/e+XjSlYJuQzQ='; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]} {args[1]}"
 }
 
 # The Code page (./stack code; code-on.caddy and the remote sites): the same scheme as the terminal's. Its unlock form
@@ -260,6 +261,7 @@ http://{$FILES_HOST} {
 	request_header -X-Bn-Code-Proxy
 	request_header -X-Bn-Csp-Nonce
 	request_header -X-Bn-Portal-Origin
+	request_header -X-Bn-Terminal-Host
 	forward_auth portal:8000 {
 		uri /auth/verify?app=code
 	}
@@ -282,7 +284,8 @@ http://{$FILES_HOST} {
 
 # Towards the code container: none of the browser's cookies or the headers only Caddy and the portal may set; the
 # secret header; the per-request nonce the CSP below allows for <style> (the page reads it from a meta tag the
-# backend adds); and the portal origin that frames the page ({args[0]}: where its badge messages go).
+# backend adds); the portal origin that frames the page ({args[0]}: where its badge messages go) and this site's
+# terminal host ({args[1]}: its terminal panel).
 (code_upstream) {
 	header_up -Cookie
 	header_up -X-Portal-Proxy
@@ -290,6 +293,7 @@ http://{$FILES_HOST} {
 	header_up X-Bn-Code-Proxy {$CODE_PROXY_SECRET}
 	header_up X-Bn-Csp-Nonce {http.request.uuid}
 	header_up X-Bn-Portal-Origin {args[0]}
+	header_up X-Bn-Terminal-Host {args[1]}
 }
 
 # From the code container — or whatever answers in its place: this Caddy sets the code host's policy. Scripts and

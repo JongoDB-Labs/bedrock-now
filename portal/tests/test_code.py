@@ -285,6 +285,8 @@ def test_models_are_this_stacks_claude_models_with_its_prices(cs):
         assert [m["id"] for m in d["models"]] == ["claude-opus-5-5", "claude-haiku-5-5"]
         opus = d["models"][0]
         assert opus["alias"] == "opus" and opus["prices"] == {"in": 4.4, "out": 22.0, "cache_read": 0.22, "cache_write": 5.5}
+        assert (opus["name"], opus["input_per_mtok"], opus["output_per_mtok"], opus["cache_read_per_mtok"], opus["cache_write_per_mtok"]) == \
+            ("claude-opus-5-5", 4.4, 22.0, 0.22, 5.5)
         assert opus["cache_write_30k"] == 0.165
         assert d["aliases"] == {"opus": "claude-opus-5-5", "haiku": "claude-haiku-5-5"} and d["default"] == "claude-opus-5-5"
         assert "(claude-opus-5-5 $0.165, claude-haiku-5-5 $0.004)" in d["note"], d["note"]
@@ -318,8 +320,9 @@ def test_spend_is_the_sessions_rows_of_the_terminal_key_only(cs):
         d = r.json()
         assert d["session"] == SID and d["requests"] == 2 and d["total"] == 0.0043
         assert [x["startTime"] for x in d["rows"]] == ["2026-10-15T10:00:00+00:00", "2026-10-15T10:00:01+00:00"]
-        assert d["rows"][1]["tokens"] == {"input": 3, "output": 5, "total": 8, "cache_read": 0, "cache_write": 26000}
-        assert d["rows"][0]["tokens"]["total"] == 0 and d["rows"][0]["tokens"]["input"] == 0
+        r1 = d["rows"][1]
+        assert (r1["tokens"], r1["input_tokens"], r1["output_tokens"], r1["cache_read_tokens"], r1["cache_write_tokens"]) == (8, 3, 5, 0, 26000)
+        assert d["rows"][0]["tokens"] == 0 and d["rows"][0]["input_tokens"] == 0
         assert d["key"] == {"alias": "claude-code-terminal", "spend": 1.25, "max_budget": 50, "reset_at": "2026-11-01T00:00:00Z", "error": None}
         q = [x for x in calls if x.url.path.startswith("/spend")][0]
         assert q.url.params["session_id"] == f"code-{SID}"
@@ -337,6 +340,17 @@ def test_spend_says_when_litellm_fails(cs):
     with _client(replace(cs, keys=cs.keys[:-1])) as c:
         tok, ut = unlocked(c)
         assert _guarded(c, f"/auth/code-spend?session={SID}", tok, ut).status_code == 503
+
+
+def test_the_terminals_unlock_form_may_be_framed_by_the_code_page(settings, cs):
+    for s, framed in ((replace(settings, terminal=True), False), (cs, True)):
+        with _client(s) as c:
+            tok = session(c)
+            r = c.get("/auth/verify?app=terminal", headers={"Accept": "text/html", "X-Forwarded-Method": "GET", "X-Forwarded-Host": TERM_HOST,
+                                                           "X-Forwarded-Uri": "/", "Cookie": f"{COOKIE}={tok}"})
+            assert r.status_code == 401 and "Unlock the terminal" in r.text
+            fa = r.headers["content-security-policy"].split("frame-ancestors ", 1)[1]
+            assert fa == (f"{PORTAL} {CODE}" if framed else PORTAL), fa
 
 
 def test_unlock_tokens_are_bound_to_their_app():

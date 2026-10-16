@@ -6,13 +6,15 @@
 // REST (JSON unless said otherwise; every answer Cache-Control: no-store; errors are {error: "…"} with 400 bad input,
 // 403 another site's Origin, 404, 409 conflict, 413 too large, 502 the sandbox failed or refused, 504 it timed out).
 // Requests other than GET/HEAD must carry the page's own Origin (browsers add it to fetch() by themselves).
-//   GET    /api/state                      {versions: {sdk, claudeCode}, limits: LIMITS, sessions: [OpenSession],
-//                                           pending: <permission prompts waiting, all sessions>}
-//   GET    /api/sessions?q=TEXT            {sessions: [SessionRow]} — the sandbox's transcripts for /workspace, newest
-//                                           first (at most 200), q filters by title/prompt (case-insensitive)
-//   GET    /api/sessions/ID/messages?offset=N&limit=N   {events: [Event…], offset, limit, more, truncated}: a
-//                                           transcript as the same events the WebSocket sends (types user, text,
-//                                           thinking, tool_use, tool_result, local); truncated: only its last 3 MiB
+//   GET    /api/state                      {versions: {cli, sdk}, limits: {sessions, upload, image, …}, sessions:
+//                                           [{id, state, model, mode, effort, title, pending, open, error}], pending,
+//                                           portal_origin, terminal_url}
+//   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}
+//                                           the sandbox's transcripts for /workspace, newest first (at most 200)
+//   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000)   {messages: [ev…], total, offset, limit, more, truncated}
+//                                           a transcript as the WebSocket's events (user with the prompt's uuid, text,
+//                                           thinking, tool_use, tool_result, local); offset/limit/total count the SDK's
+//                                           messages; truncated: only the transcript's last 3 MiB was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, taskStop?: bool}
 //                                           -> {id, existing}: opens a session (new, resume, fork, resume-at).
 //                                           taskStop: the page has a Stop per background task (stop_task), so an
@@ -22,13 +24,14 @@
 //   DELETE /api/sessions/ID                {ok}: ends its process (the transcript stays; a later prompt resumes it)
 //   POST   /api/sessions/ID/title {title}  {ok}: renames it (a custom-title line, as /rename writes)
 //   GET    /api/fs?path=P                  {path, entries: [{name, type: dir|file|symlink|other, size, mtimeMs}],
-//                                           truncated} — P relative to /workspace ("" = the workspace)
+//                                           truncated} — P relative to /workspace ("" or "." = the workspace)
 //   GET    /api/fs/file?path=P             {path, size, mtimeMs, truncated, binary, text} — text null when binary (a
 //                                           NUL in the first 8 KiB or not UTF-8); at most 2 MiB of it
-//   GET    /api/fs/download?path=P         the bytes (≤ 25 MiB), application/octet-stream, as an attachment
+//   GET    /api/fs/file?path=P&download=1  (or /api/fs/download?path=P) the bytes (≤ 25 MiB), application/octet-stream,
+//                                           as an attachment
 //   PUT    /api/fs/file?path=P {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 {error: "changed on disk …"} when
 //                                           ifMtimeMs is given and the file changed since
-//   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (URI-encoded) -> {path, size,
+//   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (percent-encoded) -> {path, size,
 //                                           mtimeMs}; an existing name gets -1, -2 … before its extension
 //   POST   /api/fs/mkdir {path}            {path}
 //   POST   /api/fs/rename {from, to}       {path}; 409 when `to` exists
@@ -38,53 +41,74 @@
 //   GET    /api/marketplaces · POST /api/marketplaces {source} · DELETE /api/marketplaces?name=N   CliResult
 //     CliResult = {ok, code, data: <parsed JSON or null>, text: <output when not JSON>}
 // Answered by the portal on the same host (Caddy routes /.bn/* there, after the same check):
-//   POST /.bn/unlock (the unlock form) · GET /.bn/models · GET /.bn/spend?session=ID (see portal/portal/app.py)
+//   POST /.bn/unlock (the unlock form)
+//   GET  /.bn/models  {models: [{id, name, alias, input_per_mtok, output_per_mtok, cache_read_per_mtok,
+//                     cache_write_per_mtok, cache_write_30k}], aliases: {opus, sonnet, haiku}, default, unit, note}
+//   GET  /.bn/spend?session=ID  {session, rows: [{startTime, model, spend, tokens, input_tokens, output_tokens,
+//                     cache_read_tokens, cache_write_tokens, status}], requests, total, key: {alias, spend, max_budget,
+//                     reset_at, error}}
 //
-// index.html (code/web/dist or code/plain) is served with two <meta> tags added before </head>:
-//   <meta name="bn-csp-nonce" content="…">     the nonce Caddy's CSP allows for <style> (CodeMirror's cspNonce)
-//   <meta name="bn-portal-origin" content="…">  the portal that frames this page (postMessage target for the badge)
+// index.html (code/web/dist or code/plain) is served no-store with <meta> tags added before </head>:
+//   bn-style-nonce (= bn-csp-nonce): the nonce Caddy's CSP allows for <style> (optional: style-src 'self' works)
+//   bn-portal-origin: the portal that frames this page (also /api/state's portal_origin)
+// Hashed files (name.HASH.ext) and everything under chunks/ are served immutable; the rest no-cache with an ETag.
 // The page tells the portal how many permission prompts wait (the Code tab's badge):
-//   parent.postMessage({bn: "code", pending: N}, <bn-portal-origin>)
+//   parent.postMessage({type: "bn-code-status", pending: N, busy}, portal_origin)
 //
-// WebSocket /ws (JSON text frames; Origin must be the page's own). Sessions live in the backend, not in the socket:
-// a reload, a second tab or a phone attaches and gets what it missed.
-// client -> server (every message may carry `req`: a string ≤ 64 chars echoed in its reply):
-//   {type: "attach", session, since?: SEQ}      replays events after SEQ (0/absent: all kept), then pending prompts
-//                                               and the state; the socket then receives the session's events
+// WebSocket /ws (JSON text frames, max 32 MiB; Origin must be the page's own). Sessions live in the backend, not in
+// the socket: a reload, a second tab or a phone attaches and gets what it missed. Every message and every `ev` has
+// its kind in `type`. A client message may carry `req` (≤ 64 chars): then it also gets {type: "reply", req, ok, data
+// | error}.
+// client -> server:
+//   {type: "attach", session, since?: SEQ}      replays this process's events after SEQ, then the prompts waiting,
+//                                               then {type: "session_state"}; the socket then receives the session
 //   {type: "detach", session}
 //   {type: "prompt", session, text, uuid?, images?: [{media_type, data(base64)}]}   a prompt typed by you (slash
-//                                               commands too: "/context"); resumes an ended session first
+//                                               commands too: "/context"); while busy it waits for the turn to end; an
+//                                               ended session is resumed first (a new process, a new ring)
 //   {type: "interrupt", session}
 //   {type: "set_model", session, model} · {type: "set_mode", session, mode} · {type: "set_effort", session, effort}
-//   {type: "permission", id, decision: "once"|"always"|"deny", message?}
-//   {type: "commands"|"models"|"mcp"|"context"|"reload_plugins", session}     -> reply data from the CLI (capped)
-//   {type: "stop_task", session, task}
+//                                               (effort null = the model's default); each answered by a status event
+//   {type: "permission", id, session, decision: "once"|"always"|"deny", message?}
+//   {type: "permission", id, session, decision: "answer", answers: {"<question text>": "<chosen label(s)>"}}
+//                                               AskUserQuestion only: the tool's input comes back with these answers
+//                                               (the SDK's channel; multi-select labels comma-separated)
+//   {type: "commands"|"models"|"mcp"|"context", session}   answered by a message of the same type (below)
+//   {type: "reload_plugins", session} · {type: "stop_task", session, task}
 // server -> client:
 //   {type: "hello", pending, limits}                          once, on connect
-//   {type: "reply", req, ok: true, data} · {type: "reply", req, ok: false, error}
 //   {type: "attached", session, state, from, last, gap}      gap: events before `from` are gone (re-read history)
-//   {type: "event", session, seq, ev}                         seq: 1, 2, 3 … per session
+//   {type: "event", session, seq, ev}                         seq 1, 2, 3 … per process: a new process starts at 1
 //   {type: "permission", id, session, tool, input, reason, blockedPath, suggestions, rules, expiresAt}
-//   {type: "permission_done", id, session, decision}         decision: once|always|deny|timeout|cancelled
-//   {type: "session_state", session, state, model, mode, effort, error}   state: starting|idle|busy|ended|error
+//   {type: "permission_done", id, session, decision}         decision: once|always|deny|answer|timeout|cancelled
+//   {type: "session_state", session, state, model, mode, effort, error}   state: starting|idle|busy|ended
+//                                                             (ended with `error` when the process failed)
+//   {type: "commands", session, commands: [{name, description, argumentHint}]}
+//   {type: "models", session, models: [{value, displayName, description, resolvedModel, supportsEffort,
+//          supportedEffortLevels}]}
+//   {type: "mcp", session, servers: [{name, status, error, scope, tools}]}
+//   {type: "context", session, usage: {totalTokens, maxTokens, percentage, model, categories: [{name, tokens, kind}]}}
 //   {type: "pending", count}                                  prompts waiting in all sessions (the badge)
-//   {type: "error", req?, error}
-// ev (every string capped, every id checked; anything else from the sandbox is dropped):
-//   {type: "init", model, cwd, permissionMode, claudeCodeVersion, tools, slashCommands, skills, plugins: [{name,
-//          version}], mcpServers: [{name, status}], effort}
-//   {type: "user", text, uuid, images}                         your prompt (images: how many)
+//   {type: "error", session?, req?, message}                  a request that failed
+// ev (every string capped, every id checked; anything else from the sandbox is dropped; `parent`: the Task tool use
+// an event belongs to, or null):
+//   {type: "init", model, cwd, permissionMode, cliVersion, tools, commands, skills, plugins: [{name, version}],
+//          mcp: [{name, status}], effort}
+//   {type: "user", text, uuid, images}                         your prompt (uuid: the client's, or a new one; images:
+//                                                              how many) — in the transcript with the same uuid
 //   {type: "delta", text, parent} · {type: "thinking_delta", text, parent}      streaming
 //   {type: "text", text, model, parent} · {type: "thinking", text, parent}       a finished block
 //   {type: "tool_use", id, name, input, parent}
 //   {type: "tool_result", id, text, is_error, parent, edit?: {path, original, hunks: [{oldStart, oldLines, newStart,
 //          newLines, lines}]}}
 //   {type: "task", id, status, summary, description, toolUseId}
-//   {type: "local", text}                                      a local command's output (/context, /cost …)
-//   {type: "status", status}                                   compacting | requesting | null
-//   {type: "notice", text}                                     API retries, compaction, a denied tool …
+//   {type: "local", text}                                      a local command's output (/context, /cost …), a
+//                                                              compaction, a denied tool, a closed session
+//   {type: "status", status, permissionMode?, model?, effort?}  compacting | requesting | a retry | "" (and the
+//                                                              switches after set_*)
 //   {type: "result", subtype, is_error, turns, duration, usage: {input_tokens, output_tokens,
 //          cache_read_input_tokens, cache_creation_input_tokens}, text}
-//   {type: "error", text}                                      the session's process failed
+//   {type: "error", message}                                   the session's process failed (text: the same)
 // No cost is ever taken from the sandbox: the page asks /.bn/spend (LiteLLM's spend logs, through the portal).
 
 export const LIMITS = Object.freeze({
@@ -101,5 +125,5 @@ export const LIMITS = Object.freeze({
 
 export const MODES = Object.freeze(['default', 'acceptEdits', 'plan', 'dontAsk']);   // not bypassPermissions / auto
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const DECISIONS = Object.freeze(['once', 'always', 'deny']);
+export const DECISIONS = Object.freeze(['once', 'always', 'deny', 'answer']);   // answer: AskUserQuestion only
 export const IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

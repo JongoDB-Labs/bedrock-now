@@ -51,7 +51,9 @@ def page_policy_problems(csp: str) -> list[str]:
     ttyd's script by its hash alone, this host only, forms only to the unlock, framed by the portal only."""
     host = f"terminal.{HOST}"
     want = ["default-src 'none'", f"connect-src 'self' ws://{host}:* wss://{host}:*", "style-src 'unsafe-inline'",
-            f"form-action {host}:*/.bn/unlock", "base-uri 'none'", "object-src 'none'", f"frame-ancestors {origin()}"]
+            f"form-action {host}:*/.bn/unlock", "base-uri 'none'", "object-src 'none'",
+            # the portal, and the Code page's terminal panel (a name that serves nothing while it is off)
+            f"frame-ancestors {origin()} {origin('code') if ENV.get('CODE_ENABLED') == 'true' else 'http://code.invalid'}"]
     parts = [p.strip() for p in csp.split(";")]
     probs = [w for w in want if w not in parts]
     if not any(re.fullmatch(r"script-src 'sha256-[A-Za-z0-9+/]{43}='", p) for p in parts):

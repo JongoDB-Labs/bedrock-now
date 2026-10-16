@@ -35,6 +35,7 @@ test('session rows: bogus ids, NaN times and markup', () => {
   const r = sessionRow({ id: '3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8', mtimeMs: 1700000000000.5, size: -5, firstPrompt: MARKUP + 'x'.repeat(1000),
     customTitle: 'T\nitle', createdAt: 'not a date', extra: { evil: true } });
   assert.equal(r.title, 'T itle');
+  assert.equal(r.first_prompt, r.firstPrompt);
   assert.equal(r.firstPrompt.length, 300);
   assert.ok(r.firstPrompt.startsWith('<img'));   // text: the page shows it as text (textContent)
   assert.equal(r.size, 0); assert.equal(r.created, null); assert.equal(r.modified, 1700000000000);
@@ -64,7 +65,10 @@ test('live messages: text, deltas, tools, results — capped, ids checked, costs
   assert.deepEqual(fromSdk({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', summary: 'ok', tool_use_id: 'toolu_9' }),
     [{ type: 'task', id: 't1', status: 'completed', summary: 'ok', description: '', toolUseId: 'toolu_9' }]);
   assert.deepEqual(fromSdk({ type: 'system', subtype: 'task_started', task_id: '../t' }), []);
-  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '<b>' }), [{ type: 'status', status: null }]);
+  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: '<b>', permissionMode: 'bypassPermissions' }), [{ type: 'status', status: '' }]);
+  assert.deepEqual(fromSdk({ type: 'system', subtype: 'status', status: 'compacting', permissionMode: 'plan' }), [{ type: 'status', status: 'compacting', permissionMode: 'plan' }]);
+  assert.deepEqual(fromSdk({ type: 'assistant', message: { content: [] }, error: 'rate_limit' }), [{ type: 'error', message: 'Claude Code reported: rate_limit', text: 'Claude Code reported: rate_limit' }]);
+  assert.equal(fromSdk({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10, error: 'overloaded' })[0].type, 'status');
 });
 
 test('init: lists capped, plugins and MCP servers as name/status only', () => {
@@ -72,9 +76,10 @@ test('init: lists capped, plugins and MCP servers as name/status only', () => {
     slash_commands: ['context', 7, null], plugins: [{ name: 'p', path: '/home/x', version: '1' }, 'bad'], mcp_servers: [{ name: 'bedrock-shared', status: 'connected', config: { headers: { Authorization: 'x' } } }],
     effort: 'ultra', apiKeySource: 'ANTHROPIC_API_KEY' });
   assert.equal(ev.tools.length, 300);
-  assert.deepEqual(ev.slashCommands, ['context']);
+  assert.equal(ev.cliVersion, '2.1.296');
+  assert.deepEqual(ev.commands, ['context']);
   assert.deepEqual(ev.plugins, [{ name: 'p', version: '1' }]);
-  assert.deepEqual(ev.mcpServers, [{ name: 'bedrock-shared', status: 'connected' }]);
+  assert.deepEqual(ev.mcp, [{ name: 'bedrock-shared', status: 'connected' }]);
   assert.equal(ev.effort, null);
   assert.ok(!JSON.stringify(ev).includes('Authorization') && !JSON.stringify(ev).includes('/home/x'));
 });

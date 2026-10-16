@@ -10,7 +10,7 @@ http://{$CODE_HOST} {
 		import code_auth
 		import code_portal
 		reverse_proxy code-upstream:8095 {
-			import code_upstream {$PORTAL_ORIGIN}
+			import code_upstream {$PORTAL_ORIGIN} {$TERMINAL_HOST}
 			import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST}
 		}
 	}

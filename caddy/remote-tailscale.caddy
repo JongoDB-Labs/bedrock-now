@@ -99,7 +99,7 @@ http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {
 			import terminal_upstream
-			import terminal_page {$REMOTE_ORIGIN}
+			import terminal_page {$REMOTE_ORIGIN} https://{$REMOTE_CODE_HOST:code.remote.invalid}
 		}
 	}
 }
@@ -112,7 +112,7 @@ http://{$REMOTE_CODE_HOST:code.remote.invalid}:8081 {
 		import code_auth
 		import code_portal
 		reverse_proxy code-upstream:8095 {
-			import code_upstream {$REMOTE_ORIGIN}
+			import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
 			import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}
 		}
 	}

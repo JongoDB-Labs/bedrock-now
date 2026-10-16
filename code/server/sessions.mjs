@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { LIMITS, MODES, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
 import { Ring } from './ring.mjs';
-import { fromSdk } from './normalize.mjs';
+import { fromSdk, errorEvent } from './normalize.mjs';
 import { isUuid, isModel, str, short } from './validate.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
@@ -22,8 +22,9 @@ export class Session {
     this.model = model || null;
     this.mode = mode || 'default';
     this.effort = effort || null;
-    this.ring = new Ring();
-    this.state = 'ended';     // starting | idle | busy | ended | error
+    this.ring = new Ring();   // this process's events (a new process starts a new ring at seq 1)
+    this.title = '';          // the first prompt of this process (what /api/state lists)
+    this.state = 'ended';     // starting | idle | busy | ended (with `error` when the process failed)
     this.error = null;
     this.q = null;            // the SDK Query while a process runs
     this.feed = null;         // the prompts for the running process: {inbox, wake, closed}, one per process
@@ -34,7 +35,7 @@ export class Session {
   get open() { return this.q !== null; }
 
   info() {
-    return { id: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, open: this.open,
+    return { id: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, title: this.title, open: this.open,
       pending: this.mgr.broker.forSession(this.id).length, lastActive: this.lastActive, error: this.error };
   }
 
@@ -53,6 +54,9 @@ export class Session {
   // {resume}), fork (a new id from another one's transcript), resume-at (up to one message).
   start({ resume, fork, at } = {}) {
     this.mgr.makeRoom(this);
+    // A page that saw this session end starts counting again from 0: the new process's events are numbered from 1
+    // (what earlier processes said is in the transcript: GET /api/sessions/ID/messages).
+    this.ring = new Ring();
     const feed = { inbox: [], wake: null, closed: false };
     const options = {
       cwd: '/workspace',
@@ -123,8 +127,8 @@ export class Session {
   ended(error) {
     this.q = null; this.endFeed();
     this.mgr.broker.cancelSession(this.id);
-    if (error) this.emit({ type: 'error', text: str(error, 2000) });
-    this.setState(error ? 'error' : 'ended', error);
+    if (error) this.emit(errorEvent(error));
+    this.setState('ended', error);   // (ended either way: the next prompt starts a new process, and a new ring)
   }
 
   /** A prompt typed in the page (slash commands too). Resumes an ended session first. */
@@ -146,23 +150,27 @@ export class Session {
       session_id: '', uuid: id, origin: { kind: 'human' } });
     feed.wake?.(); feed.wake = null;
     this.lastActive = Date.now();
+    if (!this.title) this.title = short(text, 80);
     this.emit({ type: 'user', text: str(text, 200000), uuid: id, images: images.length });
-    this.setState('busy');
+    this.setState('busy');   // (prompts sent while busy wait in the CLI's queue: they run after the turn)
   }
 
   need() { if (!this.q) throw new SessionError('this session has no running process (send a prompt to resume it)', 409); return this.q; }
   async interrupt() { await this.need().interrupt(); }
+  // the switches: the SDK first, then this session's own record, then a status event pages pick up
+  status() { this.emit({ type: 'status', status: '', permissionMode: this.mode, model: this.model, effort: this.effort }); this.mgr.onState(this); }
   async setModel(model) {
     if (!isModel(model)) throw new SessionError('bad model');
-    await this.need().setModel(model); this.model = model; this.mgr.onState(this);
+    await this.need().setModel(model); this.model = model; this.status();
   }
   async setMode(mode) {
     if (!MODES.includes(mode)) throw new SessionError('bad mode');
-    await this.need().setPermissionMode(mode); this.mode = mode; this.mgr.onState(this);
+    await this.need().setPermissionMode(mode); this.mode = mode; this.status();
   }
+  // effort null: back to the model's default
   async setEffort(effort) {
-    if (!EFFORTS.includes(effort)) throw new SessionError('bad effort');
-    await this.need().applyFlagSettings({ effortLevel: effort }); this.effort = effort; this.mgr.onState(this);
+    if (effort !== null && !EFFORTS.includes(effort)) throw new SessionError('bad effort');
+    await this.need().applyFlagSettings({ effortLevel: effort }); this.effort = effort; this.status();
   }
 
   close(reason = 'closed') {
@@ -171,7 +179,7 @@ export class Session {
     this.q = null; this.endFeed();
     this.mgr.broker.cancelSession(this.id);
     try { q.close(); } catch { /* already */ }
-    this.emit({ type: 'notice', text: reason === 'idle' ? `Closed after ${LIMITS.idleMinutes} idle minutes; your next prompt resumes it.` : 'Session closed; a prompt resumes it.' });
+    this.emit({ type: 'local', text: reason === 'idle' ? `Closed after ${LIMITS.idleMinutes} idle minutes; your next prompt resumes it.` : 'Session closed; a prompt resumes it.' });
     this.setState('ended');
   }
 }

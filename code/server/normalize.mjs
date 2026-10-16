@@ -80,15 +80,18 @@ const list = (v, n, max = LABEL) => (Array.isArray(v) ? v.slice(0, n).map((x) =>
 export function initEvent(m) {
   return {
     type: 'init', model: short(m.model, 128), cwd: short(m.cwd, 4096), permissionMode: short(m.permissionMode, 40),
-    claudeCodeVersion: short(m.claude_code_version, 40), tools: list(m.tools, 300), slashCommands: list(m.slash_commands, 500),
+    cliVersion: short(m.claude_code_version, 40), tools: list(m.tools, 300), commands: list(m.slash_commands, 500),
     skills: list(m.skills, 500),
     plugins: (Array.isArray(m.plugins) ? m.plugins : []).slice(0, 200).filter((p) => p && typeof p === 'object')
       .map((p) => ({ name: short(p.name, LABEL), version: short(p.version, 40) || null })),
-    mcpServers: (Array.isArray(m.mcp_servers) ? m.mcp_servers : []).slice(0, 100).filter((s) => s && typeof s === 'object')
+    mcp: (Array.isArray(m.mcp_servers) ? m.mcp_servers : []).slice(0, 100).filter((s) => s && typeof s === 'object')
       .map((s) => ({ name: short(s.name, LABEL), status: short(s.status, 40) })),
     effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(m.effort) ? m.effort : null,
   };
 }
+// An error of the session (the page shows `message`; `text` is the same, for older readers)
+export const errorEvent = (message) => ({ type: 'error', message: str(message, 2000), text: str(message, 2000) });
+const MODE_NAMES = ['default', 'acceptEdits', 'plan', 'dontAsk'];
 
 const TASK = ['pending', 'running', 'completed', 'failed', 'stopped', 'killed', 'paused'];
 
@@ -106,7 +109,7 @@ export function fromSdk(m) {
     }
     case 'assistant': {
       const out = blocks(m, parent);
-      if (typeof m.error === 'string') out.push({ type: 'notice', text: `Claude Code reported: ${short(m.error, 80)}` });
+      if (typeof m.error === 'string') out.push(errorEvent(`Claude Code reported: ${short(m.error, 80)}`));
       return out;
     }
     case 'user': return toolResults(m, parent, true);
@@ -118,15 +121,19 @@ export function fromSdk(m) {
       switch (m.subtype) {
         case 'init': return [initEvent(m)];
         case 'local_command_output': return [{ type: 'local', text: str(m.content, TEXT) }];
-        case 'status': return [{ type: 'status', status: ['compacting', 'requesting'].includes(m.status) ? m.status : null }];
+        case 'status': {
+          const ev = { type: 'status', status: ['compacting', 'requesting'].includes(m.status) ? m.status : '' };
+          if (MODE_NAMES.includes(m.permissionMode)) ev.permissionMode = m.permissionMode;
+          return [ev];
+        }
         case 'compact_boundary': {
           const pre = int(m.compact_metadata?.pre_tokens, 0, 1e9), post = int(m.compact_metadata?.post_tokens, 0, 1e9);
-          return [{ type: 'notice', text: `Conversation compacted${pre !== null ? ` (${pre}${post !== null ? ` → ${post}` : ''} tokens)` : ''}` }];
+          return [{ type: 'local', text: `Conversation compacted${pre !== null ? ` (${pre}${post !== null ? ` → ${post}` : ''} tokens)` : ''}.` }];
         }
         case 'api_retry':
-          return [{ type: 'notice', text: `Bedrock retry ${int(m.attempt, 0, 1000) ?? '?'}/${int(m.max_retries, 0, 1000) ?? '?'} (${short(m.error, 60) || 'error'}${int(m.error_status, 0, 999) ? `, HTTP ${m.error_status}` : ''})` }];
+          return [{ type: 'status', status: `Bedrock retry ${int(m.attempt, 0, 1000) ?? '?'}/${int(m.max_retries, 0, 1000) ?? '?'} (${short(m.error, 60) || 'error'}${int(m.error_status, 0, 999) ? `, HTTP ${m.error_status}` : ''})` }];
         case 'permission_denied':
-          return [{ type: 'notice', text: `${short(m.tool_name, LABEL)} was not allowed: ${str(m.message, 500)}` }];
+          return [{ type: 'local', text: `${short(m.tool_name, LABEL)} was not allowed: ${str(m.message, 500)}` }];
         case 'task_started':
         case 'task_progress':
         case 'task_updated':
@@ -160,7 +167,7 @@ export function fromHistory(m) {
   }
   if (m.type === 'system') {
     const c = typeof m.message === 'string' ? m.message : typeof m.message?.content === 'string' ? m.message.content : '';
-    return c ? [{ type: 'notice', text: str(c, 4000) }] : [];
+    return c ? [{ type: 'local', text: str(c, 4000) }] : [];
   }
   return [];
 }
@@ -173,7 +180,8 @@ export function sessionRow(r) {
   if (!id || mtimeMs === null) return null;
   const firstPrompt = short(r.firstPrompt, 300), customTitle = short(r.customTitle, 200);
   const title = customTitle || short(r.aiTitle, 200) || short(r.summary, 200) || firstPrompt;
-  return { id, title, firstPrompt, lastPrompt: short(r.lastPrompt, 300), customTitle, gitBranch: short(r.gitBranch, 200),
+  const gitBranch = short(r.gitBranch, 200);
+  return { id, title, first_prompt: firstPrompt, branch: gitBranch, firstPrompt, lastPrompt: short(r.lastPrompt, 300), customTitle, gitBranch,
     modified: Math.floor(mtimeMs), size: int(r.size, 0, 1e13) ?? 0,
     created: typeof r.createdAt === 'string' && !Number.isNaN(Date.parse(r.createdAt)) ? Date.parse(r.createdAt) : null };
 }

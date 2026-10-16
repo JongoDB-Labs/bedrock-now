@@ -270,6 +270,7 @@ assert t["environment"]["BN_CODE"] == "1"
 assert ("code-socket", "/run/bn-code") in [(v.get("source"), v["target"]) for v in t["volumes"]], t["volumes"]
 assert "fedcba9876543210fedcba9876543210" not in json.dumps(t) and "code-link" not in t["networks"]
 assert k["environment"]["CODE_MODE"] == "on" and k["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
+assert k["environment"]["CODE_ORIGIN"] == "http://code.bedrock-now.localhost:80", k["environment"]["CODE_ORIGIN"]
 assert "code-link" in k["networks"] and "terminal-link" in k["networks"] and "default" in k["networks"]
 on_link = sorted(n for n, v in s.items() if "code-link" in (v.get("networks") or {}))
 assert on_link == ["caddy", "code"], on_link
@@ -292,15 +293,15 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   # the local rules, the unlock form, the check, the portal's /.bn/ answers — only then the code container
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
     "import local_request import code_unlock import code_auth import code_portal import code_upstream import code_page "
-  assert_contains "$site" 'import code_upstream {$PORTAL_ORIGIN}'
+  assert_contains "$site" 'import code_upstream {$PORTAL_ORIGIN} {$TERMINAL_HOST}'
   assert_contains "$site" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST}'
   assert_contains "$site" "reverse_proxy code-upstream:8095"
   auth="$(awk '/^\(code_auth\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_eq "$(printf '%s\n' "$auth" | sed -n 2,4p | tr -d '\t' | tr '\n' '|')" "request_header -X-Bn-Code-Proxy|request_header -X-Bn-Csp-Nonce|request_header -X-Bn-Portal-Origin|"
+  assert_eq "$(printf '%s\n' "$auth" | sed -n 2,5p | tr -d '\t' | tr '\n' '|')" "request_header -X-Bn-Code-Proxy|request_header -X-Bn-Csp-Nonce|request_header -X-Bn-Portal-Origin|request_header -X-Bn-Terminal-Host|"
   assert_contains "$auth" "uri /auth/verify?app=code"
   up="$(awk '/^\(code_upstream\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   for want in "header_up -Cookie" "header_up -X-Portal-Proxy" "header_up -X-Portal-User" 'header_up X-Bn-Code-Proxy {$CODE_PROXY_SECRET}' \
-              "header_up X-Bn-Csp-Nonce {http.request.uuid}" "header_up X-Bn-Portal-Origin {args[0]}"; do
+              "header_up X-Bn-Csp-Nonce {http.request.uuid}" "header_up X-Bn-Portal-Origin {args[0]}" "header_up X-Bn-Terminal-Host {args[1]}"; do
     assert_contains "$up" "$want"
   done
   pt="$(awk '/^\(code_portal\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
@@ -322,7 +323,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
     r="$(cat "$STACK_DIR/caddy/remote-$m.caddy")"
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import code_auth')" 1
     cb="$(printf '%s\n' "$r" | awk '/reverse_proxy code-upstream:8095/,/^[[:space:]]*}$/' | grep -o 'import .*' | tr '\n' '|')"
-    assert_eq "$cb" 'import code_upstream {$REMOTE_ORIGIN}|import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}|'
+    assert_eq "$cb" 'import code_upstream {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}|import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid}|'
   done
   # the portal's routes and cookie names agree with Caddy's
   a="$(cat "$STACK_DIR/portal/portal/app.py")"

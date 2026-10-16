@@ -505,13 +505,14 @@ test_caddy_terminal_site_gateway_and_remote_gating() {
   # first the local rules, then the unlock form, then the check — only then ttyd, through the gateway
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
     "import local_request import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
-  assert_contains "$site" 'import terminal_page {$PORTAL_ORIGIN}'
+  # framed by the portal, and by the Code page's terminal panel (code.invalid while it is off: serves nothing)
+  assert_contains "$site" 'import terminal_page {$PORTAL_ORIGIN} {$CODE_ORIGIN:http://code.invalid}'
   # the terminal host's policy, whoever answers on ttyd's socket: ttyd's script alone (the hash the image build
   # checks), this host only, forms only to the unlock, framed by the portal; cookies, Clear-Site-Data and the like go
   pg="$(awk '/^\(terminal_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   h="$(sed -n 's/^ARG TTYD_PAGE_SCRIPT_SHA256=//p' "$STACK_DIR/terminal/Dockerfile")"
   [ "${#h}" = 44 ] || { echo "no TTYD_PAGE_SCRIPT_SHA256 in the Dockerfile" >&2; return 1; }
-  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'sha256-$h'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]}\""
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'sha256-$h'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action {http.request.host}:*/.bn/unlock; base-uri 'none'; object-src 'none'; frame-ancestors {args[0]} {args[1]}\""
   assert_eq "$(grep -c "sha256-" "$STACK_DIR/caddy/Caddyfile")" 1
   for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
            Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
@@ -575,7 +576,7 @@ respond 407
     assert_not_contains "$r" " terminal:7681"
     # its own response policy there too (framed by the remote portal), not the apps' (which keeps Set-Cookie)
     tb="$(printf '%s\n' "$r" | awk '/reverse_proxy terminal-upstream:7681/,/}/' | grep -o 'import .*' | tr '\n' '|')"
-    assert_eq "$tb" 'import terminal_upstream|import terminal_page {$REMOTE_ORIGIN}|' 
+    assert_eq "$tb" 'import terminal_upstream|import terminal_page {$REMOTE_ORIGIN} https://{$REMOTE_CODE_HOST:code.remote.invalid}|' 
   done
   # the portal's cookie names and the unlock route agree with Caddy's
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"'

@@ -80,6 +80,16 @@ test('the page: the plain one without a build, with the CSP nonce and the portal
   const r = await req('GET', '/', { headers: { 'X-Bn-Csp-Nonce': '0123456789abcdef-0123', 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800' } });
   assert.equal(r.status, 200);
   assert.match(r.text, /<meta name="bn-csp-nonce" content="0123456789abcdef-0123">/);
+  assert.match(r.text, /<meta name="bn-style-nonce" content="0123456789abcdef-0123">/);
+  const st = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'bn-terminal.tail1.ts.net' } });
+  assert.equal(st.json.portal_origin, 'https://bn.tail1.ts.net');
+  assert.equal(st.json.terminal_url, 'https://bn-terminal.tail1.ts.net/');
+  assert.deepEqual([st.json.versions.cli, st.json.versions.sdk, st.json.limits.sessions, st.json.limits.upload, st.json.limits.image],
+    ['2.1.296', '0.3.296', 4, 25 << 20, 5 << 20]);
+  const local = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800', 'X-Bn-Terminal-Host': 'terminal.bedrock-now.localhost' } });
+  assert.equal(local.json.terminal_url, 'http://terminal.bedrock-now.localhost:8800/');
+  const none = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'terminal.remote.invalid' } });
+  assert.equal(none.json.terminal_url, null);
   assert.match(r.text, /<meta name="bn-portal-origin" content="http:\/\/bedrock-now.localhost:8800">/);
   assert.equal(r.headers.get('cache-control'), 'no-store');
   const bad = await req('GET', '/', { headers: { 'X-Bn-Csp-Nonce': '"><script>', 'X-Bn-Portal-Origin': 'javascript:alert(1)' } });
@@ -108,7 +118,11 @@ test('sessions: the sandbox\'s rows checked (bogus ids, NaN dropped), history th
   assert.equal((await req('GET', '/api/sessions?q=nothing-like-it')).json.sessions.length, 0);
   r = await req('GET', `/api/sessions/${SID}/messages`);
   assert.equal(r.status, 200, r.text);
-  assert.deepEqual(r.json.events.map((e) => [e.type, e.text]), [['user', 'hi'], ['text', 'hello']]);
+  assert.deepEqual(r.json.messages.map((e) => [e.type, e.text]), [['user', 'hi'], ['text', 'hello']]);
+  assert.deepEqual([r.json.total, r.json.offset, r.json.more], [2, 0, false]);
+  assert.equal(r.json.messages[0].uuid, 'a0000000-0000-4000-8000-000000000001');
+  r = await req('GET', `/api/sessions/${SID}/messages?offset=1&limit=1`);
+  assert.deepEqual([r.json.messages.map((e) => e.type), r.json.total, r.json.offset], [['text'], 2, 1]);
   assert.equal((await req('GET', '/api/sessions/..%2F..%2Fetc/messages')).status, 400);
   assert.equal((await req('POST', `/api/sessions/${SID}/title`, { body: { title: 'New name' } })).json.ok, true);
   assert.equal((await req('POST', `/api/sessions/${SID}/title`, { body: { title: 'a\nb' } })).status, 400);
@@ -124,6 +138,7 @@ test('files: list (bad names dropped, sorted), text vs binary, write with the pr
   r = await req('GET', '/api/fs/file?path=bin');
   assert.equal(r.json.binary, true); assert.equal(r.json.text, null);
   assert.equal((await req('GET', '/api/fs/file?path=missing')).status, 404);
+  assert.equal((await req('GET', '/api/fs/file?path=dir/x.bin&download=1')).headers.get('content-type'), 'application/octet-stream');
   r = await req('GET', '/api/fs/download?path=dir/report%20%C3%BC.bin');
   assert.equal(r.headers.get('content-type'), 'application/octet-stream');
   assert.match(r.headers.get('content-disposition'), /^attachment; filename="report _.bin"; filename\*=UTF-8''report%20%C3%BC.bin$/);
@@ -193,7 +208,7 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   await until(a.inbox, (m) => m.type === 'permission_done' && m.decision === 'once');
   await until(a.inbox, (m) => m.type === 'pending' && m.count === 0);
   b.send({ type: 'permission', id: p.id, decision: 'once', req: 'again' });
-  assert.equal((await until(b.inbox, (m) => m.req === 'again')).ok, false);
+  assert.equal((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'again')).ok, false);
   // bad input: errors, the socket stays
   for (const [m, re] of [[{ type: 'prompt', session: '../../etc', text: 'x', req: 'e1' }, /bad session/], [{ type: 'set_mode', session: json.id, mode: 'bypassPermissions', req: 'e2' }, /bad mode/],
     [{ type: 'nope', req: 'e3' }, /unknown/], [{ type: 'stop_task', session: json.id, task: '../x', req: 'e4' }, /bad task/]]) {
@@ -206,5 +221,19 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   assert.deepEqual((await until(a.inbox, (m) => m.req === 'c')).data, [{ name: 'context', description: 'ctx <b>', argumentHint: '' }, { name: '', description: '', argumentHint: '' }]);
   a.send({ type: 'mcp', session: json.id, req: 'm' });
   assert.deepEqual((await until(a.inbox, (m) => m.req === 'm')).data, [{ name: 'bedrock-shared', status: 'connected', error: '', scope: '', tools: 2 }]);
+  // without req (as the frontend asks): answered by a message of the same type, with the session
+  for (const [type, key] of [['commands', 'commands'], ['models', 'models'], ['mcp', 'servers'], ['context', 'usage']]) {
+    a.send({ type, session: json.id });
+    const msg = await until(a.inbox, (m) => m.type === type && m.session === json.id);
+    assert.ok(msg[key], type);
+  }
+  const usage = a.inbox.find((m) => m.type === 'context').usage;
+  assert.deepEqual(usage, { totalTokens: 10, maxTokens: 0, percentage: 0, model: '', categories: [{ name: 'x', tokens: 0, kind: '' }] });
+  assert.deepEqual(a.inbox.find((m) => m.type === 'models').models[0].supportedEffortLevels, ['low']);
+  a.send({ type: 'set_mode', session: json.id, mode: 'bypassPermissions' });
+  const err = await until(a.inbox, (m) => m.type === 'error' && m.session === json.id && /bad mode/.test(m.message) && m.req === undefined);
+  assert.equal(err.error, err.message);
+  a.send({ type: 'set_effort', session: json.id, effort: null, req: 'eff' });
+  assert.equal((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'eff')).ok, true);
   a.ws.close(); b.ws.close();
 });

@@ -273,7 +273,9 @@ def stream(ctx):
     init = next((e for e in evs if e["type"] == "init"), None)
     res = [e for e in evs if e["type"] == "result"][-1]
     expect(init and "haiku" in init["model"] and init["cwd"] == "/workspace" and init["permissionMode"] == "default", f"init {init}")
-    expect(init["claudeCodeVersion"] == "2.1.296" and any(s["name"] == "bedrock-shared" for s in init["mcpServers"]), f"init {init}")
+    expect(init["cliVersion"] == "2.1.296" and any(s["name"] == "bedrock-shared" for s in init["mcp"]), f"init {init}")
+    user = next((e for e in evs if e["type"] == "user"), None)
+    expect(user and re.fullmatch(r"[0-9a-f-]{36}", user["uuid"] or ""), f"the prompt's echo: {user}")
     expect(any(e["type"] == "delta" for e in evs), "no streamed delta")
     expect("pong" in text_of(evs).lower() and res["subtype"] == "success", f"answer {text_of(evs)!r}, {res}")
     ctx.code_session = sid
@@ -281,6 +283,7 @@ def stream(ctx):
     probs = c.rec.problems(allow=LOCKED_OK)
     c.rec.save()
     expect(not probs, f"errors: {probs}")
+    ctx.code_prompt_uuid = user["uuid"]
     return f"session {sid[:8]}: init {init['model']}, {sum(e['type'] == 'delta' for e in evs)} deltas, answer {text_of(evs)!r}, result {res['subtype']} in {res['duration']} ms"
 
 
@@ -356,8 +359,15 @@ def switch(ctx):
     cmds = c.request({"type": "commands", "session": sid})
     names = {x["name"] for x in cmds}
     expect({"context", "compact"} <= names, f"commands: {sorted(names)[:20]}")
+    # the answers also come as messages of their own type, with the session (what the frontend reads)
+    typed = c.wait(lambda m: m.get("type") == "commands" and m.get("session") == sid, "a typed commands message", 10, since=0)
+    expect(len(typed["commands"]) == len(cmds), "typed commands")
+    ctxu = c.request({"type": "context", "session": sid})
+    expect(ctxu["totalTokens"] > 0 and ctxu["maxTokens"] > 0 and ctxu["categories"], f"context {ctxu}")
+    models = c.request({"type": "models", "session": sid})
+    expect(models and all("supportedEffortLevels" in m for m in models), f"models {models[:2]}")
     c.rec.save()
-    return f"set_model {HAIKU} → text from {models}; interrupt → {res['subtype']}, process kept; /cost → {local[0]['text'][:60]!r}; {len(cmds)} commands"
+    return f"set_model {HAIKU} → text from {models}; interrupt → {res['subtype']}, process kept; /cost → {local[0]['text'][:60]!r}; {len(cmds)} commands (also as a typed message); context {ctxu['totalTokens']}/{ctxu['maxTokens']}"
 
 
 @check("browser", "code-reattach-and-resume")
@@ -375,8 +385,14 @@ def reattach(ctx):
     rows = c.api("GET", "/api/sessions")["json"]["sessions"]
     row = next((r for r in rows if r["id"] == sid), None)
     expect(row and row["title"] and "pong" in row["firstPrompt"], f"session list: {row}")
-    hist = c.api("GET", f"/api/sessions/{sid}/messages")["json"]["events"]
+    hj = c.api("GET", f"/api/sessions/{sid}/messages")["json"]
+    hist = hj["messages"]
     expect(any(e["type"] == "text" and "pong" in e["text"].lower() for e in hist), "history lacks the answer")
+    expect(hj["total"] >= 2 and hj["offset"] == 0, f"history total {hj['total']}")
+    # the prompt's uuid: the same in the live echo and in the transcript (pages de-duplicate by it)
+    want = getattr(ctx, "code_prompt_uuid", None)
+    hu = [e["uuid"] for e in hist if e["type"] == "user"]
+    expect(want in hu, f"the first prompt's uuid {want} is not in the history's {hu[:4]}")
     # closed, then a prompt resumes it (--resume in the sandbox: it remembers the conversation)
     expect(c.api("DELETE", f"/api/sessions/{sid}")["status"] == 200, "close")
     c.wait(lambda m: m.get("type") == "session_state" and m["session"] == sid and m["state"] == "ended", "ended", 30)
@@ -384,6 +400,36 @@ def reattach(ctx):
     expect("pong" in text_of(evs).lower(), f"after resume: {text_of(evs)!r}")
     c.rec.save()
     return f"re-attach: {len(replay)} events replayed (from seq {att['from']}); listed as {row['title'][:40]!r}; history {len(hist)} events; closed → prompt resumed it → {text_of(evs)!r}"
+
+
+@check("browser", "code-ask-user-question")
+def ask_user_question(ctx):
+    need_haiku()
+    c = Code(ctx, "code-question")
+    sid = c.new_session("haiku", "default")
+    n = len(c.msgs())
+    c.request({"type": "prompt", "session": sid, "text": "Use the AskUserQuestion tool to ask me one question: \"Tea or coffee?\" with the two "
+               "options Tea and Coffee. After my answer, reply with exactly the option I chose and nothing else."})
+    t0 = time.time()
+    p = None
+    while time.time() - t0 < 120 and p is None:
+        ms = c.msgs()[n:]
+        p = next((m for m in ms if m.get("type") == "permission" and m.get("tool") == "AskUserQuestion"), None)
+        if p is None and any(m.get("type") == "event" and m["ev"]["type"] == "result" for m in ms):
+            c.rec.save()
+            raise Skip("Haiku answered without asking (no AskUserQuestion call this time)")
+        c.page.wait_for_timeout(300)
+    expect(p, "no AskUserQuestion prompt")
+    q = p["input"]["questions"][0]["question"]
+    bad = c.page.evaluate("(m) => { window.__bn.send(m); return true; }", {"type": "permission", "id": p["id"], "session": sid, "decision": "answer", "answers": {"not the question": "Tea"}, "req": "bad"})
+    expect(bad and c.wait(lambda m: m.get("type") == "reply" and m.get("req") == "bad", "the refusal", 10, since=n).get("ok") is False, "answers to another question were taken")
+    c.request({"type": "permission", "id": p["id"], "session": sid, "decision": "answer", "answers": {q: "Coffee"}})
+    c.wait(lambda m: m.get("type") == "event" and m["session"] == sid and m["ev"]["type"] == "result", "result", 120, since=n)
+    evs = c.events(sid, n)
+    tr = next((e for e in evs if e["type"] == "tool_result"), None)
+    expect("coffee" in text_of(evs).lower(), f"the answer did not reach Claude: {text_of(evs)!r} (tool result {tr and tr['text'][:120]!r})")
+    c.rec.save()
+    return f"AskUserQuestion {q!r} → permission {{decision: answer, answers}} → Claude got 'Coffee' ({text_of(evs)!r}); answers to another question refused"
 
 
 @check("browser", "code-files-through-the-sandbox")

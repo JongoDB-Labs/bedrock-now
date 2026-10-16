@@ -36,7 +36,7 @@
   }
   function render(ev) {
     switch (ev.type) {
-      case "init": line("muted", `${ev.model} · ${ev.permissionMode} · Claude Code ${ev.claudeCodeVersion} · ${ev.tools.length} tools · MCP ${ev.mcpServers.map((s) => `${s.name}: ${s.status}`).join(", ") || "none"}`); break;
+      case "init": line("muted", `${ev.model} · ${ev.permissionMode} · Claude Code ${ev.cliVersion} · ${ev.tools.length} tools · MCP ${ev.mcp.map((s) => `${s.name}: ${s.status}`).join(", ") || "none"}`); break;
       case "user": streaming = null; line("user", `› ${ev.text}${ev.images ? ` [${ev.images} image(s)]` : ""}`); break;
       case "delta": if (!streaming) streaming = line("assistant", ""); streaming.textContent += ev.text; if (atBottom()) log.scrollTop = log.scrollHeight; break;
       case "thinking_delta": break;
@@ -53,7 +53,7 @@
       case "status": if (ev.status) line("muted", `… ${ev.status}`); break;
       case "notice": line("muted", ev.text); break;
       case "result": streaming = null; line("muted", `— ${ev.subtype}, ${ev.turns ?? "?"} turn(s), ${ev.duration ?? "?"} ms, tokens in ${ev.usage?.input_tokens ?? "?"} / out ${ev.usage?.output_tokens ?? "?"} / cache read ${ev.usage?.cache_read_input_tokens ?? 0} / cache write ${ev.usage?.cache_creation_input_tokens ?? 0}`); costSoon(); break;
-      case "error": line("err", `error: ${ev.text}`); break;
+      case "error": line("err", `error: ${ev.message}`); break;
       default: break;
     }
   }
@@ -77,8 +77,17 @@
       card.append(el("pre", "", JSON.stringify(p.input, null, 2)));
       if (p.rules.length) card.append(el("p", "muted", `"Always" adds: ${p.rules.join("; ")}`));
       const row = el("p", "perm-buttons");
-      const b = (label, decision) => { const x = el("button", "", label); x.type = "button"; x.dataset.decision = decision;
-        x.addEventListener("click", () => request({ type: "permission", id: p.id, decision }).catch((e) => note(e.message))); return x; };
+      const b = (label, decision, answers) => { const x = el("button", "", label); x.type = "button"; x.dataset.decision = decision;
+        x.addEventListener("click", () => request({ type: "permission", id: p.id, session: p.session, decision, answers }).catch((e) => note(e.message))); return x; };
+      // AskUserQuestion: Claude's question with its options; a click answers it (the tool gets {answers})
+      if (p.tool === "AskUserQuestion" && Array.isArray(p.input.questions)) {
+        for (const q of p.input.questions.slice(0, 4)) {
+          const qr = el("p", "perm-buttons");
+          qr.append(el("span", "", `${q.question} `));
+          for (const o of (Array.isArray(q.options) ? q.options : []).slice(0, 8)) qr.append(b(String(o.label), "answer", { [q.question]: String(o.label) }));
+          card.append(qr);
+        }
+      }
       row.append(b("Allow once", "once"));
       if (p.suggestions.length) row.append(b("Always allow", "always"));
       row.append(b("Deny", "deny"));
@@ -86,7 +95,7 @@
       box.append(card);
     }
   }
-  function badge(n) { if (PORTAL && window.parent !== window) window.parent.postMessage({ bn: "code", pending: n }, PORTAL); }
+  function badge(n) { if (PORTAL && window.parent !== window) window.parent.postMessage({ type: "bn-code-status", pending: n }, PORTAL); }
 
   // --- WebSocket ---
   function request(m) {
@@ -113,7 +122,7 @@
         case "session_state":
           if (m.session === current) { $("status").textContent = `${m.state}${m.error ? `: ${m.error}` : ""}`; if (m.mode) $("mode").value = m.mode; }
           break;
-        case "error": note(m.error); break;
+        case "error": note(m.message); break;
         default: break;
       }
     };
@@ -191,8 +200,7 @@
       const sel = $("model");
       sel.textContent = "";
       for (const m of models) {
-        const p = m.prices || {};
-        sel.append(new Option(`${m.display}${p.in != null ? ` ($${p.in}/$${p.out} per Mtok)` : ""}`, m.alias || m.id));
+        sel.append(new Option(`${m.name}${m.input_per_mtok != null ? ` ($${m.input_per_mtok}/$${m.output_per_mtok} per Mtok)` : ""}`, m.alias || m.id));
       }
       const def = models.find((m) => m.alias === "sonnet") || models[0];
       if (def) sel.value = def.alias || def.id;

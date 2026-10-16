@@ -1,7 +1,7 @@
 // Permission prompts (broker.mjs) and the re-attach ring (ring.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionBroker, safeSuggestions, ruleText } from '../server/broker.mjs';
+import { PermissionBroker, safeSuggestions, ruleText, questionAnswers } from '../server/broker.mjs';
 import { Ring } from '../server/ring.mjs';
 
 const S = '3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8';
@@ -47,6 +47,23 @@ test('answers: once (the input as the CLI sent it), always (with the safe sugges
   assert.deepEqual(await p3, { behavior: 'deny', message: 'Denied in the Code page: not now' });
   assert.deepEqual(done.map((d) => d.decision), ['always', 'once', 'deny']);
   assert.deepEqual(counts, [1, 2, 3, 2, 1, 0]);
+});
+
+test('AskUserQuestion: answers to its own questions only come back in the tool input; other tools get no answers', async () => {
+  const asked = [];
+  const b = new PermissionBroker({ onAsk: (p) => asked.push(p) });
+  const input = { questions: [{ question: 'Tea or coffee?', options: [{ label: 'Tea' }, { label: 'Coffee' }], multiSelect: false }] };
+  const p = b.ask(S, 'AskUserQuestion', input, {});
+  assert.equal(b.answer(asked[0].id, 'answer', undefined, { 'Something else?': 'Tea' }), false);
+  assert.equal(b.answer(asked[0].id, 'answer', undefined, { 'Tea or coffee?': 'a\u0000b' }), false);
+  assert.equal(b.answer(asked[0].id, 'answer', undefined, { 'Tea or coffee?': 'Coffee', extra: 'x' }), true);
+  assert.deepEqual(await p, { behavior: 'allow', updatedInput: { ...input, answers: { 'Tea or coffee?': 'Coffee' } } });
+  const q = b.ask(S, 'Bash', { command: 'ls' }, {});
+  assert.equal(b.answer(asked[1].id, 'answer', undefined, { x: 'y' }), false);   // Bash has no questions
+  b.answer(asked[1].id, 'deny');
+  assert.equal((await q).behavior, 'deny');
+  assert.equal(questionAnswers({ questions: 'x' }, { x: 'y' }), null);
+  assert.equal(questionAnswers(input, ['Tea']), null);
 });
 
 test('nobody answers: denied after the timeout; an aborted request or a closed session goes too', async () => {
