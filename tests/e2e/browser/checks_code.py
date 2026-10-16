@@ -553,9 +553,9 @@ def ui_page(ctx, name, device="desktop", session=None):
     built_page(page)
     see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
     if session:
-        # its transcript merges in after the live replay: counts of turns taken before it settles would be short
-        see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
-        settled(page, "turn-end")
+        # its transcript merges in after the live replay (an ended one shows only the transcript): let it settle
+        see(page.get_by_test_id("msg-user").first).to_be_visible(timeout=30000)
+        settled(page, "msg-user")
     ctx.code_ui_rec, ctx.code_ui_page = rec, page
     return page, rec
 
@@ -585,6 +585,25 @@ def turns(page, n, timeout=150000):
     see(page.get_by_test_id("turn-end")).to_have_count(n, timeout=timeout)
 
 
+# The prompt `ask` sent last (by page) has a turn end after it. Counting turn ends would not survive a resume: a session
+# whose process ended (the least recently used idle one makes room for another) starts again with that prompt and shows
+# its transcript, which has no turn ends, before the new turn.
+ANSWERED = """(t) => { const els = [...document.querySelectorAll('[data-testid=msg-user], [data-testid=turn-end]')];
+    const i = els.map((e) => e.dataset.testid === 'msg-user' && e.innerText.includes(t)).lastIndexOf(true);
+    return i >= 0 && els.slice(i + 1).some((e) => e.dataset.testid === 'turn-end'); }"""
+_asked = {}
+
+
+def answered(page, timeout=150000):
+    page.wait_for_function(ANSWERED, arg=_asked[id(page)], timeout=timeout)
+
+
+def question_or_answer(page, timeout=120000):
+    """An AskUserQuestion card, or the turn of the prompt `ask` sent last already over (Claude did not ask)."""
+    page.wait_for_function(f"(t) => !!document.querySelector('[data-testid=question]') || ({ANSWERED})(t)",
+                           arg=_asked[id(page)], timeout=timeout)
+
+
 def saved(fn):
     """The check's network/console log is kept even when it fails (the Recorder of its last page); a failure also
     leaves a screenshot and what the page showed last (out/browser/shots/fail-*.png, out/browser/fail-*.txt)."""
@@ -612,6 +631,7 @@ def saved(fn):
 
 
 def ask(page, text):
+    _asked[id(page)] = text[:60]
     box = page.get_by_test_id("prompt")
     box.fill(text)
     box.press("Enter")
@@ -789,11 +809,10 @@ def ui_question(ctx):
     if not sid:
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-question", session=sid)
-    n = page.get_by_test_id("turn-end").count()
     ask(page, "Use the AskUserQuestion tool to ask me one question: \"Tea or coffee?\" with the two options Tea and Coffee. "
               "After my answer, reply with exactly the option I chose and nothing else.")
     q = page.get_by_test_id("question")
-    see(q.or_(page.get_by_test_id("turn-end").nth(n))).to_have_count(1, timeout=120000)
+    question_or_answer(page)
     if not q.count():
         rec.save()
         raise Skip("Haiku answered without asking (no AskUserQuestion call this time)")
@@ -803,7 +822,7 @@ def ui_question(ctx):
         see(page.get_by_test_id("q-send")).to_be_enabled()
         shot(page, "59-code-ui-question")
         page.get_by_test_id("q-send").click()
-        turns(page, n + 1)
+        answered(page)
     finally:
         # never leave the session waiting on a question (the later checks use it)
         if page.get_by_test_id("q-decline").count():
@@ -812,11 +831,10 @@ def ui_question(ctx):
     expect("coffee" in last_answer(page).lower(), f"the answer did not reach Claude: {last_answer(page)!r}")
     single = last_answer(page)
     # several choices (multiSelect): the labels go back comma-separated
-    n = page.get_by_test_id("turn-end").count()
     ask(page, "Use the AskUserQuestion tool to ask me one question, \"Which colors?\", with multiSelect true and the three options "
               "Red, Green and Blue. After my answer, reply with exactly the colors I chose, comma-separated, nothing else.")
     q = page.get_by_test_id("question")
-    see(q.or_(page.get_by_test_id("turn-end").nth(n))).to_have_count(1, timeout=120000)
+    question_or_answer(page)
     multi = "(Haiku asked no multiple-choice question this time)"
     if q.count():
         try:
@@ -825,7 +843,7 @@ def ui_question(ctx):
                 q.locator(".q-label", has_text=re.compile(rf"^\s*{label}\s*$")).first.click()
             shot(page, "59b-code-ui-question-multi")
             page.get_by_test_id("q-send").click()
-            turns(page, n + 1)
+            answered(page)
         finally:
             if page.get_by_test_id("q-decline").count():
                 page.get_by_test_id("q-decline").click()
@@ -845,7 +863,6 @@ def ui_plugins_mcp(ctx):
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-plugins", session=sid)
     c = Code.on(page, rec, goto=False)
-    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
     page.get_by_test_id("more-menu").click()
     page.get_by_test_id("menu-plugins").click()
     dlg = page.get_by_test_id("plugins-dialog")
@@ -887,9 +904,8 @@ def ui_plugins_mcp(ctx):
     box.type("/hi")
     see(page.get_by_test_id("palette")).to_contain_text("/hello-cmd:hi", timeout=30000)
     box.fill("")
-    n = page.get_by_test_id("turn-end").count()
     ask(page, "/hello-local:hello")
-    turns(page, n + 1)
+    answered(page)
     expect("hello from the e2e plugin" in last_answer(page).lower(), f"plugin command: {last_answer(page)!r}")
     # the MCP panel: the stack's bedrock-shared connected; off and on for this session
     page.get_by_test_id("more-menu").click()
@@ -925,18 +941,16 @@ def ui_queue_clear(ctx):
     if not sid:
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-queue", session=sid)
-    n = page.get_by_test_id("turn-end").count()
     # a prompt typed while Claude works waits below the answer, then runs as its own turn
     ask(page, "Count from 1 to 300, one number per line, nothing else.")
-    see(page.get_by_test_id("session-state")).to_contain_text("working", timeout=10000)
+    see(page.get_by_test_id("session-state")).to_contain_text("working", timeout=30000)   # (an ended one starts first)
     ask(page, "Reply with exactly the word: queued")
     see(page.locator("[data-testid=msg-user].queued")).to_have_count(1, timeout=10000)
     shot(page, "66-code-ui-queued")
     # Claude Code runs it as the next turn, or folds it into this one between tool rounds (the result lists it): then
     # it is shown in this turn, before the answer that came after it
-    page.wait_for_function("""(n) => { const ends = document.querySelectorAll('[data-testid=turn-end]').length;
-        return !document.querySelector('[data-testid=msg-user].queued')
-          && (ends >= n + 2 || (ends >= n + 1 && !!document.querySelector('[data-testid=msg-folded]'))); }""", arg=n, timeout=150000)
+    see(page.locator("[data-testid=msg-user].queued")).to_have_count(0, timeout=150000)
+    answered(page)
     order = page.evaluate("""() => [...document.querySelectorAll('[data-testid=msg-user], [data-testid=turn-end]')]
         .map(e => e.dataset.testid === 'turn-end' ? 'end' : (e.querySelector('[data-testid=msg-folded]') ? 'folded: ' : '') + e.innerText.trim().slice(0, 20))""")
     own = order[-4:]
@@ -1031,9 +1045,8 @@ def ui_fork(ctx):
     page.wait_for_function("(old) => { const s = (JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || '';"
                            " return s.length === 36 && s !== old; }", arg=sid, timeout=10000)
     fork = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
-    n = page.get_by_test_id("turn-end").count()
     ask(page, "Which single word did you reply with to my first message? Reply with that word only.")
-    turns(page, n + 1)
+    answered(page)
     expect("pong" in last_answer(page).lower(), f"the fork does not know the first answer: {last_answer(page)!r}")
     shot(page, "68-code-ui-fork")
     csp_clean(page, rec)
@@ -1050,7 +1063,6 @@ def ui_memory_find_rewind(ctx):
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-memory", session=sid)
     c = Code.on(page, rec, goto=False)
-    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
     # CLAUDE.md of the workspace, from the memory dialog; then the `#` shortcut appends a line to it
     c.api("DELETE", "/api/fs?path=CLAUDE.md")
     page.get_by_test_id("more-menu").click()
@@ -1093,9 +1105,8 @@ def ui_memory_find_rewind(ctx):
         page.get_by_test_id("mode-picker").click()
         page.get_by_test_id("mode-acceptEdits").click()
         wait_state(c, sid, "mode", "acceptEdits")
-    n = page.get_by_test_id("turn-end").count()
     ask(page, f"In @{UI}/rewind.txt use the Edit tool to change `rewind = 1` to `rewind = 2`. Change nothing else, run nothing else, then reply with the word done.")
-    turns(page, n + 1)
+    answered(page)
     expect(c.api("GET", f"/api/fs/file?path={UI}/rewind.txt")["json"]["text"] == "rewind = 2\n", "Claude did not edit the file")
     prompt = page.get_by_test_id("msg-user").last
     prompt.hover()
@@ -1123,9 +1134,8 @@ def ui_phone(ctx):
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-phone", device="phone", session=sid)
     see(page.get_by_test_id("phone-sessions")).to_be_visible()
-    n = page.get_by_test_id("turn-end").count()
     ask(page, "Reply with exactly the word: phone")
-    turns(page, n + 1)
+    answered(page)
     expect("phone" in last_answer(page).lower(), f"answer {last_answer(page)!r}")
     over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
     expect(over <= 0, f"the page is {over}px wider than the phone")
