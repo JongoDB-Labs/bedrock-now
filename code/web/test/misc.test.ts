@@ -93,6 +93,8 @@ test('permission sentences and "always" previews', () => {
   assert.deepEqual(sentence('Edit', { file_path: '/workspace/src/a.ts' }), { title: 'Claude wants to edit a file', subject: 'src/a.ts', detail: 'edit' });
   assert.equal(sentence('mcp__bedrock-shared__search', {}).title, 'Claude wants to use search from the MCP server bedrock-shared');
   assert.equal(sentence('WebFetch', { url: 'javascript:alert(1)' }).subject, 'javascript:alert(1)');
+  assert.equal(sentence('AskUserQuestion', {}).detail, 'question');
+  assert.equal(sentence('<img src=x>', {}).title, 'Claude wants to use <img src=x>');
   assert.deepEqual(
     rulePreview([
       { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings', mode: '', directories: [] },

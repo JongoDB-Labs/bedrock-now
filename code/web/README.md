@@ -35,7 +35,7 @@ tasks, slash commands, interrupts, seq replay on re-attach, files (list/read/wri
 upload, mkdir, rename, delete), `/.bn/models` with prices and `/.bn/spend`. It serves `dist/` with the §6 CSP.
 A prompt picks the scenario by keyword: *fix … retry* (Read + Edit), *write/create* (Write), *run the tests* (Bash),
 *background* (a background task), *agent/explore* (Task with nested calls), *fetch/web*, *mcp*, *todo/plan*, *long*,
-*hostile*, or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`).
+*ask me* (AskUserQuestion), *hostile*, or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`).
 
 ## Tests
 

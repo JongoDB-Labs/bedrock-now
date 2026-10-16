@@ -467,7 +467,7 @@ export interface History {
   total: number | null;
   offset: number;
 }
-export async function getMessages(id: string, offset = 0, limit = 400): Promise<History> {
+export async function getMessages(id: string, offset = 0, limit = 2000): Promise<History> {
   if (!isUuid(id)) throw new ApiError(400, 'bad session id');
   const o = await request('GET', `/api/sessions/${id}/messages` + q({ offset, limit }));
   return {

@@ -15,6 +15,36 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {});
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
+/**
+ * AskUserQuestion: §5's answer is once/always/deny, so a choice goes back as "deny + message" — Claude reads the
+ * message as your answer. (A richer answer channel can replace this when the backend offers one.)
+ */
+function Questions({ req }: { req: PermissionReq }) {
+  const qs = (Array.isArray(obj(req.input).questions) ? (obj(req.input).questions as unknown[]) : []).slice(0, 4).map(obj);
+  return (
+    <div class="questions">
+      {qs.map((q, i) => (
+        <div key={i} class="question">
+          <div class="q-text">{label(q.question, 500)}</div>
+          <div class="q-options">
+            {(Array.isArray(q.options) ? (q.options as unknown[]) : []).slice(0, 8).map(obj).map((o, j) => (
+              <button
+                key={j}
+                type="button"
+                class="btn small"
+                title={label(o.description, 300)}
+                onClick={() => answerPermission(req.session, req.id, 'deny', `My answer to "${label(q.question, 300)}": ${label(o.label, 200)}`)}
+              >
+                {label(o.label, 120)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Details({ req }: { req: PermissionReq }) {
   const s = sentence(req.tool, req.input);
   const i = obj(req.input);
@@ -35,6 +65,8 @@ function Details({ req }: { req: PermissionReq }) {
       return <DiffLines lines={lineDiff('', str(i.content)).slice(0, 2000)} max={40} />;
     case 'plan':
       return <MarkdownView text={safe(i.plan, 100_000)} class="plan" />;
+    case 'question':
+      return <Questions req={req} />;
     case 'json':
       return <pre class="json">{prettyJson(req.input, 20_000)}</pre>;
     default:

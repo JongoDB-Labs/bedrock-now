@@ -383,6 +383,7 @@ async function runScenario(s, text, images) {
   }
   if (t.startsWith('/')) return slash(s, text.trim());
   if (t.includes('hostile')) return hostile(s);
+  if (t.includes('ask me')) return question(s);
   if (t.includes('background') || t.includes('dev server')) return background(s);
   if (t.includes('agent') || t.includes('explore')) return agent(s);
   if (t.includes('write') || t.includes('create')) return write(s);
@@ -551,6 +552,16 @@ async function todo(s) {
     { content: 'Add a timeout to post()', status: 'pending', activeForm: 'Adding a timeout to post()' },
   ] }, async () => ({ text: 'Todos have been modified successfully.' }));
   await s.stream('Plan written; working on the second item next.');
+  return 2;
+}
+
+async function question(s) {
+  const input = { questions: [{ question: 'Which retry policy should get() use?', header: 'Policy', multiSelect: false, options: [{ label: 'Default (3 attempts)', description: 'DEFAULT_POLICY' }, { label: 'Aggressive (5 attempts)', description: 'more retries, longer waits' }] }] };
+  const id = 'toolu_' + crypto.randomBytes(10).toString('hex');
+  s.emit({ type: 'tool_use', id, name: 'AskUserQuestion', input });
+  const a = await s.ask('AskUserQuestion', input, []);
+  s.emit({ type: 'tool_result', id, text: a.message || a.decision, is_error: a.decision === 'deny' });
+  await s.stream(a.message ? `Got it — ${a.message.replace(/^.*: /, '')}.` : 'OK.');
   return 2;
 }
 

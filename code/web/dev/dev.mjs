@@ -1,7 +1,7 @@
 // `npm run dev`: rebuild on change (esbuild watch) and serve the page with the mock backend.
 // Open http://127.0.0.1:8095 — prompts pick mock scenarios: "fix the retry", "run the tests", "write an error type",
 // "start the dev server in the background", "explore with an agent", "fetch the docs", "mcp", "plan todo",
-// "hostile", or a slash command like /context.
+// "ask me", "hostile", or a slash command like /context.
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 

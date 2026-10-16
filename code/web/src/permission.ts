@@ -27,7 +27,7 @@ export interface Sentence {
   /** what the action is about (a path, a URL, a pattern), shown monospaced */
   subject: string;
   /** the kind of details block the card shows */
-  detail: 'command' | 'edit' | 'write' | 'json' | 'plan' | 'none';
+  detail: 'command' | 'edit' | 'write' | 'json' | 'plan' | 'question' | 'none';
 }
 
 export function sentence(tool: string, input: unknown): Sentence {
@@ -60,6 +60,8 @@ export function sentence(tool: string, input: unknown): Sentence {
     case 'Task':
     case 'Agent':
       return { title: `Claude wants to start a subagent${i.subagent_type ? ` (${s(i.subagent_type, 60)})` : ''}`, subject: s(i.description, 200), detail: 'json' };
+    case 'AskUserQuestion':
+      return { title: 'Claude has a question for you', subject: '', detail: 'question' };
     case 'ExitPlanMode':
       return { title: 'Claude has a plan and wants to start working on it', subject: '', detail: 'plan' };
     case 'TodoWrite':

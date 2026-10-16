@@ -422,6 +422,9 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .perm-deny { display: flex; flex-direction: column; gap: 6px; }
 .perm-deny textarea { width: 100%; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); outline: none; }
 .perm-deny textarea:focus { border-color: var(--accent); }
+.questions { display: grid; gap: 10px; }
+.q-text { font-weight: 500; margin-bottom: 6px; overflow-wrap: anywhere; }
+.q-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .perm-rules { list-style: none; margin: 0; padding: 0; font-size: 11.5px; display: grid; gap: 2px; }
 .perm-rules code { font-size: 11.5px; overflow-wrap: anywhere; }
 

@@ -16,7 +16,6 @@ import {
   terminalUrl,
   toggleExplorer,
   toggleTerminal,
-  saveFile,
   socket,
   defaultModel,
 } from '../app';
@@ -24,7 +23,7 @@ import { BOUNDS } from '../prefs';
 import { basename, label } from '../text';
 import { modeName } from '../permission';
 import { ChatPane } from './Chat';
-import { EditorPanes, EditorTabs, activeEditorText, MOD } from './EditorArea';
+import { EditorPanes, EditorTabs, saveActiveTab, MOD } from './EditorArea';
 import { FileTree } from './FileTree';
 import { SessionList } from './SessionList';
 import { ContextMeter, CostMeter, EffortPicker, ModelPicker, ModePicker, currentModel, modelLabel } from './Pickers';
@@ -366,8 +365,7 @@ function useGlobalKeys() {
       } else if (mod && e.key.toLowerCase() === 's') {
         // CodeMirror saves itself when it has focus; elsewhere, keep the browser's "save page" away and save the tab
         e.preventDefault();
-        const a = activeEditorText();
-        if (a) void saveFile(a.key, a.text);
+        saveActiveTab();
       } else if (e.key === 'Escape' && !e.defaultPrevented && document.activeElement === document.body && !store.get().dialog) {
         if (activeView()?.state === 'busy') interrupt();
       }

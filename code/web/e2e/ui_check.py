@@ -256,6 +256,22 @@ def deny_always(browser):
     p.close()
 
 
+@check("AskUserQuestion: the choice goes back to Claude")
+def ask_question(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "question", **DESKTOP)
+    page = p.open()
+    send(page, "ask me which policy to use")
+    perm = page.get_by_test_id("permission")
+    expect(perm).to_contain_text("Claude has a question for you", timeout=10_000)
+    expect(perm).to_contain_text("Which retry policy should get() use?")
+    perm.get_by_role("button", name="Aggressive (5 attempts)").click()
+    wait_turns(page, 1)
+    expect(page.locator(".msg-claude").last).to_contain_text("Aggressive (5 attempts)")
+    p.assert_clean()
+    p.close()
+
+
 @check("sessions: resume shows the transcript and continues; fork; rename")
 def resume(browser):
     post(NORMAL + "/__mock/reset")
@@ -362,9 +378,11 @@ def save_conflict(browser):
     page.keyboard.type(" More.")
     page.keyboard.press("Control+s")
     expect(page.get_by_test_id("conflict")).to_be_visible()
+    expect(page.locator(".etab.on")).to_have_class("etab on dirty")
     p.shot("desktop-conflict.png")
     page.get_by_test_id("overwrite").click()
     expect(page.get_by_test_id("conflict")).to_have_count(0)
+    expect(page.locator(".etab.on")).to_have_class("etab on")
     p.assert_clean()
     p.close()
 
@@ -520,6 +538,10 @@ def hostile(browser):
         assert r["textLen"] < 1_500_000, r["textLen"]
         bad_req = [u for u in p.requests if "../" in u or "..%2F" in u.lower() or "%2E%2E" in u.upper()]
         assert not bad_req, bad_req
+        if vp["width"] > 1000:
+            page.evaluate("document.querySelector('.messages').scrollTop = 0")
+            page.wait_for_timeout(200)
+            p.shot("hostile-markdown.png")
         # the permission card must still be answerable, with a message
         page.get_by_test_id("perm-deny").click()
         page.locator(".perm-deny textarea").fill("<img src=x onerror=alert(1)>")

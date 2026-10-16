@@ -153,6 +153,8 @@ export interface EditorHandle {
   getText(): string;
   /** Replace the whole document (a reload from disk) and mark it as the saved state. */
   setText(text: string): void;
+  /** The document was written as `text`: that is the new clean state. */
+  markSaved(text: string): void;
   setReadOnly(ro: boolean): void;
   focus(): void;
   destroy(): void;
@@ -211,6 +213,14 @@ export function mountEditor(host: HTMLElement, o: EditorOptions): EditorHandle {
       dirty = false;
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
       o.onDirty?.(false);
+    },
+    markSaved(text: string) {
+      saved = text;
+      const d = view.state.doc.toString() !== saved;
+      if (d !== dirty) {
+        dirty = d;
+        o.onDirty?.(d);
+      }
     },
     setReadOnly(r: boolean) {
       view.dispatch({ effects: ro.reconfigure(base(r)) });

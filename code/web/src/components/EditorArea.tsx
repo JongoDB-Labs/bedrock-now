@@ -22,6 +22,14 @@ function loadCm() {
 /** The live editors by tab key (the save button and conflict actions need their text). */
 const editors = new Map<string, EditorHandle>();
 
+/** Save a file tab from its editor; on success the editor's clean state moves to what was written. */
+export async function saveTab(key: string, force = false): Promise<void> {
+  const h = editors.get(key);
+  if (!h) return;
+  const text = h.getText();
+  if (await saveFile(key, text, force)) h.markSaved(text);
+}
+
 function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const seen = useRef(-1);
@@ -42,7 +50,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           path: tab.path,
           readOnly: readOnly || tab.truncated,
           onDirty: (d) => markDirty(tab.key, d),
-          onSave: (text) => void saveFile(tab.key, text),
+          onSave: () => void saveTab(tab.key),
           onCursor: (line, col) => setCursor({ line, col, lang: h.language }),
         });
         editors.set(tab.key, h);
@@ -98,7 +106,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           <span>{tab.conflict === 'disk' ? 'This file changed on disk since you opened it. Your save was not written.' : 'Claude changed this file while you had unsaved changes.'}</span>
           <span class="banner-actions">
             {tab.conflict === 'disk' && (
-              <button type="button" class="btn small" onClick={() => void saveFile(tab.key, editors.get(tab.key)?.getText() ?? '', true)} data-testid="overwrite">
+              <button type="button" class="btn small" onClick={() => void saveTab(tab.key, true)} data-testid="overwrite">
                 Overwrite
               </button>
             )}
@@ -125,7 +133,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
               {readOnly ? 'Edit' : 'Done'}
             </button>
             {!readOnly && (
-              <button type="button" class="btn small primary" onClick={() => void saveFile(tab.key, editors.get(tab.key)?.getText() ?? '')}>
+              <button type="button" class="btn small primary" onClick={() => void saveTab(tab.key)}>
                 Save
               </button>
             )}
@@ -275,10 +283,9 @@ export function EditorPanes() {
   );
 }
 
-export function activeEditorText(): { key: string; text: string } | null {
+export function saveActiveTab(): void {
   const k = store.get().activeTab;
-  const h = k ? editors.get(k) : undefined;
-  return k && h ? { key: k, text: h.getText() } : null;
+  if (k && editors.has(k)) void saveTab(k);
 }
 
 const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
