@@ -1502,12 +1502,18 @@ def settings_row(ctx):
     open_settings(page)
     card = page.locator("#set-code")
     card.wait_for(timeout=20000)
-    on = card.locator(".chip[aria-pressed=true]").inner_text()
-    ws = card.locator(".set-code-ws code").inner_text()
-    cli = card.locator(".set-cli code").last.inner_text()
+    code_row = card.locator(".set-row[data-key=CODE_ENABLED]")
+    on = code_row.locator(".chip[aria-pressed=true]").inner_text()
+    ws = code_row.locator(".set-code-ws code").inner_text()
+    cli = code_row.locator(".set-cli code").last.inner_text()
     expect(on == "On", f"the switch shows {on!r}")
     expect(ws == ENV.get("TERMINAL_WORKSPACE"), f"workspace shown {ws!r}")
     expect(cli == "./stack terminal enable --workspace DIR", f"cli {cli!r}")
+    # Bypass permissions: its own switch in the same card, off unless allowed
+    bypass = card.locator(".set-row[data-key=CODE_ALLOW_BYPASS]")
+    expect(bypass.count() == 1, "no Allow Bypass permissions row in the Code page card")
+    by = bypass.locator(".chip[aria-pressed=true]").inner_text()
+    expect(by == ("On" if ENV.get("CODE_ALLOW_BYPASS") == "true" else "Off"), f"Allow Bypass permissions shows {by!r}")
     try:
         card.screenshot(path=str(SHOTS / "65-code-settings-row.png"), animations="disabled")
     except Exception:  # noqa: BLE001 — a screenshot never fails a check
@@ -1515,7 +1521,7 @@ def settings_row(ctx):
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"Settings → Code page: On, the workspace (…/{os.path.basename(ws)}) read-only, its CLI ({cli})"
+    return f"Settings → Code page: On, the workspace (…/{os.path.basename(ws)}) read-only, its CLI ({cli}); Allow Bypass permissions {by}"
 
 
 # --- a stand-in on bn-coded's socket (run.sh starts it after the suite; E2E_CODE_HOSTILE=1) ---
