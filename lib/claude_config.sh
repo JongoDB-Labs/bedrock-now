@@ -1,11 +1,12 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034  # the CB_* results are read by bin/claude-bedrock
 # claude-bedrock's Claude Code config folder (CLAUDE_CONFIG_DIR), and the session id it prints for --resume.
 #
 # Lean by default: Claude Code runs with its own folder, ~/.claude-bedrock (CLAUDE_BEDROCK_CONFIG_DIR picks
 # another), so the plugins, hooks, skills, agents and MCP servers of your everyday ~/.claude stay out of Bedrock
-# sessions. Bedrock takes no Anthropic beta headers, so Claude Code cannot defer MCP tool definitions there: every
-# tool of every server goes into every request, billed per token. Measured with a one-line prompt on Haiku: a
-# well-stocked ~/.claude sent 5 requests of 258K-340K input tokens (~$0.14), the lean folder 1 request of 25K
+# sessions. With Anthropic's beta headers off (Bedrock rejects them) Claude Code cannot defer MCP tools: every tool of
+# every server goes into every request, billed per token. Measured with a one-line `-p` prompt on Haiku: a
+# well-stocked ~/.claude made 5 requests of 258K-340K input tokens ($0.094), an empty config folder 1 request of 25K
 # ($0.001). CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses your own folder anyway (what plain `claude` uses).
 # The working folder's own .mcp.json, .claude/settings.json and CLAUDE.md are read in both cases.
 #
@@ -13,65 +14,147 @@
 # otherwise CLAUDE_BEDROCK_CONFIG_DIR, then ~/.claude-bedrock. An exported CLAUDE_CONFIG_DIR (for your everyday
 # claude) is deliberately not used in lean mode: it is the folder the plugins live in.
 
+# _cb_strip PATH -> PATH without trailing slashes ("/" stays "/")
+_cb_strip() {
+  local p="$1"
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  printf '%s\n' "$p"
+}
+
+# _cb_home -> your home folder: $HOME, or — HOME unset or empty — the account's own (tilde expansion reads the
+# password database when HOME is unset). Empty when neither is known.
+# shellcheck disable=SC2088  # a literal "~" to compare against
+_cb_home() {
+  local h="${HOME:-}"
+  [ -n "$h" ] || h="$(unset HOME; printf '%s' ~)"
+  case "$h" in '' | '~'*) return 0 ;; esac
+  _cb_strip "$h"
+}
+
+# _cb_same A B -> true when A and B are the same folder: the same path, or both resolve (cd -P) to the same,
+# non-empty physical path. A folder that cannot be entered only matches itself by name.
+_cb_same() {
+  local a b
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$1" = "$2" ] && return 0
+  [ -d "$1" ] && [ -d "$2" ] || return 1
+  a="$(cd -P "$1" 2>/dev/null && pwd)" || return 1
+  b="$(cd -P "$2" 2>/dev/null && pwd)" || return 1
+  [ -n "$a" ] && [ "$a" = "$b" ]
+}
+
 # claude_config_show PATH -> "~/…" for paths in your home folder, else the path; shell-quoted when it holds
 # characters a shell would split or expand, so the hint can be pasted as it is.
 # shellcheck disable=SC2088  # a literal "~/" for display
 claude_config_show() {
-  local p="$1" rest
-  case "$p" in
-    "$HOME") printf '~\n'; return 0 ;;
-    "$HOME"/*) rest="${p#"$HOME"/}"
-      case "$rest" in *[!A-Za-z0-9._/+@,:=-]*) ;; *) printf '~/%s\n' "$rest"; return 0 ;; esac ;;
-  esac
+  local p="$1" rest h
+  h="${CB_HOME-$(_cb_home)}"
+  if [ -n "$h" ] && [ "$h" != / ]; then
+    case "$p" in
+      "$h") printf '~\n'; return 0 ;;
+      "$h"/*) rest="${p#"$h"/}"
+        case "$rest" in *[!A-Za-z0-9._/+@,:=-]*) ;; *) printf '~/%s\n' "$rest"; return 0 ;; esac ;;
+    esac
+  fi
   case "$p" in *[!A-Za-z0-9._/+@,:=-]*) printf '%q\n' "$p" ;; *) printf '%s\n' "$p" ;; esac
 }
 
-# claude_config_resolve -> sets CB_CONFIG_MODE (lean|mine), CB_CONFIG_DIR (the folder Claude Code will use) and
-# CB_MY_CONFIG_DIR (your everyday folder: $CLAUDE_CONFIG_DIR, or ~/.claude). Fails for a relative
-# CLAUDE_BEDROCK_CONFIG_DIR (Claude Code would take it from whatever folder you start in). Creates nothing.
+# claude_config_resolve -> sets
+#   CB_HOME            your home folder (empty if unknown)
+#   CB_OPT_IN          1 with CLAUDE_BEDROCK_USE_MY_CONFIG=1, else 0
+#   CB_MY_CONFIG_DIR   your everyday folder: $CLAUDE_CONFIG_DIR, or ~/.claude
+#   CB_DEFAULT_DIR     ~/.claude-bedrock
+#   CB_CONFIG_DIR      the folder Claude Code will use
+#   CB_CONFIG_MODE     lean, or mine (the opt-in, or a "lean" folder that is one of yours after all)
+#   CB_CONFIG_SAME_AS  for the latter: which of your folders it is
+# Fails, with CB_CONFIG_ERR, for a relative CLAUDE_BEDROCK_CONFIG_DIR (Claude Code would take it from whatever folder
+# you start in), for / or your home folder itself, and without a home folder to put ~/.claude-bedrock in.
+# Creates nothing.
 # shellcheck disable=SC2088  # the literal "~/" patterns below
 claude_config_resolve() {
-  local d
-  CB_MY_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local d set="${CLAUDE_BEDROCK_CONFIG_DIR:-}" mine
+  CB_CONFIG_ERR=''; CB_CONFIG_SAME_AS=''
+  CB_HOME="$(_cb_home)"
+  CB_DEFAULT_DIR="${CB_HOME:+$CB_HOME/.claude-bedrock}"
+  CB_MY_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-}"
+  [ -n "$CB_MY_CONFIG_DIR" ] || CB_MY_CONFIG_DIR="${CB_HOME:+$CB_HOME/.claude}"
+  [ -n "$CB_MY_CONFIG_DIR" ] || CB_MY_CONFIG_DIR='~/.claude'   # no home folder at all: for display only
+  CB_MY_CONFIG_DIR="$(_cb_strip "$CB_MY_CONFIG_DIR")"
   if [ "${CLAUDE_BEDROCK_USE_MY_CONFIG:-0}" = 1 ]; then
-    CB_CONFIG_MODE=mine; CB_CONFIG_DIR="$CB_MY_CONFIG_DIR"; return 0
+    CB_OPT_IN=1; CB_CONFIG_MODE=mine; CB_CONFIG_DIR="$CB_MY_CONFIG_DIR"; return 0
   fi
-  CB_CONFIG_MODE=lean; d="${CLAUDE_BEDROCK_CONFIG_DIR:-}"
-  case "$d" in
-    '') d="$HOME/.claude-bedrock" ;;
-    '~') d="$HOME" ;;
-    '~/'*) d="$HOME/${d#\~/}" ;;   # "~/x" that reached us unexpanded (quoted when it was set)
-    /*) ;;
-    *) return 1 ;;
+  CB_OPT_IN=0; CB_CONFIG_MODE=lean
+  case "$set" in
+    '') d="$CB_DEFAULT_DIR" ;;
+    '~' | '~/') d="$CB_HOME" ;;
+    '~/'*) d="${CB_HOME:+$CB_HOME/${set#\~/}}" ;;   # "~/x" that reached us unexpanded (quoted when it was set)
+    /*) d="$set" ;;
+    *) CB_CONFIG_ERR="CLAUDE_BEDROCK_CONFIG_DIR must be an absolute path (it is: $set)"; return 1 ;;
   esac
-  while [ "${#d}" -gt 1 ] && [ "${d%/}" != "$d" ]; do d="${d%/}"; done
-  CB_CONFIG_DIR="$d"
-  # The "lean" folder is your own one after all (named directly, or a link to it): say so, as for the opt-in.
-  if [ "$d" = "$CB_MY_CONFIG_DIR" ] || { [ -d "$d" ] && [ -d "$CB_MY_CONFIG_DIR" ] &&
-    [ "$(cd -P "$d" 2>/dev/null && pwd)" = "$(cd -P "$CB_MY_CONFIG_DIR" 2>/dev/null && pwd)" ]; }; then
-    CB_CONFIG_MODE=mine
+  if [ -z "$d" ] && [ -n "$set" ] && [ -z "$CB_HOME" ]; then
+    CB_CONFIG_ERR="HOME is not set, so CLAUDE_BEDROCK_CONFIG_DIR=$set names no folder — set HOME, or give an absolute path"
+    return 1
+  elif [ -z "$d" ]; then
+    CB_CONFIG_ERR="HOME is not set, so there is no ~/.claude-bedrock — set HOME, or CLAUDE_BEDROCK_CONFIG_DIR to a folder"
+    return 1
   fi
+  d="$(_cb_strip "$d")"
+  if [ "$d" = / ] || _cb_same "$d" / || { [ -n "$CB_HOME" ] && _cb_same "$d" "$CB_HOME"; }; then
+    CB_CONFIG_ERR="CLAUDE_BEDROCK_CONFIG_DIR must be a folder of its own, not / or your home folder (it is: $set)"
+    return 1
+  fi
+  CB_CONFIG_DIR="$d"
+  # The "lean" folder is one of yours after all (named directly, or a link to it): say so, as for the opt-in.
+  for mine in "$CB_MY_CONFIG_DIR" "${CB_HOME:+$CB_HOME/.claude}"; do
+    if _cb_same "$d" "$mine"; then CB_CONFIG_MODE=mine; CB_CONFIG_SAME_AS="$mine"; break; fi
+  done
   return 0
 }
 
-# claude_config_prepare -> lean mode: creates CB_CONFIG_DIR (mode 700) when it is missing; CB_CONFIG_NEW=1 if it
-# was created now. Fails when it cannot be created. Your own folder (mode mine) is left to Claude Code.
+# claude_config_prepare -> lean mode: creates CB_CONFIG_DIR (mode 700) when it is missing (CB_CONFIG_NEW=1), and
+# makes sure it is yours: owned by you, writable, and not writable for group or others (it holds settings that run
+# commands — hooks, MCP servers). Fails with CB_CONFIG_ERR. Your own folder (mode mine) is left to Claude Code.
 claude_config_prepare() {
-  CB_CONFIG_NEW=0
+  local d="$CB_CONFIG_DIR" show
+  CB_CONFIG_NEW=0; CB_CONFIG_ERR=''
   [ "$CB_CONFIG_MODE" = lean ] || return 0
-  [ -d "$CB_CONFIG_DIR" ] && return 0
-  (umask 077 && mkdir -p "$CB_CONFIG_DIR") 2>/dev/null && [ -d "$CB_CONFIG_DIR" ] || return 1
-  CB_CONFIG_NEW=1
+  show="$(claude_config_show "$d")"
+  if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+    if ! (umask 077 && mkdir -p "$d") 2>/dev/null || [ ! -d "$d" ]; then
+      CB_CONFIG_ERR="cannot create $show for Claude Code's settings — set CLAUDE_BEDROCK_CONFIG_DIR to a folder you can write"
+      return 1
+    fi
+    CB_CONFIG_NEW=1
+  fi
+  if [ ! -d "$d" ]; then
+    CB_CONFIG_ERR="$show is not a folder (claude-bedrock keeps Claude Code's settings there) — move it aside, or set CLAUDE_BEDROCK_CONFIG_DIR"
+    return 1
+  fi
+  if [ ! -O "$d" ]; then
+    CB_CONFIG_ERR="$show belongs to another user (made by sudo claude-bedrock?) — fix: sudo chown -R $(id -un) $show"
+    return 1
+  fi
+  if [ ! -w "$d" ]; then
+    CB_CONFIG_ERR="$show is not writable for you — fix: chmod 700 $show"
+    return 1
+  fi
+  if [ -n "$(find -H "$d" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]; then
+    CB_CONFIG_ERR="$show can be changed by other users — fix: chmod 700 $show"
+    return 1
+  fi
 }
 
 # claude_config_line -> the launch line's "config: …" part (one line)
 claude_config_line() {
   local dir my
   dir="$(claude_config_show "$CB_CONFIG_DIR")"; my="$(claude_config_show "$CB_MY_CONFIG_DIR")"
-  if [ "$CB_CONFIG_MODE" = mine ]; then
-    printf 'config: ⚠ your %s (CLAUDE_BEDROCK_USE_MY_CONFIG=1) — its plugins, hooks and MCP servers load into every session: measured ≈10× the tokens per request and up to 100× the cost per prompt\n' "$my"
+  if [ "$CB_OPT_IN" = 1 ]; then
+    printf 'config: ⚠ your %s (CLAUDE_BEDROCK_USE_MY_CONFIG=1): its plugins, hooks and MCP servers load into every session, which can cost about 100× more per prompt\n' "$my"
+  elif [ "$CB_CONFIG_MODE" = mine ]; then
+    printf 'config: ⚠ %s is your %s: its plugins, hooks and MCP servers load into every session, which can cost about 100× more per prompt\n' \
+      "$dir" "$(claude_config_show "$CB_CONFIG_SAME_AS")"
   else
-    printf 'config: lean (%s) — your %s plugins, hooks and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (≈10× the tokens per request)\n' "$dir" "$my"
+    printf 'config: lean (%s) — your %s plugins, hooks and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (that can cost about 100× more per prompt)\n' "$dir" "$my"
   fi
 }
 
@@ -79,16 +162,19 @@ claude_config_line() {
 claude_config_help() {
   local dir my
   dir="$(claude_config_show "$CB_CONFIG_DIR")"; my="$(claude_config_show "$CB_MY_CONFIG_DIR")"
-  if [ "$CB_CONFIG_MODE" = mine ]; then
-    printf '%s (CLAUDE_BEDROCK_USE_MY_CONFIG=1): your plugins, hooks and MCP servers load, ≈10× the tokens\n' "$my"
+  if [ "$CB_OPT_IN" = 1 ]; then
+    printf '%s (CLAUDE_BEDROCK_USE_MY_CONFIG=1): your plugins, hooks and MCP servers load (can cost about 100× more)\n' "$my"
+  elif [ "$CB_CONFIG_MODE" = mine ]; then
+    printf '%s, which is your %s: its plugins, hooks and MCP servers load (can cost about 100× more)\n' \
+      "$dir" "$(claude_config_show "$CB_CONFIG_SAME_AS")"
   else
-    printf '%s, lean: nothing from %s; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses %s (≈10× the tokens)\n' "$dir" "$my" "$my"
+    printf '%s, lean: nothing from %s; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses %s (can cost about 100× more)\n' "$dir" "$my" "$my"
   fi
 }
 
 # claude_config_notes -> lean mode, extra lines for this launch (may be none): that a new folder means Claude Code's
 # first-run questions once more, and — once per folder — how to bring your own CLAUDE.md along. Never copies it:
-# it may hold things you don't want sent to Bedrock.
+# it may hold things you don't want sent to Bedrock. (The wrapper shows these on a terminal only.)
 claude_config_notes() {
   [ "$CB_CONFIG_MODE" = lean ] || return 0
   local dir my mark="$CB_CONFIG_DIR/.bedrock-now-claude-md-hint"
@@ -99,51 +185,101 @@ claude_config_notes() {
   if [ -f "$CB_MY_CONFIG_DIR/CLAUDE.md" ] && [ ! -e "$CB_CONFIG_DIR/CLAUDE.md" ] && [ ! -L "$CB_CONFIG_DIR/CLAUDE.md" ] &&
     [ ! -e "$mark" ]; then
     printf 'tip: your %s/CLAUDE.md is not used here. To use it with Bedrock too: ln -s %s/CLAUDE.md %s/ (or cp it, for a Bedrock-only copy). Shown once.\n' "$my" "$my" "$dir"
-    : > "$mark" 2>/dev/null || true
+    { : > "$mark"; } 2>/dev/null || true
   fi
 }
 
 # claude_config_resume_prefix -> what has to precede `claude-bedrock --resume` to find this session again:
 # nothing for the default folder, else the variable that picked the folder.
 claude_config_resume_prefix() {
-  if [ "$CB_CONFIG_MODE" = mine ]; then printf 'CLAUDE_BEDROCK_USE_MY_CONFIG=1 '
-  elif [ "$CB_CONFIG_DIR" != "$HOME/.claude-bedrock" ]; then
+  if [ "$CB_OPT_IN" = 1 ]; then printf 'CLAUDE_BEDROCK_USE_MY_CONFIG=1 '
+  elif [ "$CB_CONFIG_DIR" != "$CB_DEFAULT_DIR" ]; then
     printf 'CLAUDE_BEDROCK_CONFIG_DIR=%s ' "$(claude_config_show "$CB_CONFIG_DIR")"
   fi
 }
 
-# session_resume_id CONFIG_DIR MARKER -> the id of the session Claude Code wrote during this run: the newest
-# transcript (projects/<folder>/<uuid>.jsonl) changed after MARKER was created, looked for in this working folder's
-# project first (Claude Code names it after the physical path, every character but A-Z a-z 0-9 as "-"), then in all
-# of them (claude -w moves into a worktree). Fails when there is none (nothing typed, --no-session-persistence).
-session_resume_id() {
-  local cfg="$1" marker="$2" slug f id depth
-  [ -f "$marker" ] && [ -d "$cfg/projects" ] || return 1
-  slug="$(pwd -P 2>/dev/null | sed 's/[^A-Za-z0-9]/-/g')"
-  for depth in 1 2; do
-    if [ "$depth" = 1 ]; then
-      [ -n "$slug" ] && [ -d "$cfg/projects/$slug" ] || continue
-      f="$(find "$cfg/projects/$slug" -mindepth 1 -maxdepth 1 -type f -name '*.jsonl' ! -name 'agent-*' -newer "$marker" \
-        -exec ls -t {} + 2>/dev/null | head -n 1)"
-    else
-      f="$(find "$cfg/projects" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' ! -name 'agent-*' -newer "$marker" \
-        -exec ls -t {} + 2>/dev/null | head -n 1)"
-    fi
-    [ -n "$f" ] || continue
-    id="$(basename "$f" .jsonl)"
-    case "$id" in
-      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
-        printf '%s\n' "$id"; return 0 ;;
-    esac
-  done
+# --- the session id for `claude-bedrock --resume` ---
+
+# cb_is_uuid STR -> true for a lowercase 8-4-4-4-12 hex id (Claude Code's session ids and transcript names)
+cb_is_uuid() {
+  case "$1" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+  esac
   return 1
 }
 
-# claude_is_interactive ARGS… -> true unless -p/--print is among them (one-shot runs get no resume line)
-claude_is_interactive() {
-  local a
+# cb_new_uuid -> a random (v4) uuid in lowercase: uuidgen, the Linux kernel's, or Python's; fails without any
+cb_new_uuid() {
+  local u=''
+  u="$(uuidgen 2>/dev/null | tr 'A-F' 'a-f')" || u=''
+  cb_is_uuid "$u" || u="$(tr 'A-F' 'a-f' < /proc/sys/kernel/random/uuid 2>/dev/null)" || u=''
+  cb_is_uuid "$u" || u="$(python3 -I -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)" || u=''
+  cb_is_uuid "$u" || return 1
+  printf '%s\n' "$u"
+}
+
+# claude_resume_plan ARGS… -> how this run's session id is known, from claude's arguments:
+#   CB_RESUME_KIND=none    one-shot (-p), or not a session in this terminal (--bg, --cloud, --desktop): no line
+#   CB_RESUME_KIND=fresh   a new session: the wrapper passes --session-id <new uuid> and names exactly that
+#   CB_RESUME_KIND=known   --session-id ID, or --resume ID, without --fork-session: CB_RESUME_ID
+#   CB_RESUME_KIND=detect  --continue, the --resume picker, --fork-session, --from-pr, …: looked for after the run
+claude_resume_plan() {
+  local a prev='' cont=0 fork=0 sid='' rid='' resumed=0
+  CB_RESUME_KIND=fresh; CB_RESUME_ID=''
   for a in "$@"; do
-    case "$a" in -p | --print) return 1 ;; --) break ;; esac
+    case "$prev" in
+      --session-id) sid="$a"; prev=''; continue ;;
+      --resume | -r | --from-pr | --teleport) prev=''; case "$a" in -*) ;; *) rid="$a"; continue ;; esac ;;
+    esac
+    case "$a" in
+      --) break ;;
+      -p | --print) CB_RESUME_KIND=none; return 0 ;;
+      --bg | --background | --cloud | --cloud=* | --desktop) CB_RESUME_KIND=none; return 0 ;;
+      --session-id) prev="$a" ;;
+      --session-id=*) sid="${a#--session-id=}" ;;
+      --resume | -r) resumed=1; prev="$a" ;;
+      --resume=*) resumed=1; rid="${a#--resume=}" ;;
+      --from-pr | --teleport) resumed=1; prev="$a" ;;
+      --from-pr=* | --teleport=*) resumed=1 ;;
+      --continue | -c) cont=1 ;;
+      --fork-session) fork=1 ;;
+    esac
   done
+  if [ "$fork" = 0 ] && cb_is_uuid "$sid"; then CB_RESUME_KIND=known; CB_RESUME_ID="$sid"
+  elif [ "$fork" = 0 ] && [ "$cont" = 0 ] && cb_is_uuid "$rid"; then CB_RESUME_KIND=known; CB_RESUME_ID="$rid"
+  elif [ -n "$sid" ] || [ "$resumed" = 1 ] || [ "$cont" = 1 ] || [ "$fork" = 1 ]; then CB_RESUME_KIND=detect
+  fi
   return 0
+}
+
+# session_transcript_exists CONFIG_DIR ID -> true once Claude Code has written that session (in any project folder:
+# claude -w moves into a worktree). Nothing typed, nothing written.
+session_transcript_exists() {
+  [ -d "$1/projects" ] || return 1
+  [ -n "$(find "$1/projects" -mindepth 2 -maxdepth 2 -type f -name "$2.jsonl" 2>/dev/null | head -n 1)" ]
+}
+
+# session_resume_detect CONFIG_DIR MARKER -> the id of the session this run wrote, for runs whose id the wrapper
+# cannot know beforehand: the transcripts (projects/<folder>/<uuid>.jsonl) changed after MARKER was created, in this
+# working folder's project and its `claude -w` worktrees only (Claude Code names a project after the physical path,
+# every character but A-Z a-z 0-9 as "-"; a worktree is <folder>/.claude/worktrees/<name>). Exactly one: prints it.
+# Fails with 1 when there is none, and with 2 when there are several (another session in the same folder, or a
+# plugin's own Agent SDK session in your ~/.claude): then only the picker can tell.
+session_resume_detect() {
+  local cfg="$1" marker="$2" slug f id found='' n=0 d
+  [ -f "$marker" ] && [ -d "$cfg/projects" ] || return 1
+  slug="$(pwd -P 2>/dev/null | sed 's/[^A-Za-z0-9]/-/g')"
+  [ -n "$slug" ] || return 1
+  for d in "$cfg/projects/$slug" "$cfg/projects/$slug--claude-worktrees-"*; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.jsonl; do
+      [ -f "$f" ] && [ -n "$(find "$f" -newer "$marker" 2>/dev/null)" ] || continue
+      id="$(basename "$f" .jsonl)"
+      cb_is_uuid "$id" || continue
+      case " $found " in *" $id "*) ;; *) found="$found $id"; n=$((n + 1)) ;; esac
+    done
+  done
+  [ "$n" -gt 0 ] || return 1
+  [ "$n" -eq 1 ] || return 2
+  printf '%s\n' "${found# }"
 }

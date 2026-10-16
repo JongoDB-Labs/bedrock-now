@@ -31,8 +31,7 @@ case "${1:-}" in
       m="not set up yet — run $STACK_DIR/stack setup"; p="not set up yet — run $STACK_DIR/stack setup"
       c="billed by Bedrock per token; prices: $STACK_DIR/stack costs"
     fi
-    if claude_config_resolve 2>/dev/null; then g="$(claude_config_help)"
-    else g="CLAUDE_BEDROCK_CONFIG_DIR must be an absolute path"; fi
+    if claude_config_resolve; then g="$(claude_config_help)"; else g="$CB_CONFIG_ERR"; fi
     cat <<EOT
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)
   Model    $m
@@ -63,10 +62,9 @@ key="$(get_env LITELLM_KEY_CLAUDE_CODE)"
 # Claude Code's config folder: its own lean one (created 700), unless CLAUDE_BEDROCK_USE_MY_CONFIG=1. Subcommands get
 # it too, so `claude-bedrock mcp add …` / `plugin install …` manage that folder. A CLAUDE_CONFIG_DIR you exported for
 # your everyday claude is not used in lean mode (precedence: lib/claude_config.sh).
-claude_config_resolve || die "CLAUDE_BEDROCK_CONFIG_DIR must be an absolute path (it is: $CLAUDE_BEDROCK_CONFIG_DIR)"
-claude_config_prepare ||
-  die "cannot create $(claude_config_show "$CB_CONFIG_DIR") for Claude Code's settings — set CLAUDE_BEDROCK_CONFIG_DIR to a folder you can write"
-[ "$CB_CONFIG_MODE" = mine ] || export CLAUDE_CONFIG_DIR="$CB_CONFIG_DIR"
+claude_config_resolve || die "$CB_CONFIG_ERR"
+claude_config_prepare || die "$CB_CONFIG_ERR"   # created 700; an existing one must be yours and not group/other-writable
+[ "$CB_OPT_IN" = 1 ] || export CLAUDE_CONFIG_DIR="$CB_CONFIG_DIR"
 
 unset ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$port"
@@ -77,7 +75,8 @@ ANTHROPIC_DEFAULT_SONNET_MODEL="$(get_env CLAUDE_BEDROCK_SONNET_MODEL)"
 ANTHROPIC_DEFAULT_HAIKU_MODEL="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
 export ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
 export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1   # Bedrock rejects Anthropic beta headers
-export ENABLE_TOOL_SEARCH=true
+# No ENABLE_TOOL_SEARCH: tool search (deferred MCP tools) needs a beta header, so with the betas off it changes
+# nothing (Claude Code 2.1.301: every MCP tool inline with or without it). Hence the lean config folder above.
 # No telemetry, error reporting or update checks from Bedrock sessions; plain `claude` is unaffected.
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
@@ -93,8 +92,7 @@ if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
   if prices_pending; then line="$line · new prices pending — run ./stack up"; fi
   if upd="$(update_available)"; then line="$line · $upd available (./stack update)"; fi
   printf '%s\n' "$line" >&2
-  claude_config_line >&2    # which config folder: lean, or yours with a warning
-  claude_config_notes >&2   # a new folder's first-run questions; once: how to bring your CLAUDE.md along
+  claude_config_line >&2    # which config folder: lean, or yours with a warning (subcommands too: `mcp add` changes it)
 fi
 
 # Sessions get the shared MCP server. Subcommands (`claude-bedrock mcp list`, `doctor`, …) reject
@@ -113,6 +111,9 @@ case "${1:-}" in
 esac
 [ "$add_mcp" = 1 ] && [ -f "$STATE_DIR/mcp.json" ] && mcp_args=(--mcp-config "$STATE_DIR/mcp.json")
 
+# For people at a terminal starting a session: a new folder's first-run questions; once: how to bring a CLAUDE.md along.
+if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ] && [ "$add_mcp" = 1 ] && [ -t 2 ]; then claude_config_notes >&2; fi
+
 # Every request of this run carries a session id, so its cost can be looked up on exit (and found in
 # LiteLLM UI › Logs). Your own ANTHROPIC_CUSTOM_HEADERS are kept.
 session_id="$(session_new_id)"
@@ -130,29 +131,49 @@ fi
 [ "$want_summary" = 1 ] || exec claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}
 
 # Interactive sessions end with `claude-bedrock --resume <id>`: Claude Code's own hint says plain `claude --resume`,
-# which looks in ~/.claude and does not find a session kept in the lean folder. The id is that of the newest transcript
-# written during this run (lib/claude_config.sh), found through a marker file made just before claude starts.
-marker=''
-if claude_is_interactive "$@"; then marker="$(mktemp "${TMPDIR:-/tmp}/claude-bedrock.XXXXXX" 2>/dev/null)" || marker=''; fi
+# which looks in ~/.claude and does not find a session kept in the lean folder (lib/claude_config.sh). A new session
+# gets its id from the wrapper (--session-id), so the line names exactly this session; for --continue, the --resume
+# picker and the like, the id is that of the one transcript of this folder written during the run (a marker file in
+# the config folder, the transcripts' own clock, tells which), or the picker when several sessions wrote there.
+marker=''; session_args=(); resume_id=''
+claude_resume_plan "$@"
+case "$CB_RESUME_KIND" in
+  fresh) if resume_id="$(cb_new_uuid)"; then session_args=(--session-id "$resume_id"); else CB_RESUME_KIND=detect; fi ;;
+  known) resume_id="$CB_RESUME_ID" ;;
+esac
+if [ "$CB_RESUME_KIND" = detect ]; then
+  marker="$(mktemp "$CB_CONFIG_DIR/.claude-bedrock-run.XXXXXX" 2>/dev/null)" ||
+    marker="$(mktemp "${TMPDIR:-/tmp}/claude-bedrock.XXXXXX" 2>/dev/null)" || marker=''
+fi
 
 # claude runs as an ordinary FOREGROUND child: same terminal, same process group, so Ctrl-C / Ctrl-Z / a closed
 # terminal reach it directly, as with `exec`. The ':' traps only keep this wrapper alive until claude exits
 # (a trapped signal is reset to its default in the child; `trap ''` would be inherited, so it is not used).
 trap ':' INT QUIT TERM
 trap '[ -z "$marker" ] || rm -f "$marker"; exit 129' HUP
-if claude "$@" ${mcp_args[@]+"${mcp_args[@]}"}; then rc=0; else rc=$?; fi
+if claude ${session_args[@]+"${session_args[@]}"} "$@" ${mcp_args[@]+"${mcp_args[@]}"}; then rc=0; else rc=$?; fi
 t_exit="$(date +%s)"
 # Ctrl-C while the summary is fetched: just leave
 trap '[ -z "$marker" ] || rm -f "$marker"; exit "$rc"' INT QUIT TERM HUP
 
 export LC_ALL=C   # number formatting in the summary (claude has already exited)
+# The resume line comes first: it is instant, the cost summary can take seconds (and Ctrl-C skips it).
 resume=''
-if [ -n "$marker" ]; then
-  if rid="$(session_resume_id "$CB_CONFIG_DIR" "$marker")"; then
-    resume="resume: $(claude_config_resume_prefix)claude-bedrock --resume $rid"
-  fi
-  rm -f "$marker"; marker=''
-fi
+case "$CB_RESUME_KIND" in
+  fresh | known) ! session_transcript_exists "$CB_CONFIG_DIR" "$resume_id" || resume="$resume_id" ;;
+  detect)
+    if [ -n "$marker" ]; then
+      found="$(session_resume_detect "$CB_CONFIG_DIR" "$marker")" && drc=0 || drc=$?
+      if [ "$drc" = 0 ]; then resume="$found"; elif [ "$drc" = 2 ]; then resume=pick; fi
+      rm -f "$marker"; marker=''
+    fi ;;
+esac
+case "$resume" in
+  '') ;;
+  pick) printf 'resume: %sclaude-bedrock --resume  (more than one session wrote in this folder meanwhile: pick yours)\n' \
+          "$(claude_config_resume_prefix)" >&2 ;;
+  *) printf 'resume: %sclaude-bedrock --resume %s\n' "$(claude_config_resume_prefix)" "$resume" >&2 ;;
+esac
 if [ -t 2 ]; then
   trap 'printf "\n" >&2; exit "$rc"' INT QUIT TERM HUP
   printf 'session: tallying cost…' >&2
@@ -161,7 +182,6 @@ if [ -t 2 ]; then
 else
   session_summary "$session_id" "$t_exit" >&2
 fi
-[ -z "$resume" ] || printf '%s\n' "$resume" >&2
 # claude was killed by INT or TERM: die of the same signal, so callers (shells, `timeout`, CI) see it.
 case "$rc" in
   130 | 143) trap - INT TERM; kill -s "$([ "$rc" = 130 ] && echo INT || echo TERM)" "$$"; sleep 1 ;;

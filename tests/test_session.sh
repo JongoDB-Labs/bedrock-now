@@ -102,10 +102,14 @@ case "$1" in --help) printf 'Usage: claude\n\nCommands:\n  mcp            Config
 printf 'CLAUDE %s\n' "$*"
 printf 'HEADERS %s\n' "$(printf '%s' "$ANTHROPIC_CUSTOM_HEADERS" | tr '\n' '|')"
 printf 'CONFIG %s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
-# like Claude Code: the transcript goes to <config>/projects/<working folder, non-alphanumerics as "-">/<id>.jsonl
-if [ -n "${STUB_TRANSCRIPT:-}" ]; then
+# like Claude Code once something was typed (STUB_TYPED=1): the transcript goes to
+# <config>/projects/<working folder, non-alphanumerics as "-">/<id>.jsonl, the id from --session-id or STUB_TRANSCRIPT
+if [ -n "${STUB_TYPED:-}" ]; then
+  sid="${STUB_TRANSCRIPT:-}"; prev=''
+  for a in "$@"; do [ "$prev" = --session-id ] && sid="$a"; prev="$a"; done
   d="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
-  sleep 1; mkdir -p "$d" && : > "$d/$STUB_TRANSCRIPT.jsonl"   # (after the wrapper's marker, also on 1 s clocks)
+  sleep 1; mkdir -p "$d" && : > "$d/$sid.jsonl"   # (after the wrapper's marker, also on 1 s clocks)
+  [ -z "${STUB_OTHER:-}" ] || : > "$d/$STUB_OTHER.jsonl"   # another session writing in the same folder meanwhile
 fi
 [ -z "${STUB_DUMP:-}" ] || { printf 'ARGV %s\n' "$*"; env; } > "$STUB_DUMP"
 if [ -n "${STUB_SLEEP:-}" ]; then
@@ -276,6 +280,19 @@ test_wrapper_launch_line_mentions_an_available_update_without_network() {
 # --- its own config folder (lib/claude_config.sh; unit tests in test_claude_config.sh) ---
 
 _perm() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+_uuid_re='[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}'
+LEAN_LINE="config: lean (~/.claude-bedrock) — your ~/.claude plugins, hooks and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (that can cost about 100× more per prompt)"
+
+# _run_wrapper_tty OUT ARGS… — the wrapper on a terminal (a pty for stdin, stdout and stderr), its output in OUT
+_run_wrapper_tty() {
+  python3 -I -c 'import os, pty, sys
+out = open(sys.argv[1], "wb")
+def rd(fd):
+    d = os.read(fd, 65536); out.write(d); return d
+st = pty.spawn(sys.argv[2:], rd)
+sys.exit(1 if st else 0)' "$1" "$BASH" "$STACK_DIR/bin/claude-bedrock" "${@:2}" < /dev/null
+}
+_need_python() { python3 -I -c 'import pty' >/dev/null 2>&1 || { echo "python3 not available" >&2; return 77; }; }
 
 test_wrapper_runs_claude_with_the_lean_config_folder_created_700() {
   _wrapper_env
@@ -284,12 +301,11 @@ test_wrapper_runs_claude_with_the_lean_config_folder_created_700() {
   [ -d "$HOME/.claude-bedrock" ] || { echo "no ~/.claude-bedrock" >&2; return 1; }
   assert_eq "$(_perm "$HOME/.claude-bedrock")" 700
   [ ! -e "$HOME/.claude" ] || { echo "touched ~/.claude" >&2; return 1; }
-  assert_eq "$(sed -n 2p "$TMP/err")" "config: lean (~/.claude-bedrock) — your ~/.claude plugins, hooks and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (≈10× the tokens per request)"
-  assert_contains "$(sed -n 3p "$TMP/err")" "config: new folder ~/.claude-bedrock — Claude Code asks its first-run questions"
-  # the second launch: the same folder, no first-run note
-  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_eq "$(sed -n 2p "$TMP/err")" "$LEAN_LINE"
+  # not a terminal: no first-run note (that is for people starting a session)
   assert_not_contains "$(cat "$TMP/err")" "new folder"
-  assert_contains "$(sed -n 2p "$TMP/err")" "config: lean (~/.claude-bedrock)"
+  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
+  assert_eq "$(sed -n 2p "$TMP/err")" "$LEAN_LINE"
 }
 
 test_wrapper_lean_ignores_an_exported_claude_config_dir_and_honours_its_own_override() {
@@ -309,16 +325,24 @@ test_wrapper_use_my_config_leaves_claude_config_dir_alone_and_warns() {
   CLAUDE_BEDROCK_USE_MY_CONFIG=1 _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
   assert_contains "$(cat "$TMP/out")" "CONFIG <unset>"
   [ ! -e "$HOME/.claude-bedrock" ] || { echo "created ~/.claude-bedrock" >&2; return 1; }
-  assert_eq "$(sed -n 2p "$TMP/err")" "config: ⚠ your ~/.claude (CLAUDE_BEDROCK_USE_MY_CONFIG=1) — its plugins, hooks and MCP servers load into every session: measured ≈10× the tokens per request and up to 100× the cost per prompt"
+  assert_eq "$(sed -n 2p "$TMP/err")" "config: ⚠ your ~/.claude (CLAUDE_BEDROCK_USE_MY_CONFIG=1): its plugins, hooks and MCP servers load into every session, which can cost about 100× more per prompt"
   CLAUDE_BEDROCK_USE_MY_CONFIG=1 CLAUDE_CONFIG_DIR="$TMP/everyday" CLAUDE_BEDROCK_CONFIG_DIR="$TMP/cb" _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
   assert_contains "$(cat "$TMP/out")" "CONFIG $TMP/everyday"
   assert_contains "$(sed -n 2p "$TMP/err")" "your $TMP/everyday (CLAUDE_BEDROCK_USE_MY_CONFIG=1)"
 }
 
+test_wrapper_lean_folder_linked_to_your_own_warns_like_the_opt_in() {
+  _wrapper_env
+  mkdir -p "$HOME/.claude"; ln -s "$HOME/.claude" "$HOME/.claude-bedrock"
+  _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(sed -n 2p "$TMP/err")" "config: ⚠ ~/.claude-bedrock is your ~/.claude: its plugins, hooks and MCP servers load"
+  assert_contains "$(cat "$TMP/out")" "CONFIG $HOME/.claude-bedrock"
+}
+
 test_wrapper_subcommands_manage_the_same_config_folder() {
   _wrapper_env
   _run_wrapper mcp list > "$TMP/out" 2> "$TMP/err"
-  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"   # no --mcp-config for a subcommand
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"   # no --mcp-config (nor --session-id) for a subcommand
   assert_contains "$(cat "$TMP/out")" "CONFIG $HOME/.claude-bedrock"
   assert_contains "$(cat "$TMP/err")" "config: lean (~/.claude-bedrock)"   # says which folder `mcp add` would change
   _run_wrapper plugin install x@y > "$TMP/out" 2> /dev/null
@@ -335,46 +359,101 @@ test_wrapper_quiet_hides_the_config_lines_but_still_uses_the_lean_folder() {
   assert_contains "$(cat "$TMP/out")" "CONFIG $HOME/.claude-bedrock"
 }
 
-test_wrapper_claude_md_tip_once_and_never_copies() {
-  _wrapper_env
+test_wrapper_first_run_note_and_claude_md_tip_on_a_terminal_once_never_a_copy() {
+  _need_python || return $?
+  _wrapper_env; export PATH="$TMP/bin:$PATH"
   mkdir -p "$HOME/.claude"; printf 'private notes\n' > "$HOME/.claude/CLAUDE.md"
-  _run_wrapper -p hi > /dev/null 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/err")" "tip: your ~/.claude/CLAUDE.md is not used here."
-  [ ! -e "$HOME/.claude-bedrock/CLAUDE.md" ] || { echo "CLAUDE.md was copied" >&2; return 1; }
+  # not on a terminal, and not for a subcommand: neither note
   _run_wrapper -p hi > /dev/null 2> "$TMP/err"
   assert_not_contains "$(cat "$TMP/err")" "tip:"
+  rm -rf "$HOME/.claude-bedrock"
+  _run_wrapper_tty "$TMP/tty" mcp list
+  assert_not_contains "$(cat "$TMP/tty")" "tip:"
+  assert_not_contains "$(cat "$TMP/tty")" "new folder"
+  rm -rf "$HOME/.claude-bedrock"
+  _run_wrapper_tty "$TMP/tty" -p hi
+  assert_contains "$(cat "$TMP/tty")" "config: new folder ~/.claude-bedrock — Claude Code asks its first-run questions"
+  assert_contains "$(cat "$TMP/tty")" "tip: your ~/.claude/CLAUDE.md is not used here. To use it with Bedrock too: ln -s ~/.claude/CLAUDE.md ~/.claude-bedrock/"
+  [ ! -e "$HOME/.claude-bedrock/CLAUDE.md" ] || { echo "CLAUDE.md was copied" >&2; return 1; }
+  _run_wrapper_tty "$TMP/tty" -p hi
+  assert_not_contains "$(cat "$TMP/tty")" "tip:"
+  assert_not_contains "$(cat "$TMP/tty")" "new folder"
 }
 
-test_wrapper_refuses_a_relative_or_unusable_config_folder() {
+test_wrapper_refuses_unusable_config_folders() {
   _wrapper_env
-  rc=0; CLAUDE_BEDROCK_CONFIG_DIR=rel/dir _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
+  : > "$TMP/afile"; mkdir -m 777 "$TMP/shared"; chmod 777 "$TMP/shared"; ln -s "$HOME" "$TMP/home-link"
+  for v in "rel/dir|must be an absolute path (it is: rel/dir)" \
+    "$TMP/afile|$TMP/afile is not a folder" \
+    "/|must be a folder of its own, not / or your home folder" \
+    "$HOME|must be a folder of its own, not / or your home folder" \
+    "~|must be a folder of its own, not / or your home folder" \
+    "$TMP/home-link/|must be a folder of its own, not / or your home folder" \
+    "$TMP/shared|$TMP/shared can be changed by other users — fix: chmod 700 $TMP/shared"; do
+    rc=0; CLAUDE_BEDROCK_CONFIG_DIR="${v%%|*}" _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
+    assert_eq "$rc" 1
+    assert_contains "$(cat "$TMP/err")" "${v#*|}"
+    assert_not_contains "$(cat "$TMP/out")" "CLAUDE"
+  done
+  # the default folder made group-writable afterwards is refused too
+  _run_wrapper -p hi > /dev/null 2>&1; chmod 770 "$HOME/.claude-bedrock"
+  rc=0; _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
   assert_eq "$rc" 1
-  assert_contains "$(cat "$TMP/err")" "CLAUDE_BEDROCK_CONFIG_DIR must be an absolute path (it is: rel/dir)"
-  assert_not_contains "$(cat "$TMP/out")" "CLAUDE"
-  : > "$TMP/afile"
-  rc=0; CLAUDE_BEDROCK_CONFIG_DIR="$TMP/afile" _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
-  assert_eq "$rc" 1
-  assert_contains "$(cat "$TMP/err")" "cannot create $TMP/afile for Claude Code's settings"
+  assert_contains "$(cat "$TMP/err")" "~/.claude-bedrock can be changed by other users — fix: chmod 700 ~/.claude-bedrock"
 }
 
-test_wrapper_interactive_session_ends_with_its_resume_command() {
+test_wrapper_without_home_still_helps_and_says_why_it_stops() {
+  _wrapper_env
+  out="$(env -u HOME PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "  Config   "
+  assert_contains "$out" "Usage: claude"   # then Claude Code's own help
+  # (an empty HOME means the account's home from the password database — the real one, so never without a folder here)
+  HOME='' CLAUDE_BEDROCK_CONFIG_DIR="$TMP/cb-nohome" _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/out")" "CONFIG $TMP/cb-nohome"
+}
+
+test_wrapper_new_session_gets_its_id_from_the_wrapper_and_names_exactly_it() {
   _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
-  STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556666 _run_wrapper > /dev/null 2> "$TMP/err"
-  assert_eq "$(tail -n 1 "$TMP/err")" "resume: claude-bedrock --resume 0b2c3d4e-1111-4222-8333-444455556666"
-  assert_contains "$(tail -n 2 "$TMP/err" | head -n 1)" "session: 2 requests"
-  # one-shot (-p): no resume line; nothing typed (no transcript): none either
-  STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556667 _run_wrapper -p hi > /dev/null 2> "$TMP/err"
-  assert_not_contains "$(cat "$TMP/err")" "resume:"
-  sleep 1; _run_wrapper > /dev/null 2> "$TMP/err"
-  assert_not_contains "$(cat "$TMP/err")" "resume:"
-  # your own folder: the command says so
-  CLAUDE_BEDROCK_USE_MY_CONFIG=1 STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556668 _run_wrapper > /dev/null 2> "$TMP/err"
-  assert_eq "$(tail -n 1 "$TMP/err")" "resume: CLAUDE_BEDROCK_USE_MY_CONFIG=1 claude-bedrock --resume 0b2c3d4e-1111-4222-8333-444455556668"
+  # another session writes in the same folder meanwhile: the line still names this one
+  STUB_TYPED=1 STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556666 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  id="$(sed -n "s/^CLAUDE --session-id \($_uuid_re\)\$/\1/p" "$TMP/out")"
+  [ -n "$id" ] || { cat "$TMP/out" >&2; echo "no --session-id passed" >&2; return 1; }
+  assert_eq "$(tail -n 2 "$TMP/err" | head -n 1)" "resume: claude-bedrock --resume $id"
+  assert_contains "$(tail -n 1 "$TMP/err")" "session: 2 requests"   # the (slow) summary comes after it
+  # with your own folder the command says so
+  CLAUDE_BEDROCK_USE_MY_CONFIG=1 STUB_TYPED=1 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  id="$(sed -n "s/^CLAUDE --session-id \($_uuid_re\)\$/\1/p" "$TMP/out")"
+  assert_contains "$(cat "$TMP/err")" "resume: CLAUDE_BEDROCK_USE_MY_CONFIG=1 claude-bedrock --resume $id"
+  CLAUDE_BEDROCK_CONFIG_DIR="$TMP/cb" STUB_TYPED=1 _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "resume: CLAUDE_BEDROCK_CONFIG_DIR=$TMP/cb claude-bedrock --resume "
 }
 
-test_wrapper_removes_its_resume_marker() {
-  _wrapper_env; mkdir -p "$TMP/proj" "$TMP/tmpdir"; cd "$TMP/proj" || return 1
-  TMPDIR="$TMP/tmpdir" STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556666 _run_wrapper > /dev/null 2> "$TMP/err"
-  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume"
-  assert_eq "$(ls -A "$TMP/tmpdir")" ""
+test_wrapper_no_resume_line_when_nothing_was_typed_or_for_one_shots() {
+  _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
+  _run_wrapper > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(head -n 1 "$TMP/out")" "CLAUDE --session-id "
+  assert_not_contains "$(cat "$TMP/err")" "resume:"
+  STUB_TYPED=1 STUB_TRANSCRIPT=0b2c3d4e-1111-4222-8333-444455556667 _run_wrapper -p hi > "$TMP/out" 2> "$TMP/err"
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE -p hi"
+  assert_not_contains "$(cat "$TMP/err")" "resume:"
+}
+
+test_wrapper_resume_by_id_names_that_session() {
+  _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
+  u=0b2c3d4e-1111-4222-8333-444455556668
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" STUB_OTHER=0b2c3d4e-1111-4222-8333-444455556669 _run_wrapper --resume "$u" > "$TMP/out" 2> "$TMP/err"
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --resume $u"   # no --session-id of the wrapper's
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume $u"
+}
+
+test_wrapper_continue_names_the_one_session_or_offers_the_picker() {
+  _wrapper_env; mkdir -p "$TMP/proj"; cd "$TMP/proj" || return 1
+  u=0b2c3d4e-1111-4222-8333-44445555666a
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" _run_wrapper --continue > "$TMP/out" 2> "$TMP/err"
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE --continue"
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume $u"
+  STUB_TYPED=1 STUB_TRANSCRIPT="$u" STUB_OTHER=0b2c3d4e-1111-4222-8333-44445555666b _run_wrapper -c > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume  (more than one session wrote in this folder meanwhile: pick yours)"
+  # the marker (in the config folder, the transcripts' clock) is gone
+  assert_eq "$(ls -A "$HOME/.claude-bedrock" | grep -c '^\.claude-bedrock-run\.' || true)" 0
 }

@@ -11,31 +11,42 @@ All notable changes to bedrock-now are documented here. The format follows
 - **`claude-bedrock` no longer loads your `~/.claude` plugins, hooks and MCP servers by default.** It runs Claude
   Code with its own config folder, `CLAUDE_CONFIG_DIR=~/.claude-bedrock` (created on first use, mode 700): Claude
   Code's own tools, the stack's `bedrock-shared` MCP server, and the working folder's own `.mcp.json`,
-  `.claude/settings.json` and `CLAUDE.md`. Bedrock takes no Anthropic beta headers, so Claude Code cannot defer MCP
-  tools there and every tool definition goes into every request, billed per token. Measured on Haiku with a one-line
-  `-p "Reply with just: ok"`: a well-stocked `~/.claude` made 5 requests of 258K–340K input tokens each (~$0.14; one
-  such request on Opus cost $1.44) and 4 more, from plugins, at every interactive launch ($0.13 with nothing typed);
-  `--strict-mcp-config` alone still made 8 requests of 46K–63K plus two of 353K from hooks (~$0.07); an empty config
-  folder made 1 request of 25K tokens ($0.001). In lean mode a launch makes no model request until you type.
+  `.claude/settings.json` and `CLAUDE.md`. Bedrock takes no Anthropic beta headers and Claude Code's tool search
+  needs one, so every tool definition goes into every request, billed per token. Measured on Haiku with a one-line
+  `-p "Reply with just: ok"`: a well-stocked `~/.claude` made 5 requests of 258K–340K input tokens each ($0.094);
+  `--strict-mcp-config` alone made 13 requests of 5K–63K each plus two of 353K from hooks ($0.112, no cheaper: hooks,
+  skills and agents still load); an empty config folder made 1 request of 25K tokens ($0.001) — about 100× cheaper.
+  With the full setup one real Opus request cost $1.44, and every interactive launch made 4 requests ($0.13) before
+  anything was typed (plugins' Agent SDK calls). In lean mode a launch makes no model request until you type.
   - The launch line says which config is used: `config: lean (~/.claude-bedrock) — your ~/.claude plugins, hooks
-    and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (≈10× the tokens per request)`, and
-    `--help` has a `Config` line. A new folder adds that Claude Code asks its first-run questions once more.
+    and MCP servers are not loaded; CLAUDE_BEDROCK_USE_MY_CONFIG=1 loads them (that can cost about 100× more per
+    prompt)`, and `--help` has a `Config` line. At a terminal, a new folder adds that Claude Code asks its first-run
+    questions once more.
   - **`CLAUDE_BEDROCK_USE_MY_CONFIG=1`** uses your `~/.claude` (or the `CLAUDE_CONFIG_DIR` you exported) as before,
-    with a ⚠ on the launch line ("measured ≈10× the tokens per request and up to 100× the cost per prompt").
-    **`CLAUDE_BEDROCK_CONFIG_DIR`** picks another lean folder (absolute path); one that is, or links to, your own
-    folder counts as the opt-in. A `CLAUDE_CONFIG_DIR` exported for plain `claude` is not used in lean mode.
-  - Subcommands manage the same folder: `claude-bedrock mcp add …`, `claude-bedrock plugin install …`. Once, if you
-    have a `~/.claude/CLAUDE.md` and the lean folder has none, the wrapper says how to link or copy it; it never
-    copies it (it may hold things you don't want sent to Bedrock). Settings, keybindings, status line, output style
-    and your own commands/agents/skills are separate now; README › Claude Code says what to copy and what not.
+    with a ⚠ on the launch line ("… which can cost about 100× more per prompt"). **`CLAUDE_BEDROCK_CONFIG_DIR`**
+    picks another lean folder: an absolute path, not `/` or your home folder in any spelling; one that is, or links
+    to, one of your own folders gets the opt-in's warning. An existing lean folder must be owned by you, writable and
+    not writable by group or others, or the wrapper stops with the fix (e.g. a `~/.claude-bedrock` made by
+    `sudo claude-bedrock`). A `CLAUDE_CONFIG_DIR` exported for plain `claude` is not used in lean mode. Without
+    `HOME`, the account's home folder is used and `--help` still works.
+  - Subcommands manage the same folder: `claude-bedrock mcp add …`, `claude-bedrock plugin install …`. Once, at a
+    terminal, if you have a `~/.claude/CLAUDE.md` and the lean folder has none, the wrapper says how to link or copy
+    it; it never copies it (it may hold things you don't want sent to Bedrock). Settings, keybindings, status line,
+    output style and your own commands/agents/skills are separate now; README › Claude Code says what to copy and
+    what not.
   - **Resume:** sessions are kept in `~/.claude-bedrock`, so Claude Code's own exit hint (`claude --resume <id>`)
-    doesn't find them. After an interactive session the wrapper adds `resume: claude-bedrock --resume <id>` below the
-    session cost (the newest transcript written during the run).
-  - The browser terminal is unchanged: its Claude Code already has its own config (`~/.claude` in the
-    `terminal-home` volume); its `--help` now says so. `./stack uninstall` mentions that `~/.claude-bedrock` is kept.
-  - e2e: `claude/claude-bedrock` runs with `CLAUDE_BEDROCK_CONFIG_DIR` (was `CLAUDE_CONFIG_DIR`, which the wrapper
-    now ignores) and checks the `config: lean` line and the folder's mode. `tests/run.sh` fails if the suite creates
-    `~/.claude-bedrock` in your real home folder.
+    doesn't find them. A new interactive session gets its id from the wrapper (`--session-id`), and when it ends the
+    wrapper prints `resume: claude-bedrock --resume <id>`, before the session cost. After `--continue` or the picker
+    it names the one session written in that folder (or its `claude -w` worktrees) during the run, or suggests the
+    picker when there were several. No line for `-p`, with `CLAUDE_BEDROCK_QUIET=1` or without a terminal.
+  - `ENABLE_TOOL_SEARCH=true` is no longer set (here and in the browser terminal): with the beta headers off it
+    changed nothing — checked with Claude Code 2.1.301, an MCP server's 40 tools were all in the request either way.
+  - The browser terminal is otherwise unchanged: its Claude Code already has its own config (`~/.claude` in the
+    `terminal-home` volume); its `--help` now says so. `./stack uninstall` mentions that `~/.claude-bedrock` (and a
+    `CLAUDE_BEDROCK_CONFIG_DIR` folder) is kept.
+  - Tests: `tests/run.sh` fails if the suite creates `~/.claude-bedrock` in your real home folder. e2e:
+    `claude/claude-bedrock` runs with a fresh `CLAUDE_BEDROCK_CONFIG_DIR` (was `CLAUDE_CONFIG_DIR`, which the
+    wrapper now ignores) and checks the `config: lean` line and the folder's mode.
 
 ## [0.4.0] - 2026-10-14
 

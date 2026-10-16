@@ -550,8 +550,9 @@ else
   say "claude-bedrock -p (Haiku, one short prompt)"
   t0="$(now)"; log="$LOGS/claude-bedrock.log"; haiku="$(get_env CLAUDE_BEDROCK_HAIKU_MODEL)"
   # Its own config folder (the wrapper's lean CLAUDE_CONFIG_DIR, not ~/.claude-bedrock) and an empty working folder:
-  # your ~/.claude, ~/.claude-bedrock and this checkout's files stay out of it.
-  mkdir -p "$OUT/claude-cwd"
+  # your ~/.claude, ~/.claude-bedrock and this checkout's files stay out of it. The config folder is the harness's own
+  # and made afresh (a reused --out keeps none), so the wrapper creates it: mode 700.
+  rm -rf "$OUT/claude-config"; mkdir -p "$OUT/claude-cwd"
   ( export CLAUDE_BEDROCK_CONFIG_DIR="$OUT/claude-config" CLAUDE_BEDROCK_MODEL="$haiku" CLAUDE_BEDROCK_SUMMARY=1
     clean_env CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_BEDROCK_MODEL CLAUDE_BEDROCK_SUMMARY
     cd "$OUT/claude-cwd" && exec "$NOTTY" "$STACK/bin/claude-bedrock" -p "Reply with exactly the word: ok" --max-turns 1 ) > "$log" 2>&1 </dev/null; rc=$?

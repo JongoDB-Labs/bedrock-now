@@ -91,7 +91,7 @@ test_claude_bedrock_help_prints_header_and_no_cost_line() {
   assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_MODEL"
   assert_contains "$(head -n 7 "$TMP/out")" "CLAUDE_BEDROCK_QUIET"
   assert_contains "$(head -n 7 "$TMP/out")" "per 1M tokens"
-  assert_eq "$(sed -n 4p "$TMP/out")" "  Config   ~/.claude-bedrock, lean: nothing from ~/.claude; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses ~/.claude (≈10× the tokens)"
+  assert_eq "$(sed -n 4p "$TMP/out")" "  Config   ~/.claude-bedrock, lean: nothing from ~/.claude; CLAUDE_BEDROCK_USE_MY_CONFIG=1 uses ~/.claude (can cost about 100× more)"
   assert_eq "$(tail -n 1 "$TMP/out")" "CLAUDE --help"
   assert_eq "$(cat "$TMP/err")" ""
   [ ! -e "$HOME/.claude-bedrock" ] || { echo "--help created ~/.claude-bedrock" >&2; return 1; }

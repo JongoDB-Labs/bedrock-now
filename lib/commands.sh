@@ -1584,10 +1584,17 @@ cmd_uninstall() {
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
   log "removed. .env and backups/ were kept (they contain secrets) — delete this folder yourself if you're done."
-  # claude-bedrock's own Claude Code folder (settings, plugins, sessions): yours, possibly shared by other copies
-  if [ -d "$HOME/.claude-bedrock" ]; then
-    log "~/.claude-bedrock (claude-bedrock's Claude Code settings and sessions) was kept — delete it yourself if you're done."
-  fi
+  # claude-bedrock's own Claude Code folder (settings, plugins, sessions): yours, possibly shared by other copies.
+  # The default one, and the one CLAUDE_BEDROCK_CONFIG_DIR names in this shell.
+  local cb_dir cb_seen=''
+  for cb_dir in "$HOME/.claude-bedrock" "${CLAUDE_BEDROCK_CONFIG_DIR:-}"; do
+    while [ "${#cb_dir}" -gt 1 ] && [ "${cb_dir%/}" != "$cb_dir" ]; do cb_dir="${cb_dir%/}"; done
+    [ -n "$cb_dir" ] && [ -d "$cb_dir" ] && [ "$cb_dir" != "$cb_seen" ] || continue
+    cb_seen="$cb_dir"
+    # shellcheck disable=SC2088  # "~/…" for display
+    case "$cb_dir" in "$HOME"/*) cb_dir="~/${cb_dir#"$HOME"/}" ;; esac
+    log "$cb_dir (claude-bedrock's Claude Code settings and sessions) was kept — delete it yourself if you're done."
+  done
 }
 
 # One update/rollback/clean/restore/setup at a time (.state/lock).

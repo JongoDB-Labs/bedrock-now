@@ -164,7 +164,7 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Behaviour | How | Expected |
 |---|---|---|
 | `claude-bedrock -p "…"` | e2e `claude/claude-bedrock` (the throwaway's wrapper, Haiku, its own `CLAUDE_BEDROCK_CONFIG_DIR`) | Answers via LiteLLM with the `claude-code` key; cost line `bedrock · <model> (…)` and `config: lean (…)` on stderr; the config folder created with mode 700; session cost summary. Skipped if `claude` is not installed. |
-| Lean config folder, `CLAUDE_BEDROCK_USE_MY_CONFIG=1`, `--resume` hint | unit (`tests/test_claude_config.sh`) · manual (an interactive session ends with `resume: claude-bedrock --resume <id>`) | Default `~/.claude-bedrock` (700); the opt-in leaves `CLAUDE_CONFIG_DIR` as it was; subcommands get the same folder. |
+| Lean config folder, `CLAUDE_BEDROCK_USE_MY_CONFIG=1`, `--resume` hint | unit (`tests/test_claude_config.sh`, `tests/test_session.sh`) · manual (an interactive session ends with `resume: claude-bedrock --resume <id>`, the id Claude Code's own hint names) | Default `~/.claude-bedrock` (700; refused when not yours or group/other-writable); the opt-in leaves `CLAUDE_CONFIG_DIR` as it was; subcommands get the same folder; new sessions get `--session-id` from the wrapper. |
 | `--help` | e2e `claude/claude-bedrock-help` | Wrapper header, then Claude Code's help. |
 | shared-mcp attached (`--mcp-config .state/mcp.json`) except for subcommands | unit (`tests/test_session.sh` etc.) · manual (`claude-bedrock mcp list` works) | — |
 | Not set up / LiteLLM down / no model | unit | Clear `xx` messages. |

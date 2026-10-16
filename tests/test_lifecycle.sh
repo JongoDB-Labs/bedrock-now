@@ -260,9 +260,12 @@ test_uninstall_confirmed_removes_volumes_and_own_symlink_only() {
   [ ! -e "$HOME/.local/bin/claude-bedrock" ] && [ ! -L "$HOME/.local/bin/claude-bedrock" ] || { echo "symlink not removed" >&2; return 1; }
   assert_contains "$(cat "$TMP/err")" ".env and backups/ were kept"
   assert_not_contains "$(cat "$TMP/err")" ".claude-bedrock"
-  mkdir -p "$HOME/.claude-bedrock"; cmd_uninstall 2> "$TMP/err"
+  mkdir -p "$HOME/.claude-bedrock" "$TMP/cb"; CLAUDE_BEDROCK_CONFIG_DIR="$TMP/cb" cmd_uninstall 2> "$TMP/err"
   assert_contains "$(cat "$TMP/err")" "~/.claude-bedrock (claude-bedrock's Claude Code settings and sessions) was kept"
-  [ -d "$HOME/.claude-bedrock" ] || { echo "~/.claude-bedrock removed" >&2; return 1; }
+  assert_contains "$(cat "$TMP/err")" "$TMP/cb (claude-bedrock's Claude Code settings and sessions) was kept"
+  [ -d "$HOME/.claude-bedrock" ] && [ -d "$TMP/cb" ] || { echo "a config folder was removed" >&2; return 1; }
+  CLAUDE_BEDROCK_CONFIG_DIR="$HOME/.claude-bedrock/" cmd_uninstall 2> "$TMP/err"
+  assert_eq "$(grep -c 'claude-bedrock.s Claude Code settings' "$TMP/err")" 1
 }
 
 test_uninstall_removes_this_installs_built_images_by_exact_name() {
