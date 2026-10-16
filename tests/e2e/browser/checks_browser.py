@@ -1949,7 +1949,16 @@ def settings_regen_rustfs(ctx):
 def _local_hour_of_helper() -> int:
     """The hour on the computer running the helper (its windows use that clock): from the heartbeat's next update
     window, which starts at AUTO_UPDATE_HOUR local time."""
-    beat = json.loads((STATE / "status" / "helper.json").read_text())
+    # (the helper replaces the file by a rename every few seconds: through Docker Desktop's file sharing a read can
+    # miss it for a moment)
+    for attempt in range(20):
+        try:
+            beat = json.loads((STATE / "status" / "helper.json").read_text())
+            break
+        except (FileNotFoundError, ValueError):
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
     a = beat.get("auto") or {}
     if not isinstance(a.get("next_window"), int) or not isinstance(a.get("hour"), int):
         raise Skip("this helper's heartbeat has no update window to read the local time from")
