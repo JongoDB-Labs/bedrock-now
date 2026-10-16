@@ -31,6 +31,9 @@ import type {
   Ev,
   FileData,
   FsEntry,
+  GitFile,
+  GitReview,
+  GrepResult,
   Hunk,
   ImageBlock,
   InitInfo,
@@ -194,7 +197,7 @@ function normEdit(v: unknown): EditInfo | null {
   const path = cleanPath(o.path ?? o.filePath);
   if (path === null || path === '') return null;
   const original = typeof (o.original ?? o.originalFile) === 'string' ? cap(o.original ?? o.originalFile, 4_000_000) : null;
-  return { path, original, hunks: normHunks(o.hunks ?? o.structuredPatch), complete: o.complete !== false };
+  return { path, original, hunks: normHunks(o.hunks ?? o.structuredPatch), complete: o.complete !== false, created: o.created === true };
 }
 
 function normInit(o: Obj): InitInfo {
@@ -792,10 +795,12 @@ export async function fsBytes(path: string, max: number, signal?: AbortSignal): 
 }
 
 export type WriteResult = { ok: true; mtimeMs: number | null } | { ok: false; conflict: true; mtimeMs: number | null };
-/** PUT with the editor's precondition; a 409 (changed on disk) comes back as {conflict}. */
-export async function fsWrite(path: string, text: string, ifMtimeMs: number | null): Promise<WriteResult> {
+/** PUT with the editor's precondition; a 409 (changed on disk; with `create`: there is such a file already) comes back
+ *  as {conflict}. */
+export async function fsWrite(path: string, text: string, ifMtimeMs: number | null, opts: { create?: boolean } = {}): Promise<WriteResult> {
   const body: Obj = { text };
   if (ifMtimeMs !== null) body.ifMtimeMs = ifMtimeMs;
+  if (opts.create) body.create = true;
   try {
     const o = await request('PUT', '/api/fs/file' + q({ path }), body);
     return { ok: true, mtimeMs: nonneg(o.mtimeMs) };
@@ -899,8 +904,110 @@ export async function fsMkdir(path: string): Promise<void> {
 export async function fsRename(from: string, to: string): Promise<void> {
   await request('POST', '/api/fs/rename', { from, to });
 }
-export async function fsDelete(path: string): Promise<void> {
-  await request('DELETE', '/api/fs' + q({ path }));
+/** Into the workspace trash; `ifMtimeMs`: only while the file is unchanged (a 409 ApiError otherwise). */
+export async function fsDelete(path: string, ifMtimeMs?: number | null): Promise<void> {
+  await request('DELETE', '/api/fs' + q({ path, ifMtimeMs: ifMtimeMs ?? undefined }));
+}
+
+// ---------------------------------------------------------------- review (git) and search in files
+
+const MODE = /^[0-7]{6}$/;
+function normGitFile(v: unknown): GitFile | null {
+  const o = obj(v);
+  const path = cleanPath(o?.path);
+  if (!o || !path) return null;
+  const status = o.status === 'added' || o.status === 'deleted' ? o.status : 'modified';
+  const mc = obj(o.modeChange);
+  return {
+    path,
+    status,
+    untracked: o.untracked === true,
+    binary: o.binary === true,
+    symlink: o.symlink === true,
+    modeChange: mc ? { old: MODE.test(str(mc.old)) ? str(mc.old) : null, new: MODE.test(str(mc.new)) ? str(mc.new) : null } : null,
+    hunks: normHunks(o.hunks),
+    mtimeMs: nonneg(o.mtimeMs),
+    size: nonneg(o.size) ?? 0,
+    // (a line the page had to cut means it does not hold the change in full either)
+    cut: o.cut === true || arr(o.hunks, 100_000).some((h) => arr(obj(h)?.lines, 100_000).some((l) => typeof l === 'string' && l.length > 10_000)),
+    bad: o.bad === true || !arr(o.hunks, 100_000).every(hunkAddsUp),
+  };
+}
+/** A hunk as git writes it: whole-number positions, only text lines, and as many of each kind as its header says. */
+function hunkAddsUp(v: unknown): boolean {
+  const h = obj(v);
+  if (!h || !Array.isArray(h.lines)) return false;
+  const n = (x: unknown) => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 1e9;
+  if (![h.oldStart, h.oldLines, h.newStart, h.newLines].every(n)) return false;
+  let old = 0;
+  let neu = 0;
+  for (const l of h.lines) {
+    if (typeof l !== 'string') return false;
+    if (l[0] === ' ') (old++, neu++);
+    else if (l[0] === '-') old++;
+    else if (l[0] === '+') neu++;
+    else if (l[0] !== '\\') return false;
+  }
+  return old === h.oldLines && neu === h.newLines;
+}
+export function normGitReview(o: Obj): GitReview {
+  const files = arr(o.files, 2000).map(normGitFile).filter((f): f is GitFile => f !== null);
+  return {
+    repo: o.repo === true,
+    reason: label(o.reason, 300),
+    head: typeof o.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(o.head) ? o.head : null,
+    files,
+    truncated: o.truncated === true,
+    timedOut: o.timedOut === true,
+  };
+}
+/** What changed in the workspace since its last commit (git in the sandbox, read-only). */
+export async function getGitDiff(): Promise<GitReview> {
+  return normGitReview(await request('GET', '/api/git/diff'));
+}
+
+export interface GrepQuery {
+  q: string;
+  regex: boolean;
+  caseSensitive: boolean;
+  include: string;
+  exclude: string;
+}
+export function normGrep(o: Obj): GrepResult {
+  let left = 2000;
+  const files = arr(o.files, 2000)
+    .map((f) => {
+      const x = obj(f);
+      const path = cleanPath(x?.path);
+      if (!x || !path) return null;
+      const hits = arr(x.hits, 100)
+        .map((h) => {
+          const y = obj(h);
+          if (!y || left <= 0) return null;
+          const line = num(y.line, 0);
+          if (!Number.isInteger(line) || line < 1 || typeof y.text !== 'string') return null;
+          const text = y.text.slice(0, 300);
+          const col = Math.min(Math.max(0, Math.floor(num(y.col, 0))), text.length);
+          left--;
+          return { line, text, col, len: Math.min(Math.max(0, Math.floor(num(y.len, 0))), text.length - col), count: Math.max(1, Math.floor(num(y.count, 1))), cut: y.cut === true };
+        })
+        .filter((h): h is NonNullable<typeof h> => h !== null);
+      return hits.length ? { path, hits } : null;
+    })
+    .filter((f): f is NonNullable<typeof f> => f !== null);
+  return {
+    engine: o.engine === 'ripgrep' ? 'ripgrep' : 'node',
+    files,
+    hits: files.reduce((n, f) => n + f.hits.length, 0),
+    truncated: o.truncated === true,
+    timedOut: o.timedOut === true,
+    error: o.error ? label(o.error, 300) : null,
+  };
+}
+/** Search the workspace's files (the backend: ripgrep in the sandbox, or a literal walk). */
+export async function grep(p: GrepQuery, signal?: AbortSignal): Promise<GrepResult> {
+  if (signal?.aborted) throw new ApiError(0, 'cancelled');
+  return normGrep(await request('GET', '/api/fs/grep' + q({ q: p.q.slice(0, 1000), regex: p.regex ? 1 : undefined, case: p.caseSensitive ? 1 : undefined, include: p.include || undefined, exclude: p.exclude || undefined })));
 }
 export function downloadUrl(path: string): string {
   return '/api/fs/file' + q({ path, download: 1 });

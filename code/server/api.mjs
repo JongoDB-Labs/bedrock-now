@@ -175,7 +175,9 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     if (data.length > LIMITS.maxUploadBytes) throw new HttpError(413, 'file too large');
     const ifMtimeMs = body.ifMtimeMs === undefined || body.ifMtimeMs === null ? undefined : num(body.ifMtimeMs, 0, 1e14);
     if (ifMtimeMs === null) throw new HttpError(400, 'bad ifMtimeMs');
-    const { result } = await call({ op: 'fs.write', path: p, size: data.length, ifMtimeMs, mode: 'replace' }, { input: data, timeoutMs: 120000 });
+    // create: only when there is no such file yet (the Review pane's Undo of a deleted file)
+    const mode = body.create === true ? 'create' : 'replace';
+    const { result } = await call({ op: 'fs.write', path: p, size: data.length, ifMtimeMs, mode }, { input: data, timeoutMs: 120000 });
     return written(result);
   }
 
@@ -196,10 +198,13 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     if (!from || !to) throw new HttpError(400, 'from and to are needed');
     return { path: okPath((await call({ op: 'fs.rename', from, to })).result.path) };
   }
-  async function remove(path) {
+  // ifMtimeMs: only while the entry is unchanged (the Review pane's Undo of a new file)
+  async function remove(path, ifMtimeMs) {
     const p = need(relPath(path), 'path');
     if (!p || p === '.' || p === '/') throw new HttpError(400, 'not the workspace itself');
-    return { trash: okPath((await call({ op: 'fs.delete', path: p })).result.trash) };
+    const pre = ifMtimeMs === undefined || ifMtimeMs === null ? undefined : num(ifMtimeMs, 0, 1e14);
+    if (pre === null) throw new HttpError(400, 'bad ifMtimeMs');
+    return { trash: okPath((await call({ op: 'fs.delete', path: p, ...(pre === undefined ? {} : { ifMtimeMs: pre }) })).result.trash) };
   }
 
   // --- the @-picker over the whole workspace: paths whose relative path contains q (bn-coded walks, bounded) ---
@@ -210,6 +215,25 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     const paths = (Array.isArray(result.paths) ? result.paths : []).slice(0, lim)
       .filter((x) => typeof x === 'string' && x.length <= 4096 && !x.split('/').some((seg) => seg === '..') && !/[\x00-\x1f\x7f]/.test(x) && !x.startsWith('/'));
     return { paths, truncated: result.truncated === true };
+  }
+
+  // --- search in files: bn-coded's fs.grep (ripgrep, or a bounded literal walk), checked both ways ---
+  async function grep(params) {
+    const c = grepRequest(params);
+    let result;
+    try {
+      ({ result } = await call({ op: 'fs.grep', ...c }, { timeoutMs: 30000, maxBytes: 4 << 20 }));
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, e.message);
+      throw e;
+    }
+    return grepResult(result);
+  }
+
+  // --- the Review pane: what changed since the last commit (bn-coded's read-only git), parsed and checked here ---
+  async function gitDiff() {
+    const { result, stdout } = await call({ op: 'git.diff' }, { timeoutMs: 45000, maxBytes: 12 << 20 });
+    return reviewOf(result, stdout.toString('utf8'));
   }
 
   // --- memory (CLAUDE.md): this workspace's (/workspace/CLAUDE.md, a file of the workspace) or your user one in the
@@ -389,9 +413,174 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
 
-  return { listSessions, messages, parentOf, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, memory, memoryWrite, plugins, available, pluginAction,
+  return { listSessions, messages, parentOf, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
     ports, stopPort, launch, launchStart };
+}
+
+// --- search in files: the page's request, checked (bn-coded checks it again), and the sandbox's answer, checked ---
+const GLOB = /^[\x20-\x7e]{1,200}$/;
+// globList("src/**, *.{ts,tsx}") -> ["src/**", "*.{ts,tsx}"]: commas outside braces separate
+export function globList(v) {
+  if (v === undefined || v === null || v === '') return [];
+  if (typeof v !== 'string' || v.length > 2200) throw new HttpError(400, 'globs: at most 10, comma-separated');
+  const out = [];
+  let cur = '', depth = 0;
+  for (const ch of v) {
+    if (ch === '{') depth++;
+    else if (ch === '}') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  const list = out.map((g) => g.trim()).filter(Boolean);
+  if (list.length > 10 || !list.every((g) => GLOB.test(g) && !g.startsWith('!') && !g.includes('\\'))) {
+    throw new HttpError(400, 'globs: at most 10, comma-separated, printable, without "!" or a backslash');
+  }
+  return list;
+}
+export function grepRequest(p) {
+  const q = typeof p?.q === 'string' ? p.q : '';
+  if (!q || q.length > 1000 || /[\x00-\x08\x0a-\x1f\x7f]/.test(q)) throw new HttpError(400, 'a search of 1 to 1000 characters, one line');
+  return { q, regex: p.regex === true || p.regex === '1', caseSensitive: p.caseSensitive === true || p.case === '1', include: globList(p.include), exclude: globList(p.exclude) };
+}
+export const GREP_HITS = 2000;
+export function grepResult(r) {
+  const files = [];
+  let total = 0;
+  for (const f of Array.isArray(r?.files) ? r.files.slice(0, GREP_HITS) : []) {
+    if (!f || typeof f !== 'object' || !relOk(f.path)) continue;
+    const hits = [];
+    for (const h of Array.isArray(f.hits) ? f.hits.slice(0, 100) : []) {
+      if (total >= GREP_HITS) break;
+      const line = int(h?.line, 1, 1e9);
+      if (line === null || typeof h.text !== 'string') continue;
+      const text = short(h.text, 300);
+      const col = Math.min(int(h.col, 0, 1e9) ?? 0, text.length);
+      hits.push({ line, text, col, len: Math.min(int(h.len, 0, 1e9) ?? 0, text.length - col), count: int(h.count, 1, 1e6) ?? 1, cut: h.cut === true });
+      total++;
+    }
+    if (hits.length) files.push({ path: f.path, hits });
+  }
+  return { engine: r?.engine === 'ripgrep' ? 'ripgrep' : 'node', files, hits: total, truncated: r?.truncated === true || (int(r?.hits, 0, 1e9) ?? 0) > total,
+    timedOut: r?.timedOut === true, error: short(r?.error, 300) || null };
+}
+
+// --- the Review pane: git's patch (and bn-coded's for new files), parsed into files and hunks. All of it comes from
+// --- the sandbox (any text): every path is checked, every count verified, everything capped; a file whose patch does
+// --- not add up is marked `bad` (shown, never undone), one cut short `cut` (likewise)
+export const DIFF = { files: 2000, fileLines: 20000, lines: 200000, lineChars: 10000 };
+export const relOk = (p) => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !p.startsWith('/') && !/[\x00]/.test(p) && p.split('/').every((x) => x && x !== '.' && x !== '..');
+// unquoteC('"a\\tb"') -> the path git quoted (C escapes; octal ones are bytes, read as UTF-8), or null
+export function unquoteC(s) {
+  if (!s.startsWith('"') || !s.endsWith('"') || s.length < 2) return null;
+  const bytes = [];
+  const MAP = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 };
+  for (let i = 1; i < s.length - 1; i++) {
+    const c = s[i];
+    if (c === '"') return null;
+    if (c !== '\\') { bytes.push(...Buffer.from(c, 'utf8')); continue; }
+    const n = s[++i];
+    if (n in MAP) bytes.push(MAP[n]);
+    else if (/[0-7]/.test(n ?? '') && /^[0-7]{3}$/.test(s.slice(i, i + 3))) { bytes.push(parseInt(s.slice(i, i + 3), 8) & 255); i += 2; }
+    else return null;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+// headerPath("a/x b/x" | '"a/x" "b/x"') -> x when both sides name the same path (renames are off), else null
+export function headerPath(rest) {
+  let a, b;
+  if (rest.startsWith('"')) {
+    const m = /^("(?:[^"\\]|\\.)*") (.*)$/.exec(rest);
+    if (!m) return null;
+    a = unquoteC(m[1]);
+    b = m[2].startsWith('"') ? unquoteC(m[2]) : m[2];
+  } else {
+    const n = (rest.length - 5) / 2;
+    if (!Number.isInteger(n) || n < 1 || rest.slice(2 + n, 5 + n) !== ' b/') return null;
+    a = rest.slice(0, 2 + n);
+    b = rest.slice(3 + n);
+  }
+  if (a === null || b === null || !a.startsWith('a/') || !b.startsWith('b/') || a.slice(2) !== b.slice(2)) return null;
+  return relOk(a.slice(2)) ? a.slice(2) : null;
+}
+const HUNK = /^@@ -(\d{1,9})(?:,(\d{1,9}))? \+(\d{1,9})(?:,(\d{1,9}))? @@/;
+// parseGitDiff(text) -> Map(path -> {path, status, binary, symlink, modeChange, hunks, cut, bad})
+export function parseGitDiff(text) {
+  const files = new Map();
+  let f = null, h = null, oldLeft = 0, newLeft = 0, total = 0, fileLines = 0;
+  const lines = String(text).split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const close = () => {
+    if (h && (oldLeft > 0 || newLeft > 0)) f.bad = true;
+    h = null;
+  };
+  for (const raw of lines) {
+    if (raw.startsWith('diff --git ')) {
+      close();
+      if (files.size >= DIFF.files) { f = null; continue; }
+      const p = headerPath(raw.slice(11));
+      f = p === null || files.has(p) ? null : { path: p, status: 'modified', binary: false, symlink: false, modeChange: null, hunks: [], cut: false, bad: false };
+      if (f) files.set(p, f);
+      fileLines = 0;
+      continue;
+    }
+    if (!f) continue;
+    if (h && (oldLeft > 0 || newLeft > 0 || raw.startsWith('\\'))) {
+      const tag = raw[0];
+      if (tag === '\\') { if (h.lines.length && !h.lines[h.lines.length - 1].startsWith('\\')) h.lines.push('\\ No newline at end of file'); continue; }
+      if (tag === ' ') { oldLeft--; newLeft--; } else if (tag === '-') oldLeft--; else if (tag === '+') newLeft--;
+      else { f.bad = true; h = null; continue; }
+      if (oldLeft < 0 || newLeft < 0) { f.bad = true; h = null; continue; }
+      if (++total > DIFF.lines || ++fileLines > DIFF.fileLines) { f.cut = true; continue; }
+      if (raw.length > DIFF.lineChars + 1) { f.cut = true; h.lines.push(raw.slice(0, DIFF.lineChars + 1)); continue; }
+      h.lines.push(raw);
+      continue;
+    }
+    close();
+    let m;
+    if ((m = HUNK.exec(raw))) {
+      const ol = m[2] === undefined ? 1 : Number(m[2]), nl = m[4] === undefined ? 1 : Number(m[4]);
+      h = { oldStart: Number(m[1]), oldLines: ol, newStart: Number(m[3]), newLines: nl, lines: [] };
+      if (f.hunks.length >= 5000) { f.cut = true; h = { ...h, lines: [] }; } else f.hunks.push(h);
+      oldLeft = ol; newLeft = nl;
+    } else if ((m = /^new file mode (\d{6})$/.exec(raw))) { f.status = 'added'; if (m[1] === '120000') f.symlink = true; }
+    else if ((m = /^deleted file mode (\d{6})$/.exec(raw))) { f.status = 'deleted'; if (m[1] === '120000') f.symlink = true; }
+    else if ((m = /^old mode (\d{6})$/.exec(raw))) f.modeChange = { old: m[1], new: f.modeChange?.new ?? null };
+    else if ((m = /^new mode (\d{6})$/.exec(raw))) { f.modeChange = { old: f.modeChange?.old ?? null, new: m[1] }; if (m[1] === '120000') f.symlink = true; }
+    else if ((m = /^index [0-9a-f]+\.\.[0-9a-f]+(?: (\d{6}))?$/.exec(raw))) { if (m[1] === '120000' || m[1] === '160000') f.symlink = true; }
+    else if (/^Binary files .* differ$/.test(raw) || raw === 'GIT binary patch') f.binary = true;
+    else if (raw.startsWith('--- ') || raw.startsWith('+++ ')) { /* the names (the header's) */ }
+    else f.bad = true;
+  }
+  close();
+  return files;
+}
+const mtime = (v) => num(v, 0, 1e14);
+// reviewOf(result, patch) -> what GET /api/git/diff answers: {repo, reason, head, files, truncated, timedOut}
+export function reviewOf(r, patch) {
+  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', head: null, files: [], truncated: false, timedOut: false };
+  const parsed = parseGitDiff(patch);
+  const files = [];
+  const seen = new Set();
+  const add = (x, untracked) => {
+    if (!x || typeof x !== 'object' || !relOk(x.path) || seen.has(x.path) || files.length >= DIFF.files) return;
+    seen.add(x.path);
+    const p = parsed.get(x.path);
+    const shown = untracked ? x.shown === true : true;
+    const base = { path: x.path, mtimeMs: mtime(x.mtimeMs), size: int(x.size, 0, 1e15) ?? 0, untracked };
+    if (p && shown) {
+      files.push({ ...base, status: untracked ? 'added' : x.type === 'missing' ? 'deleted' : p.status, binary: p.binary, symlink: p.symlink || x.type === 'symlink',
+        modeChange: p.modeChange, hunks: p.hunks, cut: p.cut, bad: p.bad });
+    } else {
+      // not in the patch (it was cut short, or the file is too large to show): listed without its changes
+      files.push({ ...base, status: untracked ? 'added' : x.type === 'missing' ? 'deleted' : 'modified', binary: false, symlink: x.type === 'symlink',
+        modeChange: null, hunks: [], cut: true, bad: false });
+    }
+  };
+  for (const x of Array.isArray(r.files) ? r.files.slice(0, DIFF.files) : []) add(x, false);
+  for (const x of Array.isArray(r.untracked) ? r.untracked.slice(0, DIFF.files) : []) add(x, true);
+  const head = typeof r.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(r.head) ? r.head : null;
+  return { repo: true, reason: null, head, files, truncated: r.truncated === true || files.length >= DIFF.files, timedOut: r.timedOut === true };
 }
 
 // --- what bn-coded answers about ports and launch.json, checked for the page (the sandbox can say anything) ---

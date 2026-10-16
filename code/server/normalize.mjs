@@ -45,7 +45,8 @@ export function editOf(r) {
     hunks.push({ oldStart: pos(h.oldStart), oldLines: pos(h.oldLines), newStart: pos(h.newStart), newLines: pos(h.newLines), lines });
   }
   const original = typeof r.originalFile === 'string' && r.originalFile.length <= 256 << 10 ? r.originalFile : null;
-  return { path: short(r.filePath, 4096), original, hunks, complete };
+  // created: a Write that made a new file (its original is null then, as it is for one too large to include)
+  return { path: short(r.filePath, 4096), original, hunks, complete, created: r.type === 'create' };
 }
 
 function blocks(m, parent) {

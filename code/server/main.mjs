@@ -226,7 +226,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, { ok: true });
     }
     if (p === '/api/fs' && m === 'GET') return send(res, 200, await api.list(q.get('path') ?? ''));
-    if (p === '/api/fs' && m === 'DELETE') return send(res, 200, await api.remove(q.get('path')));
+    if (p === '/api/fs' && m === 'DELETE') {
+      const pre = q.get('ifMtimeMs');
+      if (pre !== null && !/^[0-9]{1,15}(\.[0-9]{1,6})?$/.test(pre)) throw new HttpError(400, 'bad ifMtimeMs');
+      return send(res, 200, await api.remove(q.get('path'), pre === null ? undefined : Number(pre)));
+    }
     if (p === '/api/fs/file' && m === 'GET' && q.get('download') !== '1') return send(res, 200, await api.readFile(q.get('path')));
     if (p === '/api/fs/file' && m === 'PUT') return send(res, 200, await api.writeFile(q.get('path'), await readJson(req, (LIMITS.maxUploadBytes * 2) + (64 << 10))));
     if ((p === '/api/fs/download' || p === '/api/fs/file') && m === 'GET') {   // (/api/fs/file?download=1 too)
@@ -244,6 +248,10 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
     if (p === '/api/fs/mkdir' && m === 'POST') return send(res, 200, await api.mkdir(await readJson(req)));
     if (p === '/api/fs/find' && m === 'GET') return send(res, 200, await api.find(q.get('q') ?? '', /^[0-9]{1,3}$/.test(q.get('limit') ?? '') ? Number(q.get('limit')) : undefined));
+    if (p === '/api/fs/grep' && m === 'GET') {
+      return send(res, 200, await api.grep({ q: q.get('q') ?? '', regex: q.get('regex') ?? '', case: q.get('case') ?? '', include: q.get('include') ?? '', exclude: q.get('exclude') ?? '' }));
+    }
+    if (p === '/api/git/diff' && m === 'GET') return send(res, 200, await api.gitDiff());
     if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope')));
     if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10))));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));

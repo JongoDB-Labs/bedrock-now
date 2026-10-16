@@ -84,7 +84,11 @@ function resetFs() {
   for (let i = 1; i <= 1005; i++) add(`logs/run-${String(i).padStart(4, '0')}.log`, `run ${i}\n`);
   for (const [p, data] of Object.entries(previewFiles())) add(p, data, !isTextData(Buffer.from(data)));
   if (HOSTILE_MODE) for (const [p, t] of Object.entries(hostileFiles())) add(p, t);
+  gitHead = new Map([...fsState].map(([p, e]) => [p, e.data]));
 }
+// the workspace's "last commit" (GET /api/git/diff compares with it); /__mock/git?repo=0 makes it no repository
+let gitHead = new Map();
+let gitRepo = true;
 resetFs();
 // the backend's text test (code/server/api.mjs isText): no NUL in the first 8 KiB, and UTF-8 (a cut-off last
 // character of a truncated read forgiven)
@@ -681,6 +685,7 @@ async function runScenario(s, text, images) {
   if ((t.includes('write') || t.includes('create')) && t.includes('markdown')) return writeMarkdown(s);
   if (t.includes('write') || t.includes('create')) return write(s);
   if (t.includes('edit') || t.includes('fix') || t.includes('retry')) return edit(s);
+  if (/\bsed\b/.test(t) || t.includes('command change')) return bashChange(s);
   if (t.includes('test') || t.includes('run') || t.includes('bash')) return bash(s);
   if (t.includes('fetch') || t.includes('web')) return web(s);
   if (t.includes('mcp')) return mcp(s);
@@ -778,7 +783,8 @@ async function write(s) {
     const existed = fsState.get(p)?.data.toString() ?? null;
     s.changed(p, existed);
     writeFile(p, content);
-    return { text: `File created successfully at: /workspace/${p}`, edit: { path: p, original: existed ?? '', hunks: hunks(existed ?? '', content) } };
+    // (as Claude Code sends a Write: a new file has no original and no hunks, and says it was created)
+    return { text: `File created successfully at: /workspace/${p}`, edit: existed === null ? { path: p, original: null, hunks: [], created: true } : { path: p, original: existed, hunks: hunks(existed, content) } };
   });
   await s.stream(r.ok ? 'Created `src/http/errors.ts`.' : 'Skipped.');
   return 2;
@@ -809,6 +815,22 @@ async function hook(s) {
     return { text: '' };
   });
   await s.stream(r.ok ? 'Done: `.git/hooks/pre-commit` runs `npm test` before each commit.' : 'Skipped.');
+  return 2;
+}
+
+// a file changed by a command (sed) and one made by a command: no Edit/Write, so only git's view shows them
+async function bashChange(s) {
+  await s.stream('Raising the default timeout with sed, and noting it.');
+  const r = await s.tool('Bash', { command: "sed -i 's/10_000/15_000/' src/utils/format.ts src/http/client.ts && printf 'timeout raised\n' > NOTES.md", description: 'Raise the timeout' }, async () => {
+    await sleep(300);
+    for (const p of ['src/utils/format.ts', 'src/http/client.ts']) {
+      const cur = fsState.get(p)?.data.toString();
+      if (cur !== undefined) writeFile(p, cur.replace(/10_000/g, '15_000').replace(/(export function [a-zA-Z]+)/, '// timeout: 15 s\n$1'));
+    }
+    writeFile('NOTES.md', 'timeout raised\n');
+    return { text: '' };
+  });
+  await s.stream(r.ok ? 'Done: the default timeout is 15 s now (NOTES.md says so).' : 'Skipped.');
   return 2;
 }
 
@@ -1173,6 +1195,79 @@ async function api(req, res, url) {
     await sleep(80);
     return json(res, 200, find(String(url.searchParams.get('q') || '').slice(0, 200), Math.min(200, Number(url.searchParams.get('limit')) || 50)));
   }
+  if (p === '/api/git/diff' && m === 'GET') {
+    await sleep(120);
+    if (!gitRepo) return json(res, 200, { repo: false, reason: 'not a git repository', head: null, files: [], truncated: false, timedOut: false });
+    const files = [];
+    const skip = (x) => /^(\.git|\.bedrock-now-trash|node_modules)(\/|$)/.test(x);
+    for (const path of [...new Set([...gitHead.keys(), ...fsState.keys()])].sort()) {
+      if (skip(path)) continue;
+      const before = gitHead.get(path), now = fsState.get(path);
+      if (before && now && before.equals(now.data)) continue;
+      const bin = (now ? now.bin : false) || (before ? !isTextData(before) : false);
+      const status = !before ? 'added' : !now ? 'deleted' : 'modified';
+      const a = before && !bin ? before.toString() : '', b = now && !bin ? now.data.toString() : '';
+      let h = [];
+      if (!bin) {
+        const big = a.split('\n').length > 4000 || b.split('\n').length > 4000;
+        h = big ? [] : status === 'added' ? [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: b.replace(/\n$/, '').split('\n').length, lines: b.replace(/\n$/, '').split('\n').map((l) => `+${l}`) }]
+          : status === 'deleted' ? [{ oldStart: 1, oldLines: a.replace(/\n$/, '').split('\n').length, newStart: 0, newLines: 0, lines: a.replace(/\n$/, '').split('\n').map((l) => `-${l}`) }]
+            : hunks(a, b);
+        if (big) files.push({ path, status, untracked: status === 'added', binary: false, symlink: false, modeChange: null, hunks: [], mtimeMs: now?.mtimeMs ?? null, size: now?.data.length ?? 0, cut: true, bad: false });
+      }
+      if (!files.some((f) => f.path === path)) files.push({ path, status, untracked: status === 'added', binary: bin, symlink: false, modeChange: null, hunks: h, mtimeMs: now?.mtimeMs ?? null, size: now?.data.length ?? 0, cut: false, bad: false });
+    }
+    if (HOSTILE_MODE) {
+      // what a hostile sandbox could answer: markup and bidi in names and lines, paths out of the workspace, bad counts
+      const h = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 };
+      files.push(
+        { path: `hostile/${HOSTILE.img}.ts`, status: 'modified', hunks: [{ ...h, lines: [`-${HOSTILE.script}`, `+${HOSTILE.bidi}`] }], mtimeMs: 5 },
+        { path: '../../etc/passwd', status: 'modified', hunks: [{ ...h, lines: ['-root', '+evil'] }], mtimeMs: 5 },
+        { path: '/abs/olute', status: 'added', hunks: [] },
+        { path: 'hostile/giant.txt', status: 'added', untracked: true, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: [`+${HOSTILE.giant}`] }], mtimeMs: 'NaN', size: -1 },
+        { path: 'hostile/lies.txt', status: 'modified', hunks: [{ oldStart: -5, oldLines: 'x', newStart: 1e12, newLines: 1, lines: [`+${HOSTILE.controls}`, 42, null] }], mtimeMs: 5, cut: false, bad: false, modeChange: { old: '<b>', new: '100755' } },
+        'junk', null,
+      );
+    }
+    return json(res, 200, { repo: true, reason: null, head: HOSTILE_MODE ? '<script>' : 'c0ffee'.repeat(6) + 'c0ff', files: files.slice(0, 2000), truncated: files.length > 2000, timedOut: false });
+  }
+  if (p === '/api/fs/grep' && m === 'GET') {
+    await sleep(100);
+    const q = url.searchParams.get('q') || '';
+    if (!q || q.length > 1000 || /[\x00-\x08\x0a-\x1f]/.test(q)) return json(res, 400, { error: 'a search of 1 to 1000 characters, one line' });
+    const regex = url.searchParams.get('regex') === '1', cs = url.searchParams.get('case') === '1';
+    const globs = (v) => String(v || '').split(',').map((g) => g.trim()).filter(Boolean);
+    const inc = globs(url.searchParams.get('include')), exc = globs(url.searchParams.get('exclude'));
+    if ([...inc, ...exc].some((g) => g.startsWith('!') || g.includes('\\'))) return json(res, 400, { error: 'globs: at most 10, comma-separated, printable, without "!" or a backslash' });
+    const gl = (g) => new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\/?/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0000/g, '.*')}$`);
+    const fits = (g, path) => (g.includes('/') ? gl(g).test(path) : path.split('/').some((seg) => gl(g).test(seg)));
+    let re;
+    try { re = new RegExp(regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), cs ? '' : 'i'); } catch (e) { return json(res, 400, { error: `search: ${e.message}` }); }
+    const out = [];
+    let total = 0;
+    for (const [path, e] of [...fsState].sort(([x], [y]) => (x < y ? -1 : 1))) {
+      if (/(^|\/)(\.git|node_modules|\.bedrock-now-trash|dist|build)(\/|$)/.test(path) || e.bin || e.data.length > 1 << 20) continue;
+      if ((inc.length && !inc.some((g) => fits(g, path))) || exc.some((g) => fits(g, path))) continue;
+      const hits = [];
+      const lines = e.data.toString().split('\n');
+      for (let n = 0; n < lines.length && hits.length < 100 && total < 2000; n++) {
+        const m2 = re.exec(lines[n]);
+        if (!m2) continue;
+        const from = Math.max(0, Math.min(m2.index - 60, lines[n].length - 240));
+        const text = lines[n].length > 240 ? lines[n].slice(from, from + 240) : lines[n];
+        const col = lines[n].length > 240 ? m2.index - from : m2.index;
+        hits.push({ line: n + 1, text, col, len: Math.min(m2[0].length, text.length - col), count: 1, cut: lines[n].length > 240 });
+        total++;
+      }
+      if (hits.length) out.push({ path, hits });
+      if (total >= 2000) break;
+    }
+    if (HOSTILE_MODE) {
+      out.unshift({ path: `hostile/${HOSTILE.svg}`, hits: [{ line: 1, text: `${HOSTILE.img} ${HOSTILE.bidi}`, col: 5, len: 9999, count: -3 }] },
+        { path: '../../etc/shadow', hits: [{ line: 1, text: 'root:x' }] }, { path: 'x', hits: [{ line: 'NaN', text: 7 }] });
+    }
+    return json(res, 200, { engine: 'ripgrep', files: out, hits: total, truncated: total >= 2000, timedOut: false, error: HOSTILE_MODE ? HOSTILE.img : null });
+  }
   if (p === '/api/memory') {
     const scope = url.searchParams.get('scope');
     if (scope !== 'project' && scope !== 'user') return json(res, 400, { error: 'scope: project or user' });
@@ -1193,6 +1288,8 @@ async function api(req, res, url) {
   if (p === '/api/fs' && m === 'DELETE') {
     const d = clean(url.searchParams.get('path') || '');
     if (!d) return json(res, 400, { error: 'bad path' });
+    const pre = url.searchParams.get('ifMtimeMs');
+    if (pre !== null && fsState.get(d) && fsState.get(d).mtimeMs !== Number(pre)) return json(res, 409, { error: 'changed on disk since it was opened' });
     // moved into the workspace's trash (which git ignores), as the backend does
     let n = 0;
     const stamp = Date.now().toString(36);
@@ -1230,6 +1327,7 @@ async function api(req, res, url) {
     const b = await jsonBody(req);
     const cur = fsState.get(f);
     if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && cur && cur.mtimeMs !== b.ifMtimeMs) return json(res, 409, { error: 'changed on disk since it was opened', mtimeMs: cur.mtimeMs });
+    if (b.create === true && cur) return json(res, 409, { error: 'that name exists already' });
     writeFile(f, String(b.text ?? ''));
     return json(res, 200, { ok: true, mtimeMs: fsState.get(f).mtimeMs });
   }
@@ -1565,12 +1663,18 @@ const server = http.createServer(async (req, res) => {
         if (e && !e.error) { e.argv = [...e.argv, '--host', '0.0.0.0']; e.env = { ...e.env, BASH_ENV: '/workspace/.evil' }; }
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/git') {
+        gitRepo = url.searchParams.get('repo') !== '0';
+        if (url.searchParams.get('commit') === '1') gitHead = new Map([...fsState].map(([p2, e]) => [p2, e.data]));
+        return json(res, 200, { repo: gitRepo });
+      }
       if (url.pathname === '/__mock/reset') {
         resetLaunch();
         mockPorts.clear();
         checkpoints.clear();
         beacons.length = 0;
         resetFs();
+        gitRepo = true;
         resetPlugins();
         resetBudget();
         locked = false;

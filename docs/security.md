@@ -685,7 +685,8 @@ spawn server, Claude Code or any file at will.
   checked again when Claude worked since that dry run.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops, the previews' ops (below: the listening
-  ports, stopping one, the workspace's `.claude/launch.json`) and the watchlist's two ops (below). Claude Code's
+  ports, stopping one, the workspace's `.claude/launch.json`), the watchlist's two ops (below), and the Review pane's
+  `git.diff` and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
   `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
   a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*); refused, among
@@ -909,6 +910,78 @@ folder; they run in the sandbox either way.
 above) and serve script on the code origin — the same standing as the other app hosts: the cookies it could
 target are `HttpOnly`, the portal checks the Origin of every change, and only the portal may frame it. Pinning the
 page's script hashes in Caddy's CSP would take even that away (an open question).
+
+### Review changes and search in files
+
+The Review pane lists what changed — git's view when `/workspace` is a git repository (so changes made by commands
+count too), else Claude's own Edit/Write diffs of the session — with Keep / Undo per change and per file, and line
+comments that go with your next prompt. Search in files searches the workspace's files. Both are ops of the spawn
+server, read-only, and both read files a hostile repository or sandbox shapes.
+
+- [x] **`git.diff` runs no program a repository names.** A repository's `.git/config` (and the files it includes,
+  `includeIf` ones too), its `.gitattributes` and `.git/info/attributes` can make `git` run programs: an fsmonitor
+  hook (`core.fsmonitor`), an external diff (`diff.external`, `diff.<driver>.command`), a text conversion
+  (`diff.<driver>.textconv`), filters (`filter.<driver>.clean`/`smudge`/`process` — run when git compares a file of
+  the working tree with the repository, by `git diff` and `git status` alike), a pager, hooks, credential helpers and,
+  in a partial clone, a fetch over any transport (`ext::` runs a command). bn-coded runs `git` (the sandbox image's,
+  by its fixed path, with a fixed `PATH`) with fixed arguments only — nothing of the page's reaches it — and an
+  environment of its own: no system or global configuration or attributes (`GIT_CONFIG_NOSYSTEM`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_NOSYSTEM`), no `GIT_*` from outside, `GIT_NO_LAZY_FETCH`,
+  `GIT_ALLOW_PROTOCOL` naming no protocol, `GIT_OPTIONAL_LOCKS=0` (no index refresh written), and
+  `GIT_CEILING_DIRECTORIES` (a repository around `/workspace` is not used; one whose working tree is elsewhere —
+  `core.worktree` — is refused). Overrides that win over every configuration file travel as
+  `GIT_CONFIG_COUNT`/`KEY`/`VALUE` (no `-c name=value` parsing, so a driver named `a=b` cannot slip through):
+  `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.pager=cat`, `core.attributesFile=/dev/null`, every
+  `protocol.*.allow=never`, `credential.helper` cleared, `diff.external` cleared — and, for **every** filter and diff
+  driver the configuration defines (listed first by `git config --get-regexp`, includes evaluated as `git diff` would),
+  its `clean`, `smudge`, `process`, `textconv` and `command` set to nothing and `required` to false (more than 256
+  drivers: refused). The commands themselves: `git --no-pager --no-replace-objects` `rev-parse`, `config
+  --get-regexp`, `diff <HEAD or the empty tree> --no-ext-diff --no-textconv --no-renames --ignore-submodules=all`
+  (submodules are never entered: their own configuration would apply) `--name-only -z` and the patch, and `ls-files
+  --others --exclude-standard -z` (untracked files, `.gitignore` honoured), each with a deadline (20 s for all) and an
+  output cap (6 MiB of patch, 2,000 files; untracked files' text read by bn-coded itself: regular files, never through
+  a link, ≤ 256 KiB each, 2 MiB in all). **Proof** (`code/test/bn-coded-review.test.mjs`, run with Debian's git in
+  the image's test stage, as in the sandbox): for each of fsmonitor, `diff.external`, textconv, a diff command, a
+  clean filter, a `process` filter, a filter named `a=b`, a filter from an included file and one from `includeIf` +
+  `info/attributes`, plain `git diff`/`git status` in that repository runs the marker program (the control) and the
+  Review's git does not; then all of them at once plus pagers, hooks (`core.hooksPath`), a credential helper, ssh,
+  gpg, an editor, an alias and a submodule whose own configuration names an fsmonitor — no marker, and git's own
+  trace (`GIT_TRACE2_EVENT`) of every command the Review runs records no child process at all; a partial clone whose
+  remote is `ext::sh -c …` with `protocol.ext.allow=always` makes plain git run it to fetch a missing blob, and the
+  Review's git does not. A concurrent process in the sandbox could change the configuration between the listing and
+  the diff — it is code running there already, which could run anything itself: the point is that opening the Review
+  pane never runs a repository's programs on its own.
+- [x] **Undo writes only what you saw, where it still is.** Undo is a reverse patch the page applies to the file's
+  current text and writes through bn-coded's `fs.write` with the modification time it read as the precondition (a file
+  changed meanwhile is never overwritten); for git's view the file must also still have the time the diff saw. The
+  change's own lines must still be there (a moved place is found, a changed one refused: nothing guessed). A new file
+  goes to the workspace trash (only while unchanged: `fs.delete` with the same precondition; Claude's own new file only
+  while it is still exactly what Claude wrote), a deleted one is written back only if no file of that name appeared
+  (`create`). Binary files, links, mode-only changes, changes shown only in part (a cut patch, a line over 10,000
+  characters) and patches that do not add up (counts, positions) are shown and never undone. CRLF files stay CRLF; a
+  missing last newline stays missing. Line comments are text you typed: they go with your next prompt as
+  `path:line — comment` (not with a `/command` or a `# memory` line).
+- [x] **The code container checks git's answer.** The patch is parsed there (any text: headers must name the same
+  workspace path on both sides — no `..`, nothing absolute —, hunk counts must add up, every count and line is capped:
+  2,000 files, 20,000 lines a file, 200,000 in all, 10,000 characters a line), only files bn-coded listed are kept,
+  and the page checks the result again; its paths are shown and opened as workspace paths only.
+- [x] **`fs.grep` is ripgrep with fixed arguments, or a literal walk.** The sandbox image's `rg` (Debian's, at a
+  fixed path) with `--json --no-config` (no `RIPGREP_CONFIG_PATH`), `--engine=default` (Rust's regex engine: linear
+  time; never PCRE2's backtracking), `--fixed-strings` unless you ask for a regular expression, the text as the value
+  of `--regexp=` (so it can never become an option such as `--pre`), `--max-count=100` per file,
+  `--max-filesize=1M`, `--max-depth=40`, `--regex-size-limit=4M`, `--dfa-size-limit=16M`, links not followed (no
+  `-L`), `.gitignore` honoured (`--no-require-git`, nothing above `/workspace`), `.git`, the trash, dependencies and
+  build output skipped; your include/exclude globs (at most 10 each, 200 printable characters, no `!` or backslash)
+  checked on both sides. At most 2,000 hits (then ripgrep is stopped), 10 s (then it is killed, with whatever it
+  started: its own process group), a line cropped to 240 characters around the match, two searches at once. Without
+  ripgrep a bounded walk (50,000 entries, depth 40, regular files ≤ 1 MiB opened `O_NOFOLLOW`, binary files skipped,
+  the top `.gitignore`'s simple patterns) searches literal text only — a regular expression there is refused, as a
+  backtracking engine could run for ever on a pattern and a file.
+- [x] **The command palette is the page's own.** It lists actions, sessions and files (the same bounded workspace
+  search as `@`); its fuzzy matching is linear in each candidate (a greedy pass and a Knuth–Morris–Pratt substring
+  search, no regular expression built from what you type), with the query capped at 64 characters, candidates at 256
+  and 5,000 candidates per search — a session title or file name from the sandbox cannot make it slow. It runs nothing
+  you would not run from the page's menus.
 
 ### Previews of dev servers in the sandbox
 

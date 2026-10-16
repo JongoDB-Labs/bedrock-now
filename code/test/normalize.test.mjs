@@ -93,11 +93,13 @@ test('init: lists capped, plugins and MCP servers as name/status only', () => {
 test('edits: hunks and the original (left out when large)', () => {
   const e = editOf({ filePath: '/workspace/a.txt', originalFile: '4242\n', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', 7] }, 'x'] });
   // (a non-string line and a non-hunk were dropped: not all of it is shown)
-  assert.deepEqual(e, { path: '/workspace/a.txt', original: '4242\n', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', ''] }], complete: false });
+  assert.deepEqual(e, { path: '/workspace/a.txt', original: '4242\n', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', ''] }], complete: false, created: false });
   assert.equal(editOf({ filePath: 'x', originalFile: 'y'.repeat(300 << 10), structuredPatch: [] }).original, null);
   assert.equal(editOf({ filePath: 7, structuredPatch: [] }), undefined);
   const live = fromSdk({ type: 'user', tool_use_result: { filePath: 'a', structuredPatch: [] }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] } });
-  assert.deepEqual(live[0].edit, { path: 'a', original: null, hunks: [], complete: true });
+  assert.deepEqual(live[0].edit, { path: 'a', original: null, hunks: [], complete: true, created: false });
+  // a Write that made a new file says so (its original is null, as for one too large to include)
+  assert.equal(editOf({ type: 'create', filePath: 'n', content: 'x', structuredPatch: [], originalFile: null }).created, true);
   // the diff stops at LIMITS.editHunkChars in all
   const huge = editOf({ filePath: 'b', structuredPatch: Array.from({ length: 100 }, () => ({ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: Array(20).fill(`+${'z'.repeat(3000)}`) })) });
   const chars = huge.hunks.reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length, 0), 0);

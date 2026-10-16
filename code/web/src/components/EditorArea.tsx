@@ -16,6 +16,8 @@ import { DiffLines } from './ToolCard';
 import { useMedia } from './ui';
 import { Preview, PreviewBar } from '../preview/Preview';
 import { PreviewPane } from './DevPreview';
+import { ReviewPane, useReviewList } from './Review';
+import { shortcuts } from '../shortcuts';
 
 let cmPromise: Promise<typeof import('../editor/cm')> | null = null;
 function loadCm() {
@@ -43,6 +45,16 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   // (Split needs two columns: on a phone it shows the preview)
   const view = !tab.preview ? 'source' : phone && tab.view === 'split' ? 'preview' : tab.view;
   const canMount = !tab.loading && !tab.binary && tab.saved !== null;
+  // a search hit to show: once the editor is there (and again for each new request)
+  const [mounted, setMounted] = useState(0);
+  const revealed = useRef(0);
+  useEffect(() => {
+    const r = tab.reveal;
+    const h = editors.get(tab.key);
+    if (!r || !h || r.n === revealed.current || tab.version !== seen.current) return;
+    revealed.current = r.n;
+    requestAnimationFrame(() => h.reveal(r.line, r.col, r.len));
+  }, [tab.reveal?.n, mounted, tab.version]);
   // the editor's text while it differs from the file (the preview shows your unsaved edits)
   const [live, setLive] = useState<string | null>(null);
   const liveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,6 +87,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
         });
         editors.set(tab.key, h);
         setCursor({ line: 1, col: 1, lang: h.language });
+        setMounted((n) => n + 1);
       },
       () => setFailed('The editor could not be loaded. Reload the page to try again.'),
     );
@@ -262,7 +275,19 @@ function DiffPane({ tab, active }: { tab: DiffTab; active: boolean }) {
   );
 }
 
+function ReviewTitle() {
+  const n = useReviewList().pending.length;
+  return (
+    <>
+      <Icon name="diff" size={14} class="tab-diff" />
+      <span class="tab-name">Review</span>
+      {n > 0 && <span class="badge">{n}</span>}
+    </>
+  );
+}
+
 function TabTitle({ tab, all }: { tab: Tab; all: Tab[] }) {
+  if (tab.kind === 'review') return <ReviewTitle />;
   if (tab.kind === 'devserver') {
     return (
       <>
@@ -300,7 +325,7 @@ export function EditorTabs() {
           class={`etab${t.key === active ? ' on' : ''}${t.kind === 'file' && t.dirty ? ' dirty' : ''}`}
           role="tab"
           aria-selected={t.key === active}
-          title={t.kind === 'devserver' ? `Preview of localhost:${t.port} in the sandbox` : t.path}
+          title={t.kind === 'devserver' ? `Preview of localhost:${t.port} in the sandbox` : t.kind === 'review' ? 'Review the changes' : t.path}
           onMouseDown={(e) => {
             if (e.button === 1) {
               e.preventDefault();
@@ -311,7 +336,7 @@ export function EditorTabs() {
           <button type="button" class="etab-main" onClick={() => setActiveTab(t.key)}>
             <TabTitle tab={t} all={tabs} />
           </button>
-          <button type="button" class="etab-x" title="Close" aria-label={`Close ${t.kind === 'devserver' ? `the preview of :${t.port}` : basename(t.path)}`} onClick={() => closeTab(t.key)}>
+          <button type="button" class="etab-x" title="Close" aria-label={`Close ${t.kind === 'devserver' ? `the preview of :${t.port}` : t.kind === 'review' ? 'the review' : basename(t.path)}`} onClick={() => closeTab(t.key)}>
             <span class="etab-dot" aria-hidden="true" />
             <Icon name="close" size={13} />
           </button>
@@ -330,7 +355,8 @@ export function EditorPanes() {
       {tabs.map((t) =>
         t.kind === 'file' ? <FilePane key={t.key} tab={t} active={t.key === active} />
           : t.kind === 'devserver' ? <PreviewPane key={t.key} tab={t} active={t.key === active} />
-            : <DiffPane key={t.key} tab={t} active={t.key === active} />,
+            : t.kind === 'review' ? <ReviewPane key={t.key} active={t.key === active} />
+              : <DiffPane key={t.key} tab={t} active={t.key === active} />,
       )}
     </div>
   );
@@ -341,20 +367,10 @@ export function saveActiveTab(): void {
   if (k && editors.has(k)) void saveTab(k);
 }
 
-const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
-export const MOD = mac ? '⌘' : 'Ctrl';
+export { MOD } from '../shortcuts';
 
 function EditorWelcome() {
-  const rows: [string, string][] = [
-    ['Send to Claude', 'Enter'],
-    ['New line', 'Shift+Enter'],
-    ['Stop Claude', 'Esc'],
-    ['Cycle permission mode', 'Shift+Tab'],
-    ['Save file', `${MOD}+S`],
-    ['Toggle terminal', 'Ctrl+`'],
-    ['Toggle explorer', `${MOD}+B`],
-    ['Find in file', `${MOD}+F`],
-  ];
+  const rows: [string, string][] = shortcuts().filter((k) => k.welcome).map((k) => [k.what, k.keys]);
   return (
     <div class="editor-welcome" data-testid="editor-welcome">
       <div class="welcome-mark big">

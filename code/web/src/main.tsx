@@ -3,6 +3,7 @@ import { render } from 'preact';
 import { AppShell } from './components/Shell';
 import { boot } from './app';
 import './styles/app.css';
+import './styles/review.css';
 
 const root = document.createElement('div');
 root.id = 'app';

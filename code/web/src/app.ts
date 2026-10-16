@@ -15,6 +15,8 @@ import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
+import type { GitReview, GrepResult } from './types';
+import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 
 export interface Toast {
   id: number;
@@ -58,6 +60,8 @@ export interface FileTab {
   head: Uint8Array | null;
   /** what the file can be previewed as (null: the editor only) */
   preview: Sniffed | null;
+  /** a place to show (a search hit): the editor scrolls there once (n: each request) */
+  reveal?: { line: number; col: number; len: number; n: number } | null;
   /** Preview, the editor (Source), or both (Split: Markdown) */
   view: FileView;
 }
@@ -88,10 +92,52 @@ export interface PreviewTab {
   viewport: Viewport;
   error: string | null;
 }
-export type Tab = FileTab | DiffTab | PreviewTab;
+/** The Review pane: every changed file, its hunks with Keep / Undo, and line comments for the next prompt. */
+export interface ReviewTab {
+  kind: 'review';
+  key: 'review';
+  path: string;
+}
+export type Tab = FileTab | DiffTab | PreviewTab | ReviewTab;
 
-export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch';
+export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all';
+
+/** The Review pane's state: git's answer (the files themselves are derived: reviewFiles) and what you kept. */
+export interface ReviewState {
+  /** git's last answer (null: not asked yet, or it failed) */
+  git: GitReview | null;
+  loading: boolean;
+  error: string | null;
+  /** hunk ids you kept (reviewed): out of the pending list until they change */
+  kept: Record<string, true>;
+  /** session changes undone here (without git there is no fresh diff to show it) */
+  undone: Record<string, true>;
+  /** a file being undone (its path), or '*' for Undo all */
+  busy: string | null;
+  /** this session's changes, or everything since the last commit */
+  filter: 'session' | 'all';
+  /** the pane was opened in this page: git is asked again after each turn */
+  engaged: boolean;
+}
+export interface SearchState {
+  q: string;
+  regex: boolean;
+  caseSensitive: boolean;
+  include: string;
+  exclude: string;
+  globs: boolean;
+  loading: boolean;
+  result: GrepResult | null;
+  error: string | null;
+  /** bumped to focus the search box */
+  focus: number;
+}
+/** The command palette: open (all, or Go to file), with what it was opened for. */
+export interface PaletteState {
+  mode: 'all' | 'files';
+  n: number;
+}
 
 /** "Restore files to here" on a prompt: what a dry run found, then the restore. */
 export interface RewindState {
@@ -159,6 +205,11 @@ export interface AppState {
   startWith: Mode | null;
   /** a set_mode is on its way: another waits for its answer (two at once would race in the backend) */
   modeSwitching: boolean;
+  review: ReviewState;
+  search: SearchState;
+  palette: PaletteState | null;
+  /** line comments from the Review pane, queued for the next prompt (chips in the composer) */
+  comments: ReviewComment[];
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -199,6 +250,10 @@ export const store: Store<AppState> = createStore<AppState>({
   modeMenu: 0,
   startWith: null,
   modeSwitching: false,
+  review: { git: null, loading: false, error: null, kept: {}, undone: {}, busy: null, filter: 'session', engaged: false },
+  search: { q: '', regex: false, caseSensitive: false, include: '', exclude: '', globs: false, loading: false, result: null, error: null, focus: 0 },
+  palette: null,
+  comments: [],
 });
 
 const set = store.set;
@@ -635,6 +690,7 @@ function onEvent(id: string, ev: Ev, wasBusy = false): void {
     scheduleSpend(id);
     requestContext(id);
     refreshExpandedDirs();
+    if (get().review.engaged && id === get().active) scheduleReview();
     announce();
   } else if ((ev.kind === 'error' || (ev.kind === 'text' && /API Error/i.test(ev.text))) && BUDGET_WORDS.test(ev.text)) {
     // LiteLLM refused the request (Claude Code shows the API's error as its answer)
@@ -1804,4 +1860,244 @@ export async function loadEarlier(id: string): Promise<void> {
   } finally {
     historyLoading.delete(id);
   }
+}
+
+// ---------------------------------------------------------------- review changes
+
+/** The Review pane's files for the session shown (memoized: a store update that changes neither git's answer nor the
+ *  session's items gives the same list). */
+let reviewMemo: { git: GitReview | null; items: unknown; filesOut: ReviewFile[] } | null = null;
+export function reviewFiles(s: AppState = get()): ReviewFile[] {
+  const v = activeView(s);
+  const git = s.review.git;
+  if (reviewMemo && reviewMemo.git === git && reviewMemo.items === v?.items) return reviewMemo.filesOut;
+  const filesOut = buildReview(git, v, sessionStart(v));
+  reviewMemo = { git, items: v?.items, filesOut };
+  return filesOut;
+}
+
+function setReview(fn: (r: ReviewState) => ReviewState): void {
+  set((s) => {
+    const r = fn(s.review);
+    return r === s.review ? s : { ...s, review: r };
+  });
+}
+
+/** The Review pane in the editor area (a sheet on a phone); git is asked for what changed. */
+export function openReview(): void {
+  set((s) => ({
+    ...s,
+    tabs: s.tabs.some((t) => t.key === 'review') ? s.tabs : [...s.tabs, { kind: 'review', key: 'review', path: 'Review changes' }],
+    activeTab: 'review',
+    sheet: isPhone() ? 'editor' : s.sheet,
+    palette: null,
+    prefs: s.prefs.layout.tabletPane === 'editor' ? s.prefs : { ...s.prefs, layout: { ...s.prefs.layout, tabletPane: 'editor' } },
+    review: { ...s.review, engaged: true, filter: sessionStart(activeView(s)) === null ? 'all' : s.review.filter },
+  }));
+  savePrefs(get().prefs);
+  void refreshReview();
+}
+
+let reviewSeq = 0;
+/** Ask git again (the answer replaces the last one; an older answer arriving late is dropped). */
+export async function refreshReview(): Promise<void> {
+  const n = ++reviewSeq;
+  setReview((r) => ({ ...r, loading: true }));
+  try {
+    const git = await api.getGitDiff();
+    if (n !== reviewSeq) return;
+    setReview((r) => ({ ...r, git, loading: false, error: null }));
+  } catch (e) {
+    if (n !== reviewSeq) return;
+    // without git's answer the pane shows the session's own edits (and says why)
+    setReview((r) => ({ ...r, git: null, loading: false, error: errText(e) }));
+  }
+}
+let reviewTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleReview(ms = 1200): void {
+  if (reviewTimer) clearTimeout(reviewTimer);
+  reviewTimer = setTimeout(() => {
+    reviewTimer = null;
+    void refreshReview();
+  }, ms);
+}
+
+export function setReviewFilter(filter: 'session' | 'all'): void {
+  setReview((r) => ({ ...r, filter }));
+}
+/** Keep: the hunks are reviewed (out of the pending list while they stay as they are); keep false puts them back. */
+export function keepHunks(ids: string[], keep = true): void {
+  setReview((r) => {
+    const kept = { ...r.kept };
+    for (const id of ids.slice(0, 5000)) {
+      if (keep) kept[id] = true;
+      else delete kept[id];
+    }
+    return { ...r, kept };
+  });
+}
+
+/** Reload open tabs of a file the Review changed (yours with unsaved edits get the conflict banner). */
+function afterUndo(path: string): void {
+  const t = get().tabs.find((x) => x.kind === 'file' && x.path === path);
+  if (t?.kind === 'file') {
+    if (t.dirty) updateTab(t.key, (x) => ({ ...x, conflict: 'claude' }) as Tab);
+    else reloadFile(t.key);
+  }
+  refreshDirOf(path);
+}
+
+/** Undo one change of a file (`only`: its id), or all of the file's: a reverse patch on the file's text as it is now,
+ *  written only while the file is still as it was read (and, for git's view, as the diff saw it). A new file goes to
+ *  the workspace trash, a deleted one is written back. -> '' or why it was not undone. */
+export async function undoReview(f: ReviewFile, only?: string): Promise<string> {
+  const why = undoBlocker(f);
+  if (why) return why;
+  const busy = get().review.busy;
+  if (busy && busy !== '*') return 'another undo is on its way';
+  if (!busy) setReview((r) => ({ ...r, busy: f.path }));
+  try {
+    const err = await undoOne(f, only);
+    if (!err) {
+      const ids = only ? [only] : f.hunks.length ? f.hunks.map((h) => h.id) : [`file:${f.path}`];
+      if (f.source === 'session') setReview((r) => ({ ...r, undone: { ...r.undone, ...Object.fromEntries(ids.map((id) => [id, true as const])) } }));
+      afterUndo(f.path);
+    }
+    return err;
+  } finally {
+    if (!busy) setReview((r) => ({ ...r, busy: null }));
+    if (f.source === 'git' && !busy) await refreshReview();
+  }
+}
+
+async function undoOne(f: ReviewFile, only?: string): Promise<string> {
+  const changed = 'it changed since the review was loaded: Refresh, then look again';
+  try {
+    if (f.status === 'added' && (!only || f.hunks.length <= 1)) {
+      if (f.source === 'git') {
+        await api.fsDelete(f.path, f.mtimeMs);
+        return '';
+      }
+      // Claude's new file: moved away only while it is still exactly what Claude wrote
+      const cur = await api.fsRead(f.path);
+      if (cur.binary || cur.truncated || cur.text !== f.created) return 'it changed since Claude wrote it: not moved away';
+      await api.fsDelete(f.path, cur.mtimeMs);
+      return '';
+    }
+    if (f.status === 'deleted') {
+      const text = deletedText(f);
+      if (text === null) return 'its old text is not all here: restore it in the terminal (git checkout -- FILE)';
+      const w = await api.fsWrite(f.path, text, null, { create: true });
+      return w.ok ? '' : 'there is a file of that name again';
+    }
+    const cur = await api.fsRead(f.path);
+    if (cur.binary || cur.text === null) return 'it is a binary file now';
+    if (cur.truncated) return 'it is too large to change here (2 MB): undo it in the terminal';
+    if (f.source === 'git' && f.mtimeMs !== null && cur.mtimeMs !== f.mtimeMs) return changed;
+    // (the edits last first; within one, its hunks — reverseHunks goes bottom up)
+    const groups: ReviewHunk[][] = only ? [f.hunks.filter((h) => h.id === only)] : [...f.edits].reverse();
+    if (!groups[0]?.length) return 'that change is not in this file any more';
+    let text = cur.text;
+    const undone = get().review.undone;
+    for (const g of groups) {
+      const r = reverseHunks(text, g.filter((h) => !undone[h.id]));
+      if (!r.ok) return r.error;
+      text = r.text;
+    }
+    if (text === cur.text) return '';
+    const w = await api.fsWrite(f.path, text, cur.mtimeMs);
+    return w.ok ? '' : changed;
+  } catch (e) {
+    if (e instanceof api.ApiError && e.status === 409) return changed;
+    if (e instanceof api.ApiError && e.status === 404) return 'it is not there any more';
+    return errText(e);
+  }
+}
+
+/** Undo all: every listed file that can be undone, one after another. -> how many were, and the failures. */
+export async function undoAllReview(files: ReviewFile[]): Promise<{ done: number; failed: { path: string; why: string }[] }> {
+  set((s) => ({ ...s, dialog: null, review: { ...s.review, busy: '*' } }));
+  const failed: { path: string; why: string }[] = [];
+  let done = 0;
+  try {
+    for (const f of files.slice(0, 2000)) {
+      const why = await undoReview(f);
+      if (why) failed.push({ path: f.path, why });
+      else done++;
+    }
+  } finally {
+    setReview((r) => ({ ...r, busy: null }));
+    await refreshReview();
+  }
+  if (done) toast(`Undid the changes of ${done} file${done === 1 ? '' : 's'}.`, 'ok');
+  if (failed.length) toast(`${failed.length} not undone: ${label(failed[0].path, 80)} (${failed[0].why})${failed.length > 1 ? ' …' : ''}`, 'error');
+  return { done, failed };
+}
+
+// ---------------------------------------------------------------- line comments (queued for the next prompt)
+
+let commentN = 1;
+export function addComment(c: Omit<ReviewComment, 'id'>): void {
+  const text = c.text.trim().slice(0, 2000);
+  if (!text || !c.path || !Number.isInteger(c.line) || c.line < 1) return;
+  set((s) => (s.comments.length >= 50 ? s : { ...s, comments: [...s.comments, { ...c, text, id: commentN++ }] }));
+  if (get().comments.length >= 50) toast('At most 50 comments wait for a prompt: send them first.', 'error');
+}
+export function removeComment(id: number): void {
+  set((s) => ({ ...s, comments: s.comments.filter((c) => c.id !== id) }));
+}
+/** The prompt as it goes: with the queued comments when it is one for Claude (not a /command or a # line). */
+export function promptWithComments(text: string): { text: string; ids: number[] } {
+  const cs = get().comments;
+  if (!cs.length || !takesComments(text)) return { text, ids: [] };
+  return { text: withComments(text, cs), ids: cs.map((c) => c.id) };
+}
+export function clearComments(ids: number[]): void {
+  const gone = new Set(ids);
+  set((s) => ({ ...s, comments: s.comments.filter((c) => !gone.has(c.id)) }));
+}
+
+// ---------------------------------------------------------------- search in files
+
+export function setSearch(patch: Partial<SearchState>): void {
+  set((s) => ({ ...s, search: { ...s.search, ...patch } }));
+}
+/** The Search panel: the side panel's Search tab (a sheet on a phone), its box focused. */
+export function showSearch(): void {
+  set((s) => ({ ...s, palette: null, search: { ...s.search, focus: s.search.focus + 1 } }));
+  if (isPhone()) setSheet('search');
+  else if (typeof matchMedia === 'function' && matchMedia('(max-width: 1099.98px)').matches) setLayout({ tabletPane: 'files', side: 'search' });
+  else setLayout({ explorer: true, side: 'search' });
+}
+let searchSeq = 0;
+export async function runSearch(): Promise<void> {
+  const q = get().search;
+  if (!q.q.trim()) return setSearch({ result: null, error: null, loading: false });
+  const n = ++searchSeq;
+  setSearch({ loading: true, error: null });
+  try {
+    const result = await api.grep({ q: q.q, regex: q.regex, caseSensitive: q.caseSensitive, include: q.include, exclude: q.exclude });
+    if (n === searchSeq) setSearch({ result, loading: false, error: result.error });
+  } catch (e) {
+    if (n === searchSeq) setSearch({ loading: false, error: e instanceof api.ApiError && e.status === 429 ? 'Two searches are running already: try again in a moment.' : errText(e) });
+  }
+}
+
+/** Open a file in the editor (Source) at a line, the match selected. */
+export async function openFileAt(path: string, line: number, col = 0, len = 0): Promise<void> {
+  await openFile(path, 'source');
+  const key = `file:${cleanPath(path) ?? path}`;
+  updateTab(key, (t) => (t.kind === 'file' ? { ...t, reveal: { line, col, len, n: (t.reveal?.n ?? 0) + 1 } } : t));
+  if (isPhone()) setSheet('editor');
+}
+
+// ---------------------------------------------------------------- the command palette
+
+export function openPalette(mode: PaletteState['mode'] = 'all'): void {
+  set((s) => ({ ...s, palette: { mode, n: (s.palette?.n ?? 0) + 1 }, sheet: s.sheet === 'menu' ? null : s.sheet }));
+  // (at once, not at the next frame: what you type right after ⌘K / ⌘P goes into the palette, not the prompt box)
+  store.flush();
+}
+export function closePalette(): void {
+  set((s) => (s.palette ? { ...s, palette: null } : s));
 }

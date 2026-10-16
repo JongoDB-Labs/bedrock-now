@@ -159,6 +159,8 @@ export interface EditorHandle {
   markSaved(text: string): void;
   setReadOnly(ro: boolean): void;
   focus(): void;
+  /** Scroll to a line (1-based) and select `len` characters from `col` (a search hit). */
+  reveal(line: number, col?: number, len?: number): void;
   destroy(): void;
   language: string;
 }
@@ -229,6 +231,14 @@ export function mountEditor(host: HTMLElement, o: EditorOptions): EditorHandle {
       view.dispatch({ effects: ro.reconfigure(base(r)) });
     },
     focus: () => view.focus(),
+    reveal(line: number, col = 0, len = 0) {
+      const doc = view.state.doc;
+      const ln = doc.line(Math.min(Math.max(1, Math.floor(line) || 1), doc.lines));
+      const from = Math.min(ln.from + Math.max(0, col), ln.to);
+      const to = Math.min(from + Math.max(0, len), ln.to);
+      view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) });
+      view.focus();
+    },
     destroy: () => view.destroy(),
   };
 }

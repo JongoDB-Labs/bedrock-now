@@ -4,14 +4,14 @@
 # if needed. Screenshots and results.json land in e2e/out/ (or $E2E_OUT). The runner image and container are named
 # bn-code-web-e2e and removed afterwards (KEEP_IMAGE=1 keeps the image for faster reruns).
 #   sh e2e/run.sh            all checks
-#   E2E_ONLY=phone sh e2e/run.sh
+#   E2E_ONLY=phone sh e2e/run.sh          (several: E2E_ONLY='review|search')
 set -eu
 web=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$web/../.." && pwd)
 pw_image=$(sed -n 's/^PW_IMAGE="\(.*\)"$/\1/p' "$repo/tests/e2e/run.sh")
 [ -n "$pw_image" ] || { echo "PW_IMAGE not found in tests/e2e/run.sh" >&2; exit 2; }
-image=bn-code-web-e2e:local
-name=bn-code-web-e2e
+name=${E2E_NAME:-bn-code-web-e2e}   # (another name for the runner's image and container: E2E_NAME=…)
+image=$name:local
 out=${E2E_OUT:-$web/e2e/out}
 mkdir -p "$out"
 [ -f "$web/dist/index.html" ] || (cd "$web" && npm run build)

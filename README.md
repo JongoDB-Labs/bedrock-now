@@ -457,6 +457,26 @@ per browser.
 - **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
+- **Review changes.** **Review** in the top bar (with the pending `+N −M`; `Ctrl/⌘+Shift+D`) lists every file
+  changed: when the workspace is a git repository, git's view since the last commit — so changes made by commands
+  (Bash, `sed`, a formatter) count as much as Claude's edits, which are marked — first the files of this session, all
+  of them one click away; without git, Claude's own edits in this session. Each change has **Keep** (reviewed: out of
+  the list while it stays as it is) and **Undo** (a reverse patch, written only while the file is still as the review
+  saw it — a file changed since is left alone and you are told; a new file goes to the workspace trash, a deleted one
+  is written back), each file too, and **Undo all** asks first. Binary files, links and changes too large to show in
+  full are listed but undone in the terminal. Any line can take a **comment**: it waits as a chip in the prompt box and
+  goes with your next prompt as `path:line — comment` (remove a chip to drop it). Large diffs show 20 files and a few
+  hundred lines at a time. git runs read-only and runs no program a repository's configuration names (hooks, filters,
+  external diffs, fsmonitor …): [docs/security.md](docs/security.md#review-changes-and-search-in-files).
+- **Search in files** (the explorer's **Search** tab, `Ctrl/⌘+Shift+F`; a sheet on a phone): text — or, with **.\***,
+  a regular expression (ripgrep's syntax, linear time) — in the workspace's files, any case unless **Aa**, with files
+  to include/exclude (`src/**, *.ts`); results by file and line, a line opens the file there. It skips `.git`,
+  dependencies and build output and honours `.gitignore`; at most 2,000 results, files up to 1 MB, 10 seconds.
+- **Command palette** (`Ctrl/⌘+K` or `Ctrl+Shift+P`; `Ctrl/⌘+P` goes straight to files; on a phone ⋯ → *Command
+  palette*): actions (a new session, mode, model and effort, the terminal and explorer, Ports, export, memory,
+  plugins, MCP, Settings), sessions to resume, files anywhere in the workspace and what you ran last, matched as you
+  type and run by keyboard alone (`>` only actions, `#` only sessions). **Keyboard shortcuts** (`Ctrl/⌘+/` or `?`)
+  lists every shortcut of the page.
 - **Previews of files.** Markdown, images (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO), SVG, audio and video (what the
   browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV, JSON, JSON Lines, YAML and Jupyter notebooks (as JSON,
   for now) open in **Preview**; **Source** is the editor, and Markdown also has **Split** (not on a phone), whose

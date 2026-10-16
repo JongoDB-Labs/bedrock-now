@@ -4,7 +4,8 @@ The IDE-like page on `code.<host>` that drives Claude Code: chat with streaming 
 prompts (and AskUserQuestion as a form), an explorer and CodeMirror 6 editor over `/workspace`, Claude's edits as
 diffs, previews of workspace files (Markdown, images, SVG, audio, video, PDF, CSV/TSV, JSON, YAML), file checkpoints
 ("Restore files to here" on a prompt), the CLAUDE.md memory files, plugins & marketplaces, MCP
-servers, and the sandbox terminal in a bottom panel. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
+servers, the sandbox terminal in a bottom panel, the Review pane (every changed file — git's view or the session's
+edits — with Keep / Undo and line comments for the next prompt), Search in files and a command palette. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
 through the API in `code/server/protocol.mjs`; `src/api.ts` is the one module that knows that wire format.
 
 ## Build
@@ -70,6 +71,11 @@ clear?session=|touch?path=|reset`. Plugins: one marketplace with a few plugins; 
 `/api/ports`, `/api/launch` (three entries, one broken) and `/.bn/preview`, whose links point at a fake preview site
 on the mock's port + 100 (`p<port>-<capability>.localhost`: Chromium's loopback); a *vite* or *preview* prompt runs a
 dev server that prints Vite's banner; `POST /__mock/port?port=&cmd=` adds a listening server (`&del=1` removes it).
+Review and search: `/api/git/diff` compares the workspace with its state at the start (or at `POST /__mock/git?commit=1`;
+`?repo=0` makes it no git repository: the page then reviews the session's edits), `PUT /api/fs/file` takes `create`,
+`DELETE /api/fs` `ifMtimeMs`; a *… with sed* prompt changes two files and creates one by a Bash command (no edit event:
+only git's view shows them); `/api/fs/grep` searches the in-memory files (literal or JavaScript regex, case, globs);
+the hostile mock adds markup, bidi, `../` paths and counts that do not add up to both.
 
 ## Tests
 
@@ -92,7 +98,11 @@ headers), JSON/YAML trees (100,000 levels, wide lists, billion laughs, custom ta
 keys), Markdown images (workspace paths only; fetched once, within a byte and pixel budget), PDF links (only http(s)
 and inner destinations, against a list of hostile URIs), the workers (time budget, crash, cancel, CSP reports), timing
 tests that every regular expression run on a file's text on the main thread stays linear on crafted input, and the
-Trusted Types policy (one, named `bn-worker`, these workers only).
+Trusted Types policy (one, named `bn-worker`, these workers only); the Review's reverse patches (400 random git-shaped
+diffs undone exactly, CRLF files kept CRLF, a missing last newline kept, a moved change found, a changed file
+refused), its files from git's view or the session's edits, stable ids, what is never undone, the comments' prompt
+text, `/api/git/diff` and `/api/fs/grep` answers on hostile input; and the palette's fuzzy matcher (ranking, linear
+time on hostile candidates) and the shortcut list.
 
 `e2e/run.sh` runs `e2e/ui_check.py` in the Playwright image the e2e suite pins (`tests/e2e/run.sh` `PW_IMAGE`,
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the
@@ -108,10 +118,14 @@ already-open session, editor save conflicts, remembered layout, plugins (a marke
 a command shown with its SHA-256 before it runs, on/off, update, uninstall, the palette after the reload), the MCP
 panel (status, off/on, reconnect, a server of your own, restart), file previews (every format with zero CSP
 violations, Split following the editor, PDF find and links, CSV sort and filter, a Write card's Preview; hostile files
-that do nothing — no request outside the page, no dialog, no popup; phone sheets) — and a hostile session (markup in every field,
+that do nothing — no request outside the page, no dialog, no popup; phone sheets), the Review pane (two edits and a
+Bash change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without git, a changed file refused
+and a new file trashed; a hostile diff and search as text), Search in files (case, regex, globs, a hit opening the
+editor at its line), the command palette by keyboard alone and the shortcut sheet, and these on a phone — and a hostile session (markup in every field,
 `javascript:` links, bidi and control characters, giant strings, bad ids; a hostile plugin catalog and MCP list). Any CSP violation,
 page error or dialog fails a check. Screenshots and `results.json` go to `e2e/out/` (`E2E_OUT=…` to change;
-`E2E_ONLY=phone` to run one check; `KEEP_IMAGE=1` keeps the runner image `bn-code-web-e2e:local`).
+`E2E_ONLY=phone` to run one check, `E2E_ONLY='review|search'` several; `KEEP_IMAGE=1` keeps the runner image
+`bn-code-web-e2e:local`; `E2E_NAME=…` names the runner's image and container otherwise).
 
 ## Layout
 
@@ -126,8 +140,11 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/editor/` | CodeMirror (lazy chunk): editor, merge view, languages |
 | `src/preview/` | file previews: `sniff.ts` (kinds by magic bytes, caps), `tt.ts` (the Trusted Types policy), `run.ts` (workers with a time budget), `csv.ts` / `tree.ts` (parsers, run in `workers/`), `images.ts` (a Markdown preview's images: once per path, within a budget), `pdflinks.ts` (what a PDF link may become), `Preview.tsx` (bar, Markdown, images, media) and the lazily loaded `PdfView.tsx`, `TableView.tsx`, `TreeView.tsx` |
 | `src/transcript.ts` | the latest to-do list, the conversation as Markdown |
+| `src/review.ts` | the Review pane's model: files from git's view or the session's edits, hunk ids, reverse patches, line comments |
+| `src/fuzzy.ts` | the command palette's matcher (linear time: a greedy pass and KMP, inputs capped) |
+| `src/shortcuts.ts` | every keyboard shortcut, in one list (the shortcut sheet, the empty editor, the palette's hints) |
 | `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
 | `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |
-| `src/components/` | Shell (layouts, top bar, status bar, terminal), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer, FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog) |
+| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer (with the comment chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette |
 | `dev/` | the mock backend and `npm run dev`; `preview-fixtures.mjs` (the previews' fixtures, also written to `tests/e2e/browser/fixtures/previews`) |
 | `e2e/` | the browser checks |

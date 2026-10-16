@@ -388,6 +388,13 @@ test_spawn_server_in_the_terminal_image() {
   assert_contains "$c" "'--permission-mode': oneOf('default', 'acceptEdits', 'plan', 'dontAsk'),"
   assert_contains "$c" "server.maxConnections = MAX_CONNECTIONS"
   assert_contains "$c" "process.umask(0o077)"
+  # git.diff runs no program a repository names; fs.grep never PCRE2 (code/test/bn-coded-review.test.mjs proves both)
+  assert_contains "$c" "'--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=all'"
+  assert_contains "$c" "GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null'"
+  assert_contains "$c" "GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: 'bn-none'"
+  assert_contains "$c" "['core.fsmonitor', 'false'], ['core.hooksPath', '/dev/null']"
+  assert_contains "$c" "'--engine=default'"
+  assert_not_contains "$c" "pcre2'"
 }
 
 test_pins_sdk_in_lock_step_with_the_terminals_claude_code() {

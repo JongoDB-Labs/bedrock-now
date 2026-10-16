@@ -34,6 +34,22 @@ All notable changes to bedrock-now are documented here. The format follows
   and in a new tab, the cookie's attributes and single use, one port at a time, Sign out; and, run again with the guard
   taken out, what it stops (a preview reading a permissive Chat's API and posting to it as you).
   `tests/caddy-validate.sh`: `caddy validate` of every mode combination (own-domain mode with the DNS-plugin build).
+- **Code page: Review changes.** Every file changed — git's view since the last commit when the workspace is a git
+  repository (changes made by commands included, Claude's marked; this session's files first), else the session's own
+  Edit/Write diffs — with Keep / Undo per change and per file and Undo all; Undo is a reverse patch written only while
+  the file is still as the review saw it (a new file to the workspace trash, a deleted one written back; binary files,
+  links and partly shown changes are never undone). A comment on any line waits as a chip in the prompt box and goes
+  with the next prompt as `path:line — comment`. `Ctrl/⌘+Shift+D`, or **Review** (`+N −M`) in the top bar. The
+  sandbox's new `git.diff` op runs `git` read-only with fixed arguments and an environment of its own, so no program a
+  repository names runs (fsmonitor, filters, external diffs, textconv, pagers, hooks, lazy fetches), proven by a
+  test against a hostile repository with a control run of plain git.
+- **Code page: Search in files** (the explorer's Search tab, `Ctrl/⌘+Shift+F`): the sandbox's new `fs.grep` op —
+  ripgrep with fixed arguments (literal or ripgrep's linear-time regex, case, include/exclude globs, 100 hits per file,
+  files ≤ 1 MiB, 10 s, 2,000 results, `.gitignore` honoured, links not followed), or a bounded literal walk without
+  ripgrep; results by file and line open the editor at the line.
+- **Code page: command palette** (`Ctrl/⌘+K`, `Ctrl+Shift+P`; `Ctrl/⌘+P` for files): actions, modes, models, effort,
+  panels, sessions, files and recent picks, fuzzy-matched in linear time, entirely by keyboard; a sheet on a phone. The
+  keyboard shortcut sheet (`Ctrl/⌘+/` or `?`) now lists every shortcut.
 
 ### Changed
 
@@ -41,6 +57,8 @@ All notable changes to bedrock-now are documented here. The format follows
   default, or no address yet) and what turning them on means.
 - `./stack up` warns when `TS_SERVICE` is longer than 54 characters (`<name>-terminal` / `-preview` would exceed a DNS
   label); `./stack remote enable` refuses such a name.
+- **Code page:** the API's `PUT /api/fs/file` takes `create` (only when there is no such file) and `DELETE /api/fs`
+  takes `ifMtimeMs` (only while unchanged); an edit event says when a Write created its file (`created`).
 
 ### Fixed
 

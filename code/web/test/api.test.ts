@@ -23,11 +23,11 @@ test('tool ids are validated; edits need a clean workspace path', () => {
   assert.equal(normEvent({ type: 'tool_result', id: '<img src=x onerror=alert(1)>', text: 'x' }), null);
   const ok = normEvent({ type: 'tool_result', id: 'toolu_01', text: 'done', edit: { path: '/workspace/src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }] } });
   assert.equal(ok?.kind, 'tool_result');
-  assert.deepEqual(ok?.kind === 'tool_result' && ok.edit, { path: 'src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }], complete: true });
+  assert.deepEqual(ok?.kind === 'tool_result' && ok.edit, { path: 'src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }], complete: true, created: false });
   const bad = normEvent({ type: 'tool_result', id: 'toolu_02', text: 'x', edit: { path: '../../etc/passwd', original: 'x', hunks: [] } });
   assert.equal(bad?.kind === 'tool_result' && bad.edit, null);
   const weird = normEvent({ type: 'tool_result', id: 'toolu_03', text: 'x', edit: { filePath: 'a.ts', originalFile: 'x', structuredPatch: [{ oldStart: -5, oldLines: 'x', newStart: 1, newLines: 1, lines: ['-x', 42, '+y'] }] } });
-  assert.deepEqual(weird?.kind === 'tool_result' && weird.edit, { path: 'a.ts', original: 'x', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['-x', '+y'] }], complete: true });
+  assert.deepEqual(weird?.kind === 'tool_result' && weird.edit, { path: 'a.ts', original: 'x', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['-x', '+y'] }], complete: true, created: false });
 });
 
 test('strings are capped and names made single-line and visible', () => {

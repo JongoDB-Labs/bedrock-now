@@ -8,7 +8,10 @@ prompts queued below the stream and refused ones taken back, /clear and a reset 
 "load earlier", reconnect with replay and close codes, an expired unlock, the budget banner, save conflicts, layout
 memory, a hostile session (markup, bidi, control characters, giant strings, bad ids), and previews of dev servers (the
 "Preview :5173" chip, the preview tab with viewports, its address field and a new tab, the Ports panel with Stop and
-.claude/launch.json's Start, the phone's sheet, a hostile port list) against the mock's fake preview site.
+.claude/launch.json's Start, the phone's sheet, a hostile port list) against the mock's fake preview site; the Review
+pane (git's view with a Bash-made change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without
+git: the session's edits, a changed file refused), Search in files, the command palette by keyboard alone, the shortcut
+sheet, and these on a phone.
 Every page runs under the CSP the main Caddy will send (the mock sets it); any CSP violation, page error or dialog
 fails the check. Screenshots go to /out. Exit code 0 only when every check passed.
 """
@@ -113,7 +116,7 @@ def wait_turns(page, n, timeout=30_000):
 def check(name):
     def deco(fn):
         def run(browser):
-            if ONLY and ONLY not in name:
+            if ONLY and not any(o and o in name for o in ONLY.split("|")):
                 return
             t0 = time.time()
             try:
@@ -1944,6 +1947,332 @@ def devpreviews_hostile(browser):
     expect(rows.get_by_test_id("port-stop")).to_be_disabled()   # (pid 1 is never offered)
     n = page.evaluate("() => document.querySelector('[data-testid=ports-panel]').querySelectorAll('script, img, iframe').length")
     assert n == 0, n
+    p.assert_clean()
+    p.close()
+
+
+def api_text(page, path):
+    """A workspace file's text through the page's own API (null when it is not there)."""
+    return page.evaluate("async (p) => { const r = await fetch('/api/fs/file?path=' + encodeURIComponent(p)); return r.ok ? (await r.json()).text : null; }", path)
+
+
+def api_exists(page, path):
+    """Whether a workspace file is there (its folder's listing: no 404 in the console)."""
+    d, _, name = path.rpartition("/")
+    return page.evaluate("async ([d, n]) => { const r = await fetch('/api/fs?path=' + encodeURIComponent(d || '.')); return r.ok && (await r.json()).entries.some((e) => e.name === n); }", [d, name])
+
+
+def allow_turn(page, n, text):
+    """A prompt whose tool asks first: Allow once, then its turn's end."""
+    send(page, text)
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("perm-once").click()
+    wait_turns(page, n)
+
+
+def review_file(page, path):
+    return page.locator(f"[data-testid=review-file][data-path='{path}']")
+
+
+@check("review: Claude's edits and a Bash change (git), per-hunk Undo, Keep, a line comment in the next prompt, Undo all")
+def review(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "review", **DESKTOP)
+    page = p.open()
+    orig = {f: api_text(page, f) for f in ("src/http/client.ts", "src/utils/format.ts")}
+    allow_turn(page, 1, "Please fix get() so it uses the retry policy")
+    allow_turn(page, 2, "Write a typed error class")
+    allow_turn(page, 3, "Raise the timeout with sed")
+    # the top bar's Review: +N −M; the pane lists Claude's two files and the command's changes
+    expect(page.get_by_test_id("review-open")).to_contain_text("Review")
+    page.keyboard.press("Control+Shift+D")
+    pane = page.get_by_test_id("review-pane")
+    expect(pane).to_be_visible()
+    for f in ("src/http/client.ts", "src/http/errors.ts", "src/utils/format.ts", "NOTES.md"):
+        expect(review_file(page, f)).to_have_count(1, timeout=10_000)
+    expect(page.get_by_test_id("review-source")).to_contain_text("since the last commit")
+    expect(review_file(page, "src/http/client.ts")).to_contain_text("Claude")
+    expect(review_file(page, "src/utils/format.ts")).not_to_contain_text("Claude")
+    page.mouse.move(0, 0)
+    p.shot("review-desktop.png")
+    page.emulate_media(color_scheme="dark")
+    page.wait_for_timeout(200)
+    p.shot("review-desktop-dark.png")
+    page.emulate_media(color_scheme="light")
+    # per-hunk Undo: the command's change to format.ts, its first hunk — its added lines leave the file
+    fmt = review_file(page, "src/utils/format.ts")
+    hunks_before = fmt.get_by_test_id("review-hunk").count()
+    added = [t.strip() for t in fmt.get_by_test_id("review-hunk").first.locator(".dl-add .dl-text").all_inner_texts()]
+    assert added, "no added lines in format.ts's first hunk"
+    fmt.get_by_test_id("review-undo-hunk").first.click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("Undid a change", timeout=10_000)
+    now = api_text(page, "src/utils/format.ts")
+    for line in added:
+        assert line not in now.split("\n") or line in orig["src/utils/format.ts"].split("\n"), f"{line!r} still in format.ts"
+    expect(review_file(page, "src/utils/format.ts").get_by_test_id("review-hunk")).to_have_count(max(0, hunks_before - 1), timeout=10_000)
+    # Keep: the new file is reviewed (out of the list, under Kept)
+    review_file(page, "src/http/errors.ts").get_by_test_id("review-keep-file").click()
+    expect(review_file(page, "src/http/errors.ts")).to_have_count(0)
+    expect(page.get_by_test_id("review-kept-toggle")).to_contain_text("Kept (1)")
+    # a comment on a line of client.ts: a chip in the prompt box, then part of the next prompt
+    row = review_file(page, "src/http/client.ts").locator(".rv-row.dl-add").first
+    line_no = row.locator(".dl-no").nth(1).inner_text().strip()
+    row.hover()
+    row.get_by_test_id("review-comment-btn").click()
+    page.get_by_test_id("review-comment-input").fill("keep the timeout configurable")
+    page.get_by_test_id("review-comment-input").press("Enter")
+    chip = page.get_by_test_id("comment-chip")
+    expect(chip).to_have_count(1)
+    expect(chip).to_contain_text(f"src/http/client.ts:{line_no} — keep the timeout configurable")
+    expect(page.get_by_test_id("review-note")).to_contain_text("keep the timeout configurable")
+    p.shot("review-comment.png")
+    send(page, "Thanks, please look at my comment")
+    wait_turns(page, 4)
+    expect(page.get_by_test_id("msg-user").last).to_contain_text(f"src/http/client.ts:{line_no} — keep the timeout configurable")
+    expect(page.get_by_test_id("msg-user").last).to_contain_text("Comments on the changes:")
+    expect(chip).to_have_count(0)
+    # Undo all: what is left goes back to the last commit; the new file Claude wrote stays (kept); NOTES.md goes to the trash
+    page.get_by_test_id("review-undo-all").click()
+    expect(page.get_by_test_id("undo-all-dialog")).to_contain_text("workspace trash")
+    p.shot("review-undo-all.png")
+    page.get_by_test_id("undo-all-confirm").click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("Undid the changes of", timeout=15_000)
+    for f, t in orig.items():
+        assert api_text(page, f) == t, f"{f} is not back to the last commit"
+    assert not api_exists(page, "NOTES.md"), "NOTES.md is still there"
+    assert api_exists(page, "src/http/errors.ts"), "the kept file was undone"
+    expect(review_file(page, "src/utils/format.ts")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("review without git: the session's own edits; Undo restores the file, a new file goes to the trash; a changed file is refused")
+def review_no_git(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/git?repo=0")
+    p = Page(browser, NORMAL, "review-nogit", **DESKTOP)
+    page = p.open()
+    try:
+        orig = api_text(page, "src/http/client.ts")
+        allow_turn(page, 1, "Please fix get() so it uses the retry policy")
+        allow_turn(page, 2, "Write a typed error class")
+        page.get_by_test_id("review-open").click()
+        expect(page.get_by_test_id("review-source")).to_contain_text("not a git repository")
+        expect(page.get_by_test_id("review-file")).to_have_count(2, timeout=10_000)
+        # the file changed behind the review's back: Undo is refused, nothing written
+        page.evaluate("async () => { const r = await fetch('/api/fs/file?path=src/http/client.ts'); const j = await r.json();"
+                      " await fetch('/api/fs/file?path=src/http/client.ts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: j.text.replace('return retry(', 'return  retry(') }) }); }")
+        review_file(page, "src/http/client.ts").get_by_test_id("review-undo-file").click()
+        expect(page.get_by_test_id("toast").last).to_contain_text("Not undone", timeout=10_000)
+        assert "return  retry(" in api_text(page, "src/http/client.ts")
+        page.evaluate("async () => { const r = await fetch('/api/fs/file?path=src/http/client.ts'); const j = await r.json();"
+                      " await fetch('/api/fs/file?path=src/http/client.ts', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: j.text.replace('return  retry(', 'return retry(') }) }); }")
+        review_file(page, "src/http/client.ts").get_by_test_id("review-undo-file").click()
+        expect(page.get_by_test_id("toast").last).to_contain_text("Undid the changes", timeout=10_000)
+        assert api_text(page, "src/http/client.ts") == orig, "client.ts not restored"
+        review_file(page, "src/http/errors.ts").get_by_test_id("review-undo-file").click()
+        expect(page.get_by_test_id("toast").last).to_contain_text("workspace trash", timeout=10_000)
+        assert not api_exists(page, "src/http/errors.ts")
+        expect(page.get_by_test_id("review-empty")).to_be_visible()
+        p.assert_clean()
+    finally:
+        post(NORMAL + "/__mock/git?repo=1")
+        p.close()
+
+
+@check("search in files: Ctrl+Shift+F, case, regex, globs, a hit opens the editor at its line; a bad regex says why")
+def search(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "search", **DESKTOP)
+    page = p.open()
+    page.keyboard.press("Control+Shift+F")
+    box = page.get_by_test_id("search-input")
+    expect(box).to_be_focused()
+    box.fill("retry")
+    box.press("Enter")
+    expect(page.get_by_test_id("search-status")).to_contain_text("results in", timeout=10_000)
+    expect(page.locator("[data-testid=search-file][data-path='src/http/retry.ts']")).to_have_count(1)
+    expect(page.locator("[data-testid=search-hit] mark").first).to_have_text(re.compile("retry", re.I))
+    assert page.evaluate("(() => { const c = document.querySelector('.col-left'); return c.scrollWidth <= c.clientWidth + 1; })()"), "the search panel is wider than its column"
+    p.shot("search-desktop.png")
+    n_any = page.get_by_test_id("search-hit").count()
+    page.get_by_test_id("search-case").click()
+    box.fill("Retry")
+    box.press("Enter")
+    page.wait_for_timeout(500)
+    assert page.get_by_test_id("search-hit").count() < n_any, "case did not narrow the search"
+    page.get_by_test_id("search-case").click()
+    box.fill("retry")
+    page.get_by_test_id("search-globs").click()
+    page.get_by_test_id("search-include").fill("tests/**")
+    page.get_by_test_id("search-include").press("Enter")
+    expect(page.get_by_test_id("search-file")).to_have_count(1, timeout=10_000)
+    expect(page.get_by_test_id("search-file").first).to_have_attribute("data-path", "tests/retry.test.ts")
+    page.get_by_test_id("search-include").fill("")
+    page.get_by_test_id("search-regex").click()
+    box.fill("baseDelay(Ms)?\\s*\\*")
+    box.press("Enter")
+    expect(page.get_by_test_id("search-status")).to_contain_text("result", timeout=10_000)
+    hit = page.get_by_test_id("search-hit").first
+    line = hit.locator(".fsrch-line").inner_text().strip()
+    # keyboard: ↓ from the box to the first hit, Enter opens it
+    box.press("ArrowDown")
+    expect(hit).to_be_focused()
+    page.keyboard.press("Enter")
+    page.wait_for_function("() => { const h = document.querySelector('.pane:not(.hidden) .cm-host'); return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-content'); }", timeout=10_000)
+    expect(page.get_by_test_id("statusbar")).to_contain_text(f"Ln {line},", timeout=10_000)
+    box.fill("(unclosed")
+    box.press("Enter")
+    expect(page.get_by_test_id("search-status")).to_contain_text("search:", timeout=10_000)
+    p.errors = [e for e in p.errors if "status of 400" not in e]   # (the bad regex: the backend answers 400 with why)
+    p.assert_clean()
+    p.close()
+
+
+@check("command palette: keyboard only (Ctrl+K, Ctrl+Shift+P, Ctrl+P), actions, sessions, files; the shortcut sheet (? and Ctrl+/)")
+def command_palette(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "command-palette", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    cp = page.get_by_test_id("command-palette")
+    expect(cp).to_be_visible()
+    inp = page.get_by_test_id("cp-input")
+    expect(inp).to_be_focused()
+    expect(cp).to_contain_text("New session")
+    p.shot("palette-desktop.png")
+    page.keyboard.press("ArrowDown")
+    expect(inp).to_have_attribute("aria-activedescendant", "cp-opt-1")
+    page.keyboard.press("ArrowUp")
+    expect(inp).to_have_attribute("aria-activedescendant", "cp-opt-0")
+    page.keyboard.type("revw")
+    expect(cp.locator(".cp-item.on")).to_contain_text("Review changes")
+    page.keyboard.press("Enter")
+    expect(cp).to_have_count(0)
+    expect(page.get_by_test_id("review-pane")).to_be_visible()
+    # ">" only actions: the terminal
+    page.keyboard.press("Control+Shift+P")
+    expect(inp).to_be_focused()
+    page.keyboard.type(">terminal")
+    expect(cp.locator(".cp-item.on")).to_contain_text("terminal")
+    page.keyboard.press("Enter")
+    expect(page.get_by_test_id("terminal")).to_be_visible()
+    # Go to file: Ctrl+P, a file found in the workspace (from the page: keys typed in the terminal's frame are its own)
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+p")
+    page.keyboard.type("format.ts")   # (at once: what is typed right after the shortcut goes into the palette)
+    expect(page.get_by_test_id("prompt")).to_have_value("")
+    expect(cp.locator(".cp-item.on")).to_contain_text("src/utils/format.ts", timeout=5000)
+    p.shot("palette-files.png")
+    page.keyboard.press("Enter")
+    expect(page.locator(".etab.on")).to_contain_text("format.ts")
+    # a mode by name; Tab moves; Esc closes and gives the focus back
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    page.keyboard.type("mode plan")
+    expect(cp.locator(".cp-item.on")).to_contain_text("Mode: Plan")
+    page.keyboard.press("Tab")
+    page.keyboard.press("Shift+Tab")
+    page.keyboard.press("Enter")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan")
+    page.keyboard.press("Control+k")
+    page.keyboard.press("Escape")
+    expect(cp).to_have_count(0)
+    expect(page.get_by_test_id("prompt")).to_be_focused()
+    # the shortcut sheet: "?" outside a field, and Ctrl+/
+    page.locator("body").click(position={"x": 5, "y": 880})
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    page.keyboard.press("Shift+Slash")
+    sheet = page.get_by_test_id("shortcuts-dialog")
+    expect(sheet).to_be_visible()
+    for t in ("Command palette", "Go to file", "Search in files", "Review changes", "Keyboard shortcuts", "Comment on a line"):
+        expect(sheet).to_contain_text(t)
+    p.shot("shortcuts-desktop.png")
+    page.keyboard.press("Escape")
+    expect(sheet).to_have_count(0)
+    page.keyboard.press("Control+Slash")
+    expect(sheet).to_be_visible()
+    page.keyboard.press("Escape")
+    # "?" typed in the prompt box is a character
+    page.get_by_test_id("prompt").click()
+    page.keyboard.type("why?")
+    expect(sheet).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("phone (390×844): the palette and search as sheets from ⋯, the review in the editor sheet, a comment by touch")
+def review_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "review-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    allow_turn(page, 1, "Please fix get() so it uses the retry policy")
+    allow_turn(page, 2, "Raise the timeout with sed")
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-palette").click()
+    expect(page.get_by_test_id("cp-sheet")).to_be_visible()
+    p.shot("phone-palette.png")
+    page.get_by_test_id("cp-input").fill("search in")
+    page.get_by_test_id("cp-input").press("Enter")
+    expect(page.get_by_test_id("sheet-search")).to_be_visible()
+    page.get_by_test_id("search-input").fill("timeout")
+    page.get_by_test_id("search-input").press("Enter")
+    expect(page.get_by_test_id("search-status")).to_contain_text("results in", timeout=10_000)
+    p.shot("phone-search.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (search)"
+    page.get_by_test_id("sheet-search").get_by_role("button", name="Close", exact=True).click()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-review").click()
+    expect(page.get_by_test_id("sheet-editor")).to_be_visible()
+    expect(page.get_by_test_id("review-pane")).to_be_visible()
+    expect(page.get_by_test_id("review-file")).to_have_count(3, timeout=10_000)
+    # touch: a tapped line shows its comment button (no hover on a phone)
+    row = page.get_by_test_id("review-file").first.locator(".rv-row").first
+    btn = row.get_by_test_id("review-comment-btn")
+    row.locator(".dl-text").tap()
+    expect(row).to_have_class(re.compile("picked"))
+    assert page.evaluate("(b) => getComputedStyle(b).opacity", btn.element_handle()) == "1"
+    btn.tap()
+    page.get_by_test_id("review-comment-input").fill("why this?")
+    page.get_by_test_id("review-comment-add").click()
+    p.shot("phone-review.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (review)"
+    page.get_by_test_id("sheet-editor").get_by_role("button", name="Close", exact=True).click()
+    expect(page.get_by_test_id("comment-chip")).to_contain_text("why this?")
+    p.shot("phone-comment-chip.png")
+    p.assert_clean()
+    p.close()
+
+
+@check("review and search from a hostile sandbox: names and lines as text, paths out of the workspace dropped, nothing runs")
+def review_hostile(browser):
+    p = Page(browser, HOSTILE, "review-hostile", **DESKTOP)
+    page = p.open()
+    title0 = page.title()
+    page.get_by_test_id("review-open").click()
+    pane = page.get_by_test_id("review-pane")
+    expect(pane).to_be_visible()
+    page.get_by_test_id("review-filter-all").click()
+    expect(page.locator("[data-testid=review-file][data-path^='hostile/']")).to_have_count(3, timeout=10_000)
+    paths = page.eval_on_selector_all("[data-testid=review-file]", "els => els.map((e) => e.dataset.path)")
+    assert not any(x.startswith("/") or ".." in x.split("/") for x in paths), paths
+    expect(pane).to_contain_text("<img src=x onerror=")
+    expect(pane).to_contain_text("⟨U+202E⟩")
+    lies = page.locator("[data-testid=review-file][data-path='hostile/lies.txt']")
+    expect(lies.get_by_test_id("review-undo-file")).to_be_disabled()
+    page.keyboard.press("Control+Shift+F")
+    page.get_by_test_id("search-input").fill("anything")
+    page.get_by_test_id("search-input").press("Enter")
+    expect(page.locator("[data-testid=search-file]").first).to_contain_text("<svg onload", timeout=10_000)
+    files = page.eval_on_selector_all("[data-testid=search-file]", "els => els.map((e) => e.dataset.path)")
+    assert not any(x.startswith("/") or ".." in x.split("/") for x in files), files
+    expect(page.get_by_test_id("search-status")).to_contain_text("<img src=x")
+    p.shot("review-hostile.png")
+    r = page.evaluate("""() => ({ title: document.title, imgs: document.querySelectorAll('.rv img, .fsrch img, .rv svg:not(.ic), .fsrch svg:not(.ic):not(.spin)').length,
+      onAttrs: [...document.querySelectorAll('.rv *, .fsrch *')].filter((e) => [...e.attributes].some((a) => /^on/i.test(a.name))).length })""")
+    assert r["title"] == title0 or "pwned" not in r["title"], r
+    assert r["imgs"] == 0 and r["onAttrs"] == 0, r
     p.assert_clean()
     p.close()
 

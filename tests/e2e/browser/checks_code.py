@@ -10,8 +10,9 @@ frontend build, code/web), driven like a person would: Haiku chosen, an answer s
 card, Accept edits mode and an @-mentioned file edited (the diff opens in the editor), the / palette, an upload, a
 model switch (no turn on the other model), an interrupt, the terminal panel, a reload without duplicates,
 AskUserQuestion answered in its card, plugins from a marketplace in the workspace (one installed by a command shown
-with its SHA-256 first; its commands in the palette), the MCP panel, and a phone — each with zero CSP violations
-(Trusted Types enforced). Read only denies a write without a card while a read-only command runs; with the update
+with its SHA-256 first; its commands in the palette), the MCP panel, the Review pane (two Edits and a Bash change listed
+from git, one hunk undone, a line comment in the next prompt) with the command palette and Search in files, and a phone
+— each with zero CSP violations (Trusted Types enforced). Read only denies a write without a card while a read-only command runs; with the update
 helper (settings/*), Bypass permissions is allowed in Settings, then runs a command without a card, while a deny rule
 still denies, an ask rule on .git still asks, and a git hook written by Bash shows the watchlist's card, whose Revert
 puts it back — then it is turned off again. With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
@@ -1194,6 +1195,107 @@ def ui_memory_find_rewind(ctx):
     csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$", r"^404 DELETE .*/api/fs\?path=CLAUDE\.md$"])
     return (f"memory dialog → /workspace/CLAUDE.md written; `# …` appended a line; the @ picker found {deep}/{needle} unopened in the "
             f"explorer; Claude's Edit of {UI}/rewind.txt restored by \"Restore files to here\" after its process ended (dry run listed it first)")
+
+
+REVIEW = "e2e-review"
+
+
+@check("browser", "code-ui-review-changes")
+@saved
+def ui_review(ctx):
+    """The Review pane on Haiku: Claude edits two files (Edit), a command changes a third (Bash, sed); the pane lists all
+    three (git's view, read-only git in the sandbox), one hunk is undone, a line comment goes with the next prompt; the
+    command palette and Search in files on the way."""
+    need_haiku()
+    page, rec = ui_page(ctx, "code-ui-review")
+    c = Code.on(page, rec, goto=False)
+    had_git = any(e["name"] == ".git" for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", []))
+    c.api("POST", "/api/fs/mkdir", {"path": REVIEW})
+    files = {"a.txt": "alpha = 1\n" + "".join(f"filler {i}\n" for i in range(12)) + "omega = 1\n", "b.txt": "beta = 1\n", "c.txt": "gamma = 1\n"}
+    for name, text in files.items():
+        r = c.api("PUT", f"/api/fs/file?path={REVIEW}/{name}", {"text": text})
+        expect(r["status"] == 200, f"write {name}: {r['status']} {r['text'][:100]}")
+    # Haiku, a new session (its start: what "this session" counts from)
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("chat-new").click()
+    commit = ("git init -q && git add -A && git -c user.email=e2e@example.invalid -c user.name=e2e -c core.hooksPath=/dev/null "
+              "commit -qm base --no-verify && echo committed")
+    ask(page, f"Use the Bash tool to run exactly this command in /workspace, then reply with the word done: {commit}")
+    card = page.get_by_test_id("permission")
+    see(card).to_contain_text("git init", timeout=120000)
+    page.get_by_test_id("perm-once").click()
+    answered(page)
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    expect(state_of(c, sid).get("model") == HAIKU, f"model {state_of(c, sid)}")
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    wait_state(c, sid, "mode", "acceptEdits")
+    ask(page, f"Use the Edit tool twice: in {REVIEW}/a.txt change `alpha = 1` to `alpha = 2` and `omega = 1` to `omega = 2` (two separate "
+              f"changes), and in {REVIEW}/b.txt change `beta = 1` to `beta = 2`. Change nothing else, run no command, then reply with the word done.")
+    answered(page)
+    for name, want in (("a.txt", "alpha = 2"), ("b.txt", "beta = 2")):
+        got = c.api("GET", f"/api/fs/file?path={REVIEW}/{name}")["json"]["text"]
+        expect(want in got, f"Claude did not edit {name}: {got!r}")
+    ask(page, f"Use the Bash tool to run exactly this command in /workspace, then reply with the word done: sed -i 's/gamma = 1/gamma = 2/' {REVIEW}/c.txt")
+    see(card).to_contain_text("sed", timeout=120000)
+    page.get_by_test_id("perm-once").click()
+    answered(page)
+    expect("gamma = 2" in c.api("GET", f"/api/fs/file?path={REVIEW}/c.txt")["json"]["text"], "the sed did not run")
+    # the palette opens the Review pane (keyboard only)
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    see(page.get_by_test_id("cp-input")).to_be_focused()
+    page.keyboard.type("review changes")
+    see(page.locator("[data-testid=cp-item][aria-selected=true]")).to_contain_text("Review changes")
+    shot(page, "92-code-ui-palette")
+    page.keyboard.press("Enter")
+    pane = page.get_by_test_id("review-pane")
+    see(pane).to_be_visible()
+    see(page.get_by_test_id("review-source")).to_contain_text("since the last commit", timeout=30000)
+    row = lambda n: page.locator(f"[data-testid=review-file][data-path='{REVIEW}/{n}']")
+    for n in files:
+        see(row(n)).to_have_count(1, timeout=30000)
+    see(row("a.txt")).to_contain_text("Claude")
+    see(row("c.txt")).not_to_contain_text("Claude")
+    see(row("a.txt").get_by_test_id("review-hunk")).to_have_count(2)
+    page.mouse.move(0, 0)
+    shot(page, "93-code-ui-review")
+    # undo one hunk: a.txt's second (omega) — the first stays
+    row("a.txt").get_by_test_id("review-undo-hunk").last.click()
+    see(row("a.txt").get_by_test_id("review-hunk")).to_have_count(1, timeout=30000)
+    a = c.api("GET", f"/api/fs/file?path={REVIEW}/a.txt")["json"]["text"]
+    expect("omega = 1" in a and "alpha = 2" in a, f"a.txt after undoing one hunk: {a!r}")
+    # a comment on alpha's line: a chip, then part of the next prompt
+    line = row("a.txt").locator(".rv-row.dl-add").first
+    line_no = line.locator(".dl-no").nth(1).inner_text().strip()
+    line.hover()
+    line.get_by_test_id("review-comment-btn").click()
+    page.get_by_test_id("review-comment-input").fill("why 2 and not 3?")
+    page.get_by_test_id("review-comment-input").press("Enter")
+    see(page.get_by_test_id("comment-chip")).to_contain_text(f"{REVIEW}/a.txt:{line_no} — why 2 and not 3?")
+    shot(page, "94-code-ui-review-comment")
+    ask(page, "Reply with exactly the word: noted")
+    answered(page)
+    see(page.get_by_test_id("msg-user").last).to_contain_text(f"{REVIEW}/a.txt:{line_no} — why 2 and not 3?")
+    see(page.get_by_test_id("comment-chip")).to_have_count(0)
+    hist = c.api("GET", f"/api/sessions/{sid}/messages?tail=20")["json"]
+    prompts = [e.get("text", "") for e in hist.get("events", []) if e.get("type") == "user"]
+    expect(any(f"{REVIEW}/a.txt:{line_no} — why 2 and not 3?" in t for t in prompts), f"the comment is not in the transcript's prompts: {prompts[-2:]}")
+    # Search in files finds the command's change
+    page.keyboard.press("Control+Shift+F")
+    page.get_by_test_id("search-input").fill("gamma = 2")
+    page.get_by_test_id("search-input").press("Enter")
+    see(page.locator(f"[data-testid=search-file][data-path='{REVIEW}/c.txt']")).to_have_count(1, timeout=30000)
+    shot(page, "95-code-ui-search")
+    # clean up: the folder, and the repository this check made
+    c.api("DELETE", f"/api/fs?path={REVIEW}")
+    if not had_git:
+        c.api("DELETE", "/api/fs?path=.git")
+    csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$"])
+    return (f"session {sid[:8]} (Haiku): git init by Bash; two Edits (a.txt twice, b.txt) and a sed (c.txt) — the Review pane listed all three "
+            f"from git (Claude's marked), a.txt's second hunk undone (omega back to 1, alpha kept), a comment on a.txt:{line_no} went with "
+            f"the next prompt (in the transcript); the palette by keyboard; Search found the sed's change; no CSP violations")
 
 
 @check("browser", "code-ui-phone")

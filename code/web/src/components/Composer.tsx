@@ -9,7 +9,9 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast } from '../app';
+import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast, promptWithComments, clearComments, removeComment, openReview } from '../app';
+import { commentLine } from '../review';
+import { label } from '../text';
 import { fsFind } from '../api';
 import { findTrigger, mergeCommands, rankCommands, rankPaths, type Trigger } from '../palette';
 import type { ImageBlock } from '../types';
@@ -81,6 +83,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const allowBypass = useSel(store, (s) => s.server?.allowBypass === true);
   const narrow = useMedia('(max-width: 699.98px)');
   const dirs = useSel(store, (s) => s.fs.dirs);
+  const comments = useSel(store, (s) => s.comments);
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
   const [atts, setAtts] = useState<Attachment[]>([]);
@@ -231,10 +234,13 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
 
   const submit = async () => {
     const t = text.trim();
-    if (!t && !atts.length) return;
+    if (!t && !atts.length && !comments.length) return;
     const blocks = atts.map((a) => a.block);
-    const ok = await sendPrompt(t || 'What is in this image?', blocks);
+    // the Review pane's line comments go with a prompt for Claude ("path:line — comment"); they leave the box once sent
+    const withNotes = promptWithComments(t || (atts.length ? 'What is in this image?' : ''));
+    const ok = await sendPrompt(withNotes.text, blocks);
     if (!ok) return;
+    if (withNotes.ids.length) clearComments(withNotes.ids);
     if (t) {
       history.push(t);
       if (history.length > 50) history.shift();
@@ -346,6 +352,21 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           ))}
         </div>
       )}
+      {comments.length > 0 && (
+        <div class="cmt-chips" data-testid="comment-chips" aria-label="Comments on the changes, sent with your next prompt">
+          {comments.map((c) => (
+            <span class="chip cmt-chip" key={c.id} title={commentLine(c)} data-testid="comment-chip">
+              <button type="button" class="cmt-chip-main" onClick={openReview} title="Show the Review pane">
+                <Icon name="comment" size={12} />
+                <span class="cmt-chip-text">{label(commentLine(c), 160)}</span>
+              </button>
+              <button type="button" class="att-x" aria-label={`Remove the comment on ${c.path}:${c.line}`} onClick={() => removeComment(c.id)} data-testid="comment-chip-remove">
+                <Icon name="close" size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {atts.length > 0 && (
         <div class="atts">
           {atts.map((a) => (
@@ -438,7 +459,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
             class="send"
             title="Send (Enter)"
             aria-label="Send"
-            disabled={!text.trim() && !atts.length}
+            disabled={!text.trim() && !atts.length && !comments.length}
             onClick={() => void submit()}
             data-testid="send"
           >

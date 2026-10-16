@@ -21,6 +21,8 @@ export interface EditInfo {
   hunks: Hunk[];
   /** false: the backend dropped part of the diff (over its size cap) — the card says so */
   complete: boolean;
+  /** a Write that made a new file */
+  created?: boolean;
 }
 
 export interface InitInfo {
@@ -389,4 +391,57 @@ export interface PreviewLink {
   /** url is a single-use hand-off (https://<preview host>/.bn/preview-callback?t=…): it sets the preview host's cookie
    *  for this port and goes on to the path — each load of the frame needs a new one */
   handoff: boolean;
+}
+
+/** One file of GET /api/git/diff: what changed in it since the last commit (git in the sandbox). */
+export interface GitFile {
+  path: string;
+  status: 'modified' | 'added' | 'deleted';
+  /** not tracked by git yet (a new file) */
+  untracked: boolean;
+  binary: boolean;
+  symlink: boolean;
+  modeChange: { old: string | null; new: string | null } | null;
+  hunks: Hunk[];
+  /** its modification time as the diff saw it */
+  mtimeMs: number | null;
+  size: number;
+  /** not all of its changes came */
+  cut: boolean;
+  /** its patch did not add up */
+  bad: boolean;
+}
+export interface GitReview {
+  /** false: not a git repository here (or no git): `reason` says why */
+  repo: boolean;
+  reason: string;
+  head: string | null;
+  files: GitFile[];
+  truncated: boolean;
+  timedOut: boolean;
+}
+
+/** GET /api/fs/grep */
+export interface GrepHit {
+  line: number;
+  /** the line (at most 240 characters around the match) */
+  text: string;
+  col: number;
+  len: number;
+  /** matches on the line */
+  count: number;
+  /** the line is longer than what is shown */
+  cut: boolean;
+}
+export interface GrepFile {
+  path: string;
+  hits: GrepHit[];
+}
+export interface GrepResult {
+  engine: 'ripgrep' | 'node';
+  files: GrepFile[];
+  hits: number;
+  truncated: boolean;
+  timedOut: boolean;
+  error: string | null;
 }

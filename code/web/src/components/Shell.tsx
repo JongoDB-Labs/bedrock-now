@@ -22,7 +22,14 @@ import {
   defaultModel,
   dismissToast,
   openModeMenu,
+  openPalette,
+  openReview,
+  showSearch,
 } from '../app';
+import { SearchPanel } from './Search';
+import { CommandPalette, openPaletteFromMenu } from './CommandPalette';
+import { useReviewList } from './Review';
+import { shortcuts } from '../shortcuts';
 import { BOUNDS } from '../prefs';
 import { basename, label } from '../text';
 import { modeName } from '../permission';
@@ -61,6 +68,12 @@ function MoreMenu() {
         <>
           <MenuItem icon="plus" onSelect={() => (close(), void newSession())}>
             New session
+          </MenuItem>
+          <MenuItem icon="search" hint={`${MOD}+K`} onSelect={() => (close(), openPalette())} testid="menu-palette">
+            Command palette…
+          </MenuItem>
+          <MenuItem icon="diff" onSelect={() => (close(), openReview())} testid="menu-review">
+            Review changes
           </MenuItem>
           <MenuItem icon="plug" onSelect={() => (close(), setDialog('plugins'))} testid="menu-plugins">
             Plugins & marketplaces…
@@ -120,6 +133,25 @@ function SessionTitle({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** "Review" with the pending changes' size, as the desktop app's +12 −1: opens the Review pane. */
+function ReviewButton() {
+  const { pending } = useReviewList();
+  const add = pending.reduce((n, f) => n + f.add, 0);
+  const del = pending.reduce((n, f) => n + f.del, 0);
+  return (
+    <button type="button" class="tb-review" title={`Review changes (${MOD}+Shift+D)`} onClick={openReview} data-testid="review-open">
+      <Icon name="diff" size={14} />
+      <span class="tb-review-label">Review</span>
+      {pending.length > 0 && (
+        <span class="chg">
+          <span class="chg-add">+{add}</span>
+          <span class="chg-del">−{del}</span>
+        </span>
+      )}
+    </button>
+  );
+}
+
 function TopBar({ tablet }: { tablet?: boolean }) {
   const layout = useSel(store, (s) => s.prefs.layout);
   return (
@@ -143,6 +175,7 @@ function TopBar({ tablet }: { tablet?: boolean }) {
         <EffortPicker />
       </div>
       <div class="tb-right">
+        <ReviewButton />
         <CostMeter />
         <ContextMeter />
         {tablet && (
@@ -170,15 +203,18 @@ function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
   return (
     <aside class="side" aria-label="Explorer and sessions">
       <div class="side-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={side === 'files'} onClick={() => setLayout({ side: 'files' })} data-testid="side-files">
-          <Icon name="files" size={15} /> Explorer
+        <button type="button" role="tab" aria-selected={side === 'files'} onClick={() => setLayout({ side: 'files' })} title="Explorer" data-testid="side-files">
+          <Icon name="files" size={15} /> <span class="st-label">Explorer</span>
         </button>
-        <button type="button" role="tab" aria-selected={side === 'sessions'} onClick={() => setLayout({ side: 'sessions' })} data-testid="side-sessions">
-          <Icon name="history" size={15} /> Sessions
+        <button type="button" role="tab" aria-selected={side === 'search'} onClick={() => showSearch()} title={`Search in files (${MOD}+Shift+F)`} data-testid="side-search">
+          <Icon name="search" size={15} /> <span class="st-label">Search</span>
+        </button>
+        <button type="button" role="tab" aria-selected={side === 'sessions'} onClick={() => setLayout({ side: 'sessions' })} title="Sessions" data-testid="side-sessions">
+          <Icon name="history" size={15} /> <span class="st-label">Sessions</span>
           {pending > 0 && <span class="badge warn">{pending}</span>}
         </button>
       </div>
-      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : <SessionList />}
+      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : side === 'search' ? <SearchPanel onOpen={onOpenFile} /> : <SessionList />}
     </aside>
   );
 }
@@ -332,33 +368,29 @@ function Dialogs() {
   const launchConfirm = useSel(store, (s) => s.launchConfirm);
   const close = () => setDialog(null);
   if (dialog === 'shortcuts') {
-    const rows: [string, string][] = [
-      ['Send', 'Enter'],
-      ['New line', 'Shift+Enter'],
-      ['Stop Claude', 'Esc'],
-      ['Cycle permission mode', 'Shift+Tab'],
-      ['Open the permission mode menu', 'Alt+M'],
-      ['Previous prompt', '↑ in an empty box'],
-      ['Commands, skills, plugin commands', '/'],
-      ['Mention a file', '@'],
-      ['Answer a permission prompt', '1 · 2 · 3'],
-      ['Save the file', `${MOD}+S`],
-      ['Find in the file', `${MOD}+F`],
-      ['Toggle the terminal', 'Ctrl+`'],
-      ['Toggle the explorer', `${MOD}+B`],
-    ];
+    const all = shortcuts();
+    const groups = [...new Set(all.map((k) => k.group))];
     return (
-      <Dialog title="Keyboard shortcuts" onClose={close}>
-        <dl class="keys">
-          {rows.map(([a, b]) => (
-            <div key={a}>
-              <dt>{a}</dt>
-              <dd>
-                <kbd>{b}</kbd>
-              </dd>
-            </div>
+      <Dialog title="Keyboard shortcuts" onClose={close} wide testid="shortcuts-dialog">
+        <div class="keys-groups">
+          {groups.map((g) => (
+            <section key={g}>
+              <h3>{g}</h3>
+              <dl class="keys">
+                {all
+                  .filter((k) => k.group === g)
+                  .map((k) => (
+                    <div key={k.what}>
+                      <dt>{k.what}</dt>
+                      <dd>
+                        <kbd>{k.keys}</kbd>
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+            </section>
           ))}
-        </dl>
+        </div>
       </Dialog>
     );
   }
@@ -376,11 +408,47 @@ function Dialogs() {
   return <BypassDialog />;
 }
 
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+/** Typing in a field (the composer, a search box, the editor): "?" is a character there, not the shortcut sheet. */
+function typing(e: Event): boolean {
+  const el = (e.composedPath?.()[0] ?? e.target) as HTMLElement | null;
+  return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || !!el.closest?.('.cm-editor'));
+}
+
 /** Shortcuts that work anywhere on the page. */
 function useGlobalKeys() {
+  // the palette, search, review and go-to-file keys first (capture): they work in the prompt box and the editor too
+  useEffect(() => {
+    const cap = (e: KeyboardEvent) => {
+      if (store.get().dialog) return;   // (a modal dialog is open: everything else is inert)
+      const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      const k = e.key.toLowerCase();
+      let act: (() => void) | null = null;
+      if (mod && !e.shiftKey && !e.altKey && k === 'k') act = () => openPalette('all');
+      else if (e.ctrlKey && e.shiftKey && !e.altKey && (k === 'p' || e.code === 'KeyP')) act = () => openPalette('all');
+      else if (mod && e.shiftKey && !e.altKey && (k === 'p' || e.code === 'KeyP')) act = () => openPalette('all');
+      else if (mod && !e.shiftKey && !e.altKey && k === 'p') act = () => openPalette('files');
+      else if (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyF')) act = showSearch;
+      else if (mod && e.shiftKey && !e.altKey && (k === 'd' || e.code === 'KeyD')) act = openReview;
+      if (!act) return;
+      e.preventDefault();
+      e.stopPropagation();
+      act();
+    };
+    document.addEventListener('keydown', cap, true);
+    return () => document.removeEventListener('keydown', cap, true);
+  }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+      // the shortcut sheet: ⌘/ (in the editor it comments a line: CodeMirror took it then) or "?" outside a field
+      if (!e.defaultPrevented && ((mod && !e.shiftKey && e.key === '/') || (e.key === '?' && !mod && !e.altKey && !typing(e)))) {
+        if (!store.get().dialog && !store.get().palette) {
+          e.preventDefault();
+          setDialog('shortcuts');
+        }
+        return;
+      }
       if (e.ctrlKey && (e.key === '`' || e.code === 'Backquote')) {
         e.preventDefault();
         toggleTerminal();
@@ -512,6 +580,15 @@ function PhoneMenu() {
         <button type="button" class="pm-link" onClick={() => (setSheet(null), void newSession())}>
           <Icon name="plus" /> New session
         </button>
+        <button type="button" class="pm-link" onClick={openPaletteFromMenu} data-testid="phone-menu-palette">
+          <Icon name="search" /> Command palette
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), openReview())} data-testid="phone-menu-review">
+          <Icon name="diff" /> Review changes
+        </button>
+        <button type="button" class="pm-link" onClick={() => showSearch()} data-testid="phone-menu-search">
+          <Icon name="search" /> Search in files
+        </button>
         {term && (
           <a class="pm-link" href={term} target="_blank" rel="noopener noreferrer">
             <Icon name="terminal" /> Open the terminal
@@ -586,6 +663,11 @@ function Phone() {
         </Sheet>
       )}
       {sheet === 'menu' && <PhoneMenu />}
+      {sheet === 'search' && (
+        <Sheet title="Search in files" onClose={() => setSheet(null)} testid="sheet-search">
+          <SearchPanel />
+        </Sheet>
+      )}
       {sheet === 'ports' && (
         <Sheet title="Ports & previews" onClose={() => setSheet(null)} testid="sheet-ports">
           <PortsPanel />
@@ -633,6 +715,7 @@ export function AppShell(): ComponentChildren {
     <>
       {phone ? <Phone /> : tablet ? <Tablet /> : <Desktop />}
       <Dialogs />
+      <CommandPalette />
       <Toasts />
     </>
   );

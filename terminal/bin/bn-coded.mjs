@@ -12,6 +12,10 @@
 //                   files under /workspace (the code container mounts no folder of yours). Paths are resolved here,
 //                   in the sandbox's own view, so a symlink can only lead somewhere this container sees anyway.
 //   fs.find         paths under /workspace whose name matches (a bounded walk: the @-picker over the whole folder)
+//   fs.grep         a text (or a ripgrep regex) searched in the files of /workspace: ripgrep with fixed arguments, or
+//                   a bounded walk (literal text only); caps on hits, file size and time
+//   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
+//                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title
@@ -384,11 +388,13 @@ function fsRename(from, to) {
   return { path: rel(b) };
 }
 
-// delete: into /workspace/.bedrock-now-trash/<time>-<random>/<name> — nothing is removed for good here
-function fsDelete(p) {
+// delete: into /workspace/.bedrock-now-trash/<time>-<random>/<name> — nothing is removed for good here. ifMtimeMs: only
+// while the entry's modification time is still that (the Review pane's Undo of a new file)
+function fsDelete(p, ifMtimeMs) {
   const real = existing(p);
   const trash = path.join(WORKSPACE, TRASH);
   if (!real || real === WORKSPACE || real === trash) throw new Error('not in the workspace');
+  if (ifMtimeMs !== undefined && ifMtimeMs !== null && fs.lstatSync(real).mtimeMs !== ifMtimeMs) throw new Error('changed on disk since it was opened');
   const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   // git (and whatever honours .gitignore) leaves the trash alone
@@ -517,6 +523,357 @@ export function fsFind(q, limit) {
     }
   }
   return { paths, truncated };
+}
+
+// --- runCapped: a helper program (git, rg) with fixed arguments, no stdin, a deadline and an output cap. Resolves
+// --- {code, signal, out: Buffer, err: string, cut: the output went past maxOut (the program was killed), timedOut}.
+// --- onData(chunk) may return false to stop it early (killed; `stopped`).
+function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut = 1 << 20, onData } = {}) {
+  return new Promise((resolve) => {
+    let c;
+    // (its own process group: a stop ends whatever it started too)
+    try { c = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true }); } catch (e) { resolve({ code: -1, signal: null, out: Buffer.alloc(0), err: e.code || e.message, missing: e.code === 'ENOENT' }); return; }
+    const parts = [];
+    let size = 0, err = '', cut = false, timedOut = false, stopped = false, done = false;
+    const stop = () => {
+      try { process.kill(-c.pid, 'SIGKILL'); } catch { try { c.kill('SIGKILL'); } catch { /* gone */ } }
+      // (a pipe some other process still holds open never closes: the answer does not wait for it)
+      setTimeout(() => { c.stdout.destroy(); c.stderr.destroy(); end(null, 'SIGKILL'); }, 2000).unref();
+    };
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
+    c.stdout.on('data', (d) => {
+      if (cut || stopped) return;
+      if (onData) { if (onData(d) === false) { stopped = true; stop(); } return; }
+      if (size + d.length > maxOut) { parts.push(d.subarray(0, maxOut - size)); size = maxOut; cut = true; stop(); return; }
+      parts.push(d); size += d.length;
+    });
+    c.stderr.on('data', (d) => { if (err.length < 4000) err += d.toString('utf8'); });
+    const end = (code, signal, extra = {}) => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      resolve({ code, signal, out: Buffer.concat(parts), err: err.slice(0, 4000), cut, timedOut, stopped, ...extra });
+    };
+    c.on('error', (e) => end(-1, null, { err: e.code || e.message, missing: e.code === 'ENOENT' }));
+    c.on('close', (code, signal) => end(code, signal));
+  });
+}
+const firstFile = (list) => list.find((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } }) || list[0];
+
+// --- git.diff: what changed in /workspace since its last commit, for the page's Review pane — `git` run read-only
+// --- with fixed arguments, so that no program a repository's configuration names runs (a hostile repo: its
+// --- .git/config, the files it includes, .gitattributes, .git/info/attributes). git runs programs from configuration
+// --- for: core.fsmonitor (a hook program), diff.external and diff.<driver>.command (--no-ext-diff), textconv
+// --- (--no-textconv), filter.<driver>.clean/smudge/process (run when a worktree file is compared: overridden to
+// --- nothing, for every driver the configuration defines — listed first), a pager (--no-pager; no terminal anyway),
+// --- hooks (none for these commands; core.hooksPath=/dev/null all the same), lazy fetches of a partial clone and any
+// --- transport (GIT_NO_LAZY_FETCH, GIT_ALLOW_PROTOCOL naming no protocol, protocol.allow=never), submodules (not
+// --- entered: --ignore-submodules=all). Overrides travel as GIT_CONFIG_COUNT/KEY/VALUE (no "=" parsing of a driver's
+// --- name; they win over every configuration file). System and global configuration and attributes are not read, the
+// --- environment is built here (no GIT_* from outside), the repository must be /workspace itself (not one around it:
+// --- GIT_CEILING_DIRECTORIES), and every run has a deadline and an output cap. Untracked files are listed by git
+// --- (.gitignore honoured) and read here (regular files, never through a link).
+const GIT = process.env.BN_GIT_BIN || firstFile(['/usr/bin/git', '/usr/local/bin/git', '/bin/git']);
+const RG = process.env.BN_RG_BIN || firstFile(['/usr/bin/rg', '/usr/local/bin/rg', '/bin/rg']);
+const GIT_PATCH_MAX = 6 << 20, GIT_NAMES_MAX = 2000, GIT_UNTRACKED_TEXT = 256 << 10, GIT_UNTRACKED_TOTAL = 2 << 20, GIT_DRIVERS_MAX = 256;
+const GIT_DEADLINE = 20000;
+// the configuration every run gets (GIT_CONFIG_COUNT: above every file), before the per-driver overrides
+export const GIT_CONFIG = [
+  ['core.fsmonitor', 'false'], ['core.hooksPath', '/dev/null'], ['core.pager', 'cat'], ['core.quotePath', 'false'],
+  ['core.attributesFile', '/dev/null'], ['core.untrackedCache', 'false'], ['core.sshCommand', 'false'], ['core.askPass', ''],
+  ['diff.external', ''], ['diff.noprefix', 'false'], ['diff.mnemonicPrefix', 'false'], ['diff.relative', 'false'], ['diff.renames', 'false'],
+  ['diff.submodule', 'short'], ['diff.ignoreSubmodules', 'all'], ['submodule.recurse', 'false'], ['color.ui', 'false'], ['credential.helper', ''],
+  ['protocol.allow', 'never'], ['protocol.file.allow', 'never'], ['protocol.ext.allow', 'never'], ['protocol.ssh.allow', 'never'],
+  ['protocol.git.allow', 'never'], ['protocol.http.allow', 'never'], ['protocol.https.allow', 'never'], ['uploadpack.packObjectsHook', ''],
+];
+// gitEnv(extra) -> the whole environment of a git run: nothing inherited but a fixed PATH and HOME
+export function gitEnv(extra = []) {
+  const env = {
+    PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: 'bn-none', GIT_TERMINAL_PROMPT: '0',
+    GIT_NO_REPLACE_OBJECTS: '1', GIT_LITERAL_PATHSPECS: '1', GIT_PAGER: 'cat', PAGER: 'cat', GIT_ADVICE: '0',
+    GIT_CEILING_DIRECTORIES: path.dirname(WORKSPACE),
+  };
+  const cfg = [...GIT_CONFIG, ...extra];
+  env.GIT_CONFIG_COUNT = String(cfg.length);
+  cfg.forEach(([k, v], i) => { env[`GIT_CONFIG_KEY_${i}`] = k; env[`GIT_CONFIG_VALUE_${i}`] = v; });
+  return env;
+}
+// driverOverrides(text) -> the overrides that switch off every filter and diff driver `git config -z --get-regexp`
+// listed ("key\nvalue\0" records), or null when there are more than GIT_DRIVERS_MAX of them
+export function driverOverrides(text) {
+  const names = { filter: new Set(), diff: new Set() };
+  for (const rec of String(text).split('\0')) {
+    const key = rec.split('\n')[0];
+    const m = key.match(/^(filter|diff)\.([^\n]+)\.([A-Za-z0-9-]+)$/);
+    if (m) names[m[1]].add(m[2]);
+  }
+  if (names.filter.size + names.diff.size > GIT_DRIVERS_MAX) return null;
+  const out = [];
+  for (const n of names.filter) out.push([`filter.${n}.clean`, ''], [`filter.${n}.smudge`, ''], [`filter.${n}.process`, ''], [`filter.${n}.required`, 'false']);
+  for (const n of names.diff) out.push([`diff.${n}.textconv`, ''], [`diff.${n}.command`, ''], [`diff.${n}.cachetextconv`, 'false']);
+  return out;
+}
+// the global options before every git command: no pager, no replace refs (the rest is in the environment)
+export const GIT_PRE = ['--no-pager', '--no-replace-objects'];
+// The fixed argument lists (a test checks that nothing else is ever run)
+export const GIT_ARGS = {
+  toplevel: ['rev-parse', '--show-toplevel', '--show-object-format'],
+  head: ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+  drivers: ['config', '-z', '--get-regexp', '^(filter|diff)\\.'],
+  names: (base) => ['diff', base, '--name-only', '-z', '--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=all', '--no-color'],
+  patch: (base) => ['diff', base, '--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=all', '--no-color', '--unified=3',
+    '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short'],
+  untracked: ['ls-files', '--others', '--exclude-standard', '-z'],
+};
+const EMPTY_TREE = { sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' };
+// cquote(p) -> a path as git writes it in a diff header with core.quotePath=false: in double quotes, C escapes, when it
+// holds a quote, a backslash or a control character; as it is otherwise
+export function cquote(p) {
+  if (!/["\\\x00-\x1f\x7f]/.test(p)) return p;
+  const esc = { '\x07': '\\a', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\v': '\\v', '\f': '\\f', '\r': '\\r', '"': '\\"', '\\': '\\\\' };
+  return `"${p.replace(/["\\\x00-\x1f\x7f]/g, (c) => esc[c] || `\\${c.charCodeAt(0).toString(8).padStart(3, '0')}`)}"`;
+}
+// a workspace-relative path git names: one we can show and act on (no "..", no absolute, no NUL)
+const gitRel = (p) => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !p.startsWith('/') && !p.includes('\0') && p.split('/').every((s) => s && s !== '.' && s !== '..');
+// statRel(rel) -> {mtimeMs, size, type} of an entry of the workspace, never through a link on the way or at its end
+function statRel(rel) {
+  let p = WORKSPACE;
+  const segs = rel.split('/');
+  for (let i = 0; i < segs.length; i++) {
+    p = path.join(p, segs[i]);
+    let st;
+    try { st = fs.lstatSync(p); } catch { return null; }
+    if (i < segs.length - 1 && !st.isDirectory()) return null;
+    if (i === segs.length - 1) return { mtimeMs: st.mtimeMs, size: st.size, type: st.isSymbolicLink() ? 'symlink' : st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'other', mode: st.mode & 0o777 };
+  }
+  return null;
+}
+// untrackedDiff(rel, budget) -> the synthetic git diff of a new file (all lines added), or null when it is not shown
+// (not a regular file, larger than GIT_UNTRACKED_TEXT, past the budget) — binary as git says it
+function untrackedDiff(rel, st, budget) {
+  const head = `diff --git ${cquote(`a/${rel}`)} ${cquote(`b/${rel}`)}\nnew file mode ${st.mode & 0o111 ? '100755' : '100644'}\n`;
+  if (st.type !== 'file' || st.size > GIT_UNTRACKED_TEXT || st.size > budget.left) return null;
+  // (statRel found no link on the way; the file itself is opened O_NOFOLLOW)
+  const b = readRegular(path.join(WORKSPACE, rel), GIT_UNTRACKED_TEXT);
+  if (!b) return null;
+  budget.left -= b.length;
+  if (b.subarray(0, 8000).includes(0)) return `${head}Binary files /dev/null and ${cquote(`b/${rel}`)} differ\n`;
+  if (!b.length) return head;
+  const text = b.toString('utf8');
+  const lines = text.split('\n');
+  const nl = text.endsWith('\n');
+  if (nl) lines.pop();
+  return `${head}--- /dev/null\n+++ ${cquote(`b/${rel}`)}\n@@ -0,0 +1${lines.length === 1 ? '' : `,${lines.length}`} @@\n${lines.map((l) => `+${l}\n`).join('')}${nl ? '' : '\\ No newline at end of file\n'}`;
+}
+// gitDiff(send) -> STDOUT: the patch (git's own, then the untracked files'), RESULT {repo, reason?, head, files:
+// [{path, status, mtimeMs, size, type}], untracked: [{path, mtimeMs, size, shown}], truncated, timedOut}
+export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE } = {}) {
+  const t0 = Date.now();
+  const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
+  let extra = [];
+  const run = (args, opts = {}) => runCapped(git, [...GIT_PRE, ...args], { env: gitEnv(extra), timeoutMs: left(), ...opts });
+  const no = (reason) => ({ repo: false, reason });
+  const why = (r) => printable((r.err || '').trim().split('\n').pop() || `exit ${r.code}`, 200);
+  let r = await run(GIT_ARGS.toplevel, { maxOut: 8192 });
+  if (r.missing) return no('git is not installed in the sandbox');
+  if (r.timedOut) return no('git did not answer in time');
+  if (r.code !== 0) return no(/not a git repository/i.test(r.err) ? 'not a git repository' : `git: ${why(r)}`);
+  const [top, format] = r.out.toString('utf8').split('\n');
+  let realTop = '';
+  try { realTop = fs.realpathSync(top); } catch { /* below */ }
+  if (realTop !== fs.realpathSync(WORKSPACE)) return no('the repository is not the workspace folder itself');
+  // every filter and diff driver the configuration defines, switched off
+  r = await run(GIT_ARGS.drivers, { maxOut: 1 << 20 });
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return no(`git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : why(r)}`);
+  const ov = driverOverrides(r.out.toString('utf8'));
+  if (!ov) return no('the repository defines too many diff or filter drivers to check');
+  extra = ov;
+  r = await run(GIT_ARGS.head, { maxOut: 4096 });
+  const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
+  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return no('git: an unexpected HEAD');
+  const base = head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'];
+  // the changed paths (exact, NUL-separated), then the patch
+  r = await run(GIT_ARGS.names(base), { maxOut: 4 << 20 });
+  if (r.timedOut || r.code !== 0) return no(`git diff: ${r.timedOut ? 'no answer in time' : why(r)}`);
+  let truncated = r.cut;
+  const names = r.out.toString('utf8').split('\0').filter(gitRel);
+  if (names.length > GIT_NAMES_MAX) truncated = true;
+  const files = names.slice(0, GIT_NAMES_MAX).map((p) => {
+    const st = statRel(p);
+    return st ? { path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type } : { path: p, mtimeMs: null, size: 0, type: 'missing' };
+  });
+  let sent = 0;
+  r = await run(GIT_ARGS.patch(base), { onData: (d) => {
+    const room = GIT_PATCH_MAX - sent;
+    if (d.length > room) { if (room > 0) send(T.STDOUT, d.subarray(0, room)); sent = GIT_PATCH_MAX; return false; }
+    send(T.STDOUT, d); sent += d.length;
+    return true;
+  } });
+  if (r.stopped) truncated = true;
+  else if (r.timedOut) return { repo: true, head, files, untracked: [], truncated: true, timedOut: true };
+  else if (r.code !== 0) return no(`git diff: ${why(r)}`);
+  // untracked files (.gitignore honoured), new files as git would show them
+  r = await run(GIT_ARGS.untracked, { maxOut: 4 << 20 });
+  const untracked = [];
+  if (r.code === 0 || r.cut) {
+    if (r.cut) truncated = true;
+    const list = r.out.toString('utf8').split('\0').filter((p) => gitRel(p) && p.split('/')[0] !== TRASH);
+    if (list.length > GIT_NAMES_MAX) truncated = true;
+    const budget = { left: GIT_UNTRACKED_TOTAL };
+    for (const p of list.slice(0, GIT_NAMES_MAX)) {
+      const st = statRel(p);
+      if (!st) continue;
+      const d = sent < GIT_PATCH_MAX ? untrackedDiff(p, st, budget) : null;
+      if (d !== null) { const b = Buffer.from(d); send(T.STDOUT, b); sent += b.length; }
+      untracked.push({ path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type, shown: d !== null });
+    }
+  }
+  return { repo: true, head, files, untracked, truncated, timedOut: r.timedOut === true };
+}
+
+// --- fs.grep: search the workspace's files — ripgrep (the sandbox image's) with fixed arguments: its own regex engine
+// --- (linear time; never PCRE2), literal or regex, case, include/exclude globs (checked), --max-count per file,
+// --- --max-filesize, links never followed, .gitignore honoured, .git / the trash / dependencies and build output
+// --- skipped, a deadline and GREP_MAX hits. Without ripgrep: a bounded walk here, literal text only (no regex: a
+// --- backtracking engine on a pattern from the page could run for ever).
+export const GREP_MAX = 2000;
+const GREP_PER_FILE = 100, GREP_FILE_MAX = 1 << 20, GREP_TIMEOUT = 10000, GREP_TEXT = 240;
+const GREP_SKIP = ['.git', TRASH, 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'target', '.next', '.cache'];
+const GLOB = /^[\x20-\x7e]{1,200}$/;
+// checkGrep(req) -> the request with its parts checked, or throws
+export function checkGrep(req) {
+  const q = req?.q;
+  if (typeof q !== 'string' || q.length < 1 || q.length > 1000 || /[\x00-\x08\x0a-\x1f\x7f]/.test(q)) throw new Error('a search of 1 to 1000 characters, one line');
+  const globs = (v, what) => {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v) || v.length > 10) throw new Error(`${what}: at most 10 globs`);
+    for (const g of v) {
+      if (typeof g !== 'string' || !GLOB.test(g) || g.startsWith('!') || g.includes('\\') || g.trim() !== g) throw new Error(`${what}: a glob of printable characters (no "!", no backslash)`);
+    }
+    return v;
+  };
+  return { q, regex: req.regex === true, caseSensitive: req.caseSensitive === true, include: globs(req.include, 'include'), exclude: globs(req.exclude, 'exclude') };
+}
+// rgArgs(checked) -> ripgrep's whole argument list
+export function rgArgs({ q, regex, caseSensitive, include, exclude }) {
+  return ['--json', '--no-config', '--no-messages', '--hidden', '--no-require-git', '--no-ignore-parent', '--sort=path',
+    `--max-count=${GREP_PER_FILE}`, '--max-filesize=1M', '--max-depth=40', '--regex-size-limit=4M', '--dfa-size-limit=16M', '--engine=default',
+    regex ? '--no-fixed-strings' : '--fixed-strings', caseSensitive ? '--case-sensitive' : '--ignore-case',
+    ...GREP_SKIP.map((d) => `--glob=!${d}`), ...include.map((g) => `--glob=${g}`), ...exclude.map((g) => `--glob=!${g}`),
+    `--regexp=${q}`, '--', '.'];
+}
+// a hit's line, at most GREP_TEXT characters around the match: {text, col (in the line), len, cutBefore}
+function hitText(line, col, len) {
+  const l = line.replace(/\r?\n$/, '');
+  if (l.length <= GREP_TEXT) return { text: l, col, len };
+  const from = Math.max(0, Math.min(col - 60, l.length - GREP_TEXT));
+  return { text: l.slice(from, from + GREP_TEXT), col: col - from, len: Math.min(len, GREP_TEXT - (col - from)), cut: true };
+}
+const byteCol = (s, bytes) => Buffer.from(s, 'utf8').subarray(0, bytes).toString('utf8').length;
+async function grepRg(c, rg, timeoutMs) {
+  const files = new Map();
+  let hits = 0, buf = '', bad = false;
+  const take = (line) => {
+    let j;
+    try { j = JSON.parse(line); } catch { return true; }
+    if (j?.type !== 'match') return true;
+    const d = j.data || {};
+    const p = typeof d.path?.text === 'string' ? d.path.text.replace(/^\.\//, '') : null;
+    const text = typeof d.lines?.text === 'string' ? d.lines.text : null;
+    if (!p || text === null || !gitRel(p) || /[\x00-\x1f\x7f]/.test(p) || !Number.isInteger(d.line_number)) return true;
+    const sm = Array.isArray(d.submatches) && d.submatches[0] ? d.submatches[0] : { start: 0, end: 0 };
+    const col = byteCol(text, Number(sm.start) || 0), end = byteCol(text, Number(sm.end) || 0);
+    if (!files.has(p)) files.set(p, []);
+    files.get(p).push({ line: d.line_number, ...hitText(text, col, Math.max(0, end - col)), count: Array.isArray(d.submatches) ? d.submatches.length : 1 });
+    return ++hits < GREP_MAX;
+  };
+  const r = await runCapped(rg, rgArgs(c), { env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C.UTF-8' }, timeoutMs, onData: (d) => {
+    buf += d.toString('utf8');
+    if (buf.length > 8 << 20 && buf.indexOf('\n') < 0) { bad = true; return false; }
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (!take(line)) return false;
+    }
+    return true;
+  } });
+  if (r.missing) return null;
+  if (!r.stopped && !r.timedOut && buf) take(buf);
+  if (r.code === 2 && !hits && !r.timedOut) throw new Error(`search: ${printable((r.err || '').replace(/\s+/g, ' ').trim(), 300) || 'ripgrep failed'}`);
+  return { engine: 'ripgrep', files: [...files].map(([p, h]) => ({ path: p, hits: h })), hits, truncated: r.stopped && !bad, timedOut: r.timedOut === true, ...(bad ? { error: 'a line too long to read' } : {}) };
+}
+// globMatch(glob, s): *, ** and ? (no classes, no braces; approximate where they mix) — iterative, backtracking to the
+// latest star (a "*" never takes a "/"; then the latest "**", which may)
+export function globMatch(glob, s) {
+  let g = 0, i = 0, star = -1, mark = 0, starDeep = false, dstar = -1, dmark = 0;
+  while (i < s.length) {
+    if (g < glob.length && glob[g] === '*') {
+      const deep = glob[g + 1] === '*';
+      while (glob[g] === '*') g++;
+      if (deep && glob[g] === '/') g++;   // ("**/" may match no folder at all)
+      star = g; mark = i; starDeep = deep;
+      if (deep) { dstar = g; dmark = i; }
+      continue;
+    }
+    if (g < glob.length && (glob[g] === s[i] || (glob[g] === '?' && s[i] !== '/'))) { g++; i++; continue; }
+    if (star >= 0 && (starDeep || s[mark] !== '/')) { mark++; i = mark; g = star; continue; }
+    if (dstar >= 0) { dmark++; i = dmark; g = dstar; star = dstar; mark = dmark; starDeep = true; continue; }
+    return false;
+  }
+  while (g < glob.length && glob[g] === '*') g++;
+  return g === glob.length;
+}
+// the simple part of the top .gitignore (names and *.ext patterns, no negation): what the walk skips
+function topIgnores() {
+  const t = readSmall('.gitignore', 64 << 10);
+  if (!t) return [];
+  return t.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !l.startsWith('!') && /^\/?[A-Za-z0-9._*?-]+\/?$/.test(l)).map((l) => l.replace(/^\/|\/$/g, '')).slice(0, 200);
+}
+async function grepWalk(c, timeoutMs) {
+  if (c.regex) throw new Error('regular expressions need ripgrep, which is not in the sandbox: search for the text itself');
+  const t0 = Date.now();
+  const ignores = topIgnores();
+  const named = (name) => GREP_SKIP.includes(name) || ignores.some((g) => globMatch(g, name));
+  const matches = (globs, rel) => globs.some((g) => (g.includes('/') ? globMatch(g.replace(/^\//, ''), rel) : rel.split('/').some((seg) => globMatch(g, seg))));
+  const needle = c.caseSensitive ? c.q : c.q.toLowerCase();
+  const files = [];
+  let hits = 0, visited = 0, truncated = false, timedOut = false, tick = Date.now();
+  const queue = [''];
+  walk: while (queue.length) {
+    const dir = queue.shift();
+    let entries;
+    try { entries = fs.readdirSync(path.join(WORKSPACE, dir), { withFileTypes: true }); } catch { continue; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (++visited > 50000) { truncated = true; break walk; }
+      if (Date.now() - t0 > timeoutMs) { timedOut = true; break walk; }
+      if (Date.now() - tick > 25) { await new Promise((r) => setImmediate(r)); tick = Date.now(); }
+      const rel = dir ? `${dir}/${e.name}` : e.name;
+      if (named(e.name) || matches(c.exclude, rel)) continue;
+      if (e.isDirectory()) { if (rel.split('/').length < 40) queue.push(rel); continue; }
+      if (!e.isFile() || (c.include.length && !matches(c.include, rel))) continue;   // (links: never followed)
+      const b = readRegular(path.join(WORKSPACE, rel), GREP_FILE_MAX);
+      if (!b || b.subarray(0, 8192).includes(0)) continue;
+      const lines = b.toString('utf8').split('\n');
+      const found = [];
+      for (let n = 0; n < lines.length && found.length < GREP_PER_FILE; n++) {
+        const hay = c.caseSensitive ? lines[n] : lines[n].toLowerCase();
+        const at = hay.indexOf(needle);
+        if (at < 0) continue;
+        // (a lower-cased line may differ in length from the line: the column is then the line's start)
+        const col = hay.length === lines[n].length ? at : 0;
+        found.push({ line: n + 1, ...hitText(lines[n], col, needle.length), count: 1 });
+        if (++hits >= GREP_MAX) { files.push({ path: rel, hits: found }); truncated = true; break walk; }
+      }
+      if (found.length) files.push({ path: rel, hits: found });
+    }
+  }
+  return { engine: 'node', files, hits, truncated, timedOut };
+}
+export async function fsGrep(req, { rg = RG, timeoutMs = GREP_TIMEOUT } = {}) {
+  const c = checkGrep(req);
+  return (await grepRg(c, rg, timeoutMs)) ?? grepWalk(c, timeoutMs);
 }
 
 // --- ports: what listens in the sandbox (as VS Code's port finder reads it), for the page's previews ---
@@ -1066,6 +1423,7 @@ export function sweepOrphans({ kill = process.kill } = {}) {
 
 // --- one connection, one op ---
 const running = { claude: 0, cli: 0 };
+const helpers = { git: 0, grep: 0 };
 export function serve(sock) {
   const parser = new FrameParser();
   let child = null, opened = false, writer = null, done = false;
@@ -1118,10 +1476,19 @@ export function serve(sock) {
         case 'fs.list': return finish(T.RESULT, fsList(req.path));
         case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path));
         case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to));
-        case 'fs.delete': return finish(T.RESULT, fsDelete(req.path));
+        case 'fs.delete': return finish(T.RESULT, fsDelete(req.path, Number.isFinite(req.ifMtimeMs) ? req.ifMtimeMs : undefined));
         case 'fs.read': return finish(T.RESULT, fsRead(send, req.path, req.max));
         case 'fs.write': writer = fsWriteBegin(req); return undefined;   // the data follows as STDIN frames
         case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit));
+        // (two of each at once: a page typing fast, or many tabs, never piles up processes here)
+        case 'git.diff':
+        case 'fs.grep': {
+          const kind = req.op === 'git.diff' ? 'git' : 'grep';
+          if (helpers[kind] >= 2) return fail('busy: try again in a moment');
+          helpers[kind]++;
+          (kind === 'git' ? gitDiff(send) : fsGrep(req)).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
+          return undefined;
+        }
         case 'memory.read': return finish(T.RESULT, memoryRead(send));
         case 'ws.sensitive': return finish(T.RESULT, wsSensitive());
         case 'ws.restore': return finish(T.RESULT, wsRestore(req));

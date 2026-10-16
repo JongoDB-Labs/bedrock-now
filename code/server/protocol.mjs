@@ -47,8 +47,9 @@
 //                                           as an attachment (nosniff). The previews fetch these bytes and render
 //                                           them themselves; nothing from the workspace is ever served for the
 //                                           browser to render
-//   PUT    /api/fs/file?path=P {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 {error: "changed on disk …"} when
-//                                           ifMtimeMs is given and the file changed since
+//   PUT    /api/fs/file?path=P {text, ifMtimeMs?, create?}   {path, size, mtimeMs}; 409 {error: "changed on disk …"}
+//                                           when ifMtimeMs is given and the file changed since; create: true only writes
+//                                           a file that is not there (409 "exists already" otherwise)
 //   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (percent-encoded) -> {path, size,
 //                                           mtimeMs}; an existing name gets -1, -2 … before its extension
 //   GET    /api/fs/find?q=TEXT&limit=N (≤ 200)   {paths: ["src/a.ts", "src/" …], truncated} — paths under the
@@ -56,14 +57,36 @@
 //                                           a bounded walk (20,000 entries, depth 12; .git, the trash, dependencies
 //                                           and build output — node_modules, .venv, venv, __pycache__, dist, build,
 //                                           target, .next, .cache — skipped; links never followed)
+//   GET    /api/fs/grep?q=TEXT&regex=1&case=1&include=GLOBS&exclude=GLOBS   {engine: ripgrep|node, files: [{path, hits:
+//                                           [{line, text, col, len, count, cut}]}], hits, truncated, timedOut, error}
+//                                           — TEXT searched in the workspace's files (literal unless regex=1: ripgrep's
+//                                           own engine, linear time; the fallback without ripgrep refuses regex); any
+//                                           case unless case=1; GLOBS: at most 10, comma-separated (outside braces), no
+//                                           "!". At most 2,000 hits (100 per file), files up to 1 MiB, 10 s; links never
+//                                           followed; .gitignore honoured; .git, the trash, dependencies and build output
+//                                           skipped (as /api/fs/find). text: the line, at most 240 characters around the
+//                                           match (cut: more). 429 while two searches run already
+//   GET    /api/git/diff                   {repo, reason, head, files: [{path, status: modified|added|deleted, untracked,
+//                                           binary, symlink, modeChange: {old, new} | null, hunks: [{oldStart, oldLines,
+//                                           newStart, newLines, lines}], mtimeMs, size, cut, bad}], truncated, timedOut}
+//                                           — what changed in the workspace since its last commit (git in the sandbox:
+//                                           read-only, fixed arguments, no program from the repository's configuration;
+//                                           docs/security.md), untracked files as new ones (.gitignore honoured; their
+//                                           text up to 256 KiB each, 2 MiB in all). repo false (with a reason): not a git
+//                                           repository, no git, … — the page then reviews the session's own edits.
+//                                           mtimeMs: the file's as the diff saw it (the Review pane's Undo writes only
+//                                           while it is still that). cut: not all of its changes are here (at most 6 MiB
+//                                           of patch, 20,000 lines a file); bad: its patch did not add up. Neither is
+//                                           ever undone
 //   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
 //                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
 //                                           (~/.claude/CLAUDE.md); at most 1 MiB
 //   PUT    /api/memory?scope=project|user {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 when it changed meanwhile
 //   POST   /api/fs/mkdir {path}            {path}
 //   POST   /api/fs/rename {from, to}       {path}; 409 when `to` exists
-//   DELETE /api/fs?path=P                  {trash}: moved into /workspace/.bedrock-now-trash/ (which holds a .gitignore
-//                                           of "*" so git leaves it alone)
+//   DELETE /api/fs?path=P&ifMtimeMs=N      {trash}: moved into /workspace/.bedrock-now-trash/ (which holds a .gitignore
+//                                           of "*" so git leaves it alone); ifMtimeMs: only while its modification time
+//                                           is still N (409 otherwise)
 //   GET    /api/plugins                    {installed: [{id, name, marketplace, version, scope, enabled, fromFolder,
 //                                           installedAt, updatedAt, errors}], marketplaces: [{name, source, location}]}
 //                                           (claude plugin list / plugin marketplace list --json in the sandbox)
@@ -213,7 +236,8 @@
 //   {type: "text", text, model, parent} · {type: "thinking", text, parent}       a finished block
 //   {type: "tool_use", id, name, input, parent}
 //   {type: "tool_result", id, text, is_error, parent, edit?: {path, original, hunks: [{oldStart, oldLines, newStart,
-//          newLines, lines}], complete}}   complete: false when the diff was cut (LIMITS.editHunkChars in all)
+//          newLines, lines}], complete, created}}   complete: false when the diff was cut (LIMITS.editHunkChars in all);
+//          created: a Write that made a new file
 //   {type: "task", id, status, summary, description, toolUseId}
 //   {type: "local", text}                                      a local command's output (/context, /cost …), a
 //                                                              compaction, a denied tool, a closed session

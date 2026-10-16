@@ -61,6 +61,7 @@ const P: Record<string, string> = {
   pause: 'M7.5 5v10M12.5 5v10',
   forward: 'M3 5l6 5-6 5zM10.5 5l6 5-6 5z',
   undo: 'M7 4L3 8l4 4M3 8h9.5a4.5 4.5 0 0 1 0 9H9',
+  comment: 'M3.5 4h13v9h-7l-4 3v-3h-2z',
 };
 
 export type IconName = keyof typeof P;
