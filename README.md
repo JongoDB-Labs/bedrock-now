@@ -420,11 +420,11 @@ per browser.
 
   | Mode | Claude Code underneath | Without asking | Your words |
   |---|---|---|---|
-  | **Read only** | `dontAsk`, with Edit, Write and NotebookEdit denied | reading, searching, read-only commands (`ls`, `cat`, `git status` …) and commands you *Always* allowed; everything else is **denied** (no card) | read-only |
+  | **Read only** | `dontAsk`, with Edit, Write, NotebookEdit and EnterPlanMode denied | reading, searching, read-only commands (`ls`, `cat`, `git status` …) and commands you *Always* allowed; everything else is **denied** (no card) | read-only |
   | **Plan** | `plan` | reading and read-only commands; it asks before anything else, then shows its plan to approve | read-only, then a plan |
   | **Manual** | `default` | reading and read-only commands; every edit and other command asks | read-write-execute, each approved |
   | **Accept edits** | `acceptEdits` | file edits in the workspace and file commands there (`mkdir`, `touch`, `mv`, `cp`, `rm`, `sed`); other commands ask | read-write (execute approved) |
-  | **Bypass permissions** | `bypassPermissions` | everything — but edits of `.git`, `.claude`, `.vscode`, `.husky`, `.envrc` and `.mcp.json` still ask, and your deny rules still deny | read-write-execute, no prompts |
+  | **Bypass permissions** | `bypassPermissions` | everything — Claude's file tools still ask before changing `.git`, `.claude`, `.vscode`, `.husky`, `.devcontainer`, `.envrc` and `.mcp.json` (shell commands do not: the watchlist below flags those after the turn), and your deny rules still deny | read-write-execute, no prompts |
 
   *Read only*, *Manual* and *Accept edits* are remembered for new sessions (per browser); *Plan* and *Bypass
   permissions* apply to the session they were picked in only, as in the desktop app and VS Code. *Auto* (a reviewer
@@ -434,15 +434,24 @@ per browser.
   what it means here: the workspace is your real folder (git hooks, package scripts and editor settings in it run on
   your computer later), the sandbox's internet access, and the budget. While it is on a red strip sits above the prompt
   box (*Switch to Manual*), the tab title starts with ⏵⏵ and the portal's Code badge turns red; it ends with the
-  session's process (an idle stop, a resume: *Manual* again). Details: [docs/security.md](docs/security.md#bypass-permissions).
-- **Files that run on your computer.** In every mode, the page checks a short list of files of your folder after each
-  turn — git hooks and `.git/config`, husky hooks, `.envrc`, `.vscode/tasks.json` and `settings.json`, Claude Code's
-  `.claude/settings*.json`, `.mcp.json`, `package.json`'s install scripts, dev container files: these run on your
-  computer, not in the sandbox, when you use the folder there. If a turn (or something between turns) changed one, a
+  session's process (an idle stop, a resume: *Manual* again; new sessions start in your usual mode, never in Bypass).
+  Over remote access it works too once allowed on the computer, and the dialog says you are remote. One mode switch
+  runs at a time (pressed again meanwhile, the last one goes next), and a switch Claude Code refuses is taken back in
+  the page. Details: [docs/security.md](docs/security.md#bypass-permissions).
+- **Files that run on your computer.** In every mode, the page checks a list of files of your folder after each turn
+  — git's own (hooks, also in `core.hooksPath` such as husky's `.husky/_` or `.githooks/`; `.git/config` and the
+  files it includes; a `core.fsmonitor` program; a `.git` file and the git folder it points to; submodules), husky
+  hooks and the configuration of `pre-commit`, lefthook and lint-staged, `.envrc`, VS Code's `tasks.json`,
+  `settings.json` and `*.code-workspace`, Claude Code's `.claude/settings*.json`, `.mcp.json`, `package.json` (its
+  install scripts and hook tools' keys — and every script once a git hook here runs package scripts), `.npmrc`,
+  `.yarnrc.yml`, `.pnpmfile.cjs`, dev container files: these run on your computer, not in the sandbox, when you use the
+  folder there. If a turn (or something between turns) changed one, a
   red card says which, why it matters, shows the diff, and **Revert** puts it back as it was (a new file goes to the
   workspace trash) — as long as nothing changed it again since.
 - **Model, effort, cost.** You pick the model (this stack's models and prices) and the effort; the meter shows each
-  turn's and the session's cost and the context window's use.
+  turn's and the session's cost and the context window's use. A switch Claude Code refuses is taken back and said
+  ("Still on …"); the page lists the model in the session's own `/model` picker first, so Claude Code does not need an
+  API round trip to accept it.
 - **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).

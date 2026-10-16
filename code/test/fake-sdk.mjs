@@ -8,16 +8,23 @@ export function fakeQuery(log = []) {
     const q = {
       options, calls: [],
       async interrupt() { q.calls.push('interrupt'); push({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1, duration_ms: 5 }); },
-      async setModel(m) { q.calls.push(['setModel', m]); },
+      // failModel: the next N setModel calls fail as Claude Code's model check does on a slow API
+      async setModel(m) {
+        q.calls.push(['setModel', m]);
+        if (q.failModel > 0) { q.failModel--; throw new Error(`Couldn't confirm model "${m}" with the API. Try again, or run /model to see available models.`); }
+      },
       // the flag-settings layer as Claude Code keeps it: top-level keys merged shallowly, null clears one
       flags: {},
+      // delay: control requests take this long (answered in order, as Claude Code answers them)
       async setPermissionMode(m) {
         q.calls.push(['setPermissionMode', m]);
+        if (q.delay) await new Promise((r) => setTimeout(r, q.delay));
         if (q.refuseMode) throw new Error(q.refuseMode);
         if (q.echoMode) push({ type: 'system', subtype: 'status', status: null, permissionMode: m });
       },
       async applyFlagSettings(s) {
         q.calls.push(['applyFlagSettings', s]);
+        if (q.delay) await new Promise((r) => setTimeout(r, q.delay));
         for (const [k, v] of Object.entries(s)) { if (v === null) delete q.flags[k]; else q.flags[k] = v; }
       },
       async supportedCommands() { return [{ name: 'context', description: 'ctx <b>', argumentHint: '' }, { name: 7 }, null]; },
@@ -41,6 +48,7 @@ export function fakeQuery(log = []) {
       async stopTask(id) { q.calls.push(['stopTask', id]); },
       async rewindFiles(id, o) { q.calls.push(['rewindFiles', id, o]); return { canRewind: true, filesChanged: ['/workspace/a.txt', 7], insertions: 2, deletions: -1, extra: 'x' }; },
       close() { closed = true; q.calls.push('close'); wake?.(); },
+      emit(m) { push(m); },
       async *[Symbol.asyncIterator]() {
         (async () => {
           for await (const m of prompt) {

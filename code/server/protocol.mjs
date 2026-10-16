@@ -121,7 +121,10 @@
 //   {type: "interrupt", session}
 //   {type: "set_model", session, model} · {type: "set_mode", session, mode, confirmed?} · {type: "set_effort", session,
 //                                               effort} (effort null = the model's default); each answered by a status
-//                                               event. A session without a running process keeps them for its next start.
+//                                               event — a refused one (Claude Code could not confirm a model, a mode it
+//                                               may not set) by an error and a status with what holds. A session without
+//                                               a running process keeps them for its next start. set_mode requests of a
+//                                               session run one after another (the page sends one at a time too).
 //                                               mode: a page mode of MODES but auto (modes.mjs); bypassPermissions only
 //                                               with CODE_ALLOW_BYPASS on and confirmed: true (the page's dialog), never
 //                                               kept for a next start: a process that ends (idle, closed, restarted)
@@ -222,9 +225,9 @@
 //                                                              tool rounds (it then gets no turn of its own)
 //   {type: "error", message}                                   the session's process failed (text: the same)
 //   {type: "watch", id, when: "turn"|"between", changes: [{path, kind, why, change: added|changed|removed, before,
-//          after, binary, cut, revertable}]}   files of your folder that run on your computer later (git hooks and
-//          config, husky hooks, .envrc, VS Code tasks and settings, Claude Code's workspace settings, .mcp.json,
-//          package.json's lifecycle scripts, dev container commands) changed during a turn ("turn") or since the last
+//          after, binary, cut, revertable, exec}]}   files of your folder that run on your computer later (watch.mjs:
+//          git's own files and hook folders, hook managers, .envrc, VS Code, Claude Code's workspace settings,
+//          .mcp.json, package.json, package manager and dev container files) changed during a turn ("turn") or since the last
 //          one ended ("between": a background command, the terminal, you); in every mode. before/after: the texts to
 //          diff (≤ LIMITS.watchShownChars each; cut: more), null for a file that is not there or not text
 // No cost is ever taken from the sandbox: the page asks /.bn/spend (LiteLLM's spend logs, through the portal).

@@ -123,7 +123,7 @@
         case "permission_done": perms.delete(m.id); showPerms(); break;
         case "pending": case "hello": badge(m.pending ?? m.count); break;
         case "session_state":
-          if (m.session === current) { $("status").textContent = `${m.state}${m.error ? `: ${m.error}` : ""}`; if (m.mode) $("mode").value = m.mode; }
+          if (m.session === current) { $("status").textContent = `${m.state}${m.error ? `: ${m.error}` : ""}`; if (m.mode) $("mode").value = m.mode; if (m.model && [...$("model").options].some((o) => o.value === m.model)) $("model").value = m.model; }
           break;
         case "error": note(m.message); break;
         default: break;
@@ -268,8 +268,12 @@
   $("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("ask").requestSubmit(); });
   $("new").addEventListener("click", () => open({ model: $("model").value || undefined, mode: $("mode").value, effort: $("effort").value || undefined }));
   $("stop").addEventListener("click", () => current && request({ type: "interrupt", session: current }).catch((e) => note(e.message)));
-  $("model").addEventListener("change", () => { if (current) request({ type: "set_model", session: current, model: $("model").value }).then(() => line("muted", `model → ${$("model").value} (the next turn writes this model's prompt cache again)`)).catch((e) => note(e.message)); });
-  $("mode").addEventListener("change", () => { if (current) request({ type: "set_mode", session: current, mode: $("mode").value }).catch((e) => note(e.message)); });
+  // a switch the backend refuses (Claude Code could not confirm the model, a mode it may not set) is taken back here
+  let shownModel = "", shownMode = "default";
+  $("model").addEventListener("focus", () => { shownModel = $("model").value; });
+  $("mode").addEventListener("focus", () => { shownMode = $("mode").value; });
+  $("model").addEventListener("change", () => { if (current) request({ type: "set_model", session: current, model: $("model").value }).then(() => line("muted", `model → ${$("model").value} (the next turn writes this model's prompt cache again)`)).catch((e) => { if (shownModel) $("model").value = shownModel; note(`still on ${shownModel || "the model before"}: ${e.message}`); }); });
+  $("mode").addEventListener("change", () => { if (current) request({ type: "set_mode", session: current, mode: $("mode").value }).catch((e) => { $("mode").value = shownMode; note(`mode not changed: ${e.message}`); }); });
   $("effort").addEventListener("change", () => { if (current && $("effort").value) request({ type: "set_effort", session: current, effort: $("effort").value }).catch((e) => note(e.message)); });
   $("session").addEventListener("change", () => { const id = $("session").value; if (id) open({ resume: id, model: $("model").value || undefined, mode: $("mode").value }); });
   $("find").addEventListener("input", () => { clearTimeout(loadSessions.t); loadSessions.t = setTimeout(loadSessions, 300); });

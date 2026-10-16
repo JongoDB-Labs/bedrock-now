@@ -278,7 +278,8 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       interrupt();
     } else if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
-      // (from the store, not this render: presses in a row each see the mode the one before set)
+      // (from the store, not this render: presses in a row each see the mode the one before set; while a switch is
+      // on its way the last one pressed goes next)
       const st = store.get();
       const cur = (st.active ? st.views[st.active]?.mode : undefined) ?? st.startWith ?? st.prefs.mode;
       setMode(nextMode(cur, allowBypass));   // (into Bypass: its confirmation first)

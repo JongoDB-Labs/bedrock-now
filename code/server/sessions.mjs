@@ -18,6 +18,8 @@ const WATCH_MS = 5000;       // how long a turn's first prompt waits for the wat
 const REVERTS_KEPT = 10;     // watch events per session whose Revert stays possible (the oldest go) …
 const REVERT_BYTES = 4 << 20; // … and at most this much of their copies
 const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now';
+const MODE_ECHO_MS = 30000;  // how long a switch's status echo is waited for (then a status is Claude Code's own again)
+const NOT_CONFIRMED = /Couldn't confirm model/i;   // Claude Code's own check of a model id (one request, 5 s) failed
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
   p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
@@ -42,6 +44,9 @@ export class Session {
     this.bypassable = false;  // this process was started with --allow-dangerously-skip-permissions
     this.flagPerms = null;    // the `permissions` object this process's flag settings hold (ours: modes.mjs)
     this.switching = false;   // a mode switch is under way (it sets the flag settings itself)
+    this.modeChain = Promise.resolve(); this.modeQueue = 0;   // set_mode requests, one after another
+    this.echoes = [];         // [{mode, at}]: status messages Claude Code still owes for modes this server set (they may come late)
+    this.pickerModels = [];   // the models this process's /model picker lists (setModel then skips its API check)
     // the watchlist (watch.mjs): the watched files at this turn's start, at the last turn's end, and the Reverts kept
     this.watchBase = null; this.watchLast = null; this.watchChain = Promise.resolve(); this.watchOff = false;
     this.reverts = new Map();
@@ -88,7 +93,7 @@ export class Session {
     // a process never starts in Bypass permissions (nor auto): those are switched to, per process, by the page
     if (!START_MODES.includes(this.mode)) this.mode = 'default';
     this.bypassable = this.mgr.allowBypass === true;
-    this.flagPerms = null;
+    this.flagPerms = null; this.pickerModels = []; this.echoes = [];
     // A page that saw this session end starts counting again from 0: the new process's events are numbered from 1
     // (what earlier processes said is in the transcript: GET /api/sessions/ID/messages).
     this.ring = new Ring();
@@ -171,11 +176,27 @@ export class Session {
   observe(m) {
     if (!m || typeof m !== 'object') return;
     let changed = false;
-    // Claude Code's own mode (a plan approved with a mode, a switch): as the page names it, with the rules it needs
+    // Claude Code's own mode (a plan approved with a mode, a switch): as the page names it, with the rules it needs.
+    // Not while set_mode requests run (they set it), nor the status a switch of this server's own owes (it may come
+    // after a newer switch).
     const mode = m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status') ? pageMode(m.permissionMode) : null;
-    if (mode && mode !== this.mode && !this.switching) {
-      this.mode = mode; changed = true;
-      this.syncFlags();
+    let echo = false;
+    if (mode && m.subtype === 'status') {
+      const now = Date.now();
+      this.echoes = this.echoes.filter((x) => now - x.at < MODE_ECHO_MS);
+      const i = this.echoes.findIndex((x) => x.mode === m.permissionMode);
+      if (i >= 0) { this.echoes.splice(0, i + 1); echo = true; }
+    }
+    if (mode && mode !== this.mode && !this.switching && !this.modeQueue && !echo) {
+      if (mode === 'bypassPermissions' || mode === 'auto') {
+        // never without the page: Claude Code switched there by itself — back to Manual, and said so
+        this.mgr.log(`session ${this.id.slice(0, 8)}: Claude Code switched to ${mode} without a request from the page; back to default`);
+        this.emit({ type: 'local', text: `Claude Code switched this session to ${mode === 'auto' ? 'Auto' : 'Bypass permissions'} by itself; the Code page set it back to Manual.` });
+        void this.setMode('default').catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: back to default failed: ${short(e?.message || String(e), 200)}`));
+      } else {
+        this.mode = mode; changed = true;
+        this.syncFlags();
+      }
     }
     if (m.type === 'system' && m.subtype === 'init') {
       if (isModel(m.model)) {
@@ -272,15 +293,51 @@ export class Session {
   // the switches: the SDK first (when a process runs; else they are kept for its next start), then this session's own
   // record, then a status event pages pick up
   status() { this.emit({ type: 'status', status: '', permissionMode: this.mode, model: this.model, effort: this.effort }); this.mgr.onState(this); }
+  // A model by its full id. Claude Code 2.1.296 checks an id it is not offering with a one-token request (5 s): on a
+  // cold LiteLLM → Bedrock path that fails ("Couldn't confirm model …"). So the model goes into this process's
+  // /model picker first (modelPicker, flag settings: then there is no such request), and a failed check is tried once
+  // more. A refused switch says so, and the pages get the model that runs (a status).
   async setModel(model) {
     if (!isModel(model)) throw new SessionError('bad model');
     if (!isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
-    if (this.q) { await this.q.setModel(model); this.modelSet = true; }
+    const q = this.q;
+    if (q) {
+      try {
+        const want = [...new Set([...this.pickerModels, this.model, model].filter((m) => typeof m === 'string' && isFullModel(m)))];
+        if (want.join('\n') !== this.pickerModels.join('\n')) {
+          await q.applyFlagSettings({ modelPicker: { options: want.map((m) => ({ model: m })) } });
+          this.pickerModels = want;
+        }
+        try { await q.setModel(model); } catch (e) {
+          if (!NOT_CONFIRMED.test(e?.message || '')) throw e;
+          await q.setModel(model);
+        }
+        this.modelSet = true;
+      } catch (e) {
+        this.status();
+        throw e;
+      }
+    }
     this.model = model; this.status();
   }
   /** A page mode (modes.mjs). bypassPermissions: only with CODE_ALLOW_BYPASS, confirmed (the page's dialog), and in a
    *  process started allowing it — one that was not (or none) is started again first, resumed; never mid-turn. */
-  async setMode(raw, { confirmed = false } = {}) {
+  setMode(raw, opts = {}) {
+    // one after another: two switches at once would interleave their rules and modes
+    this.modeQueue++;
+    const run = this.modeChain.then(() => this.doSetMode(raw, opts));
+    this.modeChain = run.then(() => {}, () => {});
+    return run.finally(() => { this.modeQueue--; });
+  }
+  async doSetMode(raw, { confirmed = false } = {}) {
+    try {
+      return await this.applyMode(raw, confirmed);
+    } catch (e) {
+      this.status();   // the pages get the mode the session is in
+      throw e;
+    }
+  }
+  async applyMode(raw, confirmed) {
     const mode = normMode(raw);
     if (mode === 'auto') throw new SessionError('Auto mode is not offered in the Code page yet');
     if (!SET_MODES.includes(mode)) throw new SessionError('bad mode');
@@ -307,9 +364,12 @@ export class Session {
     this.switching = true;
     try {
       if (!samePermissions(both, this.flagPerms)) { await q.applyFlagSettings({ permissions: both }); this.flagPerms = both; }
+      const echo = { mode: cliMode(mode), at: Date.now() };
       try {
+        this.echoes.push(echo);
         await q.setPermissionMode(cliMode(mode));
       } catch (e) {
+        this.echoes = this.echoes.filter((x) => x !== echo);
         if (!samePermissions(from, this.flagPerms)) {
           await q.applyFlagSettings({ permissions: from }).then(() => { this.flagPerms = from; }, () => {});
         }
@@ -383,7 +443,7 @@ export class Session {
     const id = crypto.randomUUID();
     this.reverts.set(id, changes.map(revertOf));
     const bytes = () => [...this.reverts.values()].flat().reduce((n, c) => n + (c.before?.data?.length ?? 0), 0);
-    while (this.reverts.size > 1 && (this.reverts.size > REVERTS_KEPT || bytes() > REVERT_BYTES)) this.reverts.delete(this.reverts.keys().next().value);
+    while (this.reverts.size && (this.reverts.size > REVERTS_KEPT || bytes() > REVERT_BYTES)) this.reverts.delete(this.reverts.keys().next().value);
     this.emit(watchEvent(id, when, changes));
   }
   /** Revert: the watched files of a `watch` event (or one of them) put back as they were at its start — each only

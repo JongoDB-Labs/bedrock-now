@@ -296,6 +296,8 @@ def bypass(browser):
     expect(dlg.get_by_test_id("bypass-risk-folder")).to_contain_text("/home/you/projects/acme-api")
     expect(dlg.get_by_test_id("bypass-risk-egress")).to_contain_text("has internet access")
     expect(dlg.get_by_test_id("bypass-risk-budget")).to_contain_text("left this period")
+    expect(dlg).to_contain_text("shell commands do not")
+    expect(dlg.get_by_test_id("bypass-risk-remote")).to_have_count(0)   # (plain HTTP: the computer itself)
     p.shot("desktop-bypass-dialog.png")
     dlg.get_by_test_id("bypass-cancel").click()
     expect(dlg).to_have_count(0)
@@ -400,6 +402,36 @@ def phone_modes(browser):
     p.assert_clean()
     p.close()
     post(NORMAL + "/__mock/bypass?allow=0")
+
+
+@check("switches the backend refuses are taken back: a model Claude Code could not confirm, a mode; one mode switch at a time")
+def refused_switches(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "refused-switches", **DESKTOP)
+    page = p.open()
+    send(page, "hello")
+    wait_turns(page, 1)
+    expect(page.get_by_test_id("model-picker")).to_contain_text("Sonnet")
+    post(NORMAL + "/__mock/model-fail?n=1")
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    expect(page.locator(".toast-error")).to_contain_text("Still on Claude Sonnet 5.5", timeout=10_000)
+    expect(page.get_by_test_id("model-picker")).to_contain_text("Sonnet")
+    stored = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1') || '{}').model")
+    assert stored != "claude-haiku-5-5", f"the refused model was remembered: {stored}"
+    p.shot("desktop-model-refused.png")
+    # the next try goes through
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    expect(page.get_by_test_id("model-picker")).to_contain_text("Haiku", timeout=10_000)
+    # Shift+Tab pressed twice at once: one switch at a time, the last one wins — in the page and in the backend
+    box = page.get_by_test_id("prompt")
+    box.click()
+    page.keyboard.down("Shift"); page.keyboard.press("Tab"); page.keyboard.press("Tab"); page.keyboard.up("Shift")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan", timeout=10_000)
+    page.wait_for_function("() => fetch('/api/state').then((r) => r.json()).then((s) => s.sessions.some((x) => x.mode === 'plan'))", timeout=10_000)
+    p.assert_clean()
+    p.close()
 
 
 @check("deny with a reason; always allow; model switch note")

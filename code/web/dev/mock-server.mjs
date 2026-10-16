@@ -22,7 +22,8 @@
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
 // in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
 // name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures;
-// /__mock/bypass?allow=1|0&egress=1|0 sets what Settings allow (CODE_ALLOW_BYPASS) and the sandbox's internet access.
+// /__mock/bypass?allow=1|0&egress=1|0 sets what Settings allow (CODE_ALLOW_BYPASS) and the sandbox's internet access;
+// /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API.
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
@@ -57,6 +58,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? Math.min(ms, 5) : 
 const LIMITS = { maxImages: 4, maxPendingPerSession: 8, maxPendingTotal: 32, permissionInputMax: 1 << 20, permissionShownChars: 262144, permissionShownString: 131072, maxPromptChars: 200000 };
 let locked = false;
 let allowBypass = process.env.MOCK_BYPASS === '1';
+let modelFail = 0;   // the next N model switches fail as Claude Code's model check does on a slow API
 let egress = true;
 let keyBudget;
 const resetBudget = () => (keyBudget = { alias: 'claude-code-terminal', spend: 1.23, max_budget: 50, reset_at: new Date(Date.now() + 9 * 86400e3).toISOString() });
@@ -1499,6 +1501,10 @@ const server = http.createServer(async (req, res) => {
         if (locked) for (const ws of wss.clients) ws.terminate();
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/model-fail') {
+        modelFail = Number(url.searchParams.get('n') ?? 1) || 0;
+        return json(res, 200, { ok: true, modelFail });
+      }
       if (url.pathname === '/__mock/bypass') {
         if (url.searchParams.has('allow')) allowBypass = url.searchParams.get('allow') === '1';
         if (url.searchParams.has('egress')) egress = url.searchParams.get('egress') !== '0';
@@ -1554,6 +1560,7 @@ const server = http.createServer(async (req, res) => {
         locked = false;
         allowBypass = process.env.MOCK_BYPASS === '1';
         egress = true;
+        modelFail = 0;
         userMemory = null;
         for (const s of sessions.values()) s.interrupt();
         sessions.clear();
@@ -1667,10 +1674,20 @@ server.on('upgrade', (req, sock, head) => {
         }
         case 'interrupt':
           return s.interrupt();
-        case 'set_model':
-          if (ALIAS.test(String(m.model))) return log('set_model refused (an alias):', m.model);   // as the backend
+        case 'set_model': {
+          // as the backend: aliases refused; Claude Code's own model check can fail on a slow API (/__mock/model-fail)
+          const no = ALIAS.test(String(m.model)) ? 'name the model in full (claude-…), not by an alias'
+            : modelFail > 0 ? `Claude Code: Couldn't confirm model "${String(m.model).slice(0, 60)}" with the API. Try again, or run /model to see available models.` : '';
+          if (no) {
+            if (modelFail > 0) modelFail--;
+            s.broadcast(s.stateMsg());
+            if (req) reply({ type: 'reply', req, ok: false, error: no });
+            return reply({ type: 'error', session: s.id, req, message: no });
+          }
           s.model = String(m.model || '').slice(0, 128);
-          return;
+          s.broadcast(s.stateMsg());
+          return req ? reply({ type: 'reply', req, ok: true, data: { model: s.model } }) : undefined;
+        }
         case 'set_mode': {
           // as the backend: Bypass only where Settings allow it and with the page's confirmation; Auto not offered
           const mode = m.mode === 'dontAsk' ? 'readOnly' : m.mode;

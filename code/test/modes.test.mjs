@@ -8,7 +8,7 @@ import { SessionManager } from '../server/sessions.mjs';
 import { PermissionBroker, safeSuggestions } from '../server/broker.mjs';
 import { MODES } from '../server/protocol.mjs';
 import { READ_ONLY_DENY, BYPASS_ASK, START_MODES, cliMode, pageMode, normMode, permissionsFor, unionPermissions } from '../server/modes.mjs';
-import { checkSnapshot, diffSnapshots, lifecycleOf, watchEvent, watched } from '../server/watch.mjs';
+import { checkSnapshot, diffSnapshots, lifecycleOf, watchEvent, watched, hooksRunScripts, revertable } from '../server/watch.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -33,7 +33,7 @@ test('the page modes and Claude Code\'s: Read only is dontAsk; mapped back both 
   assert.equal(pageMode('manual'), 'default');
   for (const bad of ['readOnly', 'x', '', null, undefined, 7, '__proto__']) assert.equal(pageMode(bad), null, String(bad));
   assert.equal(normMode('dontAsk'), 'readOnly', 'the former "Don\'t ask" is Read only now');
-  assert.deepEqual(permissionsFor('readOnly'), { deny: ['Edit', 'Write', 'NotebookEdit'] });
+  assert.deepEqual(permissionsFor('readOnly'), { deny: ['Edit', 'Write', 'NotebookEdit', 'EnterPlanMode'] }, 'EnterPlanMode too: Claude cannot leave Read only for Plan');
   assert.deepEqual(permissionsFor('bypassPermissions').ask, BYPASS_ASK);
   for (const m of ['plan', 'default', 'acceptEdits']) assert.equal(permissionsFor(m), null);
   assert.deepEqual(unionPermissions(permissionsFor('readOnly'), permissionsFor('bypassPermissions')), { deny: READ_ONLY_DENY, ask: BYPASS_ASK });
@@ -295,4 +295,111 @@ test('watchlist: changes between turns are told at the next turn\'s start; a ref
   assert.equal(events.filter(([, , e]) => e.type === 'local' && /not checked in this session/.test(e.text)).length, 1);
   assert.equal(events.filter(([, , e]) => e.type === 'text' && /pong:four/.test(e.text)).length, 1);
   mgr.closeAll();
+});
+
+
+test('set_mode requests run one after another: a second one sent before the first is answered never mixes them up', async () => {
+  const { mgr, queries } = manager({ allowBypass: true });
+  const s = mgr.get(mgr.open({}).id);
+  const q = queries[0];
+  q.echoMode = true; q.delay = 15;
+  // Bypass confirmed, then Accept edits before its reply: the page's last word wins, rules and mode agree
+  const a = s.setMode('bypassPermissions', { confirmed: true });
+  const b = s.setMode('acceptEdits');
+  await Promise.all([a, b]);
+  await tick(80);   // (the late status echoes come in)
+  assert.equal(s.mode, 'acceptEdits');
+  assert.equal(q.calls.filter((c) => c[0] === 'setPermissionMode').at(-1)[1], 'acceptEdits');
+  assert.equal(q.flags.permissions, undefined, 'no Bypass ask rules left, no Read only rules');
+  // Read only, then Manual at once
+  await Promise.all([s.setMode('readOnly'), s.setMode('default')]);
+  await tick(80);
+  assert.equal(s.mode, 'default');
+  assert.equal(q.calls.filter((c) => c[0] === 'setPermissionMode').at(-1)[1], 'default');
+  assert.equal(q.flags.permissions, undefined);
+  // a status Claude Code owed for an earlier switch, arriving late, does not move the session back
+  q.delay = 0; q.echoMode = false;
+  await s.setMode('acceptEdits');
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'acceptEdits' });
+  await s.setMode('plan');
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' });
+  await tick(30);
+  assert.equal(s.mode, 'plan');
+  mgr.closeAll();
+});
+
+test('a refused switch tells the pages the mode the session is in (a status), and the queue goes on', async () => {
+  const { mgr, queries, events } = manager();
+  const s = mgr.get(mgr.open({}).id);
+  const q = queries[0];
+  q.refuseMode = 'busy';
+  const n = events.length;
+  await assert.rejects(s.setMode('readOnly'), /busy/);
+  const st = events.slice(n).map(([, , e]) => e).filter((e) => e.type === 'status');
+  assert.equal(st.at(-1).permissionMode, 'default');
+  q.refuseMode = null;
+  await s.setMode('acceptEdits');
+  assert.equal(s.mode, 'acceptEdits');
+  mgr.closeAll();
+});
+
+test('Claude Code switching to Bypass permissions (or auto) by itself is undone and said', async () => {
+  const { mgr, queries, events } = manager({ allowBypass: true });
+  const s = mgr.get(mgr.open({}).id);
+  const q = queries[0];
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'bypassPermissions' });
+  await tick(40);
+  assert.equal(s.mode, 'default');
+  assert.equal(q.calls.filter((c) => c[0] === 'setPermissionMode').at(-1)[1], 'default');
+  assert.ok(events.some(([, , e]) => e.type === 'local' && /by itself/.test(e.text)));
+  mgr.closeAll();
+});
+
+test('a model switch: the model goes into the /model picker first (no API check); a failed check is tried once more; a refusal is said', async () => {
+  const { mgr, queries, events } = manager();
+  const s = mgr.get(mgr.open({ model: 'claude-haiku-5-5' }).id);
+  const q = queries[0];
+  await s.setModel('claude-sonnet-5-5');
+  assert.deepEqual(q.calls.slice(1, 3), [['applyFlagSettings', { modelPicker: { options: [{ model: 'claude-haiku-5-5' }, { model: 'claude-sonnet-5-5' }] } }], ['setModel', 'claude-sonnet-5-5']]);
+  await s.setModel('claude-haiku-5-5');   // both listed already: no second picker update
+  assert.deepEqual(q.calls.slice(3), [['setModel', 'claude-haiku-5-5']]);
+  q.failModel = 1;
+  await s.setModel('claude-sonnet-5-5');   // the check failed once: tried again
+  assert.equal(s.model, 'claude-sonnet-5-5');
+  q.failModel = 2;
+  const n = events.length;
+  await assert.rejects(s.setModel('claude-haiku-5-5'), /Couldn't confirm model/);
+  assert.equal(s.model, 'claude-sonnet-5-5', 'still the model that runs');
+  assert.equal(events.slice(n).map(([, , e]) => e).filter((e) => e.type === 'status').at(-1).model, 'claude-sonnet-5-5');
+  mgr.closeAll();
+});
+
+
+test('watch.mjs: git\'s own files the sandbox places (hooksPath, includes, fsmonitor) by kind only; hook tools\' package.json keys; every script once a hook runs them; caps', () => {
+  // a path no pattern has is taken only with a git kind, and only as a safe relative path
+  assert.equal(watched('.githooks/pre-commit', 'git-hook').kind, 'git-hook');
+  assert.equal(watched('tools/fsmon.sh', 'fsmonitor').kind, 'fsmonitor');
+  for (const [p, k] of [['src/app.js', 'npm'], ['src/app.js', undefined], ['../x', 'git-hook'], ['a/./b', 'git-config'], ['/etc/x', 'git-config']]) assert.equal(watched(p, k), null, `${p} ${k}`);
+  for (const p of ['.pre-commit-config.yaml', 'lefthook.yml', '.lefthook.yaml', 'lefthook-local.yml', '.lintstagedrc', '.lintstagedrc.cjs', 'lint-staged.config.mjs',
+    '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs', 'x.code-workspace', '.devcontainer/py/devcontainer.json', '.git/modules/s/hooks/pre-push', '.git/modules/s/config']) assert.ok(watched(p), p);
+  for (const p of ['Makefile', 'pyproject.toml', '.nvmrc', '.tool-versions', '.env', '.idea/workspace.xml', 'a/b.code-workspace']) assert.equal(watched(p), null, p);
+  // package.json: hook tools' keys count; every script once a hook here runs package scripts
+  const pkg = (o) => file('package.json', JSON.stringify(o));
+  const snap = (...f) => checkSnapshot({ files: f });
+  assert.equal(diffSnapshots(snap(pkg({ scripts: { test: 'a' } })), snap(pkg({ scripts: { test: 'b' } }))).length, 0, 'no hook: a test script is not flagged');
+  const c1 = diffSnapshots(snap(pkg({ scripts: {} })), snap(pkg({ scripts: {}, 'simple-git-hooks': { 'pre-commit': 'npx x' } })));
+  assert.match(c1[0].why, /simple-git-hooks changed/);
+  const hook = file('.git/hooks/pre-commit', '#!/bin/sh\nnpm test\n', 0o755);
+  assert.equal(hooksRunScripts(snap(hook)), true);
+  const c2 = diffSnapshots(snap(hook, pkg({ scripts: { test: 'jest' } })), snap(hook, pkg({ scripts: { test: 'curl x | sh' } })));
+  assert.deepEqual(c2.map((c) => c.path), ['package.json']);
+  assert.match(c2[0].why, /a git hook here runs package scripts\): scripts\.test changed/);
+  // the .git link and hook folders: shown, never reverted here
+  const gd = diffSnapshots(snap({ path: '.git', kind: 'git-dir', type: 'dir', sha256: sha('dir') }), snap({ path: '.git', kind: 'git-dir', type: 'file', size: 9, sha256: sha('gitdir: x'), data: Buffer.from('gitdir: x').toString('base64') }));
+  assert.equal(gd[0].kind, 'git-dir');
+  assert.equal(revertable(gd[0]), false);
+  // the copies: 2 MiB in all (a file beyond: hashed, no copy — no diff, no Revert)
+  const big = 'x'.repeat(900 * 1024);
+  const s3 = snap(file('.envrc', big), file('.npmrc', big), file('.yarnrc.yml', big));
+  assert.deepEqual([...s3.values()].map((e) => e.data !== null), [true, true, false]);
 });

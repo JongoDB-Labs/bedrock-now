@@ -55,15 +55,20 @@ All notable changes to bedrock-now are documented here. The format follows
   in a dialog naming the risks here (your real workspace folder — its git hooks, package scripts and editor settings
   run on your computer later —, the sandbox's internet access, the budget); while it is on a red strip sits above the
   prompt box, the tab title starts with ⏵⏵ and the portal's Code badge turns red; it ends with the session's process
-  (new and resumed sessions start in *Manual*). Edits of `.git`, `.claude`, `.vscode`, `.husky`, `.envrc` and
-  `.mcp.json` still ask, deny rules still deny. Sessions start with `--allow-dangerously-skip-permissions` only while
+  (a resumed or restarted session goes on in *Manual*; new ones start in your usual mode, never in Bypass); over remote
+  access it works too once allowed, and the dialog says so. Claude's file tools still ask before changing `.git`,
+  `.claude`, `.vscode`, `.husky`, `.devcontainer`, `.envrc` and `.mcp.json` (shell commands do not: the watchlist flags
+  those), deny rules still deny; Claude Code switching to Bypass or Auto by itself is undone and said. Sessions start with `--allow-dangerously-skip-permissions` only while
   it is allowed (never in bypass); the code container refuses the switch without the setting and the page's
   confirmation.
-- **A watchlist of files that run on your computer**, in every mode: git hooks and `.git/config`, husky hooks,
-  `.envrc`, `.vscode/tasks.json` and `settings.json`, `.claude/settings*.json`, `.mcp.json`, `package.json`'s install
-  scripts and dev container files are hashed (with a copy up to 1 MiB) when a turn starts and ends; a change — by an
-  edit, by Bash, or between turns — shows a card with why it matters, the diff and **Revert** (only while the file is
-  still as the turn left it; a new file goes to the workspace trash).
+- **A watchlist of files that run on your computer**, in every mode: git's own files (hooks, `core.hooksPath` folders
+  such as husky's `.husky/_`, `.git/config` and its includes, a `core.fsmonitor` program, a `.git` file and its
+  gitdir, submodules), husky hooks and pre-commit/lefthook/lint-staged configuration, `.envrc`, VS Code tasks,
+  settings and `*.code-workspace` files, `.claude/settings*.json`, `.mcp.json`, `package.json` (install scripts and
+  hook tools' keys; every script once a git hook here runs package scripts), `.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs`
+  and dev container files are hashed (with a copy up to 1 MiB, 2 MiB in all) when a turn starts and ends; a change — by
+  an edit, by Bash, or between turns — shows a card with why it matters, the diff and **Revert** (only while the file
+  is still as the turn left it; a new file goes to the workspace trash).
 
 ### Changed
 
@@ -79,11 +84,17 @@ All notable changes to bedrock-now are documented here. The format follows
   settings decide. `CLAUDE_BEDROCK_MODEL=haiku` (`sonnet`, `opus`) is passed as that slot's full id — with the alias,
   Claude Code 2.1.296 plans on Sonnet in *Plan* mode (probed: with the full id, Plan stays on Haiku) — in the browser
   terminal's `claude-bedrock` too.
-- The Code page's plan approval says *Approve, Manual* / *Approve, Accept edits*.
+- The Code page's plan approval says *Approve, Manual* / *Approve, Accept edits*. Read only also denies EnterPlanMode
+  (Claude cannot leave it for Plan). Mode switches run one at a time in the backend (and the page sends the last one
+  pressed next); a refused one is taken back in the page.
 
 ### Fixed
 
 - The Code page showed the mode of a session's last turn start after a reload instead of the mode it is in now.
+- A model switch in the Code page could fail silently: Claude Code 2.1.296 checks an id it is not offering with a
+  one-token request that must answer within 5 s ("Couldn't confirm model …"), which a cold LiteLLM → Bedrock path can
+  miss, while the page already showed the new model. The model now goes into the session's own `/model` picker first
+  (no check request), a failed check is tried once more, and a refused switch is taken back in the page ("Still on …").
 
 ## [0.5.0] - 2026-10-16
 

@@ -664,14 +664,15 @@ spawn server, Claude Code or any file at will.
   Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
   you type in, the editor or the terminal panel, and its keys (1 *Allow once*, 2 *Always*, 3 *Deny*) answer only after
   you clicked or tabbed into it: a keystroke meant for something else never answers a prompt.
-- [x] **Modes are Claude Code's own.** The mode picker's *Plan*, *Manual* and *Accept edits* are Claude Code's `plan`,
-  `default` and `acceptEdits`; *Read only* (the page's own) is its `dontAsk` with `Edit`, `Write` and `NotebookEdit`
-  denied by rules: what is not allowed already is denied without a prompt (read-only commands and rules you *Always*
-  allowed still run). The rules a mode needs go into Claude Code's flag-settings layer (above user, project and local
-  settings) as **one** `permissions` object, sent whole on every switch — Claude Code merges that layer's keys
-  shallowly, so a partial one would drop the others — and a switch applies both modes' rules first, then the mode,
-  then the new mode's rules alone: never a moment with fewer rules than either mode needs. *Bypass permissions* and
-  the watchlist of files that run on your computer: [below](#bypass-permissions).
+- [x] **Modes are Claude Code's own.** The mode picker's *Plan*, *Manual* and *Accept edits* are Claude Code's
+  `plan`, `default` and `acceptEdits`; *Read only* (the page's own) is its `dontAsk` with `Edit`, `Write`,
+  `NotebookEdit` and `EnterPlanMode` (so Claude cannot leave it for *Plan*) denied by rules: what is not allowed
+  already is denied without a prompt (read-only commands and rules you *Always* allowed still run). The rules a mode
+  needs go into Claude Code's flag-settings layer (above user, project and local settings) as **one** `permissions`
+  object, sent whole on every switch — Claude Code merges that layer's keys shallowly, so a partial one would drop
+  the others — and a switch applies both modes' rules first, then the mode, then the new mode's rules alone: never a
+  moment with fewer rules than either mode needs. *Bypass permissions* and the watchlist of files that run on your
+  computer: [below](#bypass-permissions).
 - [x] **Connections end.** A page that stops reading (more than 16 MiB waiting unsent to it) is disconnected (close
   code 4008) and forgotten at once; every WebSocket is closed after 2 hours (4009) and the page reconnects through
   Caddy's check again — a connection outlives the end of the unlock it was opened with (Sign out, a new password, 12
@@ -982,36 +983,59 @@ action, including those a file, a web page or a tool's output talks Claude into.
   sent anywhere), and the key's budget, spent without pauses.
 - **Visible while on**: a red strip above the prompt box with *Switch to Manual*, ⏵⏵ in the tab title, the portal's
   Code badge red.
-- **Never kept.** Not remembered for new sessions; it ends with the session's process — an idle stop, a resume, a
-  new conversation start in *Manual* — and the page can only start a session in *Read only*, *Plan*, *Manual* or
-  *Accept edits*. *Always* on a card never switches to it (nor to `auto` or `dontAsk`).
-- **Still asked, still denied.** In bypass Claude Code still asks for its ask rules and still applies deny rules
-  (verified, 2.1.296). The code container adds ask rules for edits of `//workspace/.git/**`, `.claude/**`,
-  `.vscode/**`, `.husky/**`, `.devcontainer/**`, `.envrc`, `.mcp.json` and `.devcontainer.json` (absolute paths:
-  probed for absolute and relative tool paths). A speed bump only — Bash can still write them — which the watchlist
-  catches.
+- **Never kept.** Not remembered for new sessions (they start in your usual mode); it ends with the session's
+  process — an idle stop, a resume, a new conversation go on in *Manual* — and the page can only start a session in
+  *Read only*, *Plan*, *Manual* or *Accept edits*. *Always* on a card never switches to it (nor to `auto` or
+  `dontAsk`), and Claude Code switching to it (or to auto) by itself is set back to *Manual* and said.
+- **Still asked, still denied — by Claude's file tools only.** In bypass Claude Code still asks for its ask rules and
+  still applies deny rules (verified, 2.1.296). The code container adds ask rules for edits of `//workspace/.git/**`,
+  `.claude/**`, `.vscode/**`, `.husky/**`, `.devcontainer/**`, `.envrc`, `.mcp.json` and `.devcontainer.json`
+  (absolute paths: probed for absolute and relative tool paths). They cover Claude's Edit/Write/NotebookEdit; a shell
+  command writing the same files does not ask — the watchlist flags it after the turn. A speed bump, not a wall.
+- **Over remote access too — a decision.** The setting itself can only be turned on at the computer running
+  bedrock-now; once it is, a session can be switched to Bypass from a phone or laptop over remote access as well
+  (that browser has passed the portal sign-in, the Tailscale login or your domain's, and the Code page's own password
+  unlock — and the owner on a phone is the main remote user). The dialog then says you are using bedrock-now remotely:
+  everything still runs on the computer at home, in its sandbox and folder.
+- **One switch at a time.** The code container runs a session's mode switches one after another (two at once could
+  interleave their rules and modes), ignores Claude Code's mode reports while they run and the late status a switch
+  of its own still owes, and tells the pages the mode that holds when a switch is refused. The page sends one at a time
+  too (a mode picked meanwhile goes next) and takes a refused one back.
 - *Auto* mode (a classifier deciding instead of you) stays off and is not offered (see above).
 
 ### The watchlist: files that run on your computer
 
 **Checked after every turn, in every mode.** Writes to these files in the workspace run **on your computer** later,
-not in the sandbox (threat 1 of the browser terminal): `.git/hooks/*` (not git's `*.sample`), `.git/config`
-(`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, aliases, filters), `.husky/*`, `.envrc` (direnv),
-`.vscode/tasks.json` and `settings.json`, `.claude/settings.json` and `settings.local.json` (Claude Code's hooks and
-rules on your computer), `.mcp.json` (project MCP servers), `package.json` (only its install-time scripts:
-`preinstall`, `install`, `postinstall`, `prepare` and the like — a dependency or a `test` script is not flagged),
-`.devcontainer.json` and `.devcontainer/devcontainer.json` (`initializeCommand` runs on your computer). A `Makefile`
-is not on the list: it runs only when you run `make`, and Claude changes Makefiles too often for a card to mean
-anything. The spawn server (`ws.sensitive`) lists them — a SHA-256 of each, a copy of each up to 1 MiB (2 MiB in
-all), never through a link (a watched link is reported as a link) — when a turn starts (before its first prompt is
-sent, ≤ 5 s) and when it ends; the code container compares the two (and the end of the last turn with the start of
-the next: a background command, the terminal, you) and decides from the path alone what changed and why it matters,
-then shows a card: each file, why, the diff, and **Revert** — the copy from the turn's start written back with its
-mode (a file that was not there goes to the workspace trash; `ws.restore`, for these paths only, never through a
-linked folder), only while the file is still exactly as the turn's end saw it. It catches what rules cannot: a hook
-written by `echo >` in Bash, in any mode. It is a detector, not a boundary: a compromised sandbox can lie to it (as
-to everything it shows); the copies Revert writes back are kept in the code container's memory (the last 10 cards per
-session, 4 MiB), gone with a restart.
+not in the sandbox (threat 1 of the browser terminal). Git's own: `.git` itself (a folder, or a `gitdir:` file —
+followed, with its `commondir`, when it points into the workspace), `.git/hooks/*` (not git's `*.sample`), the folder
+`core.hooksPath` names when it is in the workspace (husky v9's `.husky/_`, `.githooks/` …), `.git/config` and the
+files its `include.path` / `includeIf` name inside the workspace (3 levels), a `core.fsmonitor` program inside the
+workspace (git runs it at every `git status`), and submodules (`.git/modules/*/config`, `…/hooks/*`); a hook that is
+a link counts with the content of what it points to when that is in the workspace. Then `.husky/*` and the git hook
+managers' configuration (`.pre-commit-config.yaml`, `lefthook*.yml`, `.lintstagedrc*`, `lint-staged.config.*`),
+`.envrc` (direnv), `.vscode/tasks.json`, `settings.json` and top-level `*.code-workspace` files,
+`.claude/settings.json` and `settings.local.json` (Claude Code's hooks and rules on your computer), `.mcp.json`
+(project MCP servers), `package.json` (its install-time scripts — `preinstall`, `install`, `postinstall`, `prepare`
+and the like — and the keys git hook tools read, `husky`, `simple-git-hooks`, `lint-staged`, `pre-commit`; and every
+script once a git hook or hook manager here calls npm, pnpm, yarn, npx or bun, since a hook's `npm test` runs it —
+otherwise a dependency or a `test` script is not flagged), `.npmrc`, `.yarnrc.yml` and `.pnpmfile.cjs` (they can run
+code at install or change what runs), and dev container files (`.devcontainer.json`,
+`.devcontainer/devcontainer.json`, `.devcontainer/*/devcontainer.json`: `initializeCommand` runs on your computer).
+Not on the list: `Makefile`, `pyproject.toml`, `.tool-versions`/`.nvmrc`, `.env`, `.idea` — they run only when you
+run them, or change too often for a card to mean anything. The spawn server (`ws.sensitive`) lists them — a SHA-256
+of each (files over 8 MiB by size and time), a copy of each up to 1 MiB (2 MiB in all, which the code container
+enforces again), never through a link and never a path with a `.` or `..` part — when a turn starts (before its first
+prompt is sent, ≤ 5 s) and when it ends; the code container compares the two (and the end of the last turn with the
+start of the next: a background command, the terminal, you) and decides what changed and why it matters — from the
+path, or for git's own files only the sandbox can place (a gitdir, a hooks path, an include, an fsmonitor program)
+from their git kind — then shows a card: each file, why, the diff, and **Revert** — the copy from the turn's start
+written back with its mode (a file that was not there goes to the workspace trash; `ws.restore`, for paths the spawn
+server itself counts as watched at that moment, never through a linked folder), only while the file is still exactly
+as the turn's end saw it. It catches what rules cannot: a hook written by `echo >` in Bash, in any mode. It is a
+detector, not a boundary: a compromised sandbox can lie to it (as to everything it shows), and Node has no `openat`,
+so its checks race anything running as the same user in the sandbox — which could write these files directly anyway.
+The copies Revert writes back are kept in the code container's memory (the last 10 cards per session, 4 MiB), gone
+with a restart.
 
 ## Code provenance
 

@@ -149,7 +149,10 @@ test('modes: the desktop app\'s names and order, plus Read only; the Shift+Tab c
   assert.deepEqual(MODES.map((m) => startMode(m)), ['readOnly', 'plan', 'default', 'acceptEdits', 'default', 'default']);
   assert.equal(startMode(null, 'acceptEdits'), 'acceptEdits');
   assert.equal(startMode('bypassPermissions', 'bypassPermissions'), 'default');
-  assert.deepEqual(['readOnly', 'default', 'plan', 'acceptEdits', 'bypassPermissions'].map((m) => MODE_INFO[m as (typeof MODES)[number]].tone), ['slate', 'grey', 'grey', 'blue', 'red']);
+  assert.deepEqual(['readOnly', 'default', 'plan', 'acceptEdits', 'bypassPermissions'].map((m) => MODE_INFO[m as (typeof MODES)[number]].tone), ['slate', 'grey', 'teal', 'blue', 'red']);
+  // Bypass: what still asks is said as it is — Claude's file tools, not shell commands
+  assert.match(MODE_INFO.bypassPermissions.runs, /file tools still ask/);
+  assert.match(MODE_INFO.bypassPermissions.runs, /shell commands do not/);
 });
 
 test('session: a watch event becomes one card (a replay adds none)', () => {

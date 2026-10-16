@@ -65,7 +65,7 @@ export function ModelPicker({ compact }: { compact?: boolean }) {
               checked={matches(m, current)}
               testid={`model-${m.alias ?? m.id}`}
               onSelect={() => {
-                setModel(m.id);   // by its full id: Claude Code runs exactly this model (an alias may let it run another)
+                void setModel(m.id);   // by its full id: Claude Code runs exactly this model (an alias may let it run another)
                 close();
               }}
               hint={m.input !== null ? `${perMtok(m.input)} / ${perMtok(m.output)}` : undefined}
@@ -110,6 +110,7 @@ export function ModePicker({ compact }: { compact?: boolean }) {
         <>
           <Icon name={info.icon} size={14} />
           <span class="picker-value">{name}</span>
+          {mode === 'bypassPermissions' && <Icon name="alert" size={13} class="mode-warn" />}
           <Icon name="chevronDown" size={13} class="picker-chev" />
         </>
       }

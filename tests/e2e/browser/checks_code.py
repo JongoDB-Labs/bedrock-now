@@ -1597,6 +1597,17 @@ def read_only(ctx):
     c = Code(ctx, "code-read-only")
     sid = c.new_session(HAIKU, "readOnly")
     wait_state(c, sid, "mode", "readOnly")
+    # a model switch and back to Haiku goes through at once: the session's /model picker lists the model first, so
+    # Claude Code needs no API check that a cold LiteLLM → Bedrock path could miss ("Couldn't confirm model …")
+    switched = ""
+    other = ENV.get("CLAUDE_BEDROCK_SONNET_MODEL") or ""
+    if other and other != HAIKU:
+        for m in (other, HAIKU):
+            t0 = time.time()
+            c.request({"type": "set_model", "session": sid, "model": m}, timeout=30)
+            wait_state(c, sid, "model", m)
+            expect(time.time() - t0 < 5, f"switching to {m} took {time.time() - t0:.1f} s")
+        switched = f"; model {other} and back to Haiku at once"
     n0 = len(c.msgs())
     evs = c.turn(sid, "Run exactly this shell command with the Bash tool and show me its output, nothing else: ls -a")
     bash = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
@@ -1622,7 +1633,7 @@ def read_only(ctx):
     rec_problems = c.rec.problems(allow=LOCKED_OK + [r"^404 GET .*/api/fs/file\?path=e2e-readonly-", r"console.error Failed to load resource.*404"])
     c.rec.save()
     expect(not rec_problems, f"errors: {rec_problems[:4]}")
-    return f"Read only: `{bash[0]['input'].get('command', '')[:40]}` ran, {writes[0]['name']} denied by the rules ({w['text'][:60]}), no card, no file"
+    return f"Read only: `{bash[0]['input'].get('command', '')[:40]}` ran, {writes[0]['name']} denied by the rules ({w['text'][:60]}), no card, no file{switched}"
 
 
 def _bypass_setting(ctx, on: bool):

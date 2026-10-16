@@ -15,8 +15,9 @@
 // sends it whole each time (permissionsFor; a switch first applies both modes' rules, then the new mode's alone).
 import { MODES } from './protocol.mjs';
 
-/** Read only: the edit tools denied (Edit(...) rules cover Write and NotebookEdit too; all three named, as probed). */
-export const READ_ONLY_DENY = Object.freeze(['Edit', 'Write', 'NotebookEdit']);
+/** Read only: the edit tools denied (Edit(...) rules cover Write and NotebookEdit too; all three named, as probed),
+ *  and EnterPlanMode — Claude would leave Read only for Plan, and approving a plan switches to Manual or Accept edits. */
+export const READ_ONLY_DENY = Object.freeze(['Edit', 'Write', 'NotebookEdit', 'EnterPlanMode']);
 
 /** Bypass permissions: these still ask — files in your folder that run on your computer later (git hooks and config,
  *  Claude Code's and VS Code's settings, husky hooks, direnv, project MCP servers). Absolute (//workspace/…): probed

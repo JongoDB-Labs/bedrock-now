@@ -10,8 +10,8 @@ export interface ModeInfo {
   /** what runs without asking */
   runs: string;
   icon: string;
-  /** chip colour: slate (Read only), grey (Manual, Plan), blue (Accept edits, Auto), red (Bypass) */
-  tone: 'slate' | 'grey' | 'blue' | 'red';
+  /** chip colour: slate (Read only), grey (Manual), teal (Plan, as the CLI), blue (Accept edits, Auto), red (Bypass) */
+  tone: 'slate' | 'grey' | 'teal' | 'blue' | 'red';
   /** the CLI's status-line marker */
   mark: string;
 }
@@ -30,16 +30,16 @@ export const MODE_INFO: Record<Mode, ModeInfo> = {
     desc: 'Reads and plans; changes nothing until you approve the plan',
     runs: 'Without asking: reading, searching, read-only commands. It asks before anything else, then shows its plan.',
     icon: 'pause',
-    tone: 'grey',
+    tone: 'teal',
     mark: '⏸',
   },
   default: {
     label: 'Manual',
     desc: 'Asks before every edit and command',
     runs: 'Without asking: reading, searching, read-only commands. Edits and other commands wait for you.',
-    icon: 'pause',
+    icon: 'shield',
     tone: 'grey',
-    mark: '⏸',
+    mark: '',
   },
   acceptEdits: {
     label: 'Accept edits',
@@ -60,7 +60,7 @@ export const MODE_INFO: Record<Mode, ModeInfo> = {
   bypassPermissions: {
     label: 'Bypass permissions',
     desc: 'Runs everything without asking, in the sandbox',
-    runs: 'Without asking: every command and edit — except files that run on your computer (git hooks, .claude, .vscode, .envrc …), which still ask, and your deny rules.',
+    runs: 'Without asking: every command and edit. Claude\'s file tools still ask before changing .git, .claude, .vscode, .husky, .devcontainer, .envrc or .mcp.json — shell commands do not (the watchlist flags those after the turn) — and your deny rules still deny.',
     icon: 'forward',
     tone: 'red',
     mark: '⏵⏵',

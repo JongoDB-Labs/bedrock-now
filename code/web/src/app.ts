@@ -156,6 +156,8 @@ export interface AppState {
   modeMenu: number;
   /** a mode picked while no session is open: the next new session starts in it (Plan too, which is not remembered) */
   startWith: Mode | null;
+  /** a set_mode is on its way: another waits for its answer (two at once would race in the backend) */
+  modeSwitching: boolean;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -195,6 +197,7 @@ export const store: Store<AppState> = createStore<AppState>({
   bypassAsk: null,
   modeMenu: 0,
   startWith: null,
+  modeSwitching: false,
 });
 
 const set = store.set;
@@ -956,8 +959,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   // /model with a model bedrock-now serves: switched by its full id (Claude Code given an alias may run another model)
   const picked = images.length ? null : modelCommand(t, get().models);
   if (picked) {
-    setModel(picked);
-    toast(`Model: ${get().models?.models.find((m) => m.id === picked)?.name ?? picked}`, 'ok');
+    if (await setModel(picked)) toast(`Model: ${get().models?.models.find((m) => m.id === picked)?.name ?? picked}`, 'ok');
     return true;
   }
   const mem = memoryLine(text);
@@ -995,24 +997,43 @@ export function interrupt(): void {
   if (id) socket.send({ type: 'interrupt', session: id });
 }
 
-export function setModel(name: string): void {
+/** Switch the model (by its full id). A switch Claude Code refuses (its model check can fail on a slow API) is taken
+ *  back here — the model that runs stays shown, and remembered — and said. -> whether it switched */
+export async function setModel(name: string): Promise<boolean> {
   const model = sendModel(name);
   if (!model) {
     toast(`"${label(name, 40)}" is not a model bedrock-now serves here.`, 'error');
-    return;
+    return false;
   }
+  const prevPref = get().prefs.model;
   setPrefs((p) => ({ ...p, model }));
   const v = activeView();
-  if (v && v.state !== 'closed') {
-    socket.send({ type: 'set_model', session: v.id, model });
-    updateView(v.id, (x) => ({ ...x, model }));
-  }
+  if (!v || v.state === 'closed') return true;
+  const prev = v.model;
+  updateView(v.id, (x) => ({ ...x, model }));
+  const r = await wsRequest({ type: 'set_model', session: v.id, model }, 60_000);
+  if (r.ok) return true;
+  updateView(v.id, (x) => (x.model === model ? { ...x, model: prev } : x));
+  setPrefs((p) => (p.model === model ? { ...p, model: prevPref } : p));
+  const was = get().models?.models.find((m) => m.id === prev || m.alias === prev)?.name || prev || 'the model before';
+  toast(`Still on ${was}: ${r.error || 'the switch did not go through'}`, 'error');
+  return false;
 }
 /** Switch the permission mode. Read only, Manual and Accept edits are remembered for new sessions too; Plan and Bypass
  *  are for this session only. Bypass permissions first asks (the dialog: confirmBypass), and only where Settings allow it. */
+/** A mode picked while a switch is on its way: sent once that one is answered (the last one picked wins). */
+let queuedMode: { session: string; mode: Mode } | null = null;
 export function setMode(mode: Mode): void {
   if (mode === 'auto') return;
   const v = activeView();
+  // one switch at a time: a mode picked meanwhile (Shift+Tab pressed again) shows at once and goes next
+  if (get().modeSwitching && mode !== 'bypassPermissions') {
+    if (!v || v.state === 'closed') return;
+    queuedMode = { session: v.id, mode };
+    updateView(v.id, (x) => ({ ...x, mode }));
+    announce();
+    return;
+  }
   if (mode === 'bypassPermissions') {
     if (!get().server?.allowBypass) {
       toast('Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now.', 'error');
@@ -1024,13 +1045,31 @@ export function setMode(mode: Mode): void {
     }
     return;
   }
-  if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
-  if (v && v.state !== 'closed') {
-    socket.send({ type: 'set_mode', session: v.id, mode });
-    updateView(v.id, (x) => ({ ...x, mode }));
-  } else if (v) updateView(v.id, (x) => ({ ...x, mode }));   // closed here: its next start (revive) takes it
-  else set((s) => ({ ...s, startWith: mode }));              // no session yet: the next one starts in it
+  if (!v || v.state === 'closed') {
+    if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
+    if (v) updateView(v.id, (x) => ({ ...x, mode }));        // closed here: its next start (revive) takes it
+    else set((s) => ({ ...s, startWith: mode }));            // no session yet: the next one starts in it
+    announce();
+    return;
+  }
+  // the switch shows at once, and is taken back when the backend refuses it (it then says the mode that holds)
+  const prev = v.mode;
+  updateView(v.id, (x) => ({ ...x, mode }));
   announce();
+  set((s) => ({ ...s, modeSwitching: true }));
+  void wsRequest({ type: 'set_mode', session: v.id, mode }, 120_000).then((r) => {
+    set((s) => ({ ...s, modeSwitching: false }));
+    const next = queuedMode;
+    queuedMode = null;
+    if (r.ok) {
+      if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
+    } else {
+      if (!next) updateView(v.id, (x) => (x.mode === mode ? { ...x, mode: prev } : x));
+      toast(`The mode was not changed: ${r.error || 'no answer'}`, 'error');
+      announce();
+    }
+    if (next && get().active === next.session) setMode(next.mode);
+  });
 }
 
 /** The dialog's "Bypass permissions for this session": the switch, confirmed (a session is started first when none is
@@ -1044,7 +1083,12 @@ export async function confirmBypass(): Promise<void> {
   if (!id || !v) id = await newSession();
   else if (v.state === 'closed') id = await revive(id);
   if (!id) return;
+  // after a switch still on its way (and the one queued behind it)
+  for (let i = 0; i < 2400 && (get().modeSwitching || queuedMode); i++) await new Promise((r) => setTimeout(r, 50));
+  if (get().modeSwitching) return;
+  set((s) => ({ ...s, modeSwitching: true }));
   const r = await wsRequest({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true }, 120_000);
+  set((s) => ({ ...s, modeSwitching: false }));
   if (!r.ok) {
     toast(`Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error');
     return;

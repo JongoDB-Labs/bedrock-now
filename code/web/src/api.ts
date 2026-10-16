@@ -1188,7 +1188,7 @@ export type ClientMsg =
   | { type: 'prompt'; session: string; text: string; images: ImageBlock[]; uuid: string; req: string }
   | { type: 'rewind_files'; session: string; message: string; dryRun: boolean; req: string }
   | { type: 'interrupt'; session: string }
-  | { type: 'set_model'; session: string; model: string }
+  | { type: 'set_model'; session: string; model: string; req?: string }
   | { type: 'set_mode'; session: string; mode: Mode; confirmed?: boolean; req?: string }
   | { type: 'watch_revert'; session: string; id: string; path?: string; req: string }
   | { type: 'set_effort'; session: string; effort: string | null }
