@@ -552,8 +552,26 @@ def ui_page(ctx, name, device="desktop", session=None):
     page.wait_for_load_state("domcontentloaded")
     built_page(page)
     see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    if session:
+        # its transcript merges in after the live replay: counts of turns taken before it settles would be short
+        see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
+        settled(page, "turn-end")
     ctx.code_ui_rec, ctx.code_ui_page = rec, page
     return page, rec
+
+
+def settled(page, testid, quiet=1.5, timeout=30):
+    """How many [data-testid=testid] the page shows once that number has not changed for `quiet` seconds."""
+    t0 = since = time.time()
+    last = -1
+    while time.time() - t0 < timeout:
+        n = page.get_by_test_id(testid).count()
+        if n != last:
+            last, since = n, time.time()
+        elif time.time() - since >= quiet:
+            return n
+        page.wait_for_timeout(250)
+    return last
 
 
 def csp_clean(page, rec, allow=()):
@@ -907,9 +925,7 @@ def ui_queue_clear(ctx):
     if not sid:
         raise Skip("needs the session of code-ui-desktop")
     page, rec = ui_page(ctx, "code-ui-queue", session=sid)
-    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
     n = page.get_by_test_id("turn-end").count()
-    users = page.get_by_test_id("msg-user").count()
     # a prompt typed while Claude works waits below the answer, then runs as its own turn
     ask(page, "Count from 1 to 300, one number per line, nothing else.")
     see(page.get_by_test_id("session-state")).to_contain_text("working", timeout=10000)

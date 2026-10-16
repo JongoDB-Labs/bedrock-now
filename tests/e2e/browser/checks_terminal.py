@@ -335,11 +335,19 @@ def phone(ctx):
     with page.context.expect_page() as pop:
         link.click()
     t = pop.value
+    # (a blank terminal says whether its socket opened, closed or never came)
+    sockets = []
+    t.on("websocket", lambda w: (sockets.append(f"open {w.url}"), w.on("close", lambda _w: sockets.append(f"closed {w.url}")),
+                                 w.on("socketerror", lambda e: sockets.append(f"error {e}"))))
     t.wait_for_load_state()
     t.locator("h1", has_text="Unlock the terminal").wait_for(timeout=20000)
     shot(t, "45-phone-terminal-locked")
     unlock_in(t, ENV["PORTAL_PASSWORD"])
-    wait_xterm(t)
+    try:
+        wait_xterm(t)
+    except AssertionError as e:
+        shot(t, "fail-phone-terminal")
+        raise AssertionError(f"{e}; sockets: {sockets or 'none'}; page {t.url}") from None
     new_shell_window(t, t.main_frame)
     type_line(t, t.main_frame, "echo phone-$((6*7)); claude --version")
     wait_text(t.main_frame, r"\(Claude Code\)", 20)
