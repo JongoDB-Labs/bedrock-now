@@ -690,9 +690,12 @@ spawn server, Claude Code or any file at will.
   - *Markdown*: the page's own renderer (raw HTML stays text, links only `http(s)` in a new tab). In a Markdown
     file's preview — not in chat — images come from the workspace only (paths next to the file, never above
     `/workspace`, at most 50, each ≤ 10 MiB and really an image by its bytes, fetched when they come near the view,
-    each path once per file version, at most 40 MiB and 150 million pixels for the whole preview — typing in Split
-    fetches nothing again); an image from the web is shown as a link and never loaded (it would tell a server what you
-    opened).
+    each path once per file version — typing in Split fetches nothing again — and two at a time, each within what is
+    left of the preview's 40 MiB once the fetches under way have reserved theirs (a size the explorer already listed
+    refuses a file before it is fetched). So a preview downloads at most 40 MiB of images (plus, per image refused for
+    its size, what arrived before the read was cut — usually nothing: the download endpoint sends a length), and keeps
+    and decodes at most 40 MiB and 150 million pixels; an image whose size its header does not say counts as 100
+    million). An image from the web is shown as a link and never loaded (it would tell a server what you opened).
   - *Images, SVG, audio, video*: an `<img>`, `<audio>` or `<video>` from a `blob:` URL of the file's bytes, with the
     MIME type its bytes say. An SVG is shown **only** as an image — its `<script>`, event handlers, `<foreignObject>`
     and external references (`<image href>`, `@import`) never run or load (checked in Chromium 140 under this

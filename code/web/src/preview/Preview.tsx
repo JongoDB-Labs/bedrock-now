@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import * as api from '../api';
-import { setTabView, type FileTab, type FileView } from '../app';
+import { setTabView, store, type FileTab, type FileView } from '../app';
 import { basename, bytes, dirname } from '../text';
 import { Icon, Spinner } from '../components/icons';
 import { MarkdownView } from '../components/MarkdownView';
@@ -187,9 +187,16 @@ export function Preview({ tab, text, phone, active = true }: { tab: FileTab; tex
 
 // ---------------------------------------------------------------- Markdown
 
+/** A file's size as the explorer listed it (a folder already open there), else null: lets the image budget refuse a
+ *  file before fetching it. */
+function listedSize(path: string): number | null {
+  const e = store.get().fs.dirs[dirname(path)]?.entries.find((x) => x.name === basename(path));
+  return e && e.type === 'file' && typeof e.size === 'number' ? e.size : null;
+}
+
 function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
   // one cache per file version: re-renders (typing in Split) and repeated images fetch nothing again
-  const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max)), [tab.path, tab.version]);
+  const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max), undefined, listedSize), [tab.path, tab.version]);
   const renderImage = useCallback((path: string, alt: string, key: number) => <WorkspaceImage key={`${key}:${path}`} path={path} alt={alt} cache={cache} />, [cache]);
   return (
     <div class="pv-scroll" data-testid="preview-md">

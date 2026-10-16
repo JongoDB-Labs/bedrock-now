@@ -417,17 +417,17 @@ per browser.
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
 - **Previews of files.** Markdown, images (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO), SVG, audio and video (what the
-  browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV, JSON, JSON Lines, YAML and Jupyter notebooks (as
-  JSON, for now) open in **Preview**; **Source** is the editor, and Markdown also has **Split** (not on a phone), whose preview follows
-  your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links to the web open
-  in a new tab, and nothing in it runs (no JavaScript, forms or launch actions). A CSV is a table (the header row
-  found, or switched by hand; sort and filter up to 200,000 rows; drag a column's edge to resize it); JSON and YAML
-  are a collapsible tree. A Markdown
-  file shows the images next to it in the workspace (up to 40 MB of them), never images from the web. What a file is comes from its first
-  bytes, not its name. Claude's *Write*/*Edit* cards offer **Preview** for such files. Limits (above them:
-  **Download**): Markdown, the first 2 MB; YAML 5 MB; SVG 10 MB; everything else 25 MB; images up to 100 million
-  pixels; tables 1,000,000 rows, 200 columns and 5,000,000 cells; trees 300,000 values and 100 levels. Word, Excel,
-  PowerPoint, HTML and Mermaid previews come in a later version (**Download** meanwhile); HEIC and TIFF are not shown.
+  browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV, JSON, JSON Lines, YAML and Jupyter notebooks (as JSON,
+  for now) open in **Preview**; **Source** is the editor, and Markdown also has **Split** (not on a phone), whose
+  preview follows your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links
+  to the web open in a new tab, and nothing in it runs (no JavaScript, forms or launch actions). A CSV is a table (the
+  header row found, or switched by hand; sort and filter up to 200,000 rows; drag a column's edge to resize it); JSON
+  and YAML are a collapsible tree. A Markdown file shows the images next to it in the workspace (up to 40 MB and 150
+  million pixels of them), never images from the web. What a file is comes from its first bytes, not its name.
+  Claude's *Write*/*Edit* cards offer **Preview** for such files. Limits (above them: **Download**): Markdown, the
+  first 2 MB; YAML 5 MB; SVG 10 MB; everything else 25 MB; images up to 100 million pixels; tables 1,000,000 rows, 200
+  columns and 5,000,000 cells; trees 300,000 values and 100 levels. Word, Excel, PowerPoint, HTML and Mermaid previews
+  come in a later version (**Download** meanwhile); HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which
   shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it

@@ -38,14 +38,17 @@ function checkMeta(m: unknown): CsvMeta | null {
 const cellText = (v: unknown): string => (typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v));
 
 // text widths for the columns: measured with the page's font (a canvas), so a header is never cut by an estimate
-let measure: { ctx: CanvasRenderingContext2D; family: string } | null = null;
+let measure: { ctx: CanvasRenderingContext2D; family: string; weight: number } | null = null;
 function textWidth(s: string, weight: number): number {
   if (!measure) {
     const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
     if (!ctx) return s.length * 7.6;
-    measure = { ctx, family: getComputedStyle(document.body).fontFamily || 'sans-serif' };
+    measure = { ctx, family: getComputedStyle(document.body).fontFamily || 'sans-serif', weight: 0 };
   }
-  measure.ctx.font = `${weight} 12.5px ${measure.family}`;
+  if (measure.weight !== weight) {
+    measure.ctx.font = `${weight} 12.5px ${measure.family}`;
+    measure.weight = weight;
+  }
   return measure.ctx.measureText(s.slice(0, 80)).width;
 }
 const DELIM_NAME: Record<string, string> = { ',': 'comma', ';': 'semicolon', '\t': 'tab', '|': 'pipe' };

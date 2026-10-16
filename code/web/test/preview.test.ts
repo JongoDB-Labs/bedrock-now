@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CAPS, MAX_PIXELS, extOf, hasSource, imageRefusal, imageSize, looksLikeSvg, needsBytes, previewableName, sniff, sniffBinary, viewFor } from '../src/preview/sniff';
 import { CSV_LIMITS, clipFields, guessDelimiter, guessNewline, isNumeric, looksLikeHeader, parseCsv, readCsv } from '../src/preview/csv';
-import { ImageCache, classify } from '../src/preview/images';
+import { ImageCache, LOADS, classify } from '../src/preview/images';
 import { pdfLink } from '../src/preview/pdflinks';
 import { runJob } from '../src/preview/run';
 import { TREE_LIMITS, readJson, readJsonl, readYaml, toTree, type TNode } from '../src/preview/tree';
@@ -418,6 +418,47 @@ test('markdown images: fetched once per path, within a byte and pixel budget, on
   assert.ok('blob' in (await px.get('a.png')));
   assert.match(JSON.stringify(await px.get('p0.png')), /million pixels/);
   assert.match(JSON.stringify(classify('big.png', files['big.png'])), /blob|mime/, '81 MP is under the per-image limit');
+});
+
+test('markdown images: concurrent loads never fetch past the budget; listed sizes refuse before fetching; unknown sizes count as the most', async () => {
+  // 50 different images named at once, each just under the per-image cap: 1000-byte budget per image, 3500 in all
+  const files: Record<string, Uint8Array> = {};
+  for (let i = 0; i < 50; i++) files[`i${i}.png`] = new Uint8Array([...png(20, 20), ...new Uint8Array(990 - png(20, 20).length)]);
+  let fetched = 0;
+  let inFlight = 0;
+  let most = 0;
+  const fetchBytes = async (p: string, max: number) => {
+    inFlight++;
+    most = Math.max(most, inFlight);
+    await new Promise((r) => setTimeout(r, 2));
+    inFlight--;
+    const b = files[p];
+    if (b.length > max) throw new Error(`The file is larger than ${max} bytes.`);
+    fetched += b.length;
+    return b.slice().buffer;
+  };
+  const limits = { perImage: 1000, bytes: 3500, pixels: 1e9 };
+  const cache = new ImageCache(fetchBytes, limits);
+  const all = await Promise.all(Object.keys(files).map((p) => cache.get(p)));
+  assert.ok(fetched <= limits.bytes, `fetched ${fetched} bytes, budget ${limits.bytes}`);
+  assert.ok(most <= LOADS, `${most} fetches at once`);
+  assert.equal(all.filter((e) => 'blob' in e).length, 3);
+  assert.ok(all.filter((e) => 'err' in e).every((e) => 'err' in e && /over/.test(e.err)));
+  // (the others were asked for with what was left, and refused by their length: no bytes came)
+  // sizes the explorer listed: refused without a fetch
+  const sizes: Record<string, number> = { 'huge.png': 5000, 'a.png': 990, 'b.png': 990 };
+  let asked = 0;
+  const listed = new ImageCache(async (p) => (asked++, files['i0.png'].slice().buffer), { perImage: 1000, bytes: 1500, pixels: 1e9 }, (p) => sizes[p] ?? null);
+  assert.match(JSON.stringify(await listed.get('huge.png')), /larger than/);
+  assert.ok('blob' in (await listed.get('a.png')));
+  assert.match(JSON.stringify(await listed.get('b.png')), /over/);
+  assert.equal(asked, 1, 'only the image that fits was fetched');
+  // a raster image whose size its header does not say counts as the most an image may have
+  const webp = bytes('RIFF', [0, 0, 0, 0], 'WEBPXXXX', new Array(20).fill(0));
+  assert.deepEqual(classify('x.webp', webp), { mime: 'image/webp', w: MAX_PIXELS, h: 1 });
+  const px = new ImageCache(async () => webp.slice().buffer, { perImage: 1000, bytes: 1e6, pixels: 150_000_000 });
+  assert.ok('blob' in (await px.get('one.webp')));
+  assert.match(JSON.stringify(await px.get('two.webp')), /million pixels/);
 });
 
 class FakeWorker {
