@@ -683,11 +683,16 @@ spawn server, Claude Code or any file at will.
     `nosniff`, an attachment; ≤ 25 MiB) and renders it itself; no workspace file is ever served for the browser to
     render. What a file is comes from its first bytes (a binary file's first 64 come with its read, so no second
     request is needed): an HTML file named `.png` stays text in the editor, a PNG named `.txt` is shown as a PNG.
-    Text formats (Markdown, CSV, JSON, YAML) go by their extension, an SVG must also look like one.
+    Text formats (Markdown, CSV, JSON, YAML) go by their extension, an SVG must also look like one (checked on its
+    first 64 KiB in linear time). Everything the page itself runs on a file's text on its main thread — this check,
+    the number test of table cells — is written without backtracking regular expressions (a ~50-byte crafted file
+    must not freeze the tab and with it unsaved edits in other tabs); the unit tests time them on crafted input.
   - *Markdown*: the page's own renderer (raw HTML stays text, links only `http(s)` in a new tab). In a Markdown
     file's preview — not in chat — images come from the workspace only (paths next to the file, never above
-    `/workspace`, at most 50, each ≤ 10 MiB and really an image by its bytes); an image from the web is shown as a
-    link and never loaded (it would tell a server what you opened).
+    `/workspace`, at most 50, each ≤ 10 MiB and really an image by its bytes, fetched when they come near the view,
+    each path once per file version, at most 40 MiB and 150 million pixels for the whole preview — typing in Split
+    fetches nothing again); an image from the web is shown as a link and never loaded (it would tell a server what you
+    opened).
   - *Images, SVG, audio, video*: an `<img>`, `<audio>` or `<video>` from a `blob:` URL of the file's bytes, with the
     MIME type its bytes say. An SVG is shown **only** as an image — its `<script>`, event handlers, `<foreignObject>`
     and external references (`<image href>`, `@import`) never run or load (checked in Chromium 140 under this
@@ -695,7 +700,8 @@ spawn server, Claude Code or any file at will.
     opened as a document of the code origin afterwards. Images whose header claims more than 100 million pixels
     (decompression bombs), or whose header cannot be read, are not decoded.
   - *PDF*: pdf.js 6.4.299, its *legacy* build (the modern one needs `Map.getOrInsertComputed`, missing in Chromium
-    140), parsing in its own worker (one per open PDF, ended with the preview or after 30 s without a document),
+    140), parsing in its own worker (one per PDF on screen: a PDF's viewer and worker end when its tab is not the one
+    shown, and after 30 s without a document),
     drawing pages to canvas and a text layer of `<span>`s. Not loaded or turned off: pdf.js's scripting (a PDF's
     JavaScript never runs), XFA, form fields, its annotation layer, WebAssembly (no `'wasm-unsafe-eval'`: JPEG 2000
     and JBIG2 images use its JavaScript decoders). Links: only `http(s)` URLs become links (a new tab, `noopener
@@ -705,8 +711,11 @@ spawn server, Claude Code or any file at will.
     bug let it try. Images in a PDF are capped at 16.8 million pixels (pdf.js's `maxImageSize`), a page's canvas at 4096 × 4096.
   - *CSV/TSV*: papaparse 5.7.0 in the page's own worker (papaparse's own `worker: true` would make a `blob:` worker,
     which this policy refuses); a record with more than 200 fields is cut *before* parsing (so one line of millions of
-    commas never becomes millions of strings), at most 1,000,000 rows and 5,000,000 cells are kept, each cell's text
-    ≤ 2,000 characters; values stay text (no formulas, no type guessing).
+    commas never becomes millions of strings) — with papaparse's own rules for quotes and with the file's line break
+    decided once and handed to the parser, so the cut and the parser agree on where a field and a record end (a quote
+    that is text for the parser, or a lone `\r` in a `\n` file, cannot hide commas from the cut) — at most 1,000,000
+    rows and 5,000,000 cells are kept, each cell's text ≤ 2,000 characters; values stay text (no formulas, no type
+    guessing).
   - *JSON, JSON Lines, YAML, notebooks*: parsed in a worker into a tree of lists — a key such as `__proto__` or
     `constructor` is a string in a list, never an object key — at most 300,000 values, 10,000 per level and 100
     levels; YAML with the `yaml` package's core schema, no custom tags (`!!python/object` is a warning, the value
@@ -716,7 +725,11 @@ spawn server, Claude Code or any file at will.
     content hashes written into the page at build time) into script URLs, refuses every other URL, and has no
     `createHTML`/`createScript`; a second policy by any name is refused by the browser. A worker is ended when its
     file is parsed, after 20–30 s, or when the preview closes; a CSP violation inside one is reported to the page and
-    logged.
+    logged. The workers' scripts get the **page's** policy, not one of their own: Caddy's `code_page` sets the same
+    `Content-Security-Policy` on every answer from the code container (the backend cannot add another). For a worker
+    that policy is as strict about script (only the code host's own files, no `eval`, no `wasm-unsafe-eval`) as a
+    worker-only `default-src 'none'; script-src 'self'; connect-src 'self'` would be; it also lets a worker open a
+    WebSocket to the code host and load images and fonts from it, which a worker has no use for.
   - *Not on the code origin*: HTML, Mermaid diagrams, notebooks' HTML and script outputs, Word/Excel/PowerPoint
     files — they need script or HTML parsing and get a sandboxed origin of their own in a later version; until then
     they are offered for download (HTML and notebooks open as source text).

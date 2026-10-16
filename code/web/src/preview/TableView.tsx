@@ -36,6 +36,18 @@ function checkMeta(m: unknown): CsvMeta | null {
 }
 
 const cellText = (v: unknown): string => (typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v));
+
+// text widths for the columns: measured with the page's font (a canvas), so a header is never cut by an estimate
+let measure: { ctx: CanvasRenderingContext2D; family: string } | null = null;
+function textWidth(s: string, weight: number): number {
+  if (!measure) {
+    const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+    if (!ctx) return s.length * 7.6;
+    measure = { ctx, family: getComputedStyle(document.body).fontFamily || 'sans-serif' };
+  }
+  measure.ctx.font = `${weight} 12.5px ${measure.family}`;
+  return measure.ctx.measureText(s.slice(0, 80)).width;
+}
 const DELIM_NAME: Record<string, string> = { ',': 'comma', ';': 'semicolon', '\t': 'tab', '|': 'pipe' };
 
 export function View({ tab, pv, data, phone }: ViewerProps) {
@@ -48,7 +60,9 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
   const [err, setErr] = useState<string | null>(null);
   const [header, setHeader] = useState<boolean | null>(null);
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  const [filterInput, setFilterInput] = useState('');
   const [filter, setFilter] = useState('');
+  const [sized, setSized] = useState<Record<number, number>>({});
   const [picked, setPicked] = useState<{ r: number; c: number } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const [win, setWin] = useState({ top: 0, left: 0, height: 600, width: 1000 });
@@ -61,6 +75,8 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     setErr(null);
     setSort(null);
     setFilter('');
+    setFilterInput('');
+    setSized({});
     setPicked(null);
     let frame = 0;
     let width = 0;
@@ -110,18 +126,28 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
   const done = meta !== null;
   const bodyStart = hasHeader ? 1 : 0;
 
-  // column widths from the header and the first rows
-  const widths = useMemo(() => {
+  // the filter applies 150 ms after the last keystroke (each run reads every row)
+  useEffect(() => {
+    const t = setTimeout(() => setFilter(filterInput), 150);
+    return () => clearTimeout(t);
+  }, [filterInput]);
+
+  // column widths: at least the header's text (with room for the sort mark), else the widest of the first rows' cells,
+  // within [56, 320] px (200 on a phone); a column dragged by its edge keeps the width it was given
+  const auto = useMemo(() => {
     const max = phone ? 200 : 320;
     const out: number[] = [];
-    const sample = rows.current.slice(0, 200);
+    const sample = rows.current.slice(hasHeader ? 1 : 0, 100);
+    const head = hasHeader ? rows.current[0] ?? [] : [];
     for (let c = 0; c < cols; c++) {
-      let w = colName(c).length;
-      for (const r of sample) w = Math.max(w, Math.min(60, cellText(r[c]).length));
-      out.push(Math.max(56, Math.min(max, 24 + w * 7.6)));
+      const name = hasHeader ? cellText(head[c]) || colName(c) : colName(c);
+      let w = textWidth(name, 600) + 34;
+      for (const r of sample) w = Math.max(w, textWidth(cellText(r[c]).slice(0, 60), 400) + 18);
+      out.push(Math.round(Math.max(56, Math.min(max, w))));
     }
     return out;
-  }, [cols, done, phone, count > 0 && count < 200 ? count : 200]);
+  }, [cols, done, phone, hasHeader, count > 0 && count < 100 ? count : 100]);
+  const widths = useMemo(() => auto.map((w, c) => sized[c] ?? w), [auto, sized]);
   const offsets = useMemo(() => {
     const o = [0];
     for (const w of widths) o.push(o[o.length - 1] + w);
@@ -208,8 +234,8 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
           type="search"
           placeholder={canSort ? 'Filter rows' : `Filter: up to ${SORT_MAX.toLocaleString('en-US')} rows`}
           disabled={!canSort}
-          value={filter}
-          onInput={(e) => setFilter((e.currentTarget as HTMLInputElement).value.slice(0, 200))}
+          value={filterInput}
+          onInput={(e) => setFilterInput((e.currentTarget as HTMLInputElement).value.slice(0, 200))}
           data-testid="table-filter"
         />
       </div>
@@ -267,6 +293,34 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
                 </button>
               );
             })}
+            {visCols.map((c) => (
+              <span
+                key={`g${c}`}
+                class="tv-grip"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={`Resize column ${colName(c)}`}
+                ref={(el) => {
+                  if (el) el.style.left = `${NUM_W + offsets[c + 1] - 4}px`;
+                }}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  const el = e.currentTarget as HTMLElement;
+                  el.setPointerCapture(e.pointerId);
+                  const x0 = e.clientX;
+                  const w0 = widths[c];
+                  const move = (m: PointerEvent) => setSized((o) => ({ ...o, [c]: Math.round(Math.max(40, Math.min(1200, w0 + m.clientX - x0))) }));
+                  const up = () => {
+                    el.removeEventListener('pointermove', move);
+                    el.removeEventListener('pointerup', up);
+                    el.removeEventListener('pointercancel', up);
+                  };
+                  el.addEventListener('pointermove', move);
+                  el.addEventListener('pointerup', up);
+                  el.addEventListener('pointercancel', up);
+                }}
+              />
+            ))}
           </div>
           {Array.from({ length: Math.max(0, last - first) }, (_, k) => {
             const i = first + k;

@@ -9,7 +9,7 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { startWorker } from './tt';
-import { safeHref } from '../markdown';
+import { pdfLink } from './pdflinks';
 import { PreviewMsg, errText, type ViewerProps } from './Preview';
 import { Spinner } from '../components/icons';
 
@@ -115,7 +115,8 @@ class Renderer {
     const annots = await page.getAnnotations({ intent: 'display' });
     if (cancelled()) return;
     for (const a of annots.slice(0, 2000) as Record<string, unknown>[]) {
-      if (a.subtype !== 'Link' || !Array.isArray(a.rect) || a.rect.length !== 4) continue;
+      const link = pdfLink(a);
+      if (!link) continue; // anything else (JavaScript, Launch, SubmitForm, named actions, other schemes): no element
       const r = a.rect as number[];
       const [x1, y1] = vp.convertToViewportPoint(r[0], r[1]) as number[];
       const [x2, y2] = vp.convertToViewportPoint(r[2], r[3]) as number[];
@@ -128,25 +129,23 @@ class Renderer {
         el.style.height = `${Math.abs(y2 - y1)}px`;
         layer.append(el);
       };
-      const href = typeof a.url === 'string' ? safeHref(a.url) : null;
-      if (href) {
+      if (link.kind === 'url') {
         const el = document.createElement('a');
-        el.href = href;
+        el.href = link.href;
         el.target = '_blank';
         el.rel = 'noopener noreferrer nofollow';
-        el.title = href;
+        el.title = link.href;
         el.dataset.external = '1';
         place(el);
-      } else if (a.dest !== undefined && a.dest !== null) {
+      } else {
         const el = document.createElement('button');
         el.type = 'button';
         el.title = 'Go to the linked page';
         el.addEventListener('click', () => {
-          void destPage(this.doc, a.dest).then((p) => p && this.goTo(p), () => undefined);
+          void destPage(this.doc, link.dest).then((p) => p && this.goTo(p), () => undefined);
         });
         place(el);
       }
-      // anything else (JavaScript, Launch, SubmitForm, named actions, attachments, mailto:, file:): no element at all
     }
   }
 

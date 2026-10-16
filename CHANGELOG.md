@@ -12,7 +12,7 @@ All notable changes to bedrock-now are documented here. The format follows
   and a Markdown file shows the workspace images next to it, never web images), images (PNG, JPEG, GIF, WebP, AVIF,
   BMP, ICO), SVG (as an image only), audio and video, PDF (pdf.js 6.4.299, legacy build: pages, selectable text,
   find, zoom, page jumps; web links open in a new tab; a PDF's JavaScript, forms and launch actions never run), CSV
-  and TSV (a table: header detection, sort, filter), JSON, JSON Lines and YAML (a collapsible tree; notebooks as JSON
+  and TSV (a table: header detection, sort, filter, resizable columns), JSON, JSON Lines and YAML (a collapsible tree; notebooks as JSON
   for now) open in Preview; what a file is comes from its first bytes, not its name (the file read now returns a
   binary file's first 64 bytes). Parsing runs in workers the page stops on a time budget; pdf.js and the viewers load
   on first use. Limits are stated in the page and the README (25 MB at most; images ≤ 100 million pixels; tables ≤

@@ -1385,9 +1385,11 @@ def ui_previews(ctx):
     see(pane.locator(".textLayer").first).to_contain_text("A hostile PDF", timeout=30000)
     see(pane.locator(".pdf-link")).to_have_count(1, timeout=20000)
     expect(pane.locator(".pdf-link").first.get_attribute("href") == "http://127.0.0.1:9/pdf-link", "the hostile PDF's one http link")
+    # click on every hostile line (layout: HOSTILE_PDF_LINES in code/web/dev/preview-fixtures.mjs — text at
+    # y = 700 - 30 i on a 792-point page; the last line is the allowed link): nothing happens
     box = pane.locator(".pdf-page").first.bounding_box()
-    for y in (0.17, 0.22, 0.27, 0.32, 0.37, 0.42):
-        page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * y)
+    for i in range(18):
+        page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * (792 - (700 - 30 * i + 5)) / 792)
     page.wait_for_timeout(1000)
     shot(page, "87-code-preview-hostile-pdf")
     pane = open_preview(page, f"{d}/hostile.md", "markdown")

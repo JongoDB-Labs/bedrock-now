@@ -13,7 +13,8 @@ import { setTabView, type FileTab, type FileView } from '../app';
 import { basename, bytes, dirname } from '../text';
 import { Icon, Spinner } from '../components/icons';
 import { MarkdownView } from '../components/MarkdownView';
-import { CAPS, hasSource, imageRefusal, needsBytes, sniffBinary, looksLikeSvg, type Kind, type Sniffed } from './sniff';
+import { CAPS, hasSource, imageRefusal, needsBytes, looksLikeSvg, type Kind, type Sniffed } from './sniff';
+import { ImageCache, type ImageEntry } from './images';
 
 const KIND_NAME: Record<Kind, string> = {
   markdown: 'Markdown files', image: 'images', svg: 'SVG images', audio: 'audio files', video: 'videos', pdf: 'PDF documents',
@@ -137,7 +138,7 @@ function Lazy({ name, load, props }: { name: string; load: () => Promise<{ View:
 
 // ---------------------------------------------------------------- the preview itself
 
-export function Preview({ tab, text, phone }: { tab: FileTab; text: string | null; phone: boolean }) {
+export function Preview({ tab, text, phone, active = true }: { tab: FileTab; text: string | null; phone: boolean; active?: boolean }) {
   const pv = tab.preview;
   const cap = pv ? CAPS[pv.kind] : 0;
   const tooBig = !!pv && pv.kind !== 'markdown' && tab.size !== null && tab.size > cap;
@@ -174,7 +175,8 @@ export function Preview({ tab, text, phone }: { tab: FileTab; text: string | nul
     case 'video':
       return <MediaView {...props} />;
     case 'pdf':
-      return <Lazy name="pdf" load={() => import('./PdfView')} props={props} />;
+      // a PDF in a tab not shown: its viewer (and pdf.js's worker) ends; it opens again from the bytes kept here
+      return active ? <Lazy name="pdf" load={() => import('./PdfView')} props={props} /> : null;
     case 'csv':
     case 'tsv':
       return <Lazy name="table" load={() => import('./TableView')} props={props} />;
@@ -186,7 +188,9 @@ export function Preview({ tab, text, phone }: { tab: FileTab; text: string | nul
 // ---------------------------------------------------------------- Markdown
 
 function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
-  const renderImage = useCallback((path: string, alt: string, key: number) => <WorkspaceImage key={key} path={path} alt={alt} />, []);
+  // one cache per file version: re-renders (typing in Split) and repeated images fetch nothing again
+  const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max)), [tab.path, tab.version]);
+  const renderImage = useCallback((path: string, alt: string, key: number) => <WorkspaceImage key={`${key}:${path}`} path={path} alt={alt} cache={cache} />, [cache]);
   return (
     <div class="pv-scroll" data-testid="preview-md">
       {tab.truncated && <div class="banner subtle">Only the first {bytes(CAPS.markdown)} of this file ({bytes(tab.size)}) are shown.</div>}
@@ -197,40 +201,42 @@ function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
   );
 }
 
-const MD_IMAGE_MAX = 10 * 1024 * 1024;
-
-/** A workspace image in a Markdown preview: its bytes through the API, shown only when they really are an image (or
- *  an SVG), as an <img> from a blob: URL that is revoked once decoded. Anything else stays its alt text. */
-function WorkspaceImage({ path, alt }: { path: string; alt: string }) {
-  const [st, setSt] = useState<{ url: string } | { err: string } | null>(null);
+/** A workspace image in a Markdown preview: fetched (through the preview's cache and budget) once it comes near the
+ *  view, shown only when its bytes really are an image (or an SVG), as an <img> from a blob: URL of its own that is
+ *  revoked once decoded. Anything else stays its alt text. */
+function WorkspaceImage({ path, alt, cache }: { path: string; alt: string; cache: ImageCache }) {
+  const [near, setNear] = useState(false);
+  const [entry, setEntry] = useState<ImageEntry | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const spot = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    const ac = new AbortController();
-    let url = '';
-    api.fsBytes(path, MD_IMAGE_MAX, ac.signal).then(
-      (buf) => {
-        if (ac.signal.aborted) return;
-        const b = new Uint8Array(buf);
-        let mime = sniffBinary(path, b.subarray(0, 64))?.mime ?? '';
-        if (!mime.startsWith('image/') && looksLikeSvg(new TextDecoder().decode(b.subarray(0, 8192)))) mime = 'image/svg+xml';
-        if (!mime.startsWith('image/')) return setSt({ err: 'not an image' });
-        const no = mime === 'image/svg+xml' ? null : imageRefusal(mime, b);
-        if (no) return setSt({ err: no });
-        url = URL.createObjectURL(new Blob([buf], { type: mime }));
-        setSt({ url });
-      },
-      (e) => !ac.signal.aborted && setSt({ err: errText(e) }),
-    );
+    const el = spot.current;
+    if (near || !el) return;
+    if (typeof IntersectionObserver !== 'function') return setNear(true);
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setNear(true), { rootMargin: '400px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [near]);
+  useEffect(() => {
+    if (!near) return;
+    let live = true;
+    void cache.get(path).then((e) => live && setEntry(e));
     return () => {
-      ac.abort();
-      if (url) URL.revokeObjectURL(url);
+      live = false;
     };
-  }, [path]);
-  if (st && 'url' in st) {
+  }, [near, path, cache]);
+  useEffect(() => {
+    if (!entry || !('blob' in entry)) return;
+    const u = URL.createObjectURL(entry.blob);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [entry]);
+  if (url) {
     const done = (e: Event) => URL.revokeObjectURL((e.currentTarget as HTMLImageElement).src);
-    return <img class="md-img" src={st.url} alt={alt} title={path} draggable={false} onLoad={done} onError={done} />;
+    return <img class="md-img" src={url} alt={alt} title={path} draggable={false} onLoad={done} onError={done} />;
   }
   return (
-    <span class="md-badlink" title={st && 'err' in st ? `${path}: ${st.err}` : path}>
+    <span ref={spot} class="md-badlink" title={entry && 'err' in entry ? `${path}: ${entry.err}` : path}>
       [image{alt ? `: ${alt}` : ''}]
     </span>
   );

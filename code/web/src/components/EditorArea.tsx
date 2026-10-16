@@ -39,7 +39,8 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   const phone = useMedia('(max-width: 699.98px)');
   const [readOnly, setReadOnly] = useState(phone);
   const [failed, setFailed] = useState<string | null>(null);
-  const view = tab.preview ? tab.view : 'source';
+  // (Split needs two columns: on a phone it shows the preview)
+  const view = !tab.preview ? 'source' : phone && tab.view === 'split' ? 'preview' : tab.view;
   const canMount = !tab.loading && !tab.binary && tab.saved !== null;
   // the editor's text while it differs from the file (the preview shows your unsaved edits)
   const [live, setLive] = useState<string | null>(null);
@@ -193,7 +194,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       <div class={`file-body v-${view}`}>
         {tab.preview && view !== 'source' && !tab.error && !(tab.loading && tab.saved === null) && (
           <div class="pv-host" data-testid="preview" data-kind={tab.preview.kind}>
-            <Preview tab={tab} text={live ?? tab.saved} phone={phone} />
+            <Preview tab={tab} text={live ?? tab.saved} phone={phone} active={active} />
           </div>
         )}
         <div class={`cm-host${view === 'preview' ? ' hidden' : ''}`} ref={host} />
@@ -276,8 +277,13 @@ function TabTitle({ tab, all }: { tab: Tab; all: Tab[] }) {
 export function EditorTabs() {
   const tabs = useSel(store, (s) => s.tabs);
   const active = useSel(store, (s) => s.activeTab);
+  const bar = useRef<HTMLDivElement>(null);
+  // the active tab is always in view (opening a file or switching to one off the edge of the strip)
+  useEffect(() => {
+    bar.current?.querySelector('.etab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [active, tabs.length]);
   return (
-    <div class="tabs-bar" role="tablist" aria-label="Open files">
+    <div class="tabs-bar" role="tablist" aria-label="Open files" ref={bar}>
       {tabs.map((t) => (
         <div
           key={t.key}

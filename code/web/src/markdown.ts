@@ -63,7 +63,8 @@ interface Ctx {
  *  path outside the workspace, `..` above it, or anything odd). `/x.png` is the workspace's x.png. */
 export function resolveRel(base: string, href: unknown): string | null {
   if (typeof href !== 'string' || !href || href.length > 1000 || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) return null;
-  let h = href.replace(/[?#].*$/, '');
+  const cut = href.search(/[?#]/);
+  let h = cut < 0 ? href : href.slice(0, cut);
   try {
     h = decodeURIComponent(h);
   } catch {

@@ -1,7 +1,7 @@
 // CSV / TSV → rows of text, for the table preview. Runs in a worker (workers/csv.worker.ts); pure and unit-tested.
-// papaparse 5.7.0 does the parsing (quotes, line breaks, delimiter detection); around it, caps keep a hostile file
-// bounded: a record with more than LIMITS.cols fields is cut *before* parsing (so one line of millions of commas
-// never becomes millions of strings), at most LIMITS.rows rows and LIMITS.cells cells are kept, and each cell's text
+// papaparse 5.7.0 does the parsing (quotes, delimiter detection; the line break is decided here and handed to it);
+// around it, caps keep a hostile file bounded: a record with more than LIMITS.cols fields is cut *before* parsing, by
+// the parser's own quote and line-break rules (so one line of millions of commas never becomes millions of strings), at most LIMITS.rows rows and LIMITS.cells cells are kept, and each cell's text
 // is cut at LIMITS.cellChars. Values stay text (no type guessing, no formulas).
 import Papa from 'papaparse';
 import { CSV_LIMITS, isNumeric } from './limits';
@@ -32,11 +32,31 @@ export function guessDelimiter(text: string, tsv: boolean): string {
   return DELIMS.includes(r.meta.delimiter) ? r.meta.delimiter : ',';
 }
 
-/** Records with more than maxCols fields cut to their first maxCols, quote-aware with the parser's rules (a quote
- *  opens only at the start of a field; "" inside quotes is a quote). Returns the text unchanged when nothing is cut. */
-export function clipFields(text: string, delim: string, maxCols: number): { text: string; clipped: boolean } {
+/** The line break of the file, decided once and handed to the parser (so the field cap below and the parser agree on
+ *  where a record ends): the first one in the first 64 KiB, \r\n, \n or a lone \r (default \n). */
+export function guessNewline(text: string): '\n' | '\r\n' | '\r' {
+  const n = Math.min(text.length, 65536);
+  for (let i = 0; i < n; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 10) return '\n';
+    if (c === 13) return text.charCodeAt(i + 1) === 10 ? '\r\n' : '\r';
+  }
+  return '\n';
+}
+
+const WS = /\s/;
+
+/** Records with more than maxCols fields cut to their first maxCols, with papaparse's own rules for quotes and line
+ *  breaks, so the count here is the parser's: a quote opens a field only at its start; inside, "" is a quote, and a
+ *  quote closes the field only when (after any whitespace) a delimiter, the line break or the end follows — any other
+ *  quote is text; a record ends only at `newline` outside quotes (a lone \r in a \n file is data, as for the parser).
+ *  Returns the text unchanged when nothing is cut. */
+export function clipFields(text: string, delim: string, maxCols: number, newline: string = '\n'): { text: string; clipped: boolean } {
   const D = delim.charCodeAt(0);
+  const NL = newline.charCodeAt(0);
+  const crlf = newline === '\r\n';
   const n = text.length;
+  const nlAt = (i: number) => text.charCodeAt(i) === NL && (!crlf || text.charCodeAt(i + 1) === 10);
   const parts: string[] = [];
   let from = 0;
   let fields = 1;
@@ -46,9 +66,16 @@ export function clipFields(text: string, delim: string, maxCols: number): { text
   for (let i = 0; i < n; i++) {
     const c = text.charCodeAt(i);
     if (inQ) {
-      if (c === 34) {
-        if (text.charCodeAt(i + 1) === 34) i++;
-        else inQ = false;
+      if (c !== 34) continue;
+      if (text.charCodeAt(i + 1) === 34) {
+        i++; // "" : a quote in the text
+        continue;
+      }
+      let j = i + 1;
+      while (j < n && text.charCodeAt(j) !== D && !nlAt(j) && WS.test(text[j])) j++;
+      if (j >= n || text.charCodeAt(j) === D || nlAt(j)) {
+        inQ = false;
+        atStart = false;
       }
       continue;
     }
@@ -59,12 +86,13 @@ export function clipFields(text: string, delim: string, maxCols: number): { text
       fields++;
       atStart = true;
       if (fields === maxCols + 1) cut = i;
-    } else if (c === 10 || c === 13) {
+    } else if (nlAt(i)) {
       if (cut >= 0) {
         parts.push(text.slice(from, cut));
         from = i;
         cut = -1;
       }
+      if (crlf) i++;
       fields = 1;
       atStart = true;
     } else atStart = false;
@@ -100,7 +128,7 @@ export function looksLikeHeader(rows: string[][]): boolean {
 
 /** Parse (already clipped) text. With onRows, rows are handed over in batches and not kept; without, they are
  *  returned. */
-export function parseCsv(text: string, opts: { delimiter: string; onRows?: (rows: string[][]) => void; batch?: number; limits?: typeof CSV_LIMITS }): { rows: string[][]; meta: CsvMeta } {
+export function parseCsv(text: string, opts: { delimiter: string; newline?: '\n' | '\r\n' | '\r'; onRows?: (rows: string[][]) => void; batch?: number; limits?: typeof CSV_LIMITS }): { rows: string[][]; meta: CsvMeta } {
   const L = opts.limits ?? CSV_LIMITS;
   const cell = (s: string): string => (s.length > L.cellChars ? s.slice(0, L.cellChars) + '…' : s);
   const all: string[][] = [];
@@ -111,6 +139,7 @@ export function parseCsv(text: string, opts: { delimiter: string; onRows?: (rows
   const size = opts.batch ?? 5000;
   Papa.parse(text, {
     delimiter: opts.delimiter,
+    newline: opts.newline ?? '\n',
     preview: L.rows + 1,
     skipEmptyLines: 'greedy',
     step: (r, parser) => {
@@ -153,8 +182,9 @@ export function parseCsv(text: string, opts: { delimiter: string; onRows?: (rows
 /** A whole file: delimiter, clip, parse. */
 export function readCsv(text: string, tsv: boolean, onRows?: (rows: string[][]) => void, limits = CSV_LIMITS): { rows: string[][]; meta: CsvMeta } {
   const delimiter = guessDelimiter(text, tsv);
-  const clip = clipFields(text, delimiter, limits.cols);
-  const r = parseCsv(clip.text, { delimiter, onRows, limits });
+  const newline = guessNewline(text);
+  const clip = clipFields(text, delimiter, limits.cols, newline);
+  const r = parseCsv(clip.text, { delimiter, newline, onRows, limits });
   if (clip.clipped) r.meta.colsCut = true;
   return r;
 }

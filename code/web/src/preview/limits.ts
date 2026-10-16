@@ -13,6 +13,11 @@ export type TNode =
   | { t: 's'; v: string; len: number }
   | { t: 'n' | 'b' | 'z' | 'x'; v: string };
 
-const NUM = /^\s*[-+]?(\d{1,3}(,\d{3})+|\d+)?(\.\d+)?([eE][-+]?\d+)?\s*%?\s*$/;
+// No overlapping quantifiers (the text is trimmed first, and at most 64 characters are tested): linear time. It runs on
+// the page's main thread for every cell drawn and sorted.
+const NUM = /^[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s*%)?$/;
 /** A cell that reads as a number (1,234.5 · -3e4 · 12%). */
-export const isNumeric = (s: string): boolean => s.trim() !== '' && /\d/.test(s) && NUM.test(s);
+export const isNumeric = (s: string): boolean => {
+  const t = s.trim();
+  return t.length > 0 && t.length <= 64 && /\d/.test(t) && NUM.test(t);
+};

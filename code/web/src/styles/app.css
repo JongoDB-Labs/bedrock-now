@@ -332,6 +332,8 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .tv-h:disabled { cursor: default; opacity: 1; }
 .tv-h.sorted { color: var(--accent); }
 .tv-hname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tv-grip { position: absolute; top: 0; z-index: 3; width: 8px; height: 28px; cursor: col-resize; touch-action: none; }
+.tv-grip:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .tv-r { position: absolute; left: 0; right: 0; min-width: 100%; border-bottom: 1px solid var(--line-soft); }
 .tv-r:hover { background: var(--hover); }
 .tv-num { position: sticky; left: 0; z-index: 2; width: 56px; height: 100%; display: flex; align-items: center; justify-content: flex-end; padding: 0 8px; background: var(--surface-2); border-right: 1px solid var(--line); color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }

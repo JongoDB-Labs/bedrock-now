@@ -3,7 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CAPS, MAX_PIXELS, extOf, hasSource, imageRefusal, imageSize, looksLikeSvg, needsBytes, previewableName, sniff, sniffBinary, viewFor } from '../src/preview/sniff';
-import { CSV_LIMITS, clipFields, guessDelimiter, looksLikeHeader, parseCsv, readCsv } from '../src/preview/csv';
+import { CSV_LIMITS, clipFields, guessDelimiter, guessNewline, isNumeric, looksLikeHeader, parseCsv, readCsv } from '../src/preview/csv';
+import { ImageCache, classify } from '../src/preview/images';
+import { pdfLink } from '../src/preview/pdflinks';
+import { runJob } from '../src/preview/run';
 import { TREE_LIMITS, readJson, readJsonl, readYaml, toTree, type TNode } from '../src/preview/tree';
 import { MAX_IMAGES, renderMarkdown, resolveRel, type MdNode } from '../src/markdown';
 import { base64Bytes } from '../src/api';
@@ -297,5 +300,180 @@ test('wire: a binary file\'s first bytes; the worker policy allows exactly this 
     }
   } finally {
     delete (globalThis as Record<string, unknown>).trustedTypes;
+  }
+});
+
+const ms = (fn: () => unknown): number => {
+  const t0 = performance.now();
+  fn();
+  return performance.now() - t0;
+};
+
+test('no regex here backtracks on hostile text (it runs on the page\'s main thread)', () => {
+  // looksLikeSvg: prefixes that made the first version's single regex take seconds to minutes
+  const svg: string[] = [
+    ' '.repeat(40) + 'x',
+    ' '.repeat(60_000) + 'x',
+    '<?xml?>'.repeat(9000) + 'x',
+    '<!-- -->'.repeat(8000) + 'x',
+    '<!DOCTYPE' + ' '.repeat(60_000),
+    '<!DOCTYPE x [' + ']'.repeat(30_000),
+    '<?' + '?'.repeat(60_000),
+    '<!--' + '-'.repeat(60_000),
+    '<!-- --> \n'.repeat(6000) + '<svg>',
+  ];
+  for (const t of svg) assert.ok(ms(() => looksLikeSvg(t)) < 50, `looksLikeSvg on ${JSON.stringify(t.slice(0, 20))}…`);
+  assert.ok(looksLikeSvg('<!-- --> \n'.repeat(10) + '<svg>'));
+  assert.ok(looksLikeSvg('<?xml version="1.0"?>\n<!DOCTYPE svg [ <!ENTITY a "b"> ]>\n<svg/>'));
+  assert.ok(!looksLikeSvg(' '.repeat(70_000) + '<svg>'), 'only the first 64 KiB are read');
+  // isNumeric: called for every cell drawn and sorted
+  const cells = ['1'.repeat(2000) + 'x', '1,'.repeat(1000) + 'x', ' '.repeat(2000) + '1x', '1,111'.repeat(400) + ',', '.1'.repeat(1000), '1e1'.repeat(700), '9'.repeat(64) + '%x'];
+  for (const c of cells) assert.ok(ms(() => isNumeric(c)) < 50, `isNumeric on ${c.slice(0, 20)}…`);
+  assert.ok(isNumeric('1,234.5') && isNumeric(' -3e4 ') && isNumeric('12 %') && isNumeric('.5'));
+  assert.ok(!isNumeric('1,23') && !isNumeric('abc') && !isNumeric('') && !isNumeric('1'.repeat(65)));
+});
+
+test('csv: the field cap and the parser agree on quotes and line breaks (no way around the cap)', () => {
+  const many = ','.repeat(1_000_000);
+  // a quote that is text for the parser (not followed by a delimiter): the record goes on with its commas
+  const desync = readCsv('a,b\n"a"x,"' + many + '\n1,2\n', false);
+  assert.ok(desync.rows.every((r) => r.length <= CSV_LIMITS.cols), `widest ${Math.max(...desync.rows.map((r) => r.length))}`);
+  const desync2 = readCsv('h\n"a"x,",' + many + '\n', false);
+  assert.ok(desync2.rows.every((r) => r.length <= CSV_LIMITS.cols));
+  // a lone \r in a \n file is data for the parser: it does not end the record for the cap either
+  const cr = readCsv('a,b\nx' + ',,,,\r'.repeat(250_000) + '\n1,2\n', false);
+  assert.ok(cr.rows.every((r) => r.length <= CSV_LIMITS.cols), `widest ${Math.max(...cr.rows.map((r) => r.length))}`);
+  assert.equal(cr.meta.colsCut, true);
+  // and a \r\n file: a lone \n is data
+  const crlf = readCsv('a,b\r\nx' + ',,,,\n'.repeat(250_000) + '\r\n1,2\r\n', false);
+  assert.ok(crlf.rows.every((r) => r.length <= CSV_LIMITS.cols));
+  assert.equal(guessNewline('a,b\r\nc'), '\r\n');
+  assert.equal(guessNewline('a,b\nc\r'), '\n');
+  assert.equal(guessNewline('a,b\rc'), '\r');
+  assert.equal(guessNewline('a,b'), '\n');
+  assert.deepEqual(clipFields('a,b,c\r\n1,2,3', ',', 2, '\r\n'), { text: 'a,b\r\n1,2', clipped: true });
+  assert.deepEqual(clipFields('"x" ,b,c', ',', 2), { text: '"x" ,b', clipped: true }, 'a closing quote, spaces, then the delimiter');
+  assert.deepEqual(readCsv('name,note\r\n"a, b",c\r\n', false).rows, [['name', 'note'], ['a, b', 'c']]);
+});
+
+test('images: header sizes for BMP core headers, icons holding a PNG, AVIF with several items', () => {
+  const core = new Uint8Array(30);
+  const dv = new DataView(core.buffer);
+  core.set([0x42, 0x4d]);
+  dv.setUint32(14, 12, true);
+  dv.setUint16(18, 640, true);
+  dv.setUint16(20, 480, true);
+  assert.deepEqual(imageSize('image/bmp', core), { w: 640, h: 480 });
+  const inner = png(50_000, 50_000);
+  const ico = new Uint8Array(22 + inner.length + 8);
+  const iv = new DataView(ico.buffer);
+  iv.setUint16(2, 1, true);
+  iv.setUint16(4, 1, true);
+  iv.setUint32(6 + 12, 22, true);
+  ico.set(inner, 22);
+  assert.match(imageRefusal('image/x-icon', ico) ?? '', /50,000 × 50,000/, 'an icon holding a huge PNG');
+  const avif = bytes(new Array(20).fill(0), 'ispe', [0, 0, 0, 0], u32(64), u32(64), new Array(8).fill(0), 'ispe', [0, 0, 0, 0], u32(40_000), u32(40_000));
+  assert.match(imageRefusal('image/avif', avif) ?? '', /40,000 × 40,000/, 'the largest item counts');
+});
+
+test('pdf links: only http(s) URLs and inner destinations become elements', () => {
+  const link = (url: unknown, extra: Record<string, unknown> = {}) => pdfLink({ subtype: 'Link', rect: [0, 0, 10, 10], url, ...extra });
+  assert.deepEqual(link('https://example.com/docs'), { kind: 'url', href: 'https://example.com/docs' });
+  assert.deepEqual(link('HTTP://EXAMPLE.com'), { kind: 'url', href: 'http://example.com/' });
+  for (const bad of ['javascript:alert(1)', ' javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'java\nscript:alert(1)', '\tjavascript:alert(1)', 'vbscript:msgbox(1)', 'data:text/html,<script>alert(1)</script>', 'blob:http://x/1', '//evil.example/x', 'http://user:pw@evil.example/', '/api/fs/file?path=x', 'mailto:a@b.c', 'ftp://x/y', 'file:///etc/passwd', 'https:', 42, null]) {
+    assert.equal(link(bad), null, String(bad));
+  }
+  assert.deepEqual(link(undefined, { dest: 'chapter2' }), { kind: 'dest', dest: 'chapter2' });
+  assert.deepEqual(link(undefined, { dest: [{ num: 5, gen: 0 }, { name: 'XYZ' }] })?.kind, 'dest');
+  assert.equal(link(undefined, { dest: { evil: 1 } }), null);
+  assert.equal(link(undefined, { action: 'NextPage' }), null, 'named actions');
+  assert.equal(pdfLink({ subtype: 'Widget', rect: [0, 0, 1, 1], url: 'https://x.y' }), null);
+  assert.equal(pdfLink({ subtype: 'Link', rect: [0, 0, NaN, 1], url: 'https://x.y' }), null);
+});
+
+test('markdown images: fetched once per path, within a byte and pixel budget, only real images', async () => {
+  const files: Record<string, Uint8Array> = { 'a.png': png(10, 10), 'big.png': png(9000, 9000), 'note.png': new TextEncoder().encode('<html>'), 'logo.svg': new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>') };
+  for (let i = 0; i < 5; i++) files[`p${i}.png`] = new Uint8Array([...png(20, 20), ...new Uint8Array(1000)]);
+  const asked: string[] = [];
+  const fetchBytes = async (p: string, max: number) => {
+    asked.push(p);
+    const b = files[p];
+    if (!b) throw new Error('no such file or folder');
+    if (b.length > max) throw new Error('too large');
+    return b.slice().buffer;
+  };
+  const cache = new ImageCache(fetchBytes, { perImage: 5000, bytes: 3500, pixels: 100_000_000 });
+  const [x, y] = await Promise.all([cache.get('a.png'), cache.get('a.png')]);
+  assert.equal(x, y);
+  assert.ok('blob' in x && x.mime === 'image/png' && x.w === 10);
+  assert.equal(asked.filter((p) => p === 'a.png').length, 1, 'the same path is fetched once');
+  assert.match((await cache.get('note.png')).toString() && JSON.stringify(await cache.get('note.png')), /not an image/);
+  assert.ok('blob' in (await cache.get('logo.svg')));
+  assert.match(JSON.stringify(await cache.get('missing.png')), /no such file/);
+  const got = [];
+  for (let i = 0; i < 5; i++) got.push(await cache.get(`p${i}.png`));
+  assert.ok(got.some((e) => 'err' in e && /over/.test(e.err)), 'the byte budget');
+  assert.ok(cache.bytes <= 3500);
+  const px = new ImageCache(fetchBytes, { perImage: 1 << 20, bytes: 1 << 20, pixels: 150 });
+  assert.ok('blob' in (await px.get('a.png')));
+  assert.match(JSON.stringify(await px.get('p0.png')), /million pixels/);
+  assert.match(JSON.stringify(classify('big.png', files['big.png'])), /blob|mime/, '81 MP is under the per-image limit');
+});
+
+class FakeWorker {
+  static last: FakeWorker | null = null;
+  terminated = false;
+  sent: unknown[] = [];
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  onerror: ((e: { message: string; preventDefault(): void }) => void) | null = null;
+  constructor() {
+    FakeWorker.last = this;
+  }
+  postMessage(m: unknown) {
+    this.sent.push(m);
+  }
+  terminate() {
+    this.terminated = true;
+  }
+  say(data: unknown) {
+    this.onmessage?.({ data });
+  }
+}
+
+test('workers: a job ends on its time budget, on done/error, on a crash, and on cancel; CSP reports are logged', async () => {
+  const g = globalThis as Record<string, unknown>;
+  const was = g.Worker;
+  g.Worker = FakeWorker;
+  const errs: string[] = [];
+  const log = console.error;
+  console.error = (m: string) => errs.push(String(m));
+  try {
+    const slow = runJob('data', { text: 'x' }, [], { timeoutMs: 30 });
+    const w1 = FakeWorker.last!;
+    await assert.rejects(slow.promise, /took longer than 0 s|took longer than/);
+    assert.equal(w1.terminated, true, 'a stuck worker is ended');
+    const ok = runJob<{ type: string; n: number }>('csv', { text: 'a' }, [], { timeoutMs: 5000, onChunk: (m) => errs.push(`chunk ${String(m.rows)}`) });
+    const w2 = FakeWorker.last!;
+    w2.say({ type: 'csp', text: "script-src blob:" });
+    w2.say({ type: 'chunk', rows: 'r' });
+    w2.say('not an object');
+    w2.say({ type: 'done', n: 1 });
+    assert.equal((await ok.promise).n, 1);
+    assert.equal(w2.terminated, true);
+    assert.ok(errs.some((e) => /CSP violation in the csv worker/.test(e)) && errs.includes('chunk r'));
+    const bad = runJob('data', {}, [], { timeoutMs: 5000 });
+    FakeWorker.last!.say({ type: 'error', message: 'Excessive alias count' });
+    await assert.rejects(bad.promise, /Excessive alias count/);
+    const crash = runJob('data', {}, [], { timeoutMs: 5000 });
+    FakeWorker.last!.onerror?.({ message: 'out of memory', preventDefault() {} });
+    await assert.rejects(crash.promise, /worker failed: out of memory/);
+    const gone = runJob('data', {}, [], { timeoutMs: 5000 });
+    const w5 = FakeWorker.last!;
+    gone.cancel();
+    await assert.rejects(gone.promise, /cancelled/);
+    assert.equal(w5.terminated, true);
+  } finally {
+    g.Worker = was;
+    console.error = log;
   }
 });

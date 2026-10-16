@@ -86,7 +86,10 @@ or several choices, Other), and the backend's message shapes (`code/server/proto
 for the previews: what a file is by its bytes (and never by its name alone), the caps, image headers (decompression
 bombs refused), CSV parsing on hostile input (a line of a million commas, row/cell/character caps, quotes, `__proto__`
 headers), JSON/YAML trees (100,000 levels, wide lists, billion laughs, custom tags, merge keys, cycles, `__proto__`
-keys), Markdown images (workspace paths only), and the Trusted Types policy (one, named `bn-worker`, these workers only).
+keys), Markdown images (workspace paths only; fetched once, within a byte and pixel budget), PDF links (only http(s)
+and inner destinations, against a list of hostile URIs), the workers (time budget, crash, cancel, CSP reports), timing
+tests that every regular expression run on a file's text on the main thread stays linear on crafted input, and the
+Trusted Types policy (one, named `bn-worker`, these workers only).
 
 `e2e/run.sh` runs `e2e/ui_check.py` in the Playwright image the e2e suite pins (`tests/e2e/run.sh` `PW_IMAGE`,
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the
@@ -118,7 +121,7 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/markdown.ts` | marked lexer → a node tree from fixed tags/attributes |
 | `src/text.ts` | caps, visible bidi/control characters, id and path validation, formatting |
 | `src/editor/` | CodeMirror (lazy chunk): editor, merge view, languages |
-| `src/preview/` | file previews: `sniff.ts` (kinds by magic bytes, caps), `tt.ts` (the Trusted Types policy), `run.ts` (workers with a time budget), `csv.ts` / `tree.ts` (parsers, run in `workers/`), `Preview.tsx` (bar, Markdown, images, media) and the lazily loaded `PdfView.tsx`, `TableView.tsx`, `TreeView.tsx` |
+| `src/preview/` | file previews: `sniff.ts` (kinds by magic bytes, caps), `tt.ts` (the Trusted Types policy), `run.ts` (workers with a time budget), `csv.ts` / `tree.ts` (parsers, run in `workers/`), `images.ts` (a Markdown preview's images: once per path, within a budget), `pdflinks.ts` (what a PDF link may become), `Preview.tsx` (bar, Markdown, images, media) and the lazily loaded `PdfView.tsx`, `TableView.tsx`, `TreeView.tsx` |
 | `src/transcript.ts` | the latest to-do list, the conversation as Markdown |
 | `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
 | `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |

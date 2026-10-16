@@ -237,26 +237,52 @@ function report() {
   ]);
 }
 
-/** JavaScript everywhere a PDF can carry it, a launch action, javascript:/file:/remote links, a form submit — and one
- *  ordinary http link (the only one that may become a link). */
+/** Escapes for a PDF literal string: \\, ( and ), and real line breaks and tabs as \\n, \\r, \\t. */
+const pstr = (s) => s.replace(/[()\\]/g, (c) => '\\' + c).replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+const uri = (u) => `<< /S /URI /URI (${pstr(u)}) >>`;
+/** hostile.pdf's lines, top to bottom (text at y = 700 - 30 i, its link around it): every hostile link first, then
+ *  the one ordinary http link — the only one that may become a link. The checks click each hostile line by this
+ *  layout (code/web/e2e/ui_check.py, tests/e2e/browser/checks_code.py). */
+export const HOSTILE_PDF_LINES = [
+  ['launch calc.exe', '<< /S /Launch /F (calc.exe) /Win << /F (cmd.exe) /P (/c calc) >> >>'],
+  ['javascript: URI', uri('javascript:alert(1)')],
+  ['javascript: after a space', uri(' javascript:alert(1)')],
+  ['JaVaScRiPt: mixed case', uri('JaVaScRiPt:alert(1)')],
+  ['java<newline>script:', uri('java\nscript:alert(1)')],
+  ['<tab>javascript:', uri('\tjavascript:alert(1)')],
+  ['vbscript:', uri('vbscript:msgbox(1)')],
+  ['data: HTML', uri('data:text/html,<script>alert(1)</script>')],
+  ['blob:', uri('blob:http://127.0.0.1:9/pdf-blob')],
+  ['//host (protocol-relative)', uri('//127.0.0.1:9/pdf-protocol-relative')],
+  ['http with user:pw@', uri('http://user:pw@127.0.0.1:9/pdf-credentials')],
+  ['/api/... (relative)', uri('/api/fs/file?path=README.md')],
+  ['mailto:', uri('mailto:someone@example.com')],
+  ['ftp:', uri('ftp://127.0.0.1:9/pdf-ftp')],
+  ['file:', uri('file:///etc/passwd')],
+  ['JavaScript action', null],
+  ['submit form', '<< /S /SubmitForm /F << /FS /URL /F (http://127.0.0.1:9/pdf-submit) >> >>'],
+  ['remote go-to', '<< /S /GoToR /F (other.pdf) /D [0 /Fit] >>'],
+  ['http link (allowed)', uri('http://127.0.0.1:9/pdf-link')],
+];
+
+/** JavaScript everywhere a PDF can carry it (open action, document and page actions, a link, a form field), a launch
+ *  action, every kind of URI a viewer must not open, a form submit, a remote go-to — and one ordinary http link. */
 function hostilePdf() {
-  const js = (s) => `<< /S /JavaScript /JS (${s.replace(/[()\\]/g, (c) => '\\' + c)}) >>`;
-  const link = (y, action) => `<< /Type /Annot /Subtype /Link /Rect [70 ${y} 400 ${y + 20}] /Border [0 0 0] /A ${action} >>`;
+  const js = (s) => `<< /S /JavaScript /JS (${pstr(s)}) >>`;
+  const lines = HOSTILE_PDF_LINES.map(([label, action]) => [label, action ?? js('app.alert(2)')]);
+  const first = 7; // object number of the first link
+  const links = lines.map(([, action], i) => `<< /Type /Annot /Subtype /Link /Rect [70 ${700 - 30 * i - 6} 400 ${700 - 30 * i + 16}] /Border [0 0 0] /A ${action} >>`);
+  const widget = first + links.length;
+  const annots = [...links.map((_, i) => `${first + i} 0 R`), `${widget} 0 R`].join(' ');
   return pdf([
-    '<< /Type /Catalog /Pages 2 0 R /OpenAction 6 0 R /AA << /WC 6 0 R /WS 6 0 R >> /Names << /JavaScript << /Names [(boot) 6 0 R] >> >> /AcroForm << /Fields [14 0 R] >> >>',
+    `<< /Type /Catalog /Pages 2 0 R /OpenAction 6 0 R /AA << /WC 6 0 R /WS 6 0 R >> /Names << /JavaScript << /Names [(boot) 6 0 R] >> >> /AcroForm << /Fields [${widget} 0 R] >> >>`,
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /AA << /O 6 0 R /C 6 0 R >> /Annots [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R] >>',
-    stream([text(72, 720, 18, 'A hostile PDF'), ...['launch', 'javascript: link', 'file: link', 'JavaScript action', 'submit form', 'remote go-to', 'http link (allowed)'].map((s, i) => text(72, 650 - i * 40, 12, s))].join('\n')),
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /AA << /O 6 0 R /C 6 0 R >> /Annots [${annots}] >>`,
+    stream([text(72, 745, 18, 'A hostile PDF'), ...lines.map(([label], i) => text(72, 700 - 30 * i, 12, label))].join('\n')),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
     js("app.alert('pdf javascript ran'); this.submitForm({cURL: 'http://127.0.0.1:9/pdf-js'}); app.launchURL('http://127.0.0.1:9/pdf-launch', true);"),
-    link(646, '<< /S /Launch /F (calc.exe) /Win << /F (cmd.exe) /P (/c calc) >> >>'),
-    link(606, '<< /S /URI /URI (javascript:alert\\(1\\)) >>'),
-    link(566, '<< /S /URI /URI (file:///etc/passwd) >>'),
-    link(526, js('app.alert(2)')),
-    link(486, '<< /S /SubmitForm /F << /FS /URL /F (http://127.0.0.1:9/pdf-submit) >> >>'),
-    link(446, '<< /S /GoToR /F (other.pdf) /D [0 /Fit] >>'),
-    link(406, '<< /S /URI /URI (http://127.0.0.1:9/pdf-link) >>'),
-    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (go) /Rect [420 640 520 660] /F 4 /AA << /E ${js("app.alert('hover')")} /D ${js("app.alert('down')")} >> /A ${js("app.alert('click')")} >>`,
+    ...links,
+    `<< /Type /Annot /Subtype /Widget /FT /Btn /T (go) /Rect [430 740 530 760] /F 4 /AA << /E ${js("app.alert('hover')")} /D ${js("app.alert('down')")} >> /A ${js("app.alert('click')")} >>`,
   ]);
 }
 

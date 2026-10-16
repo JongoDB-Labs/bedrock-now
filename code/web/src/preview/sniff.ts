@@ -118,12 +118,24 @@ const TEXT_KINDS: Record<string, Sniffed> = {
   ipynb: { kind: 'notebook', mime: 'application/json', what: 'Jupyter notebook (shown as JSON)' },
 };
 
-/** Does this text look like an SVG document (an <svg element before anything else that is not a prolog)? */
+// One prolog token at a time (whitespace, a processing instruction such as the XML declaration, a comment, a
+// doctype), sticky, each with a single way to match: no backtracking across tokens, linear in the input. (A single
+// regex with a repeated group of these alternatives backtracks exponentially on a crafted prefix.)
+const PROLOG = /\s+|<\?[^>]*\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>[]*(?:\[[^\]]*\][^>]*)?>/iy;
+export const SVG_SCAN = 64 * 1024;
+
+/** Does this text look like an SVG document (an <svg element before anything else that is not a prolog)? Reads at
+ *  most its first SVG_SCAN characters; linear time (it runs on the page's main thread on untrusted text). */
 export function looksLikeSvg(text: string): boolean {
-  const s = text.slice(0, 8192).replace(/^\uFEFF/, '');
-  // the prolog: XML declaration, comments, doctype, processing instructions, whitespace
-  const m = /^(?:\s+|<\?xml[^>]*\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>[]*(?:\[[\s\S]*?\])?\s*>|<\?[^>]*\?>)*<svg[\s>]/i.exec(s);
-  return m !== null;
+  const s = text.slice(0, SVG_SCAN);
+  let i = s.charCodeAt(0) === 0xfeff ? 1 : 0;
+  for (;;) {
+    PROLOG.lastIndex = i;
+    const m = PROLOG.exec(s);
+    if (!m || !m[0].length) break;
+    i = PROLOG.lastIndex;
+  }
+  return /^<svg[\s/>]/i.test(s.slice(i, i + 5));
 }
 
 /** A file's preview kind: binary files by their first bytes, text files by extension (SVG also by content). */
@@ -164,6 +176,7 @@ const u16le = (b: Uint8Array, i: number) => b[i] | (b[i + 1] << 8);
 const u24le = (b: Uint8Array, i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
 const u32be = (b: Uint8Array, i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 const i32le = (b: Uint8Array, i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24);
+const u32le = (b: Uint8Array, i: number) => i32le(b, i) >>> 0;
 
 /** An image's width × height from its header, or null when the header cannot be read (malformed, or a format whose
  *  size this does not parse). JPEG: the first SOF frame header, walking the segments as a decoder does. */
@@ -174,9 +187,29 @@ export function imageSize(mime: string, b: Uint8Array): { w: number; h: number }
     case 'image/gif':
       return b.length >= 10 ? { w: u16le(b, 6), h: u16le(b, 8) } : null;
     case 'image/bmp':
+      // OS/2's 12-byte core header has 16-bit sizes; every later header 32-bit ones (height negative: top-down)
+      if (b.length >= 22 && u32le(b, 14) === 12) return { w: u16le(b, 18), h: u16le(b, 20) };
       return b.length >= 26 ? { w: Math.abs(i32le(b, 18)), h: Math.abs(i32le(b, 22)) } : null;
-    case 'image/x-icon':
-      return { w: 256, h: 256 }; // directory entries are at most 256 × 256 each
+    case 'image/x-icon': {
+      // the largest image of the directory: an entry's own size (0 = 256), or the PNG it holds (which may claim more)
+      if (b.length < 6) return null;
+      const n = Math.min(u16le(b, 4), 256);
+      let w = 0;
+      let h = 0;
+      for (let k = 0; k < n; k++) {
+        const e = 6 + k * 16;
+        if (e + 16 > b.length) return null;
+        let ew = b[e] || 256;
+        let eh = b[e + 1] || 256;
+        const off = u32le(b, e + 12);
+        if (off + 24 <= b.length && b[off] === 0x89 && ascii(b, off + 1, 'PNG') && ascii(b, off + 12, 'IHDR')) {
+          ew = u32be(b, off + 16);
+          eh = u32be(b, off + 20);
+        }
+        if (ew * eh > w * h) [w, h] = [ew, eh];
+      }
+      return n ? { w, h } : null;
+    }
     case 'image/webp': {
       if (ascii(b, 12, 'VP8 ') && b.length >= 30) return { w: u16le(b, 26) & 0x3fff, h: u16le(b, 28) & 0x3fff };
       if (ascii(b, 12, 'VP8L') && b.length >= 25) {
@@ -208,10 +241,16 @@ export function imageSize(mime: string, b: Uint8Array): { w: number; h: number }
       return null;
     }
     case 'image/avif': {
-      // the first 'ispe' (image spatial extents) property: version/flags, then width, height
+      // the largest 'ispe' (image spatial extents: version/flags, width, height) in the first 64 KiB — the primary
+      // item's is among them; taking the largest never lets a bigger one through
       const n = Math.min(b.length, 1 << 16);
-      for (let i = 4; i + 16 <= n; i++) if (ascii(b, i, 'ispe')) return { w: u32be(b, i + 8), h: u32be(b, i + 12) };
-      return null;
+      let best: { w: number; h: number } | null = null;
+      for (let i = 4; i + 16 <= n; i++) {
+        if (!ascii(b, i, 'ispe')) continue;
+        const d = { w: u32be(b, i + 8), h: u32be(b, i + 12) };
+        if (!best || d.w * d.h > best.w * best.h) best = d;
+      }
+      return best;
     }
     default:
       return null;
