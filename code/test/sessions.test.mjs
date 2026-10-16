@@ -63,7 +63,7 @@ test('prompts: images checked, empty and oversized refused; set model/mode/effor
   await assert.rejects(s.setMode('bypassPermissions'), /bad mode/);
   await assert.rejects(s.setMode('auto'), /bad mode/);
   await assert.rejects(s.setEffort('ultra'), /bad effort/);
-  assert.deepEqual(queries[0].calls, [['setModel', 'sonnet'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
+  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], ['setModel', 'sonnet'], ['setPermissionMode', 'plan'], ['applyFlagSettings', { effortLevel: 'high' }]]);
   assert.deepEqual([s.model, s.mode, s.effort], ['sonnet', 'plan', 'high']);
   mgr.closeAll();
 });
@@ -147,7 +147,7 @@ test('commands etc. need a running process; interrupt reaches the SDK', async ()
   const { mgr, queries } = manager();
   const s = mgr.get(mgr.open({}).id);
   await s.interrupt();
-  assert.deepEqual(queries[0].calls, ['interrupt']);
+  assert.deepEqual(queries[0].calls, [['applyFlagSettings', { disableAutoMode: 'disable' }], 'interrupt']);
   s.close();
   assert.throws(() => s.need(), /no running process/);
   mgr.closeAll();
@@ -286,4 +286,30 @@ test('stderr: at most 20 lines per session every 10 s in the log, then how many 
   mgr.logStderr('s1', 'later', 20000);
   assert.deepEqual(lines.slice(-2), ['(30 more stderr lines of s1 not logged)', 'later']);
   mgr.closeAll();
+});
+
+test('auto mode is off before Claude Code reads the first prompt (Plan asks again); a refusal is logged, the prompt goes on', async () => {
+  for (const refuse of [false, true]) {
+    const logs = [];
+    let release;
+    const { mgr, queries, sent } = manager({
+      log: (l) => logs.push(l),
+      query: (a) => {
+        const q = fakeQuery(sent)(a);
+        q.applyFlagSettings = (x) => { q.calls.push(['applyFlagSettings', x]); return new Promise((r, j) => { release = refuse ? () => j(new Error('unknown control request')) : r; }); };
+        queries.push(q);
+        return q;
+      },
+    });
+    const s = mgr.get(mgr.open({ model: 'haiku', mode: 'plan' }).id);
+    assert.deepEqual(queries[0].calls[0], ['applyFlagSettings', { disableAutoMode: 'disable' }]);
+    s.prompt({ text: 'make a plan' });
+    await tick(50);
+    assert.equal(sent.length, 0, 'the prompt waits for the settings');
+    release();
+    await tick(50);
+    assert.equal(sent.length, 1);
+    assert.equal(logs.some((l) => /auto mode not turned off/.test(l)), refuse);
+    mgr.closeAll();
+  }
 });

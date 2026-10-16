@@ -79,6 +79,14 @@ All notable changes to bedrock-now are documented here. The format follows
   enable` / `disable`. The workspace is shown read-only with the command that changes it. The walkthrough's Claude
   Code steps point at the Code tab when it is on, and at Settings when it is not.
 
+### Changed
+
+- **Claude Code's auto mode is off in the sandbox**: Claude Code 2.1.283+ counts auto mode (a classifier model
+  approving actions) as available behind bedrock-now's own API address, so the browser terminal's `claude` could
+  start in it and the Code page's *Plan* mode handed writing commands to the classifier instead of asking (and blocked
+  them when it failed). The terminal image's managed settings (`/etc/claude-code/managed-settings.json`) and the Code
+  page (at every session's start) turn it off: both start in the ordinary asking mode again.
+
 ## [0.4.1] - 2026-10-15
 
 ### Added

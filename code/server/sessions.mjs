@@ -10,6 +10,11 @@ import { isUuid, isModel, str, short } from './validate.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
+const AUTO_OFF_MS = 15000;   // how long the first prompt waits for "auto mode off" to be accepted (then it goes anyway)
+const withTimeout = (p, ms) => new Promise((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
+  p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+});
 
 export class SessionError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -72,7 +77,7 @@ export class Session {
     this.ring = new Ring();
     this.epoch = crypto.randomBytes(4).toString('hex');
     this.lastInitModel = null; this.modelSet = false;
-    const feed = { inbox: [], wake: null, closed: false };
+    const feed = { inbox: [], wake: null, closed: false, ready: null };
     const options = {
       cwd: '/workspace',
       pathToClaudeCodeExecutable: '/usr/local/bin/claude',   // a path in the sandbox: only the arguments travel
@@ -102,6 +107,11 @@ export class Session {
     try {
       this.q = this.mgr.query({ prompt: this.input(feed), options });
       this.feed = feed;
+      // Auto mode off before the first prompt is read: Claude Code treats it as available behind our base URL, and
+      // then Plan mode hands writing commands to its classifier (which fails closed here) instead of asking. A
+      // control message, not an argument (bn-coded refuses --settings); the sandbox's managed settings say the same.
+      feed.ready = withTimeout(Promise.resolve(this.q.applyFlagSettings?.({ disableAutoMode: 'disable' })), AUTO_OFF_MS)
+        .catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: auto mode not turned off: ${short(e?.message || String(e), 200)}`));
     } catch (e) {
       this.q = null;
       this.setState('error', short(e.message, 300));
@@ -115,6 +125,7 @@ export class Session {
 
   // Each process reads its own feed: a closed one's generator can never take a later process's prompts.
   async *input(feed) {
+    await feed.ready;
     while (!feed.closed) {
       if (!feed.inbox.length) await new Promise((r) => { feed.wake = r; });
       while (feed.inbox.length && !feed.closed) yield feed.inbox.shift();

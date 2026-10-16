@@ -650,6 +650,11 @@ spawn server, Claude Code or any file at will.
   the warning that the file is in your folder and Claude Code on your computer honours it too. A prompt that asks for
   no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's *Plan* mode) switches the
   session to *Accept edits* or *Ask* — the only two modes it may set — and "keep planning" is a Deny with your note.
+  Claude Code's *auto* mode (a classifier model deciding instead of you) is off: Claude Code counts it as available
+  behind this stack's own API address, and would then start in it or hand *Plan* mode's writing commands to the
+  classifier instead of asking. The code container turns it off at every session's start, before the first prompt, and
+  the sandbox image's managed settings (`/etc/claude-code/managed-settings.json`, root's) turn it off for every
+  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode.
   Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
   you type in, the editor or the terminal panel, and its keys (1 *Allow once*, 2 *Always*, 3 *Deny*) answer only after
   you clicked or tabbed into it: a keystroke meant for something else never answers a prompt.

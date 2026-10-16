@@ -443,6 +443,43 @@ def ask_user_question(ctx):
     return f"AskUserQuestion {q!r} → permission {{decision: answer, answers}} → Claude got 'Coffee' ({text_of(evs)!r}); answers to another question refused"
 
 
+@check("browser", "code-plan-mode-asks")
+def plan_asks(ctx):
+    """Plan mode with a writing shell command: a permission card, as the Code page documents — not Claude Code's auto-mode
+    classifier (Claude Code counts auto mode as available behind our base URL; the backend and the sandbox's managed
+    settings turn it off). The model decides whether it runs the command: a plan it presents first is declined with
+    "no plan, run it" (twice at most); when it still runs nothing, a skip."""
+    need_haiku()
+    c = Code(ctx, "code-plan-asks")
+    sid = c.new_session("haiku", "plan")
+    n = len(c.msgs())
+    target = f"e2e-plan-{int(time.time())}.txt"
+    c.request({"type": "prompt", "session": sid, "text": f"Before any planning, run exactly this shell command with the Bash tool: touch {target}"})
+    seen, since, card = [], n, None
+    for _ in range(3):
+        m = c.wait(lambda m: m.get("session") == sid and (m.get("type") == "permission" or (m.get("type") == "event" and m["ev"]["type"] == "result")),
+                   "a permission prompt or the turn's end", 150, since=since)
+        since = c.seen
+        if m.get("type") != "permission":
+            break
+        seen.append(m.get("tool"))
+        if m.get("tool") == "Bash":
+            card = m
+            c.request({"type": "permission", "id": m["id"], "session": sid, "decision": "deny", "message": "e2e: not now"})
+            break
+        c.request({"type": "permission", "id": m["id"], "session": sid, "decision": "deny",
+                   "message": f"No plan is needed. Run exactly `touch {target}` with the Bash tool now."})
+    evs = c.events(sid, n)
+    blocked = [e for e in evs if e["type"] == "tool_result" and "auto mode" in e.get("text", "").lower()]
+    c.api("DELETE", f"/api/sessions/{sid}")
+    c.rec.save()
+    expect(not blocked, f"the auto-mode classifier handled it: {blocked[0]['text'][:200] if blocked else ''}")
+    if card is None:
+        raise Skip(f"Haiku ran no command in Plan mode this time (prompts: {seen or 'none'}); no auto-mode block either")
+    expect("touch" in json.dumps(card.get("input", {})), f"the card's input {card.get('input')}")
+    return f"Plan mode + `touch {target}` → a Bash permission card (after {seen[:-1] or 'no'} other prompts; denied), no auto-mode classifier"
+
+
 @check("browser", "code-files-through-the-sandbox")
 def files(ctx):
     need_on()

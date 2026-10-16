@@ -1373,10 +1373,12 @@ export async function rewindConfirm(): Promise<void> {
     return;
   }
   set((s) => ({ ...s, rewind: null }));
-  const n = done.files.length;
+  // (Claude Code lists the files only for the dry run: a restore answers an empty list — the check's list is what it did)
+  const files = done.files.length ? done.files : (rw.result?.files ?? []);
+  const n = files.length;
   toast(n ? `Restored ${n} file${n === 1 ? '' : 's'} to how they were before that prompt.` : 'Nothing needed restoring.', 'ok');
   // the files on disk changed: open tabs reload (yours with edits get the conflict banner), the tree is listed again
-  for (const p of done.files) {
+  for (const p of files) {
     const t = get().tabs.find((x) => x.kind === 'file' && x.path === p);
     if (t?.kind === 'file') {
       if (t.dirty) updateTab(t.key, (x) => ({ ...x, conflict: 'claude' }) as Tab);

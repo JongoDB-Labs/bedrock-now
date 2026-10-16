@@ -231,16 +231,23 @@ def claude_inside(ctx):
     f = terminal_frame(page)
     wait_xterm(f)
     new_shell_window(page, f)
-    type_line(page, f, f'clear; CLAUDE_BEDROCK_MODEL={haiku} claude-bedrock -p "Reply with exactly the word: ok" --max-turns 1')
-    out = wait_text(f, r"^session: (?!tallying)", 150)   # the final line replaces "session: tallying cost…"
+    # its stream (to a file): the mode Claude Code started in — the image's managed settings turn auto mode off, so
+    # a session without a mode starts in default (Manual), not auto — and the answer
+    type_line(page, f, f'clear; CLAUDE_BEDROCK_MODEL={haiku} claude-bedrock -p "Reply with exactly the word: ok" --max-turns 1 '
+                       '--output-format stream-json --verbose > /tmp/e2e-cb.jsonl; jq -r \'select(.type == "system" and .subtype == "init") '
+                       '| "mode: " + .permissionMode\' /tmp/e2e-cb.jsonl; jq -r \'select(.type == "result") | .result\' /tmp/e2e-cb.jsonl')
+    wait_text(f, r"^session: (?!tallying)", 150)   # the final line replaces "session: tallying cost…"
+    out = wait_text(f, r"^mode: \S+", 20)
     expect(re.search(r"^bedrock · " + re.escape(haiku), out, re.M), f"no launch line: {out[-500:]!r}")
-    expect(re.search(r"^ok\.?$", out, re.M | re.I), f"no 'ok' answer: {out[-500:]!r}")
+    mode = re.search(r"^mode: (\S+)", out, re.M).group(1)
+    expect(mode == "default", f"claude started in {mode!r} mode, not default (auto mode should be off): {out[-300:]!r}")
+    out = wait_text(f, r"^ok\.?$", 10)
     cost = re.search(r"^session: (.*)$", out, re.M).group(1)
     expect(re.match(r"(<?\$[0-9.]+ \(terminal key|no spend booked yet)", cost), f"session line {cost!r}")
     launch = re.search(r"^bedrock · .*$", out, re.M).group(0)
     shot(page, "43-terminal-claude-bedrock")
     rec.save()
-    return f"{launch[:110]} → ok; session: {cost}"
+    return f"{launch[:110]} → ok, started in default mode (auto off); session: {cost}"
 
 
 @check("http", "terminal-origin-and-unlock-enforced")

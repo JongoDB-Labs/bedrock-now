@@ -393,7 +393,8 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now(), wi
 }
 
 /** Transcript events folded into a view: each prompt ends the turn before it (a transcript has no results), nothing
- *  is left streaming or running. */
+ *  is left streaming or running, and the view's state stays what the live session says (a prompt in the transcript
+ *  is no turn running now). */
 function foldHistory(base: SessionView, events: Ev[], t0: number): SessionView {
   let v = base;
   const queued = v.queued;
@@ -405,6 +406,7 @@ function foldHistory(base: SessionView, events: Ev[], t0: number): SessionView {
   v = endStreaming(v);
   return {
     ...v,
+    state: base.state,
     queued,
     turns: v.turns.map((t) => ({ ...t, end: t.end ?? t0, history: true })),
     items: v.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'done' as const } : it)),

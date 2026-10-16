@@ -253,3 +253,16 @@ test('an export holds the transcript before the loaded window, then the view', (
   assert.deepEqual(view.items.map((i) => (i.t === 'user' || i.t === 'assistant' ? i.text : i.t)), ['one', 'first answer', 'two', 'second answer']);
   assert.equal(shown.items.length, 2, 'the view itself is unchanged');
 });
+
+test('a transcript folded in never makes the view look busy: its state stays the live one (a revived, idle session)', () => {
+  const history: Ev[] = [
+    { kind: 'user', text: 'edit it', uuid: U1, images: 0 },
+    { kind: 'text', text: 'done', model: 'm', parent: null },
+  ];
+  for (const state of ['idle', 'ended'] as const) {
+    const live = { ...newView(ID), state };
+    const m = mergeHistory(live, history);
+    assert.equal(m.state, state);
+    assert.ok(m.turns.every((t) => t.end !== null));
+  }
+});

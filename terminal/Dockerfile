@@ -58,7 +58,12 @@ RUN set -eu; userdel -r node 2>/dev/null || true; \
 COPY tmux.conf /etc/tmux.conf
 COPY bashrc /etc/bedrock-now.bashrc
 COPY bin/ /usr/local/bin/
-RUN chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
+# Claude Code's managed settings (root's, read-only for the sandbox): auto mode off for every claude here — the
+# terminal's, claude-bedrock's and the Code page's. Behind a custom base URL Claude Code counts auto mode as available
+# and would start in it, or hand Plan mode's writing commands to its classifier instead of asking.
+COPY managed-settings.json /etc/claude-code/managed-settings.json
+RUN chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.json \
+ && chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
       /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc
 
