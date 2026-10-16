@@ -1,4 +1,4 @@
-// Previews of dev servers in the sandbox (README "Preview"): the preview pane (a tab of the editor area, so desktops
+// Previews of dev servers in the sandbox (README "Previews of dev servers"): the preview pane (a tab of the editor area, so desktops
 // show chat | preview), the Ports panel (status bar; a sheet on phones) with the servers listening in the sandbox,
 // their previews, Stop and the workspace's .claude/launch.json entries, and the "Open preview" chips.
 //

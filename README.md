@@ -440,7 +440,7 @@ per browser.
   SHA-256, and only **Run this command and install** lets it run (Claude Code's `--accept-command <sha256>`; never
   `-y`). After a change the open sessions reload their plugins, so new commands and skills are in the `/` palette at
   once (that rewrites their prompt cache on the next turn).
-- **Preview** (local only for now). A web server running in the sandbox — `npm run dev`, Vite, Next,
+- **Previews of dev servers** (local only for now). A web server running in the sandbox — `npm run dev`, Vite, Next,
   `python -m http.server`, started by Claude, a background task or you in the terminal — shows in a tab beside the
   chat (*chat | preview*), with reload, an address field for its paths, desktop / tablet / phone sizes and **Open in
   a new tab** (its own developer tools, full size); on a phone it opens in a new tab. You get there from the

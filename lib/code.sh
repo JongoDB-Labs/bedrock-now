@@ -78,7 +78,7 @@ code_secrets() {
 # from PORTAL_HOST at every enable/up (like PORTAL_ORIGIN): <its site's first label>-preview.localhost —
 # bedrock-now.localhost → bedrock-now-preview.localhost, bn-dev.localhost → bn-dev-preview.localhost. Browsers count
 # a .localhost name's last two labels as its site, so a preview there is another site than the portal's: none of the
-# portal's cookies reach it (docs/security.md "Previews"). A PORTAL_HOST outside .localhost (BEDROCK_NOW_ALLOW_PUBLIC_
+# portal's cookies reach it (docs/security.md "Previews of dev servers"). A PORTAL_HOST outside .localhost (BEDROCK_NOW_ALLOW_PUBLIC_
 # HOST) gets <project>-preview.localhost: previews are local only, and *.localhost is this computer in every browser.
 code_preview_domain() {
   local h d

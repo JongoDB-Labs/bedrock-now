@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// bn-preview: the Code page's browser preview of dev servers in the sandbox (compose.terminal.yaml; README "Preview").
+// bn-preview: the Code page's browser preview of dev servers in the sandbox (compose.terminal.yaml; README "Previews of dev servers").
 // An HTTP and WebSocket proxy on a UNIX socket in the preview-socket volume, which only the terminal's gateway shares
 // (read-only: it connects, never listens there). The gateway passes requests here only with the preview's secret
 // header, which the main Caddy adds after the portal checked the preview link's capability (caddy/preview-on.caddy);
@@ -9,7 +9,7 @@
 //
 // Nothing here is a boundary for the sandbox (anything in it can replace this process, and preview content is the
 // sandbox's anyway): it only carries bytes. What keeps preview content away from bedrock-now's cookies and pages is
-// the main Caddy's site of its own and the portal's capability (docs/security.md "Previews"). What it does do:
+// the main Caddy's site of its own and the portal's capability (docs/security.md "Previews of dev servers"). What it does do:
 //   - connects only to the sandbox's own loopback, never anywhere else, and never listens on TCP
 //   - leaves out what the dev server must not see or need: hop-by-hop headers, the port header, X-Forwarded-*
 //   - a Location that points back at the same server (http://localhost:5173/x) becomes a path (/x), so redirects stay

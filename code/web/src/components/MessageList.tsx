@@ -154,7 +154,7 @@ const Assistant = memo(function Assistant({ it }: { it: Extract<Item, { t: 'assi
   const text = useStreamText(it.text, it.streaming);
   return (
     <div class={`msg-claude${it.streaming ? ' streaming' : ''}`} data-testid="msg-claude">
-      <MarkdownView text={text} />
+      <MarkdownView text={text} devLinks />
     </div>
   );
 });

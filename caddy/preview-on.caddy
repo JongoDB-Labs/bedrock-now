@@ -1,5 +1,6 @@
-# The Code page's browser previews of dev servers in the sandbox (README "Preview"; docs/security.md "Previews"): on
-# with the Code page (compose.code.yaml sets PREVIEW_MODE=on; preview-off.caddy otherwise). Imported by Caddyfile.
+# The Code page's browser previews of dev servers in the sandbox (README "Previews of dev servers"; docs/security.md
+# "Previews of dev servers in the sandbox"): on with the Code page (compose.code.yaml sets PREVIEW_MODE=on;
+# preview-off.caddy otherwise). Imported by Caddyfile.
 #
 # Local only. This site is on the local listener (127.0.0.1:PORTAL_PORT) alone; the remote sites (remote-*.caddy, on
 # :8081 / :8443) have no preview block, and the portal refuses previews for remote requests too.

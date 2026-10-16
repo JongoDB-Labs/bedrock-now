@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016,SC2034  # literal ${...} in compose/Caddy patterns; stubs read by the libs
-# The Code page's previews of dev servers in the sandbox (README "Preview"; docs/security.md "Previews"): the preview
+# The Code page's previews of dev servers in the sandbox (README "Previews of dev servers"; docs/security.md): the preview
 # domain derived from PORTAL_HOST (another site), the previews' secret, the compose wiring (bn-preview's socket volume,
 # the gateway's secret, the main Caddy's preview site only with the Code page), the main Caddy's preview site and
 # its header rules, the gateway's :7682, local only (no remote block), and bn-preview in the terminal image.

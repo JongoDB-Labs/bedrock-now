@@ -831,7 +831,7 @@ page's script hashes in Caddy's CSP would take even that away (an open question)
 
 The Code page shows a web server running in the sandbox — `npm run dev`, Vite, Next, `python -m http.server`,
 started by Claude, a background task or you in the terminal — in a pane beside the chat or in a new tab (README:
-"Preview"). What it shows is **sandbox content: treat a preview like a website from a stranger.** Its script runs in
+"Previews of dev servers"). What it shows is **sandbox content: treat a preview like a website from a stranger.** Its script runs in
 your browser. The design keeps that script away from bedrock-now's cookies and pages, adds no new way into the
 sandbox, and opens nothing on any network.
 

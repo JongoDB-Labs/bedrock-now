@@ -47,10 +47,10 @@ function textOf(n: MdNode): string {
 
 type ImageFn = (path: string, alt: string, key: number) => ComponentChildren;
 
-function toVNode(n: MdNode, key: number, img?: ImageFn): ComponentChildren {
+function toVNode(n: MdNode, key: number, img?: ImageFn, devLinks = false): ComponentChildren {
   if (typeof n === 'string') return n;
   if (n.tag === 'img') return img && n.attrs?.['data-src'] ? img(n.attrs['data-src'], n.attrs.alt ?? '', key) : null;
-  const kids = (list: MdNode[]) => list.map((c, i) => toVNode(c, i, img));
+  const kids = (list: MdNode[]) => list.map((c, i) => toVNode(c, i, img, devLinks));
   if (!TAGS.has(n.tag)) return kids(n.children);
   if (n.tag === 'pre' && n.attrs?.class !== 'md-html') {
     return <CodeBlock key={key} lang={n.attrs?.['data-lang'] ?? ''} code={n.children.map(textOf).join('')} />;
@@ -70,7 +70,7 @@ function toVNode(n: MdNode, key: number, img?: ImageFn): ComponentChildren {
     };
   } else if (n.tag === 'a' && !(typeof props.href === 'string' && /^https?:\/\//.test(props.href))) {
     delete props.href;
-  } else if (n.tag === 'a') {
+  } else if (n.tag === 'a' && devLinks) {
     // a localhost address in Claude's answer is the sandbox's: its preview (on your computer it would be something else)
     const local = localLink(props.href as string);
     if (local) {
@@ -89,7 +89,9 @@ function toVNode(n: MdNode, key: number, img?: ImageFn): ComponentChildren {
   return h(n.tag, props, n.children.length ? kids(n.children) : null) as VNode;
 }
 
-export const MarkdownView = memo(function MarkdownView({ text, class: cls, images, renderImage }: { text: string; class?: string; images?: string; renderImage?: ImageFn }) {
+/** devLinks: http://localhost:<port> links open that port's dev-server preview (Claude's answers in the chat: there
+ *  those addresses are the sandbox's); elsewhere (a workspace file's preview) links stay as written. */
+export const MarkdownView = memo(function MarkdownView({ text, class: cls, images, renderImage, devLinks }: { text: string; class?: string; images?: string; renderImage?: ImageFn; devLinks?: boolean }) {
   const nodes = useMemo(() => renderMarkdown(text, images !== undefined && renderImage ? { images } : {}), [text, images, !!renderImage]);
-  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map((n, i) => toVNode(n, i, renderImage))}</div>;
+  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map((n, i) => toVNode(n, i, renderImage, devLinks === true))}</div>;
 });
