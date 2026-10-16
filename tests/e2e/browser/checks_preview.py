@@ -344,16 +344,17 @@ def isolation(ctx):
     seen = []
     page.on("request", lambda r: seen.append(r))
     f.evaluate("async (urls) => { for (const u of urls) { try { await fetch(u, { credentials: 'include', mode: 'no-cors' }); } catch (e) { /* refused */ } } }", targets)
-    # a script's fetch from the preview's origin (cors: it says its Origin) — refused by every app host's guard, before
-    # the app (caddy/Caddyfile not_from_preview); here no cookie goes anyway (cross-site), over remote access it would
+    # a script's POST from the preview's origin (it says its Origin; no-cors, so the browser reports the answer) —
+    # refused by every app host's guard, before the app (caddy/Caddyfile not_from_preview); here no cookie goes anyway
+    # (cross-site), over remote access it would (tests/e2e/remote/run.sh)
     cors = {}
     page.on("response", lambda r: cors.setdefault(r.url, r) if "bn-guard=preview" in r.url else None)
-    f.evaluate("async (urls) => { for (const u of urls) { try { await fetch(u, { credentials: 'include' }); } catch (e) { /* no CORS answer */ } } }",
+    f.evaluate("async (urls) => { for (const u of urls) { try { await fetch(u, { method: 'POST', mode: 'no-cors', credentials: 'include', body: 'x' }); } catch (e) { /* */ } } }",
                [CODE + "/api/state?bn-guard=preview", origin() + "/api/summary?bn-guard=preview", origin("chat") + "/api/config?bn-guard=preview"])
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(800)
     guarded = {u.split("?")[0]: (r.status, r.header_value("x-bn-refused")) for u, r in cors.items()}
-    expect(len(guarded) == 3 and all(st == 403 and "same-site guard" in (g or "") for st, g in guarded.values()),
-           f"the guard on a preview's fetches: {guarded}")
+    expect(len(guarded) == 3 and all(st == 403 and "same-site guard: from a preview" in (g or "") for st, g in guarded.values()),
+           f"the guard on a preview's requests: {guarded}")
     # the control: the Code page's own request carries its cookies
     page.evaluate("async () => { await fetch('/api/state'); }")
     page.wait_for_timeout(500)
@@ -383,7 +384,7 @@ def isolation(ctx):
     sb = page.locator("[data-testid=preview-pane]:not(.hidden) iframe[data-testid=preview-frame]").get_attribute("sandbox") or ""
     expect("allow-top-navigation" not in sb and "allow-scripts" in sb, f"sandbox {sb!r}")
     return (f"from the preview: {len(targets)} hosts got no cookie (cross-site) while the Code page's own request had bn_code; its "
-            f"fetches (Origin: the preview) refused by the same-site guard on {len(guarded)} hosts (403); tossed "
+            f"POSTs (Origin: the preview) refused by the same-site guard on {len(guarded)} hosts (403); tossed "
             f"Domain={HOST} cookies refused (its own cookie {'kept' if own else 'not kept: third-party cookies blocked here'}); top navigation "
             f"blocked ({res}), the Code page unreadable ({read})")
 

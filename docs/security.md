@@ -355,8 +355,8 @@ portal's check and before the app:
   the portal frames the apps, the hand-offs (`/auth/handoff`, `/.bn/callback`, the Code page → terminal and → preview
   hand-offs) are redirects, and the unlock and sign-in pages load the portal's logo and style sheet; each app's own
   requests are same-origin. The e2e suite runs every app's flows with the guard on (here the stack's hosts are
-  same-site with each other), and `browser/same-site-guard` sends a fetch, a no-cors `POST` and a form post from the
-  portal page to the other hosts — each with the session cookie, each refused.
+  same-site with each other), and `browser/same-site-guard` sends fetches, a no-cors `POST` and a form post from the
+  Chat page to the other hosts — each with the session cookie, each refused.
 - [x] **A refusal says so**: `403` with a body naming the guard and `X-Bn-Refused` (shown in the browser's developer
   tools). Requests without `Sec-Fetch-Site` (curl, `./stack`, old browsers) and requests from other sites are left to
   what handled them before — the cookies' `SameSite`, the portal's own `Origin` checks, the apps' own.
