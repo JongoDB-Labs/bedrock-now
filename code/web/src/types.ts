@@ -57,7 +57,7 @@ export type Ev =
   | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; consumed?: string[] }
   | { kind: 'error'; text: string }
   /** files of the workspace that run on your computer changed (in a turn, or between turns) */
-  | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[] };
+  | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string };
 
 /** One watched file that changed (code/server/watch.mjs): what it is, and the texts for a diff. */
 export interface WatchChange {
@@ -260,6 +260,8 @@ export interface ServerState {
   egress: boolean | null;
   /** the folder of yours the sandbox sees (a label), when known */
   workspace: string | null;
+  /** this page came over remote access (Caddy's remote sites tell the code container; never from the browser) */
+  remote: boolean;
 }
 
 export interface FsEntry {

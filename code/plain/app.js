@@ -55,7 +55,10 @@
       case "result": streaming = null; line("muted", `— ${ev.subtype}, ${ev.turns ?? "?"} turn(s), ${ev.duration ?? "?"} ms, tokens in ${ev.usage?.input_tokens ?? "?"} / out ${ev.usage?.output_tokens ?? "?"} / cache read ${ev.usage?.cache_read_input_tokens ?? 0} / cache write ${ev.usage?.cache_creation_input_tokens ?? 0}`); costSoon(); break;
       case "error": line("err", `error: ${ev.message}`); break;
       // files that run on your computer changed (the full page offers a diff and Revert)
-      case "watch": line("err", `⚠ ${ev.when === "between" ? "Changed since the last turn" : "Changed in this turn"} — these run on your computer later:\n${(ev.changes || []).map((c) => `${c.change} ${c.path}: ${c.why}`).join("\n")}`); break;
+      case "watch":
+        if ((ev.changes || []).length) line("err", `⚠ ${ev.when === "between" ? "Changed since the last turn" : "Changed in this turn"} — these run on your computer later:\n${ev.changes.map((c) => `${c.change} ${c.path}: ${c.why}`).join("\n")}`);
+        if (ev.incomplete) line("err", `⚠ ${ev.incomplete}`);
+        break;
       default: break;
     }
   }

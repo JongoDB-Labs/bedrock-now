@@ -439,15 +439,17 @@ per browser.
   runs at a time (pressed again meanwhile, the last one goes next), and a switch Claude Code refuses is taken back in
   the page. Details: [docs/security.md](docs/security.md#bypass-permissions).
 - **Files that run on your computer.** In every mode, the page checks a list of files of your folder after each turn
-  — git's own (hooks, also in `core.hooksPath` such as husky's `.husky/_` or `.githooks/`; `.git/config` and the
-  files it includes; a `core.fsmonitor` program; a `.git` file and the git folder it points to; submodules), husky
+  — git's own (hooks, also in the folder the last `core.hooksPath` names, such as husky's `.husky/_` or `.githooks/`;
+  `.git/config` and the files it includes; a `core.fsmonitor` program; a `.git` file and the git folder it points to;
+  submodules), husky
   hooks and the configuration of `pre-commit`, lefthook and lint-staged, `.envrc`, VS Code's `tasks.json`,
   `settings.json` and `*.code-workspace`, Claude Code's `.claude/settings*.json`, `.mcp.json`, `package.json` (its
   install scripts and hook tools' keys — and every script once a git hook here runs package scripts), `.npmrc`,
   `.yarnrc.yml`, `.pnpmfile.cjs`, dev container files: these run on your computer, not in the sandbox, when you use the
   folder there. If a turn (or something between turns) changed one, a
   red card says which, why it matters, shows the diff, and **Revert** puts it back as it was (a new file goes to the
-  workspace trash) — as long as nothing changed it again since.
+  workspace trash) — as long as nothing changed it again since. When there are more of them than it checks (many git
+  config includes, hook files or submodules), a card says so instead of leaving them out silently.
 - **Model, effort, cost.** You pick the model (this stack's models and prices) and the effort; the meter shows each
   turn's and the session's cost and the context window's use. A switch Claude Code refuses is taken back and said
   ("Still on …"); the page lists the model in the session's own `/model` picker first, so Claude Code does not need an

@@ -156,7 +156,7 @@ test('modes: the desktop app\'s names and order, plus Read only; the Shift+Tab c
 });
 
 test('session: a watch event becomes one card (a replay adds none)', () => {
-  const ev = { kind: 'watch' as const, id: 'w1', when: 'turn' as const, changes: [{ path: '.envrc', kind: 'direnv', why: 'x', change: 'changed' as const, before: 'a', after: 'b', binary: false, cut: false, revertable: true, exec: false }] };
+  const ev = { kind: 'watch' as const, id: 'w1', when: 'turn' as const, incomplete: '', changes: [{ path: '.envrc', kind: 'direnv', why: 'x', change: 'changed' as const, before: 'a', after: 'b', binary: false, cut: false, revertable: true, exec: false }] };
   const v = applyEvent(applyEvent(newView('s'), ev), ev);
   assert.deepEqual(v.items.map((i) => i.t), ['watch']);
 });

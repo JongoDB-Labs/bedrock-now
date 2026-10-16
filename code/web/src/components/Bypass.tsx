@@ -14,8 +14,8 @@ export function BypassDialog() {
   const budget = useSel(store, (s) => s.budget);
   if (!asking) return null;
   const folder = server?.workspace;
-  // remote access is HTTPS (Tailscale or your domain); the computer's own address is plain HTTP
-  const remote = location.protocol === 'https:';
+  // over remote access: Caddy's remote sites say so to the code container (/api/state), the local one says not
+  const remote = server?.remote === true;
   const left = budget && budget.max !== null && budget.spend !== null ? Math.max(0, budget.max - budget.spend) : null;
   return (
     <Dialog title="Run everything without asking in this session?" onClose={cancelBypass} testid="bypass-dialog">

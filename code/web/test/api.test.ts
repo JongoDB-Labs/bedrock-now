@@ -166,3 +166,10 @@ test('a confirmation only for a command shown whole; budgets', () => {
   assert.equal(overBudget({ spend: 5, max: null, resetAt: null }), false);
   assert.equal(overBudget(null), false);
 });
+
+test('a watch event the sandbox could not complete: kept with its note, also without changes; nothing at all is dropped', () => {
+  const id = '6f1c2a54-1b2c-4d3e-8f90-0a1b2c3d4e5f';
+  const e = normEvent({ type: 'watch', id, when: 'turn', changes: [], incomplete: 'Not every file git runs from here could be checked' });
+  assert.ok(e && e.kind === 'watch' && e.incomplete.startsWith('Not every file') && e.changes.length === 0);
+  assert.equal(normEvent({ type: 'watch', id, when: 'turn', changes: [] }), null);
+});

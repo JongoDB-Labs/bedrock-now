@@ -1058,9 +1058,7 @@ export function setMode(mode: Mode): void {
   announce();
   set((s) => ({ ...s, modeSwitching: true }));
   void wsRequest({ type: 'set_mode', session: v.id, mode }, 120_000).then((r) => {
-    set((s) => ({ ...s, modeSwitching: false }));
-    const next = queuedMode;
-    queuedMode = null;
+    const next = switchDone();
     if (r.ok) {
       if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
     } else {
@@ -1068,8 +1066,19 @@ export function setMode(mode: Mode): void {
       toast(`The mode was not changed: ${r.error || 'no answer'}`, 'error');
       announce();
     }
-    if (next && get().active === next.session) setMode(next.mode);
+    sendQueued(next);
   });
+}
+/** A switch was answered: the next one may go. -> the mode picked meanwhile, if any (taken: never left behind) */
+function switchDone(): { session: string; mode: Mode } | null {
+  set((s) => ({ ...s, modeSwitching: false }));
+  const next = queuedMode;
+  queuedMode = null;
+  return next;
+}
+/** The mode picked while a switch was on its way, sent now (for the session it was picked in, if still the one shown) */
+function sendQueued(next: { session: string; mode: Mode } | null): void {
+  if (next && get().active === next.session) setMode(next.mode);
 }
 
 /** The dialog's "Bypass permissions for this session": the switch, confirmed (a session is started first when none is
@@ -1085,16 +1094,20 @@ export async function confirmBypass(): Promise<void> {
   if (!id) return;
   // after a switch still on its way (and the one queued behind it)
   for (let i = 0; i < 2400 && (get().modeSwitching || queuedMode); i++) await new Promise((r) => setTimeout(r, 50));
-  if (get().modeSwitching) return;
-  set((s) => ({ ...s, modeSwitching: true }));
-  const r = await wsRequest({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true }, 120_000);
-  set((s) => ({ ...s, modeSwitching: false }));
-  if (!r.ok) {
-    toast(`Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error');
+  if (get().modeSwitching) {
+    toast('Bypass permissions was not turned on: another mode switch is still on its way. Try again in a moment.', 'error');
     return;
   }
-  updateView(id, (x) => ({ ...x, mode: 'bypassPermissions' }));
-  announce();
+  set((s) => ({ ...s, modeSwitching: true }));
+  const r = await wsRequest({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true }, 120_000);
+  // a mode picked while this was on its way (Shift+Tab) goes next — after Bypass, so it is the one that holds
+  const next = switchDone();
+  if (!r.ok) toast(`Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error');
+  else {
+    updateView(id, (x) => ({ ...x, mode: 'bypassPermissions' }));
+    announce();
+  }
+  sendQueued(next);
 }
 export function cancelBypass(): void {
   set((s) => ({ ...s, bypassAsk: null }));

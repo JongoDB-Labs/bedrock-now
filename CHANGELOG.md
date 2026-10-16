@@ -68,7 +68,8 @@ All notable changes to bedrock-now are documented here. The format follows
   hook tools' keys; every script once a git hook here runs package scripts), `.npmrc`, `.yarnrc.yml`, `.pnpmfile.cjs`
   and dev container files are hashed (with a copy up to 1 MiB, 2 MiB in all) when a turn starts and ends; a change — by
   an edit, by Bash, or between turns — shows a card with why it matters, the diff and **Revert** (only while the file
-  is still as the turn left it; a new file goes to the workspace trash).
+  is still as the turn left it; a new file goes to the workspace trash). Git's last `core.hooksPath` counts, as in
+  git; includes are followed 16 deep in all; more than it lists (256 entries) is said on the cards, never cut silently.
 
 ### Changed
 
@@ -85,8 +86,10 @@ All notable changes to bedrock-now are documented here. The format follows
   Claude Code 2.1.296 plans on Sonnet in *Plan* mode (probed: with the full id, Plan stays on Haiku) — in the browser
   terminal's `claude-bedrock` too.
 - The Code page's plan approval says *Approve, Manual* / *Approve, Accept edits*. Read only also denies EnterPlanMode
-  (Claude cannot leave it for Plan). Mode switches run one at a time in the backend (and the page sends the last one
-  pressed next); a refused one is taken back in the page.
+  (Claude cannot leave it for Plan). Over remote access the Bypass dialog says so (Caddy's remote sites tell the code
+  container, `X-Bn-Remote`). Mode switches run one at a time in the backend (and the page sends the last one
+  pressed next); a refused one is taken back in the page, and what Claude Code reports meanwhile is reconciled after
+  the last one.
 
 ### Fixed
 

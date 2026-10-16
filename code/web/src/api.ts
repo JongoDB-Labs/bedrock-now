@@ -294,7 +294,9 @@ export function normEvent(v: unknown): Ev | null {
     case 'watch': {
       if (!isUuid(o.id)) return null;
       const changes = arr(o.changes, 50).map(normWatchChange).filter((c): c is WatchChange => c !== null);
-      return changes.length ? { kind: 'watch', id: o.id.toLowerCase(), when: o.when === 'between' ? 'between' : 'turn', changes } : null;
+      // incomplete: the sandbox could not check every file (a card of its own, or a note on one with changes)
+      const incomplete = label(o.incomplete, 400);
+      return changes.length || incomplete ? { kind: 'watch', id: o.id.toLowerCase(), when: o.when === 'between' ? 'between' : 'turn', changes, incomplete } : null;
     }
     default:
       return null;
@@ -611,6 +613,7 @@ export async function getState(): Promise<ServerState> {
     allowBypass: obj(o.bypass)?.allowed === true,
     egress: typeof obj(o.sandbox)?.egress === 'boolean' ? (obj(o.sandbox)?.egress as boolean) : null,
     workspace: typeof obj(o.sandbox)?.workspace === 'string' ? label(obj(o.sandbox)?.workspace, 1000) || null : null,
+    remote: o.remote === true,
   };
 }
 

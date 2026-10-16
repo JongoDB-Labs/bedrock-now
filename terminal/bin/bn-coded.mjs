@@ -730,6 +730,9 @@ const WATCH_FILES = ['.envrc', '.vscode/tasks.json', '.vscode/settings.json', '.
   'lint-staged.config.cjs', 'lint-staged.config.mjs', '.yarnrc.yml', '.npmrc', '.pnpmfile.cjs'];
 const WATCH_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const WATCH_MAX_FILE = 1 << 20, WATCH_MAX_DATA = 2 << 20, WATCH_MAX_DIR = 64, WATCH_MAX_HASH = 8 << 20, WATCH_MAX_MODULES = 16;
+// at most this many entries in all (the code container takes 300) and git config files followed through includes;
+// beyond either the answer says truncated (the page then says not everything could be checked) — never a silent cut
+const WATCH_MAX_ENTRIES = 256, WATCH_MAX_INCLUDES = 16;
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 // a path of the workspace this list may name: relative, one-line, no "." or ".." part
 export const watchRel = (rel) => typeof rel === 'string' && rel.length > 0 && rel.length <= 1024 && !rel.startsWith('/') &&
@@ -754,31 +757,82 @@ function watchPath(rel, create = false) {
   }
   return path.join(WORKSPACE, rel);
 }
-// readSmall(rel, max) -> the text of a regular file of the workspace (never through a link), or null
-function readSmall(rel, max = WATCH_MAX_FILE) {
-  const abs = watchPath(rel);
-  if (!abs) return null;
+// readRegular(abs, max) -> the bytes of a regular file of at most `max` bytes, never through a link at its last part
+// and never blocking on a FIFO or device put there meanwhile (O_NONBLOCK, then fstat: a regular file or nothing)
+function readRegular(abs, max) {
   let fd;
   try { fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return null; }
   try {
     const st = fs.fstatSync(fd);
-    return st.isFile() && st.size <= max ? readSlice(fd, 0, st.size).toString('utf8') : null;
-  } finally { fs.closeSync(fd); }
+    if (!st.isFile() || st.size > max) return null;
+    const parts = [];
+    let pos = 0;
+    while (pos < st.size) {
+      const b = readSlice(fd, pos, Math.min(1 << 20, st.size - pos));
+      if (!b.length) break;
+      parts.push(b); pos += b.length;
+    }
+    return Buffer.concat(parts);
+  } catch { return null; } finally { fs.closeSync(fd); }
+}
+// readSmall(rel, max) -> the text of a regular file of the workspace (never through a link), or null
+function readSmall(rel, max = WATCH_MAX_FILE) {
+  const abs = watchPath(rel);
+  const b = abs ? readRegular(abs, max) : null;
+  return b ? b.toString('utf8') : null;
 }
 // a path git names (relative to `base`, a workspace-relative folder) -> workspace-relative, or null when outside
 function gitPathRel(value, base) {
-  const v = value.trim().replace(/^"(.*)"$/, '$1');
+  const v = value.trim();
   if (!v || v.startsWith('~') || v.includes('\0')) return null;
   const abs = path.resolve(path.join(WORKSPACE, base), v);
   if (!inWorkspace(abs) || abs === WORKSPACE) return null;
   const rel = relOf(abs);
   return watchRel(rel) ? rel : null;
 }
-// gitLayout(): what git on your computer reads from this folder: the git folders (.git, or a gitdir in /workspace and
-// its commondir), their config files (and include.path / includeIf targets in /workspace, 3 levels), the hook folders
-// (core.hooksPath in /workspace too) and a core.fsmonitor program in /workspace
+// gitConfigLines(text) -> [{section, key, value}] as git reads them: comments (; #) end a line only outside double
+// quotes, a value's quotes go and its escapes (\" \\ \n \t \b) are read; a key without "=" is true
+export function gitConfigLines(text) {
+  const out = [];
+  let section = '';
+  for (const raw of text.split('\n').slice(0, 5000)) {
+    // the line up to its comment, quotes kept (a section header's subsection is quoted too)
+    let line = '', q = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '\\' && i + 1 < raw.length) { line += ch + raw[++i]; continue; }
+      if (ch === '"') q = !q;
+      else if (!q && (ch === ';' || ch === '#')) break;
+      line += ch;
+    }
+    line = line.trim();
+    const sec = line.match(/^\[\s*([A-Za-z0-9.-]+)(\s+"((?:[^"\\]|\\.)*)")?\s*\]/);
+    if (sec) { section = sec[1].toLowerCase(); continue; }
+    const kv = line.match(/^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/);
+    if (!kv || !section) continue;
+    let value = '';
+    if (kv[2] === undefined) value = 'true';
+    else {
+      let quoted = false;
+      for (let i = 0; i < kv[2].length; i++) {
+        const ch = kv[2][i];
+        if (ch === '\\' && i + 1 < kv[2].length) { const n = kv[2][++i]; value += n === 'n' ? '\n' : n === 't' ? '\t' : n === 'b' ? '\b' : n; continue; }
+        if (ch === '"') { quoted = !quoted; continue; }
+        value += ch;
+      }
+      value = value.trim();
+    }
+    out.push({ section, key: kv[1].toLowerCase(), value });
+  }
+  return out;
+}
+// gitLayout(): what git on your computer reads from this folder — the git folders (.git, or a gitdir in /workspace and
+// its commondir), their config files (config.worktree too with extensions.worktreeConfig, and include.path /
+// includeIf targets in /workspace: 3 levels, WATCH_MAX_INCLUDES in all), the hook folder git uses (the LAST
+// core.hooksPath, as git; .git/hooks without one), .husky, a core.fsmonitor program in /workspace (the last one), and
+// submodules (their config and hooks, listed last). truncated: something was left out (too many includes or modules).
 function gitLayout() {
-  const out = { gitdirs: [], configs: [], hookDirs: ['.husky'], fsmonitor: [] };
+  const out = { gitdirs: [], configs: [], hookDirs: [], moduleConfigs: [], moduleHookDirs: [], fsmonitor: [], truncated: false };
   const top = watchPath('.git');
   let st = null;
   try { st = top && fs.lstatSync(top); } catch { st = null; }
@@ -793,58 +847,70 @@ function gitLayout() {
     const c = common && gitPathRel(common.split('\n')[0], g);
     if (c && !out.gitdirs.includes(c)) out.gitdirs.push(c);
   }
-  for (const g of out.gitdirs) {
-    out.hookDirs.push(`${g}/hooks`);
-    out.configs.push(`${g}/config`);
-    let mods = [];
-    try { mods = fs.readdirSync(path.join(WORKSPACE, g, 'modules')).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..').sort().slice(0, WATCH_MAX_MODULES); } catch { /* none */ }
-    for (const n of mods) { out.configs.push(`${g}/modules/${n}/config`); out.hookDirs.push(`${g}/modules/${n}/hooks`); }
-  }
-  // the config files: core.hooksPath, core.fsmonitor, include.path / includeIf.*.path (relative to the config's folder)
+  // the configs git reads for this worktree: the common one (or the gitdir's), then config.worktree; includes inline
   const seen = new Set();
-  const walk = (rel, depth) => {
-    if (seen.has(rel) || depth > 3) return;
+  let includes = 0, hooksPath = null, fsmonitor = null, worktreeConfig = false;
+  const walk = (rel, depth, main) => {
+    if (seen.has(rel)) return;
     seen.add(rel);
+    (main ? out.configs : out.moduleConfigs).push(rel);
     const text = readSmall(rel);
     if (text === null) return;
-    let section = '';
-    for (const raw of text.split('\n').slice(0, 5000)) {
-      const line = raw.replace(/[;#].*$/, '').trim();
-      const sec = line.match(/^\[\s*([A-Za-z0-9.-]+)(\s+"[^"]*")?\s*\]$/);
-      if (sec) { section = sec[1].toLowerCase(); continue; }
-      const kv = line.match(/^([A-Za-z0-9-]+)\s*=\s*(.*)$/);
-      if (!kv) continue;
-      const key = kv[1].toLowerCase(), val = kv[2];
-      if (section === 'core' && key === 'hookspath') { const d = gitPathRel(val, '.'); if (d && !out.hookDirs.includes(d)) out.hookDirs.push(d); }
-      if (section === 'core' && key === 'fsmonitor' && !isFlag(val)) { const f = gitPathRel(val, '.'); if (f) out.fsmonitor.push(f); }
+    for (const { section, key, value } of gitConfigLines(text)) {
+      if (main && section === 'core' && key === 'hookspath') hooksPath = value;   // the last one counts, as in git
+      if (main && section === 'core' && key === 'fsmonitor') fsmonitor = value;
+      if (main && section === 'extensions' && key === 'worktreeconfig') worktreeConfig = /^(true|yes|on|1)$/i.test(value);
       if ((section === 'include' || section === 'includeif') && key === 'path') {
-        const f = gitPathRel(val, path.dirname(rel));
-        if (f) { if (!out.configs.includes(f)) out.configs.push(f); walk(f, depth + 1); }
+        const f = gitPathRel(value, path.dirname(rel));
+        if (!f || seen.has(f)) continue;
+        if (depth >= 3 || includes >= WATCH_MAX_INCLUDES) { out.truncated = true; continue; }
+        includes++;
+        walk(f, depth + 1, main);
       }
     }
   };
-  for (const c of [...out.configs]) walk(c, 0);
+  const own = out.gitdirs[0], common = out.gitdirs[out.gitdirs.length - 1];
+  if (common) walk(`${common}/config`, 0, true);
+  if (own && own !== common) walk(`${own}/config`, 0, true);   // (git reads only the common one; a stray one here still counts)
+  if (own && worktreeConfig) walk(`${own}/config.worktree`, 0, true);
+  if (hooksPath !== null && hooksPath.trim() !== '') {
+    const d = gitPathRel(hooksPath, '.');
+    if (d) out.hookDirs.push(d);   // (outside the workspace: not this folder's)
+  } else if (common) out.hookDirs.push(`${common}/hooks`);
+  if (common && !out.hookDirs.includes(`${common}/hooks`)) out.hookDirs.push(`${common}/hooks`);   // (a later config may drop hooksPath)
+  out.hookDirs.push('.husky');
+  if (fsmonitor !== null && !isFlag(fsmonitor)) { const f = gitPathRel(fsmonitor, '.'); if (f) out.fsmonitor.push(f); }
+  for (const g of out.gitdirs) {
+    let mods = [];
+    try { mods = fs.readdirSync(path.join(WORKSPACE, g, 'modules')).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..').sort(); } catch { /* none */ }
+    if (mods.length > WATCH_MAX_MODULES) { out.truncated = true; mods = mods.slice(0, WATCH_MAX_MODULES); }
+    for (const n of mods) { walk(`${g}/modules/${n}/config`, 0, false); out.moduleHookDirs.push(`${g}/modules/${n}/hooks`); }
+  }
   return out;
 }
-// the folders whose files are watched (hooks: not git's *.sample), and the single files of this moment
+// what is watched at this moment: the hook folders (git's own first), single files (git's configs and fsmonitor
+// program, then the fixed list and the patterns), the submodules' configs and hook folders last
 function watchTargets() {
   const g = gitLayout();
-  const files = [...WATCH_FILES, ...g.configs, ...g.fsmonitor];
-  for (const pat of [['.devcontainer', 'devcontainer.json']]) {
-    let subs = [];
-    try { subs = fs.readdirSync(path.join(WORKSPACE, pat[0]), { withFileTypes: true }).filter((d) => d.isDirectory() && WATCH_NAME.test(d.name) && d.name !== '.' && d.name !== '..').map((d) => d.name).sort().slice(0, 16); } catch { /* none */ }
-    for (const n of subs) files.push(`${pat[0]}/${n}/${pat[1]}`);
-  }
+  let truncated = g.truncated;
+  const files = [...g.configs, ...g.fsmonitor, ...WATCH_FILES];
+  let subs = [];
+  try { subs = fs.readdirSync(path.join(WORKSPACE, '.devcontainer'), { withFileTypes: true }).filter((d) => d.isDirectory() && WATCH_NAME.test(d.name) && d.name !== '.' && d.name !== '..').map((d) => d.name).sort(); } catch { /* none */ }
+  if (subs.length > 16) { truncated = true; subs = subs.slice(0, 16); }
+  for (const n of subs) files.push(`.devcontainer/${n}/devcontainer.json`);
   let ws = [];
-  try { ws = fs.readdirSync(WORKSPACE).filter((n) => /^[A-Za-z0-9._-]{1,100}\.code-workspace$/.test(n)).sort().slice(0, 16); } catch { /* none */ }
-  files.push(...ws);
-  return { files: [...new Set(files)], hookDirs: g.hookDirs, gitdirs: g.gitdirs, configs: g.configs, fsmonitor: g.fsmonitor };
+  try { ws = fs.readdirSync(WORKSPACE).filter((n) => /^[A-Za-z0-9._-]{1,100}\.code-workspace$/.test(n)).sort(); } catch { /* none */ }
+  if (ws.length > 16) { truncated = true; ws = ws.slice(0, 16); }
+  files.push(...ws, ...g.moduleConfigs);
+  return { files: [...new Set(files)], hookDirs: [...new Set(g.hookDirs)], moduleHookDirs: g.moduleHookDirs, gitdirs: g.gitdirs,
+    configs: [...g.configs, ...g.moduleConfigs], fsmonitor: g.fsmonitor, truncated };
 }
 export function isWatched(rel, t = watchTargets()) {
   if (!watchRel(rel)) return false;
-  if (rel === '.git' || t.files.includes(rel) || t.hookDirs.includes(rel)) return true;
+  const dirs = [...t.hookDirs, ...t.moduleHookDirs];
+  if (rel === '.git' || t.files.includes(rel) || dirs.includes(rel)) return true;
   const i = rel.lastIndexOf('/');
-  return i > 0 && t.hookDirs.includes(rel.slice(0, i)) && WATCH_NAME.test(rel.slice(i + 1)) && !rel.endsWith('.sample');
+  return i > 0 && dirs.includes(rel.slice(0, i)) && WATCH_NAME.test(rel.slice(i + 1)) && !rel.endsWith('.sample');
 }
 // watchEntry(rel, budget, kind) -> {path, kind?, type: file|symlink|dir, size, mode, sha256, data?, target?} or null
 function watchEntry(rel, budget, kind) {
@@ -856,13 +922,11 @@ function watchEntry(rel, budget, kind) {
   if (st.isSymbolicLink()) {
     let target = '', inner = '';
     try { target = fs.readlinkSync(abs); } catch { /* gone */ }
-    // a link to a file in /workspace: what it points to counts too (its content's hash)
+    // a link to a file in /workspace: what it points to counts too (its content's hash; read as readRegular reads)
     try {
       const real = fs.realpathSync(abs);
-      if (inWorkspace(real)) {
-        const t = fs.statSync(real);
-        if (t.isFile() && t.size <= WATCH_MAX_HASH) inner = sha256(fs.readFileSync(real));
-      }
+      const b = inWorkspace(real) ? readRegular(real, WATCH_MAX_HASH) : null;
+      if (b) inner = sha256(b);
     } catch { /* dangling */ }
     return e({ path: rel, type: 'symlink', size: 0, mode: 0, sha256: sha256(`link:${target}:${inner}`), target: target.slice(0, 4096) });
   }
@@ -872,6 +936,7 @@ function watchEntry(rel, budget, kind) {
   try { fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return null; }
   try {
     const f = fs.fstatSync(fd);
+    if (!f.isFile()) return e({ path: rel, type: 'file', size: 0, mode: f.mode & 0o7777, sha256: sha256(`other:${f.mode}`) });
     const h = crypto.createHash('sha256');
     const keep = f.size <= WATCH_MAX_FILE && f.size <= budget.left ? [] : null;
     let pos = 0;
@@ -888,37 +953,44 @@ function watchEntry(rel, budget, kind) {
     return out;
   } finally { fs.closeSync(fd); }
 }
+// ws.sensitive -> {files, truncated?}: the hook folders and their files first (what runs at every commit), then the
+// single files, the submodules last; at most WATCH_MAX_ENTRIES entries — truncated: true when anything was left out
 export function wsSensitive() {
   const t = watchTargets();
   const files = [], budget = { left: WATCH_MAX_DATA }, seen = new Set();
-  const add = (rel, kind) => { if (seen.has(rel)) return; seen.add(rel); const e = watchEntry(rel, budget, kind); if (e) files.push(e); };
-  add('.git', 'git-dir');
-  // (the kinds the code container cannot tell from the path: where git's own files are this time)
-  for (const rel of t.files) add(rel, t.fsmonitor.includes(rel) ? 'fsmonitor' : t.configs.includes(rel) ? 'git-config' : undefined);
-  for (const dir of t.hookDirs) {
-    if (seen.has(dir)) continue;
+  let truncated = t.truncated;
+  const room = () => (files.length < WATCH_MAX_ENTRIES ? true : ((truncated = true), false));
+  const add = (rel, kind) => { if (seen.has(rel) || !room()) return; seen.add(rel); const e = watchEntry(rel, budget, kind); if (e) files.push(e); };
+  const addDir = (dir) => {
+    if (seen.has(dir) || !room()) return;
     const d = watchEntry(dir, budget, 'git-hooks');
     seen.add(dir);
-    if (!d) continue;
+    if (!d) return;
     files.push(d);
-    if (d.type !== 'dir') continue;
+    if (d.type !== 'dir') return;
     let names = [];
-    try { names = fs.readdirSync(path.join(WORKSPACE, dir)).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..' && !n.endsWith('.sample')).sort().slice(0, WATCH_MAX_DIR); } catch { /* gone */ }
+    try { names = fs.readdirSync(path.join(WORKSPACE, dir)).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..' && !n.endsWith('.sample')).sort(); } catch { /* gone */ }
+    if (names.length > WATCH_MAX_DIR) { truncated = true; names = names.slice(0, WATCH_MAX_DIR); }
     for (const n of names) {
       const rel = `${dir}/${n}`;
-      if (seen.has(rel)) continue;
+      if (seen.has(rel) || !room()) continue;
       const e = watchEntry(rel, budget, dir === '.husky' ? 'husky' : 'git-hook');
       if (e && e.type !== 'dir') { seen.add(rel); files.push(e); }   // (a folder in it may be a hook folder of its own)
     }
-  }
-  return { files };
+  };
+  add('.git', 'git-dir');
+  for (const dir of t.hookDirs) addDir(dir);
+  // (the kinds the code container cannot tell from the path: where git's own files are this time)
+  for (const rel of t.files) add(rel, t.fsmonitor.includes(rel) ? 'fsmonitor' : t.configs.includes(rel) ? 'git-config' : undefined);
+  for (const dir of t.moduleHookDirs) addDir(dir);
+  return truncated ? { files, truncated: true } : { files };
 }
 // ws.restore {path, ifSha256, data: base64 | null, mode}: a watched file put back — data null: it was not there, so it
 // goes to the workspace trash — only while its SHA-256 is still ifSha256 (null: still not there)
 export function wsRestore(req) {
   const rel = req?.path;
   const t = watchTargets();
-  if (!isWatched(rel, t) || t.hookDirs.includes(rel) || rel === '.git') throw new Error('not a watched file');
+  if (!isWatched(rel, t) || t.hookDirs.includes(rel) || t.moduleHookDirs.includes(rel) || rel === '.git') throw new Error('not a watched file');
   const cur = watchEntry(rel, { left: 0 });
   if (cur?.type === 'dir') throw new Error('a folder is there now');
   if ((req.ifSha256 ?? null) !== (cur ? cur.sha256 : null)) throw new Error('it changed again since: not put back');

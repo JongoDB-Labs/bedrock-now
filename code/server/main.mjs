@@ -198,6 +198,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         limits: { ...LIMITS, sessions: LIMITS.maxOpen, upload: LIMITS.maxUploadBytes, image: LIMITS.maxImageBytes },
         sessions: mgr.list(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
         bypass: { allowed: mgr.allowBypass }, sandbox: sandboxInfo,
+        // over remote access (Caddy's remote sites say 1, the local one 0; a client's copy never gets here)
+        remote: req.headers['x-bn-remote'] === '1',
       });
     }
     if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));

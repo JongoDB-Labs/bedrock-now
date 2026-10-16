@@ -70,12 +70,20 @@ const MAX_FILE = 1 << 20, MAX_FILES = 300, MAX_DATA = 2 << 20;
 const SHA = /^[0-9a-f]{64}$/;
 const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/** What a card says when the sandbox could not list every watched file (more includes, hook files or submodules than
+ *  it follows, or more entries than this server takes): the files beyond were not checked. */
+export const INCOMPLETE = 'Not every file git runs from here could be checked (too many git config includes, hook files or ' +
+  'submodules): review .git and the hook folders yourself.';
+
 /** checkSnapshot(ws.sensitive's RESULT) -> Map(path -> entry), or null when it is no snapshot at all.
  *  entry: {path, kind, why, type: file|symlink|dir, size, mode, sha256, data: Buffer|null, target}; entries that do not
- *  fit the list or the limits are dropped, and copies beyond 2 MiB in all are left out (that file: no diff, no Revert). */
+ *  fit the list or the limits are dropped, and copies beyond 2 MiB in all are left out (that file: no diff, no Revert).
+ *  The map's `incomplete` is true when the sandbox left files out (truncated) or listed more than MAX_FILES: never a
+ *  silent cut — the cards say so (INCOMPLETE). */
 export function checkSnapshot(r) {
   if (!r || typeof r !== 'object' || !Array.isArray(r.files)) return null;
   const out = new Map();
+  out.incomplete = r.truncated === true || r.files.length > MAX_FILES;
   let left = MAX_DATA;
   for (const f of r.files.slice(0, MAX_FILES)) {
     const w = f && typeof f === 'object' ? watched(f.path, f.kind) : null;
@@ -177,9 +185,9 @@ export function revertable(c) {
 }
 
 /** The `watch` event the page gets (texts capped), for changes of diffSnapshots. */
-export function watchEvent(id, when, changes) {
+export function watchEvent(id, when, changes, incomplete = false) {
   return {
-    type: 'watch', id, when,
+    type: 'watch', id, when, ...(incomplete ? { incomplete: INCOMPLETE } : {}),
     changes: changes.slice(0, 50).map((c) => {
       const b = shown(c.before), a = shown(c.after);
       return { path: c.path, kind: c.kind, why: c.why, change: c.change, before: b.text ?? describe(c.before), after: a.text ?? describe(c.after),
@@ -190,6 +198,6 @@ export function watchEvent(id, when, changes) {
 
 /** What Revert needs of a change: the start's copy (or none: the file was not there) and the end's hash. */
 export const revertOf = (c) => ({
-  path: c.path, ok: revertable(c), afterSha: c.after ? c.after.sha256 : null,
+  path: c.path, kind: c.kind, ok: revertable(c), afterSha: c.after ? c.after.sha256 : null,
   before: c.before ? { data: c.before.data, mode: c.before.mode & 0o777 } : null,
 });

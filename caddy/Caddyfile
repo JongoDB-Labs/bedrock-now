@@ -272,6 +272,7 @@ http://{$FILES_HOST} {
 	request_header -X-Bn-Csp-Nonce
 	request_header -X-Bn-Portal-Origin
 	request_header -X-Bn-Terminal-Host
+	request_header -X-Bn-Remote
 	forward_auth portal:8000 {
 		uri /auth/verify?app=code
 	}
@@ -304,8 +305,9 @@ http://{$FILES_HOST} {
 
 # Towards the code container: none of the browser's cookies or the headers only Caddy and the portal may set; the
 # secret header; the per-request nonce the CSP below allows for <style> (the page reads it from a meta tag the
-# backend adds); the portal origin that frames the page ({args[0]}: where its badge messages go) and this site's
-# terminal host ({args[1]}: its terminal panel).
+# backend adds); the portal origin that frames the page ({args[0]}: where its badge messages go), this site's
+# terminal host ({args[1]}: its terminal panel) and whether this is a remote site ({args[2]}: 1 on remote-*.caddy's,
+# 0 here; the Bypass permissions dialog says so).
 (code_upstream) {
 	header_up -Cookie
 	header_up -X-Portal-Proxy
@@ -314,6 +316,7 @@ http://{$FILES_HOST} {
 	header_up X-Bn-Csp-Nonce {http.request.uuid}
 	header_up X-Bn-Portal-Origin {args[0]}
 	header_up X-Bn-Terminal-Host {args[1]}
+	header_up X-Bn-Remote {args[2]}
 }
 
 # From the code container — or whatever answers in its place: this Caddy sets the code host's policy. Scripts and

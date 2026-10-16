@@ -50,7 +50,7 @@ function Change({ c, busy, result, onRevert }: { c: WatchChange; busy: boolean; 
   );
 }
 
-export function WatchCard({ session, id, when, changes }: { session: string; id: string; when: 'turn' | 'between'; changes: WatchChange[] }) {
+export function WatchCard({ session, id, when, changes, incomplete = '' }: { session: string; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete?: string }) {
   const [results, setResults] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -65,6 +65,23 @@ export function WatchCard({ session, id, when, changes }: { session: string; id:
   };
   const open = changes.filter((c) => c.revertable && !results[c.path]?.ok);
   const title = when === 'between' ? 'Changed since the last turn ended (a background command, the terminal, or you)' : 'Changed in this turn';
+  const note = incomplete && (
+    <div class="perm-warn perm-partial" role="note" data-testid="watch-incomplete">
+      <Icon name="alert" size={14} /> {incomplete}
+    </div>
+  );
+  if (!changes.length) {
+    // the sandbox could not list every watched file: said once, on its own
+    return (
+      <div class="watch" role="group" aria-label="Files that run on your computer: not all checked" data-testid="watch-card">
+        <div class="watch-head">
+          <Icon name="alert" size={16} />
+          <span class="watch-title">Files that run on your computer: not all checked</span>
+        </div>
+        {note}
+      </div>
+    );
+  }
   if (kept) {
     return (
       <div class="watch watch-kept" data-testid="watch-card">
@@ -86,6 +103,7 @@ export function WatchCard({ session, id, when, changes }: { session: string; id:
         These files are in your folder: git, VS Code, direnv, npm or Claude Code on your computer run what they say when you use the folder there — not
         in the sandbox. Check them before you do.
       </p>
+      {note}
       <ul class="watch-list">
         {changes.map((c) => (
           <Change key={c.path} c={c} busy={busy} result={results[c.path]} onRevert={() => void revert(c.path)} />

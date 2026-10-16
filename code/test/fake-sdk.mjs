@@ -6,7 +6,7 @@ export function fakeQuery(log = []) {
     let wake = null, closed = false, n = 0;
     const push = (m) => { out.push(m); wake?.(); wake = null; };
     const q = {
-      options, calls: [],
+      options, calls: [], cli: options.permissionMode,
       async interrupt() { q.calls.push('interrupt'); push({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1, duration_ms: 5 }); },
       // failModel: the next N setModel calls fail as Claude Code's model check does on a slow API
       async setModel(m) {
@@ -20,7 +20,9 @@ export function fakeQuery(log = []) {
         q.calls.push(['setPermissionMode', m]);
         if (q.delay) await new Promise((r) => setTimeout(r, q.delay));
         if (q.refuseMode) throw new Error(q.refuseMode);
-        if (q.echoMode) push({ type: 'system', subtype: 'status', status: null, permissionMode: m });
+        // echoMode: a status for each switch; 'change': only for a switch to another mode (as Claude Code does)
+        if (q.echoMode === 'change' ? m !== q.cli : q.echoMode) push({ type: 'system', subtype: 'status', status: null, permissionMode: m });
+        q.cli = m;
       },
       async applyFlagSettings(s) {
         q.calls.push(['applyFlagSettings', s]);

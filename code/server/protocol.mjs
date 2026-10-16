@@ -10,7 +10,8 @@
 //                                           [{id, state, model, mode, effort, title, pending, open, error}], pending,
 //                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
 //                                           sandbox: {egress: true|false (TERMINAL_EGRESS), workspace: the folder of
-//                                           yours the sandbox sees (a label: this container mounts nothing) | null}}
+//                                           yours the sandbox sees (a label: this container mounts nothing) | null},
+//                                           remote: true over remote access (Caddy's X-Bn-Remote)}
 //   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}
 //                                           the sandbox's transcripts for /workspace, newest first (at most 200)
 //   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000) | ?tail=N (≤ 2000)
@@ -224,12 +225,13 @@
 //                                                              while it ran that Claude Code folded into it between
 //                                                              tool rounds (it then gets no turn of its own)
 //   {type: "error", message}                                   the session's process failed (text: the same)
-//   {type: "watch", id, when: "turn"|"between", changes: [{path, kind, why, change: added|changed|removed, before,
-//          after, binary, cut, revertable, exec}]}   files of your folder that run on your computer later (watch.mjs:
+//   {type: "watch", id, when: "turn"|"between", incomplete?, changes: [{path, kind, why, change: added|changed|removed,
+//          before, after, binary, cut, revertable, exec}]}   files of your folder that run on your computer later (watch.mjs:
 //          git's own files and hook folders, hook managers, .envrc, VS Code, Claude Code's workspace settings,
 //          .mcp.json, package.json, package manager and dev container files) changed during a turn ("turn") or since the last
 //          one ended ("between": a background command, the terminal, you); in every mode. before/after: the texts to
-//          diff (≤ LIMITS.watchShownChars each; cut: more), null for a file that is not there or not text
+//          diff (≤ LIMITS.watchShownChars each; cut: more), null for a file that is not there or not text. incomplete:
+//          the sandbox could not list every watched file (a text to show; once with no changes, then on each card)
 // No cost is ever taken from the sandbox: the page asks /.bn/spend (LiteLLM's spend logs, through the portal).
 
 export const LIMITS = Object.freeze({

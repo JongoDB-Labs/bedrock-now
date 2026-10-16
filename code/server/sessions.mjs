@@ -18,7 +18,7 @@ const WATCH_MS = 5000;       // how long a turn's first prompt waits for the wat
 const REVERTS_KEPT = 10;     // watch events per session whose Revert stays possible (the oldest go) …
 const REVERT_BYTES = 4 << 20; // … and at most this much of their copies
 const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now';
-const MODE_ECHO_MS = 30000;  // how long a switch's status echo is waited for (then a status is Claude Code's own again)
+const MODE_ECHO_MS = 3000;   // how long after its answer a switch's status echo is still taken as one (then a status is Claude Code's own again)
 const NOT_CONFIRMED = /Couldn't confirm model/i;   // Claude Code's own check of a model id (one request, 5 s) failed
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
@@ -45,7 +45,8 @@ export class Session {
     this.flagPerms = null;    // the `permissions` object this process's flag settings hold (ours: modes.mjs)
     this.switching = false;   // a mode switch is under way (it sets the flag settings itself)
     this.modeChain = Promise.resolve(); this.modeQueue = 0;   // set_mode requests, one after another
-    this.echoes = [];         // [{mode, at}]: status messages Claude Code still owes for modes this server set (they may come late)
+    this.echoes = [];         // [{mode, at}]: status messages Claude Code may still owe for modes this server set (at: when it answered; null: not yet)
+    this.cliReported = null;  // the mode Claude Code last said it is in (init, status), or a switch of ours it confirmed
     this.pickerModels = [];   // the models this process's /model picker lists (setModel then skips its API check)
     // the watchlist (watch.mjs): the watched files at this turn's start, at the last turn's end, and the Reverts kept
     this.watchBase = null; this.watchLast = null; this.watchChain = Promise.resolve(); this.watchOff = false;
@@ -93,7 +94,7 @@ export class Session {
     // a process never starts in Bypass permissions (nor auto): those are switched to, per process, by the page
     if (!START_MODES.includes(this.mode)) this.mode = 'default';
     this.bypassable = this.mgr.allowBypass === true;
-    this.flagPerms = null; this.pickerModels = []; this.echoes = [];
+    this.flagPerms = null; this.pickerModels = []; this.echoes = []; this.cliReported = null;
     // A page that saw this session end starts counting again from 0: the new process's events are numbered from 1
     // (what earlier processes said is in the transcript: GET /api/sessions/ID/messages).
     this.ring = new Ring();
@@ -177,26 +178,19 @@ export class Session {
     if (!m || typeof m !== 'object') return;
     let changed = false;
     // Claude Code's own mode (a plan approved with a mode, a switch): as the page names it, with the rules it needs.
-    // Not while set_mode requests run (they set it), nor the status a switch of this server's own owes (it may come
-    // after a newer switch).
-    const mode = m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status') ? pageMode(m.permissionMode) : null;
+    // Recorded always (cliReported) — but not the status a switch of this server's own owes (it may come after a newer
+    // switch) — and followed at once unless set_mode requests run: the last of them then reconciles (followCli).
+    const reported = m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status') && pageMode(m.permissionMode) ? m.permissionMode : null;
     let echo = false;
-    if (mode && m.subtype === 'status') {
-      const now = Date.now();
-      this.echoes = this.echoes.filter((x) => now - x.at < MODE_ECHO_MS);
-      const i = this.echoes.findIndex((x) => x.mode === m.permissionMode);
+    if (reported && m.subtype === 'status') {
+      const now = Date.now(), window = this.mgr.modeEchoMs ?? MODE_ECHO_MS;
+      this.echoes = this.echoes.filter((x) => x.at === null || now - x.at < window);
+      const i = this.echoes.findIndex((x) => x.mode === reported);
       if (i >= 0) { this.echoes.splice(0, i + 1); echo = true; }
     }
-    if (mode && mode !== this.mode && !this.switching && !this.modeQueue && !echo) {
-      if (mode === 'bypassPermissions' || mode === 'auto') {
-        // never without the page: Claude Code switched there by itself — back to Manual, and said so
-        this.mgr.log(`session ${this.id.slice(0, 8)}: Claude Code switched to ${mode} without a request from the page; back to default`);
-        this.emit({ type: 'local', text: `Claude Code switched this session to ${mode === 'auto' ? 'Auto' : 'Bypass permissions'} by itself; the Code page set it back to Manual.` });
-        void this.setMode('default').catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: back to default failed: ${short(e?.message || String(e), 200)}`));
-      } else {
-        this.mode = mode; changed = true;
-        this.syncFlags();
-      }
+    if (reported && !echo) {
+      this.cliReported = reported;
+      if (!this.switching && !this.modeQueue) changed = this.followCli() || changed;
     }
     if (m.type === 'system' && m.subtype === 'init') {
       if (isModel(m.model)) {
@@ -323,11 +317,30 @@ export class Session {
   /** A page mode (modes.mjs). bypassPermissions: only with CODE_ALLOW_BYPASS, confirmed (the page's dialog), and in a
    *  process started allowing it — one that was not (or none) is started again first, resumed; never mid-turn. */
   setMode(raw, opts = {}) {
-    // one after another: two switches at once would interleave their rules and modes
+    // one after another: two switches at once would interleave their rules and modes; after the last, what Claude Code
+    // said meanwhile (a switch of its own while ours were queued, an init) is reconciled
     this.modeQueue++;
     const run = this.modeChain.then(() => this.doSetMode(raw, opts));
     this.modeChain = run.then(() => {}, () => {});
-    return run.finally(() => { this.modeQueue--; });
+    return run.finally(() => {
+      this.modeQueue--;
+      if (!this.modeQueue && !this.switching && this.followCli()) this.status();
+    });
+  }
+  // The page's mode after what Claude Code last said (cliReported): a mode of its own is taken (with its rules); Bypass or
+  // Auto never without the page — set back to Manual, and said. -> whether the mode changed here
+  followCli() {
+    const mode = this.cliReported ? pageMode(this.cliReported) : null;
+    if (!mode || mode === this.mode || !this.q) return false;
+    if (mode === 'bypassPermissions' || mode === 'auto') {
+      this.mgr.log(`session ${this.id.slice(0, 8)}: Claude Code switched to ${mode} without a request from the page; back to default`);
+      this.emit({ type: 'local', text: `Claude Code switched this session to ${mode === 'auto' ? 'Auto' : 'Bypass permissions'} by itself; the Code page set it back to Manual.` });
+      void this.setMode('default').catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: back to default failed: ${short(e?.message || String(e), 200)}`));
+      return false;
+    }
+    this.mode = mode;
+    this.syncFlags();
+    return true;
   }
   async doSetMode(raw, { confirmed = false } = {}) {
     try {
@@ -354,6 +367,9 @@ export class Session {
       }
     }
     if (!this.q) { this.mode = mode; return this.status(); }   // kept for the next start (never bypass: refused above)
+    // already there, as Claude Code itself said, with the rules: nothing to switch (Claude Code would not answer with a
+    // status, and an echo waited for would hide its next real one)
+    if (mode === this.mode && this.cliReported === cliMode(mode) && samePermissions(permissionsFor(mode), this.flagPerms)) return this.status();
     return this.switchMode(mode);
   }
 
@@ -364,10 +380,12 @@ export class Session {
     this.switching = true;
     try {
       if (!samePermissions(both, this.flagPerms)) { await q.applyFlagSettings({ permissions: both }); this.flagPerms = both; }
-      const echo = { mode: cliMode(mode), at: Date.now() };
+      const echo = { mode: cliMode(mode), at: null };
       try {
         this.echoes.push(echo);
         await q.setPermissionMode(cliMode(mode));
+        echo.at = Date.now();
+        if (this.q === q) this.cliReported = cliMode(mode);
       } catch (e) {
         this.echoes = this.echoes.filter((x) => x !== echo);
         if (!samePermissions(from, this.flagPerms)) {
@@ -439,12 +457,16 @@ export class Session {
   }
   reportWatch(before, after, when) {
     const changes = diffSnapshots(before, after);
-    if (!changes.length) return;
+    // a snapshot the sandbox could not complete: said on every card, and once on its own (a card without changes)
+    const incomplete = after.incomplete === true;
+    const sayIncomplete = incomplete && !this.watchIncompleteSaid;
+    this.watchIncompleteSaid = incomplete;
+    if (!changes.length && !sayIncomplete) return;
     const id = crypto.randomUUID();
     this.reverts.set(id, changes.map(revertOf));
     const bytes = () => [...this.reverts.values()].flat().reduce((n, c) => n + (c.before?.data?.length ?? 0), 0);
     while (this.reverts.size && (this.reverts.size > REVERTS_KEPT || bytes() > REVERT_BYTES)) this.reverts.delete(this.reverts.keys().next().value);
-    this.emit(watchEvent(id, when, changes));
+    this.emit(watchEvent(id, when, changes, incomplete));
   }
   /** Revert: the watched files of a `watch` event (or one of them) put back as they were at its start — each only
    *  while it is still as the event saw it (bn-coded checks the hash). -> [{path, ok, action | error}] */
@@ -452,17 +474,26 @@ export class Session {
     const list = this.reverts.get(id);
     if (!list) throw new SessionError('that change is no longer known here (the Code page\'s server restarted, or it is old): put the file back in the editor or the terminal', 404);
     if (!this.mgr.watcher?.restore) throw new SessionError('reverting is not available here', 501);
-    const out = [];
-    for (const c of list.filter((x) => path === undefined || x.path === path)) {
-      if (c.done) { out.push({ path: c.path, ok: true, action: 'already' }); continue; }
-      if (!c.ok) { out.push({ path: c.path, ok: false, error: 'not revertable here (a link, a folder, or larger than 1 MiB): put it back in the terminal' }); continue; }
+    const results = new Map();
+    const restore = async (c) => {
       try {
         const r = await this.mgr.watcher.restore({ path: c.path, ifSha256: c.afterSha,
           data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null });
         c.done = true;
-        out.push({ path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
-      } catch (e) { out.push({ path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
+        results.set(c.path, { path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
+      } catch (e) { results.set(c.path, { path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
+    };
+    // git's configs last: one of them may name the hook folder the others are in (core.hooksPath) — put back first, it
+    // would make them no longer watched; a file the sandbox no longer counts as watched is tried once more at the end
+    const picked = list.filter((x) => path === undefined || x.path === path);
+    const ordered = [...picked.filter((x) => x.kind !== 'git-config'), ...picked.filter((x) => x.kind === 'git-config')];
+    for (const c of ordered) {
+      if (c.done) { results.set(c.path, { path: c.path, ok: true, action: 'already' }); continue; }
+      if (!c.ok) { results.set(c.path, { path: c.path, ok: false, error: 'not revertable here (a link, a folder, or larger than 1 MiB): put it back in the terminal' }); continue; }
+      await restore(c);
     }
+    for (const c of ordered) if (!c.done && c.ok && /not a watched file/.test(results.get(c.path)?.error || '')) await restore(c);
+    const out = picked.map((c) => results.get(c.path)).filter(Boolean);
     if (!out.length) throw new SessionError('no such file in that change', 404);
     const done = out.filter((r) => r.ok && r.action !== 'already').map((r) => r.path);
     if (done.length) this.emit({ type: 'local', text: `Put back as before the change: ${done.join(', ')}.` });

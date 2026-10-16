@@ -322,7 +322,7 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
       case 'result':
         return <ResultLine key={it.k} it={it} cost={costs ? shownCost(view?.turns[it.turn], costs[it.turn]) : null} />;
       case 'watch':
-        return <WatchCard key={it.k} session={view?.id ?? ''} id={it.id} when={it.when} changes={it.changes} />;
+        return <WatchCard key={it.k} session={view?.id ?? ''} id={it.id} when={it.when} changes={it.changes} incomplete={it.incomplete} />;
       case 'notice':
         return (
           <div key={it.k} class={`notice notice-${it.level}`}>

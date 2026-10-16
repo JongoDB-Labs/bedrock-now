@@ -111,14 +111,16 @@ test('the page: the plain one without a build, with the CSP nonce and the portal
   assert.equal(r.status, 200);
   assert.match(r.text, /<meta name="bn-csp-nonce" content="0123456789abcdef-0123">/);
   assert.match(r.text, /<meta name="bn-style-nonce" content="0123456789abcdef-0123">/);
-  const st = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'bn-terminal.tail1.ts.net' } });
+  const st = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'bn-terminal.tail1.ts.net', 'X-Bn-Remote': '1' } });
   assert.equal(st.json.portal_origin, 'https://bn.tail1.ts.net');
+  assert.equal(st.json.remote, true, 'Caddy\'s remote site says so');
   assert.equal(st.json.terminal_url, 'https://bn-terminal.tail1.ts.net/');
   assert.deepEqual([st.json.bypass, st.json.sandbox], [{ allowed: false }, { egress: null, workspace: null }]);
   assert.deepEqual([st.json.versions.cli, st.json.versions.sdk, st.json.limits.sessions, st.json.limits.upload, st.json.limits.image],
     ['2.1.296', '0.3.296', 4, 25 << 20, 5 << 20]);
-  const local = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800', 'X-Bn-Terminal-Host': 'terminal.bedrock-now.localhost' } });
+  const local = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800', 'X-Bn-Terminal-Host': 'terminal.bedrock-now.localhost', 'X-Bn-Remote': '0' } });
   assert.equal(local.json.terminal_url, 'http://terminal.bedrock-now.localhost:8800/');
+  assert.equal(local.json.remote, false);
   const none = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'https://bn.tail1.ts.net', 'X-Bn-Terminal-Host': 'terminal.remote.invalid' } });
   assert.equal(none.json.terminal_url, null);
   assert.match(r.text, /<meta name="bn-portal-origin" content="http:\/\/bedrock-now.localhost:8800">/);

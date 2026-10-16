@@ -378,6 +378,14 @@ def watchlist(browser):
         raise AssertionError("the hook is still there after Revert")
     except urllib.error.HTTPError as e:
         assert e.code == 404, e.code
+    # a sandbox that could not list every watched file: a card that says so (once), never a silent gap
+    post(NORMAL + "/__mock/watch-incomplete?on=1")
+    send(page, "hello")
+    wait_turns(page, 2)
+    expect(page.get_by_test_id("watch-incomplete")).to_have_count(1)
+    expect(page.get_by_test_id("watch-incomplete")).to_contain_text("review .git")
+    p.shot("desktop-watch-incomplete.png")
+    post(NORMAL + "/__mock/watch-incomplete?on=0")
     p.assert_clean()
     p.close()
 
@@ -429,7 +437,39 @@ def refused_switches(browser):
     box.click()
     page.keyboard.down("Shift"); page.keyboard.press("Tab"); page.keyboard.press("Tab"); page.keyboard.up("Shift")
     expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan", timeout=10_000)
-    page.wait_for_function("() => fetch('/api/state').then((r) => r.json()).then((s) => s.sessions.some((x) => x.mode === 'plan'))", timeout=10_000)
+    page.wait_for_function("() => fetch('/api/state').then((r) => r.json()).then((s) => s.sessions.length && s.sessions[s.sessions.length - 1].mode === 'plan')", timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("bypass over remote access: the dialog says so (from the code container, not the browser); a mode picked during the Bypass request goes next")
+def bypass_remote(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/bypass?allow=1&egress=0&remote=1&delay=800")
+    p = Page(browser, NORMAL, "bypass-remote", **DESKTOP)
+    page = p.open()
+    send(page, "hello")
+    wait_turns(page, 1)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-bypassPermissions").click()
+    dlg = page.get_by_test_id("bypass-dialog")
+    expect(dlg.get_by_test_id("bypass-risk-remote")).to_contain_text("over remote access")
+    p.shot("desktop-bypass-remote.png")
+    dlg.get_by_test_id("bypass-confirm").click()
+    # Shift+Tab while Bypass is on its way (800 ms): it goes next, and page and backend agree
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.press("Shift+Tab")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits", timeout=10_000)
+    page.wait_for_function("() => fetch('/api/state').then((r) => r.json()).then((s) => s.sessions.length && s.sessions[s.sessions.length - 1].mode === 'acceptEdits')", timeout=10_000)
+    page.wait_for_timeout(1200)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    expect(page.get_by_test_id("bypass-banner")).to_have_count(0)
+    # the next Bypass is not held up by a stale queued mode
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-bypassPermissions").click()
+    page.get_by_test_id("bypass-dialog").get_by_test_id("bypass-confirm").click()
+    expect(page.get_by_test_id("bypass-banner")).to_be_visible(timeout=5_000)
     p.assert_clean()
     p.close()
 

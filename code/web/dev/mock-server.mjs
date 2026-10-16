@@ -22,8 +22,10 @@
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
 // in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
 // name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures;
-// /__mock/bypass?allow=1|0&egress=1|0 sets what Settings allow (CODE_ALLOW_BYPASS) and the sandbox's internet access;
-// /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API.
+// /__mock/bypass?allow=1|0&egress=1|0&remote=1|0 sets what Settings allow (CODE_ALLOW_BYPASS), the sandbox's internet
+// access and whether the page came over remote access;
+// /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API;
+// /__mock/watch-incomplete?on=1 is a sandbox that could not list every watched file (the cards say so).
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
@@ -58,7 +60,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? Math.min(ms, 5) : 
 const LIMITS = { maxImages: 4, maxPendingPerSession: 8, maxPendingTotal: 32, permissionInputMax: 1 << 20, permissionShownChars: 262144, permissionShownString: 131072, maxPromptChars: 200000 };
 let locked = false;
 let allowBypass = process.env.MOCK_BYPASS === '1';
-let modelFail = 0;   // the next N model switches fail as Claude Code's model check does on a slow API
+let modelFail = 0;
+let remote = false;
+let modeDelay = 0;
+let watchIncomplete = false;   // /__mock/watch-incomplete?on=1: as a sandbox that could not list every watched file    // /__mock/bypass?delay=ms: set_mode answers take this long (as a slow Claude Code)   // /__mock/bypass?remote=1: as if this page came over remote access (Caddy's remote site)   // the next N model switches fail as Claude Code's model check does on a slow API
 let egress = true;
 let keyBudget;
 const resetBudget = () => (keyBudget = { alias: 'claude-code-terminal', spend: 1.23, max_budget: 50, reset_at: new Date(Date.now() + 9 * 86400e3).toISOString() });
@@ -599,10 +604,14 @@ class Session {
       changes.push({ path: p, kind: p.startsWith('.git/hooks/') ? 'git-hook' : 'other', why: WATCH_WHY(p), change: a === null ? 'added' : b === null ? 'removed' : 'changed',
         before: a, after: b, binary: false, cut: false, revertable: true, exec: p.startsWith('.git/hooks/') && b !== null });
     }
-    if (!changes.length) return;
+    // (as the backend: a snapshot the sandbox could not complete is said once on its own, then on every card)
+    const say = watchIncomplete && !this.incompleteSaid;
+    this.incompleteSaid = watchIncomplete;
+    if (!changes.length && !say) return;
     const id = crypto.randomUUID();
     this.reverts.set(id, changes.map((c) => ({ path: c.path, before: c.before, after: c.after })));
-    this.emit({ type: 'watch', id, when: 'turn', changes }, { record: false });
+    const incomplete = watchIncomplete ? { incomplete: 'Not every file git runs from here could be checked (too many git config includes, hook files or submodules): review .git and the hook folders yourself.' } : {};
+    this.emit({ type: 'watch', id, when: 'turn', changes, ...incomplete }, { record: false });
   }
   interrupt() {
     if (this.state !== 'busy') return;
@@ -1083,6 +1092,7 @@ async function api(req, res, url) {
       pending: totalPending(),
       bypass: { allowed: allowBypass },
       sandbox: { egress, workspace: '/home/you/projects/acme-api' },
+      remote,
     });
   }
   if (p === '/api/sessions' && m === 'GET') {
@@ -1501,6 +1511,10 @@ const server = http.createServer(async (req, res) => {
         if (locked) for (const ws of wss.clients) ws.terminate();
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/watch-incomplete') {
+        watchIncomplete = url.searchParams.get('on') === '1';
+        return json(res, 200, { ok: true, watchIncomplete });
+      }
       if (url.pathname === '/__mock/model-fail') {
         modelFail = Number(url.searchParams.get('n') ?? 1) || 0;
         return json(res, 200, { ok: true, modelFail });
@@ -1508,7 +1522,9 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/__mock/bypass') {
         if (url.searchParams.has('allow')) allowBypass = url.searchParams.get('allow') === '1';
         if (url.searchParams.has('egress')) egress = url.searchParams.get('egress') !== '0';
-        return json(res, 200, { ok: true, allowBypass, egress });
+        if (url.searchParams.has('remote')) remote = url.searchParams.get('remote') === '1';
+        if (url.searchParams.has('delay')) modeDelay = Math.min(5000, Number(url.searchParams.get('delay')) || 0);
+        return json(res, 200, { ok: true, allowBypass, egress, remote });
       }
       if (url.pathname === '/__mock/budget') {
         keyBudget.spend = Number(url.searchParams.get('spend') ?? keyBudget.spend);
@@ -1561,6 +1577,9 @@ const server = http.createServer(async (req, res) => {
         allowBypass = process.env.MOCK_BYPASS === '1';
         egress = true;
         modelFail = 0;
+        remote = false;
+        modeDelay = 0;
+        watchIncomplete = false;
         userMemory = null;
         for (const s of sessions.values()) s.interrupt();
         sessions.clear();
@@ -1699,6 +1718,7 @@ server.on('upgrade', (req, sock, head) => {
             if (req) reply({ type: 'reply', req, ok: false, error: no });
             return reply({ type: 'error', session: s.id, req, message: no });
           }
+          if (modeDelay) await sleep(modeDelay);
           s.mode = mode;
           s.emit({ type: 'status', permissionMode: mode }, { record: false });
           s.broadcast(s.stateMsg());

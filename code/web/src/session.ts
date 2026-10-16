@@ -35,7 +35,7 @@ export type Item =
   | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number; models?: string[]; picked?: string }
   | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' }
   /** files that run on your computer changed: the card with diffs and Revert */
-  | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[] };
+  | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string };
 
 export interface Turn {
   start: number;
@@ -294,7 +294,7 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
       return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
     case 'watch':
       if (v.items.some((it) => it.t === 'watch' && it.id === ev.id)) return v;   // replayed
-      return push(v, { t: 'watch', k: v.nextKey, id: ev.id, when: ev.when, changes: ev.changes });
+      return push(v, { t: 'watch', k: v.nextKey, id: ev.id, when: ev.when, changes: ev.changes, incomplete: ev.incomplete });
   }
 }
 
