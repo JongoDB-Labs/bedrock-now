@@ -416,6 +416,17 @@ per browser.
 - **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
+- **Previews of files.** Markdown, images (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO), SVG, audio and video (what the
+  browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV, JSON, JSON Lines, YAML and Jupyter notebooks (as
+  JSON, for now) open in **Preview**; **Source** is the editor, and Markdown also has **Split**, whose preview follows
+  your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links to the web open
+  in a new tab, and nothing in it runs (no JavaScript, forms or launch actions). A CSV is a table (the header row
+  found, or switched by hand; sort and filter up to 200,000 rows); JSON and YAML are a collapsible tree. A Markdown
+  file shows the images next to it in the workspace, never images from the web. What a file is comes from its first
+  bytes, not its name. Claude's *Write*/*Edit* cards offer **Preview** for such files. Limits (above them:
+  **Download**): Markdown, the first 2 MB; YAML 5 MB; SVG 10 MB; everything else 25 MB; images up to 100 million
+  pixels; tables 1,000,000 rows, 200 columns and 5,000,000 cells; trees 300,000 values and 100 levels. Word, Excel,
+  PowerPoint, HTML and Mermaid previews come in a later version (**Download** meanwhile); HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which
   shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it
@@ -456,13 +467,15 @@ turn Claude Code ran on another model says so on its line; switching mid-session
 
 What the sandbox can do is what the terminal can (see above); on top, a compromised sandbox could show misleading
 *text* in the Code page (fake tool output or diffs, a misleading permission sentence, a fake plugin catalog) but
-cannot run script in your browser, reach the page's container, change the prices or costs shown, answer a permission
-prompt itself, or accept a plugin's install command for you. Details:
+cannot run script in your browser (a preview draws a file as text, an image or a canvas, never as a page that runs),
+reach the page's container, change the prices or costs shown, answer a permission prompt itself, or accept a
+plugin's install command for you. Details:
 [docs/security.md](docs/security.md#the-code-page).
 
 **The page's code** lives in `code/web` (TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild, every
 dependency pinned in its lockfile) and is built into the image (`./stack code enable`, `./stack update`): nothing is
-loaded from a CDN, and it runs under the main Caddy's CSP with Trusted Types. To work on it:
+loaded from a CDN, and it runs under the main Caddy's CSP with Trusted Types (one policy, which starts only the
+build's own workers: the previews parse files in workers, and pdf.js loads only when a PDF is opened). To work on it:
 
 ```bash
 cd code/web && npm ci       # exact versions from package-lock.json

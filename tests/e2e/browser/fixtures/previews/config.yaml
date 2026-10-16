@@ -1,0 +1,8 @@
+service: code
+ports:
+  - 8095
+  - 8096
+limits: {pdf: 25MiB, yaml: 5MiB}
+anchors:
+  base: &base {retries: 3}
+  copy: *base

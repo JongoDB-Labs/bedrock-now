@@ -147,6 +147,8 @@ export interface EditorOptions {
   onDirty?: (dirty: boolean) => void;
   onSave?: (text: string) => void;
   onCursor?: (line: number, col: number) => void;
+  /** the document changed (the Markdown preview in Split follows it; it reads getText() itself) */
+  onChange?: () => void;
 }
 
 export interface EditorHandle {
@@ -187,6 +189,7 @@ export function mountEditor(host: HTMLElement, o: EditorOptions): EditorHandle {
         ]),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) {
+            o.onChange?.();
             const d = u.state.doc.length !== saved.length || u.state.doc.toString() !== saved;
             if (d !== dirty) {
               dirty = d;

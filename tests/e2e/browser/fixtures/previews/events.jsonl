@@ -1,0 +1,4 @@
+{"t":1,"event":"start"}
+{"t":2,"event":"tick"}
+not json at all
+{"t":3,"event":"stop"}

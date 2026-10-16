@@ -8,6 +8,7 @@ import { compact, countChanges, hunkLines, lineDiff, type DiffLine } from '../di
 import { displayPath, mcpParts } from '../permission';
 import { cleanPath, label, prettyJson, preview, safe, LIMITS } from '../text';
 import { openDiff, openFile } from '../app';
+import { previewableName } from '../preview/sniff';
 import { Icon, Spinner } from './icons';
 import { MarkdownView } from './MarkdownView';
 import { memo } from './ui';
@@ -242,8 +243,13 @@ function Body({ it, nested }: { it: ToolItem; nested?: ComponentChildren }) {
               <Icon name="diff" size={14} /> Open diff
             </button>
             {/* (a file outside /workspace — the sandbox's home, /tmp — cannot be opened here) */}
+            {path && cleanPath(path) !== null && previewableName(path) && (
+              <button type="button" class="btn small ghost" onClick={() => void openFile(displayPath(path), 'preview')} data-testid="tool-preview">
+                <Icon name="image" size={14} /> Preview
+              </button>
+            )}
             {path && cleanPath(path) !== null && (
-              <button type="button" class="btn small ghost" onClick={() => void openFile(displayPath(path))}>
+              <button type="button" class="btn small ghost" onClick={() => void openFile(displayPath(path), previewableName(path) ? 'source' : undefined)}>
                 <Icon name="file" size={14} /> Open file
               </button>
             )}

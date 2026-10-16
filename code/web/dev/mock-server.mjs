@@ -20,12 +20,17 @@
 // that code; /__mock/lock makes the code host refuse this browser (the unlock expired) until /__mock/unlock;
 // /__mock/budget?spend=&max= sets the key's budget; /__mock/clear?session= resets that session's conversation as
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/reset restores the fixtures.
+// Previews: the workspace has a folder previews/ with every previewable format and hostile ones
+// (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
+// or load anything) and GET /__mock/beacons lists them.
 import http from 'node:http';
+import { isUtf8 } from 'node:buffer';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { HOSTILE, hostileMarkdown, workspace, hostileFiles, MODELS, CLI_MODELS, COMMANDS, TOOLS } from './fixtures.mjs';
+import { previewFiles } from './preview-fixtures.mjs';
 const ALIAS = /^(haiku|sonnet|opus|fable|opusplan|best|default)(\[1m\])?$/i;   // Claude Code's model aliases
 
 const args = process.argv.slice(2);
@@ -60,9 +65,18 @@ function resetFs() {
   for (const [p, b] of Object.entries(binary)) add(p, b, true);
   // a folder with more entries than a listing returns (the backend's cap): the tree says so
   for (let i = 1; i <= 1005; i++) add(`logs/run-${String(i).padStart(4, '0')}.log`, `run ${i}\n`);
+  for (const [p, data] of Object.entries(previewFiles())) add(p, data, !isTextData(Buffer.from(data)));
   if (HOSTILE_MODE) for (const [p, t] of Object.entries(hostileFiles())) add(p, t);
 }
 resetFs();
+// the backend's text test (code/server/api.mjs isText): no NUL in the first 8 KiB, and UTF-8 (a cut-off last
+// character of a truncated read forgiven)
+function isTextData(buf, truncated = false) {
+  if (buf.subarray(0, 8192).includes(0)) return false;
+  for (let cut = 0; cut <= (truncated ? 3 : 0); cut++) if (isUtf8(buf.subarray(0, buf.length - cut))) return true;
+  return false;
+}
+const beacons = [];
 const dirs = () => {
   const s = new Set(['']);
   for (const p of fsState.keys()) {
@@ -613,6 +627,7 @@ async function runScenario(s, text, images) {
   if (t.includes('ask me')) return question(s);
   if (t.includes('background') || t.includes('dev server')) return background(s);
   if (t.includes('agent') || t.includes('explore')) return agent(s);
+  if ((t.includes('write') || t.includes('create')) && t.includes('markdown')) return writeMarkdown(s);
   if (t.includes('write') || t.includes('create')) return write(s);
   if (t.includes('edit') || t.includes('fix') || t.includes('retry')) return edit(s);
   if (t.includes('test') || t.includes('run') || t.includes('bash')) return bash(s);
@@ -715,6 +730,21 @@ async function write(s) {
     return { text: `File created successfully at: /workspace/${p}`, edit: { path: p, original: existed ?? '', hunks: hunks(existed ?? '', content) } };
   });
   await s.stream(r.ok ? 'Created `src/http/errors.ts`.' : 'Skipped.');
+  return 2;
+}
+
+// "write … markdown": a Markdown file (its tool card offers Preview)
+async function writeMarkdown(s) {
+  const p = 'docs/report.md';
+  const content = '# Weekly report\n\n- **Shipped:** file previews\n- **Next:** Word and Excel\n\n| Area | Status |\n|---|---|\n| PDF | done |\n| CSV | done |\n';
+  await s.stream("I'll write the report as Markdown.");
+  const r = await s.tool('Write', { file_path: '/workspace/' + p, content }, async () => {
+    const existed = fsState.get(p)?.data.toString() ?? null;
+    s.changed(p, existed);
+    writeFile(p, content);
+    return { text: `File created successfully at: /workspace/${p}`, edit: { path: p, original: existed ?? '', hunks: hunks(existed ?? '', content) } };
+  });
+  await s.stream(r.ok ? 'Wrote `docs/report.md`.' : 'Skipped.');
   return 2;
 }
 
@@ -910,7 +940,7 @@ async function hostile(s) {
 
 // ------------------------------------------------------------------ HTTP
 
-const CT = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml' };
+const CT = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.ttf': 'font/ttf' };
 
 function csp(req) {
   const host = req.headers.host || `${HOST}:${PORT}`;
@@ -920,6 +950,7 @@ function csp(req) {
     "style-src 'self'",
     `connect-src 'self' ws://${host} wss://${host}`,
     "img-src 'self' data: blob:",
+    "media-src blob:",
     "font-src 'self'",
     "worker-src 'self'",
     "base-uri 'none'",
@@ -928,7 +959,7 @@ function csp(req) {
     "frame-src 'self'",
     "frame-ancestors 'self'",
     "require-trusted-types-for 'script'",
-    "trusted-types 'none'",
+    "trusted-types bn-worker",
   ].join('; ');
 }
 
@@ -961,6 +992,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function sessionInfo(x) {
   return { id: x.id, title: x.title, first_prompt: x.firstPrompt, branch: x.branch, modified: x.modified };
+}
+
+// the backend's download: the bytes (≤ 25 MiB) as an attachment, never anything a browser would render
+function download(res, f, e) {
+  if (e.data.length > 25 * 1024 * 1024) return json(res, 413, { error: 'larger than 25 MiB: copy it out of the workspace folder instead' });
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${path.basename(f).replace(/[^\w.-]/g, '_')}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-length': e.data.length });
+  return res.end(e.data);
 }
 
 async function api(req, res, url) {
@@ -1088,16 +1126,19 @@ async function api(req, res, url) {
     const f = clean(url.searchParams.get('path') || '');
     const e = f && fsState.get(f);
     if (!e) return json(res, 404, { error: 'no such file' });
-    if (url.searchParams.get('download')) {
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${path.basename(f).replace(/[^\w.-]/g, '_')}"`, 'cache-control': 'no-store' });
-      return res.end(e.data);
-    }
+    if (url.searchParams.get('download')) return download(res, f, e);
     const MAX = 2 << 20;
     const truncated = e.data.length > MAX;
     const data = e.data.subarray(0, MAX);
-    const binary = e.bin || data.subarray(0, 8192).includes(0);
+    const binary = e.bin || !isTextData(data, truncated);
     await sleep(60);
-    return json(res, 200, { size: e.data.length, mtimeMs: e.mtimeMs, truncated, binary, text: binary ? null : data.toString('utf8') });
+    return json(res, 200, { size: e.data.length, mtimeMs: e.mtimeMs, truncated, binary, text: binary ? null : data.toString('utf8'), ...(binary ? { head: data.subarray(0, 64).toString('base64') } : {}) });
+  }
+  if (p === '/api/fs/download' && m === 'GET') {
+    const f = clean(url.searchParams.get('path') || '');
+    const e = f && fsState.get(f);
+    if (!e) return json(res, 404, { error: 'no such file or folder' });
+    return download(res, f, e);
   }
   if (p === '/api/fs/file' && m === 'PUT') {
     const f = clean(url.searchParams.get('path') || '');
@@ -1281,6 +1322,12 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/css' });
       return res.end(TERMINAL_CSS);
     }
+    if (url.pathname === '/__mock/beacon') {
+      beacons.push(url.search.slice(1).slice(0, 200) || '(none)');
+      res.writeHead(204);
+      return res.end();
+    }
+    if (url.pathname === '/__mock/beacons' && req.method === 'GET') return json(res, 200, { beacons });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {
         for (const ws of wss.clients) ws.terminate();
@@ -1325,6 +1372,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/reset') {
         checkpoints.clear();
+        beacons.length = 0;
         resetFs();
         resetPlugins();
         resetBudget();

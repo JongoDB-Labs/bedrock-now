@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="240" height="160" onload="fetch('/__mock/beacon?svg-onload');alert('onload')">
+  <script>fetch('/__mock/beacon?svg-script'); alert('svg script');</script>
+  <style>@import url(http://127.0.0.1:9/svg-css); rect { fill: #b4373a; }</style>
+  <rect width="240" height="160"/>
+  <text x="20" y="90" font-size="22" fill="#fff">hostile.svg</text>
+  <image href="http://127.0.0.1:9/svg-image.png" x="0" y="0" width="10" height="10"/>
+  <image xlink:href="/__mock/beacon?svg-image-self" x="10" y="0" width="10" height="10"/>
+  <foreignObject width="100" height="40"><iframe xmlns="http://www.w3.org/1999/xhtml" src="http://127.0.0.1:9/svg-iframe"></iframe></foreignObject>
+  <a href="javascript:alert('svg link')"><text x="20" y="130" fill="#fff">click me</text></a>
+</svg>

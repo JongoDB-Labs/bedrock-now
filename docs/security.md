@@ -667,13 +667,67 @@ spawn server, Claude Code or any file at will.
 - [x] **The page's policy is the main Caddy's, whoever answers.** Every answer from the code container gets
   `code_page` (`caddy/Caddyfile`): `default-src 'none'`, scripts only from the code host itself, styles from it plus
   a per-request nonce (`{http.request.uuid}`, which the page reads from a meta tag), connections only to the code
-  host, images also `data:`/`blob:`, frames only the terminal host and itself (the terminal panel starts at
-  `/.bn/terminal`, which redirects there), no forms, no plugins, `base-uri 'none'`, framed
-  only by the portal, and **Trusted Types** (`require-trusted-types-for 'script'; trusted-types 'none'`: no
-  HTML-string sink can run at all, in browsers that enforce it); plus `nosniff`, `Referrer-Policy: same-origin`, and
+  host, images also `data:`/`blob:`, audio and video only from `blob:`, workers only from the code host, frames only
+  the terminal host and itself (the terminal panel starts at `/.bn/terminal`, which redirects there), no forms, no
+  plugins, `base-uri 'none'`, framed only by the portal, and **Trusted Types**
+  (`require-trusted-types-for 'script'; trusted-types bn-worker`: no HTML-string sink can run at all, in browsers that
+  enforce it, and the one policy allowed only starts the page's own workers — see the previews below); the workers'
+  scripts get the same policy (Caddy sets it on every answer); plus `nosniff`, `Referrer-Policy: same-origin`, and
   none of the upstream's `Set-Cookie`, `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`,
   CORS or reporting headers. The page renders sandbox text with `textContent` only, never as HTML, and keeps it
   inside messages and cards (never in its chrome); it never asks for a password (the unlock is the portal's page).
+- [x] **File previews draw the workspace's files; nothing in them runs.** Every file in `/workspace` is untrusted
+  (the sandbox writes whatever it likes there), so the page previews on its own origin only formats it can turn into
+  DOM or canvas from plain data, under the policy above:
+  - *Bytes, not documents.* A preview fetches the file from the download endpoint (`application/octet-stream`,
+    `nosniff`, an attachment; ≤ 25 MiB) and renders it itself; no workspace file is ever served for the browser to
+    render. What a file is comes from its first bytes (a binary file's first 64 come with its read, so no second
+    request is needed): an HTML file named `.png` stays text in the editor, a PNG named `.txt` is shown as a PNG.
+    Text formats (Markdown, CSV, JSON, YAML) go by their extension, an SVG must also look like one.
+  - *Markdown*: the page's own renderer (raw HTML stays text, links only `http(s)` in a new tab). In a Markdown
+    file's preview — not in chat — images come from the workspace only (paths next to the file, never above
+    `/workspace`, at most 50, each ≤ 10 MiB and really an image by its bytes); an image from the web is shown as a
+    link and never loaded (it would tell a server what you opened).
+  - *Images, SVG, audio, video*: an `<img>`, `<audio>` or `<video>` from a `blob:` URL of the file's bytes, with the
+    MIME type its bytes say. An SVG is shown **only** as an image — its `<script>`, event handlers, `<foreignObject>`
+    and external references (`<image href>`, `@import`) never run or load (checked in Chromium 140 under this
+    policy); its source is the editor's. An image's `blob:` URL is revoked as soon as it decoded, so it cannot be
+    opened as a document of the code origin afterwards. Images whose header claims more than 100 million pixels
+    (decompression bombs), or whose header cannot be read, are not decoded.
+  - *PDF*: pdf.js 6.4.299, its *legacy* build (the modern one needs `Map.getOrInsertComputed`, missing in Chromium
+    140), parsing in its own worker (one per open PDF, ended with the preview or after 30 s without a document),
+    drawing pages to canvas and a text layer of `<span>`s. Not loaded or turned off: pdf.js's scripting (a PDF's
+    JavaScript never runs), XFA, form fields, its annotation layer, WebAssembly (no `'wasm-unsafe-eval'`: JPEG 2000
+    and JBIG2 images use its JavaScript decoders). Links: only `http(s)` URLs become links (a new tab, `noopener
+    noreferrer`); a link to a page of the document scrolls there; launch, JavaScript, submit-form, remote-go-to,
+    `file:`, `javascript:` and `mailto:` actions become nothing at all. Fonts and CMaps come from the code host (the
+    build's copy). Without `'unsafe-eval'` pdf.js cannot compile code from a font (the CVE-2024-4367 route) even if a
+    bug let it try. Images in a PDF are capped at 16.8 million pixels (pdf.js's `maxImageSize`), a page's canvas at 4096 × 4096.
+  - *CSV/TSV*: papaparse 5.7.0 in the page's own worker (papaparse's own `worker: true` would make a `blob:` worker,
+    which this policy refuses); a record with more than 200 fields is cut *before* parsing (so one line of millions of
+    commas never becomes millions of strings), at most 1,000,000 rows and 5,000,000 cells are kept, each cell's text
+    ≤ 2,000 characters; values stay text (no formulas, no type guessing).
+  - *JSON, JSON Lines, YAML, notebooks*: parsed in a worker into a tree of lists — a key such as `__proto__` or
+    `constructor` is a string in a list, never an object key — at most 300,000 values, 10,000 per level and 100
+    levels; YAML with the `yaml` package's core schema, no custom tags (`!!python/object` is a warning, the value
+    plain data), merge keys off, at most 50 alias expansions (a "billion laughs" file stops with an error), cycles cut.
+  - *Workers*: `new Worker(url)` is a Trusted Types sink. The one policy the CSP allows, `bn-worker`
+    (`code/web/src/preview/tt.ts`, the only code that creates it), turns exactly this build's worker paths (their
+    content hashes written into the page at build time) into script URLs, refuses every other URL, and has no
+    `createHTML`/`createScript`; a second policy by any name is refused by the browser. A worker is ended when its
+    file is parsed, after 20–30 s, or when the preview closes; a CSP violation inside one is reported to the page and
+    logged.
+  - *Not on the code origin*: HTML, Mermaid diagrams, notebooks' HTML and script outputs, Word/Excel/PowerPoint
+    files — they need script or HTML parsing and get a sandboxed origin of their own in a later version; until then
+    they are offered for download (HTML and notebooks open as source text).
+  The browser checks preview every format with zero CSP violations and open hostile files (an SVG with a script, an
+  `onload` handler and external references; a PDF with JavaScript in its open action, page and link actions, a
+  launch action, `javascript:`/`file:` links and a form submit; a PNG claiming 50,000 × 50,000 pixels; a line of
+  300,000 commas; a billion-laughs YAML; JSON 5,000 levels deep; `__proto__` keys): nothing runs, nothing is fetched
+  from outside, no dialog, no popup. *Remaining*: Firefox and older Safari do not enforce Trusted Types (the rest of
+  the policy still applies; DOM-only rendering is the defence, Trusted Types the backstop), and pdf.js is a large
+  parser of untrusted input running on the code origin — a pdf.js bug that ran script in its worker would act with
+  the page's cookies; moving PDFs to the sandboxed origin is the option if that ever matters.
 - [x] **Answers to Claude's questions are answers, for that question only.** When Claude asks you something (its
   AskUserQuestion tool) the page's form sends `{decision: "answer", answers}`; the code container accepts it only for
   a waiting AskUserQuestion prompt and only answers to that prompt's own questions (one line each, ≤ 2,000
@@ -741,7 +795,8 @@ spawn server, Claude Code or any file at will.
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
 or MCP status — deny service (kill the
 spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission rules into its own settings
-through *Always* (only for itself; into your folder's settings only through the explicit workspace button). It
+through *Always* (only for itself; into your folder's settings only through the explicit workspace button). A file
+it writes can be previewed, which shows its content but runs none of it. It
 cannot run script in your browser, reach the code container over the network, read its files, make it open or
 follow a path, call host callbacks other than `canUseTool`, obtain `CODE_PROXY_SECRET`, the master key or the unlock
 cookie, change the prices or costs shown, answer a permission prompt, or accept a plugin's install command (the hash

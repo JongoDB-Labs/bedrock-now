@@ -1,7 +1,8 @@
 // Markdown → a plain node tree, from marked's *lexer* only (marked's HTML renderer is never used). The tree has a
 // fixed set of tags and attributes; MarkdownView turns it into DOM nodes with Preact (text nodes and setAttribute,
 // never innerHTML). Raw HTML in the source stays visible text; links are kept only for http(s) URLs; images are
-// never loaded (shown as a link).
+// never loaded from the web (shown as a link). Only a Markdown *file's* preview (opts.images) shows images, and only
+// workspace files next to it (relative paths, at most MAX_IMAGES): MarkdownView gets them through the API as bytes.
 import { Lexer, type Token, type Tokens } from 'marked';
 import { cleanPath, visible } from './text';
 
@@ -14,6 +15,7 @@ export type MdNode = string | MdEl;
 
 const MAX_NODES = 20_000;
 const MAX_DEPTH = 40;
+export const MAX_IMAGES = 50;
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ' };
 /** Decode the few entities Markdown authors use; the result is text, so this is display-only. */
@@ -53,6 +55,31 @@ export function fileHref(href: unknown): string | null {
 
 interface Ctx {
   n: number;
+  /** a file preview: images relative to this folder (of the workspace) are shown */
+  images?: { base: string; n: number };
+}
+
+/** An image reference relative to a Markdown file in folder `base` → its workspace path, or null (a URL, an absolute
+ *  path outside the workspace, `..` above it, or anything odd). `/x.png` is the workspace's x.png. */
+export function resolveRel(base: string, href: unknown): string | null {
+  if (typeof href !== 'string' || !href || href.length > 1000 || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) return null;
+  let h = href.replace(/[?#].*$/, '');
+  try {
+    h = decodeURIComponent(h);
+  } catch {
+    return null;
+  }
+  if (!h || /[\0-\x1f]/.test(h)) return null;
+  const parts = h.startsWith('/') ? [] : base.split('/').filter(Boolean);
+  for (const seg of h.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (!parts.length) return null;
+      parts.pop();
+    } else parts.push(seg);
+  }
+  const p = cleanPath(parts.join('/'));
+  return p ? p : null;
 }
 
 function el(ctx: Ctx, tag: string, children: MdNode[], attrs?: Record<string, string>): MdEl {
@@ -126,6 +153,12 @@ function inline(tokens: Token[] | undefined, ctx: Ctx, depth: number): MdNode[] 
         const it = t as Tokens.Image;
         const href = safeHref(it.href);
         const label = `[image${it.text ? ': ' + it.text : ''}]`;
+        const local = !href && ctx.images && ctx.images.n < MAX_IMAGES ? resolveRel(ctx.images.base, it.href) : null;
+        if (local && ctx.images) {
+          ctx.images.n++;
+          out.push(el(ctx, 'img', [], { 'data-src': local, alt: visible(entities(it.text || '')).slice(0, 300) }));
+          break;
+        }
         out.push(
           href
             ? el(ctx, 'a', [txt(ctx, label)], { href, target: '_blank', rel: 'noopener noreferrer nofollow', title: visible(href) })
@@ -236,9 +269,10 @@ function listItemTight(tokens: Token[], ctx: Ctx, depth: number): MdNode[] {
   return out;
 }
 
-/** Markdown source → node tree. Never throws: a lexer failure shows the source as text. */
-export function renderMarkdown(src: string): MdNode[] {
-  const ctx: Ctx = { n: 0 };
+/** Markdown source → node tree. Never throws: a lexer failure shows the source as text. `opts.images`: the folder
+ *  of the Markdown file being previewed (its relative images become `img` nodes with a workspace path). */
+export function renderMarkdown(src: string, opts: { images?: string } = {}): MdNode[] {
+  const ctx: Ctx = { n: 0, images: opts.images !== undefined ? { base: opts.images, n: 0 } : undefined };
   let tokens: Token[];
   try {
     // a single newline is a line break, as Claude Code's own terminal shows its answers

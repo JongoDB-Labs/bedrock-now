@@ -1,5 +1,6 @@
 // Renders markdown.ts's node tree with Preact: elements from a fixed list, attributes from a fixed list, all text as
-// text nodes. No HTML string ever reaches the DOM.
+// text nodes. No HTML string ever reaches the DOM. A file preview passes `images` (the file's folder) and
+// `renderImage`: the tree's workspace images are drawn by that (src/preview: bytes through the API, as blob: images).
 import { h, type ComponentChildren, type VNode } from 'preact';
 import { useMemo, useState } from 'preact/hooks';
 import { renderMarkdown, type MdNode } from '../markdown';
@@ -42,9 +43,13 @@ function textOf(n: MdNode): string {
   return typeof n === 'string' ? n : n.children.map(textOf).join('');
 }
 
-function toVNode(n: MdNode, key: number): ComponentChildren {
+type ImageFn = (path: string, alt: string, key: number) => ComponentChildren;
+
+function toVNode(n: MdNode, key: number, img?: ImageFn): ComponentChildren {
   if (typeof n === 'string') return n;
-  if (!TAGS.has(n.tag)) return n.children.map(toVNode);
+  if (n.tag === 'img') return img && n.attrs?.['data-src'] ? img(n.attrs['data-src'], n.attrs.alt ?? '', key) : null;
+  const kids = (list: MdNode[]) => list.map((c, i) => toVNode(c, i, img));
+  if (!TAGS.has(n.tag)) return kids(n.children);
   if (n.tag === 'pre' && n.attrs?.class !== 'md-html') {
     return <CodeBlock key={key} lang={n.attrs?.['data-lang'] ?? ''} code={n.children.map(textOf).join('')} />;
   }
@@ -65,10 +70,10 @@ function toVNode(n: MdNode, key: number): ComponentChildren {
     delete props.href;
   }
   if (n.tag === 'input') props.readOnly = true;
-  return h(n.tag, props, n.children.length ? n.children.map(toVNode) : null) as VNode;
+  return h(n.tag, props, n.children.length ? kids(n.children) : null) as VNode;
 }
 
-export const MarkdownView = memo(function MarkdownView({ text, class: cls }: { text: string; class?: string }) {
-  const nodes = useMemo(() => renderMarkdown(text), [text]);
-  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map(toVNode)}</div>;
+export const MarkdownView = memo(function MarkdownView({ text, class: cls, images, renderImage }: { text: string; class?: string; images?: string; renderImage?: ImageFn }) {
+  const nodes = useMemo(() => renderMarkdown(text, images !== undefined && renderImage ? { images } : {}), [text, images, !!renderImage]);
+  return <div class={`md${cls ? ' ' + cls : ''}`}>{nodes.map((n, i) => toVNode(n, i, renderImage))}</div>;
 });

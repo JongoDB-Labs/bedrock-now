@@ -1,0 +1,76 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OpenAction 6 0 R /AA << /WC 6 0 R /WS 6 0 R >> /Names << /JavaScript << /Names [(boot) 6 0 R] >> >> /AcroForm << /Fields [14 0 R] >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /AA << /O 6 0 R /C 6 0 R >> /Annots [7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R 14 0 R] >>
+endobj
+4 0 obj
+<< /Length 361 >>
+stream
+BT /F1 18 Tf 72 720 Td (A hostile PDF) Tj ET
+BT /F1 12 Tf 72 650 Td (launch) Tj ET
+BT /F1 12 Tf 72 610 Td (javascript: link) Tj ET
+BT /F1 12 Tf 72 570 Td (file: link) Tj ET
+BT /F1 12 Tf 72 530 Td (JavaScript action) Tj ET
+BT /F1 12 Tf 72 490 Td (submit form) Tj ET
+BT /F1 12 Tf 72 450 Td (remote go-to) Tj ET
+BT /F1 12 Tf 72 410 Td (http link \(allowed\)) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /S /JavaScript /JS (app.alert\('pdf javascript ran'\); this.submitForm\({cURL: 'http://127.0.0.1:9/pdf-js'}\); app.launchURL\('http://127.0.0.1:9/pdf-launch', true\);) >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 646 400 666] /Border [0 0 0] /A << /S /Launch /F (calc.exe) /Win << /F (cmd.exe) /P (/c calc) >> >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 606 400 626] /Border [0 0 0] /A << /S /URI /URI (javascript:alert\(1\)) >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 566 400 586] /Border [0 0 0] /A << /S /URI /URI (file:///etc/passwd) >> >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 526 400 546] /Border [0 0 0] /A << /S /JavaScript /JS (app.alert\(2\)) >> >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 486 400 506] /Border [0 0 0] /A << /S /SubmitForm /F << /FS /URL /F (http://127.0.0.1:9/pdf-submit) >> >> >>
+endobj
+12 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 446 400 466] /Border [0 0 0] /A << /S /GoToR /F (other.pdf) /D [0 /Fit] >> >>
+endobj
+13 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 406 400 426] /Border [0 0 0] /A << /S /URI /URI (http://127.0.0.1:9/pdf-link) >> >>
+endobj
+14 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Btn /T (go) /Rect [420 640 520 660] /F 4 /AA << /E << /S /JavaScript /JS (app.alert\('hover'\)) >> /D << /S /JavaScript /JS (app.alert\('down'\)) >> >> /A << /S /JavaScript /JS (app.alert\('click'\)) >> >>
+endobj
+xref
+0 15
+0000000000 65535 f 
+0000000015 00000 n 
+0000000198 00000 n 
+0000000255 00000 n 
+0000000472 00000 n 
+0000000884 00000 n 
+0000000954 00000 n 
+0000001143 00000 n 
+0000001302 00000 n 
+0000001436 00000 n 
+0000001567 00000 n 
+0000001701 00000 n 
+0000001867 00000 n 
+0000002002 00000 n 
+0000002143 00000 n 
+trailer
+<< /Size 15 /Root 1 0 R >>
+startxref
+2403
+%%EOF

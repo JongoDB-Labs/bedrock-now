@@ -1,0 +1,3 @@
+run: !!python/object/apply:os.system ["touch /tmp/pwned"]
+ok: plain
+__proto__: {polluted: yes}

@@ -560,6 +560,8 @@ def save_conflict(browser):
     p = Page(browser, NORMAL, "save", **DESKTOP)
     page = p.open()
     page.locator(".tree-row[data-path='README.md']").click()
+    # (Markdown opens in Preview: its Source is the editor)
+    page.locator(".pane:not(.hidden) [data-testid=view-source]").click()
     page.wait_for_function("() => { const h = document.querySelector('.pane:not(.hidden) .cm-host'); return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-content'); }", timeout=10_000)
     content = page.locator(".pane:not(.hidden) .cm-host .cm-content")
     content.click()
@@ -1267,6 +1269,266 @@ def hostile(browser):
         assert page.title() == title0 or "pwned" not in page.title()
         p.assert_clean()
         p.close()
+
+
+# --- file previews (src/preview): every format on the code origin, under the page's CSP and Trusted Types ---------
+
+BEACONS = NORMAL + "/__mock/beacons"
+
+
+def beacons():
+    return json.loads(urllib.request.urlopen(BEACONS, timeout=5).read())["beacons"]
+
+
+def tree_click(page, path):
+    """Click a row of the explorer (drawn virtually: scrolled until the row exists)."""
+    row = page.locator(f".tree-row[data-path='{path}']")
+    page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s) s.scrollTop = 0; }")
+    for _ in range(150):
+        if row.count():
+            row.click()
+            return
+        # down a screen at a time; from the top again at the end (the folder may still be loading)
+        page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) s.scrollTop = 0; else s.scrollTop += s.clientHeight * 0.7; }")
+        page.wait_for_timeout(60)
+    raise AssertionError(f"no row {path} in the explorer")
+
+
+def expand(page, *dirs):
+    for d in dirs:
+        page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s) s.scrollTop = 0; }")
+        if page.locator(f".tree-row[data-path='{d}'][aria-expanded='true']").count() == 0:
+            tree_click(page, d)
+            page.wait_for_timeout(300)
+
+
+def preview(page, path, kind, timeout=20_000):
+    """Open a workspace file by its tree row; its pane once the preview of `kind` shows."""
+    tree_click(page, path)
+    pane = page.locator(f".pane:not(.hidden)[data-path='{path}']")
+    expect(pane.locator(f"[data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=timeout)
+    return pane
+
+
+def no_outside_requests(p):
+    """Nothing went anywhere but the page's own origin (a hostile file's references point at 127.0.0.1:9)."""
+    out = [u for u in p.requests if not (u.startswith(NORMAL + "/") or u.startswith("blob:") or u.startswith("data:"))]
+    assert not out, f"requests outside the page's origin: {out[:5]}"
+    assert not beacons(), f"beacons: {beacons()}"
+
+
+@check("previews: every format renders (Markdown + Split, images, SVG, audio, video, PDF, CSV/TSV, JSON, YAML, notebook), 0 CSP violations")
+def previews_desktop(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews", **DESKTOP)
+    page = p.open()
+    expand(page, "previews", "previews/img")
+    # Markdown: a document with the workspace's own images (blob:, revoked once decoded); a web image stays a link
+    pane = preview(page, "previews/README.md", "markdown")
+    md = pane.get_by_test_id("preview-md")
+    expect(md.locator("h1")).to_have_text("Previews")
+    page.wait_for_function("(n) => [...document.querySelectorAll('.pane:not(.hidden) .md-img')].filter((i) => i.complete && i.naturalWidth > 0).length === n", arg=2, timeout=10_000)
+    assert md.locator("a[href='http://127.0.0.1:9/md-remote.png']").count() == 1, "the web image is a link"
+    assert md.locator("img[src^='http']").count() == 0
+    p.shot("preview-markdown.png")
+    pane.get_by_test_id("view-split").click()
+    page.wait_for_function("() => { const h = document.querySelector('.pane:not(.hidden) .cm-host'); return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-content'); }", timeout=10_000)
+    pane.locator(".cm-content").click()
+    page.keyboard.press("Control+Home")
+    page.keyboard.type("## Typed in Split\n\n")
+    expect(md.locator("h2", has_text="Typed in Split")).to_be_visible(timeout=5000)
+    p.shot("preview-markdown-split.png")
+    # images by their bytes: JPEG, WebP, GIF, BMP, ICO, a PNG named .txt; the SVG as an image
+    for path, w in (("previews/photo.jpg", 48), ("previews/pic.webp", 48), ("previews/dot.gif", 1), ("previews/checks.bmp", 24), ("previews/favicon.ico", 16), ("previews/misnamed.txt", 160), ("previews/img/chart.png", 160)):
+        pane = preview(page, path, "image")
+        expect(pane.get_by_test_id("image-dims")).to_contain_text(f"{w} ×", timeout=10_000)
+    pane.get_by_role("button", name="Zoom in").click()
+    pane.get_by_role("button", name="Zoom in").click()
+    expect(pane.get_by_test_id("image-dims")).to_contain_text("%")
+    p.shot("preview-image.png")
+    pane = preview(page, "previews/img/logo.svg", "svg")
+    expect(pane.get_by_test_id("image-dims")).to_contain_text("64 × 64", timeout=10_000)
+    # audio and video from blob: (media-src blob:)
+    pane = preview(page, "previews/tone.wav", "audio")
+    page.wait_for_function("() => { const a = document.querySelector('.pane:not(.hidden) audio'); return a && a.readyState >= 1 && a.duration > 0.3; }", timeout=10_000)
+    pane = preview(page, "previews/clip.webm", "video")
+    page.wait_for_function("() => { const v = document.querySelector('.pane:not(.hidden) video'); return v && v.readyState >= 1 && v.videoWidth === 64; }", timeout=10_000)
+    p.shot("preview-video.png")
+    pane = preview(page, "previews/tone.mp3", "audio")
+    page.wait_for_function("() => { const a = document.querySelector('.pane:not(.hidden) audio'); const m = document.querySelector('.pane:not(.hidden) [data-testid=preview-msg]'); return (a && a.readyState >= 1) || !!m; }", timeout=10_000)
+    # PDF: pages drawn with a text layer; a link to the web opens a new tab (noopener); find; a link inside the document
+    pane = preview(page, "previews/report.pdf", "pdf")
+    expect(pane.get_by_test_id("pdf-page")).to_have_count(3)
+    expect(pane.locator(".textLayer").first).to_contain_text("Quarterly report", timeout=15_000)
+    assert page.evaluate("() => { const c = document.querySelector('.pane:not(.hidden) .pdf-page canvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] < 128) n++; return n; }") > 200, "page 1 has no ink"
+    link = pane.locator("a.pdf-link")
+    expect(link).to_have_count(1, timeout=10_000)
+    assert link.get_attribute("href") == "https://example.com/docs" and link.get_attribute("target") == "_blank" and "noopener" in link.get_attribute("rel")
+    p.shot("preview-pdf.png")
+    pane.get_by_test_id("pdf-find").fill("margin")
+    pane.get_by_test_id("pdf-find").press("Enter")
+    expect(pane.get_by_test_id("pdf-hits")).to_contain_text("1 on 1 page · page 2", timeout=10_000)
+    expect(pane.locator(".pdf-hit")).to_have_count(1, timeout=10_000)
+    pane.locator(".pdf-scroll").evaluate("(e) => { e.scrollTop = 0; }")
+    pane.locator("button.pdf-link").click(timeout=10_000)
+    expect(pane.get_by_test_id("pdf-pagebox")).to_have_value("3", timeout=5000)
+    # CSV: a header found, sorting, a filter, a semicolon file, TSV; a 3 MiB file (more than the editor reads) as bytes
+    pane = preview(page, "previews/data.csv", "csv")
+    expect(pane.get_by_test_id("table-size")).to_have_text("2,000 rows × 5 columns", timeout=10_000)
+    expect(pane.get_by_test_id("table-header")).to_be_checked()
+    pane.locator(".tv-h", has_text="amount").click()
+    expect(pane.locator(".tv-r").first.locator(".tv-c.num").last).to_have_text("0.5")
+    p.shot("preview-csv.png")
+    pane.get_by_test_id("table-filter").fill("2026-12-24")
+    want = sum(1 for i in range(1, 2001) if i % 12 == 11 and i % 28 == 23)
+    expect(pane.get_by_test_id("table-size")).to_contain_text(f"{want} rows of 2,000")
+    pane = preview(page, "previews/semicolons.csv", "csv")
+    expect(pane.locator(".pv-tools")).to_contain_text("semicolon-separated")
+    pane = preview(page, "previews/table.tsv", "tsv")
+    expect(pane.get_by_test_id("table-size")).to_have_text("2 rows × 2 columns")
+    pane = preview(page, "previews/bigcell.csv", "csv")
+    pane.locator(".tv-c").first.click()
+    expect(pane.get_by_test_id("table-cell")).to_contain_text("xxxx…", timeout=10_000)
+    # JSON, JSON Lines, YAML, a notebook (as JSON)
+    pane = preview(page, "previews/config.json", "json")
+    expect(pane.get_by_test_id("preview-tree")).to_contain_text("__proto__")
+    pane.get_by_role("button", name="Expand").click()
+    expect(pane.get_by_test_id("preview-tree")).to_contain_text("26214400")
+    p.shot("preview-json.png")
+    pane = preview(page, "previews/events.jsonl", "jsonl")
+    expect(pane.get_by_test_id("tree-errors")).to_contain_text("line 3")
+    pane = preview(page, "previews/config.yaml", "yaml")
+    expect(pane.get_by_test_id("preview-tree")).to_contain_text("service")
+    p.shot("preview-yaml.png")
+    pane = preview(page, "previews/notebook.ipynb", "notebook")
+    expect(pane.get_by_test_id("preview-tree")).to_contain_text("cells")
+    # past a cap, part 2 formats: download only
+    pane = preview(page, "previews/too-big.pdf", "pdf")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("previews of PDF documents stop at 25.0 MB")
+    pane = preview(page, "previews/sheet.xlsx", "later")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("later version")
+    # Claude writes a Markdown file: its card offers Preview
+    send(page, "Please write a markdown report")
+    page.get_by_test_id("perm-once").click(timeout=15_000)
+    wait_turns(page, 1)
+    page.locator(".tool[data-tool='Write']").get_by_test_id("tool-preview").click()
+    expect(page.locator(".pane:not(.hidden)[data-path='docs/report.md'] [data-testid=preview-md] h1")).to_have_text("Weekly report")
+    # one worker per preview job: none left running for a closed tab's parse, none restarted on every render
+    workers = page.evaluate("() => performance.getEntriesByType('resource').filter((e) => e.name.includes('/workers/')).map((e) => e.name.split('/').pop())")
+    assert len(workers) <= 30, f"{len(workers)} worker loads: {workers}"
+    no_outside_requests(p)
+    p.assert_clean()
+    p.close()
+
+
+@check("previews: hostile files do nothing (SVG script/onload/external refs, PDF JavaScript/launch/javascript: links, bombs, __proto__)")
+def previews_hostile(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews-hostile", **DESKTOP)
+    page = p.open()
+    expand(page, "previews")
+    popups = []
+    p.ctx.on("page", lambda pg: popups.append(pg.url))
+    # SVG: shown only as an image (240 × 160); its URL revoked once decoded; nothing it references is fetched
+    pane = preview(page, "previews/hostile.svg", "svg")
+    expect(pane.get_by_test_id("image-dims")).to_contain_text("240 × 160", timeout=10_000)
+    src = pane.locator(".pv-canvas img").get_attribute("src")
+    assert src.startswith("blob:")
+    # (loaded again as an image: a revoked blob: URL fails — the URL cannot be opened as a document either)
+    assert page.evaluate("(u) => new Promise((ok) => { const i = new Image(); i.onload = () => ok('loaded'); i.onerror = () => ok('revoked'); i.src = u; })", src) == "revoked", "the SVG's blob: URL can still be opened"
+    page.wait_for_timeout(200)
+    p.errors = [e for e in p.errors if "ERR_FILE_NOT_FOUND" not in e]   # (that probe's own failed load)
+    assert page.evaluate("() => document.querySelectorAll('svg script, foreignObject, iframe, object, embed').length") == 0
+    pane.get_by_test_id("view-source").click()
+    expect(pane.locator(".cm-content")).to_contain_text("svg script", timeout=10_000)
+    p.shot("preview-hostile-svg-source.png")
+    pane.get_by_test_id("view-preview").click()
+    p.shot("preview-hostile-svg.png")
+    # PDF: JavaScript (open action, page and link actions), launch, javascript:/file: links, submit, remote go-to → no
+    # element at all; the one http link opens in a new tab only when clicked
+    pane = preview(page, "previews/hostile.pdf", "pdf")
+    expect(pane.locator(".textLayer").first).to_contain_text("A hostile PDF", timeout=15_000)
+    links = pane.locator(".pdf-link")
+    expect(links).to_have_count(1, timeout=10_000)
+    assert links.first.evaluate("(a) => a.tagName") == "A" and links.first.get_attribute("href") == "http://127.0.0.1:9/pdf-link"
+    assert links.first.get_attribute("rel") == "noopener noreferrer nofollow" and links.first.get_attribute("target") == "_blank"
+    # click where the hostile links are drawn: nothing happens
+    for y in (0.17, 0.22, 0.27, 0.32, 0.37, 0.42):
+        box = pane.locator(".pdf-page").first.bounding_box()
+        page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * y)
+    page.wait_for_timeout(800)
+    assert page.url.startswith(NORMAL), page.url
+    assert not popups, f"popups: {popups}"
+    p.shot("preview-hostile-pdf.png")
+    # Markdown: raw HTML is text, javascript:/data: links are text, images only from the workspace (an HTML "png": text)
+    pane = preview(page, "previews/hostile.md", "markdown")
+    md = pane.get_by_test_id("preview-md")
+    expect(md).to_contain_text("<script>alert('md')</script>")
+    assert md.locator("script, iframe, img[src^='http'], a[href^='javascript'], a[href^='data']").count() == 0
+    expect(md.locator(".md-badlink", has_text="a \"png\" that is HTML")).to_be_visible(timeout=10_000)
+    # a "PNG" that is HTML: the editor, never an image; a PNG claiming 50,000 × 50,000 pixels: refused
+    tree_click(page, "previews/fake.png")
+    expect(page.locator(".pane:not(.hidden)[data-path='previews/fake.png'] .cm-content")).to_contain_text("a png that is HTML", timeout=10_000)
+    assert page.locator(".pane:not(.hidden)[data-path='previews/fake.png'] [data-testid=preview]").count() == 0
+    pane = preview(page, "previews/bomb.png", "image")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("50,000 × 50,000 pixels")
+    # parsers: a line of 300,000 commas, 5,000 levels of JSON, a billion laughs, python tags, __proto__ keys
+    pane = preview(page, "previews/wide.csv", "csv")
+    expect(pane.get_by_test_id("table-notes")).to_contain_text("only the first 200 columns", timeout=10_000)
+    pane = preview(page, "previews/deep.json", "json")
+    expect(pane.get_by_test_id("tree-cut")).to_be_visible(timeout=10_000)
+    pane = preview(page, "previews/laughs.yaml", "yaml")
+    expect(pane.get_by_test_id("tree-errors")).to_contain_text("Excessive alias count", timeout=10_000)
+    pane = preview(page, "previews/tags.yaml", "yaml")
+    expect(pane.get_by_test_id("tree-errors")).to_contain_text("Unresolved tag")
+    pane = preview(page, "previews/config.json", "json")
+    expect(pane.get_by_test_id("preview-tree")).to_contain_text("polluted")
+    assert page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined && !('polluted' in Function.prototype)")
+    pane = preview(page, "previews/notebook.ipynb", "notebook")
+    assert page.evaluate("() => document.querySelectorAll('script:not([type=module]), iframe').length") == 0
+    # the worker policy: no other URL becomes a worker, and no second policy can be made
+    tt = page.evaluate("""() => { const r = {};
+      try { trustedTypes.createPolicy('other', { createHTML: (s) => s }); r.second = 'created'; } catch (e) { r.second = e.name; }
+      try { new Worker('/workers/evil.js'); r.raw = 'started'; } catch (e) { r.raw = e.name; }
+      return r; }""")
+    assert tt == {"second": "TypeError", "raw": "TypeError"}, tt
+    # (the two refusals above are CSP / Trusted Types violations on purpose)
+    page.evaluate("window.__csp = window.__csp.filter((v) => !/trusted-types|require-trusted-types-for/.test(v))")
+    p.errors = [e for e in p.errors if not re.search(r"Trusted ?Type|trusted-types|TrustedScriptURL|evil\.js|'other'", e)]
+    no_outside_requests(p)
+    assert not p.dialogs, p.dialogs
+    p.assert_clean()
+    p.close()
+
+
+@check("previews (phone 390×844): Markdown, PDF, CSV and an image in the editor sheet, no horizontal overflow")
+def previews_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    for path, kind, shot, ready in (
+        ("previews/README.md", "markdown", "phone-preview-markdown.png", "[data-testid=preview-md] h1"),
+        ("previews/report.pdf", "pdf", "phone-preview-pdf.png", ".textLayer span"),
+        ("previews/data.csv", "csv", "phone-preview-csv.png", ".tv-c"),
+        ("previews/photo.jpg", "image", "phone-preview-image.png", "[data-testid=image-dims]:not(:empty)"),
+        ("previews/config.yaml", "yaml", "phone-preview-yaml.png", ".tv li"),
+    ):
+        page.get_by_test_id("phone-files").click()
+        expect(page.get_by_test_id("sheet-files")).to_be_visible()
+        expand(page, "previews")
+        tree_click(page, path)
+        sheet = page.get_by_test_id("sheet-editor")
+        expect(sheet).to_be_visible()
+        expect(sheet.locator(f".pane:not(.hidden) [data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=20_000)
+        expect(sheet.locator(f".pane:not(.hidden) {ready}").first).to_be_visible(timeout=20_000)
+        assert sheet.locator(".pane:not(.hidden) [data-testid=view-split]").count() == 0, "no Split on a phone"
+        page.wait_for_timeout(400)
+        p.shot(shot)
+        over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+        assert over <= 0, f"{path}: {over}px wider than the phone"
+        sheet.get_by_role("button", name="Close", exact=True).click()
+    p.assert_clean()
+    p.close()
 
 
 def main():

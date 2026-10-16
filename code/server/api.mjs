@@ -26,6 +26,8 @@ export function sandboxStatus(e) {
 }
 
 const TYPES = ['dir', 'file', 'symlink', 'other'];
+// how many first bytes of a binary file a read returns (base64, `head`): enough for every magic number the page sniffs
+export const HEAD_BYTES = 64;
 
 // isText(buf, truncated) -> false for binary: a NUL in the first 8 KiB, or not UTF-8 (a cut-off last character of a
 // truncated read is forgiven)
@@ -150,8 +152,9 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     const data = stdout.subarray(0, LIMITS.maxTextFileBytes);
     const truncated = result.truncated === true || stdout.length > data.length;
     const binary = !isText(data, truncated);
+    // head: a binary file's first bytes, so the page can tell what it is (PNG, PDF, …) without downloading it
     return { path: p, size: int(result.size, 0, 1e15) ?? data.length, mtimeMs: num(result.mtimeMs, 0, 1e14), truncated, binary,
-      text: binary ? null : data.toString('utf8') };
+      text: binary ? null : data.toString('utf8'), ...(binary ? { head: data.subarray(0, HEAD_BYTES).toString('base64') } : {}) };
   }
 
   async function download(path) {

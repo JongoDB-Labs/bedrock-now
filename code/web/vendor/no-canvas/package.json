@@ -1,0 +1,7 @@
+{
+  "name": "@napi-rs/canvas",
+  "version": "0.0.0-not-installed",
+  "description": "Stands in for pdfjs-dist's optional @napi-rs/canvas (a native canvas for Node, ~30 MB per platform). The page uses pdf.js in the browser only, where pdfjs-dist never imports it; package.json's overrides point here, so npm ci downloads no native binary.",
+  "license": "MIT",
+  "private": true
+}

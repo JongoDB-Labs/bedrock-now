@@ -1,6 +1,8 @@
 // Editor tabs: files open in CodeMirror (save with Ctrl/⌘-S, guarded by the file's mtime: a file that changed on
 // disk is not overwritten silently), and Claude's edits open as a diff (before │ after). Every tab keeps its
-// editor alive while open, so switching tabs keeps undo history and scroll position.
+// editor alive while open, so switching tabs keeps undo history and scroll position. Files that can be previewed
+// (src/preview: Markdown, images, SVG, audio, video, PDF, CSV, JSON, YAML) open in Preview, with Source (the editor)
+// one click away, and Split for Markdown (the preview follows your unsaved edits).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, closeTab, setActiveTab, saveFile, reloadFile, markDirty, setCursor, openFile, openDiff, setPrefs, keepMine, type Tab, type FileTab, type DiffTab } from '../app';
@@ -12,6 +14,7 @@ import type { EditorHandle } from '../editor/cm';
 import { Icon, Spinner } from './icons';
 import { DiffLines } from './ToolCard';
 import { useMedia } from './ui';
+import { Preview, PreviewBar } from '../preview/Preview';
 
 let cmPromise: Promise<typeof import('../editor/cm')> | null = null;
 function loadCm() {
@@ -36,10 +39,24 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   const phone = useMedia('(max-width: 699.98px)');
   const [readOnly, setReadOnly] = useState(phone);
   const [failed, setFailed] = useState<string | null>(null);
+  const view = tab.preview ? tab.view : 'source';
   const canMount = !tab.loading && !tab.binary && tab.saved !== null;
+  // the editor's text while it differs from the file (the preview shows your unsaved edits)
+  const [live, setLive] = useState<string | null>(null);
+  const liveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onChange = () => {
+    if (liveTimer.current) clearTimeout(liveTimer.current);
+    liveTimer.current = setTimeout(() => {
+      liveTimer.current = null;
+      const h = editors.get(tab.key);
+      if (h) setLive(h.getText());
+    }, 250);
+  };
+  useEffect(() => () => void (liveTimer.current && clearTimeout(liveTimer.current)), []);
 
   useEffect(() => {
-    if (!canMount || editors.has(tab.key)) return;
+    // previews mount the editor when it is first shown (Source or Split)
+    if (!canMount || view === 'preview' || editors.has(tab.key)) return;
     let dead = false;
     loadCm().then(
       (cm) => {
@@ -52,6 +69,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           onDirty: (d) => markDirty(tab.key, d),
           onSave: () => void saveTab(tab.key),
           onCursor: (line, col) => setCursor({ line, col, lang: h.language }),
+          onChange,
         });
         editors.set(tab.key, h);
         setCursor({ line: 1, col: 1, lang: h.language });
@@ -61,7 +79,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
     return () => {
       dead = true;
     };
-  }, [canMount, tab.key]);
+  }, [canMount, tab.key, view === 'preview']);
 
   useEffect(
     () => () => {
@@ -77,6 +95,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       seen.current = tab.version;
       h.setText(tab.saved);
     }
+    setLive(null);
   }, [tab.version]);
 
   useEffect(() => {
@@ -85,8 +104,9 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
 
   useEffect(() => {
     const h = editors.get(tab.key);
-    if (active && h) setCursor({ line: 1, col: 1, lang: h.language });
-  }, [active]);
+    if (active && h && view !== 'preview') setCursor({ line: 1, col: 1, lang: h.language });
+    else if (active) setCursor(null); // a preview: no cursor to show
+  }, [active, view]);
 
   const compare = async () => {
     const mine = editors.get(tab.key)?.getText() ?? '';
@@ -124,13 +144,13 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           </span>
         </div>
       )}
-      {tab.truncated && (
+      {tab.truncated && view !== 'preview' && (
         <div class="banner">
           <Icon name="alert" size={15} />
           <span>Only the first part of this file ({bytes(tab.size)} in all) is shown, read-only.</span>
         </div>
       )}
-      {phone && canMount && !tab.truncated && (
+      {phone && canMount && !tab.truncated && view !== 'preview' && (
         <div class="banner subtle">
           <span>{readOnly ? 'Read-only on this screen.' : 'Editing.'}</span>
           <span class="banner-actions">
@@ -156,7 +176,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
             Retry
           </button>
         </div>
-      ) : tab.binary ? (
+      ) : tab.binary && !tab.preview ? (
         <div class="pane-msg">
           <Icon name="file" size={28} />
           <div>
@@ -169,7 +189,15 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       ) : failed ? (
         <div class="pane-msg err">{failed}</div>
       ) : null}
-      <div class="cm-host" ref={host} />
+      {tab.preview && !tab.loading && !tab.error && <PreviewBar tab={tab} phone={phone} />}
+      <div class={`file-body v-${view}`}>
+        {tab.preview && view !== 'source' && !tab.error && !(tab.loading && tab.saved === null) && (
+          <div class="pv-host" data-testid="preview" data-kind={tab.preview.kind}>
+            <Preview tab={tab} text={live ?? tab.saved} phone={phone} />
+          </div>
+        )}
+        <div class={`cm-host${view === 'preview' ? ' hidden' : ''}`} ref={host} />
+      </div>
     </div>
   );
 }

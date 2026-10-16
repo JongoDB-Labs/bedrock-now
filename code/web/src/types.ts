@@ -251,6 +251,8 @@ export interface FileData {
   truncated: boolean;
   binary: boolean;
   text: string | null;
+  /** a binary file's first bytes (≤ 64), for telling what it is */
+  head: Uint8Array | null;
 }
 
 export interface SpendRow {

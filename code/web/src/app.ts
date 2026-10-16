@@ -12,6 +12,7 @@ import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, Mode, ServerMsg, ServerS
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
+import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 
 export interface Toast {
   id: number;
@@ -49,7 +50,14 @@ export interface FileTab {
   conflict: null | 'disk' | 'claude';
   /** bumped whenever `saved` is replaced from outside, so the editor reloads its document */
   version: number;
+  /** a binary file's first bytes (what it is: src/preview/sniff.ts) */
+  head: Uint8Array | null;
+  /** what the file can be previewed as (null: the editor only) */
+  preview: Sniffed | null;
+  /** Preview, the editor (Source), or both (Split: Markdown) */
+  view: FileView;
 }
+export type { FileView };
 export interface DiffTab {
   kind: 'diff';
   key: string;
@@ -1083,14 +1091,16 @@ function updateTab(key: string, fn: (t: Tab) => Tab): void {
   set((s) => ({ ...s, tabs: s.tabs.map((t) => (t.key === key ? fn(t) : t)) }));
 }
 
-export async function openFile(path: string): Promise<void> {
+/** Open a file in a tab (or show its tab). Previewable files open in Preview unless `view` says otherwise. */
+export async function openFile(path: string, view?: FileView): Promise<void> {
   const p = cleanPath(path);
   if (p === null || p === '') return;
   const key = `file:${p}`;
   const existing = get().tabs.find((t) => t.key === key);
+  const fresh: FileTab = { kind: 'file', key, path: p, saved: null, mtimeMs: null, size: null, binary: false, truncated: false, loading: true, error: null, dirty: false, conflict: null, version: 0, head: null, preview: null, view: view ?? 'preview' };
   set((s) => ({
     ...s,
-    tabs: existing ? s.tabs : [...s.tabs, { kind: 'file', key, path: p, saved: null, mtimeMs: null, size: null, binary: false, truncated: false, loading: true, error: null, dirty: false, conflict: null, version: 0 }],
+    tabs: existing ? s.tabs.map((t) => (t.key === key && t.kind === 'file' && view && t.preview ? { ...t, view: viewFor(t.preview, view) } : t)) : [...s.tabs, fresh],
     activeTab: key,
     sheet: isPhone() ? 'editor' : s.sheet,
     fs: { ...s.fs, selected: p },
@@ -1104,7 +1114,12 @@ export async function openFile(path: string): Promise<void> {
 async function loadFile(key: string, path: string): Promise<void> {
   try {
     const f = await api.fsRead(path);
-    updateTab(key, (t) => (t.kind === 'file' ? { ...t, saved: f.text, mtimeMs: f.mtimeMs, size: f.size, binary: f.binary, truncated: f.truncated, loading: false, error: null, dirty: false, conflict: null, version: t.version + 1 } : t));
+    const preview = sniff(path, f);
+    updateTab(key, (t) =>
+      t.kind === 'file'
+        ? { ...t, saved: f.text, mtimeMs: f.mtimeMs, size: f.size, binary: f.binary, truncated: f.truncated, loading: false, error: null, dirty: false, conflict: null, version: t.version + 1, head: f.head, preview, view: viewFor(preview, t.view) }
+        : t,
+    );
   } catch (e) {
     updateTab(key, (t) => (t.kind === 'file' ? { ...t, loading: false, error: errText(e) } : t));
   }
@@ -1116,6 +1131,10 @@ export function reloadFile(key: string): void {
     updateTab(key, (x) => ({ ...x, loading: true }) as Tab);
     void loadFile(key, t.path);
   }
+}
+
+export function setTabView(key: string, view: FileView): void {
+  updateTab(key, (t) => (t.kind === 'file' ? { ...t, view: viewFor(t.preview, view) } : t));
 }
 
 export function markDirty(key: string, dirty: boolean): void {

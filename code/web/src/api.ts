@@ -677,6 +677,19 @@ export async function fsList(path: string): Promise<{ entries: FsEntry[]; trunca
   return { entries, truncated: o.truncated === true };
 }
 
+/** base64 → at most `max` bytes, or null for anything else */
+export function base64Bytes(v: unknown, max = 64): Uint8Array | null {
+  if (typeof v !== 'string' || v.length > Math.ceil(max / 3) * 4 + 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(v)) return null;
+  try {
+    const bin = atob(v);
+    const out = new Uint8Array(Math.min(bin.length, max));
+    for (let i = 0; i < out.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 export async function fsRead(path: string): Promise<FileData> {
   const o = await request('GET', '/api/fs/file' + q({ path }));
   const binary = o.binary === true || typeof o.text !== 'string';
@@ -687,7 +700,57 @@ export async function fsRead(path: string): Promise<FileData> {
     truncated: o.truncated === true,
     binary,
     text: binary ? null : cap(o.text, 4_000_000),
+    head: binary ? base64Bytes(o.head) : null,
   };
+}
+
+/** A file's bytes for a preview (the download endpoint: application/octet-stream, ≤ 25 MiB): at most `max` of them,
+ *  else a 413 ApiError. The page renders them itself; nothing from the workspace is loaded as a document. */
+export async function fsBytes(path: string, max: number, signal?: AbortSignal): Promise<ArrayBuffer> {
+  let res: Response;
+  try {
+    res = await fetch('/api/fs/download' + q({ path }), { credentials: 'same-origin', cache: 'no-store', signal });
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw new ApiError(0, 'The Code page could not reach its server.');
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${label(res.statusText, 100)}`.trim();
+    try {
+      const o = obj(JSON.parse((await res.text()).slice(0, 100_000)));
+      if (o && (o.error || o.message)) msg = label(o.error ?? o.message, 500);
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  const tooBig = () => new ApiError(413, `The file is larger than ${Math.round(max / 1024 / 1024)} MB.`);
+  const len = Number(res.headers.get('content-length') ?? NaN);
+  if (Number.isFinite(len) && len > max) {
+    void res.body?.cancel();
+    throw tooBig();
+  }
+  if (!res.body) return await res.arrayBuffer();
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      void reader.cancel();
+      throw tooBig();
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.byteLength;
+  }
+  return out.buffer;
 }
 
 export type WriteResult = { ok: true; mtimeMs: number | null } | { ok: false; conflict: true; mtimeMs: number | null };

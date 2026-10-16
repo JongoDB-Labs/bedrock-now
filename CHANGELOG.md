@@ -6,6 +6,28 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Previews of files on the Code page.** Markdown (with **Preview / Source / Split**; Split follows unsaved edits,
+  and a Markdown file shows the workspace images next to it, never web images), images (PNG, JPEG, GIF, WebP, AVIF,
+  BMP, ICO), SVG (as an image only), audio and video, PDF (pdf.js 6.4.299, legacy build: pages, selectable text,
+  find, zoom, page jumps; web links open in a new tab; a PDF's JavaScript, forms and launch actions never run), CSV
+  and TSV (a table: header detection, sort, filter), JSON, JSON Lines and YAML (a collapsible tree; notebooks as JSON
+  for now) open in Preview; what a file is comes from its first bytes, not its name (the file read now returns a
+  binary file's first 64 bytes). Parsing runs in workers the page stops on a time budget; pdf.js and the viewers load
+  on first use. Limits are stated in the page and the README (25 MB at most; images ≤ 100 million pixels; tables ≤
+  1,000,000 rows, 200 columns, 5,000,000 cells; trees ≤ 300,000 values); above them, Download. Claude's Write/Edit
+  cards offer **Preview**. Word, Excel, PowerPoint, HTML and Mermaid previews come later (Download meanwhile).
+  New pinned dependencies of `code/web`: `pdfjs-dist` 6.4.299, `papaparse` 5.7.0, `yaml` 2.9.1 (its optional native
+  `@napi-rs/canvas` is replaced by an empty local package: no native binary is downloaded).
+
+### Changed
+
+- **The Code page's CSP** (`caddy/Caddyfile`, `code_page`) allows one Trusted Types policy, `trusted-types
+  bn-worker` (was `'none'`): it turns exactly the build's own worker scripts into script URLs and nothing else, and a
+  second policy is refused. It also allows audio and video from `blob:` (`media-src blob:`). See
+  [docs/security.md](docs/security.md#the-code-page).
+
 ## [0.5.0] - 2026-10-16
 
 ### Added

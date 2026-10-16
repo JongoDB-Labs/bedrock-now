@@ -226,6 +226,8 @@ test('files: list (bad names dropped, sorted), text vs binary, write with the pr
   assert.deepEqual(r.json, { path: 'a.txt', size: 5, mtimeMs: 1.5, truncated: false, binary: false, text: 'héllo' });
   r = await req('GET', '/api/fs/file?path=bin');
   assert.equal(r.json.binary, true); assert.equal(r.json.text, null);
+  assert.equal(r.json.head, Buffer.from([0, 1, 2, 3]).toString('base64'), 'a binary file\'s first bytes, for the page\'s previews');
+  assert.equal('head' in (await req('GET', '/api/fs/file?path=a.txt')).json, false);
   assert.equal((await req('GET', '/api/fs/file?path=missing')).status, 404);
   assert.equal((await req('GET', '/api/fs/file?path=dir/x.bin&download=1')).headers.get('content-type'), 'application/octet-stream');
   r = await req('GET', '/api/fs/download?path=dir/report%20%C3%BC.bin');

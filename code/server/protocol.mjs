@@ -34,10 +34,14 @@
 //                                           here that has no transcript yet keeps it until it has one)
 //   GET    /api/fs?path=P                  {path, entries: [{name, type: dir|file|symlink|other, size, mtimeMs}],
 //                                           truncated} — P relative to /workspace ("" or "." = the workspace)
-//   GET    /api/fs/file?path=P             {path, size, mtimeMs, truncated, binary, text} — text null when binary (a
-//                                           NUL in the first 8 KiB or not UTF-8); at most 2 MiB of it
+//   GET    /api/fs/file?path=P             {path, size, mtimeMs, truncated, binary, text, head?} — text null when binary
+//                                           (a NUL in the first 8 KiB or not UTF-8); at most 2 MiB of it. A binary
+//                                           file's first 64 bytes come as `head` (base64): the page's previews tell
+//                                           PNG, PDF, … apart by them
 //   GET    /api/fs/file?path=P&download=1  (or /api/fs/download?path=P) the bytes (≤ 25 MiB), application/octet-stream,
-//                                           as an attachment
+//                                           as an attachment (nosniff). The previews fetch these bytes and render
+//                                           them themselves; nothing from the workspace is ever served for the
+//                                           browser to render
 //   PUT    /api/fs/file?path=P {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 {error: "changed on disk …"} when
 //                                           ifMtimeMs is given and the file changed since
 //   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (percent-encoded) -> {path, size,

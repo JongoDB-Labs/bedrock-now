@@ -329,7 +329,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   assert_contains "$pt" "respond /.bn/* 404"
   assert_contains "$(awk '/^\(code_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/code-unlock"
   pg="$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types 'none'\""
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker\""
   for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
            Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
     assert_contains "$pg" "header_down -$d"

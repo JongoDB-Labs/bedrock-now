@@ -313,10 +313,13 @@ http://{$FILES_HOST} {
 
 # From the code container — or whatever answers in its place: this Caddy sets the code host's policy. Scripts and
 # styles only from the code host itself (styles also with this request's nonce), connections only to it, images also
-# data:/blob:, frames only the terminal host ({args[1]}) and itself (the terminal panel starts at /.bn/terminal, which
-# redirects there), no forms, no plugins, framed only by the portal
-# ({args[0]}), and Trusted Types: no HTML-string sink can run at all. Headers that could plant or clear cookies,
-# redirect, preload, widen a service worker, open CORS or send reports go.
+# data:/blob:, audio and video only from blob: (the file previews play workspace files from bytes the page fetched),
+# workers only from itself, frames only the terminal host ({args[1]}) and itself (the terminal panel starts at
+# /.bn/terminal, which redirects there), no forms, no plugins, framed only by the portal ({args[0]}), and Trusted
+# Types: no HTML-string sink can run at all, and the one policy allowed, bn-worker (code/web/src/preview/tt.ts), turns
+# only the build's own worker paths into script URLs. The policy applies to the workers' own scripts too (Caddy sets
+# it on every response). Headers that could plant or clear cookies, redirect, preload, widen a service worker, open
+# CORS or send reports go.
 (code_page) {
 	header_down -X-Frame-Options
 	header_down -Set-Cookie
@@ -332,7 +335,7 @@ http://{$FILES_HOST} {
 	header_down -NEL
 	header_down X-Content-Type-Options nosniff
 	header_down Referrer-Policy same-origin
-	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types 'none'"
+	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
 }
 
 # Bedrock speech-to-text (lib/stt.sh): Open WebUI (and the portal's health check) reach the stt container only

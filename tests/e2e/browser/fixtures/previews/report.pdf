@@ -1,0 +1,68 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 9 0 R >> >> /Annots [10 0 R 11 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 9 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 9 0 R >> >> >>
+endobj
+6 0 obj
+<< /Length 253 >>
+stream
+BT /F1 26 Tf 72 700 Td (Quarterly report) Tj ET
+BT /F1 13 Tf 72 660 Td (Revenue grew in every region this quarter.) Tj ET
+BT /F1 12 Tf 72 606 Td (Read the documentation \(example.com\)) Tj ET
+BT /F1 12 Tf 72 566 Td (Jump to the appendix on page 3) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Length 125 >>
+stream
+BT /F1 20 Tf 72 700 Td (Page two: details) Tj ET
+BT /F1 12 Tf 72 660 Td (Costs fell; the margin widened to 31 percent.) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Length 105 >>
+stream
+BT /F1 20 Tf 72 700 Td (Appendix) Tj ET
+BT /F1 12 Tf 72 660 Td (Method: every figure is unaudited.) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 600 330 622] /Border [0 0 0] /A << /S /URI /URI (https://example.com/docs) >> >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 560 330 582] /Border [0 0 0] /Dest [5 0 R /XYZ 0 792 0] >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000133 00000 n 
+0000000283 00000 n 
+0000000409 00000 n 
+0000000535 00000 n 
+0000000839 00000 n 
+0000001015 00000 n 
+0000001171 00000 n 
+0000001241 00000 n 
+0000001379 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1495
+%%EOF

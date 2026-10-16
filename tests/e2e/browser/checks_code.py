@@ -17,10 +17,12 @@ which check that state)."""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 from playwright.sync_api import expect as see
@@ -52,8 +54,8 @@ def need_haiku():
 def csp_problems(csp: str) -> list[str]:
     """What the code host's Content-Security-Policy (the main Caddy's code_page) lacks."""
     want = ["default-src 'none'", "script-src 'self'", f"connect-src 'self' ws://code.{HOST}:* wss://code.{HOST}:*",
-            "img-src 'self' data: blob:", "base-uri 'none'", "form-action 'none'", "object-src 'none'", f"frame-ancestors {origin()}",
-            f"frame-src 'self' http://terminal.{HOST}:* https://terminal.{HOST}:*", "require-trusted-types-for 'script'", "trusted-types 'none'"]
+            "img-src 'self' data: blob:", "media-src blob:", "worker-src 'self'", "base-uri 'none'", "form-action 'none'", "object-src 'none'", f"frame-ancestors {origin()}",
+            f"frame-src 'self' http://terminal.{HOST}:* https://terminal.{HOST}:*", "require-trusted-types-for 'script'", "trusted-types bn-worker"]
     parts = [p.strip() for p in csp.split(";")]
     probs = [w for w in want if w not in parts]
     if not any(re.fullmatch(r"style-src 'self' 'nonce-[0-9a-f-]{36}'", p) for p in parts):
@@ -1230,6 +1232,220 @@ def ui_tablet(ctx):
     shot(page, "69-code-ui-tablet")
     csp_clean(page, rec)
     return "tablet (820×1180): chat + files, the terminal drawer, no horizontal overflow; no CSP violations"
+
+
+# --- file previews (code/web/src/preview), under the real Caddy's policy, with bytes through the real backend ---
+
+PREVIEWS = Path(__file__).parent / "fixtures" / "previews"   # code/web: node dev/preview-fixtures.mjs --write …
+
+
+def put_previews(c, d):
+    """The fixtures into the workspace folder d (text with PUT, the rest uploaded as bytes), and a 3 MiB CSV (more than
+    the editor reads: its preview fetches the bytes)."""
+    for sub in ("", "/img"):
+        r = c.api("POST", "/api/fs/mkdir", {"path": d + sub})
+        expect(r["status"] == 200, f"mkdir {d}{sub}: {r['status']} {r['text'][:100]}")
+    files = sorted(f for f in PREVIEWS.rglob("*") if f.is_file())
+    files.append(None)
+    for f in files:
+        rel = "bigcell.csv" if f is None else f.relative_to(PREVIEWS).as_posix()
+        data = ('note,size\n"' + "x" * (3 << 20) + '",3MiB\nsmall,1\n').encode() if f is None else f.read_bytes()
+        folder = f"{d}/{rel.rsplit('/', 1)[0]}" if "/" in rel else d
+        r = c.page.evaluate("""async ([dir, name, b64]) => { const bin = atob(b64); const b = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+            const r = await fetch('/api/fs/upload?dir=' + encodeURIComponent(dir), { method: 'POST', body: b,
+              headers: { 'X-Filename': encodeURIComponent(name), 'Content-Type': 'application/octet-stream' } });
+            return { status: r.status, json: await r.json().catch(() => null) }; }""", [folder, rel.rsplit("/", 1)[-1], base64.b64encode(data).decode()])
+        expect(r["status"] == 200 and r["json"]["path"] == f"{d}/{rel}", f"upload {rel}: {r}")
+
+
+def tree_click(page, path):
+    """A row of the explorer (drawn virtually: scrolled until the row exists)."""
+    row = page.locator(f".tree-row[data-path='{path}']")
+    page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s) s.scrollTop = 0; }")
+    for _ in range(150):
+        if row.count():
+            row.click()
+            return
+        # down a screen at a time; from the top again at the end (the folder may still be loading)
+        page.evaluate("() => { const s = document.querySelector('.tree-scroll'); if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) s.scrollTop = 0; else s.scrollTop += s.clientHeight * 0.7; }")
+        page.wait_for_timeout(60)
+    raise AssertionError(f"no row {path} in the explorer")
+
+
+def open_preview(page, path, kind, timeout=30000):
+    tree_click(page, path)
+    pane = page.locator(f".pane:not(.hidden)[data-path='{path}']")
+    see(pane.locator(f"[data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=timeout)
+    return pane
+
+
+def outside(rec):
+    """Requests that left the code host (a hostile file's references point at 127.0.0.1:9)."""
+    return [e["url"] for e in rec.events if e["t"] in ("resp", "failed") and not e["url"].startswith((CODE + "/", "blob:", "data:"))]
+
+
+@check("browser", "code-ui-previews")
+@saved
+def ui_previews(ctx):
+    need_on()
+    page, rec = ui_page(ctx, "code-ui-previews")
+    c = Code.on(page, rec, goto=False)
+    d = f"e2e-previews-{int(time.time())}"
+    put_previews(c, d)
+    popups = []
+    page.context.on("page", lambda pg: popups.append(pg.url))
+    page.locator(".tree-tools button[aria-label='Refresh']").click()   # (the folder is newer than the explorer's listing)
+    page.wait_for_timeout(1000)
+    tree_click(page, d)
+    tree_click(page, f"{d}/img")
+    done = []
+    # Markdown with the workspace's own images (blob:, revoked once decoded); Split follows the editor
+    pane = open_preview(page, f"{d}/README.md", "markdown")
+    md = pane.get_by_test_id("preview-md")
+    see(md.locator("h1")).to_have_text("Previews")
+    page.wait_for_function("() => [...document.querySelectorAll('.pane:not(.hidden) .md-img')].filter((i) => i.complete && i.naturalWidth > 0).length === 2", timeout=20000)
+    shot(page, "80-code-preview-markdown")
+    pane.get_by_test_id("view-split").click()
+    page.wait_for_function("() => { const h = document.querySelector('.pane:not(.hidden) .cm-host'); return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-content'); }", timeout=20000)
+    pane.locator(".cm-content").click()
+    page.keyboard.press("Control+Home")
+    page.keyboard.type("## Typed in Split\n\n")
+    see(md.locator("h2", has_text="Typed in Split")).to_be_visible(timeout=10000)
+    shot(page, "81-code-preview-markdown-split")
+    done.append("Markdown (2 workspace images, Split live)")
+    # images by their bytes, SVG as an image, audio and video from blob:
+    for name, w in (("photo.jpg", 48), ("pic.webp", 48), ("dot.gif", 1), ("checks.bmp", 24), ("favicon.ico", 16), ("misnamed.txt", 160), ("img/chart.png", 160)):
+        pane = open_preview(page, f"{d}/{name}", "image")
+        see(pane.get_by_test_id("image-dims")).to_contain_text(f"{w} ×", timeout=20000)
+    shot(page, "82-code-preview-image")
+    pane = open_preview(page, f"{d}/img/logo.svg", "svg")
+    see(pane.get_by_test_id("image-dims")).to_contain_text("64 × 64", timeout=20000)
+    pane = open_preview(page, f"{d}/clip.webm", "video")
+    page.wait_for_function("() => { const v = document.querySelector('.pane:not(.hidden) video'); return v && v.readyState >= 1 && v.videoWidth === 64; }", timeout=20000)
+    shot(page, "83-code-preview-video")
+    pane = open_preview(page, f"{d}/tone.wav", "audio")
+    page.wait_for_function("() => { const a = document.querySelector('.pane:not(.hidden) audio'); return a && a.readyState >= 1 && a.duration > 0.3; }", timeout=20000)
+    done.append("images (JPEG, WebP, GIF, BMP, ICO, a PNG named .txt), SVG, WebM video, WAV audio")
+    # PDF: pdf.js (legacy build) in its worker through the bn-worker policy; text layer, the web link, find, an inner link
+    pane = open_preview(page, f"{d}/report.pdf", "pdf")
+    see(pane.get_by_test_id("pdf-page")).to_have_count(3)
+    see(pane.locator(".textLayer").first).to_contain_text("Quarterly report", timeout=30000)
+    link = pane.locator("a.pdf-link")
+    see(link).to_have_count(1, timeout=20000)
+    expect(link.get_attribute("href") == "https://example.com/docs" and link.get_attribute("target") == "_blank" and "noopener" in link.get_attribute("rel"), "the web link")
+    shot(page, "84-code-preview-pdf")
+    pane.get_by_test_id("pdf-find").fill("margin")
+    pane.get_by_test_id("pdf-find").press("Enter")
+    see(pane.get_by_test_id("pdf-hits")).to_contain_text("1 on 1 page · page 2", timeout=20000)
+    pane.locator(".pdf-scroll").evaluate("(e) => { e.scrollTop = 0; }")
+    pane.locator("button.pdf-link").click(timeout=20000)
+    see(pane.get_by_test_id("pdf-pagebox")).to_have_value("3", timeout=10000)
+    worker = page.evaluate("() => performance.getEntriesByType('resource').map((e) => e.name).find((u) => /\\/workers\\/pdf\\.worker\\.[A-Z0-9]{8}\\.mjs$/.test(u))")
+    expect(bool(worker), "pdf.js's worker was not loaded from /workers/")
+    wh = c.api("GET", worker.replace(CODE, ""))["headers"]
+    expect(wh.get("content-type", "").startswith("text/javascript") and "trusted-types bn-worker" in wh.get("content-security-policy", ""), f"worker headers {wh}")
+    done.append("PDF (3 pages, text layer, web link noopener, find, link to page 3)")
+    # CSV (sort, filter), TSV; a 3 MiB CSV through the download endpoint
+    pane = open_preview(page, f"{d}/data.csv", "csv")
+    see(pane.get_by_test_id("table-size")).to_have_text("2,000 rows × 5 columns", timeout=30000)
+    pane.locator(".tv-h", has_text="amount").click()
+    see(pane.locator(".tv-r").first.locator(".tv-c.num").last).to_have_text("0.5")
+    shot(page, "85-code-preview-csv")
+    pane.get_by_test_id("table-filter").fill("2026-12-24")
+    want = sum(1 for i in range(1, 2001) if i % 12 == 11 and i % 28 == 23)
+    see(pane.get_by_test_id("table-size")).to_contain_text(f"{want} rows of 2,000")
+    pane = open_preview(page, f"{d}/table.tsv", "tsv")
+    see(pane.get_by_test_id("table-size")).to_have_text("2 rows × 2 columns", timeout=30000)
+    pane = open_preview(page, f"{d}/bigcell.csv", "csv")
+    pane.locator(".tv-c").first.click(timeout=30000)
+    see(pane.get_by_test_id("table-cell")).to_contain_text("xxxx…", timeout=20000)
+    dl = page.evaluate("async (p) => { const r = await fetch('/api/fs/download?path=' + encodeURIComponent(p)); await r.arrayBuffer(); return Object.fromEntries(r.headers.entries()); }", f"{d}/bigcell.csv")
+    expect(dl.get("content-type") == "application/octet-stream" and dl.get("x-content-type-options") == "nosniff" and dl.get("content-disposition", "").startswith("attachment"), f"download headers {dl}")
+    done.append(f"CSV (sort, filter → {want} rows), TSV, a 3 MiB CSV as bytes (octet-stream, nosniff, attachment)")
+    # JSON, YAML, a notebook as JSON
+    pane = open_preview(page, f"{d}/config.json", "json")
+    see(pane.get_by_test_id("preview-tree")).to_contain_text("__proto__", timeout=30000)
+    pane.get_by_role("button", name="Expand").click()
+    shot(page, "86-code-preview-json")
+    pane = open_preview(page, f"{d}/config.yaml", "yaml")
+    see(pane.get_by_test_id("preview-tree")).to_contain_text("service", timeout=30000)
+    pane = open_preview(page, f"{d}/notebook.ipynb", "notebook")
+    see(pane.get_by_test_id("preview-tree")).to_contain_text("cells", timeout=30000)
+    pane = open_preview(page, f"{d}/sheet.xlsx", "later")
+    see(pane.get_by_test_id("preview-msg")).to_contain_text("later version")
+    done.append("JSON, YAML, a notebook as JSON; an .xlsx: download only")
+    # hostile files do nothing
+    pane = open_preview(page, f"{d}/hostile.svg", "svg")
+    see(pane.get_by_test_id("image-dims")).to_contain_text("240 × 160", timeout=20000)
+    pane = open_preview(page, f"{d}/hostile.pdf", "pdf")
+    see(pane.locator(".textLayer").first).to_contain_text("A hostile PDF", timeout=30000)
+    see(pane.locator(".pdf-link")).to_have_count(1, timeout=20000)
+    expect(pane.locator(".pdf-link").first.get_attribute("href") == "http://127.0.0.1:9/pdf-link", "the hostile PDF's one http link")
+    box = pane.locator(".pdf-page").first.bounding_box()
+    for y in (0.17, 0.22, 0.27, 0.32, 0.37, 0.42):
+        page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * y)
+    page.wait_for_timeout(1000)
+    shot(page, "87-code-preview-hostile-pdf")
+    pane = open_preview(page, f"{d}/hostile.md", "markdown")
+    expect(pane.locator("[data-testid=preview-md] :is(script, iframe, img[src^='http'], a[href^='javascript'])").count() == 0, "hostile markdown made markup")
+    pane = open_preview(page, f"{d}/bomb.png", "image")
+    see(pane.get_by_test_id("preview-msg")).to_contain_text("50,000 × 50,000 pixels")
+    pane = open_preview(page, f"{d}/laughs.yaml", "yaml")
+    see(pane.get_by_test_id("tree-errors")).to_contain_text("Excessive alias count", timeout=30000)
+    pane = open_preview(page, f"{d}/deep.json", "json")
+    see(pane.get_by_test_id("tree-cut")).to_be_visible(timeout=30000)
+    tree_click(page, f"{d}/fake.png")
+    see(page.locator(f".pane:not(.hidden)[data-path='{d}/fake.png'] .cm-content")).to_contain_text("a png that is HTML", timeout=20000)
+    expect(page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined"), "prototype polluted")
+    expect(not popups and page.url.startswith(CODE), f"popups {popups}, url {page.url}")
+    out = outside(rec)
+    expect(not out, f"requests that left the code host: {out[:5]}")
+    # the worker policy under the real policy: no second policy, no other worker URL
+    tt = page.evaluate("""() => { const r = {};
+      try { trustedTypes.createPolicy('other', { createHTML: (s) => s }); r.second = 'created'; } catch (e) { r.second = e.name; }
+      try { new Worker('/workers/evil.js'); r.raw = 'started'; } catch (e) { r.raw = e.name; }
+      return r; }""")
+    expect(tt == {"second": "TypeError", "raw": "TypeError"}, f"Trusted Types {tt}")
+    page.evaluate("window.__csp = (window.__csp || []).filter((v) => !/trusted-types|require-trusted-types-for/.test(v))")
+    done.append("hostile SVG/PDF/Markdown/PNG bomb/billion laughs/deep JSON/HTML-as-PNG: nothing ran, nothing left the code host, no popup")
+    csp_clean(page, rec, allow=[r"TrustedScriptURL|Trusted Type|trusted-types|'other'|evil\.js"])
+    r = c.api("DELETE", f"/api/fs?path={d}")
+    expect(r["status"] == 200, f"cleanup {r['status']}")
+    return "; ".join(done) + "; 0 CSP violations"
+
+
+@check("browser", "code-ui-previews-phone")
+@saved
+def ui_previews_phone(ctx):
+    need_on()
+    page, rec = ui_page(ctx, "code-ui-previews-phone", device="phone")
+    c = Code.on(page, rec, goto=False)
+    d = f"e2e-previews-phone-{int(time.time())}"
+    put_previews(c, d)
+    seen = []
+    for name, kind, ready, n in (("README.md", "markdown", "[data-testid=preview-md] h1", 88), ("report.pdf", "pdf", ".textLayer span", 89),
+                                 ("data.csv", "csv", ".tv-c", 90), ("photo.jpg", "image", "[data-testid=image-dims]:not(:empty)", 91)):
+        page.get_by_test_id("phone-files").click()
+        see(page.get_by_test_id("sheet-files")).to_be_visible()
+        if not seen:
+            page.locator(".tree-tools button[aria-label='Refresh']").click()
+            page.wait_for_timeout(1000)
+        if page.locator(f".tree-row[data-path='{d}'][aria-expanded='true']").count() == 0:
+            tree_click(page, d)
+        tree_click(page, f"{d}/{name}")
+        sheet = page.get_by_test_id("sheet-editor")
+        see(sheet.locator(f".pane:not(.hidden) [data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=30000)
+        see(sheet.locator(f".pane:not(.hidden) {ready}").first).to_be_visible(timeout=30000)
+        page.wait_for_timeout(500)
+        shot(page, f"{n}-code-preview-phone-{kind}")
+        over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+        expect(over <= 0, f"{name}: {over}px wider than the phone")
+        sheet.get_by_role("button", name="Close", exact=True).click()
+        seen.append(name)
+    csp_clean(page, rec)
+    c.api("DELETE", f"/api/fs?path={d}")
+    return f"phone (390×844): {', '.join(seen)} as sheets, no horizontal overflow; no CSP violations"
 
 
 @check("browser", "code-ui-budget-exceeded")
