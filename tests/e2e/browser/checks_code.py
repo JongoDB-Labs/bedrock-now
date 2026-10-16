@@ -451,7 +451,8 @@ def plan_asks(ctx):
     "no plan, run it" (twice at most); when it still runs nothing, a skip."""
     need_haiku()
     c = Code(ctx, "code-plan-asks")
-    sid = c.new_session("haiku", "plan")
+    # the model by its full name: with the alias "haiku", Claude Code plans on Sonnet ("haiku plan upgrade"), ~$0.08 a turn
+    sid = c.new_session(HAIKU, "plan")
     n = len(c.msgs())
     target = f"e2e-plan-{int(time.time())}.txt"
     c.request({"type": "prompt", "session": sid, "text": f"Before any planning, run exactly this shell command with the Bash tool: touch {target}"})
