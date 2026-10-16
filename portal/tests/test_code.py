@@ -16,7 +16,7 @@ from starlette.testclient import TestClient
 
 from portal.app import create_app
 from portal.config import from_env
-from portal.security import COOKIE, CODE_COOKIE, REMOTE_CODE_COOKIE, TERMINAL_COOKIE, TerminalUnlocks, Sessions, safe_next
+from portal.security import COOKIE, CODE_COOKIE, REMOTE_CODE_COOKIE, TERMINAL_COOKIE, Handoff, TerminalUnlocks, Sessions, safe_next
 
 SECRET = "s" * 64
 PW = "correct horse"
@@ -138,6 +138,17 @@ def test_code_tab_sits_under_chat_and_under_more_on_phones():
     assert '"code"' in open("portal/static/mobile.js", encoding="utf-8").read().split("DESKTOP_ONLY", 1)[1].split("\n", 1)[0]
     assert ".tabs .code-item" in open("portal/static/mobile.css", encoding="utf-8").read()
     assert "innerHTML" not in js
+
+
+def test_code_tabs_frame_is_made_when_idle_on_big_screens_for_its_badge():
+    js = open("portal/static/code.js", encoding="utf-8").read()
+    app = open("portal/static/app.js", encoding="utf-8").read()
+    # one way to make an app's frame (hidden until its tab shows it): the tab and the idle preload share it
+    assert "function appFrame(tab)" in app and "f.hidden = true;" in app and 'appFrame(tab).hidden = false' in app
+    pre = js.split("function preload()", 1)[1].split("\n  }\n", 1)[0]
+    assert 'matchMedia("(max-width: 767.98px)").matches) return;' in pre      # never on a phone
+    assert "requestIdleCallback(make" in pre and 'appFrame("code")' in pre
+    assert 'window.addEventListener("load", preload, { once: true })' in js.rsplit("if (here) {", 1)[1].split("\n", 1)[0]
 
 
 # --- /auth/verify?app=code ---
@@ -358,3 +369,143 @@ def test_unlock_tokens_are_bound_to_their_app():
     term, code = TerminalUnlocks(SECRET, s), TerminalUnlocks(SECRET, s, app="code")
     assert code.valid(code.issue()) and term.valid(term.issue())
     assert not code.valid(term.issue()) and not term.valid(code.issue())
+
+
+# --- one unlock for both: the Code page's terminal panel (/.bn/terminal → the terminal host's /.bn/unlock-callback) ---
+
+SAME = {"Sec-Fetch-Site": "same-origin"}
+TERM = f"http://{TERM_HOST}"
+
+
+def _handoff(c, tok, ut, headers=SAME, host=CODE_HOST):
+    return c.get("/auth/code-terminal", headers={"Host": host, "Cookie": f"{COOKIE}={tok}; {CODE_COOKIE}={ut}", **headers})
+
+
+def _callback(c, url, tok, host=TERM_HOST, extra=None):
+    path = url.split(TERM, 1)[1] if url.startswith(TERM) else url
+    q = path.split("?", 1)[1] if "?" in path else ""
+    return c.get(f"/auth/terminal-unlock-callback?{q}", headers={"Host": host, "Cookie": f"{COOKIE}={tok}", **(extra or {})})
+
+
+def test_the_code_pages_unlock_opens_the_terminal_once(cc):
+    tok, ut = unlocked(cc)
+    r = _handoff(cc, tok, ut)
+    assert r.status_code == 303 and r.headers["location"].startswith(f"{TERM}/.bn/unlock-callback?t=")
+    assert r.headers["referrer-policy"] == "no-referrer" and r.headers["cache-control"] == "no-store"
+    url = r.headers["location"]
+    r = _callback(cc, url, tok)
+    assert r.status_code == 303 and r.headers["location"] == "/", r.text
+    assert r.headers["referrer-policy"] == "no-referrer" and r.headers["cache-control"] == "no-store"
+    ck = _cookie(r, TERMINAL_COOKIE)
+    assert ck and "HttpOnly" in ck and "Domain" not in ck and "SameSite=strict" in ck
+    age = int(re.search(r"Max-Age=(\d+)", ck).group(1))
+    assert 12 * 3600 - 60 <= age <= 12 * 3600   # what is left of the Code page's unlock, not a new 12 hours
+    term_ut = ck.split(";", 1)[0].split("=", 1)[1]
+    cc.cookies.clear()
+    r = cc.get("/auth/verify?app=terminal", headers={"X-Forwarded-Method": "GET", "X-Forwarded-Host": TERM_HOST, "X-Forwarded-Uri": "/",
+                                                    "Cookie": f"{COOKIE}={tok}; {TERMINAL_COOKIE}={term_ut}"})
+    assert r.status_code == 200
+    # single use: the same link again is refused
+    r = _callback(cc, url, tok)
+    assert r.status_code == 401 and TERMINAL_COOKIE not in r.headers.get("set-cookie", "")
+
+
+def test_the_hand_off_needs_the_code_unlock_the_page_itself_and_the_terminal(cc, cs, settings):
+    tok, ut = unlocked(cc)
+    assert _handoff(cc, tok, "nope").status_code == 401                          # no Code page unlock
+    assert cc.get("/auth/code-terminal", headers={"Host": CODE_HOST, **SAME}).status_code == 401
+    for h in ({}, {"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "none"}):
+        assert _handoff(cc, tok, ut, headers=h).status_code == 403, h            # typed in, or another site's link
+    assert _handoff(cc, tok, ut, headers={**SAME, "Origin": "http://evil.example"}).status_code == 403
+    assert _handoff(cc, tok, ut, host=TERM_HOST).status_code == 404              # only on the code host
+    with _client(replace(cs, code=False)) as c:                                   # the Code page off: nothing here
+        t2 = session(c)
+        assert _handoff(c, t2, ut).status_code == 404
+
+
+def test_the_callback_refuses_bad_foreign_and_unsigned_tokens(cs):
+    with _client(cs) as c:
+        tok, ut = unlocked(c)
+        url = _handoff(c, tok, ut).headers["location"]
+        assert _callback(c, "/x?t=garbage", tok).status_code == 401
+        assert _callback(c, "/x", tok).status_code == 401
+        # on another host (the code host): not answered there at all
+        r = c.get(f"/auth/terminal-unlock-callback?{url.split('?', 1)[1]}", headers={"Host": CODE_HOST, "Cookie": f"{COOKIE}={tok}"})
+        assert r.status_code == 404
+        # without the session (local): the login, no unlock
+        r = _callback(c, url, "")
+        assert r.status_code == 302 and "/login" in r.headers["location"] and TERMINAL_COOKIE not in r.headers.get("set-cookie", "")
+    # a token of another kind (a session hand-off, signed with its own salt) never redeems here
+    bad = Handoff(SECRET, Sessions(SECRET, cs.password_hash).fingerprint).issue(TERM_HOST, 1e9, None)
+    with _client(cs) as c:
+        tok = session(c)
+        assert _callback(c, f"/x?t={bad}", tok).status_code == 401
+
+
+def test_unlock_hand_off_tokens_expire_are_single_use_and_bound_to_their_host():
+    clock = {"t": 1_000_000.0}
+    fp = Sessions(SECRET, "pw-hash").fingerprint
+    h = Handoff(SECRET, fp, clock=lambda: clock["t"], salt="bedrock-now.portal.code-terminal")
+    t = h.issue(TERM_HOST, clock["t"] - 10, "me@example.com", s=clock["t"] - 100)
+    assert h.redeem(t, CODE_HOST) is None                         # wrong audience
+    d = h.redeem(t, TERM_HOST)
+    assert d and d["iat"] == clock["t"] - 10 and d["s"] == clock["t"] - 100 and d["u"] == "me@example.com"
+    assert h.redeem(t, TERM_HOST) is None                         # replay
+    t2 = h.issue(TERM_HOST, clock["t"], None)
+    clock["t"] += 61
+    assert h.redeem(t2, TERM_HOST) is None                        # expired (60 s)
+    # another password: void at once; minted before a restart: void
+    assert Handoff(SECRET, "other-fp", clock=lambda: clock["t"], salt="bedrock-now.portal.code-terminal").redeem(
+        h.issue(TERM_HOST, clock["t"], None), TERM_HOST) is None
+    later = Handoff(SECRET, fp, clock=lambda: clock["t"] + 1, salt="bedrock-now.portal.code-terminal")
+    assert later.redeem(h.issue(TERM_HOST, clock["t"], None), TERM_HOST) is None
+    # the session hand-off's tokens are not these (another salt)
+    assert h.redeem(Handoff(SECRET, fp, clock=lambda: clock["t"]).issue(TERM_HOST, clock["t"], None), TERM_HOST) is None
+
+
+def test_an_unlock_with_a_carried_time_ends_when_that_one_does():
+    clock = {"t": 2_000_000.0}
+    s = Sessions(SECRET, "pw-hash", clock=lambda: clock["t"])
+    term = TerminalUnlocks(SECRET, s, clock=lambda: clock["t"])
+    tok = term.issue(None, iat=clock["t"] - 11 * 3600)
+    assert term.valid(tok)
+    clock["t"] += 3601                                           # 12 hours after the Code page's unlock
+    assert not term.valid(tok)
+    assert not term.valid(term.issue(None, iat=clock["t"] + 60))   # never from the future
+
+
+def test_sign_out_ends_what_the_hand_off_would_give(cs):
+    with _client(cs) as c:
+        tok, ut = unlocked(c)
+        url = _handoff(c, tok, ut).headers["location"]
+        c.post("/logout", headers={"Origin": PORTAL, "Cookie": f"{COOKIE}={tok}"})
+        c.cookies.clear()
+        r = _callback(c, url, tok)
+        assert r.status_code in (302, 401) and TERMINAL_COOKIE not in r.headers.get("set-cookie", "")
+
+
+def test_the_hand_off_on_the_remote_site_needs_its_switch_and_sets_that_hosts_session(settings):
+    r_term = f"bn-terminal.{TN}"
+    rs = replace(settings, terminal=True, code=True, remote_mode="tailscale", remote_host=R_PORTAL, proxy_secret=PROXY,
+                 remote_app_hosts={"terminal": r_term, "code": R_CODE_HOST}, remote_terminal=True)
+    with _client(rs) as c:
+        r = c.post("/login", data={"password": PW, "next": "/"}, headers={"Origin": f"https://{R_PORTAL}", "Host": R_PORTAL, **REMOTE})
+        tok = _cookie(r, "__Host-bn_session").split(";", 1)[0].split("=", 1)[1]
+        c.cookies.clear()
+        r = c.post("/auth/code-unlock", data={"password": PW}, headers={"Host": R_CODE_HOST, "Origin": f"https://{R_CODE_HOST}",
+                                                                      "Cookie": f"__Host-bn_session={tok}", **REMOTE})
+        c.cookies.clear()
+        ut = _cookie(r, REMOTE_CODE_COOKIE).split(";", 1)[0].split("=", 1)[1]
+        r = c.get("/auth/code-terminal", headers={"Host": R_CODE_HOST, "Cookie": f"__Host-bn_session={tok}; {REMOTE_CODE_COOKIE}={ut}",
+                                                  **SAME, **REMOTE})
+        assert r.status_code == 303 and r.headers["location"].startswith(f"https://{r_term}/.bn/unlock-callback?t="), r.text
+        q = r.headers["location"].split("?", 1)[1]
+        r = c.get(f"/auth/terminal-unlock-callback?{q}", headers={"Host": r_term, **REMOTE})   # no session cookie on this host yet
+        assert r.status_code == 303, r.text
+        cks = r.headers.get_list("set-cookie")
+        assert any(x.startswith("__Host-bn_terminal=") and "Secure" in x for x in cks), cks
+        assert any(x.startswith("__Host-bn_session=") for x in cks), cks   # the host's session too, as the session hand-off does
+    # REMOTE_TERMINAL off: no remote terminal, no hand-off there
+    with _client(replace(rs, remote_terminal=False)) as c:
+        assert c.get("/auth/terminal-unlock-callback?t=x", headers={"Host": r_term, **REMOTE}).status_code == 404
+        assert c.get("/auth/code-terminal", headers={"Host": R_CODE_HOST, **SAME, **REMOTE}).status_code == 404

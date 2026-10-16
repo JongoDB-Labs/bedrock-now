@@ -63,12 +63,12 @@
   // Where Claude Code also runs: the Code tab when it is on here, else how to turn it on
   function codeLine(use) {
     if (CODE.here) {
-      return use ? p("Or in the ", b("Code"), " tab: start a session and paste the same prompt. It shows each command and edit for your OK first; unlock it with the portal password.")
+      return use ? p("Or in the ", b("Code"), " tab: start a session and paste the same prompt. In its Ask mode it shows each command and edit for your OK first; unlock it with the portal password.")
         : p("Or nothing to install: the ", b("Code"), " tab is Claude Code in the browser, with a chat, your workspace's files and permission prompts, in the browser terminal's sandbox.");
     }
     if (CODE.enabled) return note("The Code tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
     return note(use ? "Prefer the browser? " : "Claude Code in the browser, nothing to install: ", settings("Code page"),
-      " turns on a Code tab (from the computer running bedrock-now; it needs the browser terminal — ", code("./stack code enable"), " turns both on).");
+      " turns on a Code tab (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
   }
   // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
   function opened(app) {

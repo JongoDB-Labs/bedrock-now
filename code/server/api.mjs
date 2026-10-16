@@ -42,7 +42,23 @@ export function attachment(name) {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(base).slice(0, 600)}`;
 }
 
-export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 4000 }) {
+// What of a transcript the SDK's parser gets (a sandbox can craft one that makes the chain building slow): its last
+// HISTORY_ENTRIES entries, of them at most HISTORY_BOUNDARIES compaction boundaries (the latest)
+export const HISTORY_ENTRIES = 20000, HISTORY_BOUNDARIES = 50;
+export function capEntries(entries) {
+  let list = entries.filter((e) => e && typeof e === 'object' && !Array.isArray(e) && typeof e.type === 'string');
+  let cut = false;
+  if (list.length > HISTORY_ENTRIES) { list = list.slice(-HISTORY_ENTRIES); cut = true; }
+  const boundary = (e) => e.type === 'system' && e.subtype === 'compact_boundary';
+  let n = list.reduce((k, e) => k + (boundary(e) ? 1 : 0), 0);
+  if (n > HISTORY_BOUNDARIES) {
+    cut = true;
+    list = list.filter((e) => !boundary(e) || n-- <= HISTORY_BOUNDARIES);   // the earliest go
+  }
+  return { list, cut };
+}
+
+export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 10000 }) {
   const need = (v, what) => { if (v === null) throw new HttpError(400, `bad ${what}`); return v; };
   const okPath = (v) => short(v, 4096);
 
@@ -66,8 +82,9 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
         if (key?.sessionId !== id) return null;
         const { result } = await call({ op: 'sessions.load', id });
         if (!Array.isArray(result.entries)) return null;
-        store.truncated = result.truncated === true;
-        return result.entries.filter((e) => e && typeof e === 'object' && !Array.isArray(e) && typeof e.type === 'string');
+        const { list, cut } = capEntries(result.entries);
+        store.truncated = result.truncated === true || cut;
+        return list;
       },
       async append() { throw new Error('read-only'); },
     };
@@ -75,22 +92,29 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
   };
 
   // A transcript as events: offset/limit count the SDK's messages (total: how many there are), each message gives one
-  // or more events (`messages` and `events` are the same list)
-  async function messages(id, offset, limit) {
+  // or more events (`messages` and `events` are the same list). tail: the last `tail` messages (more: earlier ones)
+  async function messages(id, offset, limit, tail) {
     if (!isUuid(id)) throw new HttpError(400, 'bad session id');
-    const off = int(offset, 0, 1e6) ?? 0, lim = int(limit, 1, 2000) ?? 500;
     const store = storeFor(id);
     const all = await getSessionMessages(id, { dir: '/workspace', sessionStore: store, includeSystemMessages: true });
     const msgs = Array.isArray(all) ? all : [];
+    const t = int(tail, 1, 2000);
+    const lim = t ?? int(limit, 1, 2000) ?? 500;
+    const off = t !== null ? Math.max(0, msgs.length - t) : int(offset, 0, 1e6) ?? 0;
     const events = [];
     for (const m of msgs.slice(off, off + lim)) events.push(...fromHistory(m));
-    return { messages: events, events, total: msgs.length, offset: off, limit: lim, more: off + lim < msgs.length, truncated: store.truncated };
+    return { messages: events, events, total: msgs.length, offset: off, limit: lim, more: t !== null ? off > 0 : off + lim < msgs.length, truncated: store.truncated };
   }
 
+  // a title: written to the transcript as /rename does; a session open here without a transcript yet keeps it until
+  // its first turn is over (main.mjs writes it then)
   async function title(id, body) {
     if (!isUuid(id)) throw new HttpError(400, 'bad session id');
     const t = typeof body?.title === 'string' ? body.title.trim() : '';
     if (!t || t.length > 200 || /[\x00-\x1f\x7f]/.test(t)) throw new HttpError(400, 'a title of 1 to 200 characters, one line');
+    const s = sessions.get?.(id);
+    if (s) s.title = t;
+    if (s && !s.hasTranscript) { s.pendingTitle = t; return { ok: true, pending: true }; }
     await call({ op: 'sessions.title', id, title: t });
     return { ok: true };
   }
@@ -164,16 +188,57 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
     return { trash: okPath((await call({ op: 'fs.delete', path: p })).result.trash) };
   }
 
+  // --- the @-picker over the whole workspace: paths whose relative path contains q (bn-coded walks, bounded) ---
+  async function find(q, limit) {
+    const needle = typeof q === 'string' ? q.slice(0, 200) : '';
+    const lim = int(limit, 1, 200) ?? 50;
+    const { result } = await call({ op: 'fs.find', q: needle, limit: lim });
+    const paths = (Array.isArray(result.paths) ? result.paths : []).slice(0, lim)
+      .filter((x) => typeof x === 'string' && x.length <= 4096 && !x.split('/').some((seg) => seg === '..') && !/[\x00-\x1f\x7f]/.test(x) && !x.startsWith('/'));
+    return { paths, truncated: result.truncated === true };
+  }
+
+  // --- memory (CLAUDE.md): this workspace's (/workspace/CLAUDE.md, a file of the workspace) or your user one in the
+  // sandbox (~/.claude/CLAUDE.md, a fixed file bn-coded reads and writes) ---
+  const MEMORY_MAX = 1 << 20;
+  async function memory(scope) {
+    if (scope === 'project') {
+      try {
+        const f = await readFile('CLAUDE.md');
+        return { scope, path: '/workspace/CLAUDE.md', exists: true, text: f.binary ? '' : f.text, size: f.size, mtimeMs: f.mtimeMs, truncated: f.truncated };
+      } catch (e) {
+        if (e instanceof SandboxError && /ENOENT/.test(e.message)) return { scope, path: '/workspace/CLAUDE.md', exists: false, text: '', size: 0, mtimeMs: null, truncated: false };
+        throw e;
+      }
+    }
+    if (scope !== 'user') throw new HttpError(400, 'scope: project or user');
+    const { result, stdout } = await call({ op: 'memory.read' }, { maxBytes: MEMORY_MAX + (1 << 20) });
+    const data = stdout.subarray(0, MEMORY_MAX);
+    return { scope, path: '~/.claude/CLAUDE.md', exists: result.exists === true, text: isText(data, result.truncated === true) ? data.toString('utf8') : '',
+      size: int(result.size, 0, 1e15) ?? data.length, mtimeMs: num(result.mtimeMs, 0, 1e14), truncated: result.truncated === true };
+  }
+  async function memoryWrite(scope, body) {
+    if (typeof body?.text !== 'string') throw new HttpError(400, 'text missing');
+    const data = Buffer.from(body.text, 'utf8');
+    if (data.length > MEMORY_MAX) throw new HttpError(413, 'a memory file of at most 1 MiB');
+    if (scope === 'project') return writeFile('CLAUDE.md', { text: body.text, ifMtimeMs: body.ifMtimeMs });
+    if (scope !== 'user') throw new HttpError(400, 'scope: project or user');
+    const ifMtimeMs = body.ifMtimeMs === undefined || body.ifMtimeMs === null ? undefined : num(body.ifMtimeMs, 0, 1e14);
+    if (ifMtimeMs === null) throw new HttpError(400, 'bad ifMtimeMs');
+    const { result } = await call({ op: 'memory.write', size: data.length, ifMtimeMs }, { input: data, timeoutMs: 60000 });
+    return { path: '~/.claude/CLAUDE.md', size: int(result.size, 0, 1e15), mtimeMs: num(result.mtimeMs, 0, 1e14) };
+  }
+
   // --- plugins and MCP servers (claude plugin … / claude mcp … in the sandbox; bn-coded allows these shapes only) ---
   // run(args) -> {code, out, err}: the CLI's exit code and output (untrusted text)
-  async function run(args, timeoutMs = 60000) {
-    const r = await call({ op: 'cli', args }, { timeoutMs });
+  async function run(args, timeoutMs = 60000, maxBytes = undefined) {
+    const r = await call({ op: 'cli', args }, { timeoutMs, ...(maxBytes ? { maxBytes } : {}) });
     if (!r.exit) throw new HttpError(502, 'unexpected answer from the sandbox');
     return { code: r.exit.code, out: r.stdout.toString('utf8'), err: typeof r.stderr === 'string' ? r.stderr : '' };
   }
   // listing(args) -> the parsed JSON of a listing (`plugin list --json` …), or a 502 with what the CLI said
-  async function listing(args) {
-    const r = await run(args);
+  async function listing(args, maxBytes) {
+    const r = await run(args, 60000, maxBytes);
     try { if (r.code === 0) return JSON.parse(r.out); } catch { /* below */ }
     throw new HttpError(502, `claude ${args.slice(0, 3).join(' ')} failed: ${short(lastLine(`${r.err}\n${r.out}`), 300) || `exit ${r.code}`}`);
   }
@@ -189,7 +254,7 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
   // The catalog of every added marketplace's plugins (`plugin list --json --available`: thousands of entries, ~2 MB) is
   // read once and searched here; any change through this API reads it again.
   let catalog = null;   // {at, rows}
-  const CATALOG_MS = 10 * 60000;
+  const CATALOG_MS = 10 * 60000, CATALOG_BYTES = 24 << 20;   // (the CLI's own directory alone is ~2 MB, 3,500 entries)
   const invalidate = () => { catalog = null; };
 
   async function plugins() {
@@ -200,7 +265,7 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
 
   async function available({ q, marketplace, offset, limit } = {}) {
     if (!catalog || Date.now() - catalog.at > CATALOG_MS) {
-      const d = await listing(['plugin', 'list', '--json', '--available']);
+      const d = await listing(['plugin', 'list', '--json', '--available'], CATALOG_BYTES);
       const rows = (Array.isArray(d?.available) ? d.available : []).slice(0, 20000).map(availableRow).filter(Boolean);
       const installed = new Set((Array.isArray(d?.installed) ? d.installed : []).map((x) => (typeof x?.id === 'string' ? x.id : '')));
       for (const r of rows) r.installed = installed.has(r.id);
@@ -218,13 +283,12 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
 
   // After a change: the catalog again, and the open sessions reload their plugins (new commands and skills in the
   // palette at once). A running Claude Code learns of the CLI's settings change through its file watcher, a moment
-  // later: the reload waits a little, and once more a few seconds after (pages get each new list).
-  const changed = async (res) => {
+  // later: a session whose plugin list the first reload left as it was reloads again until it changes (≤ 10 s, in the
+  // background; pages get each new list). `expectChange`: the action changes which plugins load.
+  const changed = async (res, expectChange = true) => {
     if (!res.ok) return res;
     invalidate();
-    await new Promise((r) => setTimeout(r, reloadDelayMs));
-    res.reloaded = await sessions.reloadPlugins?.() ?? 0;
-    if (res.reloaded) setTimeout(() => { sessions.reloadPlugins?.().catch(() => {}); }, reloadAgainMs).unref?.();
+    res.reloaded = await sessions.reloadPlugins?.({ untilChanged: expectChange, pollMs: reloadPollMs, maxMs: reloadMaxMs }) ?? 0;
     return res;
   };
 
@@ -244,7 +308,7 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
   async function marketplaceAdd(body) {
     const src = typeof body?.source === 'string' ? body.source.trim() : '';
     if (!src || src.length > 500 || /[\x00-\x1f\x7f]/.test(src)) throw new HttpError(400, 'bad source');
-    return changed(await action(['plugin', 'marketplace', 'add', src, '--json'], 180000));
+    return changed(await action(['plugin', 'marketplace', 'add', src, '--json'], 180000), false);
   }
   async function marketplaceRemove(name) {
     if (typeof name !== 'string' || !PLUGIN_NAME.test(name)) throw new HttpError(400, 'bad name');
@@ -253,7 +317,7 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
   async function marketplaceUpdate(body) {
     const name = body?.name;
     if (typeof name !== 'string' || !PLUGIN_NAME.test(name)) throw new HttpError(400, 'bad name');
-    return changed(await action(['plugin', 'marketplace', 'update', name, '--json'], 180000));
+    return changed(await action(['plugin', 'marketplace', 'update', name, '--json'], 180000), false);
   }
 
   // MCP servers of your own (user scope, in the sandbox's ~/.claude.json): added as one checked JSON configuration —
@@ -267,7 +331,7 @@ export function makeApi({ call, sessions, reloadDelayMs = 1500, reloadAgainMs = 
     return action(['mcp', 'remove', name, '--scope=user'], 60000);
   }
 
-  return { listSessions, messages, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, plugins, available, pluginAction,
+  return { listSessions, messages, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove };
 }
 
@@ -279,6 +343,7 @@ const firstLine = (s) => lines(s)[0] || '';
 const SHA = /^[0-9a-f]{64}$/;
 const PLUGIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
 // failure codes after which the CLI shows a marketplace-declared command and waits for a person to accept its sha256
+const CONFIRM_COMMAND = 8000, CONFIRM_URL = 2000;
 const CONFIRM = ['command_source_refused', 'command_source_declined', 'entry_helper_unconfirmed', 'entry_helper_declined', 'entry_helper_unshown', 'entry_helper_changed'];
 
 // actionResult(code, stdout, stderr) -> {ok, outcome, message, failureCode, needs_confirmation?}
@@ -296,11 +361,16 @@ export function actionResult(code, out, err = '') {
     failureCode: short(j?.failureCode, 60) || null };
   const sc = j?.shownCommand;
   if (!ok && sc && typeof sc === 'object' && typeof sc.command === 'string' && SHA.test(sc.sha256 ?? '') && CONFIRM.includes(j.failureCode)) {
+    // only what can be shown in full can be accepted: a longer command (or archive URL) is for the terminal
+    if (sc.command.length > CONFIRM_COMMAND || (typeof sc.archiveUrl === 'string' && sc.archiveUrl.length > CONFIRM_URL)) {
+      return { ...res, failureCode: 'command_too_long',
+        message: `This plugin is installed by running a command too long to show here (${sc.command.length} characters): read and accept it in the terminal (claude plugin install …).` };
+    }
     res.needs_confirmation = {
       kind: short(sc.kind, 40), plugin: PLUGIN_ID.test(sc.pluginId ?? '') ? sc.pluginId : null,
       // shown verbatim (as text) — exactly what will run in the sandbox once accepted
-      command: str(sc.command, 8000), sha256: sc.sha256, mode: short(sc.mode, 20) || null,
-      archiveUrl: typeof sc.archiveUrl === 'string' ? str(sc.archiveUrl, 2000) : null,
+      command: sc.command, sha256: sc.sha256, mode: short(sc.mode, 20) || null,
+      archiveUrl: typeof sc.archiveUrl === 'string' ? sc.archiveUrl : null,
       // the CLI says this hash was offered and still refused: the catalog changed, or it was not accepted here
       matched: sc.acceptCommandMatched === true,
     };

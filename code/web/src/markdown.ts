@@ -241,7 +241,8 @@ export function renderMarkdown(src: string): MdNode[] {
   const ctx: Ctx = { n: 0 };
   let tokens: Token[];
   try {
-    tokens = Lexer.lex(src, { gfm: true, breaks: false, async: false });
+    // a single newline is a line break, as Claude Code's own terminal shows its answers
+    tokens = Lexer.lex(src, { gfm: true, breaks: true, async: false });
   } catch {
     return [el(ctx, 'p', [visible(src)])];
   }

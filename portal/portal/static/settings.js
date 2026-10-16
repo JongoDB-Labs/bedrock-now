@@ -196,10 +196,11 @@
     if (!data.here.remote) return false;
     return k.policy === "local" || (k.policy === "widen-local" && weakens(k, value));
   }
-  // The Code page runs in the browser terminal's sandbox: Settings turns it on only while the terminal is on (which
-  // folder the sandbox sees is chosen in a terminal; lib/settings.sh settings_check_batch refuses it too)
+  // The Code page runs in the browser terminal's sandbox: with the terminal off, turning it on turns the terminal on
+  // too, with the folder ./stack names in the snapshot (choices.code_workspace; settings_check_batch checks it)
   const terminalOn = () => Boolean(keys.TERMINAL_ENABLED && keys.TERMINAL_ENABLED.value === "true");
-  function needsTerminal(k, value) { return k.key === "CODE_ENABLED" && value === "true" && shown(k) !== "true" && !terminalOn(); }
+  const codeFolder = () => terminalOn() ? (keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value) || ""
+    : (data.snapshot && data.snapshot.choices.code_workspace) || "";
 
   function cliLine(k) {
     const cmd = k.cli || `./stack config set ${k.key}`;
@@ -269,8 +270,8 @@
     const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
     for (const [val, label] of [[off, "Off"], [on, "On"]]) {
       const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });
-      b.disabled = !canChange() || (val !== cur && ((k.policy === "on-only" && val !== on) || localOnlyHere(k, val) || needsTerminal(k, val)));
-      const what = k.key === "CODE_ENABLED" ? CODE_SWITCH[val] : k.note;
+      b.disabled = !canChange() || (val !== cur && ((k.policy === "on-only" && val !== on) || localOnlyHere(k, val)));
+      const what = k.key === "CODE_ENABLED" ? codeSwitch(val) : k.note;
       b.addEventListener("click", () => { if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${label}`, what, [k.key]); });
       g.append(b);
     }
@@ -284,23 +285,26 @@
   }
 
   // --- the Code page (./stack code enable | disable, run by the update helper) ---
-  const CODE_SWITCH = {
-    true: "The helper runs ./stack code enable: it builds the Code page's image (a few minutes the first time) and restarts the terminal (its tmux session ends), the portal and Caddy.",
-    false: "The helper runs ./stack code disable: the code container goes; the terminal, its folder and Claude Code's history stay (the terminal restarts once).",
-  };
+  function codeSwitch(val) {
+    if (val !== "true") return "The helper runs ./stack code disable: the code container goes; the terminal (and its tmux session), its folder and Claude Code's history stay.";
+    const ws = codeFolder() || "the default folder";
+    return terminalOn()
+      ? `The helper runs ./stack code enable: it builds the Code page's image (a few minutes the first time) and restarts the portal and Caddy; the terminal keeps running. Claude sees the terminal's folder ${ws}.`
+      : `The helper runs ./stack code enable: it turns the browser terminal on too, with the folder ${ws} as its workspace (created if it is not there; Claude sees only that folder), then builds the Code page's image (a few minutes the first time) and restarts the portal and Caddy.`;
+  }
   function codeRow(body) {
     const k = keys.CODE_ENABLED;
     if (!k) return;
     const r = row(k);
     const main = r.querySelector(".set-main");
-    const ws = keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value;
+    const ws = codeFolder();
     const egress = !(keys.TERMINAL_EGRESS && keys.TERMINAL_EGRESS.value === "off");
     main.append(el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace (read-only here): " }),
-      el("code", { text: terminalOn() && ws ? ws : "none: the browser terminal is off" })));
+      el("code", { text: ws || (terminalOn() ? "the terminal's" : "the default folder") })));
     if (terminalOn()) {
       main.append(el("p", { class: "note", text: `Claude sees only that folder (at /workspace), uses the terminal's key and budget, and ${egress ? "can reach the internet (TERMINAL_EGRESS=off in .env turns that off)" : "has no internet (TERMINAL_EGRESS=off)"}.` }));
     } else if (shown(k) !== "true") {
-      main.append(el("p", { class: "note set-remote", text: "It needs the browser terminal, which is off: turn both on in a terminal on the computer running bedrock-now (it asks which folder the sandbox sees)." }));
+      main.append(el("p", { class: "note", text: "The browser terminal is off: turning this on turns it on too, with the folder above as its workspace (Claude sees only that folder, at /workspace). Another folder: in a terminal, with the command below." }));
     }
     const cmd = terminalOn() ? "./stack terminal enable --workspace DIR" : "./stack code enable --workspace DIR";
     const b = el("button", { type: "button", class: "copy", text: "Copy" });

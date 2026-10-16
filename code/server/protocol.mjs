@@ -11,10 +11,14 @@
 //                                           portal_origin, terminal_url}
 //   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}
 //                                           the sandbox's transcripts for /workspace, newest first (at most 200)
-//   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000)   {messages: [ev…], total, offset, limit, more, truncated}
-//                                           a transcript as the WebSocket's events (user with the prompt's uuid, text,
-//                                           thinking, tool_use, tool_result, local); offset/limit/total count the SDK's
-//                                           messages; truncated: only the transcript's last 3 MiB was read
+//   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000) | ?tail=N (≤ 2000)
+//                                           {messages: [ev…], total, offset, limit, more, truncated} a transcript as the
+//                                           WebSocket's events (user with the prompt's uuid, text, thinking, tool_use,
+//                                           tool_result, local); offset/limit/total count the SDK's messages. tail=N:
+//                                           the last N (offset = total - N; more: there are earlier ones — ask
+//                                           offset/limit for those); without tail, more: there are later ones.
+//                                           truncated: only the transcript's last 3 MiB (and at most 20,000 entries,
+//                                           50 compaction boundaries) was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, taskStop?: bool}
 //                                           -> {id, existing}: opens a session (new, resume, fork, resume-at).
 //                                           taskStop: the page has a Stop per background task (stop_task), so an
@@ -22,7 +26,8 @@
 //                                           one that is open here returns it (existing: true) instead of a second
 //                                           process. 409 when MAX_OPEN processes run and none is idle.
 //   DELETE /api/sessions/ID                {ok}: ends its process (the transcript stays; a later prompt resumes it)
-//   POST   /api/sessions/ID/title {title}  {ok}: renames it (a custom-title line, as /rename writes)
+//   POST   /api/sessions/ID/title {title}  {ok}: renames it (a custom-title line, as /rename writes; a session open
+//                                           here that has no transcript yet keeps it until it has one)
 //   GET    /api/fs?path=P                  {path, entries: [{name, type: dir|file|symlink|other, size, mtimeMs}],
 //                                           truncated} — P relative to /workspace ("" or "." = the workspace)
 //   GET    /api/fs/file?path=P             {path, size, mtimeMs, truncated, binary, text} — text null when binary (a
@@ -33,9 +38,18 @@
 //                                           ifMtimeMs is given and the file changed since
 //   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (percent-encoded) -> {path, size,
 //                                           mtimeMs}; an existing name gets -1, -2 … before its extension
+//   GET    /api/fs/find?q=TEXT&limit=N (≤ 200)   {paths: ["src/a.ts", "src/" …], truncated} — paths under the
+//                                           workspace whose relative path contains TEXT (any case); folders end in "/";
+//                                           a bounded walk (20,000 entries, depth 12; .git, node_modules and the trash
+//                                           skipped; links never followed)
+//   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
+//                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
+//                                           (~/.claude/CLAUDE.md); at most 1 MiB
+//   PUT    /api/memory?scope=project|user {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 when it changed meanwhile
 //   POST   /api/fs/mkdir {path}            {path}
 //   POST   /api/fs/rename {from, to}       {path}; 409 when `to` exists
-//   DELETE /api/fs?path=P                  {trash}: moved into /workspace/.bedrock-now-trash/
+//   DELETE /api/fs?path=P                  {trash}: moved into /workspace/.bedrock-now-trash/ (which holds a .gitignore
+//                                           of "*" so git leaves it alone)
 //   GET    /api/plugins                    {installed: [{id, name, marketplace, version, scope, enabled, fromFolder,
 //                                           installedAt, updatedAt, errors}], marketplaces: [{name, source, location}]}
 //                                           (claude plugin list / plugin marketplace list --json in the sandbox)
@@ -50,8 +64,10 @@
 //               mode, archiveUrl, matched}} — needs_confirmation: the marketplace declares a command that installs the
 //               plugin (or fetches it); nothing ran. The page shows `command` verbatim with its sha256; only a person's
 //               "accept" sends the same request again with acceptCommand = sha256 (the CLI's --accept-command; never
-//               -y). reloaded: after a change, how many open sessions reloaded their plugins (their pages get new
-//               `commands`, `plugins` and `mcp` messages)
+//               -y). Only offered when the whole command (≤ 8,000 characters) and archive URL (≤ 2,000) fit: a longer
+//               one is refused here (ok false, failureCode command_too_long). reloaded: after a change, how many open
+//               sessions reloaded their plugins (their pages get new `commands`, `plugins` and `mcp` messages; the
+//               reload is repeated for up to 10 s until the session's plugin list changes)
 //   POST   /api/mcp {name, transport: stdio|http|sse, command?, args?, env?, url?, headers?}   Outcome
 //          · DELETE /api/mcp?name=N   Outcome: an MCP server of your own in the sandbox's user configuration
 //          (claude mcp add-json / remove --scope user). A stdio server runs in the sandbox, never on your computer;
@@ -74,33 +90,71 @@
 // WebSocket /ws (JSON text frames, max 32 MiB; Origin must be the page's own). Sessions live in the backend, not in
 // the socket: a reload, a second tab or a phone attaches and gets what it missed. Every message and every `ev` has
 // its kind in `type`. A client message may carry `req` (≤ 64 chars): then it also gets {type: "reply", req, ok, data
-// | error}.
+// | error} (a refused one also an {type: "error", session, req, message}).
+// The server closes a socket with code 4008 "re-attach" when more than LIMITS.wsMaxBufferedBytes wait unsent to it (a
+// page that stopped reading; the server forgets it at once) and 4009 "session age" after LIMITS.wsMaxAgeHours. The
+// page reconnects at once on both and re-attaches with since/epoch.
 // client -> server:
-//   {type: "attach", session, since?: SEQ}      replays this process's events after SEQ, then the prompts waiting,
-//                                               then {type: "session_state"}; the socket then receives the session
+//   {type: "attach", session, since?: SEQ, epoch?}   replays this process's events after SEQ, then the prompts waiting,
+//                                               then {type: "session_state"}; the socket then receives the session.
+//                                               epoch: the process the page last saw; another one (the session was
+//                                               restarted meanwhile, maybe by another device) replays from 1, gap true
 //   {type: "detach", session}
-//   {type: "prompt", session, text, uuid?, images?: [{media_type, data(base64)}]}   a prompt typed by you (slash
-//                                               commands too: "/context"); while busy it waits for the turn to end; an
-//                                               ended session is resumed first (a new process, a new ring)
+//   {type: "prompt", session, text, uuid?, images?: [{media_type, data(base64)}], req?}   a prompt typed by you
+//                                               (slash commands too: "/context"); while busy it waits for the turn to
+//                                               end; an ended session is resumed first (a new process, a new ring).
+//                                               Refused (empty, too long, bad image, the session gone …): reply ok false
+//                                               with req, and nothing was queued
 //   {type: "interrupt", session}
 //   {type: "set_model", session, model} · {type: "set_mode", session, mode} · {type: "set_effort", session, effort}
-//                                               (effort null = the model's default); each answered by a status event
-//   {type: "permission", id, session, decision: "once"|"always"|"deny", message?}
+//                                               (effort null = the model's default); each answered by a status event.
+//                                               A session without a running process keeps them for its next start
+//   {type: "permission", id, session, decision: "once"|"always"|"always_project"|"deny", message?, mode?}
+//                                               session: the prompt's own (else refused). always: the prompt's `rules`;
+//                                               always_project: its `projectRules`; mode (ExitPlanMode only:
+//                                               "acceptEdits" | "default"): the plan approved and this session's mode set
+//                                               (never bypassPermissions, auto or dontAsk); "keep planning" is a deny with
+//                                               a message
 //   {type: "permission", id, session, decision: "answer", answers: {"<question text>": "<chosen label(s)>"}}
 //                                               AskUserQuestion only: the tool's input comes back with these answers
 //                                               (the SDK's channel; multi-select labels comma-separated)
 //   {type: "commands"|"models"|"mcp"|"context", session}   answered by a message of the same type (below)
 //   {type: "reload_plugins", session} · {type: "stop_task", session, task}
 //   {type: "mcp_reconnect", session, server} · {type: "mcp_toggle", session, server, enabled}   answered by "mcp"
+//   {type: "rewind_files", session, message: USER_MESSAGE_UUID, dryRun?, req}   file checkpoints: the files Claude
+//                                               changed since that prompt of yours put back (dryRun: only what would
+//                                               change) -> reply data {canRewind, error, filesChanged, insertions,
+//                                               deletions, skippedLinks}; sessions run with file checkpointing
 // server -> client:
 //   {type: "hello", pending, limits}                          once, on connect
-//   {type: "attached", session, state, from, last, gap}      gap: events before `from` are gone (re-read history)
-//   {type: "event", session, seq, ev}                         seq 1, 2, 3 … per process: a new process starts at 1
-//   {type: "permission", id, session, tool, input, reason, blockedPath, suggestions, rules, expiresAt}
-//   {type: "permission_done", id, session, decision}         decision: once|always|deny|answer|timeout|cancelled
+//   {type: "attached", session, epoch, state, from, last, gap}   gap: events after the page's `since` are gone, or
+//                                                             since > last, or the page's epoch is not this process's
+//                                                             (re-read the history, then show the replay after it)
+//   {type: "event", session, epoch, seq, ev}                  seq 1, 2, 3 … per process (holes are normal: finished
+//                                                             blocks replace their deltas); epoch: 8 hex characters,
+//                                                             new for every process of the session
+//   {type: "permission", id, session, tool, input, complete, reason, blockedPath, rules, projectRules, defaultNo,
+//          noAlways, expiresAt}
+//          input: the tool's input capped at LIMITS.permissionShownChars (strings at permissionShownString); complete:
+//          nothing was cut (the page offers Allow only for a complete one). An input over permissionInputMax never
+//          comes: it is denied at once, as is a prompt beyond maxPendingPerSession / maxPendingTotal waiting.
+//          rules: [{text, destination}] exactly what "Always" adds (destination session | userSettings: the sandbox's
+//          own ~/.claude — rules Claude Code proposed for a workspace file go there instead); projectRules: the same
+//          rules in the workspace file Claude Code proposed (localSettings: /workspace/.claude/settings.local.json,
+//          projectSettings: /workspace/.claude/settings.json — in your folder, which Claude Code on your computer
+//          reads too), only when it proposed one. defaultNo: open on Deny, no one-key approve; noAlways: no persistent
+//          rule may be offered (rules and projectRules are then empty)
+//   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
+//                                                             timeout|cancelled
 //   {type: "session_state", session, state, model, mode, effort, error}   state: starting|idle|busy|ended
 //                                                             (ended with `error` when the process failed)
-//   {type: "commands", session, commands: [{name, description, argumentHint}]}
+//   {type: "reset", session, new_session}                     Claude Code started a new conversation (/clear, a plan
+//                                                             approved with "clear context" …): the old session's
+//                                                             process ended after its turn; new_session (same model,
+//                                                             mode, effort) holds the conversation from here — the
+//                                                             pages attached to the old one are attached to it
+//   {type: "commands", session, commands: [{name, description, argumentHint}]}   (also pushed when Claude Code's
+//                                                             command list changes, and after a plugin reload)
 //   {type: "models", session, models: [{value, displayName, description, resolvedModel, supportsEffort,
 //          supportedEffortLevels}]}
 //   {type: "mcp", session, servers: [{name, status: connected|failed|needs-auth|pending|disabled|unknown, error,
@@ -120,12 +174,12 @@
 //   {type: "text", text, model, parent} · {type: "thinking", text, parent}       a finished block
 //   {type: "tool_use", id, name, input, parent}
 //   {type: "tool_result", id, text, is_error, parent, edit?: {path, original, hunks: [{oldStart, oldLines, newStart,
-//          newLines, lines}]}}
+//          newLines, lines}], complete}}   complete: false when the diff was cut (LIMITS.editHunkChars in all)
 //   {type: "task", id, status, summary, description, toolUseId}
 //   {type: "local", text}                                      a local command's output (/context, /cost …), a
 //                                                              compaction, a denied tool, a closed session
-//   {type: "status", status, permissionMode?, model?, effort?}  compacting | requesting | a retry | "" (and the
-//                                                              switches after set_*)
+//   {type: "status", status, permissionMode?, model?, effort?}  compacting | requesting | "Bedrock retry N/M (…)" | ""
+//                                                              (and the switches after set_*, or Claude Code's own)
 //   {type: "result", subtype, is_error, turns, duration, usage: {input_tokens, output_tokens,
 //          cache_read_input_tokens, cache_creation_input_tokens}, text}
 //   {type: "error", message}                                   the session's process failed (text: the same)
@@ -134,7 +188,15 @@
 export const LIMITS = Object.freeze({
   maxOpen: 4,                     // Claude Code processes at once (each ~220 MB in the sandbox)
   idleMinutes: 30,                // an idle process ends after this; the next prompt resumes the session
-  permissionMinutes: 10,          // a permission prompt nobody answers is denied after this
+  permissionMinutes: 30,          // a permission prompt nobody answers is denied after this
+  maxPendingPerSession: 8,        // permission prompts waiting in one session; more are denied at once
+  maxPendingTotal: 32,            // … and in all sessions
+  permissionInputMax: 1 << 20,    // a tool input whose JSON is larger is denied at once (never shown)
+  permissionShownChars: 262144,   // what a permission prompt shows of the input (JSON characters) …
+  permissionShownString: 131072,  // … and of each string in it (the page caps the same)
+  editHunkChars: 1 << 20,         // an edit's diff (all hunks) beyond this is cut (edit.complete false)
+  wsMaxBufferedBytes: 16 << 20,   // unsent to one socket: beyond, it is closed (4008) and must re-attach
+  wsMaxAgeHours: 12,              // a socket is closed (4009) after this (the page reconnects through Caddy's check)
   maxPromptChars: 200000,
   maxImages: 4,
   maxImageBytes: 5 << 20,         // per image, decoded
@@ -145,5 +207,5 @@ export const LIMITS = Object.freeze({
 
 export const MODES = Object.freeze(['default', 'acceptEdits', 'plan', 'dontAsk']);   // not bypassPermissions / auto
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const DECISIONS = Object.freeze(['once', 'always', 'deny', 'answer']);   // answer: AskUserQuestion only
+export const DECISIONS = Object.freeze(['once', 'always', 'always_project', 'deny', 'answer']);   // answer: AskUserQuestion only
 export const IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

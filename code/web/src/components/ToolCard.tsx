@@ -34,7 +34,8 @@ export function Output({ text, lines = 14, class: cls }: { text: string; lines?:
   );
 }
 
-export function DiffLines({ lines, max = 400 }: { lines: DiffLine[]; max?: number }) {
+/** `lineMax`: characters shown of one line (a permission prompt shows each line whole). */
+export function DiffLines({ lines, max = 400, lineMax = 4000 }: { lines: DiffLine[]; max?: number; lineMax?: number }) {
   const [all, setAll] = useState(false);
   const shown = all ? lines : lines.slice(0, max);
   return (
@@ -44,7 +45,7 @@ export function DiffLines({ lines, max = 400 }: { lines: DiffLine[]; max?: numbe
           <span class="dl-no" role="cell">{l.oldNo ?? ''}</span>
           <span class="dl-no" role="cell">{l.newNo ?? ''}</span>
           <span class="dl-sign" role="cell">{l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ''}</span>
-          <span class="dl-text" role="cell">{safe(l.text, 4000)}</span>
+          <span class="dl-text" role="cell">{safe(l.text, lineMax)}</span>
         </div>
       ))}
       {lines.length > max && !all && (
@@ -82,20 +83,22 @@ function Changes({ add, del }: { add: number; del: number }) {
   );
 }
 
-function editLines(it: ToolItem): { lines: DiffLine[]; add: number; del: number } {
+const MAX_EDITS = 20;
+
+function editLines(it: ToolItem): { lines: DiffLine[]; add: number; del: number; more: number } {
   const e = it.result?.edit;
   if (e && e.hunks.length) {
     const c = countChanges(e.hunks);
-    return { lines: hunkLines(e.hunks), ...c };
+    return { lines: hunkLines(e.hunks), ...c, more: 0 };
   }
   const i = obj(it.input);
   const edits = Array.isArray(i.edits) ? (i.edits as unknown[]).map(obj) : [i];
   const lines: DiffLine[] = [];
-  for (const ed of edits.slice(0, 20)) {
+  for (const ed of edits.slice(0, MAX_EDITS)) {
     if (lines.length) lines.push({ kind: 'hunk', text: '⋯', oldNo: null, newNo: null });
     lines.push(...compact(lineDiff(str(ed.old_string), str(ed.new_string))));
   }
-  return { lines, add: lines.filter((l) => l.kind === 'add').length, del: lines.filter((l) => l.kind === 'del').length };
+  return { lines, add: lines.filter((l) => l.kind === 'add').length, del: lines.filter((l) => l.kind === 'del').length, more: Math.max(0, edits.length - MAX_EDITS) };
 }
 
 const ICONS: Record<string, string> = {
@@ -221,10 +224,15 @@ function Body({ it, nested }: { it: ToolItem; nested?: ComponentChildren }) {
       const e = r?.edit;
       const path = str(i.file_path) || e?.path || '';
       const isWrite = it.name === 'Write' && !e?.hunks.length;
-      const lines = isWrite ? lineDiff('', str(i.content)).slice(0, 400) : editLines(it).lines;
+      const ed = editLines(it);
+      const lines = isWrite ? lineDiff('', str(i.content)) : ed.lines;
+      const all = (Array.isArray(i.edits) ? (i.edits as unknown[]).map(obj) : [i]).some((x) => x.replace_all === true);
       return (
         <>
+          {all && <div class="muted small">Replaced every occurrence, not only the first.</div>}
           <DiffLines lines={lines} max={isWrite ? 30 : 400} />
+          {!isWrite && ed.more > 0 && <div class="muted small">and {ed.more} more edit{ed.more === 1 ? '' : 's'} (open the diff for all of them)</div>}
+          {e && !e.complete && <div class="muted small">The change is too large to show in full here: open the file to see it.</div>}
           <div class="card-actions">
             <button
               type="button"

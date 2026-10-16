@@ -1,14 +1,17 @@
 // The prompt box, keyed like Claude Code: Enter sends, Shift+Enter is a new line, Esc stops Claude, Shift+Tab
-// cycles the permission mode, ↑ in an empty box recalls the last prompt. "/" at the start opens the command
-// palette (built-ins, skills, plugin commands from the session), "@" opens the file picker (from the explorer).
-// Images (paste, drop or 📎) up to the image limit become image blocks; other files are uploaded into the
-// workspace and @-mentioned.
+// cycles the permission mode (Ask → Accept edits → Plan), ↑ in an empty box recalls the last prompt. "/" at the
+// start opens the command palette (built-ins, skills, plugin commands from the session), "@" opens the file picker
+// (what the explorer has listed, and from two characters on a search of the whole workspace). "# text" on one line
+// adds a line to the project's CLAUDE.md. Images (paste, drop or 📎) become image blocks — scaled down to 1568 px on the long edge
+// (what Claude reads anyway), at most as many as the backend takes; other files are uploaded into the workspace and
+// @-mentioned. /clear, /reset and /new start a new session; /resume opens the session list.
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast } from '../app';
+import { fsFind } from '../api';
 import { findTrigger, mergeCommands, rankCommands, rankPaths, type Trigger } from '../palette';
-import { MODES, type ImageBlock } from '../types';
+import type { ImageBlock, Mode } from '../types';
 import { bytes, cleanPath, dirname } from '../text';
 import { Icon } from './icons';
 
@@ -23,8 +26,12 @@ interface Attachment {
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const history: string[] = [];
 let attachId = 1;
+/** Shift+Tab cycles these (Don't ask stays in the mode menu) */
+const CYCLE: Mode[] = ['default', 'acceptEdits', 'plan'];
+/** Claude reads images at up to this many pixels on the long edge; larger ones only cost upload time */
+export const MAX_EDGE = 1568;
 
-function readBase64(file: File): Promise<string> {
+function readBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => {
@@ -37,12 +44,38 @@ function readBase64(file: File): Promise<string> {
   });
 }
 
+/** An image scaled down to MAX_EDGE on its long edge (same type; GIF becomes PNG), or the file itself. */
+async function scaled(f: File): Promise<Blob> {
+  if (typeof createImageBitmap !== 'function') return f;
+  let bmp: ImageBitmap;
+  try {
+    bmp = await createImageBitmap(f);
+  } catch {
+    return f;
+  }
+  const long = Math.max(bmp.width, bmp.height);
+  if (long <= MAX_EDGE) {
+    bmp.close();
+    return f;
+  }
+  const k = MAX_EDGE / long;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(bmp.width * k));
+  c.height = Math.max(1, Math.round(bmp.height * k));
+  c.getContext('2d')?.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close();
+  const type = f.type === 'image/gif' ? 'image/png' : f.type;
+  return new Promise((resolve) => c.toBlob((b) => resolve(b ?? f), type, 0.9));
+}
+
 export function Composer({ footer }: { footer?: ComponentChildren }) {
   const view = useSel(store, (s) => (s.active ? s.views[s.active] : undefined));
   const conn = useSel(store, (s) => s.conn);
   const focusN = useSel(store, (s) => s.focusComposer);
   const insert = useSel(store, (s) => s.insert);
   const imageMax = useSel(store, (s) => s.server?.imageMax ?? 5 * 1024 * 1024);
+  const maxImages = useSel(store, (s) => s.server?.maxImages ?? 4);
+  const restore = useSel(store, (s) => s.restore);
   const dirs = useSel(store, (s) => s.fs.dirs);
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
@@ -53,6 +86,15 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const [hIndex, setHIndex] = useState(-1);
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // the attachments as they are now (an await in addFiles must not count a stale list)
+  const attsRef = useRef<Attachment[]>([]);
+  attsRef.current = atts;
+
+  // a prompt the backend refused comes back into an empty box
+  useEffect(() => {
+    if (!restore) return;
+    setText((t) => (t.trim() ? t : restore.text));
+  }, [restore?.n]);
 
   const busy = view?.state === 'busy' || view?.state === 'starting';
 
@@ -101,11 +143,31 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     if (dir !== null && !store.get().fs.dirs[dir]) void loadDir(dir);
   }, [trigger?.kind, trigger?.query]);
 
+  // from two characters on, the whole workspace is searched too (after a pause in typing)
+  const [found, setFound] = useState<{ q: string; paths: string[]; error: string }>({ q: '', paths: [], error: '' });
+  const mentionQuery = trigger?.kind === 'mention' ? trigger.query : '';
+  useEffect(() => {
+    if (mentionQuery.length < 2) return;
+    let gone = false;
+    const t = setTimeout(() => {
+      fsFind(mentionQuery, 100).then(
+        (r) => !gone && setFound({ q: mentionQuery, paths: r.paths, error: '' }),
+        (e) => !gone && setFound({ q: mentionQuery, paths: [], error: e instanceof Error ? e.message : String(e) }),
+      );
+    }, 200);
+    return () => {
+      gone = true;
+      clearTimeout(t);
+    };
+  }, [mentionQuery]);
+
   const options = useMemo(() => {
     if (!trigger) return [];
     if (trigger.kind === 'slash') return rankCommands(commands, trigger.query).map((c) => ({ key: c.name, label: `/${c.name}`, hint: c.argumentHint, desc: c.description }));
-    return rankPaths(knownPaths(store.get()), trigger.query, 40).map((p) => ({ key: p, label: p, hint: '', desc: '' }));
-  }, [trigger, commands, dirs]);
+    const all = new Set(knownPaths(store.get()));
+    if (trigger.query.length >= 2) for (const p of found.paths) all.add(p);
+    return rankPaths([...all], trigger.query, 40).map((p) => ({ key: p, label: p, hint: '', desc: '' }));
+  }, [trigger, commands, dirs, found]);
 
   useEffect(() => setPick(0), [trigger?.kind, trigger?.query]);
 
@@ -127,14 +189,20 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     const images = files.filter((f) => IMAGE_TYPES.includes(f.type));
     const others = files.filter((f) => !IMAGE_TYPES.includes(f.type));
     for (const f of images) {
-      if (f.size > imageMax) {
-        toast(`${f.name || 'The image'} is over ${bytes(imageMax)}; images are sent to Claude up to that size.`, 'error');
-        continue;
+      if (attsRef.current.length >= maxImages) {
+        toast(`At most ${maxImages} images per prompt.`, 'error');
+        break;
       }
-      if (atts.length >= 10) break;
       try {
-        const data = await readBase64(f);
-        setAtts((a) => [...a, { id: attachId++, name: f.name || 'pasted image', size: f.size, url: URL.createObjectURL(f), block: { media_type: f.type, data } }]);
+        const blob = await scaled(f);
+        if (blob.size > imageMax) {
+          toast(`${f.name || 'The image'} is over ${bytes(imageMax)} even scaled down; images are sent to Claude up to that size.`, 'error');
+          continue;
+        }
+        const data = await readBase64(blob);
+        const a = { id: attachId++, name: f.name || 'pasted image', size: blob.size, url: URL.createObjectURL(blob), block: { media_type: blob.type || f.type, data } };
+        attsRef.current = [...attsRef.current, a];
+        setAtts((x) => [...x, a]);
       } catch {
         toast('That image could not be read.', 'error');
       }
@@ -205,7 +273,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     } else if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
       const cur = view?.mode ?? store.get().prefs.mode;
-      setMode(MODES[(MODES.indexOf(cur) + 1) % MODES.length]);
+      setMode(CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length]);
     } else if (e.key === 'ArrowUp' && (el.value === '' || hIndex >= 0) && history.length && el.selectionStart === 0) {
       e.preventDefault();
       const i = hIndex < 0 ? history.length - 1 : Math.max(0, hIndex - 1);
@@ -245,7 +313,10 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     >
       {trigger && options.length > 0 && (
         <div class="palette" role="listbox" aria-label={trigger.kind === 'slash' ? 'Commands' : 'Files'} data-testid="palette">
-          <div class="palette-head">{trigger.kind === 'slash' ? 'Commands, skills and plugin commands' : 'Files in /workspace'}</div>
+          <div class="palette-head">
+            {trigger.kind === 'slash' ? 'Commands, skills and plugin commands' : 'Files in /workspace'}
+            {trigger.kind === 'mention' && found.error && found.q === trigger.query && <span class="muted"> · search failed: {found.error}</span>}
+          </div>
           {options.map((o, i) => (
             <button
               key={o.key}

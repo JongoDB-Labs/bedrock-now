@@ -2,6 +2,7 @@
 // shapes of protocol.mjs. Everything here came from the sandbox, so every field is checked or capped and anything
 // unknown is dropped — never passed through. Costs are dropped too (the page asks LiteLLM through the portal).
 import { str, short, num, int, plain, idOr, uuidOr } from './validate.mjs';
+import { LIMITS } from './protocol.mjs';
 
 const TEXT = 200000, DELTA = 100000, RESULT_TEXT = 100000, LABEL = 200;
 
@@ -21,18 +22,29 @@ function resultText(content) {
 }
 
 // An Edit / Write / MultiEdit result's diff data (the SDK's tool_use_result): enough for a side-by-side view without
-// reading the file again. The original is left out above 256 KiB.
+// reading the file again. The original is left out above 256 KiB; the hunks stop at LIMITS.editHunkChars in all
+// (complete: false then, and whenever a hunk, a line or the hunk list was cut).
 export function editOf(r) {
   if (!r || typeof r !== 'object' || typeof r.filePath !== 'string' || !Array.isArray(r.structuredPatch)) return undefined;
   const hunks = [];
+  let left = LIMITS.editHunkChars, complete = r.structuredPatch.length <= 200;
   for (const h of r.structuredPatch.slice(0, 200)) {
-    if (!h || typeof h !== 'object' || !Array.isArray(h.lines)) continue;
+    if (!h || typeof h !== 'object' || !Array.isArray(h.lines)) { complete = false; continue; }
+    if (left <= 0) { complete = false; break; }
     const pos = (v) => int(v, 0, 1e9) ?? 0;
-    hunks.push({ oldStart: pos(h.oldStart), oldLines: pos(h.oldLines), newStart: pos(h.newStart), newLines: pos(h.newLines),
-      lines: h.lines.slice(0, 5000).map((l) => (typeof l === 'string' ? str(l, 4000) : '')) });
+    const lines = [];
+    if (h.lines.length > 5000) complete = false;
+    for (const l of h.lines.slice(0, 5000)) {
+      const t = typeof l === 'string' ? str(l, 4000) : '';
+      if (typeof l !== 'string' || t !== l) complete = false;
+      if (left - t.length < 0) { complete = false; break; }
+      left -= t.length + 1;
+      lines.push(t);
+    }
+    hunks.push({ oldStart: pos(h.oldStart), oldLines: pos(h.oldLines), newStart: pos(h.newStart), newLines: pos(h.newLines), lines });
   }
   const original = typeof r.originalFile === 'string' && r.originalFile.length <= 256 << 10 ? r.originalFile : null;
-  return { path: short(r.filePath, 4096), original, hunks };
+  return { path: short(r.filePath, 4096), original, hunks, complete };
 }
 
 function blocks(m, parent) {

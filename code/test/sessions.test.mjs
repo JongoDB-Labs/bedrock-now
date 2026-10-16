@@ -152,3 +152,95 @@ test('commands etc. need a running process; interrupt reaches the SDK', async ()
   assert.throws(() => s.need(), /no running process/);
   mgr.closeAll();
 });
+
+test('a session without a transcript is never --resumed: it starts with its id until its first prompt (I3)', async () => {
+  const { mgr, queries } = manager();
+  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  assert.equal(s.hasTranscript, false);
+  s.close();
+  mgr.open({ resume: s.id });   // reopened before any prompt (a page revived it)
+  assert.deepEqual([queries.at(-1).options.sessionId, queries.at(-1).options.resume], [s.id, undefined]);
+  s.prompt({ text: 'first' });
+  await tick();
+  assert.equal(s.hasTranscript, true);
+  s.close();
+  s.prompt({ text: 'second' });   // resumes: now there is a transcript
+  assert.deepEqual([queries.at(-1).options.sessionId, queries.at(-1).options.resume], [undefined, s.id]);
+  // resuming an id this backend does not know: Claude Code's transcript is assumed
+  const R = '3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8';
+  mgr.open({ resume: R });
+  assert.equal(queries.at(-1).options.resume, R);
+  // fork at a message: resume + fork + resumeSessionAt, a new id
+  const f = mgr.open({ resume: R, fork: true, at: '00000000-0000-4000-8000-000000000002' });
+  const o = queries.at(-1).options;
+  assert.deepEqual([o.resume, o.forkSession, o.sessionId, o.resumeSessionAt], [R, true, f.id, '00000000-0000-4000-8000-000000000002']);
+  assert.equal(mgr.get(f.id).hasTranscript, true);
+  mgr.closeAll();
+});
+
+test('epoch: every process of a session has its own (a page tells a restart from a stale count)', async () => {
+  const { mgr } = manager();
+  const s = mgr.get(mgr.open({}).id);
+  const e1 = s.epoch;
+  assert.match(e1, /^[0-9a-f]{8}$/);
+  s.close();
+  s.prompt({ text: 'again' });
+  assert.notEqual(s.epoch, e1);
+  assert.equal(s.ring.first, 1);
+  mgr.closeAll();
+});
+
+test('switches on a session without a process are kept for its next start; Claude Code\'s own mode changes are followed', async () => {
+  const { mgr, queries } = manager();
+  const s = mgr.get(mgr.open({ model: 'haiku' }).id);
+  s.close();
+  await s.setModel('sonnet'); await s.setMode('plan'); await s.setEffort('high');
+  assert.deepEqual([s.model, s.mode, s.effort], ['sonnet', 'plan', 'high']);
+  s.prompt({ text: 'hi' });
+  const o = queries.at(-1).options;
+  assert.deepEqual([o.model, o.permissionMode, o.effort], ['sonnet', 'plan', 'high']);
+  await tick();
+  s.prompt({ text: 'mode:acceptEdits' });   // e.g. a plan approved with "accept edits"
+  await tick();
+  assert.equal(s.mode, 'acceptEdits');
+  mgr.closeAll();
+});
+
+test('a new conversation (conversation_reset): after the turn the old process ends, a session for the new id takes over', async () => {
+  const resets = [], exists = [];
+  const { mgr, queries, events } = manager({ onReset: (a, b) => resets.push([a.id, b.id]), transcriptExists: async (id) => { exists.push(id); return false; } });
+  const s = mgr.get(mgr.open({ model: 'haiku', mode: 'acceptEdits', taskStop: true }).id);
+  const N = '00000000-0000-4000-8000-0000000000aa';
+  s.prompt({ text: `reset:${N}` });
+  await tick(60);
+  assert.deepEqual(resets, [[s.id, N]]);
+  assert.equal(s.open, false);
+  assert.ok(events.some(([id, , ev]) => id === s.id && ev.type === 'local' && /new session/.test(ev.text)));
+  const ns = mgr.get(N);
+  assert.deepEqual([ns.model, ns.mode, ns.taskStop, ns.open, ns.hasTranscript], ['haiku', 'acceptEdits', true, true, false]);
+  assert.deepEqual([queries.at(-1).options.sessionId, queries.at(-1).options.resume], [N, undefined]);
+  assert.deepEqual(exists, [N]);
+  assert.throws(() => { s.resetTo = N; s.prompt({ text: 'x' }); }, /new session/);
+  s.resetTo = null;
+  mgr.closeAll();
+});
+
+test('Claude Code\'s new command list is passed on (commands_changed)', async () => {
+  const reloads = [];
+  const { mgr } = manager({ onReload: (s, r) => reloads.push(r) });
+  const s = mgr.get(mgr.open({}).id);
+  s.prompt({ text: 'cmds' });
+  await tick();
+  assert.deepEqual(reloads, [{ commands: [{ name: 'new-skill', description: 'found' }] }]);
+  mgr.closeAll();
+});
+
+test('stderr: at most 20 lines per session every 10 s in the log, then how many were left out', () => {
+  const lines = [];
+  const { mgr } = manager({ log: (l) => lines.push(l) });
+  for (let i = 0; i < 50; i++) mgr.logStderr('s1', `line ${i}`, 1000);
+  assert.equal(lines.length, 20);
+  mgr.logStderr('s1', 'later', 20000);
+  assert.deepEqual(lines.slice(-2), ['(30 more stderr lines of s1 not logged)', 'later']);
+  mgr.closeAll();
+});

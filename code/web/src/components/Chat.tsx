@@ -1,10 +1,13 @@
-// The Claude pane: header (session, state), messages, waiting permission prompts, background tasks, composer.
+// The Claude pane: header (session, state), banners, messages, waiting permission prompts, the to-do list, background
+// tasks, composer.
 import type { ComponentChildren } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, activeView, stopTask, newSession } from '../app';
+import { overBudget } from '../api';
 import { runningTasks } from '../session';
-import { duration, label } from '../text';
+import { latestTodos } from '../transcript';
+import { duration, label, money } from '../text';
 import { MessageList } from './MessageList';
 import { PermissionCard } from './PermissionCard';
 import { Composer } from './Composer';
@@ -93,15 +96,88 @@ export function ChatHeader({ actions }: { actions?: ComponentChildren }) {
   );
 }
 
+/** The code host stopped letting this browser in (the unlock's 12 hours, Sign out, a new password). */
+function UnlockExpired() {
+  const locked = useSel(store, (s) => s.conn === 'locked');
+  if (!locked) return null;
+  return (
+    <div class="banner warn" role="alert" data-testid="unlock-expired">
+      <Icon name="alert" size={15} />
+      <span>Your Code-page unlock expired (or you signed out). Sessions keep running; reload to unlock with the portal password.</span>
+      <span class="banner-actions">
+        <a class="btn small" href={location.pathname || '/'}>
+          Reload
+        </a>
+      </span>
+    </div>
+  );
+}
+
+/** The terminal key's budget is spent: LiteLLM refuses the next request until it resets or goes up. */
+function BudgetBanner() {
+  const budget = useSel(store, (s) => s.budget);
+  const hit = useSel(store, (s) => s.budgetHit);
+  if (!hit && !overBudget(budget)) return null;
+  const when = budget?.resetAt ? new Date(budget.resetAt).toLocaleDateString() : '';
+  const figures = budget && budget.max !== null ? `: ${money(budget.spend)} of ${money(budget.max)}` : '';
+  return (
+    <div class="banner warn" role="alert" data-testid="budget-banner">
+      <Icon name="alert" size={15} />
+      <span>
+        The Code page's key (claude-code-terminal) reached its budget{figures}
+        {when ? `, until ${when}` : ''}. Raise BUDGET_TERMINAL in Settings (from the computer running bedrock-now), or wait for the reset.
+      </span>
+    </div>
+  );
+}
+
+/** Claude's latest to-do list, pinned above the prompt box while some of it is left (collapsed to one line). */
+function TodoPanel() {
+  const v = useSel(store, (s) => activeView(s));
+  const todos = useMemo(() => (v ? latestTodos(v.items) : null), [v?.items]);
+  const [open, setOpen] = useState(false);
+  if (!todos || !todos.length) return null;
+  const done = todos.filter((t) => t.status === 'completed').length;
+  if (done === todos.length && v?.state !== 'busy') return null;
+  const now = todos.find((t) => t.status === 'in_progress');
+  return (
+    <div class={`todos${open ? ' open' : ''}`} data-testid="todo-panel">
+      <button type="button" class="todos-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Icon name="list" size={14} />
+        <span class="todos-count">
+          {done}/{todos.length}
+        </span>
+        <span class="todos-now">{now ? now.activeForm || now.content : done === todos.length ? 'All done' : 'To do'}</span>
+        <Icon name="chevronDown" size={13} class="todos-chev" />
+      </button>
+      {open && (
+        <ul class="todos-list">
+          {todos.map((t, i) => (
+            <li key={i} class={`todo todo-${t.status}`}>
+              <span class="todo-box" aria-label={t.status.replace('_', ' ')}>
+                {t.status === 'completed' ? <Icon name="check" size={12} /> : t.status === 'in_progress' ? <Icon name="play" size={10} /> : null}
+              </span>
+              <span>{t.content}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function ChatPane({ composerFooter, header = true, headerActions }: { composerFooter?: ComponentChildren; header?: boolean; headerActions?: ComponentChildren }) {
   const v = useSel(store, (s) => activeView(s));
   return (
     <section class="chat" aria-label="Claude" data-testid="chat">
       {header && <ChatHeader actions={headerActions} />}
+      <UnlockExpired />
+      <BudgetBanner />
       {v?.gap && <div class="banner subtle">Reconnected: reloading what was missed…</div>}
       <MessageList view={v} />
       <div class="chat-foot">
         <Permissions />
+        <TodoPanel />
         <TaskList />
         <Composer footer={composerFooter} />
       </div>

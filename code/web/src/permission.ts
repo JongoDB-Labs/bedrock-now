@@ -1,4 +1,4 @@
-// What a permission prompt says. The SDK's `title` is empty for headless sessions (design §11), so the page builds
+// What a permission prompt says. The SDK's `title` is empty for headless sessions, so the page builds
 // the sentence from the tool and its input itself, and previews what "Always allow" would write from the
 // suggestions. All of it is untrusted text (the sandbox chooses the tool name and input); it is only ever shown as
 // text, inside the card.
@@ -78,13 +78,18 @@ export function sentence(tool: string, input: unknown): Sentence {
   }
 }
 
-const DESTINATIONS: Record<string, string> = {
+export const DESTINATIONS: Record<string, string> = {
   session: 'for this session',
-  localSettings: 'in this workspace (.claude/settings.local.json)',
-  projectSettings: 'in this workspace, shared (.claude/settings.json)',
-  userSettings: 'for every workspace (~/.claude/settings.json)',
+  localSettings: "in this workspace's .claude/settings.local.json",
+  projectSettings: "in this workspace's .claude/settings.json",
+  userSettings: "in the sandbox's Claude Code settings (every session there)",
   cliArg: 'for this session',
 };
+
+/** Where a rule goes, in words ('' when unknown). */
+export function destinationText(d: string): string {
+  return DESTINATIONS[d] ?? (d ? `(${d})` : '');
+}
 
 /** Human-readable preview of what "Always allow" would do, one line per suggestion. Empty when there is nothing. */
 export function rulePreview(suggestions: Suggestion[]): string[] {

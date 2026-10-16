@@ -1,10 +1,10 @@
-// The only module that knows the wire format (design §5): REST on the code host, the portal's /.bn/* endpoints,
-// and the /ws WebSocket. Everything that arrives is untrusted (the sandbox can shape most of it): each field is
-// type-checked, ids are validated, strings capped, unknown shapes dropped. If the backend's details differ from §5,
-// adjust them here; the rest of the page only sees the normalised types in types.ts.
+// The only module that knows the wire format (its reference: code/server/protocol.mjs): REST on the code host, the
+// portal's /.bn/* endpoints, and the /ws WebSocket. Everything that arrives is untrusted (the sandbox can shape most
+// of it): each field is type-checked, ids are validated, strings capped, unknown shapes dropped. If the backend's
+// details change, adjust them here; the rest of the page only sees the normalised types in types.ts.
 //
-// Wire conventions assumed (beyond §5's names): every WebSocket message is a JSON object whose kind is in `type`
-// (`t` is accepted too, as in the prototype); event payloads likewise (`ev.type`).
+// Every WebSocket message is a JSON object whose kind is in `type` (`t` is accepted too, as in the prototype); event
+// payloads likewise (`ev.type`).
 
 import {
   cap,
@@ -22,6 +22,8 @@ import type {
   AvailablePlugin,
   BnModel,
   Catalog,
+  KeyBudget,
+  RuleLine,
   CliModel,
   Command,
   ContextUsage,
@@ -58,7 +60,7 @@ const mode = (v: unknown): Mode | null => (MODES.includes(v as Mode) ? (v as Mod
 const STATES: SessionState[] = ['starting', 'busy', 'idle', 'ended', 'error', 'closed'];
 const sessionState = (v: unknown): SessionState | null => (STATES.includes(v as SessionState) ? (v as SessionState) : null);
 const optId = (v: unknown): string | null => (isId(v) ? v : null);
-/** What the CLI accepts for --model (design §3.4). */
+/** What the CLI accepts for --model (bn-coded's allowlist, terminal/bin/bn-coded.mjs). */
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
 
 /** Time from a number (ms) or an ISO string; 0 when neither. */
@@ -71,11 +73,23 @@ function time(v: unknown): number {
   return 0;
 }
 
+/** A size budget for boundedJson: `n` characters in all, `str` per string; `cut` is set when anything was left out. */
+export interface Budget {
+  n: number;
+  str?: number;
+  cut?: boolean;
+}
+
 /** A JSON value re-built with bounded size: deep objects are cut, strings capped. Never executes anything. */
-export function boundedJson(v: unknown, budget = { n: LIMITS.json }, depth = 0): unknown {
-  if (budget.n <= 0) return '…';
+export function boundedJson(v: unknown, budget: Budget = { n: LIMITS.json }, depth = 0): unknown {
+  if (budget.n <= 0) {
+    budget.cut = true;
+    return '…';
+  }
   if (typeof v === 'string') {
-    const s = cap(v, Math.max(0, Math.min(budget.n, LIMITS.output)));
+    const max = Math.max(0, Math.min(budget.n, budget.str ?? LIMITS.output));
+    if (v.length > max) budget.cut = true;
+    const s = cap(v, max);
     budget.n -= s.length;
     return s;
   }
@@ -83,18 +97,43 @@ export function boundedJson(v: unknown, budget = { n: LIMITS.json }, depth = 0):
     budget.n -= 8;
     return v;
   }
-  if (depth > 12) return '…';
-  if (Array.isArray(v)) return v.slice(0, 500).map((x) => boundedJson(x, budget, depth + 1));
+  if (depth > 12) {
+    budget.cut = true;
+    return '…';
+  }
+  if (Array.isArray(v)) {
+    if (v.length > 500) budget.cut = true;
+    return v.slice(0, 500).map((x) => boundedJson(x, budget, depth + 1));
+  }
   const o = obj(v);
-  if (!o) return null;
+  if (!o) {
+    if (v !== undefined) budget.cut = true;
+    return null;
+  }
   const out: Obj = {};
-  for (const k of Object.keys(o).slice(0, 200)) {
-    if (budget.n <= 0) break;
+  const keys = Object.keys(o);
+  if (keys.length > 200) budget.cut = true;
+  for (const k of keys.slice(0, 200)) {
+    if (budget.n <= 0) {
+      budget.cut = true;
+      break;
+    }
     if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    if (k.length > 200) budget.cut = true;
     budget.n -= k.length;
     out[cap(k, 200)] = boundedJson(o[k], budget, depth + 1);
   }
   return out;
+}
+
+/** The caps both sides apply to a permission prompt's input (protocol.mjs LIMITS.permissionShownChars / …String). */
+export const PERMISSION_SHOWN_CHARS = 262_144;
+export const PERMISSION_SHOWN_STRING = 131_072;
+/** A permission prompt's input for display, and whether all of it is there. */
+export function permissionInput(v: unknown): { input: unknown; complete: boolean } {
+  const budget: Budget = { n: PERMISSION_SHOWN_CHARS, str: PERMISSION_SHOWN_STRING };
+  const input = boundedJson(v, budget);
+  return { input, complete: !budget.cut };
 }
 
 // ---------------------------------------------------------------- events
@@ -124,7 +163,7 @@ function normEdit(v: unknown): EditInfo | null {
   const path = cleanPath(o.path ?? o.filePath);
   if (path === null || path === '') return null;
   const original = typeof (o.original ?? o.originalFile) === 'string' ? cap(o.original ?? o.originalFile, 4_000_000) : null;
-  return { path, original, hunks: normHunks(o.hunks ?? o.structuredPatch) };
+  return { path, original, hunks: normHunks(o.hunks ?? o.structuredPatch), complete: o.complete !== false };
 }
 
 function normInit(o: Obj): InitInfo {
@@ -320,17 +359,42 @@ function absUrl(v: unknown): string {
   }
 }
 
+/** A process's epoch: a short id the backend gives each Claude Code process of a session. */
+function epochOf(v: unknown): string | null {
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(v) ? v : typeof v === 'number' && Number.isInteger(v) && v >= 0 ? String(v) : null;
+}
+
+function normRules(v: unknown): RuleLine[] {
+  return arr(v, 50)
+    .map((r): RuleLine | null => {
+      if (typeof r === 'string') return r ? { text: label(r, 2000), destination: '' } : null;
+      const x = obj(r);
+      return x && typeof x.text === 'string' && x.text ? { text: label(x.text, 2000), destination: label(x.destination, 40) } : null;
+    })
+    .filter((r): r is RuleLine => r !== null);
+}
+
 function normPermission(o: Obj): PermissionReq | null {
   const id = o.id;
   const session = o.session;
   if (!isId(id) || !isUuid(session)) return null;
+  // the same caps as the backend's: anything cut on either side means the prompt is not shown in full
+  const shown = permissionInput(o.input);
+  const noAlways = o.noAlways === true;
+  const hasRules = Array.isArray(o.rules) && o.rules.some((r) => obj(r));
   return {
     id,
     session: session.toLowerCase(),
     tool: label(o.tool ?? o.toolName, LIMITS.name) || 'tool',
-    input: boundedJson(o.input),
+    input: shown.input,
+    complete: o.complete !== false && shown.complete,
     reason: label(o.reason ?? o.decisionReason, 500),
-    suggestions: normSuggestions(o.suggestions),
+    rules: noAlways ? [] : normRules(o.rules),
+    projectRules: noAlways ? [] : normRules(o.projectRules),
+    defaultNo: o.defaultNo === true,
+    noAlways,
+    // an older backend sends the CLI's suggestions (and `rules` as plain strings): kept for the preview only
+    suggestions: hasRules || noAlways ? [] : normSuggestions(o.suggestions),
     at: Date.now(),
   };
 }
@@ -352,7 +416,7 @@ export function normServerMsg(raw: string): ServerMsg | null {
       const ev = normEvent(o.ev);
       const seq = num(o.seq, NaN);
       if (!session || !ev || !Number.isInteger(seq) || seq < 0) return null;
-      return { kind: 'event', session, seq, ev };
+      return { kind: 'event', session, seq, epoch: epochOf(o.epoch), ev };
     }
     case 'permission': {
       const req = normPermission(o);
@@ -364,12 +428,29 @@ export function normServerMsg(raw: string): ServerMsg | null {
       const from = num(o.from, NaN);
       const last = num(o.last, NaN);
       if (!session || !Number.isInteger(from) || !Number.isInteger(last) || from < 0 || last < 0) return null;
-      return { kind: 'attached', session, from, last, gap: o.gap === true };
+      return { kind: 'attached', session, from, last, gap: o.gap === true, epoch: epochOf(o.epoch) };
     }
     case 'session_state': {
       const state = sessionState(o.state);
-      return session && state ? { kind: 'session_state', session, state } : null;
+      return session && state
+        ? { kind: 'session_state', session, state, model: typeof o.model === 'string' && MODEL_ID.test(o.model) ? o.model : null, mode: mode(o.mode) }
+        : null;
     }
+    case 'reset': {
+      const next = o.new_session ?? o.newSession;
+      return session && isUuid(next) && next.toLowerCase() !== session ? { kind: 'reset', session, next: next.toLowerCase() } : null;
+    }
+    case 'reply': {
+      const req = typeof o.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.req) ? o.req : null;
+      return req ? { kind: 'reply', req, ok: o.ok === true, error: label(o.error, LIMITS.short), data: boundedJson(o.data) } : null;
+    }
+    case 'hello': {
+      const limits = obj(o.limits) ?? {};
+      const mi = nonneg(limits.maxImages);
+      return { kind: 'hello', pending: Math.floor(nonneg(o.pending) ?? 0), maxImages: mi === null ? null : Math.floor(mi) };
+    }
+    case 'pending':
+      return { kind: 'pending', count: Math.floor(nonneg(o.count) ?? 0) };
     case 'commands':
       return { kind: 'commands', session, commands: normCommands(o.commands) };
     case 'models':
@@ -389,7 +470,7 @@ export function normServerMsg(raw: string): ServerMsg | null {
       return usage ? { kind: 'context', session, usage } : null;
     }
     case 'error':
-      return { kind: 'error', session, message: label(o.message, LIMITS.short) || 'error' };
+      return { kind: 'error', session, message: label(o.message, LIMITS.short) || 'error', req: typeof o.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.req) ? o.req : null };
     default:
       return null;
   }
@@ -481,6 +562,8 @@ export async function getState(): Promise<ServerState> {
     maxSessions: nonneg(limits.sessions ?? limits.maxSessions),
     uploadMax: nonneg(limits.upload ?? limits.uploadBytes) ?? 25 * 1024 * 1024,
     imageMax: nonneg(limits.image ?? limits.imageBytes) ?? 5 * 1024 * 1024,
+    maxImages: Math.floor(nonneg(limits.maxImages) ?? 4),
+    pending: Math.floor(nonneg(o.pending) ?? 0),
     terminalUrl: httpUrl(o.terminal_url ?? o.terminalUrl),
     portalOrigin: httpUrl(o.portal_origin ?? o.portalOrigin),
   };
@@ -510,17 +593,23 @@ export async function listSessions(query = ''): Promise<SessionInfo[]> {
 export interface History {
   events: Ev[];
   total: number | null;
+  /** the first SDK message of this window (> 0: earlier ones can be loaded) */
   offset: number;
+  /** only the transcript's last part could be read (the backend's 3 MiB tail) */
+  truncated: boolean;
 }
-export async function getMessages(id: string, offset = 0, limit = 2000): Promise<History> {
+/** A transcript window: `tail` = its last N messages (what opening a session shows), else offset/limit. */
+export async function getMessages(id: string, opts: { tail?: number; offset?: number; limit?: number } = {}): Promise<History> {
   if (!isUuid(id)) throw new ApiError(400, 'bad session id');
-  const o = await request('GET', `/api/sessions/${id}/messages` + q({ offset, limit }));
+  const params = opts.tail ? { tail: opts.tail } : { offset: opts.offset ?? 0, limit: opts.limit ?? 2000 };
+  const o = await request('GET', `/api/sessions/${id}/messages` + q(params));
   return {
     events: arr(o.messages ?? o.events ?? o.items, 5000)
       .map(normEvent)
       .filter((e): e is Ev => e !== null),
     total: nonneg(o.total),
-    offset: nonneg(o.offset) ?? offset,
+    offset: Math.floor(nonneg(o.offset) ?? opts.offset ?? 0),
+    truncated: o.truncated === true,
   };
 }
 
@@ -541,6 +630,8 @@ export async function openSession(opts: OpenOptions): Promise<{ id: string; exis
   if (opts.resume) body.resume = opts.resume;
   if (opts.fork) body.fork = true;
   if (opts.at) body.at = opts.at;
+  // this page has a Stop per background task, so an interrupt spares them (the backend's taskStop)
+  body.taskStop = true;
   const o = await request('POST', '/api/sessions', body);
   if (!isUuid(o.id)) throw new ApiError(502, 'The server answered without a valid session id.');
   return { id: o.id.toLowerCase(), existing: o.existing === true };
@@ -556,10 +647,11 @@ export async function renameSession(id: string, title: string): Promise<void> {
 
 // ---------------------------------------------------------------- files
 
-export async function fsList(path: string): Promise<FsEntry[]> {
+/** A folder's entries; `truncated`: it has more than the backend lists. */
+export async function fsList(path: string): Promise<{ entries: FsEntry[]; truncated: boolean }> {
   const o = await request('GET', '/api/fs' + q({ path: path || '.' }));
   const TYPES = ['dir', 'file', 'symlink', 'other'] as const;
-  return arr(o.entries ?? o.items, 5000)
+  const entries = arr(o.entries ?? o.items, 5000)
     .map((e): FsEntry | null => {
       const x = obj(e);
       const name = cleanName(x?.name);
@@ -568,6 +660,7 @@ export async function fsList(path: string): Promise<FsEntry[]> {
       return { name, type, size: nonneg(x.size), mtimeMs: nonneg(x.mtimeMs) };
     })
     .filter((e): e is FsEntry => e !== null);
+  return { entries, truncated: o.truncated === true };
 }
 
 export async function fsRead(path: string): Promise<FileData> {
@@ -598,6 +691,85 @@ export async function fsWrite(path: string, text: string, ifMtimeMs: number | nu
 }
 
 /** Raw-body upload; the name travels percent-encoded in X-Filename (header values must be Latin-1). */
+/** The @ picker over the whole workspace: relative paths containing `text` (folders end in "/"). */
+export async function fsFind(text: string, limit = 100): Promise<{ paths: string[]; truncated: boolean }> {
+  const o = await request('GET', '/api/fs/find' + q({ q: text.slice(0, 200), limit: Math.max(1, Math.min(200, Math.floor(limit))) }));
+  const paths = arr(o.paths, 200)
+    .map((p) => {
+      if (typeof p !== 'string') return null;
+      const dir = p.endsWith('/');
+      const c = cleanPath(dir ? p.slice(0, -1) : p);
+      return c ? (dir ? `${c}/` : c) : null;
+    })
+    .filter((p): p is string => p !== null);
+  return { paths, truncated: o.truncated === true };
+}
+
+// ---------------------------------------------------------------- memory (CLAUDE.md)
+
+export type MemoryScope = 'project' | 'user';
+export interface Memory {
+  scope: MemoryScope;
+  /** where it is, as the backend names it (/workspace/CLAUDE.md, ~/.claude/CLAUDE.md) */
+  path: string;
+  exists: boolean;
+  text: string;
+  size: number | null;
+  mtimeMs: number | null;
+  /** larger than the editor gets: read-only here */
+  truncated: boolean;
+}
+export async function getMemory(scope: MemoryScope): Promise<Memory> {
+  const o = await request('GET', '/api/memory' + q({ scope }));
+  return {
+    scope,
+    path: label(o.path, 300) || (scope === 'project' ? '/workspace/CLAUDE.md' : '~/.claude/CLAUDE.md'),
+    exists: o.exists === true,
+    text: cap(o.text, 2 << 20),
+    size: nonneg(o.size),
+    mtimeMs: nonneg(o.mtimeMs),
+    truncated: o.truncated === true,
+  };
+}
+/** Saves a CLAUDE.md; `ifMtimeMs` (the one you read): refused when it changed meanwhile ({conflict}). */
+export async function putMemory(scope: MemoryScope, text: string, ifMtimeMs: number | null): Promise<WriteResult> {
+  const body: Obj = { text };
+  if (ifMtimeMs !== null) body.ifMtimeMs = ifMtimeMs;
+  try {
+    const o = await request('PUT', '/api/memory' + q({ scope }), body);
+    return { ok: true, mtimeMs: nonneg(o.mtimeMs) };
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 409 || e.status === 412)) return { ok: false, conflict: true, mtimeMs: nonneg(e.body?.mtimeMs) };
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------- file checkpoints
+
+/** What rewind_files would put back (dryRun) or did: the files Claude changed since a prompt of yours. */
+export interface Rewind {
+  canRewind: boolean;
+  error: string;
+  files: string[];
+  insertions: number;
+  deletions: number;
+  skippedLinks: number;
+}
+export function normRewind(v: unknown): Rewind {
+  const o = obj(v) ?? {};
+  const n = (x: unknown) => Math.floor(nonneg(x) ?? 0);
+  return {
+    canRewind: o.canRewind === true,
+    error: label(o.error, 500),
+    files: arr(o.filesChanged, 200)
+      .filter((p): p is string => typeof p === 'string' && p !== '')
+      .map((p) => cleanPath(p) ?? label(p, 500)),
+    insertions: n(o.insertions),
+    deletions: n(o.deletions),
+    skippedLinks: n(o.skippedLinks),
+  };
+}
+
 export async function fsUpload(dir: string, file: File): Promise<string> {
   const o = await request('POST', '/api/fs/upload' + q({ dir: dir || '.' }), file, {
     'X-Filename': encodeURIComponent(file.name.slice(0, 255)),
@@ -662,8 +834,9 @@ function normAvailable(v: unknown): AvailablePlugin | null {
 export function normOutcome(v: unknown): Outcome {
   const x = obj(v) ?? {};
   const c = obj(x.needs_confirmation);
+  // only a command shown whole can be accepted (a cut one is not what would run)
   const confirm =
-    c && typeof c.command === 'string' && typeof c.sha256 === 'string' && SHA256.test(c.sha256)
+    c && typeof c.command === 'string' && c.command.length <= 8000 && typeof c.sha256 === 'string' && SHA256.test(c.sha256)
       ? {
           kind: label(c.kind, 40),
           plugin: typeof c.plugin === 'string' && PLUGIN_ID.test(c.plugin) ? c.plugin : null,
@@ -775,10 +948,10 @@ export async function getModels(): Promise<BnModels> {
   return { models, aliases, defaultModel: typeof o.default === 'string' ? label(o.default, 128) : null };
 }
 
-export async function getSpend(session: string): Promise<SpendRow[]> {
-  if (!isUuid(session)) return [];
+export async function getSpend(session: string): Promise<{ rows: SpendRow[]; key: KeyBudget | null }> {
+  if (!isUuid(session)) return { rows: [], key: null };
   const o = await request('GET', '/.bn/spend' + q({ session }));
-  return arr(o.rows ?? o.items, 5000)
+  const rows = arr(o.rows ?? o.items, 5000)
     .map((r): SpendRow | null => {
       const x = obj(r);
       if (!x) return null;
@@ -788,18 +961,27 @@ export async function getSpend(session: string): Promise<SpendRow[]> {
       return { start, model: label(x.model, 128), spend, tokens: nonneg(x.tokens ?? x.total_tokens) ?? 0 };
     })
     .filter((r): r is SpendRow => r !== null);
+  const k = obj(o.key);
+  const key = k ? { spend: nonneg(k.spend), max: nonneg(k.max_budget ?? k.maxBudget), resetAt: time(k.reset_at ?? k.resetAt) || null } : null;
+  return { rows, key };
+}
+
+/** The key is spent: its budget reached (the next request is refused until it resets or the budget goes up). */
+export function overBudget(k: KeyBudget | null): boolean {
+  return !!k && k.max !== null && k.max > 0 && k.spend !== null && k.spend >= k.max;
 }
 
 // ---------------------------------------------------------------- WebSocket
 
 export type ClientMsg =
-  | { type: 'attach'; session: string; since: number }
-  | { type: 'prompt'; session: string; text: string; images: ImageBlock[]; uuid: string }
+  | { type: 'attach'; session: string; since: number; epoch?: string }
+  | { type: 'prompt'; session: string; text: string; images: ImageBlock[]; uuid: string; req: string }
+  | { type: 'rewind_files'; session: string; message: string; dryRun: boolean; req: string }
   | { type: 'interrupt'; session: string }
   | { type: 'set_model'; session: string; model: string }
   | { type: 'set_mode'; session: string; mode: Mode }
   | { type: 'set_effort'; session: string; effort: string | null }
-  | { type: 'permission'; id: string; session: string; decision: 'once' | 'always' | 'deny'; message?: string }
+  | { type: 'permission'; id: string; session: string; decision: Decision; message?: string; mode?: 'default' | 'acceptEdits' }
   | { type: 'permission'; id: string; session: string; decision: 'answer'; answers: Record<string, string> }
   | { type: 'commands'; session: string }
   | { type: 'models'; session: string }
@@ -810,13 +992,33 @@ export type ClientMsg =
   | { type: 'mcp_reconnect'; session: string; server: string }
   | { type: 'mcp_toggle'; session: string; server: string; enabled: boolean };
 
-export type ConnStatus = 'connecting' | 'open' | 'closed';
+/** A permission answer: once (ExitPlanMode: with the mode to go on in), always (sandbox-wide or this session),
+ *  always_project (into this workspace's .claude settings), deny. */
+export type Decision = 'once' | 'always' | 'always_project' | 'deny';
+
+/** locked: the code host refused us (the unlock or the sign-in expired): nothing reconnects until a reload */
+export type ConnStatus = 'connecting' | 'open' | 'closed' | 'locked';
 
 export interface SocketHandlers {
   onMessage(m: ServerMsg): void;
   onStatus(s: ConnStatus, retryAt: number | null): void;
   /** Called on every (re)open: the caller re-attaches its sessions. */
   onOpen(): void;
+}
+
+/** Close codes the backend uses: re-attach at once (it dropped a page that fell behind; a connection's age limit). */
+export const CLOSE_REATTACH = 4008;
+export const CLOSE_AGE = 4009;
+
+/** Is the code host refusing this browser (the unlock or the portal session expired)? Asks without following a
+ *  redirect: Caddy answers the unlock form (401) or a redirect to the sign-in. */
+export async function locked(): Promise<boolean> {
+  try {
+    const r = await fetch('/api/state', { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'application/json' } });
+    return r.type === 'opaqueredirect' || r.status === 401 || r.status === 403 || (r.status >= 300 && r.status < 400);
+  } catch {
+    return false;
+  }
 }
 
 /** Reconnecting WebSocket: exponential backoff with jitter (0.5 s → 15 s), messages queued while closed. */
@@ -826,6 +1028,8 @@ export class Socket {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private queue: ClientMsg[] = [];
   private stopped = false;
+  /** connections in a row that closed before they opened (a refused upgrade looks like this) */
+  private refused = 0;
 
   constructor(private h: SocketHandlers) {}
 
@@ -880,8 +1084,11 @@ export class Socket {
       return;
     }
     this.ws = ws;
+    let opened = false;
     ws.onopen = () => {
+      opened = true;
       this.attempts = 0;
+      this.refused = 0;
       this.h.onStatus('open', null);
       this.h.onOpen();
       const pending = this.queue.splice(0);
@@ -892,10 +1099,27 @@ export class Socket {
       const m = normServerMsg(e.data);
       if (m) this.h.onMessage(m);
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (this.ws !== ws) return;
       this.ws = null;
-      if (!this.stopped) this.schedule();
+      if (this.stopped) return;
+      if (e.code === CLOSE_REATTACH || e.code === CLOSE_AGE) {
+        // the backend let go of this page on purpose: come straight back (re-attach with since/epoch)
+        this.attempts = 0;
+        this.open();
+        return;
+      }
+      if (!opened && ++this.refused >= 2) {
+        void locked().then((yes) => {
+          if (this.stopped) return;
+          if (yes) {
+            this.stopped = true;
+            this.h.onStatus('locked', null);
+          } else this.schedule();
+        });
+        return;
+      }
+      this.schedule();
     };
     ws.onerror = () => {
       /* onclose follows */

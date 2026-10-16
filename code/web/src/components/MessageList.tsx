@@ -3,10 +3,11 @@
 // notices. Sticks to the bottom while you are at the bottom.
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { Item, SessionView } from '../session';
+import type { Item, Queued, SessionView } from '../session';
 import { shownCost, turnCosts } from '../spend';
 import { duration, money, tokens } from '../text';
-import { sendPrompt } from '../app';
+import { forkFrom, loadEarlier, rewindCancel, rewindConfirm, rewindPreview, sendPrompt, store } from '../app';
+import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
 import { Icon, Spinner } from './icons';
@@ -14,9 +15,82 @@ import { memo } from './ui';
 
 const PAGE = 300;
 
-const UserMsg = memo(function UserMsg({ it }: { it: Extract<Item, { t: 'user' }> }) {
+/** "Restore files to here": what a dry run found, and Restore. */
+function RewindPanel() {
+  const rw = useSel(store, (s) => s.rewind);
+  if (!rw) return null;
+  const r = rw.result;
+  const nothing = rw.phase === 'ready' && (!r || !r.canRewind || !r.files.length);
+  return (
+    <div class="rewind" role="group" aria-label="Restore files" data-testid="rewind-preview">
+      {rw.phase === 'checking' ? (
+        <div class="rewind-line">
+          <Spinner size={12} /> Checking what Claude changed since this prompt…
+        </div>
+      ) : nothing ? (
+        <div class="rewind-line">
+          Nothing to restore{rw.error || r?.error ? `: ${rw.error || r?.error}` : r && !r.canRewind ? ' (no checkpoint for this prompt)' : ' — no file changed since this prompt.'}
+        </div>
+      ) : (
+        <>
+          <div class="rewind-line">
+            Put back {r?.files.length} file{r?.files.length === 1 ? '' : 's'} as they were before this prompt{' '}
+            <span class="add">+{r?.insertions}</span> <span class="del">−{r?.deletions}</span>
+            {r && r.skippedLinks > 0 ? <span class="muted"> ({r.skippedLinks} links left alone)</span> : null}
+          </div>
+          <ul class="rewind-files">
+            {r?.files.map((f) => (
+              <li key={f}>
+                <code>{f}</code>
+              </li>
+            ))}
+          </ul>
+          {rw.error && <div class="rewind-line err">{rw.error}</div>}
+          <div class="muted small">Only files Claude changed with its edit tools; the conversation stays as it is.</div>
+        </>
+      )}
+      <div class="rewind-buttons">
+        <button type="button" class="btn small ghost" onClick={rewindCancel}>
+          {nothing ? 'Close' : 'Cancel'}
+        </button>
+        {!nothing && rw.phase !== 'checking' && (
+          <button type="button" class="btn small danger" disabled={rw.phase === 'restoring'} onClick={() => void rewindConfirm()} data-testid="rewind-confirm">
+            {rw.phase === 'restoring' ? 'Restoring…' : 'Restore'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 'user' }>; session: string }) {
+  const rewinding = useSel(store, (s) => !!it.uuid && s.rewind?.message === it.uuid);
   return (
     <div class={`msg-user${it.queued ? ' queued' : ''}`} data-testid="msg-user">
+      {it.uuid && (
+        <span class="msg-actions">
+          <button
+            type="button"
+            class="msg-rewind icon-btn tiny"
+            title="Restore files to here: put back what Claude changed since this prompt"
+            aria-label="Restore checkpoint"
+            onClick={() => void rewindPreview(session, it.uuid as string)}
+            data-testid="msg-rewind"
+          >
+            <Icon name="history" size={13} />
+          </button>
+          <button
+            type="button"
+            class="msg-fork icon-btn tiny"
+            title="Fork from here: a new session with the conversation up to this prompt"
+            aria-label="Fork from here"
+            onClick={() => void forkFrom(session, it.uuid as string)}
+            data-testid="msg-fork"
+          >
+            <Icon name="fork" size={13} />
+          </button>
+        </span>
+      )}
       <div class="msg-user-text">{it.text}</div>
       {(it.images > 0 || it.queued) && (
         <div class="msg-user-meta">
@@ -28,17 +102,63 @@ const UserMsg = memo(function UserMsg({ it }: { it: Extract<Item, { t: 'user' }>
           {it.queued && <span>queued — sent when Claude finishes</span>}
         </div>
       )}
+      {rewinding && <RewindPanel />}
     </div>
   );
 });
 
+/** While an answer streams, its markdown is laid out at most once a frame (and less often once it is long):
+ *  re-reading the whole text for every delta would grow with its square. */
+function useStreamText(text: string, streaming: boolean): string {
+  const [shown, setShown] = useState(text);
+  const last = useRef(0);
+  useEffect(() => {
+    if (!streaming) {
+      setShown(text);
+      return;
+    }
+    const wait = text.length > 20_000 ? 250 : text.length > 4000 ? 80 : 0;
+    const left = last.current + wait - Date.now();
+    let raf = 0;
+    const t = setTimeout(() => {
+      raf = requestAnimationFrame(() => {
+        last.current = Date.now();
+        setShown(text);
+      });
+    }, Math.max(0, left));
+    return () => {
+      clearTimeout(t);
+      cancelAnimationFrame(raf);
+    };
+  }, [text, streaming]);
+  return streaming ? shown : text;
+}
+
 const Assistant = memo(function Assistant({ it }: { it: Extract<Item, { t: 'assistant' }> }) {
+  const text = useStreamText(it.text, it.streaming);
   return (
     <div class={`msg-claude${it.streaming ? ' streaming' : ''}`} data-testid="msg-claude">
-      <MarkdownView text={it.text} />
+      <MarkdownView text={text} />
     </div>
   );
 });
+
+/** A prompt that waits for the turn in progress: pinned below it until the turn ends. */
+function QueuedMsg({ q }: { q: Queued }) {
+  return (
+    <div class="msg-user queued" data-testid="msg-user">
+      <div class="msg-user-text">{q.text}</div>
+      <div class="msg-user-meta">
+        {q.images > 0 && (
+          <span>
+            <Icon name="image" size={13} /> {q.images} image{q.images === 1 ? '' : 's'}
+          </span>
+        )}
+        <span>waiting — Claude takes it when this turn ends</span>
+      </div>
+    </div>
+  );
+}
 
 const Thinking = memo(function Thinking({ it }: { it: Extract<Item, { t: 'thinking' }> }) {
   return (
@@ -55,7 +175,7 @@ function ResultLine({ it, cost }: { it: Extract<Item, { t: 'result' }>; cost: nu
   const interrupted = it.subtype === 'error_during_execution';
   return (
     <div class={`turn-end${it.isError && !interrupted ? ' err' : ''}`} data-testid="turn-end">
-      <span>{interrupted ? 'Stopped' : it.isError ? `Ended: ${it.subtype}` : 'Done'}</span>
+      <span>{interrupted ? 'Stopped' : it.isError && it.subtype === 'success' ? 'Failed' : it.isError ? `Ended: ${it.subtype}` : 'Done'}</span>
       {it.durationMs > 0 && <span>{duration(it.durationMs)}</span>}
       {(it.usage.input || it.usage.output) > 0 && (
         <span title={`input ${it.usage.input} · output ${it.usage.output} · cache read ${it.usage.cacheRead} · cache write ${it.usage.cacheWrite}`}>
@@ -88,15 +208,19 @@ function Welcome() {
   );
 }
 
-function Working({ since }: { since: number }) {
+function Working({ since, status }: { since: number; status: string }) {
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick((x) => x + 1), 1000);
     return () => clearInterval(t);
   }, []);
+  // Bedrock retries (throttling, a 5xx) show here as they happen
+  const retry = /retry/i.test(status) ? status : '';
   return (
-    <div class="working" aria-live="polite">
+    <div class={`working${retry ? ' retrying' : ''}`} data-testid="working">
       <Spinner size={14} /> <span>Working… {since ? duration(Date.now() - since) : ''}</span>
+      {retry && <span class="working-status">{retry}</span>}
+      {status === 'compacting' && <span class="working-status">compacting the conversation</span>}
     </div>
   );
 }
@@ -134,7 +258,7 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
     if (!el) return;
     if (stick.current) el.scrollTop = el.scrollHeight;
     else setShowJump(true);
-  }, [items, view?.permissions.length]);
+  }, [items, view?.permissions.length, view?.queued.length]);
 
   useEffect(() => {
     stick.current = true;
@@ -147,7 +271,7 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
   const render = (it: Item): ComponentChildren => {
     switch (it.t) {
       case 'user':
-        return <UserMsg key={it.k} it={it} />;
+        return <UserMsg key={it.k} it={it} session={view?.id ?? ''} />;
       case 'assistant':
         return <Assistant key={it.k} it={it} />;
       case 'thinking':
@@ -197,18 +321,31 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
         if (stick.current) setShowJump(false);
       }}
     >
-      <div class="messages-inner">
-        {!view || (!items.length && view.state !== 'busy') ? (
+      <div class="messages-inner" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation">
+        {!view || (!items.length && view.state !== 'busy' && !view.queued.length) ? (
           <Welcome />
         ) : (
           <>
+            {top.length <= shown.length && !!view.historyOffset && (
+              <button type="button" class="linkish earlier" onClick={() => void loadEarlier(view.id)} data-testid="load-earlier">
+                Load earlier messages ({view.historyOffset} more in the transcript)
+              </button>
+            )}
+            {view.historyTruncated && top.length <= shown.length && (
+              <div class="notice notice-warn" data-testid="history-truncated">
+                <Icon name="alert" size={14} /> <span>This transcript is long: only its last part could be read here (the whole one is in the sandbox).</span>
+              </div>
+            )}
             {(top.length > shown.length || view.dropped > 0) && (
               <button type="button" class="linkish earlier" onClick={() => setLimit(limit + PAGE)} disabled={top.length <= shown.length}>
                 {top.length > shown.length ? `Show earlier messages (${top.length - shown.length})` : `${view.dropped} older messages are not kept in this page`}
               </button>
             )}
             {shown.map(render)}
-            {busy && !streaming && !view.permissions.length && <Working since={lastTurn?.end === null ? lastTurn.start : 0} />}
+            {busy && !streaming && !view.permissions.length && <Working since={lastTurn?.end === null ? lastTurn.start : 0} status={view.status} />}
+            {view.queued.map((q, i) => (
+              <QueuedMsg key={`q${i}-${q.uuid ?? ''}`} q={q} />
+            ))}
           </>
         )}
       </div>

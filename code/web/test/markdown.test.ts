@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderMarkdown, safeHref, fileHref, textOf, type MdNode, type MdEl } from '../src/markdown';
+import { visible } from '../src/text';
 
 const ALLOWED_TAGS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'br', 'a', 'span', 'div', 'input']);
 const ALLOWED_ATTRS = new Set(['href', 'target', 'rel', 'title', 'class', 'start', 'type', 'disabled', 'checked', 'data-lang', 'data-file']);
@@ -112,4 +113,26 @@ test('safeHref', () => {
   for (const bad of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'file:///etc/passwd', '/rel', 'https://u@evil.example', 'x'.repeat(5000), 42 as unknown as string]) {
     assert.equal(safeHref(bad), null, String(bad).slice(0, 30));
   }
+});
+
+test('a single newline is a line break (as in the terminal); code blocks and lists keep their shape', () => {
+  const p = renderMarkdown('1\n2\n3');
+  const count = (nodes: MdNode[], tag: string): number =>
+    nodes.reduce((n, x) => n + (typeof x === 'string' ? 0 : (x.tag === tag ? 1 : 0) + count(x.children, tag)), 0);
+  assert.equal(count(p, 'br'), 2);
+  assert.equal(count(p, 'p'), 1);
+  const code = renderMarkdown('```sh\nls\npwd\n```');
+  assert.equal(count(code, 'br'), 0);
+  assert.equal(textOf(code), 'ls\npwd');
+  const list = renderMarkdown('- a\n- b\n- c');
+  assert.equal(count(list, 'ul'), 1);
+  assert.equal(count(list, 'li'), 3);
+  assert.equal(count(list, 'br'), 0);
+});
+
+test('invisible characters are shown, not hidden: zero-width, separators, word joiner, BOM, tag characters', () => {
+  const cps = [0x200b, 0x2028, 0x2029, 0x2060, 0x2064, 0xfeff, 0xe0041, 0x202e];
+  const s = visible(cps.map((c) => 'x' + String.fromCodePoint(c)).join('') + 'x');
+  for (const c of cps) assert.ok(s.includes(`⟨U+${c.toString(16).toUpperCase().padStart(4, '0')}⟩`), c.toString(16));
+  assert.ok(cps.every((c) => !s.includes(String.fromCodePoint(c))));
 });

@@ -2,8 +2,10 @@
 // file names, session titles, even "model names" in a hostile case), so: cap every length, make invisible
 // direction/control characters visible, validate ids, and only ever hand the result to the DOM as text.
 
-/** Bidi embeddings/overrides/isolates and other invisible format characters ("Trojan Source"). */
-const BIDI = /[‪-‮⁦-⁩‎‏؜]/g;
+/** Bidi embeddings/overrides/isolates and other invisible format characters ("Trojan Source"): zero-width
+ *  characters, line/paragraph separators, word joiner and invisible operators, the BOM, and Unicode tag characters
+ *  (which can hide text from a reader but not from a shell or a model). */
+const BIDI = /[\u202a-\u202e\u2066-\u2069\u200b-\u200f\u061c\u2028\u2029\u2060-\u2064\ufeff\u{e0000}-\u{e007f}]/gu;
 /** C0/C1 controls except tab and newline (and CR, which we drop). */
 const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 /** ANSI escape sequences (colours in Bash output): CSI … final byte, and OSC … BEL/ST. */
@@ -31,7 +33,24 @@ export function visible(s: string): string {
     .replace(/\r\n?/g, '\n')
     .replace(ANSI, '')
     .replace(CONTROLS, (c) => (c === '\u001b' ? '' : `⟨U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`))
-    .replace(BIDI, (c) => `⟨U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+    .replace(BIDI, (c) => `⟨U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+}
+
+/** What makes a command hard to read in full: its size, and whitespace runs that push text out of sight. */
+export interface CommandShape {
+  lines: number;
+  length: number;
+  /** longest run of spaces/tabs (blank space that pushes the rest of a command out of sight) */
+  padding: number;
+  /** worth a warning before you allow it */
+  warn: boolean;
+}
+export function commandShape(cmd: unknown): CommandShape {
+  const s = typeof cmd === 'string' ? cmd : '';
+  const lines = s ? s.split('\n').length : 0;
+  let padding = 0;
+  for (const run of s.match(/[ \t]{2,}/g) ?? []) padding = Math.max(padding, run.length);
+  return { lines, length: s.length, padding, warn: s.length > 1000 || lines > 20 || padding >= 40 };
 }
 
 /** The one call for untrusted strings shown as text: cap + visible. */
@@ -55,12 +74,14 @@ export function isId(s: unknown): s is string {
   return typeof s === 'string' && ID.test(s);
 }
 
-/** A workspace-relative path we are willing to request or show: no NUL, no `..` segment, bounded. */
+/** A workspace-relative path we are willing to request or show: no NUL, no `..` segment, bounded; an absolute path
+ *  only inside /workspace. */
 export function cleanPath(p: unknown): string | null {
   if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
   let s = p.replace(/\\/g, '/');
   if (s.startsWith('/workspace/')) s = s.slice('/workspace/'.length);
   else if (s === '/workspace') s = '';
+  else if (s.startsWith('/')) return null;
   s = s.replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '');
   const parts = s === '' ? [] : s.split('/');
   if (parts.some((x) => x === '..' || x === '.')) return null;

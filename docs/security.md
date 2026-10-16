@@ -582,11 +582,14 @@ spawn server, Claude Code or any file at will.
 
 **Trust boundaries.**
 
-1. *Browser ⇄ main Caddy*: the portal session **and** a fresh unlock of its own, and the code host's own `Origin`.
+1. *Browser ⇄ main Caddy*: the portal session **and** a fresh unlock of its own, and the code host's own `Origin`
+   (its terminal panel: that unlock, handed to the terminal's host once — below).
 2. *Caddy ⇄ code container*: the `code-link` network (internal; Caddy and the code container only) and the
    `X-Bn-Code-Proxy` header (`CODE_PROXY_SECRET`, 128 random bits, new at every `./stack code enable`), which only
    the main Caddy adds, after the portal's yes. Cookies never reach the code container.
-3. *Code container ⇄ sandbox*: one UNIX socket in the `code-socket` volume; everything inbound is untrusted data.
+3. *Code container ⇄ sandbox*: one UNIX socket in the `code-socket` volume (the terminal's: the spawn server always
+   runs there, idle until the code container — the only other container mounting it, read-only — connects);
+   everything inbound is untrusted data.
 4. *Sandbox ⇄ LiteLLM and shared-mcp*: the terminal's gateway, key routes and budget — unchanged.
 
 - [x] **A container that holds nothing worth taking.** The code container (`code/`, built locally on the
@@ -604,7 +607,10 @@ spawn server, Claude Code or any file at will.
   `/workspace` (Node has no `openat`/`RESOLVE_BENEATH`: a check-then-open in the code container would race a sandbox
   that swaps a folder for a symlink; in there, a symlink only leads where the sandbox can go anyway). Reads are
   regular files only (`O_NONBLOCK`, `O_NOFOLLOW`: a FIFO or device cannot hang or feed it), writes go through a
-  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`.
+  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`. The memory editor reaches two fixed files only
+  (`/workspace/CLAUDE.md` and the sandbox's own `~/.claude/CLAUDE.md`, never through a link, ≤ 1 MiB); the `@`
+  search is a bounded walk of `/workspace` (20,000 entries, depth 12, no links followed); file checkpoints are Claude
+  Code's own backups in the sandbox (`rewindFiles`), restored only after a dry run you saw.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops. Claude Code's arguments must start with
   the SDK's fixed stream-json prefix and every other one must be on an allowlist in `--name=value` form
@@ -618,21 +624,36 @@ spawn server, Claude Code or any file at will.
 - [x] **Everything from the sandbox is data.** The code container caps every frame (4 MiB; a larger header ends
   the connection), every answer (8 MiB), every stdout line (32 MiB without a newline, which the SDK would otherwise
   buffer whole) and every op's time; it checks every id (a session id `../../etc`, a tool id, a task id), every
-  number (no `NaN`, nothing negative), caps every string and drops every field it does not know. Costs from Claude
+  number (no `NaN`, nothing negative), caps every string and drops every field it does not know. A session's history
+  is read from the end of its transcript only (the last 3 MiB, at most 20,000 entries and 50 compaction boundaries;
+  at most 2,000 messages per request), and the session list stops at 200. Costs from Claude
   Code itself (`total_cost_usd`, which a stand-in set to −1 in the spike) are never shown. Of the SDK's host
   callbacks only `canUseTool` is registered: forged `hook_callback`/`mcp_message` requests get errors from the SDK.
   The e2e suite starts a hostile stand-in on the socket (markup everywhere, bogus ids, an oversized frame, an
   endless line, forged control requests) and checks the page and the container.
 - [x] **Permission prompts stay yours.** A prompt waits in the code container (never in the sandbox) until a page
-  answers; nobody answering for 10 minutes counts as Deny. *Allow once* returns the tool input exactly as Claude Code
+  answers; nobody answering for 30 minutes counts as Deny. At most 8 wait per session and 32 in all — one more is
+  denied at once, as is a tool input over 1 MiB of JSON (never shown) — so a sandbox cannot bury the page in
+  prompts. What a card shows of the input is capped (256 Ki characters of JSON, 128 Ki per string, the same caps on
+  both sides) and a cut one says so and offers no *Allow*. *Allow once* returns the tool input exactly as Claude Code
   sent it; *Always* applies only the CLI's suggestions that add **allow** rules or switch to *Accept edits*/*Plan*
   — never `bypassPermissions` or `auto`, never another folder (`addDirectories`), never a removal — and the page
-  shows those rules before you click. The rules land in the sandbox's own settings (they affect only it).
-  Prompts typed in the page carry Claude Code's human origin.
+  shows exactly those rules before you click. They land in the sandbox's own `~/.claude/settings.json` (they affect
+  only it): a rule Claude Code proposes for the workspace's `.claude/settings.json` or `settings.local.json` goes
+  there instead. Writing it into the workspace's file is a separate, explicit button (**Always, in this workspace's
+  settings**) with the warning that the file is in your folder and Claude Code on your computer honours it too. A
+  prompt that asks for no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's
+  *Plan* mode) switches the session to *Accept edits* or *Ask* — the only two modes it may set — and "keep planning"
+  is a Deny with your note. Prompts typed in the page carry Claude Code's human origin.
+- [x] **Connections end.** A page that stops reading (more than 16 MiB waiting unsent to it) is disconnected (close
+  code 4008) and forgotten at once; every WebSocket is closed after 12 hours (4009), the unlock's lifetime, and the
+  page reconnects through Caddy's check again — a connection never outlives the unlock it was opened with by more
+  than that.
 - [x] **The page's policy is the main Caddy's, whoever answers.** Every answer from the code container gets
   `code_page` (`caddy/Caddyfile`): `default-src 'none'`, scripts only from the code host itself, styles from it plus
   a per-request nonce (`{http.request.uuid}`, which the page reads from a meta tag), connections only to the code
-  host, images also `data:`/`blob:`, frames only the terminal host, no forms, no plugins, `base-uri 'none'`, framed
+  host, images also `data:`/`blob:`, frames only the terminal host and itself (the terminal panel starts at
+  `/.bn/terminal`, which redirects there), no forms, no plugins, `base-uri 'none'`, framed
   only by the portal, and **Trusted Types** (`require-trusted-types-for 'script'; trusted-types 'none'`: no
   HTML-string sink can run at all, in browsers that enforce it); plus `nosniff`, `Referrer-Policy: same-origin`, and
   none of the upstream's `Set-Cookie`, `Clear-Site-Data`, `Refresh`, `Link`, `Location`, `Service-Worker-Allowed`,
@@ -669,6 +690,18 @@ spawn server, Claude Code or any file at will.
   voided by Sign out and by a new password). Caddy asks `/auth/verify?app=code`, fixed in the Caddyfile. A WebSocket
   and every request that changes something must carry the code host's own `Origin` — checked by the portal and
   again by the code container; client copies of the headers only Caddy may set are deleted first.
+- [x] **One unlock for the page and its terminal panel, handed over once.** The panel (and "open in a new tab")
+  starts at `/.bn/terminal` on the code host, which Caddy sends to the portal after the code host's check; the portal
+  checks the session, the Code page's unlock and `Sec-Fetch-Site: same-origin` (a link from another site, or a typed
+  address, gets nothing), and redirects to the terminal host's `/.bn/unlock-callback` with a token: signed with a salt
+  of its own, for exactly this site's terminal host, valid 60 seconds, single-use (its nonce is remembered), void
+  after a portal restart or a new password, carrying the Code page unlock's time and the Tailscale login. Caddy
+  sends that path to the portal before the terminal host's check; the portal redeems the token there and sets the
+  terminal's own unlock cookie (host-only, `HttpOnly`, `SameSite=Strict`) **with the Code page unlock's time** — so
+  it ends when that one does (12 hours after the password was typed; Sign out and a new password end both) and is
+  not a fresh 12 hours. Both redirects send no `Referer` and are never cached. The unlock goes one way only: the
+  terminal's never opens the Code page. Remotely, the terminal host gets its own session cookie with the token (as
+  the session hand-off does), only while `REMOTE_TERMINAL` is on, and only for the same Tailscale login.
 - [x] **Remote: with the terminal's switch.** The remote sites route the code host only while `REMOTE_TERMINAL` is
   on (one switch for "the sandbox from outside"): `lib/code.sh` writes `REMOTE_CODE_HOST` (`<base>-code.<tailnet>`,
   a sixth Tailscale Service, or `code.<your domain>`); otherwise the remote blocks match nothing and the portal
@@ -679,21 +712,25 @@ spawn server, Claude Code or any file at will.
   code container never opens a second process on a session it has open (opening it again returns the open one).
 - [x] **Turned on only where it is local.** In Settings, `CODE_ENABLED` is *widen-local*: turning the Code page on
   (it adds a host for Claude Code processes with the sandbox's internet access, reachable from the browser) works
-  only from the computer running bedrock-now, and only while the browser terminal is on (its workspace folder is
-  chosen in a terminal, `./stack terminal enable --workspace DIR`, and only shown in Settings); turning it off — the
-  safer direction — works from anywhere the settings can be changed. The update helper runs `./stack code enable`
-  or `disable`.
+  only from the computer running bedrock-now. With the browser terminal off it turns the terminal on too, with the
+  terminal's folder (`TERMINAL_WORKSPACE`, or the default `~/bedrock-now-workspace`), which Settings names before you
+  confirm and `./stack` checks first by the same rules as `./stack terminal enable` (never your home folder, a
+  system folder or this bedrock-now folder); another folder is chosen in a terminal (`./stack code enable
+  --workspace DIR`). Turning it off — the safer direction — works from anywhere the settings can be changed. The
+  update helper runs `./stack code enable` or `disable`; neither restarts the terminal container (its tmux session
+  goes on).
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
 or MCP status — deny service (kill the
 spawn server: restarted in 2 s; flood: capped; hang: timeouts), and write permission rules into its own settings
-through *Always* (only for itself). It cannot run script in your browser, reach the code container over the
-network, read its files, make it open or follow a path, call host callbacks other than `canUseTool`, obtain
-`CODE_PROXY_SECRET`, the master key or the unlock cookie, change the prices or costs shown, answer a permission
-prompt, or accept a plugin's install command (the hash goes back only after your click, and a confirmation whose hash
-is not a SHA-256 is never offered). *Project settings*: sessions load `/workspace/.claude` settings (hooks included) like the terminal does once
-you trust the folder; they run in the sandbox either way.
+through *Always* (only for itself; into your folder's settings only through the explicit workspace button). It
+cannot run script in your browser, reach the code container over the network, read its files, make it open or
+follow a path, call host callbacks other than `canUseTool`, obtain `CODE_PROXY_SECRET`, the master key or the unlock
+cookie, change the prices or costs shown, answer a permission prompt, or accept a plugin's install command (the hash
+goes back only after your click, and a confirmation whose hash is not a SHA-256 is never offered). *Project
+settings*: sessions load `/workspace/.claude` settings (hooks included) like the terminal does once you trust the
+folder; they run in the sandbox either way.
 
 **What a compromised code container gains** (a bug in the SDK, `ws` or the page): it can drive the sandbox (as
 above) and serve script on the code origin — the same standing as the other app hosts: the cookies it could

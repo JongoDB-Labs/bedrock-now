@@ -14,6 +14,8 @@ import {
   setLayout,
   setSheet,
   terminalUrl,
+  exportTranscript,
+  setNotify,
   toggleExplorer,
   toggleTerminal,
   socket,
@@ -30,6 +32,7 @@ import { ContextMeter, CostMeter, EffortPicker, ModelPicker, ModePicker, current
 import { Dialog, Dropdown, MenuItem, Sheet, Splitter, useMedia } from './ui';
 import { PluginsDialog } from './Plugins';
 import { McpPanel } from './Mcp';
+import { MemoryDialog } from './Memory';
 import { Icon, Spinner } from './icons';
 
 // ---------------------------------------------------------------- pieces
@@ -47,6 +50,7 @@ function Brand() {
 
 function MoreMenu() {
   const term = useSel(store, (s) => terminalUrl(s));
+  const notifyOn = useSel(store, (s) => s.prefs.notify);
   return (
     <Dropdown title="More" align="right" class="more" trigger={<Icon name="more" />} testid="more-menu">
       {(close) => (
@@ -60,8 +64,17 @@ function MoreMenu() {
           <MenuItem icon="server" onSelect={() => (close(), setDialog('mcp'))} testid="menu-mcp">
             MCP servers…
           </MenuItem>
+          <MenuItem icon="book" onSelect={() => (close(), setDialog('memory'))} testid="menu-memory">
+            Memory (CLAUDE.md)…
+          </MenuItem>
           <MenuItem icon="refresh" onSelect={() => (close(), reloadPlugins())}>
             Reload plugins & skills
+          </MenuItem>
+          <MenuItem icon="download" onSelect={() => (close(), exportTranscript())} testid="menu-export">
+            Export the conversation (.md)
+          </MenuItem>
+          <MenuItem checked={notifyOn} onSelect={() => (close(), void setNotify(!notifyOn))} testid="menu-notify">
+            Notify me when Claude waits or is done
           </MenuItem>
           {term && (
             <MenuItem
@@ -221,7 +234,7 @@ function StatusBar() {
     <footer class="statusbar" data-testid="statusbar">
       <span class={`sb-conn sb-${conn}`} data-testid="conn">
         <span class="sdot" />
-        {conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : (
+        {conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : conn === 'locked' ? 'Locked: reload to unlock' : (
           <>
             Offline · retry in {secs}s{' '}
             <button type="button" class="linkish" onClick={() => socket.retryNow()}>
@@ -308,6 +321,7 @@ function Dialogs() {
   }
   if (dialog === 'plugins') return <PluginsDialog onClose={close} />;
   if (dialog === 'mcp') return <McpPanel onClose={close} />;
+  if (dialog === 'memory') return <MemoryDialog onClose={close} />;
   return null;
 }
 
@@ -458,8 +472,14 @@ function PhoneMenu() {
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('plugins'))}>
           <Icon name="plug" /> Plugins & marketplaces
         </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('memory'))} data-testid="phone-menu-memory">
+          <Icon name="book" /> Memory (CLAUDE.md)
+        </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), reloadPlugins())}>
           <Icon name="refresh" /> Reload plugins & skills
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), exportTranscript())}>
+          <Icon name="download" /> Export the conversation (.md)
         </button>
       </div>
     </Sheet>
@@ -523,7 +543,7 @@ function PhoneConn() {
     <span class={`phone-conn sb-${conn}`} title={conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : 'Offline, retrying'}>
       <span class="sdot" />
       <span class="sr" data-testid="conn">
-        {conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : 'Offline'}
+        {conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : conn === 'locked' ? 'Locked' : 'Offline'}
       </span>
     </span>
   );

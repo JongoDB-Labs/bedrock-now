@@ -84,7 +84,8 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
-export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log, reloadDelayMs, reloadAgainMs }) {
+export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
+  reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {} }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -96,10 +97,25 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
 
   // --- sockets, sessions, prompts ---
   const clients = new Set();   // {ws, attached: Set(sessionId)}
-  const sendTo = (c, m) => { if (c.ws.readyState === 1) c.ws.send(JSON.stringify(m)); };
+  // drop(c, code, reason) — a socket this server stops serving: closed (the page reconnects and re-attaches), and
+  // ended for good a few seconds later when the close cannot get through (a page that stopped reading)
+  const drop = (c, code, reason) => {
+    if (!clients.delete(c)) return;
+    clearTimeout(c.ageTimer);
+    try { c.ws.close(code, reason); } catch { /* closed */ }
+    setTimeout(() => { try { c.ws.terminate(); } catch { /* gone */ } }, 5000).unref?.();
+  };
+  // Backpressure: what a socket has not taken yet stays in this process; past maxBufferedBytes the page has to re-attach
+  // (the ring has what it missed) instead of this process holding an ever longer queue for it
+  const sendTo = (c, m) => {
+    if (c.ws.readyState !== 1 || !clients.has(c)) return;
+    if (c.ws.bufferedAmount > maxBufferedBytes) return drop(c, 4008, 're-attach');
+    c.ws.send(JSON.stringify(m));
+  };
   const toAttached = (session, m) => { for (const c of clients) if (c.attached.has(session)) sendTo(c, m); };
   const toAll = (m) => { for (const c of clients) sendTo(c, m); };
   const broker = new PermissionBroker({
+    ...brokerOpts,
     onAsk: (p) => toAttached(p.session, { type: 'permission', ...p }),
     onDone: (d) => toAttached(d.session, { type: 'permission_done', ...d }),
     onCount: (count) => toAll({ type: 'pending', count }),
@@ -107,8 +123,30 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error });
   const mgr = new SessionManager({
     query, spawn, broker, log: logger,
-    onEvent: (s, seq, ev) => toAttached(s.id, { type: 'event', session: s.id, seq, ev }),
+    onEvent: (s, seq, ev) => {
+      toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
+      // a title given before the session had a transcript: written once its first turn is over
+      if (ev.type === 'result' && s.pendingTitle && s.hasTranscript) {
+        const title = s.pendingTitle;
+        s.pendingTitle = null;
+        call({ op: 'sessions.title', id: s.id, title }).catch((e) => logger(`title ${s.id.slice(0, 8)}: ${short(e?.message || String(e), 200)}`));
+      }
+    },
     onState: (s) => toAll(stateMsg(s)),
+    // Claude Code started a new conversation: the pages showing the old session follow it to the new one
+    onReset: (old, ns) => {
+      for (const c of clients) {
+        if (!c.attached.has(old.id)) continue;
+        c.attached.add(ns.id);
+        sendTo(c, { type: 'reset', session: old.id, new_session: ns.id });
+      }
+      onStateBoth(old, ns);
+    },
+    // is there a transcript for this session in the sandbox already?
+    transcriptExists: async (id) => {
+      const { result } = await call({ op: 'sessions.load', id });
+      return Array.isArray(result?.entries) && result.entries.length > 0;
+    },
     // a plugin reload: the pages showing that session get its new commands, plugins and MCP servers
     onReload: (s, r) => {
       if (Array.isArray(r.commands)) toAttached(s.id, { type: 'commands', session: s.id, commands: commandsOf(r.commands) });
@@ -116,7 +154,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       if (Array.isArray(r.mcpServers)) toAttached(s.id, { type: 'mcp', session: s.id, servers: mcpOf(r.mcpServers) });
     },
   });
-  const api = makeApi({ call, sessions: mgr, reloadDelayMs, reloadAgainMs });
+  function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
+  const api = makeApi({ call, sessions: mgr, reloadPollMs, reloadMaxMs });
   // an MCP server's name as the session reports it (plugin servers: plugin:x:y; claude.ai ones may have spaces)
   const MCP_SERVER = /^[\x20-\x7e]{1,200}$/;
   const mcpName = (v) => { if (typeof v !== 'string' || !MCP_SERVER.test(v)) throw new SessionError('bad MCP server name'); return v; };
@@ -158,7 +197,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/messages$/.exec(p)) && m === 'GET') {
       const n = (k) => (q.has(k) && /^[0-9]{1,7}$/.test(q.get(k)) ? Number(q.get(k)) : undefined);
-      return send(res, 200, await api.messages(mm[1], n('offset'), n('limit')));
+      return send(res, 200, await api.messages(mm[1], n('offset'), n('limit'), n('tail')));
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/title$/.exec(p)) && m === 'POST') return send(res, 200, await api.title(mm[1], await readJson(req)));
     if ((mm = /^\/api\/sessions\/([^/]+)$/.exec(p)) && m === 'DELETE') {
@@ -185,6 +224,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, await api.upload(q.get('dir') ?? '', name, data));
     }
     if (p === '/api/fs/mkdir' && m === 'POST') return send(res, 200, await api.mkdir(await readJson(req)));
+    if (p === '/api/fs/find' && m === 'GET') return send(res, 200, await api.find(q.get('q') ?? '', /^[0-9]{1,3}$/.test(q.get('limit') ?? '') ? Number(q.get('limit')) : undefined));
+    if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope')));
+    if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10))));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));
     if (p === '/api/plugins' && m === 'GET') return send(res, 200, await api.plugins());
     if (p === '/api/plugins/available' && m === 'GET') {
@@ -259,6 +301,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   function connection(ws) {
     const c = { ws, attached: new Set() };
     clients.add(c);
+    // a socket lives at most maxSocketAgeMs: the page reconnects, through Caddy's check (a lapsed unlock stops it there)
+    c.ageTimer = setTimeout(() => drop(c, 4009, 'session age'), maxSocketAgeMs);
+    c.ageTimer.unref?.();
     sendTo(c, { type: 'hello', pending: broker.count, limits: LIMITS });
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
@@ -279,8 +324,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       }
       return undefined;
     });
-    ws.on('close', () => clients.delete(c));
-    ws.on('error', () => clients.delete(c));
+    ws.on('close', () => { clients.delete(c); clearTimeout(c.ageTimer); });
+    ws.on('error', () => { clients.delete(c); clearTimeout(c.ageTimer); });
   }
 
   const sessionOf = (m) => {
@@ -294,10 +339,15 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'attach': {
         const s = sessionOf(m);
         c.attached.add(s.id);
-        const since = Number.isInteger(m.since) && m.since >= 0 ? m.since : 0;
-        const { events, gap } = s.ring.since(since);
-        sendTo(c, { type: 'attached', session: s.id, state: s.state, from: s.ring.first, last: s.ring.last, gap });
-        for (const e of events) sendTo(c, { type: 'event', session: s.id, seq: e.seq, ev: e.ev });
+        let since = Number.isInteger(m.since) && m.since >= 0 ? m.since : 0;
+        // the page last saw another process of this session (restarted meanwhile, maybe from another device), or
+        // counts beyond this one's events: everything this process has, and the page re-reads the transcript
+        const otherProcess = (typeof m.epoch === 'string' && m.epoch !== '' && m.epoch !== s.epoch) || since > s.ring.last;
+        if (otherProcess) since = 0;
+        const r = s.ring.since(since);
+        const gap = r.gap || otherProcess;
+        sendTo(c, { type: 'attached', session: s.id, epoch: s.epoch, state: s.state, from: s.ring.first, last: s.ring.last, gap });
+        for (const e of r.events) sendTo(c, { type: 'event', session: s.id, epoch: s.epoch, seq: e.seq, ev: e.ev });
         for (const p of broker.forSession(s.id)) sendTo(c, { type: 'permission', ...p });
         sendTo(c, stateMsg(s));
         return reply({ attached: s.id });
@@ -314,8 +364,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'set_mode': await sessionOf(m).setMode(m.mode); return reply({ mode: m.mode });
       case 'set_effort': await sessionOf(m).setEffort(m.effort ?? null); return reply({ effort: m.effort ?? null });
       case 'permission': {
-        if (!isUuid(m.id) || !DECISIONS.includes(m.decision)) throw new SessionError('bad permission answer');
-        if (!broker.answer(m.id, m.decision, typeof m.message === 'string' ? m.message : undefined, m.answers)) {
+        if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');
+        if (!broker.answer(m.id, m.decision, { message: typeof m.message === 'string' ? m.message : undefined, answers: m.answers,
+          mode: typeof m.mode === 'string' ? m.mode : undefined, session: m.session })) {
           throw new SessionError(m.decision === 'answer' ? 'that question is no longer waiting, or the answers do not match it' : 'that prompt is no longer waiting', 409);
         }
         return reply({});
@@ -348,6 +399,15 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
           categories: (Array.isArray(u?.categories) ? u.categories : []).slice(0, 30).filter((x) => x && typeof x === 'object')
             .map((x) => ({ name: short(x.name, 80), tokens: n(x.tokens), kind: short(x.kind, 20) })),
         });
+      }
+      // file checkpoints: what Claude changed since a prompt of yours, put back (dryRun: only what would change)
+      case 'rewind_files': {
+        if (!isUuid(m.message)) throw new SessionError('bad message id');
+        const r = await sessionOf(m).need().rewindFiles(m.message, { dryRun: m.dryRun === true });
+        const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+        return reply({ canRewind: r?.canRewind === true, error: str(typeof r?.error === 'string' ? r.error : '', 500),
+          filesChanged: (Array.isArray(r?.filesChanged) ? r.filesChanged : []).slice(0, 200).filter((x) => typeof x === 'string').map((x) => short(x, 4096)),
+          insertions: n(r?.insertions), deletions: n(r?.deletions), skippedLinks: n(r?.skippedLinks) });
       }
       case 'reload_plugins': {
         const r = await sessionOf(m).reloadPlugins();   // (the new lists go to every page showing the session)

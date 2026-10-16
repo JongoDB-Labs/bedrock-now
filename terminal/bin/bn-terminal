@@ -21,14 +21,13 @@ fi
 # First start only: no theme picker (dark, like the terminal). Claude Code's other first-run question — whether
 # you trust the files in /workspace — stays yours to answer.
 [ -e "$HOME/.claude.json" ] || printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$HOME/.claude.json"
-# The Code page (./stack code enable: compose.code.yaml sets BN_CODE=1): bn-coded, its spawn server, on a socket in the
-# code-socket volume, which only the code container shares (it connects; it never listens there). Restarted when it
-# exits — anything in here can kill it. Not under this script's `set -e` (a killed bn-coded would end the loop with
-# it), and detached twice, so tini (PID 1), not ttyd, is the loop's parent and reaps it. Without the MCP token: the
-# Claude Code it starts reads it from mcp.json, like claude-bedrock.
-if [ "${BN_CODE:-}" = 1 ]; then
-  ( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-coded.mjs; sleep 2; done ) </dev/null & )
-fi
+# The Code page's spawn server, bn-coded, on a socket in the code-socket volume, which only the code container shares
+# (./stack code enable; it connects, it never listens there). Always running, so turning the Code page on or off never
+# restarts this container: with no code container, nothing connects and it does nothing. Restarted when it exits —
+# anything in here can kill it. Not under this script's `set -e` (a killed bn-coded would end the loop with it), and
+# detached twice, so tini (PID 1), not ttyd, is the loop's parent and reaps it. Without the MCP token: the Claude Code
+# it starts reads it from mcp.json, like claude-bedrock.
+( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-coded.mjs; sleep 2; done ) </dev/null & )
 # ttyd: -i on a path ending in .sock is a UNIX socket (no TCP port); -W lets keystrokes through; -O refuses a
 # WebSocket whose Origin is not this host (another website cannot drive the terminal with your cookies); URL
 # arguments stay off. --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at

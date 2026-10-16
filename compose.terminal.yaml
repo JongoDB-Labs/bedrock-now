@@ -58,6 +58,10 @@ services:
       - terminal-home:/home/claude
       # ttyd's UNIX socket (no TCP listener in here at all), shared only with the gateway
       - terminal-socket:/run/bn-ttyd
+      # The Code page's spawn server (bn-coded, started by bn-terminal) listens here; only the code container shares
+      # it (compose.code.yaml, read-only: it connects, never listens). Always here, so turning the Code page on or off
+      # never recreates this container (and never ends its tmux session); with no code container nothing connects.
+      - code-socket:/run/bn-code
       # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
       - type: bind
         source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}
@@ -146,3 +150,4 @@ networks:
 volumes:
   terminal-home:
   terminal-socket:
+  code-socket:

@@ -59,6 +59,18 @@ export function rankPaths(paths: string[], query: string, max = 50): string[] {
     .map((x) => x.p);
 }
 
+/** "# text" typed as a prompt: a line for the project's memory, as Claude Code's "#" shortcut — one line only (a
+ *  pasted Markdown document that starts with a heading still goes to Claude). The text, or null. */
+export function memoryLine(prompt: string): string | null {
+  const m = /^# (\S[^\n]*)$/.exec(prompt.trim());
+  return m ? m[1].trim() : null;
+}
+
+/** CLAUDE.md with "- line" added at its end (on a line of its own). */
+export function appendMemory(text: string, line: string): string {
+  return `${text && !text.endsWith('\n') ? `${text}\n` : text}- ${line}\n`;
+}
+
 /** Built-in commands Claude Code always has, shown before the session reports its own list. */
 export const BUILTIN_COMMANDS: Command[] = [
   { name: 'compact', description: 'Summarise the conversation to free context', argumentHint: '[instructions]' },

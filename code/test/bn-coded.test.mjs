@@ -160,6 +160,38 @@ test('fs ops over the socket: list, read, write (precondition, unique names), mk
   r = result(await talk(SOCK, [open({ op: 'fs.delete', path: 'f/sub' })]));
   assert.match(r.trash, /^\.bedrock-now-trash\/.+\/sub$/);
   assert.ok(fs.existsSync(path.join(WS, r.trash, 'moved.txt')));
+  assert.equal(fs.readFileSync(path.join(WS, '.bedrock-now-trash', '.gitignore'), 'utf8'), '*\n', 'git leaves the trash alone');
+  // a replaced file keeps its mode (a script stays executable); a new one gets the default
+  fs.writeFileSync(path.join(WS, 'f/run.sh'), 'echo 1\n', { mode: 0o755 });
+  fs.chmodSync(path.join(WS, 'f/run.sh'), 0o750);
+  r = result(await talk(SOCK, [open({ op: 'fs.write', path: 'f/run.sh', size: 7 }), frame(T.STDIN, Buffer.from('echo 2\n')), frame(T.STDIN_END, Buffer.alloc(0))]));
+  assert.equal(r.size, 7);
+  assert.equal(fs.statSync(path.join(WS, 'f/run.sh')).mode & 0o777, 0o750);
+  assert.equal(fs.readFileSync(path.join(WS, 'f/run.sh'), 'utf8'), 'echo 2\n');
+  // fs.find: the @-picker over the whole workspace — bounded, no links followed, .git / node_modules / the trash skipped
+  fs.mkdirSync(path.join(WS, 'f/deep/er/node_modules/pkg'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'f/deep/er/Target.md'), 'x');
+  fs.writeFileSync(path.join(WS, 'f/deep/er/node_modules/pkg/target.js'), 'x');
+  r = result(await talk(SOCK, [open({ op: 'fs.find', q: 'TARGET', limit: 10 })]));
+  assert.deepEqual(r, { paths: ['f/deep/er/Target.md'], truncated: false });
+  r = result(await talk(SOCK, [open({ op: 'fs.find', q: 'deep', limit: 2 })]));
+  assert.deepEqual([r.paths, r.truncated], [['f/deep/', 'f/deep/er/'], true]);
+  assert.ok(!result(await talk(SOCK, [open({ op: 'fs.find', q: 'secret' })])).paths.length, 'the link out is not followed');
+  // your user memory: one fixed file (never a link), read and written whole
+  r = result(await talk(SOCK, [open({ op: 'memory.read' })]));
+  assert.deepEqual(r, { path: '~/.claude/CLAUDE.md', exists: false });
+  r = result(await talk(SOCK, [open({ op: 'memory.write', size: 6 }), frame(T.STDIN, Buffer.from('# me\n\n')), frame(T.STDIN_END, Buffer.alloc(0))]));
+  assert.equal(r.path, '~/.claude/CLAUDE.md');
+  assert.equal(fs.readFileSync(path.join(HOME, '.claude/CLAUDE.md'), 'utf8'), '# me\n\n');
+  const frames2 = await talk(SOCK, [open({ op: 'memory.read' })]);
+  assert.equal(stdout(frames2).toString(), '# me\n\n');
+  assert.equal(result(frames2).exists, true);
+  fs.rmSync(path.join(HOME, '.claude/CLAUDE.md'));
+  fs.symlinkSync(path.join(ROOT, 'outside', 'secret.txt'), path.join(HOME, '.claude/CLAUDE.md'));
+  assert.ok(result(await talk(SOCK, [open({ op: 'memory.read' })])).error, 'a link is refused');
+  assert.ok(result(await talk(SOCK, [open({ op: 'memory.write', size: 1 }), frame(T.STDIN, Buffer.from('x')), frame(T.STDIN_END, Buffer.alloc(0))])).error);
+  assert.equal(fs.readFileSync(path.join(ROOT, 'outside', 'secret.txt'), 'utf8'), 'outside');
+  fs.rmSync(path.join(HOME, '.claude/CLAUDE.md'));
   for (const req of [{ op: 'fs.delete', path: '' }, { op: 'fs.delete', path: '.bedrock-now-trash' }, { op: 'fs.read', path: '../outside/secret.txt' },
     { op: 'fs.read', path: 'out/secret.txt' }, { op: 'fs.list', path: '/etc' }, { op: 'fs.write', path: 'out/x', size: 0 }, { op: 'fs.mkdir', path: '../x' },
     { op: 'fs.rename', from: 'f/hello.txt', to: '../outside/stolen' }, { op: 'fs.read', path: 'f' }, { op: 'exec', cmd: 'id' }, { op: 'fs.write', path: 'f/y', size: 26 << 20 }]) {

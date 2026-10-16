@@ -30,6 +30,7 @@ export function fakeQuery(log = []) {
           mcpServers: [{ name: 'bedrock-shared', status: 'connected', tools: [] }] };
       },
       async stopTask(id) { q.calls.push(['stopTask', id]); },
+      async rewindFiles(id, o) { q.calls.push(['rewindFiles', id, o]); return { canRewind: true, filesChanged: ['/workspace/a.txt', 7], insertions: 2, deletions: -1, extra: 'x' }; },
       close() { closed = true; q.calls.push('close'); wake?.(); },
       async *[Symbol.asyncIterator]() {
         (async () => {
@@ -38,6 +39,10 @@ export function fakeQuery(log = []) {
             n++;
             if (n === 1) push({ type: 'system', subtype: 'init', model: options.model || 'claude-sonnet-5-5', cwd: '/workspace', permissionMode: options.permissionMode, claude_code_version: '2.1.296', tools: ['Bash'], mcp_servers: [] });
             const text = typeof m.message.content === 'string' ? m.message.content : m.message.content.at(-1).text;
+            // Claude Code starting a new conversation in this process (/clear, a plan approved with "clear context")
+            if (text.startsWith('reset:')) push({ type: 'conversation_reset', new_conversation_id: text.slice(6), uuid: 'u', session_id: 's', trigger: 'clear' });
+            if (text === 'cmds') push({ type: 'system', subtype: 'commands_changed', commands: [{ name: 'new-skill', description: 'found' }], uuid: 'u', session_id: 's' });
+            if (text.startsWith('mode:')) push({ type: 'system', subtype: 'status', status: null, permissionMode: text.slice(5) });
             if (text.startsWith('ask:')) {
               const r = await options.canUseTool('Bash', { command: text.slice(4) }, { signal: new AbortController().signal, suggestions: [] });
               push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: JSON.stringify(r) }] } });

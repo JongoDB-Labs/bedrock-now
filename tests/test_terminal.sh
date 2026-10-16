@@ -502,9 +502,13 @@ test_caddy_terminal_site_gateway_and_remote_gating() {
   assert_contains "$f" 'import terminal-{$TERMINAL_MODE:off}.caddy'
   assert_eq "$(grep -cv '^#' "$STACK_DIR/caddy/terminal-off.caddy")" 0   # off: no site
   site="$(awk '/^http:\/\/\{\$TERMINAL_HOST\}/,/^}/' "$STACK_DIR/caddy/terminal-on.caddy")"
-  # first the local rules, then the unlock form, then the check — only then ttyd, through the gateway
+  # first the local rules, then the Code page's unlock hand-off and the unlock form, then the check — only then ttyd,
+  # through the gateway
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
-    "import local_request import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
+    "import local_request import terminal_callback import terminal_unlock import terminal_auth import terminal_upstream import terminal_page "
+  cb="$(awk '/^\(terminal_callback\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
+  assert_contains "$cb" "@bn_unlock_callback path /.bn/unlock-callback"
+  assert_contains "$cb" "rewrite /auth/terminal-unlock-callback?{query}"
   # framed by the portal, and by the Code page's terminal panel (code.invalid while it is off: serves nothing)
   assert_contains "$site" 'import terminal_page {$PORTAL_ORIGIN} {$CODE_ORIGIN:http://code.invalid}'
   # the terminal host's policy, whoever answers on ttyd's socket: ttyd's script alone (the hash the image build
@@ -571,6 +575,9 @@ respond 407
   for m in tailscale domain; do
     r="$(cat "$STACK_DIR/caddy/remote-$m.caddy")"
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_auth')" 1
+    # the hand-off from the Code page there too, before the check (in the terminal's block, after the session hand-off)
+    assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_callback')" 1
+    assert_eq "$(printf '%s\n' "$r" | grep -A1 'import terminal_callback' | tail -n 1 | tr -d '\t')" "import terminal_unlock"
     assert_eq "$(printf '%s\n' "$r" | grep -c 'import terminal_upstream')" 1
     assert_contains "$r" "reverse_proxy terminal-upstream:7681"
     assert_not_contains "$r" " terminal:7681"
@@ -581,6 +588,7 @@ respond 407
   # the portal's cookie names and the unlock route agree with Caddy's
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_TERMINAL_COOKIE = "__Host-bn_terminal"'
   assert_contains "$(cat "$STACK_DIR/portal/portal/app.py")" 'Route("/auth/terminal-unlock", terminal_unlock, methods=["POST"])'
+  assert_contains "$(cat "$STACK_DIR/portal/portal/app.py")" 'Route("/auth/terminal-unlock-callback", terminal_unlock_callback, methods=["GET"])'
   assert_contains "$(cat "$STACK_DIR/portal/portal/static/terminal-unlock.html")" 'action="/.bn/unlock"'
 }
 

@@ -87,6 +87,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
         if (e.type === 'dir' && expanded[p]) walk(p, depth + 1);
         if (out.length > 50_000) return;
       }
+      if (d.truncated) out.push({ path: `${dir}\u0000more`, name: '', depth, entry: null, note: 'more' });
     };
     walk('', 0);
     return out;
@@ -225,9 +226,9 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
             }
             if (!r.entry) {
               return (
-                <div key={r.path} class={`tree-row tree-note${r.note === 'loading' ? '' : ' err'}`} ref={place}>
+                <div key={r.path} class={`tree-row tree-note${r.note === 'loading' || r.note === 'more' ? '' : ' err'}`} ref={place} data-testid={r.note === 'more' ? 'tree-truncated' : undefined}>
                   {r.note === 'loading' ? <Spinner size={12} /> : <Icon name="alert" size={13} />}
-                  <span>{r.note === 'loading' ? 'Loading…' : r.note}</span>
+                  <span>{r.note === 'loading' ? 'Loading…' : r.note === 'more' ? 'More entries than shown here (the terminal lists them all)' : r.note}</span>
                 </div>
               );
             }

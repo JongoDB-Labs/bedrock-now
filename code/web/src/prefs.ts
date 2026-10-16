@@ -1,5 +1,5 @@
 // Per-browser conveniences in localStorage (pane sizes, open panels, the model/mode for new sessions, the last
-// session). Every read is validated and clamped and every access guarded: storage can be missing, full, blocked,
+// session, notifications on or off). Every read is validated and clamped and every access guarded: storage can be missing, full, blocked,
 // or hold anything (another tab, an older version); the page must work the same without it.
 import type { Mode } from './types';
 import { MODES } from './types';
@@ -29,6 +29,8 @@ export interface Prefs {
   effort: string | null;
   lastSession: string | null;
   diffInline: boolean;
+  /** a browser notification when a prompt waits for you or a turn ends while the page is hidden */
+  notify: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -38,6 +40,7 @@ export const DEFAULT_PREFS: Prefs = {
   effort: null,
   lastSession: null,
   diffInline: false,
+  notify: false,
 };
 
 export const BOUNDS = {
@@ -69,6 +72,7 @@ export function parsePrefs(raw: unknown): Prefs {
     effort: typeof o.effort === 'string' && /^[a-z]{1,12}$/.test(o.effort) ? o.effort : null,
     lastSession: isUuid(o.lastSession) ? o.lastSession.toLowerCase() : null,
     diffInline: o.diffInline === true,
+    notify: o.notify === true,
   };
 }
 

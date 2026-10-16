@@ -703,7 +703,7 @@ def test_a_password_too_long_for_a_request_is_a_clear_413(settings, dirs):
     assert files(rq) == []
 
 
-# --- the Code page: on only from this computer and only with the terminal on; off from anywhere ---
+# --- the Code page: on only from this computer (the terminal too, when it is off); off from anywhere ---
 
 def code_rows(code="false", terminal="true"):
     return KEYS + [row("CODE_ENABLED", "advanced", "-", "widen-local", "bool", "code", value=code),
@@ -711,23 +711,30 @@ def code_rows(code="false", terminal="true"):
                    row("TERMINAL_WORKSPACE", "advanced", "s", "ro", "-", "-", value="/home/u/bedrock-workspace")]
 
 
-def test_code_page_turns_on_here_with_the_terminal_and_off_from_anywhere(make, dirs):
+def test_code_page_turns_on_here_with_or_without_the_terminal_and_off_from_anywhere(make, dirs):
     sd, rq = dirs
-    write_snapshot(sd, keys=code_rows(code="false", terminal="false")); helper_up(sd)
-    c = make()
-    r = apply(c, {"CODE_ENABLED": "true"})
-    assert r.status_code == 400 and "needs the browser terminal" in r.json()["fields"]["CODE_ENABLED"]
-    assert "./stack code enable" in r.json()["fields"]["CODE_ENABLED"] and files(rq) == []
-    write_snapshot(sd, keys=code_rows(code="false", terminal="true"))
-    r = apply(c, {"CODE_ENABLED": "true"})
-    assert r.status_code == 202, r.text
-    req = (rq / f"cfg-{r.json()['id']}.req").read_text()
-    assert f"set CODE_ENABLED {base64.b64encode(b'true').decode()}\n" in req and "\norigin local\n" in req
+    for terminal in ("false", "true"):   # (terminal off: ./stack turns it on too, after checking its folder)
+        write_snapshot(sd, keys=code_rows(code="false", terminal=terminal)); helper_up(sd)
+        r = apply(make(), {"CODE_ENABLED": "true"})
+        assert r.status_code == 202, r.text
+        req = (rq / f"cfg-{r.json()['id']}.req").read_text()
+        assert f"set CODE_ENABLED {base64.b64encode(b'true').decode()}\n" in req and "\norigin local\n" in req
+        for f in files(rq):
+            (rq / f).unlink()
     # the policy, as lib/settings.sh setting_allowed: turning it on weakens (this computer only), off never does
     code = row("CODE_ENABLED", policy="widen-local", validator="bool", value="false")
     assert "can only be turned on from the computer running bedrock-now" in st.policy_error(code, "true", local=False)
     assert st.policy_error(code, "true", local=True) is None
     assert st.policy_error(row("CODE_ENABLED", policy="widen-local", validator="bool", value="true"), "false", local=False) is None
+
+
+def test_snapshot_names_the_code_pages_folder_as_text_only(dirs):
+    sd, _ = dirs
+    write_snapshot(sd, choices={**CHOICES, "code_workspace": "/home/u/bedrock-now-workspace"})
+    assert st.snapshot(sd)["choices"]["code_workspace"] == "/home/u/bedrock-now-workspace"
+    for bad in (None, 7, ["/x"], {"p": "/x"}):
+        write_snapshot(sd, choices={**CHOICES, "code_workspace": bad})
+        assert st.snapshot(sd)["choices"]["code_workspace"] == ""
 
 
 def test_code_page_from_remote_access_only_off(make, dirs):
@@ -749,6 +756,8 @@ def test_settings_page_has_the_code_page_row_and_its_read_only_workspace():
     assert 'if (g === "code") { codeRow(body); return c; }' in js
     # the workspace shown, never changed here: the command that changes it, with Copy
     assert "Workspace (read-only here): " in js and '"./stack terminal enable --workspace DIR"' in js
-    # On stays off while the terminal is off (the helper and the portal refuse it too) and remotely (widen-local)
-    assert "needsTerminal(k, val)" in js and "localOnlyHere(k, val)" in js
-    assert "./stack code enable" in js and "./stack code disable" in js
+    # On stays off remotely (widen-local); with the terminal off it names the folder the terminal will get, from the
+    # snapshot, and says the terminal is turned on too (no restart of the terminal either way)
+    assert "localOnlyHere(k, val)" in js and "needsTerminal" not in js
+    assert "data.snapshot.choices.code_workspace" in js and "it turns the browser terminal on too, with the folder ${ws}" in js
+    assert "./stack code enable" in js and "./stack code disable" in js and "restarts the terminal" not in js

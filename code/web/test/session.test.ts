@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { addPrompt, applyEvent, applySeq, changedFiles, mergeHistory, newView, MAX_ITEMS, type SessionView } from '../src/session';
+import { addPrompt, applyEvent, applySeq, changedFiles, mergeHistory, newView, MAX_ITEMS, type SessionView, dropPrompt, endedMidTurn, prependHistory } from '../src/session';
 import type { Ev } from '../src/types';
 
 const ID = '3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c';
 const U1 = '11111111-1111-4111-8111-111111111111';
+const U3 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const U2 = '22222222-2222-4222-8222-222222222222';
 const fold = (evs: Ev[], v: SessionView = newView(ID)) => evs.reduce((x, e) => applyEvent(x, e, 1000), v);
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -60,18 +61,64 @@ test('seq: replays are ignored; holes (the ring drops finished deltas) are not a
   assert.equal(v.items.length, 3);
 });
 
-test('an optimistic prompt is not duplicated by the server echo; a busy session queues', () => {
+test('an optimistic prompt is not duplicated by the server echo; a prompt sent mid-turn waits below the stream', () => {
   let v = addPrompt(newView(ID), 'first', 0, U1, 10);
   assert.equal(v.state, 'busy');
   v = applyEvent(v, { kind: 'user', text: 'first', uuid: U1, images: 0 });
   assert.equal(v.items.filter((i) => i.t === 'user').length, 1);
   assert.equal(v.turns.length, 1);
+  v = applyEvent(v, { kind: 'delta', text: 'Hal', parent: null });
   v = addPrompt(v, 'second', 0, U2, 20);
-  const second = v.items[v.items.length - 1];
-  assert.ok(second.t === 'user' && second.queued);
-  v = applyEvent(v, { kind: 'user', text: 'second', uuid: U2, images: 0 });
-  const again = v.items[v.items.length - 1];
-  assert.ok(again.t === 'user' && !again.queued);
+  assert.deepEqual(v.queued.map((q) => q.text), ['second']);
+  assert.equal(v.items.filter((i) => i.t === 'user').length, 1, 'not in the list mid-answer');
+  v = applyEvent(v, { kind: 'user', text: 'second', uuid: U2, images: 0 });   // the backend's echo: still waiting
+  assert.equal(v.queued.length, 1);
+  v = applyEvent(v, { kind: 'delta', text: 'lo', parent: null });
+  const answer = v.items.filter((i) => i.t === 'assistant');
+  assert.equal(answer.length, 1, 'the answer is not split');
+  v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false }, 30);
+  // the turn ended: the waiting prompt joins the list after it and starts the next turn
+  assert.equal(v.queued.length, 0);
+  const last = v.items[v.items.length - 1];
+  assert.ok(last.t === 'user' && last.text === 'second');
+  assert.deepEqual(v.turns.map((t) => [t.start, t.end]), [[10, 30], [30, null]]);
+  assert.equal(v.state, 'busy');
+  // a prompt the backend refused goes again (from the queue or with its turn)
+  v = dropPrompt(v, U2);
+  assert.equal(v.items.filter((i) => i.t === 'user').length, 1);
+  assert.equal(v.turns.length, 1);
+  assert.equal(v.state, 'idle');
+});
+
+test('the process ends mid-turn: the turn closes, waiting prompts show with a note', () => {
+  let v = addPrompt(newView(ID), 'first', 0, U1, 10);
+  v = addPrompt(v, 'second', 0, U2, 20);
+  v = endedMidTurn(v, 40);
+  assert.equal(v.turns[0].end, 40);
+  assert.deepEqual(v.items.map((i) => i.t), ['user', 'user', 'notice']);
+});
+
+test('history: one turn per prompt (a transcript has no results); "load earlier" goes in front, costs stay with their turns', () => {
+  const h: Ev[] = [
+    { kind: 'user', text: 'a', uuid: U1, images: 0 },
+    { kind: 'text', text: 'A', model: '', parent: null },
+    { kind: 'user', text: 'b', uuid: U2, images: 0 },
+    { kind: 'text', text: 'B', model: '', parent: null },
+  ];
+  let v = mergeHistory(newView(ID), h, 100, { offset: 10, truncated: true });
+  assert.equal(v.queued.length, 0);
+  assert.deepEqual(v.items.filter((i) => i.t === 'user').map((i) => (i as { text: string }).text), ['a', 'b']);
+  assert.equal(v.turns.length, 2);
+  assert.ok(v.turns.every((t) => t.history && t.end !== null));
+  assert.deepEqual([v.historyOffset, v.historyTruncated], [10, true]);
+  v = applyEvent(v, { kind: 'user', text: 'c', uuid: U3, images: 0 }, 200);
+  v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false }, 210);
+  const resultTurn = (x: typeof v) => (x.items.find((i) => i.t === 'result') as { turn: number }).turn;
+  assert.equal(resultTurn(v), 2);
+  v = prependHistory(v, [{ kind: 'user', text: 'z', uuid: null, images: 0 }], 9, 300);
+  assert.equal(v.items[0].t === 'user' && v.items[0].text, 'z');
+  assert.equal(v.historyOffset, 9);
+  assert.equal(resultTurn(v), 3, 'the live result still points at its own turn');
 });
 
 test('history merges with the live replay without duplicates', () => {
@@ -105,9 +152,9 @@ test('Task children carry their parent; files Claude changed are tracked', () =>
     { kind: 'tool_use', id: 'task1', name: 'Task', input: {}, parent: null },
     { kind: 'tool_use', id: 'g1', name: 'Grep', input: {}, parent: 'task1' },
     { kind: 'tool_use', id: 'e1', name: 'Edit', input: {}, parent: null },
-    { kind: 'tool_result', id: 'e1', text: 'ok', isError: false, edit: { path: 'src/a.ts', original: 'x', hunks: [] }, parent: null },
+    { kind: 'tool_result', id: 'e1', text: 'ok', isError: false, edit: { path: 'src/a.ts', original: 'x', hunks: [], complete: true }, parent: null },
     { kind: 'tool_use', id: 'w1', name: 'Write', input: {}, parent: null },
-    { kind: 'tool_result', id: 'w1', text: 'ok', isError: false, edit: { path: 'src/new.ts', original: null, hunks: [] }, parent: null },
+    { kind: 'tool_result', id: 'w1', text: 'ok', isError: false, edit: { path: 'src/new.ts', original: null, hunks: [], complete: true }, parent: null },
   ]);
   const g = v.items.find((i) => i.t === 'tool' && i.id === 'g1');
   assert.equal(g?.t === 'tool' && g.parent, 'task1');

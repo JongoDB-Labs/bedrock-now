@@ -517,18 +517,41 @@ test_apply_code_page_off_runs_code_disable_from_anywhere() {
   assert_contains "$(tail -n 1 "$(settings_audit_file)")" "result=ok via=portal-remote keys=CODE_ENABLED"
 }
 
-test_apply_code_page_on_is_refused_remotely_and_while_the_terminal_is_off() {
+test_apply_code_page_on_is_refused_remotely() {
   _env; _in_checkout; _stub_stack; _stub_code
   set_env CODE_ENABLED false
   cp "$ENV_FILE" "$TMP/before"
   if out="$( (_lines CODE_ENABLED=true | _apply --origin remote) 2>&1)"; then return 1; fi
   assert_contains "$out" "can only be turned on from the computer running bedrock-now"
-  TERM_READY=0
-  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
-  assert_contains "$out" "the browser terminal's sandbox, which is off — turn both on in a terminal: ./stack code enable [--workspace DIR]"
-  assert_contains "$out" "nothing was changed"
   assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
   [ ! -e "$TMP/calls" ] || assert_not_contains "$(cat "$TMP/calls")" "code "
+}
+
+test_apply_code_page_on_with_the_terminal_off_turns_it_on_with_a_checked_folder() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  set_env CODE_ENABLED false
+  TERM_READY=0
+  # the default folder (not there yet: code_enable creates it), named in the choices Settings shows
+  assert_contains "$(_settings_choices)" "\"code_workspace\": \"$(terminal_default_workspace)\""
+  _lines CODE_ENABLED=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(cat "$TMP/calls" | grep '^code')" "code enable (was false)"   # (code_enable turns the terminal on first)
+  # a folder the terminal must never see: refused before anything changes
+  set_env CODE_ENABLED false; : > "$TMP/calls"
+  mkdir -p "$STACK_DIR/inside"; set_env TERMINAL_WORKSPACE "$STACK_DIR/inside"
+  assert_contains "$(_settings_choices)" "\"code_workspace\": \"$STACK_DIR/inside\""
+  cp "$ENV_FILE" "$TMP/before"
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "CODE_ENABLED: the terminal's folder $STACK_DIR/inside cannot be its workspace: it is this bedrock-now folder or inside it"
+  assert_contains "$out" "./stack code enable --workspace DIR"
+  assert_contains "$out" "nothing was changed"
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  assert_not_contains "$(cat "$TMP/calls")" "code "
+  # the stack stopped: the terminal needs it (its LiteLLM key), so not from Settings
+  set_env TERMINAL_WORKSPACE ''
+  _cfg_stack_running() { return 1; }
+  if out="$( (_lines CODE_ENABLED=true | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "needs the stack running"
+  assert_eq "$(get_env CODE_ENABLED)" false
 }
 
 test_apply_code_page_failed_enable_is_taken_back() {

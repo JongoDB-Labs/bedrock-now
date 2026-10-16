@@ -317,17 +317,21 @@ class Handoff:
 
     TTL = 60
 
-    def __init__(self, secret: str, fingerprint: str, clock=time.time):
-        self._ser = URLSafeTimedSerializer(secret, salt="bedrock-now.portal.handoff")
+    def __init__(self, secret: str, fingerprint: str, clock=time.time, salt: str = "bedrock-now.portal.handoff"):
+        """salt: each kind of hand-off signs with its own (a session hand-off never redeems as an unlock hand-off)."""
+        self._ser = URLSafeTimedSerializer(secret, salt=salt)
         self._fp = fingerprint
         self._clock = clock
         self._born = clock()
         self._used: dict[str, float] = {}
 
-    def issue(self, aud: str, iat: float, login: str | None) -> str:
+    def issue(self, aud: str, iat: float, login: str | None, **extra) -> str:
+        """extra: more claims for the redeemer (numbers only; the code page's terminal hand-off carries the portal
+        session's start in "s")."""
         now = self._clock()
-        return self._ser.dumps({"aud": aud, "iat": iat, "u": login or "", "n": secrets.token_hex(16), "fp": self._fp,
-                                "m": now, "exp": now + self.TTL})
+        data = {"aud": aud, "iat": iat, "u": login or "", "n": secrets.token_hex(16), "fp": self._fp, "m": now, "exp": now + self.TTL}
+        data.update({k: v for k, v in extra.items() if k not in data and isinstance(v, (int, float))})
+        return self._ser.dumps(data)
 
     def redeem(self, token: str | None, aud: str) -> dict | None:
         if not token or len(token) > 2048:
@@ -392,24 +396,32 @@ class TerminalUnlocks:
         self._sessions = sessions
         self._clock = clock
 
-    def issue(self, login: str | None = None) -> str:
-        return self._ser.dumps({"v": 1, "fp": self._sessions.fingerprint, "iat": self._clock(), "u": login or ""})
+    def issue(self, login: str | None = None, iat: float | None = None) -> str:
+        """iat: when the password was typed (default now). The Code page's terminal panel hands its own unlock's iat
+        over (app.py terminal_unlock_callback): one typing of the password, one 12-hour window, one Sign out."""
+        return self._ser.dumps({"v": 1, "fp": self._sessions.fingerprint, "iat": self._clock() if iat is None else iat, "u": login or ""})
+
+    def claims(self, token: str | None, login: str | None = None) -> dict | None:
+        """The unlock's data while it is valid (for this login), else None."""
+        if not token or len(token) > 2048:
+            return None
+        try:
+            data = self._ser.loads(token)
+        except (BadSignature, ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or data.get("v") != 1:
+            return None
+        iat, fp, bound = data.get("iat"), data.get("fp"), data.get("u")
+        if not isinstance(iat, (int, float)) or iat <= self._sessions.not_before or not 0 <= self._clock() - iat <= TERMINAL_MAX_AGE:
+            return None
+        if not isinstance(fp, str) or not hmac.compare_digest(fp.encode(), self._sessions.fingerprint.encode()):
+            return None
+        if not isinstance(bound, str) or not hmac.compare_digest(bound.encode(), (login or "").encode()):
+            return None
+        return data
 
     def valid(self, token: str | None, login: str | None = None) -> bool:
-        if not token or len(token) > 2048:
-            return False
-        try:
-            data = self._ser.loads(token, max_age=TERMINAL_MAX_AGE)
-        except (BadSignature, ValueError, TypeError):
-            return False
-        if not isinstance(data, dict) or data.get("v") != 1:
-            return False
-        iat, fp, bound = data.get("iat"), data.get("fp"), data.get("u")
-        if not isinstance(iat, (int, float)) or iat <= self._sessions.not_before or self._clock() - iat > TERMINAL_MAX_AGE:
-            return False
-        if not isinstance(fp, str) or not hmac.compare_digest(fp.encode(), self._sessions.fingerprint.encode()):
-            return False
-        return isinstance(bound, str) and hmac.compare_digest(bound.encode(), (login or "").encode())
+        return self.claims(token, login) is not None
 
 
 def terminal_origin_ok(headers, settings: Settings, remote: bool, websocket: bool, app: str = TERMINAL,

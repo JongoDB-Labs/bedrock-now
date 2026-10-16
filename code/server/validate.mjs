@@ -33,35 +33,51 @@ export const oneOf = (v, list, d = null) => (list.includes(v) ? v : d);
 // plain(v, budget) -> a deep copy of JSON data within limits: depth 12, 200 keys per object, 500 items per array,
 // strings capped, and a total size budget (characters) after which the rest becomes "…". Functions, prototypes and
 // the like cannot occur (JSON), and __proto__ / constructor / prototype keys are dropped.
-export function plain(v, budget = 64 << 10, maxStr = 20000) {
+export function plain(v, budget = 64 << 10, maxStr = 20000, report = null) {
   let left = budget;
+  const cut = () => { if (report) report.cut = true; };
   const BAD = new Set(['__proto__', 'constructor', 'prototype']);
   const walk = (x, depth) => {
-    if (left <= 0) return '…';
+    if (left <= 0) { cut(); return '…'; }
     if (x === null || typeof x === 'boolean') { left -= 5; return x; }
-    if (typeof x === 'number') { left -= 10; return Number.isFinite(x) ? x : null; }
-    if (typeof x === 'string') { const s = str(x, Math.min(maxStr, Math.max(left, 1))); left -= s.length + 2; return s; }
-    if (depth >= 12) { left -= 3; return '…'; }
+    if (typeof x === 'number') { left -= 10; if (!Number.isFinite(x)) cut(); return Number.isFinite(x) ? x : null; }
+    if (typeof x === 'string') {
+      const s = str(x, Math.min(maxStr, Math.max(left, 1)));
+      if (s.length !== x.length || s !== x) cut();
+      left -= s.length + 2;
+      return s;
+    }
+    if (depth >= 12) { left -= 3; cut(); return '…'; }
     if (Array.isArray(x)) {
       const out = [];
-      for (const item of x.slice(0, 500)) { if (left <= 0) { out.push('…'); break; } out.push(walk(item, depth + 1)); }
-      if (x.length > 500) out.push(`… (${x.length - 500} more)`);
+      for (const item of x.slice(0, 500)) { if (left <= 0) { out.push('…'); cut(); break; } out.push(walk(item, depth + 1)); }
+      if (x.length > 500) { out.push(`… (${x.length - 500} more)`); cut(); }
       return out;
     }
     if (typeof x === 'object') {
       const out = {};
       let n = 0;
       for (const [k, val] of Object.entries(x)) {
-        if (BAD.has(k)) continue;
-        if (++n > 200 || left <= 0) { out['…'] = 'more'; break; }
+        if (BAD.has(k)) { cut(); continue; }
+        if (++n > 200 || left <= 0) { out['…'] = 'more'; cut(); break; }
         left -= k.length + 3;
-        out[short(k, 200)] = walk(val, depth + 1);
+        const key = short(k, 200);
+        if (key !== k) cut();
+        out[key] = walk(val, depth + 1);
       }
       return out;
     }
+    cut();
     return null;   // undefined, bigint, symbol: not JSON
   };
   return walk(v, 0);
+}
+
+// capped(v, budget, maxStr) -> {value: plain(v, …), complete: nothing was cut or dropped on the way}
+export function capped(v, budget, maxStr) {
+  const report = { cut: false };
+  const value = plain(v, budget, maxStr, report);
+  return { value, complete: !report.cut };
 }
 
 // relPath(v) -> a path the page names in the workspace ("" for the workspace itself), or null. The sandbox decides

@@ -31,6 +31,17 @@ function remember(tab) { try { localStorage.setItem("bn.tab", tab); } catch (_) 
 function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) { return null; } }
 
 const PAGES = ["home", "settings"];  // the portal's own pages; everything else is an app in a frame
+// appFrame TAB -> its frame: created (hidden) on first need and kept, so switching tabs never reloads an app
+function appFrame(tab) {
+  let f = $(`#frames iframe[data-app="${tab}"]`);
+  if (!f) {
+    f = el("iframe", { src: appUrl(tab), "data-app": tab, title: tab[0].toUpperCase() + tab.slice(1),
+      allow: "clipboard-read; clipboard-write; microphone; screen-wake-lock" });
+    f.hidden = true;
+    $("#frames").append(f);
+  }
+  return f;
+}
 function showTab(tab) {
   // not "constructor" etc.; the terminal and the Code page only where the server offers them (APP_URLS: ./stack
   // terminal / ./stack code; terminal.js, code.js)
@@ -42,11 +53,7 @@ function showTab(tab) {
   $("#home").hidden = tab !== "home";
   if ($("#settings")) $("#settings").hidden = tab !== "settings";
   for (const f of document.querySelectorAll("#frames iframe")) f.hidden = f.dataset.app !== tab;
-  if (!PAGES.includes(tab) && !$(`#frames iframe[data-app="${tab}"]`)) {
-    // Created on first visit and kept, so switching tabs never reloads an app.
-    $("#frames").append(el("iframe", { src: appUrl(tab), "data-app": tab, title: tab[0].toUpperCase() + tab.slice(1),
-      allow: "clipboard-read; clipboard-write; microphone; screen-wake-lock" }));
-  }
+  if (!PAGES.includes(tab)) appFrame(tab).hidden = false;
   remember(tab);
   if (location.hash !== `#${tab}`) history.replaceState(null, "", `#${tab}`);
   if (tab === "home") refresh();

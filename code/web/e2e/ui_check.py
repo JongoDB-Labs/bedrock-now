@@ -2,13 +2,17 @@
 
 Runs two mocks inside the container (normal on :8195, hostile on :8196) with the Node binary that ships with the
 Playwright driver, then walks the page on desktop (light and dark), tablet and phone: streaming, permission
-prompts, diffs in the editor, the slash and @ pickers, uploads, background tasks, interrupt, reconnect with replay,
-save conflicts, layout memory, and a hostile session (markup, bidi, control characters, giant strings, bad ids).
+prompts (the rules Always applies, the workspace option, partially shown prompts, padded commands, default-to-no,
+MultiEdit), plan approval, diffs in the editor, the slash and @ pickers, uploads, background tasks, interrupt,
+prompts queued below the stream and refused ones taken back, /clear and a reset from the CLI, fork from a prompt,
+"load earlier", reconnect with replay and close codes, an expired unlock, the budget banner, save conflicts, layout
+memory, and a hostile session (markup, bidi, control characters, giant strings, bad ids).
 Every page runs under the CSP the main Caddy will send (the mock sets it); any CSP violation, page error or dialog
 fails the check. Screenshots go to /out. Exit code 0 only when every check passed.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -83,7 +87,8 @@ class Page:
     def assert_clean(self):
         csp = self.page.evaluate("window.__csp")
         # expected: the WebSocket dropped on purpose; the 409 of a save that found the file changed on disk
-        errs = [e for e in self.errors if "ERR_CONNECTION_REFUSED" not in e and "WebSocket" not in e and "status of 409" not in e]
+        # (and the 401s of an expired unlock)
+        errs = [e for e in self.errors if "ERR_CONNECTION_REFUSED" not in e and "WebSocket" not in e and "status of 409" not in e and "status of 401" not in e]
         assert not csp, f"CSP violations: {csp[:5]}"
         assert not errs, f"page errors: {errs[:5]}"
         assert not self.dialogs, f"dialogs: {self.dialogs}"
@@ -157,6 +162,10 @@ def desktop_flow(browser):
     expect(page.locator(".tree-row[data-path='src/http/client.ts'] .tree-mark")).to_have_text("M")
     page.keyboard.press("Control+Backquote")
     expect(page.get_by_test_id("terminal")).to_be_visible()
+    # the terminal through the code host's hand-off (one unlock): /.bn/terminal, here redirected to the mock terminal
+    expect(page.locator("iframe.term-frame")).to_have_attribute("src", "/.bn/terminal")
+    expect(page.frame_locator("iframe.term-frame").locator("pre")).to_contain_text("mock", timeout=10_000)
+    expect(page.locator(".messages-inner[role=log]")).to_have_count(1)
     page.wait_for_timeout(2500)  # spend rows arrive, the meter fills in
     expect(page.get_by_test_id("cost")).not_to_contain_text("…", timeout=10_000)
     page.mouse.move(0, 0)
@@ -234,7 +243,16 @@ def deny_always(browser):
     send(page, "run the tests")
     expect(page.get_by_test_id("permission")).to_contain_text("Claude wants to run a command", timeout=10_000)
     expect(page.get_by_test_id("permission")).to_contain_text("npm test")
-    expect(page.get_by_test_id("permission")).to_contain_text("Allow Bash(npm:*)")
+    # Always: the rule as the backend will write it, in the sandbox's own settings; the workspace file only as a
+    # separate, explicit choice with its warning
+    expect(page.get_by_test_id("perm-rules")).to_contain_text("Bash(npm:*)")
+    expect(page.get_by_test_id("perm-rules")).to_contain_text("sandbox's Claude Code settings")
+    expect(page.get_by_test_id("perm-always-project")).to_be_visible()
+    expect(page.get_by_test_id("perm-project-note")).to_contain_text(".claude/settings.local.json")
+    expect(page.get_by_test_id("perm-project-note")).to_contain_text("Claude Code on your computer")
+    page.mouse.move(0, 0)
+    expect(page.get_by_test_id("perm-once")).to_be_enabled()
+    p.shot("desktop-permission-rules.png")
     page.get_by_test_id("perm-deny").click()
     page.locator(".perm-deny textarea").fill("use pnpm instead")
     page.get_by_test_id("perm-deny-send").click()
@@ -670,7 +688,376 @@ def phone(browser):
     expect(page.get_by_test_id("mcp-dialog").locator("[data-server='bedrock-shared']")).to_be_visible()
     p.shot("phone-mcp.png")
     page.get_by_test_id("mcp-dialog").get_by_role("button", name="Close").click()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-memory").click()
+    expect(page.get_by_test_id("memory-dialog")).to_contain_text("/workspace/CLAUDE.md")
+    p.shot("phone-memory.png")
+    assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "memory dialog wider than the phone"
+    page.get_by_test_id("memory-dialog").get_by_role("button", name="Close").first.click()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.assert_clean()
+    p.close()
+
+
+ARM = """() => {
+  window.__armed = undefined;
+  const seen = (n) => n.querySelector && (n.matches('[data-testid=permission]') ? n : n.querySelector('[data-testid=permission]'));
+  const mo = new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) { const c = seen(n); if (c) {
+    const b = c.querySelector('[data-testid=perm-once]'); mo.disconnect(); window.__armed = b ? b.disabled : null; return; } } });
+  mo.observe(document.body, { childList: true, subtree: true });
+}"""
+
+
+@check("permission cards: armed after a moment; partially shown; padded command; default-to-no; MultiEdit")
+def permission_cards(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "perm-cards", **DESKTOP)
+    page = p.open()
+    # a card's Allow is off for its first moments (a keystroke meant for the prompt box must not approve)
+    page.evaluate(ARM)
+    send(page, "run the tests")
+    page.wait_for_function("() => window.__armed !== undefined", timeout=10_000)
+    assert page.evaluate("window.__armed") is True, "Allow once was enabled the moment the card appeared"
+    expect(page.get_by_test_id("perm-once")).to_be_enabled()
+    page.get_by_test_id("perm-once").click()
+    wait_turns(page, 1)
+    # too large to show in full: says so, can only be denied
+    send(page, "write the huge command fixture")
+    perm = page.get_by_test_id("permission")
+    expect(page.get_by_test_id("perm-partial")).to_be_visible(timeout=10_000)
+    page.wait_for_timeout(600)
+    expect(page.get_by_test_id("perm-once")).to_be_disabled()
+    expect(page.get_by_test_id("perm-always")).to_be_disabled()
+    page.mouse.move(0, 0)
+    p.shot("desktop-permission-partial.png", clip=perm.bounding_box())
+    page.get_by_test_id("perm-deny").click()
+    page.get_by_test_id("perm-deny-send").click()
+    wait_turns(page, 2)
+    # a command whose end is pushed out of sight: a warning with the counts
+    send(page, "show the padded listing")
+    expect(page.get_by_test_id("perm-command-warning")).to_contain_text("characters", timeout=10_000)
+    expect(page.get_by_test_id("perm-command-warning")).to_contain_text("240 spaces")
+    page.mouse.move(0, 0)
+    p.shot("desktop-permission-padded.png", clip=page.get_by_test_id("permission").bounding_box())
+    page.get_by_test_id("perm-deny").click()
+    page.get_by_test_id("perm-deny-send").click()
+    wait_turns(page, 3)
+    # default to no: Deny has the focus, no one-key approve, no Always
+    send(page, "risky cleanup")
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("perm-deny")).to_be_focused()
+    expect(page.get_by_test_id("perm-always")).to_have_count(0)
+    expect(page.get_by_test_id("perm-always-project")).to_have_count(0)
+    page.wait_for_timeout(600)
+    page.keyboard.press("1")
+    page.wait_for_timeout(300)
+    expect(page.get_by_test_id("permission")).to_have_count(1)
+    page.keyboard.press("Enter")
+    expect(page.locator(".perm-deny textarea")).to_be_focused()
+    page.keyboard.press("Enter")
+    wait_turns(page, 4)
+    expect(page.locator(".msg-claude").last).to_contain_text("Left it alone")
+    # MultiEdit: the edits a card lists, the rest counted; replace_all said
+    send(page, "rename with many edits")
+    expect(page.get_by_test_id("perm-more-edits")).to_contain_text("and 4 more edits", timeout=10_000)
+    expect(page.get_by_test_id("perm-replace-all")).to_be_visible()
+    page.get_by_test_id("perm-once").click()
+    wait_turns(page, 5)
+    expect(page.locator(".tool[data-tool='MultiEdit']")).to_be_visible()
+    # "Always, in this workspace's settings": allowed from then on, as Always is
+    send(page, "run the tests again")
+    page.get_by_test_id("perm-always-project").click(timeout=10_000)
+    wait_turns(page, 6)
+    send(page, "run the tests a third time")
+    wait_turns(page, 7)
+    expect(page.get_by_test_id("permission")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("plan approval: approve with accepted edits; keep planning with a message")
+def plan_approval(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "plan", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "fix get() so it retries")
+    perm = page.get_by_test_id("permission")
+    expect(perm).to_contain_text("Claude has a plan", timeout=10_000)
+    expect(perm.locator("h2")).to_contain_text("Route get() through retry()")
+    page.mouse.move(0, 0)
+    expect(page.get_by_test_id("plan-approve-edits")).to_be_enabled()
+    p.shot("desktop-plan.png")
+    page.get_by_test_id("plan-approve-edits").click()
+    wait_turns(page, 1)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    expect(page.locator(".tool[data-tool='Edit'] .tool-status")).to_have_attribute("title", "done")
+    expect(page.get_by_test_id("permission")).to_have_count(0)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "and the post() method?")
+    page.get_by_test_id("plan-keep").click(timeout=10_000)
+    page.locator(".perm-plan textarea").fill("also cover post() with a timeout")
+    page.get_by_test_id("plan-keep-send").click()
+    wait_turns(page, 2)
+    expect(page.locator(".msg-claude").last).to_contain_text("also cover post() with a timeout")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan")
+    p.assert_clean()
+    p.close()
+
+
+@check("prompts: queued below the stream; a refused one comes back; /clear, /resume; a reset from the CLI")
+def prompts(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "prompts", **DESKTOP)
+    page = p.open()
+    send(page, "long answer please")
+    expect(page.locator(".msg-claude.streaming")).to_have_count(1, timeout=10_000)
+    send(page, "/cost")
+    queued = page.locator(".msg-user.queued")
+    expect(queued).to_have_count(1)
+    assert page.evaluate("() => document.querySelector('.messages-inner').lastElementChild.matches('.msg-user.queued')"), "the queued prompt is not pinned below the stream"
+    page.mouse.move(0, 0)
+    p.shot("desktop-queued.png")
+    wait_turns(page, 2, timeout=60_000)
+    expect(queued).to_have_count(0)
+    expect(page.get_by_test_id("msg-user")).to_have_count(2)
+    # refused by the backend: not in the list, back in the box, said in a toast that stays off the Send button
+    send(page, "please refuse this prompt")
+    expect(page.locator(".toast")).to_contain_text("Not sent", timeout=5000)
+    expect(page.get_by_test_id("prompt")).to_have_value("please refuse this prompt")
+    expect(page.get_by_test_id("msg-user")).to_have_count(2)
+    t, s = page.locator(".toast").first.bounding_box(), page.get_by_test_id("send").bounding_box()
+    assert t["y"] + t["height"] <= s["y"] or t["x"] + t["width"] <= s["x"], f"toast over the Send button: {t} {s}"
+    # /clear: a new session with the same mode (the old one stays in the list); /resume opens the list
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    send(page, "/clear")
+    page.wait_for_function("(sid) => JSON.parse(localStorage.getItem('bn.code.v1')).lastSession !== sid", arg=sid, timeout=10_000)
+    expect(page.get_by_test_id("msg-user")).to_have_count(0)
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    send(page, "/resume")
+    expect(page.get_by_test_id("sessions")).to_be_visible()
+    # Claude Code reset the conversation itself: the page follows to the new session
+    send(page, "/cost")
+    expect(page.get_by_test_id("local").last).to_contain_text("Total cost", timeout=10_000)
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    new = json.loads(urllib.request.urlopen(urllib.request.Request(f"{NORMAL}/__mock/clear?session={sid}", method="POST", data=b""), timeout=5).read())["new_session"]
+    page.wait_for_function("(n) => JSON.parse(localStorage.getItem('bn.code.v1')).lastSession === n", arg=new, timeout=10_000)
+    expect(page.get_by_test_id("msg-user")).to_have_count(0)
+    send(page, "/context")
+    expect(page.get_by_test_id("local").last).to_contain_text("Context usage", timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("sessions: fork from a prompt; a long transcript opens at its end, 'load earlier' the rest")
+def fork_and_history(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "fork", **DESKTOP)
+    page = p.open()
+    send(page, "Explain how this project is organised")
+    wait_turns(page, 1)
+    send(page, "/cost")
+    wait_turns(page, 2)
+    first = page.get_by_test_id("msg-user").first
+    first.hover()
+    first.get_by_test_id("msg-fork").click()
+    expect(page.locator(".chat-head .pane-title")).to_contain_text("Fork of", timeout=10_000)
+    expect(page.get_by_test_id("msg-user")).to_have_count(1)
+    expect(page.get_by_test_id("msg-user").first).to_contain_text("Explain how this project is organised")
+    # the fork button is reachable from the keyboard
+    page.get_by_test_id("msg-user").first.get_by_test_id("msg-fork").focus()
+    expect(page.get_by_test_id("msg-user").first.get_by_test_id("msg-fork")).to_be_visible()
+    page.get_by_test_id("side-sessions").click()
+    page.get_by_test_id("session-row").filter(has_text="Refactor the HTTP layer").locator(".sess-main").click()
+    expect(page.get_by_test_id("load-earlier")).to_contain_text("60 more", timeout=10_000)
+    expect(page.get_by_test_id("msg-user")).to_have_count(150)
+    expect(page.get_by_test_id("msg-user").first).to_contain_text("Step 31:")
+    page.get_by_test_id("load-earlier").click()
+    page.get_by_role("button", name="Show earlier messages (60)").click()
+    expect(page.get_by_test_id("msg-user")).to_have_count(180)
+    expect(page.get_by_test_id("msg-user").first).to_contain_text("Step 1:")
+    p.assert_clean()
+    p.close()
+
+
+@check("connection: close codes re-attach at once; an expired unlock says so; budget banner; tree trash and caps")
+def connection(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "connection", **DESKTOP)
+    page = p.open()
+    send(page, "Explain how this project is organised")
+    wait_turns(page, 1)
+    before = page.locator(".messages-inner > *").count()
+    post(NORMAL + "/__mock/close?code=4008")
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=3000)
+    page.wait_for_timeout(500)
+    assert page.locator(".messages-inner > *").count() == before, "items changed after a 4008 re-attach"
+    # the key's budget is spent: the turn fails, the banner names the setting; the meter's tooltip names the key
+    post(NORMAL + "/__mock/budget?spend=50&max=50")
+    send(page, "hello again")
+    wait_turns(page, 2)
+    expect(page.get_by_test_id("turn-end").last).to_contain_text("Failed")
+    expect(page.get_by_test_id("budget-banner")).to_contain_text("BUDGET_TERMINAL", timeout=10_000)
+    page.mouse.move(0, 0)
+    p.shot("desktop-budget.png")
+    expect(page.get_by_test_id("cost")).to_have_attribute("title", re.compile("claude-code-terminal"))
+    post(NORMAL + "/__mock/budget?spend=1&max=50")
+    page.get_by_test_id("cost").click()
+    expect(page.get_by_test_id("budget-banner")).to_have_count(0, timeout=10_000)
+    # the tree: the trash stays out of sight; a folder with more entries than listed says so
+    urllib.request.urlopen(urllib.request.Request(f"{NORMAL}/api/fs?path=README.md", method="DELETE"), timeout=5).read()
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    expect(page.locator(".tree-row[data-path='logs']")).to_be_visible()
+    expect(page.locator(".tree-row[data-path='.bedrock-now-trash']")).to_have_count(0)
+    page.locator(".tree-row[data-path='logs']").click()
+    expect(page.locator(".tree-row[data-path='logs/run-0001.log']")).to_be_visible(timeout=5000)
+    page.locator(".tree-scroll").evaluate("(s) => { s.scrollTop = s.scrollHeight; }")
+    expect(page.get_by_test_id("tree-truncated")).to_be_visible(timeout=5000)
+    # the unlock expired: the page stops reconnecting and says so
+    post(NORMAL + "/__mock/lock")
+    expect(page.get_by_test_id("unlock-expired")).to_be_visible(timeout=20_000)
+    page.mouse.move(0, 0)
+    p.shot("desktop-unlock-expired.png")
+    post(NORMAL + "/__mock/unlock")
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    expect(page.get_by_test_id("unlock-expired")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("to-do list pinned above the prompt; the conversation exported as Markdown; notifications opt-in")
+def todos_export(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "todos", permissions=["notifications"], **DESKTOP)
+    page = p.open()
+    send(page, "make a todo list")
+    wait_turns(page, 1)
+    panel = page.get_by_test_id("todo-panel")
+    expect(panel).to_contain_text("1/3")
+    expect(panel).to_contain_text("Routing get() through retry()")
+    panel.locator(".todos-head").click()
+    expect(panel.locator(".todo")).to_have_count(3)
+    page.mouse.move(0, 0)
+    p.shot("desktop-todos.png")
+    # a download made in the page (a blob), under the page's CSP
+    with page.expect_download() as dl:
+        page.get_by_test_id("more-menu").click()
+        page.get_by_test_id("menu-export").click()
+    d = dl.value
+    assert d.suggested_filename == "make-a-todo-list.md", d.suggested_filename
+    with open(d.path(), encoding="utf-8") as f:
+        text = f.read()
+    assert text.startswith("# make a todo list") and "## You\n\nmake a todo list" in text and "- **TodoWrite**" in text and "## Claude" in text, text[:400]
+    # notifications: off until asked for; remembered per browser when the browser allows them, else said so (headless
+    # Chromium never does)
+    page.get_by_test_id("more-menu").click()
+    expect(page.get_by_test_id("menu-notify")).to_have_attribute("aria-checked", "false")
+    page.get_by_test_id("menu-notify").click()
+    if page.evaluate("Notification.permission") == "granted":
+        page.wait_for_function("() => JSON.parse(localStorage.getItem('bn.code.v1')).notify === true", timeout=5000)
+        page.get_by_test_id("more-menu").click()
+        expect(page.get_by_test_id("menu-notify")).to_have_attribute("aria-checked", "true")
+    else:
+        expect(page.locator(".toast")).to_contain_text("does not allow notifications")
+        page.get_by_test_id("more-menu").click()
+        expect(page.get_by_test_id("menu-notify")).to_have_attribute("aria-checked", "false")
+    page.keyboard.press("Escape")
+    p.assert_clean()
+    p.close()
+
+
+@check("memory: the project and user CLAUDE.md; '#' adds a line; a change meanwhile is not overwritten unasked")
+def memory(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "memory", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-memory").click()
+    dlg = page.get_by_test_id("memory-dialog")
+    expect(dlg).to_contain_text("/workspace/CLAUDE.md")
+    expect(dlg.get_by_test_id("memory-save")).to_have_text("Create")
+    dlg.get_by_test_id("memory-text").fill("# Notes for Claude\n\n- Use pnpm, not npm")
+    dlg.get_by_test_id("memory-save").click()
+    expect(page.locator(".toast").last).to_contain_text("Saved /workspace/CLAUDE.md")
+    # changed meanwhile (the terminal, Claude): Save says so; Overwrite is a choice
+    post(NORMAL + "/__mock/touch?path=CLAUDE.md")
+    dlg.get_by_test_id("memory-text").fill("# Notes for Claude\n\n- Use pnpm, not npm\n- Tabs, not spaces")
+    dlg.get_by_test_id("memory-save").click()
+    expect(dlg.get_by_test_id("memory-conflict")).to_be_visible()
+    page.mouse.move(0, 0)
+    p.shot("desktop-memory.png")
+    dlg.get_by_test_id("memory-overwrite").click()
+    expect(dlg.get_by_test_id("memory-conflict")).to_have_count(0)
+    # the user one, in the sandbox
+    dlg.get_by_test_id("memory-tab-user").click()
+    expect(dlg).to_contain_text("~/.claude/CLAUDE.md")
+    dlg.get_by_test_id("memory-text").fill("- I prefer short answers")
+    dlg.get_by_test_id("memory-save").click()
+    expect(dlg.get_by_test_id("memory-save")).to_have_text("Save")
+    dlg.get_by_role("button", name="Close").first.click()
+    expect(dlg).to_have_count(0)
+    # "#" on one line: a line in the project's CLAUDE.md, not a prompt for Claude
+    send(page, "# Always run the tests before committing")
+    expect(page.locator(".toast").last).to_contain_text("Added to /workspace/CLAUDE.md")
+    expect(page.get_by_test_id("msg-user")).to_have_count(0)
+    mem = json.loads(urllib.request.urlopen(f"{NORMAL}/api/memory?scope=project", timeout=5).read())
+    assert mem["text"].endswith("- Tabs, not spaces\n- Always run the tests before committing\n"), mem["text"]
+    p.assert_clean()
+    p.close()
+
+
+@check("@ picker: the whole workspace is searched, not only the folders listed")
+def mention_search(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "mention", **DESKTOP)
+    page = p.open()
+    expect(page.locator(".tree-row[data-path='src/http/retry.ts']")).to_have_count(0)
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("look at @retr")
+    pal = page.get_by_test_id("palette")
+    expect(pal).to_contain_text("src/http/retry.ts", timeout=5000)
+    box.press("Tab")
+    expect(box).to_have_value("look at @src/http/retry.ts ")
+    p.assert_clean()
+    p.close()
+
+
+@check("checkpoints: restore files to a prompt (a dry run first); nothing to restore")
+def checkpoints(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "rewind", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    send(page, "fix get() please")
+    wait_turns(page, 1)
+    send(page, "/cost")
+    wait_turns(page, 2)
+    second = page.get_by_test_id("msg-user").nth(1)
+    second.hover()
+    second.get_by_test_id("msg-rewind").click()
+    expect(page.get_by_test_id("rewind-preview")).to_contain_text("Nothing to restore")
+    page.get_by_test_id("rewind-preview").get_by_role("button", name="Close").click()
+    first = page.get_by_test_id("msg-user").first
+    first.hover()
+    first.get_by_test_id("msg-rewind").click()
+    preview = page.get_by_test_id("rewind-preview")
+    expect(preview).to_contain_text("src/http/client.ts")
+    expect(preview).to_contain_text("Put back 1 file")
+    page.mouse.move(0, 0)
+    p.shot("desktop-rewind.png")
+    page.get_by_test_id("rewind-confirm").click()
+    expect(page.locator(".toast").last).to_contain_text("Restored 1 file")
+    expect(page.get_by_test_id("rewind-preview")).to_have_count(0)
+    f = json.loads(urllib.request.urlopen(f"{NORMAL}/api/fs/file?path=src/http/client.ts", timeout=5).read())
+    assert "return retry(async" not in f["text"], "client.ts was not restored"
     p.assert_clean()
     p.close()
 

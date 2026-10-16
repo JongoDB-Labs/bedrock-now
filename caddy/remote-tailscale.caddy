@@ -95,6 +95,7 @@ http://{$REMOTE_TERMINAL_HOST:terminal.remote.invalid}:8081 {
 	route {
 		import remote_request
 		import handoff_callback
+		import terminal_callback
 		import terminal_unlock
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {

@@ -99,6 +99,7 @@ https://{$REMOTE_HOST}:8443, https://*.{$REMOTE_HOST}:8443 {
 	route @terminal {
 		import remote_request
 		import handoff_callback
+		import terminal_callback
 		import terminal_unlock
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {

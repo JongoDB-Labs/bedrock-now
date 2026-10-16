@@ -33,6 +33,9 @@ const answers = {
     : { result: { path: req.path, size: req.size, mtimeMs: 2 } }),
   'fs.delete': () => ({ result: { trash: '.bedrock-now-trash/x/a' } }),
   'sessions.title': () => ({ result: { ok: true } }),
+  'fs.find': (req) => ({ result: { paths: [`src/${req.q}.ts`, '../../etc/passwd', '/abs', 'a\u0000b', 7, 'src/'], truncated: true } }),
+  'memory.read': () => ({ result: { path: '~/.claude/CLAUDE.md', exists: true, size: 6, mtimeMs: 3, truncated: false }, stdout: Buffer.from('# mine') }),
+  'memory.write': (req) => ({ result: { path: '~/.claude/CLAUDE.md', size: req.size, mtimeMs: 4 } }),
   cli: (req) => cliAnswer(req.args),
 };
 // the stand-in CLI: listings as the real one prints them (2.1.296), and --json result lines after any human text
@@ -65,7 +68,7 @@ let srv, base, origin;
 before(async () => {
   const dist = tmp('bndist');
   srv = createServer({ secret: SECRET, query: fakeQuery(), spawn: () => {}, call, distDir: dist, plainDir: path.resolve(import.meta.dirname, '../plain'),
-    versions: { sdk: '0.3.296', claudeCode: '2.1.296' }, logger: () => {}, reloadDelayMs: 5, reloadAgainMs: 50 });
+    versions: { sdk: '0.3.296', claudeCode: '2.1.296' }, logger: () => {}, reloadPollMs: 20, reloadMaxMs: 300 });
   await new Promise((r) => srv.server.listen(0, '127.0.0.1', r));
   const port = srv.server.address().port;
   base = `http://127.0.0.1:${port}`;
@@ -270,6 +273,12 @@ test('outcomes of the CLI: its --json line after human text, else its first (ok)
   }
   // a failure code that is not about a command: no confirmation, whatever came along
   assert.equal(actionResult(1, line({ outcome: 'failed', failureCode: 'not_found', shownCommand: { command: 'x', sha256: sha } })).needs_confirmation, undefined);
+  // a command too long to show in full is never offered for confirmation
+  r = actionResult(1, line({ outcome: 'failed', failureCode: 'command_source_refused', shownCommand: { command: 'c'.repeat(8001), sha256: sha } }));
+  assert.deepEqual([r.needs_confirmation, r.failureCode], [undefined, 'command_too_long']);
+  assert.match(r.message, /too long to show here \(8001 characters\)/);
+  r = actionResult(1, line({ outcome: 'failed', failureCode: 'entry_helper_unconfirmed', shownCommand: { command: 'x', archiveUrl: `https://x/${'u'.repeat(2000)}`, sha256: sha } }));
+  assert.equal(r.failureCode, 'command_too_long');
   // exit 0 with outcome failed is a failure; a JSON line wins over an exit code
   assert.equal(actionResult(0, line({ outcome: 'failed', message: 'm' })).ok, false);
   assert.equal(installedRow({ id: '<b>@m' }), null);
@@ -321,20 +330,37 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   await until(a.inbox, (m) => m.type === 'event' && m.ev.type === 'result');
   const seqs = a.inbox.filter((m) => m.type === 'event').map((m) => m.seq);
   assert.deepEqual(seqs, [1, 2, 3, 4, 5]);
+  const epoch = a.inbox.find((m) => m.type === 'event').epoch;
+  assert.match(epoch, /^[0-9a-f]{8}$/);
+  assert.ok(a.inbox.filter((m) => m.type === 'event').every((m) => m.epoch === epoch));
   // a second page re-attaches since 2: gets what it missed, in order (the streamed delta folded into the text)
   const b = await wsOpen();
   b.send({ type: 'attach', session: json.id, since: 2, req: 'x' });
   await until(b.inbox, (m) => m.type === 'event' && m.ev.type === 'result');
   assert.deepEqual(b.inbox.filter((m) => m.type === 'event').map((m) => [m.seq, m.ev.type]), [[4, 'text'], [5, 'result']]);
-  assert.equal(b.inbox.find((m) => m.type === 'attached').gap, false);
+  assert.deepEqual([b.inbox.find((m) => m.type === 'attached').gap, b.inbox.find((m) => m.type === 'attached').epoch], [false, epoch]);
+  // a page that saw another process of this session (or counts past this one) gets all of it, with gap set
+  for (const [att, req] of [[{ since: 2, epoch: 'deadbeef' }, 'ep1'], [{ since: 99 }, 'ep2']]) {
+    const n = b.inbox.length;
+    b.send({ type: 'attach', session: json.id, ...att, req });
+    await until(b.inbox, (m) => m.type === 'reply' && m.req === req);
+    const got = b.inbox.slice(n);
+    assert.equal(got.find((m) => m.type === 'attached').gap, true, req);
+    assert.deepEqual(got.filter((m) => m.type === 'event').map((m) => m.seq), [1, 2, 4, 5], req);
+  }
   // a permission prompt: both pages see it, the badge count goes up and down, one answer settles it
   a.send({ type: 'prompt', session: json.id, text: 'ask:touch z' });
   const p = await until(b.inbox, (m) => m.type === 'permission');
   await until(a.inbox, (m) => m.type === 'pending' && m.count === 1);
-  b.send({ type: 'permission', id: p.id, decision: 'once', req: 'ok' });
+  assert.deepEqual([p.complete, p.rules, p.projectRules, p.defaultNo, p.noAlways, p.suggestions], [true, [], [], false, false, undefined]);
+  b.send({ type: 'permission', id: p.id, decision: 'once', req: 'nosession' });
+  assert.match((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'nosession')).error, /bad permission answer/);
+  b.send({ type: 'permission', id: p.id, session: '00000000-0000-4000-8000-000000000000', decision: 'once', req: 'other' });
+  assert.equal((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'other')).ok, false, 'another session cannot answer it');
+  b.send({ type: 'permission', id: p.id, session: json.id, decision: 'once', req: 'ok' });
   await until(a.inbox, (m) => m.type === 'permission_done' && m.decision === 'once');
   await until(a.inbox, (m) => m.type === 'pending' && m.count === 0);
-  b.send({ type: 'permission', id: p.id, decision: 'once', req: 'again' });
+  b.send({ type: 'permission', id: p.id, session: json.id, decision: 'once', req: 'again' });
   assert.equal((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'again')).ok, false);
   // bad input: errors, the socket stays
   for (const [m, re] of [[{ type: 'prompt', session: '../../etc', text: 'x', req: 'e1' }, /bad session/], [{ type: 'set_mode', session: json.id, mode: 'bypassPermissions', req: 'e2' }, /bad mode/],
@@ -390,4 +416,59 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   a.send({ type: 'set_effort', session: json.id, effort: null, req: 'eff' });
   assert.equal((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'eff')).ok, true);
   a.ws.close(); b.ws.close();
+});
+
+test('the @-picker over the workspace, memory files, a never-prompted session\'s title, the history\'s tail', async () => {
+  let r = await req('GET', '/api/fs/find?q=retry&limit=20');
+  assert.deepEqual(r.json, { paths: ['src/retry.ts', 'src/'], truncated: true });
+  assert.deepEqual(calls.at(-1)[0], { op: 'fs.find', q: 'retry', limit: 20 });
+  r = await req('GET', '/api/memory?scope=user');
+  assert.deepEqual(r.json, { scope: 'user', path: '~/.claude/CLAUDE.md', exists: true, text: '# mine', size: 6, mtimeMs: 3, truncated: false });
+  r = await req('PUT', '/api/memory?scope=user', { body: { text: '# mine\n- more' } });
+  assert.deepEqual(calls.at(-1), [{ op: 'memory.write', size: 13, ifMtimeMs: undefined }, 13]);
+  assert.equal(r.json.path, '~/.claude/CLAUDE.md');
+  r = await req('GET', '/api/memory?scope=project');   // a file of the workspace: fs.read of CLAUDE.md
+  assert.deepEqual(calls.at(-1)[0], { op: 'fs.read', path: 'CLAUDE.md', max: 2 << 20 });
+  assert.equal(r.json.path, '/workspace/CLAUDE.md');
+  assert.equal((await req('GET', '/api/memory?scope=../x')).status, 400);
+  assert.equal((await req('PUT', '/api/memory?scope=user', { body: { text: 'x'.repeat((1 << 20) + 1) } })).status, 413);
+  // a session that has no transcript yet keeps its title until its first turn is over, then it is written
+  const { json } = await req('POST', '/api/sessions', { body: { mode: 'default' } });
+  r = await req('POST', `/api/sessions/${json.id}/title`, { body: { title: 'Named early' } });
+  assert.deepEqual(r.json, { ok: true, pending: true });
+  assert.ok(!calls.some(([c]) => c.op === 'sessions.title' && c.id === json.id));
+  assert.equal(srv.mgr.get(json.id).title, 'Named early');
+  srv.mgr.get(json.id).prompt({ text: 'hi' });
+  for (let i = 0; i < 50 && !calls.some(([c]) => c.op === 'sessions.title' && c.id === json.id); i++) await new Promise((res) => setTimeout(res, 20));
+  assert.ok(calls.some(([c]) => c.op === 'sessions.title' && c.id === json.id && c.title === 'Named early'));
+  // the history's tail: the last N messages, more = earlier ones exist
+  r = await req('GET', `/api/sessions/${SID}/messages?tail=1`);
+  assert.deepEqual([r.json.total, r.json.offset, r.json.limit, r.json.more], [2, 1, 1, true]);
+  assert.deepEqual(r.json.messages.map((e) => e.type), ['text']);
+  // file checkpoints over the socket
+  const a = await wsOpen();
+  a.send({ type: 'rewind_files', session: json.id, message: '00000000-0000-4000-8000-000000000003', dryRun: true, req: 'rw' });
+  const rw = await until(a.inbox, (m) => m.type === 'reply' && m.req === 'rw');
+  assert.deepEqual(rw.data, { canRewind: true, error: '', filesChanged: ['/workspace/a.txt'], insertions: 2, deletions: 0, skippedLinks: 0 });
+  a.send({ type: 'rewind_files', session: json.id, message: 'x', req: 'rw2' });
+  assert.match((await until(a.inbox, (m) => m.type === 'reply' && m.req === 'rw2')).error, /bad message id/);
+  a.ws.close();
+});
+
+test('a new conversation in a session (/clear …): its pages get `reset` and follow the new session', async () => {
+  const a = await wsOpen();
+  const { json } = await req('POST', '/api/sessions', { body: { model: 'haiku', mode: 'plan' } });
+  a.send({ type: 'attach', session: json.id, req: 'at' });
+  await until(a.inbox, (m) => m.req === 'at');
+  const N = '00000000-0000-4000-8000-0000000000bb';
+  a.send({ type: 'prompt', session: json.id, text: `reset:${N}` });
+  const r = await until(a.inbox, (m) => m.type === 'reset');
+  assert.deepEqual(r, { type: 'reset', session: json.id, new_session: N });
+  const ns = srv.mgr.get(N);
+  assert.deepEqual([ns.model, ns.mode, ns.open, ns.hasTranscript], ['haiku', 'plan', true, true], 'resumed: the sandbox has its transcript');
+  assert.equal(srv.mgr.get(json.id).open, false);
+  // the page now gets the new session's events without attaching again
+  a.send({ type: 'prompt', session: N, text: 'next' });
+  await until(a.inbox, (m) => m.type === 'event' && m.session === N && m.ev.type === 'result');
+  a.ws.close();
 });

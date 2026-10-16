@@ -3,8 +3,11 @@
 import * as api from './api';
 import type { BnModels, ConnStatus } from './api';
 import { createStore, type Store } from './store';
-import { addPrompt, applySeq, mergeHistory, newView, pendingCount, type SessionView } from './session';
-import type { Ev, FsEntry, Hunk, ImageBlock, Mode, ServerMsg, ServerState, SessionInfo } from './types';
+import { addPrompt, applySeq, dropPrompt, endedMidTurn, mergeHistory, newView, pendingCount, prependHistory, type SessionView } from './session';
+import { exportName, toMarkdown } from './transcript';
+import { appendMemory, memoryLine } from './palette';
+import { sentence } from './permission';
+import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, Mode, ServerMsg, ServerState, SessionInfo } from './types';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
@@ -19,6 +22,8 @@ export interface DirState {
   entries: FsEntry[];
   loading: boolean;
   error: string | null;
+  /** the folder has more entries than the backend lists */
+  truncated: boolean;
 }
 export interface FsState {
   dirs: Record<string, DirState>;
@@ -56,7 +61,17 @@ export interface DiffTab {
 export type Tab = FileTab | DiffTab;
 
 export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory';
+
+/** "Restore files to here" on a prompt: what a dry run found, then the restore. */
+export interface RewindState {
+  session: string;
+  /** the prompt's uuid */
+  message: string;
+  phase: 'checking' | 'ready' | 'restoring';
+  result: api.Rewind | null;
+  error: string;
+}
 
 export interface AppState {
   conn: ConnStatus;
@@ -84,6 +99,15 @@ export interface AppState {
   focusComposer: number;
   /** text the composer should insert (an @mention from the explorer) */
   insert: { n: number; text: string } | null;
+  /** text the composer should get back (a prompt the backend refused) */
+  restore: { n: number; text: string } | null;
+  /** permission prompts waiting in all sessions, as the backend counts them */
+  pendingTotal: number;
+  /** the terminal key's budget (what Code-page sessions spend against) */
+  budget: KeyBudget | null;
+  /** a request was refused for the budget (until /.bn/spend shows room again) */
+  budgetHit: boolean;
+  rewind: RewindState | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -110,6 +134,11 @@ export const store: Store<AppState> = createStore<AppState>({
   cursor: null,
   focusComposer: 0,
   insert: null,
+  restore: null,
+  pendingTotal: 0,
+  budget: null,
+  budgetHit: false,
+  rewind: null,
 });
 
 const set = store.set;
@@ -172,8 +201,12 @@ export const socket = new api.Socket({
   },
   onOpen() {
     attached.clear();
-    if (opened++ > 0) void syncOpenSessions();
-    for (const id of Object.keys(get().views)) attach(id);
+    // after a reconnect the backend may have restarted: learn which sessions it still has before re-attaching
+    const again = opened++ > 0;
+    void (async () => {
+      if (again) await syncOpenSessions();
+      for (const id of Object.keys(get().views)) attach(id);
+    })();
   },
   onMessage: handle,
 });
@@ -220,7 +253,7 @@ function historyAfterReplay(id: string, quietMs: number): void {
 function attach(id: string): void {
   const v = get().views[id];
   if (!v || v.state === 'closed') return;
-  socket.send({ type: 'attach', session: id, since: v.seq });
+  socket.send(v.epoch ? { type: 'attach', session: id, since: v.seq, epoch: v.epoch } : { type: 'attach', session: id, since: v.seq });
   if (needHistory.has(id) && socket.isOpen) historyAfterReplay(id, 700);
   if (!attached.has(id)) {
     attached.add(id);
@@ -240,12 +273,54 @@ function scheduleSpend(id: string, delays = [1500, 5000, 15000, 40000]): void {
 }
 export async function refreshSpend(id: string): Promise<void> {
   try {
-    const rows = await api.getSpend(id);
+    const { rows, key } = await api.getSpend(id);
     updateView(id, (v) => ({ ...v, spend: rows }));
+    if (key) set((s) => ({ ...s, budget: key, budgetHit: api.overBudget(key) || (s.budgetHit && key.spend === null) }));
   } catch {
     /* the meter keeps showing "…" */
   }
 }
+
+/** A refusal for the key's budget (LiteLLM's words reach us in errors and failed results). */
+const BUDGET_WORDS = /budget (has been )?exceeded|exceeded budget|ExceededBudget|over (its|the) budget|max_budget/i;
+
+/** Context usage is asked for after each turn; a burst of results asks once. */
+const contextTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function requestContext(id: string, ms = 1500): void {
+  clearTimeout(contextTimers.get(id));
+  contextTimers.set(
+    id,
+    setTimeout(() => {
+      contextTimers.delete(id);
+      socket.send({ type: 'context', session: id });
+    }, ms),
+  );
+}
+
+/** Requests over the WebSocket waiting for their reply, by request id. */
+const pendingReplies = new Map<string, (r: { ok: boolean; data: unknown; error: string }) => void>();
+let requestN = 0;
+
+/** A WebSocket request and its reply (an error when none comes within `ms`). */
+function wsRequest(msg: Omit<Extract<api.ClientMsg, { type: 'rewind_files' }>, 'req'>, ms = 60_000): Promise<{ ok: boolean; data: unknown; error: string }> {
+  const req = `r${Date.now().toString(36)}${(requestN++).toString(36)}`;
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      pendingReplies.delete(req);
+      resolve({ ok: false, data: null, error: 'No answer from the Code page server.' });
+    }, ms);
+    pendingReplies.set(req, (r) => {
+      clearTimeout(t);
+      pendingReplies.delete(req);
+      resolve(r);
+    });
+    socket.send({ ...msg, req });
+  });
+}
+
+/** Prompts sent and not yet confirmed by the backend, by their request id. */
+const sentPrompts = new Map<string, { session: string; uuid: string; text: string }>();
+let promptN = 0;
 
 const historyLoading = new Set<string>();
 /** Sessions whose transcript was requested once already (a new session has none). */
@@ -254,31 +329,74 @@ const loadedHistory = new Set<string>();
 function handle(m: ServerMsg): void {
   switch (m.kind) {
     case 'event': {
-      const v = get().views[m.session];
+      let v = get().views[m.session];
       if (!v) return;
+      if (m.epoch && v.epoch !== m.epoch) {
+        if (v.epoch && v.seq > 0) {
+          // another process of this session (a restart this page did not see end): its events number from 1 again —
+          // rebuild from the transcript and the new process's events
+          updateView(m.session, (x) => ({ ...x, epoch: m.epoch, seq: 0, items: [], turns: [], queued: [] }));
+          needHistory.add(m.session);
+          historyAfterReplay(m.session, 250);
+          socket.send({ type: 'attach', session: m.session, since: 0, epoch: m.epoch ?? undefined });
+        } else updateView(m.session, (x) => ({ ...x, epoch: m.epoch }));
+        v = get().views[m.session];
+        if (!v) return;
+      }
       if (needHistory.has(m.session)) historyAfterReplay(m.session, 250);
       const next = applySeq(v, m.seq, m.ev);
       if (next === v) return;
       updateView(m.session, () => next);
-      onEvent(m.session, m.ev);
+      onEvent(m.session, m.ev, v.state === 'busy');
       return;
     }
     case 'attached': {
-      // Events this page had not seen are gone from the backend's ring (it keeps the recent ones): start over from
-      // what the replay brings next, and put the transcript in front of it once the replay has settled.
+      // Events this page had not seen are gone from the backend's ring (it keeps the recent ones), or it is another
+      // process now: start over from what the replay brings next, and put the transcript in front of it once the
+      // replay has settled.
       const v = get().views[m.session];
-      if (v && m.gap) {
-        updateView(m.session, (x) => ({ ...x, items: [], turns: [], gap: true }));
+      if (!v) return;
+      const otherProcess = !!m.epoch && !!v.epoch && m.epoch !== v.epoch;
+      if (m.gap || otherProcess) {
+        updateView(m.session, (x) => ({ ...x, epoch: m.epoch ?? x.epoch, seq: 0, items: [], turns: [], gap: true }));
         needHistory.add(m.session);
         historyAfterReplay(m.session, 250);
-      }
+      } else if (m.epoch && v.epoch !== m.epoch) updateView(m.session, (x) => ({ ...x, epoch: m.epoch }));
       return;
     }
+    case 'reset':
+      onReset(m.session, m.next);
+      return;
+    case 'reply': {
+      const waiting = pendingReplies.get(m.req);
+      if (waiting) return waiting({ ok: m.ok, data: m.data, error: m.error });
+      const p = sentPrompts.get(m.req);
+      if (!p) return;
+      sentPrompts.delete(m.req);
+      if (m.ok) return;
+      // the backend refused the prompt: it never ran — take it back and give the text back to the composer
+      updateView(p.session, (v) => dropPrompt(v, p.uuid));
+      if (get().active === p.session) set((s) => ({ ...s, restore: { n: (s.restore?.n ?? 0) + 1, text: p.text } }));
+      toast(`Not sent: ${m.error || 'the backend refused it'}`, 'error');
+      if (BUDGET_WORDS.test(m.error)) onBudgetRefusal(p.session);
+      announce();
+      return;
+    }
+    case 'hello':
+      set((s) => ({ ...s, pendingTotal: m.pending, server: s.server && m.maxImages !== null ? { ...s.server, maxImages: m.maxImages } : s.server }));
+      announce();
+      return;
+    case 'pending':
+      set((s) => ({ ...s, pendingTotal: m.count }));
+      announce();
+      return;
     case 'permission': {
       const r = m.req;
       if (!get().views[r.session]) ensureView(r.session);
+      const fresh = !get().views[r.session]?.permissions.some((p) => p.id === r.id);
       updateView(r.session, (v) => (v.permissions.some((p) => p.id === r.id) ? v : { ...v, permissions: [...v.permissions, r].slice(-20) }));
       announce();
+      if (fresh) notify('Claude is waiting for you', sentence(r.tool, r.input).title, r.session);
       return;
     }
     case 'permission_done': {
@@ -298,10 +416,21 @@ function handle(m: ServerMsg): void {
       return;
     }
     case 'session_state': {
-      if (!get().views[m.session]) return;
+      if (!get().views[m.session]) {
+        // a session another tab or device opened: it gets a view (attached, so its prompts reach this page too)
+        if (m.state === 'ended' || m.state === 'closed') return;
+        ensureView(m.session, { state: m.state, model: m.model ?? '', mode: m.mode ?? 'default' });
+        attach(m.session);
+        announce();
+        return;
+      }
       if (needHistory.has(m.session)) historyAfterReplay(m.session, 60);
-      // a later process for the same session starts a new ring buffer at seq 1
-      updateView(m.session, (v) => ({ ...v, state: m.state, seq: m.state === 'ended' || m.state === 'closed' ? 0 : v.seq }));
+      const over = m.state === 'ended' || m.state === 'closed';
+      // a later process for the same session starts a new ring buffer at seq 1 (and a new epoch)
+      updateView(m.session, (v) => {
+        const w = over ? endedMidTurn(v) : v;
+        return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode };
+      });
       if (m.state === 'idle') updateView(m.session, (v) => ({ ...v, items: v.items.map((it) => ((it.t === 'assistant' || it.t === 'thinking') && it.streaming ? { ...it, streaming: false } : it)) }));
       announce();
       return;
@@ -323,18 +452,78 @@ function handle(m: ServerMsg): void {
       if (m.session) updateView(m.session, (v) => ({ ...v, context: m.usage }));
       return;
     case 'error':
+      // a request of the page's own (a prompt) gets a reply too, which says it
+      if (m.req) return;
       if (m.session && get().views[m.session]) updateView(m.session, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: m.message, level: 'error' }], nextKey: v.nextKey + 1 }));
       else toast(m.message, 'error');
+      if (BUDGET_WORDS.test(m.message)) onBudgetRefusal(m.session);
       return;
   }
 }
 
-function onEvent(id: string, ev: Ev): void {
+/** LiteLLM refused a request for the key's budget: the banner shows until /.bn/spend has room again. */
+function onBudgetRefusal(session: string | null): void {
+  set((s) => ({ ...s, budgetHit: true }));
+  if (session) void refreshSpend(session);
+}
+
+/** The CLI reset the conversation (/clear typed elsewhere, a plan approved with a fresh context): it goes on as
+ *  another session, which takes this one's place in the page. */
+function onReset(old: string, next: string): void {
+  const v = get().views[old];
+  set((s) => {
+    const views = { ...s.views };
+    if (!views[next]) {
+      views[next] = newView(next, { state: 'idle', model: v?.model ?? '', mode: v?.mode ?? s.prefs.mode, effort: v?.effort ?? s.prefs.effort,
+        title: v?.title ? label(`${v.title} (cleared)`, 200) : '' });
+    }
+    if (views[old]) views[old] = { ...views[old], state: 'ended', seq: 0, permissions: [] };
+    return { ...s, views, active: s.active === old ? next : s.active };
+  });
+  loadedHistory.add(next);
+  if (get().active === next) setPrefs((p) => ({ ...p, lastSession: next }));
+  attach(next);
+  void refreshSessions();
+}
+
+/** Notifications (opt-in, More ▸ Notify me): only while the page is hidden, one per session at a time. */
+export async function setNotify(on: boolean): Promise<void> {
+  if (!on) return setPrefs((p) => ({ ...p, notify: false }));
+  if (typeof Notification !== 'function') return toast('This browser has no notifications.', 'error');
+  let perm = Notification.permission;
+  if (perm === 'default') perm = await Notification.requestPermission().catch(() => 'denied' as NotificationPermission);
+  if (perm !== 'granted') {
+    // a frame of the portal on another host may not ask: the Code page in its own tab can
+    return toast('The browser does not allow notifications here. Allow them for this site, or open the Code page in its own tab.', 'error');
+  }
+  setPrefs((p) => ({ ...p, notify: true }));
+}
+
+function notify(title: string, body: string, session: string): void {
+  if (!get().prefs.notify || typeof Notification !== 'function' || Notification.permission !== 'granted' || !document.hidden) return;
+  try {
+    const n = new Notification(title, { body: label(body, 200), tag: `bn-code-${session}` });
+    n.onclick = () => {
+      window.focus();
+      void activate(session);
+      n.close();
+    };
+  } catch {
+    /* (some browsers only notify from a service worker) */
+  }
+}
+
+function onEvent(id: string, ev: Ev, wasBusy = false): void {
   if (ev.kind === 'result') {
+    // (a turn seen running here: not one replayed into a page that just opened)
+    if (wasBusy) notify(ev.isError ? 'Claude stopped' : 'Claude is done', get().views[id]?.title || 'A turn ended in the Code page.', id);
     scheduleSpend(id);
-    socket.send({ type: 'context', session: id });
+    requestContext(id);
     refreshExpandedDirs();
     announce();
+  } else if ((ev.kind === 'error' || (ev.kind === 'text' && /API Error/i.test(ev.text))) && BUDGET_WORDS.test(ev.text)) {
+    // LiteLLM refused the request (Claude Code shows the API's error as its answer)
+    onBudgetRefusal(id);
   } else if (ev.kind === 'tool_result' && ev.edit) {
     onClaudeEdit(ev.edit.path, ev.edit.original, ev.edit.hunks);
   } else if (ev.kind === 'user') {
@@ -345,7 +534,8 @@ function onEvent(id: string, ev: Ev): void {
 /** Title badge and (when the portal frames us and told us its origin) a message to the portal's Code tab. */
 function announce(): void {
   const s = get();
-  const pending = Object.values(s.views).reduce((n, v) => n + pendingCount(v), 0);
+  // the backend's count covers sessions this page shows no view of (other tabs, devices)
+  const pending = Math.max(s.pendingTotal, Object.values(s.views).reduce((n, v) => n + pendingCount(v), 0));
   const busy = Object.values(s.views).some((v) => v.state === 'busy');
   document.title = `${pending ? `(${pending}) ` : ''}Code · bedrock-now`;
   const origin = s.server?.portalOrigin;
@@ -412,12 +602,22 @@ export async function activate(id: string): Promise<void> {
   set((s) => ({ ...s, focusComposer: s.focusComposer + 1 }));
 }
 
-async function reloadHistory(id: string, fresh: boolean, from = id): Promise<void> {
+/** How many transcript messages opening a session shows; "Load earlier" adds as many again. */
+const HISTORY_PAGE = 300;
+
+/** The transcript's last part merged with what the page shows. `upTo`: a fork's history ends with that prompt. */
+async function reloadHistory(id: string, fresh: boolean, from = id, upTo?: string): Promise<void> {
   if (historyLoading.has(id)) return;
   historyLoading.add(id);
   try {
-    const h = await api.getMessages(from);
-    updateView(id, (v) => mergeHistory(fresh ? { ...v, items: [], turns: [] } : v, h.events));
+    const h = await api.getMessages(from, upTo ? { offset: 0, limit: 2000 } : { tail: HISTORY_PAGE });
+    let events = h.events;
+    if (upTo) {
+      // a fork holds the conversation up to and including that prompt (the SDK's resumeSessionAt)
+      const at = events.findIndex((e) => e.kind === 'user' && e.uuid === upTo);
+      if (at >= 0) events = events.slice(0, at + 1);
+    }
+    updateView(id, (v) => mergeHistory(fresh ? { ...v, items: [], turns: [] } : v, events, Date.now(), { offset: upTo ? 0 : h.offset, truncated: h.truncated }));
   } catch (e) {
     if (!(e instanceof api.ApiError && e.status === 404)) updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: `History could not be loaded: ${errText(e)}`, level: 'warn' }], nextKey: v.nextKey + 1 }));
   } finally {
@@ -436,19 +636,28 @@ function whileOpening<T>(p: Promise<T>): Promise<T> {
   return tracked;
 }
 
-export function newSession(): Promise<string | null> {
-  return get().opening ? Promise.resolve(null) : whileOpening(openNew());
+/** Settings for a new session (the browser's choices when left out). */
+export interface NewSessionOptions {
+  model?: string;
+  mode?: Mode;
+  effort?: string | null;
 }
 
-async function openNew(): Promise<string | null> {
+export function newSession(opts: NewSessionOptions = {}): Promise<string | null> {
+  return get().opening ? Promise.resolve(null) : whileOpening(openNew(opts));
+}
+
+async function openNew(opts: NewSessionOptions): Promise<string | null> {
   const s = get();
   if (s.opening) return null;
   set((x) => ({ ...x, opening: true }));
   try {
-    const model = defaultModel(s);
-    const { id } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort });
+    const model = opts.model || defaultModel(s);
+    const mode = opts.mode ?? s.prefs.mode;
+    const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
+    const { id } = await api.openSession({ model: model || undefined, mode, effort });
     loadedHistory.add(id);
-    ensureView(id, { state: 'idle', model, mode: s.prefs.mode, effort: s.prefs.effort });
+    ensureView(id, { state: 'idle', model, mode, effort });
     set((x) => ({ ...x, active: id, sheet: null }));
     setPrefs((p) => ({ ...p, lastSession: id }));
     attach(id);
@@ -468,15 +677,22 @@ export function resumeSession(id: string, fork = false): Promise<void> {
   return whileOpening(openExisting(id, fork));
 }
 
-async function openExisting(id: string, fork: boolean): Promise<void> {
+/** A new session from a session's conversation up to one of its prompts (the prompt's uuid). */
+export function forkFrom(id: string, at: string): Promise<void> {
+  if (!isUuid(at)) return Promise.resolve();
+  return whileOpening(openExisting(id, true, at));
+}
+
+async function openExisting(id: string, fork: boolean, at?: string): Promise<void> {
   const s = get();
   if (!fork && s.views[id] && s.views[id].state !== 'closed') return activate(id);
   if (s.opening) return;
   set((x) => ({ ...x, opening: true }));
   try {
     const info = s.sessions.find((x) => x.id === id);
-    const model = defaultModel(s);
-    const { id: newId, existing } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork });
+    const src = s.views[id];
+    const model = (fork && src?.model) || defaultModel(s);
+    const { id: newId, existing } = await api.openSession({ model: model || undefined, mode: s.prefs.mode, effort: s.prefs.effort, resume: id, fork, at });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -495,13 +711,15 @@ async function openExisting(id: string, fork: boolean): Promise<void> {
     set((x) => {
       const views = { ...x.views };
       delete views[newId];
-      views[newId] = newView(newId, { state: 'idle', model, mode: x.prefs.mode, title: fork ? `Fork of ${info?.title || info?.firstPrompt || id.slice(0, 8)}` : info?.title ?? '' });
+      const name = info?.title || src?.title || info?.firstPrompt || id.slice(0, 8);
+      views[newId] = newView(newId, { state: 'idle', model, mode: x.prefs.mode, title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
       return { ...x, views, active: newId, sheet: null };
     });
     setPrefs((p) => ({ ...p, lastSession: newId }));
     loadedHistory.add(newId);
-    // a resumed process starts with an empty ring buffer, so the transcript can be loaded right away
-    await reloadHistory(newId, true, id);
+    // a resumed process starts with an empty ring buffer, so the transcript can be loaded right away (a fork's from
+    // the session it came from, up to where it forked)
+    await reloadHistory(newId, true, id, at);
     attach(newId);
     set((x) => ({ ...x, focusComposer: x.focusComposer + 1 }));
     void refreshSessions();
@@ -566,16 +784,81 @@ async function revive(id: string): Promise<string | null> {
   }
 }
 
+/** Appends "- text" to the project CLAUDE.md (created when there is none), with the read's mtime as the precondition;
+ *  a change meanwhile is read again once. */
+export async function addMemoryLine(line: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const m = await api.getMemory('project');
+      if (m.truncated) {
+        toast('CLAUDE.md is too large to change here; edit it in the explorer or the terminal.', 'error');
+        return false;
+      }
+      const r = await api.putMemory('project', appendMemory(m.text, line), m.exists ? m.mtimeMs : null);
+      if (r.ok) {
+        toast(`Added to ${m.path}: ${label(line, 80)}`, 'ok');
+        refreshDirOf('CLAUDE.md');
+        const key = 'file:CLAUDE.md';
+        const t = get().tabs.find((x) => x.key === key);
+        if (t?.kind === 'file' && !t.dirty) reloadFile(key);
+        return true;
+      }
+    } catch (e) {
+      toast(`Not added to CLAUDE.md: ${errText(e)}`, 'error');
+      return false;
+    }
+  }
+  toast('Not added: CLAUDE.md kept changing meanwhile. Try again.', 'error');
+  return false;
+}
+
+/** Slash commands the page handles itself: they would split the session in the CLI (/clear starts another
+ *  conversation) or open a terminal picker (/resume). */
+const CLEAR = /^\/(clear|reset|new)(\s.*)?$/s;
+const RESUME = /^\/resume(\s.*)?$/s;
+
+/** The Sessions list: the side panel (desktop, tablet) or its sheet (phone). */
+export function showSessions(): void {
+  if (isPhone()) setSheet('sessions');
+  else if (typeof matchMedia === 'function' && matchMedia('(max-width: 1099.98px)').matches) setLayout({ tabletPane: 'files', side: 'sessions' });
+  else setLayout({ explorer: true, side: 'sessions' });
+}
+
 export async function sendPrompt(text: string, images: ImageBlock[]): Promise<boolean> {
   if (opening) await opening.catch(() => undefined);
+  const t = text.trim();
+  if (CLEAR.test(t)) {
+    // a fresh conversation, with this one's model, mode and effort (the old one stays in the list)
+    const cur = activeView();
+    return (await newSession(cur ? { model: cur.model || undefined, mode: cur.mode, effort: cur.effort } : {})) !== null;
+  }
+  if (RESUME.test(t)) {
+    showSessions();
+    return true;
+  }
+  const mem = memoryLine(text);
+  if (mem !== null && !images.length) return addMemoryLine(mem);
   let id = get().active;
   const v = id ? get().views[id] : undefined;
-  if (id && v && (v.state === 'closed' || v.state === 'ended')) id = await revive(id);
-  else if (!id || !v) id = await newSession();
+  if (id && v && (v.state === 'closed' || v.state === 'ended')) {
+    // a session that never got a prompt has no transcript to resume: a new one takes its place
+    if (!v.items.some((it) => it.t === 'user')) {
+      const old = id;
+      id = await newSession({ model: v.model || undefined, mode: v.mode, effort: v.effort });
+      if (id) set((s) => {
+        const views = { ...s.views };
+        delete views[old];
+        return { ...s, views };
+      });
+    } else id = await revive(id);
+  } else if (!id || !v) id = await newSession();
   if (!id) return false;
   const uuid = crypto.randomUUID();
+  const req = `p${uuid.slice(0, 8)}${(promptN++).toString(36)}`;
+  sentPrompts.set(req, { session: id, uuid, text });
+  if (sentPrompts.size > 50) sentPrompts.delete(sentPrompts.keys().next().value as string);
   updateView(id, (v) => addPrompt(v, text, images.length, uuid));
-  socket.send({ type: 'prompt', session: id, text, images, uuid });
+  socket.send({ type: 'prompt', session: id, text, images, uuid, req });
   if (!get().views[id]?.title && !text.trimStart().startsWith('/')) {
     const title = label(text, 80);
     updateView(id, (v) => ({ ...v, title }));
@@ -620,9 +903,11 @@ export function answerQuestions(session: string, id: string, answers: Record<str
   announce();
 }
 
-export function answerPermission(session: string, id: string, decision: 'once' | 'always' | 'deny', message?: string): void {
+/** A permission answer. `mode` (ExitPlanMode only): the mode to go on in once the plan is approved. */
+export function answerPermission(session: string, id: string, decision: api.Decision, message?: string, mode?: 'default' | 'acceptEdits'): void {
   const msg = message?.trim() ? message.trim().slice(0, 2000) : undefined;
-  socket.send(msg ? { type: 'permission', id, session, decision, message: msg } : { type: 'permission', id, session, decision });
+  socket.send({ type: 'permission', id, session, decision, ...(msg ? { message: msg } : {}), ...(mode ? { mode } : {}) });
+  if (mode) updateView(session, (v) => ({ ...v, mode }));
   // optimistic: the server's permission_done confirms
   updateView(session, (v) => ({ ...v, permissions: v.permissions.filter((p) => p.id !== id) }));
   announce();
@@ -672,14 +957,32 @@ export async function restartSession(): Promise<void> {
 
 // ---------------------------------------------------------------- files
 
+/** The workspace trash (deletes move there): kept out of the tree. */
+export const TRASH = '.bedrock-now-trash';
+
 export async function loadDir(path: string): Promise<void> {
-  set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: true, error: null } } } }));
+  set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: true, error: null, truncated: s.fs.dirs[path]?.truncated ?? false } } } }));
   try {
-    const entries = await api.fsList(path);
+    const { entries: all, truncated } = await api.fsList(path);
+    const entries = path === '' ? all.filter((e) => e.name !== TRASH) : all;
     entries.sort((a, b) => (a.type === 'dir') === (b.type === 'dir') ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
-    set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries, loading: false, error: null } } } }));
+    set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries, loading: false, error: null, truncated } } } }));
+    reloadChangedTabs(path, entries);
   } catch (e) {
-    set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: false, error: errText(e) } } } }));
+    set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: false, error: errText(e), truncated: false } } } }));
+  }
+}
+
+/** Open files of this folder that changed on disk (a command Claude ran, the terminal): reloaded when they hold no
+ *  edits of yours; with edits, the tab says so. */
+function reloadChangedTabs(dir: string, entries: FsEntry[]): void {
+  for (const t of get().tabs) {
+    if (t.kind !== 'file' || t.loading || t.mtimeMs === null || dirname(t.path) !== dir) continue;
+    const e = entries.find((x) => x.name === basename(t.path));
+    if (!e || e.mtimeMs === null || Math.abs(e.mtimeMs - t.mtimeMs) < 1) continue;
+    if (t.dirty) {
+      if (!t.conflict) updateTab(t.key, (x) => ({ ...x, conflict: 'claude' }) as Tab);
+    } else reloadFile(t.key);
   }
 }
 
@@ -696,13 +999,14 @@ export function selectPath(path: string | null): void {
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** The open folders are listed again after a turn — at most once a second, however many turns end meanwhile. */
 export function refreshExpandedDirs(): void {
   if (refreshTimer) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     const s = get();
     for (const p of Object.keys(s.fs.dirs)) if (p === '' || s.fs.expanded[p]) void loadDir(p);
-  }, 300);
+  }, 1000);
 }
 
 const isPhone = () => typeof matchMedia === 'function' && matchMedia('(max-width: 699.98px)').matches;
@@ -782,6 +1086,19 @@ export function closeTab(key: string): void {
 }
 export function setActiveTab(key: string): void {
   set((s) => ({ ...s, activeTab: key }));
+}
+
+/** "Keep mine" on a tab that changed under your edits: the banner goes, and your next save may replace the file
+ *  (its new modification time becomes the save's precondition). */
+export async function keepMine(key: string): Promise<void> {
+  const t = get().tabs.find((x) => x.key === key);
+  if (t?.kind !== 'file') return;
+  try {
+    const f = await api.fsRead(t.path);
+    updateTab(key, (x) => ({ ...x, conflict: null, mtimeMs: f.mtimeMs }) as Tab);
+  } catch (e) {
+    toast(errText(e), 'error');
+  }
 }
 
 /** Claude's edit or write: open file tabs reload (or flag a conflict when they hold unsaved changes). */
@@ -913,11 +1230,79 @@ export function toggleExplorer(): void {
 }
 
 /** The terminal host: from /api/state, else by the naming the stack uses (code.<host> → terminal.<host>). */
-export function terminalUrl(s: AppState = get()): string | null {
-  if (s.server?.terminalUrl) return s.server.terminalUrl;
-  const h = location.hostname;
-  let t: string | null = null;
-  if (h.startsWith('code.')) t = 'terminal.' + h.slice(5);
-  else if (/-code\./.test(h)) t = h.replace(/-code\./, '-terminal.');
-  return t ? `${location.protocol}//${t}${location.port ? ':' + location.port : ''}/` : null;
+/** The terminal, through the code host's hand-off: /.bn/terminal unlocks the terminal host with this page's own
+ *  unlock (no second password) and sends the browser on to it. */
+export function terminalUrl(_s?: AppState): string | null {
+  return '/.bn/terminal';
+}
+
+/** The conversation shown as a Markdown file to keep (a download made here; nothing goes to the server). */
+export function exportTranscript(id = get().active): void {
+  const v = id ? get().views[id] : undefined;
+  if (!v) return;
+  const title = v.title || get().sessions.find((x) => x.id === v.id)?.title || '';
+  const url = URL.createObjectURL(new Blob([toMarkdown(v, title)], { type: 'text/markdown;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = exportName(v, title);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** "Restore files to here": a dry run first (what would change), shown on the prompt; `confirm` then restores. */
+export async function rewindPreview(session: string, message: string): Promise<void> {
+  if (!isUuid(message)) return;
+  set((s) => ({ ...s, rewind: { session, message, phase: 'checking', result: null, error: '' } }));
+  const r = await wsRequest({ type: 'rewind_files', session, message, dryRun: true });
+  set((s) =>
+    s.rewind?.message === message
+      ? { ...s, rewind: { ...s.rewind, phase: 'ready', result: r.ok ? api.normRewind(r.data) : null, error: r.ok ? '' : r.error || 'The check failed.' } }
+      : s,
+  );
+}
+
+export function rewindCancel(): void {
+  set((s) => ({ ...s, rewind: null }));
+}
+
+export async function rewindConfirm(): Promise<void> {
+  const rw = get().rewind;
+  if (!rw || rw.phase !== 'ready' || !rw.result?.canRewind) return;
+  set((s) => ({ ...s, rewind: s.rewind && { ...s.rewind, phase: 'restoring' } }));
+  const r = await wsRequest({ type: 'rewind_files', session: rw.session, message: rw.message, dryRun: false });
+  const done = r.ok ? api.normRewind(r.data) : null;
+  if (!r.ok || !done || done.error) {
+    set((s) => ({ ...s, rewind: s.rewind && { ...s.rewind, phase: 'ready', error: (r.ok ? done?.error : r.error) || 'The restore failed.' } }));
+    return;
+  }
+  set((s) => ({ ...s, rewind: null }));
+  const n = done.files.length;
+  toast(n ? `Restored ${n} file${n === 1 ? '' : 's'} to how they were before that prompt.` : 'Nothing needed restoring.', 'ok');
+  // the files on disk changed: open tabs reload (yours with edits get the conflict banner), the tree is listed again
+  for (const p of done.files) {
+    const t = get().tabs.find((x) => x.kind === 'file' && x.path === p);
+    if (t?.kind === 'file') {
+      if (t.dirty) updateTab(t.key, (x) => ({ ...x, conflict: 'claude' }) as Tab);
+      else reloadFile(t.key);
+    }
+  }
+  refreshExpandedDirs();
+}
+
+/** "Load earlier": the transcript's window before what the view shows. */
+export async function loadEarlier(id: string): Promise<void> {
+  const v = get().views[id];
+  if (!v || !v.historyOffset || historyLoading.has(id)) return;
+  historyLoading.add(id);
+  try {
+    const offset = Math.max(0, v.historyOffset - HISTORY_PAGE);
+    const h = await api.getMessages(id, { offset, limit: v.historyOffset - offset });
+    updateView(id, (x) => prependHistory(x, h.events, offset));
+  } catch (e) {
+    toast(`Earlier messages could not be loaded: ${errText(e)}`, 'error');
+  } finally {
+    historyLoading.delete(id);
+  }
 }

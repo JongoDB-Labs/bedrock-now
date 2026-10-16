@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boundedJson, normEvent, normServerMsg } from '../src/api';
+import { boundedJson, normEvent, normOutcome, normServerMsg, overBudget, permissionInput, PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_STRING } from '../src/api';
 
 const S = '3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c';
 const msg = (o: unknown) => normServerMsg(JSON.stringify(o));
 
 test('event messages need a valid session, an integer seq and a known event', () => {
-  assert.deepEqual(msg({ type: 'event', session: S, seq: 3, ev: { type: 'delta', text: 'hi' } }), { kind: 'event', session: S, seq: 3, ev: { kind: 'delta', text: 'hi', parent: null } });
+  assert.deepEqual(msg({ type: 'event', session: S, seq: 3, ev: { type: 'delta', text: 'hi' } }), { kind: 'event', session: S, seq: 3, epoch: null, ev: { kind: 'delta', text: 'hi', parent: null } });
+  assert.equal(msg({ type: 'event', session: S, seq: 3, epoch: 'a1b2c3d4', ev: { type: 'delta', text: 'hi' } })?.kind === 'event' && 'ok', 'ok');
   assert.equal(msg({ type: 'event', session: '../../etc', seq: 3, ev: { type: 'delta', text: 'x' } }), null);
   assert.equal(msg({ type: 'event', session: S, seq: 1.5, ev: { type: 'delta', text: 'x' } }), null);
   assert.equal(msg({ type: 'event', session: S, seq: 'NaN', ev: { type: 'delta', text: 'x' } }), null);
@@ -22,11 +23,11 @@ test('tool ids are validated; edits need a clean workspace path', () => {
   assert.equal(normEvent({ type: 'tool_result', id: '<img src=x onerror=alert(1)>', text: 'x' }), null);
   const ok = normEvent({ type: 'tool_result', id: 'toolu_01', text: 'done', edit: { path: '/workspace/src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }] } });
   assert.equal(ok?.kind, 'tool_result');
-  assert.deepEqual(ok?.kind === 'tool_result' && ok.edit, { path: 'src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }] });
+  assert.deepEqual(ok?.kind === 'tool_result' && ok.edit, { path: 'src/a.ts', original: 'a\nb', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+A'] }], complete: true });
   const bad = normEvent({ type: 'tool_result', id: 'toolu_02', text: 'x', edit: { path: '../../etc/passwd', original: 'x', hunks: [] } });
   assert.equal(bad?.kind === 'tool_result' && bad.edit, null);
   const weird = normEvent({ type: 'tool_result', id: 'toolu_03', text: 'x', edit: { filePath: 'a.ts', originalFile: 'x', structuredPatch: [{ oldStart: -5, oldLines: 'x', newStart: 1, newLines: 1, lines: ['-x', 42, '+y'] }] } });
-  assert.deepEqual(weird?.kind === 'tool_result' && weird.edit, { path: 'a.ts', original: 'x', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['-x', '+y'] }] });
+  assert.deepEqual(weird?.kind === 'tool_result' && weird.edit, { path: 'a.ts', original: 'x', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['-x', '+y'] }], complete: true });
 });
 
 test('strings are capped and names made single-line and visible', () => {
@@ -68,7 +69,7 @@ test('permission prompts need valid ids; suggestions normalised', () => {
 });
 
 test('session_state, commands, models, context', () => {
-  assert.deepEqual(msg({ type: 'session_state', session: S, state: 'busy' }), { kind: 'session_state', session: S, state: 'busy' });
+  assert.deepEqual(msg({ type: 'session_state', session: S, state: 'busy' }), { kind: 'session_state', session: S, state: 'busy', model: null, mode: null });
   assert.equal(msg({ type: 'session_state', session: S, state: 'pwned' }), null);
   const c = msg({ type: 'commands', session: S, commands: ['/compact', { name: 'x:y', description: 'd', argumentHint: '[a]' }, { name: '' }, 7] });
   assert.deepEqual(c?.kind === 'commands' && c.commands.map((x) => x.name), ['compact', 'x:y']);
@@ -89,4 +90,45 @@ test('boundedJson: bounded size and depth, no prototype keys', () => {
   assert.ok(!Object.prototype.hasOwnProperty.call(proto, '__proto__'));
   const big = boundedJson({ a: 'x'.repeat(200_000), b: Array.from({ length: 2000 }, () => 'y') });
   assert.ok(JSON.stringify(big).length < 200_000);
+});
+
+test('a permission prompt: the rules Always applies, the workspace option, defaultNo/noAlways, complete', () => {
+  const p = msg({
+    type: 'permission', id: 'p1', session: S, tool: 'Bash', input: { command: 'npm test' }, complete: true,
+    rules: [{ text: 'Bash(npm test:*)', destination: 'userSettings' }, { text: 'Read(//workspace/**)', destination: 'session' }],
+    projectRules: [{ text: 'Bash(npm test:*)', destination: 'localSettings' }],
+    defaultNo: true, noAlways: false, expiresAt: 1,
+  });
+  assert.ok(p?.kind === 'permission');
+  if (p?.kind !== 'permission') return;
+  assert.equal(p.req.rules.length, 2, 'every rule, none hidden');
+  assert.deepEqual(p.req.projectRules, [{ text: 'Bash(npm test:*)', destination: 'localSettings' }]);
+  assert.equal(p.req.defaultNo, true);
+  assert.equal(p.req.complete, true);
+  assert.deepEqual(p.req.suggestions, [], 'no fallback preview when the backend names the rules');
+  // noAlways: no Always of either kind, whatever else came
+  const n = msg({ type: 'permission', id: 'p2', session: S, tool: 'Bash', input: {}, rules: [{ text: 'x', destination: 'session' }], projectRules: [{ text: 'x', destination: 'localSettings' }], noAlways: true });
+  assert.ok(n?.kind === 'permission' && n.req.rules.length === 0 && n.req.projectRules.length === 0);
+  // the backend says it cut the input: not complete
+  const cut = msg({ type: 'permission', id: 'p3', session: S, tool: 'Bash', input: { command: 'x' }, complete: false });
+  assert.ok(cut?.kind === 'permission' && !cut.req.complete);
+});
+
+test('permission inputs: the same caps as the backend; anything cut means not complete', () => {
+  assert.deepEqual(permissionInput({ command: 'ls' }), { input: { command: 'ls' }, complete: true });
+  const long = 'a'.repeat(PERMISSION_SHOWN_STRING + 1);
+  assert.equal(permissionInput({ command: long }).complete, false);
+  const many = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`k${i}`, 'b'.repeat(PERMISSION_SHOWN_CHARS / 4)]));
+  assert.equal(permissionInput(many).complete, false);
+  assert.equal(permissionInput({ command: 'a'.repeat(PERMISSION_SHOWN_STRING - 10) }).complete, true);
+});
+
+test('a confirmation only for a command shown whole; budgets', () => {
+  const sha = 'a'.repeat(64);
+  assert.ok(normOutcome({ needs_confirmation: { command: 'npm i', sha256: sha } }).confirm);
+  assert.equal(normOutcome({ needs_confirmation: { command: 'x'.repeat(8001), sha256: sha } }).confirm, null);
+  assert.equal(overBudget({ spend: 10, max: 10, resetAt: null }), true);
+  assert.equal(overBudget({ spend: 9.99, max: 10, resetAt: null }), false);
+  assert.equal(overBudget({ spend: 5, max: null, resetAt: null }), false);
+  assert.equal(overBudget(null), false);
 });

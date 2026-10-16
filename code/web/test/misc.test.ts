@@ -2,11 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyHunks, compact, countChanges, hunkLines, lineDiff } from '../src/diff';
 import { meter, shownCost, turnCosts } from '../src/spend';
-import { findTrigger, mergeCommands, rankCommands, rankPaths } from '../src/palette';
-import { rulePreview, sentence } from '../src/permission';
+import { appendMemory, findTrigger, memoryLine, mergeCommands, rankCommands, rankPaths } from '../src/palette';
+import { rulePreview, sentence, destinationText } from '../src/permission';
 import { parsePrefs, DEFAULT_PREFS } from '../src/prefs';
-import { cap, cleanName, cleanPath, isId, isUuid, label, money, perMtok, tokens, visible } from '../src/text';
+import { cap, cleanName, cleanPath, commandShape, isId, isUuid, label, money, perMtok, tokens, visible } from '../src/text';
 import { createStore } from '../src/store';
+import { exportName, latestTodos, toMarkdown } from '../src/transcript';
+import { newView, type Item } from '../src/session';
 
 test('text: caps, visible controls, ids, paths', () => {
   assert.equal(cap('abcdef', 3), 'abc\n… (3 more characters not shown)');
@@ -100,12 +102,19 @@ test('permission sentences and "always" previews', () => {
       { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings', mode: '', directories: [] },
       { type: 'setMode', rules: [], behavior: '', destination: 'session', mode: 'acceptEdits', directories: [] },
     ]),
-    ['Allow Bash(npm test:*) in this workspace (.claude/settings.local.json)', 'Switch to Accept edits mode for this session'],
+    ["Allow Bash(npm test:*) in this workspace's .claude/settings.local.json", 'Switch to Accept edits mode for this session'],
   );
+  // the backend's rules name where they go: the sandbox's own settings unless you pick the workspace's explicitly
+  assert.equal(destinationText('userSettings'), "in the sandbox's Claude Code settings (every session there)");
+  assert.equal(destinationText('session'), 'for this session');
+  assert.equal(destinationText('<x>'), '(<x>)');
+  assert.equal(destinationText(''), '');
 });
 
 test('prefs: anything stored is validated and clamped', () => {
   assert.deepEqual(parsePrefs(null), DEFAULT_PREFS);
+  assert.equal(parsePrefs({ notify: 'yes' }).notify, false);
+  assert.equal(parsePrefs({ notify: true }).notify, true);
   const p = parsePrefs({ layout: { left: -5, right: 99999, bottom: 'x', explorer: 'yes', side: 'sessions' }, model: '<img>', mode: 'bypassPermissions', effort: 'max', lastSession: '../x' });
   assert.equal(p.layout.left, 160);
   assert.equal(p.layout.right, 900);
@@ -131,4 +140,56 @@ test('store: changes coalesce into one notification', () => {
   queued[0]();
   assert.equal(calls, 1);
   assert.equal(s.get().n, 2);
+});
+
+test('paths: absolute ones only inside /workspace; command shapes worth a warning', () => {
+  assert.equal(cleanPath('/etc/passwd'), null);
+  assert.equal(cleanPath('/workspace/a/b'), 'a/b');
+  assert.equal(cleanPath('a/b'), 'a/b');
+  assert.deepEqual(commandShape('ls -la'), { lines: 1, length: 6, padding: 0, warn: false });
+  assert.equal(commandShape('echo hi' + ' '.repeat(200) + '; rm -rf x').padding, 200, 'a run in the middle pushes the rest away too');
+  assert.equal(commandShape('a  b\tc').warn, false);
+  assert.equal(commandShape('echo hi' + ' '.repeat(200)).padding, 200);
+  assert.ok(commandShape('echo hi' + ' '.repeat(200)).warn);
+  assert.ok(commandShape(Array.from({ length: 30 }, () => 'x').join('\n')).warn);
+  assert.ok(commandShape('x'.repeat(1001)).warn);
+});
+
+test('the latest to-do list (not a subagent one); the conversation as Markdown', () => {
+  const items: Item[] = [
+    { t: 'user', k: 1, text: 'plan it', images: 0, uuid: null, queued: false },
+    { t: 'tool', k: 2, id: 't1', name: 'TodoWrite', input: { todos: [{ content: 'old', status: 'pending', activeForm: 'Doing old' }] }, status: 'done', result: null, parent: null },
+    { t: 'tool', k: 3, id: 't2', name: 'TodoWrite', input: { todos: [{ content: 'a', status: 'completed', activeForm: 'A' }, { content: 'b', status: 'in_progress', activeForm: 'Doing b' }, { content: 'c', status: 'weird' }, { nope: 1 }] }, status: 'done', result: null, parent: null },
+    { t: 'tool', k: 4, id: 't3', name: 'TodoWrite', input: { todos: [{ content: 'sub', status: 'pending' }] }, status: 'done', result: null, parent: 'task1' },
+    { t: 'tool', k: 5, id: 't4', name: 'Bash', input: { command: 'echo `hi`\nsecond line' }, status: 'error', result: null, parent: null },
+    { t: 'assistant', k: 6, text: 'Done **well**.', streaming: false, model: '', parent: null },
+    { t: 'result', k: 7, subtype: 'success', turns: 1, durationMs: 2000, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, isError: true, turn: 0 },
+  ];
+  assert.deepEqual(latestTodos(items), [
+    { content: 'a', status: 'completed', activeForm: 'A' },
+    { content: 'b', status: 'in_progress', activeForm: 'Doing b' },
+    { content: 'c', status: 'pending', activeForm: '' },
+  ]);
+  assert.equal(latestTodos(items.slice(0, 1)), null);
+  const v = { ...newView('3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c'), items };
+  const md = toMarkdown(v, 'My session', new Date('2026-10-16T12:00:00Z'));
+  assert.ok(md.startsWith('# My session\n\nExported from the Code page on 2026-10-16 12:00 UTC'));
+  assert.ok(md.includes('## You\n\nplan it'));
+  assert.ok(md.includes('## Claude\n\nDone **well**.'));
+  assert.ok(md.includes('- **Bash** (failed): `` echo `hi` ``'), md);
+  assert.ok(md.includes('_Failed · 2'));
+  assert.equal(exportName(v, 'Fix: the <retry> policy!'), 'fix-the-retry-policy.md');
+  assert.equal(exportName(v, '???'), 'session-3f2a7c1e.md');
+});
+
+test('"# text" on one line is a memory line; CLAUDE.md gets it on a line of its own', () => {
+  assert.equal(memoryLine('# Always run npm test before committing'), 'Always run npm test before committing');
+  assert.equal(memoryLine('  # spaced  \n'), 'spaced');
+  assert.equal(memoryLine('# Title\n\nA pasted document'), null);
+  assert.equal(memoryLine('#no space'), null);
+  assert.equal(memoryLine('## Heading'), null);
+  assert.equal(memoryLine('what does # mean'), null);
+  assert.equal(appendMemory('', 'a'), '- a\n');
+  assert.equal(appendMemory('# Notes', 'a'), '# Notes\n- a\n');
+  assert.equal(appendMemory('# Notes\n', 'b'), '# Notes\n- b\n');
 });

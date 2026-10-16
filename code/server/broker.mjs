@@ -2,12 +2,15 @@
 // page answers — Allow once, Always (the CLI's own rule suggestions, filtered), Deny — or nobody does for
 // LIMITS.permissionMinutes (denied, with a message Claude sees). The tool, its input, the reason and the suggestions
 // all come from the sandbox: they are capped, and "Always" can only add allow rules or switch to a mode the page
-// offers anyway — never to bypassPermissions or auto, never another folder (addDirectories).
+// offers anyway — never to bypassPermissions or auto, never another folder (addDirectories). The page is told
+// exactly what it approves: the input as shown (and whether that is all of it), and the rules "Always" writes.
 import crypto from 'node:crypto';
 import { LIMITS, MODES } from './protocol.mjs';
-import { short, str, plain } from './validate.mjs';
+import { short, str, capped } from './validate.mjs';
 
 const DESTINATIONS = ['session', 'localSettings', 'projectSettings', 'userSettings'];
+// files in /workspace/.claude: your folder, which Claude Code on your computer reads too
+const WORKSPACE_FILES = ['localSettings', 'projectSettings'];
 
 // safeSuggestions(list) -> the suggestions "Always" may apply: addRules with behavior allow, and setMode to a mode of
 // MODES other than dontAsk; each rule a tool name and an optional one-line content
@@ -28,10 +31,25 @@ export function safeSuggestions(list) {
   return out;
 }
 
-// ruleText(suggestions) -> what "Always" would add, one line each, for the page ("Bash(npm test:*)")
+// splitSuggestions(safe) -> {always, project}: what "Always" applies — rules in a workspace file go to the sandbox's own
+// user settings instead (never your folder), a mode switch to this session — and, only when the CLI proposed a
+// workspace file, the same rules there (offered separately, with a warning: "Always, in this workspace's settings")
+export function splitSuggestions(safe) {
+  const always = [], project = [];
+  for (const s of safe) {
+    if (s.type === 'setMode') { always.push({ ...s, destination: 'session' }); continue; }
+    if (WORKSPACE_FILES.includes(s.destination)) {
+      always.push({ ...s, destination: 'userSettings' });
+      project.push(s);
+    } else always.push(s);
+  }
+  return { always, project };
+}
+
+// ruleText(suggestions) -> [{text, destination}]: what they add, one line each ("Bash(npm test:*)", "mode acceptEdits")
 export const ruleText = (sugs) => sugs.flatMap((s) => (s.type === 'addRules'
-  ? s.rules.map((r) => `${r.toolName}${r.ruleContent !== undefined ? `(${r.ruleContent})` : ''} — ${s.destination}`)
-  : [`mode ${s.mode} — ${s.destination}`]));
+  ? s.rules.map((r) => ({ text: `${r.toolName}${r.ruleContent !== undefined ? `(${r.ruleContent})` : ''}`, destination: s.destination }))
+  : [{ text: `mode ${s.mode}`, destination: s.destination }]));
 
 // questionAnswers(input, answers) -> {question: answer} for AskUserQuestion's own questions only (each answer one line,
 // at most 2,000 characters), or null when nothing valid is left
@@ -46,26 +64,41 @@ export function questionAnswers(input, answers) {
   return Object.keys(out).length ? out : null;
 }
 
+// the modes a plan's approval may switch to (ExitPlanMode: approve and auto-accept edits, or approve and keep asking)
+const PLAN_MODES = ['acceptEdits', 'default'];
+const jsonSize = (v) => { try { return JSON.stringify(v ?? {}).length; } catch { return Infinity; } };
+const deny = (message) => Promise.resolve({ behavior: 'deny', message });
+
 export class PermissionBroker {
-  constructor({ onAsk = () => {}, onDone = () => {}, onCount = () => {}, timeoutMs = LIMITS.permissionMinutes * 60000 } = {}) {
-    this.pending = new Map();   // id -> {prompt, resolve, timer, input, suggestions}
-    this.onAsk = onAsk; this.onDone = onDone; this.onCount = onCount; this.timeoutMs = timeoutMs;
+  constructor({ onAsk = () => {}, onDone = () => {}, onCount = () => {}, timeoutMs = LIMITS.permissionMinutes * 60000,
+    maxPerSession = LIMITS.maxPendingPerSession, maxTotal = LIMITS.maxPendingTotal } = {}) {
+    this.pending = new Map();   // id -> {prompt, resolve, timer, input, always, project}
+    Object.assign(this, { onAsk, onDone, onCount, timeoutMs, maxPerSession, maxTotal });
   }
 
   get count() { return this.pending.size; }
   forSession(session) { return [...this.pending.values()].filter((p) => p.prompt.session === session).map((p) => p.prompt); }
 
-  /** The SDK's canUseTool for one session: resolves a PermissionResult. */
+  /** The SDK's canUseTool for one session: resolves a PermissionResult. A flood (more than maxPerSession waiting in
+   *  this session, or maxTotal in all) and an input over permissionInputMax are denied at once, never queued. */
   ask(session, tool, input, opts = {}) {
+    if (jsonSize(input) > LIMITS.permissionInputMax) {
+      return deny(`This ${short(tool, 100)} request is too large to show in the Code page (over ${LIMITS.permissionInputMax >> 20} MiB), so it was not allowed.`);
+    }
+    if (this.forSession(session).length >= this.maxPerSession || this.pending.size >= this.maxTotal) {
+      return deny('Too many permission prompts are waiting in the Code page; answer those first.');
+    }
     const id = crypto.randomUUID();
-    const suggestions = safeSuggestions(opts.suggestions);
+    const noAlways = opts.suppressAlwaysAllowRule === true;
+    const { always, project } = noAlways ? { always: [], project: [] } : splitSuggestions(safeSuggestions(opts.suggestions));
+    const shown = capped(input ?? {}, LIMITS.permissionShownChars, LIMITS.permissionShownString);
     const prompt = {
-      id, session, tool: short(tool, 200), input: plain(input ?? {}, 64 << 10), reason: str(opts.decisionReason ?? '', 1000),
-      blockedPath: short(opts.blockedPath ?? '', 4096) || null, suggestions, rules: ruleText(suggestions),
-      expiresAt: Date.now() + this.timeoutMs,
+      id, session, tool: short(tool, 200), input: shown.value, complete: shown.complete, reason: str(opts.decisionReason ?? '', 1000),
+      blockedPath: short(opts.blockedPath ?? '', 4096) || null, rules: ruleText(always), projectRules: ruleText(project),
+      defaultNo: opts.defaultToNo === true, noAlways, expiresAt: Date.now() + this.timeoutMs,
     };
     return new Promise((resolve) => {
-      const entry = { prompt, input: input && typeof input === 'object' ? input : {}, suggestions, resolve };
+      const entry = { prompt, input: input && typeof input === 'object' ? input : {}, always, project, resolve };
       entry.timer = setTimeout(() => this.#finish(id, 'timeout', {
         behavior: 'deny', message: `Nobody answered this permission prompt in the Code page within ${LIMITS.permissionMinutes} minutes.` }), this.timeoutMs);
       this.pending.set(id, entry);
@@ -75,20 +108,35 @@ export class PermissionBroker {
     });
   }
 
-  /** A page's answer: once | always | deny | answer. -> false when the prompt is gone (answered elsewhere, timed out).
-   *  "answer" (AskUserQuestion only): {answers: {question text: chosen label(s)}} — the SDK's own channel: the tool's
-   *  input comes back with `answers`, as Claude Code's permission component fills it (multi-select: comma-separated). */
-  answer(id, decision, message, answers) {
+  /** A page's answer -> false when the prompt is gone (answered elsewhere, timed out) or the answer does not fit it.
+   *    once | always | always_project | deny (with an optional message for Claude) | answer (AskUserQuestion only:
+   *    {answers: {question text: chosen label(s)}} — the SDK's own channel: the tool's input comes back with
+   *    `answers`, as Claude Code's permission component fills it; multi-select: comma-separated)
+   *    once with `mode` (ExitPlanMode only: acceptEdits | default): the plan approved, and this session's mode set
+   *  `session`, when given, must be the prompt's own session. */
+  answer(id, decision, { message, answers, mode, session } = {}) {
     const p = this.pending.get(id);
     if (!p) return false;
+    if (session !== undefined && session !== p.prompt.session) return false;
     if (decision === 'answer') {
       const a = questionAnswers(p.input, answers);
       if (!a) return false;
       return this.#finish(id, 'answer', { behavior: 'allow', updatedInput: { ...p.input, answers: a } });
     }
     // updatedInput: the input exactly as the CLI sent it (what the page showed), never something the page made up
-    if (decision === 'once') return this.#finish(id, 'once', { behavior: 'allow', updatedInput: p.input });
-    if (decision === 'always') return this.#finish(id, 'always', { behavior: 'allow', updatedInput: p.input, updatedPermissions: p.suggestions });
+    if (decision === 'once') {
+      if (mode === undefined || mode === null) return this.#finish(id, 'once', { behavior: 'allow', updatedInput: p.input });
+      if (p.prompt.tool !== 'ExitPlanMode' || !PLAN_MODES.includes(mode)) return false;
+      return this.#finish(id, 'plan', { behavior: 'allow', updatedInput: p.input, updatedPermissions: [{ type: 'setMode', mode, destination: 'session' }] });
+    }
+    if (decision === 'always') {
+      if (!p.always.length) return false;
+      return this.#finish(id, 'always', { behavior: 'allow', updatedInput: p.input, updatedPermissions: p.always });
+    }
+    if (decision === 'always_project') {
+      if (!p.project.length) return false;
+      return this.#finish(id, 'always_project', { behavior: 'allow', updatedInput: p.input, updatedPermissions: p.project });
+    }
     if (decision === 'deny') {
       const why = short(message ?? '', 1000);
       return this.#finish(id, 'deny', { behavior: 'deny', message: why ? `Denied in the Code page: ${why}` : 'The user declined this in the Code page.' });

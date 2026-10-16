@@ -10,28 +10,35 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **The Code page** (optional, off by default): `./stack code enable` adds a **Code** tab directly under Chat (on a
   phone under More, full screen) with Claude Code as a chat — streamed answers, tool calls, permission prompts
-  (*Allow once*, *Always* with the proposed rule shown, *Deny*; a badge on the tab while one waits; denied after 10
-  minutes without an answer), model, permission mode and effort switches, Stop, slash commands, sessions that keep
-  working with the tab closed (a reload re-attaches; idle ones stop after 30 minutes and resume on the next prompt;
-  at most 4 at once) and resume from the list, and the workspace's files (tree, read, edit with a "changed on disk"
-  check, upload, download). It runs Claude Code in the browser terminal's sandbox — same container, workspace, key
-  (`claude-code-terminal`) and budget — so `enable` turns the terminal on when it is off (`--workspace DIR` as
-  there) and `./stack terminal disable` turns it off too; `./stack code disable` keeps the terminal. The page comes
+  (*Allow once*, *Always* with the rule shown — saved in the sandbox's own settings, a rule in the workspace's
+  `.claude` files only through a button of its own that says Claude Code on your computer honours it too — *Deny*;
+  approving a plan in *Plan* mode with *Accept edits* or *Ask*; a badge on the tab while one waits, also before the
+  tab was first opened; denied after 30 minutes without an answer, and at once beyond 8 waiting per session or 32 in
+  all), model, permission mode and effort switches, Stop, slash commands (`/clear` starts a new session with the same
+  settings), sessions that keep working with the tab closed (a reload re-attaches; idle ones stop after 30 minutes
+  and resume on the next prompt; at most 4 at once), resume and fork from the list or fork from any of your
+  messages, and the workspace's files (tree, read, edit with a "changed on disk" check, upload, download). It runs
+  Claude Code in the browser terminal's sandbox — same container, workspace, key (`claude-code-terminal`) and budget
+  — so `enable` turns the terminal on when it is off (`--workspace DIR` as there) and `./stack terminal disable`
+  turns it off too; `./stack code disable` keeps the terminal. Neither restarts a running terminal (its tmux session
+  goes on): the spawn server always runs there, idle until the Code page connects. The page comes
   from a new `code` container (Node; the TypeScript Agent SDK 0.3.296, pinned in lock-step with the terminal's
   Claude Code 2.1.296) that holds no LiteLLM key, mounts no folder of yours and shares one internal network with
   Caddy only: Claude Code is started in the sandbox by a small spawn server (`terminal/bin/bn-coded.mjs`, Node
   built-ins only, an argument allowlist) on a socket only the two containers share, and files, sessions and
   plugins go through it too; everything coming back is treated as untrusted (capped, every id checked, rendered as
-  text). Its host needs the portal session and a password unlock of its own; the main Caddy sets its page policy (a
+  text). Its host needs the portal session and a password unlock of its own, which also opens its terminal panel:
+  a one-time, one-minute hand-off to the terminal's host (`/.bn/terminal` → `/.bn/unlock-callback`) that ends with
+  the Code page's unlock (Sign out, a new password, 12 hours). The main Caddy sets its page policy (a
   strict CSP with a per-request style nonce and Trusted Types) whoever answers. Models with this stack's prices and
   each session's cost (LiteLLM's spend logs, the terminal key's rows) come from the portal (`/.bn/models`,
   `/.bn/spend`). A new session or a model switch makes the next turn write that model's prompt cache again
   (~30k tokens: about $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5); the model list says so. Remote
   access follows the terminal's `REMOTE_TERMINAL` (a sixth Tailscale Service, or `code.<your domain>`). Home's
   Claude Code card and the walkthrough mention the Code tab. `./stack test` checks it (health, the unlock, other
-  Origins, the secret header, isolation of both sides); the e2e suite gains `--code`; the unit tests (frontend and
-  backend) run in its image's test stage (`code/test.sh`). How it is built and what it trusts: README › The Code
-  page, docs/security.md › The Code page.
+  Origins, the secret header, a round trip to the spawn server, isolation of both sides); the e2e suite gains
+  `--code`; the unit tests (frontend and backend) run in its image's test stage (`code/test.sh`). How it is built and
+  what it trusts: README › The Code page, docs/security.md › The Code page.
 - **The Code page's frontend** (`code/web`: TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild into
   the image, every dependency pinned; nothing from a CDN; runs under the CSP with Trusted Types): an IDE-like layout —
   explorer, editor tabs, chat, the sandbox's terminal in a bottom panel — that becomes chat + one pane on a tablet and
@@ -54,8 +61,14 @@ All notable changes to bedrock-now are documented here. The format follows
 - **MCP servers in the Code page** (⋯ menu): each server's status, tools and errors, reconnect, off/on for the
   session; servers of your own (stdio, HTTP, SSE) added to or removed from the sandbox's user configuration — a stdio
   server's command runs inside the sandbox only — and a *Restart this session* to load them.
-- **Settings → Code page**: turn the Code page on (only from the computer running bedrock-now, while the browser
-  terminal is on) or off (from anywhere); the update helper runs `./stack code enable` / `disable`. The workspace is
+- **More of the terminal in the Code page**: plan approval (approve and accept edits, approve and keep asking, or keep
+  planning with a note), fork from any of your prompts, file checkpoints (*Restore files to here*, with a dry run
+  first), the memory editor for `CLAUDE.md` (workspace and your own in the sandbox) with the `# ` shortcut, an `@`
+  picker that searches the whole workspace, a pinned to-do list, export as Markdown, opt-in notifications, prompts
+  queued while Claude works, `/clear`/`/new`/`/reset` (a new session with the same settings) and `/resume`.
+- **Settings → Code page**: turn the Code page on (only from the computer running bedrock-now; with the browser
+  terminal off it turns the terminal on too, with the folder it names before you confirm, checked first by the
+  terminal's rules) or off (from anywhere); the update helper runs `./stack code enable` / `disable`. The workspace is
   shown read-only with the command that changes it. The walkthrough's Claude Code steps point at the Code tab when
   it is on, and at Settings when it is not.
 

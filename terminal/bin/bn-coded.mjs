@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// bn-coded: the Code page's spawn server inside the sandbox (./stack code enable; compose.code.yaml). bn-terminal
-// starts it (and restarts it when it exits) while BN_CODE=1. It listens on a UNIX socket in the code-socket volume,
-// which only the code container shares — as a client: this side never connects anywhere. Per connection it does
+// bn-coded: the Code page's spawn server inside the sandbox (compose.terminal.yaml; the page: ./stack code enable,
+// compose.code.yaml). bn-terminal always starts it (and restarts it when it exits); without the code container it
+// has no client and does nothing. It listens on a UNIX socket in the code-socket volume, which only the code
+// container shares — as a client: this side never connects anywhere. Per connection it does
 // exactly one allowlisted thing:
 //   claude          Claude Code in stream-json mode (the Agent SDK's arguments, checked against an allowlist), with
 //                   this container's environment (LiteLLM through the gateway, the terminal key) and the shared MCP
@@ -10,6 +11,9 @@
 //   fs.list / fs.read / fs.write / fs.mkdir / fs.rename / fs.delete
 //                   files under /workspace (the code container mounts no folder of yours). Paths are resolved here,
 //                   in the sandbox's own view, so a symlink can only lead somewhere this container sees anyway.
+//   fs.find         paths under /workspace whose name matches (a bounded walk: the @-picker over the whole folder)
+//   memory.read / memory.write
+//                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title
 //                   this sandbox's Claude Code transcripts for /workspace (~/.claude/projects/-workspace/*.jsonl)
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
@@ -38,7 +42,8 @@ const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.cl
 export const MAX_FRAME = 4 << 20;          // one frame from the code container
 const MAX_READ = 25 << 20;                 // fs.read: at most this much (the code side asks for less: 2 MiB for text)
 const MAX_WRITE = 25 << 20;                // fs.write: a file (upload or editor save) of at most this much
-const MAX_PROCS = 6;                       // claude processes at once (sessions + listings)
+const MAX_PROCS = { claude: 6, cli: 4 };   // processes at once: Claude Code sessions, and plugin/MCP listings or changes
+                                           // (a slow listing never keeps a session from starting, nor the other way)
 const MAX_CONNECTIONS = 32;
 const MAX_LIST = 5000;                     // directory entries
 const MAX_SESSIONS = 200;                  // sessions.list rows (the most recent)
@@ -369,6 +374,9 @@ function fsDelete(p) {
   if (!real || real === WORKSPACE || real === trash) throw new Error('not in the workspace');
   const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // git (and whatever honours .gitignore) leaves the trash alone
+  const ignore = path.join(trash, '.gitignore');
+  try { fs.writeFileSync(ignore, '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
   const dest = path.join(dir, path.basename(real));
   fs.renameSync(real, dest);
   return { trash: rel(dest) };
@@ -412,7 +420,6 @@ function fsWriteChunk(w, chunk) {
   fs.writeSync(w.fd, chunk); w.got += chunk.length;
 }
 function fsWriteEnd(w) {
-  fs.closeSync(w.fd); w.fd = null;
   try {
     if (w.got !== w.size) throw new Error('fewer bytes than announced');
     let dest = w.real;
@@ -420,16 +427,79 @@ function fsWriteEnd(w) {
       const ext = path.extname(dest), stem = dest.slice(0, dest.length - ext.length);
       for (let i = 1; fs.existsSync(dest); i++) { if (i > 999) throw new Error('no free name'); dest = `${stem}-${i}${ext}`; }
     } else if (w.mode === 'create' && fs.existsSync(dest)) throw new Error('that name exists already');
-    if (w.ifMtimeMs !== undefined && w.ifMtimeMs !== null) {
-      let cur = null; try { cur = fs.statSync(dest).mtimeMs; } catch { /* new */ }
-      if (cur !== w.ifMtimeMs) throw new Error('changed on disk since it was opened');
-    }
-    if (!inside(dest)) throw new Error('not in the workspace');
+    let cur = null;
+    try { cur = fs.statSync(dest); } catch { /* new */ }
+    if (w.ifMtimeMs !== undefined && w.ifMtimeMs !== null && (cur ? cur.mtimeMs : null) !== w.ifMtimeMs) throw new Error('changed on disk since it was opened');
+    // a file that is replaced keeps its mode (an executable script stays executable)
+    if (cur && cur.isFile()) fs.fchmodSync(w.fd, cur.mode & 0o7777);
+    fs.closeSync(w.fd); w.fd = null;
+    if (!w.fixed && !inside(dest)) throw new Error('not in the workspace');
     fs.renameSync(w.tmp, dest);
     const st = fs.statSync(dest);
-    return { path: rel(dest), size: st.size, mtimeMs: st.mtimeMs };
-  } catch (e) { try { fs.unlinkSync(w.tmp); } catch { /* gone */ } throw e; }
+    return { path: w.fixed ? w.display : rel(dest), size: st.size, mtimeMs: st.mtimeMs };
+  } catch (e) {
+    if (w.fd !== null) { try { fs.closeSync(w.fd); } catch { /* closed */ } w.fd = null; }
+    try { fs.unlinkSync(w.tmp); } catch { /* gone */ }
+    throw e;
+  }
 }
+// --- your user memory (~/.claude/CLAUDE.md in the sandbox): one fixed file, never a link, at most MAX_MEMORY ---
+const MAX_MEMORY = 1 << 20;
+const MEMORY_FILE = () => path.join(CONFIG_DIR, 'CLAUDE.md');
+function memoryRead(send) {
+  let fd;
+  try { fd = fs.openSync(MEMORY_FILE(), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW); } catch (e) {
+    if (e.code === 'ENOENT') return { path: '~/.claude/CLAUDE.md', exists: false };
+    throw e;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a file');
+    const b = readSlice(fd, 0, Math.min(st.size, MAX_MEMORY));
+    if (b.length) send(T.STDOUT, b);
+    return { path: '~/.claude/CLAUDE.md', exists: true, size: st.size, mtimeMs: st.mtimeMs, truncated: st.size > b.length };
+  } finally { fs.closeSync(fd); }
+}
+function memoryWriteBegin(req) {
+  const size = req.size;
+  if (!Number.isInteger(size) || size < 0 || size > MAX_MEMORY) throw new Error('bad size');
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  const real = MEMORY_FILE();
+  try { if (fs.lstatSync(real).isSymbolicLink()) throw new Error('not a file'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const tmp = path.join(CONFIG_DIR, `.bn-upload-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o644);
+  return { real, tmp, fd, size, got: 0, mode: 'replace', ifMtimeMs: req.ifMtimeMs, fixed: true, display: '~/.claude/CLAUDE.md' };
+}
+
+// --- fs.find: paths under /workspace whose relative path contains q (case-insensitive) — a bounded walk that never
+// --- follows links and skips .git, node_modules and the trash
+const FIND_VISIT = 20000, FIND_DEPTH = 12, FIND_SKIP = new Set(['.git', 'node_modules', TRASH]);
+export function fsFind(q, limit) {
+  const needle = typeof q === 'string' ? q.toLowerCase().slice(0, 200) : '';
+  const max = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50;
+  const paths = [];
+  let visited = 0, truncated = false;
+  const queue = [['', 0]];
+  while (queue.length && paths.length < max) {
+    const [dir, depth] = queue.shift();
+    let entries;
+    try { entries = fs.readdirSync(path.join(WORKSPACE, dir), { withFileTypes: true }); } catch { continue; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (++visited > FIND_VISIT) { truncated = true; queue.length = 0; break; }
+      const relp = dir ? `${dir}/${e.name}` : e.name;
+      const isDir = e.isDirectory();
+      if (isDir && FIND_SKIP.has(e.name)) continue;
+      if (!needle || relp.toLowerCase().includes(needle)) {
+        paths.push(isDir ? `${relp}/` : relp);
+        if (paths.length >= max) { truncated = true; break; }
+      }
+      if (isDir && depth + 1 < FIND_DEPTH) queue.push([relp, depth + 1]);
+    }
+  }
+  return { paths, truncated };
+}
+
 function fsWriteAbort(w) {
   if (!w) return;
   try { if (w.fd !== null) fs.closeSync(w.fd); } catch { /* closed */ }
@@ -467,7 +537,7 @@ export function sweepOrphans({ kill = process.kill } = {}) {
 }
 
 // --- one connection, one op ---
-let running = 0;
+const running = { claude: 0, cli: 0 };
 export function serve(sock) {
   const parser = new FrameParser();
   let child = null, opened = false, writer = null, done = false;
@@ -475,11 +545,11 @@ export function serve(sock) {
   const finish = (t, p) => { if (done) return; done = true; send(t, p); sock.end(); };
   const fail = (msg) => finish(T.ERROR, { error: printable(msg, 300) });
 
-  function startProcess(args, cwd, env, { noStdin = false } = {}) {
-    if (running >= MAX_PROCS) return fail('too many Claude Code processes');
-    running++;
+  function startProcess(args, cwd, env, { noStdin = false, kind = 'claude' } = {}) {
+    if (running[kind] >= MAX_PROCS[kind]) return fail(kind === 'cli' ? 'too many plugin or MCP commands at once' : 'too many Claude Code processes');
+    running[kind]++;
     let counted = true;
-    const uncount = () => { if (counted) { counted = false; running--; } };
+    const uncount = () => { if (counted) { counted = false; running[kind]--; } };
     try {
       child = spawn(CLAUDE, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) { uncount(); return fail(`spawn failed: ${e.code || e.message}`); }
@@ -510,7 +580,7 @@ export function serve(sock) {
     if (req.op === 'cli') {
       const why = checkCliArgs(req.args);
       if (why) return fail(why);
-      return startProcess(req.args, WORKSPACE, cliEnv(), { noStdin: true });
+      return startProcess(req.args, WORKSPACE, cliEnv(), { noStdin: true, kind: 'cli' });
     }
     try {
       switch (req.op) {
@@ -523,6 +593,9 @@ export function serve(sock) {
         case 'fs.delete': return finish(T.RESULT, fsDelete(req.path));
         case 'fs.read': return finish(T.RESULT, fsRead(send, req.path, req.max));
         case 'fs.write': writer = fsWriteBegin(req); return undefined;   // the data follows as STDIN frames
+        case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit));
+        case 'memory.read': return finish(T.RESULT, memoryRead(send));
+        case 'memory.write': writer = memoryWriteBegin(req); return undefined;   // the data follows as STDIN frames
         default: return fail('unknown op');
       }
     } catch (e) { return fail(e.code || e.message); }

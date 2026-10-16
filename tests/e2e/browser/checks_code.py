@@ -53,7 +53,7 @@ def csp_problems(csp: str) -> list[str]:
     """What the code host's Content-Security-Policy (the main Caddy's code_page) lacks."""
     want = ["default-src 'none'", "script-src 'self'", f"connect-src 'self' ws://code.{HOST}:* wss://code.{HOST}:*",
             "img-src 'self' data: blob:", "base-uri 'none'", "form-action 'none'", "object-src 'none'", f"frame-ancestors {origin()}",
-            f"frame-src http://terminal.{HOST}:* https://terminal.{HOST}:*", "require-trusted-types-for 'script'", "trusted-types 'none'"]
+            f"frame-src 'self' http://terminal.{HOST}:* https://terminal.{HOST}:*", "require-trusted-types-for 'script'", "trusted-types 'none'"]
     parts = [p.strip() for p in csp.split(";")]
     probs = [w for w in want if w not in parts]
     if not any(re.fullmatch(r"style-src 'self' 'nonce-[0-9a-f-]{36}'", p) for p in parts):
@@ -318,7 +318,10 @@ def permission(ctx):
     expect(p["tool"] == "Bash" and name in json.dumps(p["input"]), f"prompt {p}")
     portal.locator(".tab[data-tab=code] .tab-badge:not([hidden])", has_text="1").wait_for(timeout=15000)
     shot(portal, "53-code-permission-badge")
-    drv.request({"type": "permission", "id": p["id"], "decision": "once"})
+    # an answer for another session's prompt is refused (answers carry the prompt's own session)
+    wrong = drv.page.evaluate("(m) => { window.__bn.send(m); return true; }", {"type": "permission", "id": p["id"], "session": "00000000-0000-4000-8000-000000000000", "decision": "once", "req": "wrong"})
+    expect(wrong and drv.wait(lambda m: m.get("type") == "reply" and m.get("req") == "wrong", "the refusal", 10, since=n).get("ok") is False, "an answer with another session was taken")
+    drv.request({"type": "permission", "id": p["id"], "session": sid, "decision": "once"})
     drv.wait(lambda m: m.get("type") == "event" and m["session"] == sid and m["ev"]["type"] == "result", "result", 150, since=n)
     portal.locator(".tab[data-tab=code] .tab-badge[hidden]").wait_for(state="attached", timeout=15000)
     r = drv.api("GET", f"/api/fs/file?path={name}")
@@ -329,7 +332,7 @@ def permission(ctx):
     n = len(drv.msgs())
     drv.request({"type": "prompt", "session": sid, "text": f"Use the Bash tool to run exactly this command: echo nope > {denied}"})
     p2 = drv.wait(lambda m: m.get("type") == "permission", "second permission prompt", 120, since=n)
-    drv.request({"type": "permission", "id": p2["id"], "decision": "deny", "message": "not in this test"})
+    drv.request({"type": "permission", "id": p2["id"], "session": sid, "decision": "deny", "message": "not in this test"})
     drv.wait(lambda m: m.get("type") == "event" and m["session"] == sid and m["ev"]["type"] == "result", "result", 150, since=n)
     r = drv.api("GET", f"/api/fs/file?path={denied}")
     expect(r["status"] == 404, f"the denied file exists: {r['status']}")
@@ -525,8 +528,6 @@ def plain_page(ctx):
 # Every CSP / Trusted Types violation on the code host is recorded (and fails the check)
 CSP_GUARD = """(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', (e) =>
   window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || '') + ' ' + (e.sample || ''))); })();"""
-# While the framed terminal is locked, its unlock page answers 401
-TERMINAL_LOCKED_OK = [r"^401 (GET|POST) " + re.escape(origin("terminal")) + r"/", r"console.error Failed to load resource.*401"]
 UI = "e2e-ui"
 MKT = "e2e-mkt"
 
@@ -711,14 +712,19 @@ def ui_desktop(ctx):
     page.get_by_test_id("stop").click()
     turns(page, 4, 60000)
     see(page.get_by_test_id("turn-end").last).to_contain_text("Stopped")
-    # the terminal panel (its own unlock, framed)
+    # the terminal panel: the code unlock is enough (the portal hands it over to the terminal host): ttyd's xterm, no
+    # second password
     page.get_by_test_id("toggle-terminal").click()
     see(page.get_by_test_id("terminal")).to_be_visible()
     t0 = time.time()
-    while time.time() - t0 < 20 and not any(f.url.startswith(origin("terminal")) for f in page.frames):
+    term = None
+    while time.time() - t0 < 30 and term is None:
+        term = next((f for f in page.frames if f.url.startswith(origin("terminal")) and "/.bn/" not in f.url), None)
         page.wait_for_timeout(250)
-    expect(any(f.url.startswith(origin("terminal")) for f in page.frames), "the terminal panel did not load the terminal host")
-    page.wait_for_timeout(1500)
+    expect(term is not None, f"the terminal panel did not reach the terminal host: {[f.url for f in page.frames]}")
+    term.locator(".xterm").wait_for(timeout=30000)
+    expect(term.locator("h1", has_text="Unlock").count() == 0, "the terminal asked for a second unlock")
+    page.wait_for_timeout(1000)
     shot(page, "58-code-ui-desktop")
     # a reload re-attaches: the same conversation, nothing twice
     n_user, n_tool = page.get_by_test_id("msg-user").count(), page.get_by_test_id("tool-card").count()
@@ -730,9 +736,18 @@ def ui_desktop(ctx):
            f"after the reload: {page.get_by_test_id('msg-user').count()} prompts (want {n_user}), {page.get_by_test_id('tool-card').count()} tools (want {n_tool})")
     page.evaluate(CLIENT_JS)   # (the reload took the in-page client along)
     c.api("DELETE", f"/api/fs?path={up}")
-    csp_clean(page, rec, TERMINAL_LOCKED_OK + [r"^400 POST .*/api/fs/mkdir$"])   # (fixtures: a folder that is there already)
+    csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$"])   # (fixtures: a folder that is there already)
+    # the hand-off unlocked the terminal host for this browser: the portal's Terminal tab opens without a password too
+    from checks_terminal import terminal_frame
+    portal = page.context.new_page()
+    portal.goto(origin() + "/")
+    portal.click(".tab[data-tab=terminal]")
+    tf = terminal_frame(portal)
+    tf.locator(".xterm").wait_for(timeout=30000)
+    expect(tf.locator("h1", has_text="Unlock").count() == 0, "the Terminal tab asked for its password after the Code page's hand-off")
+    portal.close()
     return (f"session {sid[:8]} (Haiku): pong streamed; Bash card → Allow once → {UI}/bash.txt; Accept edits + @{UI}/edit-me.txt → "
-            f"edited, diff in the editor; / palette; upload → @{up}; Sonnet ⇄ Haiku switch; Stop → Stopped; terminal panel; "
+            f"edited, diff in the editor; / palette; upload → @{up}; Sonnet ⇄ Haiku switch; Stop → Stopped; terminal panel (xterm, no second unlock; the Terminal tab too); "
             f"reload: {n_user} prompts, {n_tool} tools, no duplicates; no CSP violations")
 
 
@@ -765,8 +780,30 @@ def ui_question(ctx):
             page.get_by_test_id("q-decline").click()
         rec.save()
     expect("coffee" in last_answer(page).lower(), f"the answer did not reach Claude: {last_answer(page)!r}")
+    single = last_answer(page)
+    # several choices (multiSelect): the labels go back comma-separated
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, "Use the AskUserQuestion tool to ask me one question, \"Which colors?\", with multiSelect true and the three options "
+              "Red, Green and Blue. After my answer, reply with exactly the colors I chose, comma-separated, nothing else.")
+    q = page.get_by_test_id("question")
+    see(q.or_(page.get_by_test_id("turn-end").nth(n))).to_have_count(1, timeout=120000)
+    multi = "(Haiku asked no multiple-choice question this time)"
+    if q.count():
+        try:
+            expect(q.locator("input[type=checkbox]").count() >= 3, "a multiple-choice question without checkboxes")
+            for label in ("Red", "Blue"):
+                q.locator(".q-label", has_text=re.compile(rf"^\s*{label}\s*$")).first.click()
+            shot(page, "59b-code-ui-question-multi")
+            page.get_by_test_id("q-send").click()
+            turns(page, n + 1)
+        finally:
+            if page.get_by_test_id("q-decline").count():
+                page.get_by_test_id("q-decline").click()
+        a = last_answer(page).lower()
+        expect("red" in a and "blue" in a and "green" not in a, f"the multiple choice did not reach Claude: {last_answer(page)!r}")
+        multi = f"Red + Blue → {last_answer(page)!r}"
     csp_clean(page, rec)
-    return f"AskUserQuestion card: Coffee chosen, Send answer → Claude replied {last_answer(page)!r}"
+    return f"AskUserQuestion cards: Coffee → {single!r}; several choices: {multi}"
 
 
 @check("browser", "code-ui-plugins-mcp")
@@ -850,6 +887,190 @@ def ui_plugins_mcp(ctx):
             f"/hello-local:hello answered; MCP: bedrock-shared connected ({tools}), off → disabled → on")
 
 
+@check("browser", "code-ui-queue-and-clear")
+@saved
+def ui_queue_clear(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-queue", session=sid)
+    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
+    n = page.get_by_test_id("turn-end").count()
+    users = page.get_by_test_id("msg-user").count()
+    # a prompt typed while Claude works waits below the answer, then runs as its own turn
+    ask(page, "Count from 1 to 60, one number per line, nothing else.")
+    see(page.locator(".msg-claude.streaming")).to_have_count(1, timeout=120000)
+    ask(page, "Reply with exactly the word: queued")
+    see(page.locator("[data-testid=msg-user].queued")).to_have_count(1, timeout=10000)
+    shot(page, "66-code-ui-queued")
+    turns(page, n + 2)
+    see(page.locator("[data-testid=msg-user].queued")).to_have_count(0)
+    order = page.evaluate("""() => [...document.querySelectorAll('[data-testid=msg-user], [data-testid=turn-end]')].slice(-4)
+        .map(e => e.dataset.testid === 'turn-end' ? 'end' : e.innerText.trim().slice(0, 20))""")
+    expect(order[0].startswith("Count from 1") and order[1] == "end" and order[2].startswith("Reply with exactly") and order[3] == "end",
+           f"the queued prompt did not wait for the first turn: {order}")
+    expect("queued" in last_answer(page).lower(), f"answer {last_answer(page)!r}")
+    # /clear: a new session with the same model and mode (the old one stays in the list); /resume opens the list
+    mode = page.get_by_test_id("mode-picker").inner_text()
+    ask(page, "/clear")
+    see(page.locator(".chat-head .pane-title")).to_have_text("New session", timeout=20000)
+    see(page.get_by_test_id("msg-user")).to_have_count(0)
+    see(page.get_by_test_id("model-picker")).to_contain_text("Haiku")
+    expect(page.get_by_test_id("mode-picker").inner_text() == mode, f"mode {page.get_by_test_id('mode-picker').inner_text()!r}, was {mode!r}")
+    new = page.evaluate("(JSON.parse(localStorage.getItem('bn.code.v1') || '{}').lastSession) || ''")
+    expect(new and new != sid, f"/clear kept the session ({new})")
+    c = Code.on(page, rec, goto=False)
+    st = state_of(c, sid)
+    expect(st, "the cleared session is gone from the backend")
+    ask(page, "/resume")
+    see(page.get_by_test_id("session-row").first).to_be_visible(timeout=10000)
+    csp_clean(page, rec)
+    return (f"a prompt typed while busy waited below the stream (queued), then ran as its own turn ({order}); /clear → a new "
+            f"session {new[:8]} with Haiku and {mode!r}, the old one kept; /resume opens the session list")
+
+
+@check("browser", "code-ui-plan-approval")
+@saved
+def ui_plan(ctx):
+    need_haiku()
+    page, rec = ui_page(ctx, "code-ui-plan")
+    c = Code.on(page, rec, goto=False)
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    page.get_by_test_id("chat-new").click()
+    see(page.locator(".chat-head .pane-title")).to_have_text("New session", timeout=20000)
+    target = f"{UI}/planned-{int(time.time())}.txt"
+    ask(page, f"Plan this, then do it once I approve: create the file {target} containing exactly the word planned. "
+              "Keep the plan to one or two lines and present it for my approval with ExitPlanMode.")
+    card = page.locator("[data-testid=permission]:has([data-testid=plan-approve-edits])")
+    see(card.or_(page.get_by_test_id("turn-end"))).to_have_count(1, timeout=150000)
+    if not card.count():
+        csp_clean(page, rec)
+        raise Skip("Haiku ended the turn without presenting a plan (no ExitPlanMode this time)")
+    see(page.get_by_test_id("plan-approve-ask")).to_be_visible()
+    see(page.get_by_test_id("plan-keep")).to_be_visible()
+    shot(page, "67-code-ui-plan")
+    page.get_by_test_id("plan-approve-edits").click()
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    wait_state(c, sid, "mode", "acceptEdits", timeout=60)
+    t0 = time.time()
+    r = None
+    while time.time() - t0 < 150:
+        r = c.api("GET", f"/api/fs/file?path={target}")
+        if r["status"] == 200:
+            break
+        if page.get_by_test_id("perm-once").count():   # (a tool other than an edit may still ask: allow it once)
+            page.get_by_test_id("perm-once").click()
+        page.wait_for_timeout(1000)
+    expect(r and r["status"] == 200 and "planned" in r["json"]["text"], f"after approving the plan: {r and r['status']}")
+    see(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    csp_clean(page, rec)
+    return f"Plan mode → the plan card (approve + accept edits / approve + ask / keep planning) → approved with Accept edits → {target} written, mode Accept edits"
+
+
+@check("browser", "code-ui-fork-from-message")
+@saved
+def ui_fork(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-fork", session=sid)
+    page.get_by_test_id("msg-user").first.wait_for(timeout=30000)
+    total = page.get_by_test_id("msg-user").count()
+    expect(total >= 2, f"the session has {total} prompts")
+    second = page.get_by_test_id("msg-user").nth(1)
+    second.hover()
+    second.get_by_test_id("msg-fork").click()
+    see(page.locator(".chat-head .pane-title")).to_contain_text("Fork of", timeout=30000)
+    # the fork holds the conversation before that prompt; a new prompt continues from there
+    see(page.get_by_test_id("msg-user").first).to_contain_text("Reply with exactly the word: pong", timeout=30000)
+    see(page.get_by_test_id("msg-user")).to_have_count(1)
+    fork = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    expect(fork != sid, "the fork is the same session")
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, "Which single word did you reply with to my first message? Reply with that word only.")
+    turns(page, n + 1)
+    expect("pong" in last_answer(page).lower(), f"the fork does not know the first answer: {last_answer(page)!r}")
+    shot(page, "68-code-ui-fork")
+    csp_clean(page, rec)
+    return f"Fork from the second prompt → a new session {fork[:8]} (Fork of …) with the conversation before it; it remembers the first answer ({last_answer(page)!r})"
+
+
+@check("browser", "code-ui-memory-find-rewind")
+@saved
+def ui_memory_find_rewind(ctx):
+    need_haiku()
+    sid = getattr(ctx, "code_ui_session", None)
+    if not sid:
+        raise Skip("needs the session of code-ui-desktop")
+    page, rec = ui_page(ctx, "code-ui-memory", session=sid)
+    c = Code.on(page, rec, goto=False)
+    see(page.get_by_test_id("turn-end").first).to_be_visible(timeout=30000)
+    # CLAUDE.md of the workspace, from the memory dialog; then the `#` shortcut appends a line to it
+    c.api("DELETE", "/api/fs?path=CLAUDE.md")
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-memory").click()
+    dlg = page.get_by_test_id("memory-dialog")
+    dlg.get_by_test_id("memory-tab-project").click()
+    dlg.get_by_test_id("memory-text").fill("# Notes for Claude\n- the e2e suite was here\n")
+    dlg.get_by_test_id("memory-save").click()
+    t0 = time.time()
+    while time.time() - t0 < 20 and "the e2e suite was here" not in (c.api("GET", "/api/memory?scope=project")["json"] or {}).get("text", ""):
+        page.wait_for_timeout(500)
+    m = c.api("GET", "/api/memory?scope=project")["json"]
+    expect(m["exists"] and "the e2e suite was here" in m["text"], f"memory after Save: {m}")
+    shot(page, "71-code-ui-memory")
+    dlg.get_by_role("button", name="Close").click()
+    ask(page, "# the e2e marker is blue")
+    t0 = time.time()
+    while time.time() - t0 < 20 and "the e2e marker is blue" not in c.api("GET", "/api/memory?scope=project")["json"]["text"]:
+        page.wait_for_timeout(500)
+    m = c.api("GET", "/api/memory?scope=project")["json"]
+    expect("the e2e marker is blue" in m["text"] and "the e2e suite was here" in m["text"], f"memory after #: {m['text']!r}")
+    c.api("DELETE", "/api/fs?path=CLAUDE.md")
+    # the @ picker finds a file the explorer has not opened (a search of the whole workspace)
+    deep = f"{UI}/deep/a/b"
+    for d in (f"{UI}/deep", f"{UI}/deep/a", deep):
+        c.api("POST", "/api/fs/mkdir", {"path": d})
+    needle = f"needle-{int(time.time())}.txt"
+    c.api("PUT", f"/api/fs/file?path={deep}/{needle}", {"text": "found\n"})
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.fill("")
+    box.type(f"look at @{needle[:12]}")
+    see(page.get_by_test_id("palette")).to_contain_text(f"{deep}/{needle}", timeout=15000)
+    box.fill("")
+    # file checkpoints: Claude edits a file; "Restore files to here" on that prompt puts it back
+    c.api("PUT", f"/api/fs/file?path={UI}/rewind.txt", {"text": "rewind = 1\n"})
+    if state_of(c, sid).get("mode") != "acceptEdits":
+        page.get_by_test_id("mode-picker").click()
+        page.get_by_test_id("mode-acceptEdits").click()
+        wait_state(c, sid, "mode", "acceptEdits")
+    n = page.get_by_test_id("turn-end").count()
+    ask(page, f"In @{UI}/rewind.txt use the Edit tool to change `rewind = 1` to `rewind = 2`. Change nothing else, run nothing else, then reply with the word done.")
+    turns(page, n + 1)
+    expect(c.api("GET", f"/api/fs/file?path={UI}/rewind.txt")["json"]["text"] == "rewind = 2\n", "Claude did not edit the file")
+    prompt = page.get_by_test_id("msg-user").last
+    prompt.hover()
+    prompt.get_by_test_id("msg-rewind").click()
+    prev = page.get_by_test_id("rewind-preview")
+    see(prev).to_contain_text("rewind.txt", timeout=30000)
+    shot(page, "72-code-ui-rewind")
+    page.get_by_test_id("rewind-confirm").click()
+    t0 = time.time()
+    while time.time() - t0 < 30 and c.api("GET", f"/api/fs/file?path={UI}/rewind.txt")["json"]["text"] != "rewind = 1\n":
+        page.wait_for_timeout(500)
+    after = c.api("GET", f"/api/fs/file?path={UI}/rewind.txt")["json"]["text"]
+    expect(after == "rewind = 1\n", f"after Restore: {after!r}")
+    csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$", r"^404 DELETE .*/api/fs\?path=CLAUDE\.md$"])
+    return (f"memory dialog → /workspace/CLAUDE.md written; `# …` appended a line; the @ picker found {deep}/{needle} unopened in the "
+            f"explorer; Claude's Edit of {UI}/rewind.txt restored by \"Restore files to here\" (dry run listed it first)")
+
+
 @check("browser", "code-ui-phone")
 @saved
 def ui_phone(ctx):
@@ -871,6 +1092,59 @@ def ui_phone(ctx):
     shot(page, "64-code-ui-phone-menu")
     csp_clean(page, rec)
     return f"phone (390×844): chat-first, answer {last_answer(page)!r}, no horizontal overflow, the session sheet; no CSP violations"
+
+
+@check("browser", "code-ui-tablet")
+@saved
+def ui_tablet(ctx):
+    need_on()
+    page, rec = ui_page(ctx, "code-ui-tablet", device="tablet", session=getattr(ctx, "code_ui_session", None))
+    see(page.locator(".app.tablet")).to_be_visible()
+    see(page.get_by_test_id("chat")).to_be_visible()
+    page.get_by_role("button", name="Files", exact=True).click()
+    see(page.get_by_test_id("file-tree")).to_be_visible()
+    page.get_by_test_id("toggle-terminal").click()
+    see(page.get_by_test_id("terminal")).to_be_visible()
+    over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+    expect(over <= 0, f"the page is {over}px wider than the tablet")
+    page.wait_for_timeout(1500)
+    shot(page, "69-code-ui-tablet")
+    csp_clean(page, rec)
+    return "tablet (820×1180): chat + files, the terminal drawer, no horizontal overflow; no CSP violations"
+
+
+@check("browser", "code-ui-budget-exceeded")
+@saved
+def ui_budget(ctx):
+    """The terminal key over its budget (its max_budget set below its spend for a moment, through LiteLLM's admin API with
+    the throwaway's master key): a prompt is refused by LiteLLM ($0), the page says the budget is spent and where to
+    raise it; the budget is restored afterwards."""
+    need_haiku()
+    from checks_api import lite
+    key, master = ENV.get("LITELLM_KEY_TERMINAL"), ENV.get("LITELLM_MASTER_KEY")
+    if not key or not master:
+        raise Skip("no terminal key or master key in the throwaway's .env")
+    info = lite("GET", "/key/info", key=key).json()["info"]
+    budget = info.get("max_budget")
+    r = lite("POST", "/key/update", key=master, body={"key": key, "max_budget": 0.000001})
+    expect(r.status == 200, f"/key/update {r.status}")
+    try:
+        page, rec = ui_page(ctx, "code-ui-budget")
+        page.get_by_test_id("model-picker").click()
+        page.get_by_test_id("model-haiku").click()
+        page.get_by_test_id("chat-new").click()
+        see(page.locator(".chat-head .pane-title")).to_have_text("New session", timeout=20000)
+        ask(page, "Reply with exactly the word: budget")
+        see(page.get_by_test_id("budget-banner")).to_be_visible(timeout=120000)
+        see(page.get_by_test_id("budget-banner")).to_contain_text("BUDGET_TERMINAL")
+        shot(page, "70-code-ui-budget")
+        text = page.get_by_test_id("budget-banner").inner_text()
+        rec.save()
+    finally:
+        lite("POST", "/key/update", key=master, body={"key": key, "max_budget": budget})
+    restored = lite("GET", "/key/info", key=key).json()["info"].get("max_budget")
+    expect(restored == budget, f"the budget was not restored: {restored} != {budget}")
+    return f"the terminal key over budget → the page's banner: {' '.join(text.split())[:120]!r}; budget restored to ${budget}"
 
 
 @check("browser", "code-settings-row")

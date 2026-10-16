@@ -3,7 +3,7 @@
 // editor alive while open, so switching tabs keeps undo history and scroll position.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, closeTab, setActiveTab, saveFile, reloadFile, markDirty, setCursor, openFile, openDiff, setPrefs, type Tab, type FileTab, type DiffTab } from '../app';
+import { store, closeTab, setActiveTab, saveFile, reloadFile, markDirty, setCursor, openFile, openDiff, setPrefs, keepMine, type Tab, type FileTab, type DiffTab } from '../app';
 import * as api from '../api';
 import { countChanges, hunkLines } from '../diff';
 import { basename, bytes, dirname, label } from '../text';
@@ -103,7 +103,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       {tab.conflict && (
         <div class="banner warn" role="alert" data-testid="conflict">
           <Icon name="alert" size={15} />
-          <span>{tab.conflict === 'disk' ? 'This file changed on disk since you opened it. Your save was not written.' : 'Claude changed this file while you had unsaved changes.'}</span>
+          <span>{tab.conflict === 'disk' ? 'This file changed on disk since you opened it. Your save was not written.' : 'This file changed (Claude, or a command) while you had unsaved changes.'}</span>
           <span class="banner-actions">
             {tab.conflict === 'disk' && (
               <button type="button" class="btn small" onClick={() => void saveTab(tab.key, true)} data-testid="overwrite">
@@ -111,8 +111,13 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
               </button>
             )}
             <button type="button" class="btn small" onClick={() => reloadFile(tab.key)} data-testid="reload">
-              {tab.conflict === 'disk' ? 'Reload from disk' : "Take Claude's version"}
+              {tab.conflict === 'disk' ? 'Reload from disk' : 'Take the new version'}
             </button>
+            {tab.conflict === 'claude' && (
+              <button type="button" class="btn small" onClick={() => void keepMine(tab.key)} data-testid="keep-mine">
+                Keep mine
+              </button>
+            )}
             <button type="button" class="btn small ghost" onClick={() => void compare()}>
               Compare
             </button>

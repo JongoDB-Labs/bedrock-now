@@ -41,9 +41,23 @@ export interface Turn {
   history?: boolean;
 }
 
+/** A prompt sent while Claude works on a turn: shown pinned below the stream until that turn ends. */
+export interface Queued {
+  text: string;
+  images: number;
+  uuid: string | null;
+}
+
 export interface SessionView {
   id: string;
   state: SessionState;
+  /** the process whose events these are (the backend's epoch); another one numbers its events from 1 again */
+  epoch: string | null;
+  queued: Queued[];
+  /** the first transcript message shown (> 0: earlier ones can be loaded); null: no transcript loaded */
+  historyOffset: number | null;
+  /** only the transcript's last part could be read */
+  historyTruncated: boolean;
   model: string;
   mode: Mode;
   effort: string | null;
@@ -73,6 +87,10 @@ export function newView(id: string, init: Partial<SessionView> = {}): SessionVie
   return {
     id,
     state: 'idle',
+    epoch: null,
+    queued: [],
+    historyOffset: null,
+    historyTruncated: false,
     model: '',
     mode: 'default',
     effort: null,
@@ -165,9 +183,12 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
           const it = v.items[i] as Extract<Item, { t: 'user' }>;
           return it.queued ? replaceAt(v, i, { ...it, queued: false }) : v;
         }
+        if (v.queued.some((q) => q.uuid === ev.uuid)) return v;
       }
-      const started = { ...v, turns: [...v.turns, { start: now, end: null }], state: 'busy' as SessionState };
-      return push(endStreaming(started), { t: 'user', k: v.nextKey, text: ev.text, images: ev.images, uuid: ev.uuid, queued: false });
+      // a prompt that arrives while a turn runs waits for it (the CLI queues it): pinned below the stream, so the
+      // answer in progress is not split and the turn's cost stays the turn's
+      if (turnOpen(v)) return { ...v, queued: [...v.queued, { text: ev.text, images: ev.images, uuid: ev.uuid }].slice(-20) };
+      return startTurn(v, { text: ev.text, images: ev.images, uuid: ev.uuid }, now);
     }
     case 'delta':
     case 'thinking_delta': {
@@ -238,14 +259,30 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
       const next = endStreaming({ ...v, turns, state: v.state === 'busy' ? 'idle' : v.state });
       // tools still "running" when the turn ends were interrupted
       const items = next.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'error' as const } : it));
-      return push(
+      const done = push(
         { ...next, items },
         { t: 'result', k: next.nextKey, subtype: ev.subtype, turns: ev.turns, durationMs: ev.durationMs, usage: ev.usage, isError: ev.isError, turn: Math.max(0, turns.length - 1) },
       );
+      // the prompts that waited for this turn: Claude takes them next, as one turn
+      if (!done.queued.length) return done;
+      let w: SessionView = { ...done, queued: [] };
+      for (const [i, q] of done.queued.entries()) w = i === 0 ? startTurn(w, q, now) : push(w, { t: 'user', k: w.nextKey, text: q.text, images: q.images, uuid: q.uuid, queued: false });
+      return w;
     }
     case 'error':
       return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
   }
+}
+
+/** A turn is running: its prompt is in, its result not yet. */
+function turnOpen(v: SessionView): boolean {
+  const last = v.turns[v.turns.length - 1];
+  return !!last && last.end === null && !last.history;
+}
+
+function startTurn(v: SessionView, q: Queued, now: number): SessionView {
+  const started = { ...v, turns: [...v.turns, { start: now, end: null }], state: 'busy' as SessionState };
+  return push(endStreaming(started), { t: 'user', k: v.nextKey, text: q.text, images: q.images, uuid: q.uuid, queued: false });
 }
 
 /**
@@ -259,11 +296,22 @@ export function applySeq(v: SessionView, seq: number, ev: Ev, now = Date.now()):
   return { ...next, seq };
 }
 
-/** Optimistic user prompt shown before the server echoes it (deduplicated by uuid). */
+/** Optimistic user prompt shown before the server echoes it (deduplicated by uuid). While a turn runs it waits,
+ *  pinned below the stream. */
 export function addPrompt(v: SessionView, text: string, images: number, uuid: string, now = Date.now()): SessionView {
-  const busy = v.state === 'busy';
-  const started = busy ? v : { ...v, turns: [...v.turns, { start: now, end: null }] };
-  return push({ ...started, state: 'busy' }, { t: 'user', k: v.nextKey, text, images, uuid, queued: busy });
+  if (turnOpen(v) || v.state === 'busy') return { ...v, queued: [...v.queued, { text, images, uuid }].slice(-20) };
+  return startTurn(v, { text, images, uuid }, now);
+}
+
+/** Take back a prompt the backend refused (and only that one): from the queue or, with its turn, from the list. */
+export function dropPrompt(v: SessionView, uuid: string): SessionView {
+  if (v.queued.some((q) => q.uuid === uuid)) return { ...v, queued: v.queued.filter((q) => q.uuid !== uuid) };
+  const i = v.items.findIndex((it) => it.t === 'user' && it.uuid === uuid);
+  if (i < 0) return v;
+  const items = v.items.slice(0, i).concat(v.items.slice(i + 1));
+  const last = v.turns[v.turns.length - 1];
+  const open = !!last && last.end === null;
+  return { ...v, items, turns: open ? v.turns.slice(0, -1) : v.turns, state: open ? 'idle' : v.state };
 }
 
 /**
@@ -271,23 +319,7 @@ export function addPrompt(v: SessionView, text: string, images: number, uuid: st
  * live user prompt it also contains (matched by uuid), so nothing appears twice. Without a match, the history goes
  * first and a divider marks where the live part begins.
  */
-export function mergeHistory(v: SessionView, history: Ev[], now = Date.now()): SessionView {
-  let base = newView(v.id, {
-    state: v.state,
-    model: v.model,
-    mode: v.mode,
-    effort: v.effort,
-    title: v.title,
-    seq: v.seq,
-    permissions: v.permissions,
-    tasks: v.tasks,
-    commands: v.commands,
-    cliModels: v.cliModels,
-    mcp: v.mcp,
-    spend: v.spend,
-    context: v.context,
-    status: v.status,
-  });
+export function mergeHistory(v: SessionView, history: Ev[], now = Date.now(), window: { offset?: number; truncated?: boolean } = {}): SessionView {
   const liveUuids = new Set(v.items.filter((i) => i.t === 'user' && i.uuid).map((i) => (i as { uuid: string }).uuid));
   let cut = history.length;
   for (let i = 0; i < history.length; i++) {
@@ -297,21 +329,37 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now()): S
       break;
     }
   }
-  const t0 = now - 1;
-  for (const e of history.slice(0, cut)) base = applyEvent(base, e, t0);
-  // history turns are over; nothing in it is streaming or running
-  base = endStreaming(base);
-  base = {
-    ...base,
-    turns: base.turns.map((t) => ({ ...t, end: t.end ?? t0, history: true })),
-    items: base.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'done' as const } : it)),
-  };
+  let base = foldHistory(
+    newView(v.id, {
+      state: v.state,
+      epoch: v.epoch,
+      queued: v.queued,
+      model: v.model,
+      mode: v.mode,
+      effort: v.effort,
+      title: v.title,
+      seq: v.seq,
+      permissions: v.permissions,
+      tasks: v.tasks,
+      commands: v.commands,
+      cliModels: v.cliModels,
+      mcp: v.mcp,
+      spend: v.spend,
+      context: v.context,
+      status: v.status,
+      historyOffset: window.offset ?? 0,
+      historyTruncated: window.truncated === true,
+    }),
+    history.slice(0, cut),
+    now - 1,
+  );
   if (v.items.length && cut === history.length && history.length) {
     base = push(base, { t: 'notice', k: base.nextKey, text: 'Live', level: 'info' });
   }
-  // re-key the live items after the history so keys stay unique
+  // re-key the live items after the history so keys stay unique; their turns come after the history's
+  const shift = base.turns.length;
   let key = base.nextKey;
-  const live = v.items.map((it) => ({ ...it, k: key++ }));
+  const live = v.items.map((it) => (it.t === 'result' ? { ...it, k: key++, turn: it.turn + shift } : { ...it, k: key++ }));
   const items = [...base.items, ...live].slice(-MAX_ITEMS);
   return {
     ...base,
@@ -323,6 +371,51 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now()): S
     mode: v.init?.mode ?? base.mode,
     gap: false,
   };
+}
+
+/** Transcript events folded into a view: each prompt ends the turn before it (a transcript has no results), nothing
+ *  is left streaming or running. */
+function foldHistory(base: SessionView, events: Ev[], t0: number): SessionView {
+  let v = base;
+  const queued = v.queued;
+  v = { ...v, queued: [] };
+  for (const e of events) {
+    if (e.kind === 'user' && turnOpen(v)) v = closeOpenTurn(v, t0);
+    v = applyEvent(v, e, t0);
+  }
+  v = endStreaming(v);
+  return {
+    ...v,
+    queued,
+    turns: v.turns.map((t) => ({ ...t, end: t.end ?? t0, history: true })),
+    items: v.items.map((it) => (it.t === 'tool' && it.status === 'running' ? { ...it, status: 'done' as const } : it)),
+  };
+}
+
+function closeOpenTurn(v: SessionView, at: number): SessionView {
+  const last = v.turns[v.turns.length - 1];
+  if (!last || last.end !== null) return v;
+  return { ...v, turns: [...v.turns.slice(0, -1), { ...last, end: at }] };
+}
+
+/** An earlier window of the transcript in front of what the view shows ("Load earlier"). */
+export function prependHistory(v: SessionView, events: Ev[], offset: number, now = Date.now()): SessionView {
+  const earlier = foldHistory(newView(v.id), events, now - 1);
+  const shift = earlier.turns.length;
+  let key = earlier.nextKey;
+  const rest = v.items.map((it) => (it.t === 'result' ? { ...it, k: key++, turn: it.turn + shift } : { ...it, k: key++ }));
+  return { ...v, items: [...earlier.items, ...rest].slice(-MAX_ITEMS), nextKey: key, turns: [...earlier.turns, ...v.turns], historyOffset: offset };
+}
+
+/** The process ended mid-turn (it failed, or was closed): the turn is over, and prompts that waited for it were not
+ *  taken — they show as sent, with a note. */
+export function endedMidTurn(v: SessionView, now = Date.now()): SessionView {
+  let w = endStreaming(closeOpenTurn(v, now));
+  if (!w.queued.length) return w;
+  const q = w.queued;
+  w = { ...w, queued: [] };
+  for (const x of q) w = push(w, { t: 'user', k: w.nextKey, text: x.text, images: x.images, uuid: x.uuid, queued: false });
+  return push(w, { t: 'notice', k: w.nextKey, text: 'The session ended before Claude took these; send them again.', level: 'warn' });
 }
 
 /** Files Claude changed in this session (for explorer markers): path → 'A' (created) | 'M' (modified). */

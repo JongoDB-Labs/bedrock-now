@@ -98,6 +98,8 @@ def snapshot(status_dir: Path) -> dict | None:
         "restart": [s for s in ch.get("restart") or [] if isinstance(s, str) and f"restart-{s}" in DIAG_ACTIONS],
         "chat_models": [[m[0], _s(m[1], 80) or m[0]] for m in ch.get("chat_models") or []
                         if isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m[0])],
+        # the folder the Code page's sandbox would see (Settings names it before turning the terminal on with it)
+        "code_workspace": _s(ch.get("code_workspace"), 1024),
     }
     written = d.get("written_at") if isinstance(d.get("written_at"), int) else None
     base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""

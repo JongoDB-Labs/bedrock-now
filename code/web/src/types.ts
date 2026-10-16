@@ -1,5 +1,5 @@
-// The page's own model of what the backend sends. api.ts turns the wire format (design §5) into these shapes,
-// validating ids and capping strings on the way; nothing else in the page reads raw server JSON.
+// The page's own model of what the backend sends. api.ts turns the wire format (code/server/protocol.mjs) into these
+// shapes, validating ids and capping strings on the way; nothing else in the page reads raw server JSON.
 
 export type Mode = 'default' | 'acceptEdits' | 'plan' | 'dontAsk';
 export const MODES: readonly Mode[] = ['default', 'acceptEdits', 'plan', 'dontAsk'];
@@ -18,6 +18,8 @@ export interface EditInfo {
   /** The whole file before the change (Edit's originalFile); null for a new file. */
   original: string | null;
   hunks: Hunk[];
+  /** false: the backend dropped part of the diff (over its size cap) — the card says so */
+  complete: boolean;
 }
 
 export interface InitInfo {
@@ -64,12 +66,29 @@ export interface Suggestion {
   directories: string[];
 }
 
+/** One rule (or mode switch) that an "Always" answer applies, as the backend will apply it. */
+export interface RuleLine {
+  text: string;
+  destination: string;
+}
+
 export interface PermissionReq {
   id: string;
   session: string;
   tool: string;
   input: unknown;
+  /** false: the input was cut (by the backend or here) — what is shown is not all that would run: no Allow */
+  complete: boolean;
   reason: string;
+  /** what "Always" applies (sandbox-wide or this session) */
+  rules: RuleLine[];
+  /** the same rules in this workspace's .claude settings (offered separately, with a warning) */
+  projectRules: RuleLine[];
+  /** open on Deny, no one-key approve */
+  defaultNo: boolean;
+  /** no persistent "Always" choice */
+  noAlways: boolean;
+  /** (older backends) the CLI's suggestions, when no `rules` came */
   suggestions: Suggestion[];
   at: number;
 }
@@ -210,6 +229,10 @@ export interface ServerState {
   maxSessions: number | null;
   uploadMax: number;
   imageMax: number;
+  /** images per prompt the backend takes */
+  maxImages: number;
+  /** prompts waiting for an answer in all sessions */
+  pending: number;
   terminalUrl: string | null;
   portalOrigin: string | null;
 }
@@ -237,6 +260,13 @@ export interface SpendRow {
   tokens: number;
 }
 
+/** The terminal key's budget (from /.bn/spend): what the Code page's sessions spend against. */
+export interface KeyBudget {
+  spend: number | null;
+  max: number | null;
+  resetAt: number | null;
+}
+
 export interface Task {
   id: string;
   status: string;
@@ -248,18 +278,25 @@ export interface Task {
 
 /** What the server pushes over the WebSocket, normalised. */
 export type ServerMsg =
-  | { kind: 'event'; session: string; seq: number; ev: Ev }
+  | { kind: 'event'; session: string; seq: number; epoch: string | null; ev: Ev }
   | { kind: 'permission'; req: PermissionReq }
   | { kind: 'permission_done'; id: string; session: string | null }
-  | { kind: 'session_state'; session: string; state: SessionState }
-  /** the answer to `attach`: replayed events start at `from`; `gap`: some after the page's `since` are gone */
-  | { kind: 'attached'; session: string; from: number; last: number; gap: boolean }
+  | { kind: 'session_state'; session: string; state: SessionState; model: string | null; mode: Mode | null }
+  /** the answer to `attach`: replayed events start at `from`; `gap`: some after the page's `since` are gone (or the
+   *  process changed: another `epoch`) */
+  | { kind: 'attached'; session: string; from: number; last: number; gap: boolean; epoch: string | null }
+  /** the CLI reset the conversation (/clear, a plan exit with a fresh context): it goes on as `next` */
+  | { kind: 'reset'; session: string; next: string }
+  /** the answer to a message that carried `req` */
+  | { kind: 'reply'; req: string; ok: boolean; error: string; data: unknown }
+  | { kind: 'hello'; pending: number; maxImages: number | null }
+  | { kind: 'pending'; count: number }
   | { kind: 'commands'; session: string | null; commands: Command[] }
   | { kind: 'models'; session: string | null; models: CliModel[] }
   | { kind: 'mcp'; session: string | null; servers: McpServer[] }
   | { kind: 'plugins'; session: string | null; plugins: LoadedPlugin[] }
   | { kind: 'context'; session: string | null; usage: ContextUsage }
-  | { kind: 'error'; session: string | null; message: string };
+  | { kind: 'error'; session: string | null; message: string; req: string | null };
 
 export interface ImageBlock {
   media_type: string;

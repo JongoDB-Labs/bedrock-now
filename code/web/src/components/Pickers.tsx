@@ -16,7 +16,7 @@ const MODE_INFO: Record<Mode, string> = {
   dontAsk: 'Never asks: anything not already allowed is denied',
 };
 
-/** ~30k tokens are written to the prompt cache on a new session or a model switch (design §11.2). */
+/** ~30k tokens are written to the prompt cache on a new session or a model switch (measured on Bedrock). */
 const CACHE_TOKENS = 30_000;
 
 function matches(m: BnModel, current: string): boolean {
@@ -193,13 +193,18 @@ export function EffortPicker() {
 
 export function CostMeter() {
   const v = useSel(store, (s) => activeView(s));
+  const budget = useSel(store, (s) => s.budget);
   if (!v) return null;
   const { turn, session } = meter(v.turns, v.spend);
+  const key =
+    budget && budget.max !== null
+      ? `\nThe key claude-code-terminal: ${money(budget.spend)} of its ${money(budget.max)} budget${budget.resetAt ? ` (resets ${new Date(budget.resetAt).toLocaleDateString()})` : ''}.`
+      : '';
   return (
     <button
       type="button"
       class="meter-btn"
-      title="Cost from bedrock-now's spend logs (what Bedrock billed). Turns appear a few seconds after they end. Click to refresh."
+      title={`Cost from bedrock-now's spend logs (what Bedrock billed). Turns appear a few seconds after they end. Click to refresh.${key}`}
       onClick={() => void refreshSpend(v.id)}
       data-testid="cost"
     >

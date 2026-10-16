@@ -2,7 +2,8 @@
 // screen from More on a phone — its badge (permission prompts waiting), and a line on Home's Claude Code card. Loaded
 // after app.js and mobile.js (deferred; shares their $, el, appUrl and APP_URLS) and adds its elements before
 // DOMContentLoaded, so app.js binds the tab like the others. The tab frames code.<host> like any app: while the Code
-// page is locked, that host answers with its own "Unlock the Code page" form (the portal password again).
+// page is locked, that host answers with its own "Unlock the Code page" form (the portal password again). On a big
+// screen the frame is made (hidden) once the portal is idle, so the badge counts prompts before the first visit.
 "use strict";
 
 (() => {
@@ -54,6 +55,15 @@
     });
   }
 
+  // The badge needs the page running: its frame, hidden, once the portal has nothing else to do (not on a phone: there
+  // the Code page opens in a tab of its own, and an idle frame would only cost battery).
+  function preload() {
+    if (window.matchMedia("(max-width: 767.98px)").matches) return;
+    const make = () => { if (!window.matchMedia("(max-width: 767.98px)").matches) appFrame("code"); };
+    if ("requestIdleCallback" in window) window.requestIdleCallback(make, { timeout: 5000 });
+    else setTimeout(make, 2000);
+  }
+
   // Home's "Claude Code in your terminal" card: where else it runs.
   function cardLine() {
     const card = $("section.claude");
@@ -75,6 +85,6 @@
     card.append(line);
   }
 
-  if (here) { addTab(); addSheetLink(); listen(); }
+  if (here) { addTab(); addSheetLink(); listen(); window.addEventListener("load", preload, { once: true }); }
   cardLine();
 })();

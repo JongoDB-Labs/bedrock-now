@@ -1,9 +1,10 @@
 // What reaches the page from the sandbox: checked and capped (validate.mjs, normalize.mjs), with the hostile values
-// the spike's stand-in sent (§11.4 of the design: a session id "../../etc", mtimeMs "NaN", total_cost_usd -1, markup).
+// a stand-in for the sandbox sends (a session id "../../etc", mtimeMs "NaN", total_cost_usd -1, markup).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { str, short, num, int, plain, relPath, fileName, isModel, isUuid } from '../server/validate.mjs';
 import { fromSdk, fromHistory, sessionRow, editOf, initEvent } from '../server/normalize.mjs';
+import { LIMITS } from '../server/protocol.mjs';
 
 const MARKUP = '<img src=x onerror=alert(1)><script>alert(2)</script><svg onload=alert(3)>[x](javascript:alert(4))';
 
@@ -86,11 +87,17 @@ test('init: lists capped, plugins and MCP servers as name/status only', () => {
 
 test('edits: hunks and the original (left out when large)', () => {
   const e = editOf({ filePath: '/workspace/a.txt', originalFile: '4242\n', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', 7] }, 'x'] });
-  assert.deepEqual(e, { path: '/workspace/a.txt', original: '4242\n', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', ''] }] });
+  // (a non-string line and a non-hunk were dropped: not all of it is shown)
+  assert.deepEqual(e, { path: '/workspace/a.txt', original: '4242\n', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-4242', '+4343', ''] }], complete: false });
   assert.equal(editOf({ filePath: 'x', originalFile: 'y'.repeat(300 << 10), structuredPatch: [] }).original, null);
   assert.equal(editOf({ filePath: 7, structuredPatch: [] }), undefined);
   const live = fromSdk({ type: 'user', tool_use_result: { filePath: 'a', structuredPatch: [] }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] } });
-  assert.deepEqual(live[0].edit, { path: 'a', original: null, hunks: [] });
+  assert.deepEqual(live[0].edit, { path: 'a', original: null, hunks: [], complete: true });
+  // the diff stops at LIMITS.editHunkChars in all
+  const huge = editOf({ filePath: 'b', structuredPatch: Array.from({ length: 100 }, () => ({ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: Array(20).fill(`+${'z'.repeat(3000)}`) })) });
+  const chars = huge.hunks.reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length, 0), 0);
+  assert.ok(chars <= LIMITS.editHunkChars && chars > LIMITS.editHunkChars - 10000, String(chars));
+  assert.equal(huge.complete, false);
 });
 
 test('history: prompts, answers, tool results, meta dropped', () => {

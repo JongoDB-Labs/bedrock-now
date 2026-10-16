@@ -2,7 +2,8 @@
 # CODE_ENABLED=true and the browser terminal is on — after compose.terminal.yaml, whose sandbox it uses).
 #
 # The code container serves the page and runs the Agent SDK; Claude Code itself runs in the terminal's sandbox, started
-# by bn-coded (terminal/bin/bn-coded.mjs) on a UNIX socket in the code-socket volume. The code container mounts no
+# by bn-coded (terminal/bin/bn-coded.mjs) on a UNIX socket in the code-socket volume — both are the terminal's
+# (compose.terminal.yaml), so this file never changes the terminal container. The code container mounts no
 # folder of yours and holds no LiteLLM key: files, sessions and plugins are ops of bn-coded, spend and model prices
 # come from the portal (/.bn/spend, /.bn/models on the code host). Its only network, code-link (internal), it shares
 # with the main Caddy alone, which asks the portal first (session, a fresh unlock, the Origin) and then adds the secret
@@ -28,7 +29,7 @@ services:
       CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}
       HOME: /tmp
     volumes:
-      - code-socket:/run/bn-code:ro   # connecting to bn-coded's socket needs no write access; it never listens there
+      - code-socket:/run/bn-code:ro   # (the terminal's volume) connecting needs no write access; it never listens there
     networks:
       code-link:
         aliases: [code-upstream]
@@ -37,13 +38,6 @@ services:
     logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
-
-  # The sandbox: bn-coded runs beside ttyd (bn-terminal starts it with BN_CODE=1), listening in the shared volume.
-  terminal:
-    environment:
-      BN_CODE: "1"
-    volumes:
-      - code-socket:/run/bn-code
 
   # The main Caddy: the code site (caddy/code-on.caddy, CODE_HOST), proxied to code-upstream:8095.
   caddy:
@@ -68,6 +62,3 @@ services:
 networks:
   code-link:
     internal: true
-
-volumes:
-  code-socket:

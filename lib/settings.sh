@@ -280,7 +280,7 @@ cfg_effective() { if cfg_has "$1"; then cfg_new "$1"; else get_env "$1"; fi; }
 # settings_check_batch ORIGIN — every key and value (validators, policy, keys that only go together); dies with
 # the first problem (no value in any message)
 settings_check_batch() {
-  local origin="$1" k n=0 p chat
+  local origin="$1" k n=0 p chat ws why
   SV_REMOTE_ON=0; [ "$(get_env REMOTE_MODE)" != tailscale ] && [ "$(get_env REMOTE_MODE)" != domain ] || SV_REMOTE_ON=1
   for k in $CFG_ORDER; do
     n=$((n + 1))
@@ -324,10 +324,16 @@ settings_check_batch() {
       printf '%s\n' "$chat" | grep -qxF "$p" || die "MODELS_HIDDEN: $p is not a chat model your AWS key can use (./stack models)"
     done
   fi
-  # The Code page runs in the browser terminal's sandbox: Settings turns it on only while the terminal is ready (which
-  # folder of yours the sandbox sees is chosen in a terminal: ./stack code enable --workspace DIR turns both on)
+  # The Code page runs in the browser terminal's sandbox: with the terminal off, turning it on turns the terminal on
+  # too, with its folder (TERMINAL_WORKSPACE, or the default one code_enable creates; Settings names it before you
+  # confirm). That folder is checked here, before anything changes; another folder: ./stack code enable --workspace DIR
   if cfg_has CODE_ENABLED && [ "$(cfg_new CODE_ENABLED)" = true ] && ! code_on && ! terminal_ready; then
-    die "CODE_ENABLED: the Code page runs in the browser terminal's sandbox, which is off — turn both on in a terminal: ./stack code enable [--workspace DIR] (it picks the folder the sandbox sees)"
+    ws="$(code_workspace)"
+    if why="$(env_value_problem "$ws")"; then die "CODE_ENABLED: the terminal's folder $ws $why — pick one in a terminal: ./stack code enable --workspace DIR"; fi
+    if [ -e "$ws" ] && ! why="$(terminal_workspace_check "$ws")"; then
+      die "CODE_ENABLED: the terminal's folder $ws cannot be its workspace: $why — pick one in a terminal: ./stack code enable --workspace DIR"
+    fi
+    _cfg_stack_running || die "CODE_ENABLED: turning the Code page on with the terminal off needs the stack running (the terminal's LiteLLM key) — ./stack up first"
   fi
   if cfg_has TAILSCALE_ALLOWED_LOGIN && [ -z "$(cfg_new TAILSCALE_ALLOWED_LOGIN)" ]; then
     die "TAILSCALE_ALLOWED_LOGIN cannot be made blank here (that would let anyone in your tailnet try the password)"
@@ -387,10 +393,13 @@ _settings_last_change() {
     printf "{\"at\": \"%s\", \"keys\": [%s], \"via\": \"%s\", \"result\": \"%s\"}\n", at, ko, v, r }'
 }
 
-# _settings_choices -> JSON: speech-to-text models per provider, which Bedrock ones the model check enabled, and the
-# services ./stack restart takes
+# _settings_choices -> JSON: speech-to-text models per provider, which Bedrock ones the model check enabled, the
+# services ./stack restart takes, the chat models, and the folder the Code page's sandbox would see (code_workspace:
+# what Settings names before it turns the terminal on with the Code page; empty for a path JSON would need escapes in)
 _settings_choices() {
-  local p m out='' first sep ready=''
+  local p m out='' first sep ready='' ws
+  ws="$(code_workspace)"
+  case "$ws" in *'"'* | *'\'* | *[[:cntrl:]]*) ws='' ;; esac
   for p in bedrock openai groq; do
     first=1; out="$out${out:+, }\"$p\": ["
     for m in $(stt_catalog | awk -F'\t' -v p="$p" '$1 == p { print $2 }'); do
@@ -399,9 +408,9 @@ _settings_choices() {
     done
     out="$out]"
   done
-  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s]}\n' "$out" "$ready" \
+  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s], "code_workspace": "%s"}\n' "$out" "$ready" \
     "$(for s in $RESTART_SERVICES; do printf '"%s",' "$s"; done | sed 's/,$//')" \
-    "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')"
+    "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')" "$ws"
 }
 
 # _settings_display NAME -> its friendly name from catalog/display.tsv (the name itself without one); no quotes
@@ -832,13 +841,13 @@ _cfg_post() {
     sync_budget_banner
     portal_session_end
   fi
-  if _cfg_on code; then _cfg_code; fi   # last: it restarts the terminal, the portal and Caddy itself
+  if _cfg_on code; then _cfg_code; fi   # last: it restarts the portal and Caddy itself (and turns the terminal on)
 }
 
 # _cfg_code — CODE_ENABLED: ./stack code enable | disable (lib/code.sh), which write CODE_ENABLED themselves, build or
-# remove the code container and restart the terminal, the portal and Caddy; disabling leaves the terminal on, and
-# Settings turns it on only while the terminal is ready (settings_check_batch). With the stack stopped only .env
-# changes (./stack up applies it). On a rollback (CFG_ROLLBACK=1) .env already holds the previous value again: the
+# remove the code container and restart the portal and Caddy (never the terminal); enabling turns the terminal on
+# first when it is off (its folder checked by settings_check_batch), disabling leaves it on. With the stack stopped
+# only .env changes (./stack up applies it). On a rollback (CFG_ROLLBACK=1) .env already holds the previous value again: the
 # Code page follows it (code_disable needs CODE_ENABLED on to find what a failed enable started).
 _cfg_code() {
   local v back="${CFG_ROLLBACK:-0}"

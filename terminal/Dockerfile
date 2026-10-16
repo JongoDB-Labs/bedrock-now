@@ -44,7 +44,7 @@ RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error \
  && ln -s /opt/claude-code/node_modules/.bin/claude /usr/local/bin/claude && claude --version
 
 # The Code page's spawn server (bin/bn-coded.mjs: Node built-ins only) listens in /run/bn-code — the code-socket volume
-# while ./stack code is on (compose.code.yaml), shared with the code container alone; bn-terminal starts it then.
+# (compose.terminal.yaml), shared with the code container alone while ./stack code is on; bn-terminal always starts it.
 # You, inside: the same uid/gid as on your computer (TERMINAL_UID/GID from ./stack), so files in the workspace
 # folder stay yours. The node image's own user (uid 1000) goes first. The home folder is the terminal-home volume
 # (Claude Code's settings and history, shell history); it starts empty: the settings below live in /etc.

@@ -5,13 +5,16 @@
 # the terminal on: enable turns the terminal on first when it is off. Off unless you turn it on.
 #
 #   enable [--workspace DIR]   CODE_ENABLED=true (the terminal too, with DIR, when it is off or DIR is given)
-#   disable                    the code container, its network and socket volume go; the terminal stays
+#   disable                    the code container and its network go; the terminal stays (untouched)
 #   status                     on/off, the address, the container, the sandbox it uses, remote access
 #
 # .env: CODE_ENABLED, CODE_HOST (default code.PORTAL_HOST), and generated: CODE_PROXY_SECRET (the header the main Caddy
 # adds and the code container requires; new at every enable) and REMOTE_CODE_HOST (written here while REMOTE_TERMINAL=
 # true and remote access is on: one switch for "the sandbox from outside"). Only .env counts: dc() drops CODE_* from
 # your shell.
+#
+# The terminal always runs bn-coded on the code-socket volume (compose.terminal.yaml, terminal/bin/bn-terminal), so
+# turning the Code page on or off never recreates the terminal container (its tmux session goes on).
 #
 # Hooks for other parts of ./stack: code_services (status, up), code_up_hook (up), code_setup_hook (setup, update),
 # code_remote_sync / code_remote_app (remote host names), code_test_checks (./stack test), code_summary_line,
@@ -22,6 +25,12 @@ code_on() { flag_on "$(get_env CODE_ENABLED)"; }
 # code_ready -> 0 while it is on and the terminal is ready (its sandbox is where Claude Code runs)
 code_ready() { code_on && terminal_ready; }
 code_services() { ! code_ready || echo code; }
+# code_workspace -> the folder the Code page's sandbox sees: the terminal's, or the one enable would give it
+code_workspace() {
+  local ws; ws="$(get_env TERMINAL_WORKSPACE)"
+  [ -n "$ws" ] || ws="$(terminal_default_workspace)"
+  printf '%s\n' "$ws"
+}
 
 code_usage() {
   cat <<'EOF'
@@ -58,16 +67,14 @@ code_secrets() {
 }
 
 code_build() { dc build -q code; }
-# The terminal first (its new environment and the socket volume start bn-coded), then the portal (the Code tab, the
-# unlock), the main Caddy (the code site: a changed Caddyfile is read only at start), then the code container.
-_code_up() {
-  dc up -d --wait terminal && dc up -d --wait portal && dc up -d --wait --force-recreate caddy && dc up -d --wait code
-}
-_code_front() {
-  local t=''; ! terminal_ready || t=terminal
-  # shellcheck disable=SC2086  # (no terminal: nothing to recreate there)
-  { [ -z "$t" ] || dc up -d --wait $t; } && dc up -d --wait portal && dc up -d --wait --force-recreate caddy
-}
+# The portal (the Code tab, the unlock), the main Caddy (the code site: a changed Caddyfile is read only at start), then
+# the code container. The terminal is not touched: it runs bn-coded already.
+_code_up() { _code_front && dc up -d --wait code; }
+_code_front() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy; }
+# code_spawn_ready — bn-coded listens in the running terminal (a terminal container started by a version without it
+# has to be recreated once)
+code_spawn_ready() { dc exec -T terminal test -S /run/bn-code/coded.sock >/dev/null 2>&1; }
+_code_terminal_again() { terminal_build && dc up -d --wait terminal; }
 
 code_enable() {
   local own=1 targs=()
@@ -87,15 +94,16 @@ code_enable() {
   set_env CODE_ENABLED true
   code_remote_sync
   if ! terminal_ready || [ ${#targs[@]} -gt 0 ]; then
-    log "the Code page runs Claude Code in the browser terminal's sandbox: turning the terminal on first"
+    log "the Code page runs Claude Code in the browser terminal's sandbox: turning the terminal on first ($(code_workspace))"
     terminal_enable ${targs[@]+"${targs[@]}"}
     printf '\n'
-  else
+  elif ! code_spawn_ready; then
+    # a terminal started before its image had the Code page's spawn server (it normally has it: nothing restarts)
     log "the terminal container restarts once to start the Code page's spawn server (its tmux session ends)"
-    run_phase "Terminal image (with the Code page's spawn server)" terminal terminal_build
+    run_phase "Terminal (with the Code page's spawn server)" terminal _code_terminal_again
   fi
   run_phase "Code page image (build; the first one takes a few minutes)" code code_build
-  run_phase "Code page + terminal + portal + Caddy" "code terminal portal caddy" _code_up
+  run_phase "Code page + portal + Caddy" "code portal caddy" _code_up
   [ "$own" = 0 ] || stack_unlock
   printf '\n'; code_status
   printf '\nOpen the Code tab on Home (%s) and unlock it with the portal password.\n' "$(portal_url)"
@@ -111,7 +119,7 @@ code_disable() {
   dc rm -sf code >/dev/null 2>&1 || true   # with the overlay still on: compose knows it
   set_env CODE_ENABLED false
   code_remote_sync
-  run_phase "Terminal + portal + Caddy (Code page off)" "terminal portal caddy" _code_front
+  run_phase "Portal + Caddy (Code page off)" "portal caddy" _code_front
   code_network_cleanup
   [ "$own" = 0 ] || stack_unlock
   log "the Code page is off: no Code tab, no code host, no code container (the terminal and its workspace stay)"
@@ -127,11 +135,10 @@ code_terminal_off() {
   log "the Code page is off too (it runs in the terminal's sandbox): ./stack code enable turns both on again"
 }
 
-# code_network_cleanup — its network and the socket volume, once nothing uses them (never fatal)
+# code_network_cleanup — its network, once nothing uses it (never fatal; the socket volume is the terminal's)
 code_network_cleanup() {
   local p; p="$(project_name)"
   docker network rm "${p}_code-link" >/dev/null 2>&1 || true
-  docker volume rm "${p}_code-socket" >/dev/null 2>&1 || true
 }
 
 # code_remote_sync — REMOTE_CODE_HOST in .env: the Code page's remote name while it is on, the terminal is shared
@@ -203,8 +210,9 @@ code_summary_line() {
 
 # code_test_checks — ./stack test while it is on (cmd_test's `fails`; no Bedrock calls): the container's health, the
 # host's checks (login, the unlock form, another site's Origin), the code container refusing requests without the
-# secret header, and what each side must not reach: the code container nothing but Caddy, the sandbox not the code
-# container; the socket folder the sandbox user's alone.
+# secret header, one round trip to bn-coded (sessions.list, the frames code/server/frames.mjs speaks), and what each
+# side must not reach: the code container nothing but Caddy, the sandbox not the code container; the socket folder
+# the sandbox user's alone.
 code_test_checks() {
   local code out got
   code_ready || return 0
@@ -231,6 +239,16 @@ code_test_checks() {
     for (const [h, p] of hosts) { const s = net.connect({ host: h, port: p, timeout: 3000 }); const done = (r) => { res[h] = r; s.destroy(); if (!--left) console.log(hosts.map(([x]) => res[x]).join(" ")); };
       s.on("connect", () => done("open")); s.on("timeout", () => done("closed")); s.on("error", () => done("closed")); }' 2>/dev/null || true)"
   _check "the code container reaches nothing but Caddy (no LiteLLM, portal, sandbox, gateway, shared-mcp, internet)" "$out" "closed closed closed closed closed closed"
+  # one op over the spawn socket: OPEN {op: sessions.list} -> a RESULT frame (0x15) with a sessions list
+  out="$(dc exec -T code node -e 'const s = require("net").connect("/run/bn-code/coded.sock"); const p = Buffer.from(JSON.stringify({ op: "sessions.list" }));
+    const h = Buffer.alloc(5); h[0] = 1; h.writeUInt32BE(p.length, 1); let b = Buffer.alloc(0);
+    const t = setTimeout(() => { console.log("timeout"); process.exit(0); }, 10000);
+    s.on("connect", () => s.write(Buffer.concat([h, p])));
+    s.on("data", (d) => { b = Buffer.concat([b, d]); if (b.length < 5 || b.length < 5 + b.readUInt32BE(1)) return;
+      let ok = "bad"; try { ok = b[0] === 0x15 && Array.isArray(JSON.parse(b.subarray(5, 5 + b.readUInt32BE(1))).sessions) ? "ok" : "bad"; } catch { /* bad */ }
+      console.log(ok); clearTimeout(t); s.destroy(); });
+    s.on("error", (e) => { console.log("error " + e.code); clearTimeout(t); });' 2>/dev/null || true)"
+  _check "the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)" "$out" ok
   # shellcheck disable=SC2016  # expanded in the container
   out="$(dc exec -T terminal sh -c 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
   _check "the sandbox cannot reach the code container; bn-coded listens in its own folder (mode 700)" "$out" "000 700 socket"
@@ -251,8 +269,8 @@ code_rollback_cleanup() {
   log "code: the version you rolled back to has no Code page (./stack update brings it back)"
 }
 
-# code_uninstall_cleanup — ./stack uninstall, after compose's down: its network, volume and images by their exact
-# names, whether or not it is on now
+# code_uninstall_cleanup — ./stack uninstall, after compose's down: its network and images by their exact names,
+# whether or not it is on now (the socket volume is the terminal's: terminal_uninstall_cleanup)
 code_uninstall_cleanup() {
   local p; p="$(project_name)"
   code_network_cleanup

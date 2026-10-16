@@ -67,14 +67,25 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   assert_contains "$out" "turning the terminal on first"
   assert_contains "$out" "Code page: on — http://code.bedrock-now.localhost"
   assert_contains "$out" "Open the Code tab on Home"
-  # ./stack up and setup keep the secret; enable again (the terminal on now) makes a new one and rebuilds its image
+  # ./stack up and setup keep the secret; enable again (the terminal on now) makes a new one and never touches the
+  # terminal: it runs the spawn server already (compose.terminal.yaml, bn-terminal)
   code_up_hook 2>/dev/null; assert_eq "$(get_env CODE_PROXY_SECRET)" "$s1"
   : > "$TMP/dc"
   code_enable > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
   [ "$(get_env CODE_PROXY_SECRET)" != "$s1" ] || { echo "enable kept the secret" >&2; return 1; }
-  assert_contains "$(cat "$TMP/out")" "the terminal container restarts once"
+  assert_not_contains "$(cat "$TMP/out")" "restarts once"
   assert_not_contains "$(cat "$TMP/out")" "turning the terminal on first"
+  assert_eq "$(grep -E '^dc (build|up|rm|stop|restart).*terminal' "$TMP/dc")" ""   # (only asked whether bn-coded listens)
+  assert_contains "$(cat "$TMP/dc")" "dc exec -T terminal test -S /run/bn-code/coded.sock"
+  assert_eq "$(grep '^dc up' "$TMP/dc" | tr '\n' '|')" "dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait code|"
+  # a terminal started by a version without the spawn server: recreated once (and says so)
+  dc() { echo "dc $*" >> "$TMP/dc"; case "$*" in *"test -S /run/bn-code/coded.sock"*) return 1 ;; esac; return 0; }
+  : > "$TMP/dc"
+  code_enable > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
+  assert_contains "$(cat "$TMP/out")" "the terminal container restarts once"
   assert_contains "$(cat "$TMP/dc")" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --wait terminal"
+  dc() { echo "dc $*" >> "$TMP/dc"; return 0; }
   # a weak secret in .env is replaced at the next ./stack up
   set_env CODE_PROXY_SECRET abc; code_up_hook 2>/dev/null
   s3="$(get_env CODE_PROXY_SECRET)"; [ "${#s3}" -ge 32 ] || return 1
@@ -101,10 +112,10 @@ test_disable_removes_the_code_page_and_keeps_the_terminal() {
   assert_eq "$(get_env TERMINAL_ENABLED)" true
   calls="$(cat "$TMP/dc")"
   assert_eq "$(printf '%s\n' "$calls" | head -n 1)" "dc rm -sf code"   # while compose still knows it
-  assert_contains "$calls" "dc up -d --wait terminal"                    # without the spawn server and its volume
+  assert_not_contains "$calls" "terminal"                                # the terminal (and its tmux session) untouched
   assert_contains "$calls" "dc up -d --wait --force-recreate caddy"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_code-link"
-  assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_code-socket"
+  assert_not_contains "$(cat "$TMP/docker")" "docker volume rm"           # the socket volume is the terminal's
   assert_contains "$(cat "$TMP/out")" "the terminal and its workspace stay"
   code_disable > "$TMP/out" 2>&1 || return 1
   assert_contains "$(cat "$TMP/out")" "already off"
@@ -119,7 +130,7 @@ test_terminal_disable_turns_the_code_page_off_too() {
   assert_eq "$(get_env TERMINAL_ENABLED)" false
   assert_eq "$(head -n 1 "$TMP/dc")" "dc rm -sf code"
   assert_contains "$(cat "$TMP/out")" "the Code page is off too"
-  assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_code-socket"
+  assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_terminal-socket bedrock-now_code-socket"
 }
 
 test_status_names_address_container_sandbox_and_remote() {
@@ -219,15 +230,17 @@ test_images_rollback_and_uninstall() {
   code_uninstall_cleanup
   d="$(cat "$TMP/docker")"
   assert_contains "$d" "docker network rm bedrock-now_code-link"
-  assert_contains "$d" "docker volume rm bedrock-now_code-socket"
+  assert_not_contains "$d" "code-socket"   # (the terminal's volume: terminal_uninstall_cleanup)
   assert_contains "$d" "docker image rm bedrock-now/code:local bedrock-now/code:previous"
+  : > "$TMP/docker"; terminal_uninstall_cleanup
+  assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_terminal-home bedrock-now_terminal-socket bedrock-now_code-socket"
   assert_eq "$(code_image_refs)" ""
 }
 
 # --- the files: the overlay, Caddy, the spawn server, the pins ---
 
 test_compose_code_is_a_sandboxed_container_on_its_own_network() {
-  c="$(awk '/^  code:$/,/^  terminal:$/' "$STACK_DIR/compose.code.yaml")"
+  c="$(awk '/^  code:$/,/^  caddy:$/' "$STACK_DIR/compose.code.yaml")"
   for want in "read_only: true" "cap_drop: [ALL]" 'security_opt: ["no-new-privileges:true"]' 'user: "${TERMINAL_UID:-10104}:${TERMINAL_GID:-10104}"' \
               "pids_limit:" "mem_limit:" "init: true" "- code-socket:/run/bn-code:ro" "aliases: [code-upstream]" \
               'CODE_PROXY_SECRET: ${CODE_PROXY_SECRET:-}' "terminal: { condition: service_healthy }"; do
@@ -237,10 +250,12 @@ test_compose_code_is_a_sandboxed_container_on_its_own_network() {
              "TERMINAL_WORKSPACE" "type: bind" "cap_add" "default:" "SHARED_MCP_TOKEN" "terminal-link"; do
     assert_not_contains "$c" "$bad"
   done
-  t="$(awk '/^  terminal:$/,/^  caddy:$/' "$STACK_DIR/compose.code.yaml")"
-  assert_contains "$t" 'BN_CODE: "1"'
-  assert_contains "$t" "- code-socket:/run/bn-code"
-  assert_not_contains "$t" "CODE_PROXY_SECRET"
+  # the terminal is not changed by this file (turning the Code page on or off never recreates it): the socket volume
+  # and the spawn server are the terminal's own
+  assert_not_contains "$(cat "$STACK_DIR/compose.code.yaml")" "  terminal:
+    environment"
+  assert_not_contains "$(cat "$STACK_DIR/compose.code.yaml")" "BN_CODE"
+  assert_contains "$(awk '/^  terminal:$/,/^  terminal-gateway:$/' "$STACK_DIR/compose.terminal.yaml")" "- code-socket:/run/bn-code"
   assert_contains "$(awk '/^  caddy:$/,/^  portal:$/' "$STACK_DIR/compose.code.yaml")" "networks: [default, terminal-link, code-link]"
   assert_eq "$(grep -c 'internal: true' "$STACK_DIR/compose.code.yaml")" 1
   for want in 'CODE_MODE: "on"' 'REMOTE_CODE_HOST: ${REMOTE_CODE_HOST:-code.remote.invalid}' 'CODE_ENABLED: "true"'; do
@@ -265,9 +280,9 @@ assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] ==
 assert sorted(c["environment"]) == ["CODE_PROXY_SECRET", "HOME"], c["environment"]
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 assert "sk-term" not in json.dumps(c) and "sk-cc" not in json.dumps(c) and "/ws" not in json.dumps(c["volumes"])
-# the sandbox: the spawn server on, the socket volume writable, never the secret
-assert t["environment"]["BN_CODE"] == "1"
-assert ("code-socket", "/run/bn-code") in [(v.get("source"), v["target"]) for v in t["volumes"]], t["volumes"]
+# the sandbox: the socket volume writable (the spawn server always runs there), never the secret
+assert "BN_CODE" not in t["environment"]
+assert ("code-socket", "/run/bn-code", None) in [(v.get("source"), v["target"], v.get("read_only")) for v in t["volumes"]], t["volumes"]
 assert "fedcba9876543210fedcba9876543210" not in json.dumps(t) and "code-link" not in t["networks"]
 assert k["environment"]["CODE_MODE"] == "on" and k["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 assert k["environment"]["CODE_ORIGIN"] == "http://code.bedrock-now.localhost:80", k["environment"]["CODE_ORIGIN"]
@@ -282,6 +297,8 @@ import json, sys
 d = json.load(sys.stdin)
 assert "code" not in d["services"] and "code-link" not in d["networks"]
 assert "CODE_MODE" not in d["services"]["caddy"]["environment"] and "BN_CODE" not in d["services"]["terminal"]["environment"]
+# the terminal is the same with or without the Code page: its socket volume stays (nothing connects to it)
+assert ("code-socket", "/run/bn-code") in [(v.get("source"), v["target"]) for v in d["services"]["terminal"]["volumes"]]
 assert "CODE_ENABLED" not in d["services"]["portal"]["environment"]' || return 1
 }
 
@@ -305,12 +322,14 @@ test_caddy_code_site_snippets_and_remote_blocks() {
     assert_contains "$up" "$want"
   done
   pt="$(awk '/^\(code_portal\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
+  assert_contains "$pt" "@bn_code_terminal path /.bn/terminal"
+  assert_contains "$pt" "rewrite /auth/code-terminal"
   assert_contains "$pt" "rewrite /auth/code-models"
   assert_contains "$pt" "rewrite /auth/code-spend?{query}"
   assert_contains "$pt" "respond /.bn/* 404"
   assert_contains "$(awk '/^\(code_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/code-unlock"
   pg="$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
-  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types 'none'\""
+  assert_contains "$pg" "header_down Content-Security-Policy \"default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types 'none'\""
   for d in X-Frame-Options Set-Cookie Clear-Site-Data Refresh Link Location Service-Worker-Allowed 'Access-Control-*' \
            Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
     assert_contains "$pg" "header_down -$d"
@@ -328,7 +347,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   # the portal's routes and cookie names agree with Caddy's
   a="$(cat "$STACK_DIR/portal/portal/app.py")"
   for r in 'Route("/auth/code-unlock", code_unlock, methods=["POST"])' 'Route("/auth/code-models", code_models, methods=["GET"])' \
-           'Route("/auth/code-spend", code_spend, methods=["GET"])'; do
+           'Route("/auth/code-spend", code_spend, methods=["GET"])' 'Route("/auth/code-terminal", code_terminal, methods=["GET"])'; do
     assert_contains "$a" "$r"
   done
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_CODE_COOKIE = "__Host-bn_code"'
@@ -337,8 +356,9 @@ test_caddy_code_site_snippets_and_remote_blocks() {
 
 test_spawn_server_in_the_terminal_image() {
   t="$(cat "$STACK_DIR/terminal/bin/bn-terminal")"
-  # only with BN_CODE=1; restarted when it exits, outside set -e, detached twice (tini reaps it), without the MCP token
-  assert_contains "$t" 'if [ "${BN_CODE:-}" = 1 ]; then'
+  # always (inert while no code container connects); restarted when it exits, outside set -e, detached twice (tini
+  # reaps it), without the MCP token
+  assert_not_contains "$t" 'BN_CODE'
   assert_contains "$t" '( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-coded.mjs; sleep 2; done ) </dev/null & )'
   # started before ttyd takes over the process (exec)
   [ "$(grep -n 'bn-coded.mjs' "$STACK_DIR/terminal/bin/bn-terminal" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n '^exec env' "$STACK_DIR/terminal/bin/bn-terminal" | cut -d: -f1)" ] || return 1
@@ -384,6 +404,7 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
     case "$*" in
       *"ps --format"*) echo healthy ;;
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
+      *"exec -T code node"*"sessions.list"*) printf 'ok\n' ;;
       *"exec -T code node"*) printf 'closed closed closed closed closed closed\n' ;;
       *"exec -T terminal sh"*) printf '000 700 socket\n' ;;
     esac
@@ -400,9 +421,11 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
   }
   fails=0
   out="$(code_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 7
-  dc() { case "$*" in *"exec -T code node"*) printf 'open closed closed closed closed closed\n' ;; *"exec -T terminal sh"*) printf '200 755 socket\n' ;; *) ok_dc "$@" ;; esac; }
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 8
+  assert_contains "$out" "ok    the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)"
+  dc() { case "$*" in *"sessions.list"*) printf 'error ENOENT\n' ;; *"exec -T code node"*) printf 'open closed closed closed closed closed\n' ;; *"exec -T terminal sh"*) printf '200 755 socket\n' ;; *) ok_dc "$@" ;; esac; }
   out="$(code_test_checks)"
   assert_contains "$out" "FAIL  the code container reaches nothing but Caddy"
+  assert_contains "$out" "FAIL  the code container reaches bn-coded"
   assert_contains "$out" "FAIL  the sandbox cannot reach the code container"
 }

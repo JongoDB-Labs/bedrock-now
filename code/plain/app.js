@@ -75,7 +75,8 @@
       card.append(el("p", "perm-title", sentence(p)));
       if (p.reason) card.append(el("p", "muted", p.reason));
       card.append(el("pre", "", JSON.stringify(p.input, null, 2)));
-      if (p.rules.length) card.append(el("p", "muted", `"Always" adds: ${p.rules.join("; ")}`));
+      if (!p.complete) card.append(el("p", "muted", "Only part of this request is shown, so it cannot be allowed here."));
+      if (p.rules.length) card.append(el("p", "muted", `"Always" adds: ${p.rules.map((r) => `${r.text} (${r.destination})`).join("; ")}`));
       const row = el("p", "perm-buttons");
       const b = (label, decision, answers) => { const x = el("button", "", label); x.type = "button"; x.dataset.decision = decision;
         x.addEventListener("click", () => request({ type: "permission", id: p.id, session: p.session, decision, answers }).catch((e) => note(e.message))); return x; };
@@ -88,8 +89,8 @@
           card.append(qr);
         }
       }
-      row.append(b("Allow once", "once"));
-      if (p.suggestions.length) row.append(b("Always allow", "always"));
+      if (p.complete) row.append(b("Allow once", "once"));
+      if (p.complete && p.rules.length) row.append(b("Always allow", "always"));
       row.append(b("Deny", "deny"));
       card.append(row);
       box.append(card);

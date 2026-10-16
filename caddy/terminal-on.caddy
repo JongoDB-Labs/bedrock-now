@@ -1,12 +1,13 @@
 # The browser terminal on (./stack terminal enable; compose.terminal.yaml sets TERMINAL_MODE=on). Imported by
-# Caddyfile; the snippets (terminal_unlock, terminal_auth, terminal_upstream) are defined there. This Caddy shares no
-# network with the terminal: it reaches ttyd through the terminal's gateway (terminal-upstream:7681,
-# caddy/terminal-gateway.caddy).
+# Caddyfile; the snippets (terminal_callback, terminal_unlock, terminal_auth, terminal_upstream) are defined there.
+# This Caddy shares no network with the terminal: it reaches ttyd through the terminal's gateway
+# (terminal-upstream:7681, caddy/terminal-gateway.caddy).
 
 # terminal.PORTAL_HOST (TERMINAL_HOST): ttyd, framed by the portal's Terminal tab — or full screen on a phone.
 http://{$TERMINAL_HOST} {
 	route {
 		import local_request
+		import terminal_callback
 		import terminal_unlock
 		import terminal_auth
 		reverse_proxy terminal-upstream:7681 {

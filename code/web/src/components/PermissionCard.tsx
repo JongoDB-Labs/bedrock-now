@@ -1,12 +1,16 @@
 // A permission prompt: the sentence built from tool + input (the SDK's title is empty headless), what exactly would
-// run or change, the reason the CLI gave, and Allow once / Always allow (with a preview of the rule it writes) /
-// Deny (with an optional message for Claude). Keys 1/2/3 answer while the card has focus, like the CLI.
+// run or change, the reason the CLI gave, and Allow once / Always allow (with every rule it writes, as the backend
+// will write it) / Deny (with an optional message for Claude). Keys 1/2/3 answer while the card has focus, like the
+// CLI — not in the first 400 ms (a keystroke meant for the prompt box must not approve), and not at all when the
+// prompt asks to default to no. A prompt whose input could not be shown in full can only be denied. ExitPlanMode is a
+// plan to approve: with auto-accepted edits, asking for each edit, or not yet (keep planning, with a message).
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { PermissionReq } from '../types';
-import { rulePreview, sentence } from '../permission';
+import type { PermissionReq, RuleLine } from '../types';
+import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
-import { label, prettyJson, safe } from '../text';
+import { commandShape, label, prettyJson, safe } from '../text';
 import { answerPermission, answerQuestions } from '../app';
+import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
 import { buildAnswers, emptyPick, parseQuestions, toggle, type Pick, type Question } from '../questions';
 import { DiffLines } from './ToolCard';
 import { MarkdownView } from './MarkdownView';
@@ -113,61 +117,215 @@ function QuestionCard({ req, qs, index, total }: { req: PermissionReq; qs: Quest
   );
 }
 
+/** What a card shows of the input, in full or not at all: the SAME caps on both sides (protocol.mjs LIMITS). */
+const MAX_EDITS = 20;
+
 function Details({ req }: { req: PermissionReq }) {
   const s = sentence(req.tool, req.input);
   const i = obj(req.input);
   switch (s.detail) {
-    case 'command':
+    case 'command': {
+      const shape = commandShape(i.command);
       return (
-        <pre class="cmd">
-          <span class="prompt">$ </span>
-          {safe(i.command, 20_000)}
-        </pre>
+        <>
+          {shape.warn && (
+            <div class="perm-warn" data-testid="perm-command-warning">
+              <Icon name="alert" size={14} /> A long or padded command: {shape.lines} line{shape.lines === 1 ? '' : 's'}, {shape.length.toLocaleString()} characters
+              {shape.padding >= 40 ? `, a run of ${shape.padding} spaces` : ''}. Scroll through all of it before you allow it.
+            </div>
+          )}
+          <pre class="cmd">
+            <span class="prompt">$ </span>
+            {safe(i.command, 200_000)}
+          </pre>
+        </>
       );
+    }
     case 'edit': {
       const edits = Array.isArray(i.edits) ? (i.edits as unknown[]).map(obj) : [i];
-      const lines = edits.slice(0, 20).flatMap((e) => compact(lineDiff(str(e.old_string), str(e.new_string))));
-      return <DiffLines lines={lines} max={200} />;
+      const lines = edits.slice(0, MAX_EDITS).flatMap((e) => compact(lineDiff(str(e.old_string), str(e.new_string))));
+      const all = edits.some((e) => e.replace_all === true);
+      return (
+        <>
+          {all && (
+            <div class="perm-warn" data-testid="perm-replace-all">
+              <Icon name="alert" size={14} /> Replaces every occurrence in the file{edits.length > 1 ? ' (in the marked edits)' : ''}, not only the first.
+            </div>
+          )}
+          <DiffLines lines={lines} max={400} lineMax={PERMISSION_SHOWN_STRING} />
+          {edits.length > MAX_EDITS && (
+            <div class="perm-warn" data-testid="perm-more-edits">
+              and {edits.length - MAX_EDITS} more edit{edits.length - MAX_EDITS === 1 ? '' : 's'} not shown here
+            </div>
+          )}
+        </>
+      );
     }
-    case 'write':
-      return <DiffLines lines={lineDiff('', str(i.content)).slice(0, 2000)} max={40} />;
+    case 'write': {
+      const lines = lineDiff('', str(i.content));
+      return <DiffLines lines={lines} max={40} lineMax={PERMISSION_SHOWN_STRING} />;
+    }
     case 'plan':
-      return <MarkdownView text={safe(i.plan, 100_000)} class="plan" />;
+      return <MarkdownView text={safe(i.plan, PERMISSION_SHOWN_STRING)} class="plan" />;
     case 'json':
-      return <pre class="json">{prettyJson(req.input, 20_000)}</pre>;
+      // whole: the input is already within the shown caps (indentation adds to it)
+      return <pre class="json">{prettyJson(req.input, PERMISSION_SHOWN_CHARS * 4)}</pre>;
     default:
       return null;
   }
 }
 
+/** "Allow" stays off for a moment after a card appears: a keystroke meant for the prompt box must not approve. */
+function useArmed(id: string, ms = 400): boolean {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(false);
+    const t = setTimeout(() => setArmed(true), ms);
+    return () => clearTimeout(t);
+  }, [id]);
+  return armed;
+}
+
+/** The card takes focus when it appears, unless you are typing a prompt. */
+function useFocusOnArrival(ref: { current: HTMLElement | null }, id: string, target?: () => HTMLElement | null): void {
+  useEffect(() => {
+    const a = document.activeElement as HTMLElement | null;
+    const typing = a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && !!(a as HTMLTextAreaElement).value;
+    if (!typing) (target?.() ?? ref.current)?.focus({ preventScroll: true });
+  }, [id]);
+}
+
+function RuleList({ rules, label: what, testid }: { rules: RuleLine[]; label: string; testid?: string }) {
+  return (
+    <ul class="perm-rules" aria-label={what} data-testid={testid}>
+      {rules.map((r, i) => (
+        <li key={i}>
+          {/^mode \w+$/.test(r.text) ? <span>Switch to {modeName(r.text.slice(5))} mode</span> : <code>{r.text}</code>}{' '}
+          {r.destination && <span class="muted">{destinationText(r.destination)}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** ExitPlanMode: the plan, and how to go on. */
+function PlanCard({ req, index, total }: { req: PermissionReq; index: number; total: number }) {
+  const i = obj(req.input);
+  const armed = useArmed(req.id);
+  const [keep, setKeep] = useState(false);
+  const [msg, setMsg] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLTextAreaElement>(null);
+  useFocusOnArrival(ref, req.id);
+  useEffect(() => {
+    if (keep) box.current?.focus();
+  }, [keep]);
+  const ok = armed && req.complete;
+  return (
+    <div ref={ref} class="perm perm-plan" role="alertdialog" aria-label="Claude has a plan" tabIndex={-1} data-testid="permission">
+      <div class="perm-head">
+        <Icon name="book" size={16} />
+        <span class="perm-title">Claude has a plan and wants to start working on it</span>
+        {total > 1 && (
+          <span class="perm-count">
+            {index + 1} of {total}
+          </span>
+        )}
+      </div>
+      <div class="perm-details">
+        <MarkdownView text={safe(i.plan, PERMISSION_SHOWN_STRING)} class="plan" />
+      </div>
+      {!req.complete && <Partial />}
+      {keep ? (
+        <form
+          class="perm-deny"
+          onSubmit={(e) => {
+            e.preventDefault();
+            answerPermission(req.session, req.id, 'deny', msg || 'Keep planning: not yet.');
+          }}
+        >
+          <textarea ref={box} rows={2} placeholder="What should the plan change? (optional)" value={msg} maxLength={2000} onInput={(e) => setMsg((e.target as HTMLTextAreaElement).value)} />
+          <div class="perm-buttons">
+            <button type="button" class="btn ghost" onClick={() => setKeep(false)}>
+              Back
+            </button>
+            <button type="submit" class="btn" data-testid="plan-keep-send">
+              Keep planning
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div class="perm-buttons">
+          <button type="button" class="btn ghost" onClick={() => setKeep(true)} data-testid="plan-keep">
+            Keep planning…
+          </button>
+          <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'default')} data-testid="plan-approve-ask">
+            Approve, ask before edits
+          </button>
+          <button type="button" class="btn primary" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'acceptEdits')} data-testid="plan-approve-edits">
+            Approve, accept edits
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Partial() {
+  return (
+    <div class="perm-warn perm-partial" role="alert" data-testid="perm-partial">
+      <Icon name="alert" size={14} /> Partially shown: this request is too large to show in full here, so it can only be denied. Ask Claude for something smaller.
+    </div>
+  );
+}
+
 export function PermissionCard({ req, index, total }: { req: PermissionReq; index: number; total: number }) {
   const qs = req.tool === 'AskUserQuestion' ? parseQuestions(req.input) : [];
-  return qs.length ? <QuestionCard req={req} qs={qs} index={index} total={total} /> : <ToolPermission req={req} index={index} total={total} />;
+  if (qs.length) return <QuestionCard req={req} qs={qs} index={index} total={total} />;
+  if (req.tool === 'ExitPlanMode' && typeof obj(req.input).plan === 'string') return <PlanCard req={req} index={index} total={total} />;
+  return <ToolPermission req={req} index={index} total={total} />;
 }
 
 function ToolPermission({ req, index, total }: { req: PermissionReq; index: number; total: number }) {
   const s = sentence(req.tool, req.input);
-  const rules = rulePreview(req.suggestions);
+  // what "Always" applies: the backend's own list (older backends: a preview from the CLI's suggestions)
+  const rules: RuleLine[] = req.rules.length ? req.rules : req.noAlways ? [] : rulePreview(req.suggestions).map((text) => ({ text, destination: '' }));
+  const project = req.projectRules;
+  const armed = useArmed(req.id);
   const [denying, setDenying] = useState(false);
   const [msg, setMsg] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const denyRef = useRef<HTMLButtonElement>(null);
   const reasonRef = useRef<HTMLTextAreaElement>(null);
+  useFocusOnArrival(ref, req.id, () => (req.defaultNo ? denyRef.current : null));
   useEffect(() => {
     if (denying) reasonRef.current?.focus();
   }, [denying]);
 
-  const answer = (d: 'once' | 'always' | 'deny') => answerPermission(req.session, req.id, d, d === 'deny' ? msg : undefined);
+  const allow = armed && req.complete;
+  const answer = (d: Decision) => {
+    if (d !== 'deny' && !allow) return;
+    answerPermission(req.session, req.id, d, d === 'deny' ? msg : undefined);
+  };
 
   return (
     <div
       ref={ref}
-      class="perm"
+      class={`perm${req.complete ? '' : ' partial'}`}
       role="alertdialog"
       aria-label={s.title}
       tabIndex={-1}
       data-testid="permission"
       onKeyDown={(e) => {
         if (denying || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+        if (req.defaultNo) {
+          if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'BUTTON') {
+            e.preventDefault();
+            setDenying(true);
+          }
+          return;
+        }
+        if (!armed) return;
         if (e.key === '1') answer('once');
         else if (e.key === '2' && rules.length) answer('always');
         else if (e.key === '3') setDenying(true);
@@ -186,6 +344,7 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
       <div class="perm-details">
         <Details req={req} />
       </div>
+      {!req.complete && <Partial />}
       {req.reason && <div class="perm-reason">{req.reason}</div>}
       {denying ? (
         <form
@@ -223,27 +382,33 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
         </form>
       ) : (
         <div class="perm-buttons">
-          <button type="button" class="btn primary" onClick={() => answer('once')} data-testid="perm-once">
-            Allow once <kbd>1</kbd>
+          <button type="button" class="btn primary" disabled={!allow} onClick={() => answer('once')} data-testid="perm-once">
+            Allow once {!req.defaultNo && <kbd>1</kbd>}
           </button>
           {rules.length > 0 && (
-            <button type="button" class="btn" onClick={() => answer('always')} title={rules.join('\n')} data-testid="perm-always">
-              Always allow <kbd>2</kbd>
+            <button type="button" class="btn" disabled={!allow} onClick={() => answer('always')} title={rules.map((r) => r.text).join('\n')} data-testid="perm-always">
+              Always allow {!req.defaultNo && <kbd>2</kbd>}
             </button>
           )}
-          <button type="button" class="btn ghost" onClick={() => setDenying(true)} data-testid="perm-deny">
-            Deny <kbd>3</kbd>
+          {project.length > 0 && (
+            <button type="button" class="btn" disabled={!allow} onClick={() => answer('always_project')} data-testid="perm-always-project">
+              Always, in this workspace's settings
+            </button>
+          )}
+          <button ref={denyRef} type="button" class="btn ghost" onClick={() => setDenying(true)} data-testid="perm-deny">
+            Deny {!req.defaultNo && <kbd>3</kbd>}
           </button>
         </div>
       )}
-      {rules.length > 0 && !denying && (
-        <ul class="perm-rules" aria-label="What Always allow saves">
-          {rules.map((r, i) => (
-            <li key={i}>
-              <span class="muted">Always:</span> <code>{r}</code>
-            </li>
-          ))}
-        </ul>
+      {rules.length > 0 && !denying && <RuleList rules={rules} label="What Always allow saves" testid="perm-rules" />}
+      {project.length > 0 && !denying && (
+        <div class="perm-project" data-testid="perm-project-note">
+          <span class="muted small">
+            "Always, in this workspace's settings" writes these into your folder's .claude settings — Claude Code on your computer honours them in that folder
+            too:
+          </span>
+          <RuleList rules={project} label="What it writes into the workspace" />
+        </div>
       )}
     </div>
   );

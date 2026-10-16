@@ -1,6 +1,6 @@
 // Builds the Code page into dist/: index.html + app.<hash>.js/.css + lazily loaded chunks (the editor and each
-// language). No CDN, no inline script or style: the page runs under the CSP in design §6 (script-src 'self',
-// style-src 'self', Trusted Types). `node build.mjs --watch` rebuilds on change (used by `npm run dev`).
+// language). No CDN, no inline script or style: the page runs under the CSP of caddy/Caddyfile's code_page
+// (script-src 'self', style-src 'self', Trusted Types). `node build.mjs --watch` rebuilds on change (used by `npm run dev`).
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';

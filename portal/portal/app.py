@@ -158,6 +158,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     admin_rate = admin.RateLimit()
 
     handoff = Handoff(settings.secret, sessions.fingerprint)
+    # The Code page's terminal panel: its unlock carried over to the terminal host (one password for both; below)
+    unlock_handoff = Handoff(settings.secret, sessions.fingerprint, salt="bedrock-now.portal.code-terminal")
     # the password-again cookies of the browser terminal and of the Code page: one each, neither opens the other
     unlocks = {app: TerminalUnlocks(settings.secret, sessions, app=app) for app in (TERMINAL, CODE)}
     # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
@@ -389,6 +391,65 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not authed(request) or not unlocked(request, rem, CODE):
             return _no_store(JSONResponse({"error": "locked: unlock the Code page with the portal password"}, status_code=401))
         return None
+
+    # --- the Code page's terminal panel: one unlock for both. GET /.bn/terminal on the code host (Caddy → here, after the
+    # --- code host's check) mints a single-use, 60-second token for exactly this site's terminal host, carrying the
+    # --- Code page unlock's time and login; the terminal host's /.bn/unlock-callback (Caddy → here, before its check)
+    # --- redeems it and sets the terminal's own unlock with that same time: it ends when the Code page's does, and
+    # --- with Sign out or a new password like every unlock. Only from the Code page itself (Sec-Fetch-Site).
+    async def code_terminal(request: Request) -> Response:
+        if (deny := code_guard(request)) is not None:
+            return deny
+        rem = remote(request)
+        if not settings.terminal_on(rem):
+            return _no_store(PlainTextResponse("the terminal is off here", status_code=404))
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            log.warning("code → terminal hand-off refused: not from the Code page (Sec-Fetch-Site %s)",
+                        request.headers.get("sec-fetch-site", "none")[:40])
+            return _no_store(PlainTextResponse("open the terminal from the Code page", status_code=403))
+        login = session_login(request.headers, settings)
+        code = unlocks[CODE].claims(request.cookies.get(unlock_cookie_params(CODE, rem)["key"]), login)
+        sess = session_claims(request)
+        if code is None or sess is None:   # (code_guard checked both; a race with Sign out)
+            return _no_store(PlainTextResponse("locked", status_code=401))
+        host = settings.app_host(TERMINAL, rem)
+        token = unlock_handoff.issue(host, code["iat"], login, s=sess["iat"])
+        resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}", status_code=303)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        return _no_store(resp)
+
+    async def terminal_unlock_callback(request: Request) -> Response:
+        rem = remote(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if not settings.terminal_on(rem) or host != settings.app_host(TERMINAL, rem):
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        login = session_login(request.headers, settings)
+        data = unlock_handoff.redeem(request.query_params.get("t"), host)
+        again = settings.origin(CODE, rem) + "/" if settings.code_on(rem) else settings.origin(remote=rem) + "/"
+        if data is None or (data["u"] or None) != login:
+            return _error_page("This link has expired or was already used. Open the terminal again from the Code page.",
+                               401, again, "Back to the Code page")
+        cookie = unlocks[TERMINAL].issue(login, iat=data["iat"])
+        if not unlocks[TERMINAL].valid(cookie, login):   # signed out, a new password, or the 12 hours are over
+            return _error_page("The Code page's unlock has ended (Sign out, a new password, or 12 hours). Unlock it again.",
+                               401, again, "Back to the Code page")
+        resp = RedirectResponse("/", status_code=303)
+        if not authed(request):
+            # remote: this host has no session cookie of its own yet — the token carries the portal session's start
+            # (as the session hand-off does); locally the session cookie covers every app host already
+            s_iat = data.get("s")
+            if not rem or not isinstance(s_iat, (int, float)) or not sessions.valid(sessions.issue(s_iat, login), login):
+                return _no_store(login_redirect(settings.origin(TERMINAL, rem) + "/", rem))
+            set_session(resp, True, login, s_iat)
+        c = unlock_cookie_params(TERMINAL, rem)
+        left = max(1, int(TERMINAL_MAX_AGE - (time.time() - data["iat"])))
+        resp.set_cookie(c["key"], cookie, max_age=left, path="/", domain=c["domain"], httponly=True, samesite="strict",
+                        secure=c["secure"])
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        log.warning("terminal unlocked through the Code page%s", " (remote)" if rem else "")
+        return _no_store(resp)
 
     async def code_models(request: Request) -> Response:
         if (deny := code_guard(request)) is not None:
@@ -797,6 +858,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-unlock", code_unlock, methods=["POST"]),
             Route("/auth/code-models", code_models, methods=["GET"]),
             Route("/auth/code-spend", code_spend, methods=["GET"]),
+            Route("/auth/code-terminal", code_terminal, methods=["GET"]),
+            Route("/auth/terminal-unlock-callback", terminal_unlock_callback, methods=["GET"]),
             Route("/login", login_get, methods=["GET"]),
             Route("/login", login_post, methods=["POST"]),
             Route("/logout", logout, methods=["POST"]),

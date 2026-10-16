@@ -2,7 +2,7 @@
 // page reads them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normEvent, normMcpServer, normOutcome, normServerMsg } from '../src/api';
+import { normEvent, normMcpServer, normOutcome, normServerMsg, normRewind } from '../src/api';
 import { answerOf, buildAnswers, emptyPick, parseQuestions, toggle } from '../src/questions';
 import { pairs } from '../src/forms';
 import { mergeCommands } from '../src/palette';
@@ -59,10 +59,25 @@ test('the backend\'s shapes (protocol.mjs) read as meant', () => {
   const p = msg({ type: 'permission', id: S, session: S, tool: 'AskUserQuestion', input: { questions: [] }, reason: '', blockedPath: null, suggestions: [], rules: [], expiresAt: 1 });
   assert.equal(p?.kind === 'permission' && p.req.tool, 'AskUserQuestion');
   assert.deepEqual(msg({ type: 'permission_done', id: S, session: S, decision: 'answer' }), { kind: 'permission_done', id: S, session: S });
-  assert.deepEqual(msg({ type: 'session_state', session: S, state: 'ended', model: 'haiku', mode: 'default', effort: null, error: 'x' }), { kind: 'session_state', session: S, state: 'ended' });
-  assert.deepEqual(msg({ type: 'error', session: S, req: 'r1', message: 'bad mode', error: 'bad mode' }), { kind: 'error', session: S, message: 'bad mode' });
-  // messages the page does not need are dropped, not misread
-  for (const t of ['hello', 'attached', 'reply', 'pending']) assert.equal(msg({ type: t, session: S, count: 1 }), null);
+  assert.deepEqual(msg({ type: 'session_state', session: S, state: 'ended', model: 'haiku', mode: 'default', effort: null, error: 'x' }), { kind: 'session_state', session: S, state: 'ended', model: 'haiku', mode: 'default' });
+  assert.deepEqual(msg({ type: 'error', session: S, req: 'r1', message: 'bad mode', error: 'bad mode' }), { kind: 'error', session: S, message: 'bad mode', req: 'r1' });
+  // the page reads hello/pending (the badge), attached (epoch, gap), reply (a refused prompt) and reset
+  assert.deepEqual(msg({ type: 'hello', pending: 2, limits: { maxImages: 4 } }), { kind: 'hello', pending: 2, maxImages: 4 });
+  assert.deepEqual(msg({ type: 'pending', count: 3 }), { kind: 'pending', count: 3 });
+  assert.deepEqual(msg({ type: 'attached', session: S, epoch: 'ab12cd34', state: 'idle', from: 1, last: 9, gap: false }),
+    { kind: 'attached', session: S, from: 1, last: 9, gap: false, epoch: 'ab12cd34' });
+  assert.equal(msg({ type: 'attached', session: S, from: 'x', last: 9 }), null);
+  assert.deepEqual(msg({ type: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt' }), { kind: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt', data: null });
+  // rewind_files: the reply's data, read as a checkpoint result (paths shown relative to the workspace)
+  const rw = msg({ type: 'reply', req: 'r1', ok: true, data: { canRewind: true, error: '', filesChanged: ['/workspace/src/a.ts', 'b.md', 42, '/etc/passwd'], insertions: 3, deletions: -1, skippedLinks: 1 } });
+  assert.ok(rw?.kind === 'reply');
+  assert.deepEqual(rw?.kind === 'reply' && normRewind(rw.data), { canRewind: true, error: '', files: ['src/a.ts', 'b.md', '/etc/passwd'], insertions: 3, deletions: 0, skippedLinks: 1 });
+  assert.deepEqual(normRewind(null), { canRewind: false, error: '', files: [], insertions: 0, deletions: 0, skippedLinks: 0 });
+  assert.equal(msg({ type: 'reply', req: '../x', ok: true }), null);
+  const N = '44444444-4444-4444-8444-444444444444';
+  assert.deepEqual(msg({ type: 'reset', session: S, new_session: N }), { kind: 'reset', session: S, next: N });
+  assert.equal(msg({ type: 'reset', session: S, new_session: '../../etc' }), null);
+  assert.equal(msg({ type: 'reset', session: S, new_session: S }), null);
 });
 
 const INPUT = {

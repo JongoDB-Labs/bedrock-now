@@ -215,9 +215,10 @@ terminal_disable() {
   log "LiteLLM and shared-mcp restart once as they leave the terminal's gateway network: Chat answers," \
     "claude-bedrock requests and MCP sessions in progress drop for a few seconds"
   run_phase "Portal + Caddy (terminal off)" "portal caddy litellm shared-mcp" _terminal_front
-  code_network_cleanup   # (lib/code.sh: its network and socket volume, now that nothing uses them)
+  code_network_cleanup   # (lib/code.sh: its network, now that nothing uses it)
   terminal_network_cleanup
-  docker volume rm "$(project_name)_terminal-socket" >/dev/null 2>&1 || true   # ttyd's socket: nothing to keep
+  # ttyd's and bn-coded's sockets: nothing to keep
+  docker volume rm "$(project_name)_terminal-socket" "$(project_name)_code-socket" >/dev/null 2>&1 || true
   [ "$own" = 0 ] || stack_unlock
   log "the terminal is off: no Terminal tab, no terminal host, no container"
   log "kept: the workspace folder $(get_env TERMINAL_WORKSPACE), Claude Code's settings and history (volume $(project_name)_terminal-home; docker volume rm $(project_name)_terminal-home forgets them) and its LiteLLM key claude-code-terminal (spend history; delete it in Admin to revoke it)"
@@ -403,7 +404,7 @@ terminal_rollback_cleanup() {
 # on): its volume, networks and images by their exact names, whether or not it is on now. The workspace folder stays.
 terminal_uninstall_cleanup() {
   local p; p="$(project_name)"
-  docker volume rm "${p}_terminal-home" "${p}_terminal-socket" >/dev/null 2>&1 || true
+  docker volume rm "${p}_terminal-home" "${p}_terminal-socket" "${p}_code-socket" >/dev/null 2>&1 || true
   terminal_network_cleanup
   docker image rm "$p/terminal:local" "$p/terminal:previous" >/dev/null 2>&1 || true
 }
