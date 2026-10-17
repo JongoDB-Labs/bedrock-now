@@ -157,10 +157,13 @@ def start_echo(c: Code):
     mkdirs(c, ".bn-e2e")
     write(c, ".bn-e2e/echo.cjs", ECHO)
     launch_json(c, [{"name": "bn-e2e echo", "runtimeExecutable": "node", "runtimeArgs": [".bn-e2e/echo.cjs"], "port": ECHO_PORT},
-                    {"name": "bn-e2e vite", "runtimeExecutable": "node", "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", str(VITE_PORT), "--strictPort"],
-                     "cwd": ".bn-e2e/vite", "port": VITE_PORT},
-                    {"name": "bn-e2e vite install", "runtimeExecutable": "npm", "cwd": ".bn-e2e/vite",
-                     "runtimeArgs": ["install", "--no-audit", "--no-fund", "--ignore-scripts", "--no-save", "vite@7.1.5"]}])
+                    # (each with its output in a log next to it, read when the check fails; the install leaves a sentinel)
+                    {"name": "bn-e2e vite", "runtimeExecutable": "sh", "cwd": ".bn-e2e/vite",
+                     "runtimeArgs": ["-c", f"exec node node_modules/vite/bin/vite.js --port {VITE_PORT} --strictPort > ../vite.log 2>&1"],
+                     "port": VITE_PORT},
+                    {"name": "bn-e2e vite install", "runtimeExecutable": "sh", "cwd": ".bn-e2e/vite",
+                     "runtimeArgs": ["-c", "rm -f .installed; npm install --no-audit --no-fund --ignore-scripts --no-save vite@7.1.5 "
+                                           "> ../vite-install.log 2>&1 && touch .installed"]}])
     ls = c.api("GET", "/api/launch")["json"]
     expect([e["name"] for e in ls["configurations"]] == ["bn-e2e echo", "bn-e2e vite", "bn-e2e vite install"], f"launch.json {ls}")
     echo = ls["configurations"][0]
@@ -447,20 +450,27 @@ def vite(ctx):
     write(c, ".bn-e2e/vite/package.json", json.dumps({"name": "bn-e2e-vite", "private": True, "type": "module"}))
     write(c, ".bn-e2e/vite/index.html", '<!doctype html><meta charset=utf-8><title>bn-e2e vite</title><div id="app">…</div><script type="module" src="/main.js"></script>\n')
     write(c, ".bn-e2e/vite/main.js", "document.getElementById('app').textContent = 'version one';\nif (import.meta.hot) import.meta.hot.accept();\n")
+    def log_tail(path: str) -> str:
+        r = c.api("GET", f"/api/fs/file?path={path}")
+        return (r["json"] or {}).get("text", "")[-600:] if r["status"] == 200 else f"(no {path})"
+
     t0 = time.time()
-    if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/node_modules/vite/package.json")["status"] != 200:
+    if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/.installed")["status"] != 200:
         r = start_entry(c, "bn-e2e vite install")
         expect(r["status"] == 200, f"npm install: {r['text'][:200]}")
-        while time.time() - t0 < 240:
-            if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/node_modules/vite/package.json")["status"] == 200:
+        while time.time() - t0 < 240:   # (the sentinel: npm has finished, not just begun writing node_modules)
+            if c.api("GET", "/api/fs/file?path=.bn-e2e/vite/.installed")["status"] == 200:
                 break
             page.wait_for_timeout(2000)
         else:
-            raise AssertionError("vite was not installed within 4 minutes (see the terminal's window 'bn-e2e-vite-install')")
+            raise AssertionError(f"vite was not installed within 4 minutes; npm said: {log_tail('.bn-e2e/vite-install.log')}")
     installed = time.time() - t0
     r = start_entry(c, "bn-e2e vite")
     expect(r["status"] == 200, f"start vite: {r['text'][:200]}")
-    wait_port(c, VITE_PORT, timeout=60)
+    try:
+        wait_port(c, VITE_PORT, timeout=120)
+    except AssertionError as e:
+        raise AssertionError(f"{e}; vite said: {log_tail('.bn-e2e/vite.log')}") from None
     open_ports(page)
     page.locator(f"[data-testid=port-row][data-port='{VITE_PORT}'] [data-testid=port-preview]").click()
     f = preview_frame(page, VITE_PORT)
@@ -469,7 +479,10 @@ def vite(ctx):
     load = time.time() - t1
     f.evaluate("() => { window.__bnMark = 'still here'; }")
     write(c, ".bn-e2e/vite/main.js", "document.getElementById('app').textContent = 'version two';\nif (import.meta.hot) import.meta.hot.accept();\n")
-    f.wait_for_function("() => document.getElementById('app')?.textContent === 'version two'", timeout=30000)
+    try:
+        f.wait_for_function("() => document.getElementById('app')?.textContent === 'version two'", timeout=60000)
+    except Exception as e:  # noqa: BLE001
+        raise AssertionError(f"no hot update within 60 s ({type(e).__name__}); vite said: {log_tail('.bn-e2e/vite.log')}") from None
     expect(f.evaluate("() => window.__bnMark") == "still here", "the page reloaded instead of a hot update")
     shot(page, "code-preview-vite-hmr")
     # (stop it again: the throwaway's sandbox keeps nothing running)

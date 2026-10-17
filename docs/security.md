@@ -327,7 +327,8 @@ Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](
 - **One site.** All remote names are one *site* for browsers — every Service of a tailnet (`ts.net` is on the
   public suffix list, so `<tailnet>.ts.net` is the registrable domain), or everything under your domain — and
   `SameSite=Strict` cookies go with requests from anywhere on it. Every app host therefore refuses other hosts'
-  script requests ([the same-site guard](#the-same-site-guard)).
+  script requests ([the same-site guard](#the-same-site-guard)), and the Code page's previews over remote access, which
+  would put sandbox content on that site, are off unless you turn them on.
 
 ## The same-site guard
 
@@ -347,6 +348,14 @@ portal's check and before the app:
 
 - [x] **A preview's `Origin` is refused**: any host under `PREVIEW_DOMAIN` here, `REMOTE_PREVIEW_HOST` remotely — its
   fetches, form posts and WebSockets, also from a browser that sends no `Sec-Fetch-*` headers (Safari before 16.4).
+- [x] **An opaque origin is refused**: `Origin: null` unless `Sec-Fetch-Site: same-origin`. A sandboxed frame without
+  `allow-same-origin`, or a `data:` page, that a preview opens has no origin of its own: its requests say
+  `Origin: null` and `Sec-Fetch-Site: cross-site`, yet a browser may still send the site's cookies with them (the frame
+  tree decides). None of bedrock-now's requests between its hosts sends `null`; an app's own page with
+  `Referrer-Policy: no-referrer` posting to itself sends `null` with `same-origin`, which passes. It also closes the
+  gap of a browser without `Sec-Fetch-*` posting a form with `no-referrer`. Every method is refused, `GET` too: an app
+  whose CORS answers `null` with credentials (Starlette's `*` with cookies does) would otherwise let such a frame read
+  it. `tests/e2e/remote/run.sh` checks it in Chromium, Firefox and WebKit.
 - [x] **From another host of the same site (`Sec-Fetch-Site: same-site`, which no page can set), only page loads and
   plain assets pass**: `GET`/`HEAD` with `Sec-Fetch-Mode: navigate` (a link, a frame, a redirect) or `no-cors` (an
   image, a style sheet, a classic script — answers no page can read). Everything else is refused: `fetch` and XHR
@@ -362,14 +371,21 @@ portal's check and before the app:
   what handled them before — the cookies' `SameSite`, the portal's own `Origin` checks, the apps' own.
 
 Remaining risks:
-- **A page load is still a page load.** A preview (or another same-site page) can open bedrock-now's pages in a frame
-  or a tab, with your cookies; they refuse to be framed by anything but the portal (and the Code page for the
-  terminal), and no state changes on a `GET` except the automatic sign-in to Admin and Files (`/.bn/sso`, capped per
-  session).
+- **A page load is still a page load — with your cookies, by design.** Page loads and plain `no-cors` `GET`s from the
+  same site carry the site's `SameSite` cookies; that is what lets the portal frame the apps. So a preview (or another
+  same-site page) can open bedrock-now's pages in a frame or a tab and load their images: the pages refuse to be framed
+  by anything but the portal (and the Code page for the terminal), and nothing changes on a `GET` except the automatic
+  sign-in to Admin and Files (`/.bn/sso`): a preview loading it over and over spends that session's sign-in budget (a
+  nuisance: the app's own sign-in form still works). Open WebUI's sign-out (v0.12.0, the pinned version) is a `POST`,
+  which the guard refuses, so a preview cannot sign you out of Chat.
 - **Cookie tossing** across the site: a same-site page's script can set cookies for the parent (`<tailnet>.ts.net`,
   your domain). It cannot touch the `__Host-` cookies; see [docs/remote.md](remote.md#cookies-stay-on-their-own-host).
-  It can also fill the parent with cookies until requests to every host of the site are too large (clear the site's
-  data to recover).
+  It can also fill the parent with cookies until requests to every host of the site are too large; clearing that
+  site's cookies in the browser recovers (on Tailscale that means all of `<tailnet>.ts.net`, which signs you out of
+  your other tailnet apps too: [docs/remote.md](remote.md#previews-of-dev-servers-over-remote-access) has the steps).
+- **Your other apps on the same site are not guarded by it.** The guard protects bedrock-now's six hosts; Grafana, Home
+  Assistant or a NAS page on the same tailnet (or under the same domain) get no such protection from a preview — which
+  is why previews over remote access are off unless you turn them on.
 
 ## The update helper
 
@@ -989,8 +1005,10 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   changes (the page remembers the digests you started, in this browser). The confirmation binds the command line,
   not what the program then reads or which binary it is: `npm run dev` runs whatever the workspace's `package.json`
   says at that moment, and the sandbox's `PATH` decides which `npm` runs — both are the sandbox's to change.
-- [x] **Over remote access: one host, a cookie naming the port.** Wherever the Code page is remote (and
-  `REMOTE_PREVIEW` is not `false`) its previews have one host of their own, `REMOTE_PREVIEW_HOST` —
+- [x] **Over remote access: off unless turned on; then one host, a cookie naming the port.** `REMOTE_PREVIEW=true`
+  (blank is off: the preview host would be the same site as every other app of your tailnet or domain — except with a
+  `REMOTE_PREVIEW_DOMAIN` of its own, where blank is on), and wherever the Code page is remote, its previews have one
+  host of their own, `REMOTE_PREVIEW_HOST` —
   `<base>-preview.<tailnet>.ts.net` (one more Tailscale Service) or `preview.<your domain>`. A Tailscale Service is a
   single name (no wildcards; every name is in public CT logs), and a capability in the host name would also reach DNS
   resolvers and the TLS handshake's server name, so the port is in a cookie instead: `__Host-bn_preview` (host-only,
@@ -1007,7 +1025,10 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   are one site there (checked in Chromium by `tests/e2e/remote/run.sh`). The preview's script cannot read the cookie
   (`HttpOnly`) or replace it (a script cannot overwrite an `HttpOnly` cookie, and the dev server's own `Set-Cookie` with
   bedrock-now's names is dropped by Caddy); Caddy strips it, with every other `bn_*` cookie and your Tailscale identity
-  headers, before the sandbox. One host serves every port, so a browser previews **one port at a time** there.
+  headers, before the sandbox. One host serves every port, so a browser previews **one port at a time** there — and for
+  the same reason it takes no service worker: the host refuses `Service-Worker: script` requests (a worker would outlive
+  the port, the unlock and Sign out on that origin, and would see the hand-off's links). This computer's previews keep
+  their workers: an origin per port and unlock.
 - [x] **Same-site over remote access, so the apps refuse it.** Unlike here, the remote preview host is on the same site
   as the portal and the apps, whose `SameSite=Strict` cookies therefore go with its requests: every app host refuses a
   preview's `Origin` and any other host's script requests ([the same-site guard](#the-same-site-guard)). In own-domain
@@ -1017,11 +1038,13 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   browsers that block third-party cookies need **Open in a new tab**).
 
 Remaining risks:
-- **Over remote access a preview shares the portal's site** (Tailscale; own domain without `REMOTE_PREVIEW_DOMAIN`):
-  its script can open bedrock-now's pages (as any link can), set cookies for the whole site (never the `__Host-`
-  session cookies; Open WebUI's `token` could be shadowed, but not forged), and fill it with cookies until requests to
-  every host of the site fail (clear the site's data). The guard keeps it from reading anything or changing anything.
-  `REMOTE_PREVIEW=false` keeps previews on this computer.
+- **Over remote access a preview shares the portal's site** — and that of every other app of your tailnet or domain
+  (Tailscale; own domain without `REMOTE_PREVIEW_DOMAIN`), which is why it is off unless `REMOTE_PREVIEW=true`. Its
+  script can open bedrock-now's pages (as any link can), send your other apps there requests with their cookies, set
+  cookies for the whole site (never the `__Host-` session cookies; Open WebUI's `token` could be shadowed, but not
+  forged), and fill it with cookies until requests to every host of the site fail (clear the site's cookies:
+  [docs/remote.md](remote.md#previews-of-dev-servers-over-remote-access)). The guard keeps it from reading or changing
+  anything in bedrock-now.
 - **Script in a preview has your browser's network.** With `TERMINAL_EGRESS=off` the sandbox has no internet, but a
   preview's script runs in your browser, which has: it can send out what the dev server serves it (your workspace's
   files, if the app serves them). And a page from `localhost` may call services on your computer's `localhost` as

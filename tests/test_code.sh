@@ -167,7 +167,7 @@ test_remote_code_with_the_terminals_switch() {
   set_env REMOTE_TERMINAL true
   remote_hosts_tailscale "$TN"
   assert_eq "$(get_env REMOTE_CODE_HOST)" "bedrock-now-code.$TN"
-  assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal svc:bedrock-now-code svc:bedrock-now-preview"
+  assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal svc:bedrock-now-code"   # (its previews: opt-in)
   ts_serve_config tailscale "$TN" | python3 -c '
 import json, sys
 s = json.load(sys.stdin)["Services"]

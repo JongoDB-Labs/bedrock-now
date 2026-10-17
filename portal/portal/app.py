@@ -490,8 +490,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not rem:
             return "previews are off"
         if not settings.remote_preview:
-            return ("Previews over remote access are turned off (REMOTE_PREVIEW=false): Settings › Remote access on the "
-                    "computer running bedrock-now turns them on.")
+            return ("Previews over remote access are off (the default): over Tailscale or your own domain a preview would be "
+                    "on the same site as your other apps there. Open the preview on the computer running bedrock-now, or turn "
+                    "them on there (Settings › Remote access; docs/remote.md says what it means).")
         return ("Previews over remote access have no address yet: ./stack up on the computer running bedrock-now writes "
                 "it (REMOTE_PREVIEW_HOST), and with Tailscale the Service <name>-preview must be defined in its admin console.")
 

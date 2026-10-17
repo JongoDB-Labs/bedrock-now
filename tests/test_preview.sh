@@ -130,12 +130,13 @@ import remote_preview "https://{$REMOTE_CODE_HOST:code.remote.invalid} {$REMOTE_
   assert_eq "$(printf '%s\n' "$own" | grep -o 'import .*')" "$want"
   assert_eq "$(grep -cv '^#' "$STACK_DIR/caddy/remote-domain-preview-off.caddy")" 0
   assert_contains "$(cat "$STACK_DIR/caddy/remote-domain.caddy")" 'import remote-domain-preview-{$REMOTE_PREVIEW_SITE:off}.caddy'
+  assert_not_contains "$(cat "$STACK_DIR/caddy/preview-on.caddy")" "Service-Worker"   # local previews keep their workers
   assert_contains "$(cat "$STACK_DIR/compose.domain.yaml")" 'REMOTE_PREVIEW_SITE: ${REMOTE_PREVIEW_SITE:-off}'
   # the route: the hand-off's callback (before the check: no cookie yet), client copies of the port header gone, the
   # portal's check naming the port (the cookie), then bn-preview through the gateway with the previews' rules
   rp="$(awk '/^\(remote_preview\)/,/^}/' "$STACK_DIR/caddy/Caddyfile" | grep -v '^[[:space:]]*#' | tr -d '\t')"
-  assert_eq "$(printf '%s\n' "$rp" | sed -n 2,14p | tr '\n' '|')" \
-    '@bn_preview_callback path /.bn/preview-callback|reverse_proxy @bn_preview_callback portal:8000 {|rewrite /auth/preview-callback?{query}|}|request_header -X-Bn-Preview-*|forward_auth portal:8000 {|uri /auth/verify?app=preview|copy_headers X-Bn-Preview-Port|}|reverse_proxy terminal-upstream:7682 {|import preview_upstream "{args[0]}" "https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}"|}|}|'
+  assert_eq "$(printf '%s\n' "$rp" | sed -n 2,17p | tr '\n' '|')" \
+    '@bn_preview_callback path /.bn/preview-callback|reverse_proxy @bn_preview_callback portal:8000 {|rewrite /auth/preview-callback?{query}|}|@bn_preview_sw header Service-Worker script|header @bn_preview_sw X-Bn-Refused "remote preview: no service workers"|respond @bn_preview_sw "no service workers on the remote preview host: develop a PWA'"'"'s worker on this computer'"'"'s preview (docs/remote.md)" 403|request_header -X-Bn-Preview-*|forward_auth portal:8000 {|uri /auth/verify?app=preview|copy_headers X-Bn-Preview-Port|}|reverse_proxy terminal-upstream:7682 {|import preview_upstream "{args[0]}" "https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}"|}|}|'
   a="$(cat "$STACK_DIR/portal/portal/app.py")"
   assert_contains "$a" 'Route("/auth/preview-callback", preview_callback, methods=["GET"])'
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'PREVIEW_COOKIE = "__Host-bn_preview"'
@@ -152,8 +153,8 @@ test_every_app_host_has_the_same_site_guard_first() {
   # the snippet: a preview's Origin (local or remote), and another host's script — anything but a GET/HEAD page load
   # or no-cors asset
   g="$(awk '/^\(not_from_preview\)/,/^}/' "$STACK_DIR/caddy/Caddyfile" | tr -d '\t')"
-  assert_eq "$(printf '%s\n' "$g" | sed -n 2,18p | tr '\n' '|')" \
-    '@bn_from_preview {|header Origin *.{$PREVIEW_DOMAIN:preview.invalid}*|header Origin https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}|}|header @bn_from_preview X-Bn-Refused "same-site guard: from a preview"|respond @bn_from_preview "refused: a request from a preview of the sandbox (bedrock-now'"'"'s same-site guard, docs/security.md)" 403|@bn_same_site {|header Sec-Fetch-Site same-site|not {|method GET HEAD|header Sec-Fetch-Mode navigate|header Sec-Fetch-Mode no-cors|}|}|header @bn_same_site X-Bn-Refused "same-site guard: another host'"'"'s script"|respond @bn_same_site "refused: a script'"'"'s request from another host of this site (bedrock-now'"'"'s same-site guard, docs/security.md)" 403|}|'
+  assert_eq "$(printf '%s\n' "$g" | sed -n 2,24p | tr '\n' '|')" \
+    '@bn_from_preview {|header Origin *.{$PREVIEW_DOMAIN:preview.invalid}*|header Origin https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}|}|header @bn_from_preview X-Bn-Refused "same-site guard: from a preview"|respond @bn_from_preview "refused: a request from a preview of the sandbox (bedrock-now'"'"'s same-site guard, docs/security.md)" 403|@bn_opaque {|header Origin null|not header Sec-Fetch-Site same-origin|}|header @bn_opaque X-Bn-Refused "same-site guard: an opaque origin"|respond @bn_opaque "refused: a request from an opaque origin, such as a sandboxed frame (bedrock-now'"'"'s same-site guard, docs/security.md)" 403|@bn_same_site {|header Sec-Fetch-Site same-site|not {|method GET HEAD|header Sec-Fetch-Mode navigate|header Sec-Fetch-Mode no-cors|}|}|header @bn_same_site X-Bn-Refused "same-site guard: another host'"'"'s script"|respond @bn_same_site "refused: a script'"'"'s request from another host of this site (bedrock-now'"'"'s same-site guard, docs/security.md)" 403|}|'
   # first thing in the portal's routes
   assert_eq "$(awk '/^\(portal_routes\)/,/^}/' "$STACK_DIR/caddy/Caddyfile" | sed -n 2p | tr -d '\t')" "import not_from_preview"
   # every app site, local and remote: right after the local/remote rules (the portal: its routes, which start with
@@ -179,7 +180,22 @@ test_the_remote_preview_host_follows_the_remote_code_page() {
   terminal_on() { return 0; }; terminal_ready() { return 0; }
   set_env_batch CODE_ENABLED true REMOTE_TERMINAL true REMOTE_MODE tailscale TS_TAILNET "$TN" REMOTE_HOST "bedrock-now.$TN"
   terminal_remote_sync; code_remote_sync
-  assert_eq "$(get_env REMOTE_CODE_HOST) $(get_env REMOTE_PREVIEW_HOST) [$(get_env REMOTE_PREVIEW_SITE)]" "bedrock-now-code.$TN bedrock-now-preview.$TN []"
+  # off by default: the preview host would be the same site as every other app of the tailnet
+  assert_eq "$(get_env REMOTE_CODE_HOST) [$(get_env REMOTE_PREVIEW_HOST)] [$(get_env REMOTE_PREVIEW_SITE)]" "bedrock-now-code.$TN [] []"
+  assert_not_contains "$(ts_service_names) $(ts_serve_config tailscale "$TN")" "preview"
+  steps="$(ts_admin_steps tailscale)"
+  assert_contains "$steps" "The Code page's previews over remote access, bedrock-now-preview, are off: read docs/remote.md"
+  assert_contains "$steps" "define and approve that Service first, then ./stack config set REMOTE_PREVIEW true"
+  note="$(remote_preview_note)"
+  assert_contains "$note" "same site as every other app of"
+  assert_contains "$note" "first define the Service bedrock-now-preview (port tcp:443)"
+  assert_contains "$note" "Off: ./stack config set REMOTE_PREVIEW false"
+  for v in '' false OFF no 0 maybe; do
+    set_env REMOTE_PREVIEW "$v"; code_remote_sync; assert_eq "[$(get_env REMOTE_PREVIEW_HOST)]" "[]"
+  done
+  # on: one more Service, in the serve config, the policy snippet and the steps
+  set_env REMOTE_PREVIEW true; code_remote_sync
+  assert_eq "$(get_env REMOTE_PREVIEW_HOST) [$(get_env REMOTE_PREVIEW_SITE)]" "bedrock-now-preview.$TN []"
   assert_eq "$(ts_service_names)" "svc:bedrock-now svc:bedrock-now-chat svc:bedrock-now-admin svc:bedrock-now-files svc:bedrock-now-terminal svc:bedrock-now-code svc:bedrock-now-preview"
   ts_serve_config tailscale "$TN" | python3 -c '
 import json, sys
@@ -190,32 +206,34 @@ import json, sys
 p = json.load(sys.stdin)
 assert "svc:bedrock-now-preview" in p["autoApprovers"]["services"] and "svc:bedrock-now-preview" in p["grants"][0]["dst"], p' || return 1
   steps="$(ts_admin_steps tailscale)"
-  assert_contains "$steps" "bedrock-now-preview"
   assert_contains "$steps" "bedrock-now-preview shows the dev servers running in the sandbox"
-  assert_contains "$steps" "REMOTE_PREVIEW=false leaves it out"
+  assert_contains "$steps" "Off: ./stack config set REMOTE_PREVIEW false"
+  assert_eq "$(remote_preview_note)" ""
   assert_contains "$(remote_app_list)" "chat admin files terminal code preview"
-  # off: no address, no Service — and nothing in the admin steps about it
-  set_env REMOTE_PREVIEW false; code_remote_sync
-  assert_eq "[$(get_env REMOTE_PREVIEW_HOST)] $(get_env REMOTE_CODE_HOST)" "[] bedrock-now-code.$TN"
-  assert_not_contains "$(ts_service_names) $(ts_admin_steps tailscale)" "preview"
-  set_env REMOTE_PREVIEW OFF; code_remote_sync; assert_eq "[$(get_env REMOTE_PREVIEW_HOST)]" "[]"
-  set_env REMOTE_PREVIEW ''; code_remote_sync; assert_eq "$(get_env REMOTE_PREVIEW_HOST)" "bedrock-now-preview.$TN"
-  # own domain: preview.<it>, or a REMOTE_PREVIEW_DOMAIN of its own (another site: Caddy serves it as a site of its own)
-  set_env_batch REMOTE_MODE domain REMOTE_HOST bn.example.com
+  set_env REMOTE_PREVIEW yes; code_remote_sync; assert_eq "$(get_env REMOTE_PREVIEW_HOST)" "bedrock-now-preview.$TN"
+  # own domain: preview.<it> once on; a REMOTE_PREVIEW_DOMAIN of its own (another site) is on unless false
+  set_env_batch REMOTE_MODE domain REMOTE_HOST bn.example.com REMOTE_PREVIEW ''
   code_remote_sync
+  assert_eq "[$(get_env REMOTE_PREVIEW_HOST)]" "[]"
+  set_env REMOTE_PREVIEW true; code_remote_sync
   assert_eq "$(get_env REMOTE_PREVIEW_HOST) [$(get_env REMOTE_PREVIEW_SITE)]" "preview.bn.example.com []"
-  set_env REMOTE_PREVIEW_DOMAIN preview.bn-usercontent.example.net; code_remote_sync
+  set_env_batch REMOTE_PREVIEW '' REMOTE_PREVIEW_DOMAIN preview.bn-usercontent.example.net; code_remote_sync
   assert_eq "$(get_env REMOTE_PREVIEW_HOST) [$(get_env REMOTE_PREVIEW_SITE)]" "preview.bn-usercontent.example.net [own]"
   assert_contains "$(remote_dns_records 100.1.2.3)" "preview.bn-usercontent.example.net"
+  set_env REMOTE_PREVIEW false; code_remote_sync
+  assert_eq "[$(get_env REMOTE_PREVIEW_HOST)][$(get_env REMOTE_PREVIEW_SITE)]" "[][]"
   for bad in x.bn.example.com bn.example.com nodot x.localhost x.ts.net 'a b.example.com'; do
-    set_env REMOTE_PREVIEW_DOMAIN "$bad"; code_remote_sync
+    set_env_batch REMOTE_PREVIEW true REMOTE_PREVIEW_DOMAIN "$bad"; code_remote_sync
     assert_eq "$(get_env REMOTE_PREVIEW_HOST) [$(get_env REMOTE_PREVIEW_SITE)]" "preview.bn.example.com []"
+    set_env REMOTE_PREVIEW ''; code_remote_sync   # (blank is on only with a valid domain of its own)
+    assert_eq "[$(get_env REMOTE_PREVIEW_HOST)]" "[]"
   done
   set_env REMOTE_PREVIEW_DOMAIN x.bn.example.com
   assert_contains "$(code_up_hook 2>&1)" "REMOTE_PREVIEW_DOMAIN=x.bn.example.com is the remote domain or under it"
   assert_not_contains "$(remote_dns_records 100.1.2.3)" "x.bn.example.com "
   # the Code page off, or not remote: nothing; an .env that needs nothing is left untouched
-  set_env REMOTE_TERMINAL false; code_remote_sync; assert_eq "[$(get_env REMOTE_PREVIEW_HOST)][$(get_env REMOTE_PREVIEW_SITE)]" "[][]"
+  set_env_batch REMOTE_PREVIEW true REMOTE_TERMINAL false; code_remote_sync
+  assert_eq "[$(get_env REMOTE_PREVIEW_HOST)][$(get_env REMOTE_PREVIEW_SITE)]" "[][]"
   printf 'REMOTE_MODE=off\n' > "$ENV_FILE"; cp "$ENV_FILE" "$TMP/before"
   code_remote_sync
   assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
@@ -229,13 +247,13 @@ test_status_and_test_name_the_remote_previews() {
   _ts() { case "$1" in status) printf '{"BackendState":"Running","Self":{"Tags":["tag:bedrock-now"]}}\n' ;; esac; }
   set_env_batch CODE_ENABLED true REMOTE_TERMINAL true REMOTE_MODE tailscale TS_TAILNET "$TN" REMOTE_HOST "bedrock-now.$TN" \
     REMOTE_CHAT_HOST "bedrock-now-chat.$TN" PREVIEW_DOMAIN bedrock-now-preview.localhost
-  code_remote_sync
-  assert_contains "$(code_status)" "remote: https://bedrock-now-preview.$TN (one port at a time per browser; REMOTE_PREVIEW=false turns it off)"
+  terminal_remote_sync; code_remote_sync
+  assert_contains "$(code_status)" "remote: off (the default; REMOTE_PREVIEW=true turns them on"
+  assert_contains "$(remote_status)" "preview  off — the Code page's previews stay on this computer (REMOTE_PREVIEW; docs/remote.md before turning them on)"
+  set_env REMOTE_PREVIEW true; code_remote_sync
+  assert_contains "$(code_status)" "remote: https://bedrock-now-preview.$TN (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW false)"
   assert_contains "$(remote_status)" "preview  https://bedrock-now-preview.$TN   (dev servers in the sandbox, opened from the Code page)"
-  set_env REMOTE_PREVIEW false; code_remote_sync
-  assert_contains "$(code_status)" "remote: off (REMOTE_PREVIEW=false)"
   # ./stack remote test: the preview host without its cookie, and a request from its origin to the portal — refused
-  set_env REMOTE_PREVIEW ''; code_remote_sync
   _caddy_remote_get() { echo "$*" >> "$TMP/gets"; echo "403|"; }
   _check() { echo "$1 = $2 (want $3)" >> "$TMP/checks"; }
   remote_test > "$TMP/out" 2>&1 || true
@@ -250,7 +268,7 @@ test_a_new_service_is_announced_once() {
   TN=tail1234.ts.net
   export TS_SERVE_DIR="$TMP/ts"
   terminal_on() { return 0; }
-  set_env_batch REMOTE_MODE tailscale TS_TAILNET "$TN" REMOTE_HOST "bedrock-now.$TN" REMOTE_TERMINAL true
+  set_env_batch REMOTE_MODE tailscale TS_TAILNET "$TN" REMOTE_HOST "bedrock-now.$TN" REMOTE_TERMINAL true REMOTE_PREVIEW true
   remote_serve_sync 2> "$TMP/err1"                  # the first config: nothing to compare with
   set_env CODE_ENABLED true; code_remote_sync
   remote_serve_sync 2> "$TMP/err2"
@@ -259,6 +277,21 @@ test_a_new_service_is_announced_once() {
   assert_contains "$(cat "$TMP/err2")" "new Tailscale Service: svc:bedrock-now-code svc:bedrock-now-preview — define it in the admin console"
   assert_eq "$(cat "$TMP/err3")" ""
   assert_contains "$(cat "$TS_SERVE_DIR/serve.json")" '"svc:bedrock-now-preview"'
+  # an install upgraded with the Code page remote and previews left as they are (blank): no new Service at all
+  set_env REMOTE_PREVIEW ''; code_remote_sync
+  remote_serve_sync 2> "$TMP/err4"
+  assert_eq "$(cat "$TMP/err4")" ""
+  assert_not_contains "$(cat "$TS_SERVE_DIR/serve.json")" "preview"
+}
+
+test_an_over_long_service_base_is_said_out_loud() {
+  _stubs
+  export TS_SERVE_DIR="$TMP/ts" REMOTE_UP_WAIT=0
+  dc() { :; }; _ts() { :; }; ts_wait_running() { echo NeedsLogin; return 1; }
+  set_env_batch REMOTE_MODE tailscale TS_TAILNET tail1234.ts.net TS_SERVICE "$(printf 'a%.0s' $(seq 1 56))"
+  assert_contains "$(remote_up_hook 2>&1)" "is 56 characters"
+  set_env TS_SERVICE "$(printf 'a%.0s' $(seq 1 54))"
+  assert_not_contains "$(remote_up_hook 2>&1)" "characters:"
 }
 
 test_the_gateways_preview_listener_needs_its_secret() {

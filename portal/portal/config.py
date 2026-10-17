@@ -121,10 +121,10 @@ class Settings:
     preview_domain: str = ""
     # ... and over remote access (caddy/remote-*.caddy, remote_preview): one host, REMOTE_PREVIEW_HOST (written by
     # lib/code.sh: <base>-preview.<tailnet>.ts.net, preview.<REMOTE_HOST> or REMOTE_PREVIEW_DOMAIN), routed by the
-    # __Host-bn_preview cookie a hand-off from the code host sets. Blank: off (REMOTE_PREVIEW=false, or no remote Code
-    # page); remote_preview says which (the Code page's message).
+    # __Host-bn_preview cookie a hand-off from the code host sets. Blank: off (REMOTE_PREVIEW not true — the default — or
+    # no remote Code page); remote_preview (REMOTE_PREVIEW=true) says which, for the Code page's message.
     remote_preview_host: str = ""
-    remote_preview: bool = True
+    remote_preview: bool = False
 
     def password_where(self) -> str:
         """"~/bn/.env (project bn-dev)", or "" when ./stack did not say."""
@@ -302,7 +302,7 @@ def from_env(env: dict | None = None) -> Settings:
         code=code,
         preview_domain=preview,
         remote_preview_host=r_preview,
-        remote_preview=(env.get("REMOTE_PREVIEW") or "true").strip().lower() not in ("false", "0", "no", "off"),
+        remote_preview=_on(env.get("REMOTE_PREVIEW")),
         tailscale_allowed_login=(env.get("TAILSCALE_ALLOWED_LOGIN") or "").strip().lower(),
         proxy_secret=env.get("PORTAL_PROXY_SECRET", ""),
         env_file=(env.get("PORTAL_ENV_FILE") or "").strip(),

@@ -259,7 +259,7 @@ def rps(settings):
                    proxy_secret=PROXY, remote_terminal=True, tailscale_allowed_login="me@example.com",
                    remote_app_hosts={"chat": f"bn-chat.{TN}", "admin": f"bn-admin.{TN}", "files": f"bn-files.{TN}",
                                      "terminal": f"bn-terminal.{TN}", "code": R_CODE},
-                   remote_preview_host=R_PREVIEW)
+                   remote_preview_host=R_PREVIEW, remote_preview=True)
 
 
 def remote_unlocked(c, login=REMOTE):
@@ -306,7 +306,7 @@ def test_remote_preview_settings_follow_the_remote_code_page():
     base = {"PORTAL_PASSWORD": "pw", "PORTAL_SECRET": "x" * 40, "PORTAL_HOST": "bedrock-now.localhost", "TERMINAL_ENABLED": "true",
             "CODE_ENABLED": "true", "PREVIEW_DOMAIN": DOMAIN, "REMOTE_MODE": "tailscale", "REMOTE_HOST": R_PORTAL,
             "REMOTE_TERMINAL": "true", "REMOTE_TERMINAL_HOST": f"bn-terminal.{TN}", "REMOTE_CODE_HOST": R_CODE,
-            "REMOTE_PREVIEW_HOST": R_PREVIEW}
+            "REMOTE_PREVIEW_HOST": R_PREVIEW, "REMOTE_PREVIEW": "true"}
     s = from_env(base)
     assert s.remote_preview_host == R_PREVIEW and s.preview_on(remote=True) and s.preview_on() and s.remote_preview
     assert s.remote_preview_same_site()   # every Service of a tailnet is one site (ts.net is a public suffix)
@@ -317,6 +317,7 @@ def test_remote_preview_settings_follow_the_remote_code_page():
         assert from_env({**base, "REMOTE_PREVIEW_HOST": bad}).remote_preview_host == "", bad
     assert not from_env({**base, "REMOTE_PREVIEW_HOST": ""}).preview_on(remote=True)
     assert from_env({**base, "REMOTE_PREVIEW": "false"}).remote_preview is False
+    assert from_env({**base, "REMOTE_PREVIEW": ""}).remote_preview is False   # off by default (lib/code.sh writes no host then)
     # own-domain mode: preview.<REMOTE_HOST> is the portal's site; a REMOTE_PREVIEW_DOMAIN elsewhere is not
     dom = {**base, "REMOTE_MODE": "domain", "REMOTE_HOST": "bn.example.com", "REMOTE_CODE_HOST": "code.bn.example.com"}
     assert from_env({**dom, "REMOTE_PREVIEW_HOST": "preview.bn.example.com"}).remote_preview_same_site()
@@ -454,11 +455,11 @@ def test_previews_over_remote_access_can_be_off(rps):
     with _client(replace(rps, remote_preview_host="", remote_preview=False)) as c:
         rtok, rut = remote_unlocked(c)
         info = rmint(c, rtok, rut, "format=json").json()
-        assert info["available"] is False and "REMOTE_PREVIEW=false" in info["reason"] and info["domain"] == ""
+        assert info["available"] is False and "off (the default)" in info["reason"] and "same site" in info["reason"] and info["domain"] == ""
         r = rmint(c, rtok, rut)
-        assert r.status_code == 403 and "REMOTE_PREVIEW=false" in r.json()["error"]
+        assert r.status_code == 403 and "off (the default)" in r.json()["error"]
         assert rcheck(c, "x").status_code == 404
-    with _client(replace(rps, remote_preview_host="")) as c:   # on, but no address written yet (./stack up)
+    with _client(replace(rps, remote_preview_host="", remote_preview=True)) as c:   # on, but no address written yet (./stack up)
         rtok, rut = remote_unlocked(c)
         assert "./stack up" in rmint(c, rtok, rut, "format=json").json()["reason"]
         # this computer's previews are untouched

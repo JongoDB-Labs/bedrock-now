@@ -504,13 +504,16 @@ per browser.
   work there (cookies without `SameSite=None` are not sent to a frame from another site, and Safari or Chrome set to
   block third-party cookies keep none) — an app you sign in to works in **Open in a new tab**. Calls to *another*
   port from the app's page (`fetch('http://localhost:3000')`)
-  reach your computer, not the sandbox: use the dev server's proxy. **Over remote access** (wherever the Code page is
-  remote) previews have one address of their own — `https://bedrock-now-preview.<tailnet>.ts.net`, a sixth Tailscale
-  Service to define once, or `preview.<your domain>` — and a browser previews **one port at a time** there (opening
-  another port's preview switches it; *Try again* switches back). There a preview is on the *same site* as the portal
-  (every Service of a tailnet is one site), so every app host refuses its scripts' requests (the
-  [same-site guard](docs/security.md#the-same-site-guard)); `REMOTE_PREVIEW=false` (Settings › Remote access, or
-  `./stack config set REMOTE_PREVIEW false`) keeps previews on this computer only. Details:
+  reach your computer, not the sandbox: use the dev server's proxy. **Over remote access** previews are **off unless you turn
+  them on** (`./stack config set REMOTE_PREVIEW true`, or Settings › Remote access, on this computer; the Code page
+  must be remote too). Read [docs/remote.md](docs/remote.md#previews-of-dev-servers-over-remote-access) first: their
+  one address — `https://bedrock-now-preview.<tailnet>.ts.net`, one more Tailscale Service to define and approve
+  *before* you turn them on, or `preview.<your domain>` — is on the same *site* as every other app of your tailnet or
+  domain, so a page your sandbox serves could send those apps requests with their cookies. bedrock-now's own hosts
+  refuse them (the [same-site guard](docs/security.md#the-same-site-guard)); your other apps may not. In own-domain mode
+  `REMOTE_PREVIEW_DOMAIN` (a domain of their own) avoids that, and previews are then on by default. A browser previews
+  **one port at a time** there (opening another port's preview switches it; *Try again* switches back), and a dev
+  server cannot install a service worker there. Details:
   [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox),
   [docs/remote.md](docs/remote.md#previews-of-dev-servers-over-remote-access).
 - **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's
@@ -654,9 +657,9 @@ The portal from your phone or laptop, over HTTPS, without opening a port to the 
 A small Tailscale container joins your tailnet and serves four
 [Tailscale Services](https://tailscale.com/kb/1552/tailscale-services) with real certificates; your devices
 need the Tailscale app. Remote requests need your **Tailscale login and the portal password**. The local address
-keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services — six or seven with the
-browser terminal, the Code page and its previews shared remotely —, a policy snippet and an auth key) are printed with
-your names filled in; when an update or a setting adds a Service, `./stack up` says which one to define. Your own domain instead
+keeps working unchanged. One-time steps in the Tailscale admin console (a tag, four Services — six with the
+browser terminal and the Code page shared remotely, seven with its previews —, a policy snippet and an auth key) are
+printed with your names filled in; when a setting adds a Service, `./stack up` says which one to define. Your own domain instead
 (`./stack remote enable domain bedrock.example.com`, Let's Encrypt wildcard via Cloudflare DNS), how the
 host-only session cookies work, and Cloudflare Tunnel: [docs/remote.md](docs/remote.md).
 

@@ -1350,6 +1350,22 @@ def same_site_guard(ctx):
         else:
             expect(st == 403 and "same-site guard" in refused, f"{what}: {st} X-Bn-Refused {refused!r}")
         seen[what] = st
+    # an opaque origin — a sandboxed frame the page makes (no allow-same-origin): Origin null, Sec-Fetch-Site cross-site;
+    # refused too (a frame of another process: Playwright's own events see it)
+    opaque = {}
+    page.on("response", lambda r: opaque.setdefault(r.url, r) if "bn-guard=null" in r.url else None)
+    null_post, null_form = origin("admin") + "/key/generate?bn-guard=null", origin("admin") + "/key/delete?bn-guard=null-form"
+    page.evaluate("""([p, f]) => { const fr = document.createElement('iframe'); fr.setAttribute('sandbox', 'allow-scripts allow-forms'); fr.hidden = true;
+        fr.srcdoc = '<!doctype html><script>fetch(' + JSON.stringify(p) + ', { method: "POST", mode: "no-cors", credentials: "include", body: "x" })'
+          + '.finally(() => { const fo = document.createElement("form"); fo.method = "post"; fo.action = ' + JSON.stringify(f) + ';'
+          + ' document.body.append(fo); fo.submit(); });<' + '/script>';
+        document.body.append(fr); }""", [null_post, null_form])
+    page.wait_for_timeout(2500)
+    for what, u in (("opaque no-cors POST", null_post), ("opaque form post", null_form)):
+        r = opaque.get(u)
+        refused = (r.header_value("x-bn-refused") if r else None) or ""
+        expect(r is not None and r.status == 403 and "opaque origin" in refused, f"{what}: {r.status if r else 'not seen'} {refused!r}")
+        seen[what] = r.status
     rec.save()
     return (f"from the Chat page, same-site, with the session cookie: {', '.join(f'{k} {v}' for k, v in seen.items() if k != 'control image')} "
             f"(Caddy's guard, X-Bn-Refused); the control, a same-site image from the portal: {seen['control image']}")

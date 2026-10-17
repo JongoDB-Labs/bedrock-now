@@ -61,6 +61,9 @@
 # sandbox serves. Its script could otherwise send requests to these hosts that carry your cookies. Refused:
 #   - anything whose Origin is a preview's (local: any host under PREVIEW_DOMAIN; remote: REMOTE_PREVIEW_HOST): a
 #     preview's fetches, form posts and WebSockets — even from a browser that sends no Sec-Fetch-* headers;
+#   - anything with Origin: null that is not same-origin: an opaque origin — a sandboxed frame or a data: page a preview
+#     makes, whose requests say Sec-Fetch-Site: cross-site yet may carry the site's cookies (and a no-referrer form post
+#     from a browser without Sec-Fetch-*). None of bedrock-now's own requests between its hosts send it;
 #   - from any other host of the same site (Sec-Fetch-Site: same-site, which no page can set), everything but a page
 #     load (Sec-Fetch-Mode navigate, GET/HEAD: a link, a frame, a redirect — the portal's frames, its hand-offs and
 #     the Code page → terminal hand-off are all such) and a plain image, style sheet or script (no-cors GET: the
@@ -76,6 +79,12 @@
 	}
 	header @bn_from_preview X-Bn-Refused "same-site guard: from a preview"
 	respond @bn_from_preview "refused: a request from a preview of the sandbox (bedrock-now's same-site guard, docs/security.md)" 403
+	@bn_opaque {
+		header Origin null
+		not header Sec-Fetch-Site same-origin
+	}
+	header @bn_opaque X-Bn-Refused "same-site guard: an opaque origin"
+	respond @bn_opaque "refused: a request from an opaque origin, such as a sandboxed frame (bedrock-now's same-site guard, docs/security.md)" 403
 	@bn_same_site {
 		header Sec-Fetch-Site same-site
 		not {
@@ -442,6 +451,13 @@ http://{$FILES_HOST} {
 	reverse_proxy @bn_preview_callback portal:8000 {
 		rewrite /auth/preview-callback?{query}
 	}
+	# no service worker here: this one origin serves every port and every later unlock, so a worker the sandbox installed
+	# would go on answering for other ports and after Sign out, and would see the hand-off's /.bn/preview-callback?t=…
+	# (the browser fetches a worker's script with Service-Worker: script; refused, it is not installed). This computer's
+	# previews keep them: an origin per port and unlock.
+	@bn_preview_sw header Service-Worker script
+	header @bn_preview_sw X-Bn-Refused "remote preview: no service workers"
+	respond @bn_preview_sw "no service workers on the remote preview host: develop a PWA's worker on this computer's preview (docs/remote.md)" 403
 	# (only the portal's answer below may name the port: client copies go first, in a step of their own)
 	request_header -X-Bn-Preview-*
 	forward_auth portal:8000 {

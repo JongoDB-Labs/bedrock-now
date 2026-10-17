@@ -47,7 +47,7 @@ valid_ts_label() {
 
 # ts_service_names -> "svc:<base> svc:<base>-chat svc:<base>-admin svc:<base>-files" (+ svc:<base>-terminal while the
 # browser terminal is shared remotely: REMOTE_TERMINAL=true, lib/terminal.sh; + svc:<base>-code with the Code page, and
-# svc:<base>-preview for its previews of dev servers in the sandbox unless REMOTE_PREVIEW=false, lib/code.sh)
+# svc:<base>-preview for its previews of dev servers in the sandbox once REMOTE_PREVIEW=true turns them on, lib/code.sh)
 ts_service_names() {
   local b a out; b="$(ts_base)"; out="svc:$b"
   for a in $(remote_app_list); do out="$out svc:$b-$a"; done
@@ -358,9 +358,12 @@ EOF
   4. Services (https://login.tailscale.com/admin/services): Advertise → Define a Service, once for each
      of these names, each with port tcp:443:  $(ts_service_names | sed 's/svc://g; s/ /   /g')
      The sidecar ($(ts_node_name)) advertises them on start; with the autoApprovers above they are approved
-     at once — otherwise approve it under "Service hosts" of each Service.$([ -z "$(code_remote_preview_app)" ] || printf '
-     %s-preview shows the dev servers running in the sandbox: sandbox content, on the same site as the
-     others (every Service of a tailnet is one site), which refuse its requests. REMOTE_PREVIEW=false leaves it out.' "$b")
+     at once — otherwise approve it under "Service hosts" of each Service.$(if [ -n "$(code_remote_preview_app)" ]; then printf '
+     %s-preview shows the dev servers running in the sandbox: sandbox content, on the same site as every other
+     Service and app of your tailnet (bedrock-now'"'"'s refuse its requests; docs/remote.md). Off: ./stack config set REMOTE_PREVIEW false.' "$b"
+     elif [ -n "$(code_remote_app)" ]; then printf '
+     (The Code page'"'"'s previews over remote access, %s-preview, are off: read docs/remote.md before you turn
+     them on — define and approve that Service first, then ./stack config set REMOTE_PREVIEW true.)' "$b"; fi)
   5. Your devices: install Tailscale and sign in$( [ -n "$(get_env TAILSCALE_ALLOWED_LOGIN)" ] && printf ' as %s' "$(get_env TAILSCALE_ALLOWED_LOGIN)").
      Clients need v1.94+ (Linux clients up to v1.93: sudo tailscale set --accept-routes).
 EOF
@@ -517,7 +520,15 @@ remote_enable() {
     printf '\nCaddy asks Let'"'"'s Encrypt for the certificates in the background (DNS-01, a minute or two):\n./stack logs caddy\n'
   fi
   remote_login_warning
+  remote_preview_note
   printf '\nThen: ./stack remote test\n'
+}
+
+# remote_preview_note — with the Code page remote and its previews off (the default): why, and how to turn them on
+remote_preview_note() {
+  [ -n "$(code_remote_app)" ] && [ -z "$(code_remote_preview_app)" ] || return 0
+  printf '\nThe Code page'"'"'s previews of dev servers stay on this computer (REMOTE_PREVIEW, off by default):\n'
+  code_remote_preview_tradeoff | sed 's/^/  /'
 }
 
 # remote_login_warning — Tailscale mode without TAILSCALE_ALLOWED_LOGIN: say loudly what that means
@@ -588,6 +599,8 @@ remote_status() {
         *) printf '  %-8s %s\n' "$s" "$(remote_url "$s")" ;;
       esac
     done
+    [ -z "$(code_remote_app)" ] || [ -n "$(code_remote_preview_app)" ] ||
+      printf '  %-8s off — the Code page'"'"'s previews stay on this computer (REMOTE_PREVIEW; docs/remote.md before turning them on)\n' preview
   fi
   printf '  Local    %s (unchanged)\n' "$(portal_url)"
   sj="$(_ts status --json || true)"
@@ -691,9 +704,12 @@ EOF
 # a short look whether it logged in, and a warning if not (details: ./stack remote status).
 REMOTE_UP_WAIT="${REMOTE_UP_WAIT:-20}"
 remote_up_hook() {
-  local mode st; mode="$(remote_mode)"
+  local mode st b; mode="$(remote_mode)"; b="$(ts_base)"
   [ "$mode" != off ] || return 0
   [ "$REMOTE_DEGRADED" != 1 ] || return 0   # remote_net_preflight already said why
+  # (enable refuses a longer base since -terminal and -preview were added; an install from before may have one)
+  [ "$mode" != tailscale ] || [ "${#b}" -le 54 ] ||
+    warn "TS_SERVICE=$b is ${#b} characters: $b-terminal or $b-preview would be longer than a DNS name's 63 — set TS_SERVICE in .env to at most 54 (then ./stack remote enable tailscale; the Services get new names)"
   remote_serve_sync
   dc up -d --no-deps tailscale >/dev/null 2>&1 || { warn "could not start the Tailscale sidecar — remote access is down (./stack logs tailscale); the local portal is fine"; return 0; }
   if st="$(ts_wait_running "$REMOTE_UP_WAIT")"; then log "remote access: $(remote_url)"

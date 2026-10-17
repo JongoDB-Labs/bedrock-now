@@ -13,7 +13,8 @@
 # gateway requires before bn-preview: the page's previews of dev servers in the sandbox), PREVIEW_DOMAIN (the previews'
 # own site, derived from PORTAL_HOST: code_preview_domain) and REMOTE_CODE_HOST (written here while REMOTE_TERMINAL=
 # true and remote access is on: one switch for "the sandbox from outside"), with REMOTE_PREVIEW_HOST (and
-# REMOTE_PREVIEW_SITE) for its previews over remote access unless REMOTE_PREVIEW=false. Only .env counts: dc() drops
+# REMOTE_PREVIEW_SITE) for its previews over remote access once REMOTE_PREVIEW turns them on (off by default: they would
+# be same-site with your tailnet's or domain's other apps; code_remote_preview_wanted). Only .env counts: dc() drops
 # CODE_* from your shell.
 #
 # The terminal always runs bn-coded on the code-socket volume (compose.terminal.yaml, terminal/bin/bn-terminal), so
@@ -172,10 +173,10 @@ code_network_cleanup() {
 # code_remote_sync — REMOTE_CODE_HOST in .env: the Code page's remote name while it is on, the terminal is shared
 # remotely (REMOTE_TERMINAL) and remote access has its names (<base>-code.<tailnet>, or code.<your domain>);
 # otherwise none: the remote site's code block then matches nothing (and the portal refuses it anyway).
-# Its previews follow it there (REMOTE_PREVIEW_HOST; REMOTE_PREVIEW=false leaves them out): <base>-preview.<tailnet>
-# (a Tailscale Service of its own), preview.<your domain>, or REMOTE_PREVIEW_DOMAIN in domain mode — a name on a
+# Its previews can follow it there (REMOTE_PREVIEW_HOST, while code_remote_preview_wanted): <base>-preview.<tailnet> (a
+# Tailscale Service of its own), preview.<your domain>, or REMOTE_PREVIEW_DOMAIN in domain mode — a name on a
 # registrable domain of its own, so the previews are another site than the portal's (REMOTE_PREVIEW_SITE=own: a Caddy
-# site with its own certificate). docs/remote.md "Previews over remote access".
+# site with its own certificate). docs/remote.md "Previews of dev servers over remote access".
 code_remote_sync() {
   local h='' r t p='' site='' d
   r="$(get_env REMOTE_HOST)"
@@ -195,8 +196,36 @@ code_remote_sync() {
 code_remote_app() { [ -z "$(get_env REMOTE_CODE_HOST)" ] || echo code; }
 # code_remote_preview_app -> "preview" while the remote site serves its previews (a Tailscale Service of its own)
 code_remote_preview_app() { [ -z "$(get_env REMOTE_PREVIEW_HOST)" ] || echo preview; }
-# code_remote_preview_wanted -> 0 unless REMOTE_PREVIEW is off (false/0/no/off): previews come with the remote Code page
-code_remote_preview_wanted() { ! flag_off "$(get_env REMOTE_PREVIEW)"; }
+# code_remote_preview_wanted -> 0 when previews over remote access are on: REMOTE_PREVIEW=true. Blank (the default) is
+# off — on Tailscale the preview host is the same site as every other Service and machine name of your tailnet, in domain
+# mode preview.<your domain> the same site as everything under your registrable domain, and a page your sandbox serves
+# could send those other apps requests with their cookies (bedrock-now's own hosts refuse them; theirs need not) — except
+# with a REMOTE_PREVIEW_DOMAIN of its own in domain mode (another site): there blank is on. false is always off.
+code_remote_preview_wanted() {
+  local v; v="$(get_env REMOTE_PREVIEW)"
+  flag_on "$v" && return 0
+  flag_off "$v" && return 1
+  [ "$(get_env REMOTE_MODE)" = domain ] && [ -n "$(get_env REMOTE_PREVIEW_DOMAIN)" ] &&
+    code_preview_domain_ok "$(get_env REMOTE_PREVIEW_DOMAIN)" "$(get_env REMOTE_HOST)" >/dev/null
+}
+
+# code_remote_preview_tradeoff -> what turning previews over remote access on means, in plain words (./stack config set,
+# Settings' note, ./stack remote enable)
+code_remote_preview_tradeoff() {
+  cat <<'EOF'
+Previews of dev servers over remote access put a page your sandbox serves on the same site as every other app of
+your tailnet (all of <tailnet>.ts.net: other Tailscale Services, Serve apps, NAS or Home Assistant pages) — or, in
+own-domain mode, of your whole registrable domain. Its script could send those apps requests that carry their
+SameSite cookies, and set or flood cookies for the whole site. bedrock-now's own hosts refuse such requests (the
+same-site guard); other apps on your tailnet or domain may not. In own-domain mode a REMOTE_PREVIEW_DOMAIN of their
+own (another registrable domain) avoids this.
+EOF
+  if [ "$(get_env REMOTE_MODE)" = tailscale ]; then
+    printf 'With Tailscale: first define the Service %s-preview (port tcp:443) in the admin console and add\n' "$(ts_base)"
+    printf 'svc:%s-preview to your policy'"'"'s autoApprovers and grants (docs/remote.md), then turn previews on.\n' "$(ts_base)"
+  fi
+  printf 'On: ./stack config set REMOTE_PREVIEW true (or Settings › Remote access, on this computer). Off: ./stack config set REMOTE_PREVIEW false.\n'
+}
 
 # code_preview_domain_ok NAME REMOTE_HOST -> 0 for a REMOTE_PREVIEW_DOMAIN the previews can use; else prints why
 code_preview_domain_ok() {
@@ -260,8 +289,10 @@ code_status() {
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_on && echo on || echo off)"
   printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s\n' "$(get_env PREVIEW_DOMAIN)"
   if [ -n "$(get_env REMOTE_PREVIEW_HOST)" ]; then
-    printf '             remote: https://%s (one port at a time per browser; REMOTE_PREVIEW=false turns it off)\n' "$(get_env REMOTE_PREVIEW_HOST)"
-  elif [ -n "$(get_env REMOTE_CODE_HOST)" ]; then printf '             remote: off (REMOTE_PREVIEW=false)\n'; fi
+    printf '             remote: https://%s (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW false)\n' "$(get_env REMOTE_PREVIEW_HOST)"
+  elif [ -n "$(get_env REMOTE_CODE_HOST)" ]; then
+    printf '             remote: off (the default; REMOTE_PREVIEW=true turns them on — same-site with your tailnet'"'"'s or domain'"'"'s other apps: docs/remote.md)\n'
+  fi
   if flag_on "$(get_env CODE_ALLOW_BYPASS)"; then
     printf '  Bypass     allowed: the mode picker offers Bypass permissions (per session, after a confirmation)\n'
   else printf '  Bypass     off (Settings › Code page, or ./stack config set CODE_ALLOW_BYPASS, from this computer)\n'; fi

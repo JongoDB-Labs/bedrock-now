@@ -34,6 +34,7 @@ SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups
 results: dict = {"label": LABEL, "checks": [], "observed": {}}
 seen_preview: list[dict] = []
 seen_chat: list[dict] = []
+seen_code: list[dict] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -84,6 +85,8 @@ class DevServer(Base):
         if self.path.startswith("/info"):
             self.body()
             return self.send(200, json.dumps({"port": port, "headers": h}), "application/json")
+        if self.path.startswith("/sw.js"):   # a dev server's service worker (a PWA's)
+            return self.send(200, "self.addEventListener('fetch', () => {});", "text/javascript")
         self.send(200, f"<!doctype html><meta charset=utf-8><title>dev server :{port}</title><h1 id=h>preview :{port}</h1>")
 
     do_GET = do_POST = do_HEAD = handle_any
@@ -135,6 +138,7 @@ class CodePage(Base):
     def handle_any(self):
         if self.headers.get("X-Bn-Code-Proxy") != CODE_SECRET:
             return self.send(407, "the code container would refuse this: no secret")
+        seen_code.append({"path": self.path, "method": self.command})
         if self.path == "/app.js":
             return self.send(200, CODE_JS, "text/javascript")
         if self.path.startswith("/api/"):
@@ -166,29 +170,111 @@ def frame_at(page, prefix: str, timeout=20):
 
 def main() -> int:
     with sync_playwright() as p:
-        b = p.chromium.launch(args=[f"--host-resolver-rules=MAP *.{TN} {SIDECAR}"])
-        ctx = b.new_context(ignore_https_errors=True, viewport={"width": 1280, "height": 900})
-        ctx.set_default_timeout(20000)
-        reqs, resps, by_frame = {}, {}, []
-        ctx.on("request", lambda r: (reqs.setdefault(r.url, r), by_frame.append(r)))
-        ctx.on("response", lambda r: resps.setdefault(r.url, r))
-        trail = results.setdefault("trail", [])
-        ctx.on("request", lambda r: trail.append(f"request {r.method} {r.url}") if "rh=" in r.url else None)
-        ctx.on("requestfailed", lambda r: trail.append(f"failed {r.method} {r.url} {r.failure}") if "rh=" in r.url else None)
-        ctx.on("response", lambda r: trail.append(f"response {r.status} {r.url}") if "rh=" in r.url else None)
-        page = ctx.new_page()
-        page.on("console", lambda m: trail.append(f"console {m.type} {m.text[:200]}"))
-        try:
-            run(b, ctx, page, reqs, resps, by_frame)
-        except Exception as e:  # noqa: BLE001 — a step that broke: say which, keep what was found
-            import traceback
-            results["fatal"] = f"{type(e).__name__}: {e}"[:500]
-            print(traceback.format_exc(), flush=True)
+        for name in ("chromium", "firefox", "webkit"):
             try:
-                page.screenshot(path=f"/out/shots/{LABEL}-fatal.png")
-            except Exception:  # noqa: BLE001
-                pass
-        return finish(b)
+                # (every *.tail0000.ts.net name resolves to the stand-in sidecar through the container's /etc/hosts)
+                b = getattr(p, name).launch()
+            except Exception as e:  # noqa: BLE001 — a browser this image does not have
+                observe(f"{name}: not run", f"{type(e).__name__}: {e}"[:200])
+                continue
+            ctx = b.new_context(ignore_https_errors=True, viewport={"width": 1280, "height": 900})
+            ctx.set_default_timeout(20000)
+            reqs, resps, by_frame = {}, {}, []
+            ctx.on("request", lambda r: (reqs.setdefault(r.url, r), by_frame.append(r)))
+            ctx.on("response", lambda r: resps.setdefault(r.url, r))
+            trail = results.setdefault("trail", [])
+            ctx.on("request", lambda r: trail.append(f"request {r.method} {r.url}") if "rh=" in r.url else None)
+            ctx.on("requestfailed", lambda r: trail.append(f"failed {r.method} {r.url} {r.failure}") if "rh=" in r.url else None)
+            ctx.on("response", lambda r: trail.append(f"response {r.status} {r.url}") if "rh=" in r.url else None)
+            page = ctx.new_page()
+            page.on("console", lambda m: trail.append(f"console {m.type} {m.text[:200]}"))
+            try:
+                if name == "chromium":
+                    run(b, ctx, page, reqs, resps, by_frame)
+                else:
+                    f = open_preview(page)
+                    if f is None:
+                        check(f"{name}: preview-in-the-code-pages-frame", False, "no preview frame")
+                    else:
+                        null_probe(name, f, resps)
+            except Exception as e:  # noqa: BLE001 — a step that broke: say which, keep what was found
+                import traceback
+                results.setdefault("fatal", {})[name] = f"{type(e).__name__}: {e}"[:500]
+                print(traceback.format_exc(), flush=True)
+                try:
+                    page.screenshot(path=f"/out/shots/{LABEL}-{name}-fatal.png")
+                except Exception:  # noqa: BLE001
+                    pass
+            b.close()
+        return finish()
+
+
+def open_preview(page):
+    """Sign in on the remote portal, Chat through its hand-off, the Code page's unlock; its frame on the preview host."""
+    page.goto(PORTAL + "/")
+    page.wait_for_url(re.compile(r"/login"))
+    page.fill("#password", PASSWORD)
+    page.click("form[action='/login'] button[type=submit]")
+    page.wait_for_url(re.compile("^" + re.escape(PORTAL) + r"/(#\w*)?$"), timeout=20000)
+    page.goto(CHAT + "/")
+    page.wait_for_selector("#chat", timeout=20000)
+    page.goto(CODE + "/")
+    page.wait_for_selector("#password", timeout=20000)
+    page.fill("#password", PASSWORD)
+    page.click("form[action='/.bn/unlock'] button[type=submit]")
+    page.wait_for_selector("#newtab", timeout=20000)
+    f = frame_at(page, PREVIEW + "/")
+    if f is not None:
+        f.wait_for_selector("#h", timeout=20000)
+    return f
+
+
+def null_probe(name: str, f, resps) -> None:
+    """From inside the preview: a sandboxed frame (no allow-same-origin) and a data: frame, both opaque origins — their
+    requests say Origin: null and Sec-Fetch-Site: cross-site. A no-cors POST to the code host, a credentialed fetch of
+    Chat's API and a form post to Chat from each."""
+    out = {}
+    for kind in ("sandboxed", "data"):
+        tag = f"{name}-{kind}"
+        u = {"post": CODE + f"/api/state?rh=null-post-{tag}", "get": CHAT + f"/api/v1/chats?rh=null-get-{tag}",
+             "form": CHAT + f"/api/v1/chats/new?rh=null-form-{tag}"}
+        read = f.evaluate("""([u, kind]) => new Promise((done) => {
+            const html = '<!doctype html><script>(async () => {'
+              + 'try { await fetch(' + JSON.stringify(u.post) + ', { method: "POST", mode: "no-cors", credentials: "include", body: "x" }); } catch (e) {}'
+              + 'let read = "none"; try { const r = await fetch(' + JSON.stringify(u.get) + ', { credentials: "include" }); read = await r.text(); }'
+              + ' catch (e) { read = "refused: " + e.name; }'
+              + 'parent.postMessage({ bnNull: read }, "*");'
+              + 'const fo = document.createElement("form"); fo.method = "post"; fo.action = ' + JSON.stringify(u.form) + ';'
+              + 'const i = document.createElement("input"); i.name = "title"; i.value = "planted from an opaque frame"; fo.append(i);'
+              + 'document.body.append(fo); fo.submit(); })();<' + '/script>';
+            const fr = document.createElement('iframe');
+            if (kind === 'sandboxed') { fr.setAttribute('sandbox', 'allow-scripts allow-forms'); fr.srcdoc = html; }
+            else fr.src = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+            const t = setTimeout(() => done('timeout'), 8000);
+            window.addEventListener('message', function on(e) { if (e.data && 'bnNull' in e.data) { clearTimeout(t); window.removeEventListener('message', on); done(e.data.bnNull); } });
+            document.body.append(fr);
+        })""", [u, kind])
+        f.page.wait_for_timeout(1500)
+        reached = [c for c in seen_chat if f"-{tag}" in c["path"]] + [c for c in seen_code if f"-{tag}" in c["path"]]
+        answers = {k: (resps[x].status, resps[x].header_value("x-bn-refused")) if x in resps else None for k, x in u.items()}
+        out[kind] = {"read": read[:120], "answers": answers, "reached the app": [(c["path"].split("?")[1], c.get("user")) for c in reached]}
+        if LABEL == "guarded":
+            refused = [k for k, a in answers.items() if a and a[0] == 403 and "opaque origin" in (a[1] or "")]
+            check(f"{name}: opaque-origin-{kind}-refused", not reached and not read.startswith("{") and len(refused) >= 1
+                  and all(a is None or (a[0] == 403 and "opaque origin" in (a[1] or "")) for a in answers.values()),
+                  f"a {kind} frame inside the preview: nothing reached Chat or the Code page; read {read[:40]!r}; answers {answers}")
+    observe(f"{name}: requests from opaque frames inside the preview", out)
+    if LABEL == "unguarded":
+        took = [k for k, v in out.items() if any(user for _, user in v["reached the app"])]
+        observe(f"{name}: without the guard, opaque frames whose requests reached Chat signed in as you", took)
+
+
+def sw_probe(tab) -> None:
+    """A dev server's service worker on the remote preview host (top level, where a page may register one): refused."""
+    got = tab.evaluate("() => navigator.serviceWorker.register('/sw.js?rh=sw').then(() => 'registered', (e) => 'refused: ' + e.name)")
+    reached = [x for x in seen_preview if x["path"].startswith("/sw.js")]
+    check("no-service-worker-on-the-remote-preview-host", got.startswith("refused") and not reached,
+          f"navigator.serviceWorker.register('/sw.js'): {got}; the dev server saw {len(reached)} request(s) for it")
 
 
 def refused_by_guard(rs) -> bool:
@@ -309,6 +395,8 @@ def run(b, ctx, page, reqs, resps, by_frame):
                   f"without the guard the preview read {read['read'][:120]!r} and Chat took {len(chat_writes)} form post(s) as "
                   f"{chat_writes[0]['user'] if chat_writes else '-'}")
 
+        null_probe("chromium", f, resps)
+
         # a page load from the preview to the portal is a link: it passes (the portal answers its own page)
         nav = ctx.new_page()
         nav.goto(PREVIEW + "/")
@@ -335,6 +423,7 @@ def run(b, ctx, page, reqs, resps, by_frame):
         tab.wait_for_selector("#h", timeout=20000)
         check("new-tab", tab.url.startswith(PREVIEW + "/") and tab.inner_text("#h") == "preview :5173", tab.url)
         tab.screenshot(path=f"/out/shots/{LABEL}-new-tab.png")
+        sw_probe(tab)
         tab.close()
 
         # one port at a time: another port's hand-off switches what the first frame shows
@@ -362,13 +451,12 @@ def run(b, ctx, page, reqs, resps, by_frame):
         check("sign-out-ends-it", ok_before == 200 and st == 403, f"the preview answers {ok_before} before Sign out, {st} after")
 
 
-def finish(b) -> int:
-    b.close()
+def finish() -> int:
     with open(f"/out/results-{LABEL}.json", "w", encoding="utf-8") as fh:
         json.dump(results, fh, indent=1)
     bad = [c["name"] for c in results["checks"] if not c["ok"]]
     print(f"{LABEL}: {len(results['checks']) - len(bad)} of {len(results['checks'])} checks passed" + (f"; failed: {bad}" if bad else ""))
-    return 1 if bad or results.get("fatal") else 0
+    return 1 if bad or results.get("fatal") else 0  # noqa: E501
 
 
 if __name__ == "__main__":

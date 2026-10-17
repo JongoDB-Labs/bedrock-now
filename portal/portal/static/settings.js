@@ -170,12 +170,17 @@
     return k.set ? "set" : "not set";
   }
 
-  // switches that are on unless false (blank = on: the stack reads them so; lib/settings.sh setting_weakens)
-  const ON_UNLESS_FALSE = new Set(["REMOTE_PREVIEW"]);
-  const isOff = (v) => ["false", "0", "no", "off"].includes(String(v || "").trim().toLowerCase());
+  // REMOTE_PREVIEW as the stack reads it (lib/code.sh code_remote_preview_wanted): true is on, false off, and blank off —
+  // except in own-domain mode with a preview domain of their own (another site), where blank is on
+  function remotePreviewOn(k) {
+    const v = String(k.value || "").trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(v)) return true;
+    if (["false", "0", "no", "off"].includes(v)) return false;
+    return Boolean(keys.REMOTE_MODE && keys.REMOTE_MODE.value === "domain" && keys.REMOTE_PREVIEW_DOMAIN && keys.REMOTE_PREVIEW_DOMAIN.value);
+  }
   function display(k) {
     const v = shown(k);
-    if (ON_UNLESS_FALSE.has(k.key)) return isOff(k.value) ? "Off" : "On";
+    if (k.key === "REMOTE_PREVIEW") return remotePreviewOn(k) ? "On" : "Off";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
     if (k.secret === "S") return k.set ? "••••••••" : "not set";
@@ -194,7 +199,6 @@
     if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP)$/.test(k.key)) return usd(v) > usd(old);
     if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
     if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
-    if (ON_UNLESS_FALSE.has(k.key)) return !isOff(v) && isOff(old);
     return v === "true" && old !== "true";
   }
   function localOnlyHere(k, value) {
@@ -271,7 +275,7 @@
 
   function toggle(k, v) {
     const on = k.validator === "on_off" ? "on" : "true", off = k.validator === "on_off" ? "off" : (k.validator === "true_blank" ? "" : "false");
-    const cur = ON_UNLESS_FALSE.has(k.key) ? (isOff(k.value) ? off : on) : v === on ? on : off;
+    const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn(k) ? on : off) : v === on ? on : off;
     const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
     for (const [val, label] of [[off, "Off"], [on, "On"]]) {
       const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });

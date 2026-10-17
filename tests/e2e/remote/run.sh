@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Remote access without a tailnet: the real portal image and the real Caddyfile in Tailscale mode, behind a stand-in for
 # the Tailscale sidecar (a Caddy with its own internal CA terminating HTTPS for *.tail0000.ts.net at the sidecar's fixed
-# address, adding Tailscale-User-Login as Tailscale does), driven by the pinned Playwright Chromium (its compiled-in
-# public suffix list: ts.net is on it, so every *.tail0000.ts.net host is one site, as on a real tailnet). Stand-ins for
+# address, adding Tailscale-User-Login as Tailscale does), driven by the pinned Playwright Chromium — and Firefox and
+# WebKit for the opaque-origin probe (their public suffix lists have ts.net, so every *.tail0000.ts.net host is one
+# site, as on a real tailnet). Stand-ins for
 # the code container, bn-preview behind the terminal's gateway, and Open WebUI run in the Playwright container (harness.py).
 # No AWS, no model calls, no stack; nothing published; everything it makes is named <prefix>-* and removed afterwards.
 #
@@ -169,10 +170,13 @@ start_stack() {   # start_stack CADDY_DIR
   echo "the portal or the stand-in sidecar did not come up:" >&2
   docker logs "$PREFIX-portal" 2>&1 | tail -n 10 >&2; docker logs "$PREFIX-sidecar" 2>&1 | tail -n 10 >&2; return 1
 }
-run_pw() {   # run_pw LABEL
+run_pw() {   # run_pw LABEL — Chromium for everything, Firefox and WebKit for the opaque-origin probe; every Service name
+  # resolves to the stand-in sidecar through the container's /etc/hosts
+  local hosts=() s
+  for s in bn bn-chat bn-admin bn-files bn-terminal bn-code bn-preview; do hosts+=(--add-host "$s.$TN:$SIDECAR_IP"); done
   docker rm -f "$PREFIX-pw" >/dev/null 2>&1 || true
   docker run --rm --name "$PREFIX-pw" --network "$NET" --ip "$PW_IP" --network-alias open-webui --network-alias terminal-upstream \
-    --network-alias code-upstream --shm-size=1g --init \
+    --network-alias code-upstream --shm-size=1g --init "${hosts[@]}" \
     -e RH_LABEL="$1" -e RH_TN="$TN" -e RH_SIDECAR_IP="$SIDECAR_IP" -e RH_PASSWORD="$PASSWORD" -e RH_LOGIN="$LOGIN" \
     -e RH_CODE_SECRET="$CODE_SECRET" -e RH_PREVIEW_SECRET="$PREVIEW_SECRET" \
     -v "$here/harness.py:/suite/harness.py:ro" -v "$OUT:/out" "$RUNNER" python3 -u /suite/harness.py
