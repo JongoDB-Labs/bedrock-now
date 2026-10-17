@@ -2017,12 +2017,11 @@ def settings_code_auto(ctx):
         see(card.get_by_test_id("blocked-allowed")).to_be_visible(timeout=20000)
         c2.wait(lambda x: x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "result", "the retry's turn", 150, since=n2)
         again = [e for e in c2.events(sid, n2) if e["type"] == "tool_use" and e["name"] == "Bash"]
-        if again:
-            r2 = tool_result(c2.events(sid, n2), again[0]["id"])
-            expect(not (r2 and "auto mode classifier" in r2["text"]), f"the retry went to the reviewer again: {r2 and r2['text'][:200]}")
-            expect(not [e for e in c2.events(sid, n2) if e["type"] == "blocked"], "the retry was blocked again")
-        else:
-            notes.append("Allow once: Haiku did not run it again")
+        expect(again, f"Allow once: Haiku did not run it again ({text_of(c2.events(sid, n2))[:160]!r})")
+        r2 = tool_result(c2.events(sid, n2), again[0]["id"])
+        expect(r2 is not None and "auto mode classifier" not in r2["text"], f"the retry went to the reviewer again: {r2 and r2['text'][:200]}")
+        expect(not [e for e in c2.events(sid, n2) if e["type"] == "blocked"], "the retry was blocked again")
+        ran_again = f"`{again[0]['input'].get('command', '')[:40]}` ran ({(r2['text'] or 'no output')[:40]!r})"
         csp_clean(page, rec)
         # 4. the spend: the session's rows on the terminal's key, the reviewer's (Sonnet 5.5) among them
         t0, d = time.time(), {}
@@ -2041,8 +2040,9 @@ def settings_code_auto(ctx):
         c2.api("DELETE", f"/api/sessions/{sid}")
     finally:
         _auto_setting(ctx, False)
-    _auto_state(c, False)
+    # (a page of its own: the ones above may be closed by now)
+    _auto_state(Code(ctx, "code-auto-off"), False)
     return (f"Auto: allowed in Settings (terminal and code container restarted); `node -e` ran without a card; `{risky[:40]}` blocked "
-            f"{b['reason']!r}, no card; Allow once ran it again without the reviewer; spend: {len(d['rows'])} requests ${d['total']:.4f} on "
+            f"{b['reason']!r}, no card; Allow once: {ran_again}, without the reviewer; spend: {len(d['rows'])} requests ${d['total']:.4f} on "
             f"claude-code-terminal, the reviewer's {len(reviewer)} (Sonnet 5.5) ${rev_cost:.4f}; the setting off again"
             f"{'; ' + '; '.join(notes) if notes else ''}")
