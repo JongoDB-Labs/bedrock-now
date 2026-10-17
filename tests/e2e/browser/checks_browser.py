@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from common import (ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, host_of, need, origin, real_helper_running, redact,
-                    url_path)
+from common import (CHECKS_RE, ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, host_of, need, origin, real_helper_running,
+                    redact, url_path)
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
@@ -2370,10 +2370,16 @@ def settings_nightly(ctx):
         time.sleep(3)
     expect(nightly, "no nightly backup within 3 minutes of turning it on in its window")
     goto_setting(page, "updates")
-    page.click("#set-reload")
+    # Reload reads /api/settings again and then draws the page anew: wait for that answer, so nothing below holds a row
+    # of the page it replaces
+    with page.expect_response(lambda r: "/api/settings" in r.url and r.request.method == "GET", timeout=20000):
+        page.click("#set-reload")
     page.wait_for_selector(f"#settings .set-backups td:text-is('{nightly[0]['name']}')", timeout=20000)
     kinds = page.inner_text("#settings .set-backups")
-    expect("nightly" in kinds and "Back up now" in kinds, f"backup list: {kinds[:200]}")   # (and the one Back up now made)
+    expect("nightly" in kinds, f"backup list: {kinds[:200]}")
+    if not CHECKS_RE:   # (in a full run, the Back up now check made one before this one)
+        expect("Back up now" in kinds, f"backup list: {kinds[:200]}")
+    page.wait_for_timeout(300)   # the redraw after the answer
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]").scroll_into_view_if_needed()
     shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
     sw, on = _switch(goto_setting(page, "BACKUP_NIGHTLY"))
