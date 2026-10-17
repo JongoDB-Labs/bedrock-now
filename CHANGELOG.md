@@ -106,6 +106,10 @@ All notable changes to bedrock-now are documented here. The format follows
   takes the page down with it (a unit test runs each reader at its caps within a 1 GB heap). Formulas are drawn in a
   worker with a 3 s budget each; one that defines macros is shown as source. See docs/security.md, "File previews"
   and "The artifact viewer".
+- **The Code page frames bedrock-now's hosts on the portal's port only.** Its `frame-src` allowed the terminal host
+  and the previews' site on any port (`http://<TERMINAL_HOST>:*`, `http://*.<PREVIEW_DOMAIN>:*`); those names resolve
+  to this computer's loopback, so a framed page of sandbox content could navigate its frame to any service listening
+  there (a blind GET). Now `:<PORTAL_PORT>` (the remote sites' `https://` sources are unchanged).
 
 ## [0.6.0] - 2026-10-16
 

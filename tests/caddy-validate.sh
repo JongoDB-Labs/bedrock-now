@@ -52,7 +52,7 @@ for rm in off tailscale domain; do
     [ "$tm:$cm" != off:on ] || continue   # the Code page only with the terminal
     t=(TERMINAL_MODE="$tm"); c=(CODE_MODE="$cm" PREVIEW_MODE="$cm")
     [ "$tm" = off ] || t+=(TERMINAL_HOST=terminal.bn.localhost TERMINAL_PROXY_SECRET=0123456789abcdef0123456789abcdef)
-    [ "$cm" = off ] || c+=(CODE_HOST=code.bn.localhost CODE_ORIGIN=http://code.bn.localhost:8800 CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef
+    [ "$cm" = off ] || c+=(CODE_HOST=code.bn.localhost CODE_ORIGIN=http://code.bn.localhost:8800 PORTAL_PORT=8800 CODE_PROXY_SECRET=0123456789abcdef0123456789abcdef
                            PREVIEW_DOMAIN=bn-preview.localhost PREVIEW_PROXY_SECRET=00112233445566778899aabbccddeeff)
     previews=(none)
     if [ "$rm" != off ] && [ "$cm" = on ]; then

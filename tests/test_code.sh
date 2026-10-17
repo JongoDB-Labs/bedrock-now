@@ -321,7 +321,7 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   assert_eq "$(printf '%s\n' "$site" | grep -o 'import [a-z_]*' | tr '\n' ' ')" \
     "import local_request import not_from_preview import code_unlock import code_auth import code_portal import code_upstream import code_page "
   assert_contains "$site" 'import code_upstream {$PORTAL_ORIGIN} {$TERMINAL_HOST} 0'
-  assert_contains "$site" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:*'
+  assert_contains "$site" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:{$PORTAL_PORT:80}'
   assert_contains "$site" "reverse_proxy code-upstream:8095"
   auth="$(awk '/^\(code_auth\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
   assert_eq "$(printf '%s\n' "$auth" | sed -n 2,6p | tr -d '\t' | tr '\n' '|')" "request_header -X-Bn-Code-Proxy|request_header -X-Bn-Csp-Nonce|request_header -X-Bn-Portal-Origin|request_header -X-Bn-Terminal-Host|request_header -X-Bn-Remote|"

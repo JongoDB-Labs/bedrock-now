@@ -63,7 +63,9 @@ def artifact_site(ctx):
                      f"frame-ancestors {code_origin} {origin()}"):
             expect(want in csp, f"{page_path}: no {want!r} in {csp!r}")
         if strict is None:   # the static page: its one script file, nothing inline
-            expect(re.search(r"script-src http://\*\.artifact\.[^ ;]+/artifact/static\.js;", csp) and "unsafe-inline" not in csp, f"{page_path} script-src: {csp}")
+            src = re.search(r"(?:^|; )script-src ([^;]*);", csp)
+            expect(src and re.fullmatch(rf"http://\*\.artifact\.[^ ;]+:{PORT}/artifact/static\.js", src.group(1))
+                   and "allow-same-origin" not in csp, f"{page_path} script-src: {csp}")
         else:
             expect(("script-src 'self';" in csp) == strict and "allow-same-origin" not in csp, f"{page_path} script-src: {csp}")
         expect("webrtc 'block'" in csp, f"{page_path}: webrtc")

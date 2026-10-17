@@ -1160,7 +1160,8 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   app's own requests keep theirs — and with it the real `Origin` of its form posts (with `no-referrer` browsers send
   `Origin: null` for those). All previews share one site, so a preview's *script* can still set a cookie for the
   preview domain that the others receive: they all come from the same sandbox, so sites of their own per preview are
-  not needed for now. The Code page's own CSP gains one `frame-src` source, `http://*.<PREVIEW_DOMAIN>:*`.
+  not needed for now. The Code page's own CSP gains one `frame-src` source, `http://*.<PREVIEW_DOMAIN>:<PORTAL_PORT>`
+  (the portal's port only: those names resolve to this computer's loopback — see "The artifact viewer").
 - [x] **No new way into the sandbox.** The gateway's preview listener (`:7682`, on `terminal-link` only) passes
   nothing to bn-preview without `X-Bn-Preview-0<PREVIEW_PROXY_SECRET>` (128 random bits, new at every
   `./stack code enable`, in the two Caddys' environments only — never in the sandbox, the code container or the
