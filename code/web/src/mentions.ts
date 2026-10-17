@@ -232,6 +232,13 @@ export function takesMentions(prompt: string): boolean {
   return !t.startsWith('/') && !/^# \S/.test(t);
 }
 
+/** A prompt's own text for a title (the session list, the tab): what comes before its context section, if any — also
+ *  in a one-line form of it (a transcript's first prompt, with its line breaks gone). */
+export function promptTitle(text: string): string {
+  const i = text.indexOf(CONTEXT_START);
+  return (i >= 0 ? text.slice(0, i) : text).trim();
+}
+
 /** A sent prompt split for showing: your text, and the context section (folded away), if it has one. */
 export function splitContext(text: string): { prompt: string; context: string; count: number } {
   const at = text.indexOf(`\n${CONTEXT_START}\n`);

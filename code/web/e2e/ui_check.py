@@ -1305,42 +1305,6 @@ def mentions(browser):
     p.close()
 
 
-@check("mentions: hostile — terminal output with fences, fake markers, bidi and markup stays quoted text, in the page and in the prompt")
-def mentions_hostile(browser):
-    p = Page(browser, HOSTILE, "mentions-hostile", **DESKTOP)
-    page = p.open()
-    title0 = page.title()
-    page.get_by_test_id("chat-new").click()
-    box = page.get_by_test_id("prompt")
-    box.click()
-    box.type("Look at @termi")
-    box.press("Enter")
-    chip = page.locator("[data-testid=mention-chip][data-kind=terminal]")
-    expect(chip).to_have_attribute("data-state", "ready", timeout=10_000)
-    expect(chip.get_by_test_id("mention-cut")).to_be_visible()
-    chip.get_by_test_id("mention-chip-main").click()
-    prev = page.get_by_test_id("mention-preview-body")
-    expect(prev).to_contain_text("⟨U+202E⟩")
-    expect(prev).to_contain_text("<img src=x onerror=")
-    r = page.evaluate("""() => ({ imgs: document.querySelectorAll('[data-testid=composer] img').length, title: document.title,
-      fence: document.querySelector('[data-testid=mention-preview-body]').textContent.split('\\n')[1] })""")
-    assert r["imgs"] == 0 and "pwned" not in r["title"] and re.fullmatch(r"`{10,}", r["fence"]), r
-    page.mouse.move(0, 0)
-    p.shot("desktop-mentions-hostile.png")
-    n = len(mock_get(HOSTILE, "/__mock/prompts")["prompts"])
-    box.press("Enter")
-    sent = last_prompt(HOSTILE, n)
-    out = outside_fences(sent)
-    assert out.count(CONTEXT_END) == 1 and out.count(CONTEXT_START) == 1, out
-    assert [x for x in out if re.match(r"^\[[0-9]+\] @", x)][0].startswith("[1] @terminal — the last "), out
-    assert not any("a header that is not one" in x or "SYSTEM:" in x for x in out), "planted lines left the fence"
-    assert "\u202e" not in sent and "\u200b" not in sent, "invisible characters went as they are"
-    assert "older lines were left out" in sent, "the cut is said"
-    assert "pwned" not in page.title() and page.title() == title0
-    p.assert_clean()
-    p.close()
-
-
 @check("plan comments: on plan lines by keyboard and click; sent back with Keep planning; approved with comments → the next prompt")
 def plan_comments(browser):
     post(NORMAL + "/__mock/reset")
@@ -1417,7 +1381,7 @@ def plan_comments(browser):
     p.close()
 
 
-@check("plan comments on a phone; a hostile plan's lines stay text, and go back quoted")
+@check("plan comments on a phone (and @terminal there)")
 def plan_comments_phone(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "plan-comments-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
@@ -1448,40 +1412,6 @@ def plan_comments_phone(browser):
     expect(page.get_by_test_id("mention-preview-body")).to_contain_text("FAIL")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
     p.shot("phone-mentions.png")
-    p.assert_clean()
-    p.close()
-    # hostile: markup and direction-changing characters in the plan's lines stay text; the quoted line shows them
-    p = Page(browser, HOSTILE, "plan-comments-hostile", **DESKTOP)
-    page = p.open()
-    title0 = page.title()
-    page.get_by_test_id("chat-new").click()
-    page.get_by_test_id("mode-picker").click()
-    page.get_by_test_id("mode-plan").click()
-    send(page, "fix get() so it retries")
-    perm = page.locator("[data-testid=permission]:has([data-testid=plan-view-lines])")
-    expect(perm).to_be_visible(timeout=10_000)
-    perm.get_by_test_id("plan-view-lines").click()
-    evil = perm.locator("[data-testid=plan-line]", has_text="4. <img")
-    expect(evil).to_contain_text("⟨U+202E⟩")
-    evil.click()
-    page.get_by_test_id("plan-comment-text").fill("what is this?")
-    page.get_by_test_id("plan-comment-save").click()
-    r = page.evaluate("() => ({ imgs: document.querySelectorAll('[data-testid=plan-lines] img, [data-testid=plan-lines] script').length, title: document.title })")
-    assert r["imgs"] == 0 and "pwned" not in r["title"], r
-    page.mouse.move(0, 0)
-    p.shot("desktop-plan-comments-hostile.png")
-    perm.get_by_test_id("plan-keep").click()
-    perm.get_by_test_id("plan-keep-send").click()
-    t0 = time.time()
-    while time.time() - t0 < 10:
-        ans = mock_get(HOSTILE, "/__mock/answers")["answers"]
-        if ans and ans[-1]["tool"] == "ExitPlanMode":
-            break
-        time.sleep(0.1)
-    msg = ans[-1]["message"]
-    assert re.search(r"line 9:\n> 4\. <img src=x onerror=.*⟨U\+202E⟩.*\nwhat is this\?$", msg), msg
-    assert "\u202e" not in msg and "\u0007" not in msg and "\n```" not in msg.split("line 9:")[1].split("\nwhat is this?")[0], msg
-    assert page.title() == title0
     p.assert_clean()
     p.close()
 
@@ -3926,6 +3856,77 @@ def polish_hostile(browser):
     p.assert_clean()
     p.close()
 
+
+# (last: these leave sessions on the hostile mock, which the hostile checks above do not expect)
+@check("mentions: hostile — terminal output with fences, fake markers, bidi and markup stays quoted text, in the page and in the prompt")
+def mentions_hostile(browser):
+    p = Page(browser, HOSTILE, "mentions-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("chat-new").click()
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("Look at @termi")
+    box.press("Enter")
+    chip = page.locator("[data-testid=mention-chip][data-kind=terminal]")
+    expect(chip).to_have_attribute("data-state", "ready", timeout=10_000)
+    expect(chip.get_by_test_id("mention-cut")).to_be_visible()
+    chip.get_by_test_id("mention-chip-main").click()
+    prev = page.get_by_test_id("mention-preview-body")
+    expect(prev).to_contain_text("⟨U+202E⟩")
+    expect(prev).to_contain_text("<img src=x onerror=")
+    r = page.evaluate("""() => ({ imgs: document.querySelectorAll('[data-testid=composer] img').length, title: document.title,
+      fence: document.querySelector('[data-testid=mention-preview-body]').textContent.split('\\n')[1] })""")
+    assert r["imgs"] == 0 and "pwned" not in r["title"] and re.fullmatch(r"`{10,}", r["fence"]), r
+    page.mouse.move(0, 0)
+    p.shot("desktop-mentions-hostile.png")
+    n = len(mock_get(HOSTILE, "/__mock/prompts")["prompts"])
+    box.press("Enter")
+    sent = last_prompt(HOSTILE, n)
+    out = outside_fences(sent)
+    assert out.count(CONTEXT_END) == 1 and out.count(CONTEXT_START) == 1, out
+    assert [x for x in out if re.match(r"^\[[0-9]+\] @", x)][0].startswith("[1] @terminal — the last "), out
+    assert not any("a header that is not one" in x or "SYSTEM:" in x for x in out), "planted lines left the fence"
+    assert "\u202e" not in sent and "\u200b" not in sent, "invisible characters went as they are"
+    assert "older lines were left out" in sent, "the cut is said"
+    assert "pwned" not in page.title(), page.title()   # (the title itself follows the session: busy, waiting …)
+    p.assert_clean()
+    p.close()
+
+
+@check("plan comments: hostile — a plan's markup and direction-changing characters stay text, and go back quoted")
+def plan_comments_hostile(browser):
+    p = Page(browser, HOSTILE, "plan-comments-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("chat-new").click()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "fix get() so it retries")
+    perm = page.locator("[data-testid=permission]:has([data-testid=plan-view-lines])")
+    expect(perm).to_be_visible(timeout=10_000)
+    perm.get_by_test_id("plan-view-lines").click()
+    evil = perm.locator("[data-testid=plan-line]", has_text="4. <img")
+    expect(evil).to_contain_text("⟨U+202E⟩")
+    evil.click()
+    page.get_by_test_id("plan-comment-text").fill("what is this?")
+    page.get_by_test_id("plan-comment-save").click()
+    r = page.evaluate("() => ({ imgs: document.querySelectorAll('[data-testid=plan-lines] img, [data-testid=plan-lines] script').length, title: document.title })")
+    assert r["imgs"] == 0 and "pwned" not in r["title"], r
+    page.mouse.move(0, 0)
+    p.shot("desktop-plan-comments-hostile.png")
+    perm.get_by_test_id("plan-keep").click()
+    perm.get_by_test_id("plan-keep-send").click()
+    t0 = time.time()
+    while time.time() - t0 < 10:
+        ans = mock_get(HOSTILE, "/__mock/answers")["answers"]
+        if ans and ans[-1]["tool"] == "ExitPlanMode":
+            break
+        time.sleep(0.1)
+    msg = ans[-1]["message"]
+    assert re.search(r"line 9:\n> 4\. <img src=x onerror=.*⟨U\+202E⟩.*\nwhat is this\?$", msg), msg
+    assert "\u202e" not in msg and "\u0007" not in msg and "\n```" not in msg.split("line 9:")[1].split("\nwhat is this?")[0], msg
+    assert "pwned" not in page.title(), page.title()
+    p.assert_clean()
+    p.close()
 
 
 def main():

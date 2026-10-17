@@ -19,6 +19,7 @@ import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 import type { GitCommit, GitEntry, GitFile, GitReview, GitScope, GitStatus, GrepResult } from './types';
 import { proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
+import { promptTitle } from './mentions';
 import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from './budget';
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
@@ -1339,7 +1340,8 @@ function deliver(id: string, text: string, images: ImageBlock[]): boolean {
   socket.send({ type: 'prompt', session: id, text, images, uuid, req, ...(spent !== undefined ? { spent } : {}) });
   dropLinkDraft();
   if (!get().views[id]?.title && !text.trimStart().startsWith('/')) {
-    const title = label(text, 80);
+    // (your own words: not the @-mentions' context after them)
+    const title = label(promptTitle(text), 80);
     updateView(id, (v) => ({ ...v, title }));
   }
   return true;

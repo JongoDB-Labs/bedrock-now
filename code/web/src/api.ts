@@ -71,6 +71,7 @@ import type {
 } from './types';
 import { MODES } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
+import { promptTitle } from './mentions';
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -660,7 +661,7 @@ function normSessionInfo(v: unknown): SessionInfo | null {
   return {
     id: id.toLowerCase(),
     title: label(o.title ?? o.customTitle ?? o.summary, LIMITS.title),
-    firstPrompt: label(o.first_prompt ?? o.firstPrompt, LIMITS.title),
+    firstPrompt: label(promptTitle(typeof (o.first_prompt ?? o.firstPrompt) === 'string' ? String(o.first_prompt ?? o.firstPrompt).slice(0, 100_000) : ''), LIMITS.title),
     branch: label(o.branch ?? o.gitBranch, 100),
     modified: time(o.modified ?? o.lastModified ?? o.mtimeMs),
     size: nonneg(o.size ?? o.fileSize),
