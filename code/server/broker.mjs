@@ -92,6 +92,9 @@ const PLAN_MODES = ['acceptEdits', 'default'];
 const REASON_TYPES = ['rule', 'mode', 'subcommandResults', 'permissionPromptTool', 'hook', 'asyncAgent', 'sandboxOverride', 'workingDir', 'safetyCheck', 'classifier', 'other'];
 const jsonSize = (v) => { try { return JSON.stringify(v ?? {}).length; } catch { return Infinity; } };
 const deny = (message) => Promise.resolve({ behavior: 'deny', message });
+// planNote(v): a plan's "Keep planning" text — lines kept (CRLF as LF), other control characters as spaces, capped
+// eslint-disable-next-line no-control-regex
+const planNote = (v) => (typeof v === 'string' ? v.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').slice(0, LIMITS.planNoteChars).trim() : '');
 
 export class PermissionBroker {
   // autoMode: CODE_AUTO_MODE (a plan may be approved with Auto)
@@ -173,7 +176,8 @@ export class PermissionBroker {
       return this.#finish(id, 'always_project', { behavior: 'allow', updatedInput: p.input, updatedPermissions: p.project });
     }
     if (decision === 'deny') {
-      const why = short(message ?? '', 1000);
+      // a plan's "Keep planning": the note and the comments on its lines, several lines (≤ planNoteChars); else one line
+      const why = p.prompt.tool === 'ExitPlanMode' ? planNote(message) : short(message ?? '', 1000);
       return this.#finish(id, 'deny', { behavior: 'deny', message: why ? `Denied in the Code page: ${why}` : 'The user declined this in the Code page.' });
     }
     return false;

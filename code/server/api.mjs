@@ -584,10 +584,46 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return { ok: true, id };
   }
 
+  // --- @terminal: the last lines of the terminal panel's current tmux pane (bn-coded terminal.capture: read only, fixed
+  // arguments) — sandbox text: cleaned again here (controls but tab and newline out), capped, every field checked ---
+  async function terminalCapture(lines, pane) {
+    const n = lines === null || lines === undefined || lines === '' ? null : /^[0-9]{1,4}$/.test(lines) ? Number(lines) : NaN;
+    if (n !== null && !(n >= 1 && n <= CAPTURE_LINES_MAX)) throw new HttpError(400, `lines: 1 to ${CAPTURE_LINES_MAX}`);
+    if (pane !== null && pane !== undefined && pane !== '' && !PANE_ID.test(pane)) throw new HttpError(400, 'bad pane id');
+    let result;
+    try {
+      ({ result } = await call({ op: 'terminal.capture', ...(n !== null ? { lines: n } : {}), ...(pane ? { pane } : {}) }, { timeoutMs: 20000 }));
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused') {
+        if (/unknown op/.test(e.message)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+        if (/no such pane/.test(e.message)) throw new HttpError(404, e.message);
+        if (/no tmux session|hooks/.test(e.message)) throw new HttpError(409, e.message);
+      }
+      throw e;
+    }
+    return captureRow(result);
+  }
+
   return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
     gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, gitDraft, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
-    ports, stopPort, launch, launchStart, runTasks, runStart, runResults, runShow };
+    ports, stopPort, launch, launchStart, runTasks, runStart, runResults, runShow, terminalCapture };
+}
+
+// --- terminal.capture's answer, checked: the text with control characters (but tab and newline) and escapes out, at
+// most CAPTURE_TEXT_MAX characters (the newest kept: cut), a pane id %N, the window's index and name (one line) ---
+export const CAPTURE_LINES_MAX = 2000, CAPTURE_TEXT_MAX = 64 << 10;
+const PANE_ID = /^%[0-9]{1,6}$/;
+export function captureRow(x) {
+  const o = x && typeof x === 'object' ? x : {};
+  // eslint-disable-next-line no-control-regex
+  let text = typeof o.text === 'string' ? o.text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '') : '';
+  let cut = o.cut === true;
+  if (text.length > CAPTURE_TEXT_MAX) { text = text.slice(text.length - CAPTURE_TEXT_MAX); text = text.slice(text.indexOf('\n') + 1); cut = true; }
+  const w = o.window && typeof o.window === 'object' ? o.window : {};
+  return { pane: typeof o.pane === 'string' && PANE_ID.test(o.pane) ? o.pane : null,
+    window: { index: int(w.index, 0, 999999), name: short(w.name, 60) }, command: short(o.command, 60),
+    lines: text ? text.split('\n').length : 0, asked: int(o.asked, 1, CAPTURE_LINES_MAX), text, cut, wide: int(o.wide, 0, 1e6) ?? 0 };
 }
 
 // --- what bn-coded answers about one settings file (perm.read), checked for the page: rules as text (each one line or

@@ -40,6 +40,8 @@ import { MODE_INFO, offeredModes } from '../modes';
 import { ago, label } from '../text';
 import { Icon } from './icons';
 import { Sheet, useMedia } from './ui';
+import { mentionSelection } from './EditorArea';
+import { addDiff, addProblems, addTerminal } from '../attach';
 
 type Group = 'Recent' | 'Actions' | 'Sessions' | 'Files';
 interface Item {
@@ -93,6 +95,10 @@ function actions(s: AppState): Item[] {
     a('export', 'Export the conversation (.md)', () => void exportTranscript(), 'download'),
     a('notify', s.prefs.notify ? 'Stop notifying me' : 'Notify me when Claude waits or is done', () => void setNotify(!s.prefs.notify), 'alert'),
     a('mode-menu', 'Permission mode menu', openModeMenu, 'shield', '', keysFor('mode-menu')),
+    a('mention-selection', "Add the editor's selected lines to the prompt", () => void mentionSelection(), 'at', '@file#L5-10, quoted', keysFor('mention-selection')),
+    a('mention-terminal', "Add the terminal's last lines to the prompt", () => void addTerminal(), 'terminal', '@terminal, quoted'),
+    a('mention-diff', 'Add the changes to the prompt', () => void addDiff(), 'diff', "@diff: the Review pane's diff, quoted"),
+    a('mention-problems', 'Add the Problems list to the prompt', () => void addProblems(), 'alert', "@problems: the failed runs' output, quoted"),
     a('shortcuts', 'Keyboard shortcuts', () => setDialog('shortcuts'), 'keyboard', '', keysFor('shortcuts')),
   ];
   if (v && v.state !== 'closed') list.push(a('restart', 'Restart this session (load new MCP servers)', () => void restartSession(), 'refresh'));

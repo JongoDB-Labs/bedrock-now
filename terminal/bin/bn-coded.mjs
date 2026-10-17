@@ -48,6 +48,10 @@
 //   terminal.resume a session continued in the terminal: a new window of the terminal's tmux session, with
 //                   `claude-bedrock --resume <id>` typed into its shell (a checked UUID of a transcript that is there;
 //                   nothing else is ever typed)
+//   terminal.capture
+//                   the last lines (≤ 2,000, ≤ 64 KiB) of the terminal panel's current tmux pane as plain text — the
+//                   Code page's @terminal: `capture-pane -p -J` with fixed arguments and a checked pane id, escapes and
+//                   controls taken out here; read only (nothing typed, no window, no session made)
 //   run.list / run.start / run.results / run.show
 //                   Run & test: the workspace's tasks read from its files (package.json's scripts, the Makefile's
 //                   targets, pyproject.toml's entry points — nothing runs to list them), one started by name through a
@@ -1653,16 +1657,23 @@ async function tmuxSession(tmux) {
 const LOADER_VAR = /^(LD_[A-Z0-9_]{1,40}|GCONV_PATH|GLIBC_TUNABLES|BASH_FUNC_[^=]{0,200})=/;
 export const WINDOW_CLEAR = ['-e', 'LD_PRELOAD=', '-e', 'LD_AUDIT=', '-e', 'LD_LIBRARY_PATH=', '-e', 'GCONV_PATH=', '-e', 'GLIBC_TUNABLES='];
 const TMUX_MAX = 1 << 20;
-export async function tmuxGuard(tmux, { procDir = '/proc' } = {}) {
-  const hooks = [], vars = [];
+// tmuxHooks(tmux) -> {hooks: [names]}: every hook set (global, global window and pane, the session's), or {error}
+export async function tmuxHooks(tmux) {
+  const hooks = [];
   for (const args of [['show-hooks', '-g'], ['show-hooks', '-gw'], ['show-hooks', '-t', `=${TMUX_SESSION}:`]]) {
     const r = await run(tmux, args, 10000, TMUX_MAX);
-    if (r.code !== 0 || r.cut) return `the terminal's tmux did not list its hooks (${printable(r.err, 100) || (r.cut ? 'too long' : `exit ${r.code}`)})`;
+    if (r.code !== 0 || r.cut) return { error: `the terminal's tmux did not list its hooks (${printable(r.err, 100) || (r.cut ? 'too long' : `exit ${r.code}`)})` };
     for (const line of r.out.split('\n')) {
       const m = line.match(/^([a-z-]{1,40})\[[0-9]{1,6}\]/);
       if (m && !hooks.includes(m[1])) hooks.push(m[1]);
     }
   }
+  return { hooks };
+}
+export async function tmuxGuard(tmux, { procDir = '/proc' } = {}) {
+  const listed = await tmuxHooks(tmux);
+  if (listed.error) return listed.error;
+  const hooks = listed.hooks, vars = [];
   for (const args of [['show-environment', '-g'], ['show-environment', '-t', `=${TMUX_SESSION}`]]) {
     const r = await run(tmux, args, 10000, TMUX_MAX);
     if (r.code !== 0 || r.cut) return `the terminal's tmux did not list its environment (${printable(r.err, 100) || (r.cut ? 'too long' : `exit ${r.code}`)})`;
@@ -1738,6 +1749,132 @@ export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc' }
   const e = t.code === 0 ? await run(tmux, ['send-keys', '-t', pane, 'Enter']) : t;
   if (e.code !== 0) throw new Error(`tmux: ${printable(e.err, 200) || `exit ${e.code}`}`);
   return { ok: true, window, command: RESUME_CMD(id) };
+}
+
+// --- terminal.capture: the last lines of the terminal panel's current pane, as text (the Code page's @terminal) ---
+// The terminal panel shows the tmux session `claude`: its current window's active pane — or a pane of that session the
+// page names (%<number>, checked to be one of its panes) — is read with `capture-pane -p -J` (text only: without -e
+// tmux writes no colours or escapes; whatever escapes, controls or broken sequences are left are taken out here, in
+// one pass), its last N lines (1–2,000; 200 by default), at most 64 KiB of them (the newest kept), each line at most
+// 4,000 characters. Read only: nothing is typed, no window is made, a session that is not there is not created.
+// tmux runs an after-capture-pane or after-display-message hook each time those commands run: with one set, it refuses.
+export const CAPTURE = Object.freeze({ linesDefault: 200, linesMax: 2000, readMax: 4 << 20, textMax: 64 << 10, lineMax: 4000 });
+const CAPTURE_HOOKS = ['after-capture-pane', 'after-display-message'];
+const PANE_ID = /^%[0-9]{1,6}$/;
+
+// stripTerminal(s) -> s without terminal escapes and controls: CSI (ESC [ … or 0x9B …), OSC/DCS/APC/PM/SOS strings (to
+// BEL or ST; one that never ends, to the next ESC or the end), two- and three-character escapes, the C1 controls, and
+// every C0 control but tab and newline (a carriage return too). One pass, each character looked at once (linear time:
+// no regular expression on the sandbox's text).
+export function stripTerminal(s) {
+  const n = s.length, parts = [];
+  let i = 0, start = 0;
+  const skipCsi = (j) => {   // parameters and intermediates (0x20–0x3f), then a final byte (0x40–0x7e)
+    while (j < n) { const x = s.charCodeAt(j); if (x < 0x20 || x > 0x3f) break; j++; }
+    if (j < n) { const x = s.charCodeAt(j); if (x >= 0x40 && x <= 0x7e) j++; }
+    return j;
+  };
+  const skipString = (j) => {   // to BEL or ST (ESC \ or 0x9C) — or, never ended, to the next ESC or the end
+    while (j < n) {
+      const x = s.charCodeAt(j);
+      if (x === 0x07 || x === 0x9c) return j + 1;
+      if (x === 0x1b) return s.charCodeAt(j + 1) === 0x5c ? j + 2 : j;
+      j++;
+    }
+    return j;
+  };
+  while (i < n) {
+    const c = s.charCodeAt(i);
+    if ((c >= 0x20 && c < 0x7f) || c > 0x9f || c === 0x0a || c === 0x09) { i++; continue; }
+    if (i > start) parts.push(s.slice(start, i));
+    if (c === 0x1b) {
+      const d = s.charCodeAt(i + 1);
+      if (d === 0x5b) i = skipCsi(i + 2);
+      else if (d === 0x5d || d === 0x50 || d === 0x5f || d === 0x5e || d === 0x58) i = skipString(i + 2);
+      else if (d >= 0x20 && d <= 0x2f) {   // ESC, intermediates, a final character (ESC ( B …)
+        let j = i + 1;
+        while (j < n) { const x = s.charCodeAt(j); if (x < 0x20 || x > 0x2f) break; j++; }
+        i = j < n && s.charCodeAt(j) >= 0x30 && s.charCodeAt(j) <= 0x7e ? j + 1 : j;
+      } else if (d >= 0x30 && d <= 0x7e) i += 2;
+      else i += 1;
+    } else if (c === 0x9b) i = skipCsi(i + 1);
+    else if (c === 0x9d || c === 0x90 || c === 0x9f || c === 0x9e || c === 0x98) i = skipString(i + 1);
+    else i += 1;
+    start = i;
+  }
+  if (start < n) parts.push(s.slice(start));
+  return parts.join('');
+}
+
+// captureText(raw, lines) -> {text, lines, cut, wide}: the last `lines` lines of a capture, cleaned (stripTerminal),
+// without trailing spaces or the blank lines below the last output; at most textMax characters (the newest lines
+// kept: cut) and lineMax per line (wide: how many lines were cut so)
+export function captureText(raw, lines, { textMax = CAPTURE.textMax, lineMax = CAPTURE.lineMax } = {}) {
+  const all = stripTerminal(typeof raw === 'string' ? raw : '').split('\n');
+  let end = all.length;
+  while (end > 0 && all[end - 1].trim() === '') end--;
+  const from = Math.max(0, end - lines);
+  const out = [];
+  let size = 0, cut = false, wide = 0;
+  for (let k = end - 1; k >= from; k--) {
+    let l = all[k].trimEnd();
+    if (l.length > lineMax) { l = `${l.slice(0, lineMax)} … [${l.length - lineMax} more characters]`; wide++; }
+    if (size + l.length + 1 > textMax) { cut = true; break; }
+    size += l.length + 1;
+    out.push(l);
+  }
+  out.reverse();
+  return { text: out.join('\n'), lines: out.length, cut, wide };
+}
+
+// runTail(cmd, args) -> {code, out: Buffer (its last maxBytes), err, cut}: a command's whole output, or its end
+function runTail(cmd, args, timeoutMs, maxBytes) {
+  return new Promise((resolve) => {
+    let c;
+    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message, out: Buffer.alloc(0), cut: false }); return; }
+    const chunks = [];
+    let size = 0, cut = false, err = '';
+    c.stdout.on('data', (d) => {
+      chunks.push(d); size += d.length;
+      while (chunks.length > 1 && size - chunks[0].length >= maxBytes) { size -= chunks.shift().length; cut = true; }
+    });
+    c.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
+    const t = setTimeout(() => c.kill('SIGKILL'), timeoutMs);
+    c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, err: e.code || e.message, out: Buffer.alloc(0), cut: false }); });
+    c.on('close', (code) => {
+      clearTimeout(t);
+      let out = Buffer.concat(chunks);
+      if (out.length > maxBytes) { out = out.subarray(out.length - maxBytes); cut = true; }
+      resolve({ code, err, out, cut });
+    });
+  });
+}
+
+// terminalCapture({lines?, pane?}) -> {pane, window: {index, name}, command, lines, asked, text, cut, wide}
+export async function terminalCapture(req = {}, { tmux = tmuxBin() } = {}) {
+  const n = req.lines === undefined || req.lines === null ? CAPTURE.linesDefault : req.lines;
+  if (!Number.isInteger(n) || n < 1 || n > CAPTURE.linesMax) throw new Error(`lines: a whole number from 1 to ${CAPTURE.linesMax}`);
+  const asked = req.pane === undefined || req.pane === null ? null : req.pane;
+  if (asked !== null && (typeof asked !== 'string' || !PANE_ID.test(asked))) throw new Error('bad pane id');
+  if ((await run(tmux, ['has-session', '-t', `=${TMUX_SESSION}`])).code !== 0) throw new Error('the terminal has no tmux session yet: open the terminal once');
+  const listed = await tmuxHooks(tmux);
+  if (listed.error) throw new Error(listed.error);
+  const set = listed.hooks.filter((h) => CAPTURE_HOOKS.includes(h));
+  if (set.length) {
+    throw new Error(`the terminal's tmux has hooks (${set.join(', ')}) set, by something in the sandbox or your tmux settings, that would run each time it is read: ` +
+      'copy the lines yourself, or remove them (tmux set-hook -gu …)');
+  }
+  // the pane: the one named (one of the session's), else the session's current one (what the terminal panel shows)
+  const d = await run(tmux, ['display-message', '-p', '-t', asked ?? `=${TMUX_SESSION}:`, '#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_current_command}\t#{window_name}'], 10000, 4000);
+  if (d.code !== 0 || d.cut) throw new Error(asked ? 'no such pane in the terminal' : `tmux: ${printable(d.err, 200) || `exit ${d.code}`}`);
+  const [session, pane, index, command, ...name] = d.out.replace(/\n$/, '').split('\t');
+  if (session !== TMUX_SESSION || typeof pane !== 'string' || !PANE_ID.test(pane) || (asked !== null && pane !== asked)) throw new Error('no such pane in the terminal');
+  // -p: to stdout; -J: wrapped lines joined; -S -N: from N lines back in the history (and the screen below them)
+  const r = await runTail(tmux, ['capture-pane', '-p', '-J', '-S', `-${n}`, '-t', pane], 10000, CAPTURE.readMax);
+  if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
+  const t = captureText(new TextDecoder('utf-8').decode(r.out), n);
+  return { pane, window: { index: /^[0-9]{1,6}$/.test(index ?? '') ? Number(index) : null, name: printable(name.join('\t'), 60) },
+    command: printable(command ?? '', 60), lines: t.lines, asked: n, text: t.text, cut: t.cut || r.cut, wide: t.wide };
 }
 
 // --- Run & test (run.list / run.start / run.results / run.show): the workspace's tasks, read from its own files —
@@ -2662,7 +2799,7 @@ export function sweepOrphans({ kill = process.kill } = {}) {
 
 // --- one connection, one op ---
 const running = { claude: 0, cli: 0 };
-const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0 };
+const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0, capture: 0 };
 export function serve(sock) {
   const parser = new FrameParser();
   let child = null, opened = false, writer = null, done = false;
@@ -2767,6 +2904,12 @@ export function serve(sock) {
         case 'perm.remove': return finish(T.RESULT, permRemove(req));
         case 'terminal.resume':
           terminalResume(req.id).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
+        // (read only; two at once: a page's @terminal, and the chip's "capture again")
+        case 'terminal.capture':
+          if (helpers.capture >= 2) return fail('busy: try again in a moment');
+          helpers.capture++;
+          terminalCapture({ lines: req.lines, pane: req.pane }).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers.capture--; });
           return undefined;
         case 'sessions.running': return finish(T.RESULT, sessionRunning(req.id));
         default: return fail('unknown op');

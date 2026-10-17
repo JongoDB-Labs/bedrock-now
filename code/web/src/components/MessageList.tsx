@@ -16,6 +16,7 @@ import { modelLabel } from './Pickers';
 import { otherModels } from '../models';
 import { Icon, Spinner } from './icons';
 import { memo } from './ui';
+import { splitContext } from '../mentions';
 
 const PAGE = 300;
 
@@ -80,6 +81,24 @@ function RewindPanel() {
   );
 }
 
+/** A prompt of yours as text; the context its @-mentions added (mentions.ts) folded away below it. */
+function UserText({ text }: { text: string }) {
+  const parts = useMemo(() => splitContext(text), [text]);
+  return (
+    <>
+      <div class="msg-user-text">{parts.prompt}</div>
+      {parts.context && (
+        <details class="msg-context" data-testid="msg-context">
+          <summary>
+            <Icon name="at" size={12} /> Context from the workspace{parts.count ? `: ${parts.count} @-mention${parts.count === 1 ? '' : 's'}` : ''}, quoted
+          </summary>
+          <pre class="msg-context-body">{parts.context}</pre>
+        </details>
+      )}
+    </>
+  );
+}
+
 const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 'user' }>; session: string }) {
   const rewinding = useSel(store, (s) => !!it.uuid && s.rewind?.message === it.uuid);
   return (
@@ -108,7 +127,7 @@ const UserMsg = memo(function UserMsg({ it, session }: { it: Extract<Item, { t: 
           </button>
         </span>
       )}
-      <div class="msg-user-text">{it.text}</div>
+      <UserText text={it.text} />
       {(it.images > 0 || it.queued || it.folded) && (
         <div class="msg-user-meta">
           {it.images > 0 && (
@@ -165,7 +184,7 @@ const Assistant = memo(function Assistant({ it }: { it: Extract<Item, { t: 'assi
 function QueuedMsg({ q }: { q: Queued }) {
   return (
     <div class="msg-user queued" data-testid="msg-user">
-      <div class="msg-user-text">{q.text}</div>
+      <UserText text={q.text} />
       <div class="msg-user-meta">
         {q.images > 0 && (
           <span>

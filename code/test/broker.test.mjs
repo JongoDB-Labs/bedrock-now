@@ -155,6 +155,22 @@ test('plan approval: ExitPlanMode allowed with a mode for this session (accept e
   assert.deepEqual(done, ['plan', 'plan', 'deny']);
 });
 
+test('keep planning with line comments: a plan\'s note keeps its lines (≤ planNoteChars); any other denial stays one short line', async () => {
+  const asked = [];
+  const b = new PermissionBroker({ onAsk: (p) => asked.push(p) });
+  const note = 'Keep planning: not yet.\r\n\r\nMy comments on lines of the plan:\n\nline 3:\n> 1. Wrap get()\nuse opts.retry\u0000\u0007 here';
+  const k = ask(b, { plan: '1. do it' }, {}, 'ExitPlanMode');
+  b.answer(asked[0].id, 'deny', { message: note });
+  assert.deepEqual(await k, { behavior: 'deny', message: 'Denied in the Code page: Keep planning: not yet.\n\nMy comments on lines of the plan:\n\nline 3:\n> 1. Wrap get()\nuse opts.retry   here' });
+  const long = ask(b, { plan: 'p' }, {}, 'ExitPlanMode');
+  b.answer(asked[1].id, 'deny', { message: `a\n${'x'.repeat(LIMITS.planNoteChars * 2)}` });
+  assert.equal((await long).message.length, 'Denied in the Code page: '.length + LIMITS.planNoteChars);
+  const bash = ask(b, { command: 'ls' }, {}, 'Bash');
+  b.answer(asked[2].id, 'deny', { message: `not\nthis\n${'y'.repeat(5000)}` });
+  const m = (await bash).message;
+  assert.ok(m.startsWith('Denied in the Code page: not this y') && !m.includes('\n') && m.length === 'Denied in the Code page: '.length + 1000, m.slice(0, 80));
+});
+
 test('AskUserQuestion: answers to its own questions only come back in the tool input; other tools get no answers', async () => {
   const asked = [];
   const b = new PermissionBroker({ onAsk: (p) => asked.push(p) });

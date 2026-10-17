@@ -22,11 +22,12 @@ import {
   undoReview,
   type UndoOpts,
 } from '../app';
-import { rowsOf, sessionStart, totals, undoBlocker, type ReviewFile, type ReviewHunk, type Row } from '../review';
+import { rowsOf, sessionStart, shownFiles, totals, undoBlocker, type ReviewFile, type ReviewHunk, type Row } from '../review';
 import { label, safe } from '../text';
 import type { Hunk } from '../types';
 import { Icon, Spinner } from './icons';
 import { Dialog, useMedia } from './ui';
+import { addDiff } from '../attach';
 
 const FILES_PAGE = 20;
 const LINES_PAGE = 400;
@@ -38,17 +39,7 @@ export function useReviewList() {
   const undone = useSel(store, (s) => s.review.undone);
   const kept = useSel(store, (s) => s.review.kept);
   return useMemo(() => {
-    const visible = files
-      .filter((f) => filter === 'all' || f.recent || f.claude)
-      .flatMap((f): ReviewFile[] => {
-        if (!f.hunks.length) return undone[`file:${f.path}`] ? [] : [f];
-        const hunks = f.hunks.filter((h) => !undone[h.id]);
-        if (!hunks.length) return [];
-        if (hunks.length === f.hunks.length) return [f];
-        const add = hunks.reduce((n, h) => n + h.lines.filter((l) => l[0] === '+').length, 0);
-        const del = hunks.reduce((n, h) => n + h.lines.filter((l) => l[0] === '-').length, 0);
-        return [{ ...f, hunks, edits: f.edits.map((e) => e.filter((h) => !undone[h.id])), add, del }];
-      });
+    const visible = shownFiles(files, filter, undone);
     const isKept = (f: ReviewFile) => (f.hunks.length ? f.hunks.every((h) => kept[h.id]) : !!kept[`file:${f.path}`]);
     return { all: files, visible, pending: visible.filter((f) => !isKept(f)), keptFiles: visible.filter(isKept), isKept };
   }, [files, filter, undone, kept]);
@@ -85,6 +76,16 @@ export function ReviewPane({ active }: { active: boolean }) {
           </div>
         )}
         <span class="banner-actions">
+          <button
+            type="button"
+            class="btn small ghost"
+            onClick={() => void addDiff()}
+            disabled={!visible.length}
+            title="These changes go with your next prompt as a diff, quoted (@diff)"
+            data-testid="review-mention"
+          >
+            <Icon name="at" size={14} /> Add to prompt
+          </button>
           <button type="button" class="btn small ghost" onClick={() => void refreshReview()} disabled={st.loading} data-testid="review-refresh">
             {st.loading ? <Spinner size={12} /> : <Icon name="refresh" size={14} />} Refresh
           </button>

@@ -296,6 +296,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/run/start' && m === 'POST') return send(res, 200, await api.runStart(await readJson(req)));
     if (p === '/api/run/results' && m === 'GET') return send(res, 200, await api.runResults(q.get('id')));
     if (p === '/api/run/show' && m === 'POST') return send(res, 200, await api.runShow(await readJson(req)));
+    if (p === '/api/terminal/capture' && m === 'GET') return send(res, 200, await api.terminalCapture(q.get('lines'), q.get('pane')));
     if (p.startsWith('/api/')) throw new HttpError(404, 'not found');
     return page(req, res, p);
   }

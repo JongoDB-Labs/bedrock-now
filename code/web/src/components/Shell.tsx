@@ -41,7 +41,8 @@ import { BOUNDS } from '../prefs';
 import { basename, label } from '../text';
 import { modeName } from '../permission';
 import { ChatPane } from './Chat';
-import { EditorPanes, EditorTabs, saveActiveTab, MOD } from './EditorArea';
+import { EditorPanes, EditorTabs, saveActiveTab, mentionSelection, MOD } from './EditorArea';
+import { addTerminal } from '../attach';
 import { FileTree } from './FileTree';
 import { SessionList } from './SessionList';
 import { ContextMeter, CostMeter, EffortPicker, ModelPicker, currentModel, modelLabel } from './Pickers';
@@ -266,6 +267,16 @@ function TerminalPanel({ drawer }: { drawer?: boolean }) {
         <span class="pane-title">Terminal</span>
         <span class="muted small">sandbox · ttyd + tmux</span>
         <span class="pane-actions">
+          <button
+            type="button"
+            class="icon-btn"
+            title="Add the terminal's last 200 lines to the prompt (@terminal): they go with your next prompt, quoted"
+            aria-label="Add the terminal's last lines to the prompt"
+            onClick={() => void addTerminal()}
+            data-testid="terminal-mention"
+          >
+            <Icon name="at" size={15} />
+          </button>
           {url && (
             <a class="icon-btn" href={url} target="_blank" rel="noopener noreferrer" title="Open in a new tab" aria-label="Open the terminal in a new tab">
               <Icon name="external" size={15} />
@@ -501,6 +512,10 @@ function useGlobalKeys() {
         // the permission mode menu (the desktop app's ⌘⇧M is the browser's own on macOS)
         e.preventDefault();
         openModeMenu();
+      } else if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'KeyK' && !e.defaultPrevented && !store.get().dialog) {
+        // the editor's selected lines into the prompt as @path#L5-10 (on a Mac, Alt+K would type "˚")
+        e.preventDefault();
+        mentionSelection();
       } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         toggleExplorer();

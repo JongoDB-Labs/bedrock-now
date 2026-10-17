@@ -149,6 +149,8 @@ export interface EditorOptions {
   onCursor?: (line: number, col: number) => void;
   /** the document changed (the Markdown preview in Split follows it; it reads getText() itself) */
   onChange?: () => void;
+  /** the selection changed: the lines it covers, or null when nothing is selected (an @mention of them) */
+  onSelect?: (lines: { from: number; to: number } | null) => void;
 }
 
 export interface EditorHandle {
@@ -161,6 +163,9 @@ export interface EditorHandle {
   focus(): void;
   /** Scroll to a line (1-based) and select `len` characters from `col` (a search hit). */
   reveal(line: number, col?: number, len?: number): void;
+  /** The lines the selection covers — the cursor's line when nothing is selected — 1-based, with their text (as it
+   *  is in the editor) and how many lines the document has. */
+  selectedLines(): { from: number; to: number; text: string; total: number };
   destroy(): void;
   language: string;
 }
@@ -203,6 +208,10 @@ export function mountEditor(host: HTMLElement, o: EditorOptions): EditorHandle {
             const line = u.state.doc.lineAt(head);
             o.onCursor?.(line.number, head - line.from + 1);
           }
+          if (u.selectionSet || u.docChanged) {
+            const r = u.state.selection.main;
+            o.onSelect?.(r.empty ? null : linesOf(u.state.doc, r.from, r.to));
+          }
         }),
       ],
     }),
@@ -239,8 +248,23 @@ export function mountEditor(host: HTMLElement, o: EditorOptions): EditorHandle {
       view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) });
       view.focus();
     },
+    selectedLines() {
+      const doc = view.state.doc;
+      const r = view.state.selection.main;
+      const { from, to } = linesOf(doc, r.from, r.to);
+      return { from, to, text: doc.sliceString(doc.line(from).from, doc.line(to).to), total: doc.lines };
+    },
     destroy: () => view.destroy(),
   };
+}
+
+/** The lines a range covers (1-based): one that ends at the very start of a line (whole lines dragged over) does not
+ *  take that line. */
+function linesOf(doc: EditorState['doc'], from: number, to: number): { from: number; to: number } {
+  const a = doc.lineAt(from);
+  let b = doc.lineAt(to);
+  if (to > from && to === b.from && b.number > a.number) b = doc.line(b.number - 1);
+  return { from: a.number, to: b.number };
 }
 
 export interface MergeOptions {

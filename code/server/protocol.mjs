@@ -130,6 +130,13 @@
 //                                           gone: its current version to the workspace trash, the staged one written
 //                                           back (`git checkout -- path`); an untracked file to the trash; 409 when the
 //                                           file changed since ifMtimeMs; only staged changes or a conflict: 400
+//   GET    /api/terminal/capture?lines=N&pane=%N   {pane, window: {index, name}, command, lines, asked, text, cut,
+//                                           wide} — @terminal: the last N lines (1–2,000; 200) of the terminal panel's
+//                                           current tmux pane (or that pane of its session) as plain text (bn-coded's
+//                                           terminal.capture: `capture-pane -p -J`, escapes and controls taken out),
+//                                           at most 64 KiB (the newest lines kept: cut), lines over 4,000 characters cut
+//                                           (wide: how many). Read only. 409 no tmux session yet, or hooks set that would
+//                                           run on a read; 404 no such pane; 501 an older sandbox
 //   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
 //                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
 //                                           (~/.claude/CLAUDE.md); at most 1 MiB
@@ -235,7 +242,9 @@
 //                                               or Accept edits whose reasonType is not rule or hook, CODE_AUTO_MODE on):
 //                                               the session switched to auto first, then the command allowed once — a
 //                                               refused switch leaves the prompt waiting; "keep planning" is a deny with
-//                                               a message. A prompt that is not complete can only be denied: once,
+//                                               a message (an ExitPlanMode's may have several lines — the plan's line
+//                                               comments —, ≤ LIMITS.planNoteChars; any other's is one line, ≤ 1,000).
+//                                               A prompt that is not complete can only be denied: once,
 //                                               always and always_project are refused for it
 //   {type: "permission", id, session, decision: "answer", answers: {"<question text>": "<chosen label(s)>"}}
 //                                               AskUserQuestion only: the tool's input comes back with these answers
@@ -360,6 +369,7 @@ export const LIMITS = Object.freeze({
   wsMaxBufferedBytes: 16 << 20,   // unsent to one socket: beyond, it is closed (4008) and must re-attach
   wsMaxAgeHours: 2,               // a socket is closed (4009) after this (the page reconnects through Caddy's check)
   maxPromptChars: 200000,
+  planNoteChars: 16000,           // "Keep planning" on a plan: the note and the line comments sent back with it
   maxImages: 4,
   maxImageBytes: 5 << 20,         // per image, decoded
   maxUploadBytes: 25 << 20,

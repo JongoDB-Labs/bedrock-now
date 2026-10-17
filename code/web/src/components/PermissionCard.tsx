@@ -5,15 +5,17 @@
 // not in its first 400 ms, nor at all when the prompt asks to default to no. A card that appears takes the focus only
 // from nothing you type into (a field, the editor, the terminal keep it). A prompt whose input could not be shown in
 // full can only be denied. ExitPlanMode is a plan to approve: then Accept edits, or Manual (asking for each edit), or
-// Auto (while Settings allow it), or not yet (keep planning, with a message). While Settings allow Auto, a shell
+// Auto (while Settings allow it), or not yet (keep planning, with a message) — and any line of it can take a comment
+// (plannotes.ts): the comments go back with "Keep planning", or, once you approve, as your next message. While Settings allow Auto, a shell
 // command's card in Manual or Accept edits also offers "Allow, and switch to Auto", as the CLI does — not one that your
 // ask rules or a hook asked for (Auto would ask for those too).
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { PermissionReq, RuleLine } from '../types';
 import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
 import { commandShape, label, prettyJson, safe } from '../text';
-import { answerPermission, answerQuestions, allowAndSwitchToAuto, store, autoOk } from '../app';
+import { answerPermission, answerQuestions, allowAndSwitchToAuto, store, autoOk, sendToSession, toast } from '../app';
+import { approvedFollowUp, dropPlanComments, keepPlanningMessage, planLines, planNotes, setPlanComment, PLAN_COMMENT_MAX, PLAN_COMMENTS_MAX, type PlanComment } from '../plannotes';
 import { useSel } from '../store';
 import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_EDITS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
 import { typingIn } from '../focus';
@@ -223,11 +225,17 @@ function RuleList({ rules, label: what, testid }: { rules: RuleLine[]; label: st
   );
 }
 
-/** ExitPlanMode: the plan, and how to go on. */
+const NO_COMMENTS: PlanComment[] = [];
+
+/** ExitPlanMode: the plan, and how to go on — with comments on its lines (Comment on lines). */
 function PlanCard({ req, index, total }: { req: PermissionReq; index: number; total: number }) {
   const i = obj(req.input);
   const allowAuto = useSel(store, (s) => autoOk(s));
   const armed = useArmed(req.id);
+  const plan = useMemo(() => safe(i.plan, PERMISSION_SHOWN_STRING), [i.plan]);
+  const lines = useMemo(() => planLines(plan), [plan]);
+  const comments = useSel(planNotes, (s) => s[req.id] ?? NO_COMMENTS);
+  const [view, setView] = useState<'plan' | 'lines'>(() => (comments.length ? 'lines' : 'plan'));
   const [keep, setKeep] = useState(false);
   const [msg, setMsg] = useState('');
   const ref = useRef<HTMLDivElement>(null);
@@ -237,6 +245,14 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
     if (keep) box.current?.focus();
   }, [keep]);
   const ok = armed && req.complete;
+  const n = comments.length;
+  const approve = (mode: 'default' | 'acceptEdits' | 'auto') => {
+    // the comments go as your next message, once the plan is approved (Claude takes it in as it works)
+    const follow = approvedFollowUp(comments, lines);
+    answerPermission(req.session, req.id, 'once', undefined, mode);
+    dropPlanComments(req.id);
+    if (follow && !sendToSession(req.session, follow)) toast('Your comments on the plan could not be sent: they are in the prompt box.', 'error');
+  };
   return (
     <div ref={ref} class="perm perm-plan" role="alertdialog" aria-label="Claude has a plan" tabIndex={-1} data-testid="permission">
       <div class="perm-head">
@@ -248,16 +264,32 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
           </span>
         )}
       </div>
+      <div class="plan-tools">
+        <div class="seg" role="group" aria-label="How the plan is shown">
+          <button type="button" aria-pressed={view === 'plan'} onClick={() => setView('plan')} data-testid="plan-view-plan">
+            Plan
+          </button>
+          <button type="button" aria-pressed={view === 'lines'} onClick={() => setView('lines')} data-testid="plan-view-lines">
+            <Icon name="comment" size={13} /> Comment on lines{n ? ` (${n})` : ''}
+          </button>
+        </div>
+      </div>
       <div class="perm-details">
-        <MarkdownView text={safe(i.plan, PERMISSION_SHOWN_STRING)} class="plan" />
+        {view === 'plan' ? <MarkdownView text={plan} class="plan" /> : <PlanLines id={req.id} lines={lines} comments={comments} />}
       </div>
       {!req.complete && <Partial />}
+      {n > 0 && (
+        <div class="plan-cmt-count muted small" data-testid="plan-comment-count">
+          <Icon name="comment" size={13} /> {n} comment{n === 1 ? '' : 's'} on the plan: sent back with Keep planning, or as your next message once you approve.
+        </div>
+      )}
       {keep ? (
         <form
           class="perm-deny"
           onSubmit={(e) => {
             e.preventDefault();
-            answerPermission(req.session, req.id, 'deny', msg || 'Keep planning: not yet.');
+            answerPermission(req.session, req.id, 'deny', keepPlanningMessage(msg, comments, lines));
+            dropPlanComments(req.id);
           }}
         >
           <textarea ref={box} rows={2} placeholder="What should the plan change? (optional)" value={msg} maxLength={2000} onInput={(e) => setMsg((e.target as HTMLTextAreaElement).value)} />
@@ -266,7 +298,7 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
               Back
             </button>
             <button type="submit" class="btn" data-testid="plan-keep-send">
-              Keep planning
+              Keep planning{n ? ` (with ${n} comment${n === 1 ? '' : 's'})` : ''}
             </button>
           </div>
         </form>
@@ -275,20 +307,143 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
           <button type="button" class="btn ghost" onClick={() => setKeep(true)} data-testid="plan-keep">
             Keep planning…
           </button>
-          <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'default')} data-testid="plan-approve-ask">
+          <button type="button" class="btn" disabled={!ok} onClick={() => approve('default')} data-testid="plan-approve-ask">
             Approve, Manual
           </button>
           {allowAuto && (
-            <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'auto')} data-testid="plan-approve-auto">
+            <button type="button" class="btn" disabled={!ok} onClick={() => approve('auto')} data-testid="plan-approve-auto">
               Approve, Auto
             </button>
           )}
-          <button type="button" class="btn primary" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'acceptEdits')} data-testid="plan-approve-edits">
+          <button type="button" class="btn primary" disabled={!ok} onClick={() => approve('acceptEdits')} data-testid="plan-approve-edits">
             Approve, Accept edits
           </button>
         </div>
       )}
     </div>
+  );
+}
+
+/** The plan line by line, each one a button that opens a comment on it (↑/↓, Home/End move between lines; Enter opens
+ *  the comment; in it Enter saves, Shift+Enter is a new line, Esc cancels). */
+function PlanLines({ id, lines, comments }: { id: string; lines: string[]; comments: PlanComment[] }) {
+  const [cur, setCur] = useState(0);
+  const [editing, setEditing] = useState<number | null>(null);
+  const btns = useRef<(HTMLButtonElement | null)[]>([]);
+  const byLine = useMemo(() => new Map(comments.map((c) => [c.line, c])), [comments]);
+  const focusLine = (k: number) => {
+    const j = Math.max(0, Math.min(lines.length - 1, k));
+    setCur(j);
+    btns.current[j]?.focus();
+  };
+  const done = (line: number) => {
+    setEditing(null);
+    requestAnimationFrame(() => btns.current[line - 1]?.focus());
+  };
+  const save = (line: number, text: string) => {
+    if (!setPlanComment(id, line, text)) {
+      toast(`At most ${PLAN_COMMENTS_MAX} comments on one plan.`, 'error');
+      return;
+    }
+    done(line);
+  };
+  return (
+    <ol class="plan-lines" aria-label="The plan, line by line: Enter on a line comments on it" data-testid="plan-lines">
+      {lines.map((l, k) => {
+        const line = k + 1;
+        const c = byLine.get(line);
+        return (
+          <li key={k} class={`plan-line${c ? ' has' : ''}${editing === line ? ' editing' : ''}`} data-line={line}>
+            <button
+              type="button"
+              class="plan-line-btn"
+              tabIndex={k === cur ? 0 : -1}
+              ref={(el) => {
+                btns.current[k] = el;
+              }}
+              aria-label={`Line ${line}: ${l.trim() ? label(l, 200) : 'empty'}${c ? ' — has your comment' : ''}. Comment on it`}
+              onFocus={() => setCur(k)}
+              onClick={() => setEditing(line)}
+              onKeyDown={(e) => {
+                const step: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 };
+                if (e.key in step) focusLine(k + step[e.key]);
+                else if (e.key === 'Home') focusLine(0);
+                else if (e.key === 'End') focusLine(lines.length - 1);
+                else return;
+                e.preventDefault();
+              }}
+              data-testid="plan-line"
+            >
+              <span class="plan-ln" aria-hidden="true">
+                {line}
+              </span>
+              <span class="plan-text">{l || '\u00a0'}</span>
+              <span class="plan-add" aria-hidden="true">
+                <Icon name={c ? 'pencil' : 'comment'} size={13} />
+              </span>
+            </button>
+            {editing === line ? (
+              <PlanCommentBox line={line} initial={c?.text ?? ''} onSave={(t) => save(line, t)} onCancel={() => done(line)} />
+            ) : c ? (
+              <div class="plan-cmt" data-testid="plan-comment">
+                <Icon name="comment" size={13} />
+                <span class="plan-cmt-text">{c.text}</span>
+                <button type="button" class="btn small ghost" onClick={() => setEditing(line)} aria-label={`Edit your comment on line ${line}`}>
+                  Edit
+                </button>
+                <button type="button" class="btn small ghost" onClick={() => setPlanComment(id, line, '')} aria-label={`Remove your comment on line ${line}`} data-testid="plan-comment-remove">
+                  Remove
+                </button>
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function PlanCommentBox({ line, initial, onSave, onCancel }: { line: number; initial: string; onSave: (text: string) => void; onCancel: () => void }) {
+  const [t, setT] = useState(initial);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+  return (
+    <form
+      class="plan-cmt-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave(t);
+      }}
+    >
+      <textarea
+        ref={ref}
+        rows={2}
+        maxLength={PLAN_COMMENT_MAX}
+        value={t}
+        placeholder={`Your comment on line ${line} (Enter saves, Shift+Enter: new line)`}
+        aria-label={`Your comment on line ${line} of the plan`}
+        onInput={(e) => setT((e.target as HTMLTextAreaElement).value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+            e.preventDefault();
+            if (!e.repeat) onSave(t);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            onCancel();
+          }
+        }}
+        data-testid="plan-comment-text"
+      />
+      <div class="perm-buttons">
+        <button type="button" class="btn small ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" class="btn small primary" data-testid="plan-comment-save">
+          {initial ? 'Save' : 'Comment'}
+        </button>
+      </div>
+    </form>
   );
 }
 

@@ -5,7 +5,9 @@
 // (what the explorer has listed, and from two characters on a search of the whole workspace). "# text" on one line
 // adds a line to the project's CLAUDE.md. Images (paste, drop or 📎) become image blocks — scaled down to 1568 px on the long edge
 // (what Claude reads anyway), at most as many as the backend takes; other files are uploaded into the workspace and
-// @-mentioned. /clear, /reset and /new start a new session; /resume opens the session list.
+// @-mentioned. /clear, /reset and /new start a new session; /resume opens the session list. Rich @-mentions (mentions.ts,
+// attach.ts): "@terminal", "@diff", "@problems" and "@path#L5-10" (also the editor's selection, Alt+K) become chips —
+// each shows what goes — and go after your text as quoted context from the workspace.
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
@@ -17,10 +19,13 @@ import { findTrigger, mergeCommands, rankCommands, rankPaths, type Trigger } fro
 import type { ImageBlock } from '../types';
 import { nextMode } from '../modes';
 import { bytes, cleanPath, dirname } from '../text';
-import { Icon } from './icons';
+import { Icon, Spinner } from './icons';
 import { ModePicker } from './Pickers';
 import { Guards } from './Guards';
 import { useMedia } from './ui';
+import { mentionStore, removeMention, clearMentions, addTerminal, addDiff, addProblems, addLines, typedLines, recapture } from '../attach';
+import { mentionBlocks, mentionOptions, takesMentions, withContext, type Mention } from '../mentions';
+import { CAPTURE_LINES_MAX } from '../api';
 
 interface Attachment {
   id: number;
@@ -31,6 +36,16 @@ interface Attachment {
 }
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+/** protocol.mjs LIMITS.maxPromptChars */
+const PROMPT_MAX = 200_000;
+
+interface Option {
+  key: string;
+  label: string;
+  hint: string;
+  desc: string;
+  special?: ReturnType<typeof mentionOptions>[number];
+}
 const history: string[] = [];
 let attachId = 1;
 /** Claude reads images at up to this many pixels on the long edge; larger ones only cost upload time */
@@ -86,6 +101,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const narrow = useMedia('(max-width: 699.98px)');
   const dirs = useSel(store, (s) => s.fs.dirs);
   const comments = useSel(store, (s) => s.comments);
+  const mentions = useSel(mentionStore, (s) => s.items);
   const [text, setText] = useState('');
   const [caret, setCaret] = useState(0);
   const [atts, setAtts] = useState<Attachment[]>([]);
@@ -174,12 +190,15 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     };
   }, [mentionQuery]);
 
-  const options = useMemo(() => {
+  const options = useMemo((): Option[] => {
     if (!trigger) return [];
     if (trigger.kind === 'slash') return rankCommands(commands, trigger.query).map((c) => ({ key: c.name, label: `/${c.name}`, hint: c.argumentHint, desc: c.description }));
+    // @terminal, @diff, @problems and @path#L5-10 first (quoted context: a chip), then files
+    const special: Option[] = mentionOptions(trigger.query, CAPTURE_LINES_MAX).map((o) => ({ key: o.key, label: `@${o.key}`, hint: '', desc: o.desc, special: o }));
+    if (special.some((o) => o.special?.kind === 'lines' || /^terminal:/.test(o.key))) return special;
     const all = new Set(knownPaths(store.get()));
     if (trigger.query.length >= 2) for (const p of found.paths) all.add(p);
-    return rankPaths([...all], trigger.query, 40).map((p) => ({ key: p, label: p, hint: '', desc: '' }));
+    return [...special, ...rankPaths([...all], trigger.query, 40).map((p) => ({ key: p, label: p, hint: '', desc: '' }))];
   }, [trigger, commands, dirs, found]);
 
   useEffect(() => setPick(0), [trigger?.kind, trigger?.query]);
@@ -187,6 +206,12 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const choose = (i: number) => {
     const o = options[i];
     if (!o || !trigger) return;
+    // a mention of context: its chip (captured now), and its token stays in your text where you typed it
+    const sp = o.special;
+    if (sp?.kind === 'terminal') void addTerminal(sp.lines);
+    else if (sp?.kind === 'diff') void addDiff();
+    else if (sp?.kind === 'problems') void addProblems();
+    else if (sp?.kind === 'lines' && sp.ref) void addLines(sp.ref.path, sp.ref.from, sp.ref.to);
     const ins = trigger.kind === 'slash' ? `/${o.key} ` : o.key.endsWith('/') ? `@${o.key}` : `@${o.key} `;
     const next = text.slice(0, trigger.from) + ins + text.slice(trigger.to);
     setText(next);
@@ -238,13 +263,39 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
 
   const submit = async () => {
     const t = text.trim();
-    if (!t && !atts.length && !comments.length) return;
+    const ms = mentionStore.get().items;
+    if (!t && !atts.length && !comments.length && !ms.length) return;
+    if (ms.some((m) => m.state === 'loading')) {
+      toast('An @-mention is still being captured: send again in a moment.');
+      return;
+    }
     const blocks = atts.map((a) => a.block);
     // the Review pane's line comments go with a prompt for Claude ("path:line — comment"); they leave the box once sent
     const withNotes = promptWithComments(t || (atts.length ? 'What is in this image?' : ''));
-    const ok = await sendPrompt(withNotes.text, blocks);
+    // then the @-mentions' quoted context (the chips, and an @path#L… typed without one: read now)
+    let out = withNotes.text;
+    let sent: number[] = [];
+    if (takesMentions(out)) {
+      const typed = await typedLines(t);
+      if (typed.error) {
+        toast(typed.error, 'error');
+        return;
+      }
+      const ready = ms.filter((m) => m.state === 'ready');
+      if (ready.length || typed.mentions.length) {
+        out = withContext(out, [...ready, ...typed.mentions]);
+        sent = ready.map((m) => m.id);
+      }
+    }
+    if (!out.trim()) return;
+    if (out.length > PROMPT_MAX) {
+      toast(`This prompt is ${out.length.toLocaleString('en-US')} characters with its context; at most ${PROMPT_MAX.toLocaleString('en-US')} go: remove an @-mention.`, 'error');
+      return;
+    }
+    const ok = await sendPrompt(out, blocks);
     if (!ok) return;
     if (withNotes.ids.length) clearComments(withNotes.ids);
+    if (sent.length) clearMentions(sent);
     if (t) {
       history.push(t);
       if (history.length > 50) history.shift();
@@ -341,7 +392,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       {trigger && options.length > 0 && (
         <div class="palette" role="listbox" aria-label={trigger.kind === 'slash' ? 'Commands' : 'Files'} data-testid="palette">
           <div class="palette-head">
-            {trigger.kind === 'slash' ? 'Commands, skills and plugin commands' : 'Files in /workspace'}
+            {trigger.kind === 'slash' ? 'Commands, skills and plugin commands' : 'Files in /workspace · @terminal, @diff, @problems, @file#L5-10: quoted context'}
             {trigger.kind === 'mention' && found.error && found.q === trigger.query && <span class="muted"> · search failed: {found.error}</span>}
           </div>
           {options.map((o, i) => (
@@ -357,7 +408,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
                 if (el && i === pick) el.scrollIntoView({ block: 'nearest' });
               }}
             >
-              <span class="palette-label">{o.label}</span>
+              <span class="palette-label">{o.special && <Icon name={ICONS[o.special.kind]} size={12} />} {label(o.label, 300)}</span>
               {o.hint && <span class="palette-hint">{o.hint}</span>}
               {o.desc && <span class="palette-desc">{o.desc}</span>}
             </button>
@@ -379,6 +430,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           ))}
         </div>
       )}
+      <MentionChips items={mentions} />
       {atts.length > 0 && (
         <div class="atts">
           {atts.map((a) => (
@@ -397,7 +449,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           ref={ta}
           rows={1}
           value={text}
-          placeholder={busy ? 'Claude is working — type to queue a message, Esc to stop' : 'Ask Claude to build, fix or explain…  / commands · @ files'}
+          placeholder={busy ? 'Claude is working — type to queue a message, Esc to stop' : 'Ask Claude to build, fix or explain…  / commands · @ files, @terminal, @diff'}
           aria-label="Message Claude"
           data-testid="prompt"
           onInput={(e) => {
@@ -474,7 +526,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
             class="send"
             title="Send (Enter)"
             aria-label="Send"
-            disabled={!text.trim() && !atts.length && !comments.length}
+            disabled={!text.trim() && !atts.length && !comments.length && !mentions.length}
             onClick={() => void submit()}
             data-testid="send"
           >
@@ -495,6 +547,81 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           void addFiles(files);
         }}
       />
+    </div>
+  );
+}
+
+const ICONS: Record<Mention['kind'], string> = { lines: 'file', terminal: 'terminal', diff: 'diff', problems: 'alert' };
+const RECAPTURE: Record<Mention['kind'], string> = { lines: '', terminal: 'Capture again', diff: 'Take the changes again', problems: 'Take the list again' };
+
+/** The @-mention chips: each opens what goes to Claude for it (its block, exactly), with a cut said; × removes it. */
+function MentionChips({ items }: { items: Mention[] }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const blocks = useMemo(() => mentionBlocks(items), [items]);
+  if (!items.length) return null;
+  const shown = items.find((m) => m.id === open);
+  const shownBlock = shown ? blocks.find((b) => b.id === shown.id) : undefined;
+  return (
+    <div class="mn" data-testid="mention-chips">
+      <div class="mn-chips" role="list" aria-label="Context from the workspace, sent quoted with your next prompt">
+        {items.map((m) => {
+          const b = blocks.find((x) => x.id === m.id);
+          const cut = !!b?.cut || (m.state === 'ready' && !!m.note);
+          return (
+            <span role="listitem" class={`chip mn-chip ${m.state}${open === m.id ? ' on' : ''}`} key={m.id} data-testid="mention-chip" data-kind={m.kind} data-state={m.state}>
+              <button
+                type="button"
+                class="mn-chip-main"
+                aria-expanded={open === m.id}
+                onClick={() => setOpen(open === m.id ? null : m.id)}
+                title={m.state === 'error' ? `${m.token}: ${m.error}` : `${m.token} — show what goes to Claude`}
+                data-testid="mention-chip-main"
+              >
+                {m.state === 'loading' ? <Spinner size={11} /> : <Icon name={m.state === 'error' ? 'alert' : ICONS[m.kind]} size={12} />}
+                <span class="mn-chip-text">{label(m.token, 160)}</span>
+                {cut && <span class="mn-tag" data-testid="mention-cut">cut</span>}
+                {m.state === 'error' && <span class="mn-tag bad">failed</span>}
+              </button>
+              <button type="button" class="att-x" aria-label={`Remove ${label(m.token, 120)}`} onClick={() => (removeMention(m.id), open === m.id && setOpen(null))} data-testid="mention-remove">
+                <Icon name="close" size={11} />
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      {shown && (
+        <div class="mn-preview" role="region" aria-label={`What goes to Claude for ${label(shown.token, 120)}`} data-testid="mention-preview">
+          <div class="mn-preview-head">
+            <strong>{label(shown.token, 160)}</strong>
+            <span class="muted small mn-preview-title">{label(shown.title, 300)}</span>
+            <span class="mn-preview-actions">
+              {RECAPTURE[shown.kind] && (
+                <button type="button" class="btn small ghost" disabled={shown.state === 'loading'} onClick={() => recapture(shown)} data-testid="mention-recapture">
+                  <Icon name="refresh" size={13} /> {RECAPTURE[shown.kind]}
+                </button>
+              )}
+              <button type="button" class="btn small ghost" onClick={() => setOpen(null)}>
+                Close
+              </button>
+            </span>
+          </div>
+          {shown.state === 'error' ? (
+            <div class="perm-warn" role="alert" data-testid="mention-error">
+              <Icon name="alert" size={14} /> {label(shown.error, 400)}
+            </div>
+          ) : shown.state === 'loading' ? (
+            <div class="muted small">
+              <Spinner size={12} /> Capturing…
+            </div>
+          ) : (
+            <pre class="mn-preview-body" data-testid="mention-preview-body">{shownBlock?.text ?? ''}</pre>
+          )}
+          <div class="muted small mn-preview-note">
+            Sent after your message as quoted data from the workspace — not instructions. It still goes as part of your message: in Auto or
+            Bypass mode, read it before you send.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

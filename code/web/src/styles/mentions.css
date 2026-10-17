@@ -1,0 +1,67 @@
+/* --- @-mention chips in the composer (attach.ts, mentions.ts) --- */
+.mn { display: flex; flex-direction: column; gap: 6px; padding: 6px 2px 2px; min-width: 0; }
+.mn-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.mn-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0 2px 0 0; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 12px; background: var(--surface-2); }
+.mn-chip.on { background: var(--active); }
+.mn-chip.error { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.mn-chip.error .ic { color: var(--bad); }
+.mn-chip-main { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 2px 4px 2px 8px; border: 0; background: none; color: var(--ink); font-size: 12px; font-family: var(--mono); }
+.mn-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(360px, 62vw); unicode-bidi: plaintext; }
+.mn-chip .att-x { position: static; width: 18px; height: 18px; }
+.mn-tag { flex: none; padding: 0 5px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); font-family: inherit; font-size: 10.5px; font-weight: 600; }
+.mn-tag.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.mn-preview { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.mn-preview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.mn-preview-head strong { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.mn-preview-title { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.mn-preview-actions { display: inline-flex; gap: 4px; margin-left: auto; }
+.mn-preview-body { margin: 0; max-height: min(260px, 32vh); overflow: auto; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--code-bg); font-size: 12px; line-height: 1.45; white-space: pre; unicode-bidi: plaintext; }
+.mn-preview-note { line-height: 1.4; }
+
+/* the editor's "Lines 5–10 to the prompt" (a selection) */
+.file-body { position: relative; }
+.sel-mention { position: absolute; top: 6px; right: 14px; z-index: 5; box-shadow: var(--shadow); }
+.sel-mention kbd { margin-left: 2px; }
+
+/* a sent prompt's context, folded */
+.msg-context { margin-top: 6px; font-size: 12.5px; }
+.msg-context summary { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; list-style: none; }
+.msg-context summary::-webkit-details-marker { display: none; }
+.msg-context summary::before { content: "▸"; font-size: 10px; }
+.msg-context[open] summary::before { content: "▾"; }
+.msg-context-body { margin: 6px 0 0; max-height: 320px; overflow: auto; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--code-bg); font-size: 12px; line-height: 1.45; white-space: pre; unicode-bidi: plaintext; }
+
+/* the Problems list's and the Review's "Add to prompt" */
+.pp-mention { margin-left: auto; }
+
+/* --- comments on a plan's lines (PermissionCard's PlanCard, plannotes.ts) --- */
+.plan-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.plan-tools .seg button { height: 26px; font-size: 12.5px; }
+.plan-lines { list-style: none; margin: 0; padding: 4px 0; max-height: 40vh; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--surface-2); font-size: 13px; }
+.plan-line { display: flex; flex-direction: column; }
+.plan-line-btn { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) 22px; align-items: start; gap: 6px; width: 100%; padding: 2px 8px 2px 0; border: 0; background: none; color: var(--ink); text-align: left; font: inherit; line-height: 1.5; cursor: pointer; }
+.plan-line-btn:hover, .plan-line-btn:focus-visible { background: var(--hover); outline: none; }
+.plan-line-btn:focus-visible { box-shadow: inset 2px 0 0 var(--accent); }
+.plan-line.has > .plan-line-btn { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.plan-ln { color: var(--muted); font-family: var(--mono); font-size: 11.5px; text-align: right; padding-top: 2px; font-variant-numeric: tabular-nums; }
+.plan-text { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; min-width: 0; }
+.plan-add { display: grid; place-items: center; color: var(--muted); opacity: 0.45; padding-top: 3px; }
+.plan-line-btn:hover .plan-add, .plan-line-btn:focus-visible .plan-add, .plan-line.has .plan-add { opacity: 1; color: var(--accent); }
+.plan-cmt { display: flex; align-items: flex-start; gap: 6px; margin: 2px 8px 6px 3.6em; padding: 5px 8px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--surface); font-size: 12.5px; }
+.plan-cmt .ic { flex: none; margin-top: 3px; color: var(--accent); }
+.plan-cmt-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-cmt-form { display: flex; flex-direction: column; gap: 6px; margin: 2px 8px 8px 3.6em; }
+.plan-cmt-form textarea { width: 100%; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); outline: none; font: inherit; }
+.plan-cmt-form textarea:focus { border-color: var(--accent); }
+.plan-cmt-count { display: flex; align-items: center; gap: 6px; }
+
+@media (max-width: 699.98px) {
+  .mn-chip-text { max-width: 58vw; }
+  .mn-preview-body { max-height: 30vh; }
+  .sel-mention { top: auto; bottom: 10px; right: 10px; }
+  .sel-mention kbd { display: none; }
+  .plan-line-btn { grid-template-columns: 2.4em minmax(0, 1fr) 26px; padding: 6px 6px 6px 0; }
+  .plan-add { opacity: 0.8; }
+  .plan-cmt, .plan-cmt-form { margin-left: 8px; }
+  .plan-lines { max-height: 46vh; }
+}

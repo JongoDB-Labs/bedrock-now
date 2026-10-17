@@ -12,6 +12,7 @@ import { duration, failing, lastLines, outcome, outcomeText, plainCommand, plain
 import type { RunResult, RunSource, RunTask } from '../types';
 import { label, visible } from '../text';
 import { Icon, Spinner } from './icons';
+import { addProblems } from '../attach';
 import { Dialog, Dropdown } from './ui';
 
 const GROUPS: { source: RunSource; title: string }[] = [
@@ -120,6 +121,17 @@ export function Problems({ onDone }: { onDone?: () => void }) {
       <div class="pp-head">
         <strong>Problems</strong>
         <span class="muted small">{runs.length ? (bad ? `${bad} task${bad === 1 ? '' : 's'} failing` : 'nothing failing') : ''}</span>
+        {bad > 0 && (
+          <button
+            type="button"
+            class="btn small ghost pp-mention"
+            onClick={() => (void addProblems(), onDone?.())}
+            title="The failed runs and the end of their output go with your next prompt, quoted (@problems)"
+            data-testid="problems-mention"
+          >
+            <Icon name="at" size={13} /> Add to prompt
+          </button>
+        )}
       </div>
       {runs.length ? (
         <ul class="problem-list">

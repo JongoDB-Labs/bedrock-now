@@ -5,7 +5,9 @@
 // one click away, and Split for Markdown (the preview follows your unsaved edits).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, closeTab, setActiveTab, saveFile, reloadFile, markDirty, setCursor, openFile, openDiff, setPrefs, keepMine, type Tab, type FileTab, type DiffTab } from '../app';
+import { store, closeTab, setActiveTab, saveFile, reloadFile, markDirty, setCursor, openFile, openDiff, setPrefs, keepMine, toast, type Tab, type FileTab, type DiffTab } from '../app';
+import { addLines, insertIntoPrompt } from '../attach';
+import { RANGE_MAX, lineToken } from '../mentions';
 import * as api from '../api';
 import { countChanges, hunkLines } from '../diff';
 import { basename, bytes, dirname, label } from '../text';
@@ -28,6 +30,25 @@ function loadCm() {
 
 /** The live editors by tab key (the save button and conflict actions need their text). */
 const editors = new Map<string, EditorHandle>();
+
+/** The active file's selected lines as an @mention (Alt+K, the editor's "Add to prompt", the palette): a chip with
+ *  those lines as the editor has them, and @path#L5-10 in the prompt box. -> whether there was an editor. */
+export function mentionSelection(key?: string): boolean {
+  const s = store.get();
+  const tab = s.tabs.find((t) => t.key === (key ?? s.activeTab));
+  const h = tab && tab.kind === 'file' ? editors.get(tab.key) : undefined;
+  if (!tab || tab.kind !== 'file' || !h) {
+    toast('Open a file in the editor and select some lines first (then Alt+K).');
+    return false;
+  }
+  const sel = h.selectedLines();
+  const to = Math.min(sel.to, sel.from + RANGE_MAX - 1);
+  const text = to < sel.to ? sel.text.split('\n').slice(0, to - sel.from + 1).join('\n') : sel.text;
+  if (to < sel.to) toast(`At most ${RANGE_MAX} lines go with one mention: lines ${sel.from}–${to}.`);
+  void addLines(tab.path, sel.from, to, { text, total: sel.total, unsaved: tab.dirty });
+  insertIntoPrompt(`${lineToken(tab.path, sel.from, to)} `);
+  return true;
+}
 
 /** Save a file tab from its editor; on success the editor's clean state moves to what was written. */
 export async function saveTab(key: string, force = false): Promise<void> {
@@ -56,6 +77,8 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
     revealed.current = r.n;
     requestAnimationFrame(() => h.reveal(r.line, r.col, r.len));
   }, [tab.reveal?.n, mounted, tab.version]);
+  // the lines selected in the editor (its "Add to prompt" button)
+  const [sel, setSel] = useState<{ from: number; to: number } | null>(null);
   // the editor's text while it differs from the file (the preview shows your unsaved edits)
   const [live, setLive] = useState<string | null>(null);
   const liveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,6 +108,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           onSave: () => void saveTab(tab.key),
           onCursor: (line, col) => setCursor({ line, col, lang: h.language }),
           onChange,
+          onSelect: (l) => setSel((x) => (l === null ? null : x && x.from === l.from && x.to === l.to ? x : l)),
         });
         editors.set(tab.key, h);
         setCursor({ line: 1, col: 1, lang: h.language });
@@ -213,6 +237,18 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           </div>
         )}
         <div class={`cm-host${view === 'preview' ? ' hidden' : ''}`} ref={host} />
+        {sel && view !== 'preview' && (
+          <button
+            type="button"
+            class="btn small sel-mention"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => mentionSelection(tab.key)}
+            title="Add the selected lines to the prompt as @path#L… (Alt+K): they go with your next prompt, quoted"
+            data-testid="mention-selection"
+          >
+            <Icon name="at" size={13} /> {sel.from === sel.to ? `Line ${sel.from}` : `Lines ${sel.from}–${sel.to}`} to the prompt <kbd>Alt+K</kbd>
+          </button>
+        )}
       </div>
     </div>
   );

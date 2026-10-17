@@ -1345,6 +1345,17 @@ function deliver(id: string, text: string, images: ImageBlock[]): boolean {
   return true;
 }
 
+/** A prompt of yours to session `id` — not necessarily the one shown (a plan's comments, after you approved it there):
+ *  while the session is open; otherwise it goes back into the prompt box. -> whether it went */
+export function sendToSession(id: string, text: string): boolean {
+  const v = get().views[id];
+  if (!v || v.state === 'closed' || v.state === 'ended' || v.state === 'error') {
+    set((x) => ({ ...x, restore: { n: (x.restore?.n ?? 0) + 1, text } }));
+    return false;
+  }
+  return deliver(id, text, []);
+}
+
 export function interrupt(): void {
   const id = get().active;
   if (id) socket.send({ type: 'interrupt', session: id });
@@ -1504,7 +1515,9 @@ export function answerQuestions(session: string, id: string, answers: Record<str
 
 /** A permission answer. `mode` (ExitPlanMode only): the mode to go on in once the plan is approved. */
 export function answerPermission(session: string, id: string, decision: api.Decision, message?: string, mode?: 'default' | 'acceptEdits' | 'auto'): void {
-  const msg = message?.trim() ? message.trim().slice(0, 2000) : undefined;
+  // (a plan's "Keep planning" may carry its line comments: up to 16,000 characters; the backend caps every other
+  // denial's message at one line of 1,000)
+  const msg = message?.trim() ? message.trim().slice(0, 16_000) : undefined;
   socket.send({ type: 'permission', id, session, decision, ...(msg ? { message: msg } : {}), ...(mode ? { mode } : {}) });
   if (mode) updateView(session, (v) => ({ ...v, mode }));
   if (mode === 'auto') setPrefs((p) => ({ ...p, mode: 'auto' }));   // (a plan approved with Auto: remembered, as a pick of it is)

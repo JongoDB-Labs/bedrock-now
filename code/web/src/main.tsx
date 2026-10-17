@@ -6,6 +6,7 @@ import './styles/app.css';
 import './styles/review.css';
 import './styles/polish.css';
 import './styles/git.css';
+import './styles/mentions.css';
 
 const root = document.createElement('div');
 root.id = 'app';

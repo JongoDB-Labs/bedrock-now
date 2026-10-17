@@ -446,6 +446,22 @@ export function watchKind(path: string): { kind: string; why: string } | null {
   return w ? { kind: w[1], why: w[2] } : null;
 }
 
+/** The files the Review pane lists: the filter (this session's, or all since the last commit), minus what was undone
+ *  here (a file whose hunks were partly undone keeps the rest, its counts again). */
+export function shownFiles(files: ReviewFile[], filter: 'session' | 'all', undone: Record<string, true>): ReviewFile[] {
+  return files
+    .filter((f) => filter === 'all' || f.recent || f.claude)
+    .flatMap((f): ReviewFile[] => {
+      if (!f.hunks.length) return undone[`file:${f.path}`] ? [] : [f];
+      const hunks = f.hunks.filter((h) => !undone[h.id]);
+      if (!hunks.length) return [];
+      if (hunks.length === f.hunks.length) return [f];
+      const add = hunks.reduce((n, h) => n + h.lines.filter((l) => l[0] === '+').length, 0);
+      const del = hunks.reduce((n, h) => n + h.lines.filter((l) => l[0] === '-').length, 0);
+      return [{ ...f, hunks, edits: f.edits.map((e) => e.filter((h) => !undone[h.id])), add, del }];
+    });
+}
+
 export function totals(files: ReviewFile[]): { files: number; add: number; del: number } {
   return { files: files.length, add: files.reduce((n, f) => n + f.add, 0), del: files.reduce((n, f) => n + f.del, 0) };
 }

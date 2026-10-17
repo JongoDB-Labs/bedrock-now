@@ -1517,6 +1517,33 @@ export async function showRun(id: string): Promise<void> {
   await request('POST', '/api/run/show', { id });
 }
 
+/** @terminal: the last lines of the terminal panel's current tmux pane, as text (the sandbox's: shown and sent as data). */
+export interface TerminalCapture {
+  pane: string | null;
+  window: { index: number | null; name: string };
+  command: string;
+  lines: number;
+  text: string;
+  /** older lines were left out for size (not only the ones you did not ask for) */
+  cut: boolean;
+  /** lines cut at 4,000 characters */
+  wide: number;
+}
+export const CAPTURE_LINES = 200;
+export const CAPTURE_LINES_MAX = 2000;
+export function normCapture(v: unknown): TerminalCapture {
+  const o = obj(v) ?? {};
+  const w = obj(o.window) ?? {};
+  const n = (x: unknown, hi: number) => (typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= hi ? x : null);
+  const text = typeof o.text === 'string' ? o.text.slice(-70_000) : '';
+  return { pane: typeof o.pane === 'string' && /^%[0-9]{1,6}$/.test(o.pane) ? o.pane : null, window: { index: n(w.index, 999_999), name: label(w.name, 60) },
+    command: label(o.command, 60), lines: text ? text.split('\n').length : 0, text, cut: o.cut === true, wide: n(o.wide, 1e6) ?? 0 };
+}
+export async function captureTerminal(lines: number = CAPTURE_LINES): Promise<TerminalCapture> {
+  const n = Math.min(CAPTURE_LINES_MAX, Math.max(1, Math.floor(lines) || CAPTURE_LINES));
+  return normCapture(await request('GET', '/api/terminal/capture' + q({ lines: n })));
+}
+
 /** Whether previews work here, and how they are routed (the portal: a capability per host on this computer, one host
  *  and a cookie over remote access). */
 export async function getPreviewInfo(): Promise<PreviewInfo> {
