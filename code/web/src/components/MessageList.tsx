@@ -11,6 +11,7 @@ import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
 import { WatchCard } from './WatchCard';
+import { BlockedCard } from './BlockedCard';
 import { modelLabel } from './Pickers';
 import { otherModels } from '../models';
 import { Icon, Spinner } from './icons';
@@ -323,6 +324,8 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
         return <ResultLine key={it.k} it={it} cost={costs ? shownCost(view?.turns[it.turn], costs[it.turn]) : null} />;
       case 'watch':
         return <WatchCard key={it.k} session={view?.id ?? ''} id={it.id} when={it.when} changes={it.changes} incomplete={it.incomplete} />;
+      case 'blocked':
+        return <BlockedCard key={it.k} session={view?.id ?? ''} it={it} mode={view?.mode ?? null} />;
       case 'notice':
         return (
           <div key={it.k} class={`notice notice-${it.level}`}>

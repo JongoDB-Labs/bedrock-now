@@ -51,9 +51,10 @@ export const MODE_INFO: Record<Mode, ModeInfo> = {
   },
   auto: {
     label: 'Auto',
-    desc: 'A reviewer model approves routine actions; asks or blocks risky ones',
-    runs: 'Not offered yet.',
-    icon: 'forward',
+    // (the CLI's own words: "no routine prompts; a reviewer model screens actions")
+    desc: 'No routine prompts: a reviewer model screens actions, runs routine ones and blocks risky ones',
+    runs: 'Without asking: reading, read-only commands, file edits in the workspace, and what the reviewer (Sonnet 5.5) approves. Blocked: downloading and running code, sending data out, force pushes and the like — each with the rule it matched and "Allow once". Your ask rules still ask; Plan still asks you. Each check costs model tokens (~$0.13 per 5 minutes in use, on the terminal\'s key).',
+    icon: 'sparkle',
     tone: 'blue',
     mark: '⏵⏵',
   },
@@ -72,23 +73,33 @@ export function modeName(m: string): string {
   return (MODE_INFO as Record<string, ModeInfo>)[m]?.label ?? m;
 }
 
-/** The modes the picker lists, in the desktop app's order (Auto is not offered yet; Bypass only when Settings allow it). */
-export function offeredModes(allowBypass: boolean): Mode[] {
-  return allowBypass ? ['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions'] : ['readOnly', 'plan', 'default', 'acceptEdits'];
+/** The modes the picker lists, in the desktop app's order: Auto and Bypass only when Settings allow them. */
+export function offeredModes(allowBypass: boolean, allowAuto = false): Mode[] {
+  const out: Mode[] = ['readOnly', 'plan', 'default', 'acceptEdits'];
+  if (allowAuto) out.push('auto');
+  if (allowBypass) out.push('bypassPermissions');
+  return out;
 }
 
-/** Shift+Tab, as in the CLI: Manual → Accept edits → Plan → [Bypass] → Manual. Read only is outside the cycle (like
- *  the CLI's dontAsk): from it, the cycle starts at Manual. */
-export function nextMode(cur: Mode, allowBypass: boolean): Mode {
-  const cycle: Mode[] = allowBypass ? ['default', 'acceptEdits', 'plan', 'bypassPermissions'] : ['default', 'acceptEdits', 'plan'];
+/** Shift+Tab, as in the CLI: Manual → Accept edits → Plan → [Bypass] → [Auto] → Manual (the optional modes after Plan,
+ *  Bypass first and Auto last). Read only is outside the cycle (like the CLI's dontAsk): from it, the cycle starts at
+ *  Manual. */
+export function nextMode(cur: Mode, allowBypass: boolean, allowAuto = false): Mode {
+  const cycle: Mode[] = ['default', 'acceptEdits', 'plan'];
+  if (allowBypass) cycle.push('bypassPermissions');
+  if (allowAuto) cycle.push('auto');
   const i = cycle.indexOf(cur);
   return i < 0 ? 'default' : cycle[(i + 1) % cycle.length];
 }
 
-/** Remembered for new sessions (this browser): Read only, Manual, Accept edits (Auto later). Plan and Bypass apply to
- *  the session they were picked in only, as in the desktop app and VS Code. */
+/** Remembered for new sessions (this browser): Read only, Manual, Accept edits, Auto — as the desktop app and VS Code
+ *  remember Manual, Accept edits and Auto. Plan and Bypass apply to the session they were picked in only. */
 export const remembered = (m: Mode): boolean => m === 'readOnly' || m === 'default' || m === 'acceptEdits' || m === 'auto';
 
-/** What a session (re)starts in: never Bypass (nor Auto) — those are switched to, per process. */
-export const startMode = (m: Mode | null | undefined, fallback: Mode = 'default'): Mode =>
-  m === 'readOnly' || m === 'plan' || m === 'default' || m === 'acceptEdits' ? m : fallback === 'bypassPermissions' || fallback === 'auto' ? 'default' : fallback;
+/** What a session (re)starts in: never Bypass (switched to per process, after its dialog); Auto only while Settings
+ *  allow it (the backend starts it in Manual and switches before the first prompt), else Manual — as Claude Code's
+ *  own apps start in Manual when auto mode is not available. */
+export const startMode = (m: Mode | null | undefined, fallback: Mode = 'default', allowAuto = false): Mode => {
+  const ok = (x: Mode | null | undefined): x is Mode => x === 'readOnly' || x === 'plan' || x === 'default' || x === 'acceptEdits' || (x === 'auto' && allowAuto);
+  return ok(m) ? m : ok(fallback) ? fallback : 'default';
+};

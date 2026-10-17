@@ -251,17 +251,20 @@ test fails.
   `--settings={"disableAutoMode":"disable"}`, after the shared MCP server and before your arguments: Claude Code's
   flag tier, above user, project and local settings, so auto mode is off whatever `~/.claude-bedrock/settings.json`
   says, and nothing there is written. Why: Claude Code 2.1.283 and later counts auto mode as available behind this
-  stack's address and may start in it (it did, with no `--permission-mode`, in a probe against a stand-in for the API);
-  its classifier asks for `claude-sonnet-5`, which LiteLLM does not serve, so it falls back to the session's model and
-  blocks what it cannot judge — and *Plan* mode hands writing commands to it instead of asking. A `--settings` of your
-  own comes later and replaces this one (Claude Code takes the last); `CLAUDE_BEDROCK_AUTO_MODE=1` leaves auto mode to
-  Claude Code; `CLAUDE_BEDROCK_USE_MY_CONFIG=1` (or a lean folder that is one of yours) leaves it to your settings —
-  add `"disableAutoMode": "disable"` there for the same. `--help` says which on its `Auto` line.
+  stack's address and may start in it (it did, with no `--permission-mode`, in a probe against a stand-in for the API),
+  and *Plan* mode hands writing commands to its classifier instead of asking. A `--settings` of your own comes later
+  and replaces this one (Claude Code takes the last); `CLAUDE_BEDROCK_AUTO_MODE=1` leaves auto mode to Claude Code;
+  `CLAUDE_BEDROCK_USE_MY_CONFIG=1` (or a lean folder that is one of yours) leaves it to your settings — add
+  `"disableAutoMode": "disable"` there for the same. `--help` says which on its `Auto` line. With auto mode on, the
+  classifier asks for the fixed id `claude-sonnet-5`, which the catalog maps to Sonnet 5.5 (an alias, while Sonnet 5.5
+  is enabled; without it Claude Code falls back to the session's own model): about $0.13 for the first check in each 5
+  minutes and half a cent for each further one, on the `claude-code` key (measured on Bedrock, 2.1.296).
   `CLAUDE_BEDROCK_MODEL=haiku`, `sonnet` or `opus` (any case, `[1m]` kept) is passed as that slot's full id from
   `.env` (`CLAUDE_BEDROCK_HAIKU_MODEL` …): given the alias, Claude Code picks the model itself, and with `haiku` it
   plans on Sonnet in *Plan* mode (2.1.296, probed; with the full id it stays on Haiku). A `--model haiku` of yours, or
   `/model haiku` typed in a session, still reaches Claude Code as the alias. The browser terminal's `claude-bedrock`
-  maps the aliases the same way (its auto mode is off through the image's managed settings).
+  maps the aliases the same way (its auto mode is off unless Settings › Code page › *Auto mode in the terminal* is on:
+  the sandbox's managed settings, and its own `--settings` when only the Code page's Auto mode is on).
 - **Requests at launch.** Claude Code's changelog, 2.1.290: "Changed `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` to
   also skip the startup connection warm-up" — the wrapper sets that variable. The changelog names no other switch for
   startup requests, and none is needed here: in lean mode an interactive launch made no model request until

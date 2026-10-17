@@ -4,14 +4,17 @@
 // card yourself (a click on it, or Tab into it) — never a keystroke that reached it because it took the focus — and
 // not in its first 400 ms, nor at all when the prompt asks to default to no. A card that appears takes the focus only
 // from nothing you type into (a field, the editor, the terminal keep it). A prompt whose input could not be shown in
-// full can only be denied. ExitPlanMode is a plan to approve: then Accept edits, or Manual (asking for each edit), or not
-// yet (keep planning, with a message).
+// full can only be denied. ExitPlanMode is a plan to approve: then Accept edits, or Manual (asking for each edit), or
+// Auto (while Settings allow it), or not yet (keep planning, with a message). While Settings allow Auto, a shell
+// command's card in Manual or Accept edits also offers "Allow, and switch to Auto", as the CLI does — not one that your
+// ask rules or a hook asked for (Auto would ask for those too).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PermissionReq, RuleLine } from '../types';
 import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
 import { commandShape, label, prettyJson, safe } from '../text';
-import { answerPermission, answerQuestions } from '../app';
+import { answerPermission, answerQuestions, allowAndSwitchToAuto, store, autoOk } from '../app';
+import { useSel } from '../store';
 import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_EDITS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
 import { typingIn } from '../focus';
 import { buildAnswers, emptyPick, parseQuestions, toggle, type Pick, type Question } from '../questions';
@@ -219,6 +222,7 @@ function RuleList({ rules, label: what, testid }: { rules: RuleLine[]; label: st
 /** ExitPlanMode: the plan, and how to go on. */
 function PlanCard({ req, index, total }: { req: PermissionReq; index: number; total: number }) {
   const i = obj(req.input);
+  const allowAuto = useSel(store, (s) => autoOk(s));
   const armed = useArmed(req.id);
   const [keep, setKeep] = useState(false);
   const [msg, setMsg] = useState('');
@@ -270,6 +274,11 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
           <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'default')} data-testid="plan-approve-ask">
             Approve, Manual
           </button>
+          {allowAuto && (
+            <button type="button" class="btn" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'auto')} data-testid="plan-approve-auto">
+              Approve, Auto
+            </button>
+          )}
           <button type="button" class="btn primary" disabled={!ok} onClick={() => answerPermission(req.session, req.id, 'once', undefined, 'acceptEdits')} data-testid="plan-approve-edits">
             Approve, Accept edits
           </button>
@@ -316,6 +325,21 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
     if (d !== 'deny' && !allow) return;
     answerPermission(req.session, req.id, d, d === 'deny' ? msg : undefined);
   };
+  // "Allow, and switch to Auto" (the CLI's "Yes, and switch to auto mode"): a shell command in Manual or Accept edits,
+  // not asked for by one of your ask rules or a hook, while Settings allow Auto
+  const sessionMode = useSel(store, (s) => s.views[req.session]?.mode ?? null);
+  const allowAuto = useSel(store, (s) => autoOk(s));
+  const offerAuto = allowAuto && req.tool === 'Bash' && (sessionMode === 'default' || sessionMode === 'acceptEdits') && req.reasonType !== 'rule' && req.reasonType !== 'hook';
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoErr, setAutoErr] = useState('');
+  const toAuto = async () => {
+    if (!allow || autoBusy) return;
+    setAutoBusy(true);
+    setAutoErr('');
+    const e = await allowAndSwitchToAuto(req.session, req.id);
+    setAutoBusy(false);
+    if (e) setAutoErr(e);
+  };
 
   return (
     <div
@@ -359,7 +383,17 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
         <Details req={req} />
       </div>
       {!req.complete && <Partial />}
-      {req.reason && <div class="perm-reason">{req.reason}</div>}
+      {req.reason && (
+        <div class="perm-reason" data-testid="perm-reason">
+          {req.reasonType === 'classifier' && <strong>Auto mode paused: </strong>}
+          {req.reason}
+        </div>
+      )}
+      {autoErr && (
+        <div class="perm-warn perm-partial" role="alert" data-testid="perm-auto-error">
+          <Icon name="alert" size={14} /> Not switched to Auto: {autoErr}
+        </div>
+      )}
       {denying ? (
         <form
           class="perm-deny"
@@ -407,6 +441,11 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
           {project.length > 0 && (
             <button type="button" class="btn" disabled={!allow} onClick={() => answer('always_project')} data-testid="perm-always-project">
               Always, in this workspace's settings
+            </button>
+          )}
+          {offerAuto && (
+            <button type="button" class="btn" disabled={!allow || autoBusy} onClick={() => void toAuto()} title="Runs this command, then switches the session to Auto: a reviewer model checks the next actions instead of you" data-testid="perm-once-auto">
+              Allow, and switch to Auto
             </button>
           )}
           <button ref={denyRef} type="button" class="btn ghost" onClick={() => setDenying(true)} data-testid="perm-deny">

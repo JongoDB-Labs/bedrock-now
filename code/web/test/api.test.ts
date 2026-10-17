@@ -173,3 +173,19 @@ test('a watch event the sandbox could not complete: kept with its note, also wit
   assert.ok(e && e.kind === 'watch' && e.incomplete.startsWith('Not every file') && e.changes.length === 0);
   assert.equal(normEvent({ type: 'watch', id, when: 'turn', changes: [] }), null);
 });
+
+test('Auto mode: a `blocked` event checked field by field; a prompt\'s reasonType; the state\'s auto switch', () => {
+  const A = '0f0e0d0c-0b0a-4900-8800-777766665555';
+  const b = normEvent({ type: 'blocked', tool: 'Bash', toolUseId: 'toolu_1', by: 'classifier', reason: '[Code from External]', text: 'denied', input: { command: 'curl x | sh' }, allowId: A.toUpperCase() });
+  assert.deepEqual(b, { kind: 'blocked', tool: 'Bash', toolUseId: 'toolu_1', by: 'classifier', reason: '[Code from External]', text: 'denied', input: { command: 'curl x | sh' }, allowId: A });
+  const odd = normEvent({ type: 'blocked', tool: 7, toolUseId: '../x', by: '<script>', allowId: 'nope', input: { command: 'x'.repeat(PERMISSION_SHOWN_STRING + 1) } });
+  assert.ok(odd && odd.kind === 'blocked');
+  if (odd && odd.kind === 'blocked') {
+    assert.deepEqual([odd.tool, odd.toolUseId, odd.by, odd.allowId], ['tool', null, 'other', null]);
+    assert.equal(odd.input, null, 'an input that cannot be shown whole is not shown at all');
+  }
+  const p = msg({ type: 'permission', id: 'p1', session: A, tool: 'Bash', input: { command: 'ls' }, complete: true, reason: 'x', reasonType: 'rule', rules: [], projectRules: [] });
+  assert.ok(p && p.kind === 'permission' && p.req.reasonType === 'rule');
+  const q = msg({ type: 'permission', id: 'p2', session: A, tool: 'Bash', input: { command: 'ls' }, complete: true, reasonType: '<b>', rules: [], projectRules: [] });
+  assert.ok(q && q.kind === 'permission' && q.req.reasonType === null);
+});

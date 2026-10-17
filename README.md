@@ -294,13 +294,16 @@ claude.ai plan that is invisible; billed per token it is not. So:
   such line for `-p`, with `CLAUDE_BEDROCK_QUIET=1`, or when stderr is not a terminal: use `claude-bedrock --resume`
   (the picker) or `claude-bedrock --continue` then.
 - **Auto mode off, models in full.** Claude Code 2.1.283 and later counts its *auto* mode (a classifier model
-  approving actions for you, on your key) as available behind this stack's API address, and may start in it; its
-  classifier asks for a model LiteLLM does not serve, so it runs on your session's model and blocks what it cannot
-  judge. `claude-bedrock` turns it off in its lean folder's sessions, as the browser terminal and the Code page do:
-  one `--settings={"disableAutoMode":"disable"}` argument (Claude Code's flag tier, above every settings file —
-  nothing of yours is written; a `--settings` of your own replaces it). `CLAUDE_BEDROCK_AUTO_MODE=1` leaves auto mode
-  to Claude Code; with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` your own settings decide (add `"disableAutoMode": "disable"`
-  to them for the same). `CLAUDE_BEDROCK_MODEL=haiku` (or `sonnet`, `opus`) is passed as that slot's full id
+  approving actions for you, on your key) as available behind this stack's API address, and may start in it.
+  `claude-bedrock` turns it off in its lean folder's sessions, as the browser terminal and the Code page do unless
+  Settings turn it on there: one `--settings={"disableAutoMode":"disable"}` argument (Claude Code's flag tier, above
+  every settings file — nothing of yours is written; a `--settings` of your own replaces it).
+  `CLAUDE_BEDROCK_AUTO_MODE=1` leaves auto mode to Claude Code; with `CLAUDE_BEDROCK_USE_MY_CONFIG=1` your own settings
+  decide (add `"disableAutoMode": "disable"` to them for the same). Its classifier asks for `claude-sonnet-5`, which
+  the catalog maps to **Sonnet 5.5** (an alias, rendered while Sonnet 5.5 is enabled), so with auto mode on it runs
+  there, on the same key — about $0.13 for the first check in each 5 minutes and half a cent for each further one
+  (measured: it sends ~47k tokens of instructions, cached) — rather than on your session's model (an Opus session
+  would otherwise review on Opus). `CLAUDE_BEDROCK_MODEL=haiku` (or `sonnet`, `opus`) is passed as that slot's full id
   (`claude-haiku-5-5`): with the alias, Claude Code plans on Sonnet in *Plan* mode. A `--model haiku` or a `/model
   haiku` typed in a session still goes to Claude Code as an alias: name the model in full there.
 
@@ -349,6 +352,12 @@ It is a sandbox, not a shell on your computer:
   page. Whatever answers there, its page runs only ttyd's own script and can set or clear no cookies.
 - Over [remote access](#remote-access) it is **off** unless you set `REMOTE_TERMINAL=true` in `.env` (then
   `./stack up`; in Tailscale mode it is one more Service to approve, `./stack remote status` names it).
+- Claude Code's **auto mode** (a reviewer model approving actions instead of you) is off for every `claude` in it —
+  the sandbox's managed settings say so — unless **Settings → Code page → Auto mode in the terminal** is on
+  (`TERMINAL_AUTO_MODE`, from the computer running bedrock-now; the terminal restarts). Then Claude Code decides as
+  anywhere else: an interactive `claude` starts in it (`Shift+Tab` leaves it), its reviewer runs on Sonnet 5.5 at
+  about $0.13 per 5 minutes in use on the terminal's key. With only the Code page's Auto mode on, `claude` here
+  starts in *Manual* and `claude-bedrock` keeps auto mode off ([docs/security.md](docs/security.md#auto-mode)).
 - What runs in it can spend its key (within `BUDGET_TERMINAL`), read and write the shared store and knowledge
   bases (so it could plant text that Chat's answers later draw on), and change anything in the workspace — which
   you may open on your computer later: a `.git/hooks` script or `core.fsmonitor`/`core.sshCommand` in
@@ -415,8 +424,8 @@ per browser.
   answering for 30 minutes counts as Deny. When Claude asks *you* something (its AskUserQuestion tool), the card is a
   small form — one choice, several, or **Other** with your own words — and your answers go back to Claude as answers.
 - **Permission modes**, next to **Send** as in Claude Code's desktop app (`Shift+Tab` cycles *Manual → Accept edits →
-  Plan → Bypass permissions* when allowed, as the CLI does; `Alt+M` opens the menu). The desktop app's names and
-  Claude Code's own modes underneath, plus one of bedrock-now's own, *Read only*:
+  Plan → Bypass permissions → Auto*, those two when allowed, as the CLI does; `Alt+M` opens the menu). The desktop
+  app's names and Claude Code's own modes underneath, plus one of bedrock-now's own, *Read only*:
 
   | Mode | Claude Code underneath | Without asking | Your words |
   |---|---|---|---|
@@ -424,11 +433,18 @@ per browser.
   | **Plan** | `plan` | reading and read-only commands; it asks before anything else, then shows its plan to approve | read-only, then a plan |
   | **Manual** | `default` | reading and read-only commands; every edit and other command asks | read-write-execute, each approved |
   | **Accept edits** | `acceptEdits` | file edits in the workspace and file commands there (`mkdir`, `touch`, `mv`, `cp`, `rm`, `sed`); other commands ask | read-write (execute approved) |
+  | **Auto** (when allowed) | `auto` | reading, read-only commands and file edits in the workspace; every other command, web fetch or tool goes to a **reviewer model** (Sonnet 5.5) that runs the routine ones and **blocks** risky ones (downloading and running code, sending data out, force pushes …) with the rule it matched; your ask rules still ask; *Plan* still asks you | read-write-execute, model-reviewed |
   | **Bypass permissions** | `bypassPermissions` | everything — Claude's file tools still ask before changing `.git`, `.claude`, `.vscode`, `.husky`, `.devcontainer`, `.envrc` and `.mcp.json` (shell commands do not: the watchlist below flags those after the turn), and your deny rules still deny | read-write-execute, no prompts |
 
-  *Read only*, *Manual* and *Accept edits* are remembered for new sessions (per browser); *Plan* and *Bypass
-  permissions* apply to the session they were picked in only, as in the desktop app and VS Code. *Auto* (a reviewer
-  model approving routine actions) is not offered yet: Claude Code's auto mode is off in the sandbox. **Bypass
+  *Read only*, *Manual*, *Accept edits* and *Auto* are remembered for new sessions (per browser); *Plan* and *Bypass
+  permissions* apply to the session they were picked in only, as in the desktop app and VS Code. **Auto** is off
+  unless **Settings → Code page → Auto mode** is on (`CODE_AUTO_MODE`; turning it on works only from the computer
+  running bedrock-now). It needs no confirmation — it still asks or blocks, as in Claude Code — and costs model calls:
+  about **$0.13 for the first check in each 5 minutes** and half a cent for each further one, on the terminal's key
+  (more than a Haiku session itself). A blocked action shows a card with the rule it matched and **Allow once**,
+  which runs exactly that call again without the reviewer; three blocks in a row and Claude Code asks you again
+  (a normal card). In *Manual* and *Accept edits* a shell command's card also offers **Allow, and switch to Auto**,
+  and a plan can be approved with *Auto*. Details: [docs/security.md](docs/security.md#auto-mode). **Bypass
   permissions** is off unless **Settings → Code page → Allow Bypass permissions** is on (`CODE_ALLOW_BYPASS`; turning it
   on works only from the computer running bedrock-now), and every switch to it asks first, in a dialog that names
   what it means here: the workspace is your real folder (git hooks, package scripts and editor settings in it run on
@@ -807,8 +823,10 @@ Then run `./stack models --recheck`.
 
 ### Model aliases
 
-The catalog ships without aliases. If a tool still sends an old model name, put a comma list in the `aliases`
-column of `catalog/models.tsv` and run `./stack setup`:
+The catalog ships one alias: `claude-sonnet-5` → `claude-sonnet-5-5`, the fixed name Claude Code's auto-mode classifier
+asks for (so its reviews run on Sonnet 5.5 — harmless while auto mode is off: nothing asks for it then). If a tool
+still sends an old model name, put a comma list in the `aliases` column of `catalog/models.tsv` and run `./stack
+setup`:
 
 ```
 claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	claude-opus,claude-3-opus-20240229	-

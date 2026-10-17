@@ -59,7 +59,10 @@ export type Ev =
   | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; consumed?: string[] }
   | { kind: 'error'; text: string }
   /** files of the workspace that run on your computer changed (in a turn, or between turns) */
-  | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string };
+  | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string }
+  /** a call denied without asking you: by Auto mode's classifier ("classifier": reason = the rule it matched, or why
+   *  it could not decide), a deny rule, Read only …; allowId: "Allow once" can answer it (Auto's blocks only) */
+  | { kind: 'blocked'; tool: string; toolUseId: string | null; by: string; reason: string; text: string; input: unknown; allowId: string | null };
 
 /** One watched file that changed (code/server/watch.mjs): what it is, and the texts for a diff. */
 export interface WatchChange {
@@ -101,6 +104,9 @@ export interface PermissionReq {
   /** false: the input was cut (by the backend or here) — what is shown is not all that would run: no Allow */
   complete: boolean;
   reason: string;
+  /** why Claude Code asks (the SDK's decisionReasonType): rule (one of your ask rules), hook, classifier (Auto mode paused
+   *  after blocks in a row), other …; null when not said */
+  reasonType: string | null;
   /** what "Always" applies (sandbox-wide or this session) */
   rules: RuleLine[];
   /** the same rules in this workspace's .claude settings (offered separately, with a warning) */
@@ -258,6 +264,8 @@ export interface ServerState {
   portalOrigin: string | null;
   /** Settings › Code page allows Bypass permissions (CODE_ALLOW_BYPASS) */
   allowBypass: boolean;
+  /** Settings › Code page allows Auto mode (CODE_AUTO_MODE) */
+  allowAuto: boolean;
   /** the sandbox reaches the internet (TERMINAL_EGRESS); null: not known */
   egress: boolean | null;
   /** the folder of yours the sandbox sees (a label), when known */

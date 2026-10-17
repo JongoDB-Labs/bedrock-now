@@ -111,3 +111,10 @@ export function rulePreview(suggestions: Suggestion[]): string[] {
 
 /** A mode's name as the page shows it (modes.ts). */
 export { modeName } from './modes';
+
+/** Auto mode's block reason "[Code from External]" → the rule its reviewer matched; null when the reason is a sentence
+ *  (why it could not decide, "Blocked by fast classifier" …) */
+export function ruleOf(reason: string): string | null {
+  const m = /^\[([A-Za-z0-9 &_-]{1,64})\]$/.exec(reason.trim());
+  return m ? m[1] : null;
+}

@@ -92,7 +92,7 @@ function actions(s: AppState): Item[] {
   ];
   if (v && v.state !== 'closed') list.push(a('restart', 'Restart this session (load new MCP servers)', () => void restartSession(), 'refresh'));
   // modes, models, effort: one entry each, so typing "plan" or "haiku" finds them
-  for (const m of offeredModes(s.server?.allowBypass === true)) {
+  for (const m of offeredModes(s.server?.allowBypass === true, s.server?.allowAuto === true)) {
     const info = MODE_INFO[m];
     list.push(a(`mode:${m}`, `Mode: ${info.label}`, () => setMode(m), info.icon, info.desc));
   }

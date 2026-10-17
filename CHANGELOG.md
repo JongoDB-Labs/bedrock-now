@@ -6,6 +6,34 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Auto mode, opt-in.** Claude Code's *auto* mode — a reviewer model that approves routine actions and blocks risky
+  ones (downloading and running code, sending data out, force pushes …) instead of asking you — is a mode of the Code
+  page's picker once **Settings › Code page › Auto mode** is on (`CODE_AUTO_MODE`; on only from the computer running
+  bedrock-now, off from anywhere), with the desktop app's name and place: after *Plan* in the `Shift+Tab` cycle,
+  remembered for new sessions like *Accept edits*, no confirmation (it still asks or blocks). *Plan* keeps asking you.
+  A blocked action shows a card with the rule it matched and **Allow once** (exactly that call runs again, once,
+  without the reviewer — as Claude Code's own retry of a recent denial); a shell command's card in *Manual* or *Accept
+  edits* offers **Allow, and switch to Auto**, and a plan can be approved with *Auto*. **Auto mode in the terminal**
+  (`TERMINAL_AUTO_MODE`) is the same switch for the browser terminal's `claude`. Both off by default; a change restarts
+  the terminal (and, for the Code page's, the code container).
+- **The reviewer runs on Sonnet 5.5.** Claude Code's classifier asks for the fixed id `claude-sonnet-5`; the catalog
+  now maps it to `claude-sonnet-5-5` (an alias, harmless while auto mode is off), so it no longer falls back to the
+  session's own model. Verified on Bedrock first (LiteLLM passes its requests, `context-1m` beta included; spend lands
+  on the session and key): about **$0.13 for the first check in each 5 minutes** (it sends ~47k tokens of instructions,
+  cached) and about half a cent for each further check — on a Haiku session more than the session itself.
+  `claude-bedrock` on your computer keeps auto mode off in its lean folder; with `CLAUDE_BEDROCK_AUTO_MODE=1` its
+  classifier now runs on Sonnet 5.5 too.
+
+### Changed
+
+- The sandbox's Claude Code managed settings are written at the terminal container's start from the two auto mode
+  switches (`/etc/claude-code/managed-settings.json` links to `/run/bn/managed-settings.json`, a tmpfs); with both off
+  they say what they said before (auto mode off for every `claude` there).
+- A call Claude Code denies without asking you (Auto's reviewer, a deny rule, *Read only*) is a card of its own in the
+  Code page (`blocked` events), not a plain line.
+
 ## [0.7.0] - 2026-10-16
 
 ### Added

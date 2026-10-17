@@ -81,9 +81,10 @@ A prompt picks the scenario by keyword: *fix … retry* (Read + Edit), *write/cr
 *ask me* (AskUserQuestion, one choice), *ask me two* (several choices + one), *huge command* (a prompt not shown in
 full), *padded* (a command pushed out of sight), *risky* (default to no, no Always), *many edits* (MultiEdit),
 *write … markdown* (a Write of a Markdown file: its card offers Preview),
-*refuse this prompt*, *hostile*, or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`); in Plan mode
+*refuse this prompt*, *hostile*, *install script* (in Auto, the reviewer blocks it: the blocked-action card, *Allow
+once*), or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`); in Plan mode
 every prompt ends in a plan to approve. Test hooks: `POST /__mock/drop|close?code=|lock|unlock|budget?spend=&max=|
-clear?session=|touch?path=|reset`. Plugins: one marketplace with a few plugins; adding any other
+clear?session=|touch?path=|reset`; `POST /__mock/auto?allow=1|0` is Settings › Code page › Auto mode. Plugins: one marketplace with a few plugins; adding any other
 (`/workspace/name`, `owner/repo`) gives one plain plugin and one installed by a command, which answers
 `needs_confirmation {command, sha256}` until that hash comes back; installs reload the open sessions' commands. MCP:
 `bedrock-shared` plus servers you add (they load when a session starts), off/on per session, reconnect. Previews:

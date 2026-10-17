@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applyHunks, compact, countChanges, hunkLines, lineDiff } from '../src/diff';
 import { meter, shownCost, turnCosts } from '../src/spend';
 import { appendMemory, findTrigger, memoryLine, mergeCommands, rankCommands, rankPaths } from '../src/palette';
-import { rulePreview, sentence, destinationText } from '../src/permission';
+import { rulePreview, ruleOf, sentence, destinationText } from '../src/permission';
 import { parsePrefs, DEFAULT_PREFS } from '../src/prefs';
 import { cap, cleanName, cleanPath, commandShape, isId, isUuid, label, money, perMtok, tokens, visible } from '../src/text';
 import { createStore } from '../src/store';
@@ -129,9 +129,10 @@ test('prefs: anything stored is validated and clamped', () => {
   assert.equal(p.effort, 'max');
   assert.equal(p.lastSession, null);
   assert.equal(parsePrefs({ model: 'claude-sonnet-5-5[1m]' }).model, 'claude-sonnet-5-5[1m]');
-  // the mode new sessions start in: Read only, Manual, Accept edits — never Plan or Bypass (those are per session)
-  for (const m of ['readOnly', 'default', 'acceptEdits']) assert.equal(parsePrefs({ mode: m }).mode, m);
-  for (const m of ['plan', 'bypassPermissions', 'auto', 'yolo']) assert.equal(parsePrefs({ mode: m }).mode, 'default', m);
+  // the mode new sessions start in: Read only, Manual, Accept edits, Auto (started in only while Settings allow it:
+  // startMode) — never Plan or Bypass (those are per session)
+  for (const m of ['readOnly', 'default', 'acceptEdits', 'auto']) assert.equal(parsePrefs({ mode: m }).mode, m);
+  for (const m of ['plan', 'bypassPermissions', 'yolo']) assert.equal(parsePrefs({ mode: m }).mode, 'default', m);
   assert.equal(parsePrefs({ mode: 'dontAsk' }).mode, 'readOnly', 'the former "Don\'t ask" is Read only now');
 });
 
@@ -153,6 +154,29 @@ test('modes: the desktop app\'s names and order, plus Read only; the Shift+Tab c
   // Bypass: what still asks is said as it is — Claude's file tools, not shell commands
   assert.match(MODE_INFO.bypassPermissions.runs, /file tools still ask/);
   assert.match(MODE_INFO.bypassPermissions.runs, /shell commands do not/);
+});
+
+test('Auto (Settings › Code page): offered, cycled to last after Plan (and Bypass), remembered, started in — only while allowed', () => {
+  assert.deepEqual(offeredModes(false, true), ['readOnly', 'plan', 'default', 'acceptEdits', 'auto']);
+  assert.deepEqual(offeredModes(true, true), ['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions'], 'the desktop app\'s order');
+  const cycle = (bypass: boolean, auto: boolean) => { const seen = []; let m: (typeof MODES)[number] = 'default'; for (let i = 0; i < 6; i++) { seen.push(m); m = nextMode(m, bypass, auto); } return seen; };
+  // the CLI: optional modes after Plan, Bypass first and Auto last
+  assert.deepEqual(cycle(false, true), ['default', 'acceptEdits', 'plan', 'auto', 'default', 'acceptEdits']);
+  assert.deepEqual(cycle(true, true), ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto', 'default']);
+  assert.equal(nextMode('auto', false, false), 'default', 'Auto turned off meanwhile: the cycle starts again at Manual');
+  assert.ok(remembered('auto'));
+  assert.equal(startMode('auto', 'default', true), 'auto');
+  assert.equal(startMode('auto', 'default', false), 'default', 'as Claude Code\'s apps: Manual when auto mode is not available');
+  assert.equal(startMode(null, 'auto', true), 'auto');
+  assert.equal(startMode(null, 'auto', false), 'default');
+  assert.equal(MODE_INFO.auto.label, 'Auto');
+  assert.match(MODE_INFO.auto.desc, /reviewer model/);
+  assert.match(MODE_INFO.auto.runs, /Sonnet 5\.5/);
+  assert.match(MODE_INFO.auto.runs, /\$0\.13 per 5 minutes/);
+  assert.equal(MODE_INFO.auto.tone, 'blue');
+  assert.equal(ruleOf('[Code from External]'), 'Code from External');
+  assert.equal(ruleOf(' [Data Exfiltration] '), 'Data Exfiltration');
+  for (const r of ['Blocked by fast classifier', '[<img src=x>]', '[]', 'Auto mode could not evaluate this action', '[a] and [b]']) assert.equal(ruleOf(r), null, r);
 });
 
 test('session: a watch event becomes one card (a replay adds none)', () => {

@@ -295,6 +295,9 @@ export function setLayout(patch: Partial<Layout>): void {
   setPrefs((p) => ({ ...p, layout: { ...p.layout, ...patch } }));
 }
 
+/** Settings › Code page allows Auto mode (CODE_AUTO_MODE) — the code container says so in /api/state */
+export const autoOk = (s: AppState = get()): boolean => s.server?.allowAuto === true;
+
 export function activeView(s: AppState = get()): SessionView | undefined {
   return s.active ? s.views[s.active] : undefined;
 }
@@ -627,7 +630,7 @@ function onReset(old: string, next: string): void {
   set((s) => {
     const views = { ...s.views };
     if (!views[next]) {
-      views[next] = newView(next, { state: 'idle', model: v?.model ?? '', mode: startMode(v?.mode, s.prefs.mode), effort: v?.effort ?? s.prefs.effort,
+      views[next] = newView(next, { state: 'idle', model: v?.model ?? '', mode: startMode(v?.mode, s.prefs.mode, autoOk(s)), effort: v?.effort ?? s.prefs.effort,
         title: v?.title ? label(`${v.title} (cleared)`, 200) : '' });
     }
     if (views[old]) views[old] = { ...views[old], state: 'ended', seq: 0, permissions: [] };
@@ -827,7 +830,7 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
   set((x) => ({ ...x, opening: true }));
   try {
     const model = sendModel(opts.model, s) || defaultModel(s);
-    const mode = startMode(opts.mode ?? s.startWith, s.prefs.mode);   // never Bypass (nor Auto): those are switched to, per session
+    const mode = startMode(opts.mode ?? s.startWith, s.prefs.mode, autoOk(s));   // never Bypass (switched to per session); Auto only while allowed
     const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
     const { id } = await api.openSession({ model: sendModel(model, s), mode, effort });
     set((x) => ({ ...x, startWith: null }));
@@ -868,7 +871,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
     const info = s.sessions.find((x) => x.id === id);
     const src = s.views[id];
     const model = (fork && sendModel(src?.model, s)) || defaultModel(s);
-    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: startMode(s.prefs.mode), effort: s.prefs.effort, resume: id, fork, before });
+    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: startMode(s.prefs.mode, 'default', autoOk(s)), effort: s.prefs.effort, resume: id, fork, before });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -888,7 +891,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
       const views = { ...x.views };
       delete views[newId];
       const name = info?.title || src?.title || info?.firstPrompt || id.slice(0, 8);
-      views[newId] = newView(newId, { state: 'idle', model, mode: startMode(x.prefs.mode), title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
+      views[newId] = newView(newId, { state: 'idle', model, mode: startMode(x.prefs.mode, 'default', autoOk(x)), title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
       return { ...x, views, active: newId, sheet: null };
     });
     setPrefs((p) => ({ ...p, lastSession: newId }));
@@ -940,7 +943,7 @@ async function revive(id: string): Promise<string | null> {
   try {
     const v = s.views[id];
     // (the same session: Plan goes on; Bypass ended with its process — Manual)
-    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: startMode(v?.mode, s.prefs.mode), effort: v?.effort ?? s.prefs.effort, resume: id });
+    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: startMode(v?.mode, s.prefs.mode, autoOk(s)), effort: v?.effort ?? s.prefs.effort, resume: id });
     if (newId !== id) {
       // the backend gave the resumed process a new id: carry the conversation over to it
       loadedHistory.add(newId);
@@ -952,7 +955,7 @@ async function revive(id: string): Promise<string | null> {
         return { ...x, views, active: x.active === id ? newId : x.active };
       });
       setPrefs((p) => ({ ...p, lastSession: newId }));
-    } else updateView(id, (x) => ({ ...x, state: 'idle', seq: 0, gap: false, mode: startMode(x.mode, s.prefs.mode) }));
+    } else updateView(id, (x) => ({ ...x, state: 'idle', seq: 0, gap: false, mode: startMode(x.mode, s.prefs.mode, autoOk(s)) }));
     attach(newId);
     return newId;
   } catch (e) {
@@ -1007,7 +1010,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   if (CLEAR.test(t)) {
     // a fresh conversation, with this one's model, mode and effort (the old one stays in the list)
     const cur = activeView();
-    return (await newSession(cur ? { model: cur.model || undefined, mode: startMode(cur.mode, get().prefs.mode), effort: cur.effort } : {})) !== null;
+    return (await newSession(cur ? { model: cur.model || undefined, mode: startMode(cur.mode, get().prefs.mode, autoOk(get())), effort: cur.effort } : {})) !== null;
   }
   if (RESUME.test(t)) {
     showSessions();
@@ -1027,7 +1030,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
     // a session that never got a prompt has no transcript to resume: a new one takes its place
     if (!v.items.some((it) => it.t === 'user')) {
       const old = id;
-      id = await newSession({ model: v.model || undefined, mode: startMode(v.mode, get().prefs.mode), effort: v.effort });
+      id = await newSession({ model: v.model || undefined, mode: startMode(v.mode, get().prefs.mode, autoOk(get())), effort: v.effort });
       if (id) set((s) => {
         const views = { ...s.views };
         delete views[old];
@@ -1076,12 +1079,16 @@ export async function setModel(name: string): Promise<boolean> {
   toast(`Still on ${was}: ${r.error || 'the switch did not go through'}`, 'error');
   return false;
 }
-/** Switch the permission mode. Read only, Manual and Accept edits are remembered for new sessions too; Plan and Bypass
- *  are for this session only. Bypass permissions first asks (the dialog: confirmBypass), and only where Settings allow it. */
+/** Switch the permission mode. Read only, Manual, Accept edits and Auto are remembered for new sessions too; Plan and
+ *  Bypass are for this session only. Bypass permissions first asks (the dialog: confirmBypass), and only where Settings
+ *  allow it; Auto only where Settings allow it (no dialog: it still asks or blocks, as in Claude Code). */
 /** A mode picked while a switch is on its way: sent once that one is answered (the last one picked wins). */
 let queuedMode: { session: string; mode: Mode } | null = null;
 export function setMode(mode: Mode): void {
-  if (mode === 'auto') return;
+  if (mode === 'auto' && !autoOk()) {
+    toast('Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now.', 'error');
+    return;
+  }
   const v = activeView();
   // one switch at a time: a mode picked meanwhile (Shift+Tab pressed again) shows at once and goes next
   if (get().modeSwitching && mode !== 'bypassPermissions') {
@@ -1203,13 +1210,32 @@ export function answerQuestions(session: string, id: string, answers: Record<str
 }
 
 /** A permission answer. `mode` (ExitPlanMode only): the mode to go on in once the plan is approved. */
-export function answerPermission(session: string, id: string, decision: api.Decision, message?: string, mode?: 'default' | 'acceptEdits'): void {
+export function answerPermission(session: string, id: string, decision: api.Decision, message?: string, mode?: 'default' | 'acceptEdits' | 'auto'): void {
   const msg = message?.trim() ? message.trim().slice(0, 2000) : undefined;
   socket.send({ type: 'permission', id, session, decision, ...(msg ? { message: msg } : {}), ...(mode ? { mode } : {}) });
   if (mode) updateView(session, (v) => ({ ...v, mode }));
+  if (mode === 'auto') setPrefs((p) => ({ ...p, mode: 'auto' }));   // (a plan approved with Auto: remembered, as a pick of it is)
   // optimistic: the server's permission_done confirms
   updateView(session, (v) => ({ ...v, permissions: v.permissions.filter((p) => p.id !== id) }));
   announce();
+}
+
+/** "Allow, and switch to Auto" on a shell command's card (Manual, Accept edits): the session switches to Auto first —
+ *  refused, the card stays (and shows why: the returned text) — then the command runs, once. -> '' or why not */
+export async function allowAndSwitchToAuto(session: string, id: string): Promise<string> {
+  const r = await wsRequest({ type: 'permission', id, session, decision: 'once_auto' }, 120_000);
+  if (!r.ok) return r.error || 'No answer from the Code page server.';
+  updateView(session, (v) => ({ ...v, mode: 'auto', permissions: v.permissions.filter((p) => p.id !== id) }));
+  setPrefs((p) => ({ ...p, mode: 'auto' }));
+  announce();
+  return '';
+}
+
+/** "Allow once" on an action Auto mode blocked: Claude is asked to run it again, and that very call runs once without
+ *  the reviewer (the backend approves it). -> '' or why not */
+export async function allowBlocked(session: string, allowId: string): Promise<string> {
+  const r = await wsRequest({ type: 'allow_blocked', session, id: allowId }, 60_000);
+  return r.ok ? '' : r.error || 'No answer from the Code page server.';
 }
 
 export function stopTask(task: string): void {

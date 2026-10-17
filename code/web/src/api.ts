@@ -294,6 +294,20 @@ export function normEvent(v: unknown): Ev | null {
       };
     case 'error':
       return { kind: 'error', text: label(o.message ?? o.text, LIMITS.short) };
+    case 'blocked': {
+      // (an input is shown in full or not at all, with the permission prompts' caps)
+      const shown = permissionInput(o.input);
+      return {
+        kind: 'blocked',
+        tool: label(o.tool, LIMITS.name) || 'tool',
+        toolUseId: optId(o.toolUseId),
+        by: /^[A-Za-z]{1,40}$/.test(String(o.by ?? '')) ? (o.by as string) : 'other',
+        reason: label(o.reason, 500),
+        text: label(o.text, 2000),
+        input: o.input !== undefined && shown.complete ? shown.input : null,
+        allowId: isUuid(o.allowId) ? o.allowId.toLowerCase() : null,
+      };
+    }
     case 'watch': {
       if (!isUuid(o.id)) return null;
       const changes = arr(o.changes, 50).map(normWatchChange).filter((c): c is WatchChange => c !== null);
@@ -436,6 +450,7 @@ function normPermission(o: Obj): PermissionReq | null {
     input: shown.input,
     complete: o.complete !== false && shown.complete && !tooManyEdits,
     reason: label(o.reason ?? o.decisionReason, 500),
+    reasonType: /^[A-Za-z]{1,40}$/.test(String(o.reasonType ?? '')) ? (o.reasonType as string) : null,
     rules: noAlways || over(o.rules) ? [] : normRules(o.rules),
     projectRules: noAlways || over(o.projectRules) ? [] : normRules(o.projectRules),
     defaultNo: o.defaultNo === true,
@@ -614,6 +629,7 @@ export async function getState(): Promise<ServerState> {
     terminalUrl: httpUrl(o.terminal_url ?? o.terminalUrl),
     portalOrigin: httpUrl(o.portal_origin ?? o.portalOrigin),
     allowBypass: obj(o.bypass)?.allowed === true,
+    allowAuto: obj(o.auto)?.allowed === true,
     egress: typeof obj(o.sandbox)?.egress === 'boolean' ? (obj(o.sandbox)?.egress as boolean) : null,
     workspace: typeof obj(o.sandbox)?.workspace === 'string' ? label(obj(o.sandbox)?.workspace, 1000) || null : null,
     remote: o.remote === true,
@@ -1338,7 +1354,8 @@ export type ClientMsg =
   | { type: 'watch_revert'; session: string; id: string; path?: string; req: string }
   | { type: 'watch_check'; session: string; req?: string }
   | { type: 'set_effort'; session: string; effort: string | null }
-  | { type: 'permission'; id: string; session: string; decision: Decision; message?: string; mode?: 'default' | 'acceptEdits' }
+  | { type: 'permission'; id: string; session: string; decision: Decision; message?: string; mode?: 'default' | 'acceptEdits' | 'auto' }
+  | { type: 'allow_blocked'; session: string; id: string; req: string }
   | { type: 'permission'; id: string; session: string; decision: 'answer'; answers: Record<string, string> }
   | { type: 'commands'; session: string }
   | { type: 'models'; session: string }
@@ -1350,8 +1367,9 @@ export type ClientMsg =
   | { type: 'mcp_toggle'; session: string; server: string; enabled: boolean };
 
 /** A permission answer: once (ExitPlanMode: with the mode to go on in), always (sandbox-wide or this session),
- *  always_project (into this workspace's .claude settings), deny. */
-export type Decision = 'once' | 'always' | 'always_project' | 'deny';
+ *  always_project (into this workspace's .claude settings), deny, once_auto (a shell command allowed once, and the
+ *  session switched to Auto first: "Allow, and switch to Auto", while Settings allow Auto). */
+export type Decision = 'once' | 'always' | 'always_project' | 'deny' | 'once_auto';
 
 /** locked: the code host refused us (the unlock or the sign-in expired): nothing reconnects until a reload */
 export type ConnStatus = 'connecting' | 'open' | 'closed' | 'locked';

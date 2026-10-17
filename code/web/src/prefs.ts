@@ -26,7 +26,7 @@ export interface Layout {
 export interface Prefs {
   layout: Layout;
   model: string;
-  /** the mode new sessions start in: Read only, Manual or Accept edits (Plan and Bypass are for one session only) */
+  /** the mode new sessions start in: Read only, Manual, Accept edits or Auto (Plan and Bypass are for one session only) */
   mode: Mode;
   effort: string | null;
   lastSession: string | null;
@@ -70,8 +70,9 @@ export function parsePrefs(raw: unknown): Prefs {
       side: l.side === 'sessions' || l.side === 'search' ? l.side : 'files',
     },
     model: typeof o.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/.test(o.model) ? o.model : d.model,
-    // (the former "Don't ask" is Read only; Plan and Bypass are never remembered)
-    mode: o.mode === 'dontAsk' ? 'readOnly' : MODES.includes(o.mode as Mode) && remembered(o.mode as Mode) && o.mode !== 'auto' ? (o.mode as Mode) : d.mode,
+    // (the former "Don't ask" is Read only; Plan and Bypass are never remembered; Auto is, and a session starts in it only
+    // while Settings allow it: modes.ts startMode)
+    mode: o.mode === 'dontAsk' ? 'readOnly' : MODES.includes(o.mode as Mode) && remembered(o.mode as Mode) ? (o.mode as Mode) : d.mode,
     effort: typeof o.effort === 'string' && /^[a-z]{1,12}$/.test(o.effort) ? o.effort : null,
     lastSession: isUuid(o.lastSession) ? o.lastSession.toLowerCase() : null,
     diffInline: o.diffInline === true,

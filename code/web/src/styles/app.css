@@ -857,6 +857,19 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .watch-diff .dl { max-height: 260px; }
 .watch-done { color: var(--ok); font-size: 12px; }
 .watch-err { color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
+/* a call denied without asking you (BlockedCard): Auto mode's blocks in the warning colour, the rule as a tag */
+.blocked { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 10px; background: var(--surface); }
+.blocked-auto { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); border-left-color: var(--warn); }
+.blocked-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--warn); }
+.blocked:not(.blocked-auto) .blocked-head { color: var(--muted); }
+.blocked-title { color: var(--ink); font-weight: 600; font-size: 13.5px; }
+.blocked-rule { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); font-weight: 600; }
+.blocked-tool { font-size: 12px; margin-left: auto; }
+.blocked-lede { margin: 0; color: var(--muted); font-size: 12.5px; }
+.blocked-json { max-height: 200px; overflow: auto; }
+.blocked-buttons { align-items: center; }
+.blocked-buttons .linkish { margin-right: auto; font-size: 12px; }
+.blocked-told { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 @media (max-width: 699.98px) {
   .mode-panel { min-width: calc(100vw - 16px); }
   .mode-picker .picker-value { max-width: 90px; }

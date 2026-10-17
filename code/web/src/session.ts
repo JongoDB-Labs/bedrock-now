@@ -35,7 +35,9 @@ export type Item =
   | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number; models?: string[]; picked?: string }
   | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' }
   /** files that run on your computer changed: the card with diffs and Revert */
-  | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string };
+  | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string }
+  /** a call denied without asking you (Auto mode's classifier, a rule …): the card with the reason and "Allow once" */
+  | { t: 'blocked'; k: number; tool: string; toolUseId: string | null; by: string; reason: string; text: string; input: unknown; allowId: string | null };
 
 export interface Turn {
   start: number;
@@ -292,6 +294,10 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
     }
     case 'error':
       return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
+    case 'blocked':
+      // (replayed: the same call's block is shown once)
+      if (ev.toolUseId && v.items.some((it) => it.t === 'blocked' && it.toolUseId === ev.toolUseId)) return v;
+      return push(endStreaming(v), { t: 'blocked', k: v.nextKey, tool: ev.tool, toolUseId: ev.toolUseId, by: ev.by, reason: ev.reason, text: ev.text, input: ev.input, allowId: ev.allowId });
     case 'watch':
       if (v.items.some((it) => it.t === 'watch' && it.id === ev.id)) return v;   // replayed
       return push(v, { t: 'watch', k: v.nextKey, id: ev.id, when: ev.when, changes: ev.changes, incomplete: ev.incomplete });

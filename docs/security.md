@@ -722,14 +722,17 @@ spawn server, Claude Code or any file at will.
   Writing it into the workspace's file is a separate, explicit button (**Always, in this workspace's settings**) with
   the warning that the file is in your folder and Claude Code on your computer honours it too. A prompt that asks for
   no default *Allow* (or for no lasting rule) is shown that way. Approving a plan (Claude's *Plan* mode) switches the
-  session to *Accept edits* or *Manual* — the only two modes it may set — and "keep planning" is a Deny with your note.
-  Claude Code's *auto* mode (a classifier model deciding instead of you) is off: Claude Code counts it as available
-  behind this stack's own API address, and would then start in it or hand *Plan* mode's writing commands to the
-  classifier instead of asking. The code container turns it off at every session's start, before the first prompt, and
-  the sandbox image's managed settings (`/etc/claude-code/managed-settings.json`, root's) turn it off for every
-  Claude Code there — the terminal's and `claude-bedrock`'s too, which start in the ordinary asking mode. On your
-  computer `claude-bedrock` does the same in its lean folder (`--settings={"disableAutoMode":"disable"}`, Claude
-  Code's flag tier; `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code). Sessions
+  session to *Accept edits* or *Manual* (or *Auto*, while Settings allow it) and "keep planning" is a Deny with your
+  note. Claude Code's *auto* mode (a classifier model deciding instead of you) is **off unless Settings turn it on**
+  ([*Auto mode*](#auto-mode) below): Claude Code counts it as available behind this stack's own API address, and would
+  then start in it or hand *Plan* mode's writing commands to the classifier instead of asking. The code container turns
+  it off at every session's start, before the first prompt (`disableAutoMode`; with Auto allowed, it keeps *Plan*
+  asking instead: `useAutoModeDuringPlan: false`), and the sandbox's managed settings (`/etc/claude-code/
+  managed-settings.json`, a link to the file `bn-terminal` writes at the container's start from the two auto mode
+  switches) turn it off for every Claude Code there while both switches are off — the terminal's and
+  `claude-bedrock`'s too, which start in the ordinary asking mode. On your computer `claude-bedrock` does the same in
+  its lean folder (`--settings={"disableAutoMode":"disable"}`, Claude Code's flag tier; `CLAUDE_BEDROCK_AUTO_MODE=1`
+  leaves it to Claude Code, whose classifier then runs on Sonnet 5.5 through the catalog's alias). Sessions
   name their model in full: the code container refuses Claude Code's aliases (`haiku`, `sonnet`, `opus` …), with
   which Claude Code picks the model itself (with `haiku`, *Plan* mode plans on Sonnet).
   Prompts typed in the page carry Claude Code's human origin. A card that appears never takes the focus from a field
@@ -985,7 +988,9 @@ spawn server, Claude Code or any file at will.
   `./stack code enable` or `disable`; neither restarts the terminal container (its tmux session goes on). A change
   that fails is rolled back, and a terminal it had turned on is turned off again (the failure says so, or says how to
   do it when that fails too). `CODE_ALLOW_BYPASS` (*Bypass permissions* above) is *widen-local* the same way; a
-  change recreates the code container only.
+  change recreates the code container only. `CODE_AUTO_MODE` and `TERMINAL_AUTO_MODE` (*Auto mode* below) are
+  *widen-local* too; a change recreates the terminal container (the sandbox's managed settings are written at its
+  start: its shells end) and, for the Code page's, the code container.
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
@@ -1369,8 +1374,9 @@ action, including those a file, a web page or a tool's output talks Claude into.
   Code badge red.
 - **Never kept.** Not remembered for new sessions (they start in your usual mode); it ends with the session's
   process — an idle stop, a resume, a new conversation go on in *Manual* — and the page can only start a session in
-  *Read only*, *Plan*, *Manual* or *Accept edits*. *Always* on a card never switches to it (nor to `auto` or
-  `dontAsk`), and Claude Code switching to it (or to auto) by itself is set back to *Manual* and said.
+  *Read only*, *Plan*, *Manual*, *Accept edits* or (while allowed) *Auto*. *Always* on a card never switches to it
+  (nor to `auto` or `dontAsk`), and Claude Code switching to it by itself is set back to *Manual* and said (to auto:
+  the same while Auto mode is not allowed).
 - **Still asked, still denied — by Claude's file tools only.** In bypass Claude Code still asks for its ask rules and
   still applies deny rules (verified, 2.1.296). The code container adds ask rules for edits of `//workspace/.git/**`,
   `.claude/**`, `.vscode/**`, `.husky/**`, `.devcontainer/**`, `.envrc`, `.mcp.json` and `.devcontainer.json`
@@ -1392,7 +1398,61 @@ action, including those a file, a web page or a tool's output talks Claude into.
   reported, with its rules in place, sends nothing (Claude Code would send no status for it). The page sends one
   switch at a time too (a mode picked meanwhile — also while Bypass is being turned on — goes next) and takes a
   refused one back.
-- *Auto* mode (a classifier deciding instead of you) stays off and is not offered (see above).
+- *Auto* mode (a classifier deciding instead of you) has its own switch and section, next.
+
+### Auto mode
+
+**Opt-in; a model judges each action instead of you.** Claude Code's *auto* mode sends every action that would
+otherwise ask you — a shell command that is not read-only, a web fetch, an MCP tool, a write to a protected path —
+to a second model, its *classifier* (the page calls it the reviewer), which lets routine ones run and blocks risky
+ones: downloading and running code, sending data to unrecognised places, force pushes, irreversible deletes, printing
+credentials and the rest of Claude Code's default rules (`claude auto-mode defaults` in the terminal lists them).
+Reads, read-only commands and file edits in the workspace run without it. It reduces prompts; it does not make
+anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
+internet switch).
+
+- **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Code page → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto
+  mode in the terminal*) are *widen-local*: on only from the computer running bedrock-now, off from anywhere. The code
+  container enforces the Code page's: without it, sessions start with auto mode off and `set_mode auto` is refused
+  (403), whatever a page sends. Both switches reach the sandbox through its managed settings, written by `bn-terminal`
+  at the container's start (`terminal/bin/bn-claude-policy`): both off — auto mode off for every Claude Code there;
+  the terminal's on — nothing set, Claude Code decides as anywhere else (an interactive `claude` starts in auto mode,
+  `Shift+Tab` leaves it); only the Code page's on — auto mode stays available (the page needs it, and managed settings
+  outrank its own), but the terminal's `claude` starts in *Manual*, its *Plan* asks, and `claude-bedrock` there turns
+  auto mode off for its sessions; plain `claude` could still be switched to it with `Shift+Tab` — a convenience, not
+  a boundary (anything in the sandbox can run a Claude Code of its own anyway).
+- **No dialog**, unlike Bypass: like Claude Code's own `Shift+Tab` into it, because it still asks — your ask rules,
+  the first read outside the workspace — and still blocks. *Plan* keeps asking you in every case
+  (`useAutoModeDuringPlan: false`; Claude Code's default would let the classifier approve *Plan*'s commands).
+  Remembered for new sessions like *Accept edits* (as in the desktop app and VS Code), and kept across a process's end
+  while the setting is on; a process starts in *Manual* and is switched before its first prompt is read (the sandbox's
+  spawn server still refuses `--permission-mode auto`). With the setting turned off, a session asked for in Auto
+  starts in *Manual*. *Always* on a card never switches to it; Claude Code switching to it by itself (a plan approved
+  *Yes, Auto*) is followed only while the setting is on, and set back to *Manual* otherwise.
+- **A blocked action** comes as a card: what was blocked, the rule the classifier matched (`[Data Exfiltration]` …)
+  or why it could not decide, and **Allow once** — Claude is told in your words to run it again, and exactly that call
+  (its input, the description aside) is approved once, before the classifier, by a `PreToolUse` hook of the code
+  container (within 10 minutes, only in Auto; deny rules still deny) — the same as Claude Code's own *Recently denied
+  › retry*. Three blocks in a row (or 20 in all) and Claude Code pauses auto mode and asks you with an ordinary card,
+  which says so. In *Manual* and *Accept edits* a shell command's card offers **Allow, and switch to Auto** (as the CLI
+  offers *Yes, and switch to auto mode*): the switch goes first, through the same gate; not for a prompt your ask rules
+  or a hook forced.
+- **Which model, what it costs.** The classifier asks for the fixed id `claude-sonnet-5`; the catalog maps it to
+  `claude-sonnet-5-5` (a LiteLLM alias, rendered only while Sonnet 5.5 is enabled — without it Claude Code falls back
+  to the session's own model, so an Opus session would review on Opus). Its requests go through the same gateway with
+  the same key and session tags as the session's own (verified on Bedrock: the spend logs show them under the
+  session, model group `claude-sonnet-5`, model Sonnet 5.5, key `claude-code-terminal`). Each check sends Claude
+  Code's ~47k-token instructions (cached) plus the transcript's user messages and tool calls (tool *results* are left
+  out, so a hostile file cannot address the classifier directly): **measured about $0.13 for the first check in each
+  5-minute cache window** and about **$0.0055 for each further one** (a block costs a second, thinking stage of about
+  the same). On a Haiku session that is more than the session itself; the Code page's per-turn cost includes it. It
+  is spent on the terminal key's budget (`BUDGET_TERMINAL`).
+- **What leaves the sandbox**: nothing new — the classifier's requests go to LiteLLM like every other request of
+  Claude Code (Bedrock; nothing to Anthropic's servers: the sandbox has `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`, so
+  Claude Code makes its own classifier requests instead of asking a server-side review). They carry the `context-1m`
+  beta header, which LiteLLM passes to Bedrock (accepted, verified). With the sandbox's internet on
+  (`TERMINAL_EGRESS`), an action the classifier lets through can of course reach the internet as any approved
+  command can.
 
 ### The watchlist: files that run on your computer
 

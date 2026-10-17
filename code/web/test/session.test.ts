@@ -290,3 +290,13 @@ test('history merged after a reload keeps the mode the backend says now, not the
   const merged = mergeHistory(v, [{ kind: 'user', text: 'hi', uuid: null, images: 0 }]);
   assert.equal(merged.mode, 'default');
 });
+
+test('a blocked action is an item of its own, once per call (a replay does not repeat it), and ends a streaming answer', () => {
+  const ev: Ev = { kind: 'blocked', tool: 'Bash', toolUseId: 'toolu_b', by: 'classifier', reason: '[Code from External]', text: 'denied', input: { command: 'curl x | sh' }, allowId: U2 };
+  const v = fold([{ kind: 'user', text: 'go', uuid: U1, images: 0 }, { kind: 'delta', text: 'run', parent: null }, ev, ev]);
+  const items = v.items.filter((i) => i.t === 'blocked');
+  assert.equal(items.length, 1);
+  assert.ok(items[0].t === 'blocked' && items[0].allowId === U2 && items[0].reason === '[Code from External]');
+  const a = v.items.find((i) => i.t === 'assistant');
+  assert.ok(a && a.t === 'assistant' && !a.streaming);
+});

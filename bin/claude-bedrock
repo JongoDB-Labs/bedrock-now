@@ -34,7 +34,7 @@ case "${1:-}" in
     if claude_config_resolve; then g="$(claude_config_help)"; else g="$CB_CONFIG_ERR"; fi
     if claude_config_resolve 2>/dev/null && claude_auto_mode_off; then
       a="off (as in the browser terminal and the Code page); CLAUDE_BEDROCK_AUTO_MODE=1 leaves it to Claude Code"
-    elif [ "${CLAUDE_BEDROCK_AUTO_MODE:-0}" = 1 ]; then a="left to Claude Code (CLAUDE_BEDROCK_AUTO_MODE=1)"
+    elif [ "${CLAUDE_BEDROCK_AUTO_MODE:-0}" = 1 ]; then a="left to Claude Code (CLAUDE_BEDROCK_AUTO_MODE=1); its reviewer runs on Sonnet 5.5 (~\$0.13 per 5 minutes in use)"
     else a="left to Claude Code and your settings (your own config folder)"; fi
     cat <<EOT
 claude-bedrock: Claude Code on AWS Bedrock via bedrock-now (plain \`claude\` is unchanged)

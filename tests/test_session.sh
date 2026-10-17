@@ -513,6 +513,9 @@ test_wrapper_turns_auto_mode_off_in_the_lean_folder() {
   assert_contains "$out" "  Auto     auto mode off (as in the browser terminal and the Code page); CLAUDE_BEDROCK_AUTO_MODE=1 leaves it to Claude Code"
   out="$(CLAUDE_BEDROCK_USE_MY_CONFIG=1 PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
   assert_contains "$out" "  Auto     auto mode left to Claude Code and your settings (your own config folder)"
+  # CLAUDE_BEDROCK_AUTO_MODE=1: left to Claude Code, whose reviewer runs on Sonnet 5.5 (the catalog's alias)
+  out="$(CLAUDE_BEDROCK_AUTO_MODE=1 PATH="$TMP/bin:$PATH" "$BASH" "$STACK_DIR/bin/claude-bedrock" --help 2>&1)"
+  assert_contains "$out" '  Auto     auto mode left to Claude Code (CLAUDE_BEDROCK_AUTO_MODE=1); its reviewer runs on Sonnet 5.5 (~$0.13 per 5 minutes in use)'
 }
 
 test_wrapper_names_models_in_full_never_by_an_alias() {

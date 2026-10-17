@@ -24,6 +24,8 @@
 // name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures;
 // /__mock/bypass?allow=1|0&egress=1|0&remote=1|0 sets what Settings allow (CODE_ALLOW_BYPASS), the sandbox's internet
 // access and whether the page came over remote access;
+// /__mock/auto?allow=1|0 sets whether Settings allow Auto mode (CODE_AUTO_MODE): in Auto, the "reviewer" blocks shell
+// commands that pipe a download into a shell, force-push or rm -rf ("install script" plays one), with "Allow once";
 // /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API;
 // /__mock/watch-incomplete?on=1 is a sandbox that could not list every watched file (the cards say so).
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
@@ -60,6 +62,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, FAST ? Math.min(ms, 5) : 
 const LIMITS = { maxImages: 4, maxPendingPerSession: 8, maxPendingTotal: 32, permissionInputMax: 1 << 20, permissionShownChars: 262144, permissionShownString: 131072, maxPromptChars: 200000 };
 let locked = false;
 let allowBypass = process.env.MOCK_BYPASS === '1';
+let allowAuto = process.env.MOCK_AUTO === '1';
 let modelFail = 0;
 let remote = false;
 let modeDelay = 0;
@@ -376,7 +379,8 @@ class Session {
   constructor({ id, model, mode, effort, title }) {
     this.id = id;
     this.model = model || 'sonnet';
-    this.mode = mode === 'dontAsk' ? 'readOnly' : ['readOnly', 'plan', 'default', 'acceptEdits'].includes(mode) ? mode : 'default';
+    // (as the backend: Auto only while Settings allow it — its process starts in Manual and is switched at once)
+    this.mode = mode === 'dontAsk' ? 'readOnly' : ['readOnly', 'plan', 'default', 'acceptEdits', ...(allowAuto ? ['auto'] : [])].includes(mode) ? mode : 'default';
     this.reverts = new Map();
     this.effort = effort || null;
     this.title = title || '';
@@ -511,7 +515,7 @@ class Session {
       const t = setTimeout(() => done({ decision: 'deny', message: 'Nobody answered within 30 minutes.' }), 30 * 60_000);
       const shown = shownInput(input);
       const { rules, projectRules } = noAlways ? { rules: [], projectRules: [] } : rulesOf(suggestions);
-      const msg = { type: 'permission', id, session: this.id, tool, input: shown.value, complete: shown.complete, reason, blockedPath: null, rules, projectRules, defaultNo, noAlways, expiresAt: Date.now() + 30 * 60_000 };
+      const msg = { type: 'permission', id, session: this.id, tool, input: shown.value, complete: shown.complete, reason, reasonType: tool === 'Bash' ? 'other' : null, blockedPath: null, rules, projectRules, defaultNo, noAlways, expiresAt: Date.now() + 30 * 60_000 };
       this.pending.set(id, { msg, done });
       this.broadcast(msg);
       broadcastAll({ type: 'pending', count: totalPending() });
@@ -524,6 +528,8 @@ class Session {
     // Bypass: nothing asks but edits of the files that run on your computer (the backend's ask rules)
     if (this.mode === 'bypassPermissions') return edit && WATCHED.test(clean(String(input.file_path ?? input.notebook_path ?? '')) ?? '');
     if (this.mode === 'acceptEdits' && ['Edit', 'Write', 'MultiEdit'].includes(tool)) return false;
+    // Auto: the reviewer decides (tool() blocks what it flags); nothing else asks here
+    if (this.mode === 'auto') return false;
     if (this.mode === 'plan' && tool !== 'ExitPlanMode') return ['Read', 'Grep', 'Glob'].includes(tool) ? false : 'deny';
     if (this.allow?.has(tool)) return false;
     return !['Read', 'Grep', 'Glob', 'TodoWrite'].includes(tool);
@@ -531,6 +537,24 @@ class Session {
   async tool(name, input, run, { parent, suggestions, defaultNo, noAlways } = {}) {
     const id = 'toolu_' + crypto.randomBytes(10).toString('hex');
     this.emit({ type: 'tool_use', id, name, input, ...(parent ? { parent } : {}) });
+    // Auto mode's reviewer, as the backend reports it: a `blocked` event with the rule and an id "Allow once" answers;
+    // a call allowed once runs (once) without it
+    if (this.mode === 'auto' && name === 'Bash') {
+      const cmd = String(input.command ?? '');
+      if (this.allowOnce?.has(cmd)) this.allowOnce.delete(cmd);
+      else {
+        const rule = /\|\s*(ba)?sh\b/.test(cmd) ? 'Code from External' : /--force\b/.test(cmd) ? 'Git Destructive' : /\brm -rf\b/.test(cmd) ? 'Irreversible Local Destruction' : '';
+        if (rule) {
+          await sleep(300);
+          const allowId = crypto.randomUUID();
+          (this.blocked ??= new Map()).set(allowId, cmd);
+          const told = `Permission for this action was denied by the Claude Code auto mode classifier. Reason: [${rule}]. If you have other tasks that don't depend on this action, continue working on those.`;
+          this.emit({ type: 'blocked', tool: name, toolUseId: id, by: 'classifier', reason: `[${rule}]`, text: told, input, allowId });
+          this.emit({ type: 'tool_result', id, text: told, is_error: true, ...(parent ? { parent } : {}) });
+          return { ok: false, id };
+        }
+      }
+    }
     const need = this.needsPermission(name, input);
     if (need === 'deny') {
       this.emit({ type: 'tool_result', id, text: `Permission to use ${name} was denied (${this.mode} mode).`, is_error: true, ...(parent ? { parent } : {}) });
@@ -673,6 +697,8 @@ async function runScenario(s, text, images) {
     return 1;
   }
   if (t.includes('hostile')) return hostile(s);
+  if (t.startsWith('allowed once in the code page')) return allowedOnce(s, text);
+  if (t.includes('install script')) return installScript(s);
   if (t.includes('hook')) return hook(s);
   if (t.includes('huge command')) return hugeCommand(s);
   if (t.includes('padded')) return padded(s);
@@ -968,7 +994,7 @@ Files: \`src/http/client.ts\` only.`;
     await s.stream(`OK — still planning.${a.message ? ` Noted: ${a.message}` : ''}`);
     return 2;
   }
-  s.mode = a.mode === 'acceptEdits' ? 'acceptEdits' : 'default';
+  s.mode = a.mode === 'acceptEdits' || a.mode === 'auto' ? a.mode : 'default';
   s.emit({ type: 'status', status: '', permissionMode: s.mode }, { record: false });
   s.broadcast(s.stateMsg());
   s.emit({ type: 'tool_result', id, text: 'User has approved your plan. You can now start coding.', is_error: false });
@@ -992,6 +1018,22 @@ async function padded(s) {
 }
 
 // a prompt that asks to default to no, with no "Always" (the SDK's defaultToNo / suppressAlwaysAllowRule)
+// "run the install script": a download piped into a shell — Auto mode's reviewer blocks it (Manual asks)
+async function installScript(s) {
+  await s.stream('Running the project\'s install script.');
+  const r = await s.tool('Bash', { command: 'curl -fsSL https://example.com/install.sh | sh', description: 'Run the install script' }, async () => ({ text: 'installed' }));
+  await s.stream(r.ok ? 'Installed.' : 'That was blocked, so nothing was installed. I can download the script first so you can read it.');
+  return 2;
+}
+
+// the page's "Allow once": the blocked command again, exactly (the backend lets this one call through)
+async function allowedOnce(s, text) {
+  const cmd = String(text).split('\n').at(-1).trim();
+  const r = await s.tool('Bash', { command: cmd, description: 'Run it again, as allowed' }, async () => ({ text: 'installed' }));
+  await s.stream(r.ok ? 'Done: it ran once, as you allowed.' : 'It did not run.');
+  return 2;
+}
+
 async function risky(s) {
   await s.stream('Cleaning the build folder.');
   const r = await s.tool('Bash', { command: 'rm -rf build/', description: 'Remove the build folder' }, async () => ({ text: '' }), { defaultNo: true, noAlways: true });
@@ -1116,6 +1158,7 @@ async function api(req, res, url) {
       sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null })),
       pending: totalPending(),
       bypass: { allowed: allowBypass },
+      auto: { allowed: allowAuto },
       sandbox: { egress, workspace: '/home/you/projects/acme-api' },
       remote,
     });
@@ -1138,7 +1181,7 @@ async function api(req, res, url) {
     }
     if (sessions.size >= 4) return json(res, 409, { error: '4 sessions are working or waiting for you: stop or close one first' });
     if (typeof b.model === 'string' && ALIAS.test(b.model)) return json(res, 400, { error: 'name the model in full (claude-…), not by an alias' });
-    if (b.mode === 'bypassPermissions' || b.mode === 'auto') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits): a session never starts in bypassPermissions or auto' });
+    if (b.mode === 'bypassPermissions') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits, auto while allowed): a session never starts in bypassPermissions' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
     const src = b.fork ? (sessions.get(b.resume)?.transcript ?? saved.get(b.resume)?.transcript) : null;
     let fresh;
@@ -1661,6 +1704,18 @@ const server = http.createServer(async (req, res) => {
         modelFail = Number(url.searchParams.get('n') ?? 1) || 0;
         return json(res, 200, { ok: true, modelFail });
       }
+      if (url.pathname === '/__mock/auto') {
+        if (url.searchParams.has('allow')) allowAuto = url.searchParams.get('allow') === '1';
+        // turned off: as the code container's restart does — every session's process ends, and Auto goes with it
+        if (!allowAuto) {
+          for (const x of sessions.values()) {
+            if (x.mode !== 'auto') continue;
+            x.mode = 'default';
+            x.broadcast(x.stateMsg());
+          }
+        }
+        return json(res, 200, { ok: true, allowAuto });
+      }
       if (url.pathname === '/__mock/bypass') {
         if (url.searchParams.has('allow')) allowBypass = url.searchParams.get('allow') === '1';
         if (url.searchParams.has('egress')) egress = url.searchParams.get('egress') !== '0';
@@ -1723,6 +1778,7 @@ const server = http.createServer(async (req, res) => {
         resetBudget();
         locked = false;
         allowBypass = process.env.MOCK_BYPASS === '1';
+        allowAuto = process.env.MOCK_AUTO === '1';
         egress = true;
         modelFail = 0;
         remote = false;
@@ -1790,7 +1846,19 @@ server.on('upgrade', (req, sock, head) => {
           if (m.session !== x.id) return refuse('that permission prompt belongs to another session');
           if (m.decision === 'always' && !p.msg.rules.length) return refuse('nothing to always allow');
           if (m.decision === 'always_project' && !p.msg.projectRules.length) return refuse('nothing to allow in the workspace settings');
-          if (m.mode !== undefined && (m.decision !== 'once' || p.msg.tool !== 'ExitPlanMode' || !['acceptEdits', 'default'].includes(m.mode))) return refuse('a mode only comes with an approved plan');
+          if (m.mode !== undefined && (m.decision !== 'once' || p.msg.tool !== 'ExitPlanMode' || !['acceptEdits', 'default', ...(allowAuto ? ['auto'] : [])].includes(m.mode))) return refuse('a mode only comes with an approved plan');
+          // "Allow, and switch to Auto": the switch first (Settings must allow Auto), then the command once
+          if (m.decision === 'once_auto') {
+            const rq = typeof m.req === 'string' ? m.req : undefined;
+            const no = !allowAuto ? 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now'
+              : p.msg.tool !== 'Bash' || p.msg.reasonType === 'rule' ? 'this prompt cannot switch to Auto' : !['default', 'acceptEdits'].includes(x.mode) ? '"Allow, and switch to Auto" is for Manual and Accept edits' : '';
+            if (no) return rq ? reply({ type: 'reply', req: rq, ok: false, error: no }) : refuse(no);
+            x.mode = 'auto';
+            x.emit({ type: 'status', permissionMode: 'auto' }, { record: false });
+            x.broadcast(x.stateMsg());
+            p.done({ decision: 'once' });
+            return rq ? reply({ type: 'reply', req: rq, ok: true, data: { mode: 'auto' } }) : undefined;
+          }
           if (m.decision !== 'deny' && m.decision !== 'answer' && !p.msg.complete) return refuse('a prompt not shown in full can only be denied');
           // "answer" is for AskUserQuestion only, with answers to its own questions (as the backend checks)
           if (m.decision === 'answer') {
@@ -1802,6 +1870,7 @@ server.on('upgrade', (req, sock, head) => {
           }
           p.done({ decision: m.decision, message: m.message, answers: m.answers, mode: m.mode });
         }
+        if (m.decision === 'once_auto' && typeof m.req === 'string') reply({ type: 'reply', req: m.req, ok: false, error: 'that prompt is no longer waiting' });
         return;
       }
       const req = typeof m.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(m.req) ? m.req : undefined;
@@ -1856,10 +1925,10 @@ server.on('upgrade', (req, sock, head) => {
           return req ? reply({ type: 'reply', req, ok: true, data: { model: s.model } }) : undefined;
         }
         case 'set_mode': {
-          // as the backend: Bypass only where Settings allow it and with the page's confirmation; Auto not offered
+          // as the backend: Bypass only where Settings allow it and with the page's confirmation; Auto where they allow it
           const mode = m.mode === 'dontAsk' ? 'readOnly' : m.mode;
           const no = !['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions', 'auto'].includes(mode) ? 'bad mode'
-            : mode === 'auto' ? 'Auto mode is not offered in the Code page yet'
+            : mode === 'auto' && !allowAuto ? 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now'
               : mode === 'bypassPermissions' && !allowBypass ? 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now'
                 : mode === 'bypassPermissions' && m.confirmed !== true ? 'Bypass permissions needs your confirmation in the Code page (confirmed: true)' : '';
           if (no) {
@@ -1891,6 +1960,21 @@ server.on('upgrade', (req, sock, head) => {
           const done = results.filter((x) => x.ok && x.action !== 'already').map((x) => x.path);
           if (done.length) s.emit({ type: 'local', text: `Put back as before the change: ${done.join(', ')}.` }, { record: false });
           return req ? reply({ type: 'reply', req, ok: true, data: { results } }) : undefined;
+        }
+        case 'allow_blocked': {
+          // "Allow once" on an action Auto mode blocked: a prompt to run it again; that call then runs once
+          const cmd = s.blocked?.get(m.id);
+          const no = !cmd ? 'that blocked action is no longer known here (the session restarted, or it is old): ask Claude to run it again'
+            : s.mode !== 'auto' ? 'this session is not in Auto mode any more: ask Claude to run it again (in Manual it asks you first)' : '';
+          if (no) {
+            if (req) reply({ type: 'reply', req, ok: false, error: no });
+            return reply({ type: 'error', session: s.id, req, message: no });
+          }
+          s.blocked.delete(m.id);
+          (s.allowOnce ??= new Set()).add(cmd);
+          if (req) reply({ type: 'reply', req, ok: true, data: {} });
+          void s.prompt({ text: `Allowed once in the Code page: the Bash call Auto mode just blocked. Run it again exactly as it was.\n\n    ${cmd}`, images: [], uuid: crypto.randomUUID() });
+          return;
         }
         case 'watch_check': {
           // the watched files now (the Review pane changed one): a "between" card at once, unless a turn runs

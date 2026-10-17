@@ -1,10 +1,10 @@
 // Model / mode / effort pickers and the cost and context meters. Model names and prices come from bedrock-now
 // (/.bn/models), never from the CLI; costs come from bedrock-now's spend logs (/.bn/spend).
 import { useSel } from '../store';
-import { store, setModel, setMode, setEffort, activeView, defaultModel, refreshSpend } from '../app';
+import { store, setModel, setMode, setEffort, activeView, defaultModel, refreshSpend, autoOk } from '../app';
 import { meter } from '../spend';
 import type { BnModel } from '../types';
-import { MODE_INFO, offeredModes } from '../modes';
+import { MODE_INFO, offeredModes, startMode } from '../modes';
 import { money, perMtok, tokens } from '../text';
 import { Dropdown, MenuItem } from './ui';
 import { Icon } from './icons';
@@ -91,11 +91,13 @@ export function ModelPicker({ compact }: { compact?: boolean }) {
   );
 }
 
-/** The permission mode, next to Send as in Claude Code's desktop app: Read only · Plan · Manual · Accept edits ·
- *  Bypass permissions (when Settings allow it). Shift+Tab in the prompt box cycles, Alt+M opens it. */
+/** The permission mode, next to Send as in Claude Code's desktop app: Read only · Plan · Manual · Accept edits · Auto ·
+ *  Bypass permissions (Auto and Bypass when Settings allow them). Shift+Tab in the prompt box cycles, Alt+M opens it. */
 export function ModePicker({ compact }: { compact?: boolean }) {
-  const mode = useSel(store, (s) => activeView(s)?.mode ?? s.startWith ?? s.prefs.mode);
+  // (no session: the mode the next one starts in — a remembered Auto shows as Manual while Settings do not allow it)
+  const mode = useSel(store, (s) => activeView(s)?.mode ?? startMode(s.startWith ?? s.prefs.mode, 'default', autoOk(s)));
   const allowBypass = useSel(store, (s) => s.server?.allowBypass === true);
+  const allowAuto = useSel(store, (s) => s.server?.allowAuto === true);
   const signal = useSel(store, (s) => s.modeMenu);
   const info = MODE_INFO[mode] ?? MODE_INFO.default;
   const name = compact && mode === 'bypassPermissions' ? 'Bypass' : info.label;
@@ -118,7 +120,7 @@ export function ModePicker({ compact }: { compact?: boolean }) {
       {(close) => (
         <>
           <div class="panel-head">Permission mode</div>
-          {offeredModes(allowBypass).map((m) => {
+          {offeredModes(allowBypass, allowAuto).map((m) => {
             const mi = MODE_INFO[m];
             return (
               <MenuItem
@@ -138,14 +140,16 @@ export function ModePicker({ compact }: { compact?: boolean }) {
               </MenuItem>
             );
           })}
-          {!allowBypass && (
-            <div class="panel-note" data-testid="mode-bypass-off">
-              Bypass permissions is off. Settings › Code page turns it on (from the computer running bedrock-now).
+          {(!allowAuto || !allowBypass) && (
+            <div class="panel-note" data-testid={allowBypass ? 'mode-auto-off' : 'mode-bypass-off'}>
+              {!allowAuto && !allowBypass ? 'Auto and Bypass permissions are off' : !allowAuto ? 'Auto is off' : 'Bypass permissions is off'}. Settings › Code page turns{' '}
+              {!allowAuto && !allowBypass ? 'them' : 'it'} on (from the computer running bedrock-now).
             </div>
           )}
           <div class="panel-note">
-            Shift+Tab in the prompt box cycles Manual → Accept edits → Plan{allowBypass ? ' → Bypass' : ''}; Alt+M opens this menu. Read only, Manual and
-            Accept edits are remembered for new sessions; Plan and Bypass permissions are for this session only.
+            Shift+Tab in the prompt box cycles Manual → Accept edits → Plan{allowBypass ? ' → Bypass' : ''}
+            {allowAuto ? ' → Auto' : ''}; Alt+M opens this menu. Read only, Manual, Accept edits{allowAuto ? ' and Auto' : ''} are remembered for new
+            sessions; Plan and Bypass permissions are for this session only.
           </div>
         </>
       )}

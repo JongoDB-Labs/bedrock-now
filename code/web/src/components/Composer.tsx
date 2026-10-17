@@ -1,5 +1,5 @@
 // The prompt box, keyed like Claude Code: Enter sends, Shift+Enter is a new line, Esc stops Claude, Shift+Tab
-// cycles the permission mode (Manual → Accept edits → Plan → Bypass when allowed; the mode picker sits next to Send,
+// cycles the permission mode (Manual → Accept edits → Plan → Bypass → Auto, those two when allowed; the mode picker sits next to Send,
 // as in the desktop app), ↑ in an empty box recalls the last prompt. "/" at the
 // start opens the command palette (built-ins, skills, plugin commands from the session), "@" opens the file picker
 // (what the explorer has listed, and from two characters on a search of the whole workspace). "# text" on one line
@@ -81,6 +81,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const maxImages = useSel(store, (s) => s.server?.maxImages ?? 4);
   const restore = useSel(store, (s) => s.restore);
   const allowBypass = useSel(store, (s) => s.server?.allowBypass === true);
+  const allowAuto = useSel(store, (s) => s.server?.allowAuto === true);
   const narrow = useMedia('(max-width: 699.98px)');
   const dirs = useSel(store, (s) => s.fs.dirs);
   const comments = useSel(store, (s) => s.comments);
@@ -288,7 +289,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       // on its way the last one pressed goes next)
       const st = store.get();
       const cur = (st.active ? st.views[st.active]?.mode : undefined) ?? st.startWith ?? st.prefs.mode;
-      setMode(nextMode(cur, allowBypass));   // (into Bypass: its confirmation first)
+      setMode(nextMode(cur, allowBypass, allowAuto));   // (into Bypass: its confirmation first)
     } else if (e.key === 'ArrowUp' && (el.value === '' || hIndex >= 0) && history.length && el.selectionStart === 0) {
       e.preventDefault();
       const i = hIndex < 0 ? history.length - 1 : Math.max(0, hIndex - 1);

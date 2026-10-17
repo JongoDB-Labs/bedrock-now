@@ -349,9 +349,9 @@ cb_model_id() {
 
 # The one argument that turns Claude Code's auto mode off for a session (its flag tier: above user, project and local
 # settings). Claude Code 2.1.283 and later counts auto mode — a classifier model approving actions for you, on your
-# key — as available behind this stack's address and may start in it; the classifier asks for claude-sonnet-5, which
-# LiteLLM does not serve, so it runs on the session's model (an Opus classifier for an Opus session) and blocks what
-# it cannot judge. The browser terminal (managed settings) and the Code page turn it off the same way.
+# key — as available behind this stack's address and may start in it. Its classifier asks for claude-sonnet-5, which
+# the catalog maps to Sonnet 5.5 (an alias; without it the classifier would run on the session's model). The browser
+# terminal (managed settings) and the Code page turn it off the same way unless Settings turn it on there.
 # shellcheck disable=SC2034  # read by bin/claude-bedrock
 CB_AUTO_OFF_ARG='--settings={"disableAutoMode":"disable"}'
 

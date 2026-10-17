@@ -76,6 +76,9 @@ export function toMarkdown(v: SessionView, title: string, now = new Date(), part
       case 'notice':
         out.push(`_${it.text}_`, '');
         break;
+      case 'blocked':
+        out.push(`_${it.by === 'classifier' ? 'Blocked by Auto mode' : 'Not allowed'}: ${it.tool}${it.reason ? ` ${it.reason}` : ''}_`, '');
+        break;
     }
   }
   for (const q of v.queued) out.push('## You (waiting)', '', q.text, '');
