@@ -1705,6 +1705,7 @@ def ui_guardrails(ctx):
     users = page.get_by_test_id("msg-user").count()
     page.goto(f"{CODE}/?session={sid}&prompt=" + "Summarise%20this%20workspace")
     see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    page.evaluate(CLIENT_JS)   # (the in-page client again: c.api below, in this new document)
     see(page.get_by_test_id("link-draft")).to_be_visible(timeout=20000)
     see(page.get_by_test_id("prompt")).to_have_value("Summarise this workspace")
     expect(page.evaluate("location.search") == "", f"the address keeps {page.evaluate('location.search')!r}")
@@ -1765,7 +1766,8 @@ def ui_guardrails(ctx):
                 page.wait_for_timeout(1000)
             except Exception:  # noqa: BLE001 — cleanup only; the check's own outcome stands
                 pass
-    csp_clean(page, rec)
+    # (the resume refused while the terminal ran it: an expected 409)
+    csp_clean(page, rec, allow=[r"^409 POST " + re.escape(CODE) + r"/api/sessions$"])
     # Home's Code card: the framed page reports its sessions; this one listed with a Resume link
     page.goto(origin() + "/")
     page.wait_for_selector("section.code-card", timeout=20000)
