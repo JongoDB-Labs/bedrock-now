@@ -548,11 +548,13 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   for more), `@diff` (the changes the Review pane lists, as a diff), `@problems` (Run & test's failed runs and the end
   of their output) and `@file#L5-10` (those lines of a file — also the editor's selected lines: **Alt+K**, the button a
   selection shows, or the command palette); the terminal panel, the Review pane and the Problems list have an *Add to
-  prompt* button too. Each is a chip in the prompt box: click it to see exactly what goes (*Capture again* takes the
-  terminal, the changes or the Problems list anew), × drops it. They go after your text as quoted context — one
+  prompt* button too; an `@file#L5-10` typed in the box (or in a link's draft) becomes a chip as well. Each is a chip in
+  the prompt box: click it to see exactly what goes (*Capture again* takes the terminal, the changes or the Problems list
+  anew), × drops it — nothing goes that is not a chip. They go after your text as quoted context — one
   block each, headed with what it is, its content in a fence it cannot close, invisible and direction-changing
   characters shown as `⟨U+…⟩`, a line over 2,000 characters and a block over its share cut (and said), at most 80,000
-  characters in all — labelled as data from the workspace, not instructions; the conversation folds it away under
+  characters in all — between markers with an id made for that prompt, labelled as data from the workspace, not
+  instructions (a line inside that looks like such a marker is marked `⟨quoted⟩`); the conversation folds it away under
   your prompt. Not with a `/command` or a `# memory` line (the chips wait). The workspace's text is anyone's to plant
   something in (a file, a command's output), and it goes as part of **your** message: in *Auto* or *Bypass* mode, read
   the chips before you send ([docs/security.md](docs/security.md#context-mentions-and-plan-comments)).

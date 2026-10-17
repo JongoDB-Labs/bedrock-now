@@ -1629,10 +1629,11 @@ const TMUX_SESSION = 'claude';   // bn-session's: the terminal panel shows this 
 // the image's tmux by its path (never one of the sandbox's first in PATH: ~/.local/bin); BN_TMUX_BIN: tests
 const tmuxBin = () => process.env.BN_TMUX_BIN || imageProgram('tmux') || '/usr/bin/tmux';
 // run(cmd, args) -> {code, out, err, cut}: a short command's answer (out up to maxOut characters; cut: more came)
-function run(cmd, args, timeoutMs = 10000, maxOut = 2000) {
+// (env: variables over this container's own, for that one command)
+function run(cmd, args, timeoutMs = 10000, maxOut = 2000, env = {}) {
   return new Promise((resolve) => {
     let c;
-    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message, out: '' }); return; }
+    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...childEnv({}, null), ...env } }); } catch (e) { resolve({ code: -1, err: e.message, out: '' }); return; }
     let err = '', out = '', cut = false;
     c.stdout.on('data', (d) => { if (out.length < maxOut) out += d; else cut = true; });
     c.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
@@ -1760,6 +1761,10 @@ export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc' }
 // tmux runs an after-capture-pane or after-display-message hook each time those commands run: with one set, it refuses.
 export const CAPTURE = Object.freeze({ linesDefault: 200, linesMax: 2000, readMax: 4 << 20, textMax: 64 << 10, lineMax: 4000 });
 const CAPTURE_HOOKS = ['after-capture-pane', 'after-display-message'];
+// what display-message prints for the pane: is its session exactly `claude` (1/0), its id, its window's index, then the
+// free texts (its command, the window's name: shown only); and the client's locale (UTF-8: no "_" for a character)
+export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|#{window_index}|#{pane_current_command}|#{window_name}`;
+export const CAPTURE_ENV = Object.freeze({ LC_ALL: 'C.UTF-8' });
 const PANE_ID = /^%[0-9]{1,6}$/;
 
 // stripTerminal(s) -> s without terminal escapes and controls: CSI (ESC [ … or 0x9B …), OSC/DCS/APC/PM/SOS strings (to
@@ -1828,10 +1833,10 @@ export function captureText(raw, lines, { textMax = CAPTURE.textMax, lineMax = C
 }
 
 // runTail(cmd, args) -> {code, out: Buffer (its last maxBytes), err, cut}: a command's whole output, or its end
-function runTail(cmd, args, timeoutMs, maxBytes) {
+function runTail(cmd, args, timeoutMs, maxBytes, env = {}) {
   return new Promise((resolve) => {
     let c;
-    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message, out: Buffer.alloc(0), cut: false }); return; }
+    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...childEnv({}, null), ...env } }); } catch (e) { resolve({ code: -1, err: e.message, out: Buffer.alloc(0), cut: false }); return; }
     const chunks = [];
     let size = 0, cut = false, err = '';
     c.stdout.on('data', (d) => {
@@ -1864,17 +1869,22 @@ export async function terminalCapture(req = {}, { tmux = tmuxBin() } = {}) {
     throw new Error(`the terminal's tmux has hooks (${set.join(', ')}) set, by something in the sandbox or your tmux settings, that would run each time it is read: ` +
       'copy the lines yourself, or remove them (tmux set-hook -gu …)');
   }
-  // the pane: the one named (one of the session's), else the session's current one (what the terminal panel shows)
-  const d = await run(tmux, ['display-message', '-p', '-t', asked ?? `=${TMUX_SESSION}:`, '#{session_name}\t#{pane_id}\t#{window_index}\t#{pane_current_command}\t#{window_name}'], 10000, 4000);
+  // the pane: the one named (one of the session's), else the session's current one (what the terminal panel shows).
+  // tmux itself says whether its session is exactly `claude` (a 1 or a 0: a session named "claude|%7…" cannot pass for
+  // it), then the pane's id and the window's index — fixed shapes, parsed first —, then the free texts last; a
+  // printable separator, and a UTF-8 locale for the client (with LANG=C tmux prints a control character as "_")
+  const d = await run(tmux, ['display-message', '-p', '-t', asked ?? `=${TMUX_SESSION}:`, CAPTURE_FORMAT], 10000, 4000, CAPTURE_ENV);
   if (d.code !== 0 || d.cut) throw new Error(asked ? 'no such pane in the terminal' : `tmux: ${printable(d.err, 200) || `exit ${d.code}`}`);
-  const [session, pane, index, command, ...name] = d.out.replace(/\n$/, '').split('\t');
-  if (session !== TMUX_SESSION || typeof pane !== 'string' || !PANE_ID.test(pane) || (asked !== null && pane !== asked)) throw new Error('no such pane in the terminal');
+  const m = d.out.match(/^1\|(%[0-9]{1,6})\|([0-9]{1,6})\|([^\n]*)\n?$/);
+  if (!m || (asked !== null && m[1] !== asked)) throw new Error('no such pane in the terminal');
+  const [, pane, index, rest] = m;
+  const bar = rest.indexOf('|');
   // -p: to stdout; -J: wrapped lines joined; -S -N: from N lines back in the history (and the screen below them)
-  const r = await runTail(tmux, ['capture-pane', '-p', '-J', '-S', `-${n}`, '-t', pane], 10000, CAPTURE.readMax);
+  const r = await runTail(tmux, ['capture-pane', '-p', '-J', '-S', `-${n}`, '-t', pane], 10000, CAPTURE.readMax, CAPTURE_ENV);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
   const t = captureText(new TextDecoder('utf-8').decode(r.out), n);
-  return { pane, window: { index: /^[0-9]{1,6}$/.test(index ?? '') ? Number(index) : null, name: printable(name.join('\t'), 60) },
-    command: printable(command ?? '', 60), lines: t.lines, asked: n, text: t.text, cut: t.cut || r.cut, wide: t.wide };
+  return { pane, window: { index: Number(index), name: printable(bar < 0 ? '' : rest.slice(bar + 1), 60) },
+    command: printable(bar < 0 ? rest : rest.slice(0, bar), 60), lines: t.lines, asked: n, text: t.text, cut: t.cut || r.cut, wide: t.wide };
 }
 
 // --- Run & test (run.list / run.start / run.results / run.show): the workspace's tasks, read from its own files —

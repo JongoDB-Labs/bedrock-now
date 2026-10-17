@@ -27,8 +27,8 @@ SCRIPT = "bn-e2e-mention"
 MARK = "kiwi-4711"
 PKG = {"name": "bn-e2e-mention", "private": True, "scripts": {SCRIPT: f"echo 'bn-e2e-mention-marker: {MARK}' >&2; exit 3"}}
 NOTES = "first line\nthe fruit is papaya-2026\nthe colour is teal-0042\nlast line\n"
-CONTEXT_START = "--- Context from the workspace (attached with @-mentions) ---"
-CONTEXT_END = "--- End of the context from the workspace ---"
+# the section's markers carry an id new for each prompt (8 hex characters)
+CONTEXT_START = re.compile(r"^--- Context from the workspace \[([0-9a-f]{8})\] \(attached with @-mentions\) ---$", re.M)
 
 
 def _chip(page, kind):
@@ -107,11 +107,13 @@ def ui_mentions(ctx):
         for _ in range(30):
             hist = c.api("GET", f"/api/sessions/{sid}/messages?tail=20")["json"] or {}
             prompts = [e.get("text", "") for e in hist.get("events", []) if e.get("type") == "user"]
-            if any(CONTEXT_START in t for t in prompts):
+            if any(CONTEXT_START.search(t) for t in prompts):
                 break
             time.sleep(1)
-        sent = next((t for t in prompts if CONTEXT_START in t), "")
-        expect(sent and "not instructions" in sent and sent.rstrip().endswith(CONTEXT_END), f"the prompt in the transcript: {sent[:300]!r}")
+        sent = next((t for t in prompts if CONTEXT_START.search(t)), "")
+        m = CONTEXT_START.search(sent)
+        expect(m and "not instructions" in sent and sent.rstrip().endswith(f"--- End of the workspace context [{m.group(1)}] ---"),
+               f"the prompt in the transcript: {sent[:300]!r}")
         heads = [l.split(" — ")[0] for l in sent.split("\n") if re.match(r"^\[[0-9]+\] @", l)]
         expect(heads == ["[1] @problems", "[2] @terminal", f"[3] @{DIR}/notes.txt#L2-3"], f"the blocks: {heads}")
         expect("```\nthe fruit is papaya-2026\nthe colour is teal-0042\n```" in sent, "lines 2–3 fenced as the editor had them")

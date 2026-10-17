@@ -23,7 +23,7 @@ import { Icon, Spinner } from './icons';
 import { ModePicker } from './Pickers';
 import { Guards } from './Guards';
 import { useMedia } from './ui';
-import { mentionStore, removeMention, clearMentions, addTerminal, addDiff, addProblems, addLines, typedLines, recapture } from '../attach';
+import { mentionStore, removeMention, clearMentions, addTerminal, addDiff, addProblems, addLines, syncTypedLines, recapture } from '../attach';
 import { mentionBlocks, mentionOptions, takesMentions, withContext, type Mention } from '../mentions';
 import { CAPTURE_LINES_MAX } from '../api';
 
@@ -147,6 +147,12 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       setCaret(pos);
     });
   }, [insert?.n]);
+
+  // an @path#L… typed (or brought by a link's draft) becomes a chip, after a pause in typing
+  useEffect(() => {
+    const t = setTimeout(() => syncTypedLines(text), 300);
+    return () => clearTimeout(t);
+  }, [text]);
 
   // autosize
   useEffect(() => {
@@ -272,18 +278,18 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     const blocks = atts.map((a) => a.block);
     // the Review pane's line comments go with a prompt for Claude ("path:line — comment"); they leave the box once sent
     const withNotes = promptWithComments(t || (atts.length ? 'What is in this image?' : ''));
-    // then the @-mentions' quoted context (the chips, and an @path#L… typed without one: read now)
+    // then the @-mentions' quoted context: the chips — only what a chip shows goes (an @path#L… typed a moment ago
+    // becomes one first, and the prompt waits for you to see it)
     let out = withNotes.text;
     let sent: number[] = [];
     if (takesMentions(out)) {
-      const typed = await typedLines(t);
-      if (typed.error) {
-        toast(typed.error, 'error');
+      if (syncTypedLines(t) > 0) {
+        toast('Your @file#L… is a chip now: look at what goes with the prompt, then send again.');
         return;
       }
       const ready = ms.filter((m) => m.state === 'ready');
-      if (ready.length || typed.mentions.length) {
-        out = withContext(out, [...ready, ...typed.mentions]);
+      if (ready.length) {
+        out = withContext(out, ready);
         sent = ready.map((m) => m.id);
       }
     }

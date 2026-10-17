@@ -20,7 +20,6 @@ import {
   type Mention,
   type MentionKind,
 } from './mentions';
-import { label } from './text';
 
 export const mentionStore = createStore<{ items: Mention[] }>({ items: [] });
 let mentionN = 1;
@@ -35,8 +34,12 @@ function put(fn: (items: Mention[]) => Mention[]): void {
 function update(id: number, patch: Partial<Mention>): void {
   put((items) => (items.some((m) => m.id === id) ? items.map((m) => (m.id === id ? { ...m, ...patch } : m)) : items));
 }
+/** typed @path#L… you dropped (×): not made into a chip again while that text stays */
+const dismissed = new Set<string>();
 export function removeMention(id: number): void {
-  put((items) => items.filter((m) => m.id !== id));
+  const m = mentionStore.get().items.find((x) => x.id === id);
+  if (m?.typed && m.key) dismissed.add(m.key);
+  put((items) => items.filter((x) => x.id !== id));
 }
 export function clearMentions(ids: number[]): void {
   const gone = new Set(ids);
@@ -45,9 +48,9 @@ export function clearMentions(ids: number[]): void {
 
 /** A new chip (loading), or the one of the same kind (terminal, diff, problems) or the same lines again. -> its id, or
  *  null when there are MENTIONS_MAX already. */
-function slot(kind: MentionKind, token: string, key?: string): number | null {
+function slot(kind: MentionKind, token: string, key?: string, extra: Partial<Mention> = {}): number | null {
   const items = mentionStore.get().items;
-  const same = items.find((m) => m.kind === kind && (kind !== 'lines' || (m.path !== undefined && rangeKey(m.path, m.from ?? 0, m.to ?? 0) === key)));
+  const same = items.find((m) => m.kind === kind && (kind !== 'lines' || m.key === key));
   if (same) {
     update(same.id, { state: 'loading', error: '' });
     return same.id;
@@ -57,7 +60,7 @@ function slot(kind: MentionKind, token: string, key?: string): number | null {
     return null;
   }
   const id = mentionN++;
-  put((xs) => [...xs, { id, kind, token, title: '', text: '', note: '', state: 'loading', error: '', at: Date.now() }]);
+  put((xs) => [...xs, { id, kind, token, title: '', text: '', note: '', state: 'loading', error: '', at: Date.now(), ...(key ? { key } : {}), ...extra }]);
   return id;
 }
 
@@ -69,9 +72,10 @@ export function insertIntoPrompt(text: string): void {
 // ---------------------------------------------------------------- lines of a file
 
 /** Lines of a file: `text` is the editor's (its selection's lines, as they are there), else the file is read now. */
-export async function addLines(path: string, from: number, to: number, given?: { text: string; total: number; unsaved: boolean }): Promise<Mention | null> {
+export async function addLines(path: string, from: number, to: number, given?: { text: string; total: number; unsaved: boolean },
+  opts: { typed?: boolean } = {}): Promise<Mention | null> {
   const key = rangeKey(path, from, to);
-  const id = slot('lines', lineToken(path, from, to), key);
+  const id = slot('lines', lineToken(path, from, to), key, opts.typed ? { typed: true, path, from, to } : { path, from, to });
   if (id === null) return null;
   try {
     let fields;
@@ -92,22 +96,24 @@ export async function addLines(path: string, from: number, to: number, given?: {
   }
 }
 
-/** The `@path#L…` you typed that no chip holds: read now (for a prompt on its way), never kept as chips. */
-export async function typedLines(text: string): Promise<{ mentions: Mention[]; error: string }> {
-  // (a chip of the same file whose lines overlap is the same mention: a range past the file's end was clamped there)
-  const have = mentionStore.get().items.filter((m) => m.kind === 'lines' && m.path !== undefined);
-  const refs = lineRefs(text).filter((r) => !have.some((m) => m.path === r.path && (m.from ?? 0) <= r.to && r.from <= (m.to ?? 0)));
-  const out: Mention[] = [];
-  for (const r of refs.slice(0, MENTIONS_MAX)) {
-    try {
-      const f = await api.fsRead(r.path);
-      if (f.binary || f.text === null) return { mentions: [], error: `@${label(r.path, 120)}: a binary file — its lines cannot be quoted` };
-      out.push({ id: mentionN++, kind: 'lines', ...fileLines(r.path, f.text, r.from, r.to, { truncated: f.truncated }), state: 'ready', error: '', at: Date.now() });
-    } catch (e) {
-      return { mentions: [], error: `@${label(r.path, 120)}#L${r.from}: ${errText(e)}` };
-    }
+/** Every `@path#L…` typed in the prompt box (or brought by a link's draft) is a chip too — what will be sent is visible
+ *  before Send: a chip for each one no chip holds yet (asked for with the same range: the editor's, the picker's), and
+ *  the typed ones whose text went are taken away. -> how many chips it started (the prompt waits for them). */
+export function syncTypedLines(text: string): number {
+  // (a quoted path, @"a b.ts"#L1, is one the page wrote for a chip it made itself)
+  const refs = lineRefs(text).filter((r) => !r.path.startsWith('"')).slice(0, MENTIONS_MAX);
+  const keys = new Set(refs.map((r) => rangeKey(r.path, r.from, r.to)));
+  for (const k of [...dismissed]) if (!keys.has(k)) dismissed.delete(k);
+  put((items) => (items.some((m) => m.typed && !keys.has(m.key ?? '')) ? items.filter((m) => !m.typed || keys.has(m.key ?? '')) : items));
+  let started = 0;
+  for (const r of refs) {
+    const k = rangeKey(r.path, r.from, r.to);
+    if (dismissed.has(k) || mentionStore.get().items.some((m) => m.kind === 'lines' && m.key === k)) continue;
+    if (mentionStore.get().items.length >= MENTIONS_MAX) break;
+    void addLines(r.path, r.from, r.to, undefined, { typed: true });
+    started++;
   }
-  return { mentions: out, error: '' };
+  return started;
 }
 
 // ---------------------------------------------------------------- the terminal

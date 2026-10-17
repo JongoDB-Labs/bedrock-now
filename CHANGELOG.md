@@ -12,9 +12,11 @@ All notable changes to bedrock-now are documented here. The format follows
   panel's current window; `@terminal:500` for more), `@diff` (the changes the Review pane lists), `@problems` (Run &
   test's failed runs with the end of their output) and `@file#L5-10` (those lines of a file). The editor's selected
   lines go in with **Alt+K** (or the *Lines 5–10 to the prompt* button a selection shows, or the command palette);
-  the terminal panel, the Review pane and the Problems list have an *Add to prompt* button too. Each becomes a chip
-  in the prompt box that shows exactly what will go; it goes after your text as a block of quoted context —
-  labelled as data from the workspace, not instructions, in a fence its content cannot close, invisible and
+  the terminal panel, the Review pane and the Problems list have an *Add to prompt* button too; an `@file#L5-10` typed
+  in the box (or in a link's draft) becomes a chip as well. Each chip shows exactly what will go — nothing goes that
+  is not a chip; it goes after your text as a block of quoted context — between markers with an id made for that
+  prompt, labelled as data from the workspace, not instructions, in a fence its content cannot close (a line inside
+  that looks like a marker is marked `⟨quoted⟩`), invisible and
   direction-changing characters shown, long lines and large blocks cut (and said), at most 80,000 characters in all
   — and the conversation folds it away under your prompt. The terminal's lines come from a new read-only op of the
   sandbox's spawn server, `terminal.capture` (`tmux capture-pane` with fixed arguments, a checked pane id, escapes

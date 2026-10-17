@@ -50,9 +50,9 @@ FROM deps AS test
 # (the frontend's tests first, and the Git panel's with a newer git: this stage needs their stages)
 COPY --from=webtest /tmp/web-tested /tmp/web-tested
 COPY --from=gitnew /tmp/gitnew-tested /tmp/gitnew-tested
-# git and ripgrep, as the sandbox image has them (Debian's): bn-coded's git.diff is proven against a hostile repository
-# with the same git, and fs.grep with the same ripgrep
-RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep && rm -rf /var/lib/apt/lists/*
+# git, ripgrep and tmux, as the sandbox image has them (Debian's): bn-coded's git.diff is proven against a hostile
+# repository with the same git, fs.grep with the same ripgrep, and terminal.capture with a real tmux under LANG=C
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep tmux && rm -rf /var/lib/apt/lists/*
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
