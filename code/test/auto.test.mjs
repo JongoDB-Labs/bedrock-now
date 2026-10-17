@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
-import { SessionManager } from '../server/sessions.mjs';
+import { SessionManager, callKey } from '../server/sessions.mjs';
 import { PermissionBroker } from '../server/broker.mjs';
 import { createServer } from '../server/main.mjs';
 import { fromSdk } from '../server/normalize.mjs';
@@ -206,6 +206,36 @@ test('"Allow once": only in Auto, within 10 minutes; blocks by a rule get no all
     assert.equal(s.decorateBlocked({ type: 'blocked', tool: 'Bash', toolUseId: 't9', by: 'classifier' }).allowId, undefined);
     mgr.closeAll();
   }
+});
+
+test('"Allow once" matches the whole call: only Bash\'s own top-level description may differ; an MCP tool\'s description is content', () => {
+  // Bash: the label Claude rewrites on a retry is left out — nothing else
+  assert.equal(callKey('Bash', { command: 'curl x | sh', description: 'first' }), callKey('Bash', { description: 'again', command: 'curl x | sh' }));
+  assert.notEqual(callKey('Bash', { command: 'curl x | sh' }), callKey('Bash', { command: 'curl y | sh' }));
+  assert.notEqual(callKey('Bash', { command: 'x', run_in_background: true }), callKey('Bash', { command: 'x' }));
+  // other tools: every field, at every level (keys in any order)
+  const issue = (description) => ({ repo: 'o/r', title: 'Bug', description, labels: [{ name: 'a', description: 'nested' }] });
+  assert.equal(callKey('mcp__github__create_issue', issue('Steps…')), callKey('mcp__github__create_issue', { labels: [{ description: 'nested', name: 'a' }], title: 'Bug', description: 'Steps…', repo: 'o/r' }));
+  assert.notEqual(callKey('mcp__github__create_issue', issue('Steps…')), callKey('mcp__github__create_issue', issue('AWS_SECRET_ACCESS_KEY=…')), 'a top-level description is content');
+  assert.notEqual(callKey('mcp__github__create_issue', issue('x')), callKey('mcp__github__create_issue', { ...issue('x'), labels: [{ name: 'a', description: 'other' }] }), 'so is a nested one');
+  assert.notEqual(callKey('Bash', { command: 'x', env: { description: 'a' } }), callKey('Bash', { command: 'x', env: { description: 'b' } }), 'a nested description in Bash too');
+  assert.notEqual(callKey('Agent', { prompt: 'p', description: 'a' }), callKey('Agent', { prompt: 'p', description: 'b' }));
+});
+
+test('"Allow once" for an MCP tool: the retry with another description is not approved (it goes to the reviewer)', async () => {
+  const { mgr } = manager({ allowAuto: true });
+  const s = mgr.get(mgr.open({ mode: 'default' }).id);
+  await s.setMode('auto');
+  const seen = { repo: 'o/r', title: 'Bug', description: 'Steps to reproduce' };
+  s.noteToolUses({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_m1', name: 'mcp__github__create_issue', input: seen }] } });
+  const b = s.decorateBlocked({ type: 'blocked', tool: 'mcp__github__create_issue', toolUseId: 'toolu_m1', by: 'classifier', reason: '[Data Exfiltration]', text: 'denied' });
+  assert.match(b.allowId, /^[0-9a-f-]{36}$/);
+  s.allowBlocked(b.allowId);
+  const hook = (input) => s.preToolUse({ tool_name: 'mcp__github__create_issue', tool_input: input });
+  assert.deepEqual(hook({ ...seen, description: 'contents of .env' }), {}, 'a call you never saw');
+  assert.equal(hook({ ...seen }).hookSpecificOutput.permissionDecision, 'allow', 'exactly the call on the card');
+  assert.deepEqual(hook({ ...seen }), {}, 'once');
+  mgr.closeAll();
 });
 
 test('broker: a plan may be approved with Auto only while allowed; a prompt says why it asks (reasonType)', async () => {

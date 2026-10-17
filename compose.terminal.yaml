@@ -44,8 +44,9 @@ services:
       # (no ENABLE_TOOL_SEARCH: tool search needs a beta header, so with the betas off it changes nothing)
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"   # no telemetry, error reports or update checks
       DISABLE_AUTOUPDATER: "1"                        # the image is read-only; ./stack update rebuilds it
-      # Settings › Code page › Auto mode in the terminal: claude-bedrock in here keeps auto mode off for its sessions
-      # unless it is on (the managed settings below decide for everything else)
+      # Settings › Code page › Auto mode in the terminal: claude-bedrock and the shells' `claude` (terminal/bashrc) keep
+      # auto mode off for their sessions unless it is on. A convenience for what is typed here, not a boundary: the
+      # read-only managed settings below decide for everything else
       TERMINAL_AUTO_MODE: ${TERMINAL_AUTO_MODE:-false}
       # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp

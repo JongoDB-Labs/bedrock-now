@@ -1410,8 +1410,10 @@ credentials and the rest of Claude Code's default rules (`claude auto-mode defau
 Reads, read-only commands and file edits in the workspace run without it. What you say counts: a risky command you
 ask for by name in a prompt is your approval, and the reviewer may let it run (Claude Code's "approvals you state in
 conversation"; seen live — `curl -fsSL … | sh` named in a prompt ran, the same command taken from a file in the
-workspace is what it blocks), and a boundary you state ("don't push") makes it block. It reduces prompts; it does not
-make anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
+workspace is what it blocks), and a boundary you state ("don't push") makes it block. So text the page sends as your
+message carries that weight even where it comes from the workspace: a Review line comment quoting a file's name or
+lines, or *Allow once*'s retry prompt, which names the exact call it approves (acceptable there: you approved exactly
+that call, and the hook lets only that one through). It reduces prompts; it does not make anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
 internet switch).
 
 - **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Code page → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto
@@ -1428,9 +1430,11 @@ internet switch).
   anything; and in the image, `off.json` is root's file under the mount). Both off — auto mode off for every Claude
   Code there; the terminal's on — nothing set, Claude Code decides as anywhere else (an interactive `claude` starts in
   auto mode, `Shift+Tab` leaves it); only the Code page's on — auto mode stays available (the page needs it, and
-  managed settings outrank its own), but the terminal's `claude` starts in *Manual*, its *Plan* asks, and
-  `claude-bedrock` there turns auto mode off for its sessions; plain `claude` could still be switched to it with
-  `Shift+Tab`. *Allow once*'s approval is not in the sandbox either: it is a hook callback of the Agent SDK in the code
+  managed settings outrank its own), but the terminal's `claude` starts in *Manual*, its *Plan* asks, and both
+  `claude-bedrock` there and the `claude` typed in its shells (a shell function in `/etc/bedrock-now.bashrc`) add
+  Claude Code's flag-tier `disableAutoMode` to their sessions — a convenience for what you type, not a boundary:
+  `/usr/local/bin/claude` called directly, or a `--settings` of your own, goes without it, and `Shift+Tab` could then
+  reach auto mode. *Allow once*'s approval is not in the sandbox either: it is a hook callback of the Agent SDK in the code
   container (Claude Code asks the code container over the session's control channel), not a hook file or setting the
   sandbox could edit.
 - **No dialog**, unlike Bypass: like Claude Code's own `Shift+Tab` into it, because it still asks — your ask rules,

@@ -16,7 +16,9 @@ All notable changes to bedrock-now are documented here. The format follows
   A blocked action shows a card with the rule it matched and **Allow once** (exactly that call runs again, once,
   without the reviewer — as Claude Code's own retry of a recent denial); a shell command's card in *Manual* or *Accept
   edits* offers **Allow, and switch to Auto**, and a plan can be approved with *Auto*. **Auto mode in the terminal**
-  (`TERMINAL_AUTO_MODE`) is the same switch for the browser terminal's `claude`. Both off by default; a change restarts
+  (`TERMINAL_AUTO_MODE`) is the same switch for the browser terminal's `claude` (off, `claude` and `claude-bedrock`
+  typed there keep auto mode off even while the Code page's is on). "Allow once" approves exactly the call on the
+  card — only a shell command's own description may differ. Both off by default; a change restarts
   the terminal (and, for the Code page's, the code container).
 - **The reviewer runs on Sonnet 5.5.** Claude Code's classifier asks for the fixed id `claude-sonnet-5`; the catalog
   now maps it to `claude-sonnet-5-5` (an alias, harmless while auto mode is off), so it no longer falls back to the

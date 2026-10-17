@@ -356,8 +356,9 @@ It is a sandbox, not a shell on your computer:
   the sandbox's managed settings say so — unless **Settings → Code page → Auto mode in the terminal** is on
   (`TERMINAL_AUTO_MODE`, from the computer running bedrock-now; the terminal restarts). Then Claude Code decides as
   anywhere else: an interactive `claude` starts in it (`Shift+Tab` leaves it), its reviewer runs on Sonnet 5.5 at
-  about $0.13 per 5 minutes in use on the terminal's key. With only the Code page's Auto mode on, `claude` here
-  starts in *Manual* and `claude-bedrock` keeps auto mode off ([docs/security.md](docs/security.md#auto-mode)).
+  about $0.13 per 5 minutes in use on the terminal's key. With only the Code page's Auto mode on, `claude` typed in
+  its shells and `claude-bedrock` keep auto mode off (`/usr/local/bin/claude` called directly does not:
+  [docs/security.md](docs/security.md#auto-mode)).
 - What runs in it can spend its key (within `BUDGET_TERMINAL`), read and write the shared store and knowledge
   bases (so it could plant text that Chat's answers later draw on), and change anything in the workspace — which
   you may open on your computer later: a `.git/hooks` script or `core.fsmonitor`/`core.sshCommand` in

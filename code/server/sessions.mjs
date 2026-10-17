@@ -37,12 +37,16 @@ const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
 });
 
-// callKey(input) -> what identifies a tool call for "Allow once": its input as sorted JSON, without the free-text
-// `description` Claude writes anew on a retry
-function callKey(input) {
+// callKey(tool, input) -> what identifies a tool call for "Allow once": its whole input as canonical JSON (keys
+// sorted, at every level). Only Bash's own top-level `description` is left out: the label Claude writes anew on a
+// retry, which runs nothing. Every other field — of Bash, and the whole input of every other tool (an MCP tool's
+// `description` may be the very content it sends) — must be exactly what the card showed.
+export function callKey(tool, input) {
   const sort = (v) => (Array.isArray(v) ? v.map(sort) : v && typeof v === 'object'
-    ? Object.fromEntries(Object.keys(v).filter((k) => k !== 'description').sort().map((k) => [k, sort(v[k])])) : v);
-  try { return JSON.stringify(sort(input && typeof input === 'object' ? input : {})); } catch { return ''; }
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v);
+  const top = input && typeof input === 'object' && !Array.isArray(input) ? { ...input } : {};
+  if (tool === 'Bash') delete top.description;
+  try { return JSON.stringify(sort(top)); } catch { return ''; }
 }
 // what a blocked-action card shows of the call (capped like a permission prompt)
 const plainInput = (input) => capped(input ?? {}, LIMITS.permissionShownChars, LIMITS.permissionShownString).value;
@@ -247,7 +251,7 @@ export class Session {
     this.blocked.delete(id);
     const now = Date.now();
     this.allowOnce = this.allowOnce.filter((a) => a.until > now).slice(-4);
-    this.allowOnce.push({ tool: b.tool, key: callKey(b.input), until: now + ALLOW_ONCE_MS });
+    this.allowOnce.push({ tool: b.tool, key: callKey(b.tool, b.input), until: now + ALLOW_ONCE_MS });
     const what = b.tool === 'Bash' && typeof b.input.command === 'string' ? `\n\n    ${short(b.input.command, 2000).replace(/\n/g, '\n    ')}` : '';
     this.prompt({ text: `Allowed once in the Code page: the ${short(b.tool, 100)} call Auto mode just blocked. Run it again exactly as it was.${what}` });
   }
@@ -256,7 +260,7 @@ export class Session {
     const now = Date.now();
     this.allowOnce = this.allowOnce.filter((a) => a.until > now);
     if (this.mode !== 'auto' || !input || typeof input.tool_name !== 'string') return {};
-    const key = callKey(input.tool_input);
+    const key = callKey(input.tool_name, input.tool_input);
     const i = this.allowOnce.findIndex((a) => a.tool === input.tool_name && a.key === key);
     if (i < 0) return {};
     this.allowOnce.splice(i, 1);

@@ -783,3 +783,26 @@ STUB
   assert_contains "$(run TERMINAL_AUTO_MODE=yes /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" --help)" "Auto     auto mode available (Settings › Terminal › Auto mode): its reviewer model runs on Sonnet 5.5"
   assert_contains "$(run /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" --help)" "Auto     auto mode off (Settings › Terminal › Auto mode turns it on)"
 }
+
+# `claude` typed in the terminal's shells (terminal/bashrc): auto mode off for its sessions unless the terminal's own
+# switch is on — the sandbox's managed settings must leave it available while the Code page's is on; not for a
+# subcommand; /usr/local/bin/claude directly goes without it (a convenience, not a boundary)
+test_terminal_shells_claude_keeps_auto_mode_off_unless_the_terminal_allows_it() {
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/claude" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = --help ]; then printf 'Usage: claude\nCommands:\n  mcp  Configure MCP servers\n  doctor  Check\n'; exit 0; fi
+printf '%s\n' "$@"
+STUB
+  chmod 755 "$TMP/bin/claude"
+  sh_claude() { env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$TMP" TERMINAL_AUTO_MODE="$1" "$BASH" --norc --noprofile -i -c ". '$STACK_DIR/terminal/bashrc'; shift; claude \"\$@\"" _ "$@" 2>/dev/null; }
+  off='--settings={"disableAutoMode":"disable"}'
+  assert_eq "$(sh_claude false -p hi | tr '\n' ' ')" "$off -p hi "
+  assert_eq "$(sh_claude '' 'fix the bug' | tr '\n' ' ')" "$off fix the bug "
+  assert_eq "$(sh_claude false | tr '\n' ' ')" "$off "
+  assert_eq "$(sh_claude false mcp list | tr '\n' ' ')" "mcp list "
+  assert_eq "$(sh_claude true -p hi | tr '\n' ' ')" "-p hi "
+  assert_eq "$(sh_claude ON -p hi | tr '\n' ' ')" "-p hi "
+  # the terminal container passes the switch in (and only it: the Code page's reaches the sandbox as its managed settings)
+  assert_contains "$(cat "$STACK_DIR/compose.terminal.yaml")" 'TERMINAL_AUTO_MODE: ${TERMINAL_AUTO_MODE:-false}'
+}

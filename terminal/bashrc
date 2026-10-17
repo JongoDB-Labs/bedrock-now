@@ -7,3 +7,24 @@ HISTFILESIZE=20000
 HISTCONTROL=ignoreboth
 shopt -s histappend checkwinsize
 alias ls='ls --color=auto' ll='ls -alF' grep='grep --color=auto'
+
+# Claude Code's auto mode off for `claude` typed here unless Settings › Code page › Auto mode in the terminal is on
+# (TERMINAL_AUTO_MODE). The sandbox's managed settings turn it off already while both auto mode switches are off; with
+# only the Code page's on they must leave it available (the Code page's sessions need it), so this adds Claude Code's
+# flag-tier switch to sessions started here — not to a subcommand (they refuse --settings). A convenience, not a
+# boundary: /usr/local/bin/claude called directly, or a --settings of yours (Claude Code takes the last), goes without it.
+claude() {
+  case "$(printf '%s' "${TERMINAL_AUTO_MODE:-}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) command claude "$@"; return ;;
+  esac
+  if [ -z "${_BN_CLAUDE_SUBCMDS+x}" ]; then
+    _BN_CLAUDE_SUBCMDS="$(command claude --help 2>/dev/null </dev/null | awk '/^Commands:/ { f = 1; next } f && /^[^ ]/ { f = 0 }
+      f && /^  [a-z]/ { n = split($1, a, "|"); for (i = 1; i <= n; i++) print a[i] }' || true)"
+  fi
+  local c
+  case "${1:-}" in
+    '' | -*) ;;
+    *) for c in $_BN_CLAUDE_SUBCMDS; do [ "$c" = "$1" ] && { command claude "$@"; return; }; done ;;
+  esac
+  command claude '--settings={"disableAutoMode":"disable"}' "$@"
+}
