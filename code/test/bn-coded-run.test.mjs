@@ -29,6 +29,9 @@ case "$1" in
     [ -e ${JSON.stringify(path.join(ROOT, 'norun'))} ] || ( cd "$cwd" && "$@" </dev/null >>${JSON.stringify(path.join(ROOT, 'window.out'))} 2>&1 & )
     echo @7 ;;
   select-window) [ "$3" = "@7" ] || { echo "can't find window: $3" >&2; exit 1; } ;;
+  show-hooks) [ -e ${JSON.stringify(path.join(ROOT, 'hooks'))} ] && cat ${JSON.stringify(path.join(ROOT, 'hooks'))} ;;
+  show-environment) [ -e ${JSON.stringify(path.join(ROOT, 'tmuxenv-list'))} ] && cat ${JSON.stringify(path.join(ROOT, 'tmuxenv-list'))} ;;
+  display-message) [ -e ${JSON.stringify(path.join(ROOT, 'serverpid'))} ] && cat ${JSON.stringify(path.join(ROOT, 'serverpid'))} ;;
 esac
 exit 0
 `, { mode: 0o755 });
@@ -120,10 +123,12 @@ test('.npmrc: its setting names shown, its hash bound to every npm task; one tha
   ws('package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
   const plain = (await op({ op: 'run.list' })).tasks.find((t) => t.name === 'test');
   assert.deepEqual(plain.files, []);
-  ws('.npmrc', '# mine\nscript-shell=/workspace/evil.sh\n//registry.example/:_authToken=sekrit-token\nnode-options = --require ./x.js\n');
+  ws('.npmrc', '# mine\nscript-shell=/workspace/evil.sh\n//registry.example/:_authToken=sekrit-token\nnode-options = --require ./x.js\n'
+    + 'registry=https://me:sekrit-pw@registry.example/\nhttps-proxy=http://me:sekrit pw@proxy:3128\n');
   const withRc = (await op({ op: 'run.list' })).tasks.find((t) => t.name === 'test');
   assert.deepEqual(withRc.detail[0], { name: '.npmrc (the workspace\'s)',
-    text: 'script-shell=/workspace/evil.sh\n//registry.example/:_authToken = (a secret: not shown)\nnode-options = --require ./x.js' });
+    text: 'script-shell=/workspace/evil.sh\n//registry.example/:_authToken = (a secret: not shown)\nnode-options = --require ./x.js\n'
+      + 'registry=https://(hidden)@registry.example/\nhttps-proxy=http://(hidden)@proxy:3128' });
   assert.ok(!JSON.stringify(withRc).includes('sekrit'));
   assert.equal(withRc.files[0].path, '.npmrc');
   assert.match(withRc.files[0].sha256, /^[0-9a-f]{64}$/);
@@ -282,13 +287,17 @@ test('run.start: the task\'s fixed wrapper in a new tmux window (the session mad
   assert.equal(r.window, '@7');
   assert.equal(r.command, `${P.node} ${P.npm} run -- test`);
   const c = calls();
-  assert.deepEqual(c.map((x) => x[0]), ['has-session', 'new-session', 'new-window']);
-  assert.deepEqual(c[2], ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', '=claude:', '-n', 'run-test', '-c', fs.realpathSync(WS), '--',
+  // the session made first; tmux checked for hooks and loader variables (tmuxGuard) right before the window
+  assert.deepEqual(c.map((x) => x[0]), ['has-session', 'new-session', 'show-hooks', 'show-hooks', 'show-hooks', 'show-environment', 'show-environment', 'display-message', 'new-window']);
+  const nw = c.find((x) => x[0] === 'new-window');
+  assert.deepEqual(nw, ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', '=claude:', '-n', 'run-test', '-c', fs.realpathSync(WS),
+    '-e', 'LD_PRELOAD=', '-e', 'LD_AUDIT=', '-e', 'LD_LIBRARY_PATH=', '-e', 'GCONV_PATH=', '-e', 'GLIBC_TUNABLES=', '--',
     ...coded.windowCommand('bedrock-now run', coded.taskEnv(), [P.node, SELF, '--run-task', RUNS, r.id, '--', ...npmArgv('test')])]);
   // bash without the variables that run code first; the runner and the wrapper in an environment made here
-  assert.deepEqual(c[2].slice(12, 28), ['/usr/bin/env', '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS', '-u', 'PS4', '/bin/bash', '--noprofile', '--norc',
+  const at = nw.indexOf('--') + 1;
+  assert.deepEqual(nw.slice(at, at + 16), ['/usr/bin/env', '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS', '-u', 'PS4', '/bin/bash', '--noprofile', '--norc',
     '-c', '"$@"; exec bash']);
-  const inner = c[2].slice(c[2].indexOf('-i') + 1);
+  const inner = nw.slice(nw.indexOf('-i') + 1);
   assert.ok(inner.includes('NPM_CONFIG_USERCONFIG=/dev/null') && inner.includes('NPM_CONFIG_GLOBALCONFIG=/nonexistent/npmrc'));
   assert.ok(!inner.some((a) => /^(NODE_OPTIONS|BASH_ENV|LD_[A-Z_]+|npm_config_[a-z_]+|PYTHON[A-Z]*)=/i.test(a) && !/^NPM_CONFIG_(USERCONFIG|GLOBALCONFIG|UPDATE_NOTIFIER)=/.test(a)), inner.join(' '));
   const rec = JSON.parse(fs.readFileSync(path.join(RUNS, `${r.id}.json`), 'utf8'));
@@ -310,6 +319,43 @@ test('run.start: the task\'s fixed wrapper in a new tmux window (the session mad
   assert.equal(calls().filter((x) => x[0] === 'new-window').length, 1);
   fs.rmSync(path.join(ROOT, 'norun'));
   rm('package.json');
+});
+
+test('the terminal\'s tmux with hooks or loader variables (anything in the sandbox can set them): no window is made', async () => {
+  fs.writeFileSync(path.join(ROOT, 'norun'), '');
+  ws('package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+  fs.mkdirSync(path.join(WS, '.claude'), { recursive: true });
+  ws('.claude/launch.json', JSON.stringify({ configurations: [{ name: 'srv', runtimeExecutable: 'node', runtimeArgs: ['s.js'], port: 4998 }] }));
+  const digest = (await op({ op: 'run.list' })).tasks[0].digest;
+  const entry = (await op({ op: 'launch.list' })).configurations[0];
+  const both = async () => [(await op({ op: 'run.start', source: 'npm', name: 'test', digest })).error, (await op({ op: 'launch.start', name: 'srv', digest: entry.digest })).error];
+  fs.rmSync(LOG, { force: true });
+  try {
+    // a global hook (an after-new-window that types into the window or replaces its command), as `tmux show-hooks` lists it
+    fs.writeFileSync(path.join(ROOT, 'hooks'), 'after-bind-key\nafter-new-window[0] send-keys "rm -rf ~" Enter\nalert-bell\n');
+    for (const e of await both()) assert.match(e ?? '', /tmux has hooks \(after-new-window\) set, by something in the sandbox or your tmux settings/);
+    fs.rmSync(path.join(ROOT, 'hooks'));
+    // loader variables in its global or the session's environment (a removed one, -NAME, is fine)
+    for (const [env, name] of [['LD_PRELOAD=/home/claude/x.so', 'LD_PRELOAD'], ['LD_AUDIT=/x.so', 'LD_AUDIT'], ['GCONV_PATH=/tmp/g', 'GCONV_PATH'],
+      ['BASH_FUNC_exec%%=() { id; }', 'BASH_FUNC_exec%%'], ['LD_LIBRARY_PATH=/tmp', 'LD_LIBRARY_PATH']]) {
+      fs.writeFileSync(path.join(ROOT, 'tmuxenv-list'), `HOME=/home/claude\n-DISPLAY\n${env}\n`);
+      for (const e of await both()) assert.match(e ?? '', new RegExp(`loader variables \\(${name.replace(/[$%]/g, '\\$&')}\\)`), env);
+    }
+    fs.writeFileSync(path.join(ROOT, 'tmuxenv-list'), 'HOME=/home/claude\n-LD_PRELOAD\nNOTLD_X=1\nMY_LD_PRELOAD=1\n');
+    assert.equal((await op({ op: 'run.start', source: 'npm', name: 'test', digest })).ok, true);
+    // the server's own environment (what it was started with)
+    const proc = path.join(ROOT, 'fakeproc', '4321');
+    fs.mkdirSync(proc, { recursive: true });
+    fs.writeFileSync(path.join(proc, 'environ'), 'HOME=/home/claude\0LD_PRELOAD=/home/claude/evil.so\0');
+    fs.writeFileSync(path.join(ROOT, 'serverpid'), '4321\n');
+    assert.match(await coded.tmuxGuard(TMUX, { procDir: path.join(ROOT, 'fakeproc') }), /loader variables \(LD_PRELOAD\)/);
+    fs.writeFileSync(path.join(proc, 'environ'), 'HOME=/home/claude\0');
+    assert.equal(await coded.tmuxGuard(TMUX, { procDir: path.join(ROOT, 'fakeproc') }), null);
+    assert.equal(calls().filter((x) => x[0] === 'new-window').length, 1);   // (only the one allowed above)
+  } finally {
+    for (const f of ['hooks', 'tmuxenv-list', 'serverpid', 'norun']) fs.rmSync(path.join(ROOT, f), { force: true });
+    rm('package.json'); rm('.claude');
+  }
 });
 
 test('the runner: the task\'s output shown and its last 64 KiB kept with the exit status; a missing program; a signal', async () => {

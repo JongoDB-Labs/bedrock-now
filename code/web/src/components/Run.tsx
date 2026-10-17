@@ -291,7 +291,8 @@ export function RunConfirm({ task }: { task: RunTask }) {
       <p class="muted small" data-testid="run-env">
         Its environment: only the sandbox's HOME, USER, LANG and the like, and its PATH with the image's own folders first (a program of the same name in
         ~/.local/bin comes after the image's); npm reads neither your npmrc nor the global one; nothing of the terminal's other variables. What you see
-        here is checked again when you click Run — not while the program runs: it reads its files then.
+        here is checked again when you click Run — not while the program runs: it reads its files then. This guards against changed files, not against
+        something already running in the sandbox (it can also change the terminal's tmux: hooks or loader variables there refuse the run).
       </p>
       {task.files.length > 0 && (
         <p class="muted small" data-testid="run-files">

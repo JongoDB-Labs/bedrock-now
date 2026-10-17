@@ -1582,19 +1582,24 @@ export function launchConfig(c) {
   // the image's folders first; a path from the entry's folder), and whether it is the image's own
   const where = argv ? confine(cwd) : null;
   const prog = argv && where ? whichProgram(argv[0], taskPath(), where) : null;
+  // one that is not the image's own is bound by its contents too (up to 1 MiB: a script, a small binary)
+  const body = prog && !prog.own ? readRegular(prog.path, 1 << 20) : null;
   const out = { name, argv, port, cwd, env: c.env ? { ...c.env } : {}, url: c.url ?? null, autoPort: c.autoPort === true ? true : c.autoPort === false ? false : null,
-    command: argv ? argv.map(quote).join(' ') : null, program: prog ? prog.path : null, programOwn: prog ? prog.own : false };
+    command: argv ? argv.map(quote).join(' ') : null, program: prog ? prog.path : null, programOwn: prog ? prog.own : false,
+    programSha256: body ? sha256(body) : null };
   out.digest = launchDigest(out);
   return out;
 }
 // launchDigest(entry) -> SHA-256 (hex) of exactly what Start runs: the arguments, the folder, the environment (sorted
-// by name), the port (PORT) and the program file the first argument names. The page shows these and sends the digest
+// by name), the port (PORT) and the program file the first argument names (with its SHA-256 when it is not the image's
+// own). The page shows these and sends the digest
 // back with Start; a file changed meanwhile (by Claude, a command, anything in the sandbox), or a program that now
 // resolves elsewhere, no longer matches and is refused. The code container computes the same digest over what it shows
 // (code/server/api.mjs launchDigest; code/test checks the two agree).
-export function launchDigest({ argv, cwd, env, port, program, programOwn }) {
+export function launchDigest({ argv, cwd, env, port, program, programOwn, programSha256 }) {
   const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true])).digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true, programSha256 ?? null]))
+    .digest('hex');
 }
 // launchList() -> {exists, configurations, error}: the file's entries, checked (a broken one says why)
 export function launchList() {
@@ -1617,17 +1622,19 @@ export function launchList() {
   return { exists: true, configurations: list.map(launchConfig).map((c) => (c.name && names.has(c.name) ? { name: c.name, error: 'the name is used twice' } : (names.add(c.name), c))) };
 }
 const TMUX_SESSION = 'claude';   // bn-session's: the terminal panel shows this session's windows
-const TMUX = process.env.BN_TMUX_BIN || 'tmux';
-function run(cmd, args, timeoutMs = 10000) {
+// the image's tmux by its path (never one of the sandbox's first in PATH: ~/.local/bin); BN_TMUX_BIN: tests
+const tmuxBin = () => process.env.BN_TMUX_BIN || imageProgram('tmux') || '/usr/bin/tmux';
+// run(cmd, args) -> {code, out, err, cut}: a short command's answer (out up to maxOut characters; cut: more came)
+function run(cmd, args, timeoutMs = 10000, maxOut = 2000) {
   return new Promise((resolve) => {
     let c;
     try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message, out: '' }); return; }
-    let err = '', out = '';
-    c.stdout.on('data', (d) => { if (out.length < 2000) out += d; });
+    let err = '', out = '', cut = false;
+    c.stdout.on('data', (d) => { if (out.length < maxOut) out += d; else cut = true; });
     c.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
     const t = setTimeout(() => c.kill('SIGKILL'), timeoutMs);
     c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, err: e.code || e.message, out: '' }); });
-    c.on('close', (code) => { clearTimeout(t); resolve({ code, err, out }); });
+    c.on('close', (code) => { clearTimeout(t); resolve({ code, err, out, cut }); });
   });
 }
 // tmuxSession(tmux) — the terminal's tmux session, created as bn-session would (Claude Code in its first window) when
@@ -1637,11 +1644,50 @@ async function tmuxSession(tmux) {
   const r = await run(tmux, ['new-session', '-d', '-s', TMUX_SESSION, '-n', 'claude', '-c', WORKSPACE, 'claude-bedrock; exec bash']);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
 }
+// tmuxGuard(tmux) -> null, or why a window made now might not run what was shown. The terminal's tmux server is the
+// sandbox's to configure: a hook (after-new-window, …) can replace a new window's command or type into it, and loader
+// variables in its environment (LD_PRELOAD, LD_AUDIT, GCONV_PATH, …, BASH_FUNC_*) act in /usr/bin/env and bash before
+// `env -i` clears them. Right before new-window: any hook set (global, global window/pane, the session's), and any such
+// variable in its global or the session's environment or in the server's own, refuse the window. (This narrows what
+// code already running in the sandbox can do — it also controls that tmux server — it does not end it.)
+const LOADER_VAR = /^(LD_[A-Z0-9_]{1,40}|GCONV_PATH|GLIBC_TUNABLES|BASH_FUNC_[^=]{0,200})=/;
+export const WINDOW_CLEAR = ['-e', 'LD_PRELOAD=', '-e', 'LD_AUDIT=', '-e', 'LD_LIBRARY_PATH=', '-e', 'GCONV_PATH=', '-e', 'GLIBC_TUNABLES='];
+const TMUX_MAX = 1 << 20;
+export async function tmuxGuard(tmux, { procDir = '/proc' } = {}) {
+  const hooks = [], vars = [];
+  for (const args of [['show-hooks', '-g'], ['show-hooks', '-gw'], ['show-hooks', '-t', `=${TMUX_SESSION}:`]]) {
+    const r = await run(tmux, args, 10000, TMUX_MAX);
+    if (r.code !== 0 || r.cut) return `the terminal's tmux did not list its hooks (${printable(r.err, 100) || (r.cut ? 'too long' : `exit ${r.code}`)})`;
+    for (const line of r.out.split('\n')) {
+      const m = line.match(/^([a-z-]{1,40})\[[0-9]{1,6}\]/);
+      if (m && !hooks.includes(m[1])) hooks.push(m[1]);
+    }
+  }
+  for (const args of [['show-environment', '-g'], ['show-environment', '-t', `=${TMUX_SESSION}`]]) {
+    const r = await run(tmux, args, 10000, TMUX_MAX);
+    if (r.code !== 0 || r.cut) return `the terminal's tmux did not list its environment (${printable(r.err, 100) || (r.cut ? 'too long' : `exit ${r.code}`)})`;
+    for (const line of r.out.split('\n')) { const m = line.match(LOADER_VAR); if (m && !vars.includes(m[1])) vars.push(m[1]); }
+  }
+  // the server's own environment (what it was started with)
+  const p = await run(tmux, ['display-message', '-p', '-t', `=${TMUX_SESSION}:`, '#{pid}']);
+  const pid = p.code === 0 && /^[1-9][0-9]{0,9}$/.test(p.out.trim()) ? p.out.trim() : null;
+  if (pid) {
+    let env = '';
+    try { env = fs.readFileSync(path.join(procDir, pid, 'environ'), 'latin1'); } catch { /* gone, or not ours: nothing to read */ }
+    for (const kv of env.split('\0')) { const m = kv.match(LOADER_VAR); if (m && !vars.includes(m[1])) vars.push(m[1]); }
+  }
+  if (!hooks.length && !vars.length) return null;
+  const what = [hooks.length ? `hooks (${hooks.slice(0, 3).map((h) => printable(h, 30)).join(', ')})` : '', vars.length ? `loader variables (${vars.slice(0, 3).map((v) => printable(v, 30)).join(', ')})` : '']
+    .filter(Boolean).join(' and ');
+  return `the terminal's tmux has ${what} set, by something in the sandbox or your tmux settings: a window made now might not run what was shown. ` +
+    'Run it in the terminal yourself, or remove them (tmux set-hook -gu, set-environment -gu) or restart the terminal';
+}
+
 // launchStart(name, digest) — that entry (read from the file now: it must still be what the page showed, its digest)
 // in a new tmux window of the terminal's session, named after it, in its folder, with PORT=<port> and its env; when
 // the command ends, a shell stays in the window (with its exit status). The session is created as bn-session would
 // (Claude Code in its first window) when none runs yet.
-export async function launchStart(name, digest, { tmux = TMUX } = {}) {
+export async function launchStart(name, digest, { tmux = tmuxBin() } = {}) {
   if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the entry shown');
   const c = launchList().configurations.find((x) => x.name === name);
   if (!c) throw new Error('no such entry in .claude/launch.json');
@@ -1655,12 +1701,14 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
   const node = imageProgram('node');
   if (!node) throw new Error('node is not the image\'s own here: start it in the terminal');
   await tmuxSession(tmux);
+  const unsafe = await tmuxGuard(tmux);
+  if (unsafe) throw new Error(unsafe);
   // its own variables (shown, bound) over the environment made here (taskEnv), PORT last
   const env = taskEnv({ ...c.env, ...(c.port ? { PORT: String(c.port) } : {}) });
   const window = c.name.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40) || 'server';
   // the command as its own arguments (no shell parses them), the program file shown before Start, in the window's
   // terminal; this file's runner (--run-tty) says how it ended; then bash stays as the window's shell
-  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd, '--',
+  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd, ...WINDOW_CLEAR, '--',
     ...windowCommand('bedrock-now launch', env, [node, SELF, '--run-tty', `launch.json "${c.name}"`.slice(0, 120), '--', c.program, ...c.argv.slice(1)])];
   const r = await run(tmux, args);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
@@ -1672,7 +1720,7 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
 // its fresh shell and run — there, in your shell's history. Only a checked UUID of a transcript that is there is ever
 // part of what is typed (the page's own process for that session is closed first, by the code container).
 const RESUME_CMD = (id) => `claude-bedrock --resume ${id}`;
-export async function terminalResume(id, { tmux = TMUX, procDir = '/proc' } = {}) {
+export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc' } = {}) {
   if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
   let st;
   try { st = fs.lstatSync(path.join(projectDir(), `${id}.jsonl`)); } catch { throw new Error('no such session in this workspace (it has no prompts yet?)'); }
@@ -1774,7 +1822,8 @@ function taskFile(rel) {
 }
 
 // npmrcShown(text) -> the workspace .npmrc's settings as the confirmation shows them (a secret's value is not: auth,
-// tokens, passwords, keys), at most 100 lines of 300 characters — the file itself is bound by its SHA-256
+// tokens, passwords, keys — nor a URL's user and password, registry=https://user:pass@host/), at most 100 lines of 300
+// characters (cut after the hiding) — the file itself is bound by its SHA-256
 const NPMRC_SECRET = /(auth|token|password|_pass|secret|cert|key)/i;
 export function npmrcShown(text) {
   const out = [];
@@ -1783,9 +1832,10 @@ export function npmrcShown(text) {
     const t = line.trim();
     if (!t || t[0] === '#' || t[0] === ';') continue;
     if (out.length >= 100) { more++; continue; }
-    const eq = t.indexOf('=');
-    const k = (eq < 0 ? t : t.slice(0, eq)).trim();
-    const shown = eq >= 0 && NPMRC_SECRET.test(k) ? `${k} = (a secret: not shown)` : t;
+    const u = t.replace(/\/\/[^/@]*@/g, '//(hidden)@');
+    const eq = u.indexOf('=');
+    const k = (eq < 0 ? u : u.slice(0, eq)).trim();
+    const shown = eq >= 0 && NPMRC_SECRET.test(k) ? `${k} = (a secret: not shown)` : u;
     out.push(shown.length > 300 ? `${shown.slice(0, 300)}…` : shown);
   }
   return out.join('\n') + (more ? `\n… (${more} more settings in the file)` : '') || '(no settings)';
@@ -1998,7 +2048,7 @@ function runState(rec, procDir) {
 // runStart(source, name, digest) — that task (listed again now: it must still be what the page showed) in a new window
 // of the terminal's tmux session, through its fixed wrapper, run by this file's runner; the window stays (a shell in
 // the workspace) when it ends
-export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/proc' } = {}) {
+export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir = '/proc' } = {}) {
   if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the task shown');
   if (typeof source !== 'string' || !Object.hasOwn(RUN_NAME, source) || typeof name !== 'string' || !RUN_NAME[source].test(name)) throw new Error('no such task');
   const t = runList().tasks.find((x) => x.source === source && x.name === name);
@@ -2012,6 +2062,8 @@ export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/
   const recs = runRecords();
   if (recs.filter((r) => runState(r, procDir).state === 'running').length >= RUNS_AT_ONCE) throw new Error(`${RUNS_AT_ONCE} tasks run already: wait for one to end, or close its window`);
   await tmuxSession(tmux);
+  const unsafe = await tmuxGuard(tmux, { procDir });
+  if (unsafe) throw new Error(unsafe);
   fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 });
   // (the last 20 runs are kept: the oldest go, with their files)
   for (const old of runIds().slice(RUNS_KEEP - 1)) for (const f of runFiles(old)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
@@ -2021,7 +2073,7 @@ export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/
   const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
   // the runner and the wrapper as their own arguments (no shell parses them), in the environment made here (taskEnv;
   // windowCommand: bash without BASH_ENV and the like only starts it, then stays as the window's shell)
-  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', top, '--',
+  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', top, ...WINDOW_CLEAR, '--',
     ...windowCommand('bedrock-now run', taskEnv(), [node, SELF, '--run-task', RUN_DIR, id, '--', ...t.argv])];
   const r = await run(tmux, args);
   if (r.code !== 0) {
@@ -2053,7 +2105,7 @@ export function runResults(id = null, { procDir = '/proc' } = {}) {
 }
 
 // runShow(id) — that run's window made the current one of the terminal's tmux session (the terminal panel shows it)
-export async function runShow(id, { tmux = TMUX } = {}) {
+export async function runShow(id, { tmux = tmuxBin() } = {}) {
   if (typeof id !== 'string' || !RUN_ID.test(id)) throw new Error('bad run id');
   const rec = readRunFile(`${id}.json`, 16 << 10);
   if (!rec || typeof rec.window !== 'string' || !RUN_WINDOW.test(rec.window)) throw new Error('no window for that run');

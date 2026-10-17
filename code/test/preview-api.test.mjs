@@ -27,7 +27,7 @@ const answers = {
     { name: 'long', argv: ['node', 'x'.repeat(2001)], cwd: '.', port: 1 }, { name: 'ctl', argv: ['node', 'a\nb'], cwd: '.', port: 1 },
     { name: 'envs', argv: ['node'], cwd: '.', env: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`V${i}`, 'x'])), port: 1 },
     { name: 'own', argv: ['node', 's.js'], cwd: '.', port: 2, program: '/usr/local/bin/node', programOwn: true },
-    { name: 'mine', argv: ['node', 's.js'], cwd: '.', port: 3, program: '/home/claude/.local/bin/node', programOwn: 'yes' },
+    { name: 'mine', argv: ['node', 's.js'], cwd: '.', port: 3, program: '/home/claude/.local/bin/node', programOwn: 'yes', programSha256: 'ab'.repeat(32) },
     { name: 'odd', argv: ['node'], cwd: '.', port: 4, program: 'node' }, { name: 'up', argv: ['node'], cwd: '.', port: 5, program: '/usr/../tmp/x' }] } }),
   'launch.start': (req) => (req.digest === 'c'.repeat(64) ? Promise.reject(new SandboxError('.claude/launch.json changed since it was shown: review it again', 'refused'))
     : { result: { ok: true, name: req.name, window: 'web', port: 5173, command: 'npm run dev' } }),
@@ -80,18 +80,20 @@ test('GET /api/launch: entries whole (argv, folder, environment with values: sho
   const r = await req('GET', '/api/launch');
   assert.equal(r.status, 200);
   const web = { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], cwd: 'web', env: [{ name: 'NODE_ENV', value: 'x' }, { name: 'NODE_OPTIONS', value: '--require ./x.js' }],
-    url: null, autoPort: null, command: 'npm run dev', program: null, programOwn: false };
+    url: null, autoPort: null, command: 'npm run dev', program: null, programOwn: false, programSha256: null };
   web.digest = launchDigest({ argv: web.argv, cwd: 'web', env: { NODE_ENV: 'x', NODE_OPTIONS: '--require ./x.js' }, port: 5173 });
   assert.deepEqual(r.json.configurations, [web,
     { name: 'bad', error: 'port: a number from 1 to 65535' }, { name: null, error: 'no name' },
-    { name: 'attach', port: 8080, argv: null, cwd: '.', env: [], url: 'http://localhost:8080', autoPort: null, command: null, program: null, programOwn: false, digest: null },
+    { name: 'attach', port: 8080, argv: null, cwd: '.', env: [], url: 'http://localhost:8080', autoPort: null, command: null, program: null, programOwn: false, programSha256: null,
+      digest: null },
     { name: 'long', error: 'its command cannot be shown here in full: start it in the terminal' },
     { name: 'ctl', error: 'its command cannot be shown here in full: start it in the terminal' },
     { name: 'envs', error: 'its environment cannot be shown here in full: start it in the terminal' },
-    { name: 'own', port: 2, argv: ['node', 's.js'], cwd: '.', env: [], url: null, autoPort: null, command: null, program: '/usr/local/bin/node', programOwn: true,
+    { name: 'own', port: 2, argv: ['node', 's.js'], cwd: '.', env: [], url: null, autoPort: null, command: null, program: '/usr/local/bin/node', programOwn: true, programSha256: null,
       digest: launchDigest({ argv: ['node', 's.js'], cwd: '.', env: {}, port: 2, program: '/usr/local/bin/node', programOwn: true }) },
     { name: 'mine', port: 3, argv: ['node', 's.js'], cwd: '.', env: [], url: null, autoPort: null, command: null, program: '/home/claude/.local/bin/node', programOwn: false,
-      digest: launchDigest({ argv: ['node', 's.js'], cwd: '.', env: {}, port: 3, program: '/home/claude/.local/bin/node', programOwn: false }) },
+      programSha256: 'ab'.repeat(32),
+      digest: launchDigest({ argv: ['node', 's.js'], cwd: '.', env: {}, port: 3, program: '/home/claude/.local/bin/node', programOwn: false, programSha256: 'ab'.repeat(32) }) },
     { name: 'odd', error: 'its program cannot be shown here: start it in the terminal' },
     { name: 'up', error: 'its program cannot be shown here: start it in the terminal' }]);
   assert.match(web.digest, /^[0-9a-f]{64}$/);

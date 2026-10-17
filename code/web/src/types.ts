@@ -378,6 +378,8 @@ export interface LaunchEntry {
   program: string | null;
   /** whether that program is the image's own (root's alone), not one anything in the sandbox could change */
   programOwn: boolean;
+  /** the SHA-256 of a program that is not the image's own (bound by the digest; null: not, larger than 1 MiB) */
+  programSha256: string | null;
   /** SHA-256 of argv, folder, environment, port and program: Start sends it back, a change meanwhile is refused */
   digest: string | null;
   /** why the entry cannot be used (then the rest is empty) */

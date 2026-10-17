@@ -399,7 +399,8 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
             <span class="muted small">— the image's own</span>
           ) : (
             <span class="loader-why" data-testid="launch-program-sandbox">
-              <Icon name="alert" size={13} /> a program of the sandbox's or the workspace's, not the image's: anything in the sandbox can change it
+              <Icon name="alert" size={13} /> a program of the sandbox's or the workspace's, not the image's: anything in the sandbox can change it —{' '}
+              {entry.programSha256 ? `bound as it is now (SHA-256 ${entry.programSha256.slice(0, 12)}…): a change asks again` : 'larger than 1 MiB, so only its path is bound'}
             </span>
           )}
         </p>

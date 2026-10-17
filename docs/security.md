@@ -1406,15 +1406,28 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   review it again"), so a file swapped between seeing it and clicking does not run. The confirmation comes again whenever the entry
   changes (the page remembers the digests you started, in this browser). It binds the program file too: the first
   argument as Start's environment finds it (the image's own folders first in `PATH`), shown with whether it is the
-  image's own (root's alone) or one anything in the sandbox could change (`~/.local/bin`, the workspace). What else
-  decides what a command runs stays out: the window's bash starts without `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`
-  and `PS4` (tmux's global environment, which every new window gets and anything in the sandbox can set), and runs
-  `env -i` with an environment made by bn-coded — `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, `TMPDIR` of the container's
-  own environment, its `PATH` with the image's root-owned folders first, `TERM`, and npm told to read neither the
-  user's `~/.npmrc` nor the global npmrc (`~/.local/etc/npmrc` under the image's `NPM_CONFIG_PREFIX`) — plus the
-  entry's own variables (shown) and `PORT`; nothing of tmux's (no `NODE_OPTIONS`, `LD_PRELOAD`, `npm_config_*` from
-  there). The confirmation still binds what is shown, not what the program then reads: `npm run dev` runs whatever the
+  image's own (root's alone) or one anything in the sandbox could change (`~/.local/bin`, the workspace) — and such a
+  program's contents, by their SHA-256, when it is at most 1 MiB (a larger one: its path only, said). Settings outside
+  the files are kept out as far as bn-coded can: the window's bash starts without `BASH_ENV`, `ENV`, `SHELLOPTS`,
+  `BASHOPTS` and `PS4`, with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` and `GLIBC_TUNABLES` set empty
+  for the window (tmux's global environment, which every new window gets and anything in the sandbox can set), and
+  runs `env -i` with an environment made by bn-coded — `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, `TMPDIR` of the
+  container's own environment, its `PATH` with the image's root-owned folders first, `TERM`, and npm told to read
+  neither the user's `~/.npmrc` nor the global npmrc (`~/.local/etc/npmrc` under the image's `NPM_CONFIG_PREFIX`) —
+  plus the entry's own variables (shown) and `PORT`. bn-coded calls the image's `tmux` by its path, never one first in
+  `PATH`. The confirmation still binds what is shown, not what the program then reads: `npm run dev` runs whatever the
   workspace's `package.json` says when it starts, and its scripts' programs are the workspace's.
+- [x] **What the confirmations protect against, and what not.** *Start* and *Run* protect against **changed files**:
+  the workspace's (launch.json, package.json, the Makefile, pyproject.toml, a `.npmrc`) and the user and global npmrc,
+  which Claude or any command can change between your look and your click. They do not protect against **code already
+  running in the sandbox**: it also controls the terminal's tmux server (its hooks, its environment, even the server
+  itself), which makes the window. bn-coded narrows that: right before each window it asks tmux for its hooks (global,
+  global window and pane, the session's) and its global and session environment, and reads the server's own
+  environment, and refuses the window — "run it in the terminal yourself, or remove them, or restart the terminal" —
+  when a hook (`after-new-window`, …, which could replace the window's command or type into it) or a loader variable
+  (`LD_*`, `GCONV_PATH`, `GLIBC_TUNABLES`, `BASH_FUNC_*`, which act in `/usr/bin/env` and bash before `env -i`) is set
+  there. A process that replaces the tmux server or bn-coded itself is beyond that: the sandbox is not a boundary
+  against itself (see the start of this section).
 - [x] **Run & test.** bn-coded lists the workspace's tasks from its top folder's files, read as text — regular files of
   at most 1 MiB, never through a link or from a FIFO, and `make` is never asked (a Makefile's `$(shell …)` would run):
   `package.json`'s scripts, a Makefile's `name:` lines, `pyproject.toml`'s `[project.scripts]` and
@@ -1432,7 +1445,8 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   edits* too — so **Run** shows the task in full first: each argument, the script with the `pre…`/`post…` scripts npm
   runs around it by itself, the recipe or the entry point, and a workspace `.npmrc` in full (the values of its
   secrets — auth, tokens, passwords, keys — not shown; the file is bound by its SHA-256), which npm reads first
-  (`script-shell`, `node-options` … change what runs). The page sends the task's source and name and a SHA-256 of what
+  (`script-shell`, `node-options` … change what runs; a URL's user and password are not shown either). The page sends
+  the task's source and name and a SHA-256 of what
   it showed — the wrapper, those texts, and the files read besides by their own SHA-256 (`.npmrc`; the whole Makefile,
   whose variables decide its recipes) — computed by the code container over what it passed on (only the fixed
   wrappers' shapes pass); bn-coded lists the files again and refuses a task that no longer matches ("changed since it

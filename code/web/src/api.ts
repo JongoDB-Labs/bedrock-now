@@ -1424,7 +1424,8 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const name = label(o.name, 100);
   const error = typeof o.error === 'string' ? label(o.error, 200) : null;
   if (!name && !error) return null;
-  const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, digest: null, error };
+  const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, programSha256: null,
+    digest: null, error };
   if (error) return none;
   const port = typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535 ? o.port : null;
   const url = typeof o.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(o.url) ? o.url : null;
@@ -1439,7 +1440,9 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const digest = typeof o.digest === 'string' && SHA.test(o.digest) ? o.digest : null;
   const program = typeof o.program === 'string' && /^\/[A-Za-z0-9._+@/-]{1,500}$/.test(o.program) ? o.program : null;
   return { name: name || '(no name)', port, command: argv && typeof o.command === 'string' ? safe(o.command, 4000) : null, argv: digest ? argv : null,
-    cwd: safe(cwd, 1000), url, env, program, programOwn: program !== null && o.programOwn === true, digest: argv ? digest : null, error: null };   // (as it is: the digest binds it)
+    cwd: safe(cwd, 1000), url, env, program, programOwn: program !== null && o.programOwn === true,
+    programSha256: program !== null && o.programOwn !== true && typeof o.programSha256 === 'string' && SHA.test(o.programSha256) ? o.programSha256 : null,
+    digest: argv ? digest : null, error: null };   // (as it is: the digest binds it)
 }
 
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */

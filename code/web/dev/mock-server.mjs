@@ -1755,15 +1755,16 @@ function addPort(port, cmd) {
 const CAP = 'a'.repeat(9) + 'b'.repeat(24);
 const previewOrigin = (port) => `http://p${port}-${CAP}.localhost:${PREVIEW_PORT}`;
 // (the digest as code/server/api.mjs computes it: argv, folder, environment sorted by name, port)
-const launchDigest = ({ argv, cwd, env, port, program, programOwn }) => crypto.createHash('sha256')
-  .update(JSON.stringify([argv, cwd, Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), port, program ?? null, programOwn === true])).digest('hex');
+const launchDigest = ({ argv, cwd, env, port, program, programOwn, programSha256 }) => crypto.createHash('sha256')
+  .update(JSON.stringify([argv, cwd, Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), port, program ?? null, programOwn === true, programSha256 ?? null]))
+  .digest('hex');
 const launchEntry = (e) => (e.error ? e : { ...e, env: Object.entries(e.env).map(([name, value]) => ({ name, value })), digest: launchDigest(e) });
 let LAUNCH;
 const resetLaunch = () => (LAUNCH = [
   { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: { NODE_ENV: 'development' },
     program: '/usr/local/lib/node_modules/npm/bin/npm-cli.js', programOwn: true },
   { name: 'api', port: 8787, argv: ['node', 'server.js', '--verbose'], command: 'node server.js --verbose', cwd: 'api', url: null, autoPort: false,
-    env: { NODE_OPTIONS: '--require ./api/trace.js', DEBUG: 'api:*' }, program: '/home/claude/.local/bin/node', programOwn: false },
+    env: { NODE_OPTIONS: '--require ./api/trace.js', DEBUG: 'api:*' }, program: '/home/claude/.local/bin/node', programOwn: false, programSha256: 'ef'.repeat(32) },
   { name: 'broken', error: 'port: a number from 1 to 65535' },
 ]);
 resetLaunch();

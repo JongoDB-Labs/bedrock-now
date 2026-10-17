@@ -874,9 +874,10 @@ export function portRow(x) {
 // launchDigest(entry) -> SHA-256 (hex) of what Start runs — the same as bn-coded's (terminal/bin/bn-coded.mjs
 // launchDigest; code/test checks that they agree): computed here over exactly what goes to the page, so the page's Start
 // carries the digest of what it showed, and bn-coded refuses an entry that changed meanwhile
-export function launchDigest({ argv, cwd, env, port, program, programOwn }) {
+export function launchDigest({ argv, cwd, env, port, program, programOwn, programSha256 }) {
   const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true])).digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true, programSha256 ?? null]))
+    .digest('hex');
 }
 // an absolute path bn-coded names (a program it found): shown as it is, or not at all
 const ABS = /^\/[A-Za-z0-9._+@\/-]{1,500}$/;
@@ -908,9 +909,11 @@ export function launchRow(x) {
   const program = x.program === null || x.program === undefined ? null : absPath(x.program);
   if (x.program !== null && x.program !== undefined && program === null) return bad('its program cannot be shown here: start it in the terminal');
   const programOwn = program !== null && x.programOwn === true;
+  // (one not the image's own: the SHA-256 of its contents, bound too — or null, said: larger than 1 MiB)
+  const programSha256 = program !== null && !programOwn && typeof x.programSha256 === 'string' && /^[0-9a-f]{64}$/.test(x.programSha256) ? x.programSha256 : null;
   const row = { name, port, argv, cwd, env: pairs.map(([k, v]) => ({ name: k, value: v })), url, autoPort: typeof x.autoPort === 'boolean' ? x.autoPort : null,
-    command: typeof x.command === 'string' ? str(x.command, 4000) : null, program, programOwn };
-  row.digest = argv ? launchDigest({ argv, cwd, env, port, program, programOwn }) : null;
+    command: typeof x.command === 'string' ? str(x.command, 4000) : null, program, programOwn, programSha256 };
+  row.digest = argv ? launchDigest({ argv, cwd, env, port, program, programOwn, programSha256 }) : null;
   return row;
 }
 

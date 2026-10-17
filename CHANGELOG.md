@@ -51,7 +51,9 @@ All notable changes to bedrock-now are documented here. The format follows
   (`~/.local/bin`): an entry you approved then ran something else. *Start* now runs like Run & test's tasks (above:
   bash without those variables, `env -i` with an environment made by bn-coded, the image's folders first in `PATH`,
   no user or global npmrc), and the confirmation shows the program file the entry's first argument names — the
-  image's own or not — which its digest binds.
+  image's own or not, with its SHA-256 when it is not (up to 1 MiB) — which its digest binds. Before each window (Start
+  and Run alike) bn-coded checks the terminal's tmux for hooks and loader variables (`LD_*`, `GCONV_PATH`,
+  `BASH_FUNC_*`) set by something in the sandbox and refuses to make the window then; it calls the image's own tmux.
 - **Code page, previews: the address field keeps what you typed.** After a path's Enter the field took the frame's
   path back a frame or two later, from an effect that ran after the next paint; a busy page ran it after your next
   Enter, so a refused address (`http://…`) lost its red mark and the older path came back over it. Its own Enter now

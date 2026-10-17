@@ -2346,7 +2346,7 @@ def devpreviews(browser):
     expect(dlg.get_by_test_id("launch-env-loader")).to_contain_text("NODE_OPTIONS=--require ./api/trace.js")
     # the program file its first argument names: here one of the sandbox's own (~/.local/bin), said so
     expect(dlg.get_by_test_id("launch-program")).to_contain_text("/home/claude/.local/bin/node")
-    expect(dlg.get_by_test_id("launch-program-sandbox")).to_be_visible()
+    expect(dlg.get_by_test_id("launch-program-sandbox")).to_contain_text("SHA-256 efefefefefef")
     expect(dlg.get_by_test_id("launch-loaders")).to_be_visible()
     expect(dlg).to_contain_text("PORT=8787")
     p.shot("preview-launch-confirm.png")
