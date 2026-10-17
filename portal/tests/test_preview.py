@@ -28,6 +28,14 @@ VIA = {"X-Portal-Remote": "1", "X-Portal-Proxy": PROXY}
 REMOTE = {**VIA, "Tailscale-User-Login": "me@example.com"}
 
 
+def _tamper(token: str) -> str:
+    """The signed token with one character of its signature changed — the third from the end, never the last: base64's
+    last character also carries padding bits a decoder ignores, so changing an "A" there into a "B" changes nothing
+    (the forged cookie then passes, about one run in sixteen)."""
+    i = len(token) - 3
+    return token[:i] + ("A" if token[i] != "A" else "B") + token[i + 1:]
+
+
 def offline(request):
     raise httpx.ConnectError("offline in tests")
 
@@ -371,7 +379,7 @@ def test_the_hand_off_is_bound_to_its_host_login_and_unlock(rps):
         assert redeem(c, url, login=VIA).status_code == 403
         # a token changed by one character, or a missing one
         t = u.params["t"]
-        bad = url.replace(t, t[:-2] + ("A" if t[-2] != "A" else "B") + t[-1])
+        bad = url.replace(t, _tamper(t))
         assert redeem(c, bad).status_code == 400
         assert c.get("/auth/preview-callback?next=/", headers={"Host": R_PREVIEW, **REMOTE}).status_code == 400
         # only from the Code page itself; a terminal-only unlock or none mints nothing
@@ -402,7 +410,7 @@ def test_the_remote_preview_host_needs_its_cookie_its_login_and_its_own_origin(r
         # no cookie (a page load gets a page that says why), a forged one, on another host, from another login
         r = rcheck(c, None, accept="text/html")
         assert r.status_code == 403 and "one port at a time" in r.text and "X-Bn-Preview-Port" not in r.headers
-        assert rcheck(c, cookie[:-1] + ("A" if cookie[-1] != "A" else "B")).status_code == 403
+        assert rcheck(c, _tamper(cookie)).status_code == 403
         assert rcheck(c, cookie, host=R_CODE).status_code == 403
         assert rcheck(c, cookie, login={**VIA, "Tailscale-User-Login": "eve@example.com"}).status_code == 403
         # the local preview site's capability means nothing here, nor this cookie there

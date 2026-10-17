@@ -242,7 +242,7 @@ def test_unlock_tokens_are_signed_and_bound():
     sessions = Sessions(SECRET, PW)
     unlocks = TerminalUnlocks(SECRET, sessions)
     tok = unlocks.issue()
-    assert not unlocks.valid(tok[:-2] + "xx") and not unlocks.valid("") and not unlocks.valid("x" * 3000)
+    assert not unlocks.valid(tok[:-3] + ("A" if tok[-3] != "A" else "B") + tok[-2:]) and not unlocks.valid("") and not unlocks.valid("x" * 3000)
     assert not TerminalUnlocks("t" * 64, Sessions("t" * 64, PW)).valid(tok)   # another PORTAL_SECRET
     # a session token is not an unlock (another salt), and an unlock is bound to its Tailscale login
     assert not unlocks.valid(sessions.issue())
