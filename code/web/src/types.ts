@@ -135,6 +135,11 @@ export interface CliModel {
   efforts: string[];
 }
 
+/** How a model fares as Claude Code's model (catalog/code-models.tsv): a tool-using turn round-trips (works), it answers
+ *  but cannot use tools (chat-only), a session errors (fails), or nobody checked (untested). */
+export type Compat = 'works' | 'chat-only' | 'fails' | 'untested';
+export const COMPATS: readonly Compat[] = ['works', 'chat-only', 'fails', 'untested'];
+
 /** A model as bedrock-now serves it (`/.bn/models`): the only source of names and prices shown. */
 export interface BnModel {
   id: string;
@@ -144,6 +149,19 @@ export interface BnModel {
   output: number | null;
   cacheWrite: number | null;
   cacheRead: number | null;
+  /** Bedrock or OpenRouter */
+  provider: string;
+  /** who makes it: Anthropic, Meta, Mistral … ('' when unknown) */
+  vendor: string;
+  /** an OpenRouter free model: $0, never spend */
+  free: boolean;
+  compat: Compat;
+  /** what to know about it as Claude Code's model ('' for none) */
+  note: string;
+  /** Settings › Claude Code › Models lists it (the picker shows the others only with "Show all") */
+  listed: boolean;
+  /** context window in tokens, when known */
+  context: number | null;
 }
 
 export interface McpServer {

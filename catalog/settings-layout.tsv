@@ -69,6 +69,8 @@ TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet (on by default
 TERMINAL_AUTO_MODE	code	main	TERMINAL_ENABLED	Auto mode for claude typed in the Terminal too (it costs extra).
 CLAUDE_MODEL_OPUS	code	main	-	The model Claude Code works with: claude-bedrock's main (opus) slot.
 CLAUDE_BEDROCK_OPUS_MODEL	code	with	CLAUDE_MODEL_OPUS	-
+CODE_MODELS	code	main	-	The models the Code page's picker and the terminal's /model list: all enabled, Anthropic only, or a list you pick.
+CODE_DEFAULT_MODEL	code	main	-	The model new Code page sessions and claude-bedrock start on.
 CLAUDE_MODEL_SONNET	code	more	-	Claude Code's sonnet slot.
 CLAUDE_BEDROCK_SONNET_MODEL	code	with	CLAUDE_MODEL_SONNET	-
 CLAUDE_MODEL_HAIKU	code	more	-	Claude Code's haiku slot: quick background tasks.

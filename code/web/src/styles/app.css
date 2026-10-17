@@ -126,7 +126,35 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .picker-chev { opacity: 0.7; }
 .more .dd-trigger, .tree-more .dd-trigger, .sess-more .dd-trigger { width: 28px; padding: 0; justify-content: center; color: var(--muted); }
 .dd-panel { position: fixed; z-index: 50; min-width: 220px; max-width: min(420px, calc(100vw - 16px)); overflow-y: auto; padding: 5px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
-.model-panel { min-width: 330px; }
+.model-panel { width: min(440px, calc(100vw - 16px)); padding-top: 0; }
+/* the model picker: a search, groups by provider, compatibility badges, free tags, stars */
+.mp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 9px; }
+.mp-scope { font-weight: 500; text-transform: none; letter-spacing: 0; }
+.mp-searchbox { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; margin: 2px 2px 4px; padding: 0 9px; height: 32px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface); color: var(--muted); }
+.mp-searchbox:focus-within { border-color: var(--accent); }
+.mp-search { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: none; color: var(--ink); font: inherit; }
+.mp-group + .mp-group { margin-top: 2px; border-top: 1px solid var(--line-soft); padding-top: 2px; }
+.mp-group-head { padding: 6px 9px 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.mp-row { display: flex; align-items: center; gap: 2px; }
+.mp-row > .mi { flex: 1; min-width: 0; }
+.mp-row .mi-title { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mp-note { white-space: normal; }
+.mp-fails .mi-title { text-decoration: line-through; text-decoration-color: var(--bad); }
+.mp-badge { display: inline-flex; align-items: center; height: 17px; padding: 0 6px; border-radius: 9px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--muted); background: var(--surface-2); }
+.mp-badge.tone-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: color-mix(in srgb, var(--ok) 10%, var(--surface)); }
+.mp-badge.tone-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+.mp-badge.tone-bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); }
+.picker .mp-badge { margin-left: 2px; }
+.mp-free { display: inline-flex; align-items: center; height: 17px; padding: 0 6px; border-radius: 9px; font-size: 10.5px; font-weight: 600; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.picker-sub.free { color: var(--accent); font-weight: 600; }
+.mp-star { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: none; color: var(--muted); opacity: 0.55; }
+.mp-star:hover, .mp-star:focus-visible { opacity: 1; background: var(--hover); color: var(--ink); outline: none; }
+.mp-star.on { opacity: 1; color: var(--warn); }
+.mp-star.on .ic path { fill: currentColor; }
+.mp-all { display: flex; align-items: center; gap: 8px; padding: 8px 9px 2px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .panel-head { padding: 6px 9px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .panel-note { padding: 8px 9px 4px; margin-top: 4px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 12px; line-height: 1.4; max-width: 400px; }
 .mi { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; }
@@ -157,7 +185,29 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .seg button[aria-pressed="true"] { background: var(--active); color: var(--ink); font-weight: 500; }
 
 /* status bar */
-.statusbar { display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 10px; background: var(--chrome); border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; min-width: 0; }
+.statusbar { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 4px 0 10px; background: var(--chrome); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; min-width: 0; }
+/* the status bar's quick actions (Terminal, Run, Ports, mode, model): 28 px targets, an icon and a label, a styled tip */
+.sb-actions { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.sb-act, .sb-actdd .dd-trigger { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px; background: none;
+  color: var(--ink); font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.sb-act .ic, .sb-actdd .dd-trigger .ic { color: var(--muted); flex: none; }
+.sb-act:hover, .sb-actdd .dd-trigger:hover, .sb-actdd .dd-trigger[aria-expanded="true"] { background: var(--hover); border-color: var(--line); }
+.sb-act:hover .ic, .sb-actdd .dd-trigger:hover .ic { color: var(--ink); }
+.sb-act:focus-visible, .sb-actdd .dd-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sb-act[aria-pressed="true"] { background: var(--active); }
+.sb-act[aria-pressed="true"] .ic { color: var(--accent); }
+.sb-act .sb-label { overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.sb-act[data-testid="sb-model"] .sb-label { max-width: 220px; }
+.sb-cli { padding: 0 6px; }
+.app.tablet .sb-opt .sb-label, .app.tablet .sb-cli { display: none; }
+.app.tablet .sb-act[data-testid="sb-model"] .sb-label { max-width: 130px; }
+@media (max-width: 1280px) { .app.desktop .sb-cli { display: none; } }
+/* a small styled tooltip (components/ui.tsx Tip): what a control does and its shortcut */
+.tip-wrap { display: inline-flex; min-width: 0; }
+.tip { position: fixed; z-index: 90; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: min(320px, calc(100vw - 16px)); padding: 7px 10px;
+  border-radius: 8px; background: var(--ink); color: var(--surface); font-size: 12px; font-weight: 400; line-height: 1.4; white-space: normal; box-shadow: var(--shadow); pointer-events: none; }
+.tip[hidden] { display: none; }
+.tip-keys { border: 0; padding: 1px 6px; background: color-mix(in srgb, var(--surface) 20%, transparent); color: inherit; font-size: 11px; }
 .sb-conn, .sb-item { display: inline-flex; align-items: center; gap: 5px; }
 .sb-open .sdot { background: var(--ok); }
 .sb-connecting .sdot { background: var(--warn); }
@@ -755,6 +805,9 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
   .icon-btn { width: 40px; height: 40px; }
   .icon-btn.tiny { width: 36px; height: 36px; }
   .dd-trigger, .btn, .meter-btn, .seg button { min-height: 40px; }
+  .statusbar { height: 46px; }
+  .sb-act, .sb-actdd .dd-trigger { height: 40px; min-height: 40px; padding: 0 12px; }
+  .mp-star { width: 40px; height: 40px; }
   .btn.small { min-height: 36px; }
   .mi { min-height: 44px; }
   .send { width: 40px; height: 40px; }
@@ -790,8 +843,8 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
   background: color-mix(in srgb, var(--accent) 9%, var(--surface)); color: var(--accent); font-size: 11.5px; font-weight: 600; white-space: nowrap; text-decoration: none; }
 .chip-preview:hover { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
 .md a.md-preview { text-decoration-style: dashed; }
-.sb-ports .dd-trigger { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: inherit; }
-.sb-ports .dd-trigger:hover { background: var(--hover); color: var(--ink); }
+.sb-ports:not(.sb-actdd) .dd-trigger { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: inherit; }
+.sb-ports:not(.sb-actdd) .dd-trigger:hover { background: var(--hover); color: var(--ink); }
 .ports-panel { width: min(460px, calc(100vw - 16px)); padding: 8px 10px; }
 .ports-panel-body { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .sheet-body > .ports-panel-body { padding: 12px 14px; overflow-y: auto; font-size: 14px; }

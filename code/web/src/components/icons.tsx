@@ -65,6 +65,8 @@ const P: Record<string, string> = {
   // the Git panel: a branch, and minus (unstage)
   branch: 'M6 3.5v13M6 16.5a1.75 1.75 0 1 0 0 .01M14 3.5a1.75 1.75 0 1 0 0 .01M14 5.25c0 5-8 3.5-8 8.75',
   minus: 'M4 10h12',
+  // the model picker's favourites
+  star: 'M10 2.8l2.2 4.6 5 .7-3.6 3.5.9 5L10 14.3l-4.5 2.3.9-5L2.8 8.1l5-.7z',
 };
 
 export type IconName = keyof typeof P;

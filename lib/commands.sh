@@ -536,6 +536,9 @@ render_config() {
   fi
   chmod 644 "$tmp"   # read by the litellm container
   mv "$tmp" "$out"
+  # the models of the Code page and claude-bedrock (lib/code_models.sh), next to the config: the portal, claude-bedrock
+  # and LiteLLM's litellm/bn_hooks.py read it
+  ! declare -F code_models_write >/dev/null || code_models_write "$1" "$(dirname "$out")/code-models.tsv"
 }
 
 # litellm_ui_user -> the LiteLLM UI login name: the database admin's email once setup created it, else "admin"
@@ -1741,6 +1744,8 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/lock.sh"
 # Optional OpenRouter provider (setup step, ./stack openrouter, costs/models/summary sections).
 . "$STACK_DIR/lib/openrouter.sh"
+# The models of the Code page and claude-bedrock: litellm/code-models.tsv and their bn_* model_info (render_config).
+. "$STACK_DIR/lib/code_models.sh"
 # Optional speech-to-text for Open WebUI's voice calls (setup step, ./stack stt, costs/summary lines).
 . "$STACK_DIR/lib/stt.sh"
 # Image cleanup and disk usage (./stack update, ./stack clean, ./stack status).

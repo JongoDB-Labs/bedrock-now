@@ -28,6 +28,8 @@ import {
   showGit,
   openInTerminal,
   openRun,
+  openPorts,
+  openModelMenu,
 } from '../app';
 import { GitPanel } from './GitPanel';
 import { changedCount } from '../git';
@@ -36,9 +38,9 @@ import { PermissionsDialog } from './Permissions';
 import { SearchPanel } from './Search';
 import { CommandPalette, openPaletteFromMenu } from './CommandPalette';
 import { useReviewList } from './Review';
-import { shortcuts } from '../shortcuts';
+import { shortcuts, keysFor } from '../shortcuts';
 import { BOUNDS } from '../prefs';
-import { basename, label } from '../text';
+import { basename, label, perMtok } from '../text';
 import { modeName } from '../permission';
 import { ChatPane } from './Chat';
 import { EditorPanes, EditorTabs, saveActiveTab, mentionSelection, MOD } from './EditorArea';
@@ -46,8 +48,10 @@ import { addTerminal } from '../attach';
 import { FileTree } from './FileTree';
 import { SessionList } from './SessionList';
 import { ContextMeter, CostMeter, EffortPicker, ModelPicker, currentModel, modelLabel } from './Pickers';
+import { COMPAT_INFO } from '../models';
+import type { Compat, Mode } from '../types';
 import { BypassDialog } from './Bypass';
-import { Dialog, Dropdown, MenuItem, Sheet, Splitter, useMedia } from './ui';
+import { Dialog, Dropdown, MenuItem, Sheet, Splitter, Tip, ariaKeys, tipId, useMedia } from './ui';
 import { PluginsDialog } from './Plugins';
 import { McpPanel } from './Mcp';
 import { MemoryDialog } from './Memory';
@@ -304,9 +308,9 @@ function StatusBar() {
   const serverError = useSel(store, (s) => s.serverError);
   const cursor = useSel(store, (s) => s.cursor);
   const activeTab = useSel(store, (s) => s.tabs.find((t) => t.key === s.activeTab));
-  const modelName = useSel(store, (s) => {
+  const model = useSel(store, (s) => {
     const m = s.models?.models ?? [];
-    return (currentModel(m, activeView(s)?.model ?? '') ?? currentModel(m, defaultModel(s)))?.name ?? '';
+    return currentModel(m, activeView(s)?.model ?? '') ?? currentModel(m, defaultModel(s));
   });
   const [, tick] = useState(0);
   useEffect(() => {
@@ -351,12 +355,66 @@ function StatusBar() {
         </span>
       )}
       {activeTab?.kind === 'file' && activeTab.dirty && <span class="sb-item">● unsaved</span>}
-      <RunStatus />
-      <PortsStatus />
-      {v && <span class="sb-item">{modeName(v.mode)}</span>}
-      {modelName && <span class="sb-item">{modelName}</span>}
-      {server?.cli && <span class="sb-item muted">Claude Code {server.cli}</span>}
+      <span class="sb-actions" role="group" aria-label="Quick actions" data-testid="sb-actions">
+        <TerminalAction />
+        <RunStatus />
+        <PortsStatus />
+        {v && <ModeAction mode={v.mode} />}
+        {model && <ModelAction name={model.name} free={model.free} input={model.input} output={model.output} compat={model.compat} />}
+      </span>
+      {server?.cli && <span class="sb-item muted sb-cli">Claude Code {server.cli}</span>}
     </footer>
+  );
+}
+
+/** A quick action of the status bar: an icon and a label, a styled tooltip (what it does, its shortcut), aria-label. */
+function SbAction(props: { id: string; icon: string; label: string; tip: string; keys?: string; onClick: () => void; pressed?: boolean; class?: string; children?: ComponentChildren }) {
+  return (
+    <Tip id={props.id} text={props.tip} keys={props.keys}>
+      <button
+        type="button"
+        class={`sb-act${props.class ? ' ' + props.class : ''}`}
+        aria-label={props.label}
+        aria-describedby={tipId(props.id)}
+        aria-keyshortcuts={props.keys ? ariaKeys(props.keys) : undefined}
+        aria-pressed={props.pressed}
+        onClick={props.onClick}
+        data-testid={`sb-${props.id}`}
+      >
+        <Icon name={props.icon} size={15} />
+        <span class="sb-label">{props.children ?? props.label}</span>
+      </button>
+    </Tip>
+  );
+}
+
+function TerminalAction() {
+  const open = useSel(store, (s) => s.prefs.layout.terminal);
+  return (
+    <SbAction id="terminal" icon="terminal" label="Terminal" class="sb-opt" pressed={open} keys={keysFor('terminal')}
+      tip={open ? 'Hide the terminal: the sandbox’s shell, with claude-bedrock and your workspace' : 'Show the terminal: the sandbox’s shell, with claude-bedrock and your workspace'}
+      onClick={toggleTerminal} />
+  );
+}
+
+function ModeAction({ mode }: { mode: Mode }) {
+  return (
+    <SbAction id="mode" icon="shield" label={`Permission mode: ${modeName(mode)}`} class="sb-opt" keys="Shift+Tab · Alt+M"
+      tip={`Permission mode: ${modeName(mode)}. Change it: the menu next to Send (Alt+M), or Shift+Tab in the prompt box.`}
+      onClick={openModeMenu}>
+      {modeName(mode)}
+    </SbAction>
+  );
+}
+
+function ModelAction(p: { name: string; free: boolean; input: number | null; output: number | null; compat: Compat }) {
+  const price = p.free ? 'free ($0)' : p.input !== null && p.output !== null ? `${perMtok(p.input)} in / ${perMtok(p.output)} out per 1M tokens` : '';
+  const how = p.compat === 'works' ? '' : ` ${COMPAT_INFO[p.compat].says}`;
+  return (
+    <SbAction id="model" icon="model" label={`Model: ${p.name}`} tip={`Model: ${p.name}${price ? ` · ${price}` : ''}.${how} Click to switch: every model Settings › Claude Code › Models lists.`}
+      onClick={openModelMenu}>
+      {p.name}
+    </SbAction>
   );
 }
 
@@ -365,14 +423,15 @@ function PortsStatus() {
   const n = useSel(store, (s) => s.ports.length);
   return (
     <Dropdown
-      title="Servers in the sandbox and their previews"
-      class="sb-ports"
+      title={`Ports${n ? ` (${n})` : ''}: servers in the sandbox and their previews`}
+      tip={{ id: 'ports', text: `Ports & previews: ${n ? `${n} server${n === 1 ? '' : 's'} listening in the sandbox` : 'no server listens in the sandbox yet'} — open a preview, forward a port, start a launch.json entry`, keys: keysFor('ports') }}
+      class="sb-ports sb-actdd"
       panelClass="ports-panel"
       align="right"
       testid="ports-status"
       trigger={
         <>
-          <Icon name="port" size={13} /> Ports{n ? ` (${n})` : ''}
+          <Icon name="port" size={15} /> <span class="sb-label">Ports{n ? ` (${n})` : ''}</span>
         </>
       }
     >
@@ -516,6 +575,11 @@ function useGlobalKeys() {
         // the editor's selected lines into the prompt as @path#L5-10 (on a Mac, Alt+K would type "˚")
         e.preventDefault();
         mentionSelection();
+      } else if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyR' || e.code === 'KeyP') && !store.get().dialog) {
+        // the status bar's quick actions: Run & test, Ports & previews (by key position: on a Mac, Alt+letter types a sign)
+        e.preventDefault();
+        if (e.code === 'KeyR') openRun();
+        else openPorts();
       } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         toggleExplorer();

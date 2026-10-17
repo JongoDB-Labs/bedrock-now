@@ -131,6 +131,11 @@
 .set-gen { margin: 2px 0 0; }
 .set-radios { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
 .set-radios legend { font-size: 13px; color: var(--muted); padding: 0; margin-bottom: 2px; }
+/* Settings › Claude Code › Models: a long list of models in groups, filtered as you type */
+.set-code-models { max-height: min(60vh, 520px); overflow: auto; padding-right: 4px; }
+.set-code-models input[type=search] { position: sticky; top: 0; z-index: 1; margin-bottom: 4px; background: var(--surface); }
+.set-code-head { margin: 8px 0 2px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.set-code-group[hidden], .set-code-models label[hidden] { display: none; }
 .set-radio { display: flex; align-items: center; gap: 6px; color: var(--ink) !important; font-size: 14px !important; margin: 0 !important; }
 .set-sub { display: grid; gap: 4px; }
 

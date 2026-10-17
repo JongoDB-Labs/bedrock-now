@@ -55,6 +55,8 @@ DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "rest
                 "restart-shared-mcp", "restart-stt", "restart-rustfs", "restart-caddy")
 NAME = re.compile(r"[A-Z][A-Z0-9_]{1,40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
+MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}")   # a model the Code page may name (code/server validate.mjs)
+COMPAT = ("works", "chat-only", "fails", "untested")            # catalog/code-models.tsv
 
 
 # --- the snapshot ---
@@ -107,6 +109,11 @@ def snapshot(status_dir: Path) -> dict | None:
                         if isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m[0])],
         # the folder the Code page's sandbox would see (Settings names it before turning the terminal on with it)
         "code_workspace": _s(ch.get("code_workspace"), 1024),
+        # Settings › Claude Code › Models: [id, name, provider, vendor, compat, free, listed] (lib/code_models.sh)
+        "code_models": [[m[0], _s(m[1], 80) or m[0], _s(m[2], 20), _s(m[3], 40), m[4] if m[4] in COMPAT else "untested",
+                         m[5] is True, m[6] is True]
+                        for m in (ch.get("code_models") or [])[:1500]
+                        if isinstance(m, list) and len(m) == 7 and isinstance(m[0], str) and MODEL_ID.fullmatch(m[0])],
     }
     written = d.get("written_at") if isinstance(d.get("written_at"), int) else None
     base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""
@@ -340,6 +347,15 @@ def _model_pin(v, remote_on=False):
     return None if v == "" or re.fullmatch(r"[a-z0-9.-]{1,64}", v) else "must be one of the models your key can use (blank = automatic)"
 
 
+def _code_models(v, remote_on=False):
+    ok = v in ("", "all", "anthropic") or (re.fullmatch(r"[A-Za-z0-9._/:~-]+(,[A-Za-z0-9._/:~-]+)*", v) and len(v) <= MAX_VALUE)
+    return None if ok else "must be all, anthropic or a comma list of model ids"
+
+
+def _code_model(v, remote_on=False):
+    return None if v == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:~-]{0,127}", v) else "must be a model id (blank = the main model)"
+
+
 def _models_list(v, remote_on=False):
     return None if v == "" or (re.fullmatch(r"[a-z0-9.-]+(,[a-z0-9.-]+)*", v) and len(v) <= MAX_VALUE) else \
         "must be a comma list of model names"
@@ -364,6 +380,7 @@ VALIDATORS = {
     "pct": _range(50, 99, "must be a percentage from 50 to 99 (blank = 80)"),
     "keep": _range(1, 60, "must be a whole number from 1 to 60 (blank = 7)"),
     "model_pin": _model_pin, "models_list": _models_list, "pw_hash": _pw_hash,
+    "code_models": _code_models, "code_model": _code_model,
 }
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")

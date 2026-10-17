@@ -134,8 +134,14 @@ export const readPrice = (m: BnModel | null): number | null => m?.cacheRead ?? (
 
 /** A notice when the cache has gone cold: idle beyond CACHE_TTL_MS since the session's last activity, and a context
  *  worth naming (or not known). null: warm, nothing to say, or no activity known. */
+/** Whether a model writes Claude Code's prompt cache at a price: one with a cache-write price, or an Anthropic model
+ *  (Bedrock's 5-minute writes, priced from its input price when bedrock-now names none). A model of another provider
+ *  without one — Llama, Mistral, a free OpenRouter model — has no cold-cache cost to warn about. */
+export const caches = (m: BnModel | null): boolean => !m || m.cacheWrite !== null || (!m.free && m.vendor === 'Anthropic');
+
 export function cacheNotice(lastActive: number | null, tokens: number | null, model: BnModel | null, now = Date.now()): CacheNotice | null {
   if (!lastActive || !Number.isFinite(lastActive) || now - lastActive <= CACHE_TTL_MS) return null;
+  if (!caches(model)) return null;
   const t = tokens !== null && Number.isFinite(tokens) && tokens > 0 ? Math.round(tokens) : null;
   if (t !== null && t < CACHE_MIN_TOKENS) return null;
   const w = writePrice(model), r = readPrice(model);

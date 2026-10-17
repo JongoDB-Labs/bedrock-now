@@ -33,7 +33,15 @@ export interface Prefs {
   diffInline: boolean;
   /** a browser notification when a prompt waits for you or a turn ends while the page is hidden */
   notify: boolean;
+  /** models starred in the model picker (shown first), by full id */
+  starred: string[];
+  /** the model picker shows every model, not only those Settings › Claude Code › Models lists */
+  allModels: boolean;
 }
+
+/** At most this many starred models are kept. */
+export const STARRED_MAX = 50;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
 
 export const DEFAULT_PREFS: Prefs = {
   layout: { left: 260, right: 440, bottom: 240, explorer: true, terminal: false, tabletPane: 'files', side: 'files' },
@@ -43,6 +51,8 @@ export const DEFAULT_PREFS: Prefs = {
   lastSession: null,
   diffInline: false,
   notify: false,
+  starred: [],
+  allModels: false,
 };
 
 export const BOUNDS = {
@@ -69,7 +79,7 @@ export function parsePrefs(raw: unknown): Prefs {
       tabletPane: l.tabletPane === 'editor' ? 'editor' : 'files',
       side: l.side === 'sessions' || l.side === 'search' || l.side === 'git' ? l.side : 'files',
     },
-    model: typeof o.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/.test(o.model) ? o.model : d.model,
+    model: typeof o.model === 'string' && MODEL_ID.test(o.model) ? o.model : d.model,
     // (the former "Don't ask" is Read only; Plan and Bypass are never remembered; Auto is, and a session starts in it only
     // while Settings allow it: modes.ts startMode)
     mode: o.mode === 'dontAsk' ? 'readOnly' : MODES.includes(o.mode as Mode) && remembered(o.mode as Mode) ? (o.mode as Mode) : d.mode,
@@ -77,6 +87,10 @@ export function parsePrefs(raw: unknown): Prefs {
     lastSession: isUuid(o.lastSession) ? o.lastSession.toLowerCase() : null,
     diffInline: o.diffInline === true,
     notify: o.notify === true,
+    starred: Array.isArray(o.starred)
+      ? [...new Set(o.starred.filter((x): x is string => typeof x === 'string' && MODEL_ID.test(x)))].slice(0, STARRED_MAX)
+      : [],
+    allModels: o.allModels === true,
   };
 }
 

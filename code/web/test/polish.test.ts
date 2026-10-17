@@ -8,7 +8,8 @@ import { newView } from '../src/session';
 import type { BnModel, PermissionReq } from '../src/types';
 
 const model = (id: string, name: string, input: number | null, output: number | null, cacheWrite: number | null = null, cacheRead: number | null = null): BnModel =>
-  ({ id, name, alias: null, input, output, cacheWrite, cacheRead });
+  ({ id, name, alias: null, input, output, cacheWrite, cacheRead, provider: 'Bedrock', vendor: id.startsWith('claude-') ? 'Anthropic' : 'Meta', free: false,
+     compat: id.startsWith('claude-') ? 'works' : 'chat-only', note: '', listed: true, context: null });
 
 test('budgets: only valid ones, the form\'s amounts, percent and the levels crossed', () => {
   assert.deepEqual(normBudget({ usd: 2.499, hard: true }), { usd: 2.5, hard: true });

@@ -14,6 +14,7 @@ import { label, visible } from '../text';
 import { Icon, Spinner } from './icons';
 import { addProblems } from '../attach';
 import { Dialog, Dropdown } from './ui';
+import { keysFor } from '../shortcuts';
 
 const GROUPS: { source: RunSource; title: string }[] = [
   { source: 'npm', title: 'Scripts' },
@@ -236,15 +237,16 @@ export function RunStatus() {
   const bad = useSel(store, (s) => failing(s.runs));
   return (
     <Dropdown
-      title="Run & test: the workspace's scripts, make targets and entry points, and the Problems list"
-      class="sb-ports sb-run"
+      title={`Run & test${bad ? `: ${bad} failing` : ''}`}
+      tip={{ id: 'run', text: `Run & test: the workspace's scripts, make targets and entry points, in the sandbox's terminal; the Problems list${busy ? ' (running now)' : bad ? ` (${bad} failing)` : ''}`, keys: keysFor('run') }}
+      class="sb-ports sb-run sb-actdd"
       panelClass="ports-panel run-panel"
       align="right"
       testid="run-status"
       trigger={
         <>
-          <Icon name="play" size={12} /> Run
-          {busy && <Spinner size={10} />}
+          <Icon name="play" size={14} /> <span class="sb-label">Run</span>
+          {busy && <Spinner size={11} />}
           {bad > 0 && (
             <span class="sb-bad" data-testid="run-failing">
               <Icon name="alert" size={11} /> {bad}

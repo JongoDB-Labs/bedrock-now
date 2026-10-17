@@ -139,6 +139,16 @@ first_enabled() { # first_enabled ENABLED_FILE PREF... -> first pref present, or
 # Dies on a bad region, a missing catalog, or when no catalog model is enabled (LiteLLM would start with an
 # empty model list).
 render_litellm_config() {
+  local rows rc=0
+  # with lib/code_models.sh (./stack): the chat models' bn_* model_info for claude-bedrock in the terminal
+  if ! declare -F code_models_inject >/dev/null; then _render_litellm_config_base "$@"; return; fi
+  rows="$(mktemp)" || die "cannot create a temp file"
+  code_models_rows "${1:-}" > "$rows" 2>/dev/null || : > "$rows"
+  _render_litellm_config_base "$@" | code_models_inject "$rows" || rc=$?
+  rm -f "$rows"
+  return "$rc"
+}
+_render_litellm_config_base() {
   local enabled="$1" region="$2" store="${3:-false}" alerting="${4:-false}" env_login_off="${5:-false}" name mode model aliases mregion r region_yaml a msg_off aliases_out="" n=0
   local -a alias_list
   valid_region "$region" || die "invalid AWS region: '$region'"
@@ -195,6 +205,9 @@ litellm_settings:
   drop_params: true
   turn_off_message_logging: $msg_off
 EOT
+  # litellm/bn_hooks.py (part of the repository, in LiteLLM's config folder): lowers a request's max_tokens to the
+  # model's limit from litellm/code-models.tsv (Claude Code asks for up to 32,000; Bedrock's Llama refuses over 8,192)
+  [ ! -r "$STACK_DIR/litellm/bn_hooks.py" ] || printf '  callbacks: ["bn_hooks.proxy_handler_instance"]\n'
 }
 
 # classify_probe KIND STATUS BODY_FILE [REGION] -> one line: "ENABLED|DISABLED<TAB>human-readable reason"

@@ -5,6 +5,8 @@
 .state/
 litellm/*
 !litellm/.gitkeep
+# LiteLLM's one hook (lowers max_tokens to a model's limit): part of the repository, in LiteLLM's config folder
+!litellm/bn_hooks.py
 backups/
 # never commit credential documents
 *bedrock-setup*.md

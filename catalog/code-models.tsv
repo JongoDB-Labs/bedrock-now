@@ -1,0 +1,22 @@
+# How the catalog's chat models fare as Claude Code's model (the Code page, claude-bedrock and the browser terminal).
+# Claude Code speaks Anthropic's Messages API with tools; LiteLLM translates /v1/messages for every other provider, but
+# tool use, thinking, prompt caching and long contexts vary. lib/code_models.sh reads this file (first matching row
+# wins; a pattern is a model name, an "or/<OpenRouter id>", or a prefix ending in *) and ./stack writes the result to
+# litellm/code-models.tsv for the portal, claude-bedrock and LiteLLM (litellm/bn_hooks.py).
+#   status   works (a Claude Code turn with a tool call round-trips) | chat-only (answers, but cannot use tools: Claude
+#            Code cannot read, edit or run anything) | fails (a session errors) | untested
+#   max_out  the most output tokens the provider accepts in one answer, or -: Claude Code asks for up to 32,000 and some
+#            providers refuse more than their limit, so LiteLLM lowers a larger request to this (litellm/bn_hooks.py)
+#   note     shown in the Code page's picker, claude-bedrock --models and the terminal's /model menu
+# Not listed here: OpenRouter models are "untested" when OpenRouter lists tool use for them (supported_parameters),
+# "chat-only" when it does not; any other model is "untested".
+# Checked 2026-10-17 with Claude Code 2.1.296 through LiteLLM 1.105.0 (one short claude -p turn that must run a shell
+# command, with the full system prompt and tools and with a minimal one): Anthropic, OpenAI, xAI and Mistral round-trip
+# the tool call; Llama 3.3 70B needed the output cap (Bedrock refuses more than 8,192) and then wrote its tool call as
+# plain text. Amazon Nova Micro (not in the catalog) works too once capped at 10,000.
+# pattern	status	max_out	note
+claude-*	works	-	Anthropic's own: tools, thinking and prompt caching as Claude Code expects.
+gpt-6-*	works	-	Tools work through LiteLLM's translation; no thinking blocks, prompt caching as OpenAI does it.
+grok-4-7	works	-	Tools work through LiteLLM's translation; no thinking blocks, no prompt-cache writes.
+mistral-large-3	works	-	Tools work through LiteLLM's translation; no thinking blocks, no prompt caching.
+llama-3-3-70b	chat-only	8192	Answers, but writes its tool calls as plain text: Claude Code cannot read, edit or run anything with it.

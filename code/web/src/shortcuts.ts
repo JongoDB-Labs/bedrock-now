@@ -37,6 +37,8 @@ export function shortcuts(): Shortcut[] {
     { group: 'Files and editor', what: 'Find in the file', keys: `${MOD}+F` },
     { group: 'Panels', what: 'Toggle the terminal', keys: 'Ctrl+`', welcome: true, action: 'terminal' },
     { group: 'Panels', what: 'Toggle the explorer', keys: `${MOD}+B`, action: 'explorer' },
+    { group: 'Panels', what: 'Run & test: scripts, make targets, Problems', keys: 'Alt+R', action: 'run' },
+    { group: 'Panels', what: 'Ports & previews: servers in the sandbox', keys: 'Alt+P', action: 'ports' },
     { group: 'Review', what: 'Comment on a line (it goes with your next prompt)', keys: 'Comment button · Enter' },
     { group: 'Review', what: 'Cancel a comment', keys: 'Esc' },
     { group: 'Git', what: 'Commit the staged changes (in the message box)', keys: `${MOD}+Enter` },

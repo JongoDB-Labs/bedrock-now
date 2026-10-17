@@ -21,6 +21,7 @@ import {
 import type {
   AvailablePlugin,
   BnModel,
+  Compat,
   Catalog,
   KeyBudget,
   RuleLine,
@@ -69,7 +70,7 @@ import type {
   Suggestion,
   WatchChange,
 } from './types';
-import { MODES } from './types';
+import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
 
@@ -1345,34 +1346,57 @@ export interface BnModels {
   models: BnModel[];
   aliases: Record<string, string>;
   defaultModel: string | null;
+  /** Settings › Claude Code › Models: all, anthropic or list, and how many of the models it lists (null: not said) */
+  scope?: { mode: 'all' | 'anthropic' | 'list'; listed: number; total: number } | null;
 }
 export async function getModels(): Promise<BnModels> {
-  const o = await request('GET', '/.bn/models');
+  return normModels(await request('GET', '/.bn/models'));
+}
+/** /.bn/models as the page keeps it: every field checked, at most 2,000 models, a free one at $0. */
+export function normModels(raw: unknown): BnModels {
+  const o = obj(raw) ?? {};
   const aliasesIn = obj(o.aliases) ?? {};
   const aliases: Record<string, string> = {};
   for (const [k, v] of Object.entries(aliasesIn).slice(0, 20)) {
     const a = label(k, 40);
     if (/^[a-z][a-z0-9-]{0,30}$/.test(a) && typeof v === 'string') aliases[a] = label(v, 128);
   }
-  const models = arr(o.models ?? o.items, 200)
+  const seen = new Set<string>();
+  const models = arr(o.models ?? o.items, 2000)
     .map((m): BnModel | null => {
       const x = obj(m);
       if (!x) return null;
       const id = typeof (x.id ?? x.model) === 'string' ? String(x.id ?? x.model) : '';
-      if (!MODEL_ID.test(id)) return null;
+      if (!MODEL_ID.test(id) || seen.has(id)) return null;
+      seen.add(id);
       const alias = Object.entries(aliases).find(([, v]) => v === id)?.[0] ?? (typeof x.alias === 'string' ? label(x.alias, 40) : null);
+      const free = x.free === true;
+      const provider = x.provider === 'OpenRouter' ? 'OpenRouter' : 'Bedrock';
+      const ctx = nonneg(x.context);
       return {
         id,
         name: label(x.name ?? x.display_name, 128) || id,
         alias: alias || null,
-        input: nonneg(x.input_per_mtok ?? x.input),
-        output: nonneg(x.output_per_mtok ?? x.output),
-        cacheWrite: nonneg(x.cache_write_per_mtok ?? x.cacheWrite),
-        cacheRead: nonneg(x.cache_read_per_mtok ?? x.cacheRead),
+        // a free model is $0 whatever else it says (never spend)
+        input: free ? 0 : nonneg(x.input_per_mtok ?? x.input),
+        output: free ? 0 : nonneg(x.output_per_mtok ?? x.output),
+        cacheWrite: free ? null : nonneg(x.cache_write_per_mtok ?? x.cacheWrite),
+        cacheRead: free ? null : nonneg(x.cache_read_per_mtok ?? x.cacheRead),
+        provider,
+        // (an older portal names no vendor: its models were Claude's)
+        vendor: label(x.vendor, 40) || (x.vendor === undefined && id.startsWith('claude-') ? 'Anthropic' : ''),
+        free,
+        compat: COMPATS.includes(x.compat as Compat) ? (x.compat as Compat) : x.compat === undefined && id.startsWith('claude-') ? 'works' : 'untested',
+        note: label(x.note, 300),
+        listed: x.listed !== false,
+        context: ctx !== null && Number.isInteger(ctx) && ctx > 0 ? ctx : null,
       };
     })
     .filter((m): m is BnModel => m !== null);
-  return { models, aliases, defaultModel: typeof o.default === 'string' ? label(o.default, 128) : null };
+  const sc = obj(o.scope);
+  const mode = sc?.mode === 'anthropic' || sc?.mode === 'list' ? sc.mode : 'all';
+  const scope = sc ? { mode: mode as 'all' | 'anthropic' | 'list', listed: models.filter((m) => m.listed).length, total: models.length } : null;
+  return { models, aliases, defaultModel: typeof o.default === 'string' ? label(o.default, 128) : null, scope };
 }
 
 export async function getSpend(session: string): Promise<{ rows: SpendRow[]; key: KeyBudget | null }> {

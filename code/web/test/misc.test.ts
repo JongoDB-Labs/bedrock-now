@@ -270,12 +270,14 @@ test('focus: an arriving card leaves the focus in anything you type into, empty 
   }
 });
 
+const CLAUDE = { provider: 'Bedrock', vendor: 'Anthropic', free: false, compat: 'works' as const, note: '', listed: true, context: null };
+
 test('models: sessions run a model named in full — aliases mapped through /.bn/models, /model typed switches by id', async () => {
   const { fullModel, isAlias, modelCommand, otherModels, sameModel } = await import('../src/models');
   const bn = {
     models: [
-      { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', alias: 'haiku', input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
-      { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', alias: 'sonnet', input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+      { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', alias: 'haiku', input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1, ...CLAUDE },
+      { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', alias: 'sonnet', input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3, ...CLAUDE },
     ],
     aliases: { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5' },
     defaultModel: 'claude-sonnet-5-5',

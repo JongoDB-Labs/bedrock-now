@@ -446,7 +446,8 @@
     TERMINAL_MEM_LIMIT: "4g", REMOTE_MODE: "off", AWS_AUTH: "an access key", REMOTE_SUBNET: "10.255.255.248/29",
     PORTAL_HOST: "bedrock-now.localhost", PORTAL_PORT: "80, else 8800", CHAT_HOST: "chat. + the portal's address",
     ADMIN_HOST: "admin. + the portal's address", FILES_HOST: "files. + the portal's address",
-    TERMINAL_HOST: "terminal. + the portal's address", CODE_HOST: "code. + the portal's address" };
+    TERMINAL_HOST: "terminal. + the portal's address", CODE_HOST: "code. + the portal's address",
+    CODE_MODELS: "every enabled model", CODE_DEFAULT_MODEL: "the main model" };
   // display K -> the value in words: "$50 a month", "30 days (default)", "On", "Not set", "••••••••"
   function display(k) {
     const v = shown(k);
@@ -463,6 +464,8 @@
     if (k.validator === "days") return `${v} day${v === "1" ? "" : "s"}`;
     if (k.validator === "pct") return `${v}%`;
     if (k.validator === "hour" && /^\d+$/.test(v)) return hourRange(Number(v));
+    if (k.validator === "code_models") return codeModelsWords(v);
+    if (k.validator === "code_model") return modelName(v);
     return v;
   }
 
@@ -575,6 +578,7 @@
     const ownKey = (withOf[k.key] || []).find((w) => /^LITELLM_KEY_/.test(w));
     if (alias && ownKey && keys[ownKey] && keys[ownKey].set && REVEALABLE.has(ownKey)) actions.append(revealButton(ownKey, "Copy key", false));
     if (k.key === "AWS_ACCESS_KEY_ID") actions.append(actionButton("check-aws", "Check (free)"));
+    if (k.validator === "code_model") setValue(k.value ? modelName(k.value) : `Automatic: ${modelName(keys.CLAUDE_BEDROCK_OPUS_MODEL ? shown(keys.CLAUDE_BEDROCK_OPUS_MODEL) : "")} (the main model)`);
     if (k.validator === "model_pin") {   // a pin, and the model setup chose (shown while there is no pin)
       const d = keys[(withOf[k.key] || [])[0]];
       setValue(shown(k) === "blank" || !k.set ? `Automatic: ${modelName(d ? shown(d) : "")}` : `Pinned: ${modelName(shown(k))}`);
@@ -615,6 +619,9 @@
     } else if (k.validator === "or_mode") {
       if (["all", "free", "paid", ""].includes(lower(k.value))) $(".set-value", main).remove();
       actions.append(segmented(k, rw));
+    } else if (k.validator === "code_models") {
+      main.append(el("p", { class: "note set-extra", text: codeModelsNote() }));
+      actions.append(codeModelsSeg(k, rw));
     } else {
       const b = el("button", { type: "button", class: "action", text: plain(k) || k.set ? "Change" : "Set",
         "aria-describedby": `set-name-${k.key}` });
@@ -660,6 +667,48 @@
     }
     return g;
   }
+
+  // --- Settings › Claude Code › Models (CODE_MODELS, CODE_DEFAULT_MODEL): the models of litellm/code-models.tsv ---
+  // [id, name, provider, vendor, compat, free, listed] (lib/code_models.sh, through the snapshot's choices)
+  const codeModels = () => (data && data.snapshot && data.snapshot.choices.code_models) || [];
+  const COMPAT_WORD = { works: "works", "chat-only": "chat only, no tools", fails: "fails", untested: "not tested" };
+  function codeScope(v) { const x = lower(v); return x === "" || x === "all" ? "all" : x === "anthropic" ? "anthropic" : "list"; }
+  function codeModelsWords(v) {
+    const sc = codeScope(v);
+    if (sc === "all") return `Every enabled model${codeModels().length ? ` (${codeModels().length})` : ""}`;
+    if (sc === "anthropic") return "Anthropic's (Claude) only";
+    const ids = String(v).split(",").map((x) => x.trim()).filter(Boolean);
+    return `${ids.length} picked: ${ids.slice(0, 4).map(modelName).join(", ")}${ids.length > 4 ? ", …" : ""}`;
+  }
+  function codeModelsNote() {
+    const all = codeModels(), works = all.filter((m) => m[4] === "works").length;
+    if (!all.length) return "The list appears after the next ./stack up (it writes litellm/code-models.tsv).";
+    return `${all.length} enabled chat model${all.length === 1 ? "" : "s"}, ${works} of them checked to work with Claude Code's tools. Others answer through LiteLLM's translation; tool use, thinking and prompt caching vary — the Code page's picker marks each.`;
+  }
+  function codeModelsSeg(k, rw) {
+    const cur = codeScope(k.value);
+    const g = el("div", { class: "chips seg set-seg", role: "group", "aria-labelledby": `set-name-${k.key}` });
+    for (const [val, label] of [["all", "All enabled"], ["anthropic", "Anthropic only"], ["list", "Pick…"]]) {
+      const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label, "data-scope": val });
+      b.disabled = !canChange();
+      b.addEventListener("click", () => {
+        if (val === "list") openForm(rw, k);
+        else if (val !== cur) confirmApply({ [k.key]: val === "all" ? "" : val }, `${k.label}: ${label}`, k.note, [k.key]);
+      });
+      g.append(b);
+    }
+    return g;
+  }
+  // the models in groups, for the checklist and the default's select
+  function codeGroups() {
+    const g = [["Anthropic (Bedrock)", []], ["Other providers on Bedrock", []], ["OpenRouter: free", []], ["OpenRouter: paid", []]];
+    for (const m of codeModels()) {
+      const i = m[2] === "OpenRouter" ? (m[5] ? 2 : 3) : (lower(m[3]) === "anthropic" ? 0 : 1);
+      g[i][1].push(m);
+    }
+    return g.filter((x) => x[1].length);
+  }
+  function codeModelLabel(m) { return `${m[1]}${m[3] && lower(m[3]) !== "anthropic" ? ` (${m[3]})` : ""} · ${COMPAT_WORD[m[4]] || "not tested"}${m[5] ? " · free" : ""}`; }
 
   // --- the Code page (./stack code enable | disable, run by the update helper) and the browser terminal ---
   function codeSwitch(val) {
@@ -709,7 +758,7 @@
   }
 
   function modelName(id) {
-    const m = ((data.snapshot && data.snapshot.choices.chat_models) || []).find((x) => x[0] === id);
+    const m = ((data.snapshot && data.snapshot.choices.chat_models) || []).find((x) => x[0] === id) || codeModels().find((x) => x[0] === id);
     return m ? m[1] : id || "none";
   }
 
@@ -819,6 +868,52 @@
       }
       form.append(box, el("p", { class: "note", text: "Hidden models stay usable through the API and Claude Code: this only tidies the picker." }));
       collect = () => ({ [k.key]: [...box.querySelectorAll("input:checked")].map((c) => c.value).join(",") });
+    } else if (k.validator === "code_models") {
+      const picked = new Set(codeScope(v) === "list" ? v.split(",").map((x) => x.trim()).filter(Boolean) : []);
+      const box = el("fieldset", { class: "set-radios set-code-models" }, el("legend", { text: "List these in the Code page's picker and the terminal's /model" }));
+      const q = el("input", { type: "search", id: `${id}-q`, placeholder: "Filter: a name, a provider, free…", autocomplete: "off", spellcheck: "false",
+        "aria-label": "Filter the models" });
+      box.append(q);
+      const items = [];
+      for (const [title, list] of codeGroups()) {
+        const sec = el("div", { class: "set-code-group" }, el("p", { class: "set-code-head", text: title }));
+        for (const m of list) {
+          const cid = `${id}-${items.length}`;
+          const cb = el("input", { type: "checkbox", id: cid, value: m[0] });
+          if (picked.has(m[0])) cb.checked = true;
+          const lab = el("label", { for: cid, class: "set-radio", title: m[0] }, cb, " ", codeModelLabel(m));
+          items.push([lab, `${m[0]} ${m[1]} ${m[2]} ${m[3]} ${COMPAT_WORD[m[4]] || ""} ${m[5] ? "free" : ""}`.toLowerCase()]);
+          sec.append(lab);
+        }
+        box.append(sec);
+      }
+      q.addEventListener("input", () => {
+        const t = lower(q.value);
+        for (const [lab, text] of items) lab.hidden = Boolean(t) && !text.includes(t);
+        for (const sec of box.querySelectorAll(".set-code-group")) sec.hidden = ![...sec.querySelectorAll("label")].some((x) => !x.hidden);
+      });
+      form.append(box, el("p", { class: "note", text: "Only a list: the terminal's key may use every model either way, and the default model is always listed. Models that do not \"work\" cannot use Claude Code's tools reliably." }));
+      collect = () => {
+        const ids = [...box.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
+        if (!ids.length) throw new Error("Pick at least one model (or choose All enabled).");
+        return { [k.key]: ids.join(",") };
+      };
+    } else if (k.validator === "code_model") {
+      const sel = el("select", { id });
+      sel.append(el("option", { value: "", text: `automatic: the main model (${modelName(keys.CLAUDE_BEDROCK_OPUS_MODEL ? shown(keys.CLAUDE_BEDROCK_OPUS_MODEL) : "")})` }));
+      for (const [title, list] of codeGroups()) {
+        const og = el("optgroup", { label: title });
+        for (const m of list) {
+          const o = el("option", { value: m[0], text: codeModelLabel(m) });
+          if (m[0] === v) o.selected = true;
+          og.append(o);
+        }
+        sel.append(og);
+      }
+      if (v && !codeModels().some((m) => m[0] === v)) sel.append(el("option", { value: v, text: `${v} (not enabled: counts as automatic)`, selected: "" }));
+      form.append(el("label", { for: id, text: "Model" }), sel,
+        el("p", { class: "note", text: "A browser's own last pick still wins for its new sessions; --model and CLAUDE_BEDROCK_MODEL win for claude-bedrock." }));
+      collect = () => ({ [k.key]: sel.value });
     } else if (k.validator === "or_key" || k.validator === "stt_key") {
       form.append(...field(id, "New key", "password", { maxlength: "512" }));
       collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });

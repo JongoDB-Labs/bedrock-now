@@ -261,6 +261,8 @@ export interface AppState {
   bypassAsk: string | null;
   /** bumped to open the mode menu (Alt+M) */
   modeMenu: number;
+  /** bumped to open the model picker (the status bar's model) */
+  modelMenu: number;
   /** a mode picked while no session is open: the next new session starts in it (Plan too, which is not remembered) */
   startWith: Mode | null;
   /** a set_mode is on its way: another waits for its answer (two at once would race in the backend) */
@@ -317,6 +319,7 @@ export const store: Store<AppState> = createStore<AppState>({
   runConfirm: null,
   bypassAsk: null,
   modeMenu: 0,
+  modelMenu: 0,
   startWith: null,
   modeSwitching: false,
   review: { git: null, loading: false, error: null, kept: {}, undone: {}, busy: null, filter: 'session', engaged: false },
@@ -379,7 +382,9 @@ export function activeView(s: AppState = get()): SessionView | undefined {
 export function defaultModel(s: AppState = get()): string {
   const m = s.models;
   const pref = fullModel(s.prefs.model, m);
-  if (pref) return pref;
+  // (the browser's last pick while bedrock-now still serves it, and Settings › Claude Code › Models lists it or "Show all" is on)
+  const known = m?.models.find((x) => x.id === pref);
+  if (pref && (!m || !m.models.length || (known && (known.listed || s.prefs.allModels)))) return pref;
   const def = fullModel(m?.defaultModel, m);
   if (def) return def;
   return m?.models[0]?.id ?? '';
@@ -1486,6 +1491,11 @@ export function cancelBypass(): void {
 export function openModeMenu(): void {
   set((s) => ({ ...s, modeMenu: s.modeMenu + 1 }));
 }
+/** Open the model picker (the status bar's model): the top bar's on desktops and tablets, the ⋯ sheet's on phones. */
+export function openModelMenu(): void {
+  if (isPhone()) set((s) => ({ ...s, sheet: 'menu' }));
+  else set((s) => ({ ...s, modelMenu: s.modelMenu + 1 }));
+}
 
 /** Revert of a watch card: the watched files (or one) put back as they were before the change. -> each file's outcome */
 export async function revertWatch(session: string, id: string, path?: string): Promise<{ ok: boolean; error: string; results: { path: string; ok: boolean; text: string }[] }> {
@@ -1901,6 +1911,11 @@ export async function refreshRuns(): Promise<void> {
 }
 
 /** The Run panel: the tasks and the Problems list (a sheet on a phone, a dialog elsewhere). */
+/** Ports & previews (Alt+P): a dialog, on phones a sheet. */
+export function openPorts(): void {
+  if (isPhone()) set((s) => ({ ...s, sheet: 'ports' }));
+  else setDialog('ports');
+}
 export function openRun(): void {
   if (isPhone()) set((s) => ({ ...s, sheet: 'run' }));
   else setDialog('run');

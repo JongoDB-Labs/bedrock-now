@@ -5,9 +5,78 @@ import { Component, h, type ComponentChildren, type FunctionComponent } from 'pr
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './icons';
 
+let tipSeq = 0;
+/** A small styled tooltip for the control inside: what it does and its shortcut. It shows on hover (after a short
+ *  delay) and on keyboard focus, above the control (below it near the top of the window), kept on screen; Escape, a
+ *  click or leaving hides it. Positioned through the CSSOM (position: fixed, so no pane or the status bar clips it). The
+ *  control names itself (aria-label) and points at the tip (aria-describedby: `tipId(id)`). */
+export function Tip(props: { text: string; keys?: string; id: string; children: ComponentChildren; class?: string; off?: boolean }) {
+  const [want, setOpen] = useState(false);
+  const open = want && !props.off;   // (off: its panel is open)
+  const wrap = useRef<HTMLSpanElement>(null);
+  const tip = useRef<HTMLSpanElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clear = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const show = (delay: number) => {
+    clear();
+    timer.current = setTimeout(() => setOpen(true), delay);
+  };
+  const hide = () => {
+    clear();
+    setOpen(false);
+  };
+  useEffect(() => clear, []);
+  useLayoutEffect(() => {
+    if (!open || !wrap.current || !tip.current) return;
+    const r = wrap.current.getBoundingClientRect();
+    const t = tip.current;
+    const w = Math.min(t.offsetWidth, innerWidth - 16);
+    const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8));
+    t.style.left = `${left}px`;
+    if (r.top > t.offsetHeight + 12) t.style.bottom = `${innerHeight - r.top + 6}px`;
+    else t.style.top = `${r.bottom + 6}px`;
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hide();
+    };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [open]);
+  return (
+    <span
+      ref={wrap}
+      class={`tip-wrap${props.class ? ' ' + props.class : ''}`}
+      onMouseEnter={() => show(350)}
+      onMouseLeave={hide}
+      onFocusIn={(e) => {
+        // keyboard focus only (a click focuses too: its own panel or action follows, not a tip)
+        if ((e.target as HTMLElement).matches?.(':focus-visible')) show(0);
+      }}
+      onFocusOut={hide}
+      onPointerDown={hide}
+    >
+      {props.children}
+      <span ref={tip} id={tipId(props.id)} role="tooltip" class="tip" hidden={!open} data-testid={`tip-${props.id}`}>
+        <span class="tip-text">{props.text}</span>
+        {props.keys && <kbd class="tip-keys">{props.keys}</kbd>}
+      </span>
+    </span>
+  );
+}
+/** The id of a Tip's tooltip (for aria-describedby). */
+export const tipId = (id: string): string => `tip-${id}`;
+export const nextTipId = (): string => `t${++tipSeq}`;
+
 export function Dropdown(props: {
   trigger: ComponentChildren;
   title: string;
+  /** a styled tooltip instead of the browser's title: what it does and its shortcut (keys) */
+  tip?: { id: string; text: string; keys?: string };
   children: (close: () => void) => ComponentChildren;
   class?: string;
   panelClass?: string;
@@ -18,6 +87,8 @@ export function Dropdown(props: {
   openSignal?: number;
   /** a class on the trigger button itself */
   triggerClass?: string;
+  /** what gets the focus when it opens (a selector in the panel; default: the checked item, else the first) */
+  focus?: string;
 }) {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
@@ -52,8 +123,10 @@ export function Dropdown(props: {
       p.style.bottom = `${vh - r.top + 4}px`;
       p.style.maxHeight = `${Math.max(160, r.top - 12)}px`;
     }
-    const first = p.querySelector<HTMLElement>('[aria-checked="true"], [role=menuitem], [role=menuitemradio], input, button');
+    const first = (props.focus ? p.querySelector<HTMLElement>(props.focus) : null) ?? p.querySelector<HTMLElement>('[aria-checked="true"], [role=menuitem], [role=menuitemradio], input, button');
     first?.focus({ preventScroll: true });
+    // the item checked in a long list: in view
+    p.querySelector<HTMLElement>('[aria-checked="true"]')?.scrollIntoView?.({ block: 'nearest' });
   }, [open]);
 
   useEffect(() => {
@@ -86,22 +159,33 @@ export function Dropdown(props: {
     };
   }, [open]);
 
+  const button = (
+    <button
+      ref={btn}
+      type="button"
+      class={`dd-trigger${props.triggerClass ? ' ' + props.triggerClass : ''}`}
+      title={props.tip ? undefined : props.title}
+      aria-label={props.title}
+      aria-describedby={props.tip ? tipId(props.tip.id) : undefined}
+      aria-keyshortcuts={props.tip?.keys ? ariaKeys(props.tip.keys) : undefined}
+      aria-haspopup="true"
+      aria-expanded={open}
+      disabled={props.disabled}
+      data-testid={props.testid}
+      onClick={() => setOpen(!open)}
+    >
+      {props.trigger}
+    </button>
+  );
   return (
     <div class={`dd${props.class ? ' ' + props.class : ''}`} onClick={(e) => e.stopPropagation()}>
-      <button
-        ref={btn}
-        type="button"
-        class={`dd-trigger${props.triggerClass ? ' ' + props.triggerClass : ''}`}
-        title={props.title}
-        aria-label={props.title}
-        aria-haspopup="true"
-        aria-expanded={open}
-        disabled={props.disabled}
-        data-testid={props.testid}
-        onClick={() => setOpen(!open)}
-      >
-        {props.trigger}
-      </button>
+      {props.tip ? (
+        <Tip id={props.tip.id} text={props.tip.text} keys={props.tip.keys} off={open}>
+          {button}
+        </Tip>
+      ) : (
+        button
+      )}
       {open && (
         <div ref={panel} class={`dd-panel${props.panelClass ? ' ' + props.panelClass : ''}`} role="menu">
           {props.children(close)}
@@ -109,6 +193,15 @@ export function Dropdown(props: {
       )}
     </div>
   );
+}
+
+/** "Alt+R" → "Alt+R", "Ctrl+`" → "Control+`", "⌘+K · Ctrl+Shift+P" → "Meta+K Control+Shift+P" (aria-keyshortcuts). */
+export function ariaKeys(keys: string): string {
+  return keys
+    .split('·')
+    .map((k) => k.trim().replace(/⌘/g, 'Meta').replace(/\bCtrl\b/g, 'Control'))
+    .filter(Boolean)
+    .join(' ');
 }
 
 export function MenuItem(props: {

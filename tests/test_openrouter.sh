@@ -90,7 +90,19 @@ test_classify_cache_prices_enotation_and_names() {
   row="$(_rows | awk -F'\t' '$1 == "anthropic/claude-haiku-5.5"')"
   assert_eq "$(printf '%s' "$row" | cut -f4-8)" "$(printf '0.0000001\t0.0000005\t0.00000001\t0.000000125\tpaid')"
   out="$(printf 'a/b\tSome  "Quoted"\\ na\001me\t100\t1e-7\t2.5E-6\t-\t\ttext\t5\nbad id/x\tn\t1\t0\t0\t\t\ttext\t1\n' | or_classify)"
-  assert_eq "$out" "$(printf 'a/b\tSome Quoted name\t100\t0.0000001\t0.0000025\t\t\tpaid\t5')"
+  assert_eq "$out" "$(printf 'a/b\tSome Quoted name\t100\t0.0000001\t0.0000025\t\t\tpaid\t5\t\t')"
+}
+
+# Tool use and the output cap (the Code page's list, LiteLLM's cap): from supported_parameters and top_provider;
+# unknown stays empty, and nothing but 0/1 and a whole number gets through
+test_models_tsv_and_classify_keep_tool_use_and_the_output_cap() {
+  out="$(or_models_tsv < "$FIXJ")"
+  assert_contains "$out" "$(printf 'meta-llama/llama-3.3-70b-instruct\t')"
+  assert_eq "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "meta-llama/llama-3.3-70b-instruct" { print $10 "/" $11 }')" 1/16384
+  assert_eq "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "google/lyria-3-pro-preview" { print $10 "/" $11 }')" 0/65536
+  assert_eq "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "openrouter/free" { print $10 "/" $11 }')" 1/
+  out="$(printf 'a/b\tn\t1\t0\t0\t\t\ttext\t1\t0\t4096\na/c\tn\t1\t0\t0\t\t\ttext\t1\tyes\t-5\na/d\tn\t1\t0\t0\t\t\ttext\t1\n' | or_classify | cut -f1,10,11)"
+  assert_eq "$out" "$(printf 'a/b\t0\t4096\na/c\t\t\na/d\t\t')"
 }
 
 test_classify_enotation_is_exact() {

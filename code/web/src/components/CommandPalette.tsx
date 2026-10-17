@@ -86,8 +86,8 @@ function actions(s: AppState): Item[] {
     a('sessions', 'Show the session list', showSessions, 'history'),
     a('terminal', s.prefs.layout.terminal ? 'Hide the terminal' : 'Show the terminal', toggleTerminal, 'terminal', '', keysFor('terminal')),
     a('explorer', s.prefs.layout.explorer ? 'Hide the explorer' : 'Show the explorer', toggleExplorer, 'sidebar', '', keysFor('explorer')),
-    a('ports', 'Ports & previews…', () => setDialog('ports'), 'port'),
-    a('run', 'Run & test…', openRun, 'play', "the workspace's scripts, make targets and entry points; Problems"),
+    a('ports', 'Ports & previews…', () => setDialog('ports'), 'port', '', keysFor('ports')),
+    a('run', 'Run & test…', openRun, 'play', "the workspace's scripts, make targets and entry points; Problems", keysFor('run')),
     a('memory', 'Memory (CLAUDE.md)…', () => setDialog('memory'), 'book'),
     a('plugins', 'Plugins & marketplaces…', () => setDialog('plugins'), 'plug'),
     a('mcp', 'MCP servers…', () => setDialog('mcp'), 'server'),
@@ -107,7 +107,9 @@ function actions(s: AppState): Item[] {
     const info = MODE_INFO[m];
     list.push(a(`mode:${m}`, `Mode: ${info.label}`, () => setMode(m), info.icon, info.desc));
   }
-  for (const m of s.models?.models ?? []) list.push(a(`model:${m.id}`, `Model: ${label(m.name, 80)}`, () => void setModel(m.id), 'model', label(m.id, 120)));
+  // the models Settings › Claude Code › Models lists (every one with the picker's "Show all")
+  for (const m of s.models?.models ?? [])
+    if (m.listed || s.prefs.allModels) list.push(a(`model:${m.id}`, `Model: ${label(m.name, 80)}`, () => void setModel(m.id), 'model', label(m.id, 120)));
   for (const e of ['low', 'medium', 'high', 'xhigh', 'max']) list.push(a(`effort:${e}`, `Effort: ${e}`, () => setEffort(e), 'gauge'));
   list.push(a('effort:default', "Effort: the model's default", () => setEffort(null), 'gauge'));
   if (portal) {

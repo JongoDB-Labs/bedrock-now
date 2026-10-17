@@ -65,7 +65,7 @@ test_every_env_key_is_in_the_settings_table_once() {
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
   # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access, + auto mode's 2)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 123
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 125
 }
 
 test_table_columns_are_valid() {
@@ -119,7 +119,7 @@ test_config_list_follows_the_pages_sections() {
   # the Code page with Bypass and Auto under it, in Claude Code (they were under Advanced); the terminal's budget with
   # the other budgets; a pair's second half and a switch's dependents indented under it
   assert_eq "$(printf '%s\n' "$out" | awk '/^Claude Code$/ { f = 1; next } /^[A-Z]/ { f = 0 } f && /CODE_/ { print $1 }' | tr '\n' ' ')" \
-    "CODE_ENABLED CODE_ALLOW_BYPASS CODE_AUTO_MODE "
+    "CODE_ENABLED CODE_ALLOW_BYPASS CODE_AUTO_MODE CODE_MODELS CODE_DEFAULT_MODEL "
   assert_contains "$out" "    CODE_ALLOW_BYPASS            (blank)   (less protection: this computer only)"
   assert_contains "$(printf '%s\n' "$out" | awk '/^Spending & budgets$/ { f = 1; next } /^[A-Z]/ { f = 0 } f')" "  BUDGET_TERMINAL                50   (less protection: this computer only)"
   assert_contains "$out" "    AWS_SECRET_ACCESS_KEY        (set)   (this computer only)"
@@ -250,7 +250,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 124; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 126; assert d["last_change"] is None' "$f"
   fi
 }
 

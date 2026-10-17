@@ -134,8 +134,10 @@ or_json_flatten() {
 # or_field PATH < flattened -> the value at PATH (empty if absent/null)
 or_field() { P="$1" awk -F'\t' '!f && $1 == ENVIRON["P"] { print $2; f = 1 }'; }
 
-# or_models_tsv < /api/v1/models JSON -> id name context prompt completion cache_read cache_write outputs created
-# (one TAB-separated line per model, unfiltered; outputs = output_modalities joined with ",")
+# or_models_tsv < /api/v1/models JSON -> id name context prompt completion cache_read cache_write outputs created tools
+# max_out (one TAB-separated line per model, unfiltered; outputs = output_modalities joined with ","; tools = 1 when
+# supported_parameters names "tools", 0 when it lists others only, empty without the list; max_out =
+# top_provider.max_completion_tokens: the Code page and claude-bedrock show tool use, LiteLLM caps answers at max_out)
 or_models_tsv() {
   or_json_flatten | awk -F'\t' '
     $1 ~ /^data\.[0-9]+\./ {
@@ -146,12 +148,16 @@ or_models_tsv() {
       else if (f == "pricing.prompt") pp[i] = $2; else if (f == "pricing.completion") pc[i] = $2
       else if (f == "pricing.input_cache_read") rd[i] = $2; else if (f == "pricing.input_cache_write") wr[i] = $2
       else if (f ~ /^architecture\.output_modalities\.[0-9]+$/) om[i] = (om[i] == "" ? "" : om[i] ",") $2
+      else if (f ~ /^supported_parameters\.[0-9]+$/) { if ($2 == "tools") tl[i] = 1; else if (tl[i] == "") tl[i] = 0 }
+      else if (f == "top_provider.max_completion_tokens") mo[i] = $2
     }
     END { for (i = 0; i <= n; i++) if (seen[i] && id[i] != "")
-      print id[i] "\t" nm[i] "\t" cx[i] "\t" pp[i] "\t" pc[i] "\t" rd[i] "\t" wr[i] "\t" om[i] "\t" cr[i] }'
+      print id[i] "\t" nm[i] "\t" cx[i] "\t" pp[i] "\t" pc[i] "\t" rd[i] "\t" wr[i] "\t" om[i] "\t" cr[i] "\t" tl[i] "\t" mo[i] }'
 }
 
 # or_classify < or_models_tsv -> eligible models: id name context prompt completion cache_read cache_write tier created
+# tools max_out (tools 1/0/empty and max_out a whole number or empty, as or_models_tsv found them; an older cache
+# without these columns reads as empty: unknown)
 # Eligible = text-only output (no image/audio generation), a known non-negative per-token price ("-1" marks
 # OpenRouter's variable-priced routers), an id safe to write into YAML/JSON, and not a ":batch" variant (those
 # run only through OpenRouter's asynchronous batch API, not chat completions). tier = free when prompt and
@@ -191,7 +197,7 @@ or_classify() {
       ctx = ($3 ~ /^[0-9]+$/) ? $3 : ""
       rd = num($6) ? dec($6) : ""; wr = num($7) ? dec($7) : ""
       tier = ($4 + 0 == 0 && $5 + 0 == 0) ? "free" : "paid"
-      print $1, name, ctx, dec($4), dec($5), rd, wr, tier, ($9 ~ /^[0-9]+$/ ? $9 : 0)
+      print $1, name, ctx, dec($4), dec($5), rd, wr, tier, ($9 ~ /^[0-9]+$/ ? $9 : 0), ($10 == "0" || $10 == "1" ? $10 : ""), ($11 ~ /^[1-9][0-9]*$/ && length($11) <= 9 ? $11 : "")
     }'
 }
 
@@ -503,7 +509,7 @@ or_fetch_models() {
     warn "OpenRouter lists no text models your key can use — check the provider restrictions and guardrails at https://openrouter.ai/settings/privacy (Filter the model catalog for API keys applies them to this list); no OpenRouter models until then"
   fi
   { printf '# fetched_at: %s\n# source: %s/models (%s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OPENROUTER_API" "$src"
-    printf '# id\tname\tcontext\tprompt\tcompletion\tcache_read\tcache_write\ttier\tcreated\n'
+    printf '# id\tname\tcontext\tprompt\tcompletion\tcache_read\tcache_write\ttier\tcreated\ttools\tmax_out\n'
     cat "$rows"; } > "$out"
   rm -f "$raw" "$rows"
 }
@@ -532,9 +538,10 @@ openrouter_refresh() {
     else warn "OpenRouter: $OR_ERR — no OpenRouter models until ./stack openrouter refresh succeeds"; fi
     return 0
   fi
-  before="$(or_selected | cut -f1,4-7)"; prices="$(_or_cost_prices_sum)"
+  # (tool use and the output cap too: the Code page's list and LiteLLM's cap follow them)
+  before="$(or_selected | cut -f1,4-7,10,11)"; prices="$(_or_cost_prices_sum)"
   chmod 644 "$tmp"; mv "$tmp" "$f"
-  after="$(or_selected | cut -f1,4-7)"
+  after="$(or_selected | cut -f1,4-7,10,11)"
   [ "$prices" = "$(_or_cost_prices_sum)" ] || OR_PRICES_CHANGED=1
   or_missing "$(or_mode)" < <(or_cached_rows) | while IFS= read -r m; do warn "OpenRouter: '$m' (OPENROUTER_MODELS) is not an OpenRouter text model — skipped"; done
   or_write_portal_json

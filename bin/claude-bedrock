@@ -18,15 +18,48 @@ export STACK_DIR
 . "$STACK_DIR/lib/session.sh"  # session id header + cost summary on exit
 . "$STACK_DIR/lib/version.sh"  # "vX available" from the portal's cached release check (no network here)
 . "$STACK_DIR/lib/claude_config.sh"  # its own CLAUDE_CONFIG_DIR (lean) and the --resume hint on exit
+. "$STACK_DIR/lib/code_models.sh"    # the models it may run (litellm/code-models.tsv): --models, --model, /model
 
-# --help / --version: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
+# _cb_model NAME WHERE -> the full id NAME means among the models of litellm/code-models.tsv (an id, a name, an
+# OpenRouter id without or/, opus/sonnet/haiku: that slot's model), [1m] kept; dies naming the choices when there is
+# none. Without the file (./stack up writes it) Claude Code's aliases still become ids (cb_model_id) and nothing else
+# is checked.
+_cb_model() {
+  local want="$1" base suffix='' id
+  [ -r "$(code_models_file)" ] || { cb_model_id "$want"; return 0; }
+  case "$want" in *'[1m]' | *'[1M]') suffix="${want#"${want%????}"}"; base="${want%????}" ;; *) base="$want" ;; esac
+  id="$(code_model_resolve "$base")"
+  [ -n "$id" ] || die "unknown model '$want' ($2) — claude-bedrock --models lists them: $(_code_rows | awk -F'\t' '$11 == 1 { printf "%s%s", (n++ ? ", " : ""), $1; if (n == 6) { printf ", …"; exit } }')"
+  printf '%s%s\n' "$id" "$suffix"
+}
+
+# _cb_price ID -> "$0.72 in / $0.72 out per 1M tokens", "free ($0, OpenRouter)" … from litellm/code-models.tsv, else
+# the catalog's price_label
+_cb_price() {
+  local row; row="$(code_model_row "${1%\[1[mM]\]}")"
+  [ -n "$row" ] || { price_label "$1"; return 0; }
+  printf '%s\n' "$row" | awk -F'\t' 'function m(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
+    { if ($9 == 1) print "free ($0, " $3 ")"; else if ($5 == "-" || $6 == "-") print "price unknown"; else printf "%s in / %s out per 1M tokens\n", m($5), m($6) }'
+}
+
+# --help / --version / --models: no cost line, no LiteLLM needed. --help adds a short header about the wrapper.
 case "${1:-}" in
+  --models)
+    [ -f "$ENV_FILE" ] || die "stack not set up — run $STACK_DIR/stack setup"
+    [ -r "$(code_models_file)" ] || die "no model list yet — run $STACK_DIR/stack up (it writes $(code_models_file))"
+    if [ "${2:-}" = all ]; then printf 'Every enabled chat model (* = the default for new sessions):\n'
+    else printf 'The models of Settings › Claude Code › Models (* = the default for new sessions; --models all: every enabled one):\n'; fi
+    code_models_table "" "${2:-}"
+    printf '\nclaude-bedrock --model <id or name> starts on one; /model in a session switches (by full id: an alias lets Claude Code\n'
+    printf 'pick the model itself). Only models that "work" can use tools — read, edit and run things; prices as LiteLLM bills them.\n'
+    exit 0 ;;
   -h | --help)
     opus="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)"; port="$(get_env LITELLM_PORT)"
+    def="$(code_models_default)"; def="${def:-$opus}"
     if [ -n "$opus" ] && [ -n "$port" ]; then
-      m="$opus (main); CLAUDE_BEDROCK_MODEL=<name> picks another one per session"
+      m="$def (default); --model <id or name> or CLAUDE_BEDROCK_MODEL=<name> picks another, claude-bedrock --models lists them"
       p="LiteLLM on 127.0.0.1:$port, key 'claude-code' (monthly budget; ./stack costs)"
-      c="billed by Bedrock per token; $opus: $(price_label "$opus")"
+      c="billed per token by Bedrock (OpenRouter's models: by OpenRouter, free ones \$0); $def: $(_cb_price "$def")"
     else
       m="not set up yet — run $STACK_DIR/stack setup"; p="not set up yet — run $STACK_DIR/stack setup"
       c="billed by Bedrock per token; prices: $STACK_DIR/stack costs"
@@ -74,9 +107,26 @@ claude_config_prepare || die "$CB_CONFIG_ERR"   # created 700; an existing one m
 unset ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$port"
 export ANTHROPIC_AUTH_TOKEN="$key"
-# By its full id (lib/claude_config.sh cb_model_id): given one of Claude Code's aliases (haiku, sonnet, opus) Claude
-# Code picks the model itself — with "haiku" it plans on Sonnet in Plan mode
-ANTHROPIC_MODEL="$(cb_model_id "${CLAUDE_BEDROCK_MODEL:-$opus}")"
+# The model, by its full id: --model of yours, else CLAUDE_BEDROCK_MODEL, else the default of Settings › Claude Code ›
+# Models (CODE_DEFAULT_MODEL; blank: the main model). Any model of litellm/code-models.tsv, by id or name (_cb_model);
+# given one of Claude Code's aliases (haiku, sonnet, opus) Claude Code picks the model itself — with "haiku" it plans on
+# Sonnet in Plan mode — so an alias becomes its slot's id. --model is rewritten to that id (up to a `--` of yours).
+def="$(code_models_default)"
+ANTHROPIC_MODEL="$(_cb_model "${CLAUDE_BEDROCK_MODEL:-${def:-$opus}}" "${CLAUDE_BEDROCK_MODEL:+CLAUDE_BEDROCK_MODEL}${CLAUDE_BEDROCK_MODEL:-the default model}")"
+cb_args=(); want=''; i=0
+for a in "$@"; do
+  i=$((i + 1))
+  if [ "$want" = next ]; then a="$(_cb_model "$a" "--model")"; ANTHROPIC_MODEL="$a"; want=done
+  elif [ "$want" != stop ]; then
+    case "$a" in
+      --) want=stop ;;
+      --model) want=next ;;
+      --model=*) a="--model=$(_cb_model "${a#--model=}" "--model")"; ANTHROPIC_MODEL="${a#--model=}" ;;
+    esac
+  fi
+  cb_args+=("$a")
+done
+set -- ${cb_args[@]+"${cb_args[@]}"}
 export ANTHROPIC_MODEL
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus"
 ANTHROPIC_DEFAULT_SONNET_MODEL="$(get_env CLAUDE_BEDROCK_SONNET_MODEL)"
@@ -91,7 +141,13 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 # One cost line on stderr (CLAUDE_BEDROCK_QUIET=1 hides it). Spend comes from LiteLLM with this key;
 # if that takes >2s or fails, the spend part is left out rather than delaying the launch.
 if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
-  line="bedrock · $ANTHROPIC_MODEL ($(price_label "$ANTHROPIC_MODEL"))"
+  via=bedrock; case "$ANTHROPIC_MODEL" in or/*) via=openrouter ;; esac
+  line="$via · $ANTHROPIC_MODEL ($(_cb_price "$ANTHROPIC_MODEL"))"
+  case "$(code_model_row "$ANTHROPIC_MODEL" | cut -f10)" in
+    chat-only) line="$line · chat only: it cannot use tools" ;;
+    fails) line="$line · fails as Claude Code's model" ;;
+    untested) line="$line · not tested with Claude Code" ;;
+  esac
   if info="$(key_info "$key" 2 1)" && spent="$(printf '%s' "$info" | spend_text)"; then
     line="$line · spent $spent this period"
     if bw="$(printf '%s' "$info" | budget_warning)"; then line="$line · $bw"; fi
@@ -120,10 +176,19 @@ esac
 # It goes FIRST, as one `--mcp-config=FILE` argument: after your arguments, a `--` of yours turned it into prompt text;
 # first but as two arguments, the variadic option would take your prompt for a second config file.
 [ "$add_mcp" = 1 ] && [ -f "$STATE_DIR/mcp.json" ] && mcp_args=("--mcp-config=$STATE_DIR/mcp.json")
-# Auto mode off in the lean folder's sessions (lib/claude_config.sh claude_auto_mode_args): Claude Code's flag tier,
-# above every settings file; nothing of yours is written. Never for your own folder (CLAUDE_BEDROCK_USE_MY_CONFIG=1).
+# Sessions get Claude Code's flag-tier settings (above every settings file; nothing of yours is written): its /model
+# menu lists the models of Settings › Claude Code › Models by full id, name, price and how they work instead of its
+# own lineup of aliases (lib/code_models.sh code_picker_json; your folder too), and auto mode is off in the lean
+# folder's sessions (never in your own, CLAUDE_BEDROCK_USE_MY_CONFIG=1). A --settings of yours replaces it.
 settings_args=()
-[ "$add_mcp" = 1 ] && claude_auto_mode_off && settings_args=("$CB_AUTO_OFF_ARG")
+if [ "$add_mcp" = 1 ]; then
+  off=0; ! claude_auto_mode_off || off=1
+  pj=''; [ ! -r "$(code_models_file)" ] || pj="$(code_picker_json "" "$off")"
+  case "$pj" in
+    *'"options":[{'*) settings_args=("--settings=$pj") ;;
+    *) [ "$off" = 0 ] || settings_args=("$CB_AUTO_OFF_ARG") ;;
+  esac
+fi
 
 # For people at a terminal starting a session: a new folder's first-run questions; once: how to bring a CLAUDE.md along.
 if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ] && [ "$add_mcp" = 1 ] && [ -t 2 ]; then claude_config_notes >&2; fi

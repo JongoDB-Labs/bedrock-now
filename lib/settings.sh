@@ -183,6 +183,10 @@ _sv_model_pin() {
   case "$1" in '') return 0 ;; *[!a-z0-9.-]*) ;; *) [ "${#1}" -le 64 ] && return 0 ;; esac
   SV_ERR="must be one of the models your key can use (blank = automatic)"; return 1
 }
+_sv_code_models() {
+  valid_code_models "$1" && [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] || { SV_ERR="must be all, anthropic or a comma list of model ids"; return 1; }
+}
+_sv_code_model() { valid_code_model "$1" || { SV_ERR="must be a model id (blank = the main model)"; return 1; }; }
 _sv_models_list() {
   [ -n "$1" ] || return 0
   _sv_re "$1" '^[a-z0-9.-]+(,[a-z0-9.-]+)*$' && [ "${#1}" -le "$SETTINGS_MAX_VALUE" ] ||
@@ -424,9 +428,17 @@ _settings_choices() {
     done
     out="$out]"
   done
-  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s], "code_workspace": "%s"}\n' "$out" "$ready" \
+  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s], "code_workspace": "%s", "code_models": [%s]}\n' "$out" "$ready" \
     "$(for s in $RESTART_SERVICES; do printf '"%s",' "$s"; done | sed 's/,$//')" \
-    "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')" "$ws"
+    "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')" "$ws" "$(_settings_code_models)"
+}
+
+# _settings_code_models -> JSON rows for Settings › Claude Code › Models: [id, name, provider, vendor, compat, free,
+# listed] of litellm/code-models.tsv (lib/code_models.sh; at most 1500), nothing before ./stack wrote it
+_settings_code_models() {
+  declare -F _code_rows >/dev/null || return 0
+  _code_rows | awk -F'\t' 'function js(s) { gsub(/[\001-\037"\\]/, "", s); return "\"" s "\"" }
+    NF >= 12 && $1 ~ /^[A-Za-z0-9][A-Za-z0-9._:\/@-]*$/ && n < 1500 { printf "%s[%s, %s, %s, %s, %s, %s, %s]", (n++ ? ", " : ""), js($1), js($2), js($3), js($4), js($10), ($9 == 1 ? "true" : "false"), ($11 == 1 ? "true" : "false") }'
 }
 
 # _settings_display NAME -> its friendly name from catalog/display.tsv (the name itself without one); no quotes
@@ -496,7 +508,7 @@ settings_snapshot_refresh() {
 
 # _settings_facts -> a hash of what the choices come from besides .env: the models the last check enabled (and so
 # whether Voxtral is ready) and the catalog. Re-check models changes it without touching .env.
-_settings_facts() { cat "$STACK_DIR/litellm/enabled-models.txt" "$CATALOG" 2>/dev/null | openssl dgst -sha256 | awk '{ print $NF }'; }
+_settings_facts() { cat "$STACK_DIR/litellm/enabled-models.txt" "$CATALOG" "$STACK_DIR/litellm/code-models.tsv" 2>/dev/null | openssl dgst -sha256 | awk '{ print $NF }'; }
 
 # --- ./stack config ---
 
