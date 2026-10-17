@@ -348,7 +348,18 @@ plain `claude` stays exactly as it was, and it takes the same arguments. It runs
 folder, `~/.claude-bedrock`**, not your `~/.claude` ([why and how](#a-lean-config-folder-for-bedrock)).
 
 - Models: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks, subagents) =
-  `claude-haiku-5-5`. For a cheaper session: `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`.
+  `claude-haiku-5-5`. Any chat model of the catalog works too — Bedrock's other providers and the OpenRouter models
+  you enabled ([which work with Claude Code's tools](#models-for-claude-code)): `claude-bedrock --models` lists them
+  with prices and how each works (`--models all`: also those Settings › Claude Code › Models leaves out), and
+  `claude-bedrock --model mistral-large-3` (or a name: `--model "Mistral Large 3"`; an OpenRouter id with or without
+  `or/`) starts on one. An unknown model is refused before Claude Code starts, naming the choices. For a cheaper
+  session: `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`. Without either, a session starts on Settings ›
+  Claude Code › Default model (`CODE_DEFAULT_MODEL`; blank: the main model).
+- **`/model` in a session** lists the same models by name, price and how they work, instead of Claude Code's own
+  lineup of aliases (`Opus`, `Sonnet`, `Haiku`: with an alias Claude Code picks the model itself, and *Plan* mode on
+  Haiku plans on Sonnet) — a `modelPicker` in the wrapper's `--settings` (Claude Code's flag tier; at most 150 rows,
+  the default always among them). *s* in the menu switches for this session; *Enter* also saves it in the config
+  folder's settings, but the next `claude-bedrock` starts on `--model`, `CLAUDE_BEDROCK_MODEL` or the default again.
 - Each launch prints a cost line and a config line (hide both with `CLAUDE_BEDROCK_QUIET=1`):
   `bedrock · claude-opus-5-5 ($4.40 in / $22.00 out per 1M tokens) · spent $X.XX of $200.00 this period`,
   with `· ⚠ 84% of monthly budget used` from the alert threshold (80% by default) on, and
@@ -421,8 +432,8 @@ claude.ai plan that is invisible; billed per token it is not. So:
   there, on the same key — about $0.13 for the first check in each 5 minutes and half a cent for each further one
   (measured: it sends ~47k tokens of instructions, cached) — rather than on your session's model (an Opus session
   would otherwise review on Opus). `CLAUDE_BEDROCK_MODEL=haiku` (or `sonnet`, `opus`) is passed as that slot's full id
-  (`claude-haiku-5-5`): with the alias, Claude Code plans on Sonnet in *Plan* mode. A `--model haiku` or a `/model
-  haiku` typed in a session still goes to Claude Code as an alias: name the model in full there.
+  (`claude-haiku-5-5`): with the alias, Claude Code plans on Sonnet in *Plan* mode; so is `--model haiku`. A `/model
+  haiku` typed in a session still goes to Claude Code as an alias: pick from the `/model` menu, or name it in full.
 
 More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
@@ -442,8 +453,9 @@ The stack must be running to turn it on. The first `enable` builds the sandbox's
 minutes); a later `enable` without `--workspace` keeps the folder it had.
 
 This is the **Terminal** tab of the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
-tmux session, set up like the one on your computer (same models, the shared MCP server, the cost line and the
-session cost on exit), but with **its own LiteLLM key**, `claude-code-terminal`, and its own monthly budget
+tmux session, set up like the one on your computer (same models — `--models`, `--model`, the `/model` menu, read from
+LiteLLM's `/model/info` — the shared MCP server, the cost line and the session cost on exit; plain `claude` there keeps
+Claude Code's own `/model` lineup), but with **its own LiteLLM key**, `claude-code-terminal`, and its own monthly budget
 (`BUDGET_TERMINAL`, $50: Settings → Spending & budgets or `./stack config set BUDGET_TERMINAL`; a Terminal
 meter on Home). Its `claude-bedrock` prints no `resume:` line (`claude-bedrock --resume` without an id is the
 picker), and its session cost is how much the terminal key's spend grew meanwhile, so a Code page session running at
@@ -621,10 +633,10 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   have read it** (the Send button does), and it always goes into a **new session in Manual mode** — never into the
   session shown, never in the mode you last used. Both leave the address bar
   at once (a reload does not bring the draft back), and they survive the unlock. Home's Code card uses them.
-- **Model, effort, cost.** You pick the model (this stack's models and prices) and the effort; the meter shows each
-  turn's and the session's cost and the context window's use. A switch Claude Code refuses is taken back and said
-  ("Still on …"); the page lists the model in the session's own `/model` picker first, so Claude Code does not need an
-  API round trip to accept it.
+- **Model, effort, cost.** You pick the model — [any chat model of the catalog](#models-for-claude-code), Bedrock's
+  and OpenRouter's, with this stack's prices — and the effort; the meter shows each turn's and the session's cost and
+  the context window's use. A switch Claude Code refuses is taken back and said ("Still on …"); the page lists the
+  model in the session's own `/model` picker first, so Claude Code does not need an API round trip to accept it.
 - **A budget per session** (⋯ → *Budget for this session*; off by default). An amount: the conversation says when the
   session has used half of it, 80 % and all of it (from bedrock-now's spend logs, what Bedrock billed), and the cost
   meter shows the share. **Stop at the budget** (optional) is Claude Code's own stop: every Claude Code process of the
@@ -643,6 +655,52 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   plugins, MCP, Settings), sessions to resume, files anywhere in the workspace and what you ran last, matched as you
   type and run by keyboard alone (`>` only actions, `#` only sessions). **Keyboard shortcuts** (`Ctrl/⌘+/` or `?`)
   lists every shortcut of the page.
+- **The status bar's quick actions** (desktop and tablet): *Terminal* (`Ctrl+\``), *Run* (`Alt+R`), *Ports*
+  (`Alt+P`), the permission mode (`Shift+Tab`, `Alt+M`) and the model — 28 px buttons with an icon and a label (on a
+  tablet the less used ones as icons), each with a tip that says what it does and its shortcut, on hover and on
+  keyboard focus. On a phone they are in the ⋯ sheet, as 48 px rows.
+
+#### Models for Claude Code
+
+The model picker (top bar; on a phone ⋯ → *Model*; the status bar's model opens it) lists **every enabled chat model
+of the catalog**, not only Anthropic's: Claude on Bedrock, Bedrock's other providers (OpenAI's GPT-6, xAI's Grok, Meta's
+Llama, Mistral) and, with an [OpenRouter](#optional-openrouter) key, the OpenRouter models you enabled — in groups
+(*Starred*, *Anthropic*, *Other providers on Bedrock*, *OpenRouter: free*, *OpenRouter*), with a search (name,
+provider, `free` …), prices per million tokens (a free model shows **free** and costs $0: never spend), and a star per
+model kept in this browser (starred ones first). Claude Code speaks Anthropic's Messages API with tools; LiteLLM
+translates `/v1/messages` for every other provider, but tool use, thinking, prompt caching and long contexts vary, so
+each model has a badge from [`catalog/code-models.tsv`](catalog/code-models.tsv):
+
+| Badge | Meaning | Checked (Claude Code 2.1.296 through LiteLLM 1.105.0, one turn that must run a shell command) |
+|---|---|---|
+| (none) | Anthropic's own: tools, thinking, prompt caching | Claude Opus, Sonnet, Haiku |
+| **works** | a tool call round-trips; no thinking blocks, prompt caching as the provider does it | GPT-6 Sol and Luna, Grok 4.7, Mistral Large 3 (and Amazon Nova Micro, not in the catalog) |
+| **chat only** | it answers but cannot use tools: Claude Code cannot read, edit or run anything | Llama 3.3 70B (writes its tool calls as text) |
+| **not tested** | nobody checked: OpenRouter's models that list tool use | — |
+| **fails** | a session on it errors; hidden behind *Show all models* | — |
+
+Picking a model that is not "works" says what to expect (a toast); it stays selectable. OpenRouter models whose
+listing names no tool use count as *chat only*. Two fixes in LiteLLM make more models answer at all: `drop_params`
+(parameters a provider does not take are dropped) and a small hook, [`litellm/bn_hooks.py`](litellm/bn_hooks.py),
+that lowers a request's `max_tokens` to the model's limit — Claude Code asks for up to 32,000 output tokens and
+Bedrock's Llama refuses more than 8,192 (OpenRouter's limits come from its model list). Not fixed: Claude Code assumes a
+200K context for a model it does not know, so a long session on a smaller one (Llama: 128K) can fail before it
+compacts; its own cost estimate (the per-session *Stop at the budget*) prices models it does not know at its own
+default rates, while the meter and the budget's notes use what LiteLLM billed.
+
+**Settings › Claude Code › Models for Claude Code** picks which models the picker and claude-bedrock's `/model`
+menu list (`CODE_MODELS`): **All enabled** (the default), **Anthropic only** (Claude, Bedrock's and OpenRouter's), or
+**Pick…** — a checklist in the same groups, with a filter. A list for convenience, not a limit: the terminal's key may
+use every model either way, and *Show all models* in the picker shows the rest. **Default model for new sessions**
+(`CODE_DEFAULT_MODEL`): the model a new Code page session starts on (unless this browser picked another one last) and
+claude-bedrock starts with; blank = the main model (`CLAUDE_MODEL_OPUS`). Both re-render LiteLLM's config (the browser
+terminal learns the list from LiteLLM's `/model/info`), so LiteLLM restarts (about 15 s). In a terminal:
+`./stack config set CODE_MODELS anthropic`, `./stack config set CODE_DEFAULT_MODEL mistral-large-3`.
+
+Not every switch is free: switching to a model that caches writes ~30k tokens of prompt cache at its price (the picker
+says how much); a model without cache prices writes none, and has no cold-cache line above the prompt box. Auto mode's
+reviewer stays on Sonnet 5.5 whatever the session's model (Claude Code asks for `claude-sonnet-5`, which the catalog
+maps to it).
 
 #### Permissions and modes
 

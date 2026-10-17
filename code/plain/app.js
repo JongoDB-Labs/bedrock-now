@@ -204,11 +204,14 @@
   async function loadModels() {
     try {
       const r = await api("/.bn/models");
-      models = r.models;
+      // the models Settings › Claude Code › Models lists (an older portal sends no "listed": all of them)
+      models = r.models.filter((m) => m.listed !== false);
       const sel = $("model");
       sel.textContent = "";
       for (const m of models) {
-        sel.append(new Option(`${m.name}${m.input_per_mtok != null ? ` ($${m.input_per_mtok}/$${m.output_per_mtok} per Mtok)` : ""}`, m.id));   // the full id: an alias lets Claude Code pick
+        const price = m.free ? " (free)" : m.input_per_mtok != null ? ` ($${m.input_per_mtok}/$${m.output_per_mtok} per Mtok)` : "";
+        const how = m.compat && m.compat !== "works" ? ` · ${m.compat === "chat-only" ? "chat only, no tools" : m.compat === "fails" ? "fails" : "not tested"}` : "";
+        sel.append(new Option(`${m.name}${price}${how}`, m.id));   // the full id: an alias lets Claude Code pick
       }
       const def = models.find((m) => m.alias === "sonnet") || models[0];
       if (def) sel.value = def.id;

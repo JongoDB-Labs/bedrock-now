@@ -44,6 +44,32 @@ All notable changes to bedrock-now are documented here. The format follows
   the file in its editor), Chat conversations (Open WebUI's own search, asked by the portal as you), the walkthrough's
   steps, and the sections of the README and `docs/` (an index built into the portal's image; they open on GitHub at
   your release). Keyboard-driven (↑ ↓ Enter Esc), grouped; matching is linear-time with capped inputs.
+- **Every model of the catalog for Claude Code**, not only Anthropic's: the Code page's model picker lists every
+  enabled chat model — Claude on Bedrock, Bedrock's other providers (GPT-6, Grok, Llama, Mistral) and the OpenRouter
+  models you enabled — in groups (*Starred*, *Anthropic*, *Other providers on Bedrock*, *OpenRouter: free*,
+  *OpenRouter*), with a search, prices (a free model shows **free**, $0 — never spend), a star per model kept in this
+  browser (starred first), and a badge for how each works as Claude Code's model: **works** (a tool call round-trips
+  through LiteLLM's translation), **chat only** (it answers but cannot use tools), **not tested**, **fails** (behind
+  *Show all models*). Picking one that is not "works" says what to expect. Checked live with Claude Code 2.1.296
+  through LiteLLM 1.105.0 (one turn that must run a shell command): GPT-6 Sol and Luna, Grok 4.7 and Mistral Large 3
+  work; Llama 3.3 70B is chat only (it writes its tool calls as text); OpenRouter's models are "not tested", or "chat
+  only" when their listing names no tool use ([catalog/code-models.tsv](catalog/code-models.tsv),
+  [README](README.md#models-for-claude-code)).
+- **Settings › Claude Code › Models for Claude Code** (`CODE_MODELS`): which models the Code page's picker and
+  claude-bedrock's `/model` menu list — *All enabled* (the default), *Anthropic only*, or *Pick…* (a filtered checklist
+  in the same groups) — and **Default model for new sessions** (`CODE_DEFAULT_MODEL`; blank: the main model). A list for
+  convenience, not a limit: every key may use every model, budgets unchanged. LiteLLM restarts on a change (about
+  15 s).
+- **claude-bedrock** (on your computer and in the browser terminal): `claude-bedrock --models` lists the models with
+  prices and how each works (`--models all`: every enabled one); `--model <id or name>` (and `CLAUDE_BEDROCK_MODEL`)
+  takes any of them — an OpenRouter id with or without `or/`, an alias as its slot's full id — and an unknown one is
+  refused before Claude Code starts, naming the choices; Claude Code's `/model` menu lists the same models by name,
+  price and how they work instead of its alias rows (a `modelPicker` in the wrapper's `--settings`). The launch line
+  says `openrouter ·` for an OpenRouter model, `free ($0)` for a free one, and "chat only" / "not tested" where it
+  applies.
+- **LiteLLM caps a request's output at the model's limit** (`litellm/bn_hooks.py`): Claude Code asks for up to 32,000
+  output tokens and Bedrock's Llama 3.3 70B refused anything over 8,192 — it answers now. OpenRouter's limits come from
+  its model list, which also gives each model's tool use.
 
 ### Changed
 
@@ -55,6 +81,12 @@ All notable changes to bedrock-now are documented here. The format follows
   it builds the portal, and the search too. `compose.yaml` itself is unchanged for older Composes.
 - Browser notifications from Activity say only what kind of thing happened, never a session's title, a prompt or a
   job's message (those stay in the panel).
+- **The status bar's quick actions are bigger and say what they do**: *Terminal*, *Run*, *Ports*, the permission mode
+  and the model are 28 px buttons (40 px on touch screens) with an icon and a label, each with a tip — what it does
+  and its shortcut — on hover and on keyboard focus. New shortcuts: `Alt+R` opens Run & test, `Alt+P` Ports &
+  previews. The mode opens the mode menu, the model the model picker. On a phone they stay in the ⋯ sheet.
+- **The cold-cache line** shows only for models that write the prompt cache at a price (Claude's, and those with
+  cache prices): not for Llama, Mistral or a free model.
 
 ## [0.10.0] - 2026-10-17
 

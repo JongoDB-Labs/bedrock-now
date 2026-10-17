@@ -651,7 +651,19 @@ reaches is the container — with the three exceptions under *Threat model*.
   `/model/info` (LiteLLM's `allowed_routes`, set when the key is made and again at every enable, setup and update,
   so older keys get it too): wherever the sandbox reaches LiteLLM, its pass-through, `/v1/chat/completions` and the
   rest answer 403. Delete the key in Admin to cut the terminal off without touching anything else
-  (`./stack terminal enable` makes a new one).
+  (`./stack terminal enable` makes a new one). **Models:** no LiteLLM key of the stack (`claude-code`,
+  `claude-code-terminal`, `open-webui`) has a list of allowed models — each may use every model LiteLLM serves, the
+  catalog's enabled ones and the enabled OpenRouter models, within its budget — so Settings › Claude Code › Models
+  (`CODE_MODELS`) is a list for the pickers, not a limit, and changes no key (budgets unchanged). What the sandbox
+  learns of the models comes from `/model/info`, which it could already read: per chat model a name, its vendor, how
+  it works with Claude Code and whether that list includes it (`bn_*` keys of LiteLLM's model_info, rendered by
+  `./stack` from the catalog) — no secret.
+- [x] **LiteLLM's one hook.** `litellm/bn_hooks.py` (part of the repository, in LiteLLM's read-only config folder,
+  loaded through `litellm_settings.callbacks` only while the file is there) runs before every request of every key:
+  it lowers `max_tokens` (and a thinking budget that no longer fits) to the model's limit from
+  `litellm/code-models.tsv`, which `./stack` writes next to the config (Bedrock's Llama refuses more than 8,192; Claude
+  Code asks for 32,000). It changes nothing else, reads no secret, makes no network call, and any problem in it leaves
+  the request as it came.
 - [x] **Inside the stack: one neighbour, a few paths.** Its network `terminal` is internal and holds only the
   container and its gateway, a second minimal Caddy (`terminal-gateway`, the main Caddy's pinned image, read-only,
   no capabilities but binding, no admin API, no published port). The gateway listens there only on `:8091`
