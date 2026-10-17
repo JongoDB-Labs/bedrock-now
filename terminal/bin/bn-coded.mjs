@@ -1137,8 +1137,15 @@ export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLIN
 // trashEntry(rel) -> the entry itself (a file, or a link as a link) moved into /workspace/.bedrock-now-trash/<time>/,
 // never through a link on its way
 function trashEntry(rel) {
-  const abs = watchPath(rel);
-  if (!abs) throw new Error('a folder on its way is a link');
+  // (any name git can name — a backslash or a newline is part of it —, every folder on the way a real folder)
+  let on = WORKSPACE;
+  for (const seg of rel.split('/').slice(0, -1)) {
+    on = path.join(on, seg);
+    let st;
+    try { st = fs.lstatSync(on); } catch { throw new Error('not in the workspace'); }
+    if (!st.isDirectory()) throw new Error('a folder on its way is a link');
+  }
+  const abs = path.join(WORKSPACE, rel);
   const trash = path.join(WORKSPACE, TRASH);
   const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

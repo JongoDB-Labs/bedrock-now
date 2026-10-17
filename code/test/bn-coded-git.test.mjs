@@ -346,6 +346,13 @@ test('git.discard: tracked → its current version to the trash and the staged o
   const l = await coded.gitDiscard({ path: 'link-file' }, O);
   assert.ok(fs.lstatSync(path.join(WS, l.trash)).isSymbolicLink(), 'the link itself moved');
   assert.equal(fs.readFileSync(path.join(OUT, 'secret.txt'), 'utf8'), 'outside\n', 'its target untouched');
+  // names git can name, odd as they are: a backslash and a newline are part of them
+  for (const odd of ['back\\slash.txt', 'new\nline.txt']) {
+    write(odd, 'odd\n');
+    const t = await coded.gitDiscard({ path: odd }, O);
+    assert.equal(t.action, 'trashed', odd);
+    assert.ok(!fs.existsSync(path.join(WS, odd)) && fs.existsSync(path.join(WS, t.trash)), odd);
+  }
   // through a linked folder, only staged changes, nothing to discard, not a path: refused
   await assert.rejects(coded.gitDiscard({ path: 'link-out/secret.txt' }, O));
   assert.ok(fs.existsSync(path.join(OUT, 'secret.txt')));

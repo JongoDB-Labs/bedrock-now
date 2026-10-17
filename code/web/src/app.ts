@@ -16,7 +16,7 @@ import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 import type { GitCommit, GitEntry, GitFile, GitReview, GitScope, GitStatus, GrepResult } from './types';
-import { MESSAGE_ASK, messagePrompt, proposedMessage } from './git';
+import { messagePrompt, proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from './budget';
 import { pageTitle, waitingSessions } from './groups';
@@ -2608,8 +2608,6 @@ function finishDraft(id: string): void {
   if (before.trim() && before !== msg) toast('Claude\'s message replaced what was in the box.', 'info', { label: 'Put mine back', run: () => setGitMessage(before) });
   else toast('A message from Claude is in the commit box: read it, then commit.', 'ok');
 }
-/** Whether a prompt is the page's own "Write message" request. */
-export const isDraftPrompt = (text: string): boolean => text.startsWith(MESSAGE_ASK);
 
 /** A file's staged or unstaged (or new) changes in a tab of the editor area (the editor sheet on a phone). */
 export function openGitDiff(path: string, scope: GitScope): void {
