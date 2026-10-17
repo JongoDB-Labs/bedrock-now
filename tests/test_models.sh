@@ -155,7 +155,13 @@ test_render_never_calls_the_breached_password_service() {
   assert_contains "$(CATALOG="$FIX" render_litellm_config "" us-east-1 false)" "  password_policy_check_breached_passwords: false"
 }
 
-test_catalog_ships_without_legacy_aliases() {
-  assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-"')" ""
-  assert_contains "$(render_litellm_config "" us-east-1 false)" "model_group_alias: {}"
+# One alias only: claude-sonnet-5 -> claude-sonnet-5-5, the model Claude Code's auto-mode classifier asks for by that
+# fixed id (Settings › Code page › Auto mode). No legacy names otherwise; rendered only while Sonnet 5.5 is enabled.
+test_catalog_ships_only_the_classifier_alias() {
+  assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-" { print $1 "=" $4 }')" "claude-sonnet-5-5=claude-sonnet-5"
+  out="$(render_litellm_config "" us-east-1 false)"
+  assert_contains "$out" "model_group_alias:"
+  assert_contains "$out" '    "claude-sonnet-5": "claude-sonnet-5-5"'
+  printf 'claude-haiku-5-5\n' > "$TMP/enabled"
+  assert_contains "$(render_litellm_config "$TMP/enabled" us-east-1 false)" "model_group_alias: {}"
 }

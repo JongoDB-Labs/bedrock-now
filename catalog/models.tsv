@@ -3,7 +3,7 @@
 # Friendly names shown in Open WebUI live in catalog/display.tsv.
 # name	mode	litellm_model	aliases	region
 claude-opus-5-5	chat	bedrock/invoke/us.anthropic.claude-opus-5-5	-	-
-claude-sonnet-5-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-5-5	-	-
+claude-sonnet-5-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-5-5	claude-sonnet-5	-
 claude-haiku-5-5	chat	bedrock/invoke/us.anthropic.claude-haiku-5-5	-	-
 claude-sonnet-4-5	chat	bedrock/invoke/us.anthropic.claude-sonnet-4-5-20250929-v1:0	-	-
 gpt-6-sol	chat	bedrock/us.openai.gpt-6-sol	-	-
