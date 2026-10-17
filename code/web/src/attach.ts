@@ -5,8 +5,8 @@
 // captured when you add it (a chip shows what will go; "Capture again" takes it anew); nothing is sent by itself.
 import * as api from './api';
 import { createStore } from './store';
-import { store, toast, reviewFiles, refreshReview } from './app';
-import { shownFiles } from './review';
+import { store, toast, reviewFiles, refreshReview, activeView } from './app';
+import { sessionStart, shownFiles } from './review';
 import { duration, outcome, outcomeText, plainCommand, plainOutput } from './run';
 import {
   MENTIONS_MAX,
@@ -141,7 +141,12 @@ export async function addDiff(): Promise<void> {
   try {
     await refreshReview();
     const s = store.get();
-    const files = shownFiles(reviewFiles(s), s.review.filter, s.review.undone);
+    // what the Review pane lists (this session's files, or all since the last commit); this session's being none (or
+    // its start not known here): all of them
+    const all = reviewFiles(s);
+    let filter = sessionStart(activeView(s)) === null ? 'all' : s.review.filter;
+    let files = shownFiles(all, filter, s.review.undone);
+    if (!files.length && filter === 'session') files = shownFiles(all, (filter = 'all'), s.review.undone);
     if (!files.length) {
       removeMention(id);
       toast('No changes to attach: the Review pane lists none.');
@@ -149,7 +154,7 @@ export async function addDiff(): Promise<void> {
     }
     const d = diffText(files);
     const git = s.review.git?.repo === true;
-    const scope = !git ? "Claude's own edits in this session" : s.review.filter === 'session' ? 'the files changed in this session, git\'s view since the last commit' : 'git\'s view since the last commit';
+    const scope = !git ? "Claude's own edits in this session" : filter === 'session' ? 'the files changed in this session, git\'s view since the last commit' : 'git\'s view since the last commit';
     update(id, {
       title: `the changes: ${files.length} file${files.length === 1 ? '' : 's'}, +${d.add} −${d.del} (${scope})`,
       text: d.text,

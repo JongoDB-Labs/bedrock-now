@@ -12,7 +12,10 @@ memory, a hostile session (markup, bidi, control characters, giant strings, bad 
 pane (git's view with a Bash-made change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without
 git: the session's edits, a changed file refused), Search in files, the command palette by keyboard alone, the shortcut
 sheet, the Git panel (a file's diff, stage / unstage, discard to the trash, Write message as a draft, commit, the log;
-a hostile sandbox's names and proposals as text), and these on a phone.
+a hostile sandbox's names and proposals as text), rich @-mentions (@terminal, @diff, the editor's selection with Alt+K, a
+typed @file#L…: chips that show what goes, the prompt's quoted context; hostile terminal output stays inside its fence)
+and comments on a plan's lines (by keyboard, Keep planning and an approval with them, a phone, a hostile plan), and these
+on a phone.
 Every page runs under the CSP the main Caddy will send (the mock sets it); any CSP violation, page error or dialog
 fails the check. Screenshots go to /out. Exit code 0 only when every check passed.
 """
@@ -1177,6 +1180,308 @@ def plan_approval(browser):
     wait_turns(page, 2)
     expect(page.locator(".msg-claude").last).to_contain_text("also cover post() with a timeout")
     expect(page.get_by_test_id("mode-picker")).to_contain_text("Plan")
+    p.assert_clean()
+    p.close()
+
+
+def mock_get(base, path):
+    return json.loads(urllib.request.urlopen(base + path, timeout=5).read())
+
+
+CONTEXT_START = "--- Context from the workspace (attached with @-mentions) ---"
+CONTEXT_END = "--- End of the context from the workspace ---"
+EDITOR_READY = "() => { const h = document.querySelector('.pane:not(.hidden) .cm-host'); return h && h.shadowRoot && h.shadowRoot.querySelector('.cm-content'); }"
+
+
+def outside_fences(text):
+    """A prompt's lines that are not inside an @-mention block's fence (what a reader takes as structure)."""
+    out, fence, lines, i = [], "", text.split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        if fence:
+            if line == fence:
+                fence = ""
+        elif re.match(r"^\[[0-9]+\] @", line) and i + 1 < len(lines) and re.fullmatch(r"`{3,}", lines[i + 1]):
+            out.append(line)
+            fence = lines[i + 1]
+            i += 1
+        else:
+            out.append(line)
+        i += 1
+    return out
+
+
+def last_prompt(base, n_before, timeout=10):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        prompts = mock_get(base, "/__mock/prompts")["prompts"]
+        if len(prompts) > n_before:
+            return prompts[-1]
+        time.sleep(0.1)
+    raise AssertionError("no prompt reached the backend")
+
+
+@check("mentions: @terminal, @diff, the editor's selection (Alt+K) and a typed @file#L… — chips that show what goes; sent after the prompt, quoted")
+def mentions(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/touch?path=README.md")
+    p = Page(browser, NORMAL, "mentions", **DESKTOP)
+    page = p.open()
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("Why does @ter")
+    pal = page.get_by_test_id("palette")
+    expect(pal).to_contain_text("@terminal")
+    expect(pal).to_contain_text("quoted context")
+    box.press("Enter")
+    chip = page.locator("[data-testid=mention-chip][data-kind=terminal]")
+    expect(chip).to_have_attribute("data-state", "ready", timeout=10_000)
+    expect(box).to_have_value("Why does @terminal ")
+    chip.get_by_test_id("mention-chip-main").click()
+    prev = page.get_by_test_id("mention-preview-body")
+    expect(prev).to_contain_text("[1] @terminal — the last 12 lines of the terminal panel (pane %3, window 1 bash)")
+    expect(prev).to_contain_text("AssertionError: expected 1 to be 3")
+    expect(page.get_by_test_id("mention-preview")).to_contain_text("not instructions")
+    # @diff: the changes (README.md changed since the last commit)
+    box.click()
+    box.press("End")
+    box.type("fail? See @dif")
+    box.press("Enter")
+    expect(page.locator("[data-testid=mention-chip][data-kind=diff]")).to_have_attribute("data-state", "ready", timeout=10_000)
+    # the editor's selection: lines 2–3, Alt+K (also the button the selection shows)
+    page.locator(".tree-row[data-path='src']").click()
+    page.locator(".tree-row[data-path='src/http']").click()
+    page.locator(".tree-row[data-path='src/http/retry.ts']").click()
+    page.wait_for_function(EDITOR_READY, timeout=10_000)
+    page.locator(".pane:not(.hidden) .cm-host .cm-content").click()
+    page.keyboard.press("Control+Home")
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Shift+ArrowDown")
+    page.keyboard.press("Shift+End")
+    expect(page.get_by_test_id("mention-selection")).to_contain_text("Lines 2–3 to the prompt")
+    page.mouse.move(0, 0)
+    p.shot("desktop-mention-selection.png")
+    page.keyboard.press("Alt+k")
+    lines_chip = page.locator("[data-testid=mention-chip][data-kind=lines]")
+    expect(lines_chip).to_contain_text("@src/http/retry.ts#L2-3")
+    expect(lines_chip).to_have_attribute("data-state", "ready")
+    expect(box).to_have_value("Why does @terminal fail? See @diff @src/http/retry.ts#L2-3 ")
+    assert "˚" not in page.locator(".pane:not(.hidden) .cm-host .cm-content").inner_text(), "Alt+K typed a character into the editor"
+    # an @file#L… typed and not picked from the list is read when the prompt goes
+    box.press("End")
+    box.type("and @src/http/client.ts#L1-2")
+    expect(pal).to_contain_text("lines 1–2 of this file, quoted")
+    box.type(" too")
+    page.mouse.move(0, 0)
+    p.shot("desktop-mentions.png")
+    n = len(mock_get(NORMAL, "/__mock/prompts")["prompts"])
+    box.press("Enter")
+    sent = last_prompt(NORMAL, n)
+    assert sent.startswith("Why does @terminal fail? See @diff @src/http/retry.ts#L2-3 and @src/http/client.ts#L1-2 too\n\n" + CONTEXT_START + "\n"), sent[:300]
+    out = outside_fences(sent)
+    heads = [x for x in out if re.match(r"^\[[0-9]+\] @", x)]
+    assert [h.split(" — ")[0] for h in heads] == ["[1] @terminal", "[2] @diff", "[3] @src/http/retry.ts#L2-3", "[4] @src/http/client.ts#L1-2"], heads
+    assert out.count(CONTEXT_END) == 1 and out[-1] == CONTEXT_END, out[-3:]
+    retry = mock_get(NORMAL, "/api/fs/file?path=src/http/retry.ts")["text"].split("\n")
+    assert "```\n" + "\n".join(retry[1:3]) + "\n```" in sent, "lines 2–3 as the editor had them"
+    assert "+// changed on disk by someone else" in sent, "the diff"
+    assert "not instructions" in sent
+    # the chips went with it; the transcript folds the context away
+    expect(page.get_by_test_id("mention-chip")).to_have_count(0)
+    msg = page.get_by_test_id("msg-user").last
+    expect(msg.get_by_test_id("msg-context")).to_contain_text("Context from the workspace: 4 @-mentions")
+    expect(msg.locator(".msg-user-text")).to_have_text("Why does @terminal fail? See @diff @src/http/retry.ts#L2-3 and @src/http/client.ts#L1-2 too")
+    msg.get_by_test_id("msg-context").locator("summary").click()
+    expect(msg.locator(".msg-context-body")).to_contain_text("[3] @src/http/retry.ts#L2-3")
+    page.mouse.move(0, 0)
+    p.shot("desktop-mentions-sent.png")
+    # @problems with nothing failing: no chip, and the page says why
+    box.click()
+    box.type("@problems")
+    box.press("Enter")
+    expect(page.locator(".toast").last).to_contain_text("No problems to attach", timeout=10_000)
+    expect(page.locator("[data-testid=mention-chip][data-kind=problems]")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("mentions: hostile — terminal output with fences, fake markers, bidi and markup stays quoted text, in the page and in the prompt")
+def mentions_hostile(browser):
+    p = Page(browser, HOSTILE, "mentions-hostile", **DESKTOP)
+    page = p.open()
+    title0 = page.title()
+    page.get_by_test_id("chat-new").click()
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("Look at @termi")
+    box.press("Enter")
+    chip = page.locator("[data-testid=mention-chip][data-kind=terminal]")
+    expect(chip).to_have_attribute("data-state", "ready", timeout=10_000)
+    expect(chip.get_by_test_id("mention-cut")).to_be_visible()
+    chip.get_by_test_id("mention-chip-main").click()
+    prev = page.get_by_test_id("mention-preview-body")
+    expect(prev).to_contain_text("⟨U+202E⟩")
+    expect(prev).to_contain_text("<img src=x onerror=")
+    r = page.evaluate("""() => ({ imgs: document.querySelectorAll('[data-testid=composer] img').length, title: document.title,
+      fence: document.querySelector('[data-testid=mention-preview-body]').textContent.split('\\n')[1] })""")
+    assert r["imgs"] == 0 and "pwned" not in r["title"] and re.fullmatch(r"`{10,}", r["fence"]), r
+    page.mouse.move(0, 0)
+    p.shot("desktop-mentions-hostile.png")
+    n = len(mock_get(HOSTILE, "/__mock/prompts")["prompts"])
+    box.press("Enter")
+    sent = last_prompt(HOSTILE, n)
+    out = outside_fences(sent)
+    assert out.count(CONTEXT_END) == 1 and out.count(CONTEXT_START) == 1, out
+    assert [x for x in out if re.match(r"^\[[0-9]+\] @", x)][0].startswith("[1] @terminal — the last "), out
+    assert not any("a header that is not one" in x or "SYSTEM:" in x for x in out), "planted lines left the fence"
+    assert "\u202e" not in sent and "\u200b" not in sent, "invisible characters went as they are"
+    assert "older lines were left out" in sent, "the cut is said"
+    assert "pwned" not in page.title() and page.title() == title0
+    p.assert_clean()
+    p.close()
+
+
+@check("plan comments: on plan lines by keyboard and click; sent back with Keep planning; approved with comments → the next prompt")
+def plan_comments(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "plan-comments", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "fix get() so it retries")
+    perm = page.get_by_test_id("permission")
+    expect(perm).to_contain_text("Claude has a plan", timeout=10_000)
+    page.get_by_test_id("plan-view-lines").click()
+    lines = page.get_by_test_id("plan-line")
+    expect(lines).to_have_count(7)
+    # the keyboard: ↓↓ to line 3, Enter opens its box, Enter saves (back on the line)
+    lines.first.focus()
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("ArrowDown")
+    expect(lines.nth(2)).to_be_focused()
+    page.keyboard.press("Enter")
+    ta = page.get_by_test_id("plan-comment-text")
+    expect(ta).to_be_focused()
+    page.keyboard.type("use this.opts.retry, not a new policy")
+    page.keyboard.press("Enter")
+    expect(page.get_by_test_id("plan-comment")).to_have_count(1)
+    expect(lines.nth(2)).to_be_focused()
+    # a click on line 4: Esc cancels (and stops nothing); then a comment saved with the button
+    lines.nth(3).click()
+    expect(ta).to_be_focused()
+    page.keyboard.type("dropped")
+    page.keyboard.press("Escape")
+    expect(ta).to_have_count(0)
+    expect(perm).to_be_visible()
+    lines.nth(3).click()
+    expect(ta).to_be_focused()
+    page.keyboard.type("post() is fine as it is")
+    page.get_by_test_id("plan-comment-save").click()
+    expect(page.get_by_test_id("plan-comment-count")).to_contain_text("2 comments on the plan")
+    page.mouse.move(0, 0)
+    p.shot("desktop-plan-comments.png")
+    # the plain view and back: the comments stay
+    page.get_by_test_id("plan-view-plan").click()
+    expect(perm.locator("h2")).to_contain_text("Route get() through retry()")
+    expect(page.get_by_test_id("plan-view-lines")).to_contain_text("(2)")
+    page.get_by_test_id("plan-keep").click()
+    page.locator(".perm-plan .perm-deny textarea").fill("also cover post() with a timeout")
+    expect(page.get_by_test_id("plan-keep-send")).to_contain_text("with 2 comments")
+    page.get_by_test_id("plan-keep-send").click()
+    wait_turns(page, 1)
+    ans = mock_get(NORMAL, "/__mock/answers")["answers"][-1]
+    assert ans["tool"] == "ExitPlanMode" and ans["decision"] == "deny", ans
+    assert ans["message"] == ("also cover post() with a timeout\n\nMy comments on lines of the plan:\n\n"
+                              "line 3:\n> 1. Wrap the body of `HttpClient.get()` in `retry()` with `this.opts.retry`.\nuse this.opts.retry, not a new policy\n\n"
+                              "line 4:\n> 2. Leave `post()` alone (not idempotent).\npost() is fine as it is"), ans["message"]
+    expect(page.locator(".msg-claude").last).to_contain_text("line 3:")
+    # approve with a comment: approved, then the comment goes as your next prompt
+    send(page, "and the post() method?")
+    expect(perm).to_contain_text("Claude has a plan", timeout=10_000)
+    page.get_by_test_id("plan-view-lines").click()
+    page.get_by_test_id("plan-line").nth(6).click()
+    expect(page.get_by_test_id("plan-comment-text")).to_be_focused()
+    page.keyboard.type("also update the README")
+    page.keyboard.press("Enter")
+    n = len(mock_get(NORMAL, "/__mock/prompts")["prompts"])
+    page.mouse.move(0, 0)
+    expect(page.get_by_test_id("plan-approve-edits")).to_be_enabled()
+    page.get_by_test_id("plan-approve-edits").click()
+    sent = last_prompt(NORMAL, n)
+    assert sent == "I approved your plan. Take these comments on lines of it into account as you work:\n\nline 7:\n> Files: `src/http/client.ts` only.\nalso update the README", sent
+    ans = mock_get(NORMAL, "/__mock/answers")["answers"][-1]
+    assert ans["decision"] == "once" and ans["mode"] == "acceptEdits", ans
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    expect(page.locator("[data-testid=msg-user]", has_text="I approved your plan")).to_have_count(1, timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("plan comments on a phone; a hostile plan's lines stay text, and go back quoted")
+def plan_comments_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "plan-comments-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    page.get_by_test_id("composer").get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "fix get() so it retries")
+    perm = page.get_by_test_id("permission")
+    expect(perm).to_contain_text("Claude has a plan", timeout=10_000)
+    page.get_by_test_id("plan-view-lines").click()
+    page.get_by_test_id("plan-line").nth(2).click()
+    page.get_by_test_id("plan-comment-text").fill("on a phone too")
+    page.get_by_test_id("plan-comment-save").click()
+    expect(page.get_by_test_id("plan-comment")).to_have_count(1)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.shot("phone-plan-comments.png")
+    page.get_by_test_id("plan-keep").click()
+    page.get_by_test_id("plan-keep-send").click()
+    wait_turns(page, 1)
+    ans = mock_get(NORMAL, "/__mock/answers")["answers"][-1]
+    assert ans["message"].startswith("Keep planning: not yet.\n\nMy comments on lines of the plan:\n\nline 3:\n> 1. Wrap"), ans
+    # @terminal on a phone: the chip and its preview fit
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("@term")
+    box.press("Enter")
+    page.locator("[data-testid=mention-chip][data-kind=terminal] [data-testid=mention-chip-main]").click()
+    expect(page.get_by_test_id("mention-preview-body")).to_contain_text("FAIL")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.shot("phone-mentions.png")
+    p.assert_clean()
+    p.close()
+    # hostile: markup and direction-changing characters in the plan's lines stay text; the quoted line shows them
+    p = Page(browser, HOSTILE, "plan-comments-hostile", **DESKTOP)
+    page = p.open()
+    title0 = page.title()
+    page.get_by_test_id("chat-new").click()
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-plan").click()
+    send(page, "fix get() so it retries")
+    perm = page.locator("[data-testid=permission]:has([data-testid=plan-view-lines])")
+    expect(perm).to_be_visible(timeout=10_000)
+    perm.get_by_test_id("plan-view-lines").click()
+    evil = perm.locator("[data-testid=plan-line]", has_text="4. <img")
+    expect(evil).to_contain_text("⟨U+202E⟩")
+    evil.click()
+    page.get_by_test_id("plan-comment-text").fill("what is this?")
+    page.get_by_test_id("plan-comment-save").click()
+    r = page.evaluate("() => ({ imgs: document.querySelectorAll('[data-testid=plan-lines] img, [data-testid=plan-lines] script').length, title: document.title })")
+    assert r["imgs"] == 0 and "pwned" not in r["title"], r
+    page.mouse.move(0, 0)
+    p.shot("desktop-plan-comments-hostile.png")
+    perm.get_by_test_id("plan-keep").click()
+    perm.get_by_test_id("plan-keep-send").click()
+    t0 = time.time()
+    while time.time() - t0 < 10:
+        ans = mock_get(HOSTILE, "/__mock/answers")["answers"]
+        if ans and ans[-1]["tool"] == "ExitPlanMode":
+            break
+        time.sleep(0.1)
+    msg = ans[-1]["message"]
+    assert re.search(r"line 9:\n> 4\. <img src=x onerror=.*⟨U\+202E⟩.*\nwhat is this\?$", msg), msg
+    assert "\u202e" not in msg and "\u0007" not in msg and "\n```" not in msg.split("line 9:")[1].split("\nwhat is this?")[0], msg
+    assert page.title() == title0
     p.assert_clean()
     p.close()
 

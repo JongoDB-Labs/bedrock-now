@@ -9,7 +9,7 @@
 // (plannotes.ts): the comments go back with "Keep planning", or, once you approve, as your next message. While Settings allow Auto, a shell
 // command's card in Manual or Accept edits also offers "Allow, and switch to Auto", as the CLI does — not one that your
 // ask rules or a hook asked for (Auto would ask for those too).
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { PermissionReq, RuleLine } from '../types';
 import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
@@ -406,7 +406,8 @@ function PlanLines({ id, lines, comments }: { id: string; lines: string[]; comme
 function PlanCommentBox({ line, initial, onSave, onCancel }: { line: number; initial: string; onSave: (text: string) => void; onCancel: () => void }) {
   const [t, setT] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => ref.current?.focus(), []);
+  // (before the next paint: what you type right after the click lands in the box)
+  useLayoutEffect(() => ref.current?.focus(), []);
   return (
     <form
       class="plan-cmt-form"
