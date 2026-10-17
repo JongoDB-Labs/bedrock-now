@@ -101,10 +101,10 @@ test_the_preview_site_checks_every_request_and_rewrites_for_the_dev_server() {
   for d in X-Frame-Options Clear-Site-Data Service-Worker-Allowed Content-Security-Policy-Report-Only Report-To Reporting-Endpoints NEL; do
     assert_contains "$up" "header_down -$d"
   done
-  # the Code page may frame the previews' hosts (one source added to its frame-src: this site's), and asks the portal
-  # for links
+  # the Code page may frame the previews' hosts (one source added to its frame-src: this site's — locally on the
+  # portal's port only, since those names resolve to this computer's loopback), and asks the portal for links
   assert_contains "$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" 'https://{args[1]}:* {args[2]};'
-  assert_contains "$(cat "$STACK_DIR/caddy/code-on.caddy")" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:*'
+  assert_contains "$(cat "$STACK_DIR/caddy/code-on.caddy")" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:{$PORTAL_PORT:80}'
   for m in tailscale domain; do
     assert_contains "$(cat "$STACK_DIR/caddy/remote-$m.caddy")" 'import code_page {$REMOTE_ORIGIN} {$REMOTE_TERMINAL_HOST:terminal.remote.invalid} https://{$REMOTE_PREVIEW_HOST:preview.remote.invalid}'
   done

@@ -28,7 +28,7 @@ const MiB = 1024 * 1024;
 
 /** A .docx as a tree (office/htmlsafe.ts) and its pictures (classified by their bytes, within a byte/pixel budget). */
 export const DOC_LIMITS = { nodes: 200_000, depth: 60, chars: 16_000_000, images: 200, imageBytes: 40 * MiB, pixels: 150_000_000 };
-/** The zip of a .docx (office/zip.ts); an XML part over `xml` is refused (mammoth builds a DOM of it). */
+/** The zip of a .docx (office/zip.ts); a part over `xml` is refused when read (mammoth builds a DOM of its XML). */
 export const DOCX_ZIP = { entries: 5_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 32 * MiB };
 
 export interface DEl {
@@ -81,7 +81,9 @@ export interface Slide {
 }
 
 /** Jupyter notebooks: cells and their outputs; HTML and script outputs only ever go to the sandboxed viewer. */
-export const NB_LIMITS = { cells: 5_000, source: 1_000_000, outputs: 200, output: 1 * MiB, total: 20 * MiB, images: 500 };
+export const NB_LIMITS = { cells: 5_000, source: 1_000_000, outputs: 200, output: 1 * MiB, total: 20 * MiB, images: 500, pixels: 200_000_000 };
+/** What a notebook's page draws in all (not per cell): formulas, diagrams, and cells at a time (more on request). */
+export const NB_DRAW = { formulas: 2_000, diagrams: 50, page: 100 };
 export type NbOutput =
   | { k: 'text'; text: string; stream?: 'stdout' | 'stderr' }
   | { k: 'error'; name: string; value: string; trace: string }

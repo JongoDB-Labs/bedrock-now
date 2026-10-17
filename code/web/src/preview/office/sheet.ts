@@ -107,15 +107,17 @@ export function readWorkbook(buf: ArrayBuffer, onSheet: (i: number, rows: string
         if (Array.isArray(src)) {
           const w = Math.min(src.length, limits.cols);
           if (src.length > limits.cols) meta.colsCut = true;
+          // the row is padded to its last cell: every slot counts against the cells budget, empty or not (one value
+          // in column 200 of a million rows would otherwise be 200 million slots)
+          if (cells + w > limits.cells) {
+            meta.cellsCut = true;
+            break;
+          }
+          cells += w;
           for (let c = 0; c < w; c++) {
             let t = cellText(src[c]);
             if (t.length > limits.cellChars) t = t.slice(0, limits.cellChars) + '…';
             if (t) {
-              if (cells >= limits.cells) {
-                meta.cellsCut = true;
-                break;
-              }
-              cells++;
               if (chars + t.length > limits.chars) {
                 charsCut = true;
                 t = '';
@@ -129,7 +131,6 @@ export function readWorkbook(buf: ArrayBuffer, onSheet: (i: number, rows: string
           if (row.length > meta.cols) meta.cols = row.length;
         }
         rows.push(row);
-        if (meta.cellsCut) break;
       }
       // trailing empty rows (a range that reaches further than its values) go
       while (rows.length && rows[rows.length - 1].every((x) => x === '')) rows.pop();

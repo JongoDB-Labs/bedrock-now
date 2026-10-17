@@ -46,7 +46,7 @@ test_the_viewers_policies_sandbox_it_without_network() {
   assert_eq "$(printf '%s\n' "$csps" | wc -l | tr -d ' ')" 2
   while IFS= read -r c; do
     for want in "sandbox allow-scripts;" "default-src 'none';" "connect-src 'none';" "frame-src 'none';" "worker-src 'none';" \
-                "object-src 'none';" "form-action 'none';" "base-uri 'none';" 'frame-ancestors {$CODE_ORIGIN}"'; do
+                "object-src 'none';" "form-action 'none';" "base-uri 'none';" 'frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"'; do
       assert_contains "$c" "$want"
     done
     assert_not_contains "$c" "allow-same-origin"
@@ -60,7 +60,11 @@ EOF
   assert_contains "$strict" "script-src 'self';"
   assert_not_contains "$strict" "unsafe-inline' 'unsafe-eval"
   # the Code page frames the previews' site (which the artifact hosts are under) and nothing new
-  assert_contains "$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" 'http://*.{$PREVIEW_DOMAIN:preview.invalid}:*;'
+  # on the portal's port only: a framed page of sandbox content cannot navigate its frame to another port of loopback
+  assert_contains "$(cat "$STACK_DIR/caddy/code-on.caddy")" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:{$PORTAL_PORT:80}'
+  assert_contains "$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" 'http://{args[1]}:{$PORTAL_PORT:80} https://{args[1]}:* {args[2]};'
+  assert_not_contains "$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" 'http://{args[1]}:*'
+  assert_contains "$(grep -A3 'CODE_ORIGIN:' "$STACK_DIR/compose.code.yaml")" 'PORTAL_PORT: ${PORTAL_PORT:-80}'
 }
 
 test_the_artifact_site_is_local_only() {

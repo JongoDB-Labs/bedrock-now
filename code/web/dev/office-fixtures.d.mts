@@ -9,6 +9,8 @@ export function wideXlsx(): Buffer;
 export function stringsXlsx(): Buffer;
 export function liarXlsx(): Buffer;
 export function bombXlsx(): Buffer;
+export function sparseXlsx(n?: number): Buffer;
+export function oddNameDocx(size: number): Buffer;
 export function deckPptx(chartPng: Uint8Array): Buffer;
 export function hostilePptx(): Buffer;
 export function notebook(chartPng: Uint8Array): Record<string, unknown>;

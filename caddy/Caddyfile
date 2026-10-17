@@ -379,8 +379,10 @@ http://{$FILES_HOST} {
 # styles only from the code host itself (styles also with this request's nonce), connections only to it, images also
 # data:/blob:, audio and video only from blob: (the file previews play workspace files from bytes the page fetched),
 # workers only from itself, frames only the terminal host ({args[1]}), itself (the terminal panel starts at
-# /.bn/terminal, which redirects there) and the dev-server previews' hosts ({args[2]}: http://*.PREVIEW_DOMAIN:* here,
-# https://REMOTE_PREVIEW_HOST on the remote sites; caddy/preview-on.caddy, remote_preview), no forms, no
+# /.bn/terminal, which redirects there) and the dev-server previews' and artifact viewer's hosts ({args[2]}:
+# http://*.PREVIEW_DOMAIN on the portal's port here — those names resolve to this computer's loopback, and a framed
+# page of sandbox content must not navigate its frame to another service there — https://REMOTE_PREVIEW_HOST on the
+# remote sites; caddy/preview-on.caddy, artifact-on.caddy, remote_preview), no forms, no
 # plugins, framed only by the portal ({args[0]}), and Trusted Types: no HTML-string sink can run at all, and the one
 # policy allowed, bn-worker (code/web/src/preview/tt.ts), turns
 # only the build's own worker paths into script URLs. The policy applies to the workers' own scripts too (Caddy sets
@@ -401,7 +403,7 @@ http://{$FILES_HOST} {
 	header_down -NEL
 	header_down X-Content-Type-Options nosniff
 	header_down Referrer-Policy same-origin
-	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:* https://{args[1]}:* {args[2]}; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
+	header_down Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{http.request.uuid}'; connect-src 'self' ws://{http.request.host}:* wss://{http.request.host}:*; img-src 'self' data: blob:; media-src blob:; font-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' http://{args[1]}:{$PORTAL_PORT:80} https://{args[1]}:* {args[2]}; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors {args[0]}; require-trusted-types-for 'script'; trusted-types bn-worker"
 }
 
 # The Code page's previews of dev servers in the sandbox (README "Previews of dev servers"; docs/security.md "Previews of

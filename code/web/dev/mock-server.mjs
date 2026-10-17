@@ -1057,7 +1057,7 @@ function csp(req) {
     "base-uri 'none'",
     "form-action 'none'",
     "object-src 'none'",
-    "frame-src 'self' http://*.localhost:*",
+    `frame-src 'self' http://*.localhost:${PREVIEW_PORT}`,   // (as Caddy's code_page: the portal's port only)
     "frame-ancestors 'self'",
     "require-trusted-types-for 'script'",
     "trusted-types bn-worker",

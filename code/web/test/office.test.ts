@@ -16,6 +16,9 @@ import { readDocx } from '../src/preview/office/docx';
 import { keepPart, readWorkbook, repack } from '../src/preview/office/sheet';
 import { readDeck, resolvePart } from '../src/preview/office/pptx';
 import { readNotebook, b64 } from '../src/preview/notebook';
+import { drawBudget } from '../src/preview/NotebookView';
+import { setLimits } from '../src/preview/office/jszip-shim';
+import { DOCX_ZIP, NB_DRAW } from '../src/preview/limits';
 import { ansiRuns, overwrite } from '../src/preview/ansi';
 import { extractMath, restoreMath, splitMath, MATH_MAX } from '../src/mathtext';
 import { renderMarkdown, textOf, type MdNode, type MdEl } from '../src/markdown';
@@ -212,6 +215,25 @@ test('xlsx: hostile — 16,384 columns and a million rows, one string in 30,000 
   assert.ok(re.zip.entries.every((e) => e.method === 0), 'repacked uncompressed');
 });
 
+test('xlsx: empty cells a row is padded with count against the cells budget (one value far right on every row)', () => {
+  const rows: string[][][] = [];
+  const r = readWorkbook(ab(fx.sparseXlsx(20000)), (i, x) => (rows[i] = x), { ...SHEET_LIMITS, cells: 200_000 });
+  assert.equal(r.sheets[0].cellsCut, true);
+  assert.ok(rows[0].length <= 1000 && rows[0].every((x) => x.length <= 200), `${rows[0].length} rows`);
+  assert.equal(rows[0][0][199], '1');
+});
+
+test('docx: every part read is capped, whatever its name (mammoth finds its parts by their relationships)', async () => {
+  const doc = fx.oddNameDocx(2 * MiB);
+  setLimits({ ...DOCX_ZIP, xml: MiB });
+  const { loadAsync } = await import('../src/preview/office/jszip-shim');
+  const z = await loadAsync(u8(doc));
+  await assert.rejects(z.file('word/document.dat')!.async('string'), /more than 1 MB/);
+  // and with the real caps the document reads
+  const r = await readDocx(ab(fx.oddNameDocx(4096)));
+  assert.ok(textIn(r.root).startsWith('x'));
+});
+
 // ---------------------------------------------------------------- PowerPoint
 
 test('pptx: slides in order with titles, levels, bullets, a table, a picture, notes, a hidden slide', () => {
@@ -273,6 +295,17 @@ test('notebook: hostile — __proto__ is data, an SVG stays an SVG image, an HTM
   assert.ok(huge.cut && huge.cells[0].out.length < 30);
   assert.equal(b64('not base64!', 100), null);
   assert.deepEqual([...b64('AQID\n', 100)!], [1, 2, 3]);
+});
+
+test('notebook: formulas and diagrams are budgeted for the whole notebook, not per cell', () => {
+  const cells = Array.from({ length: 300 }, () => ({ k: 'md' as const, src: '$x$ '.repeat(10) + '\n```mermaid\ngraph LR\nA-->B\n```', n: null, out: [] }));
+  const b = drawBudget(cells);
+  assert.equal(b.math.size, NB_DRAW.formulas / 10);
+  assert.equal(b.diagrams.size, NB_DRAW.diagrams);
+  const nb = readNotebook(JSON.stringify({ nbformat: 4, cells: Array.from({ length: 3 }, () => ({ cell_type: 'code', source: '', outputs: Array.from({ length: 200 }, () => ({ output_type: 'display_data', data: { 'image/png': png(1, 1, () => [0, 0, 0, 255], [10000, 9000]).toString('base64') } })) })) }));
+  const outs = nb.cells.flatMap((c) => c.out);
+  assert.equal(outs.filter((o) => o.k === 'img').length, 2, 'images that claim 90 million pixels each: two within the notebook\'s 200 million');
+  assert.ok(outs.some((o) => o.k === 'note' && /million pixels in all/.test(o.text)));
 });
 
 // ---------------------------------------------------------------- ANSI

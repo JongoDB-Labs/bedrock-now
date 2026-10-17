@@ -496,7 +496,8 @@ per browser.
   highlighted, outputs with their colours and images. **HTML files run their own scripts in a sandboxed viewer**
   (another site, no network, no cookies or storage: a generated report or a small app works, a page that loads files
   next to it or from the web does not — serve its folder from the terminal, `python3 -m http.server 8000`, and use the
-  dev-server preview of :8000, below), and
+  dev-server preview of :8000, below: that one has your browser's network and is not sandboxed, so only for a page you
+  trust), and
   Mermaid diagrams are drawn there and shown as images; a notebook's HTML and JavaScript outputs run there too, when
   you click **Show the HTML output**. The viewer works on the computer running bedrock-now; over remote access these
   previews say so (Source and Download still work).

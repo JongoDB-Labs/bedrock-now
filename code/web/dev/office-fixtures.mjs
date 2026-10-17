@@ -233,6 +233,23 @@ export function liarXlsx() {
   return xlsx([{ name: 'Liar', xml: row(1, [c('A1', { n: 1 })]) + `<!-- ${' '.repeat(50 * 1024 * 1024)} -->`, part: { usz: 1024 } }], ['x']);
 }
 
+/** One value in column 200 (GR) on each of `n` rows: each row is padded to 200 cells. */
+export function sparseXlsx(n = 20000) {
+  let xml = '';
+  for (let r = 1; r <= n; r++) xml += `<row r="${r}"><c r="GR${r}"><v>${r}</v></c></row>`;
+  return xlsx([{ name: 'Sparse', xml }], ['x']);
+}
+
+/** A Word file whose document part is named document.dat (mammoth finds it by its relationship), of `size` bytes. */
+export function oddNameDocx(size) {
+  const body = para(run('x')).repeat(Math.max(1, Math.floor(size / 60)));
+  return zip([
+    { name: '[Content_Types].xml', data: types([]) },
+    { name: '_rels/.rels', data: rels([['rId1', 'officeDocument', 'word/document.dat']]) },
+    { name: 'word/document.dat', data: `${XML}<w:document ${W}><w:body>${body}</w:body></w:document>` },
+  ]);
+}
+
 /** A part that honestly unpacks to 150 MB. */
 export function bombXlsx() {
   return xlsx([{ name: 'Bomb', xml: `<!-- ${' '.repeat(150 * 1024 * 1024)} -->` }], ['x']);
@@ -352,6 +369,7 @@ export const HOSTILE_HTML = `<!doctype html>
 <meta http-equiv="refresh" content="1;url=http://127.0.0.1:9/html-refresh">
 <link rel="stylesheet" href="http://127.0.0.1:9/html-css">
 <link rel="prefetch" href="http://127.0.0.1:9/html-prefetch">
+<link rel="dns-prefetch" href="//html-dns-prefetch.invalid">
 <base href="http://127.0.0.1:9/">
 </head><body>
 <h1>A hostile page</h1>
@@ -379,7 +397,9 @@ export const HOSTILE_HTML = `<!doctype html>
     () => { document.cookie = 'x=1; Domain=localhost'; },
   ];
   for (const t of tries) { try { const r = t(); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
-  setTimeout(() => { try { location.href = 'http://127.0.0.1:9/html-nav'; } catch (e) {} }, 300);
+  // its own frame to another port on the previews' site (a name that resolves to this computer): refused by the Code
+  // page's frame-src, which allows the portal's port only
+  setTimeout(() => { try { location.href = 'http://x.' + location.hostname.split('.').slice(2).join('.') + ':9/html-nav-port'; } catch (e) {} }, 300);
 </script>
 </body></html>
 `;

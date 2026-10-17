@@ -5,7 +5,8 @@
 import { ZIP_LIMITS, ZipError, ZipReader, type ZipLimits } from './zip';
 
 let limits: ZipLimits & { xml?: number } = ZIP_LIMITS;
-/** The caps the next loadAsync applies (the DOCX worker sets them); `xml`: the largest XML part read. */
+/** The caps the next loadAsync applies (the DOCX worker sets them); `xml`: the largest part read, whatever its name
+ *  (mammoth finds its parts by the relationships' targets, which may name a "document" anything). */
 export function setLimits(l: ZipLimits & { xml?: number }): void {
   limits = l;
 }
@@ -24,7 +25,7 @@ export function loadAsync(data: ArrayBuffer | Uint8Array): Promise<{ file(name: 
           async(type: string) {
             try {
               const xml = limits.xml;
-              if (xml !== undefined && /\.(xml|rels)$/i.test(name) && (z.size(name) ?? 0) > xml) {
+              if (xml !== undefined && (z.size(name) ?? 0) > xml) {
                 throw new ZipError(`${name.slice(0, 100)} unpacks to more than ${Math.round(xml / 1048576)} MB (previews stop there)`);
               }
               const b = z.bytesOf(name);

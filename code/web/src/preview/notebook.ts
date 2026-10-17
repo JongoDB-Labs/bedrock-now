@@ -58,6 +58,7 @@ export function readNotebook(src: string, limits = NB_LIMITS): Notebook & { tran
   const lang = [own(own(meta, 'language_info'), 'name'), own(own(meta, 'kernelspec'), 'language')].find((x) => typeof x === 'string') as string | undefined;
   let total = 0;
   let images = 0;
+  let pixels = 0;
   let cut = cellsIn.length > limits.cells;
   const transfer: ArrayBuffer[] = [];
   const cells: NbCell[] = [];
@@ -97,8 +98,10 @@ export function readNotebook(src: string, limits = NB_LIMITS): Notebook & { tran
       if (!bytes) return { k: 'note', text: `(an image larger than ${limits.output / 1048576} MB, or not base64: not shown)` };
       const c = classify('output', bytes);
       if ('err' in c || c.mime !== mime) return { k: 'note', text: `(an image that is not a ${mime.slice(6).toUpperCase()}: not shown)` };
+      if (pixels + c.w * c.h > limits.pixels) return { k: 'note', text: `(images over ${limits.pixels / 1e6} million pixels in all: not shown)` };
       if (!budget(bytes.length)) return null;
       images++;
+      pixels += c.w * c.h;
       const buf = bytes.buffer as ArrayBuffer;
       transfer.push(buf);
       return { k: 'img', buf, mime: c.mime, w: c.w, h: c.h };

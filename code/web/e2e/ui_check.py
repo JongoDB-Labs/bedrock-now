@@ -1995,9 +1995,11 @@ def previews2_hostile(browser):
     page.wait_for_timeout(1000)
     assert page.url.startswith(NORMAL) and not popups, (page.url, popups)
     assert not p.dialogs, p.dialogs
-    # the Code page's own policy saw only the hostile page trying to navigate its frame away (refused: frame-src)
+    # the Code page's own policy saw only the hostile page trying to navigate its frame away — to another port of the
+    # previews' site, i.e. of this computer (refused: frame-src allows the portal's port only)
     csp = page.evaluate("window.__csp")
-    assert all(c.startswith("frame-src http://127.0.0.1:9") for c in csp), csp
+    assert csp and all(re.match(r"^frame-src http://[^ /]+:9\b", c) for c in csp), csp
+    assert any(c.startswith("frame-src http://x.localhost:9") for c in csp), csp
     page.evaluate("window.__csp = []")
     assert page.evaluate("() => ({}).polluted === undefined && Object.prototype.polluted === undefined")
     sandbox_errors(p)

@@ -19,9 +19,9 @@ import hmac
 import re
 import time
 
-from common import ENV, PORT, check, expect, http
-from checks_browser import shot
-from checks_code import ARTIFACT_FILE, CODE, Code, open_preview, outside, put_previews, saved, tree_click, ui_page, csp_clean
+from common import ENV, PORT, check, expect, http, origin
+from checks_browser import login, shot
+from checks_code import ARTIFACT_FILE, CODE, CSP_GUARD, LOCKED_OK, Code, code_frame, open_preview, outside, put_previews, saved, tree_click, ui_page, unlock_page, csp_clean
 from checks_preview import DOMAIN, _b32int, need_preview
 
 from playwright.sync_api import expect as see
@@ -60,7 +60,7 @@ def artifact_site(ctx):
         csp = a.header("content-security-policy") or ""
         expect(a.status == 200 and "<script src=" in a.text, f"{page_path}: {a.status}")
         for want in ("sandbox allow-scripts;", "default-src 'none';", "connect-src 'none';", "frame-src 'none';", "form-action 'none';",
-                     f"frame-ancestors {code_origin}"):
+                     f"frame-ancestors {code_origin} {origin()}"):
             expect(want in csp, f"{page_path}: no {want!r} in {csp!r}")
         expect(("script-src 'self';" in csp) == strict and "allow-same-origin" not in csp, f"{page_path} script-src: {csp}")
         expect(a.header("x-content-type-options") == "nosniff" and a.header("referrer-policy") == "no-referrer" and not a.headers_all("set-cookie"),
@@ -159,9 +159,45 @@ def ui_artifacts(ctx):
     done.append("a Mermaid file drawn as an image; a hostile HTML page did nothing outside its frame")
     out = outside(rec, since)
     expect(not out, f"requests that left the code host: {out[:5]}")
-    # the Code page's own policy: only the hostile page's attempt to navigate its frame away (refused by frame-src)
-    page.evaluate("window.__csp = (window.__csp || []).filter((v) => !/^frame-src http:\\/\\/127\\.0\\.0\\.1:9/.test(v))")
+    # the Code page's own policy: only the hostile page's attempt to navigate its frame to another port of this
+    # computer (x.<PREVIEW_DOMAIN>:9 — refused by frame-src, which allows the portal's port only)
+    csp = page.evaluate("window.__csp || []")
+    expect(any(v.startswith(f"frame-src http://x.{DOMAIN}:9") for v in csp), f"its frame's navigation to another port: {csp}")
+    page.evaluate("window.__csp = (window.__csp || []).filter((v) => !/^frame-src http:\\/\\/[^ \\/]+:9\\b/.test(v))")
     csp_clean(page, rec, allow=[r"Content Security Policy|Refused to connect|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|Blocked form submission|allow-modals|does not have permission to navigate|Failed to fetch|FAILED \S+ \S+ csp$"])
     r = c.api("DELETE", f"/api/fs?path={d}")
     expect(r["status"] == 200, f"cleanup {r['status']}")
     return "; ".join(done) + "; 0 CSP violations on the Code page"
+
+
+@check("browser", "code-ui-artifacts-in-portal")
+def ui_artifacts_in_portal(ctx):
+    """The usual desktop setup: the Code page inside the portal's Code tab — the viewer is framed two levels down
+    (portal → Code page → viewer; frame-ancestors names both), an HTML file's script runs there, 0 CSP violations."""
+    need_preview()
+    page, rec = ctx.page("code-ui-artifacts-in-portal")
+    page.add_init_script(CSP_GUARD)
+    login(page)
+    page.wait_for_selector("#home:not([hidden])")
+    page.click(".tab[data-tab=code]")
+    f = code_frame(page)
+    unlock_page(f)
+    f = code_frame(page)
+    f.wait_for_function("() => document.querySelector('[data-testid=conn]')?.textContent === 'Connected'", timeout=30000)
+    name = f"e2e-artifact-portal-{int(time.time())}.html"
+    r = f.evaluate("""async ([p, t]) => (await fetch('/api/fs/file?path=' + encodeURIComponent(p), { method: 'PUT',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t }) })).status""",
+                   [name, "<!doctype html><title>x</title><p id=dyn>static</p><script>document.getElementById('dyn').textContent = 'ran inside the portal';</script>"])
+    expect(r == 200, f"write {name}: {r}")
+    f.locator(".tree-tools button[aria-label='Refresh']").click()
+    f.wait_for_timeout(1000)
+    tree_click(f, name)
+    fr = f.frame_locator(f"iframe.art-frame[title='Preview of {name}']")
+    see(fr.locator("#dyn")).to_have_text("ran inside the portal", timeout=30000)
+    shot(page, "101-code-preview-html-in-portal")
+    probs = rec.problems(allow=LOCKED_OK)
+    csp = f.evaluate("window.__csp || []")
+    f.evaluate("async (p) => fetch('/api/fs?path=' + encodeURIComponent(p), { method: 'DELETE' })", name)
+    rec.save()
+    expect(not probs and not csp, f"errors {probs[:5]}, CSP {csp[:3]}")
+    return f"portal → Code page → viewer: {name}'s script ran in the viewer; no errors or CSP violations"

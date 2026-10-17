@@ -830,7 +830,8 @@ spawn server, Claude Code or any file at will.
     what a lying header can make it inflate is what the directory declared, which the caps bounded. A part is
     inflated once (a picture shown 1,000 times is not inflated 1,000 times).
   - *Word (`.docx`)*: mammoth 1.13.0 in the page's DOCX worker, reading the zip only through that reader (the build
-    puts it in JSZip's place; `package.json` points JSZip at an empty package). Its XML parser (@xmldom/xmldom)
+    puts it in JSZip's place; `package.json` points JSZip at an empty package), and no part over 32 MB, whatever its
+    name (mammoth finds its parts by the relationships' targets). Its XML parser (@xmldom/xmldom)
     expands no DTD entities, internal or external: a "billion laughs" or an XXE entity is an error, nothing is fetched
     or grown. mammoth writes HTML; in the worker, htmlparser2 12.0.0 tokenizes it and an allowlist keeps headings,
     paragraphs, lists, tables (colspan/rowspan 1–100), quotes, code, line breaks, rules, bold/italic/underline/strike/
@@ -853,8 +854,9 @@ spawn server, Claude Code or any file at will.
     format: no compression) is bounded by its size (25 MB); SheetJS checks its sector chains for loops. Only these two
     containers reach SheetJS — never its HTML, CSV, SYLK or other text readers. Options: formulas not read
     (`cellFormula: false`) — the values shown are those the file saved, nothing is computed — no HTML, styles, macros or
-    external links; at most 100 sheets, 1,000,000 rows and 200 columns a sheet, 2,000,000 cells and 40 million
-    characters in all (a string shared by a million cells counts each time), 2,000 characters a cell. Cells are text
+    external links; at most 100 sheets, 1,000,000 rows and 200 columns a sheet, 2,000,000 cells — counted as each
+    row's width, empty cells included (one value in column 200 of a million rows would be 200 million slots) — and 40
+    million characters in all (a string shared by a million cells counts each time), 2,000 characters a cell. Cells are text
     in the same virtual table as CSV files. (Formula injection is not a concern: nothing is exported or computed.)
   - *PowerPoint (`.pptx`)*: the page's own reader in the deck worker (the zip reader above, htmlparser2 in XML mode —
     a tokenizer: no DTD, no entities beyond XML's five) gives an outline: each slide's title, its text by paragraph
@@ -862,8 +864,9 @@ spawn server, Claude Code or any file at will.
     animations; no renderer that draws slides as they look is both small and free of HTML strings.
   - *Notebooks (`.ipynb`)*: parsed in the data worker (`JSON.parse`: `__proto__` is a key, never a prototype; every
     field read only when it is the notebook's own and of the expected type; at most 5,000 cells, 200 outputs a cell,
-    1 MB an output, 20 MB in all). Markdown cells with the page's Markdown renderer; code highlighted with
-    CodeMirror's parsers as text; streams and tracebacks as text with their ANSI colours (a one-pass parser: SGR
+    1 MB an output, 20 MB in all, 500 images and 200 million pixels; the page draws 100 cells at a time, more on
+    request, and at most 2,000 formulas and 50 diagrams in the whole notebook — the rest stay text). Markdown cells
+    with the page's Markdown renderer; code highlighted with CodeMirror's parsers as text; streams and tracebacks as text with their ANSI colours (a one-pass parser: SGR
     colours become classes or CSSOM colours, every other escape sequence — cursor moves, OSC titles and links — is
     dropped); PNG, JPEG and GIF outputs from their base64, kept only when their bytes are that image; SVG outputs only
     as `<img>`; `text/latex` with KaTeX. `text/html` and `application/javascript` outputs never touch the page: a
@@ -1254,11 +1257,14 @@ Code page (code.<PORTAL_HOST>) ── <iframe sandbox="allow-scripts" src="http:
   no reading anything of another frame — with no forms, popups, dialogs, downloads, top navigation or pointer lock.
   The CSP gives them no network at all: `default-src 'none'; connect-src 'none'` (no fetch, XHR, WebSocket,
   EventSource, beacon), images, fonts and media only `data:`/`blob:`, `frame-src`, `worker-src`, `object-src`,
-  `form-action`, `base-uri` and `manifest-src` `'none'`, and `frame-ancestors` the Code page alone. The HTML runner
+  `form-action`, `base-uri` and `manifest-src` `'none'`, and `frame-ancestors` the Code page (and the portal, whose
+  Code tab frames the Code page: the browser checks every ancestor). The HTML runner
   (`artifact/html.html`) lets the document it is handed run its inline scripts (`'unsafe-inline' 'unsafe-eval'` —
   that is what an HTML preview is for) under exactly that policy; the diagram page runs only its own script
   (`script-src 'self'`). A frame that tries to navigate itself elsewhere is stopped by the Code page's own
-  `frame-src` (only bedrock-now's terminal host and the previews' site). Tested in Chromium with a page that tries
+  `frame-src`: only bedrock-now's terminal host and the previews' site, **on the portal's port** (`PORTAL_PORT`) — those
+  names resolve to this computer's loopback, so with any port a framed page could send a blind GET to any service
+  listening there; a navigation to another port is refused (tested). Tested in Chromium with a page that tries
   fetch, XHR, WebSocket, EventSource, `sendBeacon`, images, stylesheets, prefetch, `<base>`, iframes, forms, popups,
   alerts, a worker, top navigation, a meta refresh, its own navigation, cookies and forged messages to the Code page:
   each refused, nothing left the browser; from inside the viewer, `self.origin` is `null` and `document.cookie`,
@@ -1294,7 +1300,12 @@ Remaining risks:
   It cannot read anything of bedrock-now's: an opaque origin, other site, no cookies.
 - **A busy page.** An HTML file can loop forever. The frame is another site, which desktop browsers run in a process
   of their own; on phones (site isolation is partial there) a busy frame can slow the Code page — close the tab.
+- **DNS.** `<link rel=dns-prefetch>` is not governed by CSP in Chromium: a page in the viewer can make the browser
+  look a name up (one more one-way channel beside WebRTC's, for what the sandbox wrote).
 - **Mermaid is large** (5 MB of script, loaded into the viewer only when a diagram is shown).
+- **Serving a folder.** For an HTML file that needs the files next to it, the page suggests a static server in the
+  terminal and a dev-server preview — which is not this viewer: it has your browser's network (see the previews'
+  risks above). Only for pages you trust.
 
 ### Bypass permissions
 

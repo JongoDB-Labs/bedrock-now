@@ -11,7 +11,8 @@
 #
 # The viewer's documents are sandboxed by their CSP (an opaque origin: no cookies, no storage) and have no network at
 # all: connect-src 'none', images, fonts and media only data:/blob:, no frames, workers, forms, plugins or <base>, and
-# only the Code page may frame them. The HTML runner (artifact/html.html) lets the document it is handed run its own
+# only the Code page may frame them (and the portal, whose Code tab frames the Code page: frame-ancestors checks every
+# ancestor). The HTML runner (artifact/html.html) lets the document it is handed run its own
 # inline scripts — that is the point of an HTML preview — under exactly that policy; the diagram page runs nothing but
 # its own script (Mermaid).
 (artifact_upstream) {
@@ -55,7 +56,7 @@ http://*.artifact.{$PREVIEW_DOMAIN} {
 		}
 		reverse_proxy @runner code-upstream:8095 {
 			import artifact_upstream
-			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN}"
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
 		}
 		@viewer {
 			method GET HEAD
@@ -63,7 +64,7 @@ http://*.artifact.{$PREVIEW_DOMAIN} {
 		}
 		reverse_proxy @viewer code-upstream:8095 {
 			import artifact_upstream
-			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN}"
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
 		}
 		respond 404
 	}

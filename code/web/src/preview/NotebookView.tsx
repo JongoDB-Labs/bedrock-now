@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { runJob } from './run';
-import { NB_LIMITS, type NbCell, type NbOutput, type Notebook } from './limits';
+import { NB_DRAW, NB_LIMITS, type NbCell, type NbOutput, type Notebook } from './limits';
+import { extractMath } from '../mathtext';
 import { ansiRuns } from './ansi';
 import { highlight, parserFor, type Tok } from './highlight';
 import type { Parser } from '@lezer/common';
@@ -48,7 +49,41 @@ function Code({ src, parser }: { src: string; parser: Parser | null }) {
 
 const plainOf = (p: string | null) => (p ? <Ansi text={p} /> : null);
 
-function Output({ o }: { o: NbOutput }): ComponentChildren {
+/** Which Markdown texts (cells and outputs, by "cell" or "cell:output") may draw formulas and diagrams, and which
+ *  LaTeX outputs may draw: the notebook's budgets (NB_DRAW) in all, in order — not per cell — so a notebook of a
+ *  thousand cells of formulas draws at most NB_DRAW.formulas of them (the rest stay text). */
+export function drawBudget(cells: NbCell[]): { math: Set<string>; diagrams: Set<string> } {
+  const math = new Set<string>();
+  const diagrams = new Set<string>();
+  let f = 0;
+  let d = 0;
+  const take = (id: string, text: string) => {
+    const n = text.includes('$') ? extractMath(text).spans.length : 0;
+    if (f + n <= NB_DRAW.formulas) {
+      f += n;
+      math.add(id);
+    }
+    let k = 0;
+    for (let i = text.indexOf('```mermaid'); i >= 0; i = text.indexOf('```mermaid', i + 10)) k++;
+    if (d + k <= NB_DRAW.diagrams) {
+      d += k;
+      diagrams.add(id);
+    }
+  };
+  cells.forEach((c, i) => {
+    if (c.k === 'md') take(String(i), c.src);
+    c.out.forEach((o, j) => {
+      if (o.k === 'md') take(`${i}:${j}`, o.text);
+      else if (o.k === 'latex' && f < NB_DRAW.formulas) {
+        f++;
+        math.add(`${i}:${j}`);
+      }
+    });
+  });
+  return { math, diagrams };
+}
+
+function Output({ o, math }: { o: NbOutput; math: boolean }): ComponentChildren {
   switch (o.k) {
     case 'text':
       return <Ansi text={o.text} cls={o.stream === 'stderr' ? 'stderr' : ''} />;
@@ -63,9 +98,9 @@ function Output({ o }: { o: NbOutput }): ComponentChildren {
     case 'svg':
       return <BlobImg blob={new Blob([o.text], { type: 'image/svg+xml' })} alt="output image (SVG)" class="nb-img" />;
     case 'md':
-      return <MarkdownView text={o.text} class="nb-md" renderMath={renderMath} />;
+      return <MarkdownView text={o.text} class="nb-md" renderMath={math ? renderMath : undefined} />;
     case 'latex':
-      return <MathTex tex={o.text.replace(/^\s*\$\$?|\$\$?\s*$/g, '')} display />;
+      return math ? <MathTex tex={o.text.replace(/^\s*\$\$?|\$\$?\s*$/g, '')} display /> : <pre class="nb-out-text">{o.text}</pre>;
     case 'html':
       return <RichOutput kind="html" body={o.html} plain={plainOf(o.plain)} />;
     case 'js':
@@ -97,9 +132,12 @@ export function View({ tab, pv, data }: ViewerProps) {
   const [nb, setNb] = useState<Notebook | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [parser, setParser] = useState<Parser | null>(null);
+  const [shown, setShown] = useState(NB_DRAW.page);
+  const budget = useMemo(() => (nb ? drawBudget(nb.cells) : null), [nb]);
   useEffect(() => {
     setNb(null);
     setErr(null);
+    setShown(NB_DRAW.page);
     const buf = data.buf ? data.buf.slice(0) : null;
     const job = runJob<Record<string, unknown>>('data', buf ? { buf, kind: 'notebook' } : { text: data.text ?? '', kind: 'notebook' }, buf ? [buf] : [], { timeoutMs: 30_000 });
     job.promise.then(
@@ -121,13 +159,14 @@ export function View({ tab, pv, data }: ViewerProps) {
     };
   }, [nb?.lang]);
   if (err) return <PreviewMsg tab={tab} err>This notebook is not shown: {err}. <strong>Source</strong> has it as JSON.</PreviewMsg>;
-  if (!nb) {
+  if (!nb || !budget) {
     return (
       <div class="pane-msg">
         <Spinner /> Reading {pv.what}…
       </div>
     );
   }
+  const left = nb.cells.length - shown;
   return (
     <div class="pv-scroll" data-testid="preview-notebook">
       {(nb.cut || nb.errors.length > 0) && (
@@ -137,10 +176,15 @@ export function View({ tab, pv, data }: ViewerProps) {
         </div>
       )}
       <div class="pv-nb">
-        {nb.cells.map((c, i) => (
+        {nb.cells.slice(0, shown).map((c, i) => (
           <div key={i} class={`nb-cell ${c.k}`} data-testid="nb-cell" data-kind={c.k}>
             {c.k === 'md' ? (
-              <MarkdownView text={c.src} class="nb-md" renderMath={renderMath} renderDiagram={renderDiagram} />
+              <MarkdownView
+                text={c.src}
+                class="nb-md"
+                renderMath={budget.math.has(String(i)) ? renderMath : undefined}
+                renderDiagram={budget.diagrams.has(String(i)) ? renderDiagram : undefined}
+              />
             ) : c.k === 'raw' ? (
               <pre class="nb-raw">{c.src}</pre>
             ) : (
@@ -153,7 +197,7 @@ export function View({ tab, pv, data }: ViewerProps) {
                   <div class="nb-outs">
                     {c.out.map((o, j) => (
                       <div key={j} class="nb-out" data-kind={o.k}>
-                        <Output o={o} />
+                        <Output o={o} math={budget.math.has(`${i}:${j}`)} />
                       </div>
                     ))}
                   </div>
@@ -162,6 +206,11 @@ export function View({ tab, pv, data }: ViewerProps) {
             )}
           </div>
         ))}
+        {left > 0 && (
+          <button type="button" class="btn small nb-more" onClick={() => setShown((n) => n + NB_DRAW.page)} data-testid="nb-more">
+            Show {Math.min(left, NB_DRAW.page)} more {Math.min(left, NB_DRAW.page) === 1 ? 'cell' : 'cells'} ({left.toLocaleString('en-US')} not shown yet)
+          </button>
+        )}
         {!nb.cells.length && <p class="muted">This notebook has no cells.</p>}
       </div>
     </div>

@@ -3,6 +3,7 @@
 <meta http-equiv="refresh" content="1;url=http://127.0.0.1:9/html-refresh">
 <link rel="stylesheet" href="http://127.0.0.1:9/html-css">
 <link rel="prefetch" href="http://127.0.0.1:9/html-prefetch">
+<link rel="dns-prefetch" href="//html-dns-prefetch.invalid">
 <base href="http://127.0.0.1:9/">
 </head><body>
 <h1>A hostile page</h1>
@@ -30,6 +31,8 @@
     () => { document.cookie = 'x=1; Domain=localhost'; },
   ];
   for (const t of tries) { try { const r = t(); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
-  setTimeout(() => { try { location.href = 'http://127.0.0.1:9/html-nav'; } catch (e) {} }, 300);
+  // its own frame to another port on the previews' site (a name that resolves to this computer): refused by the Code
+  // page's frame-src, which allows the portal's port only
+  setTimeout(() => { try { location.href = 'http://x.' + location.hostname.split('.').slice(2).join('.') + ':9/html-nav-port'; } catch (e) {} }, 300);
 </script>
 </body></html>
