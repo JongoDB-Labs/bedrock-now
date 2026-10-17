@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-17
+
 ### Added
 
 - **Auto mode, opt-in.** Claude Code's *auto* mode — a reviewer model that approves routine actions and blocks risky
@@ -1355,7 +1357,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.4.1...v0.5.0
