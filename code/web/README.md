@@ -84,7 +84,11 @@ full), *padded* (a command pushed out of sight), *risky* (default to no, no Alwa
 *refuse this prompt*, *hostile*, *install script* (in Auto, the reviewer blocks it: the blocked-action card, *Allow
 once*), or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`); in Plan mode
 every prompt ends in a plan to approve. Test hooks: `POST /__mock/drop|close?code=|lock|unlock|budget?spend=&max=|
-clear?session=|touch?path=|reset`; `POST /__mock/auto?allow=1|0` is Settings › Code page › Auto mode. Plugins: one marketplace with a few plugins; adding any other
+clear?session=|touch?path=|reset`; `POST /__mock/auto?allow=1|0` is Settings › Code page › Auto mode; for budgets, the
+cold cache, Permissions and Open in the terminal: `POST /__mock/spend?session=&add=` (more spend),
+`/__mock/age?session=&ms=` (its last activity that long ago), `/__mock/perm-touch` (the user settings change behind the
+Permissions view), `/__mock/terminal-exit?session=` (Claude Code exits in the terminal; until then a resume is refused)
+and `GET /__mock/terminal-log` (what the terminal typed). Plugins: one marketplace with a few plugins; adding any other
 (`/workspace/name`, `owner/repo`) gives one plain plugin and one installed by a command, which answers
 `needs_confirmation {command, sha256}` until that hash comes back; installs reload the open sessions' commands. MCP:
 `bedrock-shared` plus servers you add (they load when a session starts), off/on per session, reconnect. Previews:
@@ -181,9 +185,12 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/transcript.ts` | the latest to-do list, the conversation as Markdown |
 | `src/review.ts` | the Review pane's model: files from git's view or the session's edits, hunk ids, reverse patches, line comments |
 | `src/fuzzy.ts` | the command palette's matcher (linear time: a greedy pass and KMP, inputs capped) |
+| `src/budget.ts` | a session's budget (levels crossed, this browser's copy), the cold prompt cache's line, the Opus hint |
+| `src/groups.ts` | the session list's groups (Needs you, Working, Done) and the tab title |
+| `src/deeplink.ts` | `?session=` / `?prompt=` (a draft marked as from a link: capped, visible characters, linear time) |
 | `src/shortcuts.ts` | every keyboard shortcut, in one list (the shortcut sheet, the empty editor, the palette's hints) |
 | `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
 | `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |
-| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer (with the comment chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette |
+| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer (with the comment chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette, Budget (dialog), Permissions (dialog), Guards (the lines above the prompt box) |
 | `dev/` | the mock backend and `npm run dev`; `preview-fixtures.mjs` (the previews' fixtures, also written to `tests/e2e/browser/fixtures/previews`; `office-fixtures.mjs`: part 2's, made byte by byte) |
 | `e2e/` | the browser checks |
