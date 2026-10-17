@@ -769,8 +769,9 @@ spawn server, Claude Code or any file at will.
     `nosniff`, an attachment; ≤ 25 MiB) and renders it itself; no workspace file is ever served for the browser to
     render. What a file is comes from its first bytes (a binary file's first 64 come with its read, so no second
     request is needed): an HTML file named `.png` stays text in the editor, a PNG named `.txt` is shown as a PNG.
-    Office files must be zip files (or, for `.xls`, the old compound format) by their bytes and Word, Excel or
-    PowerPoint by their name. Text formats (Markdown, CSV, JSON, YAML, notebooks, HTML, Mermaid) go by their extension,
+    Office files must be zip files by their bytes and Word, Excel, OpenDocument spreadsheet or PowerPoint by their name
+    (old `.xls` and binary `.xlsb` workbooks are not previewed: SheetJS builds objects in proportion to ranges their
+    records declare, and their records cannot be filtered as an `.xlsx`'s XML is). Text formats (Markdown, CSV, JSON, YAML, notebooks, HTML, Mermaid) go by their extension,
     an SVG must also look like one (checked on its first 64 KiB in linear time). Everything the page itself runs on a file's text on its main thread — this check,
     the number test of table cells — is written without backtracking regular expressions (a ~50-byte crafted file
     must not freeze the tab and with it unsaved edits in other tabs); the unit tests time them on crafted input.
@@ -830,8 +831,10 @@ spawn server, Claude Code or any file at will.
     what a lying header can make it inflate is what the directory declared, which the caps bounded. A part is
     inflated once (a picture shown 1,000 times is not inflated 1,000 times).
   - *Word (`.docx`)*: mammoth 1.13.0 in the page's DOCX worker, reading the zip only through that reader (the build
-    puts it in JSZip's place; `package.json` points JSZip at an empty package), and no part over 32 MB, whatever its
-    name (mammoth finds its parts by the relationships' targets). Its XML parser (@xmldom/xmldom)
+    puts it in JSZip's place; `package.json` points JSZip at an empty package), and no part over 8 MB, whatever its
+    name (mammoth finds its parts by the relationships' targets): mammoth's DOM of a document part takes about 100 ×
+    its size (measured: 8 MB peaks near 950 MB, 16 MB near 1.75 GB), and a worker that runs out of heap takes the
+    Code page's renderer down with it (Chromium shares one heap cage per renderer). Its XML parser (@xmldom/xmldom)
     expands no DTD entities, internal or external: a "billion laughs" or an XXE entity is an error, nothing is fetched
     or grown. mammoth writes HTML; in the worker, htmlparser2 12.0.0 tokenizes it and an allowlist keeps headings,
     paragraphs, lists, tables (colspan/rowspan 1–100), quotes, code, line breaks, rules, bold/italic/underline/strike/
@@ -843,21 +846,30 @@ spawn server, Claude Code or any file at will.
     external file access stays off: a linked picture is never fetched), kept only when their bytes are an image the
     browser shows (EMF, WMF, TIFF, an HTML file named `.png`: a note), within 200 pictures, 40 MB and 150 million
     pixels, as `blob:` images revoked once decoded.
-  - *Excel (`.xlsx`, `.xlsm`, `.xls`, `.ods`)*: SheetJS Community Edition 0.20.3 in the page's sheet worker, from the
+  - *Excel (`.xlsx`, `.xlsm`)*: SheetJS Community Edition 0.20.3 in the page's sheet worker, from the
     tarball SheetJS publishes on its own CDN, vendored (`code/web/vendor/xlsx-0.20.3.tgz`) and pinned by its SHA-512
     in `package-lock.json` (a unit test checks the file against the lockfile; npm's `xlsx` stops at 0.18.5, which has
     a prototype-pollution and a ReDoS advisory, so the registry is never used). SheetJS unpacks a zip itself, all of
     it, with an inflater that trusts the sizes a file declares (a part that declares 0 bytes grows without bound): it
     never sees the file's zip. The reader above unpacks it within its caps, only the parts values live in are kept
-    (XML and relationships; pictures, embedded objects, printer settings and macros dropped; at most 96 MB of them)
-    and they are packed again, uncompressed, into a zip of the page's own making for SheetJS. An `.xls` (the compound
-    format: no compression) is bounded by its size (25 MB); SheetJS checks its sector chains for loops. Only these two
-    containers reach SheetJS — never its HTML, CSV, SYLK or other text readers. Options: formulas not read
+    (the content types, the package's and the workbook's relationships, the workbook, the sheets, shared strings and
+    styles; pictures, embedded objects, comments, printer settings and macros dropped; at most 48 MB of them: SheetJS
+    peaks near 800 MB there, measured) and they are packed again, uncompressed, into a zip of the page's own making.
+    SheetJS also builds objects in proportion to ranges a sheet declares — a `<hyperlink ref="A1:XFD1048576">` made a
+    stub cell for each of 17 billion cells (its `sheetRows` does not apply there), a `<col>` an object per column it
+    spans — so each sheet part is rebuilt as its root element and its `<sheetData>` alone (the values): no hyperlinks,
+    merged ranges, column definitions, dimension, validations or conditional formats reach it. Only that zip reaches
+    SheetJS — never its compound-file, HTML, CSV, SYLK or other readers. Options: formulas not read
     (`cellFormula: false`) — the values shown are those the file saved, nothing is computed — no HTML, styles, macros or
     external links; at most 100 sheets, 1,000,000 rows and 200 columns a sheet, 2,000,000 cells — counted as each
     row's width, empty cells included (one value in column 200 of a million rows would be 200 million slots) — and 40
     million characters in all (a string shared by a million cells counts each time), 2,000 characters a cell. Cells are text
     in the same virtual table as CSV files. (Formula injection is not a concern: nothing is exported or computed.)
+  - *OpenDocument spreadsheets (`.ods`)*: the page's own reader (`office/ods.ts`: `content.xml` through the zip
+    reader, htmlparser2 in XML mode, no tree built). SheetJS copied a repeated cell for every repetition
+    (`table:number-rows-repeated` × `table:number-columns-repeated`: one value repeated 16,384 columns and a million
+    rows was 17 billion cells); here a repetition costs nothing until it has a value to show, and then counts against
+    the same caps. Each cell's text as the file saved it (what the application displayed), never a formula.
   - *PowerPoint (`.pptx`)*: the page's own reader in the deck worker (the zip reader above, htmlparser2 in XML mode —
     a tokenizer: no DTD, no entities beyond XML's five) gives an outline: each slide's title, its text by paragraph
     and level, tables as rows of text, pictures (as for Word) and speaker notes. No layout, themes, charts or
@@ -873,10 +885,17 @@ spawn server, Claude Code or any file at will.
     button shows them in the artifact viewer. Widgets, Plotly, Vega and the like need a live kernel: their text.
   - *Formulas*: `$…$` and `$$…$$` in Markdown previews and notebooks (not in the chat), found by a one-pass scanner
     (money such as "$5 and $10", code spans and fences stay text; linear on crafted input, timed by the unit tests)
-    and drawn by KaTeX 0.19.0, which builds DOM nodes (no HTML string; styles through the CSSOM) on the code origin:
-    `trust` off (`\href`, `\url`, `\includegraphics`, `\html…` do nothing), at most 1,000 macro expansions,
-    `maxSize` 20 em, 10,000 characters a formula; one that does not parse shows its source. KaTeX's stylesheet and
-    fonts are the build's copy (`style-src`/`font-src 'self'`), loaded with the first formula.
+    and drawn by KaTeX 0.19.0 **in the page's math worker**, never on its main thread: KaTeX's macro limit counts
+    expansions, not what they produce (a `\def` of 1,000 characters used a few thousand times took minutes), so a
+    formula that defines macros (`\def`, `\gdef`, `\edef`, `\xdef`, `\let`, `\futurelet`, `\newcommand` and its
+    relatives, `\DeclareMathOperator`) is shown as its source, at most 200 expansions are allowed, one formula is sent
+    to the worker at a time, and a formula that takes longer than 3 s ends the worker (it shows as source; the next
+    one starts a fresh worker). KaTeX renders to an HTML string there (output `html`, `trust` off: `\href`, `\url`,
+    `\includegraphics`, `\html…` do nothing; `maxSize` 20 em; 10,000 characters a formula), htmlparser2 turns it into
+    a tree of span/svg/path/line, classes, the SVG attributes KaTeX uses (numbers and path data) and style properties
+    from a short list with plain values (no `url(`, `var(` or `expression`), at most 20,000 elements; the page draws
+    that tree with Preact, styles through the CSSOM. Formulas are drawn only as they come near the view. KaTeX's
+    stylesheet and fonts are the build's copy (`style-src`/`font-src 'self'`), loaded with the first formula.
   The browser checks preview every format with zero CSP violations on the page and open hostile files (an SVG with a script, an
   `onload` handler and external references; a PDF with JavaScript in its open action, page and link actions, a
   launch action, `javascript:`/`file:` links and a form submit; a PNG claiming 50,000 × 50,000 pixels; a line of
@@ -1238,8 +1257,13 @@ Remaining risks:
 Some previews must run what a file holds or parse it as HTML: an **HTML file** (a generated report or a small app is
 expected to run its own script), a **Mermaid diagram** (Mermaid lays out SVG in a live document and parses untrusted
 diagram text; it has had cross-site-scripting bugs) and a notebook's **HTML or JavaScript output** (pandas tables,
-plots). None of that runs on the Code page. It runs in a fixed viewer — two pages and their scripts, part of the
-page's build (`code/web/src/artifact`, `artifact/` in `dist`) — served on a site of its own:
+plots). None of that runs on the Code page. It runs in a fixed viewer — three pages and their scripts, part of the
+page's build (`code/web/src/artifact`, `artifact/` in `dist`) — served on a site of its own. **An HTML file is first
+shown without its scripts** (`artifact/static.html`: the viewer's runner under a policy that allows exactly that one
+script file, so the document it writes shows but none of its own scripts, event handlers or `javascript:` URLs run);
+its scripts run only after **Run this page's scripts** (`artifact/html.html`), as a notebook's HTML output runs only
+after its button. Mermaid diagrams are drawn by one renderer frame per file (`artifact/mermaid.html`), ended when the
+file's last diagram leaves the page.
 
 ```
 Code page (code.<PORTAL_HOST>) ── <iframe sandbox="allow-scripts" src="http://a<capability>.artifact.<PREVIEW_DOMAIN>:<port>/artifact/html.html">
@@ -1294,14 +1318,16 @@ Code page (code.<PORTAL_HOST>) ── <iframe sandbox="allow-scripts" src="http:
   code, a notebook's HTML output stays behind its button (everything else previews as usual).
 
 Remaining risks:
-- **Script in the viewer has your browser.** No network by its policy, but WebRTC is not governed by CSP in
-  Chromium: an HTML file's script could reach out over a STUN/TURN request (with `TERMINAL_EGRESS=off`, a way out for
-  what that file holds — it was written in the sandbox, which can send it out itself whenever its internet is on).
-  It cannot read anything of bedrock-now's: an opaque origin, other site, no cookies.
+- **Script in the viewer has your browser** — only after you click Run. No network by its policy, but WebRTC is not
+  governed by it in Chromium: the viewer's policy names `webrtc 'block'`, which **Chromium 140 does not enforce**
+  (tested: the directive is reported as unrecognized and a peer connection still gathers ICE candidates), so a running
+  page's script could reach out over a STUN/TURN request (with `TERMINAL_EGRESS=off`, a way out for what that file
+  holds — it was written in the sandbox, which can send it out itself whenever its internet is on). It cannot read
+  anything of bedrock-now's: an opaque origin, other site, no cookies.
 - **A busy page.** An HTML file can loop forever. The frame is another site, which desktop browsers run in a process
   of their own; on phones (site isolation is partial there) a busy frame can slow the Code page — close the tab.
-- **DNS.** `<link rel=dns-prefetch>` is not governed by CSP in Chromium: a page in the viewer can make the browser
-  look a name up (one more one-way channel beside WebRTC's, for what the sandbox wrote).
+- **DNS.** `<link rel=dns-prefetch>` is not governed by CSP in Chromium: a page in the viewer — also before Run, as
+  it is markup — can make the browser look a name up (a one-way channel, for what the sandbox wrote).
 - **Mermaid is large** (5 MB of script, loaded into the viewer only when a diagram is shown).
 - **Serving a folder.** For an HTML file that needs the files next to it, the page suggests a static server in the
   terminal and a dev-server preview — which is not this viewer: it has your browser's network (see the previews'

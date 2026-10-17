@@ -16,10 +16,10 @@ test_the_artifact_site_comes_with_the_previews() {
   # the local rules, client copies of the headers only Caddy sets gone, the portal's check, then only GET/HEAD of /artifact/*
   assert_eq "$(printf '%s\n' "$site" | sed -n 3,12p | tr '\n' '|')" \
     "import local_request|request_header -X-Bn-Artifact|request_header -X-Bn-Code-Proxy|request_header -X-Bn-Csp-Nonce|request_header -X-Bn-Portal-Origin|request_header -X-Bn-Terminal-Host|request_header -X-Bn-Remote|forward_auth portal:8000 {|uri /auth/verify?app=artifact|}|"
-  assert_eq "$(printf '%s\n' "$site" | grep -c '^method GET HEAD$')" 2
+  assert_eq "$(printf '%s\n' "$site" | grep -c '^method GET HEAD$')" 3
   assert_contains "$site" 'path /artifact/html.html'
   assert_contains "$site" 'path /artifact/*'
-  assert_eq "$(printf '%s\n' "$site" | grep -c '^reverse_proxy @\(runner\|viewer\) code-upstream:8095 {$')" 2
+  assert_eq "$(printf '%s\n' "$site" | grep -c '^reverse_proxy @\(runner\|static\|viewer\) code-upstream:8095 {$')" 3
   assert_eq "$(printf '%s\n' "$site" | tail -n 3 | head -n 1)" 'respond 404'
 }
 
@@ -43,14 +43,15 @@ test_only_the_viewers_files_reach_the_code_container_marked() {
 
 test_the_viewers_policies_sandbox_it_without_network() {
   csps="$(_site | grep 'header_down Content-Security-Policy')"
-  assert_eq "$(printf '%s\n' "$csps" | wc -l | tr -d ' ')" 2
+  assert_eq "$(printf '%s\n' "$csps" | wc -l | tr -d ' ')" 3
   while IFS= read -r c; do
     for want in "sandbox allow-scripts;" "default-src 'none';" "connect-src 'none';" "frame-src 'none';" "worker-src 'none';" \
-                "object-src 'none';" "form-action 'none';" "base-uri 'none';" 'frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"'; do
+                "object-src 'none';" "form-action 'none';" "base-uri 'none';" "webrtc 'block';" 'frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"'; do
       assert_contains "$c" "$want"
     done
     assert_not_contains "$c" "allow-same-origin"
-    assert_not_contains "$c" "http:"
+    # no host but the viewer's own runner file (the static page's one script)
+    assert_not_contains "$(printf '%s' "$c" | sed 's#http://\*\.artifact\.{\$PREVIEW_DOMAIN}:{\$PORTAL_PORT:80}/artifact/static\.js##')" "http:"
     assert_not_contains "$c" "https:"
   done <<EOF
 $csps
@@ -59,6 +60,12 @@ EOF
   strict="$(printf '%s\n' "$csps" | tail -n 1)"
   assert_contains "$strict" "script-src 'self';"
   assert_not_contains "$strict" "unsafe-inline' 'unsafe-eval"
+  # an HTML file first shows without its scripts: the static page runs one script file, the runner, and nothing inline
+  static="$(_site | awk '/^\t*@static \{/,/^\t*\}$/' ; _site | grep -A3 'reverse_proxy @static' | grep Content-Security-Policy)"
+  assert_contains "$static" 'path /artifact/static.html'
+  assert_contains "$static" "script-src http://*.artifact.{\$PREVIEW_DOMAIN}:{\$PORTAL_PORT:80}/artifact/static.js;"
+  assert_not_contains "$static" "unsafe-inline' 'unsafe"
+  assert_not_contains "$static" "script-src 'self'"
   # the Code page frames the previews' site (which the artifact hosts are under) and nothing new
   # on the portal's port only: a framed page of sandbox content cannot navigate its frame to another port of loopback
   assert_contains "$(cat "$STACK_DIR/caddy/code-on.caddy")" 'import code_page {$PORTAL_ORIGIN} {$TERMINAL_HOST} http://*.{$PREVIEW_DOMAIN:preview.invalid}:{$PORTAL_PORT:80}'

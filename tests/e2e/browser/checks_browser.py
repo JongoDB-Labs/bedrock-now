@@ -27,7 +27,8 @@ class Recorder:
     BENIGN_FAIL = ("net::ERR_ABORTED",)  # navigations and Next.js prefetches cancel requests: not errors
     # Excused on every page (none now: the portal preloads the Code frame only in a browser that has used the Code page
     # before, and each check starts a new context; the code checks excuse its locked 401 themselves, LOCKED_OK)
-    ALWAYS_OK = ()
+    # (the Code page's artifact viewer names webrtc 'block' in its policy, which Chromium 140 does not know and says so)
+    ALWAYS_OK = (r"Unrecognized Content-Security-Policy directive 'webrtc'",)
 
     def __init__(self, name: str):
         self.name, self.events = name, []

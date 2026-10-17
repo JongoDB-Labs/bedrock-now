@@ -54,16 +54,16 @@ All notable changes to bedrock-now are documented here. The format follows
   keyboard shortcut sheet (`Ctrl/⌘+/` or `?`) now lists every shortcut.
 
 - **More previews on the Code page.** Word documents (`.docx`: headings, lists, tables, pictures from inside the file,
-  links), Excel workbooks (`.xlsx`, `.xlsm`, `.xls`, `.ods`: sheet tabs over the table, values as Excel shows them —
+  links), Excel and OpenDocument workbooks (`.xlsx`, `.xlsm`, `.ods`: sheet tabs over the table, values as saved —
   formulas are never read or computed, hidden sheets marked), PowerPoint decks (`.pptx`: an outline of each slide's
   title, text, tables, pictures and speaker notes — no layout), Jupyter notebooks (`.ipynb`: Markdown cells, code
   highlighted for the kernel's language, outputs with their terminal colours, images, formulas), formulas in Markdown
-  previews and notebooks (`$…$`, `$$…$$`: KaTeX), and — in a **sandboxed viewer** of their own — HTML files (their own
-  scripts run, with no network), Mermaid diagrams (`.mmd`, ```` ```mermaid ```` blocks in Markdown and notebooks;
+  previews and notebooks (`$…$`, `$$…$$`: KaTeX, drawn in a worker), and — in a **sandboxed viewer** of their own —
+  HTML files (first without their scripts; **Run this page's scripts** runs them, with no network), Mermaid diagrams (`.mmd`, ```` ```mermaid ```` blocks in Markdown and notebooks;
   shown as images) and notebooks' HTML and JavaScript outputs (on request). The viewer is on the previews' site
   (`a<capability>.artifact.<PREVIEW_DOMAIN>`), sandboxed, framed only by the Code page; local only for now (over
-  remote access these say so, with Source and Download). Old `.doc`, `.ppt`, `.odt`, `.odp`, RTF and EPUB files:
-  Download. New pinned dependencies of `code/web`: `mammoth` 1.13.0, `htmlparser2` 12.0.0, `fflate` 0.8.3, `katex`
+  remote access these say so, with Source and Download). Old `.doc`, `.ppt`, `.xls`, binary `.xlsb`, `.odt`, `.odp`,
+  RTF and EPUB files: Download. New pinned dependencies of `code/web`: `mammoth` 1.13.0, `htmlparser2` 12.0.0, `fflate` 0.8.3, `katex`
   0.19.0, `mermaid` 12.0.0 (its `katex` and `lodash-es` raised to fixed versions by overrides), and SheetJS Community
   Edition 0.20.3 vendored as the tarball from its CDN (`code/web/vendor/xlsx-0.20.3.tgz`, its SHA-512 in
   `package-lock.json`; never npm's `xlsx` 0.18.5, which has known vulnerabilities). mammoth's JSZip and command-line
@@ -100,7 +100,12 @@ All notable changes to bedrock-now are documented here. The format follows
   a part only up to the size it declared — one byte more stops it. SheetJS never unpacks a file's zip itself (its
   inflater trusts declared sizes): it gets the value parts only, re-packed uncompressed. XML is parsed without DTD
   entities (no billion laughs, no XXE); a document's HTML is sanitised to an allowlisted tree; linked (external)
-  pictures are never fetched. See docs/security.md, "File previews" and "The artifact viewer".
+  pictures are never fetched. SheetJS sees an `.xlsx`'s values only (each sheet rebuilt as its `<sheetData>`: no
+  hyperlink or merge ranges, column definitions or dimension, which it expanded cell by cell); `.ods` files use the
+  page's own reader (repeated rows and cells bounded). Caps are set by measured memory: a worker that runs out of heap
+  takes the page down with it (a unit test runs each reader at its caps within a 1 GB heap). Formulas are drawn in a
+  worker with a 3 s budget each; one that defines macros is shown as source. See docs/security.md, "File previews"
+  and "The artifact viewer".
 
 ## [0.6.0] - 2026-10-16
 

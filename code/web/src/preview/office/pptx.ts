@@ -46,7 +46,9 @@ export function parseXml(xml: string, maxEls = 400_000): XEl {
 
 const own = (o: Record<string, string>, k: string): string | undefined => (Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
 const kids = (e: XEl, name: string) => e.c.filter((x): x is XEl => typeof x !== 'string' && x.n === name);
-const kid = (e: XEl, name: string) => kids(e, name)[0];
+const kid = (e: XEl | undefined, name: string): XEl | undefined => (e ? kids(e, name)[0] : undefined);
+/** A shape's placeholder: p:sp > p:nvSpPr > p:nvPr > p:ph (direct children only). */
+const placeholder = (sp: XEl) => kid(kid(kid(sp, 'p:nvSpPr'), 'p:nvPr'), 'p:ph');
 function* walk(e: XEl): Generator<XEl> {
   const st: XEl[] = [e];
   while (st.length) {
@@ -64,9 +66,17 @@ const textOf = (e: XEl): string => {
   return s;
 };
 
-/** A part's relationships: rId → absolute part name (targets relative to the part's folder; external ones dropped). */
+const relsCache = new WeakMap<ZipReader, Map<string, Map<string, { target: string; type: string }>>>();
+
+/** A part's relationships: rId → absolute part name (targets relative to the part's folder; external ones dropped).
+ *  Each part's are read once. */
 export function rels(z: ZipReader, part: string): Map<string, { target: string; type: string }> {
+  let cache = relsCache.get(z);
+  if (!cache) relsCache.set(z, (cache = new Map()));
+  const had = cache.get(part);
+  if (had) return had;
   const out = new Map<string, { target: string; type: string }>();
+  cache.set(part, out);
   const dir = part.slice(0, part.lastIndexOf('/'));
   const relPart = `${dir}/_rels/${part.slice(part.lastIndexOf('/') + 1)}.rels`;
   if (!z.has(relPart) || (z.size(relPart) ?? 0) > XML_CAP) return out;
@@ -108,7 +118,8 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
   for (const e of walk(parseXml(z.text(pres)))) {
     if (e.n !== 'p:sldId') continue;
     const t = presRels.get(own(e.a, 'r:id') ?? '');
-    if (t && /\/slide/.test(t.type)) order.push(t.target);
+    if (t && /\/slide$/.test(t.type) && !order.includes(t.target)) order.push(t.target);
+    if (order.length > limits.slides) break;
   }
   const images: PvImage[] = [];
   const imageAt = new Map<string, number>();
@@ -167,7 +178,7 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
     };
     for (const e of walk(doc)) {
       if (e.n === 'p:sp') {
-        const ph = [...walk(e)].find((x) => x.n === 'p:ph');
+        const ph = placeholder(e);
         const phType = ph ? own(ph.a, 'type') ?? 'body' : null;
         const body = kid(e, 'p:txBody');
         if (!body) continue;
@@ -198,21 +209,25 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
         if (k !== null && !slide.images.includes(k)) slide.images.push(k);
       }
     }
-    // speaker notes: the notes slide's body placeholder
+    // speaker notes: the notes slide's body placeholder (one notes part per slide; its paragraphs: p:txBody > a:p)
     for (const t of r.values()) {
       if (!/\/notesSlide$/.test(t.type) || !z.has(t.target) || (z.size(t.target) ?? 0) > XML_CAP) continue;
       const nd = parseXml(z.text(t.target));
       const out: string[] = [];
+      let n = 0;
       for (const sp of walk(nd)) {
         if (sp.n !== 'p:sp') continue;
-        const ph = [...walk(sp)].find((x) => x.n === 'p:ph');
+        const ph = placeholder(sp);
         if (!ph || (own(ph.a, 'type') ?? 'body') !== 'body') continue;
-        for (const p of [...walk(sp)].filter((x) => x.n === 'a:p')) {
+        for (const p of kids(kid(sp, 'p:txBody') ?? sp, 'a:p')) {
           const s = textOf(p).trim();
+          n += s.length;
           if (s) out.push(s);
+          if (n > 20_000) break;
         }
       }
       slide.notes = out.join('\n').slice(0, 20_000);
+      break;
     }
     slides.push(slide);
   }

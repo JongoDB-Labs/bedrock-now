@@ -4,7 +4,7 @@
 // source (and Download).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { artifactSite, onFrameMessage, resetArtifactSite, renderMermaid, viewerFrame, type ArtifactSite } from './artifact';
+import { artifactSite, holdRenderer, onFrameMessage, resetArtifactSite, renderMermaid, viewerFrame, type ArtifactSite } from './artifact';
 import { BlobImg } from './BlobImg';
 import { PreviewMsg, errText, type ViewerProps } from './Preview';
 import { Spinner } from '../components/icons';
@@ -28,8 +28,9 @@ function useSite(): ArtifactSite | null {
 }
 
 /** HTML in a fresh viewer frame: posted once the frame says it is ready. `fill`: the frame takes the pane; otherwise it
- *  takes the height the document reports (a hint: between H_MIN and H_MAX). */
-export function SandboxFrame({ html, title, fill, initial = 160 }: { html: string; title: string; fill?: boolean; initial?: number }) {
+ *  takes the height the document reports (a hint: between H_MIN and H_MAX). `scripts`: the runner that lets the
+ *  document's own scripts run (html.html); otherwise the one under a policy that runs none of them (static.html). */
+export function SandboxFrame({ html, title, fill, initial = 160, scripts = true }: { html: string; title: string; fill?: boolean; initial?: number; scripts?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const site = useSite();
   const [err, setErr] = useState<string | null>(null);
@@ -37,7 +38,7 @@ export function SandboxFrame({ html, title, fill, initial = 160 }: { html: strin
     const el = box.current;
     if (!el || !site?.available) return;
     setErr(null);
-    const f = viewerFrame(site.origin, 'html', title);
+    const f = viewerFrame(site.origin, scripts ? 'html' : 'static', title);
     if (!fill) f.style.height = `${initial}px`;
     el.replaceChildren(f);
     let sent = false;
@@ -61,7 +62,7 @@ export function SandboxFrame({ html, title, fill, initial = 160 }: { html: strin
       off();
       f.remove();
     };
-  }, [html, site, fill, title]);
+  }, [html, site, fill, title, scripts]);
   if (!site) return <Spinner />;
   if (!site.available) {
     return (
@@ -78,10 +79,13 @@ export function SandboxFrame({ html, title, fill, initial = 160 }: { html: strin
   );
 }
 
-/** An HTML file: its own document, scripts and all, in the viewer (which has no network). */
+/** An HTML file: its own document in the viewer (which has no network) — first without its scripts; they run only
+ *  when you click Run (per file version). */
 export function HtmlView({ tab, data }: ViewerProps) {
   const html = data.text ?? (data.buf ? new TextDecoder().decode(data.buf) : '');
   const site = useSite();
+  const [run, setRun] = useState(false);
+  useEffect(() => setRun(false), [tab.path, tab.version]);
   if (site && !site.available) {
     return (
       <PreviewMsg tab={tab}>
@@ -92,40 +96,53 @@ export function HtmlView({ tab, data }: ViewerProps) {
   return (
     <div class="pv-art" data-testid="preview-html">
       <div class="pv-tools">
-        <span class="pv-badge" title="Shown from a sandboxed site of its own: its scripts run there, with no network, no cookies and no storage">
+        <span class="pv-badge" title="Shown from a sandboxed site of its own: no network, no cookies, no storage">
           sandbox
         </span>
-        <span class="muted small pv-note">
-          Its scripts run in a sandbox with no network: links, forms, pop-ups and files next to it do not load. For those, serve its folder in the
-          terminal (<code>python3 -m http.server 8000</code>) and open the preview of :8000 — a dev-server preview, which has your browser's network:
-          only for a page you trust.
-        </span>
+        {run ? (
+          <span class="muted small pv-note" data-testid="html-running">
+            Its scripts are running, sandboxed with no network.
+          </span>
+        ) : (
+          <>
+            <span class="muted small pv-note">Shown without its scripts.</span>
+            <button type="button" class="btn small" onClick={() => setRun(true)} data-testid="html-run">
+              Run this page's scripts
+            </button>
+          </>
+        )}
+        <details class="muted small pv-hint">
+          <summary>Files next to it?</summary>
+          Links, forms, pop-ups and files next to it do not load here. For those, serve its folder in the terminal (<code>python3 -m http.server 8000</code>)
+          and open the preview of :8000 — a dev-server preview, which has your browser's network: only for a page you trust.
+        </details>
       </div>
-      <SandboxFrame html={html.length > HTML_MAX ? html.slice(0, HTML_MAX) : html} title={`Preview of ${tab.path}`} fill />
+      <SandboxFrame html={html.length > HTML_MAX ? html.slice(0, HTML_MAX) : html} title={`Preview of ${tab.path}`} fill scripts={run} />
     </div>
   );
 }
 
-/** A diagram drawn in the viewer: the SVG it sends back, as an image. */
-function useDiagram(code: string): { svg: Blob | null; err: string | null } {
+/** A diagram drawn in the viewer by its file's renderer (`owner`): the SVG it sends back, as an image. */
+function useDiagram(code: string, owner: string): { svg: Blob | null; err: string | null } {
   const [st, setSt] = useState<{ svg: Blob | null; err: string | null }>({ svg: null, err: null });
+  useEffect(() => holdRenderer(owner), [owner]);
   useEffect(() => {
     let live = true;
     setSt({ svg: null, err: null });
-    renderMermaid(code, dark()).then(
+    renderMermaid(code, dark(), owner).then(
       (svg) => live && setSt({ svg: new Blob([svg], { type: 'image/svg+xml' }), err: null }),
-      (e) => live && setSt({ svg: null, err: errText(e) }),
+      (e) => live && errText(e) !== 'stopped' && setSt({ svg: null, err: errText(e) }),
     );
     return () => {
       live = false;
     };
-  }, [code]);
+  }, [code, owner]);
   return st;
 }
 
 /** A ```mermaid block in a Markdown preview: the diagram, or its code (with why) when it cannot be drawn. */
-export function MermaidBlock({ code }: { code: string }) {
-  const { svg, err } = useDiagram(code);
+export function MermaidBlock({ code, owner }: { code: string; owner: string }) {
+  const { svg, err } = useDiagram(code, owner);
   if (err) {
     return (
       <div class="md-diagram err" data-testid="diagram-error">
@@ -153,7 +170,7 @@ export function MermaidBlock({ code }: { code: string }) {
 /** A .mmd/.mermaid file. */
 export function MermaidView({ tab, data }: ViewerProps) {
   const code = (data.text ?? (data.buf ? new TextDecoder().decode(data.buf) : '')).slice(0, 50_000);
-  const { svg, err } = useDiagram(code);
+  const { svg, err } = useDiagram(code, `${tab.path}\u0000${tab.version}`);
   const [full, setFull] = useState(false);
   if (err) return <PreviewMsg tab={tab} err>The diagram could not be drawn: {err}</PreviewMsg>;
   return (

@@ -23,13 +23,14 @@ cached for good: the names carry content hashes, or pdf.js's version). The first
 shared chunk (≈86 KB gzipped, of which the previews' part ≈8 KB) and the CSS; the editor (≈200 KB gzipped) and each language load when a file or diff is
 first opened; the previews' viewers when a file of their kind is: the table and the tree ≈3 KB each, the PDF viewer
 with pdf.js ≈150 KB, and the workers: CSV (papaparse) ≈8 KB, JSON/YAML/notebooks ≈36 KB, Word (mammoth, htmlparser2,
-fflate) ≈100 KB, Excel (SheetJS) ≈128 KB, PowerPoint ≈30 KB, pdf.js's ≈390 KB (gzipped). pdf.js's standard fonts,
+fflate) ≈100 KB, workbooks (SheetJS, our ODS reader) ≈130 KB, PowerPoint ≈30 KB, formulas (KaTeX) ≈80 KB, pdf.js's ≈390 KB (gzipped). pdf.js's standard fonts,
 CMaps and JavaScript image decoders (`assets/pdfjs-<version>/`, ≈3 MB) are fetched only as a PDF needs them; KaTeX
 (its chunk, and `assets/katex-<version>/`: its stylesheet and WOFF2 fonts) with the first formula. The artifact
 viewer's pages (`artifact/`) are never served on the code host: the code container serves them only to the artifact
 site (`caddy/artifact-on.caddy`), where the HTML runner is ≈0.5 KB and the diagram page carries Mermaid whole (one
 classic script, ≈1.5 MB gzipped: the pages are sandboxed, an opaque origin, so modules and chunks would be CORS
-requests), loaded only when a diagram is drawn.
+requests), loaded only when a diagram is drawn; `static.html` loads the runner as `static.js`, a fixed name Caddy's
+policy for that page names as its only script (an HTML file shows there first, without its own scripts).
 
 No CDN, no inline script or style, no `eval`, no HTML strings: the page runs under the CSP of `caddy/Caddyfile`'s
 `code_page`, including
@@ -131,7 +132,9 @@ time on hostile candidates) and the shortcut list; and part 2 (`test/office.test
 caps (entries, declared and actual sizes, ratio, overlap, zip64, encryption; the 100 MB bomb, the liar), the HTML
 allowlist on hostile markup, Word/Excel/PowerPoint/notebook readers on ordinary and hostile files, the ANSI and formula
 scanners (timed on crafted input), formulas and diagrams in Markdown, Office kinds by bytes and name, the artifact
-viewer's address, and the vendored SheetJS tarball against the lockfile.
+viewer's address, and the vendored SheetJS tarball against the lockfile; `test/math.test.ts`: formulas (the macro
+blow-up refused, the tree's allowlist, timing); `test/memory.test.ts`: each reader at its caps in a child process with
+a 1 GB heap (`test/mem.child.ts`; a worker that runs out of heap takes the page down).
 
 `e2e/run.sh` runs `e2e/ui_check.py` in the Playwright image the e2e suite pins (`tests/e2e/run.sh` `PW_IMAGE`,
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the

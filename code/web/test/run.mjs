@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 const out = path.join(here, '..', '.test-build');
-const files = fs.readdirSync(here).filter((f) => f.endsWith('.test.ts')).map((f) => path.join(here, f));
+// (*.child.ts: run by a test in a child process — memory.test.ts — not by node --test)
+const files = fs.readdirSync(here).filter((f) => f.endsWith('.test.ts') || f.endsWith('.child.ts')).map((f) => path.join(here, f));
 fs.rmSync(out, { recursive: true, force: true });
 await esbuild.build({
   entryPoints: files,
@@ -21,10 +22,10 @@ await esbuild.build({
   logLevel: 'warning',
   // what build.mjs defines for the page (src/env.d.ts)
   define: {
-    __BN_WORKERS__: JSON.stringify({ csv: '/workers/csv.TEST.js', data: '/workers/data.TEST.js', pdf: '/workers/pdf.worker.TEST.mjs', docx: '/workers/docx.TEST.js', sheet: '/workers/sheet.TEST.js', deck: '/workers/deck.TEST.js' }),
+    __BN_WORKERS__: JSON.stringify({ csv: '/workers/csv.TEST.js', data: '/workers/data.TEST.js', pdf: '/workers/pdf.worker.TEST.mjs', docx: '/workers/docx.TEST.js', sheet: '/workers/sheet.TEST.js', deck: '/workers/deck.TEST.js', math: '/workers/math.TEST.js' }),
     __BN_PDFJS_ASSETS__: '"/assets/pdfjs-test/"',
     __BN_KATEX_CSS__: '"/assets/katex-test/katex.min.css"',
-    __BN_ARTIFACT__: JSON.stringify({ html: '/artifact/html.html', mermaid: '/artifact/mermaid.html' }),
+    __BN_ARTIFACT__: JSON.stringify({ html: '/artifact/html.html', static: '/artifact/static.html', mermaid: '/artifact/mermaid.html' }),
   },
   // as build.mjs: mammoth's jszip is the page's own bounded zip reader
   plugins: [

@@ -49,6 +49,7 @@ const workerOptions = {
     docx: 'src/preview/workers/docx.worker.ts',
     sheet: 'src/preview/workers/sheet.worker.ts',
     deck: 'src/preview/workers/deck.worker.ts',
+    math: 'src/preview/workers/math.worker.ts',
   },
   bundle: true,
   format: 'iife',
@@ -106,8 +107,11 @@ function copyKatex() {
   return '/' + katexAssets + 'katex.min.css';
 }
 
-// The artifact viewer (served on the artifact site only): two fixed pages, each loading one script of this build.
-//   html.html     runs an HTML file or a notebook's HTML/JavaScript output as its own document (runner.ts)
+// The artifact viewer (served on the artifact site only): fixed pages, each loading one script of this build.
+//   static.html   shows an HTML file as its own document WITHOUT its scripts: the runner under a policy that allows
+//                 exactly one script, artifact/static.js (a fixed name, so caddy/artifact-on.caddy can name it)
+//   html.html     runs an HTML file or a notebook's HTML/JavaScript output as its own document, its scripts too
+//                 (runner.ts) — only after a click
 //   mermaid.html  draws Mermaid diagrams and hands the SVG back to the Code page (mermaid.ts; mermaid, bundled whole)
 // Single classic scripts (no chunks, no modules): the pages are sandboxed (an opaque origin), so a module or a chunk
 // would be a CORS request.
@@ -151,8 +155,10 @@ async function buildArtifact() {
   }
   if (!js.runner || !js.mermaid) throw new Error('build: artifact outputs not found');
   fs.writeFileSync(path.join(out, 'artifact/html.html'), artifactPage('Sandboxed preview', js.runner));
+  fs.copyFileSync(path.join(out, 'artifact', js.runner), path.join(out, 'artifact/static.js'));
+  fs.writeFileSync(path.join(out, 'artifact/static.html'), artifactPage('Sandboxed preview (no scripts)', 'static.js'));
   fs.writeFileSync(path.join(out, 'artifact/mermaid.html'), artifactPage('Diagram', js.mermaid));
-  return { pages: { html: '/artifact/html.html', mermaid: '/artifact/mermaid.html' }, metafile: r.metafile };
+  return { pages: { html: '/artifact/html.html', static: '/artifact/static.html', mermaid: '/artifact/mermaid.html' }, metafile: r.metafile };
 }
 
 const define = (workers, katexCss, artifact) => ({

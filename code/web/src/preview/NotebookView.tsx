@@ -3,7 +3,7 @@
 // streams and tracebacks as text with their ANSI colours, images as blob: images, formulas (text/latex) by KaTeX.
 // HTML and JavaScript outputs never run here: they are shown (on request) in the sandboxed artifact viewer, another
 // site with no network (ArtifactView.tsx); widgets and other rich outputs need a live kernel and show their text.
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { runJob } from './run';
 import { NB_DRAW, NB_LIMITS, type NbCell, type NbOutput, type Notebook } from './limits';
@@ -19,7 +19,6 @@ import { MarkdownView } from '../components/MarkdownView';
 import { Spinner } from '../components/icons';
 
 const renderMath = (tex: string, display: boolean, key: number) => <MathTex key={key} tex={tex} display={display} />;
-const renderDiagram = (code: string, key: number) => <MermaidBlock key={key} code={code} />;
 
 function Ansi({ text, cls }: { text: string; cls?: string }) {
   const runs = useMemo(() => ansiRuns(text), [text]);
@@ -39,10 +38,21 @@ function Ansi({ text, cls }: { text: string; cls?: string }) {
 }
 
 function Code({ src, parser }: { src: string; parser: Parser | null }) {
-  const toks: Tok[] = useMemo(() => highlight(src, parser), [src, parser]);
+  const ref = useRef<HTMLPreElement>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (near || !el) return;
+    if (typeof IntersectionObserver !== 'function') return setNear(true);
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setNear(true), { rootMargin: '800px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [near]);
+  // highlighted only once near the view (each parse runs on the main thread)
+  const toks: Tok[] | null = useMemo(() => (near ? highlight(src, parser) : null), [near, src, parser]);
   return (
-    <pre class="nb-code">
-      <code>{toks.map((t, i) => (t.cls ? <span key={i} class={t.cls}>{t.text}</span> : t.text))}</code>
+    <pre class="nb-code" ref={ref}>
+      <code>{toks ? toks.map((t, i) => (t.cls ? <span key={i} class={t.cls}>{t.text}</span> : t.text)) : src}</code>
     </pre>
   );
 }
@@ -133,6 +143,8 @@ export function View({ tab, pv, data }: ViewerProps) {
   const [err, setErr] = useState<string | null>(null);
   const [parser, setParser] = useState<Parser | null>(null);
   const [shown, setShown] = useState(NB_DRAW.page);
+  const owner = `${tab.path}\u0000${tab.version}`;
+  const renderDiagram = useCallback((code: string, key: number) => <MermaidBlock key={key} code={code} owner={owner} />, [owner]);
   const budget = useMemo(() => (nb ? drawBudget(nb.cells) : null), [nb]);
   useEffect(() => {
     setNb(null);

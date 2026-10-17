@@ -920,6 +920,8 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .nb-code .tok-punctuation { color: var(--syn-punct); }
 .math.display { display: block; margin: 10px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .math-src { white-space: pre-wrap; text-decoration: underline dotted var(--bad); }
+.math-pending { color: var(--muted); font-family: var(--mono); font-size: 0.92em; }
+.math-pending.display { display: block; margin: 10px 0; text-align: center; }
 .math-src.display { display: block; margin: 8px 0; }
 .md-diagram { margin: 0 0 12px; overflow-x: auto; }
 .md-diagram.err pre { margin: 4px 0 0; }
@@ -936,3 +938,5 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
   .nb-prompt { width: 30px; font-size: 11px; }
   .nb-outs { margin-left: 0; }
 }
+.pv-hint { flex: 1 1 100%; }
+.pv-hint summary { cursor: pointer; width: max-content; }

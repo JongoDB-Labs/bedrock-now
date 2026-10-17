@@ -78,7 +78,9 @@ class Page:
         self.page = self.ctx.new_page()
         self.errors, self.dialogs, self.requests = [], [], []
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
-        self.page.on("console", lambda m: m.type == "error" and "favicon" not in m.text and self.errors.append("console: " + m.text))
+        # (the artifact viewer's policy names webrtc 'block', which Chromium 140 does not know and says so: expected)
+        self.page.on("console", lambda m: m.type == "error" and "favicon" not in m.text and "Unrecognized Content-Security-Policy directive 'webrtc'" not in m.text
+                     and self.errors.append("console: " + m.text))
         self.page.on("dialog", lambda d: (self.dialogs.append(d.message), d.dismiss()))
         self.page.on("request", lambda r: self.requests.append(r.url))
 
@@ -1790,7 +1792,7 @@ def previews_phone(browser):
 
 # what the browser says when the artifact viewer's sandbox and policy stop something a file tries (in the viewer's frame,
 # never on the Code page: its own violations are window.__csp, checked as always)
-SANDBOX_NOISE = re.compile(r"Content Security Policy|Refused to connect|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|"
+SANDBOX_NOISE = re.compile(r"Content Security Policy|Refused to connect|Refused to execute inline script|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|"
                            r"Blocked form submission|allow-modals|net::ERR_BLOCKED_BY_CSP|Failed to load resource|Not allowed to load|"
                            r"does not have permission to navigate|^Failed to fetch$")
 
@@ -1852,6 +1854,11 @@ def previews2_desktop(browser):
     p.shot("preview2-xlsx.png")
     pane.get_by_role("tab", name="Notes").click()
     expect(pane.get_by_test_id("preview-table")).to_contain_text("javascript:alert(1)")
+    pane = preview(page, "previews/data.ods", "sheet")
+    expect(pane.get_by_test_id("sheet-tabs").get_by_role("tab")).to_have_count(2, timeout=15_000)
+    expect(pane.get_by_test_id("table-size")).to_have_text("5 rows × 2 columns")
+    pane = preview(page, "previews/data.xlsx", "sheet")
+    pane.get_by_role("tab", name="Notes").click()
     expect(pane.get_by_test_id("preview-table")).to_contain_text("click")
     assert "xlsx-formula" not in pane.get_by_test_id("preview-table").inner_text()
     expect(pane.get_by_role("tab", name=re.compile("Hidden"))).to_contain_text("(hidden)")
@@ -1889,10 +1896,24 @@ def previews2_desktop(browser):
     p.shot("preview2-math-diagram.png")
     katex = [u for u in p.requests if "/assets/katex-" in u]
     assert any(u.endswith("katex.min.css") for u in katex) and any(u.endswith(".woff2") for u in katex), katex
-    # an HTML file: its own scripts run — in the viewer, with no storage, no cookies and no network
+    # an HTML file: first without its scripts (the static page); then, on request, its own scripts run — in the
+    # viewer, with no storage, no cookies and no network
     pane = preview(page, "previews/page.html", "html")
     fr = viewer_frame(page, "Preview of previews/page.html")
+    expect(fr.locator("h1")).to_have_text("An HTML report", timeout=15_000)
+    page.wait_for_timeout(500)
+    expect(fr.locator("#dyn")).to_have_text("Waiting for the script…")
+    p.shot("preview2-html-static.png")
+    pane.get_by_test_id("html-run").click()
+    fr = viewer_frame(page, "Preview of previews/page.html")
     expect(fr.locator("#dyn")).to_have_text("Rendered by the page's own script ✓", timeout=15_000)
+    # webrtc 'block' in the viewer's policy: does this Chromium enforce it? (recorded, docs/security.md)
+    rtc = page.locator("iframe.art-frame[title='Preview of previews/page.html']").element_handle().content_frame().evaluate("""async () => {
+      try { const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:9' }] }); const c = [];
+        pc.onicecandidate = (e) => e.candidate && c.push(1); pc.createDataChannel('x'); await pc.setLocalDescription(await pc.createOffer());
+        await new Promise((r) => setTimeout(r, 1500)); pc.close(); return c.length ? `not enforced (${c.length} ICE candidates gathered)` : 'no candidates'; }
+      catch (e) { return 'refused: ' + e.name; } }""")
+    print(f"      (webrtc 'block' in Chromium {browser.version}: {rtc})", flush=True)
     expect(fr.locator("#probe")).to_contain_text("no storage")
     expect(fr.locator("#probe")).to_contain_text("no cookie")
     p.shot("preview2-html.png")
@@ -1944,9 +1965,17 @@ def previews2_hostile(browser):
     pane = preview(page, "previews/broken.xlsx", "sheet")
     expect(pane.get_by_test_id("preview-msg")).to_contain_text("not a zip file", timeout=15_000)
     pane = preview(page, "previews/wide.xlsx", "sheet")
-    expect(pane.get_by_test_id("table-notes")).to_contain_text("only the first 1,000,000 rows", timeout=15_000)
+    expect(pane.get_by_test_id("table-size")).to_have_text("1 row × 1 column", timeout=15_000)
     pane = preview(page, "previews/strings.xlsx", "sheet")
     expect(pane.get_by_test_id("table-notes")).to_contain_text("40 million characters", timeout=30_000)
+    # a hyperlink and a merge over every cell of the sheet, <cols> over every column (SheetJS made an object for each):
+    # never reach SheetJS; repeated rows × repeated cells in an .ods: within the caps; an old .xls: Download
+    pane = preview(page, "previews/links.xlsx", "sheet")
+    expect(pane.get_by_test_id("table-size")).to_have_text("1 row × 1 column", timeout=15_000)
+    pane = preview(page, "previews/repeats.ods", "sheet")
+    expect(pane.get_by_test_id("table-notes")).to_contain_text("cells per workbook", timeout=15_000)
+    pane = preview(page, "previews/old.xls", "later")
+    expect(pane.get_by_test_id("preview-msg")).to_contain_text("not previewed")
     # PowerPoint: markup is text, the external picture never fetched, the HTML ".png" no picture, no entity expanded
     pane = preview(page, "previews/hostile.pptx", "deck")
     expect(pane.get_by_test_id("deck-slide").first).to_contain_text("<script>fetch(\"/__mock/beacon?pptx-title\")</script>", timeout=15_000)
@@ -1985,6 +2014,11 @@ def previews2_hostile(browser):
     pane = preview(page, "previews/hostile.html", "html")
     fr_el = page.locator("iframe.art-frame[title='Preview of previews/hostile.html']")
     expect(fr_el).to_have_count(1, timeout=15_000)
+    assert fr_el.get_attribute("src").endswith("/artifact/static.html"), "first without its scripts"
+    page.wait_for_timeout(1500)
+    pane.get_by_test_id("html-run").click()
+    fr_el = page.locator("iframe.art-frame[title='Preview of previews/hostile.html']")
+    expect(fr_el).to_have_attribute("src", re.compile(r"/artifact/html\.html$"), timeout=15_000)
     assert ARTIFACT_RE.match(fr_el.get_attribute("src")) and fr_el.get_attribute("sandbox") == "allow-scripts"
     page.wait_for_timeout(3000)
     p.shot("preview2-hostile-html.png")
@@ -2043,7 +2077,7 @@ def previews2_phone(browser):
         ("previews/data.xlsx", "sheet", "phone-preview2-xlsx.png", ".tv-c"),
         ("previews/deck.pptx", "deck", "phone-preview2-pptx.png", "[data-testid=deck-slide]"),
         ("previews/notebook.ipynb", "notebook", "phone-preview2-notebook.png", "[data-testid=math] .katex"),
-        ("previews/page.html", "html", "phone-preview2-html.png", "iframe.art-frame"),
+        ("previews/page.html", "html", "phone-preview2-html.png", "[data-testid=html-run]"),
     ):
         page.get_by_test_id("phone-files").click()
         expect(page.get_by_test_id("sheet-files")).to_be_visible()

@@ -208,7 +208,7 @@ function LazyMath({ tex, display }: { tex: string; display: boolean }) {
   if (!m || m instanceof Error) return <code class="math-src">{display ? `$$${tex}$$` : `$${tex}$`}</code>;
   return <m.MathTex tex={tex} display={display} />;
 }
-function LazyDiagram({ code }: { code: string }) {
+function LazyDiagram({ code, owner }: { code: string; owner: string }) {
   const m = useModule('artifact', () => import('./ArtifactView'));
   if (!m || m instanceof Error) {
     return (
@@ -217,10 +217,9 @@ function LazyDiagram({ code }: { code: string }) {
       </pre>
     );
   }
-  return <m.MermaidBlock code={code} />;
+  return <m.MermaidBlock code={code} owner={owner} />;
 }
 const renderMath = (tex: string, display: boolean, key: number) => <LazyMath key={key} tex={tex} display={display} />;
-const renderDiagram = (code: string, key: number) => <LazyDiagram key={key} code={code} />;
 
 // ---------------------------------------------------------------- Markdown
 
@@ -235,6 +234,9 @@ function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
   // one cache per file version: re-renders (typing in Split) and repeated images fetch nothing again
   const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max), undefined, listedSize), [tab.path, tab.version]);
   const renderImage = useCallback((path: string, alt: string, key: number) => <WorkspaceImage key={`${key}:${path}`} path={path} alt={alt} cache={cache} />, [cache]);
+  // this file's diagrams share one renderer (a frame of the viewer), its own
+  const owner = `${tab.path}\u0000${tab.version}`;
+  const renderDiagram = useCallback((code: string, key: number) => <LazyDiagram key={key} code={code} owner={owner} />, [owner]);
   return (
     <div class="pv-scroll" data-testid="preview-md">
       {tab.truncated && <div class="banner subtle">Only the first {bytes(CAPS.markdown)} of this file ({bytes(tab.size)}) are shown.</div>}

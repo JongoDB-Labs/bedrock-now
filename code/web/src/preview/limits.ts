@@ -28,8 +28,9 @@ const MiB = 1024 * 1024;
 
 /** A .docx as a tree (office/htmlsafe.ts) and its pictures (classified by their bytes, within a byte/pixel budget). */
 export const DOC_LIMITS = { nodes: 200_000, depth: 60, chars: 16_000_000, images: 200, imageBytes: 40 * MiB, pixels: 150_000_000 };
-/** The zip of a .docx (office/zip.ts); a part over `xml` is refused when read (mammoth builds a DOM of its XML). */
-export const DOCX_ZIP = { entries: 5_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 32 * MiB };
+/** The zip of a .docx (office/zip.ts); a part over `xml` is refused when read: mammoth builds a DOM of its XML,
+ *  ~100 × its size (measured: a document part of 8 MB peaks near 950 MB, 16 MB near 1.75 GB; test/mem.child.ts). */
+export const DOCX_ZIP = { entries: 5_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 8 * MiB };
 
 export interface DEl {
   t: string;
@@ -45,10 +46,11 @@ export interface PvImage {
   h: number;
 }
 
-/** Workbooks (.xlsx, .xls, .ods): values only — no formulas computed, no macros, no external links. */
+/** Workbooks (.xlsx, .xlsm, .ods): values only — no formulas computed, no macros, no external links. */
 export const SHEET_LIMITS = { sheets: 100, rows: 1_000_000, cols: 200, cells: 2_000_000, cellChars: 2_000, chars: 40_000_000 };
-/** The zip of an .xlsx/.ods: only its XML parts go on to the parser, re-packed (office/sheet.ts). */
-export const SHEET_ZIP = { entries: 10_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 96 * MiB };
+/** The zip of an .xlsx/.ods: only its value parts go on (office/sheet.ts), at most `xml` of them in all — SheetJS
+ *  peaks near 800 MB of memory at 48 MB of sheets (measured: test/mem.child.ts), within a worker's share of the page's heap. */
+export const SHEET_ZIP = { entries: 10_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200, xml: 48 * MiB };
 export interface SheetMeta {
   name: string;
   rows: number;

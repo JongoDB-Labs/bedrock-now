@@ -55,14 +55,18 @@ def artifact_site(ctx):
     host = org.split("//", 1)[1]
     code_origin = f"{CODE}:80" if PORT == 80 else CODE
     got = {}
-    for page_path, strict in (("/artifact/html.html", False), ("/artifact/mermaid.html", True)):
+    for page_path, strict in (("/artifact/html.html", False), ("/artifact/static.html", None), ("/artifact/mermaid.html", True)):
         a = http("GET", None, page_path, {"Sec-Fetch-Dest": "iframe"}, host_header=host)
         csp = a.header("content-security-policy") or ""
         expect(a.status == 200 and "<script src=" in a.text, f"{page_path}: {a.status}")
         for want in ("sandbox allow-scripts;", "default-src 'none';", "connect-src 'none';", "frame-src 'none';", "form-action 'none';",
                      f"frame-ancestors {code_origin} {origin()}"):
             expect(want in csp, f"{page_path}: no {want!r} in {csp!r}")
-        expect(("script-src 'self';" in csp) == strict and "allow-same-origin" not in csp, f"{page_path} script-src: {csp}")
+        if strict is None:   # the static page: its one script file, nothing inline
+            expect(re.search(r"script-src http://\*\.artifact\.[^ ;]+/artifact/static\.js;", csp) and "unsafe-inline" not in csp, f"{page_path} script-src: {csp}")
+        else:
+            expect(("script-src 'self';" in csp) == strict and "allow-same-origin" not in csp, f"{page_path} script-src: {csp}")
+        expect("webrtc 'block'" in csp, f"{page_path}: webrtc")
         expect(a.header("x-content-type-options") == "nosniff" and a.header("referrer-policy") == "no-referrer" and not a.headers_all("set-cookie"),
                f"{page_path} headers")
         got[page_path] = "ok"
@@ -137,8 +141,14 @@ def ui_artifacts(ctx):
     pane = open_preview(page, f"{d}/page.html", "html")
     fl = page.locator("iframe.art-frame[title='Preview of " + f"{d}/page.html" + "']")
     see(fl).to_have_count(1, timeout=30000)
-    expect(ARTIFACT_FILE.match(fl.get_attribute("src")) and fl.get_attribute("sandbox") == "allow-scripts", f"frame {fl.get_attribute('src')}")
+    expect(ARTIFACT_FILE.match(fl.get_attribute("src")) and fl.get_attribute("src").endswith("/artifact/static.html"), f"first without scripts: {fl.get_attribute('src')}")
     fr = page.frame_locator("iframe.art-frame[title='Preview of " + f"{d}/page.html" + "']")
+    see(fr.locator("h1")).to_have_text("An HTML report", timeout=30000)
+    page.wait_for_timeout(500)
+    see(fr.locator("#dyn")).to_have_text("Waiting for the script…")
+    pane.get_by_test_id("html-run").click()
+    see(fl).to_have_attribute("src", re.compile(r"/artifact/html\.html$"), timeout=30000)
+    expect(fl.get_attribute("sandbox") == "allow-scripts", "the frame's sandbox")
     see(fr.locator("#dyn")).to_have_text("Rendered by the page's own script ✓", timeout=30000)
     probe = fl.element_handle().content_frame().evaluate("""async () => { const r = { origin: self.origin };
       try { r.cookie = document.cookie; } catch (e) { r.cookie = e.name; }
@@ -154,6 +164,8 @@ def ui_artifacts(ctx):
     page.wait_for_function("() => { const i = document.querySelector('.pane:not(.hidden) [data-testid=preview-diagram] img'); return i && i.complete && i.naturalWidth > 100; }", timeout=60000)
     shot(page, "100-code-preview-mermaid")
     pane = open_preview(page, f"{d}/hostile.html", "html")
+    page.wait_for_timeout(1500)
+    pane.get_by_test_id("html-run").click()
     page.wait_for_timeout(3000)
     expect(page.url.startswith(CODE) and not popups, f"page {page.url}, popups {popups}")
     done.append("a Mermaid file drawn as an image; a hostile HTML page did nothing outside its frame")
@@ -164,7 +176,7 @@ def ui_artifacts(ctx):
     csp = page.evaluate("window.__csp || []")
     expect(any(v.startswith(f"frame-src http://x.{DOMAIN}:9") for v in csp), f"its frame's navigation to another port: {csp}")
     page.evaluate("window.__csp = (window.__csp || []).filter((v) => !/^frame-src http:\\/\\/[^ \\/]+:9\\b/.test(v))")
-    csp_clean(page, rec, allow=[r"Content Security Policy|Refused to connect|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|Blocked form submission|allow-modals|does not have permission to navigate|Failed to fetch|FAILED \S+ \S+ csp$"])
+    csp_clean(page, rec, allow=[r"Content Security Policy|Refused to connect|Refused to execute inline script|sandboxed|Unsafe attempt to initiate navigation|Blocked opening|Blocked form submission|allow-modals|does not have permission to navigate|Failed to fetch|FAILED \S+ \S+ csp$"])
     r = c.api("DELETE", f"/api/fs?path={d}")
     expect(r["status"] == 200, f"cleanup {r['status']}")
     return "; ".join(done) + "; 0 CSP violations on the Code page"
@@ -193,9 +205,11 @@ def ui_artifacts_in_portal(ctx):
     f.wait_for_timeout(1000)
     tree_click(f, name)
     fr = f.frame_locator(f"iframe.art-frame[title='Preview of {name}']")
+    see(fr.locator("#dyn")).to_have_text("static", timeout=30000)   # first without its scripts
+    f.get_by_test_id("html-run").click()
     see(fr.locator("#dyn")).to_have_text("ran inside the portal", timeout=30000)
     shot(page, "101-code-preview-html-in-portal")
-    probs = rec.problems(allow=LOCKED_OK)
+    probs = rec.problems(allow=LOCKED_OK + [r"Refused to execute inline script"])
     csp = f.evaluate("window.__csp || []")
     f.evaluate("async (p) => fetch('/api/fs?path=' + encodeURIComponent(p), { method: 'DELETE' })", name)
     rec.save()

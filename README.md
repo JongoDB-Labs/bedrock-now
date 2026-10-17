@@ -483,7 +483,7 @@ per browser.
   lists every shortcut of the page.
 - **Previews of files.** Markdown (with formulas, `$…$` and `$$…$$`, and Mermaid diagrams), images (PNG, JPEG, GIF,
   WebP, AVIF, BMP, ICO), SVG, audio and video (what the browser plays: MP3, WAV, Ogg, FLAC, WebM, MP4), PDF, CSV/TSV,
-  JSON, JSON Lines, YAML, Word (`.docx`), Excel (`.xlsx`, `.xlsm`, `.xls`, `.ods`), PowerPoint (`.pptx`), Jupyter
+  JSON, JSON Lines, YAML, Word (`.docx`), Excel (`.xlsx`, `.xlsm`) and OpenDocument (`.ods`) workbooks, PowerPoint (`.pptx`), Jupyter
   notebooks, HTML and Mermaid (`.mmd`) files open in **Preview**; **Source** is the editor (for the text formats), and
   Markdown also has **Split** (not on a phone), whose preview follows your unsaved edits. A PDF shows its pages with selectable text, find, zoom and page jumps; its links
   to the web open in a new tab, and nothing in it runs (no JavaScript, forms or launch actions). A CSV is a table (the
@@ -493,7 +493,8 @@ per browser.
   A Word document shows its headings, lists, tables, pictures and links (no page layout); a workbook its sheets as
   tabs, with the values Excel shows — formulas are never computed — and hidden sheets marked; a PowerPoint deck an
   outline of its slides (titles, text, tables, pictures, speaker notes; no layout); a notebook its cells, code
-  highlighted, outputs with their colours and images. **HTML files run their own scripts in a sandboxed viewer**
+  highlighted, outputs with their colours and images. **HTML files show in a sandboxed viewer, first without their
+  scripts; Run this page's scripts runs them there**
   (another site, no network, no cookies or storage: a generated report or a small app works, a page that loads files
   next to it or from the web does not — serve its folder from the terminal, `python3 -m http.server 8000`, and use the
   dev-server preview of :8000, below: that one has your browser's network and is not sandboxed, so only for a page you
@@ -504,8 +505,9 @@ per browser.
   Claude's *Write*/*Edit* cards offer **Preview** for such files. Limits (above them: **Download**): Markdown, the
   first 2 MB; YAML 5 MB; SVG and HTML 10 MB; Mermaid 1 MB; notebooks 20 MB; everything else 25 MB; images up to 100
   million pixels; tables 1,000,000 rows, 200 columns and 5,000,000 cells (workbooks 2,000,000 cells, 100 sheets);
-  trees 300,000 values and 100 levels; an Office file's parts at most 128 MB unpacked. Old `.doc`/`.ppt`, OpenDocument
-  text and slides, RTF, EPUB, HEIC and TIFF are not shown.
+  trees 300,000 values and 100 levels; an Office file's parts at most 128 MB unpacked, a Word document's text part 8
+  MB, a workbook's sheets 48 MB; at most 2,000 formulas and 50 diagrams a notebook. Old `.doc`/`.ppt`/`.xls`, binary
+  `.xlsb`, OpenDocument text and slides, RTF, EPUB, HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which
   shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it
@@ -590,7 +592,7 @@ plugin's install command for you. Details:
 **The page's code** lives in `code/web` (TypeScript, Preact, CodeMirror 6, marked's lexer; bundled by esbuild, every
 dependency pinned in its lockfile) and is built into the image (`./stack code enable`, `./stack update`): nothing is
 loaded from a CDN, and it runs under the main Caddy's CSP with Trusted Types (one policy, which starts only the
-build's own workers: the previews parse files in workers, and pdf.js, SheetJS, mammoth, KaTeX and Mermaid load only
+build's own workers: the previews parse files — and draw formulas — in workers, and pdf.js, SheetJS, mammoth, KaTeX and Mermaid load only
 when a file needs them). To work on it:
 
 ```bash

@@ -67,7 +67,7 @@ export function onFrameMessage(w: Window, fn: Listener): () => void {
 }
 
 /** A frame of the viewer: sandboxed, on the artifact site, nothing delegated, no referrer. */
-export function viewerFrame(origin: string, page: 'html' | 'mermaid', title: string): HTMLIFrameElement {
+export function viewerFrame(origin: string, page: 'html' | 'static' | 'mermaid', title: string): HTMLIFrameElement {
   const f = document.createElement('iframe');
   f.setAttribute('sandbox', VIEWER_SANDBOX);
   f.setAttribute('allow', '');
@@ -172,9 +172,29 @@ class Renderer {
   }
 }
 
-let renderer: Renderer | null = null;
-/** A Mermaid diagram's SVG (text: show it only as an image), drawn in the sandboxed viewer. */
-export function renderMermaid(code: string, dark: boolean): Promise<string> {
-  renderer ??= new Renderer();
-  return renderer.render(code, dark);
+// One renderer per file (its owner: a file and its version): a diagram never shares a frame — or Mermaid's state —
+// with another file's, and a file's renderer ends when its last diagram leaves the page.
+const renderers = new Map<string, { r: Renderer; refs: number }>();
+
+/** Hold the renderer of `owner` while a diagram of it is on the page; the returned function lets go of it. */
+export function holdRenderer(owner: string): () => void {
+  let e = renderers.get(owner);
+  if (!e) {
+    e = { r: new Renderer(), refs: 0 };
+    renderers.set(owner, e);
+  }
+  e.refs++;
+  const held = e;
+  return () => {
+    if (--held.refs > 0) return;
+    held.r.stop();
+    if (renderers.get(owner) === held) renderers.delete(owner);
+  };
+}
+
+/** A Mermaid diagram's SVG (text: show it only as an image), drawn in the sandboxed viewer by `owner`'s renderer. */
+export function renderMermaid(code: string, dark: boolean, owner: string): Promise<string> {
+  const e = renderers.get(owner);
+  if (!e) return Promise.reject(new Error('stopped'));
+  return e.r.render(code, dark);
 }

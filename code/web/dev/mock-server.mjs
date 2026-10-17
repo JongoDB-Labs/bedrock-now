@@ -1532,8 +1532,9 @@ function previewLink(res, url) {
 const ARTIFACT_ORIGIN = `http://a${CAP}.artifact.localhost:${PREVIEW_PORT}`;
 const ARTIFACT_ANCESTORS = 'http://127.0.0.1:* http://localhost:*';
 const ARTIFACT_CSP = {
-  runner: `sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
-  viewer: `sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
+  runner: `sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
+  static: `sandbox allow-scripts; default-src 'none'; script-src http://*.artifact.localhost:${PREVIEW_PORT}/artifact/static.js; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
+  viewer: `sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors ${ARTIFACT_ANCESTORS}`,
 };
 function artifactSite(req, res) {
   const u = new URL(req.url, 'http://x');
@@ -1551,7 +1552,7 @@ function artifactSite(req, res) {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
     'cache-control': 'no-cache',
-    'content-security-policy': u.pathname === '/artifact/html.html' ? ARTIFACT_CSP.runner : ARTIFACT_CSP.viewer,
+    'content-security-policy': u.pathname === '/artifact/html.html' ? ARTIFACT_CSP.runner : u.pathname === '/artifact/static.html' ? ARTIFACT_CSP.static : ARTIFACT_CSP.viewer,
   });
   if (req.method === 'HEAD') return res.end();
   fs.createReadStream(file).pipe(res);

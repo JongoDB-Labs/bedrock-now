@@ -28,7 +28,7 @@ function setup(dark: boolean) {
     // what a diagram's own %%{init}%% directive may not change: Mermaid's defaults, plus labels as SVG text (HTML
     // labels would need foreignObject, which an SVG shown as an image may not decode) and the theme's CSS
     secure: ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering', 'maxEdges', 'htmlLabels', 'flowchart', 'theme', 'themeCSS',
-      'themeVariables', 'fontFamily', 'deterministicIds'],
+      'themeVariables', 'fontFamily', 'deterministicIds', 'dompurifyConfig'],
   });
 }
 

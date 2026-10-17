@@ -13,7 +13,7 @@ import { ZIP_LIMITS, ZipError, ZipReader, inflateEntry, readZip } from '../src/p
 import { sanitiseHtml } from '../src/preview/office/htmlsafe';
 import { docHref } from '../src/preview/office/links';
 import { readDocx } from '../src/preview/office/docx';
-import { keepPart, readWorkbook, repack } from '../src/preview/office/sheet';
+import { keepPart, readWorkbook, repack, sheetDataOnly } from '../src/preview/office/sheet';
 import { readDeck, resolvePart } from '../src/preview/office/pptx';
 import { readNotebook, b64 } from '../src/preview/notebook';
 import { drawBudget } from '../src/preview/NotebookView';
@@ -196,7 +196,8 @@ test('xlsx: sheets as text — formatted values, cached formula results (never t
 test('xlsx: hostile — 16,384 columns and a million rows, one string in 30,000 cells, a lying part, a bomb, a broken file', () => {
   const wide: string[][][] = [];
   const w = readWorkbook(ab(fx.wideXlsx()), (i, rows) => (wide[i] = rows));
-  assert.ok(w.sheets[0].cols <= SHEET_LIMITS.cols && w.sheets[0].rowsCut, JSON.stringify(w.sheets[0]));
+  // (its <dimension> never reaches SheetJS; the value in row 1,048,576 is past sheetRows)
+  assert.ok(w.sheets[0].cols <= SHEET_LIMITS.cols && w.sheets[0].rows === 1, JSON.stringify(w.sheets[0]));
   assert.ok(wide[0].length <= SHEET_LIMITS.rows);
   assert.equal(wide[0][0][0], '1');
   let chars = 0;
@@ -209,10 +210,15 @@ test('xlsx: hostile — 16,384 columns and a million rows, one string in 30,000 
   assert.throws(() => readWorkbook(new ArrayBuffer(64), () => {}), /not a workbook/);
   assert.throws(() => readWorkbook(ab(Buffer.concat([Buffer.from('504b0304140000000800', 'hex'), Buffer.alloc(54, 0)])), () => {}), ZipError);
   // only the parts with values go on to SheetJS
-  for (const p of ['xl/media/image1.png', 'xl/embeddings/oleObject1.bin', 'xl/printerSettings/printerSettings1.bin', 'xl/vbaProject.bin', 'docProps/thumbnail.jpeg', 'xl/activeX/activeX1.bin']) assert.equal(keepPart(p), false, p);
-  for (const p of ['xl/workbook.xml', 'xl/worksheets/sheet1.xml', 'xl/_rels/workbook.xml.rels', 'xl/worksheets/sheet1.bin', 'xl/sharedStrings.bin', 'content.xml', 'mimetype']) assert.equal(keepPart(p), true, p);
+  for (const p of ['xl/media/image1.png', 'xl/embeddings/oleObject1.bin', 'xl/printerSettings/printerSettings1.bin', 'xl/vbaProject.bin', 'docProps/thumbnail.jpeg',
+    'xl/activeX/activeX1.bin', 'xl/worksheets/sheet1.bin', 'xl/worksheets/_rels/sheet1.xml.rels', 'xl/comments1.xml', 'xl/externalLinks/externalLink1.xml', 'docProps/core.xml']) {
+    assert.equal(keepPart(p), false, p);
+  }
+  for (const p of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/worksheets/sheet1.xml', 'xl/_rels/workbook.xml.rels', 'xl/sharedStrings.xml', 'xl/styles.xml']) assert.equal(keepPart(p), true, p);
   const re = new ZipReader(repack(u8(fx.dataXlsx())));
   assert.ok(re.zip.entries.every((e) => e.method === 0), 'repacked uncompressed');
+  // old .xls and binary .xlsb: not previewed (no zip / no xl/workbook.xml)
+  assert.throws(() => readWorkbook(ab(Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)])), () => {}), /not a workbook/);
 });
 
 test('xlsx: empty cells a row is padded with count against the cells budget (one value far right on every row)', () => {
@@ -232,6 +238,44 @@ test('docx: every part read is capped, whatever its name (mammoth finds its part
   // and with the real caps the document reads
   const r = await readDocx(ab(fx.oddNameDocx(4096)));
   assert.ok(textIn(r.root).startsWith('x'));
+});
+
+test('xlsx: a sheet is rebuilt as its values alone — a hyperlink or merge over every cell, <cols> over every column, never reach SheetJS', () => {
+  const part = new ZipReader(u8(fx.hyperlinkXlsx())).text('xl/worksheets/sheet1.xml');
+  assert.match(part, /<hyperlink ref="A1:XFD1048576"/);
+  const only = sheetDataOnly(part);
+  assert.ok(!/hyperlink|mergeCell|<cols|<col |dimension/.test(only), only);
+  assert.match(only, /^<\?xml[^>]*>\n<worksheet [^>]*xmlns="[^"]+"[^>]*><sheetData><row r="1"><c r="A1"><v>1<\/v><\/c><\/row><\/sheetData><\/worksheet>$/);
+  let n = 0;
+  const t = ms(() => readWorkbook(ab(fx.hyperlinkXlsx()), (_i, rows) => (n = rows.length)));
+  assert.ok(n === 1 && t < 2000, `${n} rows in ${t.toFixed(0)} ms`);
+  // prefixes, a self-closed or missing sheetData, comments before the root; linear on crafted input
+  assert.equal(sheetDataOnly('<!-- x --><x:worksheet xmlns:x="u"><x:cols/><x:sheetData><x:row/></x:sheetData><x:hyperlinks/></x:worksheet>'),
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<x:worksheet xmlns:x="u"><x:sheetData><x:row/></x:sheetData></x:worksheet>');
+  assert.match(sheetDataOnly('<worksheet><sheetData/></worksheet>'), /<worksheet><\/worksheet>$/);
+  assert.match(sheetDataOnly('<chartsheet xmlns="u"/>'), /<chartsheet xmlns="u"><\/chartsheet>$/);
+  assert.throws(() => sheetDataOnly('<worksheet><sheetData><row>'), /does not end/);
+  for (const t2 of ['<worksheet>' + 'sheetData'.repeat(200_000), '<worksheet>' + ':sheetData '.repeat(100_000), '<worksheet>' + '<a:sheetData>'.repeat(50_000)]) {
+    assert.ok(ms(() => { try { sheetDataOnly(t2); } catch { /* damaged */ } }) < 500);
+  }
+});
+
+test('ods: our own reader — sheets, values as saved, repeated rows and cells within the caps, markup as text', () => {
+  const sheets: string[][][] = [];
+  const r = readWorkbook(ab(fx.dataOds()), (i, rows) => (sheets[i] = rows));
+  assert.deepEqual(r.sheets.map((s) => [s.name, s.rows, s.header]), [['Sales', 6, true], ['Notes', 2, false]]);
+  assert.deepEqual(sheets[0], [['Region', 'Units'], ['North', '12'], ['South', '7'], ['West', '3'], ['West', '3'], ['West', '3']]);
+  assert.deepEqual(sheets[1], [['<script>alert("ods")</script>'], ['x', 'x', 'x', 'x', 'x']]);
+  // one value repeated 16,384 columns × a million rows (SheetJS made a cell for each): the caps
+  let rows = 0;
+  let width = 0;
+  const t = ms(() => readWorkbook(ab(fx.repeatOds()), (_i, x) => {
+    rows = x.length;
+    width = Math.max(...x.map((y) => y.length));
+  }));
+  const rep = readWorkbook(ab(fx.repeatOds()), () => {});
+  assert.ok(rep.sheets[0].cellsCut && rep.sheets[0].colsCut && width === SHEET_LIMITS.cols && rows === SHEET_LIMITS.cells / SHEET_LIMITS.cols, `${rows} × ${width}`);
+  assert.ok(t < 5000, `${t.toFixed(0)} ms`);
 });
 
 // ---------------------------------------------------------------- PowerPoint
@@ -306,6 +350,16 @@ test('notebook: formulas and diagrams are budgeted for the whole notebook, not p
   const outs = nb.cells.flatMap((c) => c.out);
   assert.equal(outs.filter((o) => o.k === 'img').length, 2, 'images that claim 90 million pixels each: two within the notebook\'s 200 million');
   assert.ok(outs.some((o) => o.k === 'note' && /million pixels in all/.test(o.text)));
+});
+
+test('notebook: code is highlighted within a cap (on the main thread, once near the view)', async () => {
+  const { highlight, parserFor, HIGHLIGHT_MAX } = await import('../src/preview/highlight');
+  const p = await parserFor('python');
+  assert.ok(p, 'the Python parser');
+  const code = 'def f(x):\n    return [i * 2 for i in range(x)]  # a comment\n'.repeat(Math.floor(HIGHLIGHT_MAX / 52));
+  const t = ms(() => highlight(code, p));
+  assert.ok(t < 300, `${t.toFixed(0)} ms for ${code.length} characters`);
+  assert.deepEqual(highlight('x'.repeat(HIGHLIGHT_MAX + 1), p), [{ text: 'x'.repeat(HIGHLIGHT_MAX + 1), cls: '' }], 'past the cap: plain text');
 });
 
 // ---------------------------------------------------------------- ANSI
@@ -391,9 +445,10 @@ test('sniff: Office files by their bytes and name; HTML, Mermaid and notebooks b
   assert.equal(sniffBinary('a.xlsm', zipHead)?.kind, 'sheet');
   assert.equal(sniffBinary('a.ods', zipHead)?.kind, 'sheet');
   assert.equal(sniffBinary('a.pptx', zipHead)?.kind, 'deck');
-  assert.equal(sniffBinary('a.xls', cfb)?.kind, 'sheet');
+  assert.equal(sniffBinary('a.xls', cfb)?.kind, 'later', 'old .xls: Download');
+  assert.equal(sniffBinary('a.xlsb', zipHead)?.kind, 'later', 'binary .xlsb: Download');
   assert.equal(sniffBinary('a.doc', cfb)?.kind, 'later');
-  assert.equal(sniffBinary('a.xls', zipHead), null, 'an .xls that is a zip: not previewed');
+  assert.equal(sniffBinary('a.xls', zipHead)?.kind, 'later', 'an .xls that is a zip: not previewed');
   assert.equal(sniffBinary('a.docx', cfb), null);
   assert.equal(sniffBinary('a.zip', zipHead), null);
   assert.equal(sniffBinary('a.docx', new Uint8Array([0x3c, 0x68])), null, 'HTML named .docx');
@@ -405,7 +460,8 @@ test('sniff: Office files by their bytes and name; HTML, Mermaid and notebooks b
   for (const k of ['html', 'mermaid', 'notebook'] as const) assert.ok(hasSource(k) && !needsBytes(k));
   for (const k of ['docx', 'sheet', 'deck'] as const) assert.ok(needsBytes(k) && !hasSource(k) && CAPS[k] === 25 * MiB);
   assert.equal(viewFor({ kind: 'docx', mime: '', what: '' }, 'source'), 'preview');
-  for (const p of ['a.docx', 'a.xlsx', 'a.xls', 'a.pptx', 'a.html', 'a.mmd', 'a.ipynb']) assert.ok(previewableName(p), p);
+  for (const p of ['a.docx', 'a.xlsx', 'a.ods', 'a.pptx', 'a.html', 'a.mmd', 'a.ipynb']) assert.ok(previewableName(p), p);
+  assert.ok(!previewableName('a.xls') && !previewableName('a.xlsb'));
 });
 
 test('the artifact viewer\'s address: only http a<capability>.artifact.<domain> origins', () => {

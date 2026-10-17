@@ -185,7 +185,7 @@ const colL = (i) => {
   for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
   return s;
 };
-function xlsx(sheets, strings, { dims = [] } = {}) {
+function xlsx(sheets, strings, { dims = [], cols = '' } = {}) {
   const sst = `${XML}<sst ${S} count="${strings.length}" uniqueCount="${strings.length}">${strings.map((s) => `<si><t xml:space="preserve">${esc(s)}</t></si>`).join('')}</sst>`;
   const styles = `${XML}<styleSheet ${S}><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts><fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs></styleSheet>`;
   const wb = `${XML}<workbook ${S}><sheets>${sheets.map((s, i) => `<sheet name="${esc(s.name)}" sheetId="${i + 1}"${s.hidden ? ' state="hidden"' : ''} r:id="rS${i + 1}"/>`).join('')}</sheets></workbook>`;
@@ -196,7 +196,10 @@ function xlsx(sheets, strings, { dims = [] } = {}) {
     { name: 'xl/_rels/workbook.xml.rels', data: rels([...sheets.map((_, i) => [`rS${i + 1}`, 'worksheet', `worksheets/sheet${i + 1}.xml`]), ['rSst', 'sharedStrings', 'sharedStrings.xml'], ['rSty', 'styles', 'styles.xml']]) },
     { name: 'xl/sharedStrings.xml', data: sst },
     { name: 'xl/styles.xml', data: styles },
-    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: `${XML}<worksheet ${S}>${dims[i] ? `<dimension ref="${dims[i]}"/>` : ''}<sheetData>${s.xml}</sheetData></worksheet>`, ...(s.part ?? {}) })),
+    ...sheets.map((s, i) => {
+      const { tail = '', ...part } = s.part ?? {};
+      return { name: `xl/worksheets/sheet${i + 1}.xml`, data: `${XML}<worksheet ${S}>${dims[i] ? `<dimension ref="${dims[i]}"/>` : ''}${cols}<sheetData>${s.xml}</sheetData>${tail}</worksheet>`, ...part };
+    }),
   ]);
 }
 /** A cell: {s: shared string index} | {n: number, style?} | {f: formula, v: cached value} */
@@ -248,6 +251,86 @@ export function oddNameDocx(size) {
     { name: '_rels/.rels', data: rels([['rId1', 'officeDocument', 'word/document.dat']]) },
     { name: 'word/document.dat', data: `${XML}<w:document ${W}><w:body>${body}</w:body></w:document>` },
   ]);
+}
+
+/** A sheet whose one hyperlink claims every cell of the sheet (A1:XFD1048576): SheetJS made a stub cell for each. */
+export function hyperlinkXlsx() {
+  return xlsx([{ name: 'Links', xml: row(1, [c('A1', { n: 1 })]), part: { tail: '<hyperlinks><hyperlink ref="A1:XFD1048576" r:id="rL"/></hyperlinks><mergeCells count="1"><mergeCell ref="A1:XFD1048576"/></mergeCells>' } }], ['x'],
+    { cols: '<cols><col min="1" max="16384" width="9"/></cols>' });
+}
+
+/** An OpenDocument spreadsheet: content.xml of `rows` (arrays of strings or {v, rep}) in one table, plus `rowRepeat`. */
+export function ods(tables) {
+  const T = 'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"';
+  const cellXml = (x) => {
+    const v = typeof x === 'string' ? { v: x } : x;
+    const rep = v.rep ? ` table:number-columns-repeated="${v.rep}"` : '';
+    return v.v === '' ? `<table:table-cell${rep}/>` : `<table:table-cell office:value-type="string"${rep}><text:p>${esc(v.v)}</text:p></table:table-cell>`;
+  };
+  const body = tables.map((t) => `<table:table table:name="${esc(t.name)}">${t.rows.map((r) => `<table:table-row${r.rep ? ` table:number-rows-repeated="${r.rep}"` : ''}>${(r.cells ?? r).map(cellXml).join('')}</table:table-row>`).join('')}</table:table>`).join('');
+  return zip([
+    { name: 'mimetype', data: 'application/vnd.oasis.opendocument.spreadsheet', store: true },
+    { name: 'META-INF/manifest.xml', data: `${XML}<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/></manifest:manifest>` },
+    { name: 'content.xml', data: `${XML}<office:document-content ${T}><office:body><office:spreadsheet>${body}</office:spreadsheet></office:body></office:document-content>` },
+  ]);
+}
+
+export function dataOds() {
+  const rows = [['Region', 'Units'], ['North', '12'], ['South', '7'], { cells: ['West', '3'], rep: 3 }, { cells: [{ v: '', rep: 1000 }], rep: 1048000 }];
+  return ods([{ name: 'Sales', rows }, { name: 'Notes', rows: [['<script>alert("ods")</script>'], [{ v: 'x', rep: 5 }]] }]);
+}
+
+/** Repeats that multiply: one non-empty cell repeated 16,384 columns in a row repeated a million times. */
+export function repeatOds() {
+  return ods([{ name: 'Repeats', rows: [{ cells: [{ v: 'x', rep: 16384 }], rep: 1048576 }, { cells: [{ v: 'y', rep: 1000000 }], rep: 1000000 }] }]);
+}
+
+/** A Word document.xml of about `size` bytes of ordinary paragraphs (the heap test). */
+export function bigDocx(size) {
+  // pseudo-random words: an ordinary document does not compress 1,000 : 1 (the zip reader's ratio cap)
+  let seed = 7;
+  const word = () => {
+    seed = (seed * 1103515245 + 12345) >>> 0;
+    return (seed >>> 8).toString(36);
+  };
+  const out = [];
+  let n = 0;
+  while (n < size) {
+    const p = para(run(Array.from({ length: 8 }, word).join(' ')) + run(word(), { b: true }));
+    out.push(p);
+    n += p.length;
+  }
+  return zip([
+    { name: '[Content_Types].xml', data: types([]) },
+    { name: '_rels/.rels', data: rels([['rId1', 'officeDocument', 'word/document.xml']]) },
+    { name: 'word/document.xml', data: `${XML}<w:document ${W}><w:body>${out.join('')}</w:body></w:document>` },
+  ]);
+}
+
+/** A sheet of about `size` bytes of numeric cells, 20 a row (the heap test). */
+export function bigXlsx(size) {
+  const parts = [];
+  let n = 0;
+  for (let r = 1; n < size; r++) {
+    let x = `<row r="${r}">`;
+    for (let k = 0; k < 20; k++) x += `<c r="${colL(k)}${r}"><v>${r * 20 + k}.5</v></c>`;
+    x += '</row>';
+    parts.push(x);
+    n += x.length;
+  }
+  return xlsx([{ name: 'Big', xml: parts.join('') }], ['x']);
+}
+
+/** A slide of about `size` bytes of paragraphs (the heap test). */
+export function bigPptx(size) {
+  const ps = [];
+  let n = 0;
+  while (n < size) {
+    const t = `Paragraph ${ps.length} with some words in it`;
+    ps.push([t]);
+    n += t.length + 60;
+  }
+  return pptx([{ xml: slide([sp('title', [['Big']]), sp('body', ps)]) }]);
 }
 
 /** A part that honestly unpacks to 150 MB. */

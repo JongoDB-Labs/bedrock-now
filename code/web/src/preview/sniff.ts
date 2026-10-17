@@ -72,15 +72,17 @@ const ZIPPED: Record<string, Sniffed> = {
   docm: { kind: 'docx', mime: '', what: 'Word document (with macros, which never run)' },
   xlsx: { kind: 'sheet', mime: '', what: 'Excel workbook' },
   xlsm: { kind: 'sheet', mime: '', what: 'Excel workbook (with macros, which never run)' },
-  xlsb: { kind: 'sheet', mime: '', what: 'Excel binary workbook' },
   ods: { kind: 'sheet', mime: '', what: 'OpenDocument spreadsheet' },
   pptx: { kind: 'deck', mime: '', what: 'PowerPoint presentation' },
 };
-const COMPOUND: Record<string, Sniffed> = { xls: { kind: 'sheet', mime: '', what: 'Excel 97–2003 workbook' } };
+// (old .xls and binary .xlsb workbooks are not previewed: SheetJS builds objects in proportion to ranges their records
+// declare, and their records cannot be filtered as an .xlsx's XML is: office/sheet.ts)
+const COMPOUND: Record<string, Sniffed> = {};
 // Office files no preview reads: Download
 const LATER: Record<string, string> = {
   doc: 'Word 97–2003 document', odt: 'OpenDocument text', rtf: 'RTF document', ppt: 'PowerPoint 97–2003 presentation',
-  pptm: 'PowerPoint presentation with macros', odp: 'OpenDocument presentation', epub: 'EPUB book',
+  pptm: 'PowerPoint presentation with macros', odp: 'OpenDocument presentation', epub: 'EPUB book', xls: 'Excel 97–2003 workbook',
+  xlsb: 'Excel binary workbook',
 };
 
 /** A binary file's kind from its first bytes (and, where the magic is weak or shared, its extension). */

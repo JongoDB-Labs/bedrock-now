@@ -14,7 +14,9 @@
 # only the Code page may frame them (and the portal, whose Code tab frames the Code page: frame-ancestors checks every
 # ancestor). The HTML runner (artifact/html.html) lets the document it is handed run its own
 # inline scripts — that is the point of an HTML preview — under exactly that policy; the diagram page runs nothing but
-# its own script (Mermaid).
+# its own script (Mermaid). An HTML file is first shown by the static page (artifact/static.html): the runner under a
+# policy that allows that one script file alone, so the document it writes shows without running any of its own; its
+# scripts run only after a click (html.html). webrtc 'block': where browsers enforce it, no peer connection either.
 (artifact_upstream) {
 	header_up -Cookie
 	header_up -Referer
@@ -56,7 +58,15 @@ http://*.artifact.{$PREVIEW_DOMAIN} {
 		}
 		reverse_proxy @runner code-upstream:8095 {
 			import artifact_upstream
-			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
+		}
+		@static {
+			method GET HEAD
+			path /artifact/static.html
+		}
+		reverse_proxy @static code-upstream:8095 {
+			import artifact_upstream
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src http://*.artifact.{$PREVIEW_DOMAIN}:{$PORTAL_PORT:80}/artifact/static.js; style-src 'unsafe-inline' data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
 		}
 		@viewer {
 			method GET HEAD
@@ -64,7 +74,7 @@ http://*.artifact.{$PREVIEW_DOMAIN} {
 		}
 		reverse_proxy @viewer code-upstream:8095 {
 			import artifact_upstream
-			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
+			header_down Content-Security-Policy "sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; webrtc 'block'; frame-ancestors {$CODE_ORIGIN} {$PORTAL_ORIGIN}"
 		}
 		respond 404
 	}
