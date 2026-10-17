@@ -225,3 +225,19 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 
 /* The browser terminal's line on the Claude Code card (terminal.js): a button that reads like a link. */
 .linkish { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+/* Home's Code card (code.js): the sessions that need you, Resume, and a prompt to open in Code */
+.code-card .code-status { margin: 0 0 10px; }
+.code-card .code-status.waiting { color: var(--warn); font-weight: 600; }
+.code-sessions { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 6px; }
+.code-sessions:empty { display: none; }
+.code-session { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.code-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.code-session.waiting .code-dot { background: var(--warn); }
+.code-session.working .code-dot { background: var(--accent); }
+.code-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-state { margin: 0; flex: none; }
+.code-ask { display: flex; gap: 8px; margin: 0 0 6px; }
+.code-ask input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); }
+.code-card .note { margin: 6px 0 0; }

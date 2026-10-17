@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode
 
 import httpx
 
@@ -111,3 +112,38 @@ async def spend(client: httpx.AsyncClient, s: Settings, session: str) -> tuple[i
     return 200, {"session": session, "rows": rows, "requests": len(rows), "total": round(sum(x["spend"] for x in rows), 6),
                  "key": {"alias": "claude-code-terminal", "spend": k["spend"], "max_budget": k["max_budget"],
                          "reset_at": k["reset_at"], "error": k["error"]}}
+
+
+# --- deep links into the Code page (Home's Code card, a bookmark, a link someone sent): /?session=<id> and
+# /?prompt=<text>, kept through the Code page's unlock form so that the page gets them after the password. Rebuilt
+# from what checks out (never passed through as given); the page itself treats the prompt as a draft marked as coming
+# from a link, never sent by itself.
+DEEP_LINK_MAX = 6000      # the address as carried (a longer one keeps its session, not its prompt)
+PROMPT_MAX = 4000         # characters of a prompt (as the page caps it)
+
+
+def deep_link(uri: str | None) -> str | None:
+    """'/?session=…&prompt=…' rebuilt from a request's path and query when it is a deep link into the Code page, else
+    None. Only the root path, only these two parameters (once each), a session id that is a UUID, a prompt of at most
+    PROMPT_MAX characters without NUL."""
+    if not isinstance(uri, str) or not uri.startswith("/?") or len(uri) > 64 * 1024:
+        return None
+    try:
+        pairs = parse_qsl(uri[2:], keep_blank_values=True, strict_parsing=False, max_num_fields=8)
+    except ValueError:
+        return None
+    out: dict[str, str] = {}
+    for k, v in pairs:
+        if k not in ("session", "prompt") or k in out:
+            continue
+        if k == "session" and SESSION.fullmatch(v.lower()):
+            out[k] = v.lower()
+        elif k == "prompt" and v and "\x00" not in v:
+            out[k] = v[:PROMPT_MAX]
+    if not out:
+        return None
+    link = "/?" + urlencode(out)
+    if len(link) > DEEP_LINK_MAX and "prompt" in out:
+        del out["prompt"]
+        link = "/?" + urlencode(out) if out else ""
+    return link or None

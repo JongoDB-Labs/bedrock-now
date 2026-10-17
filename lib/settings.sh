@@ -431,8 +431,9 @@ _settings_display() {
 }
 
 # settings_snapshot_write — .state/status/settings.json for the portal: settings.tsv with each key's value (plain
-# keys), or set + a hint (secrets: see the secret column), keys .env has beyond the table (names only), the .env
-# hash the portal sends back ("base"), and the last change. One awk pass over the table and .env.
+# keys) and its default (.env.example's value: Settings › "Changed from default"), or set + a hint (secrets: see the
+# secret column), keys .env has beyond the table (names only), the .env hash the portal sends back ("base"), and the
+# last change. One awk pass over the table and .env (.env.example read first).
 settings_snapshot_write() {
   local d f tmp base
   [ -f "$ENV_FILE" ] && [ -r "$SETTINGS_TSV" ] || return 0
@@ -442,11 +443,12 @@ settings_snapshot_write() {
   {
     printf '{"version": 1, "written_at": %s, "base": "%s", "facts": "%s", "remote_on": %s, "last_change": %s, "choices": %s, "keys": [\n' \
       "$(date +%s)" "$base" "$(_settings_facts)" "$(remote_on && echo true || echo false)" "$(_settings_last_change)" "$(_settings_choices)"
-    settings_rows | awk -F'\t' '
+    settings_rows | awk -F'\t' -v example="$STACK_DIR/.env.example" '
+      BEGIN { while ((getline line < example) > 0) if (line ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr(line, 1, index(line, "=") - 1); if (!(k in def)) def[k] = substr(line, index(line, "=") + 1) } }
       function js(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, " ", s); gsub(/[\001-\037\177]/, "", s); return "\"" s "\"" }
       function mask(code, v,  n, m) {
         n = length(v)
-        if (code == "-" || code == "s") return ", \"value\": " js(v)
+        if (code == "-" || code == "s") return ", \"value\": " js(v) ((K in def) ? ", \"default\": " js(def[K]) : "")
         if (code == "k") return n >= 8 ? ", \"hint\": " js(substr(v, 1, 4) "…" substr(v, n - 3)) : ""
         if (code == "h") return n >= 8 ? ", \"hint\": " js("…" substr(v, n - 3)) : ""
         if (code == "u") { if (match(v, /^[A-Za-z]+:\/\/[^\/?#]+/)) return ", \"hint\": " js(substr(v, 1, RLENGTH) (n > RLENGTH ? "/…" : "")); return "" }
@@ -456,7 +458,7 @@ settings_snapshot_write() {
       /^[A-Za-z_][A-Za-z0-9_]*=/ { k = substr($0, 1, index($0, "=") - 1); val[k] = substr($0, index($0, "=") + 1); if (!(k in seen)) { seen[k] = 1; order[++no] = k } }
       END {
         for (i = 1; i <= nr; i++) {
-          split(row[i], c, "\t"); k = c[1]; v = (k in val) ? val[k] : ""
+          split(row[i], c, "\t"); k = c[1]; v = (k in val) ? val[k] : ""; K = k
           printf "%s{\"key\": %s, \"group\": %s, \"secret\": %s, \"policy\": %s, \"validator\": %s, \"apply\": %s, \"label\": %s, \"note\": %s, \"cli\": %s, \"present\": %s, \"set\": %s%s}",
             (i > 1 ? ",\n" : ""), js(k), js(c[2]), js(c[3]), js(c[4]), js(c[5]), js(c[6]), js(c[7]), js(c[8]), js(c[9]),
             ((k in val) ? "true" : "false"), (v != "" ? "true" : "false"), mask(c[3], v)

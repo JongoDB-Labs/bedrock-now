@@ -99,7 +99,7 @@
   .grid { display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; }
   .col { display: contents; }
   .col > section { padding: 16px; border-radius: 12px; }
-  .spend { order: 1; } .services { order: 2; } .models { order: 3; } .logins { order: 4; } .maint { order: 5; }
+  .spend { order: 1; } .code-card { order: 1; } .services { order: 2; } .models { order: 3; } .logins { order: 4; } .maint { order: 5; }
 
   /* Update card and progress, compact: the release and the button (if this device may use it); the step list
      and the terminal command are for the desktop. */

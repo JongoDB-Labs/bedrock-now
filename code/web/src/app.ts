@@ -783,11 +783,23 @@ function announce(): void {
   const origin = s.server?.portalOrigin;
   if (origin && window.parent !== window) {
     try {
-      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass }, new URL(origin).origin);
+      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass, waiting: waitingSessions(s.views, s.pendingTotal), sessions: portalSessions(s) }, new URL(origin).origin);
     } catch {
       /* not framed by the portal */
     }
   }
+}
+
+/** What Home's Code card lists (the portal frames this page): the open sessions — those that wait for you first —
+ *  with a title (sandbox data: the portal shows it as text), at most 8. */
+function portalSessions(s: AppState): { id: string; title: string; state: string; waiting: number }[] {
+  const order = (v: SessionView) => (v.permissions.length ? 0 : v.state === 'busy' || v.state === 'starting' ? 1 : 2);
+  return Object.values(s.views)
+    .filter((v) => v.state !== 'closed')
+    .sort((a, b) => order(a) - order(b))
+    .slice(0, 8)
+    .map((v) => ({ id: v.id, title: label(v.title || s.sessions.find((x) => x.id === v.id)?.title, 120), state: v.permissions.length ? 'waiting' : v.state === 'busy' || v.state === 'starting' ? 'working' : 'idle',
+      waiting: v.permissions.length }));
 }
 
 // ---------------------------------------------------------------- sessions

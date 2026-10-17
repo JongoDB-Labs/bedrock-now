@@ -36,6 +36,7 @@ from .security import (
 log = logging.getLogger("portal")
 STATIC = Path(__file__).parent / "static"
 MAX_FORM = 8192
+MAX_UNLOCK_FORM = 32768   # the Code page's unlock form: the password and a deep link (portal/code.py DEEP_LINK_MAX)
 
 
 def _security_headers(resp: Response, s: Settings) -> Response:
@@ -146,7 +147,7 @@ def _is_websocket(headers) -> bool:
 
 
 def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, retry_after: int = 0,
-                 app: str = TERMINAL) -> HTMLResponse:
+                 app: str = TERMINAL, next_link: str | None = None) -> HTMLResponse:
     """The terminal's (or the Code page's) host's own page while it is locked: the portal password again (POST
     /.bn/unlock, same host). Styled by the portal's public login.css; framed only by the portal (its tab), or full
     screen."""
@@ -155,6 +156,8 @@ def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, ret
     framers = portal + (f" {s.origin(CODE, rem)}" if app == TERMINAL and s.code_on(rem) else "")
     page = (STATIC / f"{app}-unlock.html").read_text(encoding="utf-8").replace("{{portal}}", html.escape(portal, quote=True))
     page = page.replace("{{error}}", f'<p class="error" role="alert">{html.escape(error)}</p>' if error else "")
+    # a deep link into the Code page (?session, ?prompt) goes on after the password (portal/code.py deep_link)
+    page = page.replace("{{next}}", f'<input type="hidden" name="next" value="{html.escape(next_link, quote=True)}">' if next_link else "")
     resp = HTMLResponse(page, status_code=status)
     resp.headers["Content-Security-Policy"] = (
         f"default-src 'none'; style-src {portal}; img-src {portal}; form-action 'self'; base-uri 'none'; "
@@ -356,7 +359,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if unlocked(request, rem, app):
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         if method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", ""):
-            return _unlock_page(settings, rem, app=app)
+            nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else None
+            return _unlock_page(settings, rem, app=app, next_link=nxt)
         return _no_store(PlainTextResponse(f"{NAME[app]} locked: unlock it with the portal password", status_code=401))
 
     async def terminal_unlock(request: Request) -> Response:
@@ -381,23 +385,30 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         length = request.headers.get("content-length", "")
         if not length.isdigit() or not length.isascii():
             return _no_store(PlainTextResponse("Content-Length required", status_code=411))
-        if int(length) > MAX_FORM:
+        limit = MAX_UNLOCK_FORM if app == CODE else MAX_FORM   # (the Code page's form may carry a deep link)
+        if int(length) > limit:
             return _no_store(PlainTextResponse("form too large", status_code=413))
         body = b""
         async for chunk in request.stream():
             body += chunk
-            if len(body) > MAX_FORM:
+            if len(body) > limit:
                 return _no_store(PlainTextResponse("form too large", status_code=413))
+        try:
+            form = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=4)
+        except ValueError:
+            form = {}
+        nxt = codepage.deep_link((form.get("next") or [""])[0]) if app == CODE else None
         if wait := throttle.retry_after():
-            return _unlock_page(settings, rem, f"Too many wrong passwords. Try again in {wait} s.", 429, wait, app=app)
-        password = (parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True).get("password") or [""])[0]
+            return _unlock_page(settings, rem, f"Too many wrong passwords. Try again in {wait} s.", 429, wait, app=app, next_link=nxt)
+        password = (form.get("password") or [""])[0]
         if not await asyncio.to_thread(verify_password, password, settings.password_hash):
             throttle.failure()
             log.warning("%s unlock: wrong password (%d in a row)", app, throttle.failures)
-            return _unlock_page(settings, rem, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).", app=app)
+            return _unlock_page(settings, rem, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).", app=app, next_link=nxt)
         throttle.success()
         log.warning("%s unlocked%s", app, " (remote)" if rem else "")
-        resp = RedirectResponse("/", status_code=303)
+        # a deep link (rebuilt from what checks out: same host, the root path, ?session / ?prompt only) or the page
+        resp = RedirectResponse(nxt or "/", status_code=303)
         c = unlock_cookie_params(app, rem)
         resp.set_cookie(c["key"], unlocks[app].issue(session_login(request.headers, settings)), max_age=TERMINAL_MAX_AGE,
                         path="/", domain=c["domain"], httponly=True, samesite="strict", secure=c["secure"])

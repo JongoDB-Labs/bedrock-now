@@ -5,7 +5,9 @@
 // page is locked, that host answers with its own "Unlock the Code page" form (the portal password again). On a big
 // screen, in a browser that has used the Code page (its page reported to the portal once), the frame is made (hidden)
 // once the portal is idle, so the badge counts prompts before the tab is opened; a browser that never opened it loads
-// nothing from the code host.
+// nothing from the code host. Home's Code card: the sessions that need you and the recent ones as the framed page
+// reports them (titles are sandbox data: text only, capped), Resume and Ask links (deep links: ?session=, and ?prompt=
+// — a draft the Code page marks as coming from a link, never sent by itself), and the terminal key's budget.
 "use strict";
 
 (() => {
@@ -47,9 +49,81 @@
       rel: "noopener" }, "Code", el("span", { text: "Claude Code with a chat and your files, full screen" }))));
   }
 
-  // The framed page says how many permission prompts wait ({type: "bn-code-status", pending: N, busy, bypass}, or the
-  // plain page's {bn: "code", pending: N}); only the code host may. bypass: a session runs without asking (Bypass
-  // permissions) — the badge turns red and says ⏵⏵ (the CLI's marker) while nothing waits.
+  // --- Home's Code card ---
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const STATES = { waiting: "needs you", working: "working", idle: "idle" };
+  let reported = null;   // {waiting, sessions} from the framed page; null until it reports
+  // linkTo({session, prompt}) -> the Code page's address with that deep link
+  function linkTo(params) {
+    const u = new URL(appUrl("code"));
+    for (const [k, v] of Object.entries(params)) if (v) u.searchParams.set(k, v);
+    return u.href;
+  }
+  // a deep link in the Code tab (its frame loads it: the page reads it once and takes it out of its address), or on a
+  // phone in a tab of its own
+  function openLink(params) {
+    const href = linkTo(params);
+    if (window.matchMedia("(max-width: 767.98px)").matches) { window.open(href, "_blank", "noopener"); return; }
+    showTab("code");
+    appFrame("code").src = href;
+  }
+  function codeCard() {
+    let card = $("section.code-card");
+    if (card) return card;
+    const claude = $("section.claude");
+    if (!claude) return null;
+    const input = el("input", { type: "text", id: "code-ask", maxlength: "4000", placeholder: "Ask Claude in Code…", "aria-label": "A prompt for the Code page" });
+    const form = el("form", { class: "code-ask" }, input, el("button", { type: "submit", class: "action", text: "Open in Code" }));
+    form.addEventListener("submit", (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { openLink({ prompt: t }); input.value = ""; } });
+    const open = el("button", { type: "button", class: "linkish", text: "Open Code" });
+    open.addEventListener("click", () => { if (window.matchMedia("(max-width: 767.98px)").matches) window.open(appUrl("code"), "_blank", "noopener"); else showTab("code"); });
+    card = el("section", { class: "code-card", "aria-labelledby": "code-card-title" },
+      el("h2", { id: "code-card-title", text: "Code" }),
+      el("p", { class: "note code-status", id: "code-status", "aria-live": "polite" }),
+      el("ul", { class: "code-sessions", id: "code-sessions" }),
+      form,
+      el("p", { class: "note", text: "Opens Code with your text in its prompt box, to read and send there: nothing is sent from here." }),
+      el("p", { class: "note code-budget", id: "code-budget", hidden: "" }),
+      el("p", { class: "note" }, open));
+    claude.before(card);
+    renderCard();
+    return card;
+  }
+  function renderCard() {
+    const status = $("#code-status"), list = $("#code-sessions");
+    if (!status || !list) return;
+    list.replaceChildren();
+    if (!reported) {
+      status.textContent = used() ? "Your sessions show here once the Code page has loaded (it loads in the background)." : "Claude Code with a chat, your files and permission prompts: open Code to start.";
+      return;
+    }
+    const n = reported.waiting;
+    status.textContent = n ? `${n} session${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} you` : reported.sessions.length ? "Nothing waits for you." : "No session is open.";
+    status.classList.toggle("waiting", n > 0);
+    for (const s of reported.sessions.slice(0, 5)) {
+      const resume = el("a", { class: "linkish", href: linkTo({ session: s.id }), text: s.state === "waiting" ? "Answer" : "Resume" });
+      resume.addEventListener("click", (e) => { e.preventDefault(); openLink({ session: s.id }); });
+      list.append(el("li", { class: `code-session ${s.state}` }, el("span", { class: "code-dot", "aria-hidden": "true" }),
+        el("span", { class: "code-title", text: s.title || "Untitled session" }), el("span", { class: "note code-state", text: STATES[s.state] }), resume));
+    }
+  }
+  // the framed page's list, checked: ids, states, short titles, at most 8
+  function takeSessions(v) {
+    if (!Array.isArray(v)) return [];
+    return v.slice(0, 8).filter((x) => x && typeof x.id === "string" && UUID.test(x.id) && Object.prototype.hasOwnProperty.call(STATES, x.state))
+      .map((x) => ({ id: x.id, state: x.state, title: typeof x.title === "string" ? x.title.slice(0, 120).replace(/[\u0000-\u001f\u007f]/g, " ") : "" }));
+  }
+  function budgetLine(d) {
+    const p = $("#code-budget");
+    const k = d && d.spend && (d.spend.keys || []).find((x) => x.alias === "claude-code-terminal");
+    if (!p) return;
+    p.hidden = !k || k.error || typeof k.spend !== "number";
+    if (!p.hidden) p.textContent = `Its key (Terminal / Code page): ${usd(k.spend)}${k.max_budget != null ? ` of ${usd(k.max_budget)}` : ""} this period.`;
+  }
+
+  // The framed page says how many permission prompts wait ({type: "bn-code-status", pending: N, busy, bypass, waiting,
+  // sessions}, or the plain page's {bn: "code", pending: N}); only the code host may. bypass: a session runs without
+  // asking (Bypass permissions) — the badge turns red and says ⏵⏵ (the CLI's marker) while nothing waits.
   function listen() {
     let codeOrigin = "";
     try { codeOrigin = new URL(appUrl("code")).origin; } catch (_) { return; }
@@ -63,6 +137,10 @@
       badge.classList.toggle("bypass", bypass);
       badge.title = bypass ? "A Code session runs without asking (Bypass permissions)" : "";
       document.title = n ? `(${n}) bedrock-now` : "bedrock-now";
+      if (e.data.type === "bn-code-status") {
+        reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions) };
+        renderCard();
+      }
     });
   }
 
@@ -97,6 +175,8 @@
     card.append(line);
   }
 
+  // (Home's Code card first: the framed page's first report finds it there)
+  if (here) { codeCard(); document.addEventListener("bn:summary", (e) => budgetLine(e.detail)); }
   if (here) { addTab(); addSheetLink(); listen(); window.addEventListener("load", preload, { once: true }); }
   cardLine();
 })();

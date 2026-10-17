@@ -686,6 +686,7 @@ async function refresh() {
     renderSpend(d.spend); renderOpenRouter(d.spend.openrouter, d.spend.openrouter_usage); renderServices(d.services); renderModels(d.models, d.prices); renderVoice(d.voice);
     renderUpdate(d.update); lastUpdate = d.update;
     lastSummary = d;
+    document.dispatchEvent(new CustomEvent("bn:summary", { detail: d }));   // (code.js: the Code card's key budget)
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;
     $("#load-error").hidden = true;
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;

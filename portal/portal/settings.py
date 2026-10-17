@@ -70,6 +70,8 @@ def _key_row(k: dict) -> dict | None:
            "unknown": k.get("unknown") is True}
     if code in ("-", "s"):  # plain keys only: a value of a secret never leaves this function, whatever the file says
         row["value"] = _s(k.get("value"), MAX_VALUE)
+        if isinstance(k.get("default"), str):   # .env.example's value (Settings › "Changed from default")
+            row["default"] = _s(k.get("default"), MAX_VALUE)
     elif code in ("k", "h", "u"):
         row["hint"] = _s(k.get("hint"), 120)
     return row

@@ -1432,7 +1432,8 @@ def tablet(ctx):
 
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
 
-TOUR_STEPS = 19
+# 19, plus the browser terminal's and the Code page's own steps where this run offers them (tour.js: when)
+TOUR_STEPS = 19 + (ENV.get("TERMINAL_ENABLED") == "true") + (ENV.get("TERMINAL_ENABLED") == "true" and (ENV.get("CODE_ENABLED") or "").lower() == "true")
 # What the app frames may log by themselves while they load, before their own sign-in (as in the Chat and Files
 # checks): not the walkthrough's doing.
 FRAME_NOISE = [r"^401 GET " + re.escape(origin("files")) + r"/rustfs/admin/v3/",

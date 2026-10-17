@@ -53,6 +53,8 @@
   let watching = null;      // {id, kind, label, keys, at} a request the helper has not finished
   let pollTimer = null;
   let reconnecting = false;
+  // the page's search box and "Changed from default" (P-5): kept across a re-render
+  const find = { q: "", changed: false };
 
   const page = () => $("#settings");
   const hasHelper = () => Boolean(data && data.helper.running && data.helper.settings);
@@ -108,13 +110,60 @@
       b.addEventListener("click", () => { const c = $(`#set-${g}`, p); if (c) c.scrollIntoView({ block: "start", behavior: "smooth" }); });
       nav.append(b);
     }
-    p.append(nav);
+    p.append(nav, findBar());
     const cards = el("div", { class: "set-cards" });
     for (const [g, title, lede] of GROUPS) cards.append(card(g, title, lede));
     p.append(cards);
     renderSpend();
     renderJob();
+    applyFind();
     p.scrollTop = scrollY;
+  }
+
+  // --- search and "Changed from default": rows (and the Advanced list's items) that do not match are hidden, and so is
+  // a card left without any (its title matching the search keeps it whole). Plain substring matching, any case.
+  function changedFromDefault(k) {
+    if (!k || !("value" in k) || !("default" in k) || !(k.secret === "-" || k.secret === "s")) return false;
+    const v = String(k.value).trim();
+    return v !== "" && v !== String(k.default).trim();
+  }
+  function findBar() {
+    const input = el("input", { type: "search", id: "set-find", class: "set-find-input", placeholder: "Search settings", "aria-label": "Search settings",
+      maxlength: "100", value: find.q });
+    input.value = find.q;
+    input.addEventListener("input", () => { find.q = input.value.slice(0, 100); applyFind(); });
+    const chip = el("button", { type: "button", class: "chip", id: "set-changed", "aria-pressed": String(find.changed), text: "Changed from default" });
+    chip.addEventListener("click", () => { find.changed = !find.changed; chip.setAttribute("aria-pressed", String(find.changed)); applyFind(); });
+    const known = Object.values(keys).some((k) => "default" in k);
+    return el("div", { class: "set-find" }, input, chip,
+      el("span", { class: "note set-find-note", id: "set-find-note", text: known ? "" : "Defaults are not known yet: ./stack up writes them." }));
+  }
+  function applyFind() {
+    const p = page();
+    if (!p) return;
+    const q = find.q.trim().toLowerCase();
+    p.classList.toggle("set-finding", Boolean(q) || find.changed);
+    let shownRows = 0;
+    for (const c of p.querySelectorAll(".set-card")) {
+      const title = ($("h2", c) || {}).textContent || "";
+      const whole = Boolean(q) && title.toLowerCase().includes(q) && !find.changed;
+      let left = 0;
+      for (const r of c.querySelectorAll(".set-row[data-key], .set-adv-item")) {
+        const key = r.dataset.key || (r.querySelector("code") || {}).textContent || "";
+        const okChanged = !find.changed || changedFromDefault(keys[key]);
+        const okText = !q || whole || r.textContent.toLowerCase().includes(q);
+        r.hidden = !(okChanged && okText);
+        if (!r.hidden) left++;
+      }
+      // cards without rows of their own (Diagnostics, the voice and backup forms) show only for their title
+      const rowsHere = c.querySelectorAll(".set-row[data-key], .set-adv-item").length;
+      c.hidden = (Boolean(q) || find.changed) && !(left > 0 || (whole && !rowsHere));
+      if (!c.hidden) shownRows += left;
+    }
+    const note = $("#set-find-note", p);
+    if (note && Object.values(keys).some((k) => "default" in k)) {
+      note.textContent = (q || find.changed) ? (shownRows ? `${shownRows} setting${shownRows === 1 ? "" : "s"}` : "No setting matches.") : "";
+    }
   }
 
   function helperBox() {
@@ -225,6 +274,10 @@
 
   function row(k) {
     const r = el("div", { class: "set-row", "data-key": k.key });
+    if (changedFromDefault(k)) {
+      r.dataset.changed = "1";
+      r.title = `Changed from the default (${String(k.default).trim() === "" ? "blank" : k.default})`;
+    }
     const main = el("div", { class: "set-main" },
       el("div", { class: "set-label" }, el("span", { text: k.label }), el("code", { class: "set-key", text: k.key })),
       el("div", { class: `set-value${k.secret !== "-" && k.secret !== "s" ? " masked" : ""}`, text: display(k) }),
@@ -683,7 +736,7 @@
     const filter = el("input", { type: "search", class: "set-filter", placeholder: "Find a setting", "aria-label": "Find a setting" });
     const list = el("dl", { class: "set-adv" });
     for (const k of rest) {
-      list.append(el("div", { class: "set-adv-item", "data-find": `${k.key} ${k.label} ${k.note}`.toLowerCase() },
+      list.append(el("div", { class: "set-adv-item", "data-key": k.key, "data-find": `${k.key} ${k.label} ${k.note}`.toLowerCase() },
         el("dt", {}, el("code", { text: k.key }), el("span", { class: `set-adv-value${k.secret !== "-" && k.secret !== "s" ? " masked" : ""}`, text: display(k) })),
         el("dd", {}, el("span", { text: `${k.label}. ${k.note}` }), el("code", { class: "set-adv-cli", text: k.cli }))));
     }

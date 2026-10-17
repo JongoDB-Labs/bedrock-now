@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from conftest import PASSWORD_HASH, SECRET
 from portal import settings as st
-from portal.app import create_app
+from portal.app import STATIC, create_app
 from portal.config import ConfigError, from_env
 from portal.security import NEXT_COOKIE, Sessions, hash_password, verify_password
 
@@ -176,6 +176,31 @@ def test_snapshot_keeps_values_of_plain_keys_only(dirs):
     assert k["BUDGET_SETUP"]["value"] == "5"
     assert k["XKEY"]["secret"] == "S" and "value" not in k["XKEY"]   # an unknown code counts as a secret
     assert len(snap["keys"]) == 4
+
+
+def test_snapshot_passes_defaults_of_plain_keys_only(dirs):
+    # Settings › "Changed from default": .env.example's value next to a plain key's; never for a secret or a hint
+    sd, _ = dirs
+    keys = [{**row("BUDGET_SETUP", value="7"), "default": "5"}, {**row("PORTAL_PASSWORD", "account", "S", value="x"), "default": "pw"},
+            {**row("AWS_ACCESS_KEY_ID", "aws", "k", hint="AKIA…MNOP"), "default": "AKIA"}, {**row("UPDATE_CHECK", value="true"), "default": 7},
+            {**row("REMOTE_MODE", value=""), "default": "x" * 5000}]
+    write_snapshot(sd, keys)
+    k = st.by_key(st.snapshot(sd))
+    assert k["BUDGET_SETUP"]["default"] == "5"
+    assert "default" not in k["PORTAL_PASSWORD"] and "default" not in k["AWS_ACCESS_KEY_ID"]
+    assert "default" not in k["UPDATE_CHECK"]   # (not a string)
+    assert len(k["REMOTE_MODE"]["default"]) <= st.MAX_VALUE
+
+
+def test_settings_page_search_and_changed_filter():
+    js = (STATIC / "settings.js").read_text(encoding="utf-8")
+    assert 'placeholder: "Search settings"' in js and 'text: "Changed from default"' in js
+    changed = js[js.index("function changedFromDefault(k)"):js.index("function findBar()")]
+    assert '(k.secret === "-" || k.secret === "s")' in changed and '"default" in k' in changed
+    find = js[js.index("function applyFind()"):js.index("// --- one setting ---")]
+    assert ".includes(q)" in find and "RegExp" not in find   # plain substring matching: linear, no pattern from the box
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
+        assert sink not in js
 
 
 def test_no_snapshot_or_a_bad_one(dirs):

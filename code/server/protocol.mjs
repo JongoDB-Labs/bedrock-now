@@ -142,7 +142,11 @@
 //   bn-portal-origin: the portal that frames this page (also /api/state's portal_origin)
 // Hashed files (name.HASH.ext) and everything under chunks/ are served immutable; the rest no-cache with an ETag.
 // The page tells the portal how many permission prompts wait (the Code tab's badge):
-//   parent.postMessage({type: "bn-code-status", pending: N, busy}, portal_origin)
+//   parent.postMessage({type: "bn-code-status", pending: N, busy, bypass, waiting: SESSIONS, sessions: [{id, title,
+//                      state: waiting|working|idle, waiting: N}] (≤ 8: Home's Code card; titles are sandbox data)},
+//                      portal_origin)
+// and takes deep links: /?session=ID (shown, or resumed) and /?prompt=TEXT (a draft marked as coming from a link,
+// ≤ 4,000 characters, never sent by itself); both leave the address bar at once
 //
 // WebSocket /ws (JSON text frames, max 32 MiB; Origin must be the page's own). Sessions live in the backend, not in
 // the socket: a reload, a second tab or a phone attaches and gets what it missed. Every message and every `ev` has

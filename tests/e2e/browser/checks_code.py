@@ -1611,6 +1611,147 @@ def ui_budget(ctx):
     return f"the terminal key over budget → the page's banner: {' '.join(text.split())[:120]!r}; budget restored to ${budget}"
 
 
+def _terminal_frame(page, timeout=30):
+    term = origin("terminal")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        for f in page.frames:
+            if f.url.startswith(term):
+                return f
+        page.wait_for_timeout(250)
+    raise AssertionError("no terminal frame")
+
+
+def _term_screen(frame) -> str:
+    return frame.evaluate("""() => { const b = window.term && window.term.buffer.active; if (!b) return '';
+        const out = []; for (let i = b.viewportY; i < b.viewportY + window.term.rows; i++) {
+          const l = b.getLine(i); out.push(l ? l.translateToString(true) : ''); } return out.join('\\n'); }""")
+
+
+def _term_wait(frame, pattern, timeout=60):
+    t0, txt = time.time(), ""
+    while time.time() - t0 < timeout:
+        try:
+            txt = _term_screen(frame)
+        except Exception:  # noqa: BLE001 — the frame may reload once (its unlock)
+            txt = ""
+        if re.search(pattern, txt, re.M):
+            return txt
+        time.sleep(0.5)
+    raise AssertionError(f"the terminal never showed /{pattern}/; last screen: {txt[-500:]!r}")
+
+
+@check("browser", "code-ui-guardrails")
+@saved
+def ui_guardrails(ctx):
+    """UX-10 on the real stack (Haiku): an Always rule from a Bash card listed in ⋯ › Permissions and removed there; a
+    budget with its stop (the backend restarts Claude Code with Claude Code's own maxBudgetUsd, the next answer still
+    comes, the meter shows the share); the session in the Done group; Home's Code card listing it; a ?prompt= link as a
+    marked draft (nothing sent); Open in the terminal (the command typed in a new tmux window, a resume here refused
+    until Claude Code exits there, then allowed)."""
+    need_haiku()
+    page, rec = ui_page(ctx, "code-ui-guardrails")
+    c = Code.on(page, rec, goto=False)
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("chat-new").click()
+    see(page.locator(".chat-head .pane-title")).to_have_text("New session", timeout=20000)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-default").click()
+    ask(page, "Use the Bash tool to run exactly this command, once, and nothing else: echo bn-e2e-always")
+    card = page.get_by_test_id("permission")
+    see(card).to_be_visible(timeout=150000)
+    see(card).to_contain_text("echo bn-e2e-always")
+    card.get_by_test_id("perm-always").click()
+    answered(page)
+    sid = page.evaluate("() => JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    # ⋯ › Permissions: the rule "Always" wrote, in the sandbox's user settings; removed there
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-permissions").click()
+    user = page.get_by_test_id("perm-file-user")
+    rule = user.get_by_test_id("perm-rule").filter(has_text="bn-e2e-always")
+    see(rule).to_have_count(1, timeout=20000)
+    see(page.get_by_test_id("perm-bypass-ask")).to_contain_text("Edit(//workspace/.git/**)")
+    shot(page, "80-code-ui-permissions")
+    rule.get_by_test_id("perm-remove").click()
+    see(user.get_by_test_id("perm-rule").filter(has_text="bn-e2e-always")).to_have_count(0, timeout=20000)
+    perm = c.api("GET", "/api/permissions")["json"]
+    expect(not any("bn-e2e-always" in r for r in perm["user"]["allow"]), f"the rule is still there: {perm['user']['allow'][:5]}")
+    page.get_by_test_id("permissions-dialog").get_by_role("button", name="Close").click()
+    # a budget with its stop: the backend holds it, the next prompt restarts Claude Code for it (said), the answer comes
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-budget").click()
+    page.get_by_test_id("budget-amount").fill("5")
+    page.get_by_test_id("budget-hard").check()
+    page.get_by_test_id("budget-save").click()
+    see(page.get_by_test_id("budget-dialog")).to_have_count(0, timeout=20000)
+    expect(state_of(c, sid).get("budget") == {"usd": 5, "hard": True}, f"the backend's budget: {state_of(c, sid).get('budget')}")
+    ask(page, "Reply with exactly the word: budget")
+    answered(page)
+    see(page.locator("[data-testid=chat]")).to_contain_text("so its new budget applies (stop at $5.00)", timeout=20000)
+    see(page.get_by_test_id("cost-budget")).to_contain_text("%", timeout=90000)
+    # the session list: in the Done group
+    page.get_by_test_id("session-switch").click()
+    see(page.get_by_test_id("session-group-done").locator(f"[data-session='{sid}']")).to_have_count(1, timeout=20000)
+    shot(page, "81-code-ui-budget-groups")
+    # a deep link's prompt: a draft marked as from a link, nothing sent; the address cleaned
+    users = page.get_by_test_id("msg-user").count()
+    page.goto(f"{CODE}/?session={sid}&prompt=" + "Summarise%20this%20workspace")
+    see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    see(page.get_by_test_id("link-draft")).to_be_visible(timeout=20000)
+    see(page.get_by_test_id("prompt")).to_have_value("Summarise this workspace")
+    expect(page.evaluate("location.search") == "", f"the address keeps {page.evaluate('location.search')!r}")
+    page.wait_for_timeout(3000)
+    settled(page, "msg-user")
+    expect(page.get_by_test_id("msg-user").count() <= users, "the link's prompt was sent")
+    shot(page, "82-code-ui-link-draft")
+    page.get_by_test_id("link-draft-clear").click()
+    # Open in the terminal: the command typed into a new window of the terminal's tmux; resuming here is refused meanwhile
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-to-terminal").click()
+    see(page.locator(".toast").filter(has_text=f"claude-bedrock --resume {sid}")).to_be_visible(timeout=30000)
+    see(page.get_by_test_id("terminal")).to_be_visible()
+    tf = _terminal_frame(page)
+    if tf.locator("h1", has_text="Unlock the terminal").count():
+        tf.fill("#password", ENV["PORTAL_PASSWORD"])
+        tf.click("form[action='/.bn/unlock'] button[type=submit]")
+        tf = _terminal_frame(page)
+    tf.locator(".xterm").wait_for(timeout=30000)
+    screen = _term_wait(tf, re.escape(f"claude-bedrock --resume {sid}"), 60)
+    shot(page, "83-code-ui-open-in-terminal")
+    r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
+    expect(r["status"] == 409 and "terminal" in r["text"], f"a resume while the terminal runs it: {r['status']} {r['text'][:160]}")
+    # Claude Code exits there (Ctrl-C twice: also from its first-run "trust this folder?" question), then the window's
+    # shell too: the page may resume it again (no request to the model)
+    _term_wait(tf, r"(?i)(for shortcuts|trust|Claude Code|bedrock ·)", 90)
+    page.wait_for_timeout(3000)
+    t0, r = time.time(), {"status": 0, "text": ""}
+    while time.time() - t0 < 90:
+        tf.locator(".xterm-helper-textarea").focus()
+        page.keyboard.press("Control+c")
+        page.wait_for_timeout(400)
+        page.keyboard.press("Control+c")
+        page.wait_for_timeout(3000)
+        r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
+        if r["status"] == 200:
+            break
+    expect(r["status"] == 200, f"after /exit in the terminal: {r['status']} {r['text'][:160]}")
+    tf.locator(".xterm-helper-textarea").focus()
+    page.keyboard.type("exit", delay=40)
+    page.keyboard.press("Enter")
+    csp_clean(page, rec)
+    # Home's Code card: the framed page reports its sessions; this one listed with a Resume link
+    page.goto(origin() + "/")
+    page.wait_for_selector("section.code-card", timeout=20000)
+    page.evaluate("() => { const b = document.querySelector('.tab[data-tab=code]'); if (b) b.click(); }")
+    page.wait_for_timeout(4000)
+    page.evaluate("() => { const b = document.querySelector('.tab[data-tab=home]'); if (b) b.click(); }")
+    see(page.locator(f"section.code-card .code-sessions a[href*='session={sid}']")).to_have_count(1, timeout=30000)
+    see(page.locator("#code-budget")).to_contain_text("this period", timeout=40000)
+    shot(page, "84-home-code-card")
+    return f"Always rule listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not sent; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
+
+
 @check("browser", "code-settings-row")
 def settings_row(ctx):
     need_on()

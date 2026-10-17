@@ -22,6 +22,10 @@
   const CODE = (() => {
     try { const c = JSON.parse(document.querySelector('meta[name="bn-code"]').content) || {}; return { enabled: c.enabled === true, here: c.here === true && Boolean(APP_URLS.code) }; } catch (_) { return { enabled: false, here: false }; }
   })();
+  // The browser terminal (terminal.js reads the same): usable on this site — its steps are left out where it is not.
+  const TERM = (() => {
+    try { const t = JSON.parse(document.querySelector('meta[name="bn-terminal"]').content) || {}; return { here: t.here === true && Boolean(APP_URLS.terminal) }; } catch (_) { return { here: false }; }
+  })();
   const CHECK_FAILED = "Could not check: Home says why; trying again every 30 s.";
 
   // --- small builders ---
@@ -59,6 +63,14 @@
         "Open Code", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
     }
     return button("Open Code", "open-code", () => { showTab("code"); away(); });
+  }
+  // The Terminal tab (on a phone: full screen in a new browser tab, as under More)
+  function openTerminal() {
+    if (PHONE.matches) {
+      return el("a", { class: "action", href: appUrl("terminal"), target: "_blank", rel: "noopener", "data-k": "open-terminal" },
+        "Open the terminal", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
+    }
+    return button("Open the terminal", "open-terminal", () => { showTab("terminal"); away(); });
   }
   // Where Claude Code also runs: the Code tab when it is on here, else how to turn it on
   function codeLine(use) {
@@ -352,6 +364,33 @@
       ],
       actions: () => (CODE.here ? [openCode()] : []),
     },
+    // (when: only where that app is offered here — the browser terminal, the Code page)
+    terminal: {
+      title: "The browser terminal", optional: true, when: () => TERM.here,
+      body: () => [
+        p("Claude Code in a sandbox that sees only your workspace folder: in the ", b("Terminal"), " tab, ", code("claude-bedrock"),
+          " starts by itself in its first window. It asks for the portal password again."),
+        list("ul", [
+          ["Closing the tab keeps it running: come back later, or from your phone, and it is where you left it."],
+          [code("Ctrl-b c"), " opens a shell beside it; ", code("Ctrl-b n"), " goes to the next window."],
+          ["The Code page's ", b("Open in the terminal"), " continues one of its sessions here, in a window of its own."]]),
+      ],
+      actions: () => [openTerminal()],
+    },
+    code: {
+      title: "The Code page: ask, approve, preview, review", optional: true, when: () => CODE.here,
+      body: () => [
+        p("Claude Code with a chat, your workspace's files and its permission cards, in the same sandbox. Five things to try:"),
+        list("ol", [
+          [b("Open Code"), " and unlock it with the portal password."],
+          [b("Ask"), ": type in the prompt box. In ", b("Manual"), " (the mode next to Send) every command and edit waits for your OK."],
+          [b("Approve a card"), ": Allow once, Always, or Deny. ⋯ › Permissions lists the Always rules and takes them out again."],
+          [b("Preview a server"), ": when Claude starts a dev server, ", b("Preview :port"), " shows it beside the chat (⋯ › Ports & previews)."],
+          [b("Review changes"), ": ", b("Review"), " in the top bar lists every change, with Keep and Undo; a comment on a line goes with your next prompt."]]),
+        note("⋯ › Budget for this session warns you at 50 % and 80 % of an amount you choose, and can stop Claude when it is reached."),
+      ],
+      actions: () => [openCode()],
+    },
     shared: {
       title: "One store for both", optional: true,
       body: () => [
@@ -385,8 +424,10 @@
   const SECTIONS = [
     { title: "Set up", steps: ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras"] },
     { title: "Your apps (one sign-in)", steps: ["signin-portal", "signin-chat", "signin-admin", "signin-files"] },
-    { title: "Use it together", steps: ["home", "chat", "voice-use", "docs", "claude", "shared", "admin", "done"] },
+    { title: "Use it together", steps: ["home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"] },
   ];
+  // steps of apps this site does not offer (the terminal, the Code page) are left out, not shown as open
+  for (const sec of SECTIONS) sec.steps = sec.steps.filter((id) => !STEPS[id].when || STEPS[id].when());
   const ORDER = SECTIONS.flatMap((s) => s.steps);
   const secOf = (id) => SECTIONS.findIndex((s) => s.steps.includes(id));
 

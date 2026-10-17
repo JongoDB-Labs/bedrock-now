@@ -14,7 +14,8 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from portal.app import create_app
+from portal import code as codepage
+from portal.app import STATIC, create_app
 from portal.config import from_env
 from portal.security import COOKIE, CODE_COOKIE, REMOTE_CODE_COOKIE, TERMINAL_COOKIE, Handoff, TerminalUnlocks, Sessions, safe_next
 
@@ -234,6 +235,73 @@ def test_unlock_checks_host_origin_session_and_password(cc):
     c = _cookie(r, CODE_COOKIE)
     assert r.status_code == 303 and r.headers["location"] == "/"
     assert "HttpOnly" in c and "SameSite=strict" in c and "Domain" not in c and "Max-Age=43200" in c
+
+
+# --- deep links (?session, ?prompt): kept through the unlock form, rebuilt from what checks out ---
+
+def test_deep_links_are_rebuilt_from_what_checks_out():
+    dl = codepage.deep_link
+    assert dl(f"/?session={SID}") == f"/?session={SID}"
+    assert dl(f"/?session={SID.upper()}&prompt=fix+the+bug") == f"/?session={SID}&prompt=fix+the+bug"
+    assert dl("/?prompt=%3Cimg%20src%3Dx%3E%0Anext") == "/?prompt=%3Cimg+src%3Dx%3E%0Anext"
+    assert dl("/?other=1&prompt=hi") == "/?prompt=hi"                     # unknown parameters dropped
+    assert dl("/?prompt=a&prompt=b") == "/?prompt=a"                      # once each
+    for bad in (None, "", "/", "/api/state?session=x", "//evil.example/?prompt=x", "/x?prompt=a", "?prompt=a", "/?session=../../etc",
+                "/?prompt=", "/?prompt=a%00b", "/?" + "a=1&" * 20, "/?prompt=" + "a" * 70000):
+        assert dl(bad) is None, bad
+    long = dl("/?prompt=" + "a" * 5000)
+    assert long == "/?prompt=" + "a" * 4000                              # capped as the page caps it
+    huge = dl(f"/?session={SID}&prompt=" + "%E2%80%AE" * 3000)           # too long once encoded: the session stays
+    assert huge == f"/?session={SID}"
+    assert dl("/?prompt=" + "%E2%80%AE" * 3000) is None
+
+
+def test_the_unlock_form_carries_a_deep_link_and_unlocking_goes_there(cc):
+    tok = session(cc)
+    r = verify(cc, {COOKIE: tok}, {**NAV, "X-Forwarded-Uri": f"/?session={SID}&prompt=%22%3E%3Cscript%3Ex%3C%2Fscript%3E&evil=1"})
+    assert r.status_code == 401
+    m = re.search(r'<input type="hidden" name="next" value="([^"]*)">', r.text)
+    assert m, r.text
+    assert "<script>" not in r.text and m.group(1) == f"/?session={SID}&amp;prompt=%22%3E%3Cscript%3Ex%3C%2Fscript%3E"
+    # the form posts it back: the redirect goes there (rebuilt, never as posted)
+    r = cc.post("/auth/code-unlock", data={"password": PW, "next": f"/?session={SID}&prompt=hi%0Athere"},
+                headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
+    cc.cookies.clear()
+    assert r.status_code == 303 and r.headers["location"] == f"/?session={SID}&prompt=hi%0Athere"
+    for bad in ("https://evil.example/?prompt=x", "//evil.example/?session=" + SID, "/\\evil.example", "/api/sessions?x=1", "javascript:alert(1)"):
+        r = cc.post("/auth/code-unlock", data={"password": PW, "next": bad}, headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
+        cc.cookies.clear()
+        assert r.status_code == 303 and r.headers["location"] == "/", bad
+    # a wrong password keeps it in the form; a page without a deep link has none
+    r = cc.post("/auth/code-unlock", data={"password": "wrong", "next": "/?prompt=hi"}, headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
+    cc.cookies.clear()
+    assert 'name="next" value="/?prompt=hi"' in r.text
+    assert 'name="next"' not in verify(cc, {COOKIE: tok}).text
+    # too many form fields: no deep link, still a normal answer
+    r = cc.post("/auth/code-unlock", data={"password": "wrong", **{f"f{i}": "x" for i in range(9)}}, headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
+    cc.cookies.clear()
+    assert r.status_code == 401
+
+
+def test_the_terminals_unlock_form_carries_no_deep_link(cs):
+    with _client(cs) as c:
+        tok = session(c)
+        r = c.get("/auth/verify?app=terminal", headers={"Accept": "text/html", "X-Forwarded-Method": "GET", "X-Forwarded-Host": TERM_HOST,
+                                                        "X-Forwarded-Uri": f"/?session={SID}", "Cookie": f"{COOKIE}={tok}"})
+        assert r.status_code == 401 and 'name="next"' not in r.text and "{{next}}" not in r.text
+
+
+def test_home_code_card_lists_what_the_code_page_reports_as_text():
+    js = (STATIC / "code.js").read_text(encoding="utf-8")
+    card = js[js.index("// --- Home's Code card ---"):js.index("function listen()")]
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+        assert sink not in js, sink
+    assert "UUID.test(x.id)" in card and ".slice(0, 120)" in card and ".slice(0, 8)" in card
+    assert 'u.searchParams.set(k, v)' in card and "openLink({ prompt: t })" in card and "openLink({ session: s.id })" in card
+    assert "nothing is sent from here" in card
+    assert "e.origin !== codeOrigin" in js   # only the code host's page may report
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'new CustomEvent("bn:summary", { detail: d })' in app
 
 
 def test_unlock_is_off_while_the_code_page_is(settings):

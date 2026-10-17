@@ -17,6 +17,7 @@
   <form method="post" action="/.bn/unlock">
     <label for="password">Portal password</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required>
+    {{next}}
     <button type="submit">Unlock</button>
   </form>
   <p class="hint">Sign out locks it again. Closing the tab does not stop Claude: a session keeps working, and asks for permissions when you come back (unanswered ones are denied after 10 minutes).</p>

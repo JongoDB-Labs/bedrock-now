@@ -11,7 +11,7 @@ from portal.app import STATIC, create_app
 
 STEP_IDS = ("welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras",
             "signin-portal", "signin-chat", "signin-admin", "signin-files",
-            "home", "chat", "voice-use", "docs", "claude", "shared", "admin", "done")
+            "home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done")
 
 
 def offline(request):
@@ -139,3 +139,16 @@ def test_home_card_points_at_settings_while_the_code_page_is_off():
     js = (STATIC / "code.js").read_text(encoding="utf-8")
     off = js[js.index("    } else {\n      line ="):]
     assert 'el("a", { href: "#settings", text: "Settings → Code page" })' in off and "./stack code enable" in off
+
+
+def test_terminal_and_code_steps_only_where_offered():
+    # P-1: the browser terminal and the Code page get steps of their own, shown only on a site that offers them
+    js = (STATIC / "tour.js").read_text(encoding="utf-8")
+    term = js[js.index("    terminal: {"):js.index("    code: {")]
+    code = js[js.index("    code: {"):js.index("    shared: {")]
+    assert "when: () => TERM.here" in term and "openTerminal()" in term
+    assert "when: () => CODE.here" in code and "actions: () => [openCode()]" in code
+    for words in ("Open Code", "Ask", "Approve a card", "Preview a server", "Review changes", "Budget for this session"):
+        assert words in code, words
+    assert "sec.steps = sec.steps.filter((id) => !STEPS[id].when || STEPS[id].when())" in js
+    assert "document.querySelector('meta[name=\"bn-terminal\"]')" in js and "t.here === true && Boolean(APP_URLS.terminal)" in js

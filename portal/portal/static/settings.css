@@ -101,3 +101,13 @@
 @media (min-width: 768px) {
   .sheet-links button.sheet-link { font: inherit; }
 }
+
+/* search and "Changed from default" (settings.js findBar) */
+.set-find { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 980px; margin: 4px 0 0; }
+.set-find-input { flex: 1 1 220px; min-width: 0; max-width: 420px; font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface); color: var(--ink); }
+.set-find-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+.set-find .chips, .set-find .chip { margin: 0; }
+.set-find-note { margin: 0; font-size: 12.5px; }
+.set-finding .set-row[data-changed] .set-label::after { content: "changed"; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 8px;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); }

@@ -198,6 +198,28 @@ test_snapshot_masks_every_secret() {
   fi
 }
 
+test_snapshot_names_the_defaults_of_plain_keys_only() {   # Settings › "Changed from default" (.env.example's values)
+  _env
+  set_env_batch BUDGET_SETUP 7 UPDATE_CHECK true
+  settings_snapshot_write
+  local s; s="$(cat "$(settings_snapshot_file)")"
+  assert_contains "$s" '"key": "BUDGET_SETUP", "group": "budgets", "secret": "-"'
+  assert_contains "$s" '"value": "7", "default": "5"}'
+  assert_contains "$s" '"value": "true", "default": "true"}'
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+for k in d["keys"]:
+    assert ("default" not in k) or k["secret"] in ("-", "s"), k["key"]   # never a secret, never a hint of one
+assert sum(1 for k in d["keys"] if "default" in k) > 20' "$(settings_snapshot_file)"
+  fi
+  # no .env.example (an install without it): no defaults, nothing else changes
+  STACK_DIR="$TMP/co2"; mkdir -p "$STACK_DIR/catalog"; cp "$T_ROOT/catalog/"*.tsv "$STACK_DIR/catalog/"
+  settings_snapshot_write
+  assert_not_contains "$(cat "$(settings_snapshot_file)")" '"default": '
+  assert_contains "$(cat "$(settings_snapshot_file)")" '"key": "BUDGET_SETUP"'
+}
+
 test_snapshot_refresh_follows_env_and_shows_the_last_change() {
   _env
   settings_snapshot_write
