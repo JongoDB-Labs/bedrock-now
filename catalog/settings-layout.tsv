@@ -1,0 +1,168 @@
+# Where the portal's Settings page and ./stack config list show each key of catalog/settings.tsv: the sections, their
+# order, what is common and what is rare, which settings belong to a switch, and a one-line summary for the page.
+# Presentation only — what may change, how and from where stays in settings.tsv (the update helper's allowlist), and
+# the full explanation is settings.tsv's note (the page shows it under "Details" and in the confirmation).
+# lib/settings.sh (config_list) and portal/portal/settings.py (layout) read this file; tests/test_settings.sh checks
+# that every key of settings.tsv is here exactly once.
+#
+# Section rows:  @ID  TITLE  LEDE  DOC            (DOC: a page of the repository, linked as "Learn more")
+# Key rows:      KEY  SECTION  PLACE  PARENT  SUMMARY
+#   PLACE    main (in its section) | more (under the section's "More settings", folded) | with (shown inside PARENT's
+#            row, never on its own: the other half of a pair, a value it derives, the key a budget belongs to)
+#   PARENT   - | a key of the same section: main and more rows show only while it is on (true or on; for other
+#            values: set and not off) — search and "Changed from default" show them anyway, saying so
+#   SUMMARY  one plain line (- for with rows)
+# Rows whose KEY starts with + are the page's own rows (no .env key): +devices, +models, +backups, +test, +check-aws,
+# +report, +restart. Sections are shown in this order; rows in file order.
+
+@account	Account & security	Your password, the owner email, how long sign-ins last, and what LiteLLM keeps of your prompts.	README.md#the-portal-one-login-for-everything
+PORTAL_PASSWORD	account	main	-	The one password for the portal, Chat, Admin and Files; it also unlocks the Terminal and the Code page.
+PORTAL_PASSWORD_HASH	account	with	PORTAL_PASSWORD	-
+OPENWEBUI_ADMIN_EMAIL	account	main	-	Your account in Chat, and your sign-in name for Admin (LiteLLM).
+LITELLM_UI_USER	account	with	OPENWEBUI_ADMIN_EMAIL	-
+LITELLM_UI_PASSWORD	account	main	-	Admin's own password: the portal signs you in to the Admin tab with it.
+PORTAL_SESSION_DAYS	account	main	-	How long a sign-in lasts on each browser and device.
++devices	account	main	-	Every browser, phone and installed app that signed in with the portal password.
+LITELLM_STORE_PROMPTS	account	main	-	Keep the text of every prompt and answer in LiteLLM's logs (90 days, and in backups).
+
+@aws	AWS & models	The AWS key bedrock-now calls Bedrock with, and which models that key can use.	README.md#models--access
+AWS_ACCESS_KEY_ID	aws	main	-	The IAM user key LiteLLM calls Bedrock with. A new one is checked with AWS first (free).
+AWS_SECRET_ACCESS_KEY	aws	with	AWS_ACCESS_KEY_ID	-
+AWS_REGION_NAME	aws	main	-	The AWS region your Bedrock models run in.
++models	aws	main	-	Ask Bedrock again which models your key can use, e.g. after your AWS admin granted more.
+AWS_AUTH	aws	more	-	An access key (the usual), or this EC2 machine's own IAM role.
+
+@spending	Spending & budgets	A monthly budget for each LiteLLM key, the warning before one runs out, and the prices costs are counted with. Budget changes take effect at once.	README.md#costs--budgets
+BUDGET_OPENWEBUI	spending	main	-	Monthly limit for Chat, with its document search and voice.
+LITELLM_KEY_OPENWEBUI	spending	with	BUDGET_OPENWEBUI	-
+BUDGET_CLAUDE_CODE	spending	main	-	Monthly limit for claude-bedrock in your own terminal.
+LITELLM_KEY_CLAUDE_CODE	spending	with	BUDGET_CLAUDE_CODE	-
+BUDGET_TERMINAL	spending	main	-	Monthly limit for the Terminal tab and the Code page (they share one key).
+LITELLM_KEY_TERMINAL	spending	with	BUDGET_TERMINAL	-
+BUDGET_ALERT_PCT	spending	main	-	How much of a budget may be used before Home, Chat and ./stack costs warn.
+ALERT_WEBHOOK_URL	spending	main	-	Optional: a web address LiteLLM posts a budget alert to (Slack, ntfy, your own).
+BUDGET_SETUP	spending	more	-	Monthly limit for model checks and smoke tests. Keep it above $0.05.
+LITELLM_KEY_SETUP	spending	with	BUDGET_SETUP	-
+PRICE_UPDATES	spending	more	-	Update Bedrock prices daily from AWS's public price lists (no credentials are sent).
+
+@chat	Chat & voice	Chat's models, its microphone and voice calls, and OpenRouter's models next to Bedrock.	README.md#chat-open-webui
+CHAT_DEFAULT_MODEL	chat	main	-	The model a new chat starts with.
+OWUI_DEFAULT_MODEL	chat	with	CHAT_DEFAULT_MODEL	-
+MODELS_HIDDEN	chat	main	-	Models Chat's picker leaves out. They stay usable through the API and Claude Code.
+STT_PROVIDER	chat	main	-	Who turns your speech into text for Chat's microphone and voice calls.
+STT_MODEL	chat	with	STT_PROVIDER	-
+STT_API_KEY	chat	with	STT_PROVIDER	-
+OPENROUTER_API_KEY	chat	main	-	Optional: hundreds of other models next to Bedrock. Prompts to them go to openrouter.ai.
+OPENROUTER_MODELS	chat	main	OPENROUTER_API_KEY	Which OpenRouter models Chat and the API offer.
+CHAT_TASK_MODEL	chat	more	-	The model that writes chat titles, tags and follow-up suggestions (every chat pays for it).
+OWUI_TASK_MODEL	chat	with	CHAT_TASK_MODEL	-
+OPENROUTER_MAX_MODELS	chat	more	OPENROUTER_API_KEY	At most this many OpenRouter models, the newest first; a long list slows LiteLLM's start.
+OPENROUTER_INCLUDE_ALIASES	chat	more	OPENROUTER_API_KEY	Also offer OpenRouter's …-latest alias models.
+
+@code	Claude Code	The Code page (Claude Code in the browser, with a chat and your files), the browser Terminal, and the models Claude Code uses. The Code page runs in the Terminal's sandbox: one folder, one key, one budget.	README.md#the-code-page-optional
+CODE_ENABLED	code	main	-	The Code tab: Claude Code in the browser with a chat, permission prompts and your workspace's files.
+CODE_ALLOW_BYPASS	code	main	CODE_ENABLED	Offer Bypass permissions: Claude runs every command and edit in the sandbox without asking.
+CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves routine actions and blocks risky ones (it costs extra).
+TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
+TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
+TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	Whether the sandbox (the Terminal and the Code page) can reach the internet.
+TERMINAL_AUTO_MODE	code	main	TERMINAL_ENABLED	Auto mode for claude typed in the Terminal too (it costs extra).
+CLAUDE_MODEL_OPUS	code	main	-	The model Claude Code works with: claude-bedrock's main (opus) slot.
+CLAUDE_BEDROCK_OPUS_MODEL	code	with	CLAUDE_MODEL_OPUS	-
+CLAUDE_MODEL_SONNET	code	more	-	Claude Code's sonnet slot.
+CLAUDE_BEDROCK_SONNET_MODEL	code	with	CLAUDE_MODEL_SONNET	-
+CLAUDE_MODEL_HAIKU	code	more	-	Claude Code's haiku slot: quick background tasks.
+CLAUDE_BEDROCK_HAIKU_MODEL	code	with	CLAUDE_MODEL_HAIKU	-
+TERMINAL_MEM_LIMIT	code	more	TERMINAL_ENABLED	The sandbox container's memory limit.
+
+@files	Files & sharing	The file store behind the Files tab, and the shared file server Claude Code and Chat use.	README.md#shared-files-and-knowledge-mcp
+RUSTFS_ACCESS_KEY	files	main	-	The Files tab's sign-in (the portal signs you in with it); also the storage key of Chat and backups.
+RUSTFS_SECRET_KEY	files	with	RUSTFS_ACCESS_KEY	-
+SHARED_MCP_TOKEN	files	main	-	The token of the shared file server (MCP) claude-bedrock and other MCP clients use.
+
+@remote	Remote access	The portal from your phone or laptop over Tailscale (or your own domain), without opening a port to the internet.	docs/remote.md
+REMOTE_MODE	remote	main	-	Off, Tailscale or your own domain. Turned on in a terminal: it needs steps in your tailnet.
+TAILSCALE_ALLOWED_LOGIN	remote	main	REMOTE_MODE	The only Tailscale login whose requests are served.
+REMOTE_ADMIN_ACTIONS	remote	main	REMOTE_MODE	Let your devices use Update, Settings and Diagnostics too (off: they can look, not change).
+REMOTE_TERMINAL	remote	main	REMOTE_MODE	The Terminal and the Code page over remote access too: a shell from your phone.
+REMOTE_PREVIEW	remote	main	REMOTE_TERMINAL	Previews of your dev servers over remote access too. A trade-off: read Details first.
+TS_HOSTNAME	remote	more	REMOTE_MODE	The Tailscale machine name of bedrock-now's sidecar.
+TS_SERVICE	remote	more	REMOTE_MODE	The base name of the Tailscale Services (every remote address starts with it).
+TS_TAG	remote	more	REMOTE_MODE	The sidecar's Tailscale tag; it must match your tailnet policy.
+TS_AUTHKEY	remote	more	REMOTE_MODE	The one-time enrollment key; removed once the sidecar has signed in.
+CLOUDFLARE_API_TOKEN	remote	more	REMOTE_MODE	Own-domain mode: the token that edits your DNS zone for the certificate.
+REMOTE_PREVIEW_DOMAIN	remote	more	REMOTE_MODE	Own-domain mode: a domain of its own for previews, so they are another site than your apps.
+REMOTE_SUBNET	remote	more	REMOTE_MODE	The sidecar's small Docker network; change it only if ./stack says it collides.
+
+@updates	Updates & backups	New releases, automatic updates at night, and backups of your chats, keys and files.	README.md#updating
+UPDATE_CHECK	updates	main	-	Ask GitHub once a day whether a newer bedrock-now exists (nothing about you is sent).
+AUTO_UPDATE	updates	main	-	Install a new release by itself at night, after a backup.
+AUTO_UPDATE_HOUR	updates	main	AUTO_UPDATE	When the three-hour nightly window starts (this computer's time).
+BACKUP_NIGHTLY	updates	main	-	Back up every night, keeping the newest few.
+BACKUP_HOUR	updates	main	BACKUP_NIGHTLY	When the three-hour backup window starts (this computer's time).
+BACKUP_KEEP	updates	main	BACKUP_NIGHTLY	How many nightly backups to keep. Yours, and the one a rollback needs, are never removed.
++backups	updates	main	-	Back up now, and the backups on this computer.
+UPDATE_REQUIRE_SIGNED_TAGS	updates	more	-	Install only releases whose signature git verifies.
+BEDROCK_NOW_HELPER_ALLOW_BRANCH	updates	more	-	Let the update helper update a checkout that follows a branch (a switch of the helper itself).
+HELPER_PORTAL_UID	updates	more	-	Linux: the host user that may own the portal's request files (a switch of the helper itself).
+
+@diagnostics	Diagnostics	Checks and restarts, carried out on this computer by the update helper. Each asks for the portal password.	README.md#troubleshooting
++test	diagnostics	main	-	Every service end to end, like ./stack test: two tiny Bedrock requests (~$0.0001).
++check-aws	diagnostics	main	-	Ask AWS who the key belongs to and whether it may call Bedrock (free: no model runs).
++report	diagnostics	main	-	Versions, services and settings without secrets (your home folder shown as ~), to copy into an issue.
++restart	diagnostics	main	-	Recreate one service with its current settings (10-30 s; requests in flight fail).
+
+@advanced	Advanced	Rarely needed, and read-only here: addresses, ports and internal keys, each with the reason and the command that changes it.	README.md#advanced
+PORTAL_HOST	advanced	main	-	The portal's address; it carries this page and its sign-in cookie.
+PORTAL_PORT	advanced	main	-	The port the portal is published on (80, else 8800).
+CHAT_HOST	advanced	main	-	Chat's address (blank: chat. and the portal's address).
+ADMIN_HOST	advanced	main	-	Admin's address (blank: admin. and the portal's address).
+FILES_HOST	advanced	main	-	Files' address (blank: files. and the portal's address).
+TERMINAL_HOST	advanced	main	-	The Terminal's address (blank: terminal. and the portal's address).
+CODE_HOST	advanced	main	-	The Code page's address (blank: code. and the portal's address).
+LITELLM_PORT	advanced	main	-	The port of LiteLLM's API on this computer, for tools like claude-bedrock.
+SHARED_MCP_PORT	advanced	main	-	The port of the shared file server on this computer.
+BEDROCK_NOW_ALLOW_PUBLIC_HOST	advanced	main	-	Allow a portal address that does not end in .localhost (a security switch).
+COMPOSE_PROJECT_NAME	advanced	main	-	This checkout's Docker Compose project; changing it would orphan all data.
+PORTAL_SECRET	advanced	main	-	Signs portal sessions; a new one signs out every device.
+PORTAL_PROXY_SECRET	advanced	main	-	Proves to the portal that a request came through Caddy.
+LITELLM_MASTER_KEY	advanced	main	-	LiteLLM's admin key (./stack and Home's spend use it).
+LITELLM_SALT_KEY	advanced	main	-	Encrypts what LiteLLM stores; never changed after the first setup.
+POSTGRES_PASSWORD	advanced	main	-	The database password; Postgres keeps its own copy.
+WEBUI_SECRET_KEY	advanced	main	-	Signs Chat's own sessions.
+OPENWEBUI_API_KEY	advanced	main	-	The owner's Chat API key; shared-mcp and ./stack use it.
+OPENWEBUI_ADMIN_PASSWORD	advanced	main	-	Used only when Chat starts with no accounts at all.
+
+@about	About this install	What setup and ./stack chose or wrote: models, addresses and internal values. They follow your other settings.	README.md#settings
+OWUI_EMBED_ENGINE	about	main	-	How Chat turns documents into vectors: through LiteLLM, never a local model.
+OWUI_EMBED_MODEL	about	main	-	The embedding model setup chose for document search.
+OWUI_HYBRID_SEARCH	about	main	-	On while a rerank model is enabled.
+OWUI_RERANK_ENGINE	about	main	-	Through LiteLLM while a rerank model is enabled.
+OWUI_RERANK_MODEL	about	main	-	The rerank model setup chose.
+OWUI_ENABLE_IMAGES	about	main	-	On while an image model is enabled.
+OWUI_IMAGE_MODEL	about	main	-	The image model setup chose.
+OWUI_COST_FILTER_INSTALLED	about	main	-	Setup installed Chat's cost filter once.
+STT_BEDROCK_MODEL	about	main	-	The Voxtral model in use for speech-to-text.
+OWUI_STT_ENGINE	about	main	-	Chat's speech-to-text engine; follows the speech-to-text setting.
+OWUI_STT_BASE_URL	about	main	-	Where Chat sends recordings.
+PORTAL_ORIGIN	about	main	-	The only page that may frame the apps.
+CHAT_ORIGIN	about	main	-	The origin Chat answers cross-origin requests from.
+PREVIEW_DOMAIN	about	main	-	The site the Code page's previews of dev servers are served from.
+TS_TAILNET	about	main	-	Your tailnet, read from the sidecar.
+REMOTE_HOST	about	main	-	The portal's remote address.
+REMOTE_CHAT_HOST	about	main	-	Chat's remote address.
+REMOTE_ADMIN_HOST	about	main	-	Admin's remote address.
+REMOTE_FILES_HOST	about	main	-	Files' remote address.
+REMOTE_ORIGIN	about	main	-	The remote portal's origin.
+REMOTE_TERMINAL_HOST	about	main	-	The Terminal's remote address.
+REMOTE_CODE_HOST	about	main	-	The Code page's remote address.
+REMOTE_PREVIEW_HOST	about	main	-	The remote address of previews.
+REMOTE_PREVIEW_SITE	about	main	-	Whether previews have a site of their own.
+REMOTE_SIDECAR_IP	about	main	-	The sidecar's address on its network.
+LITELLM_DB_ADMIN_READY	about	main	-	Setup created the Admin (LiteLLM) account.
+PORTAL_GID	about	main	-	Linux: the group the portal runs with.
+TERMINAL_UID	about	main	-	Your user id in the sandbox, so files in the workspace stay yours.
+TERMINAL_GID	about	main	-	Your group id in the sandbox.
+TERMINAL_PROXY_SECRET	about	main	-	Internal: proves to the Terminal that a request came through Caddy.
+CODE_PROXY_SECRET	about	main	-	Internal: proves to the Code page that a request came through Caddy.
+PREVIEW_PROXY_SECRET	about	main	-	Internal: proves to previews that a request came through Caddy.

@@ -1,6 +1,7 @@
 """The Settings page's data and requests. The portal never reads .env: ./stack writes a masked snapshot
 (STATUS_DIR/settings.json, lib/settings.sh) with every key's metadata from catalog/settings.tsv, plain values, and only
-"set" plus a short hint for secrets. A change is a request file for the host helper (lib/settings_helper.sh), which
+"set" plus a short hint for secrets. Where the page shows each key (its sections, what is folded under More, which
+switch a setting belongs to) comes from catalog/settings-layout.tsv, read from the portal's read-only catalog mount. A change is a request file for the host helper (lib/settings_helper.sh), which
 checks everything again — format, the password against its own hash, the allowlist, each value — before
 ./stack config apply runs it. The validators here mirror lib/settings.sh (portal/tests/fixtures/settings_cases.tsv is
 checked against both) so the page can say what is wrong before anything is sent.
@@ -29,6 +30,9 @@ BACKUPS = "backups.json"
 CAPABILITY = "helper-settings.json"
 REPORT = "report.txt"
 MAX_SNAPSHOT = 512 * 1024
+MAX_NOTE = 2000                # a note is the full explanation (the longest, CODE_AUTO_MODE's, is ~1,250 characters)
+LAYOUT = "settings-layout.tsv"
+MAX_LAYOUT = 64 * 1024
 MAX_REPORT = 256 * 1024
 MAX_BODY = 12 * 1024           # the JSON the page sends (Caddy caps /api/settings/* at 16 KB)
 MAX_REQUEST = 8192             # the file for the helper (lib/settings_helper.sh SETTINGS_REQ_MAX_BYTES)
@@ -36,6 +40,11 @@ MAX_KEYS = 20
 MAX_VALUE = 2000
 CAPABILITY_MAX_AGE_S = 24 * 3600
 GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates", "remote", "advanced")
+# the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
+SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
+PLACES = ("main", "more", "with")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart")
+DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
 SECRET_CODES = ("-", "s", "k", "u", "h", "S")
@@ -65,7 +74,7 @@ def _key_row(k: dict) -> dict | None:
     code = k.get("secret") if k.get("secret") in SECRET_CODES else "S"
     row = {"key": name, "group": k.get("group") if k.get("group") in GROUPS else "advanced", "secret": code,
            "policy": _s(k.get("policy"), 20) or "ro", "validator": _s(k.get("validator"), 40) or "-",
-           "apply": _s(k.get("apply"), 80), "label": _s(k.get("label"), 120) or name, "note": _s(k.get("note")),
+           "apply": _s(k.get("apply"), 80), "label": _s(k.get("label"), 120) or name, "note": _s(k.get("note"), MAX_NOTE),
            "cli": _s(k.get("cli"), 200), "set": k.get("set") is True, "present": k.get("present") is True,
            "unknown": k.get("unknown") is True}
     if code in ("-", "s"):  # plain keys only: a value of a secret never leaves this function, whatever the file says
@@ -103,6 +112,50 @@ def snapshot(status_dir: Path) -> dict | None:
     base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""
     return {"written_at": written, "base": base, "remote_on": d.get("remote_on") is True, "last_change": lc,
             "choices": choices, "keys": keys}
+
+
+_layout_cache: dict = {}
+
+
+def layout(catalog_dir: Path) -> dict:
+    """catalog/settings-layout.tsv, every field type-checked: {"sections": [{id, title, lede, doc}], "rows": [{key,
+    section, place, parent, summary}]} in the file's order ({"sections": [], "rows": []} without a readable file). Only
+    presentation: what may change and how stays in the snapshot (settings.tsv's policy and validator)."""
+    p = catalog_dir / LAYOUT
+    try:
+        st_ = p.stat()
+        if p.is_symlink() or not p.is_file() or st_.st_size > MAX_LAYOUT:
+            return {"sections": [], "rows": []}
+        stamp = (st_.st_mtime_ns, st_.st_size)
+        if _layout_cache.get("path") == str(p) and _layout_cache.get("stamp") == stamp:
+            return _layout_cache["value"]
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"sections": [], "rows": []}
+    sections, rows, seen_s, seen_k = [], [], set(), set()
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        c = line.split("\t")
+        if c[0].startswith("@"):
+            sid = c[0][1:]
+            if sid in SECTIONS and sid not in seen_s and len(c) >= 3:
+                seen_s.add(sid)
+                doc = c[3] if len(c) > 3 and DOC.fullmatch(c[3]) else ""
+                sections.append({"id": sid, "title": _s(c[1], 60) or sid, "lede": _s(c[2], 400), "doc": doc})
+            continue
+        if len(c) < 5 or c[0] in seen_k or not (NAME.fullmatch(c[0]) or c[0] in OWN_ROWS):
+            continue
+        if c[1] not in seen_s or c[2] not in PLACES or not (c[3] == "-" or NAME.fullmatch(c[3])):
+            continue
+        if c[2] == "with" and c[3] == "-":
+            continue
+        seen_k.add(c[0])
+        rows.append({"key": c[0], "section": c[1], "place": c[2], "parent": "" if c[3] == "-" else c[3],
+                     "summary": "" if c[4] == "-" else _s(c[4], 200)})
+    value = {"sections": sections, "rows": rows}
+    _layout_cache.update(path=str(p), stamp=stamp, value=value)
+    return value
 
 
 def by_key(snap: dict | None) -> dict:

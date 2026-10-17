@@ -136,7 +136,7 @@ def routes(ctx: Ctx) -> list[Route]:
         cap = st.capability(s.status_dir)
         snap = st.snapshot(s.status_dir)
         return _no_store(JSONResponse({
-            "available": snap is not None, "snapshot": snap,
+            "available": snap is not None, "snapshot": snap, "layout": st.layout(s.catalog_dir),
             "helper": {"running": state["running"], "heartbeat_at": state["heartbeat_at"], "settings": cap["settings"],
                        "diagnostics": cap["diagnostics"], "in_progress": admin.job_in_progress(state), "job": state["job"]},
             "here": {"remote": rem, "allowed": allowed(request)},

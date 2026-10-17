@@ -33,7 +33,8 @@
   const note = (...c) => el("p", { class: "note" }, ...c);
   const b = (t) => el("strong", { text: t });
   const code = (t) => el("code", { text: t });
-  const settings = (where) => el("a", { href: "#settings", text: `Settings → ${where}` });   // the portal's Settings tab
+  // the portal's Settings tab, opened at a section or a setting (settings.js: #settings/<section> or #settings/<KEY>)
+  const settings = (place, where) => el("a", { href: `#settings/${place}`, text: `Settings → ${where}` });
   const list = (tag, items) => el(tag, { class: "tour-list" }, ...items.map((i) => el("li", {}, ...[].concat(i))));
   const ext = (href, text) => el("a", { href, target: "_blank", rel: "noopener noreferrer", "data-k": `link:${href}`, text });
 
@@ -79,7 +80,7 @@
         : p("Or nothing to install: the ", b("Code"), " tab is Claude Code in the browser, with a chat, your workspace's files and permission prompts, in the browser terminal's sandbox.");
     }
     if (CODE.enabled) return note("The Code tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
-    return note(use ? "Prefer the browser? " : "Claude Code in the browser, nothing to install: ", settings("Code page"),
+    return note(use ? "Prefer the browser? " : "Claude Code in the browser, nothing to install: ", settings("CODE_ENABLED", "Claude Code"),
       " turns on a Code tab (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
   }
   // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
@@ -193,7 +194,7 @@
           ["Create a key at ", ext("https://openrouter.ai/settings/keys", "openrouter.ai › Settings › API Keys"),
             ". Name it bedrock-now; a credit limit is optional (it caps what the key can spend). It is shown once: copy it then."],
           ["Paste it into ", code(".env"), " after ", code("OPENROUTER_API_KEY="), " and run", cmd("./stack openrouter apply"),
-            "or run", cmd("./stack openrouter set"), "(it asks for the key, hidden), or paste it in ", settings("OpenRouter"), " on this computer. Either way the key is checked with OpenRouter and what needs it restarts (~30 s)."],
+            "or run", cmd("./stack openrouter set"), "(it asks for the key, hidden), or paste it in ", settings("OPENROUTER_API_KEY", "Chat & voice"), " on this computer. Either way the key is checked with OpenRouter and what needs it restarts (~30 s)."],
           ["An account without credits can only use free models, so apply and set then offer just those (",
             code("OPENROUTER_MODELS=free"), "). After buying credits, apply again or run ", code("./stack openrouter models all"), "."],
           ["On ", ext("https://openrouter.ai/settings/privacy", "Settings › Privacy"), ": most free models need ",
@@ -250,7 +251,7 @@
           keys.length ? list("ul", keys.map((k) => [`${k.label}: `, b(k.error ? "unavailable" : k.max_budget != null ? `${usd(k.max_budget)} a month` : "no budget")]))
             : note(failedAt ? CHECK_FAILED : "Loading…"),
           p("Once a key's budget is used up, LiteLLM refuses its requests until the budget resets (Home shows the date)."),
-          p("Change them in ", settings("Budgets & alerts"), " (at once, no restart), or with ", code("./stack config set BUDGET_OPENWEBUI"), "."),
+          p("Change them in ", settings("spending", "Spending & budgets"), " (at once, no restart), or with ", code("./stack config set BUDGET_OPENWEBUI"), "."),
         ];
       },
     },
@@ -278,7 +279,7 @@
       title: "The portal: your one sign-in", badges: ["Sign-in: Done"], info: true,
       body: () => [
         p("The portal password (", code("PORTAL_PASSWORD"), " in ", code(".env"), "; ", code("./stack password --show"),
-          " prints it) is the only one you type: Chat, Admin and Files sign you in with it, and the Terminal and the Code page (when they are on) ask for it once more to unlock, because they run commands. Change it in ", settings("Account & security"), "."),
+          " prints it) is the only one you type: Chat, Admin and Files sign you in with it, and the Terminal and the Code page (when they are on) ask for it once more to unlock, because they run commands. Change it in ", settings("PORTAL_PASSWORD", "Account & security"), "."),
         p("A sign-in lasts 30 days (", code("PORTAL_SESSION_DAYS"), ", also in Account & security). ", b("Sign out"),
           PHONE.matches ? " (under More)" : " at the bottom of the sidebar", " ends it everywhere, and Admin's and Files' with it."),
       ],
@@ -295,7 +296,7 @@
         fallback("admin", "Username", "Copy username", "Copy password",
           ["For LiteLLM's API, or its own form (", b("Username"), ", ", b("Password"), ", ", b("Login"),
             ") if the automatic sign-in ever fails. A password changed inside LiteLLM is not known here: set it in ",
-            settings("Account & security"), " too, or the automatic sign-in stops."]),
+            settings("LITELLM_UI_PASSWORD", "Account & security"), " too, or the automatic sign-in stops."]),
       ],
       actions: () => [openApp("admin")],
     },

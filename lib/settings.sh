@@ -8,6 +8,8 @@
 #   ./stack --writes--> .state/status/settings.json        (values of plain keys; secrets as set/not set + a hint)
 
 SETTINGS_TSV="${SETTINGS_TSV:-$STACK_DIR/catalog/settings.tsv}"
+# where the portal's Settings page and ./stack config list show each key (sections, order, More, parent switches)
+SETTINGS_LAYOUT_TSV="${SETTINGS_LAYOUT_TSV:-$STACK_DIR/catalog/settings-layout.tsv}"
 SETTINGS_MAX_KEYS=20          # keys in one change
 SETTINGS_MAX_VALUE=2000       # bytes of one value (a webhook URL is the longest)
 PW_HASH_ITER=600000           # PBKDF2-HMAC-SHA256 rounds of a new portal password hash
@@ -15,6 +17,9 @@ PW_HASH_MIN_ITER=100000       # the least a hash from the portal may use
 RESTART_SERVICES="litellm open-webui shared-mcp stt rustfs caddy"   # ./stack restart (never portal or postgres)
 
 settings_rows() { tr -d '\r' < "$SETTINGS_TSV" | awk -F'\t' '!/^#/ && NF >= 9 && $1 != "key"'; }
+# settings_layout_rows -> catalog/settings-layout.tsv without comments: "@ID TITLE LEDE DOC" section rows and
+# "KEY SECTION PLACE PARENT SUMMARY" key rows (+NAME: the page's own rows), in the page's order
+settings_layout_rows() { tr -d '\r' < "$SETTINGS_LAYOUT_TSV" 2>/dev/null | awk -F'\t' '!/^#/ && NF >= 2'; }
 # setting_field KEY COLUMN(1-9) -> that column of KEY's row ("" for an unknown key)
 # (the first match only, but read to the end: an awk that exits early can kill the writer with SIGPIPE, which pipefail
 # turns into a failure — at random, depending on how far the writer got)
@@ -502,25 +507,33 @@ _settings_mask() {   # _settings_mask KEY VALUE -> what list/get show
   esac
 }
 
-_settings_group_title() {
-  case "$1" in
-    account) echo "Account & security" ;; aws) echo "AWS & models" ;; budgets) echo "Budgets & alerts" ;; voice) echo "Voice" ;;
-    openrouter) echo "OpenRouter" ;; files) echo "Files" ;; updates) echo "Updates & backups" ;; remote) echo "Remote access" ;;
-    *) echo "Advanced" ;;
-  esac
+# config_list — every setting, in the sections of the portal's Settings page (catalog/settings-layout.tsv), each one
+# followed by the settings that belong to it (its switch's dependents, the values shown inside its row), indented.
+# Keys the layout misses (none: tests/test_settings.sh checks) come last, under "Other".
+config_list() {
+  local s title k depth pol
+  printf 'Settings in %s (secrets masked; change them in the portal'"'"'s Settings tab or with ./stack config set KEY)\n' "$(env_file_display)"
+  while IFS=$'\t' read -r s title; do
+    [ -n "$(settings_layout_rows | awk -F'\t' -v s="$s" '$1 !~ /^[@+]/ && $2 == s')" ] || continue   # Diagnostics: no keys
+    printf '\n%s\n' "$title"
+    while IFS=$'\t' read -r k depth pol; do
+      printf '%*s%-*s %s%s\n' $((2 + 2 * depth)) '' $((30 - 2 * depth)) "$k" "$(_settings_mask "$k" "$(get_env "$k")")" "$(_settings_policy_mark "$pol")"
+    done < <(settings_layout_rows | awk -F'\t' -v s="$s" -v t="$SETTINGS_TSV" '
+      function walk(i, d,   j) { print key[i] "\t" d "\t" pol[key[i]]; for (j = 1; j <= n; j++) if (par[j] == key[i]) walk(j, d + 1) }
+      BEGIN { while ((getline r < t) > 0) { split(r, c, "\t"); pol[c[1]] = c[4] } }
+      $1 !~ /^[@+]/ && $2 == s { n++; key[n] = $1; par[n] = $4; here[$1] = 1 }
+      END { for (i = 1; i <= n; i++) if (!(par[i] in here)) walk(i, 0) }')
+  done < <(settings_layout_rows | awk -F'\t' '$1 ~ /^@/ { print substr($1, 2) "\t" $2 }')
+  k="$(settings_rows | cut -f1 | awk -v l="$SETTINGS_LAYOUT_TSV" 'BEGIN { while ((getline r < l) > 0) { split(r, c, "\t"); seen[c[1]] = 1 } } !($1 in seen)')"
+  if [ -n "$k" ]; then
+    printf '\nOther\n'
+    for k in $k; do printf '  %-30s %s%s\n' "$k" "$(_settings_mask "$k" "$(get_env "$k")")" "$(_settings_policy_mark "$(setting_field "$k" 4)")"; done
+  fi
 }
 
-config_list() {
-  local g k pol mark
-  printf 'Settings in %s (secrets masked; change them in the portal'"'"'s Settings tab or with ./stack config set KEY)\n' "$(env_file_display)"
-  for g in account aws budgets voice openrouter files updates remote advanced; do
-    printf '\n%s\n' "$(_settings_group_title "$g")"
-    while IFS=$'\t' read -r k _ _ pol _; do
-      case "$pol" in edit) mark='' ;; local) mark='   (this computer only)' ;; on-only) mark='   (on only)' ;;
-        widen-local) mark='   (less protection: this computer only)' ;; regen) mark='   (regenerate)' ;; *) mark='   (read-only)' ;; esac
-      printf '  %-30s %s%s\n' "$k" "$(_settings_mask "$k" "$(get_env "$k")")" "$mark"
-    done < <(settings_rows | awk -F'\t' -v g="$g" '$2 == g')
-  done
+_settings_policy_mark() {   # _settings_policy_mark POLICY -> what may change the key, after its value in config list
+  case "$1" in edit) ;; local) echo '   (this computer only)' ;; on-only) echo '   (on only)' ;;
+    widen-local) echo '   (less protection: this computer only)' ;; regen) echo '   (regenerate)' ;; *) echo '   (read-only)' ;; esac
 }
 
 config_get() {

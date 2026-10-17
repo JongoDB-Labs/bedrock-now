@@ -1,58 +1,43 @@
 // Settings: every .env value (secrets masked), changed through the update helper (/api/settings/*).
 // Loaded after app.js (el, $, api, toast, copy, usd, day, showTab, appUrl come from there). DOM built with el() and
 // textContent only; nothing from the API is ever parsed as HTML. Every change asks for the portal password again.
+//
+// Layout (catalog/settings-layout.tsv, from /api/settings): task sections shown one at a time (a list on the left; a
+// picker on phones), each with its common settings, a folded "More settings", and settings that belong to a switch
+// indented under it and hidden while it is off. Search and "Changed from default" look through every section.
+// Addresses: #settings/<section>, #settings/<KEY>, #settings/<section>/<KEY> (app.js keeps the part after the slash).
 "use strict";
 
 (() => {
-  const GROUPS = [
-    ["account", "Account & security", "Sign-ins and sessions."],
-    ["aws", "AWS & models", "The AWS key LiteLLM calls Bedrock with, and which models are used."],
-    ["budgets", "Budgets & alerts", "Monthly budgets of the three LiteLLM keys. A change takes effect at once, without a restart."],
-    ["voice", "Voice", "Speech-to-text for Chat's microphone and voice calls."],
-    ["openrouter", "OpenRouter", "Optional: hundreds of other models next to Bedrock. Prompts to them go to openrouter.ai."],
-    ["files", "Files", "The file store (RustFS) and the shared file server Claude Code uses."],
-    ["code", "Code page", "Claude Code in the browser: the Code tab, with a chat, permission prompts and your workspace's files. It runs in the browser terminal's sandbox."],
-    ["updates", "Updates & backups", "Release checks, automatic updates and backups."],
-    ["remote", "Remote access", "The portal from your phone or laptop over Tailscale (docs/remote.md)."],
-    ["diagnostics", "Diagnostics", "Checks and restarts, carried out on this computer by the update helper."],
-    ["advanced", "Advanced", "Every other setting, read-only here: why, and the command that changes it."],
-  ];
-  const CARD_KEYS = {
-    account: ["PORTAL_PASSWORD", "OPENWEBUI_ADMIN_EMAIL", "LITELLM_UI_USER", "LITELLM_UI_PASSWORD", "PORTAL_SESSION_DAYS",
-      "LITELLM_STORE_PROMPTS"],
-    aws: ["AWS_ACCESS_KEY_ID", "AWS_REGION_NAME", "AWS_AUTH", "CHAT_DEFAULT_MODEL", "CHAT_TASK_MODEL", "CLAUDE_MODEL_OPUS",
-      "CLAUDE_MODEL_SONNET", "CLAUDE_MODEL_HAIKU", "MODELS_HIDDEN"],
-    budgets: ["BUDGET_CLAUDE_CODE", "BUDGET_OPENWEBUI", "BUDGET_SETUP", "BUDGET_ALERT_PCT", "ALERT_WEBHOOK_URL"],
-    voice: ["STT_PROVIDER"],
-    openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MODELS", "OPENROUTER_MAX_MODELS", "OPENROUTER_INCLUDE_ALIASES"],
-    files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
-    code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "TERMINAL_AUTO_MODE"],
-    updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
-    remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"],
-  };
-  // shown with another key's row (a pair, or a part of a larger form)
-  const WITH = { AWS_SECRET_ACCESS_KEY: "AWS_ACCESS_KEY_ID", STT_API_KEY: "STT_PROVIDER", STT_MODEL: "STT_PROVIDER",
-    AUTO_UPDATE_HOUR: "AUTO_UPDATE", PORTAL_PASSWORD_HASH: "PORTAL_PASSWORD", BACKUP_HOUR: "BACKUP_NIGHTLY",
-    BACKUP_KEEP: "BACKUP_NIGHTLY", OWUI_DEFAULT_MODEL: "CHAT_DEFAULT_MODEL", OWUI_TASK_MODEL: "CHAT_TASK_MODEL",
-    CLAUDE_BEDROCK_OPUS_MODEL: "CLAUDE_MODEL_OPUS", CLAUDE_BEDROCK_SONNET_MODEL: "CLAUDE_MODEL_SONNET",
-    CLAUDE_BEDROCK_HAIKU_MODEL: "CLAUDE_MODEL_HAIKU" };
-  // a pin and the setting setup derives from it (shown in the pin's row)
-  const PIN_OF = { CHAT_DEFAULT_MODEL: "OWUI_DEFAULT_MODEL", CHAT_TASK_MODEL: "OWUI_TASK_MODEL", CLAUDE_MODEL_OPUS: "CLAUDE_BEDROCK_OPUS_MODEL",
-    CLAUDE_MODEL_SONNET: "CLAUDE_BEDROCK_SONNET_MODEL", CLAUDE_MODEL_HAIKU: "CLAUDE_BEDROCK_HAIKU_MODEL" };
-  const BUDGET_KEY = { BUDGET_CLAUDE_CODE: ["claude-code", "LITELLM_KEY_CLAUDE_CODE"], BUDGET_OPENWEBUI: ["open-webui", "LITELLM_KEY_OPENWEBUI"],
-    BUDGET_SETUP: ["setup", "LITELLM_KEY_SETUP"] };
+  const REPO = "https://github.com/JongoDB-Labs/bedrock-now/blob/main/";
+  // a budget and the alias of its LiteLLM key (this period's spend under it); the key itself is the row's "with" key
+  const BUDGET_ALIAS = { BUDGET_CLAUDE_CODE: "claude-code", BUDGET_OPENWEBUI: "open-webui", BUDGET_SETUP: "setup",
+    BUDGET_TERMINAL: "claude-code-terminal" };
   const REVEALABLE = new Set(["LITELLM_UI_PASSWORD", "RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITELLM_KEY_CLAUDE_CODE",
     "LITELLM_KEY_OPENWEBUI", "LITELLM_KEY_SETUP", "SHARED_MCP_TOKEN"]);
   const DIAG_PHASES = ["check-aws", "models-recheck", "backup", "test", "report"];
   const STT_LABEL = { bedrock: "Bedrock (Mistral Voxtral, in your AWS account)", openai: "OpenAI", groq: "Groq", "": "Browser speech recognition (no voice calls)" };
+  // what a change restarts, by settings.tsv's apply column (lib/settings.sh _cfg_post): the badge next to a setting
+  const RESTARTS = { "portal-pw": ["portal"], email: ["Chat", "portal"], "litellm-pw": ["portal"], portal: ["portal"],
+    "litellm-cfg": ["LiteLLM"], aws: ["LiteLLM"], pins: ["Chat", "portal"], "alert-pct": ["portal"], stt: ["LiteLLM", "Chat", "portal"],
+    openrouter: ["LiteLLM", "portal"], rustfs: ["Files", "Chat", "shared-mcp", "portal"], mcp: ["shared-mcp", "portal"],
+    code: ["portal", "Caddy"], "code-env": ["Code page"], "terminal-env": ["Terminal"], "remote-preview": ["portal", "Caddy"] };
+  const ON_VALUES = ["true", "1", "yes", "on"], OFF_VALUES = ["false", "0", "no", "off"];
+  const KEY_NAME = /^[A-Z][A-Z0-9_]{1,40}$/;
+  const SECTION_MEMO = "bn.settings.section";
 
   let data = null;          // GET /api/settings
   let spend = null;         // /api/summary's spend (budget rows)
   let keys = {};            // KEY -> snapshot row
+  let sections = [];        // [{id, title, lede, doc}]
+  let rowOf = {};           // KEY or +own -> layout row {key, section, place, parent, summary}
+  let withOf = {};          // KEY -> [the keys shown inside its row]
+  let current = "";         // the section shown
   let pending = null;       // {kind: "apply"|"reveal"|"action"|"signout", ...} waiting for the password
   let watching = null;      // {id, kind, label, keys, at} a request the helper has not finished
   let pollTimer = null;
   let reconnecting = false;
+  let findText = new Map(); // row element -> what the search looks through (lower case)
   // the page's search box and "Changed from default" (P-5): kept across a re-render
   const find = { q: "", changed: false };
 
@@ -60,9 +45,18 @@
   const hasHelper = () => Boolean(data && data.helper.running && data.helper.settings);
   const canChange = () => hasHelper() && data.here.allowed;
   const pad2 = (n) => String(n).padStart(2, "0");
+  const lower = (x) => String(x || "").trim().toLowerCase();
+  const hourRange = (h) => `${pad2(h)}:00–${pad2((h + 3) % 24)}:00`;
+  const plain = (k) => k.secret === "-" || k.secret === "s";
+  const sectionOf = (id) => sections.find((s) => s.id === id);
 
   // --- data ---
-  async function load() {
+  let loading = null;
+  function load() {   // one request at a time: the tab switch and the page's own start may both ask
+    if (!loading) loading = loadNow().finally(() => { loading = null; });
+    return loading;
+  }
+  async function loadNow() {
     try {
       data = await api("/api/settings");
     } catch (e) {
@@ -72,6 +66,7 @@
     }
     keys = {};
     for (const k of (data.snapshot && data.snapshot.keys) || []) keys[k.key] = k;
+    buildLayout();
     render();
     renderNotice();
     const j = data.helper.job;   // a change or diagnostic still running (updates show on Home)
@@ -80,6 +75,39 @@
     }
     // this month's spend per key (next to the budgets): only while Settings is shown (the Home notice needs none)
     if (page() && !page().hidden) try { spend = (await api("/api/summary")).spend; renderSpend(); } catch (_) { /* budgets still show */ }
+  }
+
+  // The layout from catalog/settings-layout.tsv; a key it does not name (one of yours in .env) goes to Advanced.
+  function buildLayout() {
+    const l = data.layout || {};
+    sections = (l.sections || []).slice();
+    if (!sections.length) sections = [{ id: "advanced", title: "All settings", lede: "", doc: "" }];
+    rowOf = {}; withOf = {};
+    for (const r of l.rows || []) if (sectionOf(r.section)) rowOf[r.key] = r;
+    const fallback = sectionOf("advanced") ? "advanced" : sections[sections.length - 1].id;
+    for (const k of Object.keys(keys)) if (!rowOf[k]) rowOf[k] = { key: k, section: fallback, place: "main", parent: "", summary: "" };
+    for (const r of Object.values(rowOf)) if (r.place === "with" && r.parent) (withOf[r.parent] = withOf[r.parent] || []).push(r.key);
+  }
+  const rowsIn = (id) => Object.values(rowOf).filter((r) => r.section === id && r.place !== "with");
+
+  // A switch that is on: true or on; for other values, set and not off (REMOTE_MODE: tailscale or domain)
+  function isOn(key) {
+    const k = keys[key];
+    if (!k) return false;
+    if (key === "REMOTE_PREVIEW") return remotePreviewOn();
+    if (!plain(k)) return Boolean(k.set);
+    const v = lower(k.value);
+    return v !== "" && !OFF_VALUES.includes(v);
+  }
+  // shown in its section: its parent switch (and that one's parent) is on
+  function parentsOn(r, depth = 0) {
+    if (!r || !r.parent || depth > 5) return true;
+    return isOn(r.parent) && parentsOn(rowOf[r.parent], depth + 1);
+  }
+  function offParent(r, depth = 0) {   // -> the first switch above r that is off, else null
+    if (!r || !r.parent || depth > 5) return null;
+    if (!isOn(r.parent)) return r.parent;
+    return offParent(rowOf[r.parent], depth + 1);
   }
 
   function showError(msg) {
@@ -94,6 +122,7 @@
     const p = page();
     const scrollY = p.scrollTop;
     p.replaceChildren();
+    findText = new Map();
     const when = data.snapshot && data.snapshot.written_at ? new Date(data.snapshot.written_at * 1000).toLocaleString() : "";
     p.append(el("header", { class: "home-head set-head" },
       el("h1", { id: "settings-title", text: "Settings" }),
@@ -103,25 +132,86 @@
       p.append(el("p", { class: "banner", text: "Settings are not available yet: run ./stack up once (it writes .state/status/settings.json, the masked copy of .env this page shows)." }));
       return;
     }
-    p.append(helperBox(), jobBox());
-    const nav = el("nav", { class: "chips set-nav", "aria-label": "Settings sections" });
-    for (const [g, title] of GROUPS) {
-      const b = el("button", { type: "button", class: "chip", text: title });
-      b.addEventListener("click", () => { const c = $(`#set-${g}`, p); if (c) c.scrollIntoView({ block: "start", behavior: "smooth" }); });
-      nav.append(b);
-    }
-    p.append(nav, findBar());
+    p.append(helperBox(), jobBox(), findBar(), picker());
     const cards = el("div", { class: "set-cards" });
-    for (const [g, title, lede] of GROUPS) cards.append(card(g, title, lede));
-    p.append(cards);
+    for (const s of sections) cards.append(card(s));
+    p.append(el("div", { class: "set-layout" }, sectionNav(), cards));
+    if (!current || !sectionOf(current)) current = initialSection();
     renderSpend();
     renderJob();
-    applyFind();
+    applyView();
     p.scrollTop = scrollY;
   }
 
-  // --- search and "Changed from default": rows (and the Advanced list's items) that do not match are hidden, and so is
-  // a card left without any (its title matching the search keeps it whole). Plain substring matching, any case.
+  function initialSection() {
+    let memo = null;
+    try { memo = localStorage.getItem(SECTION_MEMO); } catch (_) { /* storage blocked: the first section */ }
+    return sectionOf(memo) ? memo : sections[0].id;
+  }
+
+  // the section list (desktop): Diagnostics, Advanced and About apart from the rest
+  function sectionNav() {
+    const list = el("ul", {});
+    for (const s of sections) {
+      if (s.id === "diagnostics") list.append(el("li", { class: "set-nav-sep", role: "presentation" }));
+      const b = el("button", { type: "button", class: "set-nav-item", "data-section": s.id, text: s.title });
+      b.addEventListener("click", (ev) => showSection(s.id, { focus: ev.detail === 0 }));
+      list.append(el("li", {}, b));
+    }
+    return el("nav", { class: "set-nav", "aria-label": "Settings sections" }, list);
+  }
+  // the section picker (phones): the system's own list
+  function picker() {
+    const sel = el("select", { id: "set-picker", class: "set-picker-select" });
+    for (const s of sections) sel.append(el("option", { value: s.id, text: s.title }));
+    sel.addEventListener("change", () => showSection(sel.value));
+    return el("div", { class: "set-picker" }, el("label", { for: "set-picker", text: "Section" }), sel);
+  }
+
+  // showSection ID — that section alone (and the address #settings/ID); a search in progress is cleared
+  function showSection(id, opts = {}) {
+    if (!sectionOf(id)) return;
+    current = id;
+    try { localStorage.setItem(SECTION_MEMO, id); } catch (_) { /* fine */ }
+    if (find.q || find.changed) {
+      find.q = ""; find.changed = false;
+      const input = $("#set-find"); if (input) input.value = "";
+      const chip = $("#set-changed"); if (chip) chip.setAttribute("aria-pressed", "false");
+    }
+    applyView();
+    const p = page();
+    if (p && !p.hidden && opts.address !== false && location.hash.startsWith("#settings")) history.replaceState(null, "", `#settings/${id}`);
+    if (p && opts.scroll !== false) p.scrollTop = 0;
+    if (opts.focus) { const h = $(`#set-${id}-title`); if (h) h.focus({ preventScroll: true }); }
+  }
+
+  // goTo PLACE — "section", "KEY" or "section/KEY" from the address: the section, and the setting opened (More
+  // unfolded, a setting whose switch is off shown anyway), scrolled to and highlighted
+  function goTo(place) {
+    let sec = null, key = null;
+    for (const part of String(place || "").split("/")) {
+      if (sectionOf(part)) sec = part;
+      else if ((KEY_NAME.test(part) || /^\+[a-z-]{2,20}$/.test(part)) && rowOf[part]) key = part;
+    }
+    if (key && rowOf[key].place === "with" && rowOf[rowOf[key].parent]) key = rowOf[key].parent;
+    if (key) sec = rowOf[key].section;
+    if (!sec) return;
+    showSection(sec, { address: false, scroll: !key });
+    if (!key) return;
+    const r = $(`#settings .set-card .set-row[data-key="${key}"], #settings .set-card .set-adv-item[data-key="${key}"], #settings .set-card .set-row[data-own="${key}"]`);
+    if (!r) return;
+    const more = r.closest("details.set-more");
+    if (more) more.open = true;
+    for (let d = r.closest(".set-dep"); d; d = d.parentElement.closest(".set-dep")) d.classList.add("set-forced");
+    applyView();
+    r.setAttribute("tabindex", "-1");
+    r.scrollIntoView({ block: "center" });
+    r.focus({ preventScroll: true });
+    r.classList.add("set-flash");
+    setTimeout(() => r.classList.remove("set-flash"), 2400);
+  }
+
+  // --- what is shown: one section, or every match of the search / "Changed from default" with its section ---
   function changedFromDefault(k) {
     if (!k || !("value" in k) || !("default" in k) || !(k.secret === "-" || k.secret === "s")) return false;
     const v = String(k.value).trim();
@@ -131,46 +221,81 @@
     const input = el("input", { type: "search", id: "set-find", class: "set-find-input", placeholder: "Search settings", "aria-label": "Search settings",
       maxlength: "100", value: find.q });
     input.value = find.q;
-    input.addEventListener("input", () => { find.q = input.value.slice(0, 100); applyFind(); });
+    input.addEventListener("input", () => { find.q = input.value.slice(0, 100); applyView(); });
     const chip = el("button", { type: "button", class: "chip", id: "set-changed", "aria-pressed": String(find.changed), text: "Changed from default" });
-    chip.addEventListener("click", () => { find.changed = !find.changed; chip.setAttribute("aria-pressed", String(find.changed)); applyFind(); });
+    chip.addEventListener("click", () => { find.changed = !find.changed; chip.setAttribute("aria-pressed", String(find.changed)); applyView(); });
+    const clear = el("button", { type: "button", class: "quiet", id: "set-find-clear", text: "Clear", hidden: "" });
+    clear.addEventListener("click", () => showSection(current, { scroll: false }));
     const known = Object.values(keys).some((k) => "default" in k);
-    return el("div", { class: "set-find" }, input, chip,
-      el("span", { class: "note set-find-note", id: "set-find-note", text: known ? "" : "Defaults are not known yet: ./stack up writes them." }));
+    return el("div", { class: "set-find", role: "search" }, input, chip,
+      el("span", { class: "note set-find-note", id: "set-find-note", "aria-live": "polite", text: known ? "" : "Defaults are not known yet: ./stack up writes them." }), clear);
   }
-  function applyFind() {
+  function rowMatches(r, q) {
+    const keyNames = [r.dataset.key, ...(withOf[r.dataset.key] || [])].filter(Boolean);
+    const okChanged = !find.changed || keyNames.some((n) => changedFromDefault(keys[n]));
+    return okChanged && (!q || (findText.get(r) || "").includes(q));
+  }
+  function applyView() {
     const p = page();
-    if (!p) return;
+    if (!p || !data || !data.available) return;
     const q = find.q.trim().toLowerCase();
-    p.classList.toggle("set-finding", Boolean(q) || find.changed);
-    let shownRows = 0;
+    const finding = Boolean(q) || find.changed;
+    p.classList.toggle("set-finding", finding);
+    let shownRows = 0, shownCards = 0;
     for (const c of p.querySelectorAll(".set-card")) {
-      const title = ($("h2", c) || {}).textContent || "";
-      const whole = Boolean(q) && title.toLowerCase().includes(q) && !find.changed;
       let left = 0;
-      for (const r of c.querySelectorAll(".set-row[data-key], .set-adv-item")) {
-        const key = r.dataset.key || (r.querySelector("code") || {}).textContent || "";
-        const okChanged = !find.changed || changedFromDefault(keys[key]);
-        const okText = !q || whole || r.textContent.toLowerCase().includes(q);
-        r.hidden = !(okChanged && okText);
-        if (!r.hidden) left++;
+      // a block: one setting and the ones that belong to it. Innermost first: a block shows when its setting matches
+      // or one inside it does (its setting then dimmed, as context). A setting whose switch is off: hidden, unless
+      // searching or opened by an address (then "Applies while … is on" says why it does nothing now).
+      for (const d of [...c.querySelectorAll(".set-dep")].reverse()) {
+        const own = d.querySelector(":scope > .set-row, :scope > .set-adv-item");
+        const off = Boolean(d.dataset.parent) && !parentsOn(rowOf[d.dataset.key]);
+        d.classList.toggle("set-dep-off", off);
+        if (!finding) {
+          d.hidden = off && !d.classList.contains("set-forced");
+          if (own) own.classList.remove("set-ghost");
+          continue;
+        }
+        const hit = Boolean(own) && rowMatches(own, q);
+        const inner = [...d.querySelectorAll(":scope > .set-children > .set-dep")].some((x) => !x.hidden);
+        if (hit) left++;
+        d.hidden = !(hit || inner);
+        if (own) own.classList.toggle("set-ghost", !hit && inner);
       }
-      // cards without rows of their own (Diagnostics, the voice and backup forms) show only for their title
-      const rowsHere = c.querySelectorAll(".set-row[data-key], .set-adv-item").length;
-      c.hidden = (Boolean(q) || find.changed) && !(left > 0 || (whole && !rowsHere));
-      if (!c.hidden) shownRows += left;
+      for (const m of c.querySelectorAll("details.set-more")) {
+        const n = [...m.querySelectorAll(".set-dep")].filter((d) => !d.hidden && !d.parentElement.closest(".set-dep[hidden]")).length;
+        $(".set-more-count", m).textContent = finding ? "" : `(${n})`;
+        m.hidden = n === 0;
+        if (finding && n) {
+          if (!("wasOpen" in m.dataset)) m.dataset.wasOpen = m.open ? "1" : "";
+          m.open = true;
+        } else if (!finding && "wasOpen" in m.dataset) {
+          m.open = m.dataset.wasOpen === "1";
+          delete m.dataset.wasOpen;
+        }
+      }
+      const show = finding ? left > 0 : c.dataset.section === current;
+      c.hidden = !show;
+      if (show) shownCards++;
+      shownRows += left;
     }
-    const note = $("#set-find-note", p);
+    for (const b of p.querySelectorAll(".set-nav-item")) {
+      if (!finding && b.dataset.section === current) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
+    }
+    const sel = $("#set-picker", p); if (sel) sel.value = current;
+    const note = $("#set-find-note", p), clear = $("#set-find-clear", p);
     if (note && Object.values(keys).some((k) => "default" in k)) {
-      note.textContent = (q || find.changed) ? (shownRows ? `${shownRows} setting${shownRows === 1 ? "" : "s"}` : "No setting matches.") : "";
+      note.textContent = finding ? (shownRows ? `${shownRows} setting${shownRows === 1 ? "" : "s"} in ${shownCards} section${shownCards === 1 ? "" : "s"}` : "No setting matches.") : "";
     }
+    if (clear) clear.hidden = !finding;
   }
 
   function helperBox() {
     const box = el("div", { class: "set-helper" });
     if (!data.here.allowed) {
       box.append(el("p", { class: "helper-off-title", text: "Changes are off for remote access" }),
-        el("p", { class: "note", text: "Settings, Reveal and Diagnostics work from the computer running bedrock-now. To use them from your devices too, set REMOTE_ADMIN_ACTIONS=true there (Remote access below)." }));
+        el("p", { class: "note" }, "Settings, Reveal and Diagnostics work from the computer running bedrock-now. To use them from your devices too, turn on ",
+          el("a", { href: "#settings/REMOTE_ADMIN_ACTIONS", text: "Remote access › Update, settings and diagnostics from your devices" }), " there."));
       box.classList.add("helper-off");
       return box;
     }
@@ -190,25 +315,84 @@
     return box;
   }
 
-  function card(g, title, lede) {
-    const c = el("section", { class: "set-card", id: `set-${g}`, "aria-labelledby": `set-${g}-title` },
-      el("h2", { id: `set-${g}-title`, text: title }), el("p", { class: "note set-lede", text: lede }));
-    const body = el("div", { class: "set-rows" });
+  // --- a section ---
+  function card(s) {
+    const c = el("section", { class: "set-card", id: `set-${s.id}`, "data-section": s.id, "aria-labelledby": `set-${s.id}-title`, hidden: "" });
+    const lede = el("p", { class: "note set-lede", text: s.lede });
+    if (s.doc) lede.append(" ", el("a", { href: REPO + s.doc, target: "_blank", rel: "noopener", class: "set-learn", text: "Learn more" }));
+    c.append(el("div", { class: "set-card-head" }, el("h2", { id: `set-${s.id}-title`, tabindex: "-1", text: s.title }), lede));
+    const all = rowsIn(s.id);
+    const main = all.filter((r) => r.place === "main"), more = all.filter((r) => r.place === "more");
+    const list = s.id === "advanced" || s.id === "about";
+    const body = el("div", { class: list ? "set-rows set-list" : "set-rows" });
+    blocks(body, main, list);
     c.append(body);
-    if (g === "advanced") { advanced(body); return c; }
-    if (g === "diagnostics") { diagnostics(body); return c; }
-    if (g === "voice") { voiceRow(body); return c; }
-    if (g === "code") { codeRow(body); return c; }
-    for (const k of CARD_KEYS[g] || []) {
-      if (!keys[k]) continue;
-      if (k === "TAILSCALE_ALLOWED_LOGIN" && !(data.remote && data.remote.on)) continue;
-      body.append(row(keys[k]));
+    if (s.id === "diagnostics") c.append(el("div", { class: "set-report", id: "set-report", hidden: "" }));
+    if (more.length) {
+      const inner = el("div", { class: "set-rows" });
+      blocks(inner, more, list);
+      c.append(el("details", { class: "set-more" }, el("summary", {}, "More settings ", el("span", { class: "set-more-count" })), inner));
     }
-    if (g === "account") body.append(sessionsRow());
-    if (g === "aws") body.append(modelsRow());
-    if (g === "updates") body.append(backupRow());
-    if (g === "remote") body.prepend(remoteStatus());
+    c.append(pager(s.id));
     return c;
+  }
+
+  // blocks CONTAINER ROWS — each row in a block of its own, followed by the rows that belong to it (indented)
+  function blocks(container, rows, list) {
+    const here = new Set(rows.map((r) => r.key));
+    const made = {};
+    for (const r of rows) {
+      const node = list ? listItem(r) : rowFor(r);
+      if (!node) continue;
+      const block = el("div", { class: "set-dep", "data-key": r.key });
+      if (r.parent) block.dataset.parent = r.parent;
+      if (r.parent && offParent(r)) {
+        const p = keys[offParent(r)];
+        block.append(el("p", { class: "note set-applies", text: `Applies while ${p ? p.label : offParent(r)} is on.` }));
+      }
+      block.append(node);
+      made[r.key] = block;
+      const host = r.parent && here.has(r.parent) && made[r.parent];
+      if (host) {
+        let kids = host.querySelector(":scope > .set-children");
+        if (!kids) { kids = el("div", { class: "set-children" }); host.append(kids); }
+        kids.append(block);
+      } else {
+        container.append(block);
+      }
+      const k = keys[r.key] || {};
+      // its name, summary, note and key, and those of the keys shown inside it (not the section's title: "budget" would
+      // then list every setting of Spending & budgets)
+      findText.set(node, [k.label || "", r.summary, k.note || "", r.key.startsWith("+") ? "" : r.key, node.dataset.findExtra || "",
+        ...(withOf[r.key] || []).flatMap((w) => [w, (keys[w] || {}).label || ""])].join(" ").toLowerCase());
+    }
+  }
+
+  function pager(id) {
+    const i = sections.findIndex((s) => s.id === id);
+    const nav = el("nav", { class: "set-pager", "aria-label": "Other sections" });
+    for (const [j, cls, txt] of [[i - 1, "set-prev", (t) => `← ${t}`], [i + 1, "set-next", (t) => `${t} →`]]) {
+      const s = sections[j];
+      if (!s) { nav.append(el("span", {})); continue; }
+      const b = el("button", { type: "button", class: `quiet ${cls}`, text: txt(s.title) });
+      b.addEventListener("click", (ev) => showSection(s.id, { focus: ev.detail === 0 }));
+      nav.append(b);
+    }
+    return nav;
+  }
+
+  // rowFor LAYOUT-ROW -> the row of one setting (or of one of the page's own rows), or null
+  function rowFor(r) {
+    const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
+      "+report": actionRow, "+restart": restartRow };
+    if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
+    const k = keys[r.key];
+    if (!k) return null;
+    if (r.key === "STT_PROVIDER") return voiceRow(r);
+    if (r.key === "CODE_ENABLED") return codeRow(r);
+    if (r.key === "TERMINAL_ENABLED") return terminalRow(r);
+    if (r.key === "REMOTE_MODE") return remoteStatus(r);
+    return row(k, r);
   }
 
   // --- one setting ---
@@ -223,20 +407,33 @@
   // address, REMOTE_PREVIEW_HOST (lib/code.sh code_remote_sync, which also checks a REMOTE_PREVIEW_DOMAIN) — so never On
   // while they are off. A change that may turn them on (true; or blank in own-domain mode with a preview domain of its
   // own) is less protection: lib/settings.sh setting_weakens.
-  const ON_VALUES = ["true", "1", "yes", "on"], OFF_VALUES = ["false", "0", "no", "off"];
-  const lower = (x) => String(x || "").trim().toLowerCase();
   function remotePreviewOn() { return Boolean(keys.REMOTE_PREVIEW_HOST && keys.REMOTE_PREVIEW_HOST.value); }
   function remotePreviewMayBeOn(v) {
     if (ON_VALUES.includes(lower(v))) return true;
     if (OFF_VALUES.includes(lower(v))) return false;
     return Boolean(keys.REMOTE_MODE && keys.REMOTE_MODE.value === "domain" && keys.REMOTE_PREVIEW_DOMAIN && keys.REMOTE_PREVIEW_DOMAIN.value);
   }
+  // what a blank value means (the stack's own default), for the keys whose default is not .env.example's value
+  const BLANK = { PORTAL_SESSION_DAYS: "30 days", BUDGET_ALERT_PCT: "80%", BACKUP_HOUR: hourRange(2), BACKUP_KEEP: "7",
+    AUTO_UPDATE_HOUR: hourRange(3), OPENROUTER_MODELS: "all", OPENROUTER_MAX_MODELS: "1000", TERMINAL_EGRESS: "on",
+    TERMINAL_MEM_LIMIT: "4g", REMOTE_MODE: "off", AWS_AUTH: "an access key", REMOTE_SUBNET: "10.255.255.248/29",
+    PORTAL_HOST: "bedrock-now.localhost", PORTAL_PORT: "80, else 8800", CHAT_HOST: "chat. + the portal's address",
+    ADMIN_HOST: "admin. + the portal's address", FILES_HOST: "files. + the portal's address",
+    TERMINAL_HOST: "terminal. + the portal's address", CODE_HOST: "code. + the portal's address" };
+  // display K -> the value in words: "$50 a month", "30 days (default)", "On", "Not set", "••••••••"
   function display(k) {
     const v = shown(k);
     if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
-    if (k.secret === "S") return k.set ? "••••••••" : "not set";
+    if (k.secret === "S") return k.set ? "••••••••" : "Not set";
+    if (!plain(k)) return v === "not set" ? "Not set" : v === "set" ? "Set" : v;
+    if (v === "blank" || v === "not set") return BLANK[k.key] ? `${BLANK[k.key]} (default)` : "Not set";
+    if (["TERMINAL_ENABLED", "REMOTE_TERMINAL", "OWUI_HYBRID_SEARCH", "OWUI_ENABLE_IMAGES", "LITELLM_DB_ADMIN_READY"].includes(k.key)) return v === "true" ? "On" : "Off";
+    if (k.validator === "budget") return `$${v} a month`;
+    if (k.validator === "days") return `${v} day${v === "1" ? "" : "s"}`;
+    if (k.validator === "pct") return `${v}%`;
+    if (k.validator === "hour" && /^\d+$/.test(v)) return hourRange(Number(v));
     return v;
   }
 
@@ -245,11 +442,11 @@
   function weakens(k, v) {
     const old = "value" in k ? k.value : "";
     const n = (x, lo, hi, d) => (/^\d{1,3}$/.test(x || "") && Number(x) >= lo && Number(x) <= hi ? Number(x) : d);   // _eff_int
-    const usd = (x) => (/^(\d*\.?\d+|\d+\.)$/.test(x || "") ? Number(x) : { BUDGET_CLAUDE_CODE: 200, BUDGET_OPENWEBUI: 50 }[k.key] || 5);
+    const usd = (x) => (/^(\d*\.?\d+|\d+\.)$/.test(x || "") ? Number(x) : { BUDGET_CLAUDE_CODE: 200, BUDGET_OPENWEBUI: 50, BUDGET_TERMINAL: 50 }[k.key] || 5);
     if (k.key === "BACKUP_KEEP") return n(v, 1, 60, 7) < n(old, 1, 60, 7);
     if (k.key === "PORTAL_SESSION_DAYS") return n(v, 1, 90, 30) > n(old, 1, 90, 30);
     if (k.key === "BUDGET_ALERT_PCT") return n(v, 50, 99, 80) > n(old, 50, 99, 80);
-    if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP)$/.test(k.key)) return usd(v) > usd(old);
+    if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP|TERMINAL)$/.test(k.key)) return usd(v) > usd(old);
     if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
     if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
     if (k.key === "REMOTE_PREVIEW") return remotePreviewMayBeOn(v) && !ON_VALUES.includes(lower(old));
@@ -265,41 +462,97 @@
   const codeFolder = () => terminalOn() ? (keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value) || ""
     : (data.snapshot && data.snapshot.choices.code_workspace) || "";
 
-  function cliLine(k) {
-    const cmd = k.cli || `./stack config set ${k.key}`;
+  function copyButton(cmd) {
     const b = el("button", { type: "button", class: "copy", text: "Copy" });
     b.addEventListener("click", () => copy(cmd.replace(/\s+\(.*\)$/, ""), "the command"));
-    return el("p", { class: "set-cli" }, el("span", { class: "note", text: editable(k) ? "In a terminal: " : "Read-only here: " }), el("code", { text: cmd }), " ", b);
+    return b;
+  }
+  function cliLine(k, lead) {
+    const cmd = k.cli || `./stack config set ${k.key}`;
+    return el("p", { class: "set-cli" }, el("span", { class: "note", text: lead || (editable(k) ? "In a terminal: " : "Change it in a terminal: ") }),
+      el("code", { text: cmd }), " ", copyButton(cmd));
   }
 
-  function row(k) {
-    const r = el("div", { class: "set-row", "data-key": k.key });
-    if (changedFromDefault(k)) {
-      r.dataset.changed = "1";
-      r.title = `Changed from the default (${String(k.default).trim() === "" ? "blank" : k.default})`;
+  // the badges next to a setting's name: from where it may change, that it is secret or read-only, what it restarts
+  function badges(k) {
+    const out = el("span", { class: "set-badges" });
+    const add = (text, cls, title) => out.append(el("span", { class: `badge ${cls}`, text, ...(title ? { title } : {}) }));
+    if (k.policy === "local") add("This computer only", "badge-local", "Changed only from the computer running bedrock-now: from your devices it could send your data elsewhere.");
+    if (k.policy === "on-only") add("On only", "badge-local", "Can be turned on here; turning it off is a terminal step.");
+    if (k.secret === "S" || k.secret === "h") add("Secret", "badge-secret");
+    if (k.policy === "ro" || k.policy === "derived") add("Read-only", "badge-ro");
+    if (editable(k) || k.policy === "regen") {
+      const what = [...new Set(String(k.apply || "").split(",").flatMap((a) => RESTARTS[a] || []))];
+      if (k.key === "CODE_ENABLED") add("Builds the Code page", "badge-restart");
+      else if (what.length) add(`Restarts ${what.join(", ")}`, "badge-restart", "What a change restarts (about 10-40 s)");
     }
+    return out;
+  }
+
+  // the frame of a row: name and badges, the summary, the value, and the full note folded under Details
+  function frame(k, r, opts = {}) {
+    const row = el("div", { class: "set-row", "data-key": k.key, id: `set-row-${k.key}` });
+    if (changedFromDefault(k)) {
+      row.dataset.changed = "1";
+      row.title = `Changed from the default (${String(k.default).trim() === "" ? "blank" : k.default})`;
+    }
+    const nameId = `set-name-${k.key}`, sumId = `set-sum-${k.key}`;
     const main = el("div", { class: "set-main" },
-      el("div", { class: "set-label" }, el("span", { text: k.label }), el("code", { class: "set-key", text: k.key })),
-      el("div", { class: `set-value${k.secret !== "-" && k.secret !== "s" ? " masked" : ""}`, text: display(k) }),
-      el("p", { class: "note set-note", text: k.note }));
+      el("div", { class: "set-label" }, el("span", { class: "set-name", id: nameId, text: opts.label || k.label }), badges(k)),
+      el("p", { class: "set-sum", id: sumId, text: (r && r.summary) || "" }));
+    if (opts.value !== false) {
+      const text = opts.value || display(k);
+      const v = el("p", { class: `set-value${plain(k) ? "" : " masked"}${text === "Not set" ? " set-unset" : ""}`, text });
+      if (plain(k) && "value" in k) v.dataset.value = k.value;
+      main.append(v);
+    }
     const actions = el("div", { class: "set-actions" });
-    r.append(main, actions);
-    if (BUDGET_KEY[k.key]) main.append(el("p", { class: "set-spend note", "data-alias": BUDGET_KEY[k.key][0] }));
+    row.append(main, actions);
+    const details = el("details", { class: "set-details" }, el("summary", {}, "Details"),
+      el("p", { class: "note", text: k.note }),
+      el("p", { class: "note set-envkey" }, "In .env: ", el("code", { text: [k.key, ...(withOf[k.key] || [])].join(" · ") })));
+    if (opts.cli !== false && editable(k) && canChange()) details.append(cliLine(k));
+    row._details = details;
+    row._main = main;
+    row._actions = actions;
+    return row;
+  }
+  // finish ROW: the terminal command inline where the page cannot change it, then the Details, last
+  function finish(row, k, inlineCli) {
+    if (inlineCli) row.append(inlineCli === true ? cliLine(k) : inlineCli);
+    row.append(row._details);
+    return row;
+  }
+
+  function row(k, r) {
+    const rw = frame(k, r);
+    const main = rw._main, actions = rw._actions;
+    const alias = BUDGET_ALIAS[k.key];
+    if (alias) main.append(el("p", { class: "set-spend note", "data-alias": alias }));
     if (k.key === "AWS_ACCESS_KEY_ID" && keys.AWS_AUTH && shown(keys.AWS_AUTH) === "instance-role") {
-      main.querySelector(".set-value").textContent = "this computer's IAM role (no key in .env)";
+      $(".set-value", main).textContent = "this computer's IAM role (no key in .env)";
+    }
+    if (k.key === "OPENWEBUI_ADMIN_EMAIL" && keys.LITELLM_UI_USER && "value" in keys.LITELLM_UI_USER && keys.LITELLM_UI_USER.value !== k.value) {
+      main.append(el("p", { class: "note set-extra", text: `Admin (LiteLLM) sign-in name until the next setup: ${keys.LITELLM_UI_USER.value || "admin"}` }));
     }
     // reveal / copy for what the portal holds anyway
-    if (REVEALABLE.has(k.key) && k.set) actions.append(revealButton(k.key, "Reveal"));
-    if (BUDGET_KEY[k.key] && keys[BUDGET_KEY[k.key][1]] && keys[BUDGET_KEY[k.key][1]].set) actions.append(revealButton(BUDGET_KEY[k.key][1], "Copy key"));
+    if (REVEALABLE.has(k.key) && k.set) actions.append(revealButton(k.key, "Reveal", true));
+    if (k.key === "RUSTFS_ACCESS_KEY" && keys.RUSTFS_SECRET_KEY && keys.RUSTFS_SECRET_KEY.set) actions.append(revealButton("RUSTFS_SECRET_KEY", "Copy secret", false));
+    const ownKey = (withOf[k.key] || []).find((w) => /^LITELLM_KEY_/.test(w));
+    if (alias && ownKey && keys[ownKey] && keys[ownKey].set && REVEALABLE.has(ownKey)) actions.append(revealButton(ownKey, "Copy key", false));
     if (k.key === "AWS_ACCESS_KEY_ID") actions.append(actionButton("check-aws", "Check (free)"));
-    if (PIN_OF[k.key]) {
-      const d = keys[PIN_OF[k.key]];
-      main.querySelector(".set-value").textContent = shown(k) === "blank" || !k.set ? `automatic: ${modelName(d ? shown(d) : "")}` : `pinned: ${modelName(shown(k))}`;
+    if (k.validator === "model_pin") {   // a pin, and the model setup chose (shown while there is no pin)
+      const d = keys[(withOf[k.key] || [])[0]];
+      $(".set-value", main).textContent = shown(k) === "blank" || !k.set ? `Automatic: ${modelName(d ? shown(d) : "")}` : `Pinned: ${modelName(shown(k))}`;
     }
     if (k.key === "REMOTE_PREVIEW" && ON_VALUES.includes(lower(k.value)) && !remotePreviewOn()) {
       main.append(el("p", { class: "note", text: "Switched on, not in effect: the Code page is not reachable over remote access (REMOTE_TERMINAL=true), or remote access has no names yet (./stack up)." }));
     }
-    if (k.key === "MODELS_HIDDEN") main.querySelector(".set-value").textContent = k.value ? k.value.split(",").map(modelName).join(", ") : "none";
+    if (k.key === "MODELS_HIDDEN") $(".set-value", main).textContent = k.value ? k.value.split(",").map(modelName).join(", ") : "None hidden";
+    if (k.key === "BACKUP_HOUR" && keys.AUTO_UPDATE && keys.AUTO_UPDATE.value === "on") {
+      const h = keys.AUTO_UPDATE_HOUR && /^\d+$/.test(keys.AUTO_UPDATE_HOUR.value || "") ? Number(keys.AUTO_UPDATE_HOUR.value) : 3;
+      main.append(el("p", { class: "note set-extra", text: `Automatic updates are on: nightly backups use their window (${hourRange(h)}) instead.` }));
+    }
     if (k.policy === "regen") {
       const b = el("button", { type: "button", class: "action", text: "Regenerate" });
       b.disabled = !canChange();
@@ -307,54 +560,74 @@
         `Regenerate ${k.key === "SHARED_MCP_TOKEN" ? "the MCP token" : "the Files key pair"}?`, k.note, "Regenerate",
         k.key === "SHARED_MCP_TOKEN" ? ["SHARED_MCP_TOKEN"] : ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY"]));
       actions.append(b);
-      if (!canChange()) r.append(cliLine(k));
-      return r;
+      return finish(rw, k, !canChange());
     }
-    if (!editable(k)) { r.append(cliLine(k)); return r; }
+    if (!editable(k)) return finish(rw, k, true);
     if (localOnlyHere(k, "true") && k.policy === "local") {
-      r.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your data elsewhere." }));
-      r.append(cliLine(k));
-      return r;
+      rw.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your data elsewhere." }));
+      return finish(rw, k, true);
     }
     const v = shown(k);
     if (["bool", "on_off", "true_blank"].includes(k.validator)) {
-      actions.append(toggle(k, v));
-      if (k.key === "AUTO_UPDATE" && keys.AUTO_UPDATE_HOUR) actions.append(hourSelect(keys.AUTO_UPDATE_HOUR, 3, "Change the nightly window?"));
-      if (k.key === "BACKUP_NIGHTLY") {
-        if (keys.BACKUP_HOUR) actions.append(hourSelect(keys.BACKUP_HOUR, 2, "Change the nightly backup window?"));
-        if (keys.BACKUP_KEEP) actions.append(keepSelect(keys.BACKUP_KEEP));
-      }
+      $(".set-value", main).remove();
+      actions.append(toggle(k, v, `set-name-${k.key}`));
+      rw.classList.add("set-has-switch");
+    } else if (k.validator === "hour") {   // the select shows the value
+      $(".set-value", main).remove();
+      actions.append(hourSelect(k, k.key === "AUTO_UPDATE_HOUR" ? 3 : 2, k.key === "AUTO_UPDATE_HOUR" ? "Change the nightly window?" : "Change the nightly backup window?"));
+    } else if (k.validator === "keep") {
+      $(".set-value", main).remove();
+      actions.append(keepSelect(k));
+    } else if (k.validator === "or_mode") {
+      if (["all", "free", "paid", ""].includes(lower(k.value))) $(".set-value", main).remove();
+      actions.append(segmented(k, rw));
     } else {
-      const b = el("button", { type: "button", class: "action", text: k.set || ("value" in k && k.value) ? "Change" : "Set" });
+      const b = el("button", { type: "button", class: "action", text: plain(k) || k.set ? "Change" : "Set",
+        "aria-describedby": `set-name-${k.key}` });
       b.disabled = !canChange();
-      b.addEventListener("click", () => openForm(r, k));
+      b.addEventListener("click", () => openForm(rw, k));
       actions.append(b);
     }
-    if (!canChange()) r.append(cliLine(k));
-    return r;
+    return finish(rw, k, !canChange());
   }
 
-  function toggle(k, v) {
+  // a switch: one button (role switch), its state in words next to it; a change asks for the password like any other
+  function toggle(k, v, labelId) {
     const on = k.validator === "on_off" ? "on" : "true", off = k.validator === "on_off" ? "off" : (k.validator === "true_blank" ? "" : "false");
     const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn() ? on : off) : v === on ? on : off;
-    const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
-    for (const [val, label] of [[off, "Off"], [on, "On"]]) {
-      const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });
-      b.disabled = !canChange() || (val !== cur && ((k.policy === "on-only" && val !== on) || localOnlyHere(k, val)));
-      const what = k.key === "CODE_ENABLED" ? codeSwitch(val) : k.note;
-      b.addEventListener("click", () => { if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${label}`, what, [k.key]); });
-      g.append(b);
-    }
-    const wrap = el("div", { class: "set-toggle" }, g);
-    if (k.policy === "on-only" && cur === on) wrap.append(el("span", { class: "note", text: "Turning it off is a terminal step." }));
     const other = cur === on ? off : on;
+    const b = el("button", { type: "button", class: "switch", role: "switch", "aria-checked": String(cur === on), "aria-labelledby": labelId,
+      "aria-describedby": `set-sum-${k.key}`, "data-state": cur === on ? "on" : "off" }, el("span", { class: "switch-track", "aria-hidden": "true" }, el("span", { class: "switch-thumb" })),
+    el("span", { class: "switch-text", text: cur === on ? "On" : "Off" }));
+    b.disabled = !canChange() || (k.policy === "on-only" && other !== on) || localOnlyHere(k, other);
+    const what = k.key === "CODE_ENABLED" ? codeSwitch(other) : k.note;
+    b.addEventListener("click", () => confirmApply({ [k.key]: other }, `${k.label}: ${other === on ? "On" : "Off"}`, what, [k.key]));
+    const wrap = el("div", { class: "set-toggle" }, b);
+    if (k.policy === "on-only" && cur === on) wrap.append(el("span", { class: "note", text: "Turning it off is a terminal step." }));
     if (k.policy === "widen-local" && data.here.remote && weakens(k, other)) {
       wrap.append(el("span", { class: "note", text: `${other === on ? "On" : "Off"} only from the computer running bedrock-now.` }));
     }
     return wrap;
   }
 
-  // --- the Code page (./stack code enable | disable, run by the update helper) ---
+  // OpenRouter's model set: All · Free · Paid, or a list of model ids (the form)
+  function segmented(k, rw) {
+    const v = lower(k.value) || "all";
+    const cur = ["all", "free", "paid"].includes(v) ? v : "list";
+    const g = el("div", { class: "chips seg set-seg", role: "group", "aria-labelledby": `set-name-${k.key}` });
+    for (const [val, label] of [["all", "All"], ["free", "Free"], ["paid", "Paid"], ["list", "List…"]]) {
+      const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });
+      b.disabled = !canChange();
+      b.addEventListener("click", () => {
+        if (val === "list") openForm(rw, k);
+        else if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${label}`, k.note, [k.key]);
+      });
+      g.append(b);
+    }
+    return g;
+  }
+
+  // --- the Code page (./stack code enable | disable, run by the update helper) and the browser terminal ---
   function codeSwitch(val) {
     if (val !== "true") return "The helper runs ./stack code disable: the code container goes; the terminal (and its tmux session), its folder and Claude Code's history stay.";
     const ws = codeFolder() || "the default folder";
@@ -362,30 +635,41 @@
       ? `The helper runs ./stack code enable: it builds the Code page's image (a few minutes the first time) and restarts the portal and Caddy; the terminal keeps running. Claude sees the terminal's folder ${ws}.`
       : `The helper runs ./stack code enable: it turns the browser terminal on too, with the folder ${ws} as its workspace (created if it is not there; Claude sees only that folder), then builds the Code page's image (a few minutes the first time) and restarts the portal and Caddy.`;
   }
-  function codeRow(body) {
+  function codeRow(r) {
     const k = keys.CODE_ENABLED;
-    if (!k) return;
-    const r = row(k);
-    const main = r.querySelector(".set-main");
+    const rw = row(k, r);
     const ws = codeFolder();
     const egress = !(keys.TERMINAL_EGRESS && keys.TERMINAL_EGRESS.value === "off");
-    main.append(el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace (read-only here): " }),
-      el("code", { text: ws || (terminalOn() ? "the terminal's" : "the default folder") })));
+    const extra = [el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace: " }),
+      el("code", { text: ws || (terminalOn() ? "the terminal's" : "the default folder") }))];
     if (terminalOn()) {
-      main.append(el("p", { class: "note", text: `Claude sees only that folder (at /workspace), uses the terminal's key and budget, and ${egress ? "can reach the internet (TERMINAL_EGRESS=off in .env turns that off)" : "has no internet (TERMINAL_EGRESS=off)"}.` }));
+      extra.push(el("p", { class: "note", text: `Claude sees only that folder (at /workspace), uses the terminal's key and budget, and ${egress ? "can reach the internet" : "has no internet (TERMINAL_EGRESS=off)"}.` }));
     } else if (shown(k) !== "true") {
-      main.append(el("p", { class: "note", text: "The browser terminal is off: turning this on turns it on too, with the folder above as its workspace (Claude sees only that folder, at /workspace). Another folder: in a terminal, with the command below." }));
+      extra.push(el("p", { class: "note", text: "The browser terminal is off: turning this on turns it on too, with the folder above as its workspace (Claude sees only that folder, at /workspace). Another folder: in a terminal, with the command below." }));
     }
+    rw._main.append(...extra);
+    rw.querySelector(":scope > .set-details").remove();
     const cmd = terminalOn() ? "./stack terminal enable --workspace DIR" : "./stack code enable --workspace DIR";
-    const b = el("button", { type: "button", class: "copy", text: "Copy" });
-    b.addEventListener("click", () => copy(cmd, "the command"));
-    r.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: terminalOn() ? "Another folder, in a terminal: " : "In a terminal: " }), el("code", { text: cmd }), " ", b));
-    body.append(r);
-    // Bypass permissions in the Code page's mode picker: on only from this computer (widen-local), off from anywhere
-    if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));
-    // Auto mode (a reviewer model instead of you) in the Code page, and in the terminal: the same rule
-    if (keys.CODE_AUTO_MODE) body.append(row(keys.CODE_AUTO_MODE));
-    if (keys.TERMINAL_AUTO_MODE) body.append(row(keys.TERMINAL_AUTO_MODE));
+    rw.insertBefore(el("p", { class: "set-cli" }, el("span", { class: "note", text: terminalOn() ? "Another folder, in a terminal: " : "In a terminal: " }), el("code", { text: cmd }), " ", copyButton(cmd)), null);
+    rw.append(rw._details);
+    return rw;
+  }
+  function terminalRow(r) {
+    const k = keys.TERMINAL_ENABLED;
+    const rw = frame(k, r, { label: "Browser terminal" });
+    if (terminalOn()) {
+      const ws = (keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value) || "";
+      rw._main.append(el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Folder: " }), el("code", { text: ws || "the default folder" })));
+    }
+    return finish(rw, k, cliLine(k, terminalOn() ? "Turned off, or another folder, in a terminal: " : "Turned on in a terminal (it builds an image and checks the folder): "));
+  }
+
+  function remoteStatus(r) {
+    const k = keys.REMOTE_MODE;
+    const on = data.remote && data.remote.on;
+    const rw = frame(k, r, { label: "Remote access", value: on ? `${data.remote.mode}: ${data.remote.url}` : "Off" });
+    rw._main.append(el("p", { class: "note set-extra", text: on ? `This page is open ${data.here.remote ? "remotely" : "on this computer"}.` : "It needs a Tailscale auth key and a few steps in your tailnet's admin console (Learn more above)." }));
+    return finish(rw, k, cliLine(k, on ? "Turned off in a terminal: " : "Turned on in a terminal: "));
   }
 
   function modelName(id) {
@@ -395,7 +679,7 @@
 
   function keepSelect(kk) {
     const cur = "value" in kk && /^\d+$/.test(kk.value) ? Number(kk.value) : 7;
-    const sel = el("select", { "aria-label": "Nightly backups kept" });
+    const sel = el("select", { "aria-labelledby": `set-name-${kk.key}` });
     const ns = [1, 2, 3, 5, 7, 10, 14, 21, 30, 45, 60];
     if (!ns.includes(cur)) ns.push(cur);   // a value set in a terminal shows as it is
     for (const n of ns.sort((a, b) => a - b)) {
@@ -411,9 +695,9 @@
 
   function hourSelect(hk, def, title) {
     const cur = "value" in hk && /^\d+$/.test(hk.value) ? Number(hk.value) : def;
-    const sel = el("select", { "aria-label": "Nightly window (this computer's time)" });
+    const sel = el("select", { "aria-labelledby": `set-name-${hk.key}` });
     for (let h = 0; h < 24; h++) {
-      const o = el("option", { value: String(h), text: `${pad2(h)}:00–${pad2((h + 3) % 24)}:00` });
+      const o = el("option", { value: String(h), text: hourRange(h) });
       if (h === cur) o.selected = true;
       sel.append(o);
     }
@@ -422,26 +706,25 @@
     return sel;
   }
 
-  function revealButton(key, label) {
+  function revealButton(key, label, show) {
     const b = el("button", { type: "button", class: "copy", text: label });
     b.disabled = !data.here.allowed;
-    b.addEventListener("click", () => askPassword({ kind: "reveal", key },
-      "Show and copy?", `${key} goes on your clipboard${label === "Reveal" ? " and shows here" : ""}. The portal already holds this value; nothing else can be revealed.`, "Copy"));
+    b.addEventListener("click", () => askPassword({ kind: "reveal", key, show },
+      "Show and copy?", `${key} goes on your clipboard${show ? " and shows here" : ""}. The portal already holds this value; nothing else can be revealed.`, "Copy"));
     return b;
   }
 
   // --- forms ---
-  function field(id, label, type, attrs = {}) {
+  function field(id, label, type, attrs = {}, unit = "") {
     const input = el("input", { id, type, autocomplete: type === "password" ? "new-password" : "off", spellcheck: "false", ...attrs });
-    return [el("label", { for: id, text: label }), input];
+    return [el("label", { for: id, text: label }), unit ? el("span", { class: "set-unit" }, input, el("span", { class: "note", text: unit })) : input];
   }
 
   function openForm(r, k) {
     for (const f of document.querySelectorAll("#settings .set-form")) f.remove();
     const form = el("form", { class: "set-form", novalidate: "" });
     const id = `f-${k.key}`;
-    const vals = () => ({});
-    let collect = vals;
+    let collect = () => ({});
     const v = "value" in k ? k.value : "";
     if (k.validator === "portal_password" || k.validator === "litellm_password") {
       form.append(...field(`${id}-a`, "New password", "password", { minlength: "12", maxlength: "128" }),
@@ -466,11 +749,11 @@
       form.dataset.confirm = "";
       other.addEventListener("change", () => { form.dataset.confirm = other.checked ? "other-aws-account" : ""; });
     } else if (k.validator === "budget") {
-      form.append(...field(id, "Monthly budget in USD", "text", { inputmode: "decimal", value: v, maxlength: "12" }));
+      form.append(...field(id, "Monthly budget", "text", { inputmode: "decimal", value: v, maxlength: "12" }, "USD a month"));
       const warn = el("p", { class: "note", hidden: "" });
       form.append(warn);
       const check = () => {
-        const n = Number($(`#${id}`, form).value.trim()), row = spend && (spend.keys || []).find((x) => x.alias === BUDGET_KEY[k.key][0]);
+        const n = Number($(`#${id}`, form).value.trim()), row = spend && (spend.keys || []).find((x) => x.alias === BUDGET_ALIAS[k.key]);
         let w = "";
         if (row && !row.error && n > 0 && n < row.spend) w = `Below this period's spend (${usd(row.spend)}): requests with this key are refused until the reset.`;
         else if (k.key === "BUDGET_SETUP" && n > 0 && n < 0.05) w = "Setup's model check and smoke test cost up to about $0.05: a lower budget can make ./stack setup and Re-check models fail.";
@@ -500,8 +783,6 @@
       }
       form.append(box, el("p", { class: "note", text: "Hidden models stay usable through the API and Claude Code: this only tidies the picker." }));
       collect = () => ({ [k.key]: [...box.querySelectorAll("input:checked")].map((c) => c.value).join(",") });
-    } else if (k.validator === "hour") {
-      collect = () => ({ [k.key]: $(`#${id}`, form).value });
     } else if (k.validator === "or_key" || k.validator === "stt_key") {
       form.append(...field(id, "New key", "password", { maxlength: "512" }));
       collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });
@@ -524,7 +805,9 @@
       }
     } else {
       const type = k.validator === "email" ? "email" : "text";
-      form.append(...field(id, "New value", type, { value: v, maxlength: "2000" }));
+      const unit = { days: "days (1-90; blank = 30)", pct: "% (50-99; blank = 80)", int_1_5000: "models (blank = 1000)" }[k.validator] || "";
+      const label = { or_mode: "all, free, paid, or model ids separated by commas" }[k.validator] || "New value";
+      form.append(...field(id, label, type, { value: v, maxlength: "2000", ...(unit ? { inputmode: "numeric" } : {}) }, unit));
       // emails in lowercase, as Chat keeps them
       collect = () => ({ [k.key]: k.validator === "email" ? $(`#${id}`, form).value.trim().toLowerCase() : $(`#${id}`, form).value.trim() });
     }
@@ -539,7 +822,7 @@
       try { values = collect(); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
       confirmApply(values, `Save ${k.label}?`, k.note, Object.keys(values), form, form.dataset.confirm ? [form.dataset.confirm] : []);
     });
-    r.append(form);
+    r.insertBefore(form, r.querySelector(":scope > .set-details"));
     const first = form.querySelector("input, select");
     if (first) first.focus();
   }
@@ -554,27 +837,21 @@
   }
 
   // --- voice: provider, model and key in one form ---
-  function voiceRow(body) {
+  function voiceRow(lr) {
     const pk = keys.STT_PROVIDER, mk = keys.STT_MODEL || {}, kk = keys.STT_API_KEY || {};
-    if (!pk) return;
     const prov = "value" in pk ? pk.value : "";
     const model = "value" in mk ? mk.value : "";
-    const r = el("div", { class: "set-row", "data-key": "STT_PROVIDER" });
     const label = STT_LABEL[prov] || prov;
     const now = prov ? `${label}${model ? ` · ${model}` : prov === "bedrock" ? " · voxtral-small" : ""}${kk.set && prov !== "bedrock" ? ` · key ${kk.hint || "set"}` : ""}` : label;
-    r.append(el("div", { class: "set-main" },
-      el("div", { class: "set-label" }, el("span", { text: "Speech-to-text" }), el("code", { class: "set-key", text: "STT_PROVIDER · STT_MODEL · STT_API_KEY" })),
-      el("div", { class: "set-value", text: now }), el("p", { class: "note set-note", text: pk.note })));
-    const actions = el("div", { class: "set-actions" });
-    r.append(actions);
+    const r = frame(pk, lr, { label: "Speech-to-text", value: now });
+    const actions = r._actions;
     if (data.here.remote) {
-      r.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your voice elsewhere." }), cliLine(pk));
-      body.append(r); return;
+      r.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your voice elsewhere." }));
+      return finish(r, pk, true);
     }
-    const b = el("button", { type: "button", class: "action", text: "Change" });
+    const b = el("button", { type: "button", class: "action", text: "Change", "aria-describedby": `set-name-${pk.key}` });
     b.disabled = !canChange();
     actions.append(b);
-    if (!canChange()) r.append(cliLine(pk));
     b.addEventListener("click", () => {
       for (const f of document.querySelectorAll("#settings .set-form")) f.remove();
       const form = el("form", { class: "set-form" });
@@ -591,8 +868,15 @@
       const keyIn = el("input", { id: "stt-key", type: "password", autocomplete: "new-password", maxlength: "512", placeholder: kk.set ? "keep the current key" : "" });
       const keyRow = el("div", { class: "set-sub" }, el("label", { for: "stt-key", text: "API key" }), keyIn);
       const privacy = el("p", { class: "note" });
+      const provider = () => form.querySelector("input[name=stt-provider]:checked").value;
+      const describe = () => {   // what happens to your speech, and what it costs (docs/voice.md, lib/stt.sh)
+        const p = provider();
+        privacy.textContent = p === "openai" || p === "groq" ? `Your speech (microphone and calls) goes to ${p === "openai" ? "api.openai.com" : "api.groq.com"}. The key is checked with ${STT_LABEL[p]} first (free).`
+          : p === "bedrock" ? `Your speech stays in your AWS account; it counts on Chat's budget (an estimated ${msel.value === "voxtral-mini" ? "~$0.00004" : "~$0.00014"} a minute of speech).`
+            : "The browser's own speech recognition; voice calls are unavailable.";
+      };
       const sync = () => {
-        const p = form.querySelector("input[name=stt-provider]:checked").value;
+        const p = provider();
         msel.replaceChildren(el("option", { value: "", text: "the provider's default" }));
         for (const m of choices.stt_models[p] || []) {
           const o = el("option", { value: m, text: m });
@@ -602,10 +886,10 @@
         }
         msel.disabled = !p;
         keyRow.hidden = !(p === "openai" || p === "groq");
-        privacy.textContent = p === "openai" || p === "groq" ? `Your speech (microphone and calls) goes to ${p === "openai" ? "api.openai.com" : "api.groq.com"}. The key is checked with ${STT_LABEL[p]} first (free).`
-          : p === "bedrock" ? "Your speech stays in your AWS account; it counts on Chat's budget (about $0.002 a minute)." : "The browser's own speech recognition; voice calls are unavailable.";
+        describe();
       };
       radios.addEventListener("change", sync);
+      msel.addEventListener("change", describe);
       form.append(radios, el("div", { class: "set-sub" }, el("label", { for: "stt-model", text: "Model" }), msel), keyRow, privacy);
       const err = el("p", { class: "error", role: "alert", hidden: "" });
       const cancel = el("button", { type: "button", class: "quiet", text: "Cancel" });
@@ -613,54 +897,62 @@
       cancel.addEventListener("click", () => form.remove());
       form.addEventListener("submit", (ev) => {
         ev.preventDefault();
-        const p = form.querySelector("input[name=stt-provider]:checked").value;
+        const p = provider();
         const values = { STT_PROVIDER: p, STT_MODEL: p ? msel.value : "" };
         if (keyIn.value.trim()) values.STT_API_KEY = keyIn.value.trim();
         if (p === "bedrock" || p === "") { if (kk.set) values.STT_API_KEY = ""; }
         confirmApply(values, "Save speech-to-text?", "Chat restarts (about 30 s).", Object.keys(values), form);
       });
       sync();
-      r.append(form);
+      r.insertBefore(form, r.querySelector(":scope > .set-details"));
     });
-    body.append(r);
+    return finish(r, pk, !canChange());
   }
 
-  // --- extra rows ---
+  // --- the page's own rows ---
+  function ownFrame(r, label) {
+    const rw = el("div", { class: "set-row", "data-own": r.key, id: `set-row-${r.key.slice(1)}` });
+    const main = el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { class: "set-name", id: `set-name-${r.key.slice(1)}`, text: label })),
+      el("p", { class: "set-sum", text: r.summary }));
+    rw.dataset.findExtra = label;
+    const actions = el("div", { class: "set-actions" });
+    rw.append(main, actions);
+    rw._main = main; rw._actions = actions;
+    return rw;
+  }
+
   function sessionDays() { const k = keys.PORTAL_SESSION_DAYS; return k && /^\d+$/.test(k.value || "") ? Number(k.value) : 30; }
 
-  function sessionsRow() {
-    const r = el("div", { class: "set-row" },
-      el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Signed-in devices" })),
-        el("p", { class: "note set-note", text: `Every browser, phone and installed app that signed in with the portal password stays signed in for ${sessionDays()} days.` })));
-    const a = el("div", { class: "set-actions" });
+  function sessionsRow(r) {
+    const rw = ownFrame(r, "Signed-in devices");
+    rw._main.append(el("p", { class: "note set-extra", text: `Each stays signed in for ${sessionDays()} days.` }));
     const others = el("button", { type: "button", class: "action", text: "Sign out other devices" });
     others.disabled = !data.here.allowed;
     others.addEventListener("click", () => askPassword({ kind: "signout" }, "Sign out every other device?",
       "Every other browser, phone and installed app signs in again with the portal password. This browser stays signed in.", "Sign them out"));
     const all = el("form", { method: "post", action: "/logout", class: "set-inline" }, el("button", { type: "submit", class: "action", text: "Sign out everywhere" }));
-    a.append(others, all);
-    r.append(a);
-    return r;
+    rw._actions.append(others, all);
+    return rw;
   }
 
-  function modelsRow() {
-    const r = el("div", { class: "set-row" },
-      el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Models" })),
-        el("p", { class: "note set-note", text: "Re-checking asks Bedrock which models your key can use (1-token requests, < $0.01; at most once an hour). LiteLLM restarts twice and setup picks the defaults again; about 2 minutes." }),
-        el("p", { class: "note set-note" }, "Which models appear in Chat's picker: ",
-          el("a", { href: `${(data.apps && data.apps.chat) || appUrl("chat")}admin/settings/models`, target: "_blank", rel: "noopener", text: "Chat › Admin settings › Models" }),
-          ". Hiding a model there does not block it for the API or Claude Code.")));
-    r.append(el("div", { class: "set-actions" }, actionButton("models-recheck", "Re-check models")));
-    return r;
+  function modelsRow(r) {
+    const rw = ownFrame(r, "Models your key can use");
+    const link = (place, text) => el("a", { href: `#settings/${place}`, text });
+    rw._main.append(
+      el("p", { class: "note set-extra" }, "Which model each app uses: ", link("CHAT_DEFAULT_MODEL", "Chat & voice"), " · ",
+        link("CLAUDE_MODEL_OPUS", "Claude Code"), ". Which ones Chat's picker lists: ",
+        el("a", { href: `${(data.apps && data.apps.chat) || appUrl("chat")}admin/settings/models`, target: "_blank", rel: "noopener", text: "Chat › Admin settings › Models" }), "."),
+      el("details", { class: "set-details" }, el("summary", {}, "Details"),
+        el("p", { class: "note", text: "Re-checking asks Bedrock which models your key can use (1-token requests, < $0.01; at most once an hour). LiteLLM restarts twice and setup picks the defaults again; about 2 minutes. Hiding a model in Chat's own admin settings does not block it for the API or Claude Code." })));
+    rw._actions.append(actionButton("models-recheck", "Re-check models"));
+    return rw;
   }
 
   function fmtBytes(b) { return b == null ? "" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`; }
 
-  function backupRow() {
-    const main = el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Backups" })),
-      el("p", { class: "note set-note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>-portal/, readable only by you; the newest 5 made here are kept). It takes seconds and no service stops; it is refused when the disk could not hold it twice." }),
-      el("p", { class: "note set-note", text: "Restoring stays in the terminal (./stack restore backups/<time>): it replaces every chat, key and file with an older state, so it asks twice and should never be one click away from a browser." }));
-    const r = el("div", { class: "set-row" }, main, el("div", { class: "set-actions" }, actionButton("backup", "Back up now")));
+  function backupRow(r) {
+    const rw = ownFrame(r, "Backups");
+    const main = rw._main;
     const list = (data.backups && data.backups.backups) || [];
     if (list.length) {
       const KIND = { manual: "yours", auto: "before an update", nightly: "nightly", portal: "Back up now" };
@@ -671,43 +963,37 @@
           el("td", { text: b.at ? new Date(b.at * 1000).toLocaleString() : "" }),
           el("td", { text: b.rollback ? "needed for Roll back" : "" })));
       }
-      main.append(el("div", { class: "set-backups" }, el("table", {},
+      rw.append(el("div", { class: "set-backups" }, el("table", {},
         el("thead", {}, el("tr", {}, ...["Backup", "Kind", "Size", "Made", ""].map((h) => el("th", { scope: "col", text: h })))), tbody)));
     } else {
-      main.append(el("p", { class: "note set-note", text: "No backups yet." }));
+      main.append(el("p", { class: "note set-extra", text: "No backups yet." }));
     }
-    return r;
+    rw.append(el("details", { class: "set-details" }, el("summary", {}, "Details"),
+      el("p", { class: "note", text: "A backup holds both databases, every stored file and a copy of .env (backups/<time>-portal/, readable only by you; the newest 5 made here are kept). It takes seconds and no service stops; it is refused when the disk could not hold it twice." }),
+      el("p", { class: "note", text: "Restoring stays in the terminal (./stack restore backups/<time>): it replaces every chat, key and file with an older state, so it asks twice and should never be one click away from a browser." })));
+    rw._actions.append(actionButton("backup", "Back up now"));
+    return rw;
   }
 
-  function remoteStatus() {
-    const on = data.remote && data.remote.on;
-    return el("div", { class: "set-row" }, el("div", { class: "set-main" },
-      el("div", { class: "set-label" }, el("span", { text: "Remote access" })),
-      el("div", { class: "set-value", text: on ? `${data.remote.mode}: ${data.remote.url}` : "off" }),
-      el("p", { class: "note set-note", text: on ? `This page is open ${data.here.remote ? "remotely" : "on this computer"}.` : "./stack remote enable tailscale turns it on (it needs a Tailscale auth key and steps in your tailnet's admin console)." })));
+  function actionRow(r) {
+    const act = r.key.slice(1);
+    const [label, button] = { test: ["Smoke test", "Run smoke test"], "check-aws": ["Check the AWS key", "Check (free)"],
+      report: ["Status report", "Create status report"] }[act];
+    const rw = ownFrame(r, label);
+    rw._actions.append(actionButton(act, button));
+    return rw;
   }
 
-  function diagnostics(body) {
-    const items = [
-      ["test", "Run the smoke test", "Every service end to end, like ./stack test: two tiny Bedrock requests (~$0.0001)."],
-      ["report", "Create a status report", "Versions, services and settings without secrets (your home folder shown as ~), to copy into an issue."],
-    ];
-    for (const [act, label, note] of items) {
-      const r = el("div", { class: "set-row" }, el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: label })), el("p", { class: "note set-note", text: note })));
-      r.append(el("div", { class: "set-actions" }, actionButton(act, label.replace(/^Run the |^Create a /, (m) => (m.startsWith("Run") ? "Run " : "Create ")))));
-      body.append(r);
-    }
+  function restartRow(r) {
+    const rw = ownFrame(r, "Restart a service");
+    rw._main.append(el("p", { class: "note set-extra", text: "The portal and Postgres are not restarted on their own." }));
     const sel = el("select", { id: "set-restart", "aria-label": "Service to restart" });
     for (const s of (data.snapshot.choices.restart || [])) sel.append(el("option", { value: s, text: s }));
     const rb = el("button", { type: "button", class: "action", text: "Restart" });
     rb.disabled = !canChange();
     rb.addEventListener("click", () => openAction(`restart-${sel.value}`));
-    body.append(el("div", { class: "set-row" },
-      el("div", { class: "set-main" }, el("div", { class: "set-label" }, el("span", { text: "Restart a service" })),
-        el("p", { class: "note set-note", text: "Recreates it with its current settings (10-30 s; requests in flight fail). The portal and Postgres are not restarted on their own." })),
-      el("div", { class: "set-actions" }, sel, rb)));
-    const out = el("div", { class: "set-report", id: "set-report", hidden: "" });
-    body.append(out);
+    rw._actions.append(sel, rb);
+    return rw;
   }
 
   function actionButton(act, label) {
@@ -729,22 +1015,20 @@
     askPassword({ kind: "action", action: act }, t[0], t[1], "Go");
   }
 
-  // --- Advanced: every other key ---
-  function advanced(body) {
-    const used = new Set([...Object.values(CARD_KEYS).flat(), ...Object.keys(WITH), "STT_PROVIDER"]);
-    const rest = Object.values(keys).filter((k) => !used.has(k.key));
-    const filter = el("input", { type: "search", class: "set-filter", placeholder: "Find a setting", "aria-label": "Find a setting" });
-    const list = el("dl", { class: "set-adv" });
-    for (const k of rest) {
-      list.append(el("div", { class: "set-adv-item", "data-key": k.key, "data-find": `${k.key} ${k.label} ${k.note}`.toLowerCase() },
-        el("dt", {}, el("code", { text: k.key }), el("span", { class: `set-adv-value${k.secret !== "-" && k.secret !== "s" ? " masked" : ""}`, text: display(k) })),
-        el("dd", {}, el("span", { text: `${k.label}. ${k.note}` }), el("code", { class: "set-adv-cli", text: k.cli }))));
-    }
-    filter.addEventListener("input", () => {
-      const q = filter.value.trim().toLowerCase();
-      for (const it of list.children) it.hidden = Boolean(q) && !it.dataset.find.includes(q);
-    });
-    body.append(filter, list);
+  // --- Advanced and About this install: read-only values in a compact list, each with why and how it changes ---
+  function listItem(r) {
+    const k = keys[r.key];
+    if (!k) return null;
+    const it = el("div", { class: "set-adv-item", "data-key": k.key, id: `set-row-${k.key}` },
+      el("div", { class: "set-adv-head" }, el("span", { class: "set-adv-label", text: k.unknown ? k.key : k.label }),
+        el("span", { class: `set-adv-value${plain(k) ? "" : " masked"}`, text: display(k) })),
+      el("p", { class: "set-sum", text: r.summary || k.note }),
+      el("details", { class: "set-details" }, el("summary", {}, "Details"),
+        ...(r.summary && k.note ? [el("p", { class: "note", text: k.note })] : []),
+        el("p", { class: "note set-envkey" }, "In .env: ", el("code", { text: k.key })),
+        el("p", { class: "set-cli" }, el("span", { class: "note", text: "Changes with: " }), el("code", { class: "set-adv-cli", text: k.cli }), " ", copyButton(k.cli))));
+    if (changedFromDefault(k)) it.dataset.changed = "1";
+    return it;
   }
 
   // --- spend under the budgets ---
@@ -830,7 +1114,7 @@
         return;
       }
       closeDialog();
-      if (what.kind === "reveal") { showRevealed(what.key, d.value); return; }
+      if (what.kind === "reveal") { showRevealed(what.key, d.value, what.show); return; }
       if (what.kind === "signout") { toast("Every other device is signed out"); return; }
       if (what.form) what.form.remove();
       const label = what.kind === "action" ? what.action : "settings";
@@ -852,11 +1136,12 @@
     e.hidden = false;
   }
 
-  function showRevealed(key, value) {
-    const r = document.querySelector(`#settings .set-row[data-key="${key}"]`) || document.querySelector(`#settings .set-row[data-key="BUDGET_${{ LITELLM_KEY_CLAUDE_CODE: "CLAUDE_CODE", LITELLM_KEY_OPENWEBUI: "OPENWEBUI", LITELLM_KEY_SETUP: "SETUP" }[key] || ""}"]`);
+  function showRevealed(key, value, show) {
     copy(value, key);
-    if (r && key !== "LITELLM_KEY_CLAUDE_CODE" && key !== "LITELLM_KEY_OPENWEBUI" && key !== "LITELLM_KEY_SETUP") {
+    const r = document.querySelector(`#settings .set-row[data-key="${key}"]`);
+    if (show && r) {
       const v = r.querySelector(".set-value");
+      if (!v) return;
       v.textContent = value; v.classList.remove("masked"); v.classList.add("revealed");
       setTimeout(() => { if (data) render(); }, 30000);   // shown for 30 s
     }
@@ -961,13 +1246,20 @@
       home.querySelector(".home-head").after(n);
     }
     const names = lc.keys.map((k) => (keys[k] && keys[k].label) || k);
+    const first = lc.keys.find((k) => rowOf[k]);
     n.replaceChildren(`Settings changed: ${names.slice(0, 4).join(", ")}${names.length > 4 ? ` and ${names.length - 4} more` : ""} at ${new Date(at).toLocaleString()}${lc.via === "cli" ? " (in a terminal)" : lc.via === "portal-remote" ? " (from a remote device)" : ""}. `,
-      el("a", { href: "#settings", text: "Settings" }));
+      el("a", { href: first ? `#settings/${first}` : "#settings", text: "Settings" }));
     n.hidden = false;
   }
 
+  // the place in the address (#settings/<section>[/<KEY>]) once the page is drawn
+  function placeFromAddress() {
+    const m = /^#settings\/(.+)$/.exec(location.hash);
+    if (m) { try { goTo(decodeURIComponent(m[1])); } catch (_) { goTo(m[1]); } }
+  }
+
   document.addEventListener("bn:tab", (e) => {
-    if (e.detail === "settings") load();
+    if (e.detail === "settings") load().then(placeFromAddress);
     else if (e.detail === "home" && data) renderNotice();
   });
   document.addEventListener("DOMContentLoaded", () => {
@@ -976,6 +1268,6 @@
       b.removeAttribute("href");
       b.addEventListener("click", () => showTab(b.dataset.page));
     }
-    if (!data) load();
+    if (!data) load().then(() => { if (location.hash.startsWith("#settings/")) placeFromAddress(); });
   });
 })();

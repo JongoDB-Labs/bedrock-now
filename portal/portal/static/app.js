@@ -43,6 +43,9 @@ function appFrame(tab) {
   return f;
 }
 function showTab(tab) {
+  // "settings/budgets": a page of the portal and a place in it (settings.js reads it from the address)
+  const [name, ...place] = String(tab || "").split("/");
+  tab = name;
   // not "constructor" etc.; the terminal and the Code page only where the server offers them (APP_URLS: ./stack
   // terminal / ./stack code; terminal.js, code.js)
   if (!PAGES.includes(tab) && !Object.prototype.hasOwnProperty.call(APPS, tab) && !(["terminal", "code"].includes(tab) && APP_URLS[tab])) tab = "home";
@@ -55,7 +58,8 @@ function showTab(tab) {
   for (const f of document.querySelectorAll("#frames iframe")) f.hidden = f.dataset.app !== tab;
   if (!PAGES.includes(tab)) appFrame(tab).hidden = false;
   remember(tab);
-  if (location.hash !== `#${tab}`) history.replaceState(null, "", `#${tab}`);
+  const hash = place.length && PAGES.includes(tab) ? `#${tab}/${place.join("/")}` : `#${tab}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
   if (tab === "home") refresh();
   document.dispatchEvent(new CustomEvent("bn:tab", { detail: tab }));
 }
