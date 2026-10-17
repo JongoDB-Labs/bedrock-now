@@ -1923,7 +1923,7 @@ def settings_sections(ctx):
     shown = page.locator("#settings .set-card:not([hidden])")
     expect(shown.count() >= 2 and page.locator("#set-spending:not([hidden])").count() == 1, f"search: {shown.count()} sections")
     expect(page.locator("#set-spending .set-row[data-key=BUDGET_TERMINAL]").is_visible(), "search: the terminal's budget not found")
-    expect(page.locator("#settings .set-card:not([hidden]) .set-row[data-key=PORTAL_PASSWORD]").count() == 0, "search: a setting that does not match")
+    expect(not page.locator("#settings .set-row[data-key=PORTAL_PASSWORD]").is_visible(), "search: a setting that does not match")
     shot(page, "17b-settings-search")
     page.click("#set-find-clear")
     expect(page.locator("#settings .set-card:not([hidden])").count() == 1 and page.input_value("#set-find") == "", "Clear did not end the search")
