@@ -54,13 +54,13 @@ class Recorder:
             for e in self.events:
                 f.write(redact(json.dumps(e)) + "\n")
 
-    def problems(self, host_filter: str | None = None, allow=()) -> list[str]:
+    def problems(self, host_filter: str | None = None, allow=(), start: int = 0, end: int | None = None) -> list[str]:
         """4xx/5xx responses, failed requests (not mere aborts), console errors and page errors — optionally only for
-        URLs containing host_filter. allow: regexes of 'STATUS METHOD URL' / message strings that are expected. Chrome's
-        own "Failed to load resource: … status of N" console line for an allowed (or filtered-out) response is
-        dropped with it."""
+        URLs containing host_filter, and only among events[start:end]. allow: regexes of 'STATUS METHOD URL' / message
+        strings that are expected. Chrome's own "Failed to load resource: … status of N" console line for an allowed
+        (or filtered-out) response is dropped with it."""
         out, excused = [], {}
-        for e in self.events:
+        for e in self.events[start:end]:
             if e["t"] == "resp" and e["status"] >= 400:
                 s = f"{e['status']} {e['method']} {e['url']}"
             elif e["t"] == "failed" and not any(b in e["error"] for b in self.BENIGN_FAIL):
@@ -829,6 +829,12 @@ def chat_rag(ctx):
 
 SSO_DONE = {"admin": "text=Virtual Keys", "files": "text=Create Bucket"}
 SSO_FORM = {"admin": "input[name=username]", "files": "input[placeholder='Please enter account']"}
+# What LiteLLM's own Logout leaves in its page until its form replaces it (nothing the owner sees): the session it has
+# just revoked answers 401 on whichever of LiteLLM's API routes the dashboard still asks — requests in flight and
+# refetches, so which ones is timing (/key/list, /v2/guardrails/list, …) — and the new page cuts off the rest ("Failed
+# to fetch"). Its pages and the portal's hand-off are never excused, and nothing before the Logout is.
+AFTER_OWN_LOGOUT_OK = [r"^401 [A-Z]+ " + re.escape(origin("admin")) + r"/(?!ui(/|\?|$)|\.bn/)",
+                       r"console.error Failed to .*Failed to fetch"]
 
 
 def sso_signed_in(page, scope, rec, app: str, where: str, label: str = "") -> str:
@@ -881,12 +887,15 @@ def _admin_loads(events) -> list[str]:
             if e["t"] == "resp" and e.get("type") == "document" and e["url"].startswith(origin("admin") + "/")]
 
 
-def litellm_logout(page, fl, rec, label: str) -> list[dict]:
+def litellm_logout(page, fl, rec, label: str) -> int:
     """LiteLLM's own Logout (account menu) in the Admin frame FL: its own form shows (?sso=off), never a new automatic
-    sign-in. Returns the page's events from the click on; on failure says where LiteLLM went instead."""
-    since = len(rec.events)
+    sign-in. Returns where the page's events from the click on start (rec.events[i:]); on failure says where LiteLLM
+    went instead."""
     fl.get_by_role("button", name=re.compile(r"^Account menu")).click()
-    fl.get_by_text(re.compile(r"^(Log ?out|Sign ?out)$", re.I)).first.click()
+    logout = fl.get_by_text(re.compile(r"^(Log ?out|Sign ?out)$", re.I)).first
+    logout.wait_for()
+    since = len(rec.events)
+    logout.click()
     try:
         fl.locator(SSO_FORM["admin"]).wait_for(timeout=30000)
     except Exception as e:  # noqa: BLE001 — explained below
@@ -899,7 +908,7 @@ def litellm_logout(page, fl, rec, label: str) -> list[dict]:
     loads = _admin_loads(after)
     expect(not any("/.bn/sso" in x for x in loads), f"LiteLLM's Logout went through the automatic sign-in: {loads}")
     expect("sso=off" in frame_of(page, "admin").url, f"after LiteLLM's Logout: {frame_of(page, 'admin').url}")
-    return after
+    return since
 
 
 @check("browser", "admin-litellm-ui")
@@ -933,12 +942,13 @@ def admin_ui(ctx):
     shot(page, "12-admin-keys")
     # LiteLLM's own Logout ends its session and shows its own form (PROXY_LOGOUT_URL: ?sso=off), not a new sign-in
     keys_before = tok[0]["value"]
-    litellm_logout(page, fl, rec, "admin-frame")
+    at = litellm_logout(page, fl, rec, "admin-frame")
     after = [c["value"] for c in page.context.cookies(origin("admin")) if c["name"] == "token"]
     expect(keys_before not in after, "LiteLLM's Logout left its session cookie")
     shot(page, "12a-admin-own-logout", mask_locators=[fl.locator("input")])
-    probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch",
-                                                      r"401 (GET|POST) .*/(key|user|team|global|model|sso|session)/"])
+    # nothing on the admin host may fail until the Logout; after it, only what the session it revoked leaves behind
+    probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch"], end=at)
+    probs += rec.problems(host_filter="admin.", allow=AFTER_OWN_LOGOUT_OK, start=at)
     rec.save()
     expect(not probs, f"errors: {probs}")
     return (f"{how}; token cookie host-only, Lax, readable by the dashboard; marker HttpOnly, Strict; Virtual Keys with "
@@ -959,7 +969,8 @@ def admin_logout_early(ctx):
     page.click(".tab[data-tab=admin]")
     fl = page.frame_locator("iframe[data-app=admin]")
     sso_signed_in(page, fl, rec, "admin", "Admin tab, LiteLLM without its settings", "admin-early")
-    reloaded = [x for x in _admin_loads(litellm_logout(page, fl, rec, "admin-early")) if x.startswith("302 /ui")]
+    at = litellm_logout(page, fl, rec, "admin-early")
+    reloaded = [x for x in _admin_loads(rec.events[at:]) if x.startswith("302 /ui")]
     expect(reloaded, "LiteLLM's Logout went to its form by itself although its settings never came: this check no "
                      "longer covers the reload (LiteLLM changed?)")
     shot(page, "12c-admin-logout-early", mask_locators=[fl.locator("input")])
@@ -973,10 +984,13 @@ def admin_logout_early(ctx):
     fl.locator(SSO_DONE["admin"]).first.wait_for(timeout=45000)
     again = [x for x in _admin_loads(rec.events[since:]) if "/.bn/sso" in x]
     expect(len(again) == 1 and again[0].startswith("303 "), f"Admin opened again: automatic sign-ins {again}")
-    probs = rec.problems(host_filter="admin.", allow=[r"console.error Failed to .*Failed to fetch",
-                                                      r"FAILED GET .*/sso/get/ui_settings ",
-                                                      r"console.error Failed to load resource: net::ERR_FAILED",
-                                                      r"401 (GET|POST) .*/(key|user|team|global|model|sso|session)/"])
+    # the settings request refused on purpose throughout; before the Logout and after Admin is opened again nothing
+    # else may fail, in between only what the session the Logout revoked leaves behind
+    refused = [r"FAILED GET .*/sso/get/ui_settings ", r"console.error Failed to load resource: net::ERR_FAILED",
+               r"console.error Failed to .*Failed to fetch"]
+    probs = rec.problems(host_filter="admin.", allow=refused, end=at)
+    probs += rec.problems(host_filter="admin.", allow=refused + AFTER_OWN_LOGOUT_OK, start=at, end=since)
+    probs += rec.problems(host_filter="admin.", allow=refused, start=since)
     rec.save()
     expect(not probs, f"errors: {probs}")
     return (f"Logout before LiteLLM's settings: it reloads ({reloaded[0]}) → the portal sends it to its own form, no "
