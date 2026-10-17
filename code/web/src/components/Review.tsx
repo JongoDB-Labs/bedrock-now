@@ -378,7 +378,7 @@ function CommentBox({ path, line, side, onDone }: { path: string; line: number; 
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
-            save();
+            if (!e.repeat) save();
           } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();

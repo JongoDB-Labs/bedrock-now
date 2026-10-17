@@ -1647,7 +1647,7 @@ def ui_guardrails(ctx):
     """UX-10 on the real stack (Haiku): an Always rule from a Bash card listed in ⋯ › Permissions and removed there; a
     budget with its stop (the backend restarts Claude Code with Claude Code's own maxBudgetUsd, the next answer still
     comes, the meter shows the share); the session in the Done group; Home's Code card listing it; a ?prompt= link as a
-    marked draft (nothing sent); Open in the terminal (the command typed in a new tmux window, a resume here refused
+    marked draft (not focused; nothing sent, Enter once or held); Open in the terminal (the command typed in a new tmux window, a resume here refused
     until Claude Code exits there, then allowed)."""
     need_haiku()
     page, rec = ui_page(ctx, "code-ui-guardrails")
@@ -1784,7 +1784,7 @@ def ui_guardrails(ctx):
     see(page.locator(f"section.code-card .code-sessions a[href*='session={sid}']")).to_have_count(1, timeout=30000)
     see(page.locator("#code-budget")).to_contain_text("this period", timeout=40000)
     shot(page, "114-home-code-card")
-    return f"Always rule {rules[0]!r} listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not sent; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
+    return f"Always rule {rules[0]!r} listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not focused and not sent by Enter; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
 
 
 @check("browser", "code-settings-row")

@@ -91,6 +91,10 @@ function QuestionCard({ req, qs, index, total }: { req: PermissionReq; qs: Quest
       role="alertdialog"
       aria-label="Claude has a question for you"
       data-testid="permission"
+      // (a held Enter's repeats never answer: not this card again, nor the next one when it comes up)
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.repeat) e.preventDefault();
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         send();
@@ -355,7 +359,8 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
         if (e.key === 'Tab') engage();
       }}
       onKeyDown={(e) => {
-        if (denying || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+        // (a held key's repeats never answer a card)
+        if (e.repeat || denying || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
         if (req.defaultNo) {
           if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'BUTTON') {
             e.preventDefault();
@@ -412,7 +417,7 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                answer('deny');
+                if (!e.repeat) answer('deny');
               } else if (e.key === 'Escape') {
                 e.stopPropagation();
                 setDenying(false);
