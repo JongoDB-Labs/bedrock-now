@@ -989,8 +989,8 @@ spawn server, Claude Code or any file at will.
   that fails is rolled back, and a terminal it had turned on is turned off again (the failure says so, or says how to
   do it when that fails too). `CODE_ALLOW_BYPASS` (*Bypass permissions* above) is *widen-local* the same way; a
   change recreates the code container only. `CODE_AUTO_MODE` and `TERMINAL_AUTO_MODE` (*Auto mode* below) are
-  *widen-local* too; a change recreates the terminal container (the sandbox's managed settings are written at its
-  start: its shells end) and, for the Code page's, the code container.
+  *widen-local* too; a change that picks other managed settings for the sandbox recreates the terminal container (its
+  shells end) and, for the Code page's, the code container is recreated too.
 
 **What a compromised sandbox gains** (beyond what it has as the terminal): it can show arbitrary *text* in the Code
 page — fake tool output, fake diffs, misleading permission sentences, wrong session titles, a fake plugin catalog
@@ -1417,13 +1417,22 @@ internet switch).
 - **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Code page → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto
   mode in the terminal*) are *widen-local*: on only from the computer running bedrock-now, off from anywhere. The code
   container enforces the Code page's: without it, sessions start with auto mode off and `set_mode auto` is refused
-  (403), whatever a page sends. Both switches reach the sandbox through its managed settings, written by `bn-terminal`
-  at the container's start (`terminal/bin/bn-claude-policy`): both off — auto mode off for every Claude Code there;
-  the terminal's on — nothing set, Claude Code decides as anywhere else (an interactive `claude` starts in auto mode,
-  `Shift+Tab` leaves it); only the Code page's on — auto mode stays available (the page needs it, and managed settings
-  outrank its own), but the terminal's `claude` starts in *Manual*, its *Plan* asks, and `claude-bedrock` there turns
-  auto mode off for its sessions; plain `claude` could still be switched to it with `Shift+Tab` — a convenience, not
-  a boundary (anything in the sandbox can run a Claude Code of its own anyway).
+  (403), whatever a page sends. Both switches reach the sandbox through Claude Code's **managed settings**, which
+  outrank every other settings tier — permission rules, hooks, the starting mode, `apiKeyHelper` — so the sandbox can
+  never change them: they are one of three files of this repository, `terminal/managed/off.json`, `code-auto.json`
+  and `on.json`, chosen on your computer from `.env` (`lib/common.sh` `claude_policy`; `./stack` passes the choice to
+  Compose itself, so neither your shell nor the sandbox decides it) and **bind-mounted read-only** at
+  `/etc/claude-code/managed-settings.json`. The sandbox runs as your uid with no capabilities and `no-new-privileges`
+  on a read-only image: it cannot write, replace, link over, `chmod` or remount that file, nor add a
+  `managed-settings.d` beside it in root's folder (checked by `./stack test` as the sandbox's own user, without writing
+  anything; and in the image, `off.json` is root's file under the mount). Both off — auto mode off for every Claude
+  Code there; the terminal's on — nothing set, Claude Code decides as anywhere else (an interactive `claude` starts in
+  auto mode, `Shift+Tab` leaves it); only the Code page's on — auto mode stays available (the page needs it, and
+  managed settings outrank its own), but the terminal's `claude` starts in *Manual*, its *Plan* asks, and
+  `claude-bedrock` there turns auto mode off for its sessions; plain `claude` could still be switched to it with
+  `Shift+Tab`. *Allow once*'s approval is not in the sandbox either: it is a hook callback of the Agent SDK in the code
+  container (Claude Code asks the code container over the session's control channel), not a hook file or setting the
+  sandbox could edit.
 - **No dialog**, unlike Bypass: like Claude Code's own `Shift+Tab` into it, because it still asks — your ask rules,
   the first read outside the workspace — and still blocks. *Plan* keeps asking you in every case
   (`useAutoModeDuringPlan: false`; Claude Code's default would let the classifier approve *Plan*'s commands).

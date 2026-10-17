@@ -25,8 +25,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    # /run/bn: Claude Code's managed settings, written by bn-terminal at each start (/etc/claude-code links there)
-    tmpfs: ["/tmp:size=1g,mode=1777", "/run/bn:size=64k,mode=0700,uid=${TERMINAL_UID:-10104},gid=${TERMINAL_GID:-10104}"]
+    tmpfs: ["/tmp:size=1g,mode=1777"]
     mem_limit: ${TERMINAL_MEM_LIMIT:-4g}
     pids_limit: 1024
     init: true
@@ -45,10 +44,9 @@ services:
       # (no ENABLE_TOOL_SEARCH: tool search needs a beta header, so with the betas off it changes nothing)
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"   # no telemetry, error reports or update checks
       DISABLE_AUTOUPDATER: "1"                        # the image is read-only; ./stack update rebuilds it
-      # Claude Code's auto mode in here (Settings › Terminal / Code page › Auto mode): bn-terminal writes the sandbox's
-      # managed settings from them at each start (terminal/bin/bn-claude-policy) — a change restarts this container.
+      # Settings › Code page › Auto mode in the terminal: claude-bedrock in here keeps auto mode off for its sessions
+      # unless it is on (the managed settings below decide for everything else)
       TERMINAL_AUTO_MODE: ${TERMINAL_AUTO_MODE:-false}
-      CODE_AUTO_MODE: ${CODE_AUTO_MODE:-false}
       # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp
       SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
@@ -70,6 +68,16 @@ services:
       # The Code page's preview proxy (bn-preview, started by bn-terminal) listens here; only the gateway shares it
       # (read-only: it connects). Always here too, for the same reason.
       - preview-socket:/run/bn-preview
+      # Claude Code's managed settings (they outrank every other settings tier: permission rules, hooks, the mode), one of
+      # terminal/managed/*.json chosen on your computer from Settings' auto mode switches (lib/common.sh claude_policy,
+      # passed by ./stack as TERMINAL_CLAUDE_POLICY; anything else: off). Read-only and never created by Docker: nothing
+      # in the sandbox can change them (no capabilities to remount, a read-only image around them). A different file
+      # recreates this container.
+      - type: bind
+        source: ./terminal/managed/${TERMINAL_CLAUDE_POLICY:-off}.json
+        target: /etc/claude-code/managed-settings.json
+        read_only: true
+        bind: { create_host_path: false, selinux: z }
       # Never created by Docker: a missing folder stops the container instead of becoming an empty root-owned one.
       - type: bind
         source: ${TERMINAL_WORKSPACE:?run ./stack terminal enable}

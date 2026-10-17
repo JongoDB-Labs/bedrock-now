@@ -9,11 +9,6 @@ umask 077
 # main Caddy adds after the portal's check — that secret stays out of this container, and out of every command line.
 sock=/run/bn-ttyd/ttyd.sock
 rm -f "$sock"   # one left by the last run
-# Claude Code's managed settings for every claude in here (/etc/claude-code/managed-settings.json links to this file,
-# on the /run/bn tmpfs): auto mode as Settings say (TERMINAL_AUTO_MODE, CODE_AUTO_MODE; bn-claude-policy). First, before
-# anything here can start a claude; a failure stops the container (set -e) rather than leave it without.
-bn-claude-policy > /run/bn/managed-settings.json.tmp
-mv /run/bn/managed-settings.json.tmp /run/bn/managed-settings.json
 conf="$HOME/.config/bedrock-now"
 mkdir -p "$conf"
 # The shared store and knowledge bases (shared-mcp) through the gateway: rewritten at every start, so a new

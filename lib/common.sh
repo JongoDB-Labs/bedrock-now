@@ -263,6 +263,8 @@ dc() {
       TERMINAL_ENABLED TERMINAL_WORKSPACE TERMINAL_EGRESS TERMINAL_HOST TERMINAL_UID TERMINAL_GID TERMINAL_MEM_LIMIT \
       REMOTE_TERMINAL REMOTE_TERMINAL_HOST CODE_ENABLED CODE_HOST CODE_PROXY_SECRET REMOTE_CODE_HOST PREVIEW_DOMAIN PREVIEW_PROXY_SECRET CODE_ALLOW_BYPASS \
       CODE_AUTO_MODE TERMINAL_AUTO_MODE
+    # which of terminal/managed/*.json the sandbox gets as Claude Code's managed settings (read-only): from .env alone
+    TERMINAL_CLAUDE_POLICY="$(claude_policy)" \
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }
@@ -293,6 +295,19 @@ compose_overlays() {
 _flag() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'; }
 flag_on() { case "$(_flag "$1")" in true | 1 | yes | on) return 0 ;; esac; return 1; }
 flag_off() { case "$(_flag "$1")" in false | 0 | no | off) return 0 ;; esac; return 1; }
+
+# claude_policy -> off | code-auto | on: the browser terminal's Claude Code managed settings, terminal/managed/<it>.json,
+# from the two auto mode switches in .env (compose.terminal.yaml mounts that file read-only; managed settings outrank
+# every other tier, so the sandbox never chooses or writes them):
+#   off        both switches off: auto mode off for every claude in the sandbox
+#   on         TERMINAL_AUTO_MODE: nothing set, Claude Code decides as anywhere else
+#   code-auto  only CODE_AUTO_MODE: auto mode available (the Code page switches its sessions to it; managed settings
+#              would win over the page), the terminal's claude starts in Manual and its Plan mode asks
+claude_policy() {
+  if flag_on "$(get_env TERMINAL_AUTO_MODE)"; then echo on
+  elif flag_on "$(get_env CODE_AUTO_MODE)"; then echo code-auto
+  else echo off; fi
+}
 
 # curl with a bearer token that never appears in `ps` output (token is fed via -K stdin).
 curl_auth() { # curl_auth TOKEN curl-args...

@@ -28,9 +28,11 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Changed
 
-- The sandbox's Claude Code managed settings are written at the terminal container's start from the two auto mode
-  switches (`/etc/claude-code/managed-settings.json` links to `/run/bn/managed-settings.json`, a tmpfs); with both off
-  they say what they said before (auto mode off for every `claude` there).
+- The sandbox's Claude Code managed settings are one of three files of the repository (`terminal/managed/*.json`),
+  chosen on your computer from the two auto mode switches and mounted read-only at
+  `/etc/claude-code/managed-settings.json` (the image keeps `off.json` there as root's file): nothing in the sandbox
+  can change them, and `./stack test` checks that as the sandbox's user. With both switches off they say what they
+  said before (auto mode off for every `claude` there).
 - A call Claude Code denies without asking you (Auto's reviewer, a deny rule, *Read only*) is a card of its own in the
   Code page (`blocked` events), not a plain line.
 

@@ -521,8 +521,8 @@ test_code_allow_bypass_on_only_locally_and_it_recreates_the_code_container() {
 }
 
 # Auto mode (Claude Code's: a reviewer model instead of you): the Code page's and the terminal's, each on only from this
-# computer and off from anywhere; the terminal is recreated for either (bn-terminal writes the sandbox's managed
-# settings from both at its start), the code container for the Code page's — the terminal first
+# computer and off from anywhere; the terminal is recreated when its managed settings change (a read-only file chosen
+# from both, compose decides), the code container for the Code page's — the terminal first
 test_auto_mode_settings_on_only_locally_and_they_restart_the_sandbox() {
   _env; _in_checkout; _stub_stack; _stub_code
   assert_eq "$(setting_field CODE_AUTO_MODE 4)/$(setting_field CODE_AUTO_MODE 5)/$(setting_field CODE_AUTO_MODE 6)" "widen-local/bool/code-env,terminal-env"

@@ -330,6 +330,7 @@ terminal_status() {
   else printf '  Internet   off (TERMINAL_EGRESS=off): only the gateway to LiteLLM and the shared MCP server\n'; fi
   if flag_on "$(get_env TERMINAL_AUTO_MODE)"; then printf '  Auto mode  on: Claude Code may run in auto mode here (a reviewer model on Sonnet 5.5; ~$0.13 per 5 minutes in use)\n'
   else printf '  Auto mode  off for claude here (Settings › Code page › Auto mode in the terminal, from this computer)\n'; fi
+  printf '  Managed    terminal/managed/%s.json, read-only in the sandbox (Claude Code'"'"'s managed settings)\n' "$(claude_policy)"
   if [ -n "$(get_env REMOTE_TERMINAL_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_TERMINAL_HOST)"
   elif terminal_remote_wanted; then printf '  Remote     REMOTE_TERMINAL is on, but remote access is off or not finished (./stack remote status)\n'
   else printf '  Remote     off (REMOTE_TERMINAL=true in .env, then ./stack up, adds it to remote access)\n'; fi
@@ -351,6 +352,12 @@ terminal_test_checks() {
   terminal_ready || return 0
   code="$(dc ps --format '{{.Health}}' terminal 2>/dev/null | head -n 1 || true)"
   _check "terminal container healthy" "$code" healthy
+  # Claude Code's managed settings (they outrank every other settings tier: permission rules, hooks, the mode): the
+  # file chosen here from Settings (terminal/managed/<policy>.json), and nothing the sandbox's own user could change —
+  # not the file, not its folder, no managed-settings.d beside it, a read-only mount. Asked without writing anything.
+  out="$(dc exec -T terminal sh -c 'f=/etc/claude-code/managed-settings.json; w=""; [ -w "$f" ] && w="$w file"; [ -w /etc/claude-code ] && w="$w folder"; (exec 3>>"$f") 2>/dev/null && w="$w open"; mkdir /etc/claude-code/managed-settings.d 2>/dev/null && { rmdir /etc/claude-code/managed-settings.d; w="$w drop-in"; }; ro=$(awk "\$5 == \"$f\" { print \$6 }" /proc/self/mountinfo | cut -d, -f1); echo "${w:-none} ${ro:-unmounted} $(tr -d "\n" < "$f")"' 2>/dev/null || true)"
+  _check "Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox" \
+    "$out" "none ro $(tr -d '\n' < "$STACK_DIR/terminal/managed/$(claude_policy).json")"
   # shellcheck disable=SC2034  # read by portal_curl
   PORTAL_JAR=''
   code="$(portal_curl terminal / -s -m 10 -o /dev/null -w '%{http_code}' -H 'Accept: text/html' || true)"

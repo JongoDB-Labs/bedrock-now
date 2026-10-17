@@ -288,7 +288,9 @@ assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 # Bypass permissions: off unless .env allows it; the folder only as a label (no volume of it)
 assert c["environment"]["CODE_ALLOW_BYPASS"] == "false" and c["environment"]["TERMINAL_EGRESS"] == ""
-assert c["environment"]["CODE_AUTO_MODE"] == "false" and t["environment"]["CODE_AUTO_MODE"] == "false"
+assert c["environment"]["CODE_AUTO_MODE"] == "false" and "CODE_AUTO_MODE" not in t["environment"]
+# (the sandbox gets the Code page switch only as its read-only managed settings: off here)
+assert [v["source"].rsplit("/", 1)[1] for v in t["volumes"] if v["target"] == "/etc/claude-code/managed-settings.json"] == ["off.json"], t["volumes"]
 assert c["environment"]["CODE_WORKSPACE_LABEL"].endswith("/ws"), c["environment"]["CODE_WORKSPACE_LABEL"]
 assert "sk-term" not in json.dumps(c) and "sk-cc" not in json.dumps(c) and "/ws" not in json.dumps(c["volumes"])
 # the sandbox: the socket volume writable (the spawn server always runs there), never the secret

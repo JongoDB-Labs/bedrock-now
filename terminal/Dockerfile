@@ -55,20 +55,22 @@ ARG BN_GID=10104
 RUN set -eu; userdel -r node 2>/dev/null || true; \
     getent group "$BN_GID" >/dev/null || groupadd -g "$BN_GID" claude; \
     useradd -o -M -d /home/claude -s /bin/bash -u "$BN_UID" -g "$BN_GID" claude; \
-    mkdir -p /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview /run/bn; \
-    chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview /run/bn; \
-    chmod 700 /home/claude /run/bn-ttyd /run/bn-code /run/bn-preview /run/bn
+    mkdir -p /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview; \
+    chown "$BN_UID:$BN_GID" /home/claude /workspace /run/bn-ttyd /run/bn-code /run/bn-preview; \
+    chmod 700 /home/claude /run/bn-ttyd /run/bn-code /run/bn-preview
 COPY tmux.conf /etc/tmux.conf
 COPY bashrc /etc/bedrock-now.bashrc
 COPY bin/ /usr/local/bin/
-# Claude Code's managed settings for every claude here — the terminal's, claude-bedrock's and the Code page's: a link
-# to /run/bn/managed-settings.json, which bn-terminal writes at each start (bin/bn-claude-policy) from Settings' auto
-# mode switches (TERMINAL_AUTO_MODE, CODE_AUTO_MODE; both off: auto mode off). Behind a custom base URL Claude Code
-# counts auto mode as available and would start in it, or hand Plan mode's writing commands to its classifier.
-RUN mkdir -p /etc/claude-code && ln -s /run/bn/managed-settings.json /etc/claude-code/managed-settings.json \
- && chmod 755 /etc/claude-code \
+# Claude Code's managed settings for every claude here — the terminal's, claude-bedrock's and the Code page's. They
+# outrank every other settings tier (permission rules, hooks, the mode), so nothing in the sandbox may change them:
+# root's file in root's folder, on a read-only image. This one (auto mode off) is the default; compose.terminal.yaml
+# mounts one of managed/*.json over it, read-only, chosen on your computer from Settings' auto mode switches. Behind a
+# custom base URL Claude Code counts auto mode as available and would start in it, or hand Plan mode's writing commands
+# to its classifier.
+COPY managed/off.json /etc/claude-code/managed-settings.json
+RUN chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.json \
  && chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
-      /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs /usr/local/bin/bn-preview.mjs /usr/local/bin/bn-claude-policy \
+      /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs /usr/local/bin/bn-preview.mjs \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc
 
 ENV LANG=C.UTF-8 HOME=/home/claude SHELL=/bin/bash NPM_CONFIG_PREFIX=/home/claude/.local \

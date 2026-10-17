@@ -71,8 +71,10 @@ test_dc_never_takes_terminal_settings_from_the_shell() {
   printf '#!/bin/sh\nenv | grep -E "^(TERMINAL_|REMOTE_TERMINAL)" || true\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"
   : > "$ENV_FILE"
   out="$(PATH="$TMP/bin:$PATH" TERMINAL_ENABLED=true TERMINAL_WORKSPACE=/ TERMINAL_EGRESS=on TERMINAL_HOST=x.localhost \
-    TERMINAL_UID=0 TERMINAL_GID=0 TERMINAL_MEM_LIMIT=64g REMOTE_TERMINAL=true REMOTE_TERMINAL_HOST=evil.example dc ps)"
-  assert_eq "$out" ""
+    TERMINAL_UID=0 TERMINAL_GID=0 TERMINAL_MEM_LIMIT=64g REMOTE_TERMINAL=true REMOTE_TERMINAL_HOST=evil.example \
+    TERMINAL_AUTO_MODE=true CODE_AUTO_MODE=true TERMINAL_CLAUDE_POLICY=on dc ps)"
+  # (only what ./stack itself sets: the managed settings it chose from .env — off here, whatever the shell says)
+  assert_eq "$out" "TERMINAL_CLAUDE_POLICY=off"
 }
 
 test_enable_creates_the_default_workspace_its_key_and_secret() {
@@ -453,13 +455,17 @@ test_compose_render_with_the_terminal() {
 import json, os, sys
 d = json.load(sys.stdin)
 t, g, c = d["services"]["terminal"], d["services"]["terminal-gateway"], d["services"]["caddy"]
-assert [v["source"] for v in t["volumes"] if v["type"] == "bind"] == [os.environ["WS"]], t["volumes"]
+assert [v["source"] for v in t["volumes"] if v["type"] == "bind" and v["target"] == "/workspace"] == [os.environ["WS"]], t["volumes"]
 assert sorted(t["networks"]) == ["terminal", "terminal-out"], t["networks"]
 assert t["user"] == "501:20" and t["read_only"] and t["cap_drop"] == ["ALL"] and "ports" not in t
 assert t["environment"]["ANTHROPIC_AUTH_TOKEN"] == "sk-term" and "sk-cc" not in json.dumps(t)
-# auto mode: off unless Settings say so (bn-terminal writes the managed settings from these), on a tmpfs of the user
-assert t["environment"]["TERMINAL_AUTO_MODE"] == "false" and t["environment"]["CODE_AUTO_MODE"] == "false", t["environment"]
-assert "/run/bn:size=64k,mode=0700,uid=501,gid=20" in t["tmpfs"], t["tmpfs"]
+# auto mode: the Claude Code managed settings are a repo file, mounted read-only (off unless Settings say so); the
+# Code page switch reaches the sandbox only through which file that is
+assert t["environment"]["TERMINAL_AUTO_MODE"] == "false" and "CODE_AUTO_MODE" not in t["environment"], t["environment"]
+m = [v for v in t["volumes"] if v["target"] == "/etc/claude-code/managed-settings.json"]
+assert len(m) == 1 and m[0]["type"] == "bind" and m[0]["read_only"] is True and not m[0]["bind"].get("create_host_path"), m
+assert m[0]["source"].endswith("/terminal/managed/off.json"), m
+assert t["tmpfs"] == ["/tmp:size=1g,mode=1777"], t["tmpfs"]
 hosts = sorted(h.replace("=", ":", 1) for h in t["extra_hosts"])
 assert hosts == ["gateway.docker.internal:100::1", "gateway.docker.internal:192.0.2.1", "host.docker.internal:100::1",
                  "host.docker.internal:192.0.2.1"], t["extra_hosts"]
@@ -663,6 +669,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
       *"exec -T terminal sh -c g="*) printf '200 404 404 404 404 404 ' ;;
       *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
+      *"exec -T terminal sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
       *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
   }
@@ -679,7 +686,8 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   }
   fails=0
   out="$(terminal_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 9
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 10
+  assert_contains "$out" "ok    Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox"
   assert_contains "$out" "ok    terminal gateway: the shared MCP server's tools"
   assert_contains "$out" "ok    the terminal's gateway refuses ttyd requests without the secret header"
   assert_contains "$out" "ok    terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs, a ../ path"
@@ -693,31 +701,60 @@ POST /v1/chat/completions"
   assert_contains "$out" "(got 200 200 404 404 404 200"
   assert_contains "$out" "FAIL  the terminal's gateway refuses ttyd requests without the secret header (got 200"
   assert_contains "$out" "FAIL  the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions (got 400 400"
+  # a managed-settings file the sandbox could change (a writable mount), or another one than Settings chose: FAIL
+  dc() { case "$*" in *"exec -T terminal sh -c f=/etc/claude-code"*) printf ' file open rw {"disableAutoMode":"disable"}\n' ;; *) ok_dc "$@" ;; esac; }
+  assert_contains "$(terminal_test_checks)" "FAIL  Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox (got  file open rw"
+  set_env CODE_AUTO_MODE true
+  dc() { ok_dc "$@"; }
+  assert_contains "$(terminal_test_checks)" 'want none ro {"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false})'
 }
 
-# Claude Code's managed settings in the sandbox follow the two auto mode switches (terminal/bin/bn-claude-policy): both
-# off → auto mode off for every claude there; the terminal's on → nothing set (Claude Code decides); only the Code
-# page's → available (the page needs it) but the terminal's claude starts in Manual and Plan asks.
-test_sandbox_managed_settings_follow_the_auto_mode_switches() {
-  pol() { TERMINAL_AUTO_MODE="$1" CODE_AUTO_MODE="$2" /bin/bash "$STACK_DIR/terminal/bin/bn-claude-policy"; }
-  off='{"disableAutoMode":"disable"}'
-  for v in "" false off no 0 nonsense; do assert_eq "$(pol "$v" "$v")" "$off"; done
+# Claude Code's managed settings in the sandbox (they outrank every other settings tier: permission rules, hooks, the
+# mode): one of terminal/managed/*.json, chosen on this computer from the two auto mode switches (claude_policy) and
+# mounted read-only — never written at runtime, never chosen by the sandbox or by your shell's environment
+test_sandbox_managed_settings_are_a_read_only_repo_file_chosen_here() {
+  assert_eq "$(tr -d '\n' < "$STACK_DIR/terminal/managed/off.json")" '{"disableAutoMode":"disable"}'
+  assert_eq "$(tr -d '\n' < "$STACK_DIR/terminal/managed/code-auto.json")" '{"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false}'
+  assert_eq "$(tr -d '\n' < "$STACK_DIR/terminal/managed/on.json")" '{}'
+  assert_eq "$(ls "$STACK_DIR/terminal/managed" | tr '\n' ' ')" "code-auto.json off.json on.json "
+  for f in "$STACK_DIR"/terminal/managed/*.json; do python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$f" || return 1; done
+  pol() { set_env TERMINAL_AUTO_MODE "$1"; set_env CODE_AUTO_MODE "$2"; claude_policy; }
+  for v in "" false off no 0 nonsense; do assert_eq "$(pol "$v" "$v")" off; done
   for v in true TRUE yes on 1; do
-    assert_eq "$(pol "$v" '')" '{}'
-    assert_eq "$(pol "$v" true)" '{}'
-    assert_eq "$(pol '' "$v")" '{"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false}'
+    assert_eq "$(pol "$v" '')" on
+    assert_eq "$(pol "$v" true)" on
+    assert_eq "$(pol '' "$v")" code-auto
   done
-  for t in "" true; do for c in "" true; do pol "$t" "$c" | python3 -c 'import json, sys; json.load(sys.stdin)' || return 1; done; done
-  # written first by bn-terminal (before anything can start a claude), atomically, on the tmpfs the link points to
-  f="$(cat "$STACK_DIR/terminal/bin/bn-terminal")"
-  assert_contains "$f" 'bn-claude-policy > /run/bn/managed-settings.json.tmp'
-  assert_contains "$f" 'mv /run/bn/managed-settings.json.tmp /run/bn/managed-settings.json'
-  [ "$(grep -n 'bn-claude-policy >' "$STACK_DIR/terminal/bin/bn-terminal" | cut -d: -f1)" -lt "$(grep -n 'bn-coded.mjs' "$STACK_DIR/terminal/bin/bn-terminal" | head -1 | cut -d: -f1)" ] ||
-    { echo "the policy is written after bn-coded starts" >&2; return 1; }
+  # the image: root's file (auto mode off) as the default under the mount; nothing in the sandbox writes it
   d="$(cat "$STACK_DIR/terminal/Dockerfile")"
-  assert_contains "$d" 'ln -s /run/bn/managed-settings.json /etc/claude-code/managed-settings.json'
-  assert_not_contains "$d" 'COPY managed-settings.json'
-  [ ! -e "$STACK_DIR/terminal/managed-settings.json" ] || { echo "a fixed managed-settings.json is still in the image context" >&2; return 1; }
+  assert_contains "$d" 'COPY managed/off.json /etc/claude-code/managed-settings.json'
+  assert_contains "$d" 'chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.json'
+  assert_not_contains "$d" 'ln -s /run/bn'
+  assert_not_contains "$(cat "$STACK_DIR/terminal/bin/bn-terminal")" 'managed-settings'
+  [ ! -e "$STACK_DIR/terminal/bin/bn-claude-policy" ] || { echo "a runtime policy writer is back in the image" >&2; return 1; }
+  c="$(cat "$STACK_DIR/compose.terminal.yaml")"
+  assert_contains "$c" 'source: ./terminal/managed/${TERMINAL_CLAUDE_POLICY:-off}.json'
+  assert_contains "$c" 'target: /etc/claude-code/managed-settings.json'
+}
+
+# The compose file the terminal gets: the file the switches choose, read-only — an exported TERMINAL_CLAUDE_POLICY (or
+# switches in your shell) never decides it
+test_compose_mounts_the_managed_settings_the_switches_choose() {
+  [ -n "${BN_REAL_DOCKER:-}" ] && "$BN_REAL_DOCKER" compose version >/dev/null 2>&1 || { echo "no docker compose" >&2; return 77; }
+  docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
+  mkdir -p "$TMP/ws"
+  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\nLITELLM_KEY_TERMINAL=sk-term\nTERMINAL_PROXY_SECRET=0123456789abcdef0123456789abcdef\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nTERMINAL_UID=501\nTERMINAL_GID=20\n' "$TMP/ws" > "$ENV_FILE"
+  src() { dc config --format json 2>/dev/null | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["services"]["terminal"]
+m = [v for v in t["volumes"] if v["target"] == "/etc/claude-code/managed-settings.json"]
+assert len(m) == 1 and m[0]["read_only"] is True, m
+print(m[0]["source"].rsplit("/", 1)[1])'; }
+  assert_eq "$(TERMINAL_CLAUDE_POLICY=on TERMINAL_AUTO_MODE=true CODE_AUTO_MODE=true src)" off.json
+  set_env CODE_AUTO_MODE true
+  assert_eq "$(src)" code-auto.json
+  set_env TERMINAL_AUTO_MODE true
+  assert_eq "$(TERMINAL_CLAUDE_POLICY=../../etc/passwd src)" on.json
 }
 
 # claude-bedrock in the sandbox: auto mode off in its sessions (Claude Code's flag tier) unless the terminal's switch is
