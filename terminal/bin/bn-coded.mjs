@@ -1108,11 +1108,13 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
 // its fresh shell and run — there, in your shell's history. Only a checked UUID of a transcript that is there is ever
 // part of what is typed (the page's own process for that session is closed first, by the code container).
 const RESUME_CMD = (id) => `claude-bedrock --resume ${id}`;
-export async function terminalResume(id, { tmux = TMUX } = {}) {
+export async function terminalResume(id, { tmux = TMUX, procDir = '/proc' } = {}) {
   if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
   let st;
   try { st = fs.lstatSync(path.join(projectDir(), `${id}.jsonl`)); } catch { throw new Error('no such session in this workspace (it has no prompts yet?)'); }
   if (!st.isFile()) throw new Error('no such session in this workspace');
+  // never a second process on that conversation (the page's own has ended by now: the code container waited for it)
+  if (sessionRunning(id, procDir).running) throw new Error('that conversation is already open in the sandbox (the terminal?)');
   await tmuxSession(tmux);
   const window = `resume-${id.slice(0, 8)}`;
   const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', WORKSPACE]);

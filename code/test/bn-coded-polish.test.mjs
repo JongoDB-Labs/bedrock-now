@@ -172,3 +172,34 @@ test('terminal.resume: refused for anything but a UUID of a transcript that is t
   assert.match((await call({ op: 'terminal.resume', id })).error, /no such session/);
   assert.equal(fs.existsSync(LOG), false);
 });
+
+test('sessions.running: a process with the id as an argument (not bn-coded\'s own children); terminal.resume refuses then', async () => {
+  const id = crypto.randomUUID(), other = crypto.randomUUID();
+  const proc = path.join(ROOT, 'proc');
+  const mk = (pid, argv) => { fs.mkdirSync(path.join(proc, String(pid)), { recursive: true }); fs.writeFileSync(path.join(proc, String(pid), 'cmdline'), argv.join('\0') + '\0'); };
+  mk(100, ['bash']);
+  mk(101, ['claude', '--resume', other]);
+  fs.mkdirSync(path.join(proc, 'self'), { recursive: true });
+  assert.deepEqual(coded.sessionRunning(id, proc), { running: false });
+  mk(102, ['/bin/bash', '/usr/local/bin/claude-bedrock', '--resume', id]);
+  assert.deepEqual(coded.sessionRunning(id, proc), { running: true, pid: 102 });
+  fs.rmSync(path.join(proc, '102'), { recursive: true });
+  mk(103, ['claude', '--output-format', 'stream-json', `--resume=${id}`]);
+  assert.equal(coded.sessionRunning(id, proc).running, true);
+  // the page's own process (a child bn-coded recorded) does not count
+  fs.mkdirSync(path.join(ROOT, 'children'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, 'children', '103'), '1');
+  assert.equal(coded.sessionRunning(id, proc).running, false);
+  fs.rmSync(path.join(ROOT, 'children', '103'));
+  assert.throws(() => coded.sessionRunning('nope', proc), /bad session id/);
+  assert.deepEqual(coded.sessionRunning(id, path.join(ROOT, 'no-proc')), { running: false, checked: false });
+  // terminal.resume: refused (nothing typed) while it runs
+  const dir = path.join(CONF, 'projects', WS.replace(/[^A-Za-z0-9]/g, '-'));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.jsonl`), '{"type":"user"}\n');
+  fs.rmSync(LOG, { force: true });
+  await assert.rejects(coded.terminalResume(id, { procDir: proc }), /already open in the sandbox/);
+  assert.equal(fs.existsSync(LOG), false);
+  fs.rmSync(path.join(proc, '103'), { recursive: true });
+  assert.equal((await coded.terminalResume(id, { procDir: proc })).ok, true);
+});

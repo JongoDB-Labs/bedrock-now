@@ -131,13 +131,14 @@ export class Session {
    *  process so that the new stop applies). Throws for a bad request. */
   setBudget(b, { quiet = false } = {}) {
     if (!b || typeof b !== 'object') throw new SessionError('budget: {usd, hard}');
-    if (b.spent !== undefined && b.spent !== null) this.noteSpent(b.spent);
-    if (b.usd === null) this.budget = null;
-    else {
-      if (typeof b.usd !== 'number' || !Number.isFinite(b.usd) || b.usd < BUDGET_MIN || b.usd > BUDGET_MAX) throw new SessionError(`budget: ${BUDGET_MIN} to ${BUDGET_MAX} USD`);
-      if (b.hard !== undefined && typeof b.hard !== 'boolean') throw new SessionError('hard: true or false');
-      this.budget = { usd: Math.round(b.usd * 100) / 100, hard: b.hard === true };
-    }
+    // everything checked first: a refused request changes nothing
+    if (b.usd !== null && (typeof b.usd !== 'number' || !Number.isFinite(b.usd) || b.usd < BUDGET_MIN || b.usd > BUDGET_MAX)) throw new SessionError(`budget: ${BUDGET_MIN} to ${BUDGET_MAX} USD`);
+    if (b.hard !== undefined && b.hard !== null && typeof b.hard !== 'boolean') throw new SessionError('hard: true or false');
+    const spent = b.spent === undefined || b.spent === null ? null : b.spent;
+    if (spent !== null && (typeof spent !== 'number' || !Number.isFinite(spent) || spent < 0 || spent > 1e6)) throw new SessionError('spent: a number of USD');
+    if (spent !== null) this.noteSpent(spent);
+    // (hard left out: as it was)
+    this.budget = b.usd === null ? null : { usd: Math.round(b.usd * 100) / 100, hard: typeof b.hard === 'boolean' ? b.hard : this.budget?.hard === true };
     if (!quiet) this.mgr.onState(this);
     return { budget: this.budget ? { ...this.budget } : null, restart: this.open && this.budgetRestart() };
   }

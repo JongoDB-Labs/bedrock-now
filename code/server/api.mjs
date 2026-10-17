@@ -136,18 +136,26 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
 
   // --- "Open in the terminal": this side's process ends (sessions.mjs toTerminal), then the sandbox types
   // `claude-bedrock --resume <id>` into a new window of the terminal's tmux session (bn-coded terminal.resume) ---
+  // ids handed to the terminal in the last few seconds: a second request (a double click, another tab) is refused
+  // even before the first one's `claude-bedrock` shows in the sandbox's process list
+  const handing = new Set();
   async function toTerminal(id) {
     if (!isUuid(id)) throw new HttpError(400, 'bad session id');
-    const s = sessions.get?.(id);
-    if (s) await s.toTerminal();
+    if (handing.has(id)) throw new HttpError(409, 'this session is being opened in the terminal already');
+    handing.add(id);
     let result;
     try {
+      const s = sessions.get?.(id);
+      if (s) await s.toTerminal();
       ({ result } = await call({ op: 'terminal.resume', id }, { timeoutMs: 20000 }));
     } catch (e) {
+      handing.delete(id);
       if (e instanceof SandboxError && e.kind === 'refused' && /no such session/.test(e.message)) throw new HttpError(404, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /already open/.test(e.message)) throw new HttpError(409, e.message);
       if (e instanceof SandboxError && e.kind === 'refused' && /unknown op/.test(e.message)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
       throw e;
     }
+    setTimeout(() => handing.delete(id), 10000).unref?.();
     const window = typeof result?.window === 'string' && /^resume-[0-9a-f]{8}$/.test(result.window) ? result.window : null;
     return { ok: true, window, command: `claude-bedrock --resume ${id}` };
   }

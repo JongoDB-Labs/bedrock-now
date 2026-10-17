@@ -132,10 +132,19 @@ test('POST /api/sessions/ID/terminal: this side\'s process ends first; refused m
   assert.deepEqual(calls.map((c) => c.op).filter((op) => op !== 'ws.sensitive'), ['terminal.resume']);
   assert.equal(srv.mgr.get(json.id).open, false);
   await until(a.inbox, (m) => m.type === 'event' && m.ev.type === 'local' && /Continued in the terminal/.test(m.ev.text));
+  // a second request at once (a double click, another tab) is refused, not a second window
+  calls.length = 0;
+  assert.equal((await req('POST', `/api/sessions/${json.id}/terminal`)).status, 409, 'again within seconds');
+  const twice = '3c9e6679-7425-40de-944b-e07fc1f99a22';
+  const [one, two] = await Promise.all([req('POST', `/api/sessions/${twice}/terminal`), req('POST', `/api/sessions/${twice}/terminal`)]);
+  assert.deepEqual([one.status, two.status].sort(), [200, 409]);
+  assert.equal(calls.filter((c) => c.op === 'terminal.resume').length, 1);
   // a hostile window name is not passed on
   state.resumeAnswer = () => ({ result: { ok: true, window: '<img src=x>' } });
-  r = await req('POST', `/api/sessions/${json.id}/terminal`);
+  r = await req('POST', '/api/sessions/1c9e6679-7425-40de-944b-e07fc1f99a22/terminal');
   assert.equal(r.json.window, null);
+  state.resumeAnswer = () => Promise.reject(new SandboxError('that conversation is already open in the sandbox (the terminal?)', 'refused'));
+  assert.equal((await req('POST', '/api/sessions/2c9e6679-7425-40de-944b-e07fc1f99a22/terminal')).status, 409);
   state.resumeAnswer = () => Promise.reject(new SandboxError('no such session in this workspace (it has no prompts yet?)', 'refused'));
   assert.equal((await req('POST', '/api/sessions/7c9e6679-7425-40de-944b-e07fc1f99a22/terminal')).status, 404);
   state.resumeAnswer = null;

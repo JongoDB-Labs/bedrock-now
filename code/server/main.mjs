@@ -443,7 +443,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         return reply({});
       }
       // the session's budget: {usd: null} for none; hard: Claude Code's own stop (applies from its next process start)
-      case 'set_budget': return reply(sessionOf(m).setBudget({ usd: m.usd === undefined ? null : m.usd, hard: m.hard, spent: m.spent }));
+      case 'set_budget': return reply(sessionOf(m).setBudget({ usd: m.usd === undefined ? null : m.usd, hard: m.hard, spent: m.spent }));   // (hard left out: kept)
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');
         // "Allow, and switch to Auto" (a shell command's prompt in Manual or Accept edits, as the CLI offers it): the

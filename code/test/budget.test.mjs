@@ -50,6 +50,12 @@ test('set_budget is checked: an amount between a cent and $999, hard a boolean, 
   assert.throws(() => mgr.open({ budget: { usd: 'x' } }), /budget/);
   assert.throws(() => mgr.open({ budget: [1] }), /budget/);
   assert.deepEqual(s.setBudget({ usd: 3.456, hard: false }).budget, { usd: 3.46, hard: false });
+  // a refused request changes nothing (its spend figure neither)
+  assert.throws(() => s.setBudget({ usd: 0, spent: 500 }), /budget/);
+  assert.equal(s.spent, 0);
+  // hard left out: as it was
+  s.setBudget({ usd: 4, hard: true });
+  assert.deepEqual(s.setBudget({ usd: 6 }).budget, { usd: 6, hard: true });
   assert.deepEqual(s.setBudget({ usd: null }).budget, null);
   mgr.closeAll();
 });
