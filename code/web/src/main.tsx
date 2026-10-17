@@ -1,7 +1,9 @@
 // Entry point: render the shell and start talking to the backend.
 import { render } from 'preact';
 import { AppShell } from './components/Shell';
-import { boot } from './app';
+import { boot, openFile, store } from './app';
+import { fsFind } from './api';
+import { listenPortal } from './portalbridge';
 import './styles/app.css';
 import './styles/review.css';
 import './styles/polish.css';
@@ -13,3 +15,5 @@ root.id = 'app';
 document.body.append(root);
 render(<AppShell />, root);
 void boot();
+// the portal's global search may ask this page for its sessions and files (only the portal that frames it)
+listenPortal({ portal: () => store.get().server?.portalOrigin ?? null, sessions: () => store.get().sessions, find: fsFind, openFile });

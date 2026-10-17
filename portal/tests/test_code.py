@@ -638,7 +638,7 @@ def test_the_hand_off_on_the_remote_site_needs_its_switch_and_sets_that_hosts_se
         assert c.get("/auth/code-terminal", headers={"Host": R_CODE_HOST, **SAME, **REMOTE}).status_code == 404
 
 
-def test_an_update_nobody_watched_is_said_once_on_home(tmp_path):
+def test_an_update_nobody_watched_is_said_once_in_activity(tmp_path):
     from portal import code as cp
     now = 1_800_000_000
     f = tmp_path / "code-default.json"
@@ -654,8 +654,11 @@ def test_an_update_nobody_watched_is_said_once_on_home(tmp_path):
         assert cp.default_notice(tmp_path, now) is None, bad
     f.write_text("{not json")
     assert cp.default_notice(tmp_path, now) is None
+    # no longer a banner on Home (code.js): an item in Activity (portal/activity.py, static/activity.js) with Keep and
+    # Turn off; a Keep pressed on the old banner still counts (the same localStorage key)
     js = open("portal/static/code.js", encoding="utf-8").read()
-    box = js[js.index("function defaultNotice(d)"):js.index("// (Home's Code card first")]
-    assert 'text: "Keep"' in box and 'text: "Turn off"' in box and "toSettings" in box and "localStorage.setItem(NOTICE_SEEN, String(n.at))" in box
-    assert "code(n.workspace)" in box and '", internet on). "' in box and "innerHTML" not in box
-    assert "defaultNotice(e.detail)" in js
+    assert "defaultNotice" not in js and "code-default-notice" not in js
+    act = open("portal/static/activity.js", encoding="utf-8").read()
+    assert 'act("Keep", () => dismiss(it), "action")' in act and 'act("Turn off", () => go("#settings/CODE_ENABLED"), "action")' in act
+    assert 'const NOTICE_SEEN = "bn.code.defaultNotice"' in act and "localStorage.setItem(NOTICE_SEEN, String(it.data.at))" in act
+    assert "localStorage.getItem(NOTICE_SEEN) === String(it.data.at)" in act and "innerHTML" not in act

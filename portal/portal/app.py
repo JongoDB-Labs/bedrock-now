@@ -23,7 +23,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, appicons, appsso, icons, prices, settings_api, summary, updates, webapp
+from . import activity, admin, appicons, appsso, chatsearch, icons, prices, searchindex, settings_api, summary, updates, webapp
 from . import code as codepage
 from .config import CODE, TERMINAL, Settings
 from .security import (
@@ -1032,6 +1032,38 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         log.warning("admin action requested: %s%s", action, " (remote)" if admin.is_remote(request) else "")
         return _no_store(JSONResponse({"id": nonce, "action": action}, status_code=202))
 
+    # --- the notification centre (static/activity.js): what the status files say, as items (portal/activity.py) ---
+    async def api_activity(request: Request) -> Response:
+        if (deny := api_guard(request)) is not None:
+            return deny
+        return _no_store(JSONResponse({"items": activity.items(settings, remote(request)), "generated_at": int(time.time())}))
+
+    # --- the global search (static/search.js): the Settings page's sections and settings, the docs index built into the
+    # --- image, and Chat's conversations through Open WebUI's own search (portal/searchindex.py, portal/chatsearch.py)
+    async def api_search_index(request: Request) -> Response:
+        if (deny := api_guard(request)) is not None:
+            return deny
+        return _no_store(JSONResponse({"settings": searchindex.settings_index(settings.catalog_dir),
+                                       "docs": searchindex.docs_index()}))
+
+    chats = chatsearch.ChatSearch(settings)
+
+    async def api_search_chats(request: Request) -> Response:
+        if (deny := api_guard(request)) is not None:
+            return deny
+        q = chatsearch.query(request.query_params.get("q"))
+        if not q:
+            return _no_store(JSONResponse({"error": "q: the text to look for (1-64 characters)", "chats": []}, status_code=400))
+        if not chats.rate.take():
+            return _no_store(JSONResponse({"error": "Too many searches at once: try again in a moment.", "chats": []}, status_code=429))
+        try:
+            found = await chats.search(request.app.state.http, q)
+        except chatsearch.SearchError as e:
+            # (an answer, not an error status: the page says it and offers Chat's own search box)
+            log.warning("chat search: %s", e)
+            return _no_store(JSONResponse({"error": str(e), "chats": []}))
+        return _no_store(JSONResponse({"chats": found}))
+
     async def favicon(request: Request) -> Response:
         return FileResponse(STATIC / "logo.svg", media_type="image/svg+xml")
 
@@ -1114,6 +1146,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/logins", api_logins),
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),
+            Route("/api/activity", api_activity, methods=["GET"]),
+            Route("/api/search/index", api_search_index, methods=["GET"]),
+            Route("/api/search/chats", api_search_chats, methods=["GET"]),
             *settings_api.routes(settings_api.Ctx(
                 settings=settings, sessions=sessions, throttle=throttle, remote=remote, api_guard=api_guard,
                 session_login=lambda r: session_login(r.headers, settings), set_session=set_session,

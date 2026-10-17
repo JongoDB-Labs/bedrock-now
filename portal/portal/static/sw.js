@@ -1,5 +1,6 @@
-// bedrock-now service worker. It exists so Android Chrome offers "Install app", and does nothing more.
-// It keeps NOTHING: no Cache Storage, no copy of Home, /api/* or anything else signed-in.
+// bedrock-now service worker. It exists so Android Chrome offers "Install app" (and shows Activity's opt-in browser
+// notifications there, which Android allows only through a service worker: a click brings the portal back), and does
+// nothing more. It keeps NOTHING: no Cache Storage, no copy of Home, /api/* or anything else signed-in; no push.
 // Page loads go to the network as usual; only when the network is unreachable does it answer with a short
 // built-in "can't reach bedrock-now" page instead of the browser's error. Every other request (API calls,
 // scripts, icons) is not touched. Chat, Admin and Files live on other origins and never pass through here.
@@ -39,4 +40,13 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(fetch(req).catch(() => new Response(OFFLINE, {
     status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
   })));
+});
+
+// A click on one of Activity's notifications (activity.js, while a portal tab is open): back to that tab.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    const mine = list.find((c) => new URL(c.url).origin === self.location.origin);
+    return mine ? mine.focus() : self.clients.openWindow("/");
+  }));
 });

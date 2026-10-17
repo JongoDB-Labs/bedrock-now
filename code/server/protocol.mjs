@@ -184,6 +184,11 @@
 //   parent.postMessage({type: "bn-code-status", pending: N, busy, bypass, waiting: SESSIONS, sessions: [{id, title,
 //                      state: waiting|working|idle, waiting: N}] (≤ 8: Home's Code card; titles are sandbox data)},
 //                      portal_origin)
+// and answers the portal's global search (web/src/portalbridge.ts; only from portal_origin and the parent window):
+//   portal -> page {type: "bn-portal-search", id: [A-Za-z0-9]{1,32}, q: ≤ 64 chars}
+//   page -> portal {type: "bn-code-search", id, sessions: [{id, title}] (≤ 20), files: ["path" …] (≤ 30, files only:
+//                   /api/fs/find), truncated, error?}   (titles and paths are sandbox data: the portal shows them as text)
+//   portal -> page {type: "bn-portal-open", path}   opens that workspace file in the editor (cleanPath, as any open)
 // and takes deep links: /?session=ID (shown, or resumed) and /?prompt=TEXT (a draft marked as coming from a link,
 // ≤ 4,000 characters, never sent by itself); both leave the address bar at once
 //

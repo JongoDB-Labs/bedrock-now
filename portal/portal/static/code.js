@@ -172,9 +172,34 @@
       if (e.data.type === "bn-code-status") {
         reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions) };
         renderCard();
+        // the frame reported since it (re)loaded: the global search may ask it (search.js); a reload (a deep link, the
+        // unlock ending) waits for its next report
+        if (!hooked.has(f)) { hooked.add(f); f.addEventListener("load", () => { loadedAt = Date.now(); }); }
+        reportedAt = Date.now();
+        // Activity (activity.js): the sessions that wait for you — the same checked copy the card shows
+        document.dispatchEvent(new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map((x) => ({ ...x })) } }));
       }
     });
   }
+  const hooked = new WeakSet();
+  let reportedAt = 0, loadedAt = 0;
+
+  // For the global search (search.js) and Activity: what Home's card knows, whether the frame can be asked, and the two
+  // ways into the Code page from there — a session by deep link (as Resume), a workspace file by a message to the frame
+  // (the Code page checks the path itself, and opens it only as a file of its workspace)
+  window.bnCode = {
+    ready: () => Boolean(reported) && reportedAt > loadedAt && Boolean(document.querySelector('#frames iframe[data-app="code"]')),
+    sessions: () => (reported ? reported.sessions.map((x) => ({ id: x.id, title: x.title, state: x.state })) : []),
+    openSession: (id) => { if (typeof id === "string" && UUID.test(id)) openLink({ session: id }); },
+    openFile: (path) => {
+      const f = document.querySelector('#frames iframe[data-app="code"]');
+      let origin = "";
+      try { origin = new URL(appUrl("code")).origin; } catch (_) { return; }
+      if (!f || typeof path !== "string" || !path || path.length > 1024) return;
+      showTab("code");
+      f.contentWindow.postMessage({ type: "bn-portal-open", path }, origin);
+    },
+  };
 
   // The badge needs the page running: its frame, hidden, once the portal has nothing else to do — only in a browser
   // that has used the Code page (else the code host would answer its locked form, unasked), and not on a phone (there
@@ -293,35 +318,11 @@
     card.append(line);
   }
 
-  // An update nobody watched (the update helper's Update now, or its nightly update) turned the Code page on by default
-  // (/api/summary's code.notice: lib/code.sh code_default_notice): Home says so once, with Keep (this browser does not
-  // show it again) and Turn off (Settings, at its switch). Text only; the folder is this machine's own.
-  const NOTICE_SEEN = "bn.code.defaultNotice";
-  function defaultNotice(d) {
-    const n = d && d.code && d.code.notice;
-    let box = $("#code-default-notice"), seen = null;
-    try { seen = localStorage.getItem(NOTICE_SEEN); } catch (_) { /* storage blocked: shown each time, fine */ }
-    if (!n || !Number.isInteger(n.at) || typeof n.workspace !== "string" || seen === String(n.at)) { if (box) box.hidden = true; return; }
-    if (!box) {
-      const head = $("#home .home-head");
-      if (!head) return;
-      box = el("section", { id: "code-default-notice", class: "banner code-default-notice", role: "status", "aria-label": "The Code page was turned on" });
-      head.after(box);
-    }
-    const keep = el("button", { type: "button", class: "action", text: "Keep" });
-    keep.addEventListener("click", () => { try { localStorage.setItem(NOTICE_SEEN, String(n.at)); } catch (_) { /* fine */ } box.hidden = true; });
-    const off = el("button", { type: "button", class: "action", text: "Turn off" });
-    off.addEventListener("click", toSettings);
-    box.replaceChildren(
-      el("p", {}, "The last update turned on the ", el("strong", { text: "Code page" }), n.terminal ? " and its sandbox (workspace " : " (in the terminal's sandbox, workspace ",
-        code(n.workspace), n.egress ? ", internet on). " : ", no internet). ",
-        "Claude Code runs there in a container that sees only that folder, and asks before each command or file change."),
-      el("p", { class: "code-default-actions" }, keep, off));
-    box.hidden = false;
-  }
+  // An update nobody watched turning the Code page on by default (lib/code.sh code_default_notice) is said once in
+  // Activity (activity.js, from /api/activity), with Keep and Turn off: it used to be a banner on Home.
 
   // (Home's Code card first: the framed page's first report finds it there)
-  if (here) { codeCard(); document.addEventListener("bn:summary", (e) => { budgetLine(e.detail); defaultNotice(e.detail); }); }
+  if (here) { codeCard(); document.addEventListener("bn:summary", (e) => budgetLine(e.detail)); }
   addTab(); addSheetLink();
   if (here) { listen(); window.addEventListener("load", preload, { once: true }); } else offPage();
   cardLine();

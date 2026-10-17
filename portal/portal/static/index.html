@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="/static/mobile.css">
 <link rel="stylesheet" href="/static/tour.css">
 <link rel="stylesheet" href="/static/settings.css">
+<link rel="stylesheet" href="/static/activity.css">
 <script src="/static/app.js" defer></script>
 <script src="/static/mobile.js" defer></script>
 <script src="/static/install.js" defer></script>
@@ -27,11 +28,20 @@
 <script src="/static/code.js" defer></script>
 <script src="/static/tour.js" defer></script>
 <script src="/static/settings.js" defer></script>
+<script src="/static/fuzzy.js" defer></script>
+<script src="/static/activity.js" defer></script>
+<script src="/static/search.js" defer></script>
 </head>
 <body class="shell">
 <nav class="sidebar" aria-label="Apps">
   <div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>
   <a class="version-label" id="version" target="_blank" rel="noopener noreferrer" hidden></a>
+  <div class="side-tools">
+    <button type="button" class="side-search" id="search-btn" aria-haspopup="dialog" aria-controls="search" aria-expanded="false" title="Search the portal" hidden>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.3 12.3 4.2 4.2"/></svg><span class="side-search-text">Search</span><kbd class="side-kbd" id="search-kbd">Ctrl K</kbd></button>
+    <button type="button" class="bell-btn" id="activity-btn" aria-controls="activity" aria-expanded="false" aria-label="Activity" title="Activity" hidden>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2a4.6 4.6 0 0 0-4.6 4.6v3.1L3.8 13.6h12.4l-1.6-2.7V7.8A4.6 4.6 0 0 0 10 3.2zM8.2 15.6a1.9 1.9 0 0 0 3.6 0"/></svg><span class="bell-count" id="activity-count" hidden></span></button>
+  </div>
   <ul class="tabs">
     <li><button type="button" class="tab" data-tab="home" aria-current="page">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-3.5v-4.5h-5V17H4a1 1 0 0 1-1-1z"/></svg>Home</button></li>
@@ -47,7 +57,7 @@
     <li><button type="button" class="tab" data-tab="settings">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 8.5 17.5 8.7 17.5 11.3 15.5 11.5 14.9 12.8 16.2 14.3 14.3 16.2 12.8 14.9 11.5 15.5 11.3 17.5 8.7 17.5 8.5 15.5 7.2 14.9 5.7 16.2 3.8 14.3 5.1 12.8 4.5 11.5 2.5 11.3 2.5 8.7 4.5 8.5 5.1 7.2 3.8 5.7 5.7 3.8 7.2 5.1 8.5 4.5 8.7 2.5 11.3 2.5 11.5 4.5 12.8 5.1 14.3 3.8 16.2 5.7 14.9 7.2z"/><circle cx="10" cy="10" r="2.4"/></svg>Settings</button></li>
     <li class="more-item"><button type="button" class="more-btn" id="more-btn" aria-haspopup="dialog" aria-controls="more-sheet" aria-expanded="false">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg>More</button></li>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z"/></svg>More<span class="more-dot" id="more-dot" aria-hidden="true" hidden></span></button></li>
   </ul>
   <button type="button" class="tour-btn" id="tour-btn" aria-controls="tour" aria-expanded="false" hidden>
     <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m12.8 7.2-1.7 3.9-3.9 1.7 1.7-3.9z"/></svg><span class="tour-btn-text">Walkthrough</span> <span id="tour-count" class="tour-count"></span>
@@ -68,6 +78,10 @@
       <li><a class="sheet-link" data-app="admin" target="_blank" rel="noopener">Admin <span>LiteLLM: keys, budgets, logs</span></a></li>
       <li><a class="sheet-link" data-app="files" target="_blank" rel="noopener">Files <span>RustFS: stored uploads</span></a></li>
       <li><button type="button" class="sheet-link" data-page="settings">Settings <span>Passwords, keys, budgets, voice, backups</span></button></li>
+    </ul>
+    <ul class="sheet-tools">
+      <li><button type="button" class="sheet-link" id="more-activity" aria-haspopup="dialog" aria-controls="activity" aria-expanded="false" hidden>Activity <span>Budgets, updates, jobs, Code sessions that need you</span><b class="sheet-count" id="more-activity-count" hidden></b></button></li>
+      <li><button type="button" class="sheet-link" id="more-search" aria-haspopup="dialog" aria-controls="search" hidden>Search <span>Settings, Code sessions, chats, the walkthrough, docs</span></button></li>
     </ul>
     <button type="button" class="sheet-tour" id="more-tour" hidden>Walkthrough <span id="more-tour-note">Set up, your apps, use them together</span></button>
     <form method="post" action="/logout" class="sheet-logout"><button type="submit">Sign out</button></form>
@@ -237,6 +251,18 @@
       <p class="confirm-buttons"><button type="button" class="quiet" id="confirm-cancel">Cancel</button>
         <button type="submit" class="action primary" id="confirm-ok">Confirm</button></p>
     </form>
+  </dialog>
+  <section id="activity" class="activity" role="dialog" aria-modal="false" aria-labelledby="activity-title" hidden></section>
+  <dialog id="search" class="search-dlg" aria-label="Search">
+    <div class="search-box">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.3 12.3 4.2 4.2"/></svg>
+      <input id="search-input" type="text" role="combobox" aria-expanded="true" aria-controls="search-list" aria-autocomplete="list" aria-label="Search the portal"
+        autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="Settings, sessions, files, chats, docs…">
+      <button type="button" class="search-close" id="search-close" aria-label="Close search"><kbd>Esc</kbd></button>
+    </div>
+    <div id="search-list" class="search-list" role="listbox" aria-label="Results"></div>
+    <p id="search-notes" class="search-notes" hidden></p>
+    <p class="search-help"><span id="search-status" role="status" aria-live="polite"></span><span class="search-keys">↑ ↓ to move · Enter to open · Esc to close</span></p>
   </dialog>
   <p id="toast" class="toast" role="status" aria-live="polite"></p>
 </main>

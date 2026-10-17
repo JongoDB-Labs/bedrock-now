@@ -778,4 +778,12 @@
   TABLET.addEventListener("change", relayout);
   // The Extras step offers Install app or Open in the app once install.js knows which.
   document.addEventListener("bn:app", () => { if (st.open && st.cur === "extras") render(); });
+  // The global search (search.js): the steps by title, and the walkthrough opened at one (or where it was)
+  window.bnTour = {
+    steps: () => SECTIONS.flatMap((sec) => sec.steps.map((id) => ({ id, title: STEPS[id].title, section: sec.title }))),
+    open: (id) => {
+      if (id && has(STEPS, id) && ORDER.includes(id)) { if (!st.open) setOpen(true, false); nav(id); return; }
+      if (!st.open) setOpen(true); else { const h = $("#tour-cur", panel); if (h) h.focus(); }
+    },
+  };
 })();
