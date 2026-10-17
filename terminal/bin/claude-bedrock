@@ -67,9 +67,9 @@ resolve_model() {
   esac
   rows="$(model_rows all)"
   [ -n "$rows" ] || { printf '%s%s\n' "$base" "$suffix"; return 0; }
-  id="$(printf '%s\n' "$rows" | W="$base" awk -F'\t' 'BEGIN { w = tolower(ENVIRON["W"]) } tolower($1) == w { print $1; f = 1; exit }
-    !h && (tolower($2) == w || tolower($1) == "or/" w) { h = $1 } END { if (!f && h != "") print h }')"
-  [ -n "$id" ] || die "unknown model '$want' ($2) — claude-bedrock --models lists them: $(printf '%s\n' "$rows" | awk -F'\t' '$8 == 1 { printf "%s%s", (n++ ? ", " : ""), $1; if (n == 6) { printf ", …"; exit } }')"
+  id="$(printf '%s\n' "$rows" | W="$base" awk -F'\t' 'BEGIN { w = tolower(ENVIRON["W"]) } !f && tolower($1) == w { e = $1; f = 1 }
+    !h && (tolower($2) == w || tolower($1) == "or/" w) { h = $1 } END { if (f) print e; else if (h != "") print h }')"
+  [ -n "$id" ] || die "unknown model '$want' ($2) — claude-bedrock --models lists them: $(printf '%s\n' "$rows" | awk -F'\t' '$8 == 1 && n < 6 { printf "%s%s", (n++ ? ", " : ""), $1; next } $8 == 1 { more = 1 } END { if (more) printf ", …" }')"
   printf '%s%s\n' "$id" "$suffix"
 }
 # picker_json AUTO_OFF -> --settings JSON: Claude Code's /model menu lists the listed models by full id with their names,
@@ -131,7 +131,7 @@ load_model_info
 # The model, by its full id: --model of yours, else CLAUDE_BEDROCK_MODEL, else the default of Settings › Claude Code ›
 # Models (blank there: the main model). Given one of Claude Code's aliases it picks the model itself (with "haiku", Plan
 # mode plans on Sonnet): an alias becomes its slot's id, and --model is rewritten to the id (up to a `--` of yours).
-def="$(model_rows all | awk -F'\t' '$9 == 1 { print $1; exit }')"
+def="$(model_rows all | awk -F'\t' '!f && $9 == 1 { print $1; f = 1 }')"
 model="${CLAUDE_BEDROCK_MODEL:-${def:-${CLAUDE_BEDROCK_OPUS_MODEL:-}}}"
 [ -n "$model" ] || die "no Claude model is enabled for your AWS key — run ./stack setup on your computer"
 where='the default model'; [ -z "${CLAUDE_BEDROCK_MODEL:-}" ] || where=CLAUDE_BEDROCK_MODEL
@@ -156,7 +156,7 @@ if [ "${CLAUDE_BEDROCK_QUIET:-0}" != 1 ]; then
   via=bedrock; case "$model" in or/*) via=openrouter ;; esac
   line="$via · $model"
   if p="$(price_label "$model")" && [ -n "$p" ]; then line="$line ($p)"; fi
-  case "$(model_rows all | awk -F'\t' -v m="$model" '$1 == m { print $7; exit }')" in
+  case "$(model_rows all | awk -F'\t' -v m="$model" '!f && $1 == m { print $7; f = 1 }')" in
     chat-only) line="$line · chat only: it cannot use tools" ;;
     fails) line="$line · fails as Claude Code's model" ;;
     untested) line="$line · not tested with Claude Code" ;;

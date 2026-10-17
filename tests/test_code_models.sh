@@ -70,6 +70,9 @@ test_openrouter_rows_free_at_zero_tools_and_the_output_cap() {
   assert_eq "$(printf '%s\n' "$out" | _col 10 or/meta-llama/llama-3.3-70b-instruct)" fails
   assert_eq "$(printf '%s\n' "$out" | _col 13 or/meta-llama/llama-3.3-70b-instruct)" 4096
   assert_not_contains "$out" "~anthropic"
+  printf 'OPENROUTER_INCLUDE_ALIASES=true\n' >> "$ENV_FILE"   # listed by OpenRouter's selection, still never a model here
+  assert_not_contains "$(code_models_rows "")" "~anthropic"
+  sed -i.bak '/^OPENROUTER_INCLUDE_ALIASES=/d' "$ENV_FILE"
   # anthropic scope: OpenRouter's Anthropic models count too
   printf 'CODE_MODELS=anthropic\n' >> "$ENV_FILE"
   assert_eq "$(code_models_rows "" | awk -F'\t' '$11 == 1 && $3 == "OpenRouter" { print $1 }')" "or/anthropic/claude-haiku-5.5"

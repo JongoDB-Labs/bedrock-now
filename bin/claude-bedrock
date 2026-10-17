@@ -29,7 +29,7 @@ _cb_model() {
   [ -r "$(code_models_file)" ] || { cb_model_id "$want"; return 0; }
   case "$want" in *'[1m]' | *'[1M]') suffix="${want#"${want%????}"}"; base="${want%????}" ;; *) base="$want" ;; esac
   id="$(code_model_resolve "$base")"
-  [ -n "$id" ] || die "unknown model '$want' ($2) — claude-bedrock --models lists them: $(_code_rows | awk -F'\t' '$11 == 1 { printf "%s%s", (n++ ? ", " : ""), $1; if (n == 6) { printf ", …"; exit } }')"
+  [ -n "$id" ] || die "unknown model '$want' ($2) — claude-bedrock --models lists them: $(_code_rows | awk -F'\t' '$11 == 1 && n < 6 { printf "%s%s", (n++ ? ", " : ""), $1; next } $11 == 1 { more = 1 } END { if (more) printf ", …" }')"
   printf '%s%s\n' "$id" "$suffix"
 }
 

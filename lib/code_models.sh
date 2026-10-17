@@ -75,7 +75,8 @@ code_models_rows() {
       else { cs = "untested"; cn = "Not checked with Claude Code here: tool use, thinking and prompt caching may not work." }
     }
     function add(id, name, prov, vend, pin, pout, pcr, pcw, free, tools, maxo, ctx) {
-      if (n >= ENVIRON["MAX"] + 0 || (id in seen)) return
+      # (an id the Code page and the code server take: no "~" alias of OpenRouter, at most 128 characters)
+      if (n >= ENVIRON["MAX"] + 0 || (id in seen) || id !~ /^[A-Za-z0-9][A-Za-z0-9._:\/@-]*$/ || length(id) > 128) return
       seen[id] = 1; compat(id, tools)
       if ((cm == "" || cm == "-") && maxo != "" && maxo != "-") cm = maxo   # the provider limit OpenRouter names, unless a row of ours says
       if (cm !~ /^[1-9][0-9]*$/) cm = "-"
@@ -171,16 +172,16 @@ code_model_resolve() {
   _code_rows "${2:-}" | W="$want" awk -F'\t' '
     BEGIN { w = tolower(ENVIRON["W"]) }
     { id = tolower($1); nm = tolower($2) }
-    id == w { print $1; f = 1; exit }
+    !f && id == w { e = $1; f = 1 }
     !h && (nm == w || id == "or/" w) { h = $1 }
-    END { if (!f && h != "") print h }'
+    END { if (f) print e; else if (h != "") print h }'
 }
 
 # code_model_row ID [FILE] -> the row of ID
-code_model_row() { _code_rows "${2:-}" | I="$1" awk -F'\t' '$1 == ENVIRON["I"] { print; exit }'; }
+code_model_row() { _code_rows "${2:-}" | I="$1" awk -F'\t' '!f && $1 == ENVIRON["I"] { print; f = 1 }'; }
 
 # code_models_default [FILE] -> the id new sessions start with
-code_models_default() { _code_rows "${1:-}" | awk -F'\t' '$12 == 1 { print $1; exit }'; }
+code_models_default() { _code_rows "${1:-}" | awk -F'\t' '!f && $12 == 1 { print $1; f = 1 }'; }
 
 # _code_price IN OUT FREE -> "$0.72/$0.72 per 1M", "free ($0)" or "price unknown"
 _code_price() {

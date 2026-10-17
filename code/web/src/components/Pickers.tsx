@@ -333,7 +333,7 @@ export function CostMeter() {
     <button
       type="button"
       class={`meter-btn${level}`}
-      title={`Cost from bedrock-now's spend logs (what Bedrock billed). Turns appear a few seconds after they end. Click to refresh.${v.budget ? `\nThis session's budget: ${money(v.budget.usd, 2)}${v.budget.hard ? ', stop on' : ' (warnings only)'} — ⋯ › Budget.` : ''}${key}`}
+      title={`Cost from bedrock-now's spend logs (what Bedrock or OpenRouter billed; a free model costs $0). Turns appear a few seconds after they end. Click to refresh.${v.budget ? `\nThis session's budget: ${money(v.budget.usd, 2)}${v.budget.hard ? ', stop on' : ' (warnings only)'} — ⋯ › Budget.` : ''}${key}`}
       onClick={() => void refreshSpend(v.id)}
       data-testid="cost"
     >
