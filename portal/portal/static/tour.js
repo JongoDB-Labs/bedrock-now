@@ -278,7 +278,7 @@
       title: "The portal: your one sign-in", badges: ["Sign-in: Done"], info: true,
       body: () => [
         p("The portal password (", code("PORTAL_PASSWORD"), " in ", code(".env"), "; ", code("./stack password --show"),
-          " prints it) is the only one you type: Chat, Admin and Files sign you in with it. Change it in ", settings("Account & security"), "."),
+          " prints it) is the only one you type: Chat, Admin and Files sign you in with it, and the Terminal and the Code page (when they are on) ask for it once more to unlock, because they run commands. Change it in ", settings("Account & security"), "."),
         p("A sign-in lasts 30 days (", code("PORTAL_SESSION_DAYS"), ", also in Account & security). ", b("Sign out"),
           PHONE.matches ? " (under More)" : " at the bottom of the sidebar", " ends it everywhere, and Admin's and Files' with it."),
       ],

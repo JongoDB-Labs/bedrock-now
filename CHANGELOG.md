@@ -6,6 +6,12 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sign-in page, the Portal password setting and the walkthrough** now say the password also unlocks the
+  Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
+  Admin and Files.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added
