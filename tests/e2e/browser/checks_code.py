@@ -1713,41 +1713,58 @@ def ui_guardrails(ctx):
     expect(page.get_by_test_id("msg-user").count() <= users, "the link's prompt was sent")
     shot(page, "112-code-ui-link-draft")
     page.get_by_test_id("link-draft-clear").click()
-    # Open in the terminal: the command typed into a new window of the terminal's tmux; resuming here is refused meanwhile
+    # Open in the terminal: the command typed into a new window of the terminal's tmux; resuming here is refused meanwhile.
+    # The terminal checks come later and type into tmux's current window: whatever happens here, that window is left
+    # with Claude Code ended and closed (finally).
     page.get_by_test_id("more-menu").click()
     page.get_by_test_id("menu-to-terminal").click()
     see(page.locator(".toast").filter(has_text=f"claude-bedrock --resume {sid}")).to_be_visible(timeout=30000)
     see(page.get_by_test_id("terminal")).to_be_visible()
-    tf = _terminal_frame(page)
-    if tf.locator("h1", has_text="Unlock the terminal").count():
-        tf.fill("#password", ENV["PORTAL_PASSWORD"])
-        tf.click("form[action='/.bn/unlock'] button[type=submit]")
-        tf = _terminal_frame(page)
-    tf.locator(".xterm").wait_for(timeout=30000)
-    # its window (tmux's status line), and Claude Code running there — the command line itself is soon covered by
-    # Claude Code's screen (in this fresh sandbox first its "trust this folder?" question)
-    screen = _term_wait(tf, re.escape(f"resume-{sid[:8]}"), 60)
-    screen = _term_wait(tf, r"(?i)(trust this folder|for shortcuts|claude-bedrock --resume)", 60)
-    shot(page, "113-code-ui-open-in-terminal")
-    r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
-    expect(r["status"] == 409 and "terminal" in r["text"], f"a resume while the terminal runs it: {r['status']} {r['text'][:160]}")
-    # Claude Code exits there (Ctrl-C twice: also from its first-run "trust this folder?" question), then the window's
-    # shell too: the page may resume it again (no request to the model)
-    page.wait_for_timeout(2000)
-    t0, r = time.time(), {"status": 0, "text": ""}
-    while time.time() - t0 < 90:
+    tf = None
+
+    def ctrl_c_twice():
         tf.locator(".xterm-helper-textarea").focus()
         page.keyboard.press("Control+c")
         page.wait_for_timeout(400)
         page.keyboard.press("Control+c")
-        page.wait_for_timeout(3000)
+
+    try:
+        tf = _terminal_frame(page)
+        if tf.locator("h1", has_text="Unlock the terminal").count():
+            tf.fill("#password", ENV["PORTAL_PASSWORD"])
+            tf.click("form[action='/.bn/unlock'] button[type=submit]")
+            tf = _terminal_frame(page)
+        tf.locator(".xterm").wait_for(timeout=30000)
+        # its window (tmux's status line), and Claude Code running there — the command line itself is soon covered by
+        # Claude Code's screen (in this fresh sandbox first its "trust this folder?" question)
+        _term_wait(tf, re.escape(f"resume-{sid[:8]}"), 60)
+        _term_wait(tf, r"(?i)(trust this folder|for shortcuts|claude-bedrock --resume)", 60)
+        shot(page, "113-code-ui-open-in-terminal")
         r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
-        if r["status"] == 200:
-            break
-    expect(r["status"] == 200, f"after /exit in the terminal: {r['status']} {r['text'][:160]}")
-    tf.locator(".xterm-helper-textarea").focus()
-    page.keyboard.type("exit", delay=40)
-    page.keyboard.press("Enter")
+        expect(r["status"] == 409 and "terminal" in r["text"], f"a resume while the terminal runs it: {r['status']} {r['text'][:160]}")
+        # Claude Code exits there (Ctrl-C twice: also from its first-run "trust this folder?" question): the page may
+        # resume it again (no request to the model)
+        page.wait_for_timeout(2000)
+        t0, r = time.time(), {"status": 0, "text": ""}
+        while time.time() - t0 < 90:
+            ctrl_c_twice()
+            page.wait_for_timeout(3000)
+            r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
+            if r["status"] == 200:
+                break
+        expect(r["status"] == 200, f"after Claude Code exited in the terminal: {r['status']} {r['text'][:160]}")
+    finally:
+        if tf is not None:
+            # Claude Code ended (never a prompt typed into it), then the window's shell: only once its prompt shows
+            try:
+                ctrl_c_twice()
+                _term_wait(tf, r"/workspace \$\s*$", 20)
+                tf.locator(".xterm-helper-textarea").focus()
+                page.keyboard.type("exit", delay=40)
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(1000)
+            except Exception:  # noqa: BLE001 — cleanup only; the check's own outcome stands
+                pass
     csp_clean(page, rec)
     # Home's Code card: the framed page reports its sessions; this one listed with a Resume link
     page.goto(origin() + "/")
