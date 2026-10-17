@@ -64,13 +64,15 @@ export function useSel<T, R>(store: Store<T>, sel: (s: T) => R): R {
   const value = sel(store.get());
   const valueRef = useRef(value);
   valueRef.current = value;
-  useEffect(
-    () =>
-      store.subscribe(() => {
-        const next = selRef.current(store.get());
-        if (!Object.is(next, valueRef.current)) force(0);
-      }),
-    [store],
-  );
+  useEffect(() => {
+    const check = () => {
+      const next = selRef.current(store.get());
+      if (!Object.is(next, valueRef.current)) force(0);
+    };
+    const off = store.subscribe(check);
+    // a change between this render and the subscription (effects run after paint) is not missed
+    check();
+    return off;
+  }, [store]);
   return value;
 }

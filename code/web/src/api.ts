@@ -9,7 +9,7 @@
 import {
   cap,
   cleanName,
-  cleanPath,
+  exactPath,
   isId,
   isUuid,
   label,
@@ -70,7 +70,7 @@ const mode = (v: unknown): Mode | null => (v === 'dontAsk' ? 'readOnly' : MODES.
 const WATCH_CHANGES = ['added', 'changed', 'removed'] as const;
 function normWatchChange(v: unknown): WatchChange | null {
   const o = obj(v);
-  const path = cleanPath(o?.path);
+  const path = exactPath(o?.path);
   if (!o || !path) return null;
   const change = WATCH_CHANGES.includes(o.change as WatchChange['change']) ? (o.change as WatchChange['change']) : 'changed';
   const text = (t: unknown) => (typeof t === 'string' ? cap(t, 70_000) : null);
@@ -194,7 +194,7 @@ function normHunks(v: unknown): Hunk[] {
 function normEdit(v: unknown): EditInfo | null {
   const o = obj(v);
   if (!o) return null;
-  const path = cleanPath(o.path ?? o.filePath);
+  const path = exactPath(o.path ?? o.filePath);
   if (path === null || path === '') return null;
   const original = typeof (o.original ?? o.originalFile) === 'string' ? cap(o.original ?? o.originalFile, 4_000_000) : null;
   return { path, original, hunks: normHunks(o.hunks ?? o.structuredPatch), complete: o.complete !== false, created: o.created === true };
@@ -818,7 +818,7 @@ export async function fsFind(text: string, limit = 100): Promise<{ paths: string
     .map((p) => {
       if (typeof p !== 'string') return null;
       const dir = p.endsWith('/');
-      const c = cleanPath(dir ? p.slice(0, -1) : p);
+      const c = exactPath(dir ? p.slice(0, -1) : p);
       return c ? (dir ? `${c}/` : c) : null;
     })
     .filter((p): p is string => p !== null);
@@ -883,7 +883,7 @@ export function normRewind(v: unknown): Rewind {
     error: label(o.error, 500),
     files: arr(o.filesChanged, 200)
       .filter((p): p is string => typeof p === 'string' && p !== '')
-      .map((p) => cleanPath(p) ?? label(p, 500)),
+      .map((p) => exactPath(p) ?? label(p, 500)),
     insertions: n(o.insertions),
     deletions: n(o.deletions),
     skippedLinks: n(o.skippedLinks),
@@ -895,7 +895,7 @@ export async function fsUpload(dir: string, file: File): Promise<string> {
     'X-Filename': encodeURIComponent(file.name.slice(0, 255)),
     'Content-Type': 'application/octet-stream',
   });
-  const p = cleanPath(o.path);
+  const p = exactPath(o.path);
   return p ?? (dir ? `${dir}/${file.name}` : file.name);
 }
 export async function fsMkdir(path: string): Promise<void> {
@@ -914,7 +914,7 @@ export async function fsDelete(path: string, ifMtimeMs?: number | null): Promise
 const MODE = /^[0-7]{6}$/;
 function normGitFile(v: unknown): GitFile | null {
   const o = obj(v);
-  const path = cleanPath(o?.path);
+  const path = exactPath(o?.path);
   if (!o || !path) return null;
   const status = o.status === 'added' || o.status === 'deleted' ? o.status : 'modified';
   const mc = obj(o.modeChange);
@@ -931,6 +931,7 @@ function normGitFile(v: unknown): GitFile | null {
     // (a line the page had to cut means it does not hold the change in full either)
     cut: o.cut === true || arr(o.hunks, 100_000).some((h) => arr(obj(h)?.lines, 100_000).some((l) => typeof l === 'string' && l.length > 10_000)),
     bad: o.bad === true || !arr(o.hunks, 100_000).every(hunkAddsUp),
+    watch: obj(o.watch) ? { kind: label(obj(o.watch)!.kind, 40), why: label(obj(o.watch)!.why, 300) } : null,
   };
 }
 /** A hunk as git writes it: whole-number positions, only text lines, and as many of each kind as its header says. */
@@ -951,7 +952,9 @@ function hunkAddsUp(v: unknown): boolean {
   return old === h.oldLines && neu === h.newLines;
 }
 export function normGitReview(o: Obj): GitReview {
-  const files = arr(o.files, 2000).map(normGitFile).filter((f): f is GitFile => f !== null);
+  // (one entry per path: a second one for the same file would be a second Undo of it)
+  const seen = new Set<string>();
+  const files = arr(o.files, 2000).map(normGitFile).filter((f): f is GitFile => f !== null && !seen.has(f.path) && !!seen.add(f.path));
   return {
     repo: o.repo === true,
     reason: label(o.reason, 300),
@@ -978,7 +981,7 @@ export function normGrep(o: Obj): GrepResult {
   const files = arr(o.files, 2000)
     .map((f) => {
       const x = obj(f);
-      const path = cleanPath(x?.path);
+      const path = exactPath(x?.path);
       if (!x || !path) return null;
       const hits = arr(x.hits, 100)
         .map((h) => {
@@ -1309,6 +1312,7 @@ export type ClientMsg =
   | { type: 'set_model'; session: string; model: string; req?: string }
   | { type: 'set_mode'; session: string; mode: Mode; confirmed?: boolean; req?: string }
   | { type: 'watch_revert'; session: string; id: string; path?: string; req: string }
+  | { type: 'watch_check'; session: string; req?: string }
   | { type: 'set_effort'; session: string; effort: string | null }
   | { type: 'permission'; id: string; session: string; decision: Decision; message?: string; mode?: 'default' | 'acceptEdits' }
   | { type: 'permission'; id: string; session: string; decision: 'answer'; answers: Record<string, string> }

@@ -74,8 +74,10 @@ dev server that prints Vite's banner; `POST /__mock/port?port=&cmd=` adds a list
 Review and search: `/api/git/diff` compares the workspace with its state at the start (or at `POST /__mock/git?commit=1`;
 `?repo=0` makes it no git repository: the page then reviews the session's edits), `PUT /api/fs/file` takes `create`,
 `DELETE /api/fs` `ifMtimeMs`; a *… with sed* prompt changes two files and creates one by a Bash command (no edit event:
-only git's view shows them); `/api/fs/grep` searches the in-memory files (literal or JavaScript regex, case, globs);
-the hostile mock adds markup, bidi, `../` paths and counts that do not add up to both.
+only git's view shows them; it also bumps `package.json`, a file of the watchlist); `watch_check` reports the watched
+files that changed since the last turn; `/api/fs/grep` searches the in-memory files (literal or JavaScript regex, case,
+globs); the hostile mock adds markup, bidi, `../` paths, counts that do not add up, a file named `.claude\settings.json`
+and one with a newline in its name to both.
 
 ## Tests
 

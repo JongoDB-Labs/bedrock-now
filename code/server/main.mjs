@@ -403,6 +403,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         if (m.path !== undefined && (typeof m.path !== 'string' || m.path.length > 4096)) throw new SessionError('bad path');
         return reply({ results: await sessionOf(m).revertWatch(m.id, m.path) });
       }
+      // the watched files checked now (the Review pane just changed one): a `watch` event when something changed
+      case 'watch_check': await sessionOf(m).watchNow(); return reply({});
       case 'set_effort': await sessionOf(m).setEffort(m.effort ?? null); return reply({ effort: m.effort ?? null });
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');

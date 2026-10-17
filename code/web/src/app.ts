@@ -690,7 +690,7 @@ function onEvent(id: string, ev: Ev, wasBusy = false): void {
     scheduleSpend(id);
     requestContext(id);
     refreshExpandedDirs();
-    if (get().review.engaged && id === get().active) scheduleReview();
+    if (wasBusy && get().review.engaged && id === get().active) scheduleReview();   // (a turn that ran here, not a replay)
     announce();
   } else if ((ev.kind === 'error' || (ev.kind === 'text' && /API Error/i.test(ev.text))) && BUDGET_WORDS.test(ev.text)) {
     // LiteLLM refused the request (Claude Code shows the API's error as its answer)
@@ -1898,20 +1898,35 @@ export function openReview(): void {
   void refreshReview();
 }
 
-let reviewSeq = 0;
-/** Ask git again (the answer replaces the last one; an older answer arriving late is dropped). */
-export async function refreshReview(): Promise<void> {
-  const n = ++reviewSeq;
-  setReview((r) => ({ ...r, loading: true }));
-  try {
-    const git = await api.getGitDiff();
-    if (n !== reviewSeq) return;
-    setReview((r) => ({ ...r, git, loading: false, error: null }));
-  } catch (e) {
-    if (n !== reviewSeq) return;
-    // without git's answer the pane shows the session's own edits (and says why)
-    setReview((r) => ({ ...r, git: null, loading: false, error: errText(e) }));
+/** git is asked once at a time: asked again meanwhile, it is asked once more when the answer is in (the latest
+ *  answer always shows; a stream of requests never leaves the pane waiting). */
+let reviewInflight: Promise<void> | null = null;
+let reviewAgain = false;
+export function refreshReview(): Promise<void> {
+  if (reviewInflight) {
+    reviewAgain = true;
+    return reviewInflight;
   }
+  setReview((r) => ({ ...r, loading: true }));
+  const run = (async () => {
+    try {
+      do {
+        reviewAgain = false;
+        try {
+          const git = await api.getGitDiff();
+          setReview((r) => ({ ...r, git, error: null }));
+        } catch (e) {
+          // without git's answer the pane shows the session's own edits (and says why)
+          setReview((r) => ({ ...r, git: null, error: errText(e) }));
+        }
+      } while (reviewAgain);
+    } finally {
+      reviewInflight = null;
+      setReview((r) => ({ ...r, loading: false }));
+    }
+  })();
+  reviewInflight = run;
+  return run;
 }
 let reviewTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleReview(ms = 1200): void {
@@ -1947,21 +1962,50 @@ function afterUndo(path: string): void {
   refreshDirOf(path);
 }
 
-/** Undo one change of a file (`only`: its id), or all of the file's: a reverse patch on the file's text as it is now,
- *  written only while the file is still as it was read (and, for git's view, as the diff saw it). A new file goes to
- *  the workspace trash, a deleted one is written back. -> '' or why it was not undone. */
-export async function undoReview(f: ReviewFile, only?: string): Promise<string> {
+/** How an Undo is asked for: one change (`only`: its id) or the file; `confirmed`: you agreed to undo changes that are
+ *  not Claude's file edits (git's view: a command's, yours, or older uncommitted work). */
+export interface UndoOpts {
+  only?: string;
+  confirmed?: boolean;
+}
+export const NOT_MINE = 'not Claude\'s file edits: confirm first';
+
+/** What an Undo would touch that is not Claude's (git's view), or '' — the page asks before it goes. */
+export function undoAsks(f: ReviewFile, o: UndoOpts = {}, s: AppState = get()): string {
+  if (f.source !== 'git') return '';
+  const { kept, undone } = s.review;
+  if (o.only) {
+    const h = f.hunks.find((x) => x.id === o.only);
+    return h && !h.mine ? 'This change was not made by Claude\'s file tools in this session: it may be a command\'s, yours, or older uncommitted work.' : '';
+  }
+  const pending = f.hunks.filter((h) => !kept[h.id] && !undone[h.id]);
+  if (f.status === 'modified' && f.own.length && !f.hunks.some((h) => h.mine && kept[h.id])) return '';   // (Claude's own edits are reversed)
+  if (f.status === 'added' && f.created !== null) return '';   // (Claude's new file: moved away only while unchanged)
+  const others = pending.filter((h) => !h.mine).length || (!pending.length && !f.claude ? 1 : 0);
+  return others ? `${f.path}: ${others === 1 ? 'a change' : `${others} changes`} not made by Claude\'s file tools in this session (a command\'s, yours, or older uncommitted work).` : '';
+}
+
+/** Undo one change of a file, or the file's: a reverse patch on the file's text as it is now, written only while the
+ *  file is still as it was read (and, for git's view, as the diff saw it). For a file Claude edited, the file's Undo
+ *  reverses Claude's own edits (what was not Claude's stays); changes that are not Claude's are undone only once
+ *  confirmed. A new file goes to the workspace trash, a deleted one is written back. -> '' or why it was not undone. */
+export async function undoReview(f: ReviewFile, o: UndoOpts | string = {}): Promise<string> {
+  const opts: UndoOpts = typeof o === 'string' ? { only: o } : o;
   const why = undoBlocker(f);
   if (why) return why;
+  if (!opts.confirmed && undoAsks(f, opts)) return NOT_MINE;
   const busy = get().review.busy;
   if (busy && busy !== '*') return 'another undo is on its way';
   if (!busy) setReview((r) => ({ ...r, busy: f.path }));
   try {
-    const err = await undoOne(f, only);
+    const err = await undoOne(f, opts);
     if (!err) {
-      const ids = only ? [only] : f.hunks.length ? f.hunks.map((h) => h.id) : [`file:${f.path}`];
+      const ids = opts.only ? [opts.only] : f.hunks.length ? f.hunks.map((h) => h.id) : [`file:${f.path}`];
       if (f.source === 'session') setReview((r) => ({ ...r, undone: { ...r.undone, ...Object.fromEntries(ids.map((id) => [id, true as const])) } }));
       afterUndo(f.path);
+      // a file that runs on your computer: its card now, not at the next turn
+      const sid = get().active;
+      if (f.watch && sid && !busy) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
     }
     return err;
   } finally {
@@ -1970,40 +2014,63 @@ export async function undoReview(f: ReviewFile, only?: string): Promise<string> 
   }
 }
 
-async function undoOne(f: ReviewFile, only?: string): Promise<string> {
+/** The folders on a path's way that are not there any more, made again (inside the workspace: bn-coded's mkdir). */
+async function makeParents(path: string): Promise<void> {
+  const parts = path.split('/').slice(0, -1);
+  for (let i = 1; i <= parts.length; i++) {
+    try {
+      await api.fsMkdir(parts.slice(0, i).join('/'));
+    } catch {
+      /* there already (or refused: the write below says why) */
+    }
+  }
+}
+
+async function undoOne(f: ReviewFile, o: UndoOpts): Promise<string> {
   const changed = 'it changed since the review was loaded: Refresh, then look again';
+  const { undone, kept } = get().review;
+  const only = o.only;
   try {
-    if (f.status !== 'modified' && !only && (f.hunks.some((h) => get().review.kept[h.id]) || get().review.kept[`file:${f.path}`])) return 'you kept it';
+    if (f.status !== 'modified' && !only && (f.hunks.some((h) => kept[h.id]) || kept[`file:${f.path}`])) return 'you kept it';
     if (f.status === 'added' && (!only || f.hunks.length <= 1)) {
-      if (f.source === 'git') {
+      if (f.source === 'git' && f.created === null) {
         await api.fsDelete(f.path, f.mtimeMs);
         return '';
       }
       // Claude's new file: moved away only while it is still exactly what Claude wrote
       const cur = await api.fsRead(f.path);
       if (cur.binary || cur.truncated || cur.text !== f.created) return 'it changed since Claude wrote it: not moved away';
+      if (f.source === 'git' && f.mtimeMs !== null && cur.mtimeMs !== f.mtimeMs) return changed;
       await api.fsDelete(f.path, cur.mtimeMs);
       return '';
     }
     if (f.status === 'deleted') {
       const text = deletedText(f);
       if (text === null) return 'its old text is not all here: restore it in the terminal (git checkout -- FILE)';
-      const w = await api.fsWrite(f.path, text, null, { create: true });
-      return w.ok ? '' : 'there is a file of that name again';
+      await makeParents(f.path);
+      try {
+        const w = await api.fsWrite(f.path, text, null, { create: true });
+        return w.ok ? '' : 'there is a file of that name again';
+      } catch (e) {
+        return `not written back: ${errText(e)}`;
+      }
     }
     const cur = await api.fsRead(f.path);
     if (cur.binary || cur.text === null) return 'it is a binary file now';
     if (cur.truncated) return 'it is too large to change here (2 MB): undo it in the terminal';
     if (f.source === 'git' && f.mtimeMs !== null && cur.mtimeMs !== f.mtimeMs) return changed;
-    // (the edits last first; within one, its hunks — reverseHunks goes bottom up). The whole file: the changes listed,
-    // never one you kept or one undone already
-    const { undone, kept } = get().review;
-    const groups: ReviewHunk[][] = only ? [f.hunks.filter((h) => h.id === only)] : [...f.edits].reverse().map((g) => g.filter((h) => !kept[h.id]));
+    // what to reverse: one change; Claude's own edits of the file (last first — what was not Claude's stays); or the
+    // changes listed (git's, bottom up), never one you kept or one undone already
+    let groups: ReviewHunk[][];
+    if (only) groups = [f.hunks.filter((h) => h.id === only)];
+    else if (f.source === 'session') groups = [...f.edits].reverse().map((g) => g.filter((h) => !kept[h.id]));
+    else if (!o.confirmed && f.own.length && !f.hunks.some((h) => h.mine && kept[h.id])) groups = [...f.own].reverse();
+    else groups = [f.hunks.filter((h) => !kept[h.id] && (o.confirmed || h.mine))];
     if (only ? !groups[0]?.length : !groups.some((g) => g.length)) return only ? 'that change is not in this file any more' : 'nothing left to undo here: every change was kept';
     let text = cur.text;
     for (const g of groups) {
       const r = reverseHunks(text, g.filter((h) => !undone[h.id]));
-      if (!r.ok) return r.error;
+      if (!r.ok) return f.own.length && groups === f.own ? `Claude's lines changed since it wrote them (${r.error}): undo the changes one by one` : r.error;
       text = r.text;
     }
     if (text === cur.text) return '';
@@ -2016,24 +2083,34 @@ async function undoOne(f: ReviewFile, only?: string): Promise<string> {
   }
 }
 
-/** Undo all: every listed file that can be undone, one after another. -> how many were, and the failures. */
-export async function undoAllReview(files: ReviewFile[]): Promise<{ done: number; failed: { path: string; why: string }[] }> {
+/** Undo all: Claude's changes of every listed file (and, with `everything`, also the changes that are not Claude's),
+ *  one file after another. -> how many were undone, how many were left (not Claude's), and the failures. */
+export async function undoAllReview(files: ReviewFile[], everything = false): Promise<{ done: number; left: number; failed: { path: string; why: string }[] }> {
   set((s) => ({ ...s, dialog: null, review: { ...s.review, busy: '*' } }));
   const failed: { path: string; why: string }[] = [];
   let done = 0;
+  let left = 0;
   try {
     for (const f of files.slice(0, 2000)) {
-      const why = await undoReview(f);
-      if (why) failed.push({ path: f.path, why });
+      // without `everything`, a file with nothing of Claude's is left as it is
+      if (!everything && f.source === 'git' && !f.claude && !f.hunks.some((h) => h.mine)) {
+        left++;
+        continue;
+      }
+      const why = await undoReview(f, { confirmed: everything });
+      if (why === NOT_MINE) left++;
+      else if (why) failed.push({ path: f.path, why });
       else done++;
     }
   } finally {
     setReview((r) => ({ ...r, busy: null }));
     await refreshReview();
   }
-  if (done) toast(`Undid the changes of ${done} file${done === 1 ? '' : 's'}.`, 'ok');
+  const sid = get().active;
+  if (done && sid && files.some((f) => f.watch)) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
+  if (done) toast(`Undid the changes of ${done} file${done === 1 ? '' : 's'}${left ? ` (${left} not Claude's left as they are)` : ''}.`, 'ok');
   if (failed.length) toast(`${failed.length} not undone: ${label(failed[0].path, 80)} (${failed[0].why})${failed.length > 1 ? ' …' : ''}`, 'error');
-  return { done, failed };
+  return { done, left, failed };
 }
 
 // ---------------------------------------------------------------- line comments (queued for the next prompt)

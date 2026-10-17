@@ -75,10 +75,11 @@ export function isId(s: unknown): s is string {
 }
 
 /** A workspace-relative path we are willing to request or show: no NUL, no `..` segment, bounded; an absolute path
- *  only inside /workspace. */
+ *  only inside /workspace. A backslash is an ordinary character of a name (the sandbox is Linux: `a\b` is one file,
+ *  never a/b). */
 export function cleanPath(p: unknown): string | null {
   if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
-  let s = p.replace(/\\/g, '/');
+  let s = p;
   if (s.startsWith('/workspace/')) s = s.slice('/workspace/'.length);
   else if (s === '/workspace') s = '';
   else if (s.startsWith('/')) return null;
@@ -86,6 +87,16 @@ export function cleanPath(p: unknown): string | null {
   const parts = s === '' ? [] : s.split('/');
   if (parts.some((x) => x === '..' || x === '.')) return null;
   return parts.join('/');
+}
+
+/** A path the backend names (git, search hits, Claude's edits): taken exactly as it is — relative to /workspace (a
+ *  /workspace/ prefix dropped), no empty, "." or ".." part, no NUL — or null. Nothing is rewritten: a path that names
+ *  another file once normalised is refused, not redirected. */
+export function exactPath(p: unknown): string | null {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 4096 || p.includes('\0')) return null;
+  const s = p.startsWith('/workspace/') ? p.slice('/workspace/'.length) : p;
+  if (s.startsWith('/') || s.split('/').some((x) => x === '' || x === '.' || x === '..')) return null;
+  return s;
 }
 
 /** A single directory-entry name from the server: no slash, no NUL, not . or .. */

@@ -575,11 +575,14 @@ const firstFile = (list) => list.find((f) => { try { return fs.statSync(f).isFil
 const GIT = process.env.BN_GIT_BIN || firstFile(['/usr/bin/git', '/usr/local/bin/git', '/bin/git']);
 const RG = process.env.BN_RG_BIN || firstFile(['/usr/bin/rg', '/usr/local/bin/rg', '/bin/rg']);
 const GIT_PATCH_MAX = 6 << 20, GIT_NAMES_MAX = 2000, GIT_UNTRACKED_TEXT = 256 << 10, GIT_UNTRACKED_TOTAL = 2 << 20, GIT_DRIVERS_MAX = 256;
+// what the RESULT's two lists may take (their paths and fields): far below a frame (4 MiB) whatever the names' length
+const GIT_LIST_BYTES = 1 << 20;
 const GIT_DEADLINE = 20000;
 // the configuration every run gets (GIT_CONFIG_COUNT: above every file), before the per-driver overrides
 export const GIT_CONFIG = [
   ['core.fsmonitor', 'false'], ['core.hooksPath', '/dev/null'], ['core.pager', 'cat'], ['core.quotePath', 'false'],
-  ['core.attributesFile', '/dev/null'], ['core.untrackedCache', 'false'], ['core.sshCommand', 'false'], ['core.askPass', ''],
+  ['core.attributesFile', '/dev/null'], ['core.excludesFile', '/dev/null'], ['diff.orderFile', '/dev/null'],
+  ['core.untrackedCache', 'false'], ['core.sshCommand', 'false'], ['core.askPass', ''],
   ['diff.external', ''], ['diff.noprefix', 'false'], ['diff.mnemonicPrefix', 'false'], ['diff.relative', 'false'], ['diff.renames', 'false'],
   ['diff.submodule', 'short'], ['diff.ignoreSubmodules', 'all'], ['submodule.recurse', 'false'], ['color.ui', 'false'], ['credential.helper', ''],
   ['protocol.allow', 'never'], ['protocol.file.allow', 'never'], ['protocol.ext.allow', 'never'], ['protocol.ssh.allow', 'never'],
@@ -667,7 +670,7 @@ function untrackedDiff(rel, st, budget) {
 }
 // gitDiff(send) -> STDOUT: the patch (git's own, then the untracked files'), RESULT {repo, reason?, head, files:
 // [{path, status, mtimeMs, size, type}], untracked: [{path, mtimeMs, size, shown}], truncated, timedOut}
-export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, namesMax = 4 << 20 } = {}) {
+export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, namesMax = 4 << 20, listBytes = GIT_LIST_BYTES } = {}) {
   const t0 = Date.now();
   const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
   let extra = [];
@@ -700,10 +703,19 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   if (r.cut) nameList.pop();   // (the last name of a cut list may be cut too)
   const names = nameList.filter(gitRel);
   if (names.length > GIT_NAMES_MAX) truncated = true;
-  const files = names.slice(0, GIT_NAMES_MAX).map((p) => {
+  // the files that run on your computer (the watchlist's targets, core.hooksPath and all): the Review marks them
+  let targets = null;
+  try { targets = watchTargets(); } catch { /* not marked */ }
+  const isW = (p) => { try { return targets ? isWatched(p, targets) : false; } catch { return false; } };
+  // (the lists stop at listBytes in all: very long names degrade to "not every change listed", never an answer too large)
+  let room = listBytes;
+  const fits = (p) => { room -= Buffer.byteLength(p) + 96; if (room < 0) truncated = true; return room >= 0; };
+  const files = [];
+  for (const p of names.slice(0, GIT_NAMES_MAX)) {
+    if (!fits(p)) break;
     const st = statRel(p);
-    return st ? { path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type } : { path: p, mtimeMs: null, size: 0, type: 'missing' };
-  });
+    files.push({ ...(st ? { path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type } : { path: p, mtimeMs: null, size: 0, type: 'missing' }), ...(isW(p) ? { watched: true } : {}) });
+  }
   let sent = 0;
   r = await run(GIT_ARGS.patch(base), { onData: (d) => {
     const room = GIT_PATCH_MAX - sent;
@@ -727,9 +739,10 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
     for (const p of list.slice(0, GIT_NAMES_MAX)) {
       const st = statRel(p);
       if (!st) continue;
+      if (!fits(p)) break;
       const d = sent < GIT_PATCH_MAX ? untrackedDiff(p, st, budget) : null;
       if (d !== null) { const b = Buffer.from(d); send(T.STDOUT, b); sent += b.length; }
-      untracked.push({ path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type, shown: d !== null });
+      untracked.push({ path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type, shown: d !== null, ...(isW(p) ? { watched: true } : {}) });
     }
   }
   return { repo: true, head, files, untracked, truncated, timedOut: r.timedOut === true };

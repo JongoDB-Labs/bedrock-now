@@ -18,7 +18,9 @@ import {
   setReviewFilter,
   toast,
   undoAllReview,
+  undoAsks,
   undoReview,
+  type UndoOpts,
 } from '../app';
 import { rowsOf, sessionStart, totals, undoBlocker, type ReviewFile, type ReviewHunk, type Row } from '../review';
 import { label, safe } from '../text';
@@ -172,10 +174,17 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
   const blocker = undoBlocker(f);
   const wholeOnly = f.status !== 'modified';
   const pendingHunks = f.hunks.filter((h) => !kept[h.id]);
-  const run = async (only?: string) => {
-    const why = await undoReview(f, only);
+  // an Undo that would touch changes that are not Claude's asks first (git's view)
+  const [ask, setAsk] = useState<{ o: UndoOpts; text: string } | null>(null);
+  const go = async (o: UndoOpts) => {
+    const why = await undoReview(f, o);
     if (why) toast(`Not undone (${label(f.path, 80)}): ${why}`, 'error');
-    else toast(only ? `Undid a change in ${label(f.path, 80)}` : f.status === 'added' ? `Moved ${label(f.path, 80)} to the workspace trash` : `Undid the changes in ${label(f.path, 80)}`, 'ok');
+    else toast(o.only ? `Undid a change in ${label(f.path, 80)}` : f.status === 'added' ? `Moved ${label(f.path, 80)} to the workspace trash` : `Undid the changes in ${label(f.path, 80)}`, 'ok');
+  };
+  const run = (only?: string) => {
+    const text = undoAsks(f, { only });
+    if (text) setAsk({ o: { only }, text });
+    else void go({ only });
   };
   return (
     <section class="rv-file" id={`rv-${encodeURIComponent(f.path)}`} data-testid="review-file" data-path={f.path}>
@@ -188,6 +197,11 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
           {label(f.path, 400)}
         </button>
         {f.claude && <span class="pill" title="Claude's file tools changed it in this session">Claude</span>}
+        {f.watch && (
+          <span class="pill pill-warn" title={`It runs on your computer: ${f.watch.why}`} data-testid="review-watch">
+            <Icon name="alert" size={11} /> runs on your computer
+          </span>
+        )}
         <span class="chg">
           {f.add > 0 && <span class="chg-add">+{f.add}</span>}
           {f.del > 0 && <span class="chg-del">−{f.del}</span>}
@@ -201,7 +215,7 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
             class="btn small"
             disabled={!!blocker || !!busy}
             title={blocker || (f.status === 'added' ? 'Move it to the workspace trash' : f.status === 'deleted' ? 'Write it back' : 'Undo the changes listed in this file (not those you kept)')}
-            onClick={() => void run()}
+            onClick={() => run()}
             data-testid="review-undo-file"
           >
             {busy === f.path ? <Spinner size={12} /> : <Icon name="undo" size={13} />} Undo{f.status === 'added' ? ' (trash)' : ''}
@@ -214,8 +228,31 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
           {f.binary && <div class="pane-msg small">A binary file{f.size ? ` (${f.size} bytes)` : ''}: its change is not shown.</div>}
           {f.modeOnly && <div class="pane-msg small">Only its mode changed.</div>}
           {!f.hunks.length && !f.binary && !f.modeOnly && <div class="pane-msg small">{f.cut ? 'Too large to show here.' : f.status === 'added' ? 'A new, empty file.' : 'No text changes shown.'}</div>}
-          <HunkList f={f} hunks={pendingHunks} wholeOnly={wholeOnly} blocked={!!blocker || !!busy} onUndo={(id) => void run(id)} />
+          <HunkList f={f} hunks={pendingHunks} wholeOnly={wholeOnly} blocked={!!blocker || !!busy} onUndo={(id) => run(id)} />
         </div>
+      )}
+      {ask && (
+        <Dialog title="Undo a change that is not Claude's?" onClose={() => setAsk(null)} testid="undo-confirm-dialog">
+          <p>{label(ask.text, 600)}</p>
+          <p class="muted small">Undo puts it back as it was at the last commit{f.watch ? ' — and this file runs on your computer' : ''}.</p>
+          <div class="dlg-actions">
+            <button type="button" class="btn" onClick={() => setAsk(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn danger"
+              onClick={() => {
+                const o = ask.o;
+                setAsk(null);
+                void go({ ...o, confirmed: true });
+              }}
+              data-testid="undo-confirm"
+            >
+              Undo it anyway
+            </button>
+          </div>
+        </Dialog>
       )}
     </section>
   );
@@ -257,6 +294,11 @@ function Hunk({ f, h, rows, cut, wholeOnly, blocked, onUndo }: { f: ReviewFile; 
         <span class="rv-hunk-at">
           @@ −{h.oldStart},{h.oldLines} +{h.newStart},{h.newLines} @@
         </span>
+        {f.source === 'git' && !h.mine && (
+          <span class="pill pill-muted" title="Not made by Claude's file tools in this session: a command's, yours, or older uncommitted work — Undo asks first" data-testid="review-not-claude">
+            not Claude's
+          </span>
+        )}
         {!wholeOnly && (
           <span class="banner-actions">
             <button type="button" class="btn small ghost" onClick={() => keepHunks([h.id])} data-testid="review-keep-hunk">
@@ -359,25 +401,41 @@ function CommentBox({ path, line, side, onDone }: { path: string; line: number; 
 
 function UndoAllDialog({ files }: { files: ReviewFile[] }) {
   const dialog = useSel(store, (s) => s.dialog);
+  const [everything, setEverything] = useState(false);
   if (dialog !== 'undo-all') return null;
   const can = files.filter((f) => !undoBlocker(f));
-  const added = can.filter((f) => f.status === 'added').length;
-  const deleted = can.filter((f) => f.status === 'deleted').length;
+  // git's view: what is Claude's goes; the rest only when you tick the box
+  const theirs = can.filter((f) => f.source === 'git' && (undoAsks(f) || (!f.claude && !f.hunks.some((h) => h.mine))));
+  const mine = can.length - theirs.length;
+  const n = everything ? can.length : mine;
+  const goes = everything ? can : can.filter((f) => !theirs.includes(f));
+  const added = goes.filter((f) => f.status === 'added').length;
+  const deleted = goes.filter((f) => f.status === 'deleted').length;
+  const watched = goes.filter((f) => f.watch).length;
   return (
     <Dialog title="Undo all changes?" onClose={() => setDialog(null)} testid="undo-all-dialog">
       <p>
-        The changes listed ({can.length} file{can.length === 1 ? '' : 's'}) go back to how they were
-        {can.some((f) => f.source === 'git') ? ' at the last commit' : ' before Claude changed them'}
+        {can.some((f) => f.source === 'git') ? "Claude's changes" : 'The changes listed'} ({mine} file{mine === 1 ? '' : 's'}) go back to how they were before Claude made them
         {added ? `; ${added} new file${added === 1 ? '' : 's'} move${added === 1 ? 's' : ''} to the workspace trash` : ''}
         {deleted ? `; ${deleted} deleted file${deleted === 1 ? ' is' : 's are'} written back` : ''}. A file that changed since the review was loaded is left as it is.
       </p>
-      {files.length > can.length && <p class="muted small">{files.length - can.length} cannot be undone here (binary, links, or shown only in part) and stay as they are.</p>}
+      {theirs.length > 0 && (
+        <label class="rv-everything">
+          <input type="checkbox" checked={everything} onChange={(e) => setEverything((e.currentTarget as HTMLInputElement).checked)} data-testid="undo-all-everything" />
+          <span>
+            Also undo {theirs.length} file{theirs.length === 1 ? '' : 's'} with changes that are not Claude's file edits (a command's, yours, or older
+            uncommitted work): back to the last commit
+          </span>
+        </label>
+      )}
+      {watched > 0 && <p class="small warn-text">{watched} of them run on your computer (git hooks, settings, scripts): their card follows.</p>}
+      {files.length > can.length && <p class="muted small">{files.length - can.length} cannot be undone here (binary, links, odd names, or shown only in part) and stay as they are.</p>}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={() => setDialog(null)}>
           Cancel
         </button>
-        <button type="button" class="btn danger" onClick={() => void undoAllReview(can)} data-testid="undo-all-confirm" disabled={!can.length}>
-          Undo {can.length} file{can.length === 1 ? '' : 's'}
+        <button type="button" class="btn danger" onClick={() => void undoAllReview(can, everything)} data-testid="undo-all-confirm" disabled={!n}>
+          Undo {n} file{n === 1 ? '' : 's'}
         </button>
       </div>
     </Dialog>

@@ -463,7 +463,11 @@ per browser.
   of them one click away; without git, Claude's own edits in this session. Each change has **Keep** (reviewed: out of
   the list while it stays as it is) and **Undo** (a reverse patch, written only while the file is still as the review
   saw it — a file changed since is left alone and you are told; a new file goes to the workspace trash, a deleted one
-  is written back), each file too, and **Undo all** asks first. Binary files, links and changes too large to show in
+  is written back), each file too, and **Undo all** asks first. With git, the pane compares with the last commit, so it
+  can also hold changes that are not Claude's (a command's, yours, older uncommitted work): those are marked, undoing
+  a file Claude edited reverses only Claude's own edits, and undoing anything else asks first (Undo all leaves it
+  unless you tick it in); files that run on your computer (git hooks, `package.json`, `.vscode`, `.claude` …) are
+  marked too, and their watchlist card comes right after an Undo. Binary files, links and changes too large to show in
   full are listed but undone in the terminal. Any line can take a **comment**: it waits as a chip in the prompt box and
   goes with your next prompt as `path:line — comment` (remove a chip to drop it). Large diffs show 20 files and a few
   hundred lines at a time. git runs read-only and runs no program a repository's configuration names (hooks, filters,

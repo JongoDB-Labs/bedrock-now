@@ -38,8 +38,10 @@ All notable changes to bedrock-now are documented here. The format follows
   repository (changes made by commands included, Claude's marked; this session's files first), else the session's own
   Edit/Write diffs — with Keep / Undo per change and per file and Undo all; Undo is a reverse patch written only while
   the file is still as the review saw it (a new file to the workspace trash, a deleted one written back; binary files,
-  links and partly shown changes are never undone). A comment on any line waits as a chip in the prompt box and goes
-  with the next prompt as `path:line — comment`. `Ctrl/⌘+Shift+D`, or **Review** (`+N −M`) in the top bar. The
+  links and partly shown changes are never undone). With git, changes that are not Claude's file edits (a command's,
+  yours, older uncommitted work) are marked: a file's Undo reverses only Claude's own edits, anything else asks first,
+  and files of the watchlist are marked and checked right after an Undo. A comment on any line waits as a chip in
+  the prompt box and goes with the next prompt as `path:line — comment` (an unusual file name quoted and escaped). `Ctrl/⌘+Shift+D`, or **Review** (`+N −M`) in the top bar. The
   sandbox's new `git.diff` op runs `git` read-only with fixed arguments and an environment of its own, so no program a
   repository names runs (fsmonitor, filters, external diffs, textconv, pagers, hooks, lazy fetches), proven by a
   test against a hostile repository with a control run of plain git.
@@ -58,7 +60,10 @@ All notable changes to bedrock-now are documented here. The format follows
 - `./stack up` warns when `TS_SERVICE` is longer than 54 characters (`<name>-terminal` / `-preview` would exceed a DNS
   label); `./stack remote enable` refuses such a name.
 - **Code page:** the API's `PUT /api/fs/file` takes `create` (only when there is no such file) and `DELETE /api/fs`
-  takes `ifMtimeMs` (only while unchanged); an edit event says when a Write created its file (`created`).
+  takes `ifMtimeMs` (only while unchanged); an edit event says when a Write created its file (`created`); the
+  WebSocket takes `watch_check` (the watched files checked now).
+- **Code page:** paths are taken exactly as the backend names them: a backslash is part of a file name, never turned
+  into a folder separator (it could make the page show or change another file).
 
 ### Fixed
 

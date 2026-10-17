@@ -113,3 +113,8 @@
 .st-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @container (max-width: 340px) { .side-tabs button:not([aria-selected="true"]) .st-label { display: none; } }
 .rv-row.picked { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.pill-warn { background: color-mix(in srgb, var(--bad) 14%, var(--surface)); color: var(--bad); gap: 4px; }
+.pill-muted { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+.rv-everything { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0 10px; font-size: 13px; }
+.rv-everything input { margin-top: 3px; }

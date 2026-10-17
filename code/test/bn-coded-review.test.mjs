@@ -279,15 +279,56 @@ test('git: the patch is capped (truncated), a configuration include that never e
   assert.equal(cut.r.repo, true, cut.r.reason);
   assert.equal(cut.r.truncated, true);
   assert.ok(cut.r.files.length >= 1 && cut.r.files.length < 7 && cut.r.files.every((f) => /^(huge|n[0-5])\.txt$/.test(f.path)), JSON.stringify(cut.r.files.map((f) => f.path)));
-  // a FIFO named by include.path: git waits for ever — the deadline ends it
+  // the lists stop at their byte budget: "not every change listed", never an answer larger than a frame
+  const small = await diff({ listBytes: 250 });
+  assert.equal(small.r.repo, true);
+  assert.equal(small.r.truncated, true);
+  assert.ok(small.r.files.length >= 1 && small.r.files.length < 7, String(small.r.files.length));
+  // FIFOs as core.excludesFile and diff.orderFile (read by ls-files and diff): overridden, never opened — no wait
   const fifo = path.join(ROOT, 'fifo.cfg');
   try { execFileSync('mkfifo', [fifo]); } catch { t.skip('no mkfifo'); return; }
+  const cfgFile = path.join(WS, '.git', 'config');
+  const cfgBefore = fs.readFileSync(cfgFile, 'utf8');
+  fs.appendFileSync(cfgFile, `[core]\n  excludesFile = ${fifo}\n[diff]\n  orderFile = ${fifo}\n`);
+  // control: plain git waits on them
+  const stuck = (args) => spawnSync(GIT, args, { cwd: WS, env: PLAIN, timeout: 1500 }).error?.code === 'ETIMEDOUT';
+  assert.ok(stuck(['diff', 'HEAD']), 'control: plain git diff opens diff.orderFile');
+  assert.ok(stuck(['ls-files', '--others', '--exclude-standard']), 'control: plain git ls-files opens core.excludesFile');
+  const t1 = Date.now();
+  const quick = await diff({ deadlineMs: 15000 });
+  assert.equal(quick.r.repo, true, quick.r.reason);
+  assert.ok(Date.now() - t1 < 5000, `${Date.now() - t1} ms: a FIFO was opened`);
+  fs.writeFileSync(cfgFile, cfgBefore);
   fs.appendFileSync(path.join(WS, '.git', 'config'), `[include]\n  path = ${fifo}\n`);
   const t0 = Date.now();
   const x = await diff({ deadlineMs: 1500 });
   assert.ok(Date.now() - t0 < 8000, `${Date.now() - t0} ms`);
   assert.equal(x.r.repo, false);
   assert.match(x.r.reason, /in time/);
+});
+
+test('git: files that run on your computer are marked (the watchlist\'s targets, a core.hooksPath folder too); a backslash in a name is a name', async () => {
+  resetWs();
+  git(WS, 'init', '-q');
+  fs.mkdirSync(path.join(WS, '.githooks'));
+  fs.mkdirSync(path.join(WS, '.claude'));
+  for (const [f, t] of Object.entries({ 'package.json': '{}\n', '.githooks/pre-commit': 'true\n', 'plain.txt': 'x\n', '.claude\\settings.json': 'x\n' })) fs.writeFileSync(path.join(WS, f), t);
+  git(WS, 'add', '.');
+  commit(WS);
+  git(WS, 'config', 'core.hooksPath', '.githooks');
+  for (const f of ['package.json', '.githooks/pre-commit', 'plain.txt']) fs.writeFileSync(path.join(WS, f), 'changed\n');
+  fs.rmSync(path.join(WS, '.claude\\settings.json'));
+  const { r, patch } = await diff();
+  const w = Object.fromEntries(r.files.map((f) => [f.path, f.watched === true]));
+  assert.deepEqual(w, { '.claude\\settings.json': false, '.githooks/pre-commit': true, 'package.json': true, 'plain.txt': false });
+  const rv = reviewOf(r, patch);
+  const by = Object.fromEntries(rv.files.map((f) => [f.path, f]));
+  assert.equal(by['package.json'].watch.kind, 'npm');
+  assert.equal(by['.githooks/pre-commit'].watch.kind, 'git', 'a hook folder only the sandbox knows (core.hooksPath)');
+  assert.equal(by['plain.txt'].watch, null);
+  // the backslash stays part of the name: never .claude/settings.json
+  assert.equal(by['.claude\\settings.json'].status, 'deleted');
+  assert.ok(!rv.files.some((f) => f.path === '.claude/settings.json'));
 });
 
 test('git.diff over the socket: STDOUT carries the patch, RESULT the files', async () => {

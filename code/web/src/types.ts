@@ -410,6 +410,8 @@ export interface GitFile {
   cut: boolean;
   /** its patch did not add up */
   bad: boolean;
+  /** a file of the watchlist (it runs on your computer later): its kind and why */
+  watch?: { kind: string; why: string } | null;
 }
 export interface GitReview {
   /** false: not a git repository here (or no git): `reason` says why */

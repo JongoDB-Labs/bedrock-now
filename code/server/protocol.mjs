@@ -68,7 +68,8 @@
 //                                           match (cut: more). 429 while two searches run already
 //   GET    /api/git/diff                   {repo, reason, head, files: [{path, status: modified|added|deleted, untracked,
 //                                           binary, symlink, modeChange: {old, new} | null, hunks: [{oldStart, oldLines,
-//                                           newStart, newLines, lines}], mtimeMs, size, cut, bad}], truncated, timedOut}
+//                                           newStart, newLines, lines}], mtimeMs, size, cut, bad, watch: {kind, why} |
+//                                           null}], truncated, timedOut}
 //                                           — what changed in the workspace since its last commit (git in the sandbox:
 //                                           read-only, fixed arguments, no program from the repository's configuration;
 //                                           docs/security.md), untracked files as new ones (.gitignore honoured; their
@@ -77,7 +78,8 @@
 //                                           mtimeMs: the file's as the diff saw it (the Review pane's Undo writes only
 //                                           while it is still that). cut: not all of its changes are here (at most 6 MiB
 //                                           of patch, 20,000 lines a file); bad: its patch did not add up. Neither is
-//                                           ever undone
+//                                           ever undone. watch: a file of the watchlist (it runs on your computer).
+//                                           At most 2,000 files and 1 MiB of names: beyond, truncated
 //   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
 //                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
 //                                           (~/.claude/CLAUDE.md); at most 1 MiB
@@ -175,6 +177,9 @@
 //                                               back as they were at its start (a file that was not there goes to the
 //                                               workspace trash) -> reply data {results: [{path, ok, action|error}]}; each
 //                                               only while it is still as the event saw it (else that one is refused)
+//   {type: "watch_check", session, req?}         the watched files checked now (the Review pane changed one): a
+//                                               `watch` event ("between") when something changed since the last check;
+//                                               nothing while a turn runs (its end reports it)
 //   {type: "rewind_files", session, message: USER_MESSAGE_UUID, dryRun?, req}   file checkpoints: the files Claude
 //                                               changed since that prompt of yours put back (dryRun: only what would
 //                                               change) -> reply data {canRewind, error, filesChanged, insertions,

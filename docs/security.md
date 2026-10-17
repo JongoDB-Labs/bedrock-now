@@ -939,8 +939,12 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   --get-regexp`, `diff <HEAD or the empty tree> --no-ext-diff --no-textconv --no-renames --ignore-submodules=all`
   (submodules are never entered: their own configuration would apply) `--name-only -z` and the patch, and `ls-files
   --others --exclude-standard -z` (untracked files, `.gitignore` honoured), each with a deadline (20 s for all) and an
-  output cap (6 MiB of patch, 2,000 files; untracked files' text read by bn-coded itself: regular files, never through
-  a link, ≤ 256 KiB each, 2 MiB in all). **Proof** (`code/test/bn-coded-review.test.mjs`, run with Debian's git in
+  output cap (6 MiB of patch, 2,000 files and 1 MiB of names — beyond, the review says not everything is listed;
+  untracked files' text read by bn-coded itself: regular files, never through a link, ≤ 256 KiB each, 2 MiB in all).
+  Files git would otherwise open on the way are named `/dev/null` (`core.attributesFile`, `core.excludesFile`,
+  `diff.orderFile`: a FIFO there would stall every refresh). A `.git` *file* whose `gitdir:` points outside
+  `/workspace` is followed — to data of the sandbox, read with the same overrides (the working tree must still be
+  `/workspace`). **Proof** (`code/test/bn-coded-review.test.mjs`, run with Debian's git in
   the image's test stage, as in the sandbox): for each of fsmonitor, `diff.external`, textconv, a diff command, a
   clean filter, a `process` filter, a filter named `a=b`, a filter from an included file and one from `includeIf` +
   `info/attributes`, plain `git diff`/`git status` in that repository runs the marker program (the control) and the
@@ -951,13 +955,28 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   Review's git does not. A concurrent process in the sandbox could change the configuration between the listing and
   the diff — it is code running there already, which could run anything itself: the point is that opening the Review
   pane never runs a repository's programs on its own.
+- [x] **Paths are taken exactly.** Every path the backend names (git, search hits, Claude's edits, the watchlist) is
+  used as it is — a backslash is part of a name (the sandbox is Linux), never a folder separator — or refused (empty,
+  `.` or `..` parts, NUL); nothing is rewritten, so a file named `.claude\settings.json` can never be shown or undone
+  as `.claude/settings.json`. Undo is refused for names with a backslash, control characters or a replacement
+  character (a name that is not UTF-8), and one review lists a path once. A path that goes into a prompt (a line
+  comment: `path:line — comment`) is quoted, with control, invisible and direction-changing characters escaped, when
+  it is not plain: a file name cannot add a line to a prompt that carries your authority.
+- [x] **Whose change it is.** In git's view a change is *Claude's* when it carries lines Claude's file tools wrote or
+  removed in this session; the rest (a command's, yours, older uncommitted work) is marked *not Claude's*. Undoing a
+  file Claude edited reverses Claude's own edits (what was not Claude's stays); undoing a change that is not Claude's
+  asks first, and *Undo all* leaves those alone unless you tick them in. A file that runs on your computer (the
+  watchlist's files, and hook folders only the sandbox knows) is marked in the pane, and after an Undo of one the
+  watched files are checked at once (`watch_check`): its card comes now, not at the next turn.
 - [x] **Undo writes only what you saw, where it still is.** Undo is a reverse patch the page applies to the file's
   current text and writes through bn-coded's `fs.write` with the modification time it read as the precondition (a file
   changed meanwhile is never overwritten); for git's view the file must also still have the time the diff saw. The
-  change's own lines must still be there (a moved place is found, a changed one refused: nothing guessed). A new file
-  goes to the workspace trash (only while unchanged: `fs.delete` with the same precondition; Claude's own new file only
-  while it is still exactly what Claude wrote), a deleted one is written back only if no file of that name appeared
-  (`create`; with the default mode: an executable bit is not restored). Binary files, links, mode-only changes,
+  change's own lines must still be there — at the place the change was made, or else at the one other place they are
+  (twice or more: refused, which copy was changed is not known; nothing guessed). A new file goes to the workspace
+  trash (only while unchanged: `fs.delete` with the same precondition; Claude's own new file only while it is still
+  exactly what Claude wrote), a deleted one is written back only if no file of that name appeared (`create`, its
+  folders made again inside `/workspace` when they are gone; with the default mode: an executable bit is not
+  restored). Binary files, links, mode-only changes,
   changes shown only in part (a cut patch, a line over 10,000 characters), patches that do not add up (counts,
   positions) and text that is not UTF-8 (git's text of it arrives with replacement characters) are shown and never
   undone. Undoing a file or *Undo all* undoes the changes listed — never one you kept. CRLF files stay CRLF; a missing

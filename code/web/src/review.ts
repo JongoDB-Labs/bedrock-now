@@ -10,6 +10,9 @@ export type FileStatus = 'modified' | 'added' | 'deleted';
 export interface ReviewHunk extends Hunk {
   /** stable across refreshes: the file, and a hash of the change's own lines */
   id: string;
+  /** git's view: the change has lines Claude's file tools wrote or removed in this session (false: a command's, yours,
+   *  or older uncommitted work — Undo asks first); always true for the session's own edits */
+  mine: boolean;
 }
 export interface ReviewFile {
   path: string;
@@ -37,6 +40,11 @@ export interface ReviewFile {
   recent: boolean;
   /** a new file's whole text as Claude wrote it (session source: what Undo checks before it moves the file away) */
   created: string | null;
+  /** git's view of a file Claude's tools changed: those edits in order (an Undo of the file reverses these, keeping
+   *  changes that were not Claude's); [] otherwise */
+  own: ReviewHunk[][];
+  /** the watchlist's kind (git hook, VS Code task, package.json …): a file that runs on your computer */
+  watch: { kind: string; why: string } | null;
   add: number;
   del: number;
 }
@@ -59,14 +67,30 @@ const counts = (hunks: Hunk[]) => {
 };
 
 /** Hunks with ids: the path and the lines' hash (a second identical change in the same file gets #2). */
-export function withIds(path: string, hunks: Hunk[], prefix = 'g'): ReviewHunk[] {
+export function withIds(path: string, hunks: Hunk[], prefix = 'g', mine: (h: Hunk) => boolean = () => true): ReviewHunk[] {
   const seen = new Map<string, number>();
   return hunks.map((h) => {
     const base = `${prefix}:${path}:${hash(h.lines.join('\n'))}`;
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
-    return { ...h, id: n > 1 ? `${base}#${n}` : base };
+    return { ...h, id: n > 1 ? `${base}#${n}` : base, mine: mine(h) };
   });
+}
+
+/** Does a hunk of git's view carry lines Claude's edits added or removed (by their text, ignoring a line ending)? */
+export function overlaps(h: Hunk, own: SessionEdit[]): boolean {
+  if (!own.length) return false;
+  const plus = new Set<string>();
+  const minus = new Set<string>();
+  for (const e of own) {
+    for (const x of createdHunks(e)) {
+      for (const l of x.lines) {
+        if (l[0] === '+') plus.add(stripCr(l.slice(1)));
+        else if (l[0] === '-') minus.add(stripCr(l.slice(1)));
+      }
+    }
+  }
+  return h.lines.some((l) => (l[0] === '+' && plus.has(stripCr(l.slice(1)))) || (l[0] === '-' && minus.has(stripCr(l.slice(1)))));
 }
 
 export interface SessionEdit {
@@ -114,16 +138,22 @@ function fromSession(path: string, list: SessionEdit[]): ReviewFile {
   const created = createdFile && list.length === 1 ? (first.content ?? (first.hunks.length ? applyForward('', first.hunks) : null)) : null;
   return {
     path, status: createdFile ? 'added' : 'modified', source: 'session', binary: false, symlink: false, modeOnly: false, hunks, edits,
-    mtimeMs: null, size: 0, cut: list.some((e) => !e.complete), bad: false, untracked: false, claude: true, recent: true, created, ...counts(hunks),
+    mtimeMs: null, size: 0, cut: list.some((e) => !e.complete), bad: false, untracked: false, claude: true, recent: true, created, own: [],
+    watch: watchKind(path), ...counts(hunks),
   };
 }
 
-function fromGit(f: GitFile, claude: boolean, since: number | null): ReviewFile {
-  const hunks = withIds(f.path, f.hunks);
+function fromGit(f: GitFile, own: SessionEdit[] | undefined, since: number | null): ReviewFile {
+  const claude = !!own?.length;
+  const hunks = withIds(f.path, f.hunks, 'g', (h) => overlaps(h, own ?? []));
+  // Claude's own edits of the file, for an Undo of the file that leaves what was not Claude's (only when all came whole)
+  const ownHunks = claude && own!.every((e) => e.complete) ? own!.map((e, i) => withIds(f.path, createdHunks(e), `s${i}`)) : [];
   return {
     path: f.path, status: f.status, source: 'git', binary: f.binary, symlink: f.symlink, modeOnly: !!f.modeChange && !f.hunks.length && !f.binary,
     hunks, edits: [hunks], mtimeMs: f.mtimeMs, size: f.size, cut: f.cut, bad: f.bad, untracked: f.untracked, claude,
-    recent: claude || (since !== null && f.mtimeMs !== null && f.mtimeMs >= since), created: null, ...counts(f.hunks),
+    recent: claude || (since !== null && f.mtimeMs !== null && f.mtimeMs >= since),
+    created: claude && own!.length === 1 && own![0].created ? own![0].content : null, own: f.status === 'modified' ? ownHunks : [],
+    watch: f.watch ?? watchKind(f.path), ...counts(f.hunks),
   };
 }
 
@@ -136,7 +166,7 @@ export function buildReview(git: GitReview | null, v: SessionView | undefined, s
     const seen = new Set<string>();
     for (const f of git.files) {
       seen.add(f.path);
-      files.push(fromGit(f, edits.has(f.path), since));
+      files.push(fromGit(f, edits.get(f.path), since));
     }
     // (a file Claude changed and git leaves out — ignored, or put back since — is not listed: git's view is the truth)
     void seen;
@@ -191,7 +221,7 @@ const stripCr = (s: string) => (s.endsWith('\r') ? s.slice(0, -1) : s);
 
 /** The index where `block` stands in `lines` — at `expected` if it is there, else the nearest place it is (exact
  *  first, then ignoring a line-ending \r on either side); -1: not there. */
-function findBlock(lines: string[], block: string[], expected: number): { at: number; loose: boolean } {
+function findBlock(lines: string[], block: string[], expected: number): { at: number; loose: boolean; ambiguous: boolean } {
   const fits = (at: number, loose: boolean) => {
     if (at < 0 || at + block.length > lines.length) return false;
     for (let k = 0; k < block.length; k++) {
@@ -204,14 +234,21 @@ function findBlock(lines: string[], block: string[], expected: number): { at: nu
   // (a bounded search: a huge file with a short block only checks near the expected place)
   const reach = lines.length * Math.max(1, block.length) > 50_000_000 ? 200 : lines.length;
   for (const loose of [false, true]) {
-    if (fits(expected, loose)) return { at: expected, loose };
+    // where the change was made: that place, if the lines are still there
+    if (fits(expected, loose)) return { at: expected, loose, ambiguous: false };
+    // else the one other place they are — two or more: which one was Claude's is not known, so none is touched
+    let found = -1;
     for (let d = 1; d <= reach; d++) {
-      if (fits(expected - d, loose)) return { at: expected - d, loose };
-      if (fits(expected + d, loose)) return { at: expected + d, loose };
+      for (const at of [expected - d, expected + d]) {
+        if (!fits(at, loose)) continue;
+        if (found >= 0) return { at: -1, loose, ambiguous: true };
+        found = at;
+      }
       if (expected - d < 0 && expected + d > lines.length) break;
     }
+    if (found >= 0) return { at: found, loose, ambiguous: false };
   }
-  return { at: -1, loose: false };
+  return { at: -1, loose: false, ambiguous: false };
 }
 
 export type Reversed = { ok: true; text: string } | { ok: false; error: string };
@@ -230,7 +267,9 @@ export function reverseHunks(text: string, hunks: Hunk[]): Reversed {
     let at = expected;
     let loose = false;
     if (neu.length) {
-      ({ at, loose } = findBlock(t.lines, neu.map((o) => o.text), expected));
+      let ambiguous = false;
+      ({ at, loose, ambiguous } = findBlock(t.lines, neu.map((o) => o.text), expected));
+      if (ambiguous) return { ok: false, error: 'the file changed since, and these lines are in it more than once: not undone (which one is the change is not known)' };
       if (at < 0) return { ok: false, error: 'the file changed since: these lines are not there any more' };
     } else if (at > t.lines.length) return { ok: false, error: 'the file is shorter than the change expects' };
     const end = at + neu.length;
@@ -291,6 +330,8 @@ export function undoBlocker(f: ReviewFile): string {
   if (f.modeOnly) return 'only its mode changed: chmod it in the terminal';
   if (f.cut) return 'only part of this change is shown here: undo it in the terminal';
   if (f.bad) return 'its diff did not add up: undo it in the terminal';
+  // a name the page cannot be sure to hand back exactly (a backslash, a name that is not UTF-8, control characters)
+  if (/[\\\uFFFD\u0000-\u001f\u007f]/.test(f.path)) return 'its name has characters the Review cannot act on safely: undo it in the terminal';
   if (f.status === 'added' && f.source === 'session' && f.created === null) return 'Claude changed it more than once since creating it: undo the changes one by one';
   // (git's text of a file that is not UTF-8 came with replacement characters: written back, it would not be the file)
   if (f.hunks.some((h) => h.lines.some((l) => l.includes('\uFFFD')))) return 'its text is not UTF-8 here: undo it in the terminal (git checkout -- FILE)';
@@ -328,9 +369,20 @@ export interface ReviewComment {
   side: 'new' | 'old';
   text: string;
 }
+/** A path as it goes into a prompt: as it is when it is plain; otherwise quoted, with quotes, backslashes, control
+ *  and invisible or direction-changing characters escaped (a file name can never add a line or hide text in a prompt
+ *  that carries your authority). */
+export function promptPath(p: string): string {
+  if (/^[A-Za-z0-9._\-/@+~,=]+$/.test(p)) return p;
+  const esc = p
+    .replace(/[\\"]/g, (c) => `\\${c}`)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    .replace(/[\u{e0000}-\u{e007f}]/gu, (c) => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`);
+  return `"${esc}"`;
+}
 /** "src/a.ts:47 — comment" (a removed line: "src/a.ts:47 (removed line) — comment") */
 export function commentLine(c: ReviewComment): string {
-  return `${c.path}:${c.line}${c.side === 'old' ? ' (removed line)' : ''} — ${c.text.replace(/\s+/g, ' ').trim()}`;
+  return `${promptPath(c.path)}:${c.line}${c.side === 'old' ? ' (removed line)' : ''} — ${c.text.replace(/\s+/g, ' ').trim()}`;
 }
 /** The prompt with the queued line comments after it (or, with no text of yours, the comments as the prompt). */
 export function withComments(prompt: string, comments: ReviewComment[]): string {
@@ -343,6 +395,30 @@ export function withComments(prompt: string, comments: ReviewComment[]): string 
 export function takesComments(prompt: string): boolean {
   const t = prompt.trim();
   return !t.startsWith('/') && !/^# \S/.test(t);
+}
+
+// The watchlist's fixed patterns (code/server/watch.mjs WATCH, in the same order; test/review.test.ts checks the same
+// table as code/test/normalize.test.mjs): which files of a review run on your computer later. Git's view gets the
+// sandbox's own answer as well (core.hooksPath and other places only it knows).
+const WATCH: [RegExp, string, string][] = [
+  [/^\.git$/, 'git-dir', 'where git keeps this folder\'s hooks and config'],
+  [/^\.git\/hooks$|^\.git\/modules\/[^/]+\/hooks$/, 'git-hooks', 'a git hooks folder'],
+  [/^\.git\/hooks\/[^/]+$|^\.git\/modules\/[^/]+\/hooks\/[^/]+$/, 'git-hook', 'a git hook: git runs it on your computer'],
+  [/^\.git\/config$|^\.git\/modules\/[^/]+\/config$/, 'git-config', 'git\'s configuration: it can name commands git runs on your computer'],
+  [/^\.husky$/, 'git-hooks', 'a git hooks folder'],
+  [/^\.husky\/[^/]+$/, 'husky', 'a husky hook: git runs it on your computer'],
+  [/^\.pre-commit-config\.yaml$|^\.?lefthook(-local)?\.ya?ml$|^\.lintstagedrc(\.(json|ya?ml|[cm]?js))?$|^lint-staged\.config\.[cm]?js$/, 'hook-manager', 'a git hook manager\'s configuration: its commands run on your computer'],
+  [/^\.envrc$/, 'direnv', 'direnv runs it on your computer'],
+  [/^\.vscode\/(tasks|settings)\.json$|^[^/]+\.code-workspace$/, 'vscode', 'VS Code reads it on your computer (tasks, settings)'],
+  [/^\.claude\/settings(\.local)?\.json$/, 'claude', 'Claude Code on your computer runs its hooks'],
+  [/^\.mcp\.json$/, 'mcp', 'Claude Code on your computer starts these MCP servers'],
+  [/^package\.json$/, 'npm', 'npm, pnpm and yarn run its scripts on your computer'],
+  [/^\.yarnrc\.yml$|^\.npmrc$|^\.pnpmfile\.cjs$/, 'package-manager', 'package manager configuration: it can run code on your computer'],
+  [/^\.devcontainer\.json$|^\.devcontainer\/([^/]+\/)?devcontainer\.json$/, 'devcontainer', 'a dev container: it can run commands on your computer'],
+];
+export function watchKind(path: string): { kind: string; why: string } | null {
+  const w = WATCH.find(([re]) => re.test(path));
+  return w ? { kind: w[1], why: w[2] } : null;
 }
 
 export function totals(files: ReviewFile[]): { files: number; add: number; del: number } {
