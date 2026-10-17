@@ -161,6 +161,48 @@ assert asyncio.run(h.proxy_handler_instance.async_pre_call_hook(None, None, None
 '
 }
 
+# the hook: Claude Code's running token count after a tool result left out for another vendor's model on Bedrock
+# (LiteLLM would make it an "Operator note" after the result, which GPT-6 sometimes answers with nothing); kept for
+# Claude, for OpenRouter and for a model the file does not list; every other message as it came
+test_litellm_hook_drops_token_counts_for_other_vendors_on_bedrock() {
+  command -v python3 >/dev/null 2>&1 || return 77
+  mkdir -p "$TMP/h/litellm/integrations"
+  printf '' > "$TMP/h/litellm/__init__.py"; printf '' > "$TMP/h/litellm/integrations/__init__.py"
+  printf 'class CustomLogger:\n    pass\n' > "$TMP/h/litellm/integrations/custom_logger.py"
+  cp "$STACK_DIR/lib/litellm-hooks/bn_hooks.py" "$TMP/h/bn_hooks.py"
+  { printf '# x\n# id\n'
+    printf 'gpt-x\tG\tBedrock\tOpenAI\t1\t1\t-\t-\t0\tworks\t1\t0\t-\t-\t-\n'
+    printf 'claude-big\tC\tBedrock\tAnthropic\t1\t1\t-\t-\t0\tworks\t1\t1\t-\t-\t-\n'
+    printf 'or/a/b\tO\tOpenRouter\ta\t1\t1\t-\t-\t0\tuntested\t1\t0\t-\t-\t-\n'; } > "$TMP/h/code-models.tsv"
+  PYTHONPATH="$TMP/h" python3 -c '
+import asyncio, copy, bn_hooks as h
+env = "# Environment\nPlatform: linux\n\n<total_tokens>15000000 tokens left</total_tokens>"
+msgs = [{"role": "user", "content": [{"type": "text", "text": "run echo hi"}]},
+        {"role": "system", "content": env},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "hi"}]},
+        {"role": "system", "content": "<total_tokens>14984242 tokens left</total_tokens>"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "again"},
+        {"role": "system", "content": [{"type": "text", "text": "\n<total_tokens>14000000 tokens left</total_tokens>\n"}]}]
+run = lambda d: asyncio.run(h.proxy_handler_instance.async_pre_call_hook(None, None, d, "anthropic_messages"))
+d = run({"model": "gpt-x", "max_tokens": 32000, "messages": copy.deepcopy(msgs)})
+assert d["messages"] == [msgs[i] for i in (0, 1, 2, 3, 5, 6)] and d["max_tokens"] == 32000, d   # the environment stays
+for model in ("claude-big", "or/a/b", "unlisted"):
+    assert run({"model": model, "messages": copy.deepcopy(msgs)})["messages"] == msgs, model
+# a count as the first message, among other text, with a second block, or from the user: kept
+other = [{"role": "system", "content": "<total_tokens>1 tokens left</total_tokens>"}, msgs[0],
+         {"role": "system", "content": "<total_tokens>1 tokens left</total_tokens> and more"},
+         {"role": "system", "content": [{"type": "text", "text": "<total_tokens>1 tokens left</total_tokens>"}, {"type": "text", "text": "x"}]},
+         {"role": "user", "content": "<total_tokens>1 tokens left</total_tokens>"}]
+assert run({"model": "gpt-x", "messages": copy.deepcopy(other)})["messages"] == other
+# odd shapes: unchanged, never an error
+for d in ({"model": "gpt-x", "messages": "x"}, {"model": "gpt-x", "messages": [None, 3, {"role": "system"}, {"role": "system", "content": [None]}]},
+          {"model": ["gpt-x"], "messages": msgs}):
+    assert run(copy.deepcopy(d)) == d, d
+'
+}
+
 
 # Names that YAML refuses or a terminal acts on (C1 controls such as U+009B, CSI; U+2028; bidi overrides; U+FFFE) never
 # reach LiteLLM's config, the model list or a terminal; a config that is not valid YAML is never put in place

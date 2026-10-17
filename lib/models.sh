@@ -207,7 +207,7 @@ litellm_settings:
 EOT
   # LiteLLM's one hook (lib/litellm-hooks/bn_hooks.py, copied next to the config by render_config): lowers a request's
   # max_tokens to the model's limit from litellm/code-models.tsv (Claude Code asks for up to 32,000; Bedrock's Llama
-  # refuses over 8,192)
+  # refuses over 8,192) and leaves out Claude Code's running token count for another vendor's model on Bedrock
   [ ! -r "$(bn_hook_src)" ] || printf '  callbacks: ["bn_hooks.proxy_handler_instance"]\n'
 }
 

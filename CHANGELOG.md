@@ -69,7 +69,10 @@ All notable changes to bedrock-now are documented here. The format follows
   applies.
 - **LiteLLM caps a request's output at the model's limit** (`lib/litellm-hooks/bn_hooks.py`, copied next to the config): Claude Code asks for up to 32,000
   output tokens and Bedrock's Llama 3.3 70B refused anything over 8,192 — it answers now. OpenRouter's limits come from
-  its model list, which also gives each model's tool use.
+  its model list, which also gives each model's tool use. For another vendor's model on Bedrock the hook also leaves
+  out Claude Code's running token count after each tool result (a system message of its own, `<total_tokens>…`):
+  LiteLLM turned it into a note after the result, and GPT-6 sometimes ended its turn on that note with no answer, or
+  asked what to do.
 
 ### Changed
 

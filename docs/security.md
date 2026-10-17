@@ -662,8 +662,10 @@ reaches is the container — with the three exceptions under *Threat model*.
   LiteLLM's read-only config folder whenever it renders the config, which names it in `litellm_settings.callbacks` only
   while the source is there) runs before every request of every key: it lowers `max_tokens` (and a thinking budget that
   no longer fits) to the model's limit from `litellm/code-models.tsv`, which `./stack` writes next to the config
-  (Bedrock's Llama refuses more than 8,192; Claude Code asks for 32,000). It changes nothing else, reads no secret,
-  makes no network call, and any problem in it leaves the request as it came. `./stack rollback` to a version without
+  (Bedrock's Llama refuses more than 8,192; Claude Code asks for 32,000), and for another vendor's model on Bedrock it
+  leaves out the system messages that hold nothing but Claude Code's running token count (`<total_tokens>N tokens
+  left</total_tokens>`). It changes nothing else (no other message, nothing of yours), reads no secret, makes no
+  network call, and any problem in it leaves the request as it came. `./stack rollback` to a version without
   it takes the `callbacks:` line out of the running config before the checkout (that version starts LiteLLM with it).
 - [x] **Model names are data.** A name from OpenRouter's list reaches LiteLLM's config, `claude-bedrock --models`,
   Claude Code's `/model` menu and the pages: C1 controls (U+009B is a terminal's CSI), U+2028/U+2029, bidi embeddings,

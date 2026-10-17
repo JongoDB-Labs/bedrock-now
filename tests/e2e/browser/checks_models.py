@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import time
 
 from playwright.sync_api import expect as see
@@ -39,6 +40,25 @@ def _other(bn: dict) -> dict | None:
 
 def _tool_result(evs, tid):
     return next((e for e in evs if e["type"] == "tool_result" and e.get("id") == tid), None)
+
+
+def _turn_allowing_bash(c, sid, m, text):
+    """A prompt to session SID up to its result, Bash allowed once at each card (a read-only command like echo may run
+    without one: Claude Code's own rule). -> (its events, how many cards)"""
+    n = len(c.msgs())
+    c.request({"type": "prompt", "session": sid, "text": text})
+    asked, since = 0, n   # (then from the card answered last)
+    while True:
+        x = c.wait(lambda y: (y.get("type") == "permission" and y.get("session", sid) == sid)
+                   or (y.get("type") == "event" and y.get("session") == sid and y["ev"]["type"] == "result"),
+                   "a permission prompt or the result", 150, since=since)
+        since = None
+        if x.get("type") != "permission":
+            return c.events(sid, n), asked
+        expect(x["tool"] == "Bash", f"{m['id']} asked for {x['tool']}, not Bash: {json.dumps(x)[:300]}")
+        c.request({"type": "permission", "id": x["id"], "session": sid, "decision": "once"})
+        asked += 1
+        expect(asked <= 3, "more than three permission prompts for one echo")
 
 
 @check("browser", "code-models-catalog")
@@ -85,27 +105,29 @@ def other_provider(ctx):
     if not m:
         raise Skip("no model of another provider that works is enabled for this key")
     sid = c.new_session(m["id"], "default")
-    n = len(c.msgs())
-    c.request({"type": "prompt", "session": sid, "text": "Use the Bash tool to run exactly this command: echo bn-e2e-$((6*7)) — then reply with its output only."})
-    # a read-only command like echo may run without a card (Claude Code's own read-only rule): allow one only if it comes
-    asked = 0
-    while True:
-        x = c.wait(lambda y: (y.get("type") == "permission" and y.get("session", sid) == sid)
-                   or (y.get("type") == "event" and y.get("session") == sid and y["ev"]["type"] == "result"),
-                   "a permission prompt or the result", 150)
-        if x.get("type") != "permission":
-            break
-        expect(x["tool"] == "Bash", f"{m['id']} asked for {x['tool']}, not Bash: {json.dumps(x)[:300]}")
-        c.request({"type": "permission", "id": x["id"], "session": sid, "decision": "once"})
-        asked += 1
-        expect(asked <= 3, "more than three permission prompts for one echo")
-    evs = c.events(sid, n)
+    # This run's nonce in the command: in the tool call, it shows the prompt's own text reached the model (through
+    # LiteLLM's translation). $RANDOM: a number only the shell knows — in the answer, it shows the tool's result did.
+    nonce = secrets.token_hex(4)
+    evs, asked = _turn_allowing_bash(c, sid, m, f"Use the Bash tool to run exactly this command: echo bn-e2e-{nonce}-$RANDOM — then reply with its output only.")
     use = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
     res = _tool_result(evs, use[0]["id"]) if use else None
     text = "".join(e["text"] for e in evs if e["type"] == "text")
     expect(use, f"{m['id']} called no Bash tool: {[e['type'] for e in evs][:30]}")
-    expect(res and "bn-e2e-42" in res["text"] and not res["is_error"], f"tool result {res}")
-    expect("bn-e2e-42" in text, f"answer {text[:200]!r}")
+    expect(f"bn-e2e-{nonce}-" in json.dumps(use[0].get("input")), f"the prompt's nonce {nonce} is not in the call: {json.dumps(use[0].get('input'))[:200]}")
+    out = re.search(rf"bn-e2e-{nonce}-[0-9]+", res["text"]) if res and not res["is_error"] else None
+    expect(out, f"tool result {res}")
+    out = out.group(0)
+    nudged = None
+    if out not in text:
+        # A model may end the turn after the result with no answer, or ask what to do: variance, as long as the result
+        # is in its context — asked once more, it must answer from it (a number of a new run of the command counts)
+        nudged = text.strip()[:60] or "no text"
+        evs2, more = _turn_allowing_bash(c, sid, m, "What did the command print? Reply with its output only.")
+        asked += more
+        outs = {out} | {x.group(0) for e in evs2 if e["type"] == "tool_result" for x in re.finditer(rf"bn-e2e-{nonce}-[0-9]+", e.get("text") or "")}
+        text2 = "".join(e["text"] for e in evs2 if e["type"] == "text")
+        expect(any(o in text2 for o in outs), f"answer {text[:200]!r}, asked again {text2[:200]!r}; the command printed {out}")
+        evs += evs2
     init = next((e for e in evs if e["type"] == "init"), None)
     expect(init is None or init["model"] == m["id"], f"init model {init and init['model']}")
     # its spend, from LiteLLM's logs, under that model (logged as the provider's model: bedrock/us.openai.gpt-6-luna)
@@ -128,7 +150,8 @@ def other_provider(ctx):
     expect(models == [m["id"]], f"after set_model {m['id']}: text from {models}")
     c.request({"type": "set_model", "session": sid2, "model": HAIKU}, timeout=90)
     c.rec.save()
-    return (f"{m['name']} ({m['id']}, {m['vendor']}): Bash tool call round-tripped ({asked} card(s)) → {res['text'].strip()[:40]!r}, answer {text.strip()[:40]!r}; "
+    said = f"answer {text.strip()[:40]!r}" if not nudged else f"answer without it ({nudged!r}), asked again: {text2.strip()[:40]!r}"
+    return (f"{m['name']} ({m['id']}, {m['vendor']}): the prompt's nonce in its Bash call ({asked} card(s)) → {out!r}, {said}; "
             f"spend ${spent:.5f} under it ({cached} prompt-cache tokens read); a Haiku session switched to it (text from {models}) and back")
 
 

@@ -7,7 +7,8 @@
 # render_config writes them to litellm/code-models.tsv (code_models_write) and into LiteLLM's model_info (bn_* keys,
 # code_models_inject): the portal's /.bn/models reads the file, claude-bedrock on your computer reads the file, the one
 # in the terminal reads LiteLLM's /model/info (the only way the sandbox learns anything of this), and LiteLLM's
-# lib/litellm-hooks/bn_hooks.py (copied next to it) lowers a request's max_tokens to a model's max_out from the file.
+# lib/litellm-hooks/bn_hooks.py (copied next to it) lowers a request's max_tokens to a model's max_out from the file
+# and, for another vendor's model on Bedrock (provider and vendor columns), leaves out Claude Code's token counts.
 #
 #   code_models_rows ENABLED_FILE("" = all)   the rows (below) on stdout
 #   code_models_write ENABLED_FILE [OUT]      litellm/code-models.tsv, atomically
