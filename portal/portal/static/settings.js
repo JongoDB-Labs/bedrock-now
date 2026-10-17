@@ -176,6 +176,7 @@
     if (!sectionOf(id)) return;
     current = id;
     try { localStorage.setItem(SECTION_MEMO, id); } catch (_) { /* fine */ }
+    for (const d of document.querySelectorAll("#settings .set-forced")) d.classList.remove("set-forced");   // (goTo's)
     if (find.q || find.changed) {
       find.q = ""; find.changed = false;
       const input = $("#set-find"); if (input) input.value = "";
@@ -351,9 +352,10 @@
       if (!node) continue;
       const block = el("div", { class: "set-dep", "data-key": r.key });
       if (r.parent) block.dataset.parent = r.parent;
-      if (r.parent && offParent(r)) {
-        const p = keys[offParent(r)];
-        block.append(el("p", { class: "note set-applies", text: `Applies while ${p ? p.label : offParent(r)} is on.` }));
+      if (r.parent && offParent(r)) {   // shown only by a search or an address: why it does nothing now
+        const p = keys[offParent(r)] || { label: offParent(r), secret: "-" };
+        const name = ROW_LABEL[p.key] || p.label;
+        block.append(el("p", { class: "note set-applies", text: plain(p) ? `Applies while ${name} is on.` : `Applies once ${name} is set.` }));
       }
       block.append(node);
       made[r.key] = block;
