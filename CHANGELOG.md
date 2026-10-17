@@ -42,6 +42,17 @@ All notable changes to bedrock-now are documented here. The format follows
 - `./stack up` warns when `TS_SERVICE` is longer than 54 characters (`<name>-terminal` / `-preview` would exceed a DNS
   label); `./stack remote enable` refuses such a name.
 
+### Fixed
+
+- **"The update helper is not running" while it was running (macOS).** The helper replaces `helper.json` every 2-3 s
+  with a rename, and Docker Desktop's file sharing tells the container for 10-30 ms after each rename that the file
+  does not exist. About one read in 200 (more while a job runs) then found no helper: **Save** in Settings answered
+  *The update helper is not running*, Settings opened read-only with *One-click updates are off*, Home lost a running
+  update's progress for a poll. The portal now reads a file that is listed in its folder again (the listing
+  refreshes it; measured: one retry is always enough), for every file `./stack` and the helper write. Linux was not
+  affected. Also: a heartbeat up to 10 s ahead of the portal's clock still counts (Docker Desktop's clock can trail
+  the Mac's, e.g. after sleep), and the refusal says when the helper was last seen, or that Docker's clock is behind.
+
 ## [0.6.0] - 2026-10-16
 
 ### Added

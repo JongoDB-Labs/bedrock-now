@@ -26,6 +26,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+from . import hostfiles
+
 ACTIONS = ("update", "rollback", "clean", "auto-on", "auto-off")
 AUTO_ACTIONS = ("auto-on", "auto-off")
 # What to type instead, when the helper is not running
@@ -33,6 +35,10 @@ CLI = {"update": "./stack update", "rollback": "./stack rollback", "clean": "./s
        "auto-on": "./stack helper auto on", "auto-off": "./stack helper auto off"}
 TERMINAL = ("done", "failed", "skipped")   # skipped: an automatic update that did not start
 HEARTBEAT_MAX_AGE_S = 30          # the helper writes one every few seconds (also while a job runs)
+# The heartbeat is the host's clock, the check this container's: a heartbeat up to this far "ahead" still counts.
+# Docker Desktop's VM clock can trail the computer's (just after it wakes from sleep, until it syncs), and with the
+# two clocks 1 s apart, about one check in six used to call a running helper stopped.
+HEARTBEAT_SKEW_S = 10
 JOB_STALE_S = 3 * 3600            # a "running" status older than this no longer blocks new requests
 MIN_INTERVAL_S = 30               # rate limit: one request per 30 s ...
 MAX_PER_HOUR = 6                  # ... and at most 6 an hour
@@ -74,13 +80,7 @@ class RateLimit:
 
 
 def _read(path: Path, cap: int = 64 * 1024) -> dict:
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > cap:
-            return {}
-        d = json.loads(path.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return hostfiles.read_json(path, cap)   # (a file the helper just replaced is read again: hostfiles.py)
 
 
 def _int(v):
@@ -134,7 +134,7 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
             "trigger": "auto" if job_raw.get("trigger") == "auto" else "request",
         }
     return {
-        "running": hb is not None and 0 <= now - hb <= HEARTBEAT_MAX_AGE_S,
+        "running": hb is not None and -HEARTBEAT_SKEW_S <= now - hb <= HEARTBEAT_MAX_AGE_S,
         "heartbeat_at": hb,
         "version": _str(beat.get("version"), 80),
         "branch": _str(beat.get("branch"), 100),
@@ -143,6 +143,24 @@ def helper_state(status_dir: Path, now: float | None = None) -> dict:
         "auto": _auto(beat),
         "job": job,
     }
+
+
+def _span(s: float) -> str:
+    s = int(s)
+    return f"{s} s" if s < 120 else f"{s // 60} min" if s < 7200 else f"{s // 3600} h" if s < 172800 else f"{s // 86400} days"
+
+
+def not_running(state: dict, now: float | None = None) -> str:
+    """Why helper_state says it is not running, for the refusal: never seen (not installed, or not started since it
+    was), silent for how long, or a heartbeat from the future (Docker's clock is behind this computer's)."""
+    hb = state.get("heartbeat_at")
+    if hb is None:
+        return "The update helper is not running"
+    age = (time.time() if now is None else now) - hb
+    if age < 0:
+        return (f"The update helper's heartbeat is {_span(-age)} ahead of the portal's clock: Docker's clock is behind "
+                "this computer's (restarting Docker Desktop sets it right)")
+    return f"The update helper is not running: it was last seen {_span(age)} ago (./stack helper status says more)"
 
 
 def job_in_progress(state: dict, now: float | None = None) -> bool:

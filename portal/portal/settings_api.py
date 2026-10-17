@@ -119,8 +119,8 @@ def routes(ctx: Ctx) -> list[Route]:
     def helper_ready() -> Response | None:
         state = admin.helper_state(s.status_dir)
         if not state["running"]:
-            return err(503, "The update helper is not running, so nothing can be applied from here: ./stack helper install "
-                            "turns it on, or use ./stack config set KEY in a terminal.")
+            return err(503, f"{admin.not_running(state)}. Nothing can be applied from here until it runs: ./stack helper "
+                            "install starts it, or use ./stack config set KEY in a terminal.")
         if not st.capability(s.status_dir)["settings"]:
             return err(503, "This update helper predates Settings: ./stack helper install refreshes it.")
         if admin.job_in_progress(state):

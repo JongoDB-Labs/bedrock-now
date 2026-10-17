@@ -148,6 +148,42 @@ def test_refused_when_the_helper_is_not_running(make_client, dirs):
     assert requests_in(rq) == []
 
 
+def test_the_refusal_says_whether_the_helper_was_ever_seen(make_client, dirs):
+    st, rq = dirs
+    c = make_client()
+    assert ask(c).json()["error"].startswith("The update helper is not running. Start it with ./stack helper install")
+    beat(st, age=admin.HEARTBEAT_MAX_AGE_S + 600)
+    e = ask(c).json()["error"]
+    assert "last seen 10 min ago" in e and "./stack helper install" in e and "./stack clean" in e
+    beat(st, age=-(admin.HEARTBEAT_SKEW_S + 50))   # dated a minute ahead: Docker's clock is behind
+    e = ask(c).json()["error"]
+    assert re.search(r"heartbeat is (59|60) s ahead of the portal's clock", e) and "restarting Docker Desktop" in e
+    assert requests_in(rq) == []
+
+
+def test_a_heartbeat_a_little_ahead_of_dockers_clock_counts(dirs):
+    st, _ = dirs
+    beat(st, age=0)
+    hb = json.loads((st / "helper.json").read_text())["heartbeat"]
+    # the container's clock trails the computer's by up to HEARTBEAT_SKEW_S: still running
+    assert admin.helper_state(st, now=hb - 0.4)["running"] is True
+    assert admin.helper_state(st, now=hb - admin.HEARTBEAT_SKEW_S)["running"] is True
+    assert admin.helper_state(st, now=hb - admin.HEARTBEAT_SKEW_S - 1)["running"] is False
+    assert admin.helper_state(st, now=hb + admin.HEARTBEAT_MAX_AGE_S + 1)["running"] is False
+
+
+def test_home_keeps_the_helper_and_its_job_while_the_files_are_replaced(make_client, dirs, just_replaced):
+    st, rq = dirs
+    beat(st)
+    job(st, "restarting")
+    c = make_client()
+    just_replaced(st / "helper.json", st / "helper-status.json")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["running"] is True and s["job"]["phase"] == "restarting" and s["in_progress"] is True
+    just_replaced(st / "helper.json")
+    assert ask(c).status_code == 409   # "another action is still running", never "not running"
+
+
 def test_one_action_at_a_time_and_rate_limited(make_client, dirs):
     st, rq = dirs
     beat(st)

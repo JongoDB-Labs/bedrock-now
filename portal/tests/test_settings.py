@@ -318,6 +318,33 @@ def test_needs_a_helper_that_takes_settings_and_no_job_running(make, dirs):
     assert files(rq) == []
 
 
+def test_a_heartbeat_the_helper_just_replaced_is_not_a_missing_helper(make, dirs, just_replaced):
+    """The e2e flake (settings/settings-owner-email, settings/settings-page): the helper renames a new helper.json over
+    the old one every 2-3 s, and through Docker Desktop's file sharing the portal could find no file for a moment —
+    "The update helper is not running" with the helper running. The file is read again now."""
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    just_replaced(sd / "helper.json", sd / "helper-settings.json")
+    h = c.get("/api/settings", headers=API).json()["helper"]
+    assert h["running"] is True and h["settings"] is True
+    just_replaced(sd / "helper.json", sd / "settings.json")
+    r = apply(c, {"BUDGET_SETUP": "6"})
+    assert r.status_code == 202, r.text
+    assert files(rq) == [f"cfg-{r.json()['id']}.req"]
+
+
+def test_a_helper_that_stopped_is_named_with_when_it_was_last_seen(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    beat = json.loads((sd / "helper.json").read_text())
+    beat["heartbeat"] -= 150
+    (sd / "helper.json").write_text(json.dumps(beat))
+    e = apply(make(), {"BUDGET_SETUP": "6"}).json()["error"]
+    assert e.startswith("The update helper is not running: it was last seen 2 min ago")
+    assert "./stack helper install starts it" in e and "./stack config set KEY" in e and files(rq) == []
+
+
 def test_rate_limited(make, dirs):
     sd, rq = dirs
     write_snapshot(sd); helper_up(sd)

@@ -22,6 +22,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import hostfiles
+
 SNAPSHOT = "settings.json"
 BACKUPS = "backups.json"
 CAPABILITY = "helper-settings.json"
@@ -49,13 +51,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}")
 # --- the snapshot ---
 
 def _read_json(path: Path, cap: int) -> dict:
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > cap:
-            return {}
-        d = json.loads(path.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return hostfiles.read_json(path, cap)   # (a file the host just replaced is read again: hostfiles.py)
 
 
 def _s(v, n=600) -> str:

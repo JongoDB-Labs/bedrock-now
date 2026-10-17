@@ -27,6 +27,8 @@ from pathlib import Path
 
 import httpx
 
+from . import hostfiles
+
 log = logging.getLogger("portal.updates")
 
 REPO = "JongoDB-Labs/bedrock-now"
@@ -98,13 +100,7 @@ def newer(latest: str, installed: str) -> bool | None:
 
 
 def _read_json(path: Path) -> dict:
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_STATE:
-            return {}
-        d = json.loads(path.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return hostfiles.read_json(path, MAX_STATE)   # (version.json just replaced by ./stack is read again: hostfiles.py)
 
 
 def _match(rx: re.Pattern, v) -> str:
