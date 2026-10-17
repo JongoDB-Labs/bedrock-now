@@ -79,7 +79,8 @@ picker_json() {
   model_rows | awk -F'\t' -v off="$1" '
     function js(s) { gsub(/[\001-\037"\\]/, "", s); return "\"" s "\"" }
     function m(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
-    n >= 149 && $9 != 1 { next }
+    $9 != 1 && n >= 149 && !(had && n < 150) { next }
+    $9 == 1 { had = 1 }
     { p = ($6 == 1 ? "free ($0)" : ($4 == "-" || $5 == "-") ? "price unknown" : m($4) "/" m($5) " per 1M")
       c = ($7 == "works" ? "works" : $7 == "chat-only" ? "chat only (no tools)" : $7 == "fails" ? "fails" : "not tested")
       r = r (n++ ? "," : "") "{\"model\":" js($1) ",\"label\":" js($2 (substr($1, 1, 3) == "or/" ? " · OpenRouter" : "")) ",\"description\":" js($3 " · " p " · " c) "}" }
@@ -133,7 +134,8 @@ load_model_info
 def="$(model_rows all | awk -F'\t' '$9 == 1 { print $1; exit }')"
 model="${CLAUDE_BEDROCK_MODEL:-${def:-${CLAUDE_BEDROCK_OPUS_MODEL:-}}}"
 [ -n "$model" ] || die "no Claude model is enabled for your AWS key — run ./stack setup on your computer"
-model="$(resolve_model "$model" "${CLAUDE_BEDROCK_MODEL:+CLAUDE_BEDROCK_MODEL}${CLAUDE_BEDROCK_MODEL:-the default model}")"
+where='the default model'; [ -z "${CLAUDE_BEDROCK_MODEL:-}" ] || where=CLAUDE_BEDROCK_MODEL
+model="$(resolve_model "$model" "$where")"
 cb_args=(); want=''
 for a in "$@"; do
   if [ "$want" = next ]; then a="$(resolve_model "$a" --model)"; model="$a"; want=done

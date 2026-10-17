@@ -167,3 +167,20 @@ webhook	0	bad	http://127.evil.example/hook
 webhook	0	ok	http://10.0.0.5:8080/hook
 webhook	0	ok	http://172.20.1.2/hook
 webhook	0	bad	http://172.32.1.2/hook
+code_models	0	ok	
+code_models	0	ok	all
+code_models	0	ok	anthropic
+code_models	0	ok	claude-opus-5-5
+code_models	0	ok	claude-opus-5-5,or/google/gemma-4-31b-it:free,llama-3-3-70b
+code_models	0	bad	claude-opus-5-5,
+code_models	0	bad	,claude-opus-5-5
+code_models	0	bad	a,,b
+code_models	0	bad	a b
+code_models	0	bad	a;b
+code_models	0	bad	claude-opus-5-5\nclaude-haiku-5-5
+code_model	0	ok	
+code_model	0	ok	claude-opus-5-5
+code_model	0	ok	or/google/gemma-4-31b-it:free
+code_model	0	bad	-dash-first
+code_model	0	bad	a,b
+code_model	0	bad	Claude Opus

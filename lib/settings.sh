@@ -300,7 +300,7 @@ cfg_effective() { if cfg_has "$1"; then cfg_new "$1"; else get_env "$1"; fi; }
 # settings_check_batch ORIGIN — every key and value (validators, policy, keys that only go together); dies with
 # the first problem (no value in any message)
 settings_check_batch() {
-  local origin="$1" k n=0 p chat ws why
+  local origin="$1" k n=0 p chat ws why code
   SV_REMOTE_ON=0; [ "$(get_env REMOTE_MODE)" != tailscale ] && [ "$(get_env REMOTE_MODE)" != domain ] || SV_REMOTE_ON=1
   for k in $CFG_ORDER; do
     n=$((n + 1))
@@ -343,6 +343,18 @@ settings_check_batch() {
     for p in $(cfg_new MODELS_HIDDEN | tr ',' ' '); do
       printf '%s\n' "$chat" | grep -qxF "$p" || die "MODELS_HIDDEN: $p is not a chat model your AWS key can use (./stack models)"
     done
+  fi
+  # Settings › Claude Code › Models: models the stack serves (litellm/code-models.tsv; not checked before it exists)
+  code="$(_code_rows 2>/dev/null | cut -f1)"
+  if [ -n "$code" ] && cfg_has CODE_DEFAULT_MODEL && [ -n "$(cfg_new CODE_DEFAULT_MODEL)" ]; then
+    printf '%s\n' "$code" | grep -qxF "$(cfg_new CODE_DEFAULT_MODEL)" || die "CODE_DEFAULT_MODEL: $(cfg_new CODE_DEFAULT_MODEL) is not a chat model this stack serves (claude-bedrock --models all)"
+  fi
+  if [ -n "$code" ] && cfg_has CODE_MODELS; then
+    case "$(cfg_new CODE_MODELS)" in '' | all | anthropic) ;; *)
+      for p in $(cfg_new CODE_MODELS | tr ',' ' '); do
+        printf '%s\n' "$code" | grep -qxF "$p" || die "CODE_MODELS: $p is not a chat model this stack serves (claude-bedrock --models all)"
+      done ;;
+    esac
   fi
   # The Code page runs in the browser terminal's sandbox: with the terminal off, turning it on turns the terminal on
   # too, with its folder (TERMINAL_WORKSPACE, or the default one code_enable creates; Settings names it before you

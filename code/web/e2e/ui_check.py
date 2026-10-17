@@ -3963,6 +3963,180 @@ def plan_comments_hostile(browser):
     p.close()
 
 
+# --- the status bar's quick actions, and the model picker with every model of the catalog ---
+
+def _many_models():
+    """/.bn/models as the portal serves it with Bedrock's other providers and dozens of OpenRouter models."""
+    m = [
+        {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "provider": "Bedrock", "vendor": "Anthropic", "compat": "works", "listed": True, "input_per_mtok": 4.4, "output_per_mtok": 22, "cache_write_per_mtok": 5.5, "cache_read_per_mtok": 0.44},
+        {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "provider": "Bedrock", "vendor": "Anthropic", "compat": "works", "listed": True, "input_per_mtok": 3.3, "output_per_mtok": 16.5, "cache_write_per_mtok": 4.125, "cache_read_per_mtok": 0.33},
+        {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "Bedrock", "vendor": "Anthropic", "compat": "works", "listed": True, "input_per_mtok": 1.1, "output_per_mtok": 5.5, "cache_write_per_mtok": 1.375, "cache_read_per_mtok": 0.11},
+        {"id": "llama-3-3-70b", "name": "Llama 3.3 70B", "provider": "Bedrock", "vendor": "Meta", "compat": "chat-only", "listed": True, "input_per_mtok": 0.72, "output_per_mtok": 0.72,
+         "note": "Answers, but writes its tool calls as plain text: Claude Code cannot read, edit or run anything with it."},
+        {"id": "mistral-large-3", "name": "Mistral Large 3", "provider": "Bedrock", "vendor": "Mistral", "compat": "works", "listed": True, "input_per_mtok": 0.5, "output_per_mtok": 1.5},
+        {"id": "gpt-6-luna", "name": "GPT-6 Luna", "provider": "Bedrock", "vendor": "OpenAI", "compat": "works", "listed": False, "input_per_mtok": 0.11, "output_per_mtok": 0.55},
+        {"id": "grok-4-7", "name": "Grok 4.7", "provider": "Bedrock", "vendor": "xAI", "compat": "fails", "listed": True, "input_per_mtok": 2.2, "output_per_mtok": 6.6},
+    ]
+    vendors = ["Google", "Meta", "Mistral", "NVIDIA", "Qwen", "DeepSeek", "Z.ai", "inclusionAI"]
+    for i in range(40):
+        v = vendors[i % len(vendors)]
+        m.append({"id": f"or/{v.lower().replace('.', '')}/model-{i}:free", "name": f"{v} Model {i} (free)", "provider": "OpenRouter", "vendor": v, "free": True,
+                  "compat": "untested" if i % 5 else "chat-only", "listed": True, "input_per_mtok": 0, "output_per_mtok": 0, "context": 131072})
+    for i in range(20):
+        v = vendors[i % len(vendors)]
+        m.append({"id": f"or/{v.lower().replace('.', '')}/paid-{i}", "name": f"{v} Paid {i}", "provider": "OpenRouter", "vendor": v, "compat": "untested", "listed": True,
+                  "input_per_mtok": 0.2 + i / 10, "output_per_mtok": 0.8 + i / 10, "context": 262144})
+    m.append({"id": "or/google/gemma-4-31b-it:free", "name": "Gemma 4 31B (free)", "provider": "OpenRouter", "vendor": "Google", "free": True, "compat": "untested", "listed": True,
+              "input_per_mtok": 0, "output_per_mtok": 0, "context": 262144})
+    return {"models": m, "aliases": {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5"}, "default": "claude-sonnet-5-5",
+            "scope": {"mode": "all", "listed": 0, "total": 0}}
+
+
+@check("statusbar: quick actions are 28 px+ with styled tips (what + shortcut), Alt+R / Alt+P; tablet icons; phone ⋯ sheet")
+def statusbar_actions(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "statusbar", **DESKTOP)
+    page = p.open()
+    send(page, "hello")
+    wait_turns(page, 1)
+    sizes = {}
+    for i in ("sb-terminal", "run-status", "ports-status", "sb-mode", "sb-model"):
+        el = page.get_by_test_id(i)
+        expect(el).to_be_visible()
+        box = el.bounding_box()
+        sizes[i] = round(box["height"])
+        assert box["height"] >= 28 and box["width"] >= 28, (i, box)
+        assert el.get_attribute("aria-label"), i
+        assert el.get_attribute("aria-describedby"), i
+        assert el.get_attribute("title") is None, f"{i}: the styled tip, not the browser's title too"
+    expect(page.get_by_test_id("sb-mode")).to_contain_text("Manual")
+    expect(page.get_by_test_id("sb-model")).to_contain_text("Claude Sonnet 5.5")
+    # hover: what it does and its shortcut, above the bar (the bar clips nothing: the tip is fixed)
+    page.get_by_test_id("run-status").hover()
+    tip = page.get_by_test_id("tip-run")
+    expect(tip).to_be_visible(timeout=3_000)
+    expect(tip).to_contain_text("Run & test")
+    expect(tip.locator("kbd")).to_have_text("Alt+R")
+    tb, rb = tip.bounding_box(), page.get_by_test_id("run-status").bounding_box()
+    assert tb["y"] + tb["height"] <= rb["y"] + 1 and tb["x"] >= 0 and tb["x"] + tb["width"] <= 1440, (tb, rb)
+    p.shot("statusbar-tip-run.png", clip={"x": max(0, tb["x"] - 40), "y": tb["y"] - 10, "width": min(700, 1440 - max(0, tb["x"] - 40)), "height": rb["y"] + rb["height"] - tb["y"] + 16})
+    page.mouse.move(700, 300)
+    expect(tip).to_be_hidden()
+    # keyboard focus shows a tip too (Tab from Run to Ports)
+    page.get_by_test_id("run-status").focus()
+    page.keyboard.press("Tab")
+    expect(page.get_by_test_id("tip-ports")).to_be_visible(timeout=3_000)
+    expect(page.get_by_test_id("tip-ports")).to_contain_text("Alt+P")
+    page.keyboard.press("Escape")
+    expect(page.get_by_test_id("tip-ports")).to_be_hidden()
+    # the shortcuts: Run & test, Ports & previews
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Alt+KeyR")
+    expect(page.get_by_test_id("run-dialog")).to_be_visible(timeout=5_000)
+    page.keyboard.press("Escape")
+    expect(page.get_by_test_id("run-dialog")).to_have_count(0)
+    page.keyboard.press("Alt+KeyP")
+    expect(page.get_by_test_id("ports-dialog")).to_be_visible(timeout=5_000)
+    page.keyboard.press("Escape")
+    # the mode and the model open their menus; Terminal toggles the panel
+    page.get_by_test_id("sb-model").click()
+    expect(page.locator(".model-panel")).to_be_visible()
+    page.keyboard.press("Escape")
+    page.get_by_test_id("sb-mode").click()
+    expect(page.locator(".mode-panel")).to_be_visible()
+    page.keyboard.press("Escape")
+    page.get_by_test_id("sb-terminal").click()
+    expect(page.get_by_test_id("terminal")).to_be_visible()
+    expect(page.get_by_test_id("sb-terminal")).to_have_attribute("aria-pressed", "true")
+    page.mouse.move(700, 300)
+    p.shot("statusbar-desktop.png", clip={"x": 0, "y": 900 - 40, "width": 1440, "height": 40})
+    p.assert_clean()
+    p.close()
+    # tablet: the optional ones as icons (the tip names them), every one still a big target
+    t = Page(browser, NORMAL, "statusbar-tablet", viewport={"width": 1024, "height": 768}, has_touch=True, color_scheme="light")
+    page = t.open()
+    expect(page.get_by_test_id("statusbar")).to_be_visible()
+    assert page.get_by_test_id("sb-terminal").locator(".sb-label").is_hidden()
+    for i in ("sb-terminal", "run-status", "ports-status", "sb-model"):
+        box = page.get_by_test_id(i).bounding_box()
+        assert box["height"] >= 28 and box["x"] + box["width"] <= 1024, (i, box)
+    t.shot("statusbar-tablet.png", clip={"x": 0, "y": 768 - 48, "width": 1024, "height": 48})
+    t.assert_clean()
+    t.close()
+    # phone: no status bar; the ⋯ sheet holds Ports and Run as 44 px+ rows
+    ph = Page(browser, NORMAL, "statusbar-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = ph.open()
+    expect(page.get_by_test_id("statusbar")).to_have_count(0)
+    page.get_by_test_id("phone-menu-btn").click()
+    for i in ("phone-menu-ports", "phone-menu-run"):
+        box = page.get_by_test_id(i).bounding_box()
+        assert box["height"] >= 44, (i, box)
+    ph.shot("statusbar-phone-menu.png")
+    ph.assert_clean()
+    ph.close()
+    print(f"      status bar targets (px): {sizes}", flush=True)
+
+
+@check("models-picker: every catalog model grouped by provider, search, free tag, compatibility badges, stars, Show all, warnings")
+def models_picker(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "models-picker", **DESKTOP)
+    many = _many_models()
+    p.page.route("**/.bn/models", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(many)))
+    page = p.open()
+    page.get_by_test_id("model-picker").click()
+    panel = page.locator(".model-panel")
+    expect(panel).to_be_visible()
+    # the search box has the focus; the groups in order
+    expect(page.get_by_test_id("model-search")).to_be_focused()
+    heads = panel.locator(".mp-group-head").all_inner_texts()
+    assert [h.lower() for h in heads] == ["anthropic (claude)", "other providers on bedrock", "openrouter: free", "openrouter"], heads
+    bed = page.get_by_test_id("model-group-bedrock")
+    expect(bed).to_contain_text("Llama 3.3 70B")
+    expect(bed.get_by_test_id("compat-chat-only")).to_contain_text("chat only")
+    expect(bed).not_to_contain_text("Grok 4.7")       # fails: behind Show all
+    expect(bed).not_to_contain_text("GPT-6 Luna")     # not in Settings' list: behind Show all
+    free = page.get_by_test_id("model-group-or-free")
+    expect(free.get_by_test_id("free-tag").first).to_have_text("free")
+    assert free.locator(".mi-hint").first.inner_text().strip() == "free"
+    expect(panel.get_by_test_id("model-show-all")).to_be_visible()
+    p.shot("models-picker.png")
+    # search: every word, Enter picks the first match (and says what to expect of an untested one)
+    page.get_by_test_id("model-search").fill("gemma free")
+    expect(panel.locator(".mp-row")).to_have_count(1)
+    p.shot("models-picker-search.png")
+    page.get_by_test_id("model-search").press("Enter")
+    expect(page.get_by_test_id("model-picker")).to_contain_text("Gemma 4 31B (free)", timeout=5_000)
+    expect(page.get_by_test_id("model-picker")).to_contain_text("free")
+    expect(page.get_by_test_id("toast").last).to_contain_text("Not checked with Claude Code", timeout=5_000)
+    # a chat-only model warns that it cannot use tools; a star lists it first
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("star-llama-3-3-70b").click()
+    expect(page.get_by_test_id("model-group-starred")).to_contain_text("Llama 3.3 70B")
+    page.get_by_test_id("model-llama-3-3-70b").click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("cannot use tools", timeout=5_000)
+    # kept in this browser (saved a moment later)
+    for _ in range(50):
+        stored = page.evaluate("() => JSON.parse(localStorage.getItem('bn.code.v1') || '{}')")
+        if stored.get("starred") == ["llama-3-3-70b"]:
+            break
+        page.wait_for_timeout(100)
+    assert stored.get("starred") == ["llama-3-3-70b"], stored
+    # Show all: the failing and the unlisted ones, marked
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-show-all").check()
+    expect(page.get_by_test_id("model-group-bedrock")).to_contain_text("Grok 4.7")
+    expect(page.get_by_test_id("model-group-bedrock").get_by_test_id("compat-fails")).to_have_text("fails")
+    expect(page.get_by_test_id("model-group-bedrock")).to_contain_text("GPT-6 Luna")
+    p.shot("models-picker-all.png")
+    page.keyboard.press("Escape")
+    # the status bar names it with its badge in the tip
+    page.get_by_test_id("sb-model").hover()
+    expect(page.get_by_test_id("tip-model")).to_contain_text("cannot use tools", timeout=3_000)
+    p.assert_clean()
+    p.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     procs = start_mocks()

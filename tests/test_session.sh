@@ -93,7 +93,9 @@ test_session_fetch_pages_through_large_sessions() {
 _wrapper_env() {
   # A throwaway HOME: the wrapper creates ~/.claude-bedrock, and must never do that in yours from a test.
   export HOME="$TMP/home"; mkdir -p "$HOME"
-  unset CLAUDE_CONFIG_DIR CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_BEDROCK_USE_MY_CONFIG CLAUDE_BEDROCK_QUIET
+  unset CLAUDE_CONFIG_DIR CLAUDE_BEDROCK_CONFIG_DIR CLAUDE_BEDROCK_USE_MY_CONFIG CLAUDE_BEDROCK_QUIET CLAUDE_BEDROCK_MODEL
+  # no model list unless a test writes one (a checkout's own litellm/code-models.tsv must not change what these see)
+  export CODE_MODELS_FILE="$TMP/code-models.tsv"
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/claude" <<'EOS'
 #!/bin/sh
@@ -542,4 +544,71 @@ test_wrapper_continue_names_the_one_session_or_offers_the_picker() {
   assert_contains "$(cat "$TMP/err")" "resume: claude-bedrock --resume  (more than one session wrote in this folder meanwhile: pick yours)"
   # the marker (in the config folder, the transcripts' clock) is gone
   for f in "$HOME/.claude-bedrock"/.claude-bedrock-run.*; do [ ! -e "$f" ] || { echo "left: $f" >&2; return 1; }; done
+}
+
+
+# --- the models it may run (litellm/code-models.tsv, lib/code_models.sh): --models, --model, /model ---
+
+_code_tsv() {
+  { printf '# GENERATED\n# scope: all\n# id\tname\tprovider\tvendor\tin\tout\tcache_read\tcache_write\tfree\tcompat\tlisted\tdefault\tmax_out\tcontext\tnote\n'
+    printf 'claude-opus-5-5\tClaude Opus 5.5\tBedrock\tAnthropic\t4.40\t22.00\t0.22\t5.50\t0\tworks\t1\t%s\t-\t-\t-\n' "${1:-0}"
+    printf 'claude-haiku-5-5\tClaude Haiku 5.5\tBedrock\tAnthropic\t0.11\t0.55\t0.011\t0.1375\t0\tworks\t1\t0\t-\t-\t-\n'
+    printf 'llama-3-3-70b\tLlama 3.3 70B\tBedrock\tMeta\t0.72\t0.72\t-\t-\t0\tchat-only\t1\t%s\t8192\t-\tNo tools.\n' "${2:-0}"
+    printf 'mistral-large-3\tMistral Large 3\tBedrock\tMistral\t0.50\t1.50\t-\t-\t0\tworks\t0\t0\t-\t-\t-\n'
+    printf 'or/google/gemma-4-31b-it:free\tGemma 4 31B (free)\tOpenRouter\tGoogle\t0\t0\t-\t-\t1\tuntested\t1\t0\t32768\t262144\t-\n'
+  } > "$CODE_MODELS_FILE"
+}
+
+test_wrapper_models_lists_the_listed_models_with_prices_and_how_they_work() {
+  _wrapper_env; _code_tsv 1
+  out="$(_run_wrapper --models 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "* claude-opus-5-5"
+  assert_contains "$out" "chat only (no tools) · Meta on Bedrock"
+  assert_contains "$out" "free (\$0)"
+  assert_not_contains "$out" "mistral-large-3"
+  assert_contains "$(_run_wrapper --models all 2>&1)" "mistral-large-3"
+  assert_not_contains "$out" "CLAUDE --"   # never runs claude
+  rm -f "$CODE_MODELS_FILE"
+  out="$(_run_wrapper --models 2>&1)" && return 1
+  assert_contains "$out" "no model list yet"
+}
+
+test_wrapper_model_by_id_name_or_alias_rewritten_to_the_id_and_unknown_refused() {
+  _wrapper_env; _code_tsv
+  _run_wrapper --model "llama 3.3 70b" -p hi > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(head -n 1 "$TMP/out")" "--model llama-3-3-70b -p hi"
+  assert_eq "$(grep '^MODEL ' "$TMP/out")" "MODEL llama-3-3-70b"
+  assert_contains "$(cat "$TMP/err")" "bedrock · llama-3-3-70b (\$0.72 in / \$0.72 out per 1M tokens) · chat only: it cannot use tools"
+  _run_wrapper --model=google/gemma-4-31b-it:free -p hi > "$TMP/out" 2> "$TMP/err"
+  assert_contains "$(head -n 1 "$TMP/out")" "--model=or/google/gemma-4-31b-it:free -p hi"
+  assert_contains "$(cat "$TMP/err")" "openrouter · or/google/gemma-4-31b-it:free (free (\$0, OpenRouter)) · not tested with Claude Code"
+  # an alias becomes its slot's id (Plan mode on "haiku" would plan on Sonnet); after `--` nothing is touched
+  printf 'CLAUDE_BEDROCK_HAIKU_MODEL=claude-haiku-5-5\n' >> "$ENV_FILE"
+  _run_wrapper --model haiku -p -- --model x > "$TMP/out" 2> /dev/null
+  assert_contains "$(head -n 1 "$TMP/out")" "--model claude-haiku-5-5 -p -- --model x"
+  CLAUDE_BEDROCK_MODEL="Claude Haiku 5.5" _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_eq "$(grep '^MODEL ' "$TMP/out")" "MODEL claude-haiku-5-5"
+  # unknown: refused before claude runs, naming the choices
+  rc=0; _run_wrapper --model gpt-4 -p hi > "$TMP/out" 2> "$TMP/err" || rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$(cat "$TMP/err")" "unknown model 'gpt-4' (--model) — claude-bedrock --models lists them: claude-opus-5-5, claude-haiku-5-5, llama-3-3-70b, or/google/gemma-4-31b-it:free"
+  assert_eq "$(cat "$TMP/out")" ""
+  rc=0; CLAUDE_BEDROCK_MODEL=nope _run_wrapper -p hi > /dev/null 2> "$TMP/err" || rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$(cat "$TMP/err")" "unknown model 'nope' (CLAUDE_BEDROCK_MODEL)"
+}
+
+test_wrapper_starts_on_the_default_of_settings_and_lists_the_models_in_model() {
+  _wrapper_env; _code_tsv 0 1; unset CLAUDE_BEDROCK_AUTO_MODE
+  _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_eq "$(grep '^MODEL ' "$TMP/out")" "MODEL llama-3-3-70b"
+  a="$(head -n 1 "$TMP/out")"
+  assert_contains "$a" '--settings={"disableAutoMode":"disable","modelPicker":{"replaceBuiltInOptions":true,"options":[{"model":"claude-opus-5-5","label":"Claude Opus 5.5","description":"Anthropic · $4.40/$22.00 per 1M · works"},'
+  assert_contains "$a" '{"model":"or/google/gemma-4-31b-it:free","label":"Gemma 4 31B (free) · OpenRouter","description":"Google · free ($0) · not tested"}]}}'
+  assert_not_contains "$a" "mistral-large-3"
+  # your own folder: the menu, never auto mode off; a subcommand: neither
+  CLAUDE_BEDROCK_USE_MY_CONFIG=1 _run_wrapper -p hi > "$TMP/out" 2> /dev/null
+  assert_contains "$(head -n 1 "$TMP/out")" '--settings={"modelPicker":'
+  _run_wrapper mcp list > "$TMP/out" 2> /dev/null
+  assert_eq "$(head -n 1 "$TMP/out")" "CLAUDE mcp list"
 }

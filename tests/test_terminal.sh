@@ -806,3 +806,55 @@ STUB
   # the terminal container passes the switch in (and only it: the Code page's reaches the sandbox as its managed settings)
   assert_contains "$(cat "$STACK_DIR/compose.terminal.yaml")" 'TERMINAL_AUTO_MODE: ${TERMINAL_AUTO_MODE:-false}'
 }
+
+# claude-bedrock in the sandbox: the models come from LiteLLM's /model/info (the bn_* keys ./stack renders) — --models,
+# --model by id or name rewritten to the id, an unknown one refused, the default of Settings, and the /model menu
+test_claude_bedrock_in_the_sandbox_lists_and_checks_the_models_of_model_info() {
+  mkdir -p "$TMP/bin" "$TMP/home/.config/bedrock-now"
+  cat > "$TMP/bin/claude" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = --help ]; then printf 'Usage: claude\nCommands:\n  mcp  Configure MCP servers\n'; exit 0; fi
+printf 'ARG %s\n' "$@"; printf 'MODEL %s\n' "$ANTHROPIC_MODEL"
+STUB
+  cat > "$TMP/bin/curl" <<'STUB'
+#!/bin/sh
+for a in "$@"; do case "$a" in */model/info) cat "$INFO"; exit 0 ;; esac; done
+exit 0
+STUB
+  chmod 755 "$TMP/bin/claude" "$TMP/bin/curl"
+  cat > "$TMP/info.json" <<'JSON'
+{"data": [
+ {"model_name": "claude-opus-5-5", "model_info": {"mode": "chat", "input_cost_per_token": 4.4e-06, "output_cost_per_token": 2.2e-05, "bn_name": "Claude Opus 5.5", "bn_vendor": "Anthropic", "bn_compat": "works", "bn_code": true}},
+ {"model_name": "llama-3-3-70b", "model_info": {"mode": "chat", "input_cost_per_token": 7.2e-07, "output_cost_per_token": 7.2e-07, "bn_name": "Llama 3.3 70B", "bn_vendor": "Meta", "bn_compat": "chat-only", "bn_code": true, "bn_default": true}},
+ {"model_name": "mistral-large-3", "model_info": {"mode": "chat", "input_cost_per_token": 5e-07, "output_cost_per_token": 1.5e-06, "bn_name": "Mistral Large 3", "bn_vendor": "Mistral", "bn_compat": "works", "bn_code": false}},
+ {"model_name": "or/google/gemma-4-31b-it:free", "model_info": {"mode": "chat", "input_cost_per_token": 0, "output_cost_per_token": 0, "bn_name": "Gemma 4 31B (free)", "bn_vendor": "Google", "bn_compat": "untested", "bn_code": true}},
+ {"model_name": "cohere-embed-v4", "model_info": {"mode": "embedding", "input_cost_per_token": 1.2e-07}}
+]}
+JSON
+  run() { env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$TMP/home" INFO="$TMP/info.json" ANTHROPIC_BASE_URL=http://gateway:8091 ANTHROPIC_AUTH_TOKEN=sk-x \
+    CLAUDE_BEDROCK_OPUS_MODEL=claude-opus-5-5 ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5-5 TERMINAL_AUTO_MODE=false "$@" /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" "${ARGS[@]}"; }
+  command -v jq >/dev/null 2>&1 || { echo "no jq" >&2; return 77; }
+  ARGS=(--models); out="$(run 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "* llama-3-3-70b"
+  assert_contains "$out" "chat only (no tools) · Meta"
+  assert_contains "$out" "free (\$0)"
+  assert_not_contains "$out" "mistral-large-3"
+  assert_not_contains "$out" "cohere"
+  ARGS=(--models all); assert_contains "$(run 2>&1)" "mistral-large-3"
+  # the default of Settings (bn_default), the /model menu with the listed models, auto mode off
+  ARGS=(-p hi); out="$(run CLAUDE_BEDROCK_QUIET=1)" || return 1
+  assert_contains "$out" "MODEL llama-3-3-70b"
+  assert_contains "$out" 'ARG --settings={"disableAutoMode":"disable","modelPicker":{"replaceBuiltInOptions":true,"options":[{"model":"claude-opus-5-5","label":"Claude Opus 5.5","description":"Anthropic · $4.40/$22.00 per 1M · works"}'
+  assert_contains "$out" '{"model":"or/google/gemma-4-31b-it:free","label":"Gemma 4 31B (free) · OpenRouter","description":"Google · free ($0) · not tested"}]}}'
+  assert_not_contains "$out" '"mistral-large-3"'
+  # --model by name or OpenRouter id, rewritten; the launch line says what to expect; an unknown one is refused
+  ARGS=(--model "mistral large 3" -p hi); out="$(run CLAUDE_BEDROCK_QUIET=1)" || return 1
+  assert_contains "$out" "$(printf 'ARG --model\nARG mistral-large-3')"
+  ARGS=(--model=google/gemma-4-31b-it:free -p hi); out="$(run 2>&1)" || return 1
+  assert_contains "$out" "ARG --model=or/google/gemma-4-31b-it:free"
+  assert_contains "$out" "openrouter · or/google/gemma-4-31b-it:free (free (\$0)) · not tested with Claude Code"
+  ARGS=(--model gpt-4 -p hi); rc=0; out="$(run 2>&1)" || rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" "unknown model 'gpt-4' (--model) — claude-bedrock --models lists them: claude-opus-5-5, llama-3-3-70b, or/google/gemma-4-31b-it:free"
+  assert_not_contains "$out" "ARG"
+}

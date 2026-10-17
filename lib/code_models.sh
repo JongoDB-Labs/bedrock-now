@@ -213,13 +213,13 @@ _code_json_str() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037"\\')"; }
 # listed models by their full ids with our names, prices and how they work (modelPicker, replacing its own lineup of
 # aliases: an alias lets Claude Code pick the model itself — Plan mode on "haiku" plans on Sonnet), plus auto mode off
 code_picker_json() {
-  local f="${1:-}" off="${2:-0}" id name prov vend pin pout _cr _cw free compat listed def _mo _cx _note rows='' sep='' n=0
+  local f="${1:-}" off="${2:-0}" id name prov vend pin pout _cr _cw free compat listed def _mo _cx _note rows='' sep='' n=0 had=0
   while IFS=$'\t' read -r id name prov vend pin pout _cr _cw free compat listed def _mo _cx _note; do
     [ "$listed" = 1 ] || continue
     # at most CODE_PICKER_MAX rows (the default always): one argument stays far below Linux's 128 KB per argument, and
     # a longer menu helps nobody — --model and /model <id> reach every model
-    [ "$n" -lt "$((CODE_PICKER_MAX - 1))" ] || [ "$def" = 1 ] || continue
-    n=$((n + 1))
+    [ "$def" = 1 ] || [ "$n" -lt "$((CODE_PICKER_MAX - 1))" ] || { [ "$had" = 1 ] && [ "$n" -lt "$CODE_PICKER_MAX" ]; } || continue
+    n=$((n + 1)); [ "$def" != 1 ] || had=1
     rows="$rows$sep{\"model\":$(_code_json_str "$id"),\"label\":$(_code_json_str "$name$([ "$prov" = OpenRouter ] && echo ' · OpenRouter')"),\"description\":$(_code_json_str "$vend · $(_code_price "$pin" "$pout" "$free") · $(_code_compat_word "$compat")")}"
     sep=','
   done < <(_code_rows "$f")

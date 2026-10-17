@@ -1603,3 +1603,19 @@ test_backup_nightly_command_names_and_prunes() {
   assert_eq "$(tr '\n' ';' < "$TMP/calls")" "named nightly;prune nightly 3;list;named portal;prune portal 5;list;"
   if (cmd_backup --weekly) 2>/dev/null; then return 1; fi
 }
+
+# Settings › Claude Code › Models: only models the stack serves (litellm/code-models.tsv); a change re-renders LiteLLM's
+# config (its bn_* keys: the terminal's /model) and recreates LiteLLM only when that changed
+test_code_models_must_be_served_and_apply_re_renders_litellm() {
+  _env; _in_checkout; _stub_stack
+  printf '# x\nclaude-opus-5-5\tC\tBedrock\tAnthropic\t1\t1\t-\t-\t0\tworks\t1\t1\t-\t-\t-\nor/a/b:free\tB\tOpenRouter\tA\t0\t0\t-\t-\t1\tuntested\t1\t0\t-\t-\t-\n' > "$STACK_DIR/litellm/code-models.tsv"
+  if out="$( (_lines CODE_DEFAULT_MODEL=titan-embed-v2 | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "CODE_DEFAULT_MODEL: titan-embed-v2 is not a chat model this stack serves"
+  if out="$( (_lines CODE_MODELS=claude-opus-5-5,nope | _apply) 2>&1)"; then return 1; fi
+  assert_contains "$out" "CODE_MODELS: nope is not a chat model this stack serves"
+  _lines CODE_MODELS=claude-opus-5-5,or/a/b:free CODE_DEFAULT_MODEL=or/a/b:free | _apply 2>/dev/null
+  assert_eq "$(get_env CODE_MODELS)/$(get_env CODE_DEFAULT_MODEL)" "claude-opus-5-5,or/a/b:free/or/a/b:free"
+  assert_contains "$(cat "$TMP/calls")" "render"
+  _lines CODE_MODELS=anthropic | _apply 2>/dev/null
+  assert_eq "$(get_env CODE_MODELS)" anthropic
+}

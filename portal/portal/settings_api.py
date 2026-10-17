@@ -180,6 +180,12 @@ def routes(ctx: Ctx) -> list[Route]:
                 fields[k] = "must be a Claude model (Claude Code speaks Anthropic's API)"
         if values.get("MODELS_HIDDEN") and not set(values["MODELS_HIDDEN"].split(",")) <= chat:
             fields["MODELS_HIDDEN"] = "lists a model your AWS key cannot use"
+        # Settings › Claude Code › Models: models the stack serves (litellm/code-models.tsv; not checked before it exists)
+        code = {m[0] for m in snap["choices"].get("code_models") or []}
+        if code and values.get("CODE_DEFAULT_MODEL") and values["CODE_DEFAULT_MODEL"] not in code:
+            fields["CODE_DEFAULT_MODEL"] = "is not a chat model this stack serves"
+        if code and values.get("CODE_MODELS") not in (None, "", "all", "anthropic") and not set(values["CODE_MODELS"].split(",")) <= code:
+            fields["CODE_MODELS"] = "lists a model this stack does not serve"
         if {"STT_PROVIDER", "STT_API_KEY", "STT_MODEL"} & set(values):
             p, model = eff("STT_PROVIDER"), eff("STT_MODEL")
             models = snap["choices"]["stt_models"].get(p, [])

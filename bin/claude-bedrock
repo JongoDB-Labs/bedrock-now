@@ -112,7 +112,8 @@ export ANTHROPIC_AUTH_TOKEN="$key"
 # given one of Claude Code's aliases (haiku, sonnet, opus) Claude Code picks the model itself — with "haiku" it plans on
 # Sonnet in Plan mode — so an alias becomes its slot's id. --model is rewritten to that id (up to a `--` of yours).
 def="$(code_models_default)"
-ANTHROPIC_MODEL="$(_cb_model "${CLAUDE_BEDROCK_MODEL:-${def:-$opus}}" "${CLAUDE_BEDROCK_MODEL:+CLAUDE_BEDROCK_MODEL}${CLAUDE_BEDROCK_MODEL:-the default model}")"
+where='the default model'; [ -z "${CLAUDE_BEDROCK_MODEL:-}" ] || where=CLAUDE_BEDROCK_MODEL
+ANTHROPIC_MODEL="$(_cb_model "${CLAUDE_BEDROCK_MODEL:-${def:-$opus}}" "$where")"
 cb_args=(); want=''; i=0
 for a in "$@"; do
   i=$((i + 1))

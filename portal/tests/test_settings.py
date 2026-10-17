@@ -65,11 +65,16 @@ KEYS = [
     row("CLAUDE_MODEL_OPUS", "aws", "-", "edit", "model_pin", "pins", value=""),
     row("BACKUP_KEEP", "updates", "-", "widen-local", "keep", "-", value="7"),
     row("MODELS_HIDDEN", "aws", "-", "edit", "models_list", "owui-models", value=""),
+    row("CODE_MODELS", "aws", "-", "edit", "code_models", "litellm-cfg", value=""),
+    row("CODE_DEFAULT_MODEL", "aws", "-", "edit", "code_model", "litellm-cfg", value=""),
     row("PORTAL_SESSION_DAYS", "account", "-", "widen-local", "days", "portal", value=""),
 ]
 CHOICES = {"stt_models": {"bedrock": ["voxtral-small", "voxtral-mini"], "openai": ["gpt-4o-mini-transcribe"], "groq": []},
            "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm", "open-webui"],
-           "chat_models": [["claude-haiku-5-5", "Claude Haiku 5.5"], ["mistral-large-3", "Mistral Large 3"]]}
+           "chat_models": [["claude-haiku-5-5", "Claude Haiku 5.5"], ["mistral-large-3", "Mistral Large 3"]],
+           "code_models": [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
+                           ["mistral-large-3", "Mistral Large 3", "Bedrock", "Mistral", "works", False, True],
+                           ["or/google/gemma-4-31b-it:free", "Gemma 4 31B (free)", "OpenRouter", "Google", "untested", True, True]]}
 
 
 def write_snapshot(stdir, keys=KEYS, base=BASE, **extra):
@@ -157,7 +162,7 @@ def test_every_snapshot_validator_has_a_python_twin():
     # the names catalog/settings.tsv uses (the shell test compares that list with this one)
     for name in ("portal_password", "litellm_password", "email", "aws_key_id", "aws_secret", "budget", "webhook", "bool",
                  "on_off", "true_blank", "hour", "stt_provider", "stt_key", "stt_model", "or_key", "or_mode",
-                 "int_1_5000", "login"):
+                 "int_1_5000", "login", "code_models", "code_model"):
         assert name in st.VALIDATORS
 
 
@@ -627,6 +632,28 @@ def test_pins_and_hidden_models_must_be_enabled_chat_models(make, dirs):
     assert "CHAT_DEFAULT_MODEL" in apply(c, {"CHAT_DEFAULT_MODEL": "titan-embed-v2"}).json()["fields"]
     assert "MODELS_HIDDEN" in apply(c, {"MODELS_HIDDEN": "claude-haiku-5-5,nope"}).json()["fields"]
     assert apply(c, {"CHAT_DEFAULT_MODEL": "mistral-large-3"}).status_code == 202
+
+
+def test_code_models_must_be_models_the_stack_serves(make, dirs):
+    sd, rq = dirs
+    write_snapshot(sd); helper_up(sd)
+    c = make()
+    assert "CODE_DEFAULT_MODEL" in apply(c, {"CODE_DEFAULT_MODEL": "titan-embed-v2"}).json()["fields"]
+    assert "CODE_MODELS" in apply(c, {"CODE_MODELS": "claude-haiku-5-5,nope"}).json()["fields"]
+    assert apply(c, {"CODE_MODELS": "anthropic"}).status_code == 202
+
+
+def test_code_models_choices_are_sanitized(dirs):
+    sd, _ = dirs
+    write_snapshot(sd)
+    d = json.loads((sd / "settings.json").read_text())
+    d["choices"]["code_models"] = [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
+                                   ["or/x/y:free", "Y <b>", "OpenRouter", "X", "bogus", True, "yes"],
+                                   ["../../etc", "bad", "Bedrock", "A", "works", False, True], ["short"], "nope"]
+    (sd / "settings.json").write_text(json.dumps(d))
+    ch = st.snapshot(sd)["choices"]["code_models"]
+    assert ch == [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
+                  ["or/x/y:free", "Y <b>", "OpenRouter", "X", "untested", True, False]]
 
 
 def test_backup_list_is_sanitized(make, dirs):
