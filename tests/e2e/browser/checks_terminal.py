@@ -212,7 +212,10 @@ def survives(ctx):
             type_line(page, f, "tmux list-windows -F '#W' | tr '\\n' ' '; echo")
             out = wait_text(f, re.escape(mark), 20)
         rec.save()
-    return f"a window made in one browser ({mark}) is still there from the next one: {re.search(r'claude.*' + re.escape(mark), out).group(0)[:80]}"
+    # the list is one line, but other checks' windows (Run, Start, Open in the terminal) can make it wrap in xterm
+    names = " ".join(out.split())
+    expect(re.search(r"\bclaude\b", names), f"no claude window in {names[-300:]!r}")
+    return f"a window made in one browser ({mark}) is still there from the next one: {names[-120:]}"
 
 
 @check("browser", "terminal-claude-bedrock-inside")
