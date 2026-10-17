@@ -687,7 +687,8 @@ spawn server, Claude Code or any file at will.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops, the previews' ops (below: the listening
   ports, stopping one, the workspace's `.claude/launch.json`), the watchlist's two ops (below), the Review pane's
-  `git.diff` and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
+  `git.diff`, the Git panel's `git.status`, `git.log`, `git.file`, `git.stage`, `git.unstage`, `git.commit` and
+  `git.discard`, and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
   Permissions view's, *Open in the terminal*'s and the resume check's ops (`perm.read`, `perm.remove`,
   `terminal.resume`, `sessions.running`: below, "Budgets, Permissions, Open in the terminal, links"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
@@ -1180,6 +1181,103 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   search, no regular expression built from what you type), with the query capped at 64 characters, candidates at 256
   and 5,000 candidates per search — a session title or file name from the sandbox cannot make it slow. It runs nothing
   you would not run from the page's menus.
+
+### The Git panel
+
+The Code page's Git tab shows the branch, the changed files (staged, not staged, untracked, conflicts) and the last 20
+commits, and it stages, unstages, discards and commits. Unlike the Review pane, these commands **change** the
+repository — so on top of the Review's hardening, none of them may let the repository run a program: a commit is the
+place git runs hooks, and a hook (or a filter, a signing program …) is exactly what Claude, a command or a cloned
+repository can plant in `.git/` or in a configuration file.
+
+- [x] **The same hardening as `git.diff`, for every command.** The sandbox image's `git` by its fixed path, an
+  environment built from scratch (no system or global configuration or attributes, no `GIT_*` from outside, no lazy
+  fetch, no transport, `GIT_CEILING_DIRECTORIES`), the repository must be `/workspace` itself, every filter and diff
+  driver the configuration defines switched off (`clean`, `smudge`, `process`, `textconv`, `command`), `core.fsmonitor`,
+  pagers, credential helpers, `core.sshCommand`, `core.askPass` neutralised, submodules never entered
+  (`--ignore-submodules=all`), a deadline (30 s for an op) and output caps (2,000 entries and 1 MiB of names in a
+  status; 2 MiB of a file's diff; 20 commits). The global options are `--no-pager --no-replace-objects
+  --literal-pathspecs` (and `GIT_LITERAL_PATHSPECS=1`).
+- [x] **No hook runs.** `core.hooksPath=/dev/null` (hook files: `.git/hooks`, a `core.hooksPath` folder of the
+  repository or one an included file names, husky's …), and — because **git 2.54's config-based hooks**
+  (`hook.<name>.command` + `hook.<name>.event`) are *not* turned off by `core.hooksPath` (verified: a `pre-commit` defined
+  that way ran with `core.hooksPath=/dev/null`) — every `hook.<name>` the configuration defines (includes and
+  `includeIf` evaluated as git does) is listed first and switched off with `hook.<name>.enabled=false` (more than 256
+  drivers and hooks together: refused). The commit also has `--no-verify`. This covers `pre-commit`,
+  `prepare-commit-msg` (which `--no-verify` alone does not skip), `commit-msg`, `post-commit`,
+  `reference-transaction`, `post-index-change`, `post-checkout` (`git checkout -- path`), `post-rewrite` and
+  `pre-auto-gc`.
+- [x] **No other program either.** No signing: `--no-gpg-sign`, `commit.gpgSign=false`, `tag.gpgSign=false`, and
+  `gpg.program`, `gpg.ssh.program`, `gpg.x509.program` named as files that cannot exist, `gpg.ssh.defaultKeyCommand`
+  cleared. No editor: `GIT_EDITOR=:` and `core.editor=:` (git's own "start none"; the message comes on stdin with
+  `-F -`). No automatic housekeeping: `gc.auto=0`, `maintenance.auto=false` (git would start `git maintenance` after a
+  commit). One checkout worker (`checkout.workers=1`: no helper processes). The log: `--no-show-signature` and
+  `log.showSignature=false` (verifying a signature runs gpg), `log.mailmap=false`. Aliases cannot shadow git's own
+  commands, and none is used. **"Stage all" is never `git add --all`:** with a submodule, `git add --all` (or `git
+  add` of a folder holding one) makes git run `git status` *inside the submodule* — a child process with the
+  submodule's own configuration, whose filters the overrides cannot know. The panel's "stage all" is the list
+  `git.status` gives (which never names a submodule); a path that is a folder or a submodule (`git ls-files -s`:
+  mode 160000, also one not checked out) is refused.
+- [x] **Fixed argument lists; the page names only paths and a message.** The commands, all of them:
+  `rev-parse --show-toplevel --show-object-format --absolute-git-dir`, `config -z --get-regexp ^(filter|diff|hook)\.`,
+  `config -z --get-regexp ^user\.(name|email)$`, `rev-parse --verify --quiet HEAD^{commit}`, `status --porcelain=v2 -z
+  --branch --untracked-files=all --ignore-submodules=all --no-renames [-- path]`, `diff [--cached <HEAD or the empty
+  tree>] --numstat -z` and the patch (`--no-ext-diff --no-textconv --no-renames --ignore-submodules=all --no-color
+  --unified=3 … -- path`), `log --max-count=20 --no-show-signature --no-notes --no-color --no-decorate -z
+  --format=%H%x00%an%x00%ae%x00%at%x00%s <HEAD> --`, `ls-files -s -z -- paths`, `add -- paths`, `reset -q <HEAD> --
+  paths` (before a first commit: `rm --cached -q -r -f -- paths`; "unstage all": the path `.`), `commit --no-verify
+  --no-gpg-sign --cleanup=whitespace --quiet -F -`, `log -1 --format=%s HEAD --` and `checkout -q -- path`. Paths (1 to
+  100 a request, 64 KiB in all) are checked in the code container and again in bn-coded: relative to `/workspace`, no
+  empty, `.` or `..` part, no NUL, no `.git` part; they always follow `--` and are literal pathspecs (`*`, `:(top)` …
+  mean nothing). The **message** goes on git's stdin, never on its command line: at most 64 KiB, something besides
+  blanks, and no NUL, no control characters but tab and newline (a CR only before a newline) and no characters that
+  change the direction of text (a log read in a terminal later must say what it shows); `--cleanup=whitespace` (lines
+  starting with `#` are kept, never stripped as comments).
+- [x] **Discard keeps what it replaces.** An untracked file moves to the workspace trash; a tracked file's current
+  version moves there first (the entry itself — a link stays a link, never what it points to; never through a linked
+  folder), then `git checkout -- path` writes the staged version back (if git fails, the file is moved back). Only
+  while the file still has the modification time the panel saw (409 otherwise), only for unstaged changes (a file
+  with only staged changes, or a conflict, is refused), and the page asks first. After a discard the watched files are
+  checked at once (`watch_check`), as after a Review Undo.
+- [x] **Who a commit is by.** The repository's `user.name` / `user.email` (read by git, includes and all), else the
+  sandbox's own `~/.config/git/config` and `~/.gitconfig` — read by bn-coded itself, regular files only, never through
+  a link, includes not followed (the global configuration is never given to git) — else a fixed identity, "bedrock-now
+  Code page" `<code-page@bedrock-now.invalid>`. A name or e-mail with `<`, `>` or a control character is not used. It
+  is set as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` (nothing else of the environment can be added), and the panel shows it
+  before you commit. Commits are refused during a rebase, cherry-pick, revert or bisect (finish those in the terminal).
+- [x] **Write message asks, it never commits.** It sends the open session (or a new one) a prompt you see in the
+  conversation: the staged files (names quoted as the Review's comments quote them: a name cannot add a line) and their
+  diff (at most 30,000 characters) in a fence longer than any backtick run inside it, and the request to answer with the
+  message only, without tools. The diff is workspace content — instructions in it are text in a fence, but a model can
+  still be swayed by them; in *Manual* every tool still asks, and the answer only ever becomes the commit box's text:
+  the first fenced block (else the whole answer), with control and direction-changing characters taken out, at most
+  8,000 characters. You read it; Commit is yours.
+- [x] **The code container checks every answer.** Paths as workspace paths (once per group), status letters from a
+  short list, counts and times as bounded integers, hashes as 40/64 hex digits, the branch, upstream, identity and
+  subjects as one-line text; at most 2,000 entries and 20 commits; the page checks again and shows all of it as text.
+  The changing routes need the page's own Origin (as every other); two reads and one change run at once in the
+  sandbox (git's index lock is never fought over: a second change gets "busy", 429).
+- [x] **No push, no pull.** They are not in the panel, by decision: a push sends the workspace's code to a remote
+  with whatever credentials the sandbox holds (`~/.git-credentials`, a token in a URL, an SSH key), the remote's URL
+  is something Claude can change in `.git/config` (`remote.*.url`, `url.*.insteadOf` / `pushInsteadOf` rewriting it,
+  an `ext::` transport), and ssh would read `~/.ssh/config` (`ProxyCommand`, `LocalCommand`). A safe button would need
+  the effective URL shown and confirmed, an https/ssh-only protocol list, credential helpers limited to git's own, a
+  vetted ssh configuration and the sandbox's egress setting — more than a minimal panel should carry. Run `git push`
+  / `git pull` in the terminal, where you see what git does. The panel shows the upstream's ahead/behind counts from
+  the sandbox's last fetch (no network).
+- **Proof** (`code/test/bn-coded-git.test.mjs`, with Debian's git in the image's test stage, and locally with git
+  2.54): for each of hook files in `.git/hooks`, in a `core.hooksPath` folder and in one an included file sets,
+  config-based hooks (also from `includeIf`; skipped where git has none), clean/smudge/process filters, a filter named
+  `a=b` from `includeIf` + `info/attributes`, textconv and an external diff, fsmonitor, gpg signing, ssh signing, an
+  editor, and automatic gc with a `pre-auto-gc` hook plus parallel checkout, plain git in that repository runs the
+  marker program (the control) and the panel's whole round — status, log, a file's diff, stage, the staged diff,
+  commit, discard, unstage — does not; then all of them at once plus pagers, a credential helper, ssh, askpass, a
+  sequence editor, `log.showSignature`, aliases named after every command it runs and a submodule with its own hooks:
+  no marker, "stage all" leaves the submodule alone and refuses it by name, and git's own trace (`GIT_TRACE2_EVENT`)
+  of every command the panel runs, in that repository, records no child process. Also: messages with newlines kept
+  exactly and NUL, escape and direction characters refused; paths out of the workspace, `.git` parts and folders
+  refused; discard's trash, precondition and links; the identity's order (a link or an include in `~/.gitconfig` not
+  followed); states; caps; a FIFO include stopped by the deadline.
 
 ### Previews of dev servers in the sandbox
 

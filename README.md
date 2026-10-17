@@ -514,6 +514,19 @@ per browser.
   a regular expression (ripgrep's syntax, linear time) — in the workspace's files, any case unless **Aa**, with files
   to include/exclude (`src/**, *.ts`); results by file and line, a line opens the file there. It skips `.git`,
   dependencies and build output and honours `.gitignore`; at most 2,000 results, files up to 1 MB, 10 seconds.
+- **Git** (the explorer's **Git** tab, `Ctrl/⌘+Shift+G`; on a phone ⋯ → *Git*), when the workspace is a git
+  repository: the branch and how far it is ahead of / behind its upstream (as the sandbox last fetched it); the
+  changed files grouped **Staged**, **Changes** and **Untracked** (and conflicts during a merge) with their `+/−` —
+  a file opens its staged or unstaged diff in the editor area; **Stage** / **Unstage** per file or per group;
+  **Discard** asks first, then moves the file as it is now to the workspace trash and writes the staged (or last
+  committed) version back — only while the file is still as the panel saw it. The commit box commits what is staged
+  (`Ctrl/⌘+Enter`); **Write message** asks the open session (with the staged diff) to propose a message, which lands in
+  the box as a draft for you to read — it never commits by itself. The panel shows who the commit is by (the
+  repository's `user.name`/`user.email`, else the sandbox's `~/.gitconfig`, else "bedrock-now Code page"), and the last
+  20 commits. Commits made here run **no git hooks** (`pre-commit`, `commit-msg` …), no signing program and no editor,
+  whatever the repository configures — your computer's git would run its hooks, so staged files that run on your
+  computer are marked. There is no push or pull: run `git push` / `git pull` in the terminal, where you see the remote
+  and the credentials git uses. [docs/security.md](docs/security.md#the-git-panel)
 - **Command palette** (`Ctrl/⌘+K` or `Ctrl+Shift+P`; `Ctrl/⌘+P` goes straight to files; on a phone ⋯ → *Command
   palette*): actions (a new session, mode, model and effort, the terminal and explorer, Ports, export, memory,
   plugins, MCP, Settings), sessions to resume, files anywhere in the workspace and what you ran last, matched as you
@@ -1205,7 +1218,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   command, re-attach and resume, files, spend; then the page itself as a person uses it — a Bash prompt allowed in
   its card, an @-mentioned file edited and its diff, the palette, an upload, a reload without duplicates, an
   AskUserQuestion answered, plugins from a marketplace in the workspace with the install command confirmed by its
-  SHA-256, the MCP panel, a phone, the Settings row — each with zero CSP violations; previews of a dev server in the
+  SHA-256, the MCP panel, a phone, the Settings row, the Git panel (Claude edits a file; stage, commit and the log from
+  the panel, while planted hooks never run) — each with zero CSP violations; previews of a dev server in the
   sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`, isolation checked from inside
   the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel, PowerPoint, notebook, HTML and
   Mermaid previews and the sandboxed viewer's site (its policies, refused capabilities, isolation from inside it);

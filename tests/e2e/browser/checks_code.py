@@ -11,7 +11,9 @@ card, Accept edits mode and an @-mentioned file edited (the diff opens in the ed
 model switch (no turn on the other model), an interrupt, the terminal panel, a reload without duplicates,
 AskUserQuestion answered in its card, plugins from a marketplace in the workspace (one installed by a command shown
 with its SHA-256 first; its commands in the palette), the MCP panel, the Review pane (two Edits and a Bash change listed
-from git, one hunk undone, a line comment in the next prompt) with the command palette and Search in files, and a phone
+from git, one hunk undone, a line comment in the next prompt) with the command palette and Search in files, the Git panel
+(hooks planted for every event plain git runs them on; Claude's edit staged, Write message's draft, a commit with
+Ctrl+Enter in the log, a discard — not one hook runs), and a phone
 — each with zero CSP violations (Trusted Types enforced). Read only denies a write without a card while a read-only command runs; with the update
 helper (settings/*), Bypass permissions is allowed in Settings, then runs a command without a card, while a deny rule
 still denies, an ask rule on .git still asks, and a git hook written by Bash shows the watchlist's card, whose Revert
@@ -1302,6 +1304,124 @@ def ui_review(ctx):
     return (f"session {sid[:8]} (Haiku): git init by Bash; two Edits (a.txt twice, b.txt) and a sed (c.txt) — the Review pane listed all three "
             f"from git (Claude's marked, the sed's change \"not Claude's\"), a.txt's second hunk undone (omega back to 1, alpha kept), a comment on a.txt:{line_no} went with "
             f"the next prompt (in the transcript); the palette by keyboard; Search found the sed's change; no CSP violations")
+
+
+GITP = "e2e-git"
+GIT_HOOKS = ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "reference-transaction", "post-index-change", "post-checkout")
+
+
+@check("browser", "code-ui-git-panel")
+@saved
+def ui_git(ctx):
+    """The Git panel on Haiku: a repository whose .git/hooks hold a hook for every event a commit, a stage or a discard
+    would fire, each leaving a marker file (plain git in the sandbox runs them: the control); Claude edits a file; the
+    panel shows it with its diff, stages it, Write message puts Claude's proposal into the box without committing,
+    Ctrl+Enter commits, the log shows the commit, a discard puts a file back — and no hook ran."""
+    need_haiku()
+    page, rec = ui_page(ctx, "code-ui-git")
+    c = Code.on(page, rec, goto=False)
+    had_git = any(e["name"] == ".git" for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", []))
+    for d in (GITP, f"{GITP}/marks"):
+        c.api("POST", "/api/fs/mkdir", {"path": d})
+    r = c.api("PUT", f"/api/fs/file?path={GITP}/note.txt", {"text": "value = 1\n"})
+    expect(r["status"] == 200, f"write note.txt: {r['status']} {r['text'][:100]}")
+    marks = lambda: sorted(e["name"] for e in (c.api("GET", f"/api/fs?path={GITP}/marks")["json"] or {}).get("entries", []))
+    # Haiku, a new session; Bash plants the hooks and makes a commit with plain git — which runs them (the control)
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("chat-new").click()
+    setup = (f"git init -q && mkdir -p .git/hooks && for h in {' '.join(GIT_HOOKS)}; do printf '#!/bin/sh\\ntouch /workspace/{GITP}/marks/%s\\n' "
+             f"\"$h\" > .git/hooks/$h && chmod +x .git/hooks/$h; done && git add -A && git -c user.email=e2e@example.invalid -c user.name=e2e "
+             f"commit -qm 'e2e-git base' && echo committed")
+    ask(page, f"Use the Bash tool to run exactly this command in /workspace, then reply with the word done: {setup}")
+    card = page.get_by_test_id("permission")
+    see(card).to_contain_text("git init", timeout=120000)
+    page.get_by_test_id("perm-once").click()
+    answered(page)
+    control = marks()
+    expect("pre-commit" in control and "post-commit" in control, f"control: plain git in the sandbox did not run the hooks ({control})")
+    for m in control:
+        c.api("DELETE", f"/api/fs?path={GITP}/marks/{m}")
+    expect(marks() == [], f"markers left: {marks()}")
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    # Claude edits the file (Accept edits: no card)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    wait_state(c, sid, "mode", "acceptEdits")
+    ask(page, f"Use the Edit tool: in {GITP}/note.txt change `value = 1` to `value = 2`. Change nothing else, run no command, then reply with the word done.")
+    answered(page)
+    expect("value = 2" in c.api("GET", f"/api/fs/file?path={GITP}/note.txt")["json"]["text"], "Claude did not edit note.txt")
+    # the Git tab: the file under Changes, +1 −1, its diff
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+Shift+G")
+    row = lambda group: page.locator(f"[data-testid=git-file][data-path='{GITP}/note.txt'][data-group={group}]")
+    see(row("unstaged")).to_have_count(1, timeout=30000)
+    see(row("unstaged")).to_contain_text("+1")
+    see(row("unstaged")).to_contain_text("−1")
+    see(page.get_by_test_id("git-no-hooks")).to_contain_text("No git hooks run here")
+    base = page.locator("[data-testid=git-log-entry] .gitp-subject").first
+    see(base).to_have_text("e2e-git base", timeout=30000)
+    row("unstaged").get_by_test_id("git-open").click()
+    see(page.locator(f"[data-testid=git-diff-pane][data-path='{GITP}/note.txt']")).to_contain_text("value = 2", timeout=30000)
+    page.mouse.move(0, 0)
+    shot(page, "g1-code-ui-git")
+    # stage it (post-index-change would run with plain git)
+    row("unstaged").hover()
+    row("unstaged").get_by_test_id("git-stage").click()
+    see(row("staged")).to_have_count(1, timeout=30000)
+    # Write message: Claude's proposal fills the box — nothing is committed
+    page.get_by_test_id("git-write-message").click()
+    # (asked to use no tool; should Haiku try one anyway — a plain `git status` would fire post-index-change — it is denied)
+    denied = 0
+    t0 = time.time()
+    while time.time() - t0 < 150:
+        page.wait_for_function("() => !!document.querySelector('[data-testid=git-message]')?.value || !!document.querySelector('[data-testid=permission]')", timeout=150000)
+        if page.get_by_test_id("git-message").input_value():
+            break
+        page.get_by_test_id("perm-deny").click()
+        page.get_by_test_id("perm-deny-send").click()
+        denied += 1
+        page.wait_for_timeout(500)
+    draft = page.get_by_test_id("git-message").input_value()
+    expect(draft != "", "no draft from Write message")
+    see(base).to_have_text("e2e-git base")
+    expect(c.api("GET", "/api/git/log")["json"]["commits"][0]["subject"] == "e2e-git base", "Write message committed something")
+    shot(page, "g2-code-ui-git-draft")
+    # your message, Ctrl+Enter (pre-commit, prepare-commit-msg, commit-msg, post-commit, reference-transaction would run)
+    msg = "e2e: value = 2, committed from the Git panel"
+    page.get_by_test_id("git-message").fill(msg)
+    page.get_by_test_id("git-message").press("Control+Enter")
+    see(page.get_by_test_id("toast").last).to_contain_text("Committed", timeout=60000)
+    see(base).to_have_text(msg, timeout=30000)
+    log = c.api("GET", "/api/git/log")["json"]["commits"]
+    expect(log[0]["subject"] == msg and log[1]["subject"] == "e2e-git base", f"log: {[x['subject'] for x in log[:3]]}")
+    st = c.api("GET", "/api/git/status")["json"]
+    expect(not any(e["path"] == f"{GITP}/note.txt" for e in st["staged"] + st["unstaged"]), f"note.txt still changed: {st}")
+    # a discard: the file as committed comes back (post-checkout would run with plain git)
+    c.api("PUT", f"/api/fs/file?path={GITP}/note.txt", {"text": "value = 3\n"})
+    page.get_by_test_id("git-refresh").click()
+    see(row("unstaged")).to_have_count(1, timeout=30000)
+    row("unstaged").hover()
+    row("unstaged").get_by_test_id("git-discard").click()
+    page.get_by_test_id("git-discard-confirm").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Discarded the changes", timeout=60000)
+    expect(c.api("GET", f"/api/fs/file?path={GITP}/note.txt")["json"]["text"] == "value = 2\n", "the discard did not put the committed text back")
+    shot(page, "g3-code-ui-git-committed")
+    # no hook ran: not one marker
+    after = marks()
+    expect(after == [], f"hooks ran from the panel: {after}")
+    who = st.get("identity") or {}
+    # clean up: the hooks, the folder, and the repository this check made
+    for h in GIT_HOOKS:
+        c.api("DELETE", f"/api/fs?path=.git/hooks/{h}")
+    c.api("DELETE", f"/api/fs?path={GITP}")
+    if not had_git:
+        c.api("DELETE", "/api/fs?path=.git")
+    csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$"])
+    return (f"session {sid[:8]} (Haiku): hooks for {', '.join(GIT_HOOKS)} planted; plain git ran {len(control)} of them (control); Claude's Edit "
+            f"listed under Changes (+1 −1) with its diff, staged, Write message drafted {draft.splitlines()[0][:60]!r} without a commit{f' ({denied} tool call denied)' if denied else ''}, "
+            f"Ctrl+Enter committed as {who.get('name', '?')} ({who.get('from', '?')}), the log shows it, a discard restored the committed text — "
+            f"0 hook markers from the panel; no CSP violations")
 
 
 @check("browser", "code-ui-phone")

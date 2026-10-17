@@ -6,7 +6,9 @@ diffs, previews of workspace files (Markdown with formulas and diagrams, images,
 YAML, Word, Excel, PowerPoint, Jupyter notebooks; HTML files and Mermaid diagrams in a sandboxed viewer), file checkpoints
 ("Restore files to here" on a prompt), the CLAUDE.md memory files, plugins & marketplaces, MCP
 servers, the sandbox terminal in a bottom panel, the Review pane (every changed file — git's view or the session's
-edits — with Keep / Undo and line comments for the next prompt), Search in files and a command palette. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
+edits — with Keep / Undo and line comments for the next prompt), Search in files, the Git panel (staged / unstaged /
+untracked files with their diffs, stage, unstage, discard to the trash, commit with a message the session can draft, the
+last 20 commits — git in the sandbox runs no hook) and a command palette. Preact + CodeMirror 6 + marked's lexer, bundled by esbuild. It talks to the code backend only
 through the API in `code/server/protocol.mjs`; `src/api.ts` is the one module that knows that wire format.
 
 ## Build
@@ -101,7 +103,12 @@ Review and search: `/api/git/diff` compares the workspace with its state at the 
 only git's view shows them; it also bumps `package.json`, a file of the watchlist); `watch_check` reports the watched
 files that changed since the last turn; `/api/fs/grep` searches the in-memory files (literal or JavaScript regex, case,
 globs); the hostile mock adds markup, bidi, `../` paths, counts that do not add up, a file named `.claude\settings.json`
-and one with a newline in its name to both.
+and one with a newline in its name to both. The Git panel: `/api/git/status|log|file|stage|unstage|commit|discard` over
+an in-memory index between that last commit and the files (a commit moves both; the log starts with three commits;
+discard refuses a file `/__mock/touch` changed since, as the backend's precondition does); a prompt that starts with
+"Propose a git commit message" (the panel's *Write message*) is answered with a message in a ```` ```text ```` block;
+the hostile mock adds markup and bidi in the branch, identity, names and subjects, paths out of the workspace, bad
+codes and counts, a conflict, and a proposal with control and direction characters.
 The artifact viewer: `/.bn/artifact` names `a<capability>.artifact.localhost` on that same port, which serves
 `dist/artifact/*` with the viewer's policies (`/__mock/bypass?remote=1` makes it unavailable, as over remote access).
 The previews' fixtures include Word, Excel, PowerPoint, notebooks, HTML, Mermaid and formulas, with their hostile ones
@@ -133,7 +140,10 @@ Trusted Types policy (one, named `bn-worker`, these workers only); the Review's 
 diffs undone exactly, CRLF files kept CRLF, a missing last newline kept, a moved change found, a changed file
 refused), its files from git's view or the session's edits, stable ids, what is never undone, the comments' prompt
 text, `/api/git/diff` and `/api/fs/grep` answers on hostile input; the palette's fuzzy matcher (ranking, linear
-time on hostile candidates) and the shortcut list; and part 2 (`test/office.test.ts`): the zip reader's
+time on hostile candidates) and the shortcut list; the Git panel (`test/git.test.ts`): the *Write message* prompt (file
+names quoted, the diff in a fence it cannot close, the cap), the draft taken from the answer (first block, controls and
+direction characters out), the Commit blocker, and `/api/git/status`, `/api/git/log` and `/api/git/file` answers on
+hostile input, each scan timed on crafted input; and part 2 (`test/office.test.ts`): the zip reader's
 caps (entries, declared and actual sizes, ratio, overlap, zip64, encryption; the 100 MB bomb, the liar), the HTML
 allowlist on hostile markup, Word/Excel/PowerPoint/notebook readers on ordinary and hostile files, the ANSI and formula
 scanners (timed on crafted input), formulas and diagrams in Markdown, Office kinds by bytes and name, the artifact
@@ -162,7 +172,9 @@ way out — each request refused before it leaves the browser — over remote ac
 2 GB, whose smaller caps say the preview is limited there), the Review pane (two edits and a
 Bash change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without git, a changed file refused
 and a new file trashed; a hostile diff and search as text), Search in files (case, regex, globs, a hit opening the
-editor at its line), the command palette by keyboard alone and the shortcut sheet, and these on a phone — and a hostile session (markup in every field,
+editor at its line), the command palette by keyboard alone and the shortcut sheet, the Git panel (a file's diff,
+stage and unstage, discard asking first and refused for a file changed since, *Write message* filling the box without
+committing, `Ctrl+Enter`, the log; a hostile sandbox's branch, names and proposal as text), and these on a phone — and a hostile session (markup in every field,
 `javascript:` links, bidi and control characters, giant strings, bad ids; a hostile plugin catalog and MCP list). Any CSP violation,
 page error or dialog fails a check. Screenshots and `results.json` go to `e2e/out/` (`E2E_OUT=…` to change;
 `E2E_ONLY=phone` to run one check, `E2E_ONLY='review|search'` several; `KEEP_IMAGE=1` keeps the runner image
