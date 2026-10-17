@@ -386,8 +386,10 @@ test_spawn_server_in_the_terminal_image() {
   for bad in "net.connect" "shell: true" "execSync" "exec(" "'-y'" "'--dangerously-skip-permissions'" "bypassPermissions'" "'auto'"; do
     assert_not_contains "$(printf '%s\n' "$c" | grep -v '^//')" "$bad"
   done
-  # a session may be switched to Bypass permissions (CODE_ALLOW_BYPASS), never started in it
-  assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions']"
+  # a session may be switched to Bypass permissions (CODE_ALLOW_BYPASS), never started in it; the Git panel's
+  # Write-message helper may take tools away (--tools= empty only) and keep no transcript
+  assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence']"
+  assert_contains "$c" "'--tools': (v) => v === '',"
   assert_contains "$c" "'--permission-mode': oneOf('default', 'acceptEdits', 'plan', 'dontAsk'),"
   assert_contains "$c" "server.maxConnections = MAX_CONNECTIONS"
   assert_contains "$c" "process.umask(0o077)"
