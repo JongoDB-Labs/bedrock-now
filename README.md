@@ -544,6 +544,18 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   with the same model, mode and effort; `/resume` opens the session list. Claude's latest to-do list stays pinned
   above the prompt; the conversation can be exported as Markdown (the whole transcript, not only what the page shows);
   notifications when a prompt waits or a turn ends are opt-in (⋯ menu).
+- **@-mentions of context.** `@terminal` (the last 200 lines of the terminal panel's current window — `@terminal:500`
+  for more), `@diff` (the changes the Review pane lists, as a diff), `@problems` (Run & test's failed runs and the end
+  of their output) and `@file#L5-10` (those lines of a file — also the editor's selected lines: **Alt+K**, the button a
+  selection shows, or the command palette); the terminal panel, the Review pane and the Problems list have an *Add to
+  prompt* button too. Each is a chip in the prompt box: click it to see exactly what goes (*Capture again* takes the
+  terminal, the changes or the Problems list anew), × drops it. They go after your text as quoted context — one
+  block each, headed with what it is, its content in a fence it cannot close, invisible and direction-changing
+  characters shown as `⟨U+…⟩`, a line over 2,000 characters and a block over its share cut (and said), at most 80,000
+  characters in all — labelled as data from the workspace, not instructions; the conversation folds it away under
+  your prompt. Not with a `/command` or a `# memory` line (the chips wait). The workspace's text is anyone's to plant
+  something in (a file, a command's output), and it goes as part of **your** message: in *Auto* or *Bypass* mode, read
+  the chips before you send ([docs/security.md](docs/security.md#context-mentions-and-plan-comments)).
 - **Memory.** ⋯ → *Memory (CLAUDE.md)* edits this workspace's `CLAUDE.md` and your own in the sandbox
   (`~/.claude/CLAUDE.md`). A shortcut of the page's own: a one-line prompt starting with `# ` is added to the
   workspace's `CLAUDE.md` instead of being sent (the terminal's Claude Code has no such shortcut: ask Claude there,
@@ -603,7 +615,10 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   in the sandbox's own Claude Code settings; never "skip all permissions"; where Claude Code proposes one for the
   workspace, a separate **Always, in this workspace's settings**, which Claude Code on your computer honours too) or
   **Deny** (with an optional note for Claude). In *Plan* mode Claude asks you to approve its plan: approve and let it
-  edit (*Accept edits*), approve and keep asking (*Manual*), or keep planning with a note. A card shown only in part
+  edit (*Accept edits*), approve and keep asking (*Manual*), or keep planning with a note. **Comment on lines** shows
+  the plan line by line: a comment on any line (a click, or Enter on it — ↑/↓ move between lines, Esc cancels) goes
+  back with *Keep planning* as `line N:`, the line quoted, then your comment; approve instead and the comments go as
+  your next message in that session. A card shown only in part
   (very large input) can only be denied. A new card never takes the focus from the prompt box, the editor or the
   terminal panel, and its keys **1**/**2**/**3** (Allow once, Always, Deny with a note) answer only once you have
   clicked or tabbed into it. While a prompt waits the Code tab shows a badge (in a browser that has used the Code

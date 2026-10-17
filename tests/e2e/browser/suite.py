@@ -14,6 +14,7 @@ import checks_artifact  # noqa: F401
 import checks_browser  # noqa: F401
 import checks_code  # noqa: F401
 import checks_http  # noqa: F401
+import checks_mentions  # noqa: F401
 import checks_preview  # noqa: F401
 import checks_run  # noqa: F401
 import checks_terminal  # noqa: F401

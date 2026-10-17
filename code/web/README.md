@@ -200,6 +200,9 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/mathtext.ts` | `$…$` / `$$…$$` found in Markdown before lexing (linear), as placeholders markdown.ts turns into formulas |
 | `src/transcript.ts` | the latest to-do list, the conversation as Markdown |
 | `src/review.ts` | the Review pane's model: files from git's view or the session's edits, hunk ids, reverse patches, line comments |
+| `src/mentions.ts` | rich @-mentions: blocks of quoted context after a prompt (fences their content cannot close, quoted headers, visible characters, caps with their notes), `@path#L…` found in linear time, the picker's own entries |
+| `src/attach.ts` | the @-mention chips' state and capture: the editor's lines, a file's, the terminal (`/api/terminal/capture`), the Review's changes, the Problems list |
+| `src/plannotes.ts` | comments on a plan's lines: kept per plan while it waits; sent back with Keep planning or after an approval |
 | `src/fuzzy.ts` | the command palette's matcher (linear time: a greedy pass and KMP, inputs capped) |
 | `src/budget.ts` | a session's budget (levels crossed, this browser's copy), the cold prompt cache's line, the Opus hint |
 | `src/groups.ts` | the session list's groups (Needs you, Working, Done) and the tab title |
@@ -207,6 +210,6 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/shortcuts.ts` | every keyboard shortcut, in one list (the shortcut sheet, the empty editor, the palette's hints) |
 | `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
 | `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |
-| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form), Composer (with the comment chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette, Budget (dialog), Permissions (dialog), Guards (the lines above the prompt box) |
+| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form and plan line comments), Composer (with the comment and @-mention chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette, Budget (dialog), Permissions (dialog), Guards (the lines above the prompt box) |
 | `dev/` | the mock backend and `npm run dev`; `preview-fixtures.mjs` (the previews' fixtures, also written to `tests/e2e/browser/fixtures/previews`; `office-fixtures.mjs`: part 2's, made byte by byte) |
 | `e2e/` | the browser checks |

@@ -6,6 +6,26 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Rich @-mentions on the Code page.** Besides files, `@` now offers `@terminal` (the last 200 lines of the terminal
+  panel's current window; `@terminal:500` for more), `@diff` (the changes the Review pane lists), `@problems` (Run &
+  test's failed runs with the end of their output) and `@file#L5-10` (those lines of a file). The editor's selected
+  lines go in with **Alt+K** (or the *Lines 5–10 to the prompt* button a selection shows, or the command palette);
+  the terminal panel, the Review pane and the Problems list have an *Add to prompt* button too. Each becomes a chip
+  in the prompt box that shows exactly what will go; it goes after your text as a block of quoted context —
+  labelled as data from the workspace, not instructions, in a fence its content cannot close, invisible and
+  direction-changing characters shown, long lines and large blocks cut (and said), at most 80,000 characters in all
+  — and the conversation folds it away under your prompt. The terminal's lines come from a new read-only op of the
+  sandbox's spawn server, `terminal.capture` (`tmux capture-pane` with fixed arguments, a checked pane id, escapes
+  taken out). What a mention quotes is the workspace's text but goes as part of **your** message, so read the chips
+  before you send in *Auto* or *Bypass* mode ([README](README.md#chat-and-sessions),
+  [docs/security.md](docs/security.md#context-mentions-and-plan-comments)).
+- **Comments on a plan's lines.** When Claude presents a plan (Plan mode), **Comment on lines** shows it line by line:
+  a comment on any line (a click, or Enter on it; ↑/↓ move between lines, Esc cancels) goes back with **Keep
+  planning…** as `line N:` with the line quoted and your comment, or, when you approve, as your next message in that
+  session. Works by keyboard and on a phone.
+
 ## [0.10.0] - 2026-10-17
 
 ### Changed
