@@ -263,7 +263,7 @@ test fails.
   `.env` (`CLAUDE_BEDROCK_HAIKU_MODEL` …): given the alias, Claude Code picks the model itself, and with `haiku` it
   plans on Sonnet in *Plan* mode (2.1.296, probed; with the full id it stays on Haiku). A `--model haiku` of yours, or
   `/model haiku` typed in a session, still reaches Claude Code as the alias. The browser terminal's `claude-bedrock`
-  maps the aliases the same way (its auto mode is off unless Settings › Code page › *Auto mode in the terminal* is on:
+  maps the aliases the same way (its auto mode is off unless Settings › Claude Code › *Auto mode in the terminal* is on:
   the sandbox's managed settings, and its own `--settings` when only the Code page's Auto mode is on).
 - **Requests at launch.** Claude Code's changelog, 2.1.290: "Changed `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` to
   also skip the startup connection warm-up" — the wrapper sets that variable. The changelog names no other switch for

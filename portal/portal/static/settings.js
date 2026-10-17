@@ -168,7 +168,7 @@
     return el("div", { class: "set-picker" }, el("label", { for: "set-picker", text: "Section" }), sel);
   }
 
-  // showSection ID — that section alone (and the address #settings/ID); a search in progress is cleared
+  // showSection ID — that section alone (and the address: #settings/ and its id); a search in progress is cleared
   function showSection(id, opts = {}) {
     if (!sectionOf(id)) return;
     current = id;
@@ -231,7 +231,9 @@
       el("span", { class: "note set-find-note", id: "set-find-note", "aria-live": "polite", text: known ? "" : "Defaults are not known yet: ./stack up writes them." }), clear);
   }
   function rowMatches(r, q) {
-    const keyNames = [r.dataset.key, ...(withOf[r.dataset.key] || [])].filter(Boolean);
+    // the row's key and the ones shown inside it, except values ./stack derives (setup's model choices differ from
+    // .env.example's blank on every install: they are no change of yours)
+    const keyNames = [r.dataset.key, ...(withOf[r.dataset.key] || []).filter((w) => keys[w] && keys[w].policy !== "derived")].filter(Boolean);
     const okChanged = !find.changed || keyNames.some((n) => changedFromDefault(keys[n]));
     return okChanged && (!q || (findText.get(r) || "").includes(q));
   }

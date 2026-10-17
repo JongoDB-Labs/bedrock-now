@@ -82,6 +82,62 @@ test_table_columns_are_valid() {
   assert_eq "$bad" ""
 }
 
+# catalog/settings-layout.tsv: where the Settings page and ./stack config list show each key
+test_the_layout_places_every_key_once() {
+  local bad py
+  bad="$(settings_rows | cut -f1 | awk -F'\t' -v l="$SETTINGS_LAYOUT_TSV" '
+    BEGIN { while ((getline r < l) > 0) { if (r ~ /^#/ || r == "") continue; split(r, c, "\t"); if (c[1] ~ /^[@+]/) continue; n[c[1]]++ } }
+    { t[$1] = 1; if (n[$1] != 1) print $1 " placed " n[$1] + 0 " times" }
+    END { for (k in n) if (!(k in t)) print k " is not in settings.tsv" }')"
+  assert_eq "$bad" ""
+  # sections exist and come first; places, parents (a switch of the same section, never a row shown inside another)
+  bad="$(settings_layout_rows | awk -F'\t' '
+    $1 ~ /^@/ { if (NF < 4 || $2 == "" || $3 == "") print $1 " section text"; sec[substr($1, 2)] = 1; next }
+    { if (!($2 in sec)) print $1 " section " $2
+      if ($3 !~ /^(main|more|with)$/) print $1 " place " $3
+      if ($3 == "with" && $4 == "-") print $1 " with no row"
+      if ($3 != "with" && ($5 == "" || $5 == "-")) print $1 " no summary"
+      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart)$/) print $1 " unknown own row"
+      s[$1] = $2; p[$1] = $4; pl[$1] = $3; o[++n] = $1 }
+    END { for (i = 1; i <= n; i++) { k = o[i]; if (p[k] == "-") continue
+            if (!(p[k] in s)) print k " parent " p[k] " unknown"; else if (s[p[k]] != s[k]) print k " parent in another section"
+            else if (pl[p[k]] == "with") print k " parent is shown inside another row" } }')"
+  assert_eq "$bad" ""
+  # the portal knows these sections, in this order (portal/portal/settings.py SECTIONS)
+  py="$(cat "$STACK_DIR/portal/portal/settings.py")"
+  assert_contains "$py" "SECTIONS = ($(settings_layout_rows | awk -F'\t' '$1 ~ /^@/ { printf "%s\"%s\"", (n++ ? ", " : ""), substr($1, 2) }'))"
+}
+
+test_config_list_follows_the_pages_sections() {
+  _env
+  set_env_batch TERMINAL_ENABLED true CODE_ENABLED true
+  local out
+  out="$(NO_COLOR=1 config_list)"
+  # the page's section titles, in its order (Diagnostics has no keys)
+  assert_eq "$(printf '%s\n' "$out" | awk '/^[A-Z]/ && NR > 1' | tr '\n' '|')" \
+    "Account & security|AWS & models|Spending & budgets|Chat & voice|Claude Code|Files & sharing|Remote access|Updates & backups|Advanced|About this install|"
+  # the Code page with Bypass and Auto under it, in Claude Code (they were under Advanced); the terminal's budget with
+  # the other budgets; a pair's second half and a switch's dependents indented under it
+  assert_eq "$(printf '%s\n' "$out" | awk '/^Claude Code$/ { f = 1; next } /^[A-Z]/ { f = 0 } f && /CODE_/ { print $1 }' | tr '\n' ' ')" \
+    "CODE_ENABLED CODE_ALLOW_BYPASS CODE_AUTO_MODE "
+  assert_contains "$out" "    CODE_ALLOW_BYPASS            (blank)   (less protection: this computer only)"
+  assert_contains "$(printf '%s\n' "$out" | awk '/^Spending & budgets$/ { f = 1; next } /^[A-Z]/ { f = 0 } f')" "  BUDGET_TERMINAL                50   (less protection: this computer only)"
+  assert_contains "$out" "    AWS_SECRET_ACCESS_KEY        (set)   (this computer only)"
+  assert_contains "$out" "      REMOTE_PREVIEW             (blank)   (less protection: this computer only)"   # under REMOTE_TERMINAL
+  assert_not_contains "$out" "Other"
+  # every key of the table once
+  assert_eq "$(printf '%s\n' "$out" | awk '/^ +[A-Z][A-Z0-9_]+ / { print $1 }' | sort | uniq -d)" ""
+  assert_eq "$(printf '%s\n' "$out" | awk '/^ +[A-Z][A-Z0-9_]+ / { print $1 }' | wc -l | tr -d ' ')" "$(settings_rows | wc -l | tr -d ' ')"
+}
+
+test_config_list_names_keys_the_layout_misses() {   # (a layout older than the table: nothing is left out)
+  _env
+  SETTINGS_LAYOUT_TSV="$TMP/layout.tsv"
+  grep -v '^BUDGET_SETUP' "$T_ROOT/catalog/settings-layout.tsv" > "$SETTINGS_LAYOUT_TSV"
+  local out; out="$(NO_COLOR=1 config_list)"
+  assert_contains "$out" "$(printf '\nOther\n  BUDGET_SETUP')"
+}
+
 test_every_validator_exists_in_bash_and_python() {
   local v py
   py="$(cat "$STACK_DIR/portal/portal/settings.py")"

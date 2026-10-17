@@ -181,6 +181,9 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
   only `.env.example`'s value as their default (Settings › *Changed from default*; secrets are never compared), and
   the SHA-256 of `.env` (`base`). Reveal/Copy returns only what the portal already holds for Home and its own work
   (the Admin and Files sign-ins, the three LiteLLM keys, `SHARED_MCP_TOKEN`), after the password again.
+  Where the page shows each key (`catalog/settings-layout.tsv`: sections, *More*, which switch a setting belongs to)
+  is presentation only: the portal reads it from its read-only catalog mount, type-checks every field, and nothing in
+  it decides what may change, from where, or how — that stays in `catalog/settings.tsv` and the helper.
 - **The front door.** A change, a Reveal, a diagnostic and "Sign out other devices" need a session,
   `X-Requested-With`, the portal's own `Origin`, the portal password typed again (wrong ones count toward the
   login's lock-out), and, for a remote session, `REMOTE_ADMIN_ACTIONS=true`. A body over 12 KB is refused (Caddy:
@@ -536,7 +539,7 @@ what a successful attacker reaches is the container — with the three exception
   what is mounted. Claude Code's own settings and history live in the `terminal-home` volume (not part of
   `./stack backup`).
 - [x] **Its own key.** It holds `claude-code-terminal`, a LiteLLM key of its own with its own monthly budget
-  (`BUDGET_TERMINAL`, $50: `./stack config set BUDGET_TERMINAL`, listed under Settings → Advanced; a meter on Home, a
+  (`BUDGET_TERMINAL`, $50: `./stack config set BUDGET_TERMINAL`, in Settings → Spending & budgets; a meter on Home, a
   line in `./stack costs`), never the `claude-code` key of
   `claude-bedrock` on your computer, the master key, the portal password or AWS credentials. The key itself may
   call only Claude Code's LiteLLM routes — `/v1/messages` (with `…/count_tokens`), `/v1/models`, `/key/info`,
@@ -1618,7 +1621,7 @@ Remaining risks:
 `claude --dangerously-skip-permissions`, and the terminal tab lets you); what it removes is your check of each
 action, including those a file, a web page or a tool's output talks Claude into. So:
 
-- **Off unless you allow it.** `CODE_ALLOW_BYPASS` (Settings → Code page → *Allow Bypass permissions*) is
+- **Off unless you allow it.** `CODE_ALLOW_BYPASS` (Settings → Claude Code → *Allow Bypass permissions*) is
   *widen-local*: on only from the computer running bedrock-now, off from anywhere. The code container reads it at
   its start (a change recreates it) and is the only place it is enforced: with it, Claude Code processes start with
   `--allow-dangerously-skip-permissions` — still in one of the asking modes; Claude Code refuses a switch to bypass
@@ -1675,7 +1678,7 @@ lines, or *Allow once*'s retry prompt, which names the exact call it approves (a
 that call, and the hook lets only that one through). It reduces prompts; it does not make anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
 internet switch).
 
-- **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Code page → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto
+- **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Claude Code → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto
   mode in the terminal*) are *widen-local*: on only from the computer running bedrock-now, off from anywhere. The code
   container enforces the Code page's: without it, sessions start with auto mode off and `set_mode auto` is refused
   (403), whatever a page sends. Both switches reach the sandbox through Claude Code's **managed settings**, which

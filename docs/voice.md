@@ -218,7 +218,7 @@ the audio and uses that.
 ## Troubleshooting
 
 - **"Error transcribing chunk: External: …"** in Chat carries the stt container's message, for example:
-  - *the Open WebUI key is over its monthly budget* — raise it in the portal's Settings → Budgets & alerts (or `./stack config set BUDGET_OPENWEBUI`);
+  - *the Open WebUI key is over its monthly budget* — raise it in the portal's Settings → Spending & budgets (or `./stack config set BUDGET_OPENWEBUI`);
   - *Bedrock refused voxtral-small … for this AWS account* — model access was revoked: ask your AWS admin, then
     `./stack models --recheck`; or `./stack stt set openai|groq`;
   - *Bedrock is throttling speech-to-text right now* — try again in a few seconds;

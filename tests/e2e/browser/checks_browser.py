@@ -1783,9 +1783,29 @@ def _need_helper(ctx) -> dict:
     return d
 
 
-def open_settings(page):
+def open_settings(page, place=None):
     page.click(".tab[data-tab=settings]")
-    page.wait_for_selector("#settings .set-card", timeout=20000)
+    page.wait_for_selector("#settings .set-card:not([hidden])", timeout=20000)
+    if place:
+        goto_setting(page, place)
+
+
+def goto_setting(page, place):
+    """Settings at a section or a setting, as a link does (#settings/<section> or #settings/<KEY>): the section shown,
+    More unfolded or a setting whose switch is off shown anyway. Returns the setting's row (or the section)."""
+    page.evaluate("p => { location.hash = '#settings'; location.hash = '#settings/' + p; }", place)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", place):
+        row = page.locator(f"#settings .set-row[data-key={place}], #settings .set-adv-item[data-key={place}]").first
+    else:
+        row = page.locator(f"#set-{place}")
+    row.wait_for(state="visible", timeout=20000)
+    return row
+
+
+def _switch(row):
+    """The On/Off switch of a settings row: (its locator, whether it is on)."""
+    sw = row.locator("[role=switch]").first
+    return sw, sw.get_attribute("aria-checked") == "true"
 
 
 def _confirm(page, password=None, wait_sent=True):
@@ -1821,7 +1841,7 @@ def _wait_job(page, timeout=240):
 
 def _change(page, key, fill: dict, password=None, timeout=240):
     """Change → fill the form → Save → password → wait for the helper. -> (ok, message)"""
-    row = page.locator(f"#settings .set-row[data-key={key}]")
+    row = goto_setting(page, key)
     row.locator(".set-actions .action", has_text=re.compile("Change|Set")).first.click()
     for sel, value in fill.items():
         row.locator(sel).fill(value)
@@ -1847,9 +1867,11 @@ def settings_without_helper(ctx):
     open_settings(page)
     expect(page.locator("#settings .set-helper.helper-off").is_visible(), "no hint that changes need the helper")
     expect("./stack helper install" in page.inner_text("#settings .set-helper"), "helper command missing")
-    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} cards")
+    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} sections")
     expect(page.locator("#settings .set-actions .action:not([disabled])", has_text="Change").count() == 0, "Change works without a helper")
-    expect("./stack config set BUDGET_SETUP" in page.inner_text("#set-budgets"), "no terminal command next to a budget")
+    expect(page.locator("#settings [role=switch]:not([disabled])").count() == 0, "a switch works without a helper")
+    goto_setting(page, "BUDGET_SETUP")   # (under More)
+    expect("./stack config set BUDGET_SETUP" in page.inner_text("#set-spending"), "no terminal command next to a budget")
     html = page.content()
     leaked = [k for k in SECRET_ENV if len(ENV.get(k, "")) >= 8 and ENV[k] in html]
     expect(not leaked, f"secret values in the page: {leaked}")
@@ -1857,7 +1879,90 @@ def settings_without_helper(ctx):
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return "read-only without the helper: the install hint, every card, ./stack config set per field; no secret in the page"
+    return "read-only without the helper: the install hint, every section, ./stack config set per field; no secret in the page"
+
+
+@check("browser", "settings-sections")
+def settings_sections(ctx):
+    """The Settings page's sections (no helper needed: nothing changes): one section at a time from the list, the
+    address follows; links open a section or a setting (More unfolded, a setting whose switch is off shown with why);
+    search and "Changed from default" across every section; the phone's picker."""
+    d = _settings_api(ctx)
+    page, rec = ctx.page("settings-sections")
+    login(page)
+    # Home's budget note links to the section
+    page.wait_for_selector("#home:not([hidden])")
+    page.click("#home a[href='#settings/spending']")
+    page.wait_for_selector("#set-spending:not([hidden])", timeout=20000)
+    expect(page.evaluate("location.hash") == "#settings/spending", f"address {page.evaluate('location.hash')}")
+    nav = page.locator(".set-nav .set-nav-item")
+    expect(nav.count() == 11, f"{nav.count()} sections in the list")
+    expect(page.locator(".set-nav-item[aria-current=true]").inner_text() == "Spending & budgets", "the list does not mark the section")
+    # the list: one section at a time, the address follows (a reload comes back to it)
+    page.locator(".set-nav-item", has_text="Claude Code").click()
+    page.wait_for_selector("#set-code:not([hidden])")
+    expect(page.locator("#settings .set-card:not([hidden])").count() == 1, "more than one section shown")
+    expect(page.evaluate("location.hash") == "#settings/code", f"address {page.evaluate('location.hash')}")
+    page.reload()
+    page.wait_for_selector("#set-code:not([hidden])", timeout=20000)
+    # a setting under More: unfolded, scrolled to
+    row = goto_setting(page, "BUDGET_SETUP")
+    expect(page.locator("#set-spending details.set-more[open]").count() == 1, "More not unfolded for a setting in it")
+    expect(row.is_visible(), "BUDGET_SETUP not shown")
+    # a setting whose switch is off: hidden in its section, shown by a link with why
+    keys = {k["key"]: k for k in d["snapshot"]["keys"]}
+    off = keys.get("BACKUP_NIGHTLY", {}).get("value") != "on"
+    goto_setting(page, "updates")
+    if off:
+        expect(page.locator("#settings .set-row[data-key=BACKUP_HOUR]").is_hidden(), "the backup window shows while nightly backups are off")
+        goto_setting(page, "BACKUP_HOUR")
+        expect("Applies while Nightly backups is on." in page.inner_text("#set-updates"), "no 'Applies while' for a hidden setting")
+    # search: every section with a match, grouped; Clear goes back to the section
+    page.fill("#set-find", "budget")
+    page.wait_for_timeout(200)
+    shown = page.locator("#settings .set-card:not([hidden])")
+    expect(shown.count() >= 2 and page.locator("#set-spending:not([hidden])").count() == 1, f"search: {shown.count()} sections")
+    expect(page.locator("#set-spending .set-row[data-key=BUDGET_TERMINAL]").is_visible(), "search: the terminal's budget not found")
+    expect(page.locator("#settings .set-card:not([hidden]) .set-row[data-key=PORTAL_PASSWORD]").count() == 0, "search: a setting that does not match")
+    shot(page, "17b-settings-search")
+    page.click("#set-find-clear")
+    expect(page.locator("#settings .set-card:not([hidden])").count() == 1 and page.input_value("#set-find") == "", "Clear did not end the search")
+    # "Changed from default": only settings whose value differs from .env.example's
+    page.click("#set-changed")
+    page.wait_for_timeout(200)
+    changed = page.eval_on_selector_all("#settings .set-card:not([hidden]) .set-dep:not([hidden]) > .set-row[data-key]:not(.set-ghost)", "els => els.map(e => e.dataset.key)")
+    differs = lambda k: bool(keys.get(k, {}).get("value", "").strip()) and "default" in keys[k] and keys[k]["value"].strip() != keys[k]["default"].strip()  # noqa: E731
+    inside = {}   # a row also counts as changed for the (not derived) keys shown inside it, e.g. STT_MODEL in Speech-to-text
+    for r in d["layout"]["rows"]:
+        if r["place"] == "with" and keys.get(r["key"], {}).get("policy") != "derived":
+            inside.setdefault(r["parent"], []).append(r["key"])
+    bad = [k for k in changed if not any(differs(x) for x in [k, *inside.get(k, [])])]
+    expect(not bad, f"shown as changed but not: {bad}")
+    page.click("#set-changed")
+    # a link to a setting from the walkthrough's address grammar, from another tab
+    page.click(".tab[data-tab=home]")
+    page.evaluate("location.hash = '#settings/CODE_ENABLED'")
+    page.wait_for_selector("#set-code:not([hidden]) .set-row[data-key=CODE_ENABLED]", timeout=20000)
+    # keyboard: the list's buttons, then the section's heading
+    page.locator(".set-nav-item", has_text="Files & sharing").focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#set-files:not([hidden])")
+    expect(page.evaluate("document.activeElement && document.activeElement.id") == "set-files-title", "focus not on the section's heading")
+    # a phone: the picker
+    ppage, prec = ctx.page("settings-sections-phone", device="phone")
+    login(ppage)
+    ppage.evaluate("location.hash = '#settings/remote'")
+    ppage.wait_for_selector("#set-remote:not([hidden])", timeout=20000)
+    expect(ppage.input_value("#set-picker") == "remote", "phone: the picker does not show the section")
+    ppage.select_option("#set-picker", "updates")
+    ppage.wait_for_selector("#set-updates:not([hidden])")
+    expect(ppage.evaluate("location.hash") == "#settings/updates", "phone: the address does not follow the picker")
+    probs = rec.problems() + prec.problems()
+    rec.save(); prec.save()
+    expect(not probs, f"errors: {probs}")
+    return (f"11 sections, one at a time; Home → Spending & budgets; More unfolds for BUDGET_SETUP; "
+            f"{'a hidden dependent shown with why; ' if off else ''}search 'budget' → {shown.count()} sections; "
+            f"Changed from default → {len(changed)} settings; keyboard to the heading; phone picker")
 
 
 @check("settings", "settings-page")
@@ -1866,38 +1971,46 @@ def settings_page(ctx):
     page, rec = ctx.page("settings-page")
     login(page)
     open_settings(page)
-    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} cards, not eleven")
+    expect(page.locator("#settings .set-card").count() == 11, f"{page.locator('#settings .set-card').count()} sections, not eleven")
+    expect(page.locator("#settings .set-card:not([hidden])").count() == 1, "more than one section shown at a time")
     expect(page.locator("#settings .set-helper").is_hidden(), "the helper hint shows while the helper runs")
-    adv = page.inner_text("#set-advanced")
+    goto_setting(page, "advanced")
     for k in ("LITELLM_SALT_KEY", "POSTGRES_PASSWORD", "PORTAL_HOST", "COMPOSE_PROJECT_NAME"):
-        expect(k in adv, f"Advanced lacks {k}")
+        expect(page.locator(f"#set-advanced .set-adv-item[data-key={k}]").count() == 1, f"Advanced lacks {k}")
+    goto_setting(page, "about")
+    expect(page.locator("#set-about .set-adv-item[data-key=OWUI_EMBED_MODEL]").count() == 1, "About this install lacks OWUI_EMBED_MODEL")
     html = page.content()
     leaked = [k for k in SECRET_ENV if len(ENV.get(k, "")) >= 8 and ENV[k] in html]
     expect(not leaked, f"secret values in the page: {leaked}")
     expect(d["snapshot"]["base"] and len(d["snapshot"]["keys"]) >= 86, "snapshot")
+    expect(len(d["layout"]["sections"]) == 11 and len(d["layout"]["rows"]) >= 120, "layout")
+    goto_setting(page, "account")
     shot(page, "18-settings-desktop", mask=[".set-value", ".set-adv-value"])
     page.emulate_media(color_scheme="dark")
     page.wait_for_timeout(300)
     shot(page, "19-settings-desktop-dark", mask=[".set-value", ".set-adv-value"])
-    page.locator("#set-budgets").scroll_into_view_if_needed()
+    goto_setting(page, "spending")
     shot(page, "20-settings-budgets-dark", mask=[".set-value", ".set-adv-value"])
     page.emulate_media(color_scheme="light")
-    # a phone: Settings opens from More, as a page of the portal
+    # a phone: Settings opens from More, as a page of the portal; the section picker instead of the list
     ppage, prec = ctx.page("settings-phone", device="phone")
     login(ppage)
     ppage.click("#more-btn")
     ppage.click("#more-sheet .sheet-link[data-page=settings]")
-    ppage.wait_for_selector("#settings .set-card", timeout=20000)
+    ppage.wait_for_selector("#settings .set-card:not([hidden])", timeout=20000)
     expect(ppage.locator("#settings").is_visible() and ppage.locator("#more-sheet").is_hidden(), "phone: Settings not shown")
+    expect(ppage.locator("#set-picker").is_visible() and ppage.locator(".set-nav").is_hidden(), "phone: no section picker")
     width = ppage.evaluate("document.querySelector('#settings').scrollWidth")
     expect(width <= 392, f"phone: the page scrolls sideways ({width}px)")
     shot(ppage, "21-settings-phone", mask=[".set-value", ".set-adv-value"])
-    ppage.locator("#set-voice").scroll_into_view_if_needed()
+    ppage.select_option("#set-picker", "chat")
+    ppage.locator("#set-chat .set-row[data-key=STT_PROVIDER]").wait_for(timeout=10000)
+    expect(ppage.locator("#settings .set-card:not([hidden])").count() == 1, "phone: more than one section shown")
     shot(ppage, "22-settings-phone-voice", mask=[".set-value", ".set-adv-value"])
     probs = rec.problems() + prec.problems()
     rec.save(); prec.save()
     expect(not probs, f"errors: {probs}")
-    return "11 cards, Advanced lists every other key, no secret in the page; desktop light/dark and phone (from More) render"
+    return "11 sections, one at a time; Advanced and About list the rest; no secret in the page; desktop light/dark and phone (picker) render"
 
 
 @check("settings", "settings-budget-change")
@@ -1914,7 +2027,8 @@ def settings_budget(ctx):
     info = _lite_key_info(ENV["LITELLM_KEY_SETUP"])
     expect(abs(float(info["max_budget"]) - float(new)) < 1e-9, f"LiteLLM max_budget {info['max_budget']}, want {new}")
     ENV["BUDGET_SETUP"] = new
-    page.wait_for_selector(f"#settings .set-row[data-key=BUDGET_SETUP] .set-value:text-is('{new}')", timeout=15000)
+    page.wait_for_selector(f"#settings .set-row[data-key=BUDGET_SETUP] .set-value[data-value='{new}']", state="attached", timeout=15000)
+    goto_setting(page, "BUDGET_SETUP")
     shot(page, "23-settings-budget-saved", mask=[".set-value", ".set-adv-value"])
     rec.save()
     return f"BUDGET_SETUP → {new} in .env and in LiteLLM (max_budget) in {secs:.0f} s, no restart; message: {msg}"
@@ -1928,7 +2042,7 @@ def settings_reveal(ctx):
     page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
     open_settings(page)
     page.evaluate("navigator.clipboard.writeText('')")
-    page.locator("#settings .set-row[data-key=SHARED_MCP_TOKEN] .set-actions .copy").click()
+    goto_setting(page, "SHARED_MCP_TOKEN").locator(".set-actions .copy").first.click()
     _confirm(page)
     clip, t0 = "", time.time()
     while time.time() - t0 < 5 and not clip:
@@ -2053,7 +2167,7 @@ def settings_backup(ctx):
     _need_helper(ctx)
     page, rec = ctx.page("settings-backup")
     login(page)
-    open_settings(page)
+    open_settings(page, "updates")
     page.locator("#set-updates .set-actions .action", has_text="Back up now").click()
     _confirm(page)
     ok, msg = _wait_job(page, 180)
@@ -2088,7 +2202,7 @@ def settings_regen_rustfs(ctx):
     fid = json.loads(up["body"])["id"]
     old_access = page.evaluate("fetch('/api/logins', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())")["files"]["username"]
     open_settings(page)
-    page.locator("#settings .set-row[data-key=RUSTFS_ACCESS_KEY] .set-actions .action", has_text="Regenerate").click()
+    goto_setting(page, "RUSTFS_ACCESS_KEY").locator(".set-actions .action", has_text="Regenerate").click()
     _confirm(page)
     ok, msg = _wait_job(page, 300)
     expect(ok, f"regenerate failed: {msg}")
@@ -2137,34 +2251,40 @@ def settings_nightly(ctx):
     open_settings(page)
     now_h = _local_hour_of_helper()
     before = {b["name"] for b in _settings_api(ctx)["backups"]["backups"]}
-    row = page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]")
     keys = {k["key"]: k for k in _settings_api(ctx)["snapshot"]["keys"]}
     # a window that includes now but is not the current one (each window gets one backup: an earlier run may have had it)
     cur = keys.get("BACKUP_HOUR", {}).get("value") or "2"
     hour = next(h for h in (now_h, (now_h - 1) % 24, (now_h - 2) % 24) if str(h) != cur)
-    if cur != str(hour):
-        row.locator("select").first.select_option(str(hour))
-        _confirm(page)
-        ok, msg = _wait_job(page)
-        expect(ok, f"BACKUP_HOUR: {msg}")
-    on = page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="On")
-    if on.get_attribute("aria-pressed") != "true":   # (an earlier, interrupted run may have left it on)
-        on.click()
+    # on first: the window and how many to keep show under the switch only while it is on
+    sw, on = _switch(goto_setting(page, "BACKUP_NIGHTLY"))
+    expect(on or page.locator("#settings .set-row[data-key=BACKUP_HOUR]").is_hidden(), "the backup window shows while nightly backups are off")
+    if not on:   # (an earlier, interrupted run may have left it on)
+        sw.click()
         _confirm(page)
         ok, msg = _wait_job(page)
         expect(ok, f"BACKUP_NIGHTLY: {msg}")
+        # the page reads the settings again after the job: the window's row then belongs to a switch that is on
+        page.wait_for_selector("#settings .set-row[data-key=BACKUP_NIGHTLY] [role=switch][aria-checked=true]", state="attached", timeout=30000)
+    if cur != str(hour):
+        goto_setting(page, "BACKUP_HOUR").locator("select").first.select_option(str(hour))
+        _confirm(page)
+        ok, msg = _wait_job(page)
+        expect(ok, f"BACKUP_HOUR: {msg}")
     t0, nightly = time.time(), []
     while time.time() - t0 < 180 and not nightly:
         nightly = [b for b in _settings_api(ctx)["backups"]["backups"] if b["kind"] == "nightly" and b["name"] not in before]
         time.sleep(3)
     expect(nightly, "no nightly backup within 3 minutes of turning it on in its window")
+    goto_setting(page, "updates")
     page.click("#set-reload")
     page.wait_for_selector(f"#settings .set-backups td:text-is('{nightly[0]['name']}')", timeout=20000)
     kinds = page.inner_text("#settings .set-backups")
     expect("nightly" in kinds and "Back up now" in kinds, f"backup list: {kinds[:200]}")   # (and the one Back up now made)
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]").scroll_into_view_if_needed()
     shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
-    page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY] .chip", has_text="Off").click()
+    sw, on = _switch(goto_setting(page, "BACKUP_NIGHTLY"))
+    expect(on, "nightly backups do not show as on")
+    sw.click()
     _confirm(page)
     ok, msg = _wait_job(page)
     expect(ok, f"BACKUP_NIGHTLY off: {msg}")

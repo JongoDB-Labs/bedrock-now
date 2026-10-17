@@ -36,7 +36,7 @@ from urllib.parse import urlencode
 from playwright.sync_api import expect as see
 
 from common import ENV, HOST, PORT, SHOTS, Skip, check, expect, http, origin
-from checks_browser import _confirm, _need_helper, _wait_job, login, open_settings, shot
+from checks_browser import _confirm, _need_helper, _switch, _wait_job, goto_setting, login, open_settings, shot
 
 ON = ENV.get("CODE_ENABLED") == "true" and ENV.get("TERMINAL_ENABLED") == "true"
 HOSTILE = os.environ.get("E2E_CODE_HOSTILE") == "1"
@@ -1911,27 +1911,28 @@ def settings_row(ctx):
     need_on()
     page, rec = ctx.page("code-settings")
     login(page)
-    open_settings(page)
+    open_settings(page, "code")
     card = page.locator("#set-code")
     card.wait_for(timeout=20000)
     code_row = card.locator(".set-row[data-key=CODE_ENABLED]")
-    on = code_row.locator(".chip[aria-pressed=true]").inner_text()
-    ws = code_row.locator(".set-code-ws code").inner_text()
-    cli = code_row.locator(".set-cli code").last.inner_text()
-    expect(on == "On", f"the switch shows {on!r}")
+    _, on = _switch(code_row)
+    ws = code_row.locator(".set-code-ws code").first.inner_text()
+    cli = code_row.locator(":scope > .set-cli code").last.inner_text()
+    expect(on, "the Code page's switch shows Off")
     expect(ws == ENV.get("TERMINAL_WORKSPACE"), f"workspace shown {ws!r}")
     expect(cli == "./stack terminal enable --workspace DIR", f"cli {cli!r}")
-    # Bypass permissions: its own switch in the same card, off unless allowed
-    bypass = card.locator(".set-row[data-key=CODE_ALLOW_BYPASS]")
-    expect(bypass.count() == 1, "no Allow Bypass permissions row in the Code page card")
-    by = bypass.locator(".chip[aria-pressed=true]").inner_text()
-    expect(by == ("On" if ENV.get("CODE_ALLOW_BYPASS") == "true" else "Off"), f"Allow Bypass permissions shows {by!r}")
-    # Auto mode, the Code page's and the terminal's: their own switches in the same card, off unless allowed
-    for key in ("CODE_AUTO_MODE", "TERMINAL_AUTO_MODE"):
-        r = card.locator(f".set-row[data-key={key}]")
-        expect(r.count() == 1, f"no {key} row in the Code page card")
-        v = r.locator(".chip[aria-pressed=true]").inner_text()
-        expect(v == ("On" if ENV.get(key) == "true" else "Off"), f"{key} shows {v!r}")
+    # Bypass permissions: its own switch under the Code page's, off unless allowed
+    bypass = card.locator(".set-row[data-key=CODE_ENABLED] ~ .set-children .set-row[data-key=CODE_ALLOW_BYPASS]")
+    expect(bypass.count() == 1 and bypass.is_visible(), "no Allow Bypass permissions row under the Code page's switch")
+    _, by_on = _switch(bypass)
+    by = "On" if by_on else "Off"
+    expect(by_on == (ENV.get("CODE_ALLOW_BYPASS") == "true"), f"Allow Bypass permissions shows {by!r}")
+    # Auto mode, the Code page's and the terminal's: their own switches under the Code page's and the terminal's
+    for key, parent in (("CODE_AUTO_MODE", "CODE_ENABLED"), ("TERMINAL_AUTO_MODE", "TERMINAL_ENABLED")):
+        r = card.locator(f".set-row[data-key={parent}] ~ .set-children .set-row[data-key={key}]")
+        expect(r.count() == 1 and r.is_visible(), f"no {key} row under {parent}")
+        _, v = _switch(r)
+        expect(v == (ENV.get(key) == "true"), f"{key} shows {'On' if v else 'Off'}")
     try:
         card.screenshot(path=str(SHOTS / "65-code-settings-row.png"), animations="disabled")
     except Exception:  # noqa: BLE001 — a screenshot never fails a check
@@ -1939,7 +1940,7 @@ def settings_row(ctx):
     probs = rec.problems()
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"Settings → Code page: On, the workspace (…/{os.path.basename(ws)}) read-only, its CLI ({cli}); Allow Bypass permissions {by}; both Auto modes Off"
+    return f"Settings → Claude Code → Code page: On, the workspace (…/{os.path.basename(ws)}) read-only, its CLI ({cli}); Allow Bypass permissions {by}; both Auto modes Off"
 
 
 # --- a stand-in on bn-coded's socket (run.sh starts it after the suite; E2E_CODE_HOSTILE=1) ---
@@ -2055,15 +2056,15 @@ def read_only(ctx):
 
 
 def _bypass_setting(ctx, on: bool):
-    """Settings › Code page › Allow Bypass permissions, through the page and the update helper."""
+    """Settings › Claude Code › Allow Bypass permissions, through the page and the update helper."""
     page, rec = ctx.page(f"settings-code-bypass-{'on' if on else 'off'}")
     login(page)
     open_settings(page)
-    row = page.locator("#settings .set-row[data-key=CODE_ALLOW_BYPASS]")
-    expect(row.count() == 1, "no Allow Bypass permissions row in the Code page card")
-    chip = row.locator(".chip", has_text="On" if on else "Off")
-    if chip.get_attribute("aria-pressed") != "true":
-        chip.click()
+    row = goto_setting(page, "CODE_ALLOW_BYPASS")
+    expect(row.count() == 1, "no Allow Bypass permissions row in Claude Code")
+    sw, now = _switch(row)
+    if now != on:
+        sw.click()
         _confirm(page)
         ok, msg = _wait_job(page)
         expect(ok, f"CODE_ALLOW_BYPASS={'true' if on else 'false'}: {msg}")
@@ -2205,16 +2206,16 @@ def settings_code_bypass(ctx):
 
 
 def _auto_setting(ctx, on: bool):
-    """Settings › Code page › Auto mode, through the page and the update helper (it restarts the terminal and the code
+    """Settings › Claude Code › Auto mode, through the page and the update helper (it restarts the terminal and the code
     container: the sandbox's managed settings and the code container both follow it)."""
     page, rec = ctx.page(f"settings-code-auto-{'on' if on else 'off'}")
     login(page)
     open_settings(page)
-    row = page.locator("#settings .set-row[data-key=CODE_AUTO_MODE]")
-    expect(row.count() == 1, "no Auto mode row in the Code page card")
-    chip = row.locator(".chip", has_text="On" if on else "Off")
-    if chip.get_attribute("aria-pressed") != "true":
-        chip.click()
+    row = goto_setting(page, "CODE_AUTO_MODE")
+    expect(row.count() == 1, "no Auto mode row in Claude Code")
+    sw, now = _switch(row)
+    if now != on:
+        sw.click()
         _confirm(page)
         ok, msg = _wait_job(page)
         expect(ok, f"CODE_AUTO_MODE={'true' if on else 'false'}: {msg}")

@@ -197,8 +197,12 @@ def test_settings_page_search_and_changed_filter():
     assert 'placeholder: "Search settings"' in js and 'text: "Changed from default"' in js
     changed = js[js.index("function changedFromDefault(k)"):js.index("function findBar()")]
     assert '(k.secret === "-" || k.secret === "s")' in changed and '"default" in k' in changed
-    find = js[js.index("function applyFind()"):js.index("// --- one setting ---")]
+    find = js[js.index("function rowMatches(r, q)"):js.index("function helperBox()")]
     assert ".includes(q)" in find and "RegExp" not in find   # plain substring matching: linear, no pattern from the box
+    # across every section: a match shows with its section (the others hidden), More opened where it matches; the
+    # settings shown inside a row (its "with" keys) count as that row's
+    assert "const show = finding ? left > 0 : c.dataset.section === current;" in find
+    assert "m.open = true;" in find and "withOf[r.dataset.key]" in find
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
         assert sink not in js
 
@@ -718,7 +722,7 @@ def test_previews_over_remote_access_are_opt_in():
     from portal.app import STATIC
     js = (STATIC / "settings.js").read_text(encoding="utf-8")
     # shown as it takes effect: On only while the stack wrote the previews' address (never On while they are off)
-    assert '"TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"]' in js and 'if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";' in js
+    assert 'if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";' in js
     assert 'function remotePreviewOn() { return Boolean(keys.REMOTE_PREVIEW_HOST && keys.REMOTE_PREVIEW_HOST.value); }' in js
     assert 'const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn() ? on : off)' in js and "Switched on, not in effect" in js
     # the page's own weakening rule is the stack's: any value that may turn them on, from anything but on
@@ -868,16 +872,13 @@ def test_code_page_from_remote_access_only_off(make, dirs):
 def test_settings_page_has_the_code_page_row_and_its_read_only_workspace():
     from portal.app import STATIC
     js = (STATIC / "settings.js").read_text(encoding="utf-8")
-    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "TERMINAL_AUTO_MODE"]' in js
-    # Bypass permissions and the two Auto modes: their own switches in the same card (widen-local: on only from this computer)
-    assert 'if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));' in js
-    assert 'if (keys.CODE_AUTO_MODE) body.append(row(keys.CODE_AUTO_MODE));' in js
-    assert 'if (keys.TERMINAL_AUTO_MODE) body.append(row(keys.TERMINAL_AUTO_MODE));' in js
-    assert 'if (g === "code") { codeRow(body); return c; }' in js
+    assert 'if (r.key === "CODE_ENABLED") return codeRow(r);' in js and 'if (r.key === "TERMINAL_ENABLED") return terminalRow(r);' in js
+    # Bypass permissions and the two Auto modes: their own switches under the Code page's and the terminal's
+    # (catalog/settings-layout.tsv: test_settings_layout.py; widen-local: on only from this computer)
     # the workspace shown, never changed here: the command that changes it, with Copy
-    assert "Workspace (read-only here): " in js and '"./stack terminal enable --workspace DIR"' in js
+    assert '"Workspace: "' in js and '"./stack terminal enable --workspace DIR"' in js
     # On stays off remotely (widen-local); with the terminal off it names the folder the terminal will get, from the
     # snapshot, and says the terminal is turned on too (no restart of the terminal either way)
-    assert "localOnlyHere(k, val)" in js and "needsTerminal" not in js
+    assert "localOnlyHere(k, other)" in js and "needsTerminal" not in js
     assert "data.snapshot.choices.code_workspace" in js and "it turns the browser terminal on too, with the folder ${ws}" in js
     assert "./stack code enable" in js and "./stack code disable" in js and "restarts the terminal" not in js

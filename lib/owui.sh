@@ -217,7 +217,7 @@ sync_openwebui_models() {
       then ok=$((ok + 1)); else bad=$((bad + 1)); warn "Open WebUI: could not update $a ($OWUI_ERR)"; fi
     done
   done 3< <(catalog_rows)
-  owui_apply_hidden   # MODELS_HIDDEN (Settings → AWS & models)
+  owui_apply_hidden   # MODELS_HIDDEN (Settings → Chat & voice)
   if [ "$bad" -eq 0 ]; then log "Open WebUI model picker: friendly names and Bedrock prices ($ok models; helper models hidden)"
   else warn "$bad Open WebUI model update(s) failed — prices are still in ./stack costs and the LiteLLM UI; re-run ./stack setup to retry"; fi
 }

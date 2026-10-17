@@ -1138,7 +1138,7 @@ settings_reconcile() {
     elif [ -n "$owner" ] && { [ -z "$held" ] || { [ "$role" = pending ] && [ "$(_owui_chat_count "$held")" = 0 ]; }; }; then
       [ -z "$held" ] || _owui_delete_user "$held" || true
       if _owner_email_move "$owner" "$email"; then log "Chat's owner account now uses $email again (its chats stay)"
-      else warn "Chat's owner account does not use $email and could not be changed ($OWNER_ERR) — Settings → Owner email"; fi
+      else warn "Chat's owner account does not use $email and could not be changed ($OWNER_ERR) — Settings → Account & security → Owner email"; fi
     else
       warn "Chat has no admin account for $email (OPENWEBUI_ADMIN_EMAIL) — left as is; see README › Troubleshooting"
     fi

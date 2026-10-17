@@ -480,12 +480,13 @@ parse_virtual_key() { # parse_virtual_key < /key/generate JSON -> the sk-… key
 # _pinned PIN_KEY EN -> the model PIN_KEY in .env pins (Settings, ./stack config set) while it is an enabled chat
 # model; nothing when unpinned; a warning when the pinned one is no longer enabled (the automatic choice is used)
 _pinned() {
-  local p; p="$(get_env "$1")"
+  local p w; p="$(get_env "$1")"
   [ -n "$p" ] || return 0
   if grep -qxF "$p" "$2" 2>/dev/null && catalog_rows | P="$p" awk -F'\t' '$1 == ENVIRON["P"] && $2 == "chat" { f = 1 } END { exit !f }'; then
     printf '%s\n' "$p"
   else
-    warn "$1=$p is not a chat model your AWS key can use now — using the automatic choice (Settings → AWS & models)"
+    case "$1" in CLAUDE_MODEL_*) w='Claude Code' ;; *) w='Chat & voice' ;; esac
+    warn "$1=$p is not a chat model your AWS key can use now — using the automatic choice (Settings → $w)"
   fi
   return 0
 }
@@ -754,7 +755,7 @@ cmd_costs() {
   printf '\nBreakdown by model and day: %s/ui → Usage (portal Admin tab; its sign-in is on the portal Home page)\n' "$(portal_url admin)"
   printf 'Budgets: Settings in the portal, or ./stack config set BUDGET_CLAUDE_CODE (BUDGET_OPENWEBUI, BUDGET_SETUP%s)\n' \
     "$([ -z "$(get_env LITELLM_KEY_TERMINAL)" ] || echo ', BUDGET_TERMINAL')"
-  printf 'Alerts at %s%%: Settings → Budgets & alerts, or ./stack config set ALERT_WEBHOOK_URL (%s)\n' "$(alert_pct)" \
+  printf 'Alerts at %s%%: Settings → Spending & budgets, or ./stack config set ALERT_WEBHOOK_URL (%s)\n' "$(alert_pct)" \
     "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo 'webhook set' || echo 'none set')"
   [ "$PRICES_SOURCE" = catalog ] || return 0   # the daily update keeps them current (and says so above when it fails)
   age="$(prices_age_days)"

@@ -22,7 +22,7 @@ Everything below runs on your computer, behind one portal sign-in. The optional 
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
-| [**Costs & budgets**](#costs--budgets) | a monthly budget per key, prices updated daily, `./stack costs` | on | Settings → Budgets & alerts |
+| [**Costs & budgets**](#costs--budgets) | a monthly budget per key, prices updated daily, `./stack costs` | on | Settings → Spending & budgets |
 | [**Updates**](#updating) | `./stack update` with a backup and `./stack rollback`; one-click on Home; automatic at night | one-click: setup asks; automatic: off | `./stack helper install`; `./stack helper auto on` / `off` |
 
 ## Quickstart
@@ -114,7 +114,7 @@ then delete the folder.
 
 Open http://bedrock-now.localhost (or the URL `./stack status` prints) and sign in with `PORTAL_PASSWORD`.
 `*.localhost` names point at your own computer in every current browser, so there is nothing to configure. You
-stay signed in for 30 days (Settings → Session length); **Sign out** at the bottom of the sidebar ends every session at once. `./stack
+stay signed in for 30 days (Settings → Account & security → Session length); **Sign out** at the bottom of the sidebar ends every session at once. `./stack
 open` opens it: the installed app if you have installed it (see [Desktop app](#desktop-app)), otherwise a tab in
 your browser.
 
@@ -380,14 +380,14 @@ The stack must be running. The first `enable` builds the sandbox's image on your
 This adds a **Terminal** tab to the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
 tmux session, set up like the one on your computer (same models, the shared MCP server, the cost line and the
 session cost on exit), but with **its own LiteLLM key**, `claude-code-terminal`, and its own monthly budget
-(`BUDGET_TERMINAL`, $50: `./stack config set BUDGET_TERMINAL`, shown read-only under Settings → Advanced; a Terminal
+(`BUDGET_TERMINAL`, $50: Settings → Spending & budgets or `./stack config set BUDGET_TERMINAL`; a Terminal
 meter on Home). Its `claude-bedrock` prints no `resume:` line (`claude-bedrock --resume` without an id is the
 picker), and its session cost is how much the terminal key's spend grew meanwhile, so a Code page session running at
 the same time counts too. `Ctrl-b c` opens a shell window, `Ctrl-b n` switches. Its other settings are shown under
-Settings → Advanced, read-only: they change with `./stack terminal`.
+Settings → Claude Code, read-only: they change with `./stack terminal`.
 Reloading, closing the tab or losing the phone's connection only detaches: the session keeps running and opens
 where you left it (until the container restarts: `./stack update`, a new image or folder at `./stack terminal
-enable`, an *Auto mode* switch in Settings → Code page, a reboot). Hold
+enable`, an *Auto mode* switch in Settings → Claude Code, a reboot). Hold
 Shift (Option on a Mac) to select text; an external keyboard helps a lot on a phone.
 
 It is a sandbox, not a shell on your computer:
@@ -419,7 +419,7 @@ It is a sandbox, not a shell on your computer:
 - Over [remote access](#remote-access) it is **off** unless you set `REMOTE_TERMINAL=true` in `.env` (then
   `./stack up`; in Tailscale mode it is one more Service to approve, `./stack remote status` names it).
 - Claude Code's **auto mode** (a reviewer model approving actions instead of you) is off for every `claude` in it —
-  the sandbox's managed settings say so — unless **Settings → Code page → Auto mode in the terminal** is on
+  the sandbox's managed settings say so — unless **Settings → Claude Code → Auto mode in the terminal** is on
   (`TERMINAL_AUTO_MODE`, from the computer running bedrock-now; the terminal restarts). Then Claude Code decides as
   anywhere else: an interactive `claude` starts in it (`Shift+Tab` leaves it), its reviewer runs on Sonnet 5.5 at
   about $0.13 per 5 minutes in use on the terminal's key. With only the Code page's Auto mode on, `claude` typed in
@@ -467,7 +467,7 @@ it on). `enable` and `disable` restart the portal and Caddy (open apps reload) b
 goes on (only a terminal container from before v0.5.0, without the page's spawn server, is restarted once, and
 `--workspace` with another folder recreates it).
 
-From the portal: **Settings → Code page → On** (only on the computer running bedrock-now; **Off** works from
+From the portal: **Settings → Claude Code → Code page: On** (only on the computer running bedrock-now; **Off** works from
 anywhere). The update helper runs `./stack code enable` / `disable` for you. With the browser terminal off, **On**
 turns it on too, with the folder Settings names before you confirm (the terminal's `TERMINAL_WORKSPACE`, or
 `~/bedrock-now-workspace`); another folder is chosen in a terminal (`./stack code enable --workspace DIR`, or
@@ -476,7 +476,7 @@ back and a terminal it had turned on is turned off again (`./stack code enable` 
 instead and leaves the settings as they are: run it again).
 
 `./stack code disable` (or **Off**) leaves the browser terminal on; `./stack terminal disable` turns the Code page
-off too. Two of its permission modes, *Auto* and *Bypass permissions*, stay off until **Settings → Code page** allows
+off too. Two of its permission modes, *Auto* and *Bypass permissions*, stay off until **Settings → Claude Code** allows
 them (*Auto mode*, *Allow Bypass permissions*; or `./stack config set CODE_AUTO_MODE` / `CODE_ALLOW_BYPASS`; turning
 them on only from the computer running bedrock-now; [permission modes](#permissions-and-modes)). Either switch
 restarts the page's container (about 10 s: open Code sessions end, your next prompt resumes them), and *Auto mode*
@@ -586,7 +586,7 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
 
   *Read only*, *Manual*, *Accept edits* and *Auto* are remembered for new sessions (per browser); *Plan* and *Bypass
   permissions* apply to the session they were picked in only, as in the desktop app and VS Code. **Auto** is off
-  unless **Settings → Code page → Auto mode** is on (`CODE_AUTO_MODE`; turning it on works only from the computer
+  unless **Settings → Claude Code → Auto mode** is on (`CODE_AUTO_MODE`; turning it on works only from the computer
   running bedrock-now). It needs no confirmation — it still asks or blocks, as in Claude Code — and costs model calls:
   about **$0.13 for the first check in each 5 minutes** and half a cent for each further one, on the terminal's key
   (more than a Haiku session itself). A risky command you ask for by name counts as your approval (the reviewer may
@@ -595,7 +595,7 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   which runs exactly that call again without the reviewer; three blocks in a row and Claude Code asks you again
   (a normal card). In *Manual* and *Accept edits* a shell command's card also offers **Allow, and switch to Auto**,
   and a plan can be approved with *Auto*. Details: [docs/security.md](docs/security.md#auto-mode). **Bypass
-  permissions** is off unless **Settings → Code page → Allow Bypass permissions** is on (`CODE_ALLOW_BYPASS`; turning it
+  permissions** is off unless **Settings → Claude Code → Allow Bypass permissions** is on (`CODE_ALLOW_BYPASS`; turning it
   on works only from the computer running bedrock-now), and every switch to it asks first, in a dialog that names
   what it means here: the workspace is your real folder (git hooks, package scripts and editor settings in it run on
   your computer later), the sandbox's internet access, and the budget. While it is on a red strip sits above the prompt
@@ -844,14 +844,34 @@ files (narrow it with a prefix).
 
 ## Settings
 
-The **Settings** tab (the gear in the sidebar; on a phone under **More**) shows every value of `.env`, grouped like
-this: Account & security · AWS & models · Budgets & alerts · Voice · OpenRouter · Files · Code page · Updates &
-backups · Remote access · Diagnostics · Advanced. Plain values are shown as they are; secrets only as *set* (with the
-last four characters of generated keys and the `AKIA…` ends of the AWS key ID). The portal never reads `.env`:
-`./stack` writes a masked copy, `.state/status/settings.json`, whenever `.env` changes (the page shows "as of").
-**Search settings** (above the cards) finds a setting by its name, key or note; **Changed from default** lists the
-plain settings whose value differs from `.env.example`'s (a blank value counts as the default; keys and passwords are
-never compared).
+The **Settings** tab (the gear in the sidebar; on a phone under **More**) shows every value of `.env`, in sections
+by what you came to do — a list on the left (on a phone, a section picker at the top), one section at a time:
+
+| Section | What is in it |
+|---|---|
+| **Account & security** | portal password, owner email, Admin (LiteLLM) password, session length, signed-in devices, storing prompts |
+| **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
+| **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
+| **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, internet access, *Auto mode in the terminal*), Claude Code's main model; *More*: its sonnet/haiku slots, the sandbox's memory |
+| **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
+| **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
+| **Updates & backups** | daily release check, automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
+| **Diagnostics** | smoke test, AWS key check, status report, restart a service |
+| **Advanced** | read-only: addresses, ports and internal keys, each with why and the command that changes it |
+| **About this install** | read-only: what setup and `./stack` chose or wrote (embedding and voice models, origins, remote addresses …) |
+
+Each setting has a one-line description, its value in plain words, badges (*This computer only*, *Secret*,
+*Read-only*, what a change restarts) and, under **Details**, the full explanation, its `.env` key and the terminal
+command. Settings that belong to a switch sit under it and show only while it is on (a nightly backup's window, the
+Code page's *Auto mode*, everything of remote access); rare ones are folded under **More settings**.
+**Search settings** finds a setting in every section by its name, key or description; **Changed from default**
+lists the plain settings whose value differs from `.env.example`'s (a blank value counts as the default; keys and
+passwords are never compared). A link can open a section or a setting: `#settings/spending`,
+`#settings/CODE_ENABLED` (the walkthrough and Home use them). Plain values are shown as they are; secrets only as
+*set* (with the last four characters of generated keys and the `AKIA…` ends of the AWS key ID). The portal never
+reads `.env`: `./stack` writes a masked copy, `.state/status/settings.json`, whenever `.env` changes (the page shows
+"as of"); where each key is shown comes from `catalog/settings-layout.tsv`.
 
 **What you can change here**, each with what it restarts and for how long:
 
@@ -865,13 +885,13 @@ never compared).
   automatic; Claude Code's slots take Claude models; setup keeps a pin while that model is enabled and warns
   when it is not), and which models Chat's picker
   leaves out (a tidier picker only: the API and Claude Code can still use them);
-- the three budgets of `claude-code`, `open-webui` and `setup` (at once, no restart; a warning when one is below
-  this period's spend), the alert threshold (50-99%, default 80%) and the budget alert webhook (the terminal's
-  `BUDGET_TERMINAL` is listed under Advanced: `./stack config set BUDGET_TERMINAL`);
+- the four budgets of `claude-code`, `open-webui`, `claude-code-terminal` (the Terminal and the Code page) and
+  `setup` (at once, no restart; a warning when one is below this period's spend), the alert threshold (50-99%,
+  default 80%) and the budget alert webhook;
 - speech-to-text (Bedrock, OpenAI, Groq or the browser), OpenRouter's key, model set, model cap and `-latest`
   aliases;
-- the **Code page** (on and off, with the folder it would use) and its *Allow Bypass permissions*, *Auto mode* and
-  *Auto mode in the terminal* ([The Code page](#turning-the-code-page-on-and-off));
+- the **Code page** (on and off, with the folder it would use) and its *Allow Bypass permissions* and *Auto mode*;
+  the browser terminal's *Auto mode in the terminal* ([The Code page](#turning-the-code-page-on-and-off));
 - the daily release and price checks, automatic updates and their hour, signed releases only (on only);
   **Back up now** (the newest 5 made here are kept), **nightly backups** (by the update helper, in a three-hour
   window you pick or, with automatic updates on, theirs, keeping the newest 1-60) and the list of backups (name,
@@ -883,13 +903,14 @@ never compared).
   prompts, longer sign-ins, a higher budget or alert threshold, release checks, automatic updates or nightly backups
   off, fewer backups kept, remote previews, the Code page, its *Allow Bypass permissions*, *Auto mode* and *Auto
   mode in the terminal*: that direction only from this computer, the other from anywhere;
-- **Diagnostics** (the password again): the smoke test (~$0.0001), a restart of one service, a status report to
+- **Diagnostics** (the password again): the smoke test (~$0.0001), the AWS key check (free), a restart of one
+  service, a status report to
   copy (your home folder shown as `~`; no secrets, emails, tailnet names or account numbers).
 
 Reveal/Copy works only for values the portal already holds (the Admin and Files sign-ins, the three LiteLLM keys,
-the shared MCP token), after the password again. Everything else in **Advanced** is read-only, with the reason and
-the command that changes it (ports, host names, internal secrets). Restoring a backup stays a terminal command
-(`./stack restore`): it replaces every chat, key and file with an older state.
+the shared MCP token), after the password again. **Advanced** and **About this install** are read-only, with the
+reason and the command that changes each value (ports, host names, internal secrets, what setup derived). Restoring
+a backup stays a terminal command (`./stack restore`): it replaces every chat, key and file with an older state.
 
 **How a change is applied.** Changes need the [update helper](#updating) (`./stack helper install`): the portal
 writes a small request, and the helper — outside Docker, as you — checks it again (the password against its own
@@ -900,7 +921,7 @@ Without the helper the page is read-only and shows the terminal command next to 
 **In a terminal** the same rules apply:
 
 ```
-./stack config                 # every setting, grouped like the page (Code page keys under Advanced), secrets masked
+./stack config                 # every setting, in the page's sections (a switch's settings under it), secrets masked
 ./stack config get BUDGET_SETUP
 ./stack config set PORTAL_PASSWORD BUDGET_OPENWEBUI   # asks for each value (hidden for secrets)
 ./stack config check-aws       # free
@@ -945,8 +966,8 @@ cross-checks it with the public AWS Price List; `./stack setup` and `./stack up`
 upstream file from making prices vanish or jump; a refused change shows as a warning on Home and in `./stack
 costs`. `./stack prices` checks now, `./stack prices --accept` applies a change the guards refused, and new
 prices reach LiteLLM at the next `./stack up` (until then Home says so and the `claude-bedrock` line says `new
-prices pending`). The fallback is `catalog/prices.tsv`; Settings → Updates & backups (`PRICE_UPDATES`) turns
-updates off (`./stack prices` then refuses to run).
+prices pending`). The fallback is `catalog/prices.tsv`; Settings → Spending & budgets (`PRICE_UPDATES`, under
+More settings) turns updates off (`./stack prices` then refuses to run).
 
 **Budgets.** Setup creates three LiteLLM keys, each with a monthly budget: `claude-code` **$200**, `open-webui`
 **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused until the reset date
@@ -956,9 +977,9 @@ key, `claude-code-terminal`, **$50** (`BUDGET_TERMINAL`). To change one, use **S
 way): it applies at once, with no restart, and keeps the reset date. Raising a budget works only from the computer
 running bedrock-now.
 
-**Alerts.** Each key has a soft budget at **80%** (Settings → Budgets & alerts → Alert threshold, 50-99%;
+**Alerts.** Each key has a soft budget at **80%** (Settings → Spending & budgets → Alert threshold, 50-99%;
 `BUDGET_ALERT_PCT`): it never blocks, but `./stack costs`, Home and the `claude-bedrock` launch line warn from there
-on. To also get a message, set **Settings → Budgets & alerts → Budget alert webhook** (or `./stack config set
+on. To also get a message, set **Settings → Spending & budgets → Budget alert webhook** (or `./stack config set
 ALERT_WEBHOOK_URL`) to any URL that accepts a JSON POST (an n8n, Zapier or Make hook, for example). LiteLLM then posts
 its own JSON alert (`soft_budget_crossed`, `budget_crossed`); it is not Slack's message format.
 
@@ -1064,7 +1085,7 @@ add them next to your Bedrock models as `or/<id>`; it is **off unless you give i
 ./stack openrouter remove              # back to Bedrock only
 ```
 
-The portal's **Settings → OpenRouter** does the same as `set` from the computer running bedrock-now (not over
+The portal's **Settings → Chat & voice → OpenRouter API key** does the same as `set` from the computer running bedrock-now (not over
 remote access): paste the key there, and it is checked before anything changes.
 
 An account without credits can only use free models, so `apply`, `set` and setup then offer just those

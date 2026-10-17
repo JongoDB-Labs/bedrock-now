@@ -18,6 +18,32 @@ All notable changes to bedrock-now are documented here. The format follows
 - **The sign-in page, the Portal password setting and the walkthrough** now say the password also unlocks the
   Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
   Admin and Files.
+- **Settings: the terminal's budget** (`BUDGET_TERMINAL`, the key of the Terminal and the Code page) can be changed
+  on the page, with the other budgets and this period's spend; it was listed read-only under Advanced.
+- **Settings: long explanations were cut** at 600 characters — mid-word for *Auto mode*, *Auto mode in the
+  terminal*, *Allow Bypass permissions* and *Previews over remote access*, in the page and in the confirmation of a
+  change. They are whole now.
+- **Settings: speech-to-text's cost** said "about $0.002 a minute" for Bedrock; Voxtral Small is an estimated
+  ~$0.00014 a minute (Mini ~$0.00004), as `./stack stt` and docs/voice.md say.
+
+### Changed
+
+- **Settings, reorganized by task.** Eleven sections instead of one long page of eleven cards (14,000 px on a
+  desktop, 20,000 on a phone): Account & security · AWS & models · Spending & budgets · Chat & voice · Claude Code ·
+  Files & sharing · Remote access · Updates & backups · Diagnostics · Advanced · About this install. A list on the
+  left (on a phone, a section picker that stays at the top) shows one section at a time. Moves: Chat's models, voice
+  and OpenRouter into Chat & voice; the Code page, the browser terminal (folder, internet access, its Auto mode) and
+  Claude Code's models into Claude Code; price updates into Spending & budgets; the 32 values setup and `./stack`
+  derive into About this install, so Advanced holds only addresses, ports and internal keys. Each setting has a
+  one-line description, its value in plain words ("$50 a month", "30 days (default)"), badges (*This computer
+  only*, *Secret*, *Read-only*, what a change restarts) and the full explanation under *Details*; booleans are
+  switches. Settings that belong to a switch sit under it and show only while it is on (Bypass and Auto under the
+  Code page, a nightly backup's window and count, everything of remote access, OpenRouter's options); rare ones are
+  folded under *More settings*. Search and *Changed from default* look through every section and show the matches
+  under their section. Links open a section or a setting — `#settings/spending`, `#settings/CODE_ENABLED` — and the
+  walkthrough and Home use them. Nothing about how a change is applied, checked or allowed changed.
+  `./stack config list` uses the same sections, with a switch's settings indented under it. Where each key is shown
+  comes from a new file, `catalog/settings-layout.tsv` ([README](README.md#settings)).
 
 ### Docs
 

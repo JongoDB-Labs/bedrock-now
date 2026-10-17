@@ -156,7 +156,7 @@ test_render_never_calls_the_breached_password_service() {
 }
 
 # One alias only: claude-sonnet-5 -> claude-sonnet-5-5, the model Claude Code's auto-mode classifier asks for by that
-# fixed id (Settings › Code page › Auto mode). No legacy names otherwise; rendered only while Sonnet 5.5 is enabled.
+# fixed id (Settings › Claude Code › Auto mode). No legacy names otherwise; rendered only while Sonnet 5.5 is enabled.
 test_catalog_ships_only_the_classifier_alias() {
   assert_eq "$(catalog_rows | awk -F'\t' '$4 != "-" { print $1 "=" $4 }')" "claude-sonnet-5-5=claude-sonnet-5"
   out="$(render_litellm_config "" us-east-1 false)"
