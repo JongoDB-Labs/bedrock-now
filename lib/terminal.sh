@@ -501,10 +501,11 @@ terminal_test_checks() {
   [ "$(terminal_egress_mode)" = internet ] || return 0
   # TERMINAL_EGRESS=internet: its egress proxy healthy; no route around it (a public address, directly: nothing
   # answers); through it, refused before any connection is made: this computer by Docker's name and LiteLLM's port on
-  # its loopback, the metadata address, a private address, the IPv6 loopback, and the stack's containers by name
+  # its loopback, the metadata address, a private address, the IPv6 loopback, and the stack's containers by name (the
+  # proxy named, NO_PROXY set aside: 127.0.0.1 and ::1 would otherwise stay inside the sandbox)
   code="$(dc ps --format '{{.Health}}' terminal-egress 2>/dev/null | head -n 1 || true)"
   _check "the sandbox's egress proxy healthy" "$code" healthy
-  out="$(dc exec -T -e LP="$(get_env LITELLM_PORT)" terminal sh -c 'curl --noproxy "*" -s -m 4 -o /dev/null -w "%{http_code} " http://1.1.1.1/ || true; for u in "http://host.docker.internal:$LP/" "http://127.0.0.1:$LP/v1/models" http://169.254.169.254/latest/meta-data/ http://10.0.0.1/ "http://[::1]/" http://portal:8000/healthz http://litellm:4000/health/liveliness; do curl -g -s -m 10 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
+  out="$(dc exec -T -e LP="$(get_env LITELLM_PORT)" terminal sh -c 'curl --noproxy "*" -s -m 4 -o /dev/null -w "%{http_code} " http://1.1.1.1/ || true; for u in "http://host.docker.internal:$LP/" "http://127.0.0.1:$LP/v1/models" http://169.254.169.254/latest/meta-data/ http://10.0.0.1/ "http://[::1]/" http://portal:8000/healthz http://litellm:4000/health/liveliness; do env -u NO_PROXY -u no_proxy curl -g -x http://egress:3128 -s -m 10 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
   _check "the sandbox: no route around its egress proxy; through it no host.docker.internal, LiteLLM's port, metadata, private or ::1 address, no container" \
     "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 403 403 403 403 403 403 403"
 }

@@ -515,7 +515,8 @@ code_test_checks() {
     s.on("error", (e) => { console.log("error " + e.code); clearTimeout(t); });' 2>/dev/null || true)"
   _check "the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)" "$out" ok
   # shellcheck disable=SC2016  # expanded in the container
-  out="$(dc exec -T terminal sh -c 'curl -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
+  # (directly: through its egress proxy, TERMINAL_EGRESS=internet, a container's name is refused anyway)
+  out="$(dc exec -T terminal sh -c 'curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
   _check "the sandbox cannot reach the code container; bn-coded listens in its own folder (mode 700)" "$out" "000 700 socket"
   code_preview_checks
 }

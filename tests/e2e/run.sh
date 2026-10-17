@@ -505,7 +505,7 @@ if [ "$CODE" = 1 ]; then
     done
     [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "uid" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
     # From the sandbox: no route to the code container; bn-coded's socket in a folder of its own (mode 700)
-    out="$(docker exec "$tc" sh -c 'curl -s -m 4 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>&1)"
+    out="$(docker exec "$tc" sh -c 'curl --noproxy "*" -s -m 4 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>&1)"
     [ "$out" = "000 700 socket" ] || bad="$bad sandbox:$out"
     # The main Caddy reaches it, but it answers nothing without the secret header
     out="$(docker exec "$cad" sh -c 'wget -S -T 10 -O /dev/null http://code-upstream:8095/api/state 2>&1 | awk "/^  HTTP\// { print \$2; exit }"' 2>&1)"
