@@ -85,7 +85,9 @@
       el("p", { class: "note", text: "Opens Code with your text in its prompt box, to read and send there: nothing is sent from here." }),
       el("p", { class: "note code-budget", id: "code-budget", hidden: "" }),
       el("p", { class: "note" }, open));
-    claude.before(card);
+    // high in the second column, under Services: "N sessions need you" is something to act on
+    const services = $("section.services");
+    if (services) services.after(card); else claude.before(card);
     renderCard();
     return card;
   }

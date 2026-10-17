@@ -1676,7 +1676,7 @@ def ui_guardrails(ctx):
     rule = user.get_by_test_id("perm-rule").filter(has=page.locator("code.perm-rule", has_text=rules[0]))
     see(rule.first).to_be_visible(timeout=20000)
     see(page.get_by_test_id("perm-bypass-ask")).to_contain_text("Edit(//workspace/.git/**)")
-    shot(page, "80-code-ui-permissions")
+    shot(page, "110-code-ui-permissions")
     rule.first.get_by_test_id("perm-remove").click()
     t0 = time.time()
     while time.time() - t0 < 20 and rules[0] in c.api("GET", "/api/permissions")["json"]["user"]["allow"]:
@@ -1700,7 +1700,7 @@ def ui_guardrails(ctx):
     # the session list: in the Done group
     page.get_by_test_id("session-switch").click()
     see(page.get_by_test_id("session-group-done").locator(f"[data-session='{sid}']")).to_have_count(1, timeout=20000)
-    shot(page, "81-code-ui-budget-groups")
+    shot(page, "111-code-ui-budget-groups")
     # a deep link's prompt: a draft marked as from a link, nothing sent; the address cleaned
     users = page.get_by_test_id("msg-user").count()
     page.goto(f"{CODE}/?session={sid}&prompt=" + "Summarise%20this%20workspace")
@@ -1711,7 +1711,7 @@ def ui_guardrails(ctx):
     page.wait_for_timeout(3000)
     settled(page, "msg-user")
     expect(page.get_by_test_id("msg-user").count() <= users, "the link's prompt was sent")
-    shot(page, "82-code-ui-link-draft")
+    shot(page, "112-code-ui-link-draft")
     page.get_by_test_id("link-draft-clear").click()
     # Open in the terminal: the command typed into a new window of the terminal's tmux; resuming here is refused meanwhile
     page.get_by_test_id("more-menu").click()
@@ -1724,14 +1724,16 @@ def ui_guardrails(ctx):
         tf.click("form[action='/.bn/unlock'] button[type=submit]")
         tf = _terminal_frame(page)
     tf.locator(".xterm").wait_for(timeout=30000)
-    screen = _term_wait(tf, re.escape(f"claude-bedrock --resume {sid}"), 60)
-    shot(page, "83-code-ui-open-in-terminal")
+    # its window (tmux's status line), and Claude Code running there — the command line itself is soon covered by
+    # Claude Code's screen (in this fresh sandbox first its "trust this folder?" question)
+    screen = _term_wait(tf, re.escape(f"resume-{sid[:8]}"), 60)
+    screen = _term_wait(tf, r"(?i)(trust this folder|for shortcuts|claude-bedrock --resume)", 60)
+    shot(page, "113-code-ui-open-in-terminal")
     r = c.api("POST", "/api/sessions", {"resume": sid, "model": HAIKU, "mode": "default"})
     expect(r["status"] == 409 and "terminal" in r["text"], f"a resume while the terminal runs it: {r['status']} {r['text'][:160]}")
     # Claude Code exits there (Ctrl-C twice: also from its first-run "trust this folder?" question), then the window's
     # shell too: the page may resume it again (no request to the model)
-    _term_wait(tf, r"(?i)(for shortcuts|trust|Claude Code|bedrock ·)", 90)
-    page.wait_for_timeout(3000)
+    page.wait_for_timeout(2000)
     t0, r = time.time(), {"status": 0, "text": ""}
     while time.time() - t0 < 90:
         tf.locator(".xterm-helper-textarea").focus()
@@ -1755,7 +1757,7 @@ def ui_guardrails(ctx):
     page.evaluate("() => { const b = document.querySelector('.tab[data-tab=home]'); if (b) b.click(); }")
     see(page.locator(f"section.code-card .code-sessions a[href*='session={sid}']")).to_have_count(1, timeout=30000)
     see(page.locator("#code-budget")).to_contain_text("this period", timeout=40000)
-    shot(page, "84-home-code-card")
+    shot(page, "114-home-code-card")
     return f"Always rule {rules[0]!r} listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not sent; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
 
 
