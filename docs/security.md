@@ -177,8 +177,9 @@ The **Settings** tab shows every key of `.env` and changes the ones listed in
 - **What the page sees.** `./stack` writes `.state/status/settings.json` (read-only in the portal) whenever `.env`
   changes: plain values as they are, secrets only as *set* with at most a short hint (the last four characters
   of a generated key, the two ends of the AWS key ID, the host of the webhook URL; nothing of a password, the AWS
-  secret or the Cloudflare token), each key's description and policy from `catalog/settings.tsv`, and the
-  SHA-256 of `.env` (`base`). Reveal/Copy returns only what the portal already holds for Home and its own work
+  secret or the Cloudflare token), each key's description and policy from `catalog/settings.tsv`, for plain keys
+  only `.env.example`'s value as their default (Settings › *Changed from default*; secrets are never compared), and
+  the SHA-256 of `.env` (`base`). Reveal/Copy returns only what the portal already holds for Home and its own work
   (the Admin and Files sign-ins, the three LiteLLM keys, `SHARED_MCP_TOKEN`), after the password again.
 - **The front door.** A change, a Reveal, a diagnostic and "Sign out other devices" need a session,
   `X-Requested-With`, the portal's own `Origin`, the portal password typed again (wrong ones count toward the
@@ -685,8 +686,10 @@ spawn server, Claude Code or any file at will.
   checked again when Claude worked since that dry run.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops, the previews' ops (below: the listening
-  ports, stopping one, the workspace's `.claude/launch.json`), the watchlist's two ops (below), and the Review pane's
-  `git.diff` and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration). Claude Code's
+  ports, stopping one, the workspace's `.claude/launch.json`), the watchlist's two ops (below), the Review pane's
+  `git.diff` and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
+  Permissions view's, *Open in the terminal*'s and the resume check's ops (`perm.read`, `perm.remove`,
+  `terminal.resume`, `sessions.running`: below, "Budgets, Permissions, Open in the terminal, links"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
   `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
   a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*); refused, among
@@ -1009,6 +1012,65 @@ folder; they run in the sandbox either way.
 above) and serve script on the code origin — the same standing as the other app hosts: the cookies it could
 target are `HttpOnly`, the portal checks the Origin of every change, and only the portal may frame it. Pinning the
 page's script hashes in Caddy's CSP would take even that away (an open question).
+
+### Budgets, Permissions, Open in the terminal, links
+
+- [x] **A budget's stop is Claude Code's own, and a convenience, not a boundary.** A session's budget (`set_budget`:
+  USD 0.01–999, checked) lives in the code container and in your browser. With its stop on, every Claude Code process
+  of the session starts with `maxBudgetUsd` — what is left: the amount less the larger of the page's figure (LiteLLM's
+  spend logs, through the portal) and Claude Code's own estimate (its results' `total_cost_usd`, which counts the
+  session's earlier processes; sandbox data, used only to stop sooner, never shown). Probed with a fake API (Claude Code
+  2.1.296, SDK 0.3.296): the SDK passes it as `--max-budget-usd` (on bn-coded's allowlist, `^[0-9]{1,3}(\.[0-9]{1,6})?$`),
+  it is checked after every request — a turn ends mid-way with `error_max_budget_usd` — later prompts in that process
+  are refused without a request, and it counts per process (a resumed process restores the estimate but not the
+  limit: hence "what is left" at every start). It is an estimate at Claude Code's list prices and can overshoot by one
+  request; the page also interrupts a turn LiteLLM's logs show past the budget, and refuses prompts while nothing is
+  left. A change while a process runs takes effect at the next prompt that starts a turn (the process restarts:
+  *Bypass permissions* ends with it, as with every restart). The real limit stays the terminal key's monthly budget
+  in LiteLLM, which the sandbox cannot change: anything in the sandbox can call LiteLLM with that key directly.
+- [x] **Permissions view: one fixed file changed, the workspace's only shown.** `perm.read` reads the sandbox's
+  `~/.claude/settings.json` (where *Always* writes) and `/workspace/.claude/settings.json` and `settings.local.json` —
+  regular files only (`O_NOFOLLOW`, `O_NONBLOCK`), never through a link on the way (a `.claude` that is a link is
+  reported, not followed), at most 256 KiB each, and only their `permissions` lists leave as text (500 rules per list,
+  4,000 characters per rule; anything else is counted, not passed on). `perm.remove` changes one file only, the
+  sandbox's user settings: one rule (each copy of it) out of `allow`, `ask` or `deny`, **only while the file's SHA-256
+  is still the one the page showed** (an *Always* meanwhile, or the terminal, makes it refuse: the page reads it again),
+  every other key and value kept (JSON re-written with 2-space indents; a numeric-looking key may move to the front,
+  as JavaScript orders them), through a temporary file that keeps the file's mode and a rename, refused when the file
+  turned into a link. The workspace's files are never changed here: they are in your folder, and Claude Code on your
+  computer honours them too (the page says so). The page shows the rules with invisible and control characters made
+  visible.
+- [x] **Open in the terminal types one fixed command.** `terminal.resume` takes a session id that must be a UUID **and**
+  the name of a transcript that is there (a regular file, not a link); it opens a new window of the terminal's tmux
+  session (`resume-<first 8 hex>`, in `/workspace`) and types `claude-bedrock --resume <uuid>` into that window's new
+  shell with `send-keys -l` (literal text, no key names), then Enter — never into a window where something already
+  runs, never anything the page or the sandbox chose. The code container ends its own process for the session first
+  (refused while a turn runs) and waits for it to exit. Then `sessions.running` keeps the page from resuming that
+  conversation a second time: before a session that is not open in the page is resumed (`POST /api/sessions` with
+  `resume`, or a prompt to an ended session), bn-coded looks for a process in the sandbox — other than its own
+  children — with that id as an argument (`/proc/*/cmdline`, at most 64 KiB each); if there is one, the resume is
+  refused (409) until Claude Code exits there. Two Claude Code processes would both append to one transcript. The check
+  is the safe side (a process that merely mentions the id counts too), and not a boundary: anything in the sandbox can
+  run Claude Code itself. A spend tag of its own: the terminal's `claude-bedrock` books under `cb-…`, not the page's
+  `code-<uuid>`, so that session's page cost meter does not show what the terminal spends on it (Home's key spend does).
+- [x] **Links put a draft in the prompt box, never more.** `code.<host>/?session=<id>&prompt=<text>`: the session is
+  shown or resumed (a valid UUID of this workspace, else said); the prompt becomes a **draft** in the prompt box, with a
+  banner that it came from a link — **nothing is ever sent by itself**, a link cannot pick a mode, a model, a budget or
+  an answer to a card. A link is anyone's to make, so the text is treated like sandbox text: at most 4,000 characters
+  (a longer one is cut, and the banner says so), control and bidirectional characters shown as `⟨U+…⟩` (no hidden
+  "Trojan Source" text), parsed in linear time (the query looked at only up to 64 KiB; unit tests time hostile inputs),
+  and both parameters leave the address bar at once (`history.replaceState`), so a reload or a shared screenshot does
+  not carry them on. The Code page's unlock form carries such a link through the password (a hidden field), and the
+  portal rebuilds it from what checks out — the root path, `session` (a UUID) and `prompt` (≤ 4,000 characters, no
+  NUL), once each, at most 6,000 characters encoded (a longer one keeps its session) — so the redirect after the unlock
+  never goes elsewhere (another host, another path, `//…`, `javascript:` all end at `/`). The terminal's unlock form
+  carries none. Phishing remains possible in the sense that a link can suggest a harmful prompt: the banner and the
+  rule that you send it yourself are the defence — read a draft from a link before you send it.
+- [x] **Home's Code card shows only what the framed page reports.** The Code page posts its open sessions (at most 8:
+  id, title, state, count of prompts waiting) to the portal's origin only, with the badge's status message; the portal
+  takes it only from the code host's origin, keeps ids that are UUIDs and states it knows, cuts titles to 120
+  characters with control characters removed, and draws it as text. Its *Resume* and *Ask* only open the Code page
+  with a deep link (above). The card's spend line is the terminal key's, from Home's own summary.
 
 ### Review changes and search in files
 

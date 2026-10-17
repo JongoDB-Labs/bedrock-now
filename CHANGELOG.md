@@ -27,6 +27,42 @@ All notable changes to bedrock-now are documented here. The format follows
   cached) and about half a cent for each further check — on a Haiku session more than the session itself.
   `claude-bedrock` on your computer keeps auto mode off in its lean folder; with `CLAUDE_BEDROCK_AUTO_MODE=1` its
   classifier now runs on Sonnet 5.5 too.
+- **Code page: a budget per session** (⋯ → *Budget for this session*; off by default). Warnings in the conversation at
+  50 %, 80 % and 100 % of it, from bedrock-now's spend logs, and the share on the cost meter. **Stop at the budget**
+  (optional) is Claude Code's own: each of the session's Claude Code processes starts with what is left as its
+  `maxBudgetUsd` — verified with a fake API to stop a streaming session after the request that reaches it, mid-turn,
+  and to refuse later prompts without a request; per process, so the code container passes what is left (the larger
+  of the spend logs' figure and Claude Code's estimate) at every start. The page also interrupts a turn the spend logs
+  show past the budget, and prompts are refused while nothing is left. A change while Claude Code runs restarts it at
+  the next prompt. **New sessions start with this budget too** remembers one for this browser. `set_budget` over the
+  WebSocket; `budget` in `POST /api/sessions`, `session_state` and `/api/state`.
+- **Code page: the cold prompt cache, before you send.** After 5 idle minutes, a line above the prompt box says your
+  next prompt writes the session's context to the prompt cache again (`~48k tokens ≈ $0.18 on Sonnet 5.5`, at the
+  model's cache-write price, and what it would have cost warm). A new session on Opus says how much more it costs than
+  Sonnet per token, with a switch. `session_state` carries the backend's `lastActive`.
+- **Code page: ⋯ → Permissions.** The allow / ask / deny rules Claude Code applies: the sandbox's
+  `~/.claude/settings.json` (where *Always* writes; **Remove** per rule, only while the file is as shown, every other
+  key kept, atomic), the workspace's `.claude/settings.json` and `settings.local.json` (shown only: Claude Code on your
+  computer honours them too), and the page's own rules (what still asks in Bypass permissions, what Read only denies).
+  New bn-coded ops `perm.read` and `perm.remove`; `GET /api/permissions`, `POST /api/permissions/remove`.
+- **Code page: sessions grouped** as Needs you (a permission card, a question or a plan waiting) · Working · Done, a dot
+  on a session whose turn ended while you were elsewhere, and the tab title `(2) waiting`. On a phone the session list
+  opens first while a session waits for you.
+- **Code page: Open in the terminal** (a session's ⋯, or ⋯ → *Continue this session in the terminal*): the page's
+  process for it ends, and a new window of the terminal panel gets `claude-bedrock --resume <id>` typed into its shell
+  (bn-coded `terminal.resume`: a UUID of a transcript that is there, nothing else typed); until Claude Code exits there,
+  resuming it in the page is refused (`sessions.running`: two processes would both write the conversation).
+  `POST /api/sessions/ID/terminal`.
+- **Links into the Code page**: `/?session=<id>` shows or resumes a session; `/?prompt=<text>` puts a draft in the
+  prompt box, marked as coming from a link — never sent by itself, at most 4,000 characters, invisible characters
+  shown; both leave the address bar at once and survive the Code page's unlock (the portal rebuilds the link from what
+  checks out).
+- **Home: a Code card** (the Code page on): how many sessions need you, the open ones with Resume / Answer, a prompt
+  box that opens Code with it as a draft (nothing is sent from Home), and the terminal key's spend against its budget.
+- **Walkthrough: the browser terminal and the Code page** get steps of their own where the site offers them (open
+  Code → ask → approve a card → preview a server → review changes).
+- **Settings: Search settings and Changed from default** (plain settings against `.env.example`'s values, which the
+  settings snapshot now carries; secrets are never compared).
 
 ### Changed
 
@@ -37,6 +73,11 @@ All notable changes to bedrock-now are documented here. The format follows
   said before (auto mode off for every `claude` there).
 - A call Claude Code denies without asking you (Auto's reviewer, a deny rule, *Read only*) is a card of its own in the
   Code page (`blocked` events), not a plain line.
+
+- Session titles: the session list prefers a title Claude Code wrote (a rename, its `ai-title` or summary) over the
+  first prompt for the open sessions too. Probed: Claude Code 2.1.296 writes `ai-title` lines in SDK sessions only
+  with its non-essential traffic on (a Haiku request per session), which the sandbox turns off — so in the sandbox the
+  first prompt (or your rename) is the title.
 
 ## [0.7.0] - 2026-10-16
 

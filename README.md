@@ -76,7 +76,7 @@ your browser.
 
 | Tab | What it is | Sign-in |
 |---|---|---|
-| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command. Refreshes every 30 s; makes no Bedrock calls. | the portal |
+| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Refreshes every 30 s; makes no Bedrock calls. | the portal |
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
 | **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | automatic |
@@ -128,7 +128,8 @@ instead of covering an app, on a tablet it is a card next to the icons, and on a
    are folded away under **Credentials**, with Copy buttons and a link to each app's own form, for the API or in
    case the automatic sign-in ever fails.
 3. **Use it together:** Home, a chat with its cost line, voice, your documents, Claude Code writing to the shared
-   store and Chat answering from that file, and where the money went in Admin.
+   store and Chat answering from that file, and where the money went in Admin — plus, where they are on, the browser
+   terminal and the Code page (open Code → ask → approve a card → preview a server → review the changes).
 
 Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat, Admin or
 Files opened, a key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
@@ -424,6 +425,11 @@ per browser.
   waits the Code tab shows a badge (in a browser that has used the Code page, also before you open the tab); nobody
   answering for 30 minutes counts as Deny. When Claude asks *you* something (its AskUserQuestion tool), the card is a
   small form — one choice, several, or **Other** with your own words — and your answers go back to Claude as answers.
+- **Permissions** (⋯ → *Permissions*): every rule Claude Code applies in the sandbox — *allow* (runs without asking),
+  *ask*, *deny*. The sandbox's own `~/.claude/settings.json`, where **Always** puts its rules, with **Remove** on each
+  (only while the file is as shown: a change meanwhile shows it again first); the workspace's `.claude/settings.json`
+  and `settings.local.json`, shown only — they are in your folder, and Claude Code on your computer honours them too;
+  and the page's own rules: what still asks in *Bypass permissions*, what *Read only* denies.
 - **Permission modes**, next to **Send** as in Claude Code's desktop app (`Shift+Tab` cycles *Manual → Accept edits →
   Plan → Bypass permissions → Auto*, those two when allowed, as the CLI does; `Alt+M` opens the menu). The desktop
   app's names and Claude Code's own modes underneath, plus one of bedrock-now's own, *Read only*:
@@ -473,6 +479,18 @@ per browser.
   turn's and the session's cost and the context window's use. A switch Claude Code refuses is taken back and said
   ("Still on …"); the page lists the model in the session's own `/model` picker first, so Claude Code does not need an
   API round trip to accept it.
+- **A budget per session** (⋯ → *Budget for this session*; off by default). An amount: the conversation says when the
+  session has used half of it, 80 % and all of it (from bedrock-now's spend logs, what Bedrock billed), and the cost
+  meter shows the share. **Stop at the budget** (optional) is Claude Code's own stop: every Claude Code process of the
+  session starts with what is left (its `maxBudgetUsd`), it ends a turn after the request that reaches it — by its own
+  estimate, so up to one request over — and new prompts are refused until you raise the budget or turn the stop off;
+  the page also stops a turn the spend logs show past it. A change while Claude Code runs applies from your next prompt
+  (it restarts for it, which may write the prompt cache again). **New sessions start with this budget too** keeps it
+  for the sessions you start in this browser. The terminal key's monthly budget (`BUDGET_TERMINAL`) applies anyway.
+- **A cold prompt cache, before you send.** After 5 idle minutes Claude Code's prompt cache has expired: a line above
+  the prompt box says what your next prompt writes to it again — the session's context, `~48k tokens ≈ $0.18 on
+  Sonnet 5.5`, at the model's cache-write price, and what it would have cost warm. A new session on Opus shows how
+  much more Opus costs than Sonnet per token, with a one-click switch (*Do not show again* hides it).
 - **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
   drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
   side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
@@ -533,9 +551,21 @@ per browser.
   `.xlsb`, OpenDocument text and slides, RTF, EPUB, HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which
-  shares them. A session keeps working when you close the tab or reload: the page re-attaches and shows what it
-  missed, nothing twice. At most 4 sessions run at once (each Claude Code process takes ~220 MB of the sandbox's
-  memory); an idle one stops after 30 minutes and your next prompt resumes it.
+  shares them. The open ones are grouped as Claude Code's agent view does: **Needs you** (a permission card, a question
+  or a plan waiting), **Working**, **Done** — with a dot on one that finished while you were looking at another (or
+  away), and the tab's title says `(2) waiting`. On a phone, the session list opens first while a session waits for you.
+  A session's title is the one Claude Code wrote (a rename, or its own summary or title when a transcript has one —
+  Claude Code writes those only with its non-essential traffic on, which the sandbox turns off), else its first prompt.
+  **Open in the terminal** (a session's ⋯, or ⋯ → *Continue this session in the terminal*) ends the page's process for
+  it and types `claude-bedrock --resume <id>` into a new window of the terminal panel; until Claude Code exits there,
+  the page refuses to resume it (two processes would both write the conversation). A session keeps working when you
+  close the tab or reload: the page re-attaches and shows what it missed, nothing twice. At most 4 sessions run at once
+  (each Claude Code process takes ~220 MB of the sandbox's memory); an idle one stops after 30 minutes and your next
+  prompt resumes it.
+- **Links into the page.** `code.<host>/?session=<id>` shows (or resumes) that session; `?prompt=<text>` puts the text
+  into the prompt box as a **draft marked as coming from a link** — never sent by itself, at most 4,000 characters,
+  invisible characters shown — so read it before you send it: anyone can make such a link. Both leave the address bar
+  at once (a reload does not bring the draft back), and they survive the unlock. Home's Code card uses them.
 - **Plugins & marketplaces** (⋯ menu). What is installed (on/off, update, uninstall; the built-in ones read-only),
   the added marketplaces' catalog (search, install) and the marketplaces themselves (add `owner/repo`, an `https://`
   git URL or a folder of the workspace, `/workspace/…`, which works without internet; update; remove). Some plugins
@@ -652,6 +682,9 @@ like this: Account & security · AWS & models · Budgets & alerts · Voice · Op
 · Remote access · Diagnostics · Advanced. Plain values are shown as they are; secrets only as *set* (with the
 last four characters of generated keys and the `AKIA…` ends of the AWS key ID). The portal never reads `.env`:
 `./stack` writes a masked copy, `.state/status/settings.json`, whenever `.env` changes (the page shows "as of").
+**Search settings** (above the cards) finds a setting by its name, key or note; **Changed from default** lists the
+plain settings whose value differs from `.env.example`'s (a blank value counts as the default; keys and passwords are
+never compared).
 
 **What you can change here**, each with what it restarts and for how long:
 
