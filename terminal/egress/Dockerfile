@@ -9,5 +9,5 @@ RUN chmod 755 /opt/bn-egress && chmod 644 /opt/bn-egress/bn-egress.mjs && node -
 # getaddrinfo runs in libuv's thread pool: more than its default 4 lookups at once (npm opens many connections)
 ENV NODE_ENV=production UV_THREADPOOL_SIZE=16
 USER 65534:65534
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["node", "/opt/bn-egress/bn-egress.mjs", "--health"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 CMD ["node", "/opt/bn-egress/bn-egress.mjs", "--health"]
 CMD ["node", "--max-old-space-size=96", "/opt/bn-egress/bn-egress.mjs"]
