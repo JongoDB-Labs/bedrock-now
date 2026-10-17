@@ -146,7 +146,7 @@ your browser.
 
 | Tab | What it is | Sign-in |
 |---|---|---|
-| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Refreshes every 30 s; makes no Bedrock calls. | the portal |
+| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Refreshes every 30 s; makes no Bedrock calls. Above the tabs: **Search** (Ctrl/⌘+K) and the **Activity** bell ([Activity and search](#activity-and-search)). | the portal |
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
 | **Code** | On by default: Claude Code with a chat and your files, at `code.bedrock-now.localhost` ([The Code page](#the-code-page)); while it is off the tab stays, muted, and says how to turn it on | the portal, then the portal password again (12 hours) |
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
@@ -207,6 +207,34 @@ on a phone it is under **More**.
 Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat, Admin or
 Files opened, a key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
 closing the walkthrough leaves the button with your progress, and **Start over** at the end resets it.
+
+### Activity and search
+
+**Activity** is the bell at the top of the sidebar (on a phone: **More → Activity**, and a dot on More): its number is
+what you have not read yet, and its panel lists, newest first:
+
+- a **budget** at `BUDGET_ALERT_PCT` (80 % by default) of its monthly limit, or used up — one per key and period, with
+  **Change the budget** (Settings, at that key's budget);
+- an **update** available, with **What's new** (Home's update card);
+- **Code sessions that need you** (a permission prompt, a question, a plan): what the Code tab reports while this
+  browser has it open or loaded in the background, with **Answer**;
+- **jobs**: what the update helper did (an update, a rollback, a clean-up, a Settings change, a backup, a diagnostic)
+  and the last `./stack` command typed in a terminal that changed the stack — running, then finished or failed, for a
+  week;
+- the Code page **turned on by an update nobody watched**, with **Keep** and **Turn off**;
+- a **model check** that could not check every model, and **failed OpenRouter requests** of the last 24 hours.
+
+**Mark as read**, **Mark all as read** and **✕** (dismiss; **Show dismissed** brings them back) are kept in this
+browser only. **Browser notifications** in the panel are off until you turn them on (the browser asks once): then a new
+item raises one while a portal tab is open but you are not looking at it — never for what was there already, never
+when the tab is closed (there is no push service).
+
+**Search** (**Ctrl+K**, **⌘K** on a Mac, or the box at the top of the sidebar; on a phone **More → Search**) finds, as
+you type: the portal's pages, every Settings section and setting by name or key (Enter opens it, lit up), Code
+sessions and **workspace file names** (asked from the Code tab while this browser has it open; Enter opens the file in
+its editor), **Chat conversations** (Open WebUI's own search), the walkthrough's steps, and the sections of this README
+and `docs/` (on GitHub, as of your release). ↑ ↓ choose, Enter opens, Esc closes. Nothing typed there leaves your
+computer; [docs/security.md](docs/security.md#activity-and-search) says what each part reads.
 
 ### Desktop app
 
@@ -1415,8 +1443,9 @@ restores is never pruned, however old.
 otherwise: an install with no `CODE_ENABLED` in `.env` (or a blank one) gets both, in `~/bedrock-now-workspace` (or
 the terminal's folder, if it was on), with the terminal's own key and budget; the update says so ("The Code page is
 now on by default …") and its *What's new* names it. An update nobody watched — **Update now** on Home, or the
-nightly automatic update — also leaves a one-time banner on Home: "The last update turned on the Code page and its
-sandbox (workspace …, internet on)", with **Keep** and **Turn off** (Settings, at its switch). Building their images takes a few minutes more the first time
+nightly automatic update — also leaves a one-time item in [Activity](#activity-and-search) (the bell): "The last
+update turned on the Code page and its sandbox (workspace …, internet on)", with **Keep** and **Turn off** (Settings,
+at its switch). Building their images takes a few minutes more the first time
 (about 1.6 GB). `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` in `.env` stays off; `./stack code disable`
 afterwards turns it off for good. Bypass, Auto, remote access to the sandbox and remote previews stay off.
 `./stack rollback` of that update turns them off again, as they were (the data it restores has no key for the

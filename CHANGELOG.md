@@ -27,6 +27,29 @@ All notable changes to bedrock-now are documented here. The format follows
   a comment on any line (a click, or Enter on it; ↑/↓ move between lines, Esc cancels) goes back with **Keep
   planning…** as `line N:` with the line quoted and your comment, or, when you approve, as your next message in that
   session. Works by keyboard and on a phone.
+- **Activity**, the portal's notification centre: a bell at the top of the sidebar (on a phone **More → Activity**,
+  and a dot on More) with the number of unread items, and a panel of them, newest first — a budget at
+  `BUDGET_ALERT_PCT` of its monthly limit or used up (**Change the budget**), an update available (**What's new**),
+  Code sessions that need you (**Answer**), the update helper's jobs (updates, rollbacks, clean-ups, Settings
+  changes, backups, diagnostics) and the last `./stack` command typed in a terminal, running and then finished or
+  failed, for a week; a model check that could not check every model; failed OpenRouter requests. **Mark as read**,
+  **Mark all as read** and dismiss are kept in the browser (ids and times only). Optional **browser notifications**
+  (the browser asks once) for new items while a portal tab is open and not looked at — no push service. The server
+  side derives everything from status files that exist already (`/api/activity`); nothing new is stored
+  ([README](README.md#activity-and-search), [docs/security.md](docs/security.md#activity-and-search)).
+- **Search** in the portal: **Ctrl+K** (**⌘K** on a Mac), the box at the top of the sidebar, or **More → Search** on
+  a phone. It finds the portal's pages, every Settings section and setting by name or key (Enter opens it, lit up),
+  Code sessions and workspace file names (asked from the Code tab's frame while this browser has it open; Enter opens
+  the file in its editor), Chat conversations (Open WebUI's own search, asked by the portal as you), the walkthrough's
+  steps, and the sections of the README and `docs/` (an index built into the portal's image; they open on GitHub at
+  your release). Keyboard-driven (↑ ↓ Enter Esc), grouped; matching is linear-time with capped inputs.
+
+### Changed
+
+- **The Code page turned on by an update nobody watched** is now an item in Activity, with the same **Keep** and
+  **Turn off**, instead of a banner on Home (a **Keep** pressed on the banner still counts).
+- The portal's image is built with `additional_contexts: { repo: . }` in `compose.yaml`, for the search's docs index:
+  BuildKit sends it only `README.md` and `docs/*.md` from that folder. Docker Compose 2.17 or newer reads it.
 
 ## [0.10.0] - 2026-10-17
 

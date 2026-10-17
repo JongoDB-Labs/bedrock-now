@@ -277,6 +277,72 @@ in the audit log and on Home. It cannot run anything but `./stack config apply` 
 change hosts, ports, the helper's own switches or the internal secrets (beyond asking for a new random RustFS pair
 or MCP token — it is restarted with them, as it holds the current ones), and cannot restore a backup.
 
+## Activity and search
+
+The portal's notification centre (the bell, `static/activity.js`) and its global search (Ctrl/⌘+K, `static/search.js`)
+only read what the portal already has, and **no new data leaves this computer**: nothing is sent to a third party, no
+push service is used, and there is no new store — the server keeps no list of its own.
+
+- **What Activity reads.** `GET /api/activity` (a session and `X-Requested-With`, like every `/api/*`) derives its
+  items, each time it is asked, from files that exist already, read-only through the same reader as Home (no
+  symlinks, size caps, every field type-checked, text capped and control characters dropped; `portal/activity.py`):
+  `.state/status/helper-status.json` (the helper's last job), `terminal-job.json` (the last `./stack` command typed
+  in a terminal: only its command's words, never its arguments), `code-default.json` (an update nobody watched
+  turned the Code page on), the release check's `latest.json` and `version.json`, and the last model check
+  (`litellm/probe-results.tsv`). Budgets and failed OpenRouter requests come from `/api/summary`, which Home loads
+  anyway (Activity asks it at most every 5 minutes while Home is not shown); Code sessions that wait for you come
+  from the Code tab's frame's status message (below). An item carries a place in the portal to go to
+  (`#home`, `#settings/<KEY>` — checked on both sides; never a URL).
+- **What the browser keeps.** Read, unread and dismissed: `localStorage["bn.activity"]`, this browser only, holding
+  item ids and times — never a title or a text (an id names a key alias, a job id, a release tag, a Code session's
+  UUID); entries older than 45 days are dropped. A Code page notice kept with the old Home banner's **Keep** stays
+  kept (`bn.code.defaultNotice`).
+- **Browser notifications** are off until you turn them on in the panel, which asks the browser's permission; then
+  only items that appear while a portal tab is open and not focused raise one (title and text, which the browser
+  shows as plain text; a Code session's title is sandbox text), at most three at a time, never for what was there
+  when the page opened. There is no Web Push: no subscription, no push service, no server-sent notification.
+  `sw.js` only handles a click on one (it focuses the portal); on Android Chrome, which allows notifications only
+  through a service worker, it shows them.
+- **The Code tab's frame and the portal** talk by `postMessage`, and each side checks the other's origin *and*
+  window: the portal takes messages only from the code host's origin and from its own Code tab's frame
+  (`e.source === frame.contentWindow`), the Code page only from the portal origin it was given (`/api/state`'s
+  `portal_origin`) and from `window.parent`; each answers to that one origin only (never `"*"`). The messages:
+  - Code page → portal `{type: "bn-code-status", pending, busy, bypass, waiting, sessions: [{id, title, state}]}`
+    (as before: the badge and Home's Code card); Activity uses the same checked copy (ids that are UUIDs, known
+    states, at most 8, titles cut to 120 characters with invisible and direction-changing characters shown as
+    `⟨U+…⟩`).
+  - portal → Code page `{type: "bn-portal-search", id, q}` (id: 1–32 letters and digits; q: at most 64 characters,
+    control characters dropped), and back `{type: "bn-code-search", id, sessions: [{id, title}] (≤ 20), files:
+    [path] (≤ 30), truncated}`: the session list's own fuzzy match and the @ picker's bounded walk (`/api/fs/find`).
+    The portal takes only the answer to its last request, ids that are UUIDs, and workspace-relative file paths
+    (no `..`, `.`, empty part, leading `/` or NUL; folders left out), shown as text like the titles.
+  - portal → Code page `{type: "bn-portal-open", path}`: the Code page opens that file in its editor only if the path
+    passes its own checks (`exactPath` and `cleanPath`, as every open there) — it reads a file of the workspace the
+    page can already read; it never runs anything.
+  A frame that is locked, not loaded (a phone, a browser that never opened Code) or the plain page answers nothing:
+  the search then says where to look instead.
+- **Chat conversations** come from Open WebUI's own search API, asked by the portal server (`GET /api/search/chats`):
+  it signs in to Open WebUI the way the Chat tab does — `POST /api/v1/auths/signin` with `X-Portal-User: <owner email>`
+  on the stack's internal network (Open WebUI trusts that header from the containers on its network; see *What stays
+  local*) — and keeps the owner's session token in memory only, for at most an hour (dropped at the first 401; the
+  portal's HTTP client keeps no cookies), never logged, never on disk, never sent to the browser. Only the chat's id
+  (a UUID), its title and Open WebUI's snippet go to the page, as text (capped, control characters dropped, at most
+  20). The query is at most 64 characters; a few searches a second at most. If it fails, the page offers Chat's own
+  search box instead.
+- **Settings and docs.** `GET /api/search/index` returns the Settings page's sections and settings (titles and
+  one-line summaries from `catalog/settings-layout.tsv` and `catalog/settings.tsv`: never a value of `.env`) and an
+  index of README.md and `docs/*.md` (headings, GitHub's anchors, a line of text each) built when the portal's image
+  is built (`portal/Dockerfile`, stage `docs`; compose's `additional_contexts` sends BuildKit only those files, never
+  `.env`, `.state` or `backups/`). A docs result opens the section on github.com in a new tab
+  (`noopener,noreferrer`) — a link you click, like the release notes' — at your release's tag.
+- **Matching is linear.** Every query and candidate is capped (64 and 256 characters, 5,000 candidates per search)
+  and matched by one greedy pass plus a Knuth–Morris–Pratt substring search (`static/fuzzy.js`, the Code palette's
+  algorithm); no regular expression is built from input (a test checks the portal's scripts for `new RegExp`), and
+  unit tests time hostile inputs (5,000 near-miss candidates of 1 KiB, a 200,000-character title); so does the e2e
+  suite in Chromium. The docs index is built from this repository's files with string operations only.
+- **Over remote access** Activity and search work as locally (they read nothing a remote session could not see on
+  Home and in Settings already); the Code tab's frame answers only where the Code page is allowed there.
+
 ## Remote access
 
 Off by default; `./stack remote enable tailscale` turns it on ([docs/remote.md](remote.md)). What changes:
@@ -546,8 +612,9 @@ reaches is the container — with the three exceptions under *Threat model*.
     turns it on); `./stack rollback` of the update that turned them on turns them off again, keeping a switch you
     turned off since. `TERMINAL_EGRESS` keeps its default (on: Claude Code needs npm, pip, git and documentation).
   - *Unattended:* an update nobody watched (Home's **Update now** or the nightly automatic update, both run by the
-    update helper without a terminal) that turns them on leaves a one-time banner on Home — the workspace folder and
-    whether the sandbox has internet, **Keep** or **Turn off** — besides the line in the update's *What's new*.
+    update helper without a terminal) that turns them on leaves a one-time item in Activity (the portal's bell) — the
+    workspace folder and whether the sandbox has internet, **Keep** or **Turn off** — besides the line in the update's
+    *What's new*.
     Headless or scripted installs (`--yes` on a server) that should not run it put `CODE_ENABLED=false` (or
     `TERMINAL_EGRESS=off`) into `.env` before the first setup ([README](../README.md#quickstart)).
 

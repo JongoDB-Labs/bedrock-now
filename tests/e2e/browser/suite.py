@@ -9,7 +9,8 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-import checks_api  # noqa: F401 — registers checks
+import checks_activity  # noqa: F401 — registers checks
+import checks_api  # noqa: F401
 import checks_artifact  # noqa: F401
 import checks_browser  # noqa: F401
 import checks_code  # noqa: F401
