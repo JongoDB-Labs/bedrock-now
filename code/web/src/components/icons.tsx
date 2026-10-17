@@ -62,6 +62,9 @@ const P: Record<string, string> = {
   forward: 'M3 5l6 5-6 5zM10.5 5l6 5-6 5z',
   undo: 'M7 4L3 8l4 4M3 8h9.5a4.5 4.5 0 0 1 0 9H9',
   comment: 'M3.5 4h13v9h-7l-4 3v-3h-2z',
+  // the Git panel: a branch, and minus (unstage)
+  branch: 'M6 3.5v13M6 16.5a1.75 1.75 0 1 0 0 .01M14 3.5a1.75 1.75 0 1 0 0 .01M14 5.25c0 5-8 3.5-8 8.75',
+  minus: 'M4 10h12',
 };
 
 export type IconName = keyof typeof P;

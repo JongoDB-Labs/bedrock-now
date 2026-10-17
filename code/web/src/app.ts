@@ -15,7 +15,8 @@ import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
-import type { GitReview, GrepResult } from './types';
+import type { GitCommit, GitEntry, GitFile, GitReview, GitScope, GitStatus, GrepResult } from './types';
+import { MESSAGE_ASK, messagePrompt, proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from './budget';
 import { pageTitle, waitingSessions } from './groups';
@@ -102,9 +103,23 @@ export interface ReviewTab {
   key: 'review';
   path: string;
 }
-export type Tab = FileTab | DiffTab | PreviewTab | ReviewTab;
+/** A file's changes from the Git panel: staged (the last commit → what is staged), unstaged (what is staged → the
+ *  file), or a new file's — read only, in the Review's rows. */
+export interface GitDiffTab {
+  kind: 'gitdiff';
+  key: string;
+  path: string;
+  scope: GitScope;
+  loading: boolean;
+  error: string | null;
+  /** null: no change of that kind (any more) */
+  file: GitFile | null;
+  /** bumped by each load (an older answer is dropped) */
+  n: number;
+}
+export type Tab = FileTab | DiffTab | PreviewTab | ReviewTab | GitDiffTab;
 
-export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search';
+export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search' | 'git';
 export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all' | 'budget' | 'permissions';
 
 /** The Review pane's state: git's answer (the files themselves are derived: reviewFiles) and what you kept. */
@@ -123,6 +138,24 @@ export interface ReviewState {
   filter: 'session' | 'all';
   /** the pane was opened in this page: git is asked again after each turn */
   engaged: boolean;
+}
+/** The Git panel: git's last answers, the commit box, and "Write message" on its way. */
+export interface GitState {
+  status: GitStatus | null;
+  commits: GitCommit[];
+  loading: boolean;
+  error: string | null;
+  /** an action on its way (stage, unstage, discard, commit): what it acts on */
+  busy: string | null;
+  /** the commit box (kept while the panel is closed) */
+  message: string;
+  /** "Write message": the prompt sent to a session (its answer becomes the commit box's draft); session null until
+   *  the prompt was delivered */
+  drafting: { session: string | null; prompt: string; since: number } | null;
+  /** the panel was opened in this page: git is asked again after each turn */
+  engaged: boolean;
+  /** bumped to focus the commit box */
+  focus: number;
 }
 export interface SearchState {
   q: string;
@@ -225,6 +258,7 @@ export interface AppState {
   /** a set_mode is on its way: another waits for its answer (two at once would race in the backend) */
   modeSwitching: boolean;
   review: ReviewState;
+  git: GitState;
   search: SearchState;
   palette: PaletteState | null;
   /** line comments from the Review pane, queued for the next prompt (chips in the composer) */
@@ -274,6 +308,7 @@ export const store: Store<AppState> = createStore<AppState>({
   startWith: null,
   modeSwitching: false,
   review: { git: null, loading: false, error: null, kept: {}, undone: {}, busy: null, filter: 'session', engaged: false },
+  git: { status: null, commits: [], loading: false, error: null, busy: null, message: '', drafting: null, engaged: false, focus: 0 },
   search: { q: '', regex: false, caseSensitive: false, include: '', exclude: '', globs: false, loading: false, result: null, error: null, focus: 0 },
   palette: null,
   comments: [],
@@ -777,6 +812,8 @@ function onEvent(id: string, ev: Ev, wasBusy = false, replayed = false): void {
     requestContext(id);
     refreshExpandedDirs();
     if (wasBusy && get().review.engaged && id === get().active) scheduleReview();   // (a turn that ran here, not a replay)
+    if (wasBusy && get().git.engaged) scheduleGit();
+    if (!replayed && get().git.drafting) finishDraft(id);
     announce();
   } else if ((ev.kind === 'error' || (ev.kind === 'text' && /API Error/i.test(ev.text))) && BUDGET_WORDS.test(ev.text)) {
     // LiteLLM refused the request (Claude Code shows the API's error as its answer)
@@ -2280,6 +2317,7 @@ export async function undoReview(f: ReviewFile, o: UndoOpts | string = {}): Prom
   } finally {
     if (!busy) setReview((r) => ({ ...r, busy: null }));
     if (f.source === 'git' && !busy) await refreshReview();
+    if (!busy && get().git.engaged) void refreshGit();
   }
 }
 
@@ -2374,6 +2412,7 @@ export async function undoAllReview(files: ReviewFile[], everything = false): Pr
   } finally {
     setReview((r) => ({ ...r, busy: null }));
     await refreshReview();
+    if (get().git.engaged) void refreshGit();
   }
   const sid = get().active;
   if (done && sid) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
@@ -2403,6 +2442,199 @@ export function promptWithComments(text: string): { text: string; ids: number[] 
 export function clearComments(ids: number[]): void {
   const gone = new Set(ids);
   set((s) => ({ ...s, comments: s.comments.filter((c) => !gone.has(c.id)) }));
+}
+
+// ---------------------------------------------------------------- the Git panel
+
+function setGit(fn: (g: GitState) => GitState): void {
+  set((s) => {
+    const g = fn(s.git);
+    return g === s.git ? s : { ...s, git: g };
+  });
+}
+/** The Git panel: the side panel's Git tab (a sheet on a phone); git is asked what changed. */
+export function showGit(focusMessage = false): void {
+  set((s) => ({ ...s, palette: null, git: { ...s.git, engaged: true, focus: focusMessage ? s.git.focus + 1 : s.git.focus } }));
+  if (isPhone()) setSheet('git');
+  else if (typeof matchMedia === 'function' && matchMedia('(max-width: 1099.98px)').matches) setLayout({ tabletPane: 'files', side: 'git' });
+  else setLayout({ explorer: true, side: 'git' });
+  void refreshGit();
+}
+/** git is asked once at a time (status, then the log); asked again meanwhile, once more when that answer is in. */
+let gitInflight: Promise<void> | null = null;
+let gitAgain = false;
+export function refreshGit(): Promise<void> {
+  if (gitInflight) {
+    gitAgain = true;
+    return gitInflight;
+  }
+  setGit((g) => ({ ...g, loading: true }));
+  const run = (async () => {
+    try {
+      do {
+        gitAgain = false;
+        try {
+          const status = await api.getGitStatus();
+          const log = status.repo ? await api.getGitLog() : { commits: [] as GitCommit[], error: null };
+          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error }));
+        } catch (e) {
+          // (two reads run already: the next refresh has the answer)
+          if (!(e instanceof api.ApiError && e.status === 429)) setGit((g) => ({ ...g, error: errText(e) }));
+        }
+      } while (gitAgain);
+    } finally {
+      gitInflight = null;
+      setGit((g) => ({ ...g, loading: false }));
+    }
+  })();
+  gitInflight = run;
+  return run;
+}
+let gitTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleGit(ms = 1200): void {
+  if (gitTimer) clearTimeout(gitTimer);
+  gitTimer = setTimeout(() => {
+    gitTimer = null;
+    void refreshGit();
+  }, ms);
+}
+export function setGitMessage(message: string): void {
+  setGit((g) => (g.message === message ? g : { ...g, message }));
+}
+/** One change at a time: `what` names it (busy), then git is asked again — and the Review pane too, when it is open. */
+async function gitChange(what: string, fn: () => Promise<string | void>): Promise<boolean> {
+  if (get().git.busy) return false;
+  setGit((g) => ({ ...g, busy: what }));
+  let failed = '';
+  try {
+    const ok = await fn();
+    if (ok) toast(ok, 'ok');
+    return true;
+  } catch (e) {
+    failed = e instanceof api.ApiError && e.status === 429 ? 'Another git change is on its way: try again in a moment.' : `git: ${errText(e)}`;
+    return false;
+  } finally {
+    setGit((g) => ({ ...g, busy: null }));
+    await refreshGit();
+    // (a failure is said once git was asked again: the panel shows the files as they are by then)
+    if (failed) toast(failed, 'error');
+    if (get().review.engaged) void refreshReview();
+  }
+}
+/** Stage files (git add), 100 at a time; 'all': every change and new file git lists (no conflicts). */
+export function stageGit(paths: string[] | 'all'): Promise<boolean> {
+  return gitChange(paths === 'all' ? '*stage' : paths.length === 1 ? paths[0] : '*stage', async () => {
+    if (paths === 'all') return void (await api.gitStage('all'));
+    for (let i = 0; i < paths.length; i += 100) await api.gitStage(paths.slice(i, i + 100));
+  });
+}
+/** Unstage files (git reset): their changes stay in the files. */
+export function unstageGit(paths: string[] | 'all'): Promise<boolean> {
+  return gitChange(paths === 'all' ? '*unstage' : paths.length === 1 ? paths[0] : '*unstage', async () => {
+    if (paths === 'all') return void (await api.gitUnstage('all'));
+    for (let i = 0; i < paths.length; i += 100) await api.gitUnstage(paths.slice(i, i + 100));
+  });
+}
+/** Discard a file's unstaged changes (or a new file): its current version goes to the workspace trash; only while the
+ *  file is as git saw it. Open tabs of it reload; the watchlist is checked at once (a file that runs on your computer). */
+export function discardGit(e: GitEntry): Promise<boolean> {
+  return gitChange(e.path, async () => {
+    const r = await api.gitDiscard(e.path, e.mtimeMs);
+    afterUndo(e.path);
+    const sid = get().active;
+    if (sid) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
+    return r.action === 'trashed' ? `Moved ${label(e.path, 80)} to the workspace trash` : `Discarded the changes to ${label(e.path, 80)}${r.trash ? ' (its version is in the workspace trash)' : ''}`;
+  });
+}
+/** Commit what is staged with the commit box's message (git in the sandbox: no hook, no signing program). */
+export async function commitGit(): Promise<boolean> {
+  const message = get().git.message;
+  if (!message.trim() || get().git.busy) return false;
+  let done = false;
+  await gitChange('*commit', async () => {
+    const r = await api.gitCommit(message);
+    done = true;
+    // (the box is cleared only if it still holds what was committed)
+    setGit((g) => (g.message === message ? { ...g, message: '' } : g));
+    return `Committed ${r.head ? r.head.slice(0, 8) : ''}: ${label(r.subject, 120)}`;
+  });
+  return done;
+}
+/** "Write message": the open session (a new one if none is open) is asked to propose a message for the staged changes
+ *  — their diff goes with the prompt —; its answer becomes the commit box's draft when the turn ends. Never commits. */
+export async function writeCommitMessage(): Promise<void> {
+  const st = get().git.status;
+  if (!st?.repo || !st.staged.length || get().git.drafting) return;
+  const v = activeView();
+  if (v && (v.state === 'busy' || v.state === 'starting')) return toast('Claude is working in this session: ask for a message once the turn is over.', 'error');
+  let files: GitFile[] = [];
+  try {
+    files = (await api.getGitFile('staged', null)).files;
+  } catch (e) {
+    return toast(`The staged changes could not be read: ${errText(e)}`, 'error');
+  }
+  const prompt = messagePrompt(st.staged, files);
+  setGit((g) => ({ ...g, drafting: { session: null, prompt, since: Date.now() } }));
+  const sent = await sendPrompt(prompt, []);
+  if (!sent) return setGit((g) => ({ ...g, drafting: null }));
+  const sid = get().active;
+  setGit((g) => (g.drafting?.prompt === prompt ? { ...g, drafting: { ...g.drafting, session: sid } } : g));
+  // (a session started for this request is named for it, not after the prompt's first words)
+  if (sid) updateView(sid, (x) => (x.title === label(prompt, 80) ? { ...x, title: 'Commit message' } : x));
+}
+export function cancelDraft(): void {
+  setGit((g) => ({ ...g, drafting: null }));
+}
+/** A turn ended in session `id`: if it answered "Write message", the message it proposed goes into the commit box. */
+function finishDraft(id: string): void {
+  const d = get().git.drafting;
+  const v = get().views[id];
+  if (!d || (d.session !== null && d.session !== id) || !v) return;
+  let at = -1;
+  for (let i = v.items.length - 1; i >= 0; i--) {
+    const it = v.items[i];
+    if (it.t === 'user' && it.text === d.prompt) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return;   // (another session's turn: this one's answer is still to come)
+  let answer = '';
+  for (const it of v.items.slice(at + 1)) if (it.t === 'assistant' && it.parent === null && it.text.trim()) answer = it.text;
+  const msg = proposedMessage(answer);
+  const before = get().git.message;
+  setGit((g) => ({ ...g, drafting: null, ...(msg ? { message: msg, focus: g.focus + 1 } : {}) }));
+  if (!msg) return toast('Claude\'s answer had no commit message in it.', 'error');
+  if (before.trim() && before !== msg) toast('Claude\'s message replaced what was in the box.', 'info', { label: 'Put mine back', run: () => setGitMessage(before) });
+  else toast('A message from Claude is in the commit box: read it, then commit.', 'ok');
+}
+/** Whether a prompt is the page's own "Write message" request. */
+export const isDraftPrompt = (text: string): boolean => text.startsWith(MESSAGE_ASK);
+
+/** A file's staged or unstaged (or new) changes in a tab of the editor area (the editor sheet on a phone). */
+export function openGitDiff(path: string, scope: GitScope): void {
+  const key = `gitdiff:${scope}:${path}`;
+  set((s) => ({
+    ...s,
+    tabs: s.tabs.some((t) => t.key === key) ? s.tabs : [...s.tabs, { kind: 'gitdiff', key, path, scope, loading: true, error: null, file: null, n: 0 }],
+    activeTab: key,
+    sheet: isPhone() ? 'editor' : s.sheet,
+    prefs: s.prefs.layout.tabletPane === 'editor' ? s.prefs : { ...s.prefs, layout: { ...s.prefs.layout, tabletPane: 'editor' } },
+  }));
+  savePrefs(get().prefs);
+  void loadGitDiff(key);
+}
+export async function loadGitDiff(key: string): Promise<void> {
+  const t = get().tabs.find((x) => x.key === key);
+  if (t?.kind !== 'gitdiff') return;
+  const n = t.n + 1;
+  updateTab(key, (x) => (x.kind === 'gitdiff' ? { ...x, loading: true, error: null, n } : x));
+  try {
+    const d = await api.getGitFile(t.scope, t.path);
+    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: d.repo ? null : d.reason || 'not a git repository', file: d.files[0] ?? null } : x));
+  } catch (e) {
+    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: errText(e) } : x));
+  }
 }
 
 // ---------------------------------------------------------------- search in files

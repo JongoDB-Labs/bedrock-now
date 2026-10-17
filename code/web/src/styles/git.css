@@ -1,0 +1,57 @@
+/* The Git panel (side panel tab, phone sheet) and its file diffs in the editor area (the Review's rows: review.css). */
+
+.gitp { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.gitp-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.gitp-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12.5px var(--mono); color: var(--ink); }
+.gitp-sync { flex: none; font: 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.gitp-head .icon-btn { margin-left: auto; }
+.gitp-body { flex: 1; min-height: 0; overflow: auto; padding-bottom: 24px; }
+.gitp > .banner, .gitp-body > .banner { border-bottom: 1px solid var(--line); }
+.gitp-pad { padding: 6px 10px; }
+.gitp-clean { display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+
+/* the commit box */
+.gitp-commit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+.gitp-msg { width: 100%; min-height: 58px; max-height: 40vh; resize: vertical; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--mono); }
+.gitp-msg:focus { border-color: var(--accent); outline: none; }
+.gitp-commit-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.gitp-commit-actions .btn.primary { min-width: 92px; justify-content: center; }
+.gitp-drafting { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); }
+.gitp-note { overflow-wrap: anywhere; }
+
+/* groups and rows */
+.gitp-group { border-bottom: 1px solid var(--line-soft, var(--line)); }
+.gitp-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 2px; background: var(--side); }
+.gitp-group-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; background: none; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; text-align: left; }
+.gitp-group-toggle .badge { background: var(--active); color: var(--accent); }
+.gitp-group-toggle .chg { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.gitp-row { display: flex; align-items: center; gap: 4px; min-height: 26px; padding: 0 4px 0 8px; }
+.gitp-row:hover, .gitp-row:focus-within { background: var(--hover); }
+.gitp-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0; border: 0; background: none; color: var(--ink); font-size: 12.5px; text-align: left; }
+.gitp-name { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitp-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.gitp-watch { flex: none; display: inline-grid; place-items: center; color: var(--warn); }
+.gitp-chg { flex: none; display: inline-flex; gap: 4px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.gitp-actions { flex: none; display: inline-flex; align-items: center; gap: 0; }
+.gitp-actions .icon-btn { width: 24px; height: 24px; }
+/* a mouse shows the row's buttons on hover (keyboard: on focus); touch always */
+.gitp-row:not(.touch) .gitp-actions .icon-btn { opacity: 0; }
+.gitp-row:not(.touch):hover .gitp-actions .icon-btn, .gitp-row:not(.touch):focus-within .gitp-actions .icon-btn { opacity: 1; }
+.gitp-more { margin: 4px 8px 8px; }
+.gitp-code { overflow-wrap: anywhere; }
+
+/* the log */
+.gitp-log-row { display: grid; gap: 1px; padding: 4px 10px; }
+.gitp-log-row:hover { background: var(--hover); }
+.gitp-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.gitp-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.gitp-meta code { font-size: 11px; }
+
+/* phones: the sheet gives the panel the whole width; bigger targets */
+.sheet .gitp-row { min-height: 40px; }
+.sheet .gitp-open { height: 40px; font-size: 14px; }
+.sheet .gitp-actions .icon-btn { width: 36px; height: 36px; opacity: 1 !important; }
+.sheet .gitp-msg { font-size: 15px; }
+
+/* a file's diff from the panel (editor area) */
+.gitd .rv-head .rv-path { min-width: 0; overflow-wrap: anywhere; }

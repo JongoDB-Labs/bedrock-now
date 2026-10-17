@@ -438,6 +438,61 @@ export interface GitReview {
   timedOut: boolean;
 }
 
+/** The Git panel (GET /api/git/status): one file in a group. `code` is git's letter (M modified, A added, D deleted,
+ *  T type changed …); add/del are lines (null: binary or not counted). */
+export interface GitEntry {
+  path: string;
+  code: string;
+  add: number | null;
+  del: number | null;
+  binary: boolean;
+  /** the file's modification time when git looked (unstaged and new files: Discard acts only while it is still that) */
+  mtimeMs: number | null;
+  /** a file of the watchlist (it runs on your computer later) */
+  watch: { kind: string; why: string } | null;
+}
+export interface GitIdentity {
+  name: string;
+  email: string;
+  /** the repository's user.name/email, the sandbox's ~/.gitconfig, or bedrock-now's fixed one */
+  from: 'repository' | 'sandbox' | 'default';
+}
+export interface GitStatus {
+  repo: boolean;
+  reason: string;
+  branch: string | null;
+  detached: boolean;
+  head: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  state: null | 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect';
+  identity: GitIdentity | null;
+  staged: GitEntry[];
+  unstaged: GitEntry[];
+  untracked: GitEntry[];
+  conflicts: GitEntry[];
+  truncated: boolean;
+}
+export interface GitCommit {
+  hash: string;
+  author: string;
+  email: string;
+  /** seconds since 1970 */
+  time: number;
+  subject: string;
+}
+export type GitScope = 'staged' | 'unstaged' | 'untracked';
+/** GET /api/git/file: a file's staged or unstaged changes (or every staged change, without a path) */
+export interface GitFileDiff {
+  repo: boolean;
+  reason: string;
+  scope: GitScope;
+  path: string | null;
+  files: GitFile[];
+  truncated: boolean;
+}
+
 /** GET /api/fs/grep */
 export interface GrepHit {
   line: number;

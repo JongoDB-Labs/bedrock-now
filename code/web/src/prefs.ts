@@ -20,7 +20,7 @@ export interface Layout {
   /** tablet: what the left column shows */
   tabletPane: 'files' | 'editor';
   /** explorer sidebar view */
-  side: 'files' | 'search' | 'sessions';
+  side: 'files' | 'search' | 'git' | 'sessions';
 }
 
 export interface Prefs {
@@ -67,7 +67,7 @@ export function parsePrefs(raw: unknown): Prefs {
       explorer: typeof l.explorer === 'boolean' ? l.explorer : d.layout.explorer,
       terminal: typeof l.terminal === 'boolean' ? l.terminal : d.layout.terminal,
       tabletPane: l.tabletPane === 'editor' ? 'editor' : 'files',
-      side: l.side === 'sessions' || l.side === 'search' ? l.side : 'files',
+      side: l.side === 'sessions' || l.side === 'search' || l.side === 'git' ? l.side : 'files',
     },
     model: typeof o.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/.test(o.model) ? o.model : d.model,
     // (the former "Don't ask" is Read only; Plan and Bypass are never remembered; Auto is, and a session starts in it only

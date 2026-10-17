@@ -25,8 +25,11 @@ import {
   openPalette,
   openReview,
   showSearch,
+  showGit,
   openInTerminal,
 } from '../app';
+import { GitPanel } from './GitPanel';
+import { changedCount } from '../git';
 import { BudgetDialog } from './Budget';
 import { PermissionsDialog } from './Permissions';
 import { SearchPanel } from './Search';
@@ -79,6 +82,9 @@ function MoreMenu() {
           </MenuItem>
           <MenuItem icon="diff" onSelect={() => (close(), openReview())} testid="menu-review">
             Review changes
+          </MenuItem>
+          <MenuItem icon="branch" hint={`${MOD}+Shift+G`} onSelect={() => (close(), showGit())} testid="menu-git">
+            Git…
           </MenuItem>
           <MenuItem icon="plug" onSelect={() => (close(), setDialog('plugins'))} testid="menu-plugins">
             Plugins & marketplaces…
@@ -216,6 +222,7 @@ function TopBar({ tablet }: { tablet?: boolean }) {
 function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
   const side = useSel(store, (s) => s.prefs.layout.side);
   const pending = useSel(store, (s) => Object.values(s.views).reduce((n, v) => n + v.permissions.length, 0));
+  const changes = useSel(store, (s) => changedCount(s.git.status));
   return (
     <aside class="side" aria-label="Explorer and sessions">
       <div class="side-tabs" role="tablist">
@@ -225,12 +232,16 @@ function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
         <button type="button" role="tab" aria-selected={side === 'search'} onClick={() => showSearch()} title={`Search in files (${MOD}+Shift+F)`} data-testid="side-search">
           <Icon name="search" size={15} /> <span class="st-label">Search</span>
         </button>
+        <button type="button" role="tab" aria-selected={side === 'git'} onClick={() => showGit()} title={`Git (${MOD}+Shift+G)`} data-testid="side-git">
+          <Icon name="branch" size={15} /> <span class="st-label">Git</span>
+          {changes > 0 && <span class="badge" data-testid="git-count">{changes > 999 ? '999+' : changes}</span>}
+        </button>
         <button type="button" role="tab" aria-selected={side === 'sessions'} onClick={() => setLayout({ side: 'sessions' })} title="Sessions" data-testid="side-sessions">
           <Icon name="history" size={15} /> <span class="st-label">Sessions</span>
           {pending > 0 && <span class="badge warn">{pending}</span>}
         </button>
       </div>
-      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : side === 'search' ? <SearchPanel onOpen={onOpenFile} /> : <SessionList />}
+      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : side === 'search' ? <SearchPanel onOpen={onOpenFile} /> : side === 'git' ? <GitPanel /> : <SessionList />}
     </aside>
   );
 }
@@ -448,6 +459,7 @@ function useGlobalKeys() {
       else if (mod && !e.shiftKey && !e.altKey && k === 'p') act = () => openPalette('files');
       else if (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyF')) act = showSearch;
       else if (mod && e.shiftKey && !e.altKey && (k === 'd' || e.code === 'KeyD')) act = openReview;
+      else if (mod && e.shiftKey && !e.altKey && (k === 'g' || e.code === 'KeyG')) act = () => showGit();
       if (!act) return;
       e.preventDefault();
       e.stopPropagation();
@@ -607,6 +619,9 @@ function PhoneMenu() {
         <button type="button" class="pm-link" onClick={() => showSearch()} data-testid="phone-menu-search">
           <Icon name="search" /> Search in files
         </button>
+        <button type="button" class="pm-link" onClick={() => showGit()} data-testid="phone-menu-git">
+          <Icon name="branch" /> Git: changes, commit, log
+        </button>
         {term && (
           <a class="pm-link" href={term} target="_blank" rel="noopener noreferrer">
             <Icon name="terminal" /> Open the terminal
@@ -690,6 +705,11 @@ function Phone() {
       {sheet === 'search' && (
         <Sheet title="Search in files" onClose={() => setSheet(null)} testid="sheet-search">
           <SearchPanel />
+        </Sheet>
+      )}
+      {sheet === 'git' && (
+        <Sheet title="Git" onClose={() => setSheet(null)} testid="sheet-git">
+          <GitPanel />
         </Sheet>
       )}
       {sheet === 'ports' && (

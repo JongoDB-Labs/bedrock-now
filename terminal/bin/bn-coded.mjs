@@ -857,7 +857,7 @@ export function gitMessage(m) {
   if (typeof m !== 'string') throw new Error('a commit message, please');
   if (m.includes('\0')) throw new Error('the message has a NUL character');
   const t = m.replace(/\r\n/g, '\n');
-  if (/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f؜‎‏‪-‮⁦-⁩]/.test(t)) throw new Error('the message has control or direction-changing characters');
+  if (/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(t)) throw new Error('the message has control or direction-changing characters');
   if (!t.trim()) throw new Error('the message is empty');
   if (Buffer.byteLength(t) > GIT_MESSAGE_MAX) throw new Error('the message is longer than 64 KiB');
   return t.endsWith('\n') ? t : `${t}\n`;

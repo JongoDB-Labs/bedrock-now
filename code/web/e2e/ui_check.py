@@ -11,7 +11,8 @@ memory, a hostile session (markup, bidi, control characters, giant strings, bad 
 .claude/launch.json's Start, the phone's sheet, a hostile port list) against the mock's fake preview site; the Review
 pane (git's view with a Bash-made change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without
 git: the session's edits, a changed file refused), Search in files, the command palette by keyboard alone, the shortcut
-sheet, and these on a phone.
+sheet, the Git panel (a file's diff, stage / unstage, discard to the trash, Write message as a draft, commit, the log;
+a hostile sandbox's names and proposals as text), and these on a phone.
 Every page runs under the CSP the main Caddy will send (the mock sets it); any CSP violation, page error or dialog
 fails the check. Screenshots go to /out. Exit code 0 only when every check passed.
 """
@@ -2828,6 +2829,190 @@ def review_hostile(browser):
     p.shot("review-hostile.png")
     r = page.evaluate("""() => ({ title: document.title, imgs: document.querySelectorAll('.rv img, .fsrch img, .rv svg:not(.ic), .fsrch svg:not(.ic):not(.spin)').length,
       onAttrs: [...document.querySelectorAll('.rv *, .fsrch *')].filter((e) => [...e.attributes].some((a) => /^on/i.test(a.name))).length })""")
+    assert r["title"] == title0 or "pwned" not in r["title"], r
+    assert r["imgs"] == 0 and r["onAttrs"] == 0, r
+    p.assert_clean()
+    p.close()
+
+
+# ---------------------------------------------------------------- C-12: the Git panel
+
+
+def git_row(page, path, group=None):
+    g = f"[data-group={group}]" if group else ""
+    return page.locator(f"[data-testid=git-file][data-path='{path}']{g}")
+
+
+def log_subjects(page):
+    return page.eval_on_selector_all("[data-testid=git-log-entry] .gitp-subject", "els => els.map((e) => e.textContent)")
+
+
+@check("git panel: Ctrl+Shift+G, a file's diff, stage / unstage, discard (asks; the trash; refused once changed), Write message (a draft, never a commit), commit with Ctrl+Enter, the log")
+def git_panel(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "git", **DESKTOP)
+    page = p.open()
+    orig = api_text(page, "src/http/client.ts")
+    allow_turn(page, 1, "Please fix get() so it uses the retry policy")
+    allow_turn(page, 2, "Raise the timeout with sed")
+    page.keyboard.press("Control+Shift+G")
+    expect(page.get_by_test_id("side-git")).to_have_attribute("aria-selected", "true")
+    panel = page.get_by_test_id("git-panel")
+    for f in ("src/http/client.ts", "src/utils/format.ts", "package.json"):
+        expect(git_row(page, f, "unstaged")).to_have_count(1, timeout=10_000)
+    expect(git_row(page, "NOTES.md", "untracked")).to_have_count(1)
+    expect(page.get_by_test_id("git-count")).to_have_text("4")
+    expect(page.get_by_test_id("git-branch")).to_have_text("main")
+    expect(git_row(page, "package.json").get_by_test_id("git-watch")).to_be_visible()
+    expect(git_row(page, "src/utils/format.ts").get_by_test_id("git-watch")).to_have_count(0)
+    expect(page.get_by_test_id("git-no-hooks")).to_contain_text("No git hooks run here")
+    expect(page.get_by_test_id("git-identity")).to_contain_text("Mock User <mock@example.invalid>")
+    expect(page.get_by_test_id("git-log-entry")).to_have_count(3)
+    commits0 = log_subjects(page)
+    # a file's diff: the editor area, the Review's rows
+    git_row(page, "src/utils/format.ts").get_by_test_id("git-open").click()
+    pane = page.locator("[data-testid=git-diff-pane][data-path='src/utils/format.ts']")
+    expect(pane).to_have_attribute("data-scope", "unstaged")
+    expect(pane.locator(".dl-add")).not_to_have_count(0)
+    expect(pane).to_contain_text("timeout: 15 s")
+    page.mouse.move(0, 0)
+    p.shot("git-desktop.png")
+    # stage it: out of Changes, into Staged; its unstaged diff is empty now
+    git_row(page, "src/utils/format.ts").hover()
+    git_row(page, "src/utils/format.ts").get_by_test_id("git-stage").click()
+    expect(git_row(page, "src/utils/format.ts", "staged")).to_have_count(1, timeout=10_000)
+    expect(git_row(page, "src/utils/format.ts", "unstaged")).to_have_count(0)
+    expect(pane.get_by_test_id("git-diff-empty")).to_be_visible(timeout=10_000)
+    # unstage, and stage again
+    git_row(page, "src/utils/format.ts", "staged").hover()
+    git_row(page, "src/utils/format.ts", "staged").get_by_test_id("git-unstage").click()
+    expect(git_row(page, "src/utils/format.ts", "unstaged")).to_have_count(1, timeout=10_000)
+    git_row(page, "src/utils/format.ts").hover()
+    git_row(page, "src/utils/format.ts").get_by_test_id("git-stage").click()
+    expect(git_row(page, "src/utils/format.ts", "staged")).to_have_count(1, timeout=10_000)
+    git_row(page, "src/utils/format.ts", "staged").get_by_test_id("git-open").click()
+    expect(page.locator("[data-testid=git-diff-pane][data-scope=staged]")).to_contain_text("timeout: 15 s", timeout=10_000)
+    # discard a new file: asks, then the trash
+    git_row(page, "NOTES.md").hover()
+    git_row(page, "NOTES.md").get_by_test_id("git-discard").click()
+    expect(page.get_by_test_id("git-discard-dialog")).to_contain_text("workspace trash")
+    page.get_by_test_id("git-discard-confirm").click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("Moved NOTES.md to the workspace trash", timeout=10_000)
+    assert not api_exists(page, "NOTES.md")
+    # discard client.ts: Cancel leaves it; a change on disk since the panel looked is refused; then it goes back
+    git_row(page, "src/http/client.ts").hover()
+    git_row(page, "src/http/client.ts").get_by_test_id("git-discard").click()
+    page.get_by_test_id("git-discard-dialog").get_by_role("button", name="Cancel").click()
+    assert api_text(page, "src/http/client.ts") != orig
+    post(NORMAL + "/__mock/touch?path=src/http/client.ts")
+    before = api_text(page, "src/http/client.ts")
+    git_row(page, "src/http/client.ts").hover()
+    git_row(page, "src/http/client.ts").get_by_test_id("git-discard").click()
+    page.get_by_test_id("git-discard-confirm").click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("changed on disk", timeout=10_000)
+    assert api_text(page, "src/http/client.ts") == before, "discarded although it changed since"
+    # (the refusal is said once git was asked again: the row shows the file as it is now)
+    git_row(page, "src/http/client.ts").hover()
+    git_row(page, "src/http/client.ts").get_by_test_id("git-discard").click()
+    page.get_by_test_id("git-discard-confirm").click()
+    expect(page.get_by_test_id("toast").last).to_contain_text("Discarded the changes to src/http/client.ts", timeout=10_000)
+    assert api_text(page, "src/http/client.ts") == orig, "client.ts is not back"
+    # Commit waits for a message; Write message asks the session and fills the box — no commit
+    expect(page.get_by_test_id("git-commit")).to_be_disabled()
+    page.get_by_test_id("git-write-message").click()
+    expect(page.get_by_test_id("git-message")).to_have_value(re.compile(r"^Update format\.ts\n\nKeep the retry policy"), timeout=15_000)
+    expect(page.get_by_test_id("msg-user").last).to_contain_text("Propose a git commit message for the changes staged")
+    expect(page.get_by_test_id("msg-user").last).to_contain_text("timeout: 15 s")
+    assert log_subjects(page) == commits0, "Write message committed something"
+    p.shot("git-draft.png")
+    # your own message, Ctrl+Enter
+    page.get_by_test_id("git-message").fill("Raise the default timeout to 15 s\n\nThe CI runners are slow.")
+    page.get_by_test_id("git-message").press("Control+Enter")
+    expect(page.get_by_test_id("toast").last).to_contain_text("Committed", timeout=10_000)
+    expect(page.locator("[data-testid=git-log-entry] .gitp-subject").first).to_have_text("Raise the default timeout to 15 s", timeout=10_000)
+    expect(page.get_by_test_id("git-group-staged")).to_have_count(0)
+    expect(page.get_by_test_id("git-message")).to_have_value("")
+    expect(page.get_by_test_id("git-ahead-behind")).to_have_text("↑1 ↓0")
+    page.emulate_media(color_scheme="dark")
+    page.wait_for_timeout(200)
+    p.shot("git-desktop-dark.png")
+    page.emulate_media(color_scheme="light")
+    # the palette: commit box focused
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    page.get_by_test_id("cp-input").fill("git: commit")
+    page.get_by_test_id("cp-input").press("Enter")
+    expect(page.get_by_test_id("git-message")).to_be_focused()
+    # no repository: says so
+    post(NORMAL + "/__mock/git?repo=0")
+    try:
+        page.get_by_test_id("git-refresh").click()
+        expect(page.get_by_test_id("git-norepo")).to_contain_text("not a git repository", timeout=10_000)
+    finally:
+        post(NORMAL + "/__mock/git?repo=1")
+    p.assert_clean()
+    p.close()
+
+
+@check("git panel (phone 390×844): the Git sheet from ⋯, a file's diff in the editor sheet, stage and commit by touch, no horizontal overflow")
+def git_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "git-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    allow_turn(page, 1, "Raise the timeout with sed")
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-git").click()
+    sheet = page.get_by_test_id("sheet-git")
+    expect(sheet).to_be_visible()
+    expect(git_row(page, "src/utils/format.ts", "unstaged")).to_have_count(1, timeout=10_000)
+    # touch: the row's buttons are there without a hover
+    btn = git_row(page, "src/utils/format.ts").get_by_test_id("git-stage")
+    assert page.evaluate("(b) => getComputedStyle(b).opacity", btn.element_handle()) == "1"
+    p.shot("git-phone.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (git sheet)"
+    git_row(page, "src/utils/format.ts").get_by_test_id("git-open").tap()
+    expect(page.get_by_test_id("sheet-editor")).to_be_visible()
+    expect(page.locator("[data-testid=git-diff-pane][data-path='src/utils/format.ts']")).to_contain_text("timeout: 15 s", timeout=10_000)
+    p.shot("git-phone-diff.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (diff)"
+    page.get_by_test_id("sheet-editor").get_by_role("button", name="Close", exact=True).click()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-git").click()
+    git_row(page, "src/utils/format.ts").get_by_test_id("git-stage").tap()
+    expect(git_row(page, "src/utils/format.ts", "staged")).to_have_count(1, timeout=10_000)
+    page.get_by_test_id("git-message").fill("Raise the timeout")
+    page.get_by_test_id("git-commit").tap()
+    expect(page.get_by_test_id("toast").last).to_contain_text("Committed", timeout=10_000)
+    expect(page.locator("[data-testid=git-log-entry] .gitp-subject").first).to_have_text("Raise the timeout", timeout=10_000)
+    p.shot("git-phone-committed.png")
+    p.assert_clean()
+    p.close()
+
+
+@check("git panel from a hostile sandbox: branch, names, identity and subjects as text, paths out of the workspace dropped, a draft's control characters taken out, nothing runs")
+def git_hostile(browser):
+    p = Page(browser, HOSTILE, "git-hostile", **DESKTOP)
+    page = p.open()
+    title0 = page.title()
+    page.keyboard.press("Control+Shift+G")
+    panel = page.get_by_test_id("git-panel")
+    expect(panel.locator("[data-testid=git-file][data-path^='hostile/']")).not_to_have_count(0, timeout=10_000)
+    paths = page.eval_on_selector_all("[data-testid=git-file]", "els => els.map((e) => e.dataset.path)")
+    assert not any(x.startswith("/") or ".." in x.split("/") or len(x) > 4096 for x in paths), paths
+    expect(page.get_by_test_id("git-branch")).to_contain_text("<script>")
+    expect(page.get_by_test_id("git-branch")).to_contain_text("⟨U+202E⟩")
+    expect(page.get_by_test_id("git-identity")).to_contain_text("<script>")
+    expect(panel).to_contain_text("<img src=x")
+    expect(panel.locator("[data-testid=git-log-entry]").first).to_contain_text("<script>")
+    expect(page.get_by_test_id("git-state")).to_have_count(0)
+    # Write message: the proposal's control and direction-changing characters never reach the box
+    page.get_by_test_id("git-write-message").click()
+    expect(page.get_by_test_id("git-message")).to_have_value(re.compile("^Fix "), timeout=15_000)
+    v = page.get_by_test_id("git-message").input_value()
+    assert not any(c in v for c in "\u202e\u2066\u0007\u001b"), repr(v)
+    p.shot("git-hostile.png")
+    r = page.evaluate("""() => ({ title: document.title, imgs: document.querySelectorAll('.gitp img, .gitp svg:not(.ic):not(.spin)').length,
+      onAttrs: [...document.querySelectorAll('.gitp *')].filter((e) => [...e.attributes].some((a) => /^on/i.test(a.name))).length })""")
     assert r["title"] == title0 or "pwned" not in r["title"], r
     assert r["imgs"] == 0 and r["onAttrs"] == 0, r
     p.assert_clean()

@@ -17,6 +17,7 @@ import { useMedia } from './ui';
 import { Preview, PreviewBar } from '../preview/Preview';
 import { PreviewPane } from './DevPreview';
 import { ReviewPane, useReviewList } from './Review';
+import { GitDiffPane } from './GitPanel';
 import { shortcuts } from '../shortcuts';
 
 let cmPromise: Promise<typeof import('../editor/cm')> | null = null;
@@ -288,6 +289,15 @@ function ReviewTitle() {
 
 function TabTitle({ tab, all }: { tab: Tab; all: Tab[] }) {
   if (tab.kind === 'review') return <ReviewTitle />;
+  if (tab.kind === 'gitdiff') {
+    return (
+      <>
+        <Icon name="branch" size={14} class="tab-diff" />
+        <span class="tab-name">{label(basename(tab.path), 120)}</span>
+        <span class="tab-dir">{tab.scope === 'staged' ? 'staged' : tab.scope === 'untracked' ? 'new' : 'changes'}</span>
+      </>
+    );
+  }
   if (tab.kind === 'devserver') {
     return (
       <>
@@ -356,7 +366,8 @@ export function EditorPanes() {
         t.kind === 'file' ? <FilePane key={t.key} tab={t} active={t.key === active} />
           : t.kind === 'devserver' ? <PreviewPane key={t.key} tab={t} active={t.key === active} />
             : t.kind === 'review' ? <ReviewPane key={t.key} active={t.key === active} />
-              : <DiffPane key={t.key} tab={t} active={t.key === active} />,
+              : t.kind === 'gitdiff' ? <GitDiffPane key={t.key} tab={t} active={t.key === active} />
+                : <DiffPane key={t.key} tab={t} active={t.key === active} />,
       )}
     </div>
   );

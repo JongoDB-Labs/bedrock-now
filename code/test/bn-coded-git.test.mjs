@@ -93,7 +93,7 @@ test('paths and messages: checked before git runs', () => {
   assert.equal(coded.gitMessage('one line'), 'one line\n');
   assert.equal(coded.gitMessage('crlf\r\nbody'), 'crlf\nbody\n');
   assert.equal(coded.gitMessage('# not a comment\ttab'), '# not a comment\ttab\n');
-  for (const bad of ['', '  \n\t', 'a\0b', 'a\x1b[31mred', 'a\rb', 'bidi ‮ txt', 'iso ⁦x⁩', 'c1 \x85', 'x'.repeat(65 << 10), null, 5, ['x']]) {
+  for (const bad of ['', '  \n\t', 'a\0b', 'a\x1b[31mred', 'a\rb', 'bidi \u202e txt', 'iso \u2066x\u2069', 'c1 \x85', 'x'.repeat(65 << 10), null, 5, ['x']]) {
     assert.throws(() => coded.gitMessage(bad), undefined, JSON.stringify(bad)?.slice(0, 40));
   }
 });

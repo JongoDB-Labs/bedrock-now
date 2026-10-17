@@ -22,7 +22,7 @@ test('requests: paths (workspace files, no .git part, 1 to 100), all, and the co
   }
   assert.ok(gitPathOk('dir/new\nline.txt') && !gitPathOk('') && !gitPathOk('a//b') && !gitPathOk(7));
   assert.equal(commitMessage('Fix\n\nbody\r\n'), 'Fix\n\nbody\r\n');
-  for (const bad of ['', ' \n ', 'a\0b', 'esc\x1b[2J', 'lone\rcr', 'rtl ‮', 'x'.repeat(65 << 10), 7, null]) {
+  for (const bad of ['', ' \n ', 'a\0b', 'esc\x1b[2J', 'lone\rcr', 'rtl \u202e', 'x'.repeat(65 << 10), 7, null]) {
     assert.throws(() => commitMessage(bad), /message/, JSON.stringify(bad)?.slice(0, 30));
   }
 });
@@ -129,7 +129,7 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
   assert.deepEqual(r.json, { ok: true, head: H, subject: 'Subject', author: { name: 'n', email: 'e', from: 'sandbox' } });
   assert.equal((await req('POST', '/api/git/commit', { message: 'nul\0' })).status, 400);
   const n = calls.length;
-  assert.equal((await req('POST', '/api/git/commit', { message: '‮evil' })).status, 400);
+  assert.equal((await req('POST', '/api/git/commit', { message: '\u202eevil' })).status, 400);
   assert.equal(calls.length, n, 'a refused message never reaches the sandbox');
   r = await req('POST', '/api/git/commit', { message: 'nothing' });
   assert.equal(r.status, 400);

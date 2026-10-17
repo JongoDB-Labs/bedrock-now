@@ -8,7 +8,7 @@ export const MOD = mac ? '⌘' : 'Ctrl';
 export interface Shortcut {
   keys: string;
   what: string;
-  group: 'Chat' | 'Find and go' | 'Files and editor' | 'Panels' | 'Review' | 'In the palette';
+  group: 'Chat' | 'Find and go' | 'Files and editor' | 'Panels' | 'Review' | 'Git' | 'In the palette';
   /** shown on the empty editor too */
   welcome?: boolean;
   /** the palette action it opens (its hint there) */
@@ -30,6 +30,7 @@ export function shortcuts(): Shortcut[] {
     { group: 'Find and go', what: 'Go to file', keys: `${MOD}+P`, welcome: true, action: 'go-to-file' },
     { group: 'Find and go', what: 'Search in files', keys: `${MOD}+Shift+F`, welcome: true, action: 'search' },
     { group: 'Find and go', what: 'Review changes', keys: `${MOD}+Shift+D`, welcome: true, action: 'review' },
+    { group: 'Find and go', what: 'Git: changes, commit, log', keys: `${MOD}+Shift+G`, action: 'git' },
     { group: 'Find and go', what: 'Keyboard shortcuts', keys: `${MOD}+/ · ?`, action: 'shortcuts' },
     { group: 'Files and editor', what: 'Save the file', keys: `${MOD}+S`, welcome: true },
     { group: 'Files and editor', what: 'Find in the file', keys: `${MOD}+F` },
@@ -37,6 +38,7 @@ export function shortcuts(): Shortcut[] {
     { group: 'Panels', what: 'Toggle the explorer', keys: `${MOD}+B`, action: 'explorer' },
     { group: 'Review', what: 'Comment on a line (it goes with your next prompt)', keys: 'Comment button · Enter' },
     { group: 'Review', what: 'Cancel a comment', keys: 'Esc' },
+    { group: 'Git', what: 'Commit the staged changes (in the message box)', keys: `${MOD}+Enter` },
     { group: 'In the palette', what: 'Move', keys: '↑ ↓ · Tab' },
     { group: 'In the palette', what: 'Run', keys: 'Enter' },
     { group: 'In the palette', what: 'Close', keys: 'Esc' },

@@ -24,6 +24,7 @@ import {
 } from '../app';
 import { rowsOf, sessionStart, totals, undoBlocker, type ReviewFile, type ReviewHunk, type Row } from '../review';
 import { label, safe } from '../text';
+import type { Hunk } from '../types';
 import { Icon, Spinner } from './icons';
 import { Dialog, useMedia } from './ui';
 
@@ -439,5 +440,50 @@ function UndoAllDialog({ files }: { files: ReviewFile[] }) {
         </button>
       </div>
     </Dialog>
+  );
+}
+
+/** A diff's hunks, read only — the Git panel's file diffs: the Review's rows and styles (no Keep, Undo or comments),
+ *  400 lines at a time. */
+export function ReadOnlyHunks({ path, hunks }: { path: string; hunks: Hunk[] }) {
+  const [limit, setLimit] = useState(LINES_PAGE);
+  let shown = 0;
+  const out = [];
+  for (let k = 0; k < hunks.length && shown < limit; k++) {
+    const h = hunks[k];
+    const rows = rowsOf(h);
+    const take = rows.slice(0, limit - shown);
+    shown += take.length;
+    out.push(
+      <div class="rv-hunk" key={k} data-testid="git-hunk">
+        <div class="rv-hunk-head">
+          <span class="rv-hunk-at">
+            @@ −{h.oldStart},{h.oldLines} +{h.newStart},{h.newLines} @@
+          </span>
+        </div>
+        <div class="rv-rows" role="table" aria-label={`Changes in ${path}`}>
+          {take.map((r, i) => (
+            <div key={i} class={`dl-row dl-${r.kind === 'nonl' ? 'hunk' : r.kind} rv-row`} role="row">
+              <span class="dl-no" role="cell">{r.oldNo ?? ''}</span>
+              <span class="dl-no" role="cell">{r.newNo ?? ''}</span>
+              <span class="dl-sign" role="cell">{r.kind === 'add' ? '+' : r.kind === 'del' ? '−' : ''}</span>
+              <span class="dl-text" role="cell">{r.kind === 'nonl' ? <em class="muted">{r.text}</em> : safe(r.text, 4000)}</span>
+            </div>
+          ))}
+          {take.length < rows.length && <div class="muted small rv-cut">…</div>}
+        </div>
+      </div>,
+    );
+  }
+  const total = hunks.reduce((n, h) => n + h.lines.length, 0);
+  return (
+    <>
+      {out}
+      {total > limit && (
+        <button type="button" class="btn small rv-more" onClick={() => setLimit(limit + LINES_PAGE * 5)} data-testid="git-more-lines">
+          Show more lines ({total - limit} left)
+        </button>
+      )}
+    </>
   );
 }

@@ -31,8 +31,14 @@ import type {
   Ev,
   FileData,
   FsEntry,
+  GitCommit,
+  GitEntry,
   GitFile,
+  GitFileDiff,
+  GitIdentity,
   GitReview,
+  GitScope,
+  GitStatus,
   GrepResult,
   Hunk,
   ImageBlock,
@@ -1044,6 +1050,114 @@ export function normGitReview(o: Obj): GitReview {
 /** What changed in the workspace since its last commit (git in the sandbox, read-only). */
 export async function getGitDiff(): Promise<GitReview> {
   return normGitReview(await request('GET', '/api/git/diff'));
+}
+
+// ---------------------------------------------------------------- the Git panel
+
+const GIT_CODES = ['M', 'A', 'D', 'T', 'R', 'C', 'U'];
+const GIT_HEX = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const GIT_STATES = ['merge', 'rebase', 'cherry-pick', 'revert', 'bisect'] as const;
+const count = (x: unknown): number | null => (typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 1e9 ? x : null);
+function normGitIdentity(v: unknown): GitIdentity | null {
+  const o = obj(v);
+  if (!o) return null;
+  return { name: label(o.name, 200), email: label(o.email, 200), from: o.from === 'repository' || o.from === 'sandbox' ? o.from : 'default' };
+}
+function normGitEntry(v: unknown, conflict: boolean): GitEntry | null {
+  const o = obj(v);
+  const path = exactPath(o?.path);
+  if (!o || !path) return null;
+  const code = str(o.code);
+  const w = obj(o.watch);
+  const binary = o.binary === true;
+  return {
+    path,
+    code: conflict ? (/^[ADU]{2}$/.test(code) ? code : 'UU') : GIT_CODES.includes(code) ? code : 'M',
+    add: binary ? null : count(o.add),
+    del: binary ? null : count(o.del),
+    binary,
+    mtimeMs: nonneg(o.mtimeMs),
+    watch: w ? { kind: label(w.kind, 40), why: label(w.why, 300) } : null,
+  };
+}
+/** GET /api/git/status, checked: every path a workspace path (once per group), at most 2,000 entries in all. */
+export function normGitStatus(o: Obj): GitStatus {
+  let left = 2000;
+  const list = (v: unknown, conflict = false): GitEntry[] => {
+    const seen = new Set<string>();
+    const out: GitEntry[] = [];
+    for (const x of arr(v, 2000)) {
+      const e = normGitEntry(x, conflict);
+      if (!e || seen.has(e.path) || left <= 0) continue;
+      seen.add(e.path);
+      left--;
+      out.push(e);
+    }
+    return out;
+  };
+  return {
+    repo: o.repo === true,
+    reason: label(o.reason, 300),
+    branch: o.branch ? label(o.branch, 250) || null : null,
+    detached: o.detached === true,
+    head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null,
+    upstream: o.upstream ? label(o.upstream, 250) || null : null,
+    ahead: count(o.ahead),
+    behind: count(o.behind),
+    state: GIT_STATES.includes(o.state as (typeof GIT_STATES)[number]) ? (o.state as GitStatus['state']) : null,
+    identity: normGitIdentity(o.identity),
+    staged: list(o.staged),
+    unstaged: list(o.unstaged),
+    untracked: list(o.untracked),
+    conflicts: list(o.conflicts, true),
+    truncated: o.truncated === true || left <= 0,
+  };
+}
+/** The branch, its changes (staged, unstaged, new, conflicts) and who a commit is by (git in the sandbox). */
+export async function getGitStatus(): Promise<GitStatus> {
+  return normGitStatus(await request('GET', '/api/git/status'));
+}
+export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: GitCommit[]; error: string | null } {
+  const commits = arr(o.commits, 100)
+    .map((v) => {
+      const c = obj(v);
+      if (!c || typeof c.hash !== 'string' || !GIT_HEX.test(c.hash)) return null;
+      return { hash: c.hash, author: label(c.author, 200), email: label(c.email, 200), time: typeof c.time === 'number' && Number.isInteger(c.time) && c.time > 0 && c.time < 1e11 ? c.time : 0, subject: label(c.subject, 300) };
+    })
+    .filter((c): c is GitCommit => c !== null)
+    .slice(0, 20);
+  return { repo: o.repo === true, reason: label(o.reason, 300), commits, error: o.error ? label(o.error, 300) : null };
+}
+/** HEAD's last 20 commits. */
+export async function getGitLog(): Promise<{ repo: boolean; reason: string; commits: GitCommit[]; error: string | null }> {
+  return normGitLog(await request('GET', '/api/git/log'));
+}
+export function normGitFileDiff(o: Obj, scope: GitScope, path: string | null): GitFileDiff {
+  const seen = new Set<string>();
+  const files = arr(o.files, 2000)
+    .map(normGitFile)
+    .filter((f): f is GitFile => f !== null && (path === null || f.path === path) && !seen.has(f.path) && !!seen.add(f.path));
+  return { repo: o.repo === true, reason: label(o.reason, 300), scope, path, files, truncated: o.truncated === true };
+}
+/** A file's staged or unstaged changes (or a new file's); scope staged without a path: every staged change. */
+export async function getGitFile(scope: GitScope, path: string | null): Promise<GitFileDiff> {
+  return normGitFileDiff(await request('GET', '/api/git/file' + q({ scope, path: path ?? undefined })), scope, path);
+}
+export async function gitStage(paths: string[] | 'all'): Promise<void> {
+  await request('POST', '/api/git/stage', paths === 'all' ? { all: true } : { paths });
+}
+export async function gitUnstage(paths: string[] | 'all'): Promise<void> {
+  await request('POST', '/api/git/unstage', paths === 'all' ? { all: true } : { paths });
+}
+/** Commit what is staged with this message (the sandbox runs no hook, no signing program). */
+export async function gitCommit(message: string): Promise<{ head: string | null; subject: string; author: GitIdentity | null }> {
+  const o = await request('POST', '/api/git/commit', { message });
+  return { head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null, subject: label(o.subject, 300), author: normGitIdentity(o.author) };
+}
+/** A file's unstaged changes gone (its current version to the workspace trash), only while it is as shown. */
+export async function gitDiscard(path: string, ifMtimeMs: number | null): Promise<{ action: 'restored' | 'trashed'; trash: string | null }> {
+  const o = await request('POST', '/api/git/discard', { path, ...(ifMtimeMs === null ? {} : { ifMtimeMs }) });
+  return { action: o.action === 'trashed' ? 'trashed' : 'restored', trash: exactPath(o.trash) };
 }
 
 export interface GrepQuery {
