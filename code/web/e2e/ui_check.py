@@ -23,6 +23,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import playwright
@@ -2831,6 +2832,255 @@ def review_hostile(browser):
     assert r["imgs"] == 0 and r["onAttrs"] == 0, r
     p.assert_clean()
     p.close()
+
+
+# ---------------------------------------------------------------- UX-10: guardrails, permissions, groups, deep links
+
+
+def first_session(base=NORMAL):
+    return json.loads(urllib.request.urlopen(base + "/api/state", timeout=5).read())["sessions"]
+
+
+@check("polish: a session's budget — warnings at 50/80/100 %, the stop refuses a prompt, the cold cache, the Opus hint")
+def polish_budget(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "polish-budget", **DESKTOP)
+    page = p.open()
+    page.get_by_role("button", name="Explain how this project is organised").click()
+    wait_turns(page, 1)
+    sid = first_session()[0]["id"]
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-budget").click()
+    dlg = page.get_by_test_id("budget-dialog")
+    expect(dlg).to_contain_text("so far (bedrock-now's spend logs")
+    page.get_by_test_id("budget-amount").fill("abc")
+    page.get_by_test_id("budget-save").click()
+    expect(page.get_by_test_id("budget-error")).to_contain_text("An amount from $0.01")
+    page.get_by_test_id("budget-amount").fill("1.00")
+    p.shot("polish-budget-dialog.png")
+    page.get_by_test_id("budget-save").click()
+    expect(dlg).to_have_count(0)
+    expect(page.get_by_test_id("cost-budget")).to_be_visible(timeout=10_000)
+    assert first_session()[0]["budget"] == {"usd": 1.0, "hard": False}, first_session()[0]["budget"]
+    # spend crosses 50 %, then 80 % and 100 %: one warning each, in the conversation
+    post(f"{NORMAL}/__mock/spend?session={sid}&add=0.45")
+    page.get_by_test_id("cost").click()
+    expect(page.locator(".notice").filter(has_text="used half of its $1.00 budget")).to_have_count(1, timeout=10_000)
+    post(f"{NORMAL}/__mock/spend?session={sid}&add=0.6")
+    page.get_by_test_id("cost").click()
+    expect(page.locator(".notice").filter(has_text="reached its $1.00 budget")).to_have_count(1, timeout=10_000)
+    expect(page.locator(".notice").filter(has_text="80 %")).to_have_count(0)   # (two levels at once: the higher one)
+    expect(page.get_by_test_id("cost")).to_have_class(re.compile(r"\bover\b"))
+    # the stop on: the next prompt is refused, and comes back to the prompt box
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-budget").click()
+    page.get_by_test_id("budget-hard").check()
+    page.get_by_test_id("budget-save").click()
+    expect(page.locator(".toast").filter(has_text="stop on")).to_be_visible(timeout=10_000)
+    assert first_session()[0]["budget"] == {"usd": 1.0, "hard": True}
+    send(page, "Summarise the README")
+    expect(page.locator(".toast").filter(has_text="reached its budget of $1.00")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("prompt")).to_have_value("Summarise the README")
+    p.shot("polish-budget-refused.png")
+    # no budget: the prompt goes
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-budget").click()
+    page.get_by_test_id("budget-remove").click()
+    expect(page.get_by_test_id("cost-budget")).to_have_count(0, timeout=10_000)
+    page.get_by_test_id("prompt").press("Enter")
+    wait_turns(page, 2)
+    # idle 12 minutes (the backend's lastActive): the cold-cache line, with the model's cache-write price
+    post(f"{NORMAL}/__mock/age?session={sid}&ms=720000")
+    page.reload()
+    cold = page.get_by_test_id("cold-cache")
+    expect(cold).to_contain_text("the prompt cache has expired", timeout=15_000)
+    expect(cold).to_contain_text("on Claude Sonnet 5.5")
+    expect(cold).to_contain_text("while it was warm")
+    p.shot("polish-cold-cache.png")
+    # a new session on Opus (bedrock-now's prices: Opus 5× Sonnet here): the hint, and "Use Sonnet" switches
+    page.route("**/.bn/models", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+        "models": [{"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "input_per_mtok": 15, "output_per_mtok": 75},
+                   {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "input_per_mtok": 3, "output_per_mtok": 15}],
+        "aliases": {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5"}, "default": "claude-opus-5-5"})))
+    page.evaluate("localStorage.removeItem('bn.code.v1')")
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.get_by_test_id("chat-new").click()
+    hint = page.get_by_test_id("opus-hint")
+    expect(hint).to_contain_text("about 5× Claude Sonnet 5.5", timeout=10_000)
+    p.shot("polish-opus-hint.png")
+    hint.get_by_test_id("opus-hint-switch").click()
+    expect(hint).to_have_count(0, timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("polish: Permissions — the sandbox's rules removable, the workspace's shown only, the modes' own; a changed file refused")
+def polish_permissions(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "polish-perms", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-permissions").click()
+    dlg = page.get_by_test_id("permissions-dialog")
+    user = dlg.get_by_test_id("perm-file-user")
+    expect(user.get_by_test_id("perm-rule")).to_have_count(5, timeout=10_000)
+    expect(dlg.get_by_test_id("perm-file-project")).to_contain_text("Read(./.env)")
+    expect(dlg.get_by_test_id("perm-file-project").get_by_test_id("perm-remove")).to_have_count(0)
+    expect(dlg).to_contain_text("Claude Code on your computer honours these too")
+    expect(dlg.get_by_test_id("perm-bypass-ask")).to_contain_text("Edit(//workspace/.git/**)")
+    p.shot("polish-permissions.png")
+    # the file changed behind the view's back: nothing removed, the list read again
+    post(NORMAL + "/__mock/perm-touch")
+    user.get_by_test_id("perm-remove").first.click()
+    expect(page.locator(".toast").filter(has_text="changed meanwhile")).to_be_visible(timeout=10_000)
+    expect(user.get_by_test_id("perm-rule")).to_have_count(6, timeout=10_000)
+    user.get_by_test_id("perm-rule").filter(has_text="Bash(npm test:*)").get_by_test_id("perm-remove").click()
+    expect(page.locator(".toast").filter(has_text="Removed: Bash(npm test:*)")).to_be_visible(timeout=10_000)
+    expect(user.get_by_test_id("perm-rule")).to_have_count(5, timeout=10_000)
+    expect(user).not_to_contain_text("Bash(npm test:*)")
+    p.assert_clean()
+    p.close()
+
+
+@check("polish: session groups (Needs you / Working / Done), the dot for a turn that ended elsewhere, the tab title; Open in the terminal")
+def polish_groups(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "polish-groups", **DESKTOP)
+    page = p.open()
+    page.get_by_role("button", name="Explain how this project is organised").click()
+    wait_turns(page, 1)
+    first = first_session()[0]["id"]
+    page.get_by_test_id("chat-new").click()
+    send(page, "ask me which colour to use")
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("session-switch").click()
+    needs = page.get_by_test_id("session-group-needs")
+    expect(needs.get_by_test_id("session-row")).to_have_count(1)
+    expect(needs).to_contain_text("waiting for you")
+    expect(page.get_by_test_id("session-group-done").get_by_test_id("session-row")).to_have_count(1)
+    page.wait_for_function("() => document.title.startsWith('(1) waiting · ')", timeout=5_000)
+    # the first session works while the second one is shown: done elsewhere → its dot
+    page.locator(f"[data-testid=session-row][data-session='{first}'] .sess-main").click()
+    send(page, "Summarise the README")
+    page.get_by_test_id("session-group-needs").get_by_test_id("session-row").locator(".sess-main").click()
+    expect(page.locator(f"[data-testid=session-row][data-session='{first}'] [data-testid=session-unseen]")).to_be_visible(timeout=20_000)
+    p.shot("polish-groups.png")
+    page.locator(f"[data-testid=session-row][data-session='{first}'] .sess-main").click()
+    expect(page.locator(f"[data-testid=session-row][data-session='{first}'] [data-testid=session-unseen]")).to_have_count(0)
+    # Open in the terminal: the page's process ends, the terminal types the resume command; a resume here is refused
+    # until Claude Code exits there
+    row = page.locator(f"[data-testid=session-row][data-session='{first}']")
+    row.hover()
+    row.locator(".sess-more .dd-trigger").click()
+    page.get_by_test_id("session-to-terminal").click()
+    expect(page.locator(".toast").filter(has_text=f"claude-bedrock --resume {first}")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("terminal")).to_be_visible()
+    typed = json.loads(urllib.request.urlopen(NORMAL + "/__mock/terminal-log", timeout=5).read())["typed"]
+    assert typed == [f"claude-bedrock --resume {first}"], typed
+    send(page, "and one more thing")
+    expect(page.locator(".toast").filter(has_text="open in the terminal")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("prompt")).to_have_value("and one more thing")
+    post(f"{NORMAL}/__mock/terminal-exit?session={first}")
+    page.get_by_test_id("prompt").press("Enter")
+    wait_turns(page, 3)
+    p.assert_clean()
+    p.close()
+
+
+@check("polish: deep links — ?session shows it, ?prompt is a draft marked as from a link (never sent), the address cleaned")
+def polish_links(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "polish-links", **DESKTOP)
+    page = p.open()
+    page.get_by_role("button", name="Explain how this project is organised").click()
+    wait_turns(page, 1)
+    sid = first_session()[0]["id"]
+    page.get_by_test_id("chat-new").click()
+    expect(page.get_by_test_id("session-state")).to_contain_text("idle")
+    evil = "rm -rf ~ ‮txt.exe\u0007 " + "x" * 5000
+    page.goto(NORMAL + "/?session=" + sid + "&prompt=" + urllib.parse.quote(evil) + "&keep=1")
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    draft = page.get_by_test_id("link-draft")
+    expect(draft).to_contain_text("This draft came from a link")
+    expect(draft).to_contain_text("only the first 4,000 characters")
+    box = page.get_by_test_id("prompt")
+    v = box.input_value()
+    assert v.startswith("rm -rf ~ ⟨U+202E⟩txt.exe⟨U+0007⟩"), v[:60]
+    assert len(v) <= 4100, len(v)
+    assert page.evaluate("location.search") == "?keep=1", page.evaluate("location.search")
+    expect(page.get_by_test_id("chat")).to_contain_text("Explain how this project is organised")   # the linked session is shown
+    page.wait_for_timeout(1500)
+    expect(page.get_by_test_id("msg-user")).to_have_count(1)   # nothing was sent
+    p.shot("polish-link-draft.png")
+    page.get_by_test_id("link-draft-clear").click()
+    expect(draft).to_have_count(0)
+    expect(box).to_have_value("")
+    # a reload does not bring it back; a bad session id is said, not followed
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    expect(page.get_by_test_id("link-draft")).to_have_count(0)
+    page.goto(NORMAL + "/?session=00000000-0000-4000-8000-000000000000")
+    expect(page.locator(".toast").filter(has_text="not in this workspace")).to_be_visible(timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("polish: phone — the sessions that need you open first; budget and permissions fit; the link draft")
+def polish_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "polish-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    send(page, "ask me which colour to use")
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=15_000)
+    page.reload()
+    sheet = page.get_by_test_id("sheet-sessions")
+    expect(sheet).to_be_visible(timeout=10_000)
+    expect(sheet.get_by_test_id("session-group-needs")).to_contain_text("waiting for you")
+    p.shot("polish-phone-needs-you.png")
+    sheet.get_by_test_id("session-group-needs").get_by_test_id("session-row").locator(".sess-main").click()
+    expect(page.get_by_test_id("permission")).to_be_visible(timeout=10_000)
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-budget").click()
+    expect(page.get_by_test_id("budget-dialog")).to_be_visible()
+    assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "budget dialog wider than the phone"
+    p.shot("polish-phone-budget.png")
+    page.get_by_test_id("budget-dialog").get_by_role("button", name="Close").click()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-permissions").click()
+    expect(page.get_by_test_id("perm-file-user").get_by_test_id("perm-rule").first).to_be_visible(timeout=10_000)
+    assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "permissions dialog wider than the phone"
+    p.shot("polish-phone-permissions.png")
+    page.get_by_test_id("permissions-dialog").get_by_role("button", name="Close").click()
+    page.goto(NORMAL + "/?prompt=" + urllib.parse.quote("Summarise the open issues"))
+    expect(page.get_by_test_id("link-draft")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("sheet-sessions")).to_have_count(0)   # (a link's draft wins over the landing)
+    p.shot("polish-phone-link.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.assert_clean()
+    p.close()
+
+
+@check("polish: hostile — permission rules and a link's draft stay text; the session list's titles too")
+def polish_hostile(browser):
+    p = Page(browser, HOSTILE, "polish-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-permissions").click()
+    dlg = page.get_by_test_id("permissions-dialog")
+    expect(dlg).to_contain_text("<script>document.title", timeout=10_000)
+    expect(dlg).to_contain_text("⟨U+202E⟩")
+    r = page.evaluate("""() => ({ imgs: document.querySelectorAll('[data-testid=permissions-dialog] img, [data-testid=permissions-dialog] svg:not(.ic)').length,
+      onAttrs: [...document.querySelectorAll('[data-testid=permissions-dialog] *')].filter((e) => [...e.attributes].some((a) => /^on/i.test(a.name))).length,
+      long: Math.max(...[...document.querySelectorAll('.perm-rule')].map((e) => e.textContent.length)) })""")
+    assert r["imgs"] == 0 and r["onAttrs"] == 0 and r["long"] <= 4100, r
+    page.get_by_test_id("permissions-dialog").get_by_role("button", name="Close").click()
+    page.goto(HOSTILE + "/?prompt=" + urllib.parse.quote('<img src=x onerror="window.pwned=1">'))
+    expect(page.get_by_test_id("link-draft")).to_be_visible(timeout=10_000)
+    assert page.evaluate("window.pwned === undefined")
+    p.assert_clean()
+    p.close()
+
 
 
 def main():

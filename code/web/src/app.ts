@@ -13,10 +13,14 @@ import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList,
 import { approveLaunch, approvedLaunch, switchedAway, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
-import { basename, cleanPath, dirname, isUuid, joinPath, label } from './text';
+import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 import type { GitReview, GrepResult } from './types';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
+import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from './budget';
+import { pageTitle, waitingSessions } from './groups';
+import { parseDeepLink, withoutDeepLink } from './deeplink';
+import { sessionCost } from './spend';
 
 export interface Toast {
   id: number;
@@ -101,7 +105,7 @@ export interface ReviewTab {
 export type Tab = FileTab | DiffTab | PreviewTab | ReviewTab;
 
 export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all' | 'budget' | 'permissions';
 
 /** The Review pane's state: git's answer (the files themselves are derived: reviewFiles) and what you kept. */
 export interface ReviewState {
@@ -210,6 +214,10 @@ export interface AppState {
   palette: PaletteState | null;
   /** line comments from the Review pane, queued for the next prompt (chips in the composer) */
   comments: ReviewComment[];
+  /** a draft that came from a link (?prompt=): the composer shows it marked as such until it is sent or cleared */
+  linkDraft: { n: number; text: string; cut: boolean } | null;
+  /** the budget new sessions start with (this browser's; null: none) */
+  budgetNext: Budget | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -254,6 +262,8 @@ export const store: Store<AppState> = createStore<AppState>({
   search: { q: '', regex: false, caseSensitive: false, include: '', exclude: '', globs: false, loading: false, result: null, error: null, focus: 0 },
   palette: null,
   comments: [],
+  linkDraft: null,
+  budgetNext: nextBudget(),
 });
 
 const set = store.set;
@@ -416,11 +426,60 @@ function scheduleSpend(id: string, delays = [1500, 5000, 15000, 40000]): void {
 export async function refreshSpend(id: string): Promise<void> {
   try {
     const { rows, key } = await api.getSpend(id);
-    updateView(id, (v) => ({ ...v, spend: rows }));
+    const total = sessionCost(rows);
+    const before = get().views[id];
+    updateView(id, (v) => ({ ...v, spend: rows, spendSeen: total }));
     if (key) set((s) => ({ ...s, budget: key, budgetHit: api.overBudget(key) || (s.budgetHit && key.spend === null) }));
+    if (before) onSpend(id, before.spendSeen, total);
   } catch {
     /* the meter keeps showing "…" */
   }
+}
+
+/** This browser's copy of a session's budget, written only when it differs (session_state comes often). */
+function keepBudget(id: string, b: Budget | null): void {
+  const was = storedBudget(id);
+  if ((was?.usd ?? null) !== (b?.usd ?? null) || (was?.hard ?? false) !== (b?.hard ?? false)) rememberBudget(id, b);
+}
+
+/** A notice in a session's conversation (the page's own: not in the transcript). */
+function addNotice(id: string, text: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+  updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text, level }], nextKey: v.nextKey + 1 }));
+}
+
+/** Sessions the page stopped at their budget in this turn (one interrupt per turn). */
+const budgetStopped = new Set<string>();
+/** The session's spend (bedrock-now's spend logs) moved from `before` to `total`: a warning when it crossed 50 %, 80 %
+ *  or all of its budget; with the stop on, a turn still running at the budget is interrupted here too (the backend's
+ *  stop is Claude Code's own estimate, and a budget changed mid-turn applies from its next start). */
+function onSpend(id: string, before: number | null, total: number): void {
+  const v = get().views[id];
+  const b = v?.budget ?? null;
+  if (!v || !b) return;
+  const level = crossed(before, total, b);
+  const of = `its ${money(b.usd, 2)} budget (${money(total)} so far, from bedrock-now's spend logs)`;
+  if (level === 50) addNotice(id, `This session has used half of ${of}.`, 'info');
+  else if (level === 80) addNotice(id, `This session has used 80 % of ${of}.`, 'warn');
+  else if (level === 100) {
+    addNotice(id, b.hard ? `This session reached ${of}: Claude stops at it (⋯ › Budget raises it or turns the stop off).`
+      : `This session reached ${of}. The budget only warns: ⋯ › Budget changes it, or turns on its stop.`, 'warn');
+  }
+  if (b.hard && total >= b.usd && (v.state === 'busy' || v.state === 'starting') && !budgetStopped.has(id)) {
+    budgetStopped.add(id);
+    socket.send({ type: 'interrupt', session: id });
+    addNotice(id, `Stopped: this session's spend reached its ${money(b.usd, 2)} budget (${money(total)}, from bedrock-now's spend logs).`, 'warn');
+  }
+}
+
+/** While a session with a budget works, its spend is read every 20 s (LiteLLM books it in batches), so the warnings
+ *  and the stop come during a long turn too — only while the page is visible. */
+let budgetTimer: ReturnType<typeof setInterval> | null = null;
+function startBudgetWatch(): void {
+  if (budgetTimer) return;
+  budgetTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    for (const v of Object.values(get().views)) if (v.budget && (v.state === 'busy' || v.state === 'starting')) void refreshSpend(v.id);
+  }, 20_000);
 }
 
 /** A refusal for the key's budget (LiteLLM's words reach us in errors and failed results). */
@@ -570,7 +629,7 @@ function handle(m: ServerMsg): void {
       if (!get().views[m.session]) {
         // a session another tab or device opened: it gets a view (attached, so its prompts reach this page too)
         if (m.state === 'ended' || m.state === 'closed') return;
-        ensureView(m.session, { state: m.state, model: m.model ?? '', mode: m.mode ?? 'default' });
+        ensureView(m.session, { state: m.state, model: m.model ?? '', mode: m.mode ?? 'default', budget: m.budget ?? null });
         attach(m.session);
         announce();
         return;
@@ -580,8 +639,11 @@ function handle(m: ServerMsg): void {
       // a later process for the same session starts a new ring buffer at seq 1 (and a new epoch)
       updateView(m.session, (v) => {
         const w = over ? endedMidTurn(v) : v;
-        return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode };
+        return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode, budget: m.budget === undefined ? w.budget : m.budget,
+          lastActive: m.lastActive ?? w.lastActive };
       });
+      // the backend's budget is the one its stop uses: this browser remembers it (another device may have changed it)
+      if (m.budget !== undefined) keepBudget(m.session, m.budget);
       if (m.state === 'idle') {
         updateView(m.session, (v) => ({ ...v, items: v.items.map((it) => ((it.t === 'assistant' || it.t === 'thinking') && it.streaming ? { ...it, streaming: false } : it)) }));
         closeIdleTurn(m.session);
@@ -688,6 +750,8 @@ function notify(title: string, body: string, session: string): void {
 
 function onEvent(id: string, ev: Ev, wasBusy = false): void {
   if (ev.kind === 'result') {
+    // finished while you were elsewhere: a dot in the session list until you look
+    if (wasBusy && (id !== get().active || (typeof document !== 'undefined' && document.hidden))) updateView(id, (v) => (v.unseen ? v : { ...v, unseen: true }));
     // (a turn seen running here: not one replayed into a page that just opened)
     if (wasBusy) notify(ev.isError ? 'Claude stopped' : 'Claude is done', get().views[id]?.title || 'A turn ended in the Code page.', id);
     scheduleSpend(id);
@@ -701,6 +765,7 @@ function onEvent(id: string, ev: Ev, wasBusy = false): void {
   } else if (ev.kind === 'tool_result' && ev.edit) {
     onClaudeEdit(ev.edit.path, ev.edit.original, ev.edit.hunks);
   } else if (ev.kind === 'user') {
+    budgetStopped.delete(id);
     announce();
   }
 }
@@ -713,7 +778,8 @@ function announce(): void {
   const busy = Object.values(s.views).some((v) => v.state === 'busy');
   // a session running without asking: the tab title says so (⏵⏵, the CLI's marker), and the portal's Code tab
   const bypass = Object.values(s.views).some((v) => v.mode === 'bypassPermissions' && v.state !== 'closed' && v.state !== 'ended');
-  document.title = `${bypass ? '⏵⏵ ' : ''}${pending ? `(${pending}) ` : ''}Code · bedrock-now`;
+  // "(2) waiting": the sessions that need you (a prompt, a question, a plan), as the session list's first group
+  document.title = pageTitle(waitingSessions(s.views, s.pendingTotal), bypass);
   const origin = s.server?.portalOrigin;
   if (origin && window.parent !== window) {
     try {
@@ -731,6 +797,15 @@ function ensureView(id: string, init: Partial<SessionView> = {}): void {
 }
 
 export async function boot(): Promise<void> {
+  // a deep link (Home's Code card, a bookmark, a link someone sent): taken, then out of the address bar at once
+  const link = typeof location !== 'undefined' ? parseDeepLink(location.search) : parseDeepLink('');
+  if (link.any) {
+    try {
+      history.replaceState(history.state, '', withoutDeepLink(location.href));
+    } catch {
+      /* (a sandboxed test frame) */
+    }
+  }
   socket.start();
   const results = await Promise.allSettled([api.getState(), api.getModels(), refreshSessions()]);
   const [st, models] = results;
@@ -740,16 +815,51 @@ export async function boot(): Promise<void> {
     const server = st.value;
     set((s) => ({ ...s, server }));
     for (const o of server.sessions) {
-      ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title });
+      ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title, budget: o.budget, lastActive: o.lastActive });
     }
-    const last = get().prefs.lastSession;
-    const pick = server.sessions.find((o) => o.id === last) ?? server.sessions.find((o) => o.state !== 'closed' && o.state !== 'ended');
-    if (pick) await activate(pick.id);
+    const shown = link.session ? await showLinked(link.session) : false;
+    if (!shown) {
+      const last = get().prefs.lastSession;
+      const pick = server.sessions.find((o) => o.id === last) ?? server.sessions.find((o) => o.state !== 'closed' && o.state !== 'ended');
+      if (pick) await activate(pick.id);
+    }
     if (socket.isOpen) for (const o of server.sessions) attach(o.id);
+    // on a phone, sessions waiting for you come first: the session list opens on its "Needs you" group
+    if (!link.session && !link.prompt && isPhone() && (server.pending > 0 || server.sessions.some((o) => o.pending > 0))) setSheet('sessions');
   } else set((s) => ({ ...s, serverError: errText(st.reason) }));
+  // a link's prompt: a draft in the prompt box, marked as coming from a link — never sent by itself
+  if (link.prompt) set((s) => ({ ...s, linkDraft: { n: (s.linkDraft?.n ?? 0) + 1, text: link.prompt as string, cut: link.cut }, restore: { n: (s.restore?.n ?? 0) + 1, text: link.prompt as string } }));
   void loadDir('');
   announce();
   startPortWatch();
+  startBudgetWatch();
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      const id = get().active;
+      if (!document.hidden && id && get().views[id]?.unseen) updateView(id, (v) => ({ ...v, unseen: false }));
+    });
+  }
+}
+
+/** A deep link's session: shown when it is open here, resumed when it is one of this workspace's sessions, else said.
+ *  -> whether it is shown */
+async function showLinked(id: string): Promise<boolean> {
+  const v = get().views[id];
+  if (v && v.state !== 'closed') {
+    await activate(id);
+    return true;
+  }
+  if (get().sessions.some((x) => x.id === id) || v) {
+    await resumeSession(id);
+    return get().active === id;
+  }
+  toast('The link named a session that is not in this workspace (any more).', 'error');
+  return false;
+}
+
+/** The draft from a link was sent or put away. */
+export function dropLinkDraft(): void {
+  set((s) => (s.linkDraft ? { ...s, linkDraft: null } : s));
 }
 
 export async function refreshSessions(query = get().sessionsQuery): Promise<void> {
@@ -768,6 +878,7 @@ export async function activate(id: string): Promise<void> {
   if (!isUuid(id)) return;
   ensureView(id);
   set((s) => ({ ...s, active: id, sheet: s.sheet === 'sessions' ? null : s.sheet }));
+  updateView(id, (v) => (v.unseen ? { ...v, unseen: false } : v));
   setPrefs((p) => ({ ...p, lastSession: id }));
   const v = get().views[id];
   if (v && !v.items.length && !loadedHistory.has(id)) {
@@ -818,6 +929,8 @@ export interface NewSessionOptions {
   model?: string;
   mode?: Mode;
   effort?: string | null;
+  /** its budget (undefined: the one new sessions start with) */
+  budget?: Budget | null;
 }
 
 export function newSession(opts: NewSessionOptions = {}): Promise<string | null> {
@@ -832,10 +945,13 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
     const model = sendModel(opts.model, s) || defaultModel(s);
     const mode = startMode(opts.mode ?? s.startWith, s.prefs.mode, autoOk(s));   // never Bypass (switched to per session); Auto only while allowed
     const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
-    const { id } = await api.openSession({ model: sendModel(model, s), mode, effort });
+    // the budget new sessions start with (this browser's; ⋯ › Budget sets it)
+    const budget = opts.budget === undefined ? s.budgetNext : opts.budget;
+    const { id } = await api.openSession({ model: sendModel(model, s), mode, effort, budget });
     set((x) => ({ ...x, startWith: null }));
     loadedHistory.add(id);
-    ensureView(id, { state: 'idle', model, mode, effort });
+    ensureView(id, { state: 'idle', model, mode, effort, budget });
+    if (budget) rememberBudget(id, budget);
     set((x) => ({ ...x, active: id, sheet: null }));
     setPrefs((p) => ({ ...p, lastSession: id }));
     attach(id);
@@ -871,7 +987,10 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
     const info = s.sessions.find((x) => x.id === id);
     const src = s.views[id];
     const model = (fork && sendModel(src?.model, s)) || defaultModel(s);
-    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: startMode(s.prefs.mode, 'default', autoOk(s)), effort: s.prefs.effort, resume: id, fork, before });
+    // its budget goes with it (a fork starts with the one new sessions get)
+    const budget = fork ? s.budgetNext : (src?.budget ?? storedBudget(id));
+    const { id: newId, existing, fresh } = await api.openSession({ model: sendModel(model, s), mode: startMode(s.prefs.mode, 'default', autoOk(s)), effort: s.prefs.effort, resume: id, fork, before,
+      budget: budget ? { ...budget, ...(fork ? {} : spentOf(src)) } : null });
     if (existing) {
       // open already (another tab, another device): the same process — attach to it; its history merges after the replay
       set((x) => ({ ...x, opening: false }));
@@ -891,7 +1010,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
       const views = { ...x.views };
       delete views[newId];
       const name = info?.title || src?.title || info?.firstPrompt || id.slice(0, 8);
-      views[newId] = newView(newId, { state: 'idle', model, mode: startMode(x.prefs.mode, 'default', autoOk(x)), title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '' });
+      views[newId] = newView(newId, { state: 'idle', model, mode: startMode(x.prefs.mode, 'default', autoOk(x)), title: fork ? label(`Fork of ${name}`, 200) : info?.title ?? '', budget });
       return { ...x, views, active: newId, sheet: null };
     });
     setPrefs((p) => ({ ...p, lastSession: newId }));
@@ -925,6 +1044,57 @@ export async function closeSessionById(id: string): Promise<void> {
   announce();
 }
 
+/** What the spend logs say a session cost so far, for the backend's stop ({} when not known). */
+function spentOf(v: SessionView | undefined): { spent?: number } {
+  return v?.spend ? { spent: Math.round(sessionCost(v.spend) * 1e6) / 1e6 } : {};
+}
+
+/** A session's budget (null: none): the backend's copy (its stop) and this browser's; `forNew`: the one new sessions
+ *  start with too. -> '' or why it was not set */
+export async function setSessionBudget(id: string | null, b: Budget | null, forNew?: boolean): Promise<string> {
+  if (forNew !== undefined) {
+    set((s) => ({ ...s, budgetNext: forNew ? b : null }));
+    rememberBudget(null, b, forNew);
+  }
+  const v = id ? get().views[id] : undefined;
+  if (!id || !v) return '';
+  if (v.state === 'closed' || v.state === 'ended') {
+    // no process: its next start takes it (revive sends this browser's copy)
+    rememberBudget(id, b);
+    updateView(id, (x) => ({ ...x, budget: b }));
+    return '';
+  }
+  const r = await wsRequest({ type: 'set_budget', session: id, usd: b ? b.usd : null, hard: b?.hard === true, ...spentOf(v) }, 30_000);
+  if (!r.ok) return r.error || 'No answer from the Code page server.';
+  rememberBudget(id, b);
+  updateView(id, (x) => ({ ...x, budget: b, spendSeen: x.spendSeen }));
+  const restart = (r.data as { restart?: unknown } | null)?.restart === true;
+  toast(b ? `Budget ${money(b.usd, 2)}${b.hard ? ', stop on' : ''}${restart ? ': Claude Code restarts for it with your next prompt' : ''}.` : 'No budget for this session.', 'ok');
+  void refreshSpend(id);
+  return '';
+}
+
+/** "Open in the terminal": the page's process for the session ends, and the terminal panel (a new tab on a phone)
+ *  shows a new window where `claude-bedrock --resume <id>` was typed. Until Claude Code exits there, a prompt here is
+ *  refused (two processes would write one conversation). */
+export async function openInTerminal(id: string): Promise<void> {
+  if (!isUuid(id)) return;
+  try {
+    const r = await api.openInTerminal(id);
+    updateView(id, (v) => ({ ...v, state: v.state === 'closed' ? 'closed' : 'ended', permissions: [] }));
+    const text = `Continued in the terminal${r.window ? ` (window ${r.window})` : ''}: ${r.command}. Exit it there (/exit) before you prompt here again.`;
+    // (a phone: the terminal in a tab of its own — opened by your tap, which no popup blocker stops)
+    if (isPhone()) toast(text, 'ok', { label: 'Open the terminal', run: () => void window.open(terminalUrl() ?? '/.bn/terminal', '_blank', 'noopener,noreferrer') });
+    else {
+      setLayout({ terminal: true });
+      toast(text, 'ok');
+    }
+    announce();
+  } catch (e) {
+    toast(`Not opened in the terminal: ${errText(e)}`, 'error');
+  }
+}
+
 export async function renameSessionById(id: string, title: string): Promise<void> {
   const t = title.trim();
   if (!t) return;
@@ -943,7 +1113,9 @@ async function revive(id: string): Promise<string | null> {
   try {
     const v = s.views[id];
     // (the same session: Plan goes on; Bypass ended with its process — Manual)
-    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: startMode(v?.mode, s.prefs.mode, autoOk(s)), effort: v?.effort ?? s.prefs.effort, resume: id });
+    const budget = v?.budget ?? storedBudget(id);
+    const { id: newId } = await api.openSession({ model: sendModel(v?.model, s) || sendModel(defaultModel(s), s), mode: startMode(v?.mode, s.prefs.mode, autoOk(s)), effort: v?.effort ?? s.prefs.effort, resume: id,
+      budget: budget ? { ...budget, ...spentOf(v) } : null });
     if (newId !== id) {
       // the backend gave the resumed process a new id: carry the conversation over to it
       loadedHistory.add(newId);
@@ -1044,7 +1216,10 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   sentPrompts.set(req, { session: id, uuid, text });
   if (sentPrompts.size > 50) sentPrompts.delete(sentPrompts.keys().next().value as string);
   updateView(id, (v) => addPrompt(v, text, images.length, uuid));
-  socket.send({ type: 'prompt', session: id, text, images, uuid, req });
+  // with a budget, what the spend logs say so far (the backend's stop counts it)
+  const spent = get().views[id]?.budget ? spentOf(get().views[id]).spent : undefined;
+  socket.send({ type: 'prompt', session: id, text, images, uuid, req, ...(spent !== undefined ? { spent } : {}) });
+  dropLinkDraft();
   if (!get().views[id]?.title && !text.trimStart().startsWith('/')) {
     const title = label(text, 80);
     updateView(id, (v) => ({ ...v, title }));

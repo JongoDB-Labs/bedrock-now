@@ -59,6 +59,7 @@ import type {
   WatchChange,
 } from './types';
 import { MODES } from './types';
+import { normBudget, type Budget as SessionBudget } from './budget';
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -495,7 +496,9 @@ export function normServerMsg(raw: string): ServerMsg | null {
     case 'session_state': {
       const state = sessionState(o.state);
       return session && state
-        ? { kind: 'session_state', session, state, model: typeof o.model === 'string' && MODEL_ID.test(o.model) ? o.model : null, mode: mode(o.mode) }
+        ? { kind: 'session_state', session, state, model: typeof o.model === 'string' && MODEL_ID.test(o.model) ? o.model : null, mode: mode(o.mode),
+          // (an older backend says nothing about budgets: no key, not "none")
+          ...(o.budget === undefined ? {} : { budget: normBudget(o.budget) }), ...(time(o.lastActive) ? { lastActive: time(o.lastActive) } : {}) }
         : null;
     }
     case 'reset': {
@@ -599,6 +602,9 @@ function normOpen(v: unknown): OpenSession | null {
     mode: mode(o.mode ?? o.permissionMode),
     title: label(o.title, LIMITS.title),
     pending: Math.max(0, Math.floor(num(o.pending ?? o.permissions))),
+    lastActive: time(o.lastActive) || null,
+    budget: normBudget(o.budget),
+    terminal: o.terminal === true,
   };
 }
 
@@ -689,6 +695,8 @@ export interface OpenOptions {
   at?: string;
   /** with resume + fork: the conversation before this prompt of yours (the backend resumes at its parent) */
   before?: string;
+  /** the session's budget, before its process starts (spent: what the spend logs say it cost so far) */
+  budget?: (SessionBudget & { spent?: number }) | null;
 }
 /** POST /api/sessions -> its id, and `existing` when the backend already had that session open (then it is the
  *  same process: attach to it, never start a second one). A full house answers 409 (shown as the error). */
@@ -700,6 +708,7 @@ export async function openSession(opts: OpenOptions): Promise<{ id: string; exis
   if (opts.fork) body.fork = true;
   if (opts.at) body.at = opts.at;
   if (opts.before) body.before = opts.before;
+  if (opts.budget) body.budget = { usd: opts.budget.usd, hard: opts.budget.hard, ...(opts.budget.spent !== undefined ? { spent: opts.budget.spent } : {}) };
   // this page has a Stop per background task, so an interrupt spares them (the backend's taskStop)
   body.taskStop = true;
   const o = await request('POST', '/api/sessions', body);
@@ -711,6 +720,58 @@ export async function closeSession(id: string): Promise<void> {
   if (!isUuid(id)) return;
   await request('DELETE', `/api/sessions/${id}`);
 }
+/** "Open in the terminal": the backend ends its process for the session, then a new window of the terminal's tmux
+ *  session runs `claude-bedrock --resume <id>` (typed there). -> the window's name (null: not known) */
+export async function openInTerminal(id: string): Promise<{ window: string | null; command: string }> {
+  if (!isUuid(id)) throw new ApiError(400, 'bad session id');
+  const o = await request('POST', `/api/sessions/${id}/terminal`);
+  const window = typeof o.window === 'string' && /^resume-[0-9a-f]{8}$/.test(o.window) ? o.window : null;
+  return { window, command: `claude-bedrock --resume ${id.toLowerCase()}` };
+}
+
+/** One settings file's permission rules (the Permissions view). Rules are text from the sandbox: shown with safe(),
+ *  removed by their exact text. */
+export interface PermFile {
+  path: string;
+  exists: boolean;
+  error: string | null;
+  sha256: string | null;
+  allow: string[];
+  ask: string[];
+  deny: string[];
+  other: number;
+  truncated: boolean;
+  defaultMode: string | null;
+  directories: string[];
+}
+export interface Permissions {
+  user: PermFile;
+  project: PermFile;
+  local: PermFile;
+  bypassAsk: string[];
+  readOnlyDeny: string[];
+}
+const rules = (v: unknown): string[] => arr(v, 500).filter((r): r is string => typeof r === 'string' && r.length >= 1 && r.length <= 4000);
+export function normPermFile(v: unknown, path: string): PermFile {
+  const o = obj(v) ?? {};
+  return { path, exists: o.exists === true, error: typeof o.error === 'string' && o.error ? label(o.error, 200) : null,
+    sha256: typeof o.sha256 === 'string' && /^[0-9a-f]{64}$/.test(o.sha256) ? o.sha256 : null,
+    allow: rules(o.allow), ask: rules(o.ask), deny: rules(o.deny), other: Math.floor(nonneg(o.other) ?? 0), truncated: o.truncated === true,
+    defaultMode: typeof o.defaultMode === 'string' && o.defaultMode ? label(o.defaultMode, 40) : null,
+    directories: arr(o.directories, 50).filter((d): d is string => typeof d === 'string').map((d) => label(d, 1000)) };
+}
+export async function getPermissions(): Promise<Permissions> {
+  const o = await request('GET', '/api/permissions');
+  const list = (v: unknown) => arr(v, 50).filter((r): r is string => typeof r === 'string').map((r) => label(r, 300));
+  return { user: normPermFile(o.user, '~/.claude/settings.json'), project: normPermFile(o.project, '.claude/settings.json'),
+    local: normPermFile(o.local, '.claude/settings.local.json'), bypassAsk: list(o.bypassAsk), readOnlyDeny: list(o.readOnlyDeny) };
+}
+/** A rule out of the sandbox's user settings, only while the file is as shown (409 otherwise: read it again). */
+export async function removePermission(list: 'allow' | 'ask' | 'deny', rule: string, sha256: string): Promise<{ sha256: string | null }> {
+  const o = await request('POST', '/api/permissions/remove', { list, rule, sha256 });
+  return { sha256: typeof o.sha256 === 'string' && /^[0-9a-f]{64}$/.test(o.sha256) ? o.sha256 : null };
+}
+
 export async function renameSession(id: string, title: string): Promise<void> {
   if (!isUuid(id)) return;
   await request('POST', `/api/sessions/${id}/title`, { title: title.slice(0, 200) });
@@ -1346,7 +1407,8 @@ export function overBudget(k: KeyBudget | null): boolean {
 
 export type ClientMsg =
   | { type: 'attach'; session: string; since: number; epoch?: string }
-  | { type: 'prompt'; session: string; text: string; images: ImageBlock[]; uuid: string; req: string }
+  | { type: 'prompt'; session: string; text: string; images: ImageBlock[]; uuid: string; req: string; spent?: number }
+  | { type: 'set_budget'; session: string; usd: number | null; hard: boolean; spent?: number; req?: string }
   | { type: 'rewind_files'; session: string; message: string; dryRun: boolean; req: string }
   | { type: 'interrupt'; session: string }
   | { type: 'set_model'; session: string; model: string; req?: string }

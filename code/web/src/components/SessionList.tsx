@@ -1,8 +1,11 @@
-// Sessions: the ones open in the backend (live state, waiting permissions) and the sandbox's saved sessions
-// (search, resume, fork, rename). Titles are sandbox data: shown as text.
+// Sessions: the ones open in the backend, grouped as Claude Code's agent view does — Needs you (a permission card, a
+// question or a plan waiting), Working, Done (a dot: it finished while you were elsewhere) — and the sandbox's saved
+// sessions (search, resume, fork, rename, open in the terminal). Titles are sandbox data: shown as text (a title
+// Claude Code wrote itself — ai-title, summary — when there is one, else the first prompt).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, activate, closeSessionById, newSession, refreshSessions, renameSessionById, resumeSession } from '../app';
+import { store, activate, closeSessionById, newSession, openInTerminal, refreshSessions, renameSessionById, resumeSession } from '../app';
+import { GROUP_LABEL, grouped, type Group } from '../groups';
 import type { SessionView } from '../session';
 import type { SessionInfo } from '../types';
 import { ago, label } from '../text';
@@ -14,12 +17,14 @@ function StateDot({ v }: { v: SessionView | undefined }) {
   if (!v) return null;
   if (v.permissions.length)
     return (
-      <span class="badge warn" title="Waiting for your permission">
+      <span class="badge warn" title="Waiting for you: a permission, a question or a plan">
         {v.permissions.length}
       </span>
     );
   if (v.state === 'busy' || v.state === 'starting') return <Spinner size={12} />;
   if (v.state === 'error') return <span class="sdot err" title="error" />;
+  if (v.unseen) return <span class="sdot unseen" title="Finished while you were elsewhere" data-testid="session-unseen" />;
+  if (v.state === 'closed' || v.state === 'ended') return <span class="sdot" title="Closed: a prompt resumes it" />;
   return <span class="sdot live" title="open" />;
 }
 
@@ -31,8 +36,9 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
     if (renaming) input.current?.select();
   }, [renaming]);
   const open = props.view && props.view.state !== 'closed';
+  const busy = props.view?.state === 'busy' || props.view?.state === 'starting';
   return (
-    <li class={`sess${props.active ? ' active' : ''}`} data-testid="session-row">
+    <li class={`sess${props.active ? ' active' : ''}${props.view?.unseen ? ' unseen' : ''}`} data-testid="session-row" data-session={props.id}>
       {renaming ? (
         <form
           class="sess-rename"
@@ -73,6 +79,9 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
             <MenuItem icon="pencil" onSelect={() => (close(), setVal(props.title), setRenaming(true))}>
               Rename
             </MenuItem>
+            <MenuItem icon="terminal" disabled={busy} onSelect={() => (close(), void openInTerminal(props.id))} testid="session-to-terminal">
+              {busy ? 'Open in the terminal (once this turn ends)' : 'Open in the terminal'}
+            </MenuItem>
             {open && (
               <MenuItem icon="stop" onSelect={() => (close(), void closeSessionById(props.id))}>
                 Close (stops its process; the transcript stays)
@@ -96,8 +105,16 @@ export function SessionList() {
   const [q, setQ] = useState(store.get().sessionsQuery);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const openIds = Object.keys(views);
+  const groups = grouped(views);
   const recent = sessions.filter((s) => !views[s.id]);
+  // a title Claude Code gave the session (or you: Rename) over the first prompt the page saw
+  const titleOf = (id: string, v: SessionView) => {
+    const info = sessions.find((s) => s.id === id);
+    const listed = info?.title && info.title !== info.firstPrompt ? info.title : '';
+    return label(listed || v.title || info?.title || info?.firstPrompt, 200);
+  };
+  const sub = (v: SessionView) => [v.permissions.length ? 'waiting for you' : v.state === 'busy' ? 'working' : v.state === 'starting' ? 'starting' : v.unseen ? 'done — new' : v.state,
+    modelLabel(models, v.model)].filter(Boolean).join(' · ');
 
   return (
     <div class="sessions" data-testid="sessions">
@@ -122,17 +139,20 @@ export function SessionList() {
         </button>
       </div>
       <div class="sess-scroll">
-        {openIds.length > 0 && (
-          <>
-            <div class="group-head">Open</div>
-            <ul class="sess-list">
-              {openIds.map((id) => {
-                const v = views[id];
-                const info = sessions.find((s) => s.id === id);
-                return <Row key={id} id={id} view={v} info={info} active={id === active} title={label(v.title || info?.title || info?.firstPrompt, 200)} sub={`${v.state === 'busy' ? 'working' : v.state}${modelLabel(models, v.model) ? ' · ' + modelLabel(models, v.model) : ''}`} />;
-              })}
-            </ul>
-          </>
+        {(['needs', 'working', 'done'] as Group[]).map((g) =>
+          groups[g].length > 0 ? (
+            <div key={g} class={`sess-group sess-group-${g}`} data-testid={`session-group-${g}`}>
+              <div class="group-head">
+                {GROUP_LABEL[g]}
+                {g === 'needs' && <span class="badge warn">{groups[g].length}</span>}
+              </div>
+              <ul class="sess-list">
+                {groups[g].map((id) => (
+                  <Row key={id} id={id} view={views[id]} info={sessions.find((s) => s.id === id)} active={id === active} title={titleOf(id, views[id])} sub={sub(views[id])} />
+                ))}
+              </ul>
+            </div>
+          ) : null,
         )}
         <div class="group-head">
           Recent {loading && <Spinner size={11} />}

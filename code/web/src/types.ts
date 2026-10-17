@@ -1,5 +1,6 @@
 // The page's own model of what the backend sends. api.ts turns the wire format (code/server/protocol.mjs) into these
 // shapes, validating ids and capping strings on the way; nothing else in the page reads raw server JSON.
+import type { Budget } from './budget';
 
 /** The page's permission modes (modes.ts names them; code/server/modes.mjs maps them to Claude Code's). */
 export type Mode = 'readOnly' | 'plan' | 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions';
@@ -247,6 +248,12 @@ export interface OpenSession {
   mode: Mode | null;
   title: string;
   pending: number;
+  /** the backend's last activity in this session (ms) */
+  lastActive: number | null;
+  /** its budget (null: none) */
+  budget: Budget | null;
+  /** handed to the terminal (Open in the terminal) */
+  terminal: boolean;
 }
 
 export interface ServerState {
@@ -320,7 +327,7 @@ export type ServerMsg =
   | { kind: 'event'; session: string; seq: number; epoch: string | null; ev: Ev }
   | { kind: 'permission'; req: PermissionReq }
   | { kind: 'permission_done'; id: string; session: string | null }
-  | { kind: 'session_state'; session: string; state: SessionState; model: string | null; mode: Mode | null }
+  | { kind: 'session_state'; session: string; state: SessionState; model: string | null; mode: Mode | null; budget?: Budget | null; lastActive?: number }
   /** the answer to `attach`: replayed events start at `from`; `gap`: some after the page's `since` are gone (or the
    *  process changed: another `epoch`) */
   | { kind: 'attached'; session: string; from: number; last: number; gap: boolean; epoch: string | null }

@@ -28,6 +28,10 @@
 // commands that pipe a download into a shell, force-push or rm -rf ("install script" plays one), with "Allow once";
 // /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API;
 // /__mock/watch-incomplete?on=1 is a sandbox that could not list every watched file (the cards say so).
+// /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
+// session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
+// the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
+// the terminal was asked to type; /__mock/perm-touch changes the user settings behind the Permissions view's back.
 // Previews: the workspace has a folder previews/ with every previewable format and hostile ones
 // (dev/preview-fixtures.mjs); GET /__mock/beacon?… records a request (what a hostile file would make if it could run
 // or load anything) and GET /__mock/beacons lists them.
@@ -296,6 +300,27 @@ const sessions = new Map(); // id -> Session (open)
 const saved = new Map(); // id -> {id, title, firstPrompt, branch, modified, transcript}
 const checkpoints = new Map(); // id -> {prompts, changes}: a session's file checkpoints, across its processes
 const spendRows = new Map(); // id -> rows
+const inTerminal = new Set(); // sessions handed to the terminal (a resume here is refused until /__mock/terminal-exit)
+const terminalLog = [];       // what the terminal was asked to type
+// a session's budget as the backend checks it: {usd, hard}, null for none, false when it is not one
+function mockBudget(b) {
+  if (b === null || b === undefined || b.usd === null) return null;
+  if (typeof b.usd !== 'number' || !Number.isFinite(b.usd) || b.usd < 0.01 || b.usd > 999) return false;
+  return { usd: Math.round(b.usd * 100) / 100, hard: b.hard === true };
+}
+// the Permissions view: the sandbox's user settings (rules "Always" wrote; removable) and the workspace's (shown only)
+const PERM_USER = () => ({ theme: 'dark', permissions: { allow: ['Bash(npm test:*)', 'Bash(git status:*)', 'WebFetch(domain:docs.example.com)'], ask: ['Bash(git push:*)'], deny: ['Bash(rm -rf:*)'] } });
+let permUser = PERM_USER();
+const permSha = () => crypto.createHash('sha256').update(JSON.stringify(permUser)).digest('hex');
+const BYPASS_ASK = ['Edit(//workspace/.git/**)', 'Edit(//workspace/.claude/**)', 'Edit(//workspace/.vscode/**)', 'Edit(//workspace/.husky/**)',
+  'Edit(//workspace/.devcontainer/**)', 'Edit(//workspace/.envrc)', 'Edit(//workspace/.mcp.json)', 'Edit(//workspace/.devcontainer.json)'];
+function permissionsView() {
+  const file = (path, o, sha) => ({ path, exists: true, sha256: sha, allow: o.permissions.allow, ask: o.permissions.ask ?? [], deny: o.permissions.deny ?? [], other: 0, truncated: false, defaultMode: null, directories: [] });
+  const user = file('~/.claude/settings.json', permUser, permSha());
+  if (HOSTILE_MODE) user.allow = [...user.allow, HOSTILE.script, HOSTILE.bidi, 'x'.repeat(5000), 7];
+  return { user, project: file('.claude/settings.json', { permissions: { allow: ['Bash(make test)'], deny: ['Read(./.env)'] } }, 'b'.repeat(64)),
+    local: { path: '.claude/settings.local.json', exists: false }, bypassAsk: BYPASS_ASK, readOnlyDeny: ['Edit', 'Write', 'NotebookEdit', 'EnterPlanMode'] };
+}
 
 function seedSaved() {
   const mk = (title, firstPrompt, ago, transcript) => {
@@ -404,6 +429,10 @@ class Session {
     // MCP servers of your own load when a session (process) starts
     this.mcpLoaded = new Set(plug.mcp.map((m) => m.name));
     this.mcpOff = new Set();
+    // the budget (set_budget; null: none) and what the page last said it cost (the backend's stop)
+    this.budget = null;
+    this.spent = 0;
+    this.lastActive = Date.now();
   }
   broadcast(msg) {
     const s = JSON.stringify(msg);
@@ -451,7 +480,7 @@ class Session {
     return { canRewind: true, error: '', filesChanged: [...first.keys()].map((p) => '/workspace/' + p), insertions, deletions, skippedLinks: 0 };
   }
   stateMsg() {
-    return { type: 'session_state', session: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, error: null };
+    return { type: 'session_state', session: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, error: null, budget: this.budget, lastActive: this.lastActive };
   }
   resolvedModel() {
     if (this.overrideModel) return this.overrideModel;
@@ -620,6 +649,7 @@ class Session {
       spendRows.set(this.id, rows);
     }, FAST ? 10 : 900);
     saved.set(this.id, { id: this.id, title: this.title, firstPrompt: saved.get(this.id)?.firstPrompt || text, branch: 'main', modified: Date.now(), transcript: this.transcript });
+    this.lastActive = Date.now();
     this.setState('idle');
     const next = this.queue.shift();
     if (next) setTimeout(() => void this.prompt(next), 50);
@@ -1155,7 +1185,8 @@ async function api(req, res, url) {
     return json(res, 200, {
       versions: { cli: '2.1.296', sdk: '0.3.296' },
       limits: { sessions: 4, upload: 25 * 1024 * 1024, image: 5 * 1024 * 1024, maxImages: LIMITS.maxImages },
-      sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null })),
+      sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null,
+        lastActive: s.lastActive, budget: s.budget, terminal: false })),
       pending: totalPending(),
       bypass: { allowed: allowBypass },
       auto: { allowed: allowAuto },
@@ -1176,6 +1207,7 @@ async function api(req, res, url) {
     if (b.resume && UUID.test(b.resume) && !b.fork) {
       // the backend never opens a second process on one transcript: an open session is simply returned
       if (sessions.has(b.resume)) return json(res, 200, { id: b.resume, existing: true });
+      if (inTerminal.has(b.resume)) return json(res, 409, { error: 'This conversation is open in the terminal (or elsewhere in the sandbox) right now: exit Claude Code there (/exit), then try again here.' });
       id = b.resume;
       title = saved.get(b.resume)?.title ?? '';
     }
@@ -1183,6 +1215,12 @@ async function api(req, res, url) {
     if (typeof b.model === 'string' && ALIAS.test(b.model)) return json(res, 400, { error: 'name the model in full (claude-…), not by an alias' });
     if (b.mode === 'bypassPermissions') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits, auto while allowed): a session never starts in bypassPermissions' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
+    if (b.budget) {
+      const bb = mockBudget(b.budget);
+      if (bb === false) return json(res, 400, { error: 'budget: 0.01 to 999 USD' });
+      s.budget = bb;
+      if (typeof b.budget.spent === 'number' && b.budget.spent >= 0) s.spent = b.budget.spent;
+    }
     const src = b.fork ? (sessions.get(b.resume)?.transcript ?? saved.get(b.resume)?.transcript) : null;
     let fresh;
     if (src) {
@@ -1197,6 +1235,33 @@ async function api(req, res, url) {
     sessions.set(id, s);
     log('open', id, b.resume ? (b.fork ? 'fork of ' + b.resume : 'resume') : 'new', s.model, s.mode);
     return json(res, 200, { id, existing: false, ...(fresh ? { fresh } : {}) });
+  }
+  let tm;
+  if ((tm = /^\/api\/sessions\/([^/]+)\/terminal$/.exec(p)) && m === 'POST') {
+    const id = tm[1];
+    if (!UUID.test(id)) return json(res, 400, { error: 'bad session id' });
+    const s = sessions.get(id);
+    if (s && (s.state === 'busy' || s.state === 'starting')) return json(res, 409, { error: 'Claude is working in this session: wait for the turn to end (or stop it), then open it in the terminal' });
+    if (!s && !saved.get(id)?.transcript?.length) return json(res, 404, { error: 'no such session in this workspace (it has no prompts yet?)' });
+    if (s) {
+      s.emit({ type: 'local', text: 'Continued in the terminal: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.' });
+      s.setState('ended');
+      sessions.delete(id);
+    }
+    inTerminal.add(id);
+    terminalLog.push(`claude-bedrock --resume ${id}`);
+    return json(res, 200, { ok: true, window: `resume-${id.slice(0, 8)}`, command: `claude-bedrock --resume ${id}` });
+  }
+  if (p === '/api/permissions' && m === 'GET') return json(res, 200, permissionsView());
+  if (p === '/api/permissions/remove' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (!['allow', 'ask', 'deny'].includes(b.list) || typeof b.rule !== 'string' || !b.rule || typeof b.sha256 !== 'string') return json(res, 400, { error: 'bad request' });
+    if (b.sha256 !== permSha()) return json(res, 409, { error: 'the user settings changed since they were shown: look again' });
+    const list = permUser.permissions[b.list];
+    const kept = list.filter((r) => r !== b.rule);
+    if (kept.length === list.length) return json(res, 409, { error: 'no such rule' });
+    permUser.permissions[b.list] = kept;
+    return json(res, 200, { ok: true, removed: list.length - kept.length, sha256: permSha() });
   }
   let mm = /^\/api\/sessions\/([^/]+)(\/messages|\/title)?$/.exec(p);
   if (mm) {
@@ -1681,6 +1746,7 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (url.pathname === '/__mock/beacons' && req.method === 'GET') return json(res, 200, { beacons });
+    if (url.pathname === '/__mock/terminal-log' && req.method === 'GET') return json(res, 200, { typed: terminalLog });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {
         for (const ws of wss.clients) ws.terminate();
@@ -1767,7 +1833,34 @@ const server = http.createServer(async (req, res) => {
         if (url.searchParams.get('commit') === '1') gitHead = new Map([...fsState].map(([p2, e]) => [p2, e.data]));
         return json(res, 200, { repo: gitRepo });
       }
+      if (url.pathname === '/__mock/spend') {
+        const id = url.searchParams.get('session') || '';
+        const add = Number(url.searchParams.get('add') || 0);
+        const rows = spendRows.get(id) ?? [];
+        rows.push({ startTime: new Date().toISOString(), model: 'claude-sonnet-5-5', spend: add, tokens: 1000 });
+        spendRows.set(id, rows);
+        return json(res, 200, { ok: true, total: rows.reduce((n, r) => n + r.spend, 0) });
+      }
+      if (url.pathname === '/__mock/age') {
+        const id = url.searchParams.get('session') || '';
+        const ms = Number(url.searchParams.get('ms') || 600000);
+        const s = sessions.get(id);
+        if (s) s.lastActive = Date.now() - ms;
+        if (saved.get(id)) saved.get(id).modified = Date.now() - ms;
+        return json(res, 200, { ok: !!(s || saved.get(id)) });
+      }
+      if (url.pathname === '/__mock/terminal-exit') {
+        inTerminal.delete(url.searchParams.get('session') || '');
+        return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/__mock/perm-touch') {
+        permUser.permissions.allow.push('Bash(ls:*)');
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === '/__mock/reset') {
+        inTerminal.clear();
+        terminalLog.length = 0;
+        permUser = PERM_USER();
         resetLaunch();
         mockPorts.clear();
         checkpoints.clear();
@@ -1901,15 +1994,29 @@ server.on('upgrade', (req, sock, head) => {
             : text.length > LIMITS.maxPromptChars ? 'the prompt is too long'
             : images.length > LIMITS.maxImages ? `at most ${LIMITS.maxImages} images per prompt`
             : /refuse this prompt/i.test(text) ? 'the sandbox refused this prompt (mock)' : '';
-          if (bad) {
-            if (req) reply({ type: 'reply', req, ok: false, error: bad });
-            return reply({ type: 'error', session: s.id, req, message: bad });
+          if (typeof m.spent === 'number' && m.spent >= 0) s.spent = Math.max(s.spent, m.spent);
+          const spentNow = (spendRows.get(s.id) ?? []).reduce((n, r) => n + (r.spend > 0 ? r.spend : 0), 0);
+          const over = s.budget?.hard && Math.max(s.spent, spentNow) >= s.budget.usd
+            ? `This session reached its budget of $${s.budget.usd.toFixed(2)}, and its stop is on: raise the budget or turn the stop off (⋯ › Budget) to go on.` : '';
+          if (bad || over) {
+            if (req) reply({ type: 'reply', req, ok: false, error: bad || over });
+            return reply({ type: 'error', session: s.id, req, message: bad || over });
           }
+          s.lastActive = Date.now();
           if (req) reply({ type: 'reply', req, ok: true, data: { queued: s.state === 'busy' } });
           return void s.prompt({ text, images, uuid: m.uuid });
         }
         case 'interrupt':
           return s.interrupt();
+        case 'set_budget': {
+          const b = mockBudget({ usd: m.usd ?? null, hard: m.hard });
+          if (b === false) return reply({ type: 'reply', req, ok: false, error: 'budget: 0.01 to 999 USD' });
+          const restart = JSON.stringify(b) !== JSON.stringify(s.budget) && (b?.hard === true || s.budget?.hard === true);
+          s.budget = b;
+          if (typeof m.spent === 'number' && m.spent >= 0) s.spent = Math.max(s.spent, m.spent);
+          s.broadcast(s.stateMsg());
+          return reply({ type: 'reply', req, ok: true, data: { budget: b, restart } });
+        }
         case 'set_model': {
           // as the backend: aliases refused; Claude Code's own model check can fail on a slow API (/__mock/model-fail)
           const no = ALIAS.test(String(m.model)) ? 'name the model in full (claude-…), not by an alias'

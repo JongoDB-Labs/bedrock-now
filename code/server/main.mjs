@@ -124,7 +124,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     onCount: (count) => toAll({ type: 'pending', count }),
   });
   const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error,
-    budget: s.budget ? { ...s.budget } : null });
+    budget: s.budget ? { ...s.budget } : null, lastActive: s.lastActive });
   // the watchlist's two ops in the sandbox (bn-coded): the watched files (hashes, copies ≤ 1 MiB), and one put back
   const watcher = watch === false ? null : {
     snapshot: async () => (await call({ op: 'ws.sensitive' }, { timeoutMs: 15000 })).result,

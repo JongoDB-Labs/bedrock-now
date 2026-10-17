@@ -19,6 +19,7 @@ import { nextMode } from '../modes';
 import { bytes, cleanPath, dirname } from '../text';
 import { Icon } from './icons';
 import { ModePicker } from './Pickers';
+import { Guards } from './Guards';
 import { useMedia } from './ui';
 
 interface Attachment {
@@ -380,6 +381,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           ))}
         </div>
       )}
+      <Guards onClear={() => setText('')} />
       <div class="composer-box">
         <textarea
           ref={ta}

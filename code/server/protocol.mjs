@@ -252,7 +252,7 @@
 //          rule may be offered (rules and projectRules are then empty)
 //   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
 //                                                             timeout|cancelled
-//   {type: "session_state", session, state, model, mode, effort, error, budget}   state: starting|idle|busy|ended
+//   {type: "session_state", session, state, model, mode, effort, error, budget, lastActive}   state: starting|idle|busy|ended
 //                                                             (ended with `error` when the process failed); mode: a
 //                                                             page mode (MODES)
 //   {type: "reset", session, new_session}                     Claude Code started a new conversation (/clear, a plan

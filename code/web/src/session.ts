@@ -16,6 +16,7 @@ import type {
   Usage,
   WatchChange,
 } from './types';
+import type { Budget } from './budget';
 
 export type Item =
   | { t: 'user'; k: number; text: string; images: number; uuid: string | null; queued: boolean; folded?: boolean }
@@ -84,6 +85,14 @@ export interface SessionView {
   gap: boolean;
   dropped: number;
   status: string;
+  /** a turn ended while you were elsewhere (another session shown, or the page hidden): the list's dot */
+  unseen: boolean;
+  /** the session's budget as the backend holds it (null: none) */
+  budget: Budget | null;
+  /** the backend's last activity of this session (its lastActive), for the cold-cache line */
+  lastActive: number | null;
+  /** the session's spend when it was last looked at (budget warnings fire when it crosses a level) */
+  spendSeen: number | null;
 }
 
 export const MAX_ITEMS = 3000;
@@ -115,6 +124,10 @@ export function newView(id: string, init: Partial<SessionView> = {}): SessionVie
     gap: false,
     dropped: 0,
     status: '',
+    unseen: false,
+    budget: null,
+    lastActive: null,
+    spendSeen: null,
     ...init,
   };
 }
@@ -389,6 +402,10 @@ export function mergeHistory(v: SessionView, history: Ev[], now = Date.now(), wi
       spend: v.spend,
       context: v.context,
       status: v.status,
+      unseen: v.unseen,
+      budget: v.budget,
+      lastActive: v.lastActive,
+      spendSeen: v.spendSeen,
       historyOffset: window.offset ?? 0,
       historyTruncated: window.truncated === true,
     }),

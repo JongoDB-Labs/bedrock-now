@@ -4,6 +4,7 @@ import { AppShell } from './components/Shell';
 import { boot } from './app';
 import './styles/app.css';
 import './styles/review.css';
+import './styles/polish.css';
 
 const root = document.createElement('div');
 root.id = 'app';

@@ -25,7 +25,10 @@ import {
   openPalette,
   openReview,
   showSearch,
+  openInTerminal,
 } from '../app';
+import { BudgetDialog } from './Budget';
+import { PermissionsDialog } from './Permissions';
 import { SearchPanel } from './Search';
 import { CommandPalette, openPaletteFromMenu } from './CommandPalette';
 import { useReviewList } from './Review';
@@ -62,6 +65,8 @@ function Brand() {
 function MoreMenu() {
   const term = useSel(store, (s) => terminalUrl(s));
   const notifyOn = useSel(store, (s) => s.prefs.notify);
+  const active = useSel(store, (s) => activeView(s));
+  const canTerminal = !!active && active.items.some((it) => it.t === 'user') && active.state !== 'busy' && active.state !== 'starting';
   return (
     <Dropdown title="More" align="right" class="more" trigger={<Icon name="more" />} testid="more-menu">
       {(close) => (
@@ -84,6 +89,12 @@ function MoreMenu() {
           <MenuItem icon="book" onSelect={() => (close(), setDialog('memory'))} testid="menu-memory">
             Memory (CLAUDE.md)…
           </MenuItem>
+          <MenuItem icon="shield" onSelect={() => (close(), setDialog('permissions'))} testid="menu-permissions">
+            Permissions…
+          </MenuItem>
+          <MenuItem icon="gauge" onSelect={() => (close(), setDialog('budget'))} testid="menu-budget">
+            Budget for this session…
+          </MenuItem>
           <MenuItem icon="port" onSelect={() => (close(), setDialog('ports'))} testid="menu-ports">
             Ports & previews…
           </MenuItem>
@@ -105,6 +116,11 @@ function MoreMenu() {
               }}
             >
               Open the terminal in a new tab
+            </MenuItem>
+          )}
+          {active && (
+            <MenuItem icon="terminal" disabled={!canTerminal} onSelect={() => (close(), void openInTerminal(active.id))} testid="menu-to-terminal">
+              Continue this session in the terminal
             </MenuItem>
           )}
           <MenuItem icon="keyboard" onSelect={() => (close(), setDialog('shortcuts'))}>
@@ -397,6 +413,8 @@ function Dialogs() {
   if (dialog === 'plugins') return <PluginsDialog onClose={close} />;
   if (dialog === 'mcp') return <McpPanel onClose={close} />;
   if (dialog === 'memory') return <MemoryDialog onClose={close} />;
+  if (dialog === 'budget') return <BudgetDialog onClose={close} />;
+  if (dialog === 'permissions') return <PermissionsDialog onClose={close} />;
   if (dialog === 'launch') return launchConfirm ? <LaunchConfirm entry={launchConfirm} /> : null;
   if (dialog === 'ports') {
     return (
@@ -605,6 +623,12 @@ function PhoneMenu() {
         </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('memory'))} data-testid="phone-menu-memory">
           <Icon name="book" /> Memory (CLAUDE.md)
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('permissions'))} data-testid="phone-menu-permissions">
+          <Icon name="shield" /> Permissions
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('budget'))} data-testid="phone-menu-budget">
+          <Icon name="gauge" /> Budget for this session
         </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), reloadPlugins())}>
           <Icon name="refresh" /> Reload plugins & skills

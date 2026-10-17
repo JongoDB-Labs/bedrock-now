@@ -1,0 +1,41 @@
+/* Session groups and dots, the budget, the guard lines above the prompt box, the Permissions view. */
+
+/* the session list: a dot for a turn that ended while you were elsewhere; the "Needs you" group stands out */
+.sdot.unseen { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.sess.unseen .sess-title { font-weight: 650; }
+.sess-group-needs > .group-head { color: var(--warn); }
+.sess-group-needs > .group-head .badge { margin-left: 2px; }
+
+/* the cost meter with a budget: amber from 80 %, red at it */
+.meter-budget { color: var(--muted); font-size: 11.5px; }
+.meter-btn.warn { border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); }
+.meter-btn.warn .meter-budget { color: var(--warn); }
+.meter-btn.over { border-color: var(--bad); }
+.meter-btn.over .meter-budget { color: var(--bad); font-weight: 600; }
+
+/* the lines above the prompt box */
+.guard { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+.guard > .ic { flex: none; }
+.guard > span { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.guard.cold-cache, .guard.opus-hint { padding: 5px 9px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line-soft); }
+.guard.banner { margin: 0 0 6px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); }
+
+/* ⋯ › Budget */
+.budget-form { display: flex; flex-direction: column; gap: 10px; max-width: 560px; }
+.budget-amount { display: flex; align-items: center; gap: 10px; }
+.budget-amount input { width: 120px; height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font-variant-numeric: tabular-nums; }
+.budget-amount input:focus { outline: none; border-color: var(--accent); }
+.budget-form .check { display: flex; align-items: flex-start; gap: 8px; line-height: 1.45; }
+.budget-form .check input { margin-top: 3px; flex: none; }
+
+/* ⋯ › Permissions */
+.perm-sec { margin: 14px 0 4px; }
+.perm-sec h3 { margin: 0 0 4px; font-size: 13.5px; }
+.perm-file { margin: 6px 0 0; }
+.perm-list h4 { margin: 8px 0 4px; font-size: 12.5px; font-weight: 600; }
+.perm-list ul, .perm-fixed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.perm-list li, .perm-fixed li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.perm-rule, .perm-fixed code { flex: 1; min-width: 0; padding: 3px 7px; border-radius: 5px; background: var(--code-bg); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.perm-allow h4 { color: var(--ok); }
+.perm-ask h4 { color: var(--warn); }
+.perm-deny h4 { color: var(--bad); }

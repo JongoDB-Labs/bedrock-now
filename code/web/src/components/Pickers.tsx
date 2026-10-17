@@ -3,6 +3,7 @@
 import { useSel } from '../store';
 import { store, setModel, setMode, setEffort, activeView, defaultModel, refreshSpend, autoOk } from '../app';
 import { meter } from '../spend';
+import { percent } from '../budget';
 import type { BnModel } from '../types';
 import { MODE_INFO, offeredModes, startMode } from '../modes';
 import { money, perMtok, tokens } from '../text';
@@ -216,6 +217,8 @@ export function CostMeter() {
   const budget = useSel(store, (s) => s.budget);
   if (!v) return null;
   const { turn, session } = meter(v.turns, v.spend);
+  const pct = v.budget ? percent(session, v.budget) : 0;
+  const level = !v.budget ? '' : pct >= 100 ? ' over' : pct >= 80 ? ' warn' : '';
   const key =
     budget && budget.max !== null
       ? `\nThe key claude-code-terminal: ${money(budget.spend)} of its ${money(budget.max)} budget${budget.resetAt ? ` (resets ${new Date(budget.resetAt).toLocaleDateString()})` : ''}.`
@@ -223,8 +226,8 @@ export function CostMeter() {
   return (
     <button
       type="button"
-      class="meter-btn"
-      title={`Cost from bedrock-now's spend logs (what Bedrock billed). Turns appear a few seconds after they end. Click to refresh.${key}`}
+      class={`meter-btn${level}`}
+      title={`Cost from bedrock-now's spend logs (what Bedrock billed). Turns appear a few seconds after they end. Click to refresh.${v.budget ? `\nThis session's budget: ${money(v.budget.usd, 2)}${v.budget.hard ? ', stop on' : ' (warnings only)'} — ⋯ › Budget.` : ''}${key}`}
       onClick={() => void refreshSpend(v.id)}
       data-testid="cost"
     >
@@ -237,6 +240,12 @@ export function CostMeter() {
       )}
       <span class="meter-fig">{money(session)}</span>
       <span class="meter-label">session</span>
+      {v.budget && (
+        <span class="meter-budget" data-testid="cost-budget" aria-label={`${Math.round(pct)} % of its ${money(v.budget.usd, 2)} budget`}>
+          {' '}
+          · {Math.round(pct)}%
+        </span>
+      )}
     </button>
   );
 }
