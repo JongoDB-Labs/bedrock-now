@@ -41,8 +41,9 @@ All notable changes to bedrock-now are documented here. The format follows
   model's cache-write price, and what it would have cost warm). A new session on Opus says how much more it costs than
   Sonnet per token, with a switch. `session_state` carries the backend's `lastActive`.
 - **Code page: ⋯ → Permissions.** The allow / ask / deny rules Claude Code applies: the sandbox's
-  `~/.claude/settings.json` (where *Always* writes; **Remove** per rule, only while the file is as shown, every other
-  key kept, atomic), the workspace's `.claude/settings.json` and `settings.local.json` (shown only: Claude Code on your
+  `~/.claude/settings.json` (where *Always* writes; **Remove** per rule, only while the file is as shown — checked
+  again just before the rename — every other key kept, atomic; removing an *ask* or *deny* rule first says what it
+  lets Claude do), the workspace's `.claude/settings.json` and `settings.local.json` (shown only: Claude Code on your
   computer honours them too), and the page's own rules (what still asks in Bypass permissions, what Read only denies).
   New bn-coded ops `perm.read` and `perm.remove`; `GET /api/permissions`, `POST /api/permissions/remove`.
 - **Code page: sessions grouped** as Needs you (a permission card, a question or a plan waiting) · Working · Done, a dot
@@ -54,8 +55,10 @@ All notable changes to bedrock-now are documented here. The format follows
   resuming it in the page is refused (`sessions.running`: two processes would both write the conversation).
   `POST /api/sessions/ID/terminal`.
 - **Links into the Code page**: `/?session=<id>` shows or resumes a session; `/?prompt=<text>` puts a draft in the
-  prompt box, marked as coming from a link — never sent by itself, at most 4,000 characters, invisible characters
-  shown; both leave the address bar at once and survive the Code page's unlock (the portal rebuilds the link from what
+  prompt box, marked as coming from a link (its lines and characters, the site it was opened from) — never sent by
+  itself, never focused, not sent by Enter until "I have read it" (a held Enter's repeats never send, anywhere), and
+  always sent into a **new session in Manual mode** (never the session shown, never the remembered mode); at most
+  4,000 characters, invisible characters shown; both leave the address bar at once and survive the Code page's unlock (the portal rebuilds the link from what
   checks out).
 - **Home: a Code card** (the Code page on): how many sessions need you, the open ones with Resume / Answer, a prompt
   box that opens Code with it as a draft (nothing is sent from Home), and the terminal key's spend against its budget.

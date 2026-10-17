@@ -2939,6 +2939,24 @@ def polish_permissions(browser):
     expect(page.locator(".toast").filter(has_text="Removed: Bash(npm test:*)")).to_be_visible(timeout=10_000)
     expect(user.get_by_test_id("perm-rule")).to_have_count(5, timeout=10_000)
     expect(user).not_to_contain_text("Bash(npm test:*)")
+    # a deny or ask rule: Remove says first what becomes possible (and its tooltip too); "Keep it" keeps it
+    deny = user.get_by_test_id("perm-rule").filter(has_text="Bash(rm -rf:*)")
+    expect(deny.get_by_test_id("perm-remove")).to_have_attribute("title", re.compile("no longer blocked"))
+    deny.get_by_test_id("perm-remove").click()
+    expect(deny.get_by_test_id("perm-remove-confirm")).to_contain_text("is no longer blocked")
+    p.shot("polish-permissions-confirm.png")
+    deny.get_by_test_id("perm-remove-no").click()
+    expect(user.get_by_test_id("perm-remove-confirm")).to_have_count(0)
+    page.wait_for_timeout(500)
+    expect(user.get_by_test_id("perm-rule")).to_have_count(5)
+    ask = user.get_by_test_id("perm-rule").filter(has_text="Bash(git push:*)")
+    expect(ask.get_by_test_id("perm-remove")).to_have_attribute("title", re.compile("without asking"))
+    ask.get_by_test_id("perm-remove").click()
+    expect(ask.get_by_test_id("perm-remove-confirm")).to_contain_text("Claude may then Bash(git push:*) without asking")
+    ask.get_by_test_id("perm-remove-yes").click()
+    expect(page.locator(".toast").filter(has_text="Removed: Bash(git push:*)")).to_be_visible(timeout=10_000)
+    expect(user.get_by_test_id("perm-rule")).to_have_count(4, timeout=10_000)
+    expect(user.get_by_test_id("perm-rule").filter(has_text="Bash(git status:*)").get_by_test_id("perm-remove")).to_have_attribute("title", re.compile("asks again"))
     p.assert_clean()
     p.close()
 
@@ -2995,7 +3013,7 @@ def polish_groups(browser):
     p.close()
 
 
-@check("polish: deep links — ?session shows it, ?prompt is a draft marked as from a link (never sent), the address cleaned")
+@check("polish: deep links — ?session shows it; ?prompt is a draft from a link: not focused, Enter (once or held) never sends it, it goes into a new Manual session")
 def polish_links(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "polish-links", **DESKTOP)
@@ -3003,27 +3021,109 @@ def polish_links(browser):
     page.get_by_role("button", name="Explain how this project is organised").click()
     wait_turns(page, 1)
     sid = first_session()[0]["id"]
+    # the mode remembered for new sessions: Accept edits — a link's draft never starts in it
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-acceptEdits").click()
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Accept edits")
+    remembered = "JSON.parse(localStorage.getItem('bn.code.v1') || '{}').mode"
+    for _ in range(50):   # (remembered once the switch is confirmed)
+        if page.evaluate(remembered) == "acceptEdits":
+            break
+        page.wait_for_timeout(200)
+    assert page.evaluate(remembered) == "acceptEdits", page.evaluate(remembered)
     page.get_by_test_id("chat-new").click()
+    expect(page.get_by_test_id("msg-user")).to_have_count(0)
     expect(page.get_by_test_id("session-state")).to_contain_text("idle")
+    open_ids = lambda: {s["id"] for s in first_session()}
+    for _ in range(50):   # (the new, empty session is open)
+        if len(open_ids()) == 2:
+            break
+        page.wait_for_timeout(200)
+    before = open_ids()
+    assert len(before) == 2, before
+    is_prompt_focused = "document.activeElement === document.querySelector('[data-testid=prompt]')"
+
+    def held_enter():
+        # a held Enter: the first keydown, then the browser's repeats (Playwright marks a second down as a repeat) —
+        # and a repeat on its own, as a page script would see one
+        box.focus()
+        page.keyboard.down("Enter")
+        page.keyboard.down("Enter")
+        page.keyboard.down("Enter")
+        page.keyboard.up("Enter")
+        page.evaluate("""() => document.querySelector('[data-testid=prompt]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true }))""")
+
+    # 1. a session and a prompt: the session is shown; the draft is marked, cut, its size and source said, not focused
     evil = "rm -rf ~ ‮txt.exe\u0007 " + "x" * 5000
     page.goto(NORMAL + "/?session=" + sid + "&prompt=" + urllib.parse.quote(evil) + "&keep=1")
     expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
     draft = page.get_by_test_id("link-draft")
     expect(draft).to_contain_text("This draft came from a link")
-    expect(draft).to_contain_text("only the first 4,000 characters")
+    expect(draft).to_contain_text("cut: the link held more")
+    expect(draft).to_contain_text("a new session in Manual mode, not this one")
+    expect(page.get_by_test_id("link-draft-size")).to_contain_text("1 line, ")
+    expect(page.get_by_test_id("link-draft-from")).to_have_text("an unknown page")
     box = page.get_by_test_id("prompt")
     v = box.input_value()
     assert v.startswith("rm -rf ~ ⟨U+202E⟩txt.exe⟨U+0007⟩"), v[:60]
     assert len(v) <= 4100, len(v)
     assert page.evaluate("location.search") == "?keep=1", page.evaluate("location.search")
     expect(page.get_by_test_id("chat")).to_contain_text("Explain how this project is organised")   # the linked session is shown
+    page.wait_for_timeout(800)
+    assert not page.evaluate(is_prompt_focused), "the prompt box took the focus with a link's draft in it"
+    # Enter, once and held: nothing is sent, anywhere; the banner says how to send it
+    box.press("Enter")
+    expect(page.get_by_test_id("link-draft-enter")).to_be_visible()
+    held_enter()
     page.wait_for_timeout(1500)
-    expect(page.get_by_test_id("msg-user")).to_have_count(1)   # nothing was sent
+    expect(page.get_by_test_id("msg-user")).to_have_count(1)
+    assert open_ids() == before, "a session was started"
+    assert box.input_value() == v
     p.shot("polish-link-draft.png")
+    # Send: a new session in Manual mode — not the linked one, not the remembered Accept edits
+    page.get_by_test_id("send").click()
+    wait_turns(page, 1)
+    expect(page.get_by_test_id("link-draft")).to_have_count(0)
+    new = [s for s in first_session() if s["id"] not in before]
+    assert len(new) == 1 and new[0]["id"] != sid and new[0]["mode"] == "default", new
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    expect(page.get_by_test_id("msg-user")).to_have_count(1)
+    expect(page.get_by_test_id("msg-user")).to_contain_text("rm -rf ~")
+    assert page.evaluate(remembered) == "acceptEdits", "the link changed the remembered mode"
+    before = open_ids()
+
+    # 2. a prompt alone, from another site: no session shown, Manual shown; Enter after "I have read it" sends it
+    page.goto(NORMAL + "/?prompt=" + urllib.parse.quote("line one\nline two\nline three"), referer="https://links.example/page?x=1")
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    expect(page.get_by_test_id("link-draft-size")).to_have_text("3 lines, 28 characters")
+    expect(page.get_by_test_id("link-draft-from")).to_have_text("links.example")
+    expect(page.get_by_test_id("mode-picker")).to_contain_text("Manual")
+    expect(page.get_by_test_id("msg-user")).to_have_count(0)
+    page.wait_for_timeout(800)
+    assert not page.evaluate(is_prompt_focused), "the prompt box took the focus with a link's draft in it"
+    box.press("Enter")
+    held_enter()
+    page.wait_for_timeout(1000)
+    assert open_ids() == before, "a session was started"
+    page.get_by_test_id("link-draft-ack").click()
+    expect(page.get_by_test_id("link-draft")).to_have_attribute("data-ack", "1")
+    expect(page.get_by_test_id("link-draft")).to_contain_text("a new session in Manual mode")
+    page.evaluate("""() => document.querySelector('[data-testid=prompt]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true }))""")
+    page.wait_for_timeout(800)
+    assert open_ids() == before, "a repeated Enter sent the draft"
+    box.press("Enter")
+    wait_turns(page, 1)
+    new = [s for s in first_session() if s["id"] not in before]
+    assert len(new) == 1 and new[0]["mode"] == "default", new
+    expect(page.get_by_test_id("link-draft")).to_have_count(0)
+    expect(page.get_by_test_id("msg-user")).to_contain_text("line three")
+
+    # 3. "Clear it" empties the box; a reload does not bring it back; a bad session id is said, not followed
+    page.goto(NORMAL + "/?prompt=" + urllib.parse.quote("never mind"))
+    expect(page.get_by_test_id("link-draft")).to_be_visible(timeout=10_000)
     page.get_by_test_id("link-draft-clear").click()
-    expect(draft).to_have_count(0)
+    expect(page.get_by_test_id("link-draft")).to_have_count(0)
     expect(box).to_have_value("")
-    # a reload does not bring it back; a bad session id is said, not followed
     page.reload()
     expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
     expect(page.get_by_test_id("link-draft")).to_have_count(0)

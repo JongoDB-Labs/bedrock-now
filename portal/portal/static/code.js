@@ -113,7 +113,15 @@
   function takeSessions(v) {
     if (!Array.isArray(v)) return [];
     return v.slice(0, 8).filter((x) => x && typeof x.id === "string" && UUID.test(x.id) && Object.prototype.hasOwnProperty.call(STATES, x.state))
-      .map((x) => ({ id: x.id, state: x.state, title: typeof x.title === "string" ? x.title.slice(0, 120).replace(/[\u0000-\u001f\u007f]/g, " ") : "" }));
+      .map((x) => ({ id: x.id, state: x.state, title: typeof x.title === "string" ? shownTitle(x.title) : "" }));
+  }
+  // A title as the Code page shows it: at most 120 characters, line breaks and tabs as spaces, other control
+  // characters and the invisible or direction-changing ones ("Trojan Source": bidi overrides and isolates, zero-width
+  // characters, tag characters) shown as ⟨U+202E⟩ — so "notes⟨U+202E⟩fdp.exe" cannot pass for another name.
+  const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu;
+  function shownTitle(t) {
+    return Array.from(t.slice(0, 240)).slice(0, 120).join("").replace(/[\t\n\r]/g, " ")
+      .replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}⟩`);
   }
   function budgetLine(d) {
     const p = $("#code-budget");
@@ -129,8 +137,12 @@
   function listen() {
     let codeOrigin = "";
     try { codeOrigin = new URL(appUrl("code")).origin; } catch (_) { return; }
+    // (and only from the Code tab's own frame: another window of the code host — a pop-out, a page it opened — says
+    // nothing here)
+    const codeFrame = () => document.querySelector('#frames iframe[data-app="code"]');
     window.addEventListener("message", (e) => {
-      if (e.origin !== codeOrigin || !e.data || (e.data.type !== "bn-code-status" && e.data.bn !== "code") || !badge) return;
+      const f = codeFrame();
+      if (e.origin !== codeOrigin || !f || e.source !== f.contentWindow || !e.data || (e.data.type !== "bn-code-status" && e.data.bn !== "code") || !badge) return;
       markUsed();
       const n = Number.isInteger(e.data.pending) && e.data.pending > 0 ? Math.min(e.data.pending, 99) : 0;
       const bypass = e.data.bypass === true;

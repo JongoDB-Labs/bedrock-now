@@ -153,6 +153,8 @@ def test_code_tabs_frame_is_made_when_idle_on_big_screens_for_its_badge():
     handler = js.split('window.addEventListener("message", (e) => {', 1)[1].split("});", 1)[0]
     check, rest = handler.split("return;", 1)
     assert "e.origin !== codeOrigin" in check and rest.lstrip().startswith("markUsed();")
+    # only the Code tab's own frame (the one appFrame("code") makes), not just any window of the code host
+    assert "e.source !== f.contentWindow" in check and '#frames iframe[data-app="code"]' in js
     assert 'const USED = "bn.code.used";' in js and 'localStorage.getItem(USED) === "1"' in js and 'localStorage.setItem(USED, "1")' in js
     # a session in Bypass permissions: the badge turns red with the CLI's marker (text only)
     assert 'badge.classList.toggle("bypass", bypass);' in rest and 'bypass ? "⏵⏵" : ""' in rest and "e.data.bypass === true" in rest
@@ -299,6 +301,12 @@ def test_home_code_card_lists_what_the_code_page_reports_as_text():
     assert "UUID.test(x.id)" in card and ".slice(0, 120)" in card and ".slice(0, 8)" in card
     assert 'u.searchParams.set(k, v)' in card and "openLink({ prompt: t })" in card and "openLink({ session: s.id })" in card
     assert "nothing is sent from here" in card
+    # titles: invisible and direction-changing characters shown as ⟨U+…⟩, as the Code page shows them
+    assert "title: typeof x.title === \"string\" ? shownTitle(x.title)" in card
+    inv = card.split("const INVISIBLE = ", 1)[1].split("\n", 1)[0]
+    for c in ("\\u202a-\\u202e", "\\u2066-\\u2069", "\\u200b-\\u200f", "\\ufeff", "\\u{e0000}-\\u{e007f}", "\\u0000-\\u001f", "\\u007f-\\u009f"):
+        assert c in inv or c.replace("\\u202a-", "\\u2028-") in inv, c
+    assert inv.endswith("/gu;") and "`⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, \"0\")}⟩`" in card
     assert "e.origin !== codeOrigin" in js   # only the code host's page may report
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     assert 'new CustomEvent("bn:summary", { detail: d })' in app

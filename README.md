@@ -427,7 +427,8 @@ per browser.
   small form — one choice, several, or **Other** with your own words — and your answers go back to Claude as answers.
 - **Permissions** (⋯ → *Permissions*): every rule Claude Code applies in the sandbox — *allow* (runs without asking),
   *ask*, *deny*. The sandbox's own `~/.claude/settings.json`, where **Always** puts its rules, with **Remove** on each
-  (only while the file is as shown: a change meanwhile shows it again first); the workspace's `.claude/settings.json`
+  (only while the file is as shown: a change meanwhile shows it again first; taking out an *ask* or *deny* rule asks
+  you first, saying what Claude may then do without asking, or what is no longer blocked); the workspace's `.claude/settings.json`
   and `settings.local.json`, shown only — they are in your folder, and Claude Code on your computer honours them too;
   and the page's own rules: what still asks in *Bypass permissions*, what *Read only* denies.
 - **Permission modes**, next to **Send** as in Claude Code's desktop app (`Shift+Tab` cycles *Manual → Accept edits →
@@ -563,8 +564,11 @@ per browser.
   (each Claude Code process takes ~220 MB of the sandbox's memory); an idle one stops after 30 minutes and your next
   prompt resumes it.
 - **Links into the page.** `code.<host>/?session=<id>` shows (or resumes) that session; `?prompt=<text>` puts the text
-  into the prompt box as a **draft marked as coming from a link** — never sent by itself, at most 4,000 characters,
-  invisible characters shown — so read it before you send it: anyone can make such a link. Both leave the address bar
+  into the prompt box as a **draft marked as coming from a link** (how many lines and characters, the site it was
+  opened from) — never sent by itself, at most 4,000 characters, invisible characters shown — so read it before you
+  send it: anyone can make such a link. The prompt box is not focused, Enter does not send it until you press **I
+  have read it** (the Send button does), and it always goes into a **new session in Manual mode** — never into the
+  session shown, never in the mode you last used. Both leave the address bar
   at once (a reload does not bring the draft back), and they survive the unlock. Home's Code card uses them.
 - **Plugins & marketplaces** (⋯ menu). What is installed (on/off, update, uninstall; the built-in ones read-only),
   the added marketplaces' catalog (search, install) and the marketplaces themselves (add `owner/repo`, an `https://`

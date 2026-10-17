@@ -1034,12 +1034,15 @@ page's script hashes in Caddy's CSP would take even that away (an open question)
   reported, not followed), at most 256 KiB each, and only their `permissions` lists leave as text (500 rules per list,
   4,000 characters per rule; anything else is counted, not passed on). `perm.remove` changes one file only, the
   sandbox's user settings: one rule (each copy of it) out of `allow`, `ask` or `deny`, **only while the file's SHA-256
-  is still the one the page showed** (an *Always* meanwhile, or the terminal, makes it refuse: the page reads it again),
+  is still the one the page showed** — checked when it is read and again just before the rename, so an *Always*
+  written while the new copy was made is not lost (an *Always* meanwhile, or the terminal, makes it refuse: the page
+  reads it again) —
   every other key and value kept (JSON re-written with 2-space indents; a numeric-looking key may move to the front,
   as JavaScript orders them), through a temporary file that keeps the file's mode and a rename, refused when the file
   turned into a link. The workspace's files are never changed here: they are in your folder, and Claude Code on your
   computer honours them too (the page says so). The page shows the rules with invisible and control characters made
-  visible.
+  visible; removing an *ask* or *deny* rule — which loosens what Claude may do — asks first and says what becomes
+  possible ("Claude may then … without asking", "… is no longer blocked").
 - [x] **Open in the terminal types one fixed command.** `terminal.resume` takes a session id that must be a UUID **and**
   the name of a transcript that is there (a regular file, not a link); it opens a new window of the terminal's tmux
   session (`resume-<first 8 hex>`, in `/workspace`) and types `claude-bedrock --resume <uuid>` into that window's new
@@ -1048,15 +1051,21 @@ page's script hashes in Caddy's CSP would take even that away (an open question)
   (refused while a turn runs) and waits for it to exit. Then `sessions.running` keeps the page from resuming that
   conversation a second time: before a session that is not open in the page is resumed (`POST /api/sessions` with
   `resume`, or a prompt to an ended session), bn-coded looks for a process in the sandbox — other than its own
-  children — with that id as an argument (`/proc/*/cmdline`, at most 64 KiB each); if there is one, the resume is
+  children — with an argument that holds that id in any form (`--resume <id>`, `--resume=<id>`, `-r<id>`,
+  `--session-id <id>`, a path to its transcript; `/proc/*/cmdline`, at most 64 KiB each); if there is one, the resume is
   refused (409) until Claude Code exits there. Two Claude Code processes would both append to one transcript. The check
   is the safe side (a process that merely mentions the id counts too), and not a boundary: anything in the sandbox can
   run Claude Code itself. A spend tag of its own: the terminal's `claude-bedrock` books under `cb-…`, not the page's
   `code-<uuid>`, so that session's page cost meter does not show what the terminal spends on it (Home's key spend does).
 - [x] **Links put a draft in the prompt box, never more.** `code.<host>/?session=<id>&prompt=<text>`: the session is
   shown or resumed (a valid UUID of this workspace, else said); the prompt becomes a **draft** in the prompt box, with a
-  banner that it came from a link — **nothing is ever sent by itself**, a link cannot pick a mode, a model, a budget or
-  an answer to a card. A link is anyone's to make, so the text is treated like sandbox text: at most 4,000 characters
+  banner that it came from a link (its lines and characters, and the referring site when the browser names one) —
+  **nothing is ever sent by itself**, a link cannot pick a mode, a model, a budget or an answer to a card. It is not
+  one key away from being sent either: the prompt box is not focused when it arrives, Enter does not send it until you
+  press "I have read it" (only the Send button does), a held Enter's repeats never send anything (anywhere on the
+  page), and it always goes into a **new session in Manual mode** — never into the session the link showed or the one
+  last open, never in the remembered mode (Accept edits, Auto) — so a draft that slips through still asks before each
+  edit and command. A link is anyone's to make, so the text is treated like sandbox text: at most 4,000 characters
   (a longer one is cut, and the banner says so), control and bidirectional characters shown as `⟨U+…⟩` (no hidden
   "Trojan Source" text), parsed in linear time (the query looked at only up to 64 KiB; unit tests time hostile inputs),
   and both parameters leave the address bar at once (`history.replaceState`), so a reload or a shared screenshot does

@@ -1129,11 +1129,13 @@ export async function terminalResume(id, { tmux = TMUX, procDir = '/proc' } = {}
 }
 
 // sessionRunning(id) -> {running, pid?}: whether a process in the sandbox other than this bn-coded's own children has
-// that session id as an argument (`claude-bedrock --resume <id>` in the terminal, `claude -r <id>` …): the code
-// container resumes a conversation in the page only while nothing else runs it — two Claude Code processes would both
-// append to its transcript. A process that only mentions it (grep <id>) counts too: the safe side.
+// an argument holding that session id, in any form (`claude-bedrock --resume <id>` in the terminal, `-r<id>`,
+// `--resume=<id>`, `--session-id <id>`, a path to its transcript …): the code container resumes a conversation in the
+// page only while nothing else runs it — two Claude Code processes would both append to its transcript. A process that
+// only mentions it (grep <id>, tail -f <id>.jsonl) counts too: the safe side.
 export function sessionRunning(id, procDir = '/proc') {
   if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
+  const want = id.toLowerCase();
   const mine = new Set();
   try { for (const n of fs.readdirSync(CHILDREN)) mine.add(n); } catch { /* none */ }
   let pids = [];
@@ -1144,7 +1146,9 @@ export function sessionRunning(id, procDir = '/proc') {
     try { fd = fs.openSync(path.join(procDir, n, 'cmdline'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); } catch { continue; }
     let argv;
     try { argv = readSlice(fd, 0, 64 << 10).toString('utf8').split('\0'); } catch { continue; } finally { fs.closeSync(fd); }
-    if (argv.some((a) => a === id || a.endsWith(`=${id}`))) return { running: true, pid: Number(n) };
+    // any argument holding the id: --resume ID, --resume=ID, -rID, --session-id ID / =ID, a path to its transcript…
+    // (a false positive only refuses a resume here, with the reason; a miss would let two processes write it)
+    if (argv.some((a) => a.toLowerCase().includes(want))) return { running: true, pid: Number(n) };
   }
   return { running: false };
 }
@@ -1209,23 +1213,28 @@ export function permRead() {
 // permRemove({list, rule, ifSha256}) — that rule (every copy of it) out of the user settings' permissions[list], only
 // while the file's SHA-256 is still ifSha256; every other key and value kept (the file is JSON with 2-space indents
 // afterwards, as Claude Code writes it); a temporary file beside it, renamed into place, its mode kept
-export function permRemove(req) {
+// the user settings as they are now: { buf, mode } (never through a link; a regular file of at most PERM_MAX_FILE)
+function readUserSettings(file) {
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
+    throw new Error(e.code === 'ENOENT' ? 'there are no user settings (any more)' : 'the user settings cannot be read');
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > PERM_MAX_FILE) throw new Error('the user settings are not a regular file of at most 256 KiB: change them in the terminal');
+    return { buf: readSlice(fd, 0, st.size), mode: st.mode & 0o777 };
+  } finally { fs.closeSync(fd); }
+}
+const PERM_CHANGED = 'the user settings changed since they were shown: look again';
+// (hooks.beforeCommit: tests only — a write landing between the read and the rename; never reachable from the socket)
+export function permRemove(req, hooks = {}) {
   const list = req?.list, rule = req?.rule;
   if (!PERM_LISTS.includes(list)) throw new Error('list: allow, ask or deny');
   if (typeof rule !== 'string' || !rule.length || rule.length > PERM_RULE_CHARS) throw new Error('bad rule');
   if (typeof req.ifSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(req.ifSha256)) throw new Error('ifSha256: the SHA-256 of the file as shown');
   const file = USER_SETTINGS();
-  let fd;
-  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
-    throw new Error(e.code === 'ENOENT' ? 'there are no user settings (any more)' : 'the user settings cannot be read');
-  }
-  let buf, mode;
-  try {
-    const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.size > PERM_MAX_FILE) throw new Error('the user settings are not a regular file of at most 256 KiB: change them in the terminal');
-    buf = readSlice(fd, 0, st.size); mode = st.mode & 0o777;
-  } finally { fs.closeSync(fd); }
-  if (sha256(buf) !== req.ifSha256) throw new Error('the user settings changed since they were shown: look again');
+  const { buf, mode } = readUserSettings(file);
+  if (sha256(buf) !== req.ifSha256) throw new Error(PERM_CHANGED);
   let j;
   try { j = JSON.parse(buf.toString('utf8')); } catch { throw new Error('the user settings are not valid JSON: change them in the terminal'); }
   const arr = j && typeof j === 'object' && !Array.isArray(j) && j.permissions && typeof j.permissions === 'object' && !Array.isArray(j.permissions) ? j.permissions[list] : null;
@@ -1242,7 +1251,14 @@ export function permRemove(req) {
     fs.fsyncSync(out);
   } catch (e) { fs.closeSync(out); try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
   fs.closeSync(out);
-  try { if (fs.lstatSync(file).isSymbolicLink()) throw new Error('a link now: not changed'); fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  // just before the rename, the file once more: a rule Claude Code wrote meanwhile ("Always" on a card, the terminal)
+  // is not lost to this copy (only a write in the microseconds between this read and the rename could be)
+  try {
+    if (typeof hooks.beforeCommit === 'function') hooks.beforeCommit();
+    if (fs.lstatSync(file).isSymbolicLink()) throw new Error('a link now: not changed');
+    if (sha256(readUserSettings(file).buf) !== req.ifSha256) throw new Error(PERM_CHANGED);
+    fs.renameSync(tmp, file);
+  } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
   return { ok: true, removed: arr.length - kept.length, sha256: sha256(data) };
 }
 // --- the watchlist (ws.sensitive / ws.restore): files of /workspace that run on your computer later. Never through a

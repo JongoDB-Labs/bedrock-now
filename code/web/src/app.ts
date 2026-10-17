@@ -157,6 +157,21 @@ export interface RewindState {
   mark: number;
 }
 
+/** A draft that came from a link (?prompt=): never focused, never sent by Enter until you said you read it, and always
+ *  sent into a NEW session in Manual mode — never into the session shown, never in your remembered mode. */
+export interface LinkDraft {
+  n: number;
+  text: string;
+  /** the link's prompt was longer than the draft holds */
+  cut: boolean;
+  lines: number;
+  chars: number;
+  /** where the link was opened from (the referring page's host), or '' when not known */
+  from: string;
+  /** you said you read it ("I have read it"): Enter may send it now */
+  ack: boolean;
+}
+
 export interface AppState {
   conn: ConnStatus;
   retryAt: number | null;
@@ -215,7 +230,7 @@ export interface AppState {
   /** line comments from the Review pane, queued for the next prompt (chips in the composer) */
   comments: ReviewComment[];
   /** a draft that came from a link (?prompt=): the composer shows it marked as such until it is sent or cleared */
-  linkDraft: { n: number; text: string; cut: boolean } | null;
+  linkDraft: LinkDraft | null;
   /** the budget new sessions start with (this browser's; null: none) */
   budgetNext: Budget | null;
 }
@@ -822,6 +837,13 @@ export async function boot(): Promise<void> {
       /* (a sandboxed test frame) */
     }
   }
+  // a link's prompt: a draft in the prompt box, marked as coming from a link — never sent by itself, never focused, and
+  // sent (by Send, or Enter once you said you read it) into a new session in Manual mode
+  if (link.prompt) {
+    const text = link.prompt;
+    set((s) => ({ ...s, linkDraft: { n: (s.linkDraft?.n ?? 0) + 1, text, cut: link.cut, lines: text.split('\n').length, chars: text.length, from: referrerHost(), ack: false },
+      restore: { n: (s.restore?.n ?? 0) + 1, text }, startWith: 'default' }));   // (the mode picker shows Manual: what it starts in)
+  }
   socket.start();
   const results = await Promise.allSettled([api.getState(), api.getModels(), refreshSessions()]);
   const [st, models] = results;
@@ -834,7 +856,8 @@ export async function boot(): Promise<void> {
       ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title, budget: o.budget, lastActive: o.lastActive });
     }
     const shown = link.session ? await showLinked(link.session) : false;
-    if (!shown) {
+    // (a link's draft without a session: no session shown — sending it starts a new one, in Manual)
+    if (!shown && !link.prompt) {
       const last = get().prefs.lastSession;
       const pick = server.sessions.find((o) => o.id === last) ?? server.sessions.find((o) => o.state !== 'closed' && o.state !== 'ended');
       if (pick) await activate(pick.id);
@@ -843,8 +866,6 @@ export async function boot(): Promise<void> {
     // on a phone, sessions waiting for you come first: the session list opens on its "Needs you" group
     if (!link.session && !link.prompt && isPhone() && (server.pending > 0 || server.sessions.some((o) => o.pending > 0))) setSheet('sessions');
   } else set((s) => ({ ...s, serverError: errText(st.reason) }));
-  // a link's prompt: a draft in the prompt box, marked as coming from a link — never sent by itself
-  if (link.prompt) set((s) => ({ ...s, linkDraft: { n: (s.linkDraft?.n ?? 0) + 1, text: link.prompt as string, cut: link.cut }, restore: { n: (s.restore?.n ?? 0) + 1, text: link.prompt as string } }));
   void loadDir('');
   announce();
   startPortWatch();
@@ -877,6 +898,23 @@ async function showLinked(id: string): Promise<boolean> {
 export function dropLinkDraft(): void {
   set((s) => (s.linkDraft ? { ...s, linkDraft: null } : s));
 }
+/** "I have read it": Enter may send the link's draft now (still into a new session in Manual mode). */
+export function ackLinkDraft(): void {
+  set((s) => (s.linkDraft && !s.linkDraft.ack ? { ...s, linkDraft: { ...s.linkDraft, ack: true } } : s));
+}
+/** The page the link was opened from, as a host name ('' when the browser does not say). */
+function referrerHost(): string {
+  try {
+    const r = typeof document !== 'undefined' ? document.referrer : '';
+    if (!r) return '';
+    const u = new URL(r);
+    // (this page's own host says nothing: the password page before it, or a reload)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return typeof location !== 'undefined' && u.host === location.host ? '' : label(u.host, 120);
+  } catch {
+    return '';
+  }
+}
 
 export async function refreshSessions(query = get().sessionsQuery): Promise<void> {
   set((s) => ({ ...s, sessionsLoading: true, sessionsQuery: query }));
@@ -903,7 +941,8 @@ export async function activate(id: string): Promise<void> {
   }
   attach(id);
   void refreshSpend(id);
-  set((s) => ({ ...s, focusComposer: s.focusComposer + 1 }));
+  // (never while a link's draft waits in the prompt box: a key pressed now would land in it)
+  set((s) => (s.linkDraft ? s : { ...s, focusComposer: s.focusComposer + 1 }));
 }
 
 /** How many transcript messages opening a session shows; "Load earlier" adds as many again. */
@@ -1194,6 +1233,13 @@ export function showSessions(): void {
 
 export async function sendPrompt(text: string, images: ImageBlock[]): Promise<boolean> {
   if (opening) await opening.catch(() => undefined);
+  // a link's draft: a new session in Manual mode (never the one shown, never your remembered mode), as a prompt for
+  // Claude — none of the page's own shortcuts (# memory line, /model, /clear) apply to it
+  if (get().linkDraft) {
+    const nid = await newSession({ mode: 'default' });
+    if (!nid) return false;
+    return deliver(nid, text, images);
+  }
   const t = text.trim();
   if (CLEAR.test(t)) {
     // a fresh conversation, with this one's model, mode and effort (the old one stays in the list)
@@ -1227,6 +1273,11 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
     } else id = await revive(id);
   } else if (!id || !v) id = await newSession();
   if (!id) return false;
+  return deliver(id, text, images);
+}
+
+/** The prompt to session `id` (open): shown at once, sent over the socket (a refusal takes it back). */
+function deliver(id: string, text: string, images: ImageBlock[]): boolean {
   const uuid = crypto.randomUUID();
   const req = `p${uuid.slice(0, 8)}${(promptN++).toString(36)}`;
   sentPrompts.set(req, { session: id, uuid, text });

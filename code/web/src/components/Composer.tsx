@@ -9,7 +9,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast, promptWithComments, clearComments, removeComment, openReview } from '../app';
+import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast, promptWithComments, clearComments, removeComment, openReview, dropLinkDraft } from '../app';
 import { commentLine } from '../review';
 import { label } from '../text';
 import { fsFind } from '../api';
@@ -93,6 +93,8 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
   const [closedFor, setClosedFor] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [hIndex, setHIndex] = useState(-1);
+  // Enter pressed on a link's draft not yet read: the banner says again how to send it
+  const [nudge, setNudge] = useState(0);
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   // the attachments as they are now (an await in addFiles must not count a stale list)
@@ -280,6 +282,14 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      // a held Enter repeats: it never sends (one prompt per press)
+      if (e.repeat) return;
+      // a link's draft: Enter does not send it until you said you read it ("I have read it") — the Send button does
+      const ld = store.get().linkDraft;
+      if (ld && !ld.ack) {
+        setNudge((n) => n + 1);
+        return;
+      }
       void submit();
     } else if (e.key === 'Escape' && busy) {
       e.preventDefault();
@@ -381,7 +391,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           ))}
         </div>
       )}
-      <Guards onClear={() => setText('')} />
+      <Guards onClear={() => setText('')} nudge={nudge} />
       <div class="composer-box">
         <textarea
           ref={ta}
@@ -393,6 +403,8 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
           onInput={(e) => {
             const el = e.currentTarget as HTMLTextAreaElement;
             setText(el.value);
+            // (a link's draft deleted by hand: put away)
+            if (!el.value.trim() && store.get().linkDraft) dropLinkDraft();
             setCaret(el.selectionStart);
             setHIndex(-1);
           }}

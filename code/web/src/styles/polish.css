@@ -19,6 +19,13 @@
 .guard > span { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
 .guard.cold-cache, .guard.opus-hint { padding: 5px 9px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line-soft); }
 .guard.banner { margin: 0 0 6px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.guard.banner.subtle { border-color: var(--line-soft); }
+/* the link's draft: its text the pane's width, the buttons on a line of their own */
+.guard.link-draft .banner-actions { flex-basis: 100%; justify-content: flex-end; }
+/* Enter on a link's draft not yet read: the banner says it again, once, visibly */
+.guard.nudge { animation: guard-nudge 0.5s ease-out 1; }
+@keyframes guard-nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+@media (prefers-reduced-motion: reduce) { .guard.nudge { animation: none; outline: 2px solid var(--warn); } }
 
 /* ⋯ › Budget */
 .budget-form { display: flex; flex-direction: column; gap: 10px; max-width: 560px; }
@@ -35,7 +42,12 @@
 .perm-list h4 { margin: 8px 0 4px; font-size: 12.5px; font-weight: 600; }
 .perm-list ul, .perm-fixed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .perm-list li, .perm-fixed li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.perm-list li { flex-wrap: wrap; }
 .perm-rule, .perm-fixed code { flex: 1; min-width: 0; padding: 3px 7px; border-radius: 5px; background: var(--code-bg); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .perm-allow h4 { color: var(--ok); }
 .perm-ask h4 { color: var(--warn); }
 .perm-deny h4 { color: var(--bad); }
+/* Permissions: removing an ask or deny rule says what becomes possible first */
+.perm-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 4px 0 2px; padding: 6px 9px; border-radius: 8px; font-size: 12px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.perm-confirm > span { flex: 1; min-width: 180px; overflow-wrap: anywhere; }

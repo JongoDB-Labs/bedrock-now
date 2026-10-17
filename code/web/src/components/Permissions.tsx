@@ -11,13 +11,24 @@ import { safe } from '../text';
 import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
 
-const LISTS: { key: 'allow' | 'ask' | 'deny'; title: string; what: string }[] = [
+type List = 'allow' | 'ask' | 'deny';
+const LISTS: { key: List; title: string; what: string }[] = [
   { key: 'allow', title: 'Allow', what: 'runs without asking' },
   { key: 'ask', title: 'Ask', what: 'always asks first' },
   { key: 'deny', title: 'Deny', what: 'refused' },
 ];
 
-function Rules({ id, file, removable, onRemove, busy }: { id: string; file: PermFile; removable: boolean; onRemove?: (list: 'allow' | 'ask' | 'deny', rule: string) => void; busy: string }) {
+/** What taking a rule out of a list makes possible (its button's tooltip, and the confirmation for ask and deny:
+ *  those loosen what Claude may do; taking out an allow rule only makes Claude ask again). */
+export const removeEffect: Record<List, string> = {
+  allow: 'Take this rule out: Claude asks again before doing this.',
+  ask: 'Take this rule out: Claude may then do this without asking, where an allow rule or the session\'s mode lets it.',
+  deny: 'Take this rule out: this is no longer blocked — Claude may then do it (asking first, unless an allow rule or the session\'s mode lets it run).',
+};
+
+function Rules({ id, file, removable, onRemove, busy }: { id: string; file: PermFile; removable: boolean; onRemove?: (list: List, rule: string) => void; busy: string }) {
+  // an ask or deny rule's Remove asks first, saying what becomes possible
+  const [confirming, setConfirming] = useState('');
   if (file.error) return <p class="muted small">{file.path}: {file.error}</p>;
   if (!file.exists) return <p class="muted small">{file.path}: not there (no rules).</p>;
   const empty = !file.allow.length && !file.ask.length && !file.deny.length;
@@ -34,9 +45,46 @@ function Rules({ id, file, removable, onRemove, busy }: { id: string; file: Perm
               <li key={`${i}:${r}`} data-testid="perm-rule">
                 <code class="perm-rule">{safe(r, 4000)}</code>
                 {removable && onRemove && (
-                  <button type="button" class="btn small ghost" disabled={!!busy} title="Take this rule out: Claude asks again" onClick={() => onRemove(l.key, r)} data-testid="perm-remove">
+                  <button
+                    type="button"
+                    class="btn small ghost"
+                    disabled={!!busy}
+                    title={removeEffect[l.key]}
+                    onClick={() => (l.key === 'allow' ? onRemove(l.key, r) : setConfirming(`${l.key}:${r}`))}
+                    data-testid="perm-remove"
+                  >
                     {busy === `${l.key}:${r}` ? <Spinner size={11} /> : <Icon name="close" size={12} />} Remove
                   </button>
+                )}
+                {removable && onRemove && confirming === `${l.key}:${r}` && (
+                  <div class="perm-confirm" role="alert" data-testid="perm-remove-confirm">
+                    <span>
+                      {l.key === 'ask' ? (
+                        <>
+                          Claude may then <code>{safe(r, 200)}</code> without asking, where an allow rule or the session's mode lets it.
+                        </>
+                      ) : (
+                        <>
+                          <code>{safe(r, 200)}</code> is no longer blocked: Claude may then do it — asking first, unless an allow rule or the session's mode lets it run.
+                        </>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      class="btn small danger"
+                      disabled={!!busy}
+                      onClick={() => {
+                        setConfirming('');
+                        onRemove(l.key, r);
+                      }}
+                      data-testid="perm-remove-yes"
+                    >
+                      Remove it
+                    </button>
+                    <button type="button" class="btn small ghost" onClick={() => setConfirming('')} data-testid="perm-remove-no">
+                      Keep it
+                    </button>
+                  </div>
                 )}
               </li>
             ))}
@@ -65,7 +113,7 @@ export function PermissionsDialog({ onClose }: { onClose: () => void }) {
   };
   useEffect(() => void load(), []);
 
-  const remove = async (list: 'allow' | 'ask' | 'deny', rule: string) => {
+  const remove = async (list: List, rule: string) => {
     if (!p?.user.sha256) return;
     setBusy(`${list}:${rule}`);
     try {

@@ -127,6 +127,18 @@ test('perm.remove: refused when the file changed since it was shown, for a rule 
   assert.equal(fs.readFileSync(USER, 'utf8'), text);
 });
 
+test('perm.remove: a rule written between the read and the rename (an "Always" just then) is not lost — refused instead', () => {
+  const text = JSON.stringify({ permissions: { allow: ['Read', 'Write'] } });
+  fs.writeFileSync(USER, text);
+  const always = JSON.stringify({ permissions: { allow: ['Read', 'Write', 'Bash(make:*)'] } });
+  assert.throws(() => coded.permRemove({ list: 'allow', rule: 'Read', ifSha256: sha(text) }, { beforeCommit: () => fs.writeFileSync(USER, always) }), /changed since they were shown/);
+  assert.equal(fs.readFileSync(USER, 'utf8'), always);
+  assert.deepEqual(fs.readdirSync(CONF).filter((n) => n.startsWith('.bn-upload-')), []);
+  // (unchanged meanwhile: removed)
+  assert.equal(coded.permRemove({ list: 'allow', rule: 'Read', ifSha256: sha(always) }, { beforeCommit: () => {} }).removed, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(USER, 'utf8')).permissions.allow, ['Write', 'Bash(make:*)']);
+});
+
 test('perm.remove: never through a link, never a file that is not JSON', async () => {
   fs.rmSync(USER);
   const target = path.join(ROOT, 'target.json');
@@ -186,6 +198,13 @@ test('sessions.running: a process with the id as an argument (not bn-coded\'s ow
   fs.rmSync(path.join(proc, '102'), { recursive: true });
   mk(103, ['claude', '--output-format', 'stream-json', `--resume=${id}`]);
   assert.equal(coded.sessionRunning(id, proc).running, true);
+  // every form that names it: -r<id>, --session-id <id> / =<id>, upper case, a path to its transcript
+  for (const argv of [['claude', `-r${id}`], ['claude', '--session-id', id], ['claude', `--session-id=${id}`], ['claude', '-r', id.toUpperCase()], ['tail', '-f', `/home/x/.claude/projects/-workspace/${id}.jsonl`]]) {
+    fs.rmSync(path.join(proc, '104'), { recursive: true, force: true });
+    mk(104, argv);
+    assert.equal(coded.sessionRunning(id, proc).running, true, argv.join(' '));
+  }
+  fs.rmSync(path.join(proc, '104'), { recursive: true, force: true });
   // the page's own process (a child bn-coded recorded) does not count
   fs.mkdirSync(path.join(ROOT, 'children'), { recursive: true });
   fs.writeFileSync(path.join(ROOT, 'children', '103'), '1');
