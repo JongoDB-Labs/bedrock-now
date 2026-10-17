@@ -874,10 +874,13 @@ export function portRow(x) {
 // launchDigest(entry) -> SHA-256 (hex) of what Start runs — the same as bn-coded's (terminal/bin/bn-coded.mjs
 // launchDigest; code/test checks that they agree): computed here over exactly what goes to the page, so the page's Start
 // carries the digest of what it showed, and bn-coded refuses an entry that changed meanwhile
-export function launchDigest({ argv, cwd, env, port }) {
+export function launchDigest({ argv, cwd, env, port, program, programOwn }) {
   const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null])).digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true])).digest('hex');
 }
+// an absolute path bn-coded names (a program it found): shown as it is, or not at all
+const ABS = /^\/[A-Za-z0-9._+@\/-]{1,500}$/;
+const absPath = (v) => (typeof v === 'string' && ABS.test(v) && !v.split('/').some((p) => p === '..' || p === '.') ? v : null);
 const ONE_LINE = /^[^\x00-\x1f\x7f]*$/;
 // launchRow(x) -> an entry for the page, whole or not at all: its arguments, folder and environment (names and values)
 // are shown before Start, so nothing of them is cut — an entry beyond bn-coded's own limits is refused with a reason
@@ -901,9 +904,13 @@ export function launchRow(x) {
   if (cwd === null) return bad('its folder cannot be shown here: start it in the terminal');
   const port = int(x.port, 1, 65535);
   const url = typeof x.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(x.url) ? x.url : null;
+  // the program file Start runs (its first argument as found there): a path the page can show, or the entry is refused
+  const program = x.program === null || x.program === undefined ? null : absPath(x.program);
+  if (x.program !== null && x.program !== undefined && program === null) return bad('its program cannot be shown here: start it in the terminal');
+  const programOwn = program !== null && x.programOwn === true;
   const row = { name, port, argv, cwd, env: pairs.map(([k, v]) => ({ name: k, value: v })), url, autoPort: typeof x.autoPort === 'boolean' ? x.autoPort : null,
-    command: typeof x.command === 'string' ? str(x.command, 4000) : null };
-  row.digest = argv ? launchDigest({ argv, cwd, env, port }) : null;
+    command: typeof x.command === 'string' ? str(x.command, 4000) : null, program, programOwn };
+  row.digest = argv ? launchDigest({ argv, cwd, env, port, program, programOwn }) : null;
   return row;
 }
 
@@ -925,13 +932,18 @@ export function runDigest({ source, name, argv, cwd, detail, files }) {
     (detail || []).map((d) => [d.name, d.text]), (files || []).map((f) => [f.path, f.sha256])])).digest('hex');
 }
 // the entry-point loader bn-coded runs a pyproject.toml task with (its PY_LOADER; code/test checks that they agree)
-export const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+export const PY_LOADER = "import functools, importlib, sys; sys.path.insert(0, ''); n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
   "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
-// wrapperOk(source, name, argv): one of the fixed wrappers bn-coded runs, for this name
+// wrapperOk(source, name, argv): one of the fixed wrappers bn-coded runs, for this name, with the image's programs by
+// their absolute paths (node and npm's npm-cli.js; make; python3 isolated with the loader above)
+const prog = (v, re) => absPath(v) !== null && re.test(v);
 function wrapperOk(source, name, argv) {
-  if (source === 'npm') return argv.length === 4 && argv[0] === 'npm' && argv[1] === 'run' && argv[2] === '--' && argv[3] === name;
-  if (source === 'make') return argv.length === 3 && argv[0] === 'make' && argv[1] === '--' && argv[2] === name;
-  return argv.length === 5 && argv[0] === 'python3' && argv[1] === '-c' && argv[2] === PY_LOADER && argv[3] === name && /^[A-Za-z_][A-Za-z0-9_.]{0,200}:[A-Za-z_][A-Za-z0-9_.]{0,200}$/.test(argv[4]);
+  if (source === 'npm') {
+    return argv.length === 5 && prog(argv[0], /\/node$/) && prog(argv[1], /\/npm-cli\.js$/) && argv[2] === 'run' && argv[3] === '--' && argv[4] === name;
+  }
+  if (source === 'make') return argv.length === 3 && prog(argv[0], /\/g?make$/) && argv[1] === '--' && argv[2] === name;
+  return argv.length === 6 && prog(argv[0], /\/python3(\.[0-9]{1,2})?$/) && argv[1] === '-I' && argv[2] === '-c' && argv[3] === PY_LOADER && argv[4] === name
+    && /^[A-Za-z_][A-Za-z0-9_.]{0,200}:[A-Za-z_][A-Za-z0-9_.]{0,200}$/.test(argv[5]);
 }
 export function runSourceRow(x) {
   if (!x || typeof x !== 'object' || typeof x.source !== 'string' || !Object.hasOwn(RUN_FILES, x.source)) return null;
@@ -952,7 +964,7 @@ export function runTaskRow(x) {
   if (!(Array.isArray(argv) && argv.every((a) => typeof a === 'string' && a.length <= 2000 && ONE_LINE.test(a)) && wrapperOk(source, name, argv))) {
     return bad('not run the way bedrock-now runs tasks: run it in the terminal');
   }
-  const detail = Array.isArray(x.detail) && x.detail.length >= 1 && x.detail.length <= 3 && x.detail.every((d) => d && typeof d === 'object'
+  const detail = Array.isArray(x.detail) && x.detail.length >= 1 && x.detail.length <= 4 && x.detail.every((d) => d && typeof d === 'object'
     && typeof d.name === 'string' && d.name.length <= 300 && ONE_LINE.test(d.name) && typeof d.text === 'string' && d.text.length <= RUN_TEXT) ? x.detail : null;
   if (!detail) return bad('its script cannot be shown here in full: run it in the terminal');
   const filesIn = x.files === undefined ? [] : x.files;

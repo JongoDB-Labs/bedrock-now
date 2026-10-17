@@ -17,9 +17,9 @@ test('the commands as you would type them, and "Ask Claude"\'s draft', () => {
   assert.equal(plainCommand({ source: 'python', name: 'hello' }), 'hello');
   assert.equal(askDraft(task()), 'Run `npm test` and fix failures.');
   assert.equal(askDraft(task({ source: 'make', name: 'check' })), 'Run `make check` and fix failures.');
-  assert.equal(askDraft(task({ source: 'python', name: 'hello', argv: ['python3', '-c', 'loader', 'hello', 'app.cli:main'] })),
+  assert.equal(askDraft(task({ source: 'python', name: 'hello', argv: ['/usr/bin/python3', '-I', '-c', 'loader', 'hello', 'app.cli:main'] })),
     'Run the `hello` entry point of pyproject.toml (`app.cli:main`) and fix failures.');
-  assert.equal(askDraft(task({ source: 'python', name: 'hello', argv: ['python3', '-c', 'loader', 'hello', '`x`'] })), 'Run the `hello` entry point of pyproject.toml and fix failures.');
+  assert.equal(askDraft(task({ source: 'python', name: 'hello', argv: ['/usr/bin/python3', '-I', '-c', 'loader', 'hello', '`x`'] })), 'Run the `hello` entry point of pyproject.toml and fix failures.');
 });
 
 test('a task run after you saw it: remembered by its digest (a changed one asks again); blocked storage asks every time', () => {

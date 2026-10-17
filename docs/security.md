@@ -1404,28 +1404,44 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   entry's name and a SHA-256 of exactly what it showed (arguments, folder, environment, port), computed by the code
   container; bn-coded reads the file again and refuses an entry that no longer matches ("changed since it was shown:
   review it again"), so a file swapped between seeing it and clicking does not run. The confirmation comes again whenever the entry
-  changes (the page remembers the digests you started, in this browser). The confirmation binds the command line,
-  not what the program then reads or which binary it is: `npm run dev` runs whatever the workspace's `package.json`
-  says at that moment, and the sandbox's `PATH` decides which `npm` runs — both are the sandbox's to change.
+  changes (the page remembers the digests you started, in this browser). It binds the program file too: the first
+  argument as Start's environment finds it (the image's own folders first in `PATH`), shown with whether it is the
+  image's own (root's alone) or one anything in the sandbox could change (`~/.local/bin`, the workspace). What else
+  decides what a command runs stays out: the window's bash starts without `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`
+  and `PS4` (tmux's global environment, which every new window gets and anything in the sandbox can set), and runs
+  `env -i` with an environment made by bn-coded — `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, `TMPDIR` of the container's
+  own environment, its `PATH` with the image's root-owned folders first, `TERM`, and npm told to read neither the
+  user's `~/.npmrc` nor the global npmrc (`~/.local/etc/npmrc` under the image's `NPM_CONFIG_PREFIX`) — plus the
+  entry's own variables (shown) and `PORT`; nothing of tmux's (no `NODE_OPTIONS`, `LD_PRELOAD`, `npm_config_*` from
+  there). The confirmation still binds what is shown, not what the program then reads: `npm run dev` runs whatever the
+  workspace's `package.json` says when it starts, and its scripts' programs are the workspace's.
 - [x] **Run & test.** bn-coded lists the workspace's tasks from its top folder's files, read as text — regular files of
   at most 1 MiB, never through a link or from a FIFO, and `make` is never asked (a Makefile's `$(shell …)` would run):
   `package.json`'s scripts, a Makefile's `name:` lines, `pyproject.toml`'s `[project.scripts]` and
   `[tool.poetry.scripts]` lines, each read in linear time (tested on crafted files). A task runs only through a fixed
-  wrapper with its name as one argument after `--` — `npm run -- <name>`, `make -- <target>`, or `python3 -c <a fixed
-  loader> <name> <module:function>` — never a command line built from the files or sent by the page, and only with a
-  name of a fixed set of characters (letters, digits and `_ . : @ / + -` for npm; others are listed with the reason,
-  not offered), in a new window of the terminal's tmux (each argument its own; bash only runs them, then stays as the
-  window's shell). The files are the workspace's, which anything in the sandbox can write — Claude in *Accept edits*
-  too — so **Run** shows the task in full first: each argument, the script with the `pre…`/`post…` scripts npm runs
-  around it by itself, the recipe or the entry point, and a workspace `.npmrc` with the names of its settings
+  wrapper with its name as one argument after `--`, with the image's own programs by their absolute path (root's alone,
+  through their links; a task is not offered without them) — `<node> <npm-cli.js> run -- <name>` (npm through the
+  image's node: npm's own `#!/usr/bin/env node` would look `node` up in `PATH`), `<make> -- <target>`, or `<python3> -I
+  -c <a fixed loader> <name> <module:function>` (isolated: no `PYTHON*` variables or user site-packages, and the
+  workspace first on `sys.path` only after the loader's own imports, for the entry point's module — the workspace's
+  code) — never a command line built from the files or sent by the page, and only with a name of a fixed set of
+  characters (letters, digits and `_ . : @ / + -` for npm; others are listed with the reason, not offered), in a new
+  window of the terminal's tmux (each argument its own) in the same environment as launch.json's Start above (bash
+  without `BASH_ENV` & co., then `env -i` with bn-coded's own few variables, the image's folders first in `PATH`, no
+  user or global npmrc). The files are the workspace's, which anything in the sandbox can write — Claude in *Accept
+  edits* too — so **Run** shows the task in full first: each argument, the script with the `pre…`/`post…` scripts npm
+  runs around it by itself, the recipe or the entry point, and a workspace `.npmrc` in full (the values of its
+  secrets — auth, tokens, passwords, keys — not shown; the file is bound by its SHA-256), which npm reads first
   (`script-shell`, `node-options` … change what runs). The page sends the task's source and name and a SHA-256 of what
   it showed — the wrapper, those texts, and the files read besides by their own SHA-256 (`.npmrc`; the whole Makefile,
   whose variables decide its recipes) — computed by the code container over what it passed on (only the fixed
   wrappers' shapes pass); bn-coded lists the files again and refuses a task that no longer matches ("changed since it
   was shown", 409). The confirmation comes again whenever the task changes (the page remembers the digests you ran,
-  in this browser). It binds the command and the texts shown, not what they then run: the programs a script names are
-  the workspace's (`node_modules/.bin` comes first on npm's `PATH`) and a Makefile may include other files — both the
-  sandbox's to change, and the confirmation says so. A `.npmrc` that is a link (or larger than 1 MiB) refuses npm's
+  in this browser). The check holds when you click Run, not while the program runs (it reads `package.json` itself a
+  moment later), and it binds the command and the texts shown, not what they then run: the programs a script names
+  are the workspace's (`node_modules/.bin` comes first on npm's `PATH`, then the image's folders, then
+  `~/.local/bin`) and a Makefile may include other files — both the sandbox's to change, and the confirmation says
+  so. A `.npmrc` that is a link (or larger than 1 MiB) refuses npm's
   tasks. The runner (bn-coded's `--run-task`, in that window) gives the task no input (`/dev/null`: a test runner runs
   once instead of watching), shows its output there and keeps its exit status and last 64 KiB in `/tmp/bn-coded/runs`
   (the last 20 runs; at most 8 at once); anything in the sandbox can write those files, so the code container and the

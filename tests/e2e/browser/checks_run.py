@@ -42,9 +42,10 @@ def _run_from_panel(page, name: str):
     see(row).to_be_visible(timeout=20000)
     row.get_by_test_id("run-start").click()
     dlg = page.get_by_test_id("run-confirm")
-    see(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(4)
-    argv = dlg.get_by_test_id("run-argv").locator("li").all_inner_texts()
-    expect(argv == ["npm", "run", "--", name], f"the confirmation's arguments: {argv}")
+    see(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(5)
+    argv = [t.split(" — ")[0] for t in dlg.get_by_test_id("run-argv").locator("li").all_inner_texts()]
+    expect(re.fullmatch(r"/usr/(local/)?bin/node", argv[0]) and argv[1].endswith("/npm-cli.js") and argv[1].startswith("/usr/") and argv[2:] == ["run", "--", name],
+           f"the confirmation's arguments (the image's own node and npm): {argv}")
     return dlg
 
 
@@ -71,7 +72,8 @@ def run_problems(ctx):
         expect(listed["status"] == 200, f"GET /api/run: {listed['status']} {listed['text'][:200]}")
         tasks = listed["json"]["tasks"]
         fails = next((t for t in tasks if t.get("name") == "bn-e2e-fails"), None)
-        expect(fails and fails["argv"] == ["npm", "run", "--", "bn-e2e-fails"] and re.fullmatch(r"[0-9a-f]{64}", fails["digest"] or ""), f"the task listed: {fails}")
+        expect(fails and fails["argv"][2:] == ["run", "--", "bn-e2e-fails"] and fails["argv"][0].startswith("/usr/") and re.fullmatch(r"[0-9a-f]{64}", fails["digest"] or ""),
+               f"the task listed: {fails}")
         make = [t for t in tasks if t["source"] == "make"]
         make_note = "make targets listed, not offered (no make in the sandbox)" if make and all(t.get("error") for t in make) else "make targets offered"
         # the page: Run shows the task in full, then runs it in the terminal; Problems gets its exit status and output

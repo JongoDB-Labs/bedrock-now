@@ -50,7 +50,7 @@ function TaskRow({ t, onDone }: { t: RunTask; onDone?: () => void }) {
       </div>
       {!t.error && t.command && (
         <code class="run-cmd" title={`${visible(t.command)}\n\n${t.detail.map((d) => `${visible(d.name)}: ${visible(d.text)}`).join('\n')}`} data-testid="run-cmd">
-          <span class="run-wrapper">{t.source === 'python' ? `python3 … ${t.name}` : visible(t.command)}</span>
+          <span class="run-wrapper">{t.source === 'npm' ? `npm run -- ${t.name}` : t.source === 'make' ? `make -- ${t.name}` : `python3 … ${t.name}`}</span>
           <span class="run-gist"> → {gist(t) || '(empty)'}</span>
         </code>
       )}
@@ -264,7 +264,14 @@ export function RunConfirm({ task }: { task: RunTask }) {
         {(task.argv ?? []).map((a, i) => (
           <li key={i}>
             <code>{visible(a) || '(empty)'}</code>
-            {task.source === 'python' && i === 2 && <span class="muted small"> — bedrock-now's loader: it imports the module and calls the function, as the script pip installs for it would</span>}
+            {task.source === 'python' && i === 3 && (
+              <span class="muted small">
+                {' '}
+                — bedrock-now's loader: it imports the module from the workspace (its code is the workspace's, which anything in the sandbox can change) and
+                calls the function, as the script pip installs for it would
+              </span>
+            )}
+            {task.source === 'npm' && i === 1 && <span class="muted small"> — the image's own npm, run by the image's own node</span>}
           </li>
         ))}
       </ol>
@@ -281,6 +288,11 @@ export function RunConfirm({ task }: { task: RunTask }) {
       ))}
       {task.source === 'npm' && task.detail.length > 1 && <p class="muted small">npm runs the pre… and post… scripts around it by itself.</p>}
       {task.source === 'npm' && <p class="muted small">The script runs in npm's shell, with the workspace's node_modules/.bin first on PATH: the programs it names are the workspace's to change.</p>}
+      <p class="muted small" data-testid="run-env">
+        Its environment: only the sandbox's HOME, USER, LANG and the like, and its PATH with the image's own folders first (a program of the same name in
+        ~/.local/bin comes after the image's); npm reads neither your npmrc nor the global one; nothing of the terminal's other variables. What you see
+        here is checked again when you click Run — not while the program runs: it reads its files then.
+      </p>
       {task.files.length > 0 && (
         <p class="muted small" data-testid="run-files">
           Bound to {task.files.map((f) => `${f.path} (SHA-256 ${f.sha256.slice(0, 12)}…)`).join(', ')}: a change there asks again.

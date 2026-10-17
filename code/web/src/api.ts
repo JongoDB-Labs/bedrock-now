@@ -1424,7 +1424,7 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const name = label(o.name, 100);
   const error = typeof o.error === 'string' ? label(o.error, 200) : null;
   if (!name && !error) return null;
-  const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], digest: null, error };
+  const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, digest: null, error };
   if (error) return none;
   const port = typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535 ? o.port : null;
   const url = typeof o.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(o.url) ? o.url : null;
@@ -1437,8 +1437,9 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const whole = env.length <= 32 && env.every((p) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(p.name) && p.value.length <= 4000) && cwd.length <= 1000;
   if ((argvIn && !argv) || !whole) return { ...none, error: 'It cannot be shown here in full: start it in the terminal.' };
   const digest = typeof o.digest === 'string' && SHA.test(o.digest) ? o.digest : null;
+  const program = typeof o.program === 'string' && /^\/[A-Za-z0-9._+@/-]{1,500}$/.test(o.program) ? o.program : null;
   return { name: name || '(no name)', port, command: argv && typeof o.command === 'string' ? safe(o.command, 4000) : null, argv: digest ? argv : null,
-    cwd: safe(cwd, 1000), url, env, digest: argv ? digest : null, error: null };   // (as it is: the digest binds it)
+    cwd: safe(cwd, 1000), url, env, program, programOwn: program !== null && o.programOwn === true, digest: argv ? digest : null, error: null };   // (as it is: the digest binds it)
 }
 
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */
@@ -1470,8 +1471,8 @@ export function normRunTask(v: unknown): RunTask | null {
   if (typeof o.error === 'string') return { ...none, error: label(o.error, 300) };
   const argvIn = arr(o.argv, 9);
   const argv = argvIn.length >= 1 && argvIn.length <= 8 && argvIn.every((a) => typeof a === 'string' && a.length <= 2000) ? (argvIn as string[]) : null;
-  const detailIn = arr(o.detail, 4).map((d) => obj(d));
-  const detail = detailIn.length >= 1 && detailIn.length <= 3 && detailIn.every((d) => !!d && typeof d.name === 'string' && d.name.length <= 300 && typeof d.text === 'string' && d.text.length <= 8000)
+  const detailIn = arr(o.detail, 5).map((d) => obj(d));
+  const detail = detailIn.length >= 1 && detailIn.length <= 4 && detailIn.every((d) => !!d && typeof d.name === 'string' && d.name.length <= 300 && typeof d.text === 'string' && d.text.length <= 8000)
     ? detailIn.map((d) => ({ name: String(d!.name), text: String(d!.text) })) : null;
   const files = arr(o.files, 4).map((f) => obj(f)).filter((f): f is Obj => !!f && typeof f.path === 'string' && typeof f.sha256 === 'string' && SHA.test(f.sha256))
     .map((f) => ({ path: label(f.path, 100), sha256: String(f.sha256) }));

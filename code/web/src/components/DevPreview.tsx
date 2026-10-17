@@ -391,6 +391,21 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
           </li>
         ))}
       </ol>
+      <h3>The program it runs</h3>
+      {entry.program ? (
+        <p data-testid="launch-program">
+          <code class="launch-cwd">{visible(entry.program)}</code>{' '}
+          {entry.programOwn ? (
+            <span class="muted small">— the image's own</span>
+          ) : (
+            <span class="loader-why" data-testid="launch-program-sandbox">
+              <Icon name="alert" size={13} /> a program of the sandbox's or the workspace's, not the image's: anything in the sandbox can change it
+            </span>
+          )}
+        </p>
+      ) : (
+        <p class="muted small" data-testid="launch-program">{visible(entry.argv?.[0] ?? '')}: not found in the sandbox — it will say so in its window</p>
+      )}
       <h3>Folder</h3>
       <p>
         <code class="launch-cwd" data-testid="launch-cwd">/workspace{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
@@ -414,6 +429,10 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
           );
         })}
       </ul>
+      <p class="muted small">
+        Besides these, only the sandbox's HOME, USER, LANG and the like, and its PATH with the image's own folders first; npm reads neither your
+        npmrc nor the global one (NPM_CONFIG_USERCONFIG and NPM_CONFIG_GLOBALCONFIG name none); nothing of the terminal's other variables.
+      </p>
       {loaders.length > 0 && (
         <div class="banner warn small" data-testid="launch-loaders">
           {loaders.length === 1 ? 'One variable' : `${loaders.length} variables`} above can run code before the command itself. Start it only if you

@@ -31,16 +31,27 @@ All notable changes to bedrock-now are documented here. The format follows
   entry points (`[project.scripts]`, `[tool.poetry.scripts]`) — next to `.claude/launch.json`'s dev servers. **Run**
   shows the task in full first, like *Start*: each argument of its fixed wrapper (`npm run -- <name>`,
   `make -- <target>`, or `python3` with bedrock-now's loader), the script with npm's pre/post scripts, the recipe or
-  entry point, a workspace `.npmrc` and its settings; then bn-coded runs it in a new window of the terminal's tmux, only
+  entry point, a workspace `.npmrc` (its secrets' values hidden); then bn-coded runs it in a new window of the terminal's tmux, only
   while it is still what you saw (a SHA-256 of the wrapper, the texts and the `.npmrc` / whole Makefile; asked again
   whenever it changes). The new **Problems** list has each run's exit status, duration and the end of its output (the
   last 64 KiB kept); a row opens its window in the terminal panel, and *Run* counts the tasks whose last run failed.
-  **Ask Claude** drafts "Run `npm test` and fix failures." in the prompt box instead (never sent by itself). bn-coded's
-  new ops `run.list`, `run.start`, `run.results`, `run.show`; `GET /api/run`, `POST /api/run/start`,
-  `GET /api/run/results`, `POST /api/run/show`.
+  **Ask Claude** drafts "Run `npm test` and fix failures." in the prompt box instead (never sent by itself). A task
+  runs with the image's own programs by their path (npm through the image's node), in an environment of its own: the
+  window's bash without `BASH_ENV`/`ENV`/`SHELLOPTS`/`BASHOPTS`/`PS4`, then `env -i` with a few of the container's
+  variables, a `PATH` with the image's root-owned folders first, and npm reading neither `~/.npmrc` nor the global
+  npmrc — so tmux's global environment, those npmrc files and a program of the same name in `~/.local/bin` cannot
+  change what an approved task runs. bn-coded's new ops `run.list`, `run.start`, `run.results`, `run.show`;
+  `GET /api/run`, `POST /api/run/start`, `GET /api/run/results`, `POST /api/run/show`.
 
 ### Fixed
 
+- **Code page: launch.json's *Start* ran in tmux's global environment.** Anything in the sandbox could set
+  `BASH_ENV`, `NODE_OPTIONS` or `npm_config_script_shell` there (`tmux set-environment -g`), point npm at a
+  `script-shell` in `~/.npmrc` or the global npmrc, or put an `npm` / `node` of its own first in `PATH`
+  (`~/.local/bin`): an entry you approved then ran something else. *Start* now runs like Run & test's tasks (above:
+  bash without those variables, `env -i` with an environment made by bn-coded, the image's folders first in `PATH`,
+  no user or global npmrc), and the confirmation shows the program file the entry's first argument names — the
+  image's own or not — which its digest binds.
 - **Code page, previews: the address field keeps what you typed.** After a path's Enter the field took the frame's
   path back a frame or two later, from an effect that ran after the next paint; a busy page ran it after your next
   Enter, so a refused address (`http://…`) lost its red mark and the older path came back over it. Its own Enter now

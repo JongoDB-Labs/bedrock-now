@@ -2344,6 +2344,9 @@ def devpreviews(browser):
     expect(dlg).to_contain_text("/workspace/api")
     expect(dlg.get_by_test_id("launch-env-loader")).to_have_count(1)
     expect(dlg.get_by_test_id("launch-env-loader")).to_contain_text("NODE_OPTIONS=--require ./api/trace.js")
+    # the program file its first argument names: here one of the sandbox's own (~/.local/bin), said so
+    expect(dlg.get_by_test_id("launch-program")).to_contain_text("/home/claude/.local/bin/node")
+    expect(dlg.get_by_test_id("launch-program-sandbox")).to_be_visible()
     expect(dlg.get_by_test_id("launch-loaders")).to_be_visible()
     expect(dlg).to_contain_text("PORT=8787")
     p.shot("preview-launch-confirm.png")
@@ -2519,8 +2522,10 @@ def run_and_test(browser):
     # Run: the task in full first — the wrapper's arguments one by one, npm's pretest with it, Ask Claude instead
     test.get_by_test_id("run-start").click()
     dlg = page.get_by_test_id("run-confirm")
-    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(4)
-    assert dlg.get_by_test_id("run-argv").locator("li").all_inner_texts() == ["npm", "run", "--", "test"], dlg.get_by_test_id("run-argv").inner_text()
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(5)
+    argv = [t.split(" — ")[0] for t in dlg.get_by_test_id("run-argv").locator("li").all_inner_texts()]
+    assert argv == ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "run", "--", "test"], argv
+    expect(dlg.get_by_test_id("run-env")).to_contain_text("npm reads neither your npmrc nor the global one")
     expect(dlg.get_by_test_id("run-detail")).to_have_count(2)
     expect(dlg.get_by_test_id("run-detail").first).to_have_text("tsc --noEmit")
     expect(dlg.get_by_test_id("run-detail").nth(1)).to_have_text("vitest run")
@@ -2575,7 +2580,7 @@ def run_and_test(browser):
     panel.locator("[data-testid=run-task][data-source=make][data-name=check]").get_by_test_id("run-start").click()
     dlg = page.get_by_test_id("run-confirm")
     expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(3)
-    assert dlg.get_by_test_id("run-argv").locator("li").all_inner_texts() == ["make", "--", "check"], dlg.get_by_test_id("run-argv").inner_text()
+    assert dlg.get_by_test_id("run-argv").locator("li").all_inner_texts() == ["/usr/bin/make", "--", "check"], dlg.get_by_test_id("run-argv").inner_text()
     expect(dlg.get_by_test_id("run-detail")).to_have_text("pytest -q")
     expect(dlg.get_by_test_id("run-files")).to_contain_text("Makefile (SHA-256 abababababab")
     expect(dlg.get_by_test_id("run-notes")).to_contain_text("includes other files")
@@ -2583,8 +2588,10 @@ def run_and_test(browser):
     panel = run_panel(page)
     panel.locator("[data-testid=run-task][data-source=python]").get_by_test_id("run-start").click()
     dlg = page.get_by_test_id("run-confirm")
-    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(5)
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(6)
     expect(dlg.get_by_test_id("run-argv")).to_contain_text("bedrock-now's loader")
+    expect(dlg.get_by_test_id("run-argv")).to_contain_text("its code is the workspace's")
+    expect(dlg.get_by_test_id("run-argv").locator("li").nth(1)).to_have_text("-I")
     expect(dlg.get_by_test_id("run-detail")).to_have_text('hello = "app.cli:main"')
     dlg.get_by_role("button", name="Cancel").click()
     # Ask Claude: a draft in the prompt box, never sent
@@ -2615,7 +2622,7 @@ def run_phone(browser):
     p.shot("run-phone-sheet.png")
     sheet.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-start").click()
     dlg = page.get_by_test_id("run-confirm")
-    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(4)
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(5)
     expect(page.locator("dialog[open][data-testid=run-confirm]")).to_be_visible()   # (shown as a modal after its first paint)
     assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "the confirmation is wider than the phone"
     p.shot("run-phone-confirm.png")

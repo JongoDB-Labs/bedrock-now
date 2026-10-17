@@ -25,6 +25,7 @@ case "$1" in
   new-window)
     cwd=.
     while [ $# -gt 0 ]; do case "$1" in -c) cwd=$2; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+    [ -e ${JSON.stringify(path.join(ROOT, 'tmuxenv'))} ] && . ${JSON.stringify(path.join(ROOT, 'tmuxenv'))}
     [ -e ${JSON.stringify(path.join(ROOT, 'norun'))} ] || ( cd "$cwd" && "$@" </dev/null >>${JSON.stringify(path.join(ROOT, 'window.out'))} 2>&1 & )
     echo @7 ;;
   select-window) [ "$3" = "@7" ] || { echo "can't find window: $3" >&2; exit 1; } ;;
@@ -33,13 +34,19 @@ exit 0
 `, { mode: 0o755 });
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), BN_TMUX_BIN: TMUX,
   BN_CODE_RUNS: RUNS, HOME: ROOT, CLAUDE_CONFIG_DIR: path.join(ROOT, '.claude') });
-// a stand-in make on PATH (the sandbox's image has none: its Makefile targets are then listed, not offered — below)
-const MAKEBIN = path.join(ROOT, 'makebin');
-fs.mkdirSync(MAKEBIN);
-fs.writeFileSync(path.join(MAKEBIN, 'make'), '#!/bin/sh\necho "make $*"\n', { mode: 0o755 });
-process.env.PATH = `${MAKEBIN}:${process.env.PATH}`;
+// the image's own folders, and one more of root's with a stand-in make and python3 (the test runs as root, so its files
+// are root's alone, as the image's are; the sandbox's image has no make: its targets are then listed, not offered —
+// below). A stand-in "tmux" of the test's own (ROOT/tmuxenv: what tmux's global environment would give a new window).
+const SYSBIN = path.join(ROOT, 'sysbin');
+fs.mkdirSync(SYSBIN, { mode: 0o755 });
+fs.writeFileSync(path.join(SYSBIN, 'make'), '#!/bin/sh\necho "make $*"\n', { mode: 0o755 });
+fs.writeFileSync(path.join(SYSBIN, 'python3'), '#!/bin/sh\nprintf "py:%s|" "$@"; echo\n', { mode: 0o755 });
+const SYSTEM = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+process.env.BN_SYSTEM_BIN = `${SYSTEM}:${SYSBIN}`;
 const coded = await import(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'));
 const SELF = path.join(TERMINAL_DIR, 'bin/bn-coded.mjs');
+const P = coded.imagePrograms();
+const npmArgv = (name) => [P.node, P.npm, 'run', '--', name];
 let server;
 const SOCK = path.join(SOCKDIR, 'coded.sock');
 before(async () => { server = coded.start(); await new Promise((r) => (server.listening ? r() : server.once('listening', r))); });
@@ -66,20 +73,24 @@ test('package.json: each script with npm\'s pre/post scripts, run as `npm run --
     'a; rm -rf /': 'x', '$(touch /tmp/pwned)': 'x', 'x\ny': 'x', '--version': 'x', '-x': 'x', '`id`': 'x', 'a b': 'x', 'ü': 'x', '': 'x',
     ['n'.repeat(101)]: 'x', __proto__: 'proto', constructor: 'echo c', num: 7, long: 'x'.repeat(coded.TASK_TEXT_MAX + 1) } }));
   const by = Object.fromEntries(r.tasks.map((t) => [t.name, t]));
-  assert.deepEqual(by.test.argv, ['npm', 'run', '--', 'test']);
-  assert.equal(by.test.command, 'npm run -- test');
+  assert.ok(P.node && P.npm && P.npm.endsWith('/npm-cli.js'), JSON.stringify(P));
+  assert.deepEqual(by.test.argv, npmArgv('test'));
+  assert.equal(by.test.command, `${P.node} ${P.npm} run -- test`);
   assert.deepEqual(by.test.detail, [{ name: 'pretest', text: 'tsc --noEmit' }, { name: 'test', text: 'vitest run' }, { name: 'posttest', text: 'echo done' }]);
   assert.equal(by.test.cwd, '.');
   assert.match(by.test.digest, /^[0-9a-f]{64}$/);
-  assert.deepEqual(by['lint:fix'].argv, ['npm', 'run', '--', 'lint:fix']);
-  assert.deepEqual(by['build/web'].argv, ['npm', 'run', '--', 'build/web']);
-  assert.deepEqual(by.constructor.argv, ['npm', 'run', '--', 'constructor']);   // (own keys only: never Object's)
+  assert.deepEqual(by['lint:fix'].argv, npmArgv('lint:fix'));
+  assert.deepEqual(by['build/web'].argv, npmArgv('build/web'));
+  assert.deepEqual(by.constructor.argv, npmArgv('constructor'));   // (own keys only: never Object's)
   for (const odd of ['a; rm -rf /', '$(touch /tmp/pwned)', 'x\ny', '--version', '-x', '`id`', 'a b', 'ü', '', 'n'.repeat(101)]) {
     assert.ok(by[odd]?.error && !by[odd].argv, JSON.stringify(odd));
   }
   assert.match(by.num.error, /not a string/);
   assert.match(by.long.error, /too long/);
   assert.ok(!r.tasks.some((t) => t.argv && t.argv.some((a) => /[;$`\n ]/.test(a))), 'a wrapper argument with a shell character');
+  // without the image's own node or npm: listed, not offered
+  const none = coded.npmTasks(JSON.stringify({ scripts: { test: 'x' } }), null, { node: null, npm: P.npm });
+  assert.match(none.tasks[0].error, /npm or node is not the image's own/);
   // JSON.parse makes "__proto__" an own key: a name like any other (npm has one too), never the prototype
   const p = coded.npmTasks('{"scripts": {"__proto__": "echo p", "x": "echo x"}}');
   assert.deepEqual(p.tasks.map((t) => t.name), ['__proto__', 'x']);
@@ -109,8 +120,11 @@ test('.npmrc: its setting names shown, its hash bound to every npm task; one tha
   ws('package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
   const plain = (await op({ op: 'run.list' })).tasks.find((t) => t.name === 'test');
   assert.deepEqual(plain.files, []);
-  ws('.npmrc', 'script-shell=/workspace/evil.sh\n');
+  ws('.npmrc', '# mine\nscript-shell=/workspace/evil.sh\n//registry.example/:_authToken=sekrit-token\nnode-options = --require ./x.js\n');
   const withRc = (await op({ op: 'run.list' })).tasks.find((t) => t.name === 'test');
+  assert.deepEqual(withRc.detail[0], { name: '.npmrc (the workspace\'s)',
+    text: 'script-shell=/workspace/evil.sh\n//registry.example/:_authToken = (a secret: not shown)\nnode-options = --require ./x.js' });
+  assert.ok(!JSON.stringify(withRc).includes('sekrit'));
   assert.equal(withRc.files[0].path, '.npmrc');
   assert.match(withRc.files[0].sha256, /^[0-9a-f]{64}$/);
   assert.match(withRc.notes[0], /script-shell/);
@@ -197,9 +211,10 @@ test('run.list over the socket: every source with its file; a link or a FIFO is 
   ws('Makefile', 'check:\n\tpytest -q\n');
   ws('pyproject.toml', '[project.scripts]\nhello = "app.cli:main"\n');
   const r = await op({ op: 'run.list' });
-  assert.deepEqual(r.tasks.map((t) => [t.source, t.name, t.argv.length]), [['npm', 'test', 4], ['make', 'check', 3], ['python', 'hello', 5]]);
+  assert.deepEqual(r.tasks.map((t) => [t.source, t.name, t.argv.length]), [['npm', 'test', 5], ['make', 'check', 3], ['python', 'hello', 6]]);
   const py = r.tasks[2];
-  assert.deepEqual(py.argv, ['python3', '-c', coded.PY_LOADER, 'hello', 'app.cli:main']);
+  assert.deepEqual(py.argv, [P.python3, '-I', '-c', coded.PY_LOADER, 'hello', 'app.cli:main']);
+  assert.deepEqual(r.tasks[1].argv, [P.make, '--', 'check']);
   assert.equal(r.tasks[1].files[0].path, 'Makefile');
   // the whole Makefile is bound: a variable elsewhere in it changes the digest
   const before1 = r.tasks[1].digest;
@@ -211,15 +226,16 @@ test('run.list over the socket: every source with its file; a link or a FIFO is 
   assert.equal(s.sources[1].file, 'GNUmakefile');
   assert.deepEqual(s.tasks.filter((t) => t.source === 'make').map((t) => t.name), ['gnu']);
   rm('GNUmakefile');
-  // without make in the sandbox: the targets are listed with the reason, none offered
-  const PATH0 = process.env.PATH;
-  fs.mkdirSync(path.join(ROOT, 'nomake'), { recursive: true });
-  process.env.PATH = path.join(ROOT, 'nomake');
+  // without the image's own make (the sandbox's image has none; one in PATH only does not count): the targets are
+  // listed with the reason, none offered
+  process.env.BN_SYSTEM_BIN = SYSTEM;
   try {
-    s = await op({ op: 'run.list' });
-    assert.match(s.sources[1].error, /make is not installed in the sandbox/);
-    assert.deepEqual(s.tasks.filter((t) => t.source === 'make').map((t) => [t.name, t.error, t.argv]), [['check', 'make is not installed in the sandbox', undefined]]);
-  } finally { process.env.PATH = PATH0; }
+    if (!coded.imageProgram('make')) {
+      s = await op({ op: 'run.list' });
+      assert.match(s.sources[1].error, /make is not installed in the sandbox/);
+      assert.deepEqual(s.tasks.filter((t) => t.source === 'make').map((t) => [t.name, t.error, t.argv]), [['check', 'make is not installed in the sandbox', undefined]]);
+    }
+  } finally { process.env.BN_SYSTEM_BIN = `${SYSTEM}:${SYSBIN}`; }
   // links are not followed (the file could be anywhere); a FIFO does not hang the list
   fs.writeFileSync(path.join(ROOT, 'outside.json'), JSON.stringify({ scripts: { out: 'x' } }));
   rm('package.json');
@@ -264,13 +280,19 @@ test('run.start: the task\'s fixed wrapper in a new tmux window (the session mad
   assert.equal(r.ok, true);
   assert.match(r.id, /^[0-9a-f]{16}$/);
   assert.equal(r.window, '@7');
-  assert.equal(r.command, 'npm run -- test');
+  assert.equal(r.command, `${P.node} ${P.npm} run -- test`);
   const c = calls();
   assert.deepEqual(c.map((x) => x[0]), ['has-session', 'new-session', 'new-window']);
   assert.deepEqual(c[2], ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', '=claude:', '-n', 'run-test', '-c', fs.realpathSync(WS), '--',
-    'bash', '-c', '"$@"; exec bash', 'bedrock-now run', process.execPath, SELF, '--run-task', RUNS, r.id, '--', 'npm', 'run', '--', 'test']);
+    ...coded.windowCommand('bedrock-now run', coded.taskEnv(), [P.node, SELF, '--run-task', RUNS, r.id, '--', ...npmArgv('test')])]);
+  // bash without the variables that run code first; the runner and the wrapper in an environment made here
+  assert.deepEqual(c[2].slice(12, 28), ['/usr/bin/env', '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS', '-u', 'PS4', '/bin/bash', '--noprofile', '--norc',
+    '-c', '"$@"; exec bash']);
+  const inner = c[2].slice(c[2].indexOf('-i') + 1);
+  assert.ok(inner.includes('NPM_CONFIG_USERCONFIG=/dev/null') && inner.includes('NPM_CONFIG_GLOBALCONFIG=/nonexistent/npmrc'));
+  assert.ok(!inner.some((a) => /^(NODE_OPTIONS|BASH_ENV|LD_[A-Z_]+|npm_config_[a-z_]+|PYTHON[A-Z]*)=/i.test(a) && !/^NPM_CONFIG_(USERCONFIG|GLOBALCONFIG|UPDATE_NOTIFIER)=/.test(a)), inner.join(' '));
   const rec = JSON.parse(fs.readFileSync(path.join(RUNS, `${r.id}.json`), 'utf8'));
-  assert.deepEqual({ ...rec, startedAt: 0 }, { id: r.id, source: 'npm', name: 'test', command: 'npm run -- test', startedAt: 0, window: '@7' });
+  assert.deepEqual({ ...rec, startedAt: 0 }, { id: r.id, source: 'npm', name: 'test', command: `${P.node} ${P.npm} run -- test`, startedAt: 0, window: '@7' });
   // refused: a digest that is not the task's now, a changed file, names and sources that are not listed
   for (const [req, why] of [
     [{ source: 'npm', name: 'test', digest: 'a'.repeat(64) }, /changed since it was shown: review it again/],
@@ -335,17 +357,8 @@ test('the runner: the task\'s output shown and its last 64 KiB kept with the exi
 test('run.start → the runner in the window → run.results (exit status, the end of the output) → run.show', async () => {
   fs.rmSync(LOG, { force: true });
   fs.rmSync(RUNS, { recursive: true, force: true });
-  // a "npm" of our own first on PATH would be the sandbox's business; here the wrapper's program is checked as given:
-  // a package.json whose script fails, run through a stand-in npm that runs the script like npm does
-  const bin = path.join(ROOT, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh
-[ "$1" = run ] && [ "$2" = -- ] || { echo "unexpected: $*" >&2; exit 64; }
-exec ${JSON.stringify(process.execPath)} -e 'const s = require("./package.json").scripts[process.argv[1]]; require("child_process").execSync(s, { stdio: "inherit", shell: "/bin/sh" })' "$3"
-`, { mode: 0o755 });
-  const PATH0 = process.env.PATH;
-  process.env.PATH = `${bin}:${PATH0}`;
-  try {
+  // the image's own npm (the test container's: root's, in /usr/local), through the tmux stand-in and the runner
+  {
     ws('package.json', JSON.stringify({ scripts: { fails: 'echo "1 test failed"; exit 1', passes: 'echo all good' } }));
     const tasks = (await op({ op: 'run.list' })).tasks;
     const start = async (name) => op({ op: 'run.start', source: 'npm', name, digest: tasks.find((t) => t.name === name).digest });
@@ -372,8 +385,115 @@ exec ${JSON.stringify(process.execPath)} -e 'const s = require("./package.json")
     assert.match((await op({ op: 'run.show', id: b.id })).error, /no window/);
     fs.writeFileSync(path.join(RUNS, `${b.id}.json`), JSON.stringify({ ...rec, window: '@9' }));
     assert.match((await op({ op: 'run.show', id: b.id })).error, /its window is closed/);
-  } finally { process.env.PATH = PATH0; }
+  }
   rm('package.json');
+});
+
+test('what runs: the image\'s own programs (root\'s alone, through their links) first; an environment made here, never tmux\'s', () => {
+  const mine = path.join(ROOT, 'mine');   // (a folder of the sandbox's own uid, like ~/.local/bin)
+  fs.mkdirSync(mine, { recursive: true });
+  fs.writeFileSync(path.join(mine, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(mine, 'tool'), '#!/bin/sh\n', { mode: 0o755 });
+  execFileSync('chown', ['-R', '1000:1000', mine]);
+  // taskPath: root's folders first, in their order; the others after; relative and repeated ones dropped
+  assert.equal(coded.taskPath(`${mine}:/usr/local/bin:relative::/usr/bin:${mine}`), `/usr/local/bin:/usr/bin:${mine}`);
+  // whichProgram: the first in that PATH, through its links; the sandbox's own one only where the image has none
+  const node = coded.whichProgram('node', coded.taskPath(`${mine}:/usr/local/bin`), '/');
+  assert.deepEqual(node, { path: fs.realpathSync('/usr/local/bin/node'), own: true });
+  assert.deepEqual(coded.whichProgram('tool', coded.taskPath(`${mine}:/usr/local/bin`), '/'), { path: path.join(mine, 'tool'), own: false });
+  assert.deepEqual(coded.whichProgram('./mine/tool', '', ROOT), { path: path.join(mine, 'tool'), own: false });
+  assert.equal(coded.whichProgram('no-such-program', '/usr/bin', '/'), null);
+  assert.equal(coded.imageFile(path.join(mine, 'node')), false);
+  assert.equal(coded.imageFile('/usr/local/bin/node'), true);
+  // a link of root's to a file of the sandbox's is not the image's either
+  fs.symlinkSync(path.join(mine, 'node'), path.join(SYSBIN, 'node-link'));
+  assert.equal(coded.imageFile(path.join(SYSBIN, 'node-link')), false);
+  assert.equal(coded.imageProgram('node-link'), null);
+  fs.rmSync(path.join(SYSBIN, 'node-link'));
+  // taskEnv: a few variables of this container's own, the PATH reordered, npm's user and global config off; the rest
+  // (what makes a program or shell run code first, secrets) never
+  const env = coded.taskEnv({ PORT: '5173' }, { HOME: '/home/claude', USER: 'claude', LANG: 'C.UTF-8', LC_ALL: 'C', TZ: 'UTC', PATH: `${mine}:/usr/bin`,
+    BASH_ENV: '/x', ENV: '/x', SHELLOPTS: 'xtrace', PS4: '$(id)', NODE_OPTIONS: '--require /x', LD_PRELOAD: '/x.so', npm_config_script_shell: '/x',
+    NPM_CONFIG_PREFIX: '/home/claude/.local', NPM_CONFIG_USERCONFIG: '/x', PYTHONSTARTUP: '/x', PYTHONPATH: '/x', ANTHROPIC_AUTH_TOKEN: 'sk-x',
+    BASH_FUNC_ls: '() { id; }', GIT_SSH_COMMAND: 'x', HOME2: 'x', TERM: 'evil' });
+  assert.deepEqual(env, { HOME: '/home/claude', USER: 'claude', LANG: 'C.UTF-8', LC_ALL: 'C', TZ: 'UTC', PATH: `/usr/bin:${mine}`, TERM: 'tmux-256color',
+    NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_GLOBALCONFIG: '/nonexistent/npmrc', NPM_CONFIG_UPDATE_NOTIFIER: 'false', PORT: '5173' });
+  // the window: bash without BASH_ENV & co. only starts `env -i <that environment> <program> …`
+  assert.deepEqual(coded.windowCommand('label', { A: '1' }, ['/usr/bin/true', 'x']), ['/usr/bin/env', '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS',
+    '-u', 'PS4', '/bin/bash', '--noprofile', '--norc', '-c', '"$@"; exec bash', 'label', '/usr/bin/env', '-i', 'A=1', '/usr/bin/true', 'x']);
+});
+
+test('the launch runner: the window\'s terminal its own, then how it ended', async () => {
+  const lines = [];
+  const out = { write: (d) => lines.push(String(d)) };
+  assert.equal(await coded.runTty('launch.json "web"', [process.execPath, '-e', 'process.exit(4)'], { out }), 4);
+  assert.match(lines.join(''), /\[launch\.json "web" exited with status 4 — this window stays: a shell in its folder\]/);
+  assert.equal(await coded.runTty('x', ['no-such-program-bn'], { out }), 1);
+  assert.match(lines.join(''), /could not start: not found/);
+  assert.equal(await coded.runTty('x', [], { out }), 2);
+});
+
+test('what the shown files do not say cannot change what runs: tmux\'s global environment, npm\'s user and global npmrc, programs of the same name in ~/.local/bin', async () => {
+  fs.rmSync(LOG, { force: true });
+  fs.rmSync(RUNS, { recursive: true, force: true });
+  const OUT = path.join(ROOT, 'window.out');
+  fs.rmSync(OUT, { force: true });
+  const evil = path.join(ROOT, 'evil'), pwned = path.join(ROOT, 'pwned');
+  fs.mkdirSync(evil, { recursive: true });
+  fs.mkdirSync(pwned, { recursive: true });
+  const marker = (n) => path.join(pwned, n);
+  const hook = (n) => { const f = path.join(evil, `${n}.sh`); fs.writeFileSync(f, `#!/bin/sh\ntouch ${marker(n)}\nexec /bin/sh "$@"\n`, { mode: 0o755 }); return f; };
+  // the sandbox's ~/.local (its own uid's): its bin folder first on PATH with a node, npm, python3, make and sh of its
+  // own, and the global npmrc npm reads under NPM_CONFIG_PREFIX (as the image sets it)
+  const local = path.join(ROOT, 'local'), lbin = path.join(local, 'bin');
+  fs.mkdirSync(lbin, { recursive: true });
+  fs.mkdirSync(path.join(local, 'etc'), { recursive: true });
+  for (const n of ['node', 'npm', 'python3', 'make', 'sh']) fs.writeFileSync(path.join(lbin, n), `#!/bin/sh\ntouch ${marker(`localbin-${n}`)}\nexit 99\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(local, 'etc/npmrc'), `script-shell=${hook('global-npmrc')}\n`);
+  execFileSync('chown', ['-R', '1000:1000', local]);
+  // ~/.npmrc (HOME is ROOT here)
+  fs.writeFileSync(path.join(evil, 'require.js'), `require('fs').writeFileSync(${JSON.stringify(marker('node-options'))}, '')\n`);
+  fs.writeFileSync(path.join(ROOT, '.npmrc'), `script-shell=${hook('user-npmrc')}\nnode-options=--require ${path.join(evil, 'require.js')}\n`);
+  // tmux's global environment, which every new window gets (`tmux set-environment -g …`)
+  fs.writeFileSync(path.join(ROOT, 'tmuxenv'), `${[`export BASH_ENV=${hook('bash-env')}`, `export ENV=${hook('env')}`, 'export SHELLOPTS=xtrace',
+    `export PS4='$(touch ${marker('ps4')})'`, `export NODE_OPTIONS='--require ${path.join(evil, 'require.js')}'`,
+    `export npm_config_script_shell=${hook('env-script-shell')}`, `export NPM_CONFIG_USERCONFIG=${path.join(ROOT, '.npmrc')}`,
+    `export npm_config_globalconfig=${path.join(local, 'etc/npmrc')}`, `export PATH=${lbin}:$PATH`].join('\n')}\n`);
+  const PATH0 = process.env.PATH, PREFIX0 = process.env.NPM_CONFIG_PREFIX;
+  process.env.PATH = `${lbin}:${PATH0}`;   // bn-coded's own PATH as in the image: ~/.local/bin first
+  process.env.NPM_CONFIG_PREFIX = local;
+  try {
+    ws('package.json', JSON.stringify({ scripts: { probe: 'echo "node=$(command -v node) sh=$(command -v sh)"; node -e "console.log(\'node ran\')"' } }));
+    ws('pyproject.toml', '[project.scripts]\nhello = "app.cli:main"\n');
+    fs.mkdirSync(path.join(WS, '.claude'), { recursive: true });
+    ws('.claude/launch.json', JSON.stringify({ configurations: [{ name: 'probe', runtimeExecutable: 'node', runtimeArgs: ['-e', 'console.log("launch node=" + process.execPath)'], port: 4999 }] }));
+    const tasks = (await op({ op: 'run.list' })).tasks;
+    const probe = tasks.find((t) => t.name === 'probe');
+    assert.deepEqual(probe.argv, npmArgv('probe'));
+    const done = (id) => until(async () => (await op({ op: 'run.results', id })).runs.find((x) => x.state === 'done'), `run ${id}`, 30000);
+    const a = await op({ op: 'run.start', source: 'npm', name: 'probe', digest: probe.digest });
+    const ra = await done(a.id);
+    assert.equal(ra.exitCode, 0, ra.tail);
+    assert.match(ra.tail, /node=\/usr\/local\/bin\/node sh=\/(usr\/)?bin\/sh\n/);   // (the image's: ~/.local/bin's come after)
+    assert.match(ra.tail, /node ran/);
+    const py = tasks.find((t) => t.name === 'hello');
+    assert.equal(py.argv[0], path.join(SYSBIN, 'python3'));
+    const rb = await done((await op({ op: 'run.start', source: 'python', name: 'hello', digest: py.digest })).id);
+    assert.match(rb.tail, /^py:-I\|py:-c\|py:import functools, importlib, sys; sys.path.insert/m);
+    // launch.json's Start: the same window, environment and program
+    const entry = (await op({ op: 'launch.list' })).configurations[0];
+    assert.deepEqual([entry.program, entry.programOwn], [fs.realpathSync('/usr/local/bin/node'), true]);
+    assert.equal((await op({ op: 'launch.start', name: 'probe', digest: entry.digest })).ok, true);
+    await until(() => fs.existsSync(OUT) && /launch\.json "probe" exited with status 0/.test(fs.readFileSync(OUT, 'utf8')), 'the launch window', 30000);
+    assert.match(fs.readFileSync(OUT, 'utf8'), /launch node=\/usr\/local\/bin\/node/);
+    assert.deepEqual(fs.readdirSync(pwned), []);
+  } finally {
+    process.env.PATH = PATH0;
+    if (PREFIX0 === undefined) delete process.env.NPM_CONFIG_PREFIX; else process.env.NPM_CONFIG_PREFIX = PREFIX0;
+    fs.rmSync(path.join(ROOT, 'tmuxenv'), { force: true });
+    fs.rmSync(path.join(ROOT, '.npmrc'), { force: true });
+    rm('package.json'); rm('pyproject.toml'); rm('.claude');
+  }
 });
 
 test('run.results: the last 20 runs, the list\'s tails cut to 4 KiB, running and lost runs, junk in the folder ignored', async () => {
@@ -435,11 +555,18 @@ test('run.start keeps the last 20 runs (the oldest go, with their files); at mos
 test('the code container passes only the fixed wrappers and checked runs to the page', async (t) => {
   let api;
   try { api = await import('../server/api.mjs'); } catch { t.skip('the backend\'s dependencies are not installed here (code/test.sh runs it)'); return; }
-  const base = { source: 'npm', name: 'test', argv: ['npm', 'run', '--', 'test'], cwd: '.', command: 'npm run -- test', detail: [{ name: 'test', text: 'vitest run' }], files: [], notes: [] };
+  const N = ['/usr/local/bin/node', '/usr/local/lib/node_modules/npm/bin/npm-cli.js'];
+  const base = { source: 'npm', name: 'test', argv: [...N, 'run', '--', 'test'], cwd: '.', command: 'npm run -- test', detail: [{ name: 'test', text: 'vitest run' }], files: [], notes: [] };
   assert.equal(api.runTaskRow(base).digest, coded.runDigest(base));
+  assert.equal(api.runTaskRow({ ...base, source: 'make', argv: ['/usr/bin/make', '--', 'test'] }).error, undefined);
+  assert.equal(api.runTaskRow({ ...base, source: 'python', argv: ['/usr/bin/python3.13', '-I', '-c', api.PY_LOADER, 'test', 'a.b:c'] }).error, undefined);
   for (const [bad, why] of [
-    [{ argv: ['sh', '-c', 'rm -rf /'] }, /not run the way/], [{ argv: ['npm', 'run', 'test'] }, /not run the way/], [{ argv: ['npm', 'run', '--', 'other'] }, /not run the way/],
-    [{ source: 'make', argv: ['make', 'test'] }, /not run the way/], [{ source: 'python', argv: ['python3', '-c', 'import os; os.system("id")', 'test', 'a:b'] }, /not run the way/],
+    [{ argv: ['sh', '-c', 'rm -rf /'] }, /not run the way/], [{ argv: ['npm', 'run', '--', 'test'] }, /not run the way/], [{ argv: [...N, 'run', '--', 'other'] }, /not run the way/],
+    [{ argv: ['node', N[1], 'run', '--', 'test'] }, /not run the way/], [{ argv: ['/home/claude/../x/node', N[1], 'run', '--', 'test'] }, /not run the way/],
+    [{ argv: [N[0], '/tmp/evil.js', 'run', '--', 'test'] }, /not run the way/], [{ argv: [...N, 'run', 'test'] }, /not run the way/],
+    [{ source: 'make', argv: ['make', '--', 'test'] }, /not run the way/], [{ source: 'make', argv: ['/usr/bin/make', 'test'] }, /not run the way/],
+    [{ source: 'python', argv: ['/usr/bin/python3', '-I', '-c', 'import os; os.system("id")', 'test', 'a:b'] }, /not run the way/],
+    [{ source: 'python', argv: ['/usr/bin/python3', '-c', api.PY_LOADER, 'test', 'a:b'] }, /not run the way/],
     [{ detail: [{ name: 'test', text: 'x'.repeat(8001) }] }, /cannot be shown/], [{ detail: [] }, /cannot be shown/], [{ detail: [{ name: 'a\nb', text: 'x' }] }, /cannot be shown/],
     [{ files: [{ path: '../x', sha256: 'a'.repeat(64) }] }, /files/], [{ files: [{ path: '.npmrc', sha256: 'zz' }] }, /files/], [{ cwd: 'sub' }, /top folder/],
   ]) assert.match(api.runTaskRow({ ...base, ...bad }).error, why, JSON.stringify(bad));

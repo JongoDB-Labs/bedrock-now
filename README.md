@@ -631,10 +631,12 @@ per browser.
   `name:` lines; listed but not offered while the sandbox has no `make`, and its image has none), `pyproject.toml`'s
   entry points (`[project.scripts]`, `[tool.poetry.scripts]`) — and `.claude/launch.json`'s dev servers (*Start*, as in
   Ports), each with what it runs. **Run** shows the task in full first — each argument of its fixed wrapper (`npm run
-  -- <name>`, `make -- <target>`, or `python3` with bedrock-now's loader for an entry point), the script with npm's
-  `pre…` and `post…` scripts, the recipe or the entry point, and a workspace `.npmrc` (its settings named) — then runs
-  it in a new window of the terminal, without input (a test runner runs once instead of watching; Ctrl-C there stops
-  it). A task changed after you looked does not run, and the confirmation comes again whenever it changes. Each run's
+  -- <name>`, `make -- <target>`, or `python3` with bedrock-now's loader for an entry point — the image's own programs,
+  by their path), the script with npm's `pre…` and `post…` scripts, the recipe or the entry point, and a workspace
+  `.npmrc` (its secrets' values hidden) — then runs it in a new window of the terminal, without input (a test runner
+  runs once instead of watching; Ctrl-C there stops it), in an environment of its own: a few of the sandbox's
+  variables, its `PATH` with the image's folders first, no `~/.npmrc` or global npmrc, nothing of tmux's (like
+  launch.json's *Start*, which also shows the program file it runs). A task changed after you looked does not run, and the confirmation comes again whenever it changes. Each run's
   exit status, how long it took and the end of its output (the last 64 KiB are kept) go to the **Problems** list: *Run*
   in the status bar counts the tasks whose last run failed, a row opens its window in the terminal panel (a new tab on
   a phone) and *All output* shows what was kept. **Ask Claude** puts a draft such as "Run `npm test` and fix

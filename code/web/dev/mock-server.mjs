@@ -1755,14 +1755,15 @@ function addPort(port, cmd) {
 const CAP = 'a'.repeat(9) + 'b'.repeat(24);
 const previewOrigin = (port) => `http://p${port}-${CAP}.localhost:${PREVIEW_PORT}`;
 // (the digest as code/server/api.mjs computes it: argv, folder, environment sorted by name, port)
-const launchDigest = ({ argv, cwd, env, port }) => crypto.createHash('sha256')
-  .update(JSON.stringify([argv, cwd, Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), port])).digest('hex');
+const launchDigest = ({ argv, cwd, env, port, program, programOwn }) => crypto.createHash('sha256')
+  .update(JSON.stringify([argv, cwd, Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), port, program ?? null, programOwn === true])).digest('hex');
 const launchEntry = (e) => (e.error ? e : { ...e, env: Object.entries(e.env).map(([name, value]) => ({ name, value })), digest: launchDigest(e) });
 let LAUNCH;
 const resetLaunch = () => (LAUNCH = [
-  { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: { NODE_ENV: 'development' } },
+  { name: 'web', port: 5173, argv: ['npm', 'run', 'dev'], command: 'npm run dev', cwd: '.', url: null, autoPort: null, env: { NODE_ENV: 'development' },
+    program: '/usr/local/lib/node_modules/npm/bin/npm-cli.js', programOwn: true },
   { name: 'api', port: 8787, argv: ['node', 'server.js', '--verbose'], command: 'node server.js --verbose', cwd: 'api', url: null, autoPort: false,
-    env: { NODE_OPTIONS: '--require ./api/trace.js', DEBUG: 'api:*' } },
+    env: { NODE_OPTIONS: '--require ./api/trace.js', DEBUG: 'api:*' }, program: '/home/claude/.local/bin/node', programOwn: false },
   { name: 'broken', error: 'port: a number from 1 to 65535' },
 ]);
 resetLaunch();
@@ -1796,12 +1797,13 @@ async function previewApi(req, res, p) {
 // (as code/server/api.mjs computes it, and its loader for pyproject.toml's entry points)
 const runDigest = ({ source, name, argv, cwd, detail, files }) => crypto.createHash('sha256')
   .update(JSON.stringify([source, name, argv, cwd, detail.map((d) => [d.name, d.text]), files.map((f) => [f.path, f.sha256])])).digest('hex');
-const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+const PY_LOADER = "import functools, importlib, sys; sys.path.insert(0, ''); n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
   "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
 const MAKEFILE_SHA = 'ab'.repeat(32), NPMRC_SHA = 'cd'.repeat(32);
-const npmTask = (name, script, extra = {}) => ({ source: 'npm', name, argv: ['npm', 'run', '--', name], cwd: '.', command: `npm run -- ${name}`,
+const NODE = '/usr/local/bin/node', NPM = '/usr/local/lib/node_modules/npm/bin/npm-cli.js';
+const npmTask = (name, script, extra = {}) => ({ source: 'npm', name, argv: [NODE, NPM, 'run', '--', name], cwd: '.', command: `${NODE} ${NPM} run -- ${name}`,
   detail: [...(extra.pre ? [{ name: `pre${name}`, text: extra.pre }] : []), { name, text: script }], files: [], notes: [] });
-const makeTask = (name, recipe) => ({ source: 'make', name, argv: ['make', '--', name], cwd: '.', command: `make -- ${name}`,
+const makeTask = (name, recipe) => ({ source: 'make', name, argv: ['/usr/bin/make', '--', name], cwd: '.', command: `/usr/bin/make -- ${name}`,
   detail: [{ name: `Makefile: ${name}`, text: recipe }], files: [{ path: 'Makefile', sha256: MAKEFILE_SHA }],
   notes: ['Makefile includes other files: make reads them too (and its variables decide what the recipe runs).'] });
 // what each task "prints" and how it ends ([exit code, output]; a signal for one)
@@ -1825,7 +1827,7 @@ const resetRun = () => {
     { source: 'npm', name: 'deploy && rm -rf ~', error: 'not a name the Run menu passes on (letters, digits and _ . : @ / + -): run it in the terminal' },
     makeTask('all', '$(MAKE) build test\n@echo all done'),
     makeTask('check', 'pytest -q'),
-    { source: 'python', name: 'hello', argv: ['python3', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: `python3 -c '…' hello app.cli:main`,
+    { source: 'python', name: 'hello', argv: ['/usr/bin/python3.13', '-I', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: `/usr/bin/python3.13 -I -c '…' hello app.cli:main`,
       detail: [{ name: 'pyproject.toml [project.scripts]', text: 'hello = "app.cli:main"' }], files: [], notes: [] },
     ...(HOSTILE_MODE ? [
       { source: 'npm', name: HOSTILE.img, error: HOSTILE.script },

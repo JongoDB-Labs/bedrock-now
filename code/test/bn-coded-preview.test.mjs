@@ -92,8 +92,10 @@ test('launch.json: JSON with comments and trailing commas', () => {
 test('launch.json entries: checked one by one, the command shown as it will run', () => {
   const c = coded.launchConfig({ name: 'web', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev', '--', '--host', "it's"], port: 5173,
     cwd: '${workspaceFolder}/web', env: { NODE_ENV: 'development' }, autoPort: true });
+  // (its program: npm as Start's environment finds it — the image's own, from its folders first)
+  const npm = coded.whichProgram('npm', coded.taskPath(), path.join(fs.realpathSync(WS), 'web'));
   assert.deepEqual(c, { name: 'web', argv: ['npm', 'run', 'dev', '--', '--host', "it's"], port: 5173, cwd: 'web', env: { NODE_ENV: 'development' },
-    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'", digest: coded.launchDigest(c) });
+    url: null, autoPort: true, command: "npm run dev -- --host 'it'\\''s'", program: npm ? npm.path : null, programOwn: npm ? npm.own : false, digest: coded.launchDigest(c) });
   assert.match(c.digest, /^[0-9a-f]{64}$/);
   // the digest covers the arguments, the folder, the environment (in any order) and the port — nothing else
   const d = (x) => coded.launchConfig({ name: 'web', runtimeExecutable: 'npm', runtimeArgs: ['run', 'dev'], port: 5173, ...x }).digest;
@@ -102,6 +104,10 @@ test('launch.json entries: checked one by one, the command shown as it will run'
   for (const other of [{ runtimeArgs: ['run', 'start'] }, { port: 5174 }, { cwd: 'web' }, { env: { NODE_OPTIONS: '--require ./x.js' } }]) {
     assert.notEqual(d(other), d({}), JSON.stringify(other));
   }
+  // and the program file the first argument names (another one found there now: another digest)
+  const e = { argv: ['npm'], cwd: '.', env: {}, port: 1 };
+  assert.notEqual(coded.launchDigest({ ...e, program: '/usr/local/bin/npm', programOwn: true }), coded.launchDigest({ ...e, program: '/home/claude/.local/bin/npm', programOwn: false }));
+  assert.notEqual(coded.launchDigest({ ...e, program: '/x', programOwn: true }), coded.launchDigest({ ...e, program: '/x', programOwn: false }));
   assert.deepEqual(coded.launchConfig({ name: 'srv', program: 'server.js', args: ['--verbose'] }).argv, ['node', 'server.js', '--verbose']);
   assert.equal(coded.launchConfig({ name: 'srv', program: 'server.js' }).port, 3000);                  // the desktop app's default
   const attach = coded.launchConfig({ name: 'mine', url: 'http://localhost:8080' });
@@ -152,11 +158,13 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
   assert.deepEqual(calls[0], ['has-session', '-t', '=claude']);
   assert.deepEqual(calls[1], ['new-session', '-d', '-s', 'claude', '-n', 'claude', '-c', WS, 'claude-bedrock; exec bash']);
   const w = calls[2];
-  assert.deepEqual(w.slice(0, 13), ['new-window', '-d', '-t', '=claude:', '-n', 'web-app', '-c', path.join(fs.realpathSync(WS), 'web'),
-    '-e', 'NODE_ENV=development', '-e', 'PORT=5173', '--']);
-  assert.equal(w[13], 'bash');
-  assert.equal(w[14], '-c');
-  assert.deepEqual(w.slice(17), ['npm', 'run', 'dev', '$(touch /tmp/pwned)']);   // arguments, never parsed by a shell
+  // bash without BASH_ENV & co. starts `env -i <an environment made here, the entry's own variables, PORT> node
+  // bn-coded --run-tty <label> -- <the program found> <its arguments>` — arguments, never parsed by a shell
+  assert.deepEqual(w, ['new-window', '-d', '-t', '=claude:', '-n', 'web-app', '-c', path.join(fs.realpathSync(WS), 'web'), '--',
+    ...coded.windowCommand('bedrock-now launch', coded.taskEnv({ NODE_ENV: 'development', PORT: '5173' }),
+      [coded.imageProgram('node'), path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'), '--run-tty', 'launch.json "web app"', '--', listed.program, 'run', 'dev', '$(touch /tmp/pwned)'])]);
+  assert.equal(listed.program, fs.realpathSync(coded.imageProgram('npm')));
+  assert.ok(w.includes('NPM_CONFIG_USERCONFIG=/dev/null') && w.includes('PORT=5173') && w.includes('NODE_ENV=development'));
   // the session runs now: no second new-session
   fs.writeFileSync(LOG, '');
   await talk(SOCK, [open({ op: 'launch.start', name: 'web app', digest: listed.digest })]);
@@ -182,11 +190,18 @@ test('launch.start: the file\'s command in a new window of the terminal\'s tmux 
 test('the code container\'s digest of an entry is bn-coded\'s', async (t) => {
   let api;
   try { api = await import('../server/api.mjs'); } catch { t.skip('the backend\'s dependencies are not installed here (code/test.sh runs it)'); return; }
+  fs.writeFileSync(path.join(WS, 'web', 'tool.sh'), '#!/bin/sh\n', { mode: 0o755 });
+  try { fs.chownSync(path.join(WS, 'web', 'tool.sh'), 1000, 1000); } catch { /* not root: it is not root's anyway */ }
   writeLaunch(JSON.stringify({ configurations: [
     { name: 'a', runtimeExecutable: 'node', runtimeArgs: ['x.js', 'ü'], port: 3000, env: { Z: '1', A: 'two words' }, cwd: '${workspaceFolder}/web' },
-    { name: 'b', program: 'server.js' }] }));
+    { name: 'b', program: 'server.js' }, { name: 'c', runtimeExecutable: './tool.sh', cwd: 'web' }, { name: 'd', runtimeExecutable: 'no-such-program-bn' }] }));
   for (const c of result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations) {
     const row = api.launchRow(c);
     assert.equal(row.digest, c.digest, c.name);
+    assert.deepEqual([row.program, row.programOwn], [c.program, c.programOwn], c.name);
   }
+  const byName = Object.fromEntries(result(await talk(SOCK, [open({ op: 'launch.list' })])).configurations.map((c) => [c.name, c]));
+  assert.equal(byName.c.program, path.join(fs.realpathSync(WS), 'web', 'tool.sh'));   // (the workspace's: not the image's)
+  assert.equal(byName.c.programOwn, false);
+  assert.equal(byName.d.program, null);
 });
