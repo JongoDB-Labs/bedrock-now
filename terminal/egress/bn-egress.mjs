@@ -391,8 +391,16 @@ export function createServer(cfg, deps = {}) {
     rawReply(sock, status, status === 431 ? 'the request header is too large' : 'not a request this proxy understands');
   });
 
+  // one request's trouble never ends the proxy: an exception in a handler closes that connection only (logged)
+  const guard = (fn) => (req, a, b) => {
+    Promise.resolve().then(() => fn(req, a, b)).catch((e) => {
+      log.info({ event: 'error', method: short(req && req.method, 16), why: short(e && e.message, 200) });
+      try { (a && a.socket ? a.socket : a).destroy(); } catch { /* gone */ }
+    });
+  };
+
   // CONNECT host:port — a tunnel to the one address checked
-  server.on('connect', async (req, client, head) => {
+  server.on('connect', guard(async (req, client, head) => {
     client.on('error', () => {});
     if (tooMany(req)) { log.refused({ method: 'CONNECT', status: 431, why: 'too many header lines' }); return rawReply(client, 431, 'too many header lines'); }
     const a = parseAuthority(req.url);
@@ -412,10 +420,10 @@ export function createServer(cfg, deps = {}) {
     client.write('HTTP/1.1 200 Connection established\r\n\r\n');
     if (head && head.length) up.write(head);
     up.pipe(client); client.pipe(up);
-  });
+  }));
 
   // GET http://host/path — plain HTTP, forwarded to the one address checked; origin-form only for /healthz
-  server.on('request', async (req, res) => {
+  server.on('request', guard(async (req, res) => {
     req.on('error', () => {});
     if (req.url.startsWith('/')) {
       if (req.url === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end('ok\n'); }
@@ -439,15 +447,16 @@ export function createServer(cfg, deps = {}) {
     } catch { return reply(res, 400, 'a path this proxy cannot pass on'); }
     up.setTimeout(idleMs, () => up.destroy(Object.assign(new Error('idle'), { code: 'ETIMEDOUT' })));
     up.on('response', (ur) => {
-      const out = forwardHeaders(ur.rawHeaders);
-      try { res.writeHead(ur.statusCode, ur.statusMessage, out); } catch { res.writeHead(ur.statusCode, out); }
+      try { res.writeHead(ur.statusCode, ur.statusMessage, forwardHeaders(ur.rawHeaders)); } catch {
+        up.destroy(); return reply(res, 502, `${short(u.hostname)}:${port} answered with a header this proxy cannot pass on`);
+      }
       ur.pipe(res);
       ur.on('error', () => res.destroy());
     });
     up.on('error', (e) => reply(res, e && e.code === 'ETIMEDOUT' ? 504 : 502, `${short(u.hostname)}:${port} did not answer (${(e && e.code) || 'error'})`));
     res.on('close', () => { if (!res.writableFinished) up.destroy(); });
     req.pipe(up);
-  });
+  }));
 
   // a WebSocket in absolute form (clients tunnel ws:// and wss:// with CONNECT instead)
   server.on('upgrade', (req, sock) => { sock.on('error', () => {}); rawReply(sock, 501, 'upgrades go through CONNECT'); });
@@ -507,6 +516,8 @@ async function main() {
       skipped: [...cfg.allow.bad, ...cfg.deny.bad].map((s) => short(s, 80)),
       local: cfg.extra.map((r) => `${r.family === 4 ? formatV4(r.bytes) : 'v6'}/${r.bits}`) });
   });
+  // (the handlers catch their own; anything else is logged, and the other connections go on)
+  process.on('unhandledRejection', (e) => log.info({ event: 'error', why: short(e && e.message, 200) }));
   const stop = () => { server.close(); setTimeout(() => process.exit(0), 2000).unref(); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

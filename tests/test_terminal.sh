@@ -1018,3 +1018,31 @@ JSON
   assert_contains "$out" "unknown model 'gpt-4' (--model) — claude-bedrock --models lists them: claude-opus-5-5, llama-3-3-70b, or/google/gemma-4-31b-it:free"
   assert_not_contains "$out" "ARG"
 }
+
+# An update from a version without the egress proxy (v0.10.0 and earlier) says once, in its What's new, that the
+# sandbox's internet is public addresses only now and how to open this computer's services again; nothing in .env
+# changes (blank or an old on is the new default). Not again from a version that had the proxy, nor with the terminal off.
+test_whats_new_says_once_that_the_sandbox_lost_this_computers_services() {
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  git init -q -b main "$TMP/origin"
+  mkdir -p "$TMP/origin/terminal"; : > "$TMP/origin/terminal/Dockerfile"
+  git -C "$TMP/origin" add terminal; git -C "$TMP/origin" commit -qm old; git -C "$TMP/origin" tag -a v0.10.0 -m "v0.10.0 — old"
+  mkdir -p "$TMP/origin/terminal/egress"; : > "$TMP/origin/terminal/egress/bn-egress.mjs"
+  git -C "$TMP/origin" add terminal; git -C "$TMP/origin" commit -qm new; git -C "$TMP/origin" tag -a v0.11.0 -m "v0.11.0 — new"
+  git clone -q "$TMP/origin" "$TMP/stack"; STACK_DIR="$TMP/stack"
+  stt_enabled() { return 0; }; remote_on() { return 0; }; helper_installed() { return 0; }; auto_on() { return 0; }; code_ready() { return 1; }
+  old="$(git -C "$STACK_DIR" rev-parse 'v0.10.0^{commit}')"; new="$(git -C "$STACK_DIR" rev-parse 'v0.11.0^{commit}')"
+  for v in '' on internet; do
+    printf 'TERMINAL_ENABLED=true\nTERMINAL_EGRESS=%s\n' "$v" > "$ENV_FILE"
+    assert_contains "$(update_whats_new "$old")" "Sandbox internet: public addresses only now, through an egress proxy — this computer's services and your network are closed to it (Settings › Claude Code › Sandbox internet access: \"+ this computer\" opens them again)"
+  done
+  assert_eq "$(get_env TERMINAL_EGRESS)" internet   # (nothing written)
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_EGRESS=host\n' > "$ENV_FILE"
+  assert_contains "$(update_whats_new "$old")" "Sandbox internet: TERMINAL_EGRESS=host keeps this computer's services and your network open to it"
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_EGRESS=off\n' > "$ENV_FILE"
+  assert_not_contains "$(update_whats_new "$old")" "Sandbox internet"
+  printf 'TERMINAL_ENABLED=true\n' > "$ENV_FILE"
+  assert_not_contains "$(update_whats_new "$new")" "Sandbox internet"
+  printf 'TERMINAL_ENABLED=false\n' > "$ENV_FILE"
+  assert_not_contains "$(update_whats_new "$old")" "Sandbox internet"
+}

@@ -600,11 +600,10 @@ reaches is the container — with the three exceptions under *Threat model*.
   on, with the workspace `~/bedrock-now-workspace` (created with mode 700 and checked like any other: below). What
   that adds to a default install, and what it does not:
   - *Adds:* a container running Claude Code and a shell, as your user id, that can read and write that one folder,
-    spend its own key (`claude-code-terminal`, `BUDGET_TERMINAL`: $50 a month by default), reach the internet and —
-    with that same internet access, on Docker Desktop — the services of this computer itself through Docker's host
-    address (the name `host.docker.internal` is taken away in the sandbox, the address is not: LiteLLM's port with its
-    own key's limits, the shared MCP server, the portal's login, any dev server; *Threat model* below).
-    `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, closes both. And two
+    spend its own key (`claude-code-terminal`, `BUDGET_TERMINAL`: $50 a month by default) and reach public internet
+    addresses through its egress proxy (ports 80, 443 and 22) — not this computer's own services, your local network
+    or private addresses, which the proxy refuses (*Out* below). Settings › Claude Code › *Sandbox internet access*
+    (`TERMINAL_EGRESS`) turns the internet off, or opens this computer's services too (`host`, as v0.10.0 did). And two
     more host names on `127.0.0.1` behind the portal (`terminal.` and `code.`), each needing the portal session
     **and** the portal password again (12 hours per browser). Anything that later opens the workspace on your
     computer runs what Claude wrote there (threat 1).
@@ -617,7 +616,8 @@ reaches is the container — with the three exceptions under *Threat model*.
     folder that cannot be created or is refused leaves both off (setup says why and goes on); an image that does not
     build is turned off again and tried once more at the next setup or update, then no more (`./stack code enable`
     turns it on); `./stack rollback` of the update that turned them on turns them off again, keeping a switch you
-    turned off since. `TERMINAL_EGRESS` keeps its default (on: Claude Code needs npm, pip, git and documentation).
+    turned off since. `TERMINAL_EGRESS` keeps its default (internet, public addresses only: Claude Code needs npm, pip,
+    git and documentation).
   - *Unattended:* an update nobody watched (Home's **Update now** or the nightly automatic update, both run by the
     update helper without a terminal) that turns them on leaves a one-time item in Activity (the portal's bell) — the
     workspace folder and whether the sandbox has internet, **Keep** or **Turn off** — besides the line in the update's
@@ -688,21 +688,60 @@ reaches is the container — with the three exceptions under *Threat model*.
   Postgres, RustFS and the speech-to-text container share no network with the terminal, and the portal, Open
   WebUI, Postgres, RustFS and speech-to-text none with the gateway either. `./stack test` and the e2e suite probe
   all of this from inside the container (and the gateway's neighbours from the gateway).
-- [x] **Out: the internet, unless you say no.** A second network, `terminal-out` (`compose.terminal-egress.yaml`),
-  gives it the internet for git, npm, pip and Claude Code's web fetch. On Docker Desktop the internet includes your
-  Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000` directly, past
-  the gateway's list (but not past its key's: the routes above, 403 for the rest, which `./stack test` checks),
-  shared-mcp on `:8765` (with the token it has anyway), the portal and its login on `127.0.0.1:PORTAL_PORT` (it
-  needs the password), dev servers, and the Docker API if *Expose daemon on tcp://localhost:2375* is on (that
-  would be the whole machine). The login's lock-out after wrong passwords is global, not per client: Docker
-  Desktop delivers your browser's requests and the sandbox's from the same address (its bridge gateway; checked),
-  so per-address counting could not tell them apart. A runaway process in the sandbox could therefore keep the
-  login (and the unlock) locked for up to five minutes at a time — `./stack terminal disable` or
-  `TERMINAL_EGRESS=off` ends that; it cannot get in. In the container the names
-  `host.docker.internal` and `gateway.docker.internal` point at an unroutable address — a speed bump only: the
-  address itself stays reachable. On Linux a container can reach the host through its network's gateway address
-  (services listening on `0.0.0.0`). `TERMINAL_EGRESS=off` in `.env` (then `./stack up`) leaves only the
-  internal network and closes these paths.
+- [x] **Out: public internet addresses only, through an egress proxy (since the release after v0.10.0).** The sandbox
+  has no network with a route out. Besides its gateway's, its one other network, `terminal-proxy` (internal), holds a
+  single peer: `terminal-egress` (`compose.terminal-proxy.yaml`; `terminal/egress/bn-egress.mjs`, Node built-ins only,
+  on the terminal's pinned Node base, built here; uid 65534, read-only, no capabilities, 192 MB, 64 processes), which
+  alone is also on `terminal-out`, the internet, and listens only on its `terminal-proxy` address (`egress:3128`).
+  Every process in the sandbox is told about it: `HTTP_PROXY`/`HTTPS_PROXY` (both spellings; curl, git, npm, pip,
+  Python, Go and Claude Code read them), `NODE_USE_ENV_PROXY=1` for Node's `fetch` and `http`, ssh (git over ssh)
+  through `bn-ssh-proxy` (an HTTP CONNECT to port 22; `/etc/ssh/ssh_config.d/bedrock-now.conf`), and bn-coded keeps
+  them in what Run & test and launch.json's *Start* run with; `NO_PROXY` keeps the gateway (LiteLLM, the shared MCP
+  server) and the sandbox's own loopback (dev servers, previews) direct. Anything that ignores them has no route at all
+  (and the internal networks resolve no outside names). The proxy:
+  - passes plain HTTP (absolute URLs; hop-by-hop and proxy headers dropped) and CONNECT tunnels (TLS, ssh) on ports
+    80, 443 and 22 only;
+  - looks each name up once itself, checks every address it gets and connects to exactly an address it checked — a
+    name that answers differently the next time (DNS rebinding) cannot swap it. Refused: loopback, RFC 1918,
+    shared/CGNAT (100.64/10, Tailscale's), link-local (169.254/16: the cloud's metadata address), multicast,
+    reserved, documentation and benchmarking ranges, IPv6 unique-local, link-local, site-local and multicast, and the
+    IPv6 forms that carry a refused IPv4 address (mapped, NAT64, 6to4); also what it finds at start and every minute:
+    Docker's names for this computer (`host.docker.internal`, `gateway.docker.internal` …), its default gateways and
+    its own networks — refused even where an unusual Docker address pool makes them look public;
+  - refuses before any lookup names of one label (containers, `localhost`), names under `.localhost`, `.local`,
+    `.internal`, `.lan`, `.home.arpa`, `.test`, `.invalid` and `.onion`, and IP addresses in any form but `a.b.c.d`
+    (`127.1`, `2130706433`, `0x7f.0.0.1`, `0177.0.0.1`); names are read in IDNA, without a trailing dot;
+  - limits a request's header to 16 KB and 64 lines, 512 connections at once, 10 s per lookup, 15 s per connection
+    and 15 minutes without data; WebSocket upgrades in plain HTTP go through CONNECT instead;
+  - logs every refusal (`./stack logs terminal-egress`): method, name, port, the address it resolved to and why —
+    never a path, a header or a body; at most 20 per 10 seconds, then a count. Nothing it allows is logged.
+
+  `TERMINAL_EGRESS_ALLOW` in `.env` narrows it to the names listed (each with the names under it; `name:PORT` or
+  `*:PORT` opens another port, `*` stands for every name) and `TERMINAL_EGRESS_DENY` refuses names whatever ALLOW
+  says; neither can open a private address or this computer. Settings › Claude Code › *Sandbox internet access*
+  offers **Internet only** (this, the default; blank and an older install's `on` mean it too), **+ this computer**
+  (`host`, next item) and **Off**; opening it further (off, internet, host) works only from this computer, closing it
+  from anywhere, and the sandbox restarts. What it does not stop: what is in the workspace can still be sent to any
+  public address (the proxy limits where, not what; names asked for can carry data too, through its lookups); a CDN
+  that fronts many sites is one name to the lists; a computer whose own address on its network is public (not RFC
+  1918) is not known to the proxy as this computer and stays reachable at that address. `./stack test` and the e2e
+  suite check the refusals from inside the sandbox (no route around the proxy; this computer, its published ports,
+  private, link-local, ULA and loopback addresses, also behind public names that resolve to them, all 403) and that
+  npm, pip, git (https and ssh), curl and Node's fetch work through it.
+- [x] **`TERMINAL_EGRESS=host`: this computer's services too, as up to v0.10.0.** `compose.terminal-egress.yaml` puts
+  the sandbox itself on `terminal-out` (no proxy): any address, any port, any protocol. On Docker Desktop the internet
+  then includes your Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000`
+  directly, past the gateway's list (but not past its key's: the routes above, 403 for the rest, which `./stack test`
+  checks), shared-mcp on `:8765` (with the token it has anyway), the portal and its login on `127.0.0.1:PORTAL_PORT`
+  (it needs the password), dev servers, and the Docker API if *Expose daemon on tcp://localhost:2375* is on (that
+  would be the whole machine). The login's lock-out after wrong passwords is global, not per client: Docker Desktop
+  delivers your browser's requests and the sandbox's from the same address (its bridge gateway; checked), so
+  per-address counting could not tell them apart. A runaway process in the sandbox could therefore keep the login (and
+  the unlock) locked for up to five minutes at a time — `./stack terminal disable` or `TERMINAL_EGRESS=off` ends that;
+  it cannot get in. In the container the names `host.docker.internal` and `gateway.docker.internal` point at an
+  unroutable address — a speed bump only: the address itself stays reachable. On Linux a container can reach the host
+  through its network's gateway address (services listening on `0.0.0.0`), and the machines of your network are
+  reachable too. *Internet only* (the default) or *Off* closes these paths again.
 - [x] **A fresh password to open it.** The terminal host (`terminal.PORTAL_HOST`) needs the portal session **and**
   an unlock: the portal password typed again on that host's own page (`POST /.bn/unlock`; same lock-out as the
   login form: five wrong ones lock both for a while). The unlock is a signed cookie, host-only on the terminal
@@ -753,7 +792,8 @@ reaches is the container — with the three exceptions under *Threat model*.
 **Threat model.** Someone with your portal session cookie but not the password gets the unlock page. Someone with
 both (or with your unlocked browser), or a malicious package or prompt that Claude Code runs in there, gets a shell
 in the container: your workspace folder, the terminal's key within its budget, the shared store, the internet
-(and, with it, your Mac's loopback services through Docker Desktop, unless `TERMINAL_EGRESS=off`) — not your other
+through its egress proxy (and with `TERMINAL_EGRESS=host` also your Mac's loopback services through Docker Desktop and
+your network) — not your other
 files, the stack's secrets or its other services. Three things reach further than the container and are yours to
 weigh:
 
@@ -762,9 +802,9 @@ weigh:
    or Makefile target, Claude Code's `.claude/settings.json` hooks or `.mcp.json` — each runs on your computer
    when you open the folder there with the tool that reads it (git, your editor, direnv, npm, `claude-bedrock`).
    Use a workspace you only open in the terminal, or review it like code from someone else.
-2. **Your Mac's own services** (Docker Desktop, egress on): see above — LiteLLM directly (its key still limited
-   to Claude Code's routes), shared-mcp, the portal's login (wrong guesses can keep it locked for you), dev
-   servers, an exposed Docker API.
+2. **Your Mac's own services** (only with `TERMINAL_EGRESS=host`, on Docker Desktop): see above — LiteLLM directly
+   (its key still limited to Claude Code's routes), shared-mcp, the portal's login (wrong guesses can keep it locked
+   for you), dev servers, an exposed Docker API.
 3. **The knowledge bases.** `write_file(…, ingest_to=…)` through the shared MCP server can put text into a
    knowledge base that Chat later answers from (a prompt-injection route into Chat sessions).
 
@@ -1624,7 +1664,8 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   there. A process that replaces the tmux server or bn-coded itself is beyond that: the sandbox is not a boundary
   against itself (see the start of this section).
 - [x] **Run & test.** bn-coded lists the workspace's tasks from its top folder's files, read as text — regular files of
-  at most 1 MiB, never through a link or from a FIFO, and `make` is never asked (a Makefile's `$(shell …)` would run):
+  at most 1 MiB, never through a link or from a FIFO, and `make` (GNU make, the image's own) is never asked to list them
+  (a Makefile's `$(shell …)` would run):
   `package.json`'s scripts, a Makefile's `name:` lines, `pyproject.toml`'s `[project.scripts]` and
   `[tool.poetry.scripts]` lines, each read in linear time (tested on crafted files). A task runs only through a fixed
   wrapper with its name as one argument after `--`, with the image's own programs by their absolute path (root's alone,
@@ -1821,8 +1862,9 @@ action, including those a file, a web page or a tool's output talks Claude into.
   the setting the page offers no Bypass, and the code container refuses it whatever a page sends.
 - **A dialog every time** you switch to it, naming the real risks: the workspace is your folder (git hooks, git
   config, package scripts, `.vscode/tasks.json`, `.envrc` and Claude Code settings in it run on your computer when
-  you use it there), the sandbox's internet access (`TERMINAL_EGRESS`; with it on, anything in the workspace can be
-  sent anywhere), and the key's budget, spent without pauses.
+  you use it there), the sandbox's internet access (`TERMINAL_EGRESS`; unless it is off, anything in the workspace can
+  be sent anywhere — and with `host` this computer's services can be reached too), and the key's budget, spent without
+  pauses.
 - **Visible while on**: a red strip above the prompt box with *Switch to Manual*, ⏵⏵ in the tab title, the portal's
   Code badge red.
 - **Never kept.** Not remembered for new sessions (they start in your usual mode); it ends with the session's

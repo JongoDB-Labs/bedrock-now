@@ -92,6 +92,34 @@ All notable changes to bedrock-now are documented here. The format follows
   stop is left out there and the next prompt is refused once the spend logs reach the budget. A switch between Claude
   and another provider restarts the process for it at the next turn.
 - **The Default model's confirmation** in Settings names the model's price and how it works with Claude Code.
+- **The sandbox's internet no longer reaches this computer's services** (the browser terminal and the Code page). The
+  sandbox now sits on internal networks only; its one way out is an egress proxy of its own (`terminal-egress`,
+  `compose.terminal-proxy.yaml`: a small Node program with no dependencies, on the terminal's pinned Node image, built
+  here; about 20 MB of memory idle, 45 kB of disk beside the layers it shares). It passes HTTP and HTTPS — and ssh
+  for git, by CONNECT — to public addresses on ports 80, 443 and 22, checked after its own DNS lookup and connected to
+  exactly the address it checked (no DNS-rebinding window), and refuses loopback, private (RFC 1918), shared/CGNAT
+  (Tailscale's too), link-local (the cloud's metadata address), multicast, reserved and IPv6 unique-local and
+  link-local addresses, the IPv6 forms that carry such an IPv4 address, Docker's names and addresses for this computer
+  (`host.docker.internal`, the host gateway, ports published on its `127.0.0.1`), names that are never public
+  (`localhost`, `.local`, `.internal`, container names) and IP addresses written in other than `a.b.c.d`. Anything that
+  ignores the proxy has no route at all. Every process in the sandbox is told about it (`HTTP_PROXY`/`HTTPS_PROXY`,
+  `NODE_USE_ENV_PROXY`, ssh's `ProxyCommand`; Run & test and launch.json's dev servers keep them), while Claude Code's
+  way to LiteLLM through its gateway and the dev-server previews stay direct. Refusals are logged without paths
+  (`./stack logs terminal-egress`); `./stack test` and the e2e suite check them from inside the sandbox.
+- **Settings › Claude Code › Sandbox internet access** (`TERMINAL_EGRESS`) is a choice of three: **Internet only**
+  (`internet`, the new default), **+ this computer** (`host`: the sandbox itself on the internet, with this computer's
+  services and your network — how v0.10.0 and earlier always worked) and **Off**. Opening it further works only from
+  the computer running bedrock-now; closing it works from anywhere. The terminal restarts with the change (its shells
+  and open Code sessions end). `TERMINAL_EGRESS_ALLOW` (only these names; `name:PORT` or `*:PORT` opens another port)
+  and `TERMINAL_EGRESS_DENY` (never these) in `.env` narrow the proxy further.
+- **Upgrading:** nothing to edit. A blank `TERMINAL_EGRESS` — and an explicit `on` (`true`/`1`/`yes`), which only ever
+  meant "the internet" — now reads as `internet`, so an updated install loses the sandbox's way to this computer's own
+  services and your network, and keeps the internet; `off` stays off. The update's *What's new* says so once, with the
+  way back (*+ this computer*, or `TERMINAL_EGRESS=host`). `./stack rollback` to v0.10.0 removes the proxy and reads
+  every value but `off` as on again.
+- **`make` in the sandbox**: the terminal's image has GNU make (Debian's, refreshed weekly with the other packages), so
+  Run & test now offers a Makefile's targets (`make -- <target>`, the image's own `/usr/bin/make`) instead of only
+  listing them.
 
 ## [0.10.0] - 2026-10-17
 

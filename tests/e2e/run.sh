@@ -266,7 +266,7 @@ spend_start   # with --reuse: only this run's spend is counted
 # terminal_probe CONTAINER HOST_ADDR — inside the terminal: what it can reach. Prints "name<TAB>result" lines.
 # HOST_ADDR: Docker's address for this computer (host-gateway; on Docker Desktop its loopback services answer there).
 terminal_probe() {
-  docker exec -i -e HG="$2" -e LP="$(get_env LITELLM_PORT)" "$1" bash -s <<'SH'
+  docker exec -i -e HG="$2" -e LP="$(get_env LITELLM_PORT)" -e PP="$(get_env PORTAL_PORT)" "$1" bash -s <<'SH'
 tcp() { if timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; then echo open; else echo closed; fi; }
 for t in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 litellm:4000 shared-mcp:8000 stt:8000 caddy:8080 \
          gateway:8080 gateway:8090 gateway:8081 gateway:7681 gateway:7682 gateway:80; do
@@ -315,6 +315,35 @@ printf 'user\t%s\n' "$(id -u)"
 printf 'workspace\t%s\n' "$(ls -a /workspace | tr '\n' ' ')"
 printf 'docker-socket\t%s\n' "$(ls /var/run/docker.sock /run/docker.sock 2>&1 | grep -c 'No such file')"
 printf 'claude\t%s\n' "$(claude --version 2>&1 | head -n 1)"
+printf 'make\t%s\n' "$(make --version 2>&1 | head -n 1)"
+# --- its way out (TERMINAL_EGRESS=internet, the default): the egress proxy alone. Every process is told about it; nothing
+# has a route around it; through it, public addresses work (curl, npm, pip, git, Node's fetch, ssh to port 22) and this
+# computer, its published ports (this stack's own: LiteLLM's and the portal's), private, link-local, ULA and loopback
+# addresses — also behind a public name — are refused (403) before any connection is made.
+printf 'egress-env\t%s %s %s\n' "${HTTPS_PROXY:-none}" "${NODE_USE_ENV_PROXY:-none}" "$(printf '%s' "${NO_PROXY:-}" | tr ',' '\n' | grep -cx gateway)"
+x() { env -u NO_PROXY -u no_proxy curl -g -x http://egress:3128 -s -m 15 "$@" || true; }
+printf 'direct-internet\t%s\n' "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ || true)"
+printf 'direct-host\t%s %s\n' "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://$HG:$LP/" || true)" \
+  "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://$HG:$PP/" || true)"
+printf 'proxy-host\t%s\n' "$(for u in "http://host.docker.internal:$LP/" "http://gateway.docker.internal:$LP/" "http://$HG:$LP/v1/models" "http://$HG:$PP/" \
+  "http://127.0.0.1:$LP/" "http://localhost:$PP/" "http://[::1]:$LP/" "http://[::ffff:127.0.0.1]:$LP/"; do x -o /dev/null -w '%{http_code} ' "$u"; done)"
+printf 'proxy-private\t%s\n' "$(for u in http://10.255.255.1/ http://172.31.255.254/ http://192.168.255.254/ http://100.100.100.100/ \
+  http://169.254.169.254/latest/meta-data/ "http://[fd00::1]/" "http://[fe80::1]/" http://portal:8000/ http://litellm:4000/; do x -o /dev/null -w '%{http_code} ' "$u"; done)"
+# (port 22 is open through it: this computer's address on it is refused for the address itself)
+printf 'proxy-host-ssh\t%s\n' "$(x -o /dev/null -w '%{http_connect}' "https://$HG:22/")"
+printf 'proxy-tls-private\t%s\n' "$(for u in https://10.255.255.1/ "https://$HG:$LP/" https://169.254.169.254/; do x -o /dev/null -w '%{http_connect} ' "$u"; done)"
+# public names that resolve to private addresses (DNS "rebinding" to this machine or the LAN): refused after the lookup
+printf 'proxy-rebind\t%s\n' "$(for u in http://127.0.0.1.nip.io/ http://10.255.255.1.nip.io/ http://169.254.169.254.nip.io/; do x "$u" | grep -c 'resolves to'; done | tr '\n' ' ')"
+printf 'proxy-port\t%s\n' "$(x -o /dev/null -w '%{http_connect}' https://registry.npmjs.org:25/)"
+printf 'proxy-public\t%s %s\n' "$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/is-number || true)" \
+  "$(curl -s -m 20 -o /dev/null -w '%{http_code}' http://registry.npmjs.org/is-number || true)"
+printf 'node-fetch\t%s\n' "$(node -e "fetch('https://registry.npmjs.org/is-number').then((r) => console.log(r.status), (e) => console.log('error', e.cause && e.cause.code))" 2>&1 | head -n 1)"
+d="$(mktemp -d)"
+printf 'npm-install\t%s\n' "$(cd "$d" && npm install --no-audit --no-fund --loglevel=error is-number@7.0.0 >/dev/null 2>&1 && test -f node_modules/is-number/package.json && echo ok || echo failed)"
+printf 'pip-download\t%s\n' "$(python3 -m pip download --no-deps -q -d "$d/pip" six==1.16.0 >/dev/null 2>&1 && ls "$d/pip" | grep -c '^six-' || echo failed)"
+rm -rf "$d"
+printf 'git-https\t%s\n' "$(GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote https://github.com/octocat/Hello-World.git HEAD 2>/dev/null | wc -l | tr -d ' ')"
+printf 'git-ssh\t%s\n' "$(timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -T git@github.com 2>&1 | grep -c 'Permission denied (publickey)')"
 SH
 }
 if [ "$TERMINAL" = 1 ]; then
@@ -342,16 +371,30 @@ if [ "$TERMINAL" = 1 ]; then
               gateway-key-generate=404 gateway-bedrock=404 gateway-spend-logs=404 gateway-chat-completions=404 \
               gateway-unclean="404 404 404 404 404 " ttyd-tcp=000 tcp-listeners=0 ttyd-socket=200 proxy-secret-in-env=0 \
               preview-socket=400 preview-secret-in-env=0 \
-              host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2; do
+              host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2 \
+              egress-env="http://egress:3128 1 1" direct-internet=000 direct-host="000 000" \
+              proxy-host="403 403 403 403 403 403 403 403 " proxy-private="403 403 403 403 403 403 403 403 403 " \
+              proxy-host-ssh=403 proxy-tls-private="403 403 403 " proxy-rebind="1 1 1 " proxy-port=403 proxy-public="200 200" node-fetch=200 \
+              npm-install=ok pip-download=1 git-https=1 git-ssh=1; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
     [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "user" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
-    # LiteLLM through the loopback: reachable on Docker Desktop (the 200 shows it), but the key gets 403 off its
-    # routes (and 404 for a ../ path, which LiteLLM routes nowhere); elsewhere not reachable at all
+    # LiteLLM through this computer's loopback: with the egress proxy (the default) refused by it, and no route around
+    # it (direct-host above); with TERMINAL_EGRESS=host reachable on Docker Desktop (the 200 shows it), but the key gets
+    # 403 off its routes (and 404 for a ../ path, which LiteLLM routes nowhere)
     lbr="$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "loopback-litellm" { print $2 }')"
-    case "$(uname -s):$lbr" in Darwin:"200 403 403 403 404" | Linux:"000 000 000 000 000" | Linux:"200 403 403 403 404") ;;
-      *) bad="$bad loopback-litellm:$lbr" ;; esac
+    case "$(uname -s):$lbr" in *:"403 403 403 403 403") ;; *) bad="$bad loopback-litellm:$lbr" ;; esac
     printf '%s\n' "$probe" | grep -q '^claude	[0-9.]* (Claude Code)' || bad="$bad no-claude"
+    printf '%s\n' "$probe" | grep -q '^make	GNU Make [0-9]' || bad="$bad no-make"
+    # the proxy's log: each refusal, with the address and why — never a path
+    eg="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal-egress)"
+    elog="$(docker logs "$eg" 2>&1)"; printf '%s\n' "$elog" > "$LOGS/terminal-egress.log"
+    printf '%s\n' "$elog" | grep -q '"event":"refused".*"host":"169.254.169.254".*"why":"link-local' || bad="$bad egress-log-no-refusal"
+    printf '%s\n' "$elog" | grep -q 'meta-data' && bad="$bad egress-log-has-a-path"
+    printf '%s\n' "$elog" | grep -q '"address":"127.0.0.1".*resolves to 127.0.0.1' || bad="$bad egress-log-no-rebind"
+    printf '%s\n' "$elog" | grep -q "\"port\":22,\"address\":\"$hg\",\"status\":403" || bad="$bad egress-log-no-host-gateway"
+    [ "$(docker inspect -f '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}}' "$eg" 2>/dev/null)" = "65534:65534 true [ALL]" ] ||
+      bad="$bad egress-not-hardened"
     # Its key is its own (claude-code-terminal), never the claude-code key of claude-bedrock on this computer
     ins="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$tc" 2>/dev/null)"
     ! env_has LITELLM_KEY_CLAUDE_CODE "$ins" || bad="$bad has-the-claude-code-key"
@@ -366,7 +409,7 @@ if [ "$TERMINAL" = 1 ]; then
     out="$(docker exec "$tgw" sh -c 'for h in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 stt:8000; do wget -q -T 3 -O /dev/null "http://$h/" 2>&1 | head -n 1 | grep -q "bad address" || echo "$h"; done; wget -q -T 5 -O /dev/null http://litellm:4000/health/liveliness || echo litellm-unreachable' 2>&1)"
     [ -z "$out" ] || bad="$bad gateway-neighbours:$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80)"
     if [ -z "$bad" ]; then
-      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions and ../ or // paths) and the internet; LiteLLM via the loopback ($lbr): its key only on its routes; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd on a socket only (no TCP listener), 407 at the gateway without the secret, which is nowhere in the sandbox; the gateway's neighbours: LiteLLM, not the portal, Open WebUI or the data; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
+      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions and ../ or // paths) and the internet through its egress proxy alone (no direct route: 000 to the registry and this computer; curl, Node's fetch, npm install, pip download, git over https and ssh work through it; refused with 403 before any connection: host.docker.internal, gateway.docker.internal, the host gateway's LiteLLM and portal ports, 127.0.0.1, localhost, ::1, ::ffff:127.0.0.1, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254.169.254, fd00::1, fe80::1, the stack's containers by name, CONNECT to private addresses, port 25, and public names resolving to 127.0.0.1, 10.x and the metadata address; refusals logged without paths; the proxy runs as 65534, read-only, no capabilities); LiteLLM via the loopback ($lbr): refused; make there; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd on a socket only (no TCP listener), 407 at the gateway without the secret, which is nowhere in the sandbox; the gateway's neighbours: LiteLLM, not the portal, Open WebUI or the data; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
     else record terminal terminal-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/terminal-isolation.log)"; fi
     # A failed request to ttyd (the terminal stopped) writes no request headers — so not the secret — into the
     # gateway's log; the secret goes to the main Caddy's wget on stdin, never onto a command line here

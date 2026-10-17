@@ -1658,7 +1658,8 @@ releases_between() {
 newest_release_tags() { _git -c versionsort.suffix=- tag -l 'v[0-9]*' --sort=-v:refname 2>/dev/null | grep -v -- '-' || true; }
 
 # update_whats_new [FROM_COMMIT] — after an update to a new version: each release it brought, with its headline (all of
-# them, when it jumped over several), then a few lines: voice, the Code page (while on: it is on by default now), remote
+# them, when it jumped over several), then a few lines: voice, the Code page (while on: it is on by default now), the
+# sandbox's internet (once, from a version before its egress proxy), remote
 # access and updates (each with the command that changes it, the last two only while off: the one-click helper, or on
 # a release its automatic updates) and the release notes
 update_whats_new() {
@@ -1671,6 +1672,14 @@ update_whats_new() {
   if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
   else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
   ! code_ready || printf '  Code page: on — the Code tab, Claude Code in the browser (sandbox folder %s); ./stack code disable turns it off\n' "$(get_env TERMINAL_WORKSPACE)"
+  # the sandbox's way out changed under an update from a version without the egress proxy (v0.10.0 and earlier):
+  # said once, with the way back. An older install's TERMINAL_EGRESS=on (or blank) is the new default; nothing to edit.
+  if terminal_on && [ -n "${1:-}" ] && [ -e "$STACK_DIR/.git" ] && ! _git cat-file -e "$1:terminal/egress/bn-egress.mjs" 2>/dev/null; then
+    case "$(terminal_egress_mode)" in
+      internet) printf "  Sandbox internet: public addresses only now, through an egress proxy — this computer's services and your network are closed to it (Settings › Claude Code › Sandbox internet access: \"+ this computer\" opens them again)\n" ;;
+      host) printf '  Sandbox internet: TERMINAL_EGRESS=host keeps this computer'"'"'s services and your network open to it (internet, the new default, closes them)\n' ;;
+    esac
+  fi
   remote_on || printf '  Remote access: off — ./stack remote enable tailscale (docs/remote.md)\n'
   if ! helper_installed; then printf '  One-click updates from Home: ./stack helper install\n'
   elif [ -n "$tag" ] && ! auto_on; then printf '  Automatic updates: off — ./stack helper auto on installs new releases at night\n'; fi

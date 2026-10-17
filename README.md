@@ -110,9 +110,9 @@ run depending on your connection (about 2 minutes after that), and under $0.05 o
 and the Code page are built on your computer during the first setup (a few minutes more, about 1.6 GB).
 
 **On a server, or in a script (`--yes`, nobody at the screen):** the Code page and its sandbox come on by default,
-with internet access — and, on Docker Desktop, a way to this computer's own services through Docker's host address.
-To keep them off, write it into `.env` before the first setup (setup keeps a `.env` it finds); or keep them on
-without internet with `TERMINAL_EGRESS=off`, which closes both:
+with internet access to public addresses through the sandbox's egress proxy (not this computer's own services or your
+network). To keep them off, write it into `.env` before the first setup (setup keeps a `.env` it finds); or keep them
+on without internet with `TERMINAL_EGRESS=off`:
 
 ```bash
 git clone https://github.com/JongoDB-Labs/bedrock-now && cd bedrock-now
@@ -482,13 +482,18 @@ It is a sandbox, not a shell on your computer:
   404 to everything else: LiteLLM's admin UI and API, the Bedrock pass-through, the portal and its login, Open
   WebUI, the databases. It never holds the master key or the `claude-code` key of `claude-bedrock` on your
   computer, and its own key works only for those LiteLLM paths, wherever it is used.
-- Out, it reaches the internet (git clone, npm, pip, Claude Code's web fetch). On Docker Desktop that also means
-  your computer's own services through Docker's host address — LiteLLM on `127.0.0.1:4000` (its key still only
-  for Claude Code's paths) and the shared MCP server on `:8765` directly, the portal's login (without the password
-  a runaway process can only keep the login's lock-out going for you), any dev server, and the Docker API if you
-  exposed it on `tcp://localhost:2375`. The name `host.docker.internal` points nowhere in the container, but the
-  address stays reachable: `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, takes the internet and that path
-  away.
+- Out, it reaches **public internet addresses only** (git clone, npm, pip, Claude Code's web fetch), through an
+  egress proxy of its own: the sandbox itself is on internal networks only, and the proxy passes HTTP and HTTPS (and
+  ssh, for git) on ports 80, 443 and 22 to public addresses, checked after its own DNS lookup — never to this
+  computer's own services (Docker's host address, ports published on `127.0.0.1`), your local network, private,
+  link-local (the cloud metadata address) or IPv6 unique-local addresses. Anything that ignores the proxy has no
+  route at all; refusals are logged (`./stack logs terminal-egress`). Settings › Claude Code › **Sandbox internet
+  access** (`TERMINAL_EGRESS`) offers three choices: **Internet only** (the default), **+ this computer**
+  (`host`: the sandbox on the internet itself, as v0.10.0 and earlier always had it — then LiteLLM on
+  `127.0.0.1:4000`, still with its own key's limits, the shared MCP server, the portal's login, any dev server, the
+  Docker API if you exposed it, and your network are reachable from it) and **Off** (only LiteLLM and the shared MCP
+  server). Opening it further works only from this computer. `TERMINAL_EGRESS_ALLOW` (only these names; `name:PORT`
+  opens another port) and `TERMINAL_EGRESS_DENY` (never these) in `.env` narrow it further.
 - Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
   ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
   page. Whatever answers there, its page runs only ttyd's own script and can set or clear no cookies.
@@ -548,7 +553,7 @@ folder `~/bedrock-now-workspace`, and says so; `./stack update` does the same on
 setup says why and goes on without it; if an image does not build or the terminal's key cannot be made, it is
 turned off again and the next setup or update tries again. What it can do on its own stays off until you allow it:
 *Bypass permissions* and *Auto mode*, remote access to the sandbox (`REMOTE_TERMINAL`) and remote previews; the
-sandbox's internet access keeps its default (on; `TERMINAL_EGRESS=off`).
+sandbox's internet access keeps its default (public addresses only, through its egress proxy; `TERMINAL_EGRESS`).
 
 While it is off, the **Code** tab stays in the sidebar, muted with an *off* pill (on a phone **More → Code (off)**):
 it then shows what the Code page is, what turning it on does (with the folder Claude would see) and **Turn on in
@@ -852,14 +857,14 @@ maps to it).
   and the credentials git uses. [docs/security.md](docs/security.md#the-git-panel)
 - **Run & test** (*Run* in the status bar, ⋯ → *Run & test*, or the command palette). The workspace's tasks, read from
   the files in its top folder — `package.json`'s scripts, the targets of the Makefile `make` would read (its `name:`
-  lines; listed but not offered while the sandbox has no `make`, and its image has none), `pyproject.toml`'s entry
-  points (`[project.scripts]`, `[tool.poetry.scripts]`) — and `.claude/launch.json`'s dev servers (*Start*, as in
-  Ports), each with what it runs. **Run** shows the task in full first — each argument of its fixed wrapper (`npm run
-  -- <name>`, `make -- <target>`, or `python3` with bedrock-now's loader for an entry point — the image's own
-  programs, by their path), the script with npm's `pre…` and `post…` scripts, the recipe or the entry point, and a
-  workspace `.npmrc` (its secrets' values hidden) — the first time in this browser and again whenever it changed; then
-  it runs it in a new window of the terminal, without input (a test runner runs once instead of watching; Ctrl-C there
-  stops it), in an environment of its own: a few of the sandbox's variables, its `PATH` with the image's folders
+  lines, run by the sandbox image's own GNU `make`), `pyproject.toml`'s entry points (`[project.scripts]`,
+  `[tool.poetry.scripts]`) — and `.claude/launch.json`'s dev servers (*Start*, as in Ports), each with what it runs.
+  **Run** shows the task in full first — each argument of its fixed wrapper (`npm run -- <name>`, `make -- <target>`,
+  or `python3` with bedrock-now's loader for an entry point — the image's own programs, by their path), the script
+  with npm's `pre…` and `post…` scripts, the recipe or the entry point, and a workspace `.npmrc` (its secrets' values
+  hidden) — the first time in this browser and again whenever it changed; then it runs it in a new window of the
+  terminal, without input (a test runner runs once instead of watching; Ctrl-C there stops it), in an environment of
+  its own: a few of the sandbox's variables (its egress proxy's among them), its `PATH` with the image's folders
   first, no `~/.npmrc` or global npmrc, nothing of tmux's (like launch.json's *Start*, which also shows the program
   file it runs). A task changed after you looked does not run. Neither runs while the terminal's tmux has hooks or
   loader variables (`LD_*`, `BASH_FUNC_*` …) that something in the sandbox set: the page says so, and `tmux set-hook
@@ -934,7 +939,7 @@ cannot install a service worker there. Details:
 #### Where it runs
 
 It runs in the [browser terminal's](#claude-code-in-the-browser) sandbox — the same container, workspace
-folder, key (`claude-code-terminal`) and budget (`BUDGET_TERMINAL`), internet switch (`TERMINAL_EGRESS`) and
+folder, key (`claude-code-terminal`) and budget (`BUDGET_TERMINAL`), internet access (`TERMINAL_EGRESS`) and
 remote switch (`REMOTE_TERMINAL`) — so `enable` turns the terminal on when it is off, and `./stack terminal
 disable` turns the Code page off with it. The page itself comes from a separate container that holds no LiteLLM
 key and mounts no folder of yours: Claude Code runs in the sandbox (started there by a small spawn server on a
@@ -1364,10 +1369,10 @@ troubleshooting: [docs/voice.md](docs/voice.md).
   `raw.githubusercontent.com` to estimate the download. Unauthenticated, https only; nothing about your
   install is sent (GitHub sees your IP address, as for any download). Settings → Updates & backups
   (`UPDATE_CHECK`) turns it off.
-- **The browser terminal and the Code page, only if you turn them on:** what you run in the sandbox may use the
-  internet (git, npm, pip, Claude Code's web fetch) unless `TERMINAL_EGRESS=off`; Claude Code there still talks only
-  to Bedrock, through its gateway and LiteLLM, with its non-essential traffic off. Building their images downloads
-  Debian packages, Claude Code and the page's packages from npm, and ttyd from GitHub.
+- **The browser terminal and the Code page (on by default):** what you run in the sandbox may use the public internet
+  (git, npm, pip, Claude Code's web fetch) through its egress proxy unless `TERMINAL_EGRESS=off`; Claude Code there
+  still talks only to Bedrock, through its gateway and LiteLLM, with its non-essential traffic off. Building their
+  images downloads Debian packages, Claude Code and the page's packages from npm, and ttyd from GitHub.
 - **Remote access, only if you turn it on:** the Tailscale container talks to Tailscale's coordination servers; in
   own-domain mode Caddy asks Let's Encrypt for certificates through Cloudflare's DNS API.
 - **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;

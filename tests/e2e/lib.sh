@@ -268,10 +268,11 @@ teardown() {
     # The browser terminal (--terminal) lives in overlay files that `down` without them does not read: its volume
     # and networks go by name.
     docker volume rm "${PROJECT}_terminal-home" "${PROJECT}_terminal-socket" >/dev/null 2>&1 || true
-    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" "${PROJECT}_terminal-link" >/dev/null 2>&1 || true
+    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" "${PROJECT}_terminal-link" "${PROJECT}_terminal-proxy" >/dev/null 2>&1 || true
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
                "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous" \
-               "$PROJECT/terminal:local" "$PROJECT/terminal:previous" "$PROJECT/code:local" "$PROJECT/code:previous"; do
+               "$PROJECT/terminal:local" "$PROJECT/terminal:previous" "$PROJECT/terminal-egress:local" "$PROJECT/terminal-egress:previous" \
+               "$PROJECT/code:local" "$PROJECT/code:previous"; do
       docker image rm "$img" >/dev/null 2>&1 || true
     done
     for id in $(docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null); do

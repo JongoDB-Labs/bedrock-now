@@ -3,8 +3,8 @@ on with the Code page). No model calls: a package.json at the workspace's top wi
 passes, each run from the page's Run panel — shown in full first, then run by bn-coded as `npm run -- <name>` in a new
 window of the terminal's tmux, through its runner — and their exit status and output in the Problems list; a row opens
 its window in the terminal panel; a script changed after the page showed it is refused (409); the Makefile's targets
-are listed, and offered only where the sandbox has make (its image has none). The workspace's own package.json and
-Makefile, if any, are put back afterwards."""
+are listed and offered (the sandbox's image has make: /usr/bin/make), and one runs from the panel as `make -- <target>`.
+The workspace's own package.json and Makefile, if any, are put back afterwards."""
 
 from __future__ import annotations
 
@@ -75,6 +75,9 @@ def run_problems(ctx):
         expect(fails and fails["argv"][2:] == ["run", "--", "bn-e2e-fails"] and fails["argv"][0].startswith("/usr/") and re.fullmatch(r"[0-9a-f]{64}", fails["digest"] or ""),
                f"the task listed: {fails}")
         make = [t for t in tasks if t["source"] == "make"]
+        if had_mk is None:   # (our Makefile: its target offered, by the image's own make)
+            mt = next((t for t in make if t.get("name") == "bn-e2e-target"), None)
+            expect(mt and not mt.get("error") and mt["argv"] == ["/usr/bin/make", "--", "bn-e2e-target"], f"the Makefile's target: {mt}")
         make_note = "make targets listed, not offered (no make in the sandbox)" if make and all(t.get("error") for t in make) else "make targets offered"
         # the page: Run shows the task in full, then runs it in the terminal; Problems gets its exit status and output
         page.get_by_test_id("run-status").click()
@@ -108,6 +111,22 @@ def run_problems(ctx):
         see(page.get_by_test_id("terminal")).not_to_have_class(re.compile(r"\bhidden\b"), timeout=10000)
         page.wait_for_timeout(3000)
         shot(page, "code-run-terminal-window")
+        # the Makefile's target, from the panel too: `make -- bn-e2e-target` by the image's own make
+        if had_mk is None:
+            if not page.get_by_test_id("run-panel").is_visible():
+                page.get_by_test_id("run-status").click()
+            row = page.locator("[data-testid=run-panel] [data-testid=run-task][data-name='bn-e2e-target']")
+            see(row).to_be_visible(timeout=20000)
+            row.get_by_test_id("run-start").click()
+            dlg = page.get_by_test_id("run-confirm")
+            see(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(3)
+            argv = [t.split(" — ")[0] for t in dlg.get_by_test_id("run-argv").locator("li").all_inner_texts()]
+            expect(argv == ["/usr/bin/make", "--", "bn-e2e-target"], f"make's confirmation: {argv}")
+            dlg.get_by_test_id("run-confirm-run").click()
+            mk = _problem(page, "bn-e2e-target", "ok (exit 0)")
+            see(mk.get_by_test_id("problem-tail")).to_contain_text("bn-e2e from make")
+            make_note = "the Makefile's target offered and run from the panel (/usr/bin/make -- bn-e2e-target: ok, its output in Problems)"
+            runs = c.api("GET", "/api/run/results")["json"]["runs"]   # (the count the refused run below must not change)
         # changed after it was shown (Claude, or any command in the sandbox, edits package.json): refused, nothing runs
         changed = json.loads(json.dumps(PKG))
         changed["scripts"]["bn-e2e-fails"] += " ; echo swapped"

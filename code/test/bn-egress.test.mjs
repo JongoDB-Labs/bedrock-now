@@ -340,3 +340,19 @@ test('config from the environment: blank lists allow every public name on 80, 44
   const d = eg.config({ TERMINAL_EGRESS_ALLOW: 'github.com', TERMINAL_EGRESS_DENY: 'evil.example' });
   assert.deepEqual([d.allow.entries.length, d.deny.entries[0].pattern], [1, 'evil.example']);
 });
+
+test('a handler that throws ends its own connection only, logged; the proxy goes on', async () => {
+  const lines = [];
+  const cfg = { allow: null, deny: null };   // listsRefuse reads cfg.deny.entries: a TypeError inside the handler
+  const worse = eg.createServer(cfg, { log: { info: (o) => lines.push(o), refused: () => {} } });
+  await new Promise((r) => worse.listen(0, '127.0.0.1', r));
+  const port = worse.address().port;
+  const once = () => new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => s.write('CONNECT example.com:443 HTTP/1.1\r\n\r\n'));
+    s.on('data', () => {}); s.on('error', () => {}); s.on('close', resolve);
+  });
+  await once(); await once();
+  assert.equal(lines.filter((l) => l.event === 'error').length, 2);
+  assert.ok(worse.listening);
+  worse.close();
+});

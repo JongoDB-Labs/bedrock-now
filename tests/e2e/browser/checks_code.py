@@ -2408,3 +2408,62 @@ def settings_code_auto(ctx):
             f"{b['reason']!r}, no card; Allow once: {ran_again}, without the reviewer; spend: {len(d['rows'])} requests ${d['total']:.4f} on "
             f"claude-code-terminal, the reviewer's {len(reviewer)} (Sonnet 5.5) ${rev_cost:.4f}; the setting off again"
             f"{'; ' + '; '.join(notes) if notes else ''}")
+
+
+def _egress_choice(ctx, label: str, value: str):
+    """Settings › Claude Code › Sandbox internet access: the chip `label` through the page and the update helper (it
+    brings the egress proxy up or removes it and recreates the terminal on its new networks, then the code container)."""
+    page, rec = ctx.page(f"settings-sandbox-internet-{value}")
+    login(page)
+    open_settings(page)
+    row = goto_setting(page, "TERMINAL_EGRESS")
+    expect(row.count() == 1, "no Sandbox internet access row in Claude Code")
+    chips = row.locator(".set-actions .set-seg button")
+    expect([t.strip() for t in chips.all_inner_texts()] == ["Internet only", "+ this computer", "Off"], f"its choices: {chips.all_inner_texts()}")
+    chip = row.locator(f".set-actions .set-seg button[data-value='{value}']")
+    if chip.get_attribute("aria-pressed") != "true":
+        chip.click()
+        _confirm(page)
+        ok, msg = _wait_job(page, timeout=300)
+        expect(ok, f"TERMINAL_EGRESS={value}: {msg}")
+        page.reload()
+        open_settings(page)
+        row = goto_setting(page, "TERMINAL_EGRESS")
+    see(row.locator(f".set-actions .set-seg button[data-value='{value}']")).to_have_attribute("aria-pressed", "true", timeout=20000)
+    row.scroll_into_view_if_needed()
+    shot(page, f"settings-sandbox-internet-{value}", mask=[".set-value", ".set-adv-value"])
+    rec.save()
+
+
+def _egress_state(c, host: bool, timeout=120):
+    """Wait for the (restarted) code container to say what the sandbox reaches (sandbox.egress / egressHost)."""
+    t0 = time.time()
+    while True:
+        try:
+            st = c.api("GET", "/api/state")
+            sb = (st["json"] or {}).get("sandbox") or {}
+            if st["status"] == 200 and sb.get("egress") is True and sb.get("egressHost") is host:
+                return
+        except Exception:  # noqa: BLE001 — the container is restarting
+            pass
+        expect(time.time() - t0 < timeout, f"the code container does not say egressHost={host}")
+        c.page.wait_for_timeout(1500)
+
+
+@check("settings", "settings-sandbox-internet")
+def settings_sandbox_internet(ctx):
+    """Settings › Claude Code › Sandbox internet access, end to end (no model calls): Internet only (the default) →
+    + this computer (TERMINAL_EGRESS=host: the proxy goes, the sandbox on the internet itself) → Internet only again (the
+    proxy back, built and started before the sandbox); each time the helper's job ends ok, the row shows the choice
+    after a reload and the restarted code container says it (its Bypass dialog's words). The terminal's isolation after
+    this is checked again by the CLI part (./stack test)."""
+    _need_helper(ctx)
+    c = Code(ctx, "settings-sandbox-internet")
+    _egress_state(c, False)
+    try:
+        _egress_choice(ctx, "+ this computer", "host")
+        _egress_state(c, True)
+    finally:
+        _egress_choice(ctx, "Internet only", "internet")
+    _egress_state(c, False)
+    return "Internet only → + this computer (the code container: egressHost true) → Internet only again (egressHost false), each through the update helper"
