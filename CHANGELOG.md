@@ -26,6 +26,16 @@ All notable changes to bedrock-now are documented here. The format follows
   second time with git 2.54 (code/Dockerfile's `gitnew` stage), where config-based hooks exist
   ([docs/security.md](docs/security.md#the-git-panel)).
 
+### Fixed
+
+- **Code page, previews: the address field keeps what you typed.** After a path's Enter the field took the frame's
+  path back a frame or two later, from an effect that ran after the next paint; a busy page ran it after your next
+  Enter, so a refused address (`http://…`) lost its red mark and the older path came back over it. Its own Enter now
+  shows the cleaned path at once, and only navigations from elsewhere (Reload, a chip, Ports) put the frame's path back.
+- **Code page: the toast for a new dev server.** The first list of listening ports (what runs already is no news) is
+  taken as soon as the page connects, not at the port watch's next tick up to 3 s later: a server started within those
+  seconds now gets its *Preview* toast too.
+
 ## [0.8.0] - 2026-10-17
 
 ### Added

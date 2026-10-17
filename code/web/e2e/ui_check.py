@@ -72,11 +72,13 @@ document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(e.
 class Page:
     """A fresh browser context + page with the safety listeners attached."""
 
-    def __init__(self, browser, base, name, memory=8, **ctx):
+    def __init__(self, browser, base, name, memory=8, init=None, **ctx):
         self.base = base
         self.name = name
         self.ctx = browser.new_context(**ctx)
         self.ctx.add_init_script(GUARD)
+        if init:
+            self.ctx.add_init_script(init)
         # the device's memory as the page sees it (src/preview/device.ts): fixed, whatever runs the checks — 2 GB makes it
         # a small device, with the previews' smaller caps
         self.ctx.add_init_script(f"Object.defineProperty(Navigator.prototype, 'deviceMemory', {{ get: () => {int(memory)}, configurable: true }});")
@@ -2388,6 +2390,54 @@ def devpreviews(browser):
     dlg.get_by_role("button", name="Cancel").click()
     # (expected: the 502 of bn-preview's "nothing is listening" page, in the frame; the 409 of the swapped entry)
     p.errors = [e for e in p.errors if "status of 502" not in e and "status of 409" not in e]
+    p.assert_clean()
+    p.close()
+
+
+# A starved renderer, as under CPU contention: animation frames and timers of 30 ms or more run late, while input and
+# DevTools' calls are handled at once (Chromium runs those first). Only the top page's (not the preview frame's).
+STARVED = """
+(() => {
+  if (window.top !== window) return;
+  const st = window.setTimeout.bind(window), ct = window.clearTimeout.bind(window);
+  window.__lag = 0;
+  window.requestAnimationFrame = (cb) => st(() => cb(performance.now()), 16 + window.__lag);
+  window.cancelAnimationFrame = (id) => ct(id);
+  window.setTimeout = (fn, ms, ...a) => st(fn, (ms || 0) >= 30 ? ms + window.__lag : ms, ...a);
+})();
+"""
+
+
+@check("dev-server previews: the address field while the page's timers lag (a refused path keeps its mark)")
+def devpreviews_starved(browser):
+    # (the field took the frame's path back from an effect that ran after the next paint: under load that came after
+    # the next Enter and put the older path over a refused one — 20 times in 20 at 60 ms of lag, before the fix)
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/port?port=5173&cmd=vite")
+    p = Page(browser, NORMAL, "previews-starved", init=STARVED, **DESKTOP)
+    page = p.open()
+    assert page.evaluate("window.__lag === 0"), "the starving script did not run"
+    page.get_by_test_id("ports-status").click()
+    page.get_by_test_id("port-other").fill("5173")
+    page.get_by_test_id("port-other-go").click()
+    expect(devpreview_frame(page).locator("h1")).to_have_text("Hello from the dev server on :5173", timeout=10_000)
+    addr = page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-path]")
+    page.evaluate("window.__lag = 60")
+    for i in range(3):
+        addr.fill(f"about?x={i}")
+        addr.press("Enter")
+        expect(devpreview_frame(page).locator("code")).to_have_text(f"/about?x={i}", timeout=10_000)
+        addr.fill("http://evil.example/")
+        addr.press("Enter")
+        expect(page.locator(".pv-addr.bad")).to_have_count(1)
+        page.wait_for_timeout(400)   # (an echo of the last navigation still due lands by now)
+        expect(page.locator(".pv-addr.bad")).to_have_count(1, timeout=100)
+        assert addr.input_value() == "http://evil.example/", addr.input_value()
+    # a navigation from elsewhere (Reload) still puts the frame's path in the field
+    page.locator("[data-testid=preview-pane]:not(.hidden) [data-testid=preview-reload]").click()
+    expect(addr).to_have_value("/about?x=2", timeout=5000)
+    expect(page.locator(".pv-addr.bad")).to_have_count(0)
+    page.evaluate("window.__lag = 0")
     p.assert_clean()
     p.close()
 

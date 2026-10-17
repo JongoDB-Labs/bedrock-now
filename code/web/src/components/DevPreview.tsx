@@ -36,7 +36,14 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
   const vp = VIEWPORTS.find((v) => v.id === tab.viewport) ?? VIEWPORTS[0];
   const scale = vp.w ? fitScale(vp.w, vp.h, room.w, room.h) : 1;
 
-  useEffect(() => {
+  // The field shows the frame's path again after a navigation from elsewhere (Reload, a chip, the Ports panel) — never
+  // after one of its own: its Enter shows the cleaned path at once, and whatever is typed after that stays. (Synced
+  // from an effect after the store's next frame and the next paint instead, a navigation's echo could land after the
+  // next Enter: the older path back in the field over a refused one, its mark cleared.)
+  const shown = useRef({ at: tab.at, n: tab.n });
+  useLayoutEffect(() => {
+    if (shown.current.at === tab.at && shown.current.n === tab.n) return;
+    shown.current = { at: tab.at, n: tab.n };
     setAddr(tab.at);
     setBad(false);
   }, [tab.at, tab.n]);
@@ -58,8 +65,13 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
   // the field's own value: an Enter right after typing may come before the re-render that updates `addr`
   const go = (value: string) => {
     const p = cleanPreviewPath(value);
-    setBad(p === null);
-    if (p !== null) navigatePreview(tab.key, p);
+    if (p === null) return setBad(true);
+    setBad(false);
+    setAddr(p);
+    navigatePreview(tab.key, p);
+    // (the store has the navigation now; this pane renders it a frame later — already shown)
+    const t = store.get().tabs.find((x) => x.key === tab.key);
+    if (t?.kind === 'devserver') shown.current = { at: t.at, n: t.n };
   };
   // what the frame loads (over remote access the hand-off, which goes on to the path), and its address (to copy)
   const src = tab.link ? (tab.link.handoff ? tab.link.url : tab.link.origin + tab.at) : null;

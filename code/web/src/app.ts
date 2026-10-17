@@ -391,6 +391,9 @@ export const socket = new api.Socket({
     attached.clear();
     infoAsked.clear();
     reattaching.clear();
+    // the ports that listen already, at once (not at the port watch's next tick, up to 3 s later): a server started
+    // after this is news (its toast), not part of the first list
+    if (knownPorts === null) void refreshPorts();
     // after a reconnect the backend may have restarted: learn which sessions it still has before re-attaching
     const again = opened++ > 0;
     void (async () => {
