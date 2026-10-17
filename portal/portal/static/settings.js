@@ -25,6 +25,9 @@
   const ON_VALUES = ["true", "1", "yes", "on"], OFF_VALUES = ["false", "0", "no", "off"];
   const KEY_NAME = /^[A-Z][A-Z0-9_]{1,40}$/;
   const SECTION_MEMO = "bn.settings.section";
+  // a row that stands for more than its key: named for what it shows
+  const ROW_LABEL = { RUSTFS_ACCESS_KEY: "Files (RustFS) key pair", STT_PROVIDER: "Speech-to-text", TERMINAL_ENABLED: "Browser terminal",
+    REMOTE_MODE: "Remote access" };
 
   let data = null;          // GET /api/settings
   let spend = null;         // /api/summary's spend (budget rows)
@@ -365,7 +368,7 @@
       const k = keys[r.key] || {};
       // its name, summary, note and key, and those of the keys shown inside it (not the section's title: "budget" would
       // then list every setting of Spending & budgets)
-      findText.set(node, [k.label || "", r.summary, k.note || "", r.key.startsWith("+") ? "" : r.key, node.dataset.findExtra || "",
+      findText.set(node, [k.label || "", ROW_LABEL[r.key] || "", r.summary, k.note || "", r.key.startsWith("+") ? "" : r.key, node.dataset.findExtra || "",
         ...(withOf[r.key] || []).flatMap((w) => [w, (keys[w] || {}).label || ""])].join(" ").toLowerCase());
     }
   }
@@ -500,7 +503,7 @@
     }
     const nameId = `set-name-${k.key}`, sumId = `set-sum-${k.key}`;
     const main = el("div", { class: "set-main" },
-      el("div", { class: "set-label" }, el("span", { class: "set-name", id: nameId, text: opts.label || k.label }), badges(k)),
+      el("div", { class: "set-label" }, el("span", { class: "set-name", id: nameId, text: opts.label || ROW_LABEL[k.key] || k.label }), badges(k)),
       el("p", { class: "set-sum", id: sumId, text: (r && r.summary) || "" }));
     if (opts.value !== false) {
       const text = opts.value || display(k);
@@ -658,7 +661,7 @@
   }
   function terminalRow(r) {
     const k = keys.TERMINAL_ENABLED;
-    const rw = frame(k, r, { label: "Browser terminal" });
+    const rw = frame(k, r);
     if (terminalOn()) {
       const ws = (keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value) || "";
       rw._main.append(el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Folder: " }), el("code", { text: ws || "the default folder" })));
@@ -669,7 +672,7 @@
   function remoteStatus(r) {
     const k = keys.REMOTE_MODE;
     const on = data.remote && data.remote.on;
-    const rw = frame(k, r, { label: "Remote access", value: on ? `${data.remote.mode}: ${data.remote.url}` : "Off" });
+    const rw = frame(k, r, { value: on ? `${data.remote.mode}: ${data.remote.url}` : "Off" });
     rw._main.append(el("p", { class: "note set-extra", text: on ? `This page is open ${data.here.remote ? "remotely" : "on this computer"}.` : "It needs a Tailscale auth key and a few steps in your tailnet's admin console (Learn more above)." }));
     return finish(rw, k, cliLine(k, on ? "Turned off in a terminal: " : "Turned on in a terminal: "));
   }
@@ -845,7 +848,7 @@
     const model = "value" in mk ? mk.value : "";
     const label = STT_LABEL[prov] || prov;
     const now = prov ? `${label}${model ? ` · ${model}` : prov === "bedrock" ? " · voxtral-small" : ""}${kk.set && prov !== "bedrock" ? ` · key ${kk.hint || "set"}` : ""}` : label;
-    const r = frame(pk, lr, { label: "Speech-to-text", value: now });
+    const r = frame(pk, lr, { value: now });
     const actions = r._actions;
     if (data.here.remote) {
       r.append(el("p", { class: "note set-remote", text: "Change this from the computer running bedrock-now: from your devices it could send your voice elsewhere." }));
