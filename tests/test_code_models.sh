@@ -89,7 +89,7 @@ test_write_inject_resolve_and_the_picker() {
   assert_eq "$(ls -l "$f" | cut -c1-10)" "-rw-r--r--"
   # LiteLLM's model_info: the bn_* keys after each chat model's mode
   yaml="$(printf '  - model_name: "llama-x"\n    model_info:\n      mode: "chat"\n  - model_name: "emb"\n    model_info:\n      mode: "embedding"\n  - model_name: "or/google/gemma-4-31b-it:free"\n    model_info:\n      mode: "chat"\n' | code_models_inject "$f")"
-  assert_contains "$yaml" "$(printf '      mode: "chat"\n      bn_name: "Llama X"\n      bn_vendor: "Meta"\n      bn_compat: "chat-only"\n      bn_code: true\n  - model_name: "emb"')"
+  assert_contains "$yaml" "$(printf '      mode: "chat"\n      bn_id: "llama-x"\n      bn_name: "Llama X"\n      bn_vendor: "Meta"\n      bn_compat: "chat-only"\n      bn_code: true\n  - model_name: "emb"')"
   assert_contains "$yaml" "$(printf '      bn_name: "Gemma 4 31B (free)"\n      bn_vendor: "Google"\n      bn_compat: "untested"\n      bn_code: true')"
   assert_eq "$(printf '%s\n' "$yaml" | grep -c 'bn_default: true')" 0   # claude-big is the default, not in this YAML
   assert_eq "$(code_model_resolve claude-big)" claude-big
@@ -119,7 +119,7 @@ test_render_config_writes_the_file_and_litellm_gets_the_bn_keys_and_the_hook() {
   : > "$TMP/litellm/bn_hooks.py"
   render_config "$TMP/en"
   cfg="$(cat "$TMP/litellm/config.yaml")"
-  assert_contains "$cfg" "$(printf '      bn_name: "Claude Big"\n      bn_vendor: "Anthropic"\n      bn_compat: "works"\n      bn_code: true\n      bn_default: true')"
+  assert_contains "$cfg" "$(printf '      bn_id: "claude-big"\n      bn_name: "Claude Big"\n      bn_vendor: "Anthropic"\n      bn_compat: "works"\n      bn_code: true\n      bn_default: true')"
   assert_contains "$cfg" "$(printf '      bn_name: "Llama X"\n      bn_vendor: "Meta"\n      bn_compat: "chat-only"\n      bn_code: false')"
   assert_contains "$cfg" '  callbacks: ["bn_hooks.proxy_handler_instance"]'
   assert_eq "$(_code_rows "$TMP/litellm/code-models.tsv" | awk -F'\t' '$11 == 1 { print $1 }' | tr '\n' ' ')" "claude-big claude-small "

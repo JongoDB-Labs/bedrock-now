@@ -42,7 +42,9 @@ info_json=''
 load_model_info() { info_json="$(curl -fsS -m 4 -H "Authorization: Bearer $key" "$gw/model/info" 2>/dev/null || true)"; }
 model_info_json() { printf '%s' "$info_json"; }
 model_rows() {
-  model_info_json | jq -r --arg all "${1:-}" '.data[]? | select(.model_info.bn_name != null) | select($all == "all" or .model_info.bn_code == true)
+  # (an alias of the catalog — claude-sonnet-5 — comes with its target's model_info: only the entry bn_id names counts)
+  model_info_json | jq -r --arg all "${1:-}" '.data[]? | select(.model_info.bn_name != null) | select((.model_info.bn_id // .model_name) == .model_name)
+    | select($all == "all" or .model_info.bn_code == true)
     | [.model_name, .model_info.bn_name, (.model_info.bn_vendor // "-"), (.model_info.input_cost_per_token // "-" | tostring),
        (.model_info.output_cost_per_token // "-" | tostring), (.model_info.bn_compat // "untested"),
        (if .model_info.bn_code == true then 1 else 0 end), (if .model_info.bn_default == true then 1 else 0 end)] | @tsv' 2>/dev/null |

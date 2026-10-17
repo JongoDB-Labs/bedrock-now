@@ -64,7 +64,7 @@ def catalog(ctx):
     info = {d["model_name"]: d["model_info"] for d in r.json()["data"]}
     for m in ms:
         i = info.get(m["id"]) or {}
-        expect(i.get("bn_name") == m["name"] and i.get("bn_compat") == m["compat"] and i.get("bn_code") is m["listed"],
+        expect(i.get("bn_id", m["id"]) == m["id"] and i.get("bn_name") == m["name"] and i.get("bn_compat") == m["compat"] and i.get("bn_code") is m["listed"],
                f"{m['id']}: /model/info says {({k: v for k, v in i.items() if k.startswith('bn_')})}")
     expect(info.get(bn["default"], {}).get("bn_default") is True, f"bn_default not on {bn['default']}")
     other = [m["id"] for m in ms if m["vendor"] != "Anthropic"]
@@ -87,27 +87,37 @@ def other_provider(ctx):
     sid = c.new_session(m["id"], "default")
     n = len(c.msgs())
     c.request({"type": "prompt", "session": sid, "text": "Use the Bash tool to run exactly this command: echo bn-e2e-$((6*7)) — then reply with its output only."})
-    p = c.wait(lambda x: x.get("type") == "permission" or (x.get("type") == "event" and x.get("session") == sid and x["ev"]["type"] == "result"),
-               "a permission prompt or the result", 150, since=n)
-    expect(p.get("type") == "permission" and p["tool"] == "Bash", f"{m['id']} asked for no Bash: {json.dumps(p)[:300]}")
-    c.request({"type": "permission", "id": p["id"], "session": sid, "decision": "once"})
-    c.wait(lambda x: x.get("type") == "event" and x["session"] == sid and x["ev"]["type"] == "result", "result", 150, since=n)
+    # a read-only command like echo may run without a card (Claude Code's own read-only rule): allow one only if it comes
+    asked = 0
+    while True:
+        x = c.wait(lambda y: (y.get("type") == "permission" and y.get("session", sid) == sid)
+                   or (y.get("type") == "event" and y.get("session") == sid and y["ev"]["type"] == "result"),
+                   "a permission prompt or the result", 150)
+        if x.get("type") != "permission":
+            break
+        expect(x["tool"] == "Bash", f"{m['id']} asked for {x['tool']}, not Bash: {json.dumps(x)[:300]}")
+        c.request({"type": "permission", "id": x["id"], "session": sid, "decision": "once"})
+        asked += 1
+        expect(asked <= 3, "more than three permission prompts for one echo")
     evs = c.events(sid, n)
     use = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
     res = _tool_result(evs, use[0]["id"]) if use else None
     text = "".join(e["text"] for e in evs if e["type"] == "text")
+    expect(use, f"{m['id']} called no Bash tool: {[e['type'] for e in evs][:30]}")
     expect(res and "bn-e2e-42" in res["text"] and not res["is_error"], f"tool result {res}")
     expect("bn-e2e-42" in text, f"answer {text[:200]!r}")
     init = next((e for e in evs if e["type"] == "init"), None)
     expect(init is None or init["model"] == m["id"], f"init model {init and init['model']}")
-    # its spend, from LiteLLM's logs, under that model
+    # its spend, from LiteLLM's logs, under that model (logged as the provider's model: bedrock/us.openai.gpt-6-luna)
     t0, rows = time.time(), []
+    mine = lambda r: m["id"].removeprefix("or/") in r["model"]   # noqa: E731
     while time.time() - t0 < 60:
         rows = (c.api("GET", f"/.bn/spend?session={sid}")["json"] or {}).get("rows") or []
-        if any(r["model"] == m["id"] for r in rows):
+        if any(mine(r) for r in rows):
             break
         c.page.wait_for_timeout(2000)
-    spent = sum(r["spend"] for r in rows if r["model"] == m["id"])
+    spent = sum(r["spend"] for r in rows if mine(r))
+    cached = sum(r["cache_read_tokens"] for r in rows if mine(r))
     expect(rows and spent > 0, f"no spend under {m['id']}: {rows[:3]}")
     # a Haiku session switches to it (by its full id; the picker's flag settings spare Claude Code its 5 s check) and back
     sid2 = getattr(ctx, "code_session", None) or c.new_session(HAIKU, "default")
@@ -118,8 +128,8 @@ def other_provider(ctx):
     expect(models == [m["id"]], f"after set_model {m['id']}: text from {models}")
     c.request({"type": "set_model", "session": sid2, "model": HAIKU}, timeout=90)
     c.rec.save()
-    return (f"{m['name']} ({m['id']}, {m['vendor']}): Bash tool call round-tripped → {res['text'].strip()[:40]!r}, answer {text.strip()[:40]!r}; "
-            f"spend ${spent:.5f} under it; a Haiku session switched to it (text from {models}) and back")
+    return (f"{m['name']} ({m['id']}, {m['vendor']}): Bash tool call round-tripped ({asked} card(s)) → {res['text'].strip()[:40]!r}, answer {text.strip()[:40]!r}; "
+            f"spend ${spent:.5f} under it ({cached} prompt-cache tokens read); a Haiku session switched to it (text from {models}) and back")
 
 
 @check("browser", "code-session-llama-capped")

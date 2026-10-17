@@ -828,6 +828,7 @@ STUB
  {"model_name": "llama-3-3-70b", "model_info": {"mode": "chat", "input_cost_per_token": 7.2e-07, "output_cost_per_token": 7.2e-07, "bn_name": "Llama 3.3 70B", "bn_vendor": "Meta", "bn_compat": "chat-only", "bn_code": true, "bn_default": true}},
  {"model_name": "mistral-large-3", "model_info": {"mode": "chat", "input_cost_per_token": 5e-07, "output_cost_per_token": 1.5e-06, "bn_name": "Mistral Large 3", "bn_vendor": "Mistral", "bn_compat": "works", "bn_code": false}},
  {"model_name": "or/google/gemma-4-31b-it:free", "model_info": {"mode": "chat", "input_cost_per_token": 0, "output_cost_per_token": 0, "bn_name": "Gemma 4 31B (free)", "bn_vendor": "Google", "bn_compat": "untested", "bn_code": true}},
+ {"model_name": "claude-sonnet-5", "model_info": {"mode": "chat", "input_cost_per_token": 4.4e-06, "output_cost_per_token": 2.2e-05, "bn_id": "claude-opus-5-5", "bn_name": "Claude Opus 5.5", "bn_vendor": "Anthropic", "bn_compat": "works", "bn_code": true}},
  {"model_name": "cohere-embed-v4", "model_info": {"mode": "embedding", "input_cost_per_token": 1.2e-07}}
 ]}
 JSON
@@ -840,6 +841,7 @@ JSON
   assert_contains "$out" "free (\$0)"
   assert_not_contains "$out" "mistral-large-3"
   assert_not_contains "$out" "cohere"
+  assert_not_contains "$out" "claude-sonnet-5 "   # an alias of the catalog is not a model of its own
   ARGS=(--models all); assert_contains "$(run 2>&1)" "mistral-large-3"
   # the default of Settings (bn_default), the /model menu with the listed models, auto mode off
   ARGS=(-p hi); out="$(run CLAUDE_BEDROCK_QUIET=1)" || return 1

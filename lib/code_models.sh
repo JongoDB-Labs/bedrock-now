@@ -144,12 +144,13 @@ code_models_write() {
 }
 
 # code_models_inject ROWS_FILE < LiteLLM config -> the same config with, after `mode: "chat"` of each model in
-# ROWS_FILE, its bn_* lines: bn_name, bn_vendor, bn_compat, bn_code (listed in the Code page and the terminal) and
+# ROWS_FILE, its bn_* lines: bn_id (its own name: /model/info also lists an alias of the catalog — claude-sonnet-5 —
+# with its target's model_info), bn_name, bn_vendor, bn_compat, bn_code (listed in the Code page and the terminal) and
 # bn_default (the one new sessions start with). Only what the terminal's claude-bedrock needs from /model/info.
 code_models_inject() {
   F="$1" awk -F'\t' '
     BEGIN { f = ENVIRON["F"]; while ((getline line < f) > 0) { if (line ~ /^#/) continue; split(line, c, "\t"); if (c[1] == "") continue
-              info[c[1]] = sprintf("      bn_name: \"%s\"\n      bn_vendor: \"%s\"\n      bn_compat: \"%s\"\n      bn_code: %s\n%s", c[2], c[4], c[10], (c[11] == 1 ? "true" : "false"), (c[12] == 1 ? "      bn_default: true\n" : "")) }
+              info[c[1]] = sprintf("      bn_id: \"%s\"\n      bn_name: \"%s\"\n      bn_vendor: \"%s\"\n      bn_compat: \"%s\"\n      bn_code: %s\n%s", c[1], c[2], c[4], c[10], (c[11] == 1 ? "true" : "false"), (c[12] == 1 ? "      bn_default: true\n" : "")) }
             close(f) }
     /^  - model_name: "/ { cur = $0; sub(/^  - model_name: "/, "", cur); sub(/".*$/, "", cur) }
     { print }
