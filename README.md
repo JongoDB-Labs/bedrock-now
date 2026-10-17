@@ -1413,7 +1413,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 ## Testing
 
 - **Unit tests** (no Docker, no AWS): `/bin/bash tests/run.sh` (bash 3.2), plus the Python tests in
-  `portal/tests`, `shared-mcp/tests`, `stt/tests` and `owui/tests`.
+  `portal/tests`, `shared-mcp/tests`, `stt/tests` and `owui/tests` (the portal's in its image's test stage, with the
+  repository files some of them check: `portal/test.sh`). The Settings page's controls, key by key, against each
+  setting's policy (on this computer and from a remote device) in a browser, without a stack:
+  `sh portal/e2e/settings/run.sh`.
 - **End-to-end suite** (opt-in, run by hand; not part of `tests/run.sh` or CI): `tests/e2e/run.sh --aws-env FILE`
   builds a throwaway copy of this checkout under its own project (`bne2e.localhost`, free ports — never your
   install's), runs setup non-interactively, drives every page in a pinned Playwright Chromium container (login, Home,
@@ -1503,7 +1506,7 @@ caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.cad
                               the Code page's site, caddy/preview-*.caddy and artifact-*.caddy its previews' and
                               file viewer's sites; caddy/Dockerfile the DNS-plugin build for own-domain mode
 tailscale/                    the sidecar's serve config (written by ./stack remote)
-portal/                       login + Home service (Python; tests: docker build --target test portal)
+portal/                       login + Home service (Python; tests: portal/test.sh)
 terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux, the Code page's
                               spawn server (bin/bn-coded.mjs)
 code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code), the page

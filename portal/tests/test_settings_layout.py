@@ -1,7 +1,9 @@
 """Settings › the page's layout: catalog/settings-layout.tsv (sections, More, parent switches, summaries) as the
 portal reads and serves it, the deep links into it (#settings/<section>, #settings/<KEY>), and the page code that
-hides a setting while its switch is off. The checks against the real catalog run where the repository is around (not
-in the portal's test image, which holds portal/ only); tests/test_settings.sh checks the same file from the shell."""
+hides a setting while its switch is off. The checks against the real catalog, README and docs need the repository:
+in a checkout, or in the test image when portal/test.sh passes it in (BN_REPO_DIR=/repo); a plain
+`docker build --target test portal` skips them. tests/test_settings.sh checks the same file from the shell, and
+portal/e2e/settings/run.sh every key's controls in a browser."""
 
 import json
 import os
@@ -18,10 +20,11 @@ from dataclasses import replace
 
 ORIGIN = {"Origin": "http://bedrock-now.localhost"}
 API = {"X-Requested-With": "bedrock-now"}
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(os.environ.get("BN_REPO_DIR") or Path(__file__).resolve().parents[2])
 REAL = REPO / "catalog" / "settings-layout.tsv"
 TABLE = REPO / "catalog" / "settings.tsv"
-need_repo = pytest.mark.skipif(not (REAL.is_file() and TABLE.is_file()), reason="the repository's catalog is not here (test image)")
+need_repo = pytest.mark.skipif(not (REAL.is_file() and TABLE.is_file() and (REPO / "README.md").is_file()),
+                               reason="the repository's catalog/README are not here: portal/test.sh passes them to the test image")
 
 LAYOUT = """# a comment
 @account\tAccount & security\tYour password.\tREADME.md#settings
@@ -206,6 +209,47 @@ def test_links_into_settings_name_a_section_or_a_setting():
     assert alone and not [w for w in alone if w not in names], alone
     assert len(found) >= 10
     assert not [p for p in found if p not in places], found
+
+
+def _anchors(text: str) -> set:
+    """GitHub's heading anchors: lower case, punctuation dropped, spaces to hyphens ("Costs & budgets" -> costs--budgets)."""
+    out = set()
+    for line in text.splitlines():
+        m = re.match(r"#{1,6} (.+)", line)
+        if m:
+            out.add(re.sub(r"[^\w\- ]", "", m.group(1).strip().lower()).replace(" ", "-"))
+    return out
+
+
+@need_repo
+def test_learn_more_links_reach_a_heading():
+    st._layout_cache.clear()
+    for s in st.layout(REAL.parent)["sections"]:
+        path, _, frag = s["doc"].partition("#")
+        f = REPO / path
+        assert f.is_file(), s
+        if frag:
+            assert frag in _anchors(f.read_text(encoding="utf-8")), f"{s['id']}: {s['doc']} names no heading"
+
+
+def test_the_page_and_the_server_say_less_protection_the_same_way():
+    # a form refuses the less protective direction remotely before the password, in the server's words
+    js = _js()
+    words = dict(re.findall(r'(\w+): "([a-z ]+)"', js[js.index("const WEAKEN_WORD = {"):js.index("function localOnlyHere(k, value)")]))
+    assert words == st._WEAKEN_WORD
+    form = js[js.index("const weak = Object.keys(values).find("):js.index("confirmApply(values, `Save ${k.label}?`")]
+    assert 'keys[n].policy === "widen-local" && localOnlyHere(keys[n], values[n])' in form
+    assert "from the computer running bedrock-now (the other way works everywhere)" in form
+
+
+def test_without_a_layout_every_setting_keeps_its_row():
+    # a damaged checkout: one section of ordinary rows (not the read-only list), pairs inside their rows, own rows
+    js = _js()
+    fb = js[js.index("function fallbackLayout() {"):js.index("// The layout from catalog/settings-layout.tsv")]
+    assert 'section: "all", place: "main"' in fb and 'place: "with", parent: FALLBACK_WITH[k]' in fb
+    assert '"+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart"' in fb
+    assert 'if (!(l.sections || []).length) l = fallbackLayout();' in js
+    assert 'const list = s.id === "advanced" || s.id === "about";' in js   # "all" renders rows
 
 
 # --- the page code (string checks: the portal's tests run no browser; tests/e2e/browser/checks_browser.py does) ---

@@ -80,11 +80,25 @@
     if (page() && !page().hidden) try { spend = (await api("/api/summary")).spend; renderSpend(); } catch (_) { /* budgets still show */ }
   }
 
+  // Without catalog/settings-layout.tsv (a damaged checkout): one section of ordinary rows, every setting changeable as
+  // its policy allows, the halves of a pair and the values a row shows inside it as before the sections existed
+  const FALLBACK_WITH = { AWS_SECRET_ACCESS_KEY: "AWS_ACCESS_KEY_ID", STT_API_KEY: "STT_PROVIDER", STT_MODEL: "STT_PROVIDER",
+    PORTAL_PASSWORD_HASH: "PORTAL_PASSWORD", RUSTFS_SECRET_KEY: "RUSTFS_ACCESS_KEY", OWUI_DEFAULT_MODEL: "CHAT_DEFAULT_MODEL",
+    OWUI_TASK_MODEL: "CHAT_TASK_MODEL", CLAUDE_BEDROCK_OPUS_MODEL: "CLAUDE_MODEL_OPUS", CLAUDE_BEDROCK_SONNET_MODEL: "CLAUDE_MODEL_SONNET",
+    CLAUDE_BEDROCK_HAIKU_MODEL: "CLAUDE_MODEL_HAIKU", LITELLM_KEY_CLAUDE_CODE: "BUDGET_CLAUDE_CODE", LITELLM_KEY_OPENWEBUI: "BUDGET_OPENWEBUI",
+    LITELLM_KEY_SETUP: "BUDGET_SETUP", LITELLM_KEY_TERMINAL: "BUDGET_TERMINAL" };
+  function fallbackLayout() {
+    const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
+      ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
+  }
+
   // The layout from catalog/settings-layout.tsv; a key it does not name (one of yours in .env) goes to Advanced.
   function buildLayout() {
-    const l = data.layout || {};
-    sections = (l.sections || []).slice();
-    if (!sections.length) sections = [{ id: "advanced", title: "All settings", lede: "", doc: "" }];
+    let l = data.layout || {};
+    if (!(l.sections || []).length) l = fallbackLayout();
+    sections = l.sections.slice();
     rowOf = {}; withOf = {};
     for (const r of l.rows || []) if (sectionOf(r.section)) rowOf[r.key] = r;
     const fallback = sectionOf("advanced") ? "advanced" : sections[sections.length - 1].id;
@@ -465,6 +479,10 @@
     if (k.key === "REMOTE_PREVIEW") return remotePreviewMayBeOn(v) && !ON_VALUES.includes(lower(old));
     return v === "true" && old !== "true";
   }
+  // portal/portal/settings.py _WEAKEN_WORD: how the less protective direction is said
+  const WEAKEN_WORD = { BACKUP_KEEP: "lowered", BACKUP_NIGHTLY: "turned off", PORTAL_SESSION_DAYS: "made longer", BUDGET_ALERT_PCT: "raised",
+    BUDGET_CLAUDE_CODE: "raised", BUDGET_OPENWEBUI: "raised", BUDGET_SETUP: "raised", BUDGET_TERMINAL: "raised", AUTO_UPDATE: "turned off",
+    UPDATE_CHECK: "turned off" };
   function localOnlyHere(k, value) {
     if (!data.here.remote) return false;
     return k.policy === "local" || (k.policy === "widen-local" && weakens(k, value));
@@ -721,7 +739,7 @@
   }
 
   function revealButton(key, label, show) {
-    const b = el("button", { type: "button", class: "copy", text: label });
+    const b = el("button", { type: "button", class: "copy", "data-reveal": key, text: label });
     b.disabled = !data.here.allowed;
     b.addEventListener("click", () => askPassword({ kind: "reveal", key, show },
       "Show and copy?", `${key} goes on your clipboard${show ? " and shows here" : ""}. The portal already holds this value; nothing else can be revealed.`, "Copy"));
@@ -834,6 +852,14 @@
       ev.preventDefault();
       let values;
       try { values = collect(); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
+      // the less protective direction of a widen-local value, from a remote device: refused here before the password
+      // (the portal's settings.policy_error and the helper refuse it too, with the same words)
+      const weak = Object.keys(values).find((n) => keys[n] && keys[n].policy === "widen-local" && localOnlyHere(keys[n], values[n]));
+      if (weak) {
+        err.textContent = `${keys[weak].label} can only be ${WEAKEN_WORD[weak] || "turned on"} from the computer running bedrock-now (the other way works everywhere).`;
+        err.hidden = false;
+        return;
+      }
       confirmApply(values, `Save ${k.label}?`, k.note, Object.keys(values), form, form.dataset.confirm ? [form.dataset.confirm] : []);
     });
     r.insertBefore(form, r.querySelector(":scope > .set-details"));
@@ -1011,7 +1037,7 @@
   }
 
   function actionButton(act, label) {
-    const b = el("button", { type: "button", class: "action", text: label });
+    const b = el("button", { type: "button", class: "action", "data-act": act, text: label });
     b.disabled = !canChange() || !(data.helper.diagnostics || []).includes(act);
     b.addEventListener("click", () => openAction(act));
     return b;

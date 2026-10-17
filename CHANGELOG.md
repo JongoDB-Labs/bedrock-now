@@ -43,7 +43,14 @@ All notable changes to bedrock-now are documented here. The format follows
   under their section. Links open a section or a setting — `#settings/spending`, `#settings/CODE_ENABLED` — and the
   walkthrough and Home use them. Nothing about how a change is applied, checked or allowed changed.
   `./stack config list` uses the same sections, with a switch's settings indented under it. Where each key is shown
-  comes from a new file, `catalog/settings-layout.tsv` ([README](README.md#settings)).
+  comes from a new file, `catalog/settings-layout.tsv` ([README](README.md#settings)). A less protective value typed
+  in a form on a remote device (a higher budget, a longer session) is refused at once, before the password (the
+  portal and the helper refused it already). Without the layout file the page still shows every setting with its
+  control, in one list.
+- **Tests:** `portal/test.sh` runs the portal's tests in its image with the repository files some of them check (the
+  Settings layout against `catalog/settings.tsv`, its links into README and docs); `sh portal/e2e/settings/run.sh`
+  checks every key's controls on the Settings page against its policy, locally and remotely, in the e2e suite's
+  Playwright image (no stack).
 
 ### Docs
 
