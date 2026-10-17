@@ -2458,12 +2458,12 @@ def settings_sandbox_internet(ctx):
     after a reload and the restarted code container says it (its Bypass dialog's words). The terminal's isolation after
     this is checked again by the CLI part (./stack test)."""
     _need_helper(ctx)
-    c = Code(ctx, "settings-sandbox-internet")
-    _egress_state(c, False)
+    # (each ctx.page closes the pages before it: a Code page of its own after each change)
+    _egress_state(Code(ctx, "settings-sandbox-internet-before"), False)
     try:
         _egress_choice(ctx, "+ this computer", "host")
-        _egress_state(c, True)
+        _egress_state(Code(ctx, "settings-sandbox-internet-host"), True)
     finally:
         _egress_choice(ctx, "Internet only", "internet")
-    _egress_state(c, False)
+    _egress_state(Code(ctx, "settings-sandbox-internet-after"), False)
     return "Internet only → + this computer (the code container: egressHost true) → Internet only again (egressHost false), each through the update helper"
