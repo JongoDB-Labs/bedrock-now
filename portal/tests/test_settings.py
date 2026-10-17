@@ -655,10 +655,22 @@ def test_previews_over_remote_access_are_opt_in():
     assert st.policy_error(row("REMOTE_PREVIEW", "remote", "-", "widen-local", "bool", "remote-preview", value="true"), "false", local=False) is None
     assert st.weakens("REMOTE_PREVIEW", "true", "") and st.weakens("REMOTE_PREVIEW", "true", "false")
     assert not st.weakens("REMOTE_PREVIEW", "false", "true") and not st.weakens("REMOTE_PREVIEW", "false", "")
+    # any change that may turn them on: blank is on in own-domain mode with a preview domain of their own
+    own = {"REMOTE_MODE": "domain", "REMOTE_PREVIEW_DOMAIN": "preview.example-usercontent.net"}
+    off_row = row("REMOTE_PREVIEW", "remote", "-", "widen-local", "bool", "remote-preview", value="false")
+    assert "turned on" in st.policy_error(off_row, "", local=False, ctx=own)
+    assert st.policy_error(off_row, "", local=False, ctx={"REMOTE_MODE": "domain"}) is None
+    assert st.policy_error(off_row, "", local=False, ctx={"REMOTE_MODE": "tailscale", "REMOTE_PREVIEW_DOMAIN": "x.example.net"}) is None
+    assert st.policy_error(off_row, "", local=True, ctx=own) is None
+    assert not st.weakens("REMOTE_PREVIEW", "", "true", own) and not st.weakens("REMOTE_PREVIEW", "false", "", own)
     from portal.app import STATIC
     js = (STATIC / "settings.js").read_text(encoding="utf-8")
-    assert '"TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"]' in js and 'if (k.key === "REMOTE_PREVIEW") return remotePreviewOn(k) ? "On" : "Off";' in js
-    # blank is on only in own-domain mode with a preview domain of their own
+    # shown as it takes effect: On only while the stack wrote the previews' address (never On while they are off)
+    assert '"TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"]' in js and 'if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";' in js
+    assert 'function remotePreviewOn() { return Boolean(keys.REMOTE_PREVIEW_HOST && keys.REMOTE_PREVIEW_HOST.value); }' in js
+    assert 'const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn() ? on : off)' in js and "Switched on, not in effect" in js
+    # the page's own weakening rule is the stack's: any value that may turn them on, from anything but on
+    assert 'if (k.key === "REMOTE_PREVIEW") return remotePreviewMayBeOn(v) && !ON_VALUES.includes(lower(old));' in js
     assert 'keys.REMOTE_MODE.value === "domain" && keys.REMOTE_PREVIEW_DOMAIN && keys.REMOTE_PREVIEW_DOMAIN.value' in js
 
 

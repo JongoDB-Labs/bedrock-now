@@ -218,8 +218,17 @@ setting_weakens() {
       awk -v n="$(_eff_budget "$1" "$2")" -v o="$(_eff_budget "$1" "$3")" 'BEGIN { exit !(n + 0 > o + 0) }' ;;
     BACKUP_NIGHTLY | AUTO_UPDATE) [ "$2" != on ] && [ "$3" = on ] ;;                              # turned off
     UPDATE_CHECK) [ "$2" = false ] && [ "$3" != false ] ;;                                       # no release checks
+    REMOTE_PREVIEW) _remote_preview_may_be_on "$2" && ! flag_on "$3" ;;                          # previews may turn on
     *) [ "$2" = true ] && [ "$3" != true ] ;;                                                    # remote admin, stored prompts
   esac
+}
+# _remote_preview_may_be_on VALUE -> 0 when REMOTE_PREVIEW=VALUE may turn previews over remote access on: true, or
+# anything not false in own-domain mode with a REMOTE_PREVIEW_DOMAIN (lib/code.sh code_remote_preview_wanted: there
+# blank is on); an upper bound, so every change that may turn them on counts as less protection
+_remote_preview_may_be_on() {
+  flag_on "$1" && return 0
+  flag_off "$1" && return 1
+  [ "$(get_env REMOTE_MODE)" = domain ] && [ -n "$(get_env REMOTE_PREVIEW_DOMAIN)" ]
 }
 _weaken_word() {
   case "$1" in

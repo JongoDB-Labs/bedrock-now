@@ -170,17 +170,21 @@
     return k.set ? "set" : "not set";
   }
 
-  // REMOTE_PREVIEW as the stack reads it (lib/code.sh code_remote_preview_wanted): true is on, false off, and blank off —
-  // except in own-domain mode with a preview domain of their own (another site), where blank is on
-  function remotePreviewOn(k) {
-    const v = String(k.value || "").trim().toLowerCase();
-    if (["true", "1", "yes", "on"].includes(v)) return true;
-    if (["false", "0", "no", "off"].includes(v)) return false;
+  // REMOTE_PREVIEW shown as it takes effect: On only while the stack serves previews over remote access — it wrote their
+  // address, REMOTE_PREVIEW_HOST (lib/code.sh code_remote_sync, which also checks a REMOTE_PREVIEW_DOMAIN) — so never On
+  // while they are off. A change that may turn them on (true; or blank in own-domain mode with a preview domain of its
+  // own) is less protection: lib/settings.sh setting_weakens.
+  const ON_VALUES = ["true", "1", "yes", "on"], OFF_VALUES = ["false", "0", "no", "off"];
+  const lower = (x) => String(x || "").trim().toLowerCase();
+  function remotePreviewOn() { return Boolean(keys.REMOTE_PREVIEW_HOST && keys.REMOTE_PREVIEW_HOST.value); }
+  function remotePreviewMayBeOn(v) {
+    if (ON_VALUES.includes(lower(v))) return true;
+    if (OFF_VALUES.includes(lower(v))) return false;
     return Boolean(keys.REMOTE_MODE && keys.REMOTE_MODE.value === "domain" && keys.REMOTE_PREVIEW_DOMAIN && keys.REMOTE_PREVIEW_DOMAIN.value);
   }
   function display(k) {
     const v = shown(k);
-    if (k.key === "REMOTE_PREVIEW") return remotePreviewOn(k) ? "On" : "Off";
+    if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
     if (k.secret === "S") return k.set ? "••••••••" : "not set";
@@ -199,6 +203,7 @@
     if (/^BUDGET_(CLAUDE_CODE|OPENWEBUI|SETUP)$/.test(k.key)) return usd(v) > usd(old);
     if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
     if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
+    if (k.key === "REMOTE_PREVIEW") return remotePreviewMayBeOn(v) && !ON_VALUES.includes(lower(old));
     return v === "true" && old !== "true";
   }
   function localOnlyHere(k, value) {
@@ -238,6 +243,9 @@
       const d = keys[PIN_OF[k.key]];
       main.querySelector(".set-value").textContent = shown(k) === "blank" || !k.set ? `automatic: ${modelName(d ? shown(d) : "")}` : `pinned: ${modelName(shown(k))}`;
     }
+    if (k.key === "REMOTE_PREVIEW" && ON_VALUES.includes(lower(k.value)) && !remotePreviewOn()) {
+      main.append(el("p", { class: "note", text: "Switched on, not in effect: the Code page is not reachable over remote access (REMOTE_TERMINAL=true), or remote access has no names yet (./stack up)." }));
+    }
     if (k.key === "MODELS_HIDDEN") main.querySelector(".set-value").textContent = k.value ? k.value.split(",").map(modelName).join(", ") : "none";
     if (k.policy === "regen") {
       const b = el("button", { type: "button", class: "action", text: "Regenerate" });
@@ -275,7 +283,7 @@
 
   function toggle(k, v) {
     const on = k.validator === "on_off" ? "on" : "true", off = k.validator === "on_off" ? "off" : (k.validator === "true_blank" ? "" : "false");
-    const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn(k) ? on : off) : v === on ? on : off;
+    const cur = k.key === "REMOTE_PREVIEW" ? (remotePreviewOn() ? on : off) : v === on ? on : off;
     const g = el("div", { class: "chips", role: "group", "aria-label": k.label });
     for (const [val, label] of [[off, "Off"], [on, "On"]]) {
       const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label });

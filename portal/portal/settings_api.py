@@ -148,12 +148,13 @@ def routes(ctx: Ctx) -> list[Route]:
     def check_values(values: dict, snap: dict, local: bool, same_password: bool = False) -> dict:
         """{KEY: what is wrong} (no value in any message); the same rules as lib/settings.sh settings_check_batch."""
         rows, fields = st.by_key(snap), {}
+        ctx = {k: r.get("value") or "" for k, r in rows.items()}   # (the other settings, for REMOTE_PREVIEW's rule)
         for k, v in values.items():
             row = rows.get(k)
             if row is None or row["policy"] not in st.EDITABLE:
-                fields[k] = st.policy_error(row, v, local) if row else "is not a bedrock-now setting"
+                fields[k] = st.policy_error(row, v, local, ctx) if row else "is not a bedrock-now setting"
                 continue
-            e = st.policy_error(row, v, local) or st.validate(row["validator"], v, snap["remote_on"])
+            e = st.policy_error(row, v, local, ctx) or st.validate(row["validator"], v, snap["remote_on"])
             if e:
                 fields[k] = e
         if fields:

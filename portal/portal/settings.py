@@ -345,9 +345,25 @@ def _eff_budget(key: str, v: str) -> float:
     return float(v) if re.fullmatch(r"[0-9]*\.?[0-9]+|[0-9]+\.", v or "") else _BUDGET_DEFAULT.get(key, 5.0)
 
 
-def weakens(key: str, new: str, old: str) -> bool:
+_ON = ("true", "1", "yes", "on")
+_OFF = ("false", "0", "no", "off")
+
+
+def _remote_preview_may_be_on(v: str, ctx: dict) -> bool:
+    """REMOTE_PREVIEW=v may turn previews over remote access on: true, or anything not false in own-domain mode with a
+    REMOTE_PREVIEW_DOMAIN (lib/code.sh code_remote_preview_wanted: blank is on there) — an upper bound, so every change
+    that may turn them on counts as less protection. lib/settings.sh _remote_preview_may_be_on is the same."""
+    v = (v or "").strip().lower()
+    if v in _ON:
+        return True
+    if v in _OFF:
+        return False
+    return (ctx.get("REMOTE_MODE") or "") == "domain" and bool(ctx.get("REMOTE_PREVIEW_DOMAIN"))
+
+
+def weakens(key: str, new: str, old: str, ctx: dict | None = None) -> bool:
     """NEW protects less than OLD, both as they take effect (policy widen-local: that direction only from this
-    computer). lib/settings.sh setting_weakens is the same."""
+    computer). lib/settings.sh setting_weakens is the same. ctx: the other settings' values ({KEY: value})."""
     if key == "BACKUP_KEEP":
         return _eff_int(new, 1, 60, 7) < _eff_int(old, 1, 60, 7)
     if key == "PORTAL_SESSION_DAYS":
@@ -360,10 +376,12 @@ def weakens(key: str, new: str, old: str) -> bool:
         return new != "on" and old == "on"
     if key == "UPDATE_CHECK":
         return new == "false" and old != "false"
+    if key == "REMOTE_PREVIEW":
+        return _remote_preview_may_be_on(new, ctx or {}) and (old or "").strip().lower() not in _ON
     return new == "true" and old != "true"
 
 
-def policy_error(row: dict, value: str, local: bool) -> str | None:
+def policy_error(row: dict, value: str, local: bool, ctx: dict | None = None) -> str | None:
     p = row.get("policy")
     if p == "edit":
         return None
@@ -374,7 +392,7 @@ def policy_error(row: dict, value: str, local: bool) -> str | None:
     if p == "on-only":
         return None if value == "true" else "can only be turned on here (turning it off is a terminal step: edit .env)"
     if p == "widen-local":
-        if local or not weakens(row.get("key", ""), value, row.get("value") or ""):
+        if local or not weakens(row.get("key", ""), value, row.get("value") or "", ctx):
             return None
         return f"can only be {_WEAKEN_WORD.get(row.get('key'), 'turned on')} from the computer running bedrock-now (the other way works everywhere)"
     return f"is read-only here: {row.get('cli') or 'see ./stack config'}"

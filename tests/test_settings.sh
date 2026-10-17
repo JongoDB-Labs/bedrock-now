@@ -532,6 +532,15 @@ test_remote_previews_are_opt_in_on_only_locally_and_they_restart_portal_and_cadd
   assert_contains "$SV_ERR" "REMOTE_PREVIEW can only be turned on from the computer running bedrock-now"
   setting_allowed REMOTE_PREVIEW true local
   setting_allowed REMOTE_PREVIEW false remote
+  # any change that may turn them on: blank is on in own-domain mode with a preview domain of its own
+  if setting_weakens REMOTE_PREVIEW '' false; then return 1; fi
+  set_env_batch REMOTE_MODE domain REMOTE_PREVIEW_DOMAIN preview.example-usercontent.net REMOTE_PREVIEW false
+  setting_weakens REMOTE_PREVIEW '' false || return 1
+  if setting_allowed REMOTE_PREVIEW '' remote; then echo "false → blank (on there) allowed remotely" >&2; return 1; fi
+  setting_allowed REMOTE_PREVIEW '' local || return 1
+  if setting_weakens REMOTE_PREVIEW '' true; then return 1; fi
+  if setting_weakens REMOTE_PREVIEW false ''; then return 1; fi
+  set_env_batch REMOTE_MODE tailscale REMOTE_PREVIEW_DOMAIN '' REMOTE_PREVIEW ''
   # the Code page remote over Tailscale: nothing until it is turned on here; then the address, the Service (with a word
   # about defining it), the trade-off in plain words, and the portal and Caddy restarted; off from a phone undoes it
   code_on() { return 0; }; terminal_on() { return 0; }
