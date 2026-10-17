@@ -932,7 +932,9 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         data["portal"]["url"] = settings.origin(remote=rem)
         data["apps"] = settings.app_urls(rem)
         data["terminal"] = {"enabled": settings.terminal, "here": settings.terminal_on(rem)}
-        data["code"] = {"enabled": settings.code, "here": settings.code_on(rem)}
+        data["code"] = {"enabled": settings.code, "here": settings.code_on(rem),
+                        # an update nobody watched turned it on by default: Home says so once (code.js)
+                        "notice": codepage.default_notice(settings.status_dir) if settings.code_on(rem) else None}
         data["remote"] = {"on": settings.remote_on(), "here": rem, "mode": settings.remote_mode if settings.remote_on() else "off",
                           "url": settings.origin(remote=True) if settings.remote_on() else ""}
         return _no_store(JSONResponse(data))

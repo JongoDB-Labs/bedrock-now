@@ -20,7 +20,11 @@ pass=0; fail=0; skip=0
 BN_SHIM_LOG="$(mktemp)"; BN_REAL_CURL="$(command -v curl || echo /usr/bin/curl)"; BN_REAL_DOCKER="$(command -v docker || true)"
 # openssl is real too; only its PBKDF2 derivation (600,000 real rounds) is cached for the run (tests/shims/openssl)
 BN_REAL_OPENSSL="$(command -v openssl || echo /usr/bin/openssl)"; BN_PBKDF2_CACHE="$(mktemp -d)"
-export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER BN_REAL_OPENSSL BN_PBKDF2_CACHE
+# Every test child gets a home of its own ($TMP/home): nothing a test runs (setup turns the Code page on with
+# ~/bedrock-now-workspace; claude-bedrock makes ~/.claude-bedrock) can touch your real one. Only the real docker of the
+# compose-rendering tests still reads its CLI plugins from your Docker config folder (DOCKER_CONFIG).
+BN_REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME:-/nonexistent}/.docker}"
+export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER BN_REAL_OPENSSL BN_PBKDF2_CACHE BN_REAL_DOCKER_CONFIG
 
 # No EXIT trap in the child: bash 3.2 reports exit status 0 from an EXIT trap after fatal
 # errors (unbound variable, failed `.`), which would turn real failures into passes.
@@ -28,6 +32,7 @@ export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER BN_REAL_OPENSSL BN_PBKDF2_CACHE
 CHILD='
 TMP=$(mktemp -d)
 export STACK_DIR="$T_ROOT" ENV_FILE="$TMP/.env" STATE_DIR="$TMP/.state" BEDROCK_NOW_NO_OPEN=1 PATH="$T_ROOT/tests/shims:$PATH"
+export HOME="$TMP/home" DOCKER_CONFIG="$BN_REAL_DOCKER_CONFIG"; mkdir -p "$HOME"
 ( set -euo pipefail
   . lib/common.sh; . lib/ports.sh; . lib/portal.sh; . lib/models.sh; . lib/prices.sh; . tests/assert.sh
   . "$T_FILE"

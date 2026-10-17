@@ -39,11 +39,11 @@ test_help_anywhere_on_the_line_runs_nothing() {
   for c in "helper install --help" "stt set openai --help" "stt set openai -h" "restore X --help" \
            "remote enable tailscale --help" "openrouter set --help" "update --to v1 --help" "clean --yes --help"; do
     # shellcheck disable=SC2086  # word-split on purpose
-    out="$(HOME="$TMP/home" _stack $c </dev/null 2>&1)" || { printf './stack %s failed:\n%s\n' "$c" "$out" >&2; return 1; }
+    out="$(HOME="$TMP/help-home" _stack $c </dev/null 2>&1)" || { printf './stack %s failed:\n%s\n' "$c" "$out" >&2; return 1; }
     assert_contains "$out" "./stack ${c%% *}"
   done
   assert_eq "$(cat "$ENV_FILE")" "$before"
-  [ ! -e "$TMP/home" ] && [ ! -e "$STATE_DIR" ]
+  [ ! -e "$TMP/help-home" ] && [ ! -e "$STATE_DIR" ]   # (a home of its own: tests/run.sh made $TMP/home)
 }
 
 test_unknown_command_with_help_still_fails() {

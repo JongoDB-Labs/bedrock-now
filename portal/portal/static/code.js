@@ -257,7 +257,7 @@
           item("It sees ", el("strong", { text: "one folder" }), " of this computer, its workspace: ", ws, " (created if it is not there). Another folder: ", other, "."),
           item("It has ", el("strong", { text: "its own key and budget" }), " (the terminal's, $50 a month unless you change it), apart from Chat's and ", code("claude-bedrock"), "'s; its spend shows on Home."),
           item("Claude ", el("strong", { text: "asks before acting" }), ": in Manual mode every command and file change waits for your OK. Bypass permissions and Auto mode stay off unless you allow them in Settings."),
-          item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches the internet unless ", code("TERMINAL_EGRESS=off"), " is in ", code(".env"), "."),
+          item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches the internet — and, on Docker Desktop, services on this computer through Docker's host address — unless ", code("TERMINAL_EGRESS=off"), " is in ", code(".env"), ", which closes both."),
           item("The first time, it builds the Code page's image: a few minutes.")),
         el("h2", { text: "Turning it on" }),
         el("p", { class: "note", text: "Turn on in Settings works only on the computer running bedrock-now: from another device, Settings shows the switch but leaves it to that computer. Or in a terminal, in your bedrock-now folder:" }),
@@ -310,8 +310,35 @@
     card.append(line);
   }
 
+  // An update nobody watched (the update helper's Update now, or its nightly update) turned the Code page on by default
+  // (/api/summary's code.notice: lib/code.sh code_default_notice): Home says so once, with Keep (this browser does not
+  // show it again) and Turn off (Settings, at its switch). Text only; the folder is this machine's own.
+  const NOTICE_SEEN = "bn.code.defaultNotice";
+  function defaultNotice(d) {
+    const n = d && d.code && d.code.notice;
+    let box = $("#code-default-notice"), seen = null;
+    try { seen = localStorage.getItem(NOTICE_SEEN); } catch (_) { /* storage blocked: shown each time, fine */ }
+    if (!n || !Number.isInteger(n.at) || typeof n.workspace !== "string" || seen === String(n.at)) { if (box) box.hidden = true; return; }
+    if (!box) {
+      const head = $("#home .home-head");
+      if (!head) return;
+      box = el("section", { id: "code-default-notice", class: "banner code-default-notice", role: "status", "aria-label": "The Code page was turned on" });
+      head.after(box);
+    }
+    const keep = el("button", { type: "button", class: "action", text: "Keep" });
+    keep.addEventListener("click", () => { try { localStorage.setItem(NOTICE_SEEN, String(n.at)); } catch (_) { /* fine */ } box.hidden = true; });
+    const off = el("button", { type: "button", class: "action", text: "Turn off" });
+    off.addEventListener("click", toSettings);
+    box.replaceChildren(
+      el("p", {}, "The last update turned on the ", el("strong", { text: "Code page" }), n.terminal ? " and its sandbox (workspace " : " (in the terminal's sandbox, workspace ",
+        code(n.workspace), n.egress ? ", internet on). " : ", no internet). ",
+        "Claude Code runs there in a container that sees only that folder, and asks before each command or file change."),
+      el("p", { class: "code-default-actions" }, keep, off));
+    box.hidden = false;
+  }
+
   // (Home's Code card first: the framed page's first report finds it there)
-  if (here) { codeCard(); document.addEventListener("bn:summary", (e) => budgetLine(e.detail)); }
+  if (here) { codeCard(); document.addEventListener("bn:summary", (e) => { budgetLine(e.detail); defaultNotice(e.detail); }); }
   addTab(); addSheetLink();
   if (here) { listen(); window.addEventListener("load", preload, { once: true }); } else offPage();
   cardLine();

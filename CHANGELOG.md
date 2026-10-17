@@ -14,9 +14,15 @@ All notable changes to bedrock-now are documented here. The format follows
   chose (`CODE_ENABLED` blank or absent in `.env`) and says so in its *What's new* ("Code page: on — …; ./stack code
   disable turns it off"); an explicit `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` stays off. A folder that cannot
   be created or used leaves it off with the reason and setup goes on; an image that does not build is turned off
-  again and tried at the next setup or update; `./stack rollback` of the update that turned it on turns it off again
-  (the data it restores has no key for the sandbox). `./stack code disable` and `./stack terminal disable` now record
-  the choice even while it was off, so updates no longer turn it on. What stays opt-in is unchanged: Bypass permissions,
+  again and tried once more at the next setup or update, then no more (`./stack code enable` once the cause is fixed:
+  an offline or full machine does not rebuild 1.6 GB at every update); `./stack rollback` of the update that turned
+  it on turns it off again (the data it restores has no key for the sandbox), keeping a switch you turned off since.
+  An update nobody watched (Home's **Update now**, the nightly automatic update) that turns it on also leaves a
+  one-time banner on Home with the workspace folder and the internet switch — **Keep** or **Turn off**. Servers and
+  scripted `--yes` installs that should not run it put `CODE_ENABLED=false` (or `TERMINAL_EGRESS=off`, which also
+  closes the sandbox's way to this computer's services on Docker Desktop) into `.env` before the first setup.
+  `./stack code disable` and `./stack terminal disable` now record the choice even while it was off, so updates no
+  longer turn it on. What stays opt-in is unchanged: Bypass permissions,
   Auto mode, remote access to the sandbox (`REMOTE_TERMINAL`), remote previews; the sandbox's internet access keeps
   its default. About 1.6 GB more images are built on a new install (the terminal ~1.2 GB, the Code page ~0.4 GB);
   idle they use about 110 MB of memory ([README](README.md#the-code-page),

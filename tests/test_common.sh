@@ -100,3 +100,10 @@ test_piped_awk_lookups_never_exit_early() {
   # what it guards against, once for real: under pipefail the first match wins and nothing fails
   ( set -o pipefail; v="$(seq 1 200000 | awk '!f && $1 == 3 { print; f = 1 }')"; [ "$v" = 3 ] )
 }
+
+test_every_test_runs_with_a_home_of_its_own() {
+  # tests/run.sh: setup (the Code page's ~/bedrock-now-workspace) or claude-bedrock (~/.claude-bedrock) run by a test
+  # must never reach your real home folder
+  case "$HOME" in "$TMP"/*) ;; *) echo "HOME is $HOME, not under $TMP" >&2; return 1 ;; esac
+  [ -d "$HOME" ] || return 1
+}

@@ -131,7 +131,7 @@ def test_code_page_is_framed_only_when_on(settings, cs):
             assert 'src="/static/code.js"' in r.text
             assert (CODE in r.headers["content-security-policy"]) is want   # frame-src: the Code tab's frame
             summary = c.get("/api/summary", headers={"Cookie": f"{COOKIE}={tok}", "X-Requested-With": "bedrock-now"}).json()
-            assert summary["code"] == {"enabled": s.code, "here": want} and ("code" in summary["apps"]) is want
+            assert summary["code"] == {"enabled": s.code, "here": want, "notice": None} and ("code" in summary["apps"]) is want
 
 
 def test_code_tab_sits_under_chat_and_under_more_on_phones():
@@ -636,3 +636,26 @@ def test_the_hand_off_on_the_remote_site_needs_its_switch_and_sets_that_hosts_se
     with _client(replace(rs, remote_terminal=False)) as c:
         assert c.get("/auth/terminal-unlock-callback?t=x", headers={"Host": r_term, **REMOTE}).status_code == 404
         assert c.get("/auth/code-terminal", headers={"Host": R_CODE_HOST, **SAME, **REMOTE}).status_code == 404
+
+
+def test_an_update_nobody_watched_is_said_once_on_home(tmp_path):
+    from portal import code as cp
+    now = 1_800_000_000
+    f = tmp_path / "code-default.json"
+    assert cp.default_notice(tmp_path, now) is None
+    f.write_text(json.dumps({"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "terminal": True}))
+    assert cp.default_notice(tmp_path, now) == {"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "terminal": True}
+    # stale (30 days), from the future, odd values: nothing
+    for bad in ({"at": now - 31 * 86400, "workspace": "/w", "egress": True}, {"at": now + 3600, "workspace": "/w", "egress": True},
+                {"at": "1", "workspace": "/w", "egress": True}, {"at": True, "workspace": "/w", "egress": True},
+                {"at": now, "workspace": "relative", "egress": True}, {"at": now, "workspace": "/w\n<b>", "egress": True},
+                {"at": now, "workspace": "/w", "egress": "yes"}, {"at": now, "workspace": "/" + "a" * 2000, "egress": False}):
+        f.write_text(json.dumps(bad))
+        assert cp.default_notice(tmp_path, now) is None, bad
+    f.write_text("{not json")
+    assert cp.default_notice(tmp_path, now) is None
+    js = open("portal/static/code.js", encoding="utf-8").read()
+    box = js[js.index("function defaultNotice(d)"):js.index("// (Home's Code card first")]
+    assert 'text: "Keep"' in box and 'text: "Turn off"' in box and "toSettings" in box and "localStorage.setItem(NOTICE_SEEN, String(n.at))" in box
+    assert "code(n.workspace)" in box and '", internet on). "' in box and "innerHTML" not in box
+    assert "defaultNotice(e.detail)" in js

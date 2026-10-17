@@ -136,6 +136,7 @@ code_enable() {
   fi
   run_phase "Code page image (build; the first one takes a few minutes)" code code_build
   run_phase "Code page + portal + Caddy" "code portal caddy" _code_up
+  code_default_forget_failures
   [ "$own" = 0 ] || stack_unlock
   printf '\n'; code_status
   printf '\nOpen the Code tab on Home (%s) and unlock it with the portal password.\n' "$(portal_url)"
@@ -144,6 +145,7 @@ code_enable() {
 code_disable() {
   local own=1
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  code_default_notice_clear
   if ! code_on; then
     # blank (never chosen) would be turned on by the next setup or update: false keeps it off
     [ -n "$(get_env CODE_ENABLED)" ] || set_env CODE_ENABLED false
@@ -275,10 +277,38 @@ code_up_hook() {
 # CODE_ENABLED is no longer blank.
 CODE_DEFAULT_ON=0   # set by code_default_on: 2 = it turned the terminal and the Code page on, 1 = the Code page only
 code_default_wanted() { [ -z "$(get_env CODE_ENABLED)" ] && ! flag_off "$(get_env TERMINAL_ENABLED)"; }
+# A default that did not come up twice is not tried again (an offline or full machine would otherwise build 1.6 GB of
+# images at every setup and update): .state/code-default-failed holds how often and why; ./stack code enable, a
+# default that came up, or disable forget it.
+code_default_failed_file() { printf '%s/code-default-failed
+' "$STATE_DIR"; }
+code_default_failures() { local n; n="$(sed -n 's/^count=//p' "$(code_default_failed_file)" 2>/dev/null)"; case "$n" in '' | *[!0-9]*) echo 0 ;; *) echo "$n" ;; esac; }
+code_default_forget_failures() { rm -f "$(code_default_failed_file)" 2>/dev/null || true; }
+# code_default_notice — after an update nobody watched (no terminal: the update helper's Update now or its nightly
+# update), .state/status/code-default.json for the portal: Home says once that the Code page was turned on, with Keep
+# and Turn off. Its fields are this machine's own (the folder, the internet switch); written as ./stack writes the
+# other status files.
+code_default_notice() {
+  local d f tmp ws egress
+  d="$(status_dir)"; mkdir -p "$d" 2>/dev/null || return 0
+  f="$d/code-default.json"
+  ws="$(get_env TERMINAL_WORKSPACE | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  if terminal_egress_on; then egress=true; else egress=false; fi
+  tmp="$(mktemp "$d/.code-default.XXXXXX")" 2>/dev/null || return 0
+  printf '{"at": %s, "workspace": "%s", "egress": %s, "terminal": %s}\n' "$(date +%s)" "$ws" "$egress" \
+    "$([ "$CODE_DEFAULT_ON" = 2 ] && echo true || echo false)" > "$tmp" && chmod 644 "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+}
+code_default_notice_clear() { rm -f "$(status_dir)/code-default.json" 2>/dev/null || true; }
 code_default_on() {
-  local ws real why created=0 ids
+  local ws real why created=0 ids n
   CODE_DEFAULT_ON=0
   code_default_wanted || return 0
+  n="$(code_default_failures)"
+  if [ "$n" -ge 2 ]; then
+    log "the Code page (on by default) stays off: it did not come up $n times ($(sed -n 's/^why=//p' "$(code_default_failed_file)" 2>/dev/null))" \
+      "— turn it on yourself with ./stack code enable once that is fixed"
+    return 0
+  fi
   if ! terminal_on; then
     ws="$(get_env TERMINAL_WORKSPACE)"; [ -n "$ws" ] || ws="$(terminal_default_workspace)"
     case "$ws" in "~") ws="$HOME" ;; "~/"*) ws="$HOME/${ws#"~/"}" ;; esac
@@ -308,8 +338,13 @@ code_default_on() {
   set_env CODE_ENABLED true
   terminal_remote_sync
   code_remote_sync
-  # (during ./stack update: in its record, so ./stack rollback puts it back as it was — code_default_rollback)
-  if declare -F _record_set >/dev/null && [ "$(_record_get result)" = running ]; then _record_set code_default "$CODE_DEFAULT_ON"; fi
+  # (during ./stack update: in its record, so ./stack rollback puts it back as it was — code_default_rollback — with
+  # whether the terminal had a key before; and, when nobody watched the update, a notice for Home)
+  if declare -F _record_set >/dev/null && [ "$(_record_get result)" = running ]; then
+    _record_set code_default "$CODE_DEFAULT_ON"
+    _record_set code_default_key "$([ -n "$(get_env LITELLM_KEY_TERMINAL)" ] && echo kept || echo new)"
+    _have_tty || code_default_notice
+  fi
   log "The Code page is now on by default: Claude Code in the browser (the Code tab), in a sandbox that sees only" \
     "$(get_env TERMINAL_WORKSPACE) — ./stack code disable turns it off"
   log "its images are built next (the first time: about 1.6 GB on disk and a few minutes)"
@@ -321,10 +356,10 @@ _code_default_skip() {
 
 # code_setup_hook — setup / ./stack update (after the terminal's): a new image (new code) and the container. Never
 # stops setup: a failure leaves the previous one running, with a warning (CODE_SETUP_FAILED=1 for code_default_settle).
-CODE_SETUP_FAILED=0
+CODE_SETUP_FAILED=0; CODE_SETUP_WHY=''
 code_setup_hook() {
   local out start
-  CODE_SETUP_FAILED=0
+  CODE_SETUP_FAILED=0; CODE_SETUP_WHY=''
   code_remote_sync
   code_ready || return 0
   code_secrets
@@ -333,7 +368,7 @@ code_setup_hook() {
   if { code_build && dc up -d --wait terminal-gateway && dc up -d --wait code; } > "$out" 2>&1; then
     rm -f "$out"; log "$(phase_line "Code page" $(($(_now) - start)))"; return 0
   fi
-  CODE_SETUP_FAILED=1
+  CODE_SETUP_FAILED=1; CODE_SETUP_WHY="the Code page's image did not build or its container did not start"
   warn "Code page: could not build or start it — its last messages:"
   tail -n 15 "$out" | sed 's/^/    /' >&2; rm -f "$out"
   warn "Code page: setup goes on without it; ./stack code enable tries again"
@@ -344,12 +379,20 @@ code_setup_hook() {
 # and shared-mcp, off the terminal's network) without it — so setup, its checks and an update go on; the next setup
 # or update tries again.
 code_default_settle() {
-  local both
+  local both why n f
   [ "$CODE_DEFAULT_ON" != 0 ] || return 0
-  [ "${TERMINAL_SETUP_FAILED:-0}" = 1 ] || [ "$CODE_SETUP_FAILED" = 1 ] || return 0
+  if [ "${TERMINAL_SETUP_FAILED:-0}" != 1 ] && [ "$CODE_SETUP_FAILED" != 1 ]; then code_default_forget_failures; return 0; fi
   both=0; [ "$CODE_DEFAULT_ON" != 2 ] || both=1
-  warn "the Code page (on by default) did not come up (see above): it is off again for now, and setup goes on." \
-    "The next ./stack setup or update tries again; ./stack code enable tries now (./stack code disable: keep it off)"
+  why="${TERMINAL_SETUP_WHY:-}"; [ -n "$why" ] || why="${CODE_SETUP_WHY:-it did not start}"
+  n=$(( $(code_default_failures) + 1 )); f="$(code_default_failed_file)"
+  { mkdir -p "${f%/*}" && printf 'count=%s\nwhy=%s\n' "$n" "$(printf '%s' "$why" | tr '\n' ' ' | cut -c1-200)" > "$f"; } 2>/dev/null || true
+  if [ "$n" -ge 2 ]; then
+    warn "the Code page (on by default) did not come up again ($why): it is off, and setup and updates stop trying." \
+      "Turn it on yourself with ./stack code enable once that is fixed (./stack code disable: keep it off)"
+  else
+    warn "the Code page (on by default) did not come up ($why): it is off again for now, and setup goes on." \
+      "The next ./stack setup or update tries once more; ./stack code enable tries now (./stack code disable: keep it off)"
+  fi
   # (while compose still knows them)
   if [ "$both" = 1 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
   else dc rm -sf code >/dev/null 2>&1 || true; fi
@@ -362,23 +405,34 @@ code_default_settle() {
   code_network_cleanup
   [ "$both" = 0 ] || terminal_network_cleanup
   if declare -F _record_set >/dev/null && [ -n "$(_record_get code_default)" ]; then _record_set code_default ''; fi
+  code_default_notice_clear
   CODE_DEFAULT_ON=0
 }
 
-# code_default_rollback MODE — ./stack rollback of an update whose setup turned the Code page on by default (its record's
-# code_default: 2 = with the terminal, 1 = the Code page alone): off again, as before that update — blank, so the next
-# update turns it on again — before the restored code's restore and up. The data restored is from before the update:
-# it has no LiteLLM key for a terminal that update turned on, so that key goes from .env too. Their containers go while
-# compose still knows them; their networks after the up (cmd_rollback). The workspace folder stays.
+# code_default_rollback MODE [KEY] — ./stack rollback of an update whose setup turned the Code page on by default (its
+# record's code_default: 2 = with the terminal, 1 = the Code page alone): what is still as that default left it (true)
+# goes back to blank, as before that update — so the next update turns it on again — before the restored code's
+# restore and up; a switch you turned off since (false) stays false. The data restored is from before the update: a
+# LiteLLM key that update made for the terminal (KEY: new) is not in it, so it goes from .env too. Their containers go
+# while compose still knows them; their networks after the up (cmd_rollback). The workspace folder stays.
 code_default_rollback() {
+  local code=0 term=0
   case "${1:-}" in 1 | 2) ;; *) return 1 ;; esac
-  if [ "$1" = 2 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
-  else dc rm -sf code >/dev/null 2>&1 || true; fi
-  set_env CODE_ENABLED ''
-  if [ "$1" = 2 ]; then set_env TERMINAL_ENABLED ''; set_env LITELLM_KEY_TERMINAL ''; fi
+  ! flag_on "$(get_env CODE_ENABLED)" || code=1
+  [ "$1" != 2 ] || ! flag_on "$(get_env TERMINAL_ENABLED)" || term=1
+  if [ "$term" = 1 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
+  elif [ "$code" = 1 ]; then dc rm -sf code >/dev/null 2>&1 || true; fi
+  [ "$code" = 0 ] || set_env CODE_ENABLED ''
+  [ "$term" = 0 ] || set_env TERMINAL_ENABLED ''
+  [ "$1" != 2 ] || [ "${2:-new}" != new ] || set_env LITELLM_KEY_TERMINAL ''
   terminal_remote_sync
   code_remote_sync
-  log "rollback: that update turned the Code page$([ "$1" = 2 ] && echo ' and its terminal') on by default — off again, as before it (the next ./stack update turns $([ "$1" = 2 ] && echo them || echo it) on again)"
+  code_default_notice_clear
+  if [ "$code" = 1 ] || [ "$term" = 1 ]; then
+    log "rollback: that update turned the Code page$([ "$term" = 1 ] && echo ' and its terminal') on by default — off again, as before it (the next ./stack update turns $([ "$term" = 1 ] && echo them || echo it) on again)"
+  else
+    log "rollback: that update turned the Code page on by default, and you turned it off since — it stays off"
+  fi
 }
 
 code_status() {

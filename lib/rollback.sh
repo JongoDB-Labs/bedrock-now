@@ -6,7 +6,8 @@
 # .state/update/last.env (key=value, written by ./stack update):
 #   at=<epoch> from=<commit> branch=<branch or empty> from_version=<git describe> backup=backups/<ts>-auto
 #   result=running|done|rolled-back  to_version=<after the update>  rolled_back_version=<what ./stack rollback left>
-#   code_default=1|2 (that update's setup turned the Code page on by default: lib/code.sh code_default_on)
+#   code_default=1|2 code_default_key=new|kept (that update's setup turned the Code page on by default, and whether the
+#   terminal's LiteLLM key was made then: lib/code.sh code_default_on)
 
 update_record_file() { printf '%s/update/last.env\n' "$STATE_DIR"; }
 
@@ -150,7 +151,7 @@ cmd_rollback() {
   fi
   # The Code page (and its terminal) turned on by default by the update gone back from: off again, as before it — the
   # data restored has no key for its sandbox (lib/code.sh code_default_rollback); their networks after the up.
-  if declare -F code_default_rollback >/dev/null && code_default_rollback "$(_record_get code_default)"; then
+  if declare -F code_default_rollback >/dev/null && code_default_rollback "$(_record_get code_default)" "$(_record_get code_default_key)"; then
     no_code=1; [ "$(_record_get code_default)" != 2 ] || no_terminal=1
   fi
   _rollback_local_builds

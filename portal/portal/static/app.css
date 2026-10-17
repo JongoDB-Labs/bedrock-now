@@ -265,6 +265,11 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 .code-off-actions .note { margin: 0; }
 .code-off-card .cmdline { margin: 8px 0 0; }
 .code-off-card h2 + .note { margin-top: 0; }
+/* Home: an update nobody watched turned the Code page on (code.js) — Keep or Turn off */
+.code-default-notice { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.code-default-notice p { margin: 0; max-width: 90ch; }
+.code-default-notice code { overflow-wrap: anywhere; }
+.code-default-actions { display: flex; gap: 8px; margin-top: 10px !important; }
 /* Settings, opened from the Code tab's page: the Code page's switch lights up briefly */
 .code-flash { animation: code-flash 1.6s ease-out; border-radius: 8px; }
 @keyframes code-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }

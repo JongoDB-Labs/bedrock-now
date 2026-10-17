@@ -6,12 +6,14 @@ anything: the spike saw a hostile stand-in report a cost of -1), so both are ans
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode
 
 import httpx
 
-from . import summary, usage
+from . import hostfiles, summary, usage
 from . import prices as price_update
 from .config import Settings
 
@@ -147,3 +149,25 @@ def deep_link(uri: str | None) -> str | None:
         del out["prompt"]
         link = "/?" + urlencode(out) if out else ""
     return link or None
+
+
+# --- after an update nobody watched turned the Code page on by default (lib/code.sh code_default_notice) ---
+
+NOTICE = "code-default.json"
+NOTICE_DAYS = 30
+
+
+def default_notice(status_dir: Path, now: float | None = None) -> dict | None:
+    """What Home's one-time banner says: when, the workspace folder and whether the sandbox reaches the internet, from
+    STATUS_DIR/code-default.json (written by ./stack only during an update without a terminal: the update helper's
+    Update now or nightly update). None when there is none, it is older than 30 days, or anything in it is off."""
+    d = hostfiles.read_json(status_dir / NOTICE, 4096)
+    at, ws = d.get("at"), d.get("workspace")
+    if not isinstance(at, int) or isinstance(at, bool) or not isinstance(ws, str) or not isinstance(d.get("egress"), bool):
+        return None
+    now = time.time() if now is None else now
+    if at > now + 300 or now - at > NOTICE_DAYS * 86400 or not ws.startswith("/") or len(ws) > 1024:
+        return None
+    if any(ord(c) < 32 or ord(c) == 127 for c in ws):
+        return None
+    return {"at": at, "workspace": ws, "egress": d["egress"], "terminal": d.get("terminal") is True}

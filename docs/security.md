@@ -525,8 +525,11 @@ reaches is the container — with the three exceptions under *Threat model*.
   on, with the workspace `~/bedrock-now-workspace` (created with mode 700 and checked like any other: below). What
   that adds to a default install, and what it does not:
   - *Adds:* a container running Claude Code and a shell, as your user id, that can read and write that one folder,
-    spend its own key (`claude-code-terminal`, `BUDGET_TERMINAL`: $50 a month by default), reach the internet and,
-    on Docker Desktop, your computer's own services through Docker's host address (*Threat model* below), and two
+    spend its own key (`claude-code-terminal`, `BUDGET_TERMINAL`: $50 a month by default), reach the internet and —
+    with that same internet access, on Docker Desktop — the services of this computer itself through Docker's host
+    address (the name `host.docker.internal` is taken away in the sandbox, the address is not: LiteLLM's port with its
+    own key's limits, the shared MCP server, the portal's login, any dev server; *Threat model* below).
+    `TERMINAL_EGRESS=off` in `.env`, then `./stack up`, closes both. And two
     more host names on `127.0.0.1` behind the portal (`terminal.` and `code.`), each needing the portal session
     **and** the portal password again (12 hours per browser). Anything that later opens the workspace on your
     computer runs what Claude wrote there (threat 1).
@@ -537,8 +540,14 @@ reaches is the container — with the three exceptions under *Threat model*.
   - *Kept:* an explicit `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is never turned on again;
     `./stack code disable` (Settings → Code page → Off, from anywhere) or `./stack terminal disable` writes it. A
     folder that cannot be created or is refused leaves both off (setup says why and goes on); an image that does not
-    build is turned off again and tried at the next setup or update; `./stack rollback` of the update that turned
-    them on turns them off again. `TERMINAL_EGRESS` keeps its default (on).
+    build is turned off again and tried once more at the next setup or update, then no more (`./stack code enable`
+    turns it on); `./stack rollback` of the update that turned them on turns them off again, keeping a switch you
+    turned off since. `TERMINAL_EGRESS` keeps its default (on: Claude Code needs npm, pip, git and documentation).
+  - *Unattended:* an update nobody watched (Home's **Update now** or the nightly automatic update, both run by the
+    update helper without a terminal) that turns them on leaves a one-time banner on Home — the workspace folder and
+    whether the sandbox has internet, **Keep** or **Turn off** — besides the line in the update's *What's new*.
+    Headless or scripted installs (`--yes` on a server) that should not run it put `CODE_ENABLED=false` (or
+    `TERMINAL_EGRESS=off`) into `.env` before the first setup ([README](../README.md#quickstart)).
 
 - [x] **Not a shell on your computer.** ttyd runs `tmux` in its own container (`terminal/`, built locally; base
   image pinned by digest, Claude Code by version and SHA-512 in `terminal/claude-code/package-lock.json`, ttyd's

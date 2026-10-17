@@ -104,6 +104,18 @@ run depending on your connection (about 2 minutes after that), and under $0.05 o
 (the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04). The browser terminal
 and the Code page are built on your computer during the first setup (a few minutes more, about 1.6 GB).
 
+**On a server, or in a script (`--yes`, nobody at the screen):** the Code page and its sandbox come on by default,
+with internet access — and, on Docker Desktop, a way to this computer's own services through Docker's host address.
+To keep them off, write it into `.env` before the first setup (setup keeps a `.env` it finds); or keep them on
+without internet with `TERMINAL_EGRESS=off`, which closes both:
+
+```bash
+git clone https://github.com/JongoDB-Labs/bedrock-now && cd bedrock-now
+cp .env.example .env && chmod 600 .env
+printf 'CODE_ENABLED=false\n' >> .env      # or: printf 'TERMINAL_EGRESS=off\n' >> .env  (the last line of a key wins)
+./setup.sh --yes
+```
+
 **Next:** open the **Code** tab, under Chat, to use Claude Code in the browser: it asks for the portal password
 once more, and in its default mode every command and file change waits for your OK ([the Code page](#the-code-page);
 `./stack code disable` turns it off). Remote access, OpenRouter and voice can be changed at any time
@@ -1180,7 +1192,9 @@ with Amazon Linux 2023, a 30–40 GB gp3 disk and a security group with **no inb
 $31/month in `us-east-1` before Bedrock usage; you reach it over Tailscale. The recipe — least-privilege role
 policy, IMDSv2 hop limit 2 (containers need it to reach the role), Docker on AL2023, data residency, costs and a
 request template for your AWS admin — is in [docs/cloud-vm.md](docs/cloud-vm.md). Other providers (Hetzner,
-DigitalOcean, …) work the same way with an access key.
+DigitalOcean, …) work the same way with an access key. The Code page and its sandbox are on by default there too;
+to keep them off on a server, put `CODE_ENABLED=false` (or `TERMINAL_EGRESS=off`) into `.env` before the first setup
+([how](#quickstart)).
 
 ## Voice: speech-to-text
 
@@ -1363,11 +1377,14 @@ restores is never pruned, however old.
 **Updating from v0.9.0 or earlier** turns the Code page on, with the browser terminal it runs in, unless you chose
 otherwise: an install with no `CODE_ENABLED` in `.env` (or a blank one) gets both, in `~/bedrock-now-workspace` (or
 the terminal's folder, if it was on), with the terminal's own key and budget; the update says so ("The Code page is
-now on by default …") and its *What's new* names it. Building their images takes a few minutes more the first time
+now on by default …") and its *What's new* names it. An update nobody watched — **Update now** on Home, or the
+nightly automatic update — also leaves a one-time banner on Home: "The last update turned on the Code page and its
+sandbox (workspace …, internet on)", with **Keep** and **Turn off** (Settings, at its switch). Building their images takes a few minutes more the first time
 (about 1.6 GB). `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` in `.env` stays off; `./stack code disable`
 afterwards turns it off for good. Bypass, Auto, remote access to the sandbox and remote previews stay off.
 `./stack rollback` of that update turns them off again, as they were (the data it restores has no key for the
-sandbox), and the next update turns them on again.
+sandbox; a switch you turned off since stays off), and the next update turns them on again. If they do not come up
+twice (no network, a full disk), setup and updates stop trying: `./stack code enable` once that is fixed.
 
 **Updating from v0.4.x** (to v0.5.0 or later) is an ordinary update: the four steps above, a few minutes of
 downtime (Chat answers, `claude-bedrock` requests and MCP sessions in progress then fail; start them again), and

@@ -134,7 +134,7 @@ test_a_default_that_did_not_come_up_is_off_again_and_tried_next_time() {
   assert_contains "$(cat "$TMP/dc")" "dc up -d --wait --no-deps litellm shared-mcp"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_code-link"
   assert_contains "$(cat "$TMP/out")" "did not come up"
-  assert_contains "$(cat "$TMP/out")" "The next ./stack setup or update tries again"
+  assert_contains "$(cat "$TMP/out")" "The next ./stack setup or update tries once more"
   assert_eq "$CODE_DEFAULT_ON" 0
   code_default_wanted || { echo "not wanted again" >&2; return 1; }
   # the terminal was on already and only the Code page failed: the Code page alone goes, the terminal stays
@@ -156,15 +156,31 @@ test_rollback_of_the_update_that_turned_it_on_turns_it_off_again() {
   # during ./stack update (its record says running): the default is recorded, so rollback can put it back
   mkdir -p "$STATE_DIR/update"; printf 'from=abc\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"
   code_default_on > /dev/null 2>&1 || return 1
-  assert_eq "$(_record_get code_default)" 2
+  assert_eq "$(_record_get code_default)" 2; assert_eq "$(_record_get code_default_key)" new
   set_env LITELLM_KEY_TERMINAL sk-term
   : > "$TMP/dc"
-  code_default_rollback "$(_record_get code_default)" > "$TMP/out" 2>&1 || return 1
+  code_default_rollback "$(_record_get code_default)" "$(_record_get code_default_key)" > "$TMP/out" 2>&1 || return 1
   assert_eq "$(get_env CODE_ENABLED)" ""; assert_eq "$(get_env TERMINAL_ENABLED)" ""
   assert_eq "$(get_env LITELLM_KEY_TERMINAL)" ""   # (the data restored has no such key)
   assert_eq "$(head -n 1 "$TMP/dc")" "dc rm -sf code terminal terminal-gateway"
   assert_contains "$(cat "$TMP/out")" "that update turned the Code page and its terminal on by default — off again"
   code_default_wanted || return 1   # the next update turns them on again
+  # turned off since the update (false): rollback keeps it false, so no later update turns it on again
+  set_env CODE_ENABLED false; set_env TERMINAL_ENABLED false; set_env LITELLM_KEY_TERMINAL sk-term; : > "$TMP/dc"
+  code_default_rollback 2 new > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" false; assert_eq "$(get_env TERMINAL_ENABLED)" false
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" ""   # (still not in the data restored)
+  [ ! -s "$TMP/dc" ] || { echo "removed containers that were off: $(cat "$TMP/dc")" >&2; return 1; }
+  assert_contains "$(cat "$TMP/out")" "you turned it off since — it stays off"
+  if code_default_wanted; then echo "an explicit false would be turned on again" >&2; return 1; fi
+  # only the Code page turned off since: it stays false, the terminal (still as the default left it) goes back
+  set_env CODE_ENABLED false; set_env TERMINAL_ENABLED true; : > "$TMP/dc"
+  code_default_rollback 2 new > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" false; assert_eq "$(get_env TERMINAL_ENABLED)" ""
+  # a terminal key that was there before the update (kept): it stays, the restored data has it
+  set_env CODE_ENABLED true; set_env TERMINAL_ENABLED true; set_env LITELLM_KEY_TERMINAL sk-old
+  code_default_rollback 2 kept > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-old; assert_eq "$(get_env TERMINAL_ENABLED)" ""
   # the terminal was on before: only the Code page goes, the terminal's key stays
   set_env TERMINAL_ENABLED true; set_env CODE_ENABLED true; set_env LITELLM_KEY_TERMINAL sk-term; : > "$TMP/dc"
   code_default_rollback 1 > /dev/null 2>&1 || return 1
@@ -187,6 +203,63 @@ test_rollback_of_the_update_that_turned_it_on_turns_it_off_again() {
   body="$(sed -n '/^cmd_rollback() {/,/^}/p' "$STACK_DIR/lib/rollback.sh" | tr -d ' ')"
   case "$body" in *'code_default_rollback"$(_record_getcode_default)"'*'"$STACK_DIR/stack"restore'*'[ "$no_code" = 0 ] || code_network_cleanup'*) ;; *'code_default_rollback"$(_record_getcode_default)"'*'"$STACK_DIR/stack"restore'*code_network_cleanup*) ;;
     *) echo "rollback order" >&2; return 1 ;; esac
+}
+
+test_a_default_that_failed_twice_is_not_tried_again() {
+  _stubs
+  # first failure: off again, tried once more at the next setup
+  code_default_on > /dev/null 2>&1 || return 1
+  TERMINAL_SETUP_FAILED=1; TERMINAL_SETUP_WHY="the terminal's image did not build or its container did not start"; CODE_SETUP_FAILED=0
+  code_default_settle > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(code_default_failures)" 1
+  assert_contains "$(cat "$TMP/out")" "did not come up (the terminal's image did not build"
+  assert_contains "$(cat "$TMP/out")" "tries once more"
+  code_default_on > /dev/null 2>&1 || return 1; assert_eq "$CODE_DEFAULT_ON" 2
+  # second failure: setup and updates stop trying, and say how to turn it on
+  code_default_settle > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(code_default_failures)" 2
+  assert_contains "$(cat "$TMP/out")" "setup and updates stop trying"
+  assert_contains "$(cat "$TMP/out")" "Turn it on yourself with ./stack code enable once that is fixed"
+  cp "$ENV_FILE" "$TMP/env.1"
+  code_default_on > "$TMP/out" 2>&1 || return 1
+  assert_eq "$CODE_DEFAULT_ON" 0
+  cmp -s "$ENV_FILE" "$TMP/env.1" || { echo ".env changed after two failures" >&2; return 1; }
+  assert_contains "$(cat "$TMP/out")" "stays off: it did not come up 2 times (the terminal's image did not build"
+  assert_contains "$(cat "$TMP/out")" "turn it on yourself with ./stack code enable once that is fixed"
+  # ./stack code enable (or a default that came up) forgets them
+  code_enable > /dev/null 2>&1 || return 1
+  assert_eq "$(code_default_failures)" 0
+  printf 'count=1\nwhy=x\n' > "$(code_default_failed_file)"; set_env CODE_ENABLED ''; set_env TERMINAL_ENABLED ''
+  code_default_on > /dev/null 2>&1 || return 1; TERMINAL_SETUP_FAILED=0; CODE_SETUP_FAILED=0
+  code_default_settle > /dev/null 2>&1 || return 1
+  assert_eq "$(code_default_failures)" 0
+}
+
+test_an_update_nobody_watched_leaves_a_notice_for_home() {
+  _stubs
+  mkdir -p "$STATE_DIR/update"; printf 'from=abc\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"
+  _have_tty() { return 1; }   # the update helper: no terminal
+  code_default_on > /dev/null 2>&1 || return 1
+  f="$(status_dir)/code-default.json"
+  [ -f "$f" ] || { echo "no notice" >&2; return 1; }
+  python3 - "$f" "$(get_env TERMINAL_WORKSPACE)" <<'PY' || return 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["workspace"] == sys.argv[2] and d["egress"] is True and d["terminal"] is True and isinstance(d["at"], int), d
+PY
+  case "$(uname -s)" in Darwin) assert_eq "$(stat -f %Lp "$f")" 644 ;; *) assert_eq "$(stat -c %a "$f")" 644 ;; esac
+  # internet off: said so
+  set_env CODE_ENABLED ''; set_env TERMINAL_EGRESS off; code_default_on > /dev/null 2>&1 || return 1
+  assert_contains "$(cat "$f")" '"egress": false'
+  # disable, or a default undone, takes it away
+  code_disable > /dev/null 2>&1 || return 1
+  [ ! -e "$f" ] || { echo "the notice outlived disable" >&2; return 1; }
+  # a terminal at hand (you saw the message), or not in an update (a fresh install): no notice
+  set_env CODE_ENABLED ''; _have_tty() { return 0; }; code_default_on > /dev/null 2>&1 || return 1
+  [ ! -e "$f" ] || return 1
+  set_env CODE_ENABLED ''; _have_tty() { return 1; }; printf 'result=done\n' > "$(update_record_file)"
+  code_default_on > /dev/null 2>&1 || return 1
+  [ ! -e "$f" ] || return 1
 }
 
 test_disable_while_it_was_never_chosen_keeps_it_off() {
