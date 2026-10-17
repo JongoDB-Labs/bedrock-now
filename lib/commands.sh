@@ -222,10 +222,25 @@ ensure_images() {
   done
 }
 
+# fix_checkout_modes — every tracked file and folder readable by all, as a clone made with umask 022 has them. The
+# update helper runs with umask 077 (its launchd Umask / systemd UMask), so before this fix an update or rollback it
+# ran wrote each new or changed file as 600 (700 for scripts): images built from them (code/: COPY keeps the mode,
+# root owns the copy, the container runs as another user) could not read their own sources. Untracked files (.env,
+# .state/, backups/) are never touched. Never fatal.
+fix_checkout_modes() {
+  [ -e "$STACK_DIR/.git" ] || return 0
+  ( cd "$STACK_DIR" &&
+    git ls-files -z | xargs -0 chmod go+rX 2>/dev/null
+    git ls-tree -r -d --name-only -z HEAD | xargs -0 chmod go+rx 2>/dev/null
+    chmod go+rx . 2>/dev/null ) || true
+  return 0
+}
+
 # fix_bind_mount_perms — containers read litellm/, postgres/init.sql, caddy/Caddyfile and catalog/ (the portal)
 # as non-owner users, so a strict umask (077) on clone must not make them unreadable.
 fix_bind_mount_perms() {
   local f
+  fix_checkout_modes
   chmod a+rX "$STACK_DIR/litellm" "$STACK_DIR/postgres" "$STACK_DIR/caddy" "$STACK_DIR/catalog"
   chmod 644 "$STACK_DIR/postgres/init.sql" "$STACK_DIR/caddy/Caddyfile" "$STACK_DIR"/catalog/*.tsv
   for f in "$STACK_DIR"/caddy/*.caddy "$STACK_DIR/caddy/Dockerfile"; do [ ! -f "$f" ] || chmod 644 "$f"; done   # remote access
@@ -1304,7 +1319,9 @@ newest_release_tag() {
   git -C "$1" -c versionsort.suffix=- tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | sed -n '1p' || true
 }
 
-_git() { git -C "$STACK_DIR" "$@"; }
+# (umask 022: what git writes into the checkout must be readable as a clone's is, also when the update helper — umask
+# 077 — runs ./stack update; see fix_checkout_modes)
+_git() { ( umask 022; git -C "$STACK_DIR" "$@" ); }
 _require_clean_tree() { # ./stack update never starts (no backup, no pruning) over local changes to tracked files
   [ -e "$STACK_DIR/.git" ] || return 0
   [ -z "$(_git status --porcelain --untracked-files=no)" ] ||

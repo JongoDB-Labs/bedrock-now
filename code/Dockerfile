@@ -68,6 +68,10 @@ COPY package.json ./
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY --from=web /src/dist/ ./web/dist/
+# Readable by the user compose runs it as (TERMINAL_UID), whatever modes the checkout has: COPY keeps them, and a
+# checkout written with umask 077 (the update helper's) has 600 files — the server then failed with EACCES on its own
+# main.mjs. (The portal, shared-mcp and stt images do the same; node_modules and web/dist are already a+r.)
+RUN chmod -R a+rX /opt/code/package.json /opt/code/server /opt/code/plain
 ENV NODE_ENV=production
 # (compose runs it as TERMINAL_UID, read-only; this is for a plain docker run)
 USER node

@@ -8,6 +8,13 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **Updates and rollbacks run by the update helper (Home → Update now, Roll back, automatic updates) left the
+  checkout unreadable to the Code page's container.** The helper runs with umask 077, so every file such an update
+  wrote was 600: the code container then failed with `EACCES` on its own `main.mjs` (Settings → Code page On failed;
+  with the Code page already on, the update ended in "setup failed" and only a rollback recovered). git now runs
+  with umask 022 during updates and rollbacks, setup repairs the modes of tracked files (installs already hit
+  included), and the code image makes its own sources readable. Found by an upgrade rehearsal v0.4.1 → v0.9.0.
+
 - **The sign-in page, the Portal password setting and the walkthrough** now say the password also unlocks the
   Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
   Admin and Files.

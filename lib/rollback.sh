@@ -63,8 +63,10 @@ update_unfinished() {
 
 # _rollback_checkout FROM BRANCH — the code as it was before the update (branch users stay on their branch)
 _rollback_checkout() {
-  if [ -n "$2" ]; then git -C "$STACK_DIR" switch --quiet -C "$2" "$1"
-  else git -C "$STACK_DIR" -c advice.detachedHead=false checkout --quiet "$1"; fi
+  # (umask 022: the update helper runs with 077 — files written as 600 break images built from them; see
+  # fix_checkout_modes in lib/commands.sh)
+  if [ -n "$2" ]; then ( umask 022; git -C "$STACK_DIR" switch --quiet -C "$2" "$1" )
+  else ( umask 022; git -C "$STACK_DIR" -c advice.detachedHead=false checkout --quiet "$1" ); fi
 }
 
 # _rollback_local_builds — the previous portal/shared-mcp/stt/terminal builds (<project>/<name>:previous) become :local

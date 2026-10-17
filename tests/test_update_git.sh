@@ -373,3 +373,29 @@ test_update_to_a_new_version_ends_with_whats_new_and_a_no_op_does_not() {
   out="$(cmd_update --force 2>/dev/null)"
   assert_eq "$out" ""
 }
+
+# The update helper runs with umask 077 (launchd Umask 63 / systemd UMask=0077). v0.9.0 and older wrote every file an
+# update added or changed as 600, so code/'s image (COPY keeps modes; it runs as TERMINAL_UID) failed with EACCES.
+_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+test_update_under_umask_077_writes_files_readable_by_all() {
+  _fixture
+  mkdir -p "$TMP/origin/sub"; printf 'x\n' > "$TMP/origin/sub/new.mjs"; printf '#!/bin/sh\n' > "$TMP/origin/sub/run.sh"
+  chmod 755 "$TMP/origin/sub/run.sh"; git -C "$TMP/origin" add sub; git -C "$TMP/origin" commit -qm four
+  git -C "$TMP/origin" tag -a v0.3.0 -m v0.3.0
+  ( umask 077; update_checkout "" ) 2> "$TMP/err"
+  assert_eq "$(git -C "$TMP/stack" describe --tags --exact-match)" "v0.3.0"
+  assert_eq "$(_mode "$TMP/stack/sub/new.mjs")" 644
+  assert_eq "$(_mode "$TMP/stack/sub/run.sh")" 755
+  assert_eq "$(_mode "$TMP/stack/sub")" 755
+  assert_eq "$(_mode "$TMP/stack/file")" 644
+}
+
+test_fix_checkout_modes_repairs_tracked_files_only() {
+  _fixture
+  mkdir -p "$TMP/stack/.state"; printf 's\n' > "$TMP/stack/.env"; chmod 600 "$TMP/stack/.env"; chmod 700 "$TMP/stack/.state"
+  chmod 600 "$TMP/stack/file"
+  fix_checkout_modes
+  assert_eq "$(_mode "$TMP/stack/file")" 644
+  assert_eq "$(_mode "$TMP/stack/.env")" 600
+  assert_eq "$(_mode "$TMP/stack/.state")" 700
+}
