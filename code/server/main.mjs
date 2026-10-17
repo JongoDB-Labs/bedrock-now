@@ -84,7 +84,7 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
-// allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Code page). sandbox: {egress, workspace} what the page's Bypass dialog says
+// allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Claude Code). sandbox: {egress, workspace} what the page's Bypass dialog says
 // about the sandbox (TERMINAL_EGRESS, the folder of yours it sees — a label). watch: false turns the watchlist off.
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},

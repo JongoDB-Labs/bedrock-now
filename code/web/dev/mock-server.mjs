@@ -2209,7 +2209,7 @@ server.on('upgrade', (req, sock, head) => {
           // "Allow, and switch to Auto": the switch first (Settings must allow Auto), then the command once
           if (m.decision === 'once_auto') {
             const rq = typeof m.req === 'string' ? m.req : undefined;
-            const no = !allowAuto ? 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now'
+            const no = !allowAuto ? 'Auto mode is off: turn it on in Settings › Claude Code, from the computer running bedrock-now'
               : p.msg.tool !== 'Bash' || p.msg.reasonType === 'rule' ? 'this prompt cannot switch to Auto' : !['default', 'acceptEdits'].includes(x.mode) ? '"Allow, and switch to Auto" is for Manual and Accept edits' : '';
             if (no) return rq ? reply({ type: 'reply', req: rq, ok: false, error: no }) : refuse(no);
             x.mode = 'auto';
@@ -2301,8 +2301,8 @@ server.on('upgrade', (req, sock, head) => {
           // as the backend: Bypass only where Settings allow it and with the page's confirmation; Auto where they allow it
           const mode = m.mode === 'dontAsk' ? 'readOnly' : m.mode;
           const no = !['readOnly', 'plan', 'default', 'acceptEdits', 'bypassPermissions', 'auto'].includes(mode) ? 'bad mode'
-            : mode === 'auto' && !allowAuto ? 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now'
-              : mode === 'bypassPermissions' && !allowBypass ? 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now'
+            : mode === 'auto' && !allowAuto ? 'Auto mode is off: turn it on in Settings › Claude Code, from the computer running bedrock-now'
+              : mode === 'bypassPermissions' && !allowBypass ? 'Bypass permissions is off: turn it on in Settings › Claude Code, from the computer running bedrock-now'
                 : mode === 'bypassPermissions' && m.confirmed !== true ? 'Bypass permissions needs your confirmation in the Code page (confirmed: true)' : '';
           if (no) {
             if (req) reply({ type: 'reply', req, ok: false, error: no });

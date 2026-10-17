@@ -143,7 +143,7 @@ export function ModePicker({ compact }: { compact?: boolean }) {
           })}
           {(!allowAuto || !allowBypass) && (
             <div class="panel-note" data-testid={allowBypass ? 'mode-auto-off' : 'mode-bypass-off'}>
-              {!allowAuto && !allowBypass ? 'Auto and Bypass permissions are off' : !allowAuto ? 'Auto is off' : 'Bypass permissions is off'}. Settings › Code page turns{' '}
+              {!allowAuto && !allowBypass ? 'Auto and Bypass permissions are off' : !allowAuto ? 'Auto is off' : 'Bypass permissions is off'}. Settings › Claude Code turns{' '}
               {!allowAuto && !allowBypass ? 'them' : 'it'} on (from the computer running bedrock-now).
             </div>
           )}

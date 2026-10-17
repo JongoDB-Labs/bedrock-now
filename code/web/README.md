@@ -86,7 +86,7 @@ full), *padded* (a command pushed out of sight), *risky* (default to no, no Alwa
 *refuse this prompt*, *hostile*, *install script* (in Auto, the reviewer blocks it: the blocked-action card, *Allow
 once*), or a slash command (`/context`, `/cost`, `/model sonnet`, `/compact`); in Plan mode
 every prompt ends in a plan to approve. Test hooks: `POST /__mock/drop|close?code=|lock|unlock|budget?spend=&max=|
-clear?session=|touch?path=|reset`; `POST /__mock/auto?allow=1|0` is Settings › Code page › Auto mode; for budgets, the
+clear?session=|touch?path=|reset`; `POST /__mock/auto?allow=1|0` is Settings › Claude Code › Auto mode; for budgets, the
 cold cache, Permissions and Open in the terminal: `POST /__mock/spend?session=&add=` (more spend),
 `/__mock/age?session=&ms=` (its last activity that long ago), `/__mock/perm-touch` (the user settings change behind the
 Permissions view), `/__mock/terminal-exit?session=` (Claude Code exits in the terminal; until then a resume is refused)

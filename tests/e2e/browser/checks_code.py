@@ -212,7 +212,7 @@ def _off_page(ctx) -> str:
     expect(t.is_visible() and page.locator(".code-item.off .tab-off").inner_text().strip() == "off", "no muted Code tab with its off pill")
     expect(page.locator(".popout[data-app=code]").count() == 0 and page.locator(".tab[data-tab=code] .tab-badge").count() == 0, "a pop-out or badge while off")
     line = page.inner_text("section.claude .code-line")
-    expect("Code tab" in line and "./stack code enable" in line and "Settings → Code page" in line, f"card {line!r}")
+    expect("Code tab" in line and "./stack code enable" in line and "Settings › Claude Code" in line, f"card {line!r}")
     t.click()
     page.wait_for_selector("#code:not([hidden]) .code-off-card")
     expect(page.locator("#frames iframe[data-app=code]").count() == 0, "a Code frame while off")
@@ -231,7 +231,8 @@ def _off_page(ctx) -> str:
     page.wait_for_selector(f"#settings:not([hidden]) {CODE_SETTINGS_ROW[len('#settings '):]}", timeout=20000)
     page.wait_for_function(f"""() => {{ const r = document.querySelector('{CODE_SETTINGS_ROW}').getBoundingClientRect();
       return r.top >= 0 && r.bottom <= innerHeight; }}""", timeout=15000)
-    expect(page.evaluate("location.hash") == "#settings", "Settings is not shown")
+    expect(page.evaluate("location.hash").startswith("#settings"), "Settings is not shown")
+    expect(page.locator("#settings .set-card", has=page.locator('.set-row[data-key="CODE_ENABLED"]')).first.is_visible(), "the Claude Code section is not shown")
     page.wait_for_timeout(400)
     shot(page, "50b-code-off-settings")
     # #code by hand (a bookmark): the page, not Home

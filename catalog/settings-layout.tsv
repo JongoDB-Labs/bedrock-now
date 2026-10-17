@@ -59,13 +59,13 @@ OWUI_TASK_MODEL	chat	with	CHAT_TASK_MODEL	-
 OPENROUTER_MAX_MODELS	chat	more	OPENROUTER_API_KEY	At most this many OpenRouter models, the newest first; a long list slows LiteLLM's start.
 OPENROUTER_INCLUDE_ALIASES	chat	more	OPENROUTER_API_KEY	Also offer OpenRouter's …-latest alias models.
 
-@code	Claude Code	The Code page (Claude Code in the browser, with a chat and your files), the browser Terminal, and the models Claude Code uses. The Code page runs in the Terminal's sandbox: one folder, one key, one budget.	README.md#the-code-page-optional
-CODE_ENABLED	code	main	-	The Code tab: Claude Code in the browser with a chat, permission prompts and your workspace's files.
+@code	Claude Code	The Code page (Claude Code in the browser, with a chat and your files), the browser Terminal, and the models Claude Code uses. The Code page runs in the Terminal's sandbox: one folder, one key, one budget. Both are on by default.	README.md#the-code-page
+CODE_ENABLED	code	main	-	The Code tab: Claude Code in the browser with a chat, permission prompts and your workspace's files (on by default).
 CODE_ALLOW_BYPASS	code	main	CODE_ENABLED	Offer Bypass permissions: Claude runs every command and edit in the sandbox without asking.
 CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves routine actions and blocks risky ones (it costs extra).
 TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
 TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
-TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	Whether the sandbox (the Terminal and the Code page) can reach the internet.
+TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet (on by default; on Docker Desktop also this computer's services). Off closes both.
 TERMINAL_AUTO_MODE	code	main	TERMINAL_ENABLED	Auto mode for claude typed in the Terminal too (it costs extra).
 CLAUDE_MODEL_OPUS	code	main	-	The model Claude Code works with: claude-bedrock's main (opus) slot.
 CLAUDE_BEDROCK_OPUS_MODEL	code	with	CLAUDE_MODEL_OPUS	-

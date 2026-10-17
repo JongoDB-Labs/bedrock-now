@@ -436,7 +436,8 @@ _settings_display() {
 }
 
 # settings_snapshot_write — .state/status/settings.json for the portal: settings.tsv with each key's value (plain
-# keys) and its default (.env.example's value: Settings › "Changed from default"), or set + a hint (secrets: see the
+# keys) and its default (.env.example's value — true for CODE_ENABLED and TERMINAL_ENABLED, on by default: Settings ›
+# "Changed from default"), or set + a hint (secrets: see the
 # secret column), keys .env has beyond the table (names only), the .env hash the portal sends back ("base"), and the
 # last change. One awk pass over the table and .env (.env.example read first).
 settings_snapshot_write() {
@@ -449,7 +450,11 @@ settings_snapshot_write() {
     printf '{"version": 1, "written_at": %s, "base": "%s", "facts": "%s", "remote_on": %s, "last_change": %s, "choices": %s, "keys": [\n' \
       "$(date +%s)" "$base" "$(_settings_facts)" "$(remote_on && echo true || echo false)" "$(_settings_last_change)" "$(_settings_choices)"
     settings_rows | awk -F'\t' -v example="$STACK_DIR/.env.example" '
-      BEGIN { while ((getline line < example) > 0) if (line ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr(line, 1, index(line, "=") - 1); if (!(k in def)) def[k] = substr(line, index(line, "=") + 1) } }
+      BEGIN { while ((getline line < example) > 0) if (line ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr(line, 1, index(line, "=") - 1); if (!(k in def)) def[k] = substr(line, index(line, "=") + 1) }
+              # blank in .env.example, but on by default: setup turns them on (lib/code.sh code_default_on), so on is
+              # not "Changed from default" and an explicit false is (no .env.example: no defaults at all)
+              if ("CODE_ENABLED" in def) def["CODE_ENABLED"] = "true"
+              if ("TERMINAL_ENABLED" in def) def["TERMINAL_ENABLED"] = "true" }
       function js(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, " ", s); gsub(/[\001-\037\177]/, "", s); return "\"" s "\"" }
       function mask(code, v,  n, m) {
         n = length(v)

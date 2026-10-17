@@ -36,29 +36,6 @@ All notable changes to bedrock-now are documented here. The format follows
   too. The Terminal tab is unchanged: it shows only while the terminal is on.
 - **The end-to-end suite** (`tests/e2e/run.sh`) runs with the Code page on by default, as a new install does;
   `--no-code` (or `E2E_NO_CODE=1`) runs it turned off, for the tab's off page.
-
-### Fixed
-
-- **Updates and rollbacks run by the update helper (Home → Update now, Roll back, automatic updates) left the
-  checkout unreadable to the Code page's container.** The helper runs with umask 077, so every file such an update
-  wrote was 600: the code container then failed with `EACCES` on its own `main.mjs` (Settings → Code page On failed;
-  with the Code page already on, the update ended in "setup failed" and only a rollback recovered). git now runs
-  with umask 022 during updates and rollbacks, setup repairs the modes of tracked files (installs already hit
-  included), and the code image makes its own sources readable. Found by an upgrade rehearsal v0.4.1 → v0.9.0.
-
-- **The sign-in page, the Portal password setting and the walkthrough** now say the password also unlocks the
-  Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
-  Admin and Files.
-- **Settings: the terminal's budget** (`BUDGET_TERMINAL`, the key of the Terminal and the Code page) can be changed
-  on the page, with the other budgets and this period's spend; it was listed read-only under Advanced.
-- **Settings: long explanations were cut** at 600 characters — mid-word for *Auto mode*, *Auto mode in the
-  terminal*, *Allow Bypass permissions* and *Previews over remote access*, in the page and in the confirmation of a
-  change. They are whole now.
-- **Settings: speech-to-text's cost** said "about $0.002 a minute" for Bedrock; Voxtral Small is an estimated
-  ~$0.00014 a minute (Mini ~$0.00004), as `./stack stt` and docs/voice.md say.
-
-### Changed
-
 - **Settings, reorganized by task.** Eleven sections instead of one long page of eleven cards (14,000 px on a
   desktop, 20,000 on a phone): Account & security · AWS & models · Spending & budgets · Chat & voice · Claude Code ·
   Files & sharing · Remote access · Updates & backups · Diagnostics · Advanced · About this install. A list on the
@@ -82,6 +59,26 @@ All notable changes to bedrock-now are documented here. The format follows
   Settings layout against `catalog/settings.tsv`, its links into README and docs); `sh portal/e2e/settings/run.sh`
   checks every key's controls on the Settings page against its policy, locally and remotely, in the e2e suite's
   Playwright image (no stack).
+
+### Fixed
+
+- **Updates and rollbacks run by the update helper (Home → Update now, Roll back, automatic updates) left the
+  checkout unreadable to the Code page's container.** The helper runs with umask 077, so every file such an update
+  wrote was 600: the code container then failed with `EACCES` on its own `main.mjs` (Settings → Code page On failed;
+  with the Code page already on, the update ended in "setup failed" and only a rollback recovered). git now runs
+  with umask 022 during updates and rollbacks, setup repairs the modes of tracked files (installs already hit
+  included), and the code image makes its own sources readable. Found by an upgrade rehearsal v0.4.1 → v0.9.0.
+
+- **The sign-in page, the Portal password setting and the walkthrough** now say the password also unlocks the
+  Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
+  Admin and Files.
+- **Settings: the terminal's budget** (`BUDGET_TERMINAL`, the key of the Terminal and the Code page) can be changed
+  on the page, with the other budgets and this period's spend; it was listed read-only under Advanced.
+- **Settings: long explanations were cut** at 600 characters — mid-word for *Auto mode*, *Auto mode in the
+  terminal*, *Allow Bypass permissions* and *Previews over remote access*, in the page and in the confirmation of a
+  change. They are whole now.
+- **Settings: speech-to-text's cost** said "about $0.002 a minute" for Bedrock; Voxtral Small is an estimated
+  ~$0.00014 a minute (Mini ~$0.00004), as `./stack stt` and docs/voice.md say.
 
 ### Docs
 

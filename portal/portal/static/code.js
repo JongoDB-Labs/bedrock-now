@@ -187,30 +187,13 @@
   }
 
   // --- the Code tab while the Code page is off here: a page of the portal (no frame, nothing from the code host) ---
-  // Settings, at the Code page's switch (its row, else its card), which lights up briefly: now if Settings is drawn,
-  // and once more when it has redrawn itself (it reloads each time it is shown, keeping its scroll position).
+  // Settings at the Code page's switch: its address, #settings/CODE_ENABLED — settings.js opens its section (Claude
+  // Code), scrolls to it and lights it up (also when the address is that already: showTab reads it again)
+  const SWITCH = "#settings/CODE_ENABLED";
   function toSettings() {
-    showTab("settings");
-    const box = $("#settings");
-    const go = () => {
-      const r = $('#settings .set-row[data-key="CODE_ENABLED"]') || $("#set-code");
-      if (!r) return false;
-      r.scrollIntoView({ block: "center" });
-      r.classList.remove("code-flash"); void r.offsetWidth; r.classList.add("code-flash");
-      clearTimeout(r.flashT); r.flashT = setTimeout(() => r.classList.remove("code-flash"), 1800);
-      return true;
-    };
-    go();
-    if (!box) return;
-    const mo = new MutationObserver(() => { if (go()) mo.disconnect(); });
-    mo.observe(box, { childList: true });
-    setTimeout(() => mo.disconnect(), 15000);
+    if (location.hash === SWITCH) showTab(SWITCH.slice(1)); else location.hash = SWITCH;
   }
-  function settingsLink(text) {
-    const a = el("a", { href: "#settings", text });
-    a.addEventListener("click", (e) => { e.preventDefault(); toSettings(); });
-    return a;
-  }
+  const settingsLink = (text) => el("a", { href: SWITCH, text });
   const code = (t, id) => el("code", id ? { id, text: t } : { text: t });
   function copyCmd(text) {
     const b = el("button", { type: "button", class: "copy", text: "Copy" });
@@ -256,7 +239,7 @@
           item("Claude runs in the browser terminal's ", el("strong", { text: "sandbox" }), ", not on your computer itself; the terminal is turned on too if it is off (a Terminal tab comes with it)."),
           item("It sees ", el("strong", { text: "one folder" }), " of this computer, its workspace: ", ws, " (created if it is not there). Another folder: ", other, "."),
           item("It has ", el("strong", { text: "its own key and budget" }), " (the terminal's, $50 a month unless you change it), apart from Chat's and ", code("claude-bedrock"), "'s; its spend shows on Home."),
-          item("Claude ", el("strong", { text: "asks before acting" }), ": in Manual mode every command and file change waits for your OK. Bypass permissions and Auto mode stay off unless you allow them in Settings."),
+          item("Claude ", el("strong", { text: "asks before acting" }), ": in Manual mode every command and file change waits for your OK. Bypass permissions and Auto mode stay off unless you allow them in Settings › Claude Code."),
           item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches the internet — and, on Docker Desktop, services on this computer through Docker's host address — unless ", code("TERMINAL_EGRESS=off"), " is in ", code(".env"), ", which closes both."),
           item("The first time, it builds the Code page's image: a few minutes.")),
         el("h2", { text: "Turning it on" }),
@@ -305,7 +288,7 @@
         " in ", code(".env"), " turns it on with the terminal).");
     } else {
       line = el("p", { class: "note code-line" }, "Or in the browser with a chat: the ", tab, ", off for now. ",
-        settingsLink("Settings → Code page"), " (on the computer running bedrock-now) or ", code("./stack code enable"), " turns it on.");
+        settingsLink("Settings › Claude Code"), " (on the computer running bedrock-now) or ", code("./stack code enable"), " turns it on.");
     }
     card.append(line);
   }

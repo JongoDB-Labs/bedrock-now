@@ -366,7 +366,7 @@ export function setLayout(patch: Partial<Layout>): void {
   setPrefs((p) => ({ ...p, layout: { ...p.layout, ...patch } }));
 }
 
-/** Settings › Code page allows Auto mode (CODE_AUTO_MODE) — the code container says so in /api/state */
+/** Settings › Claude Code allows Auto mode (CODE_AUTO_MODE) — the code container says so in /api/state */
 export const autoOk = (s: AppState = get()): boolean => s.server?.allowAuto === true;
 
 export function activeView(s: AppState = get()): SessionView | undefined {
@@ -1379,7 +1379,7 @@ export async function setModel(name: string): Promise<boolean> {
 let queuedMode: { session: string; mode: Mode } | null = null;
 export function setMode(mode: Mode): void {
   if (mode === 'auto' && !autoOk()) {
-    toast('Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now.', 'error');
+    toast('Auto mode is off: turn it on in Settings › Claude Code, from the computer running bedrock-now.', 'error');
     return;
   }
   const v = activeView();
@@ -1393,7 +1393,7 @@ export function setMode(mode: Mode): void {
   }
   if (mode === 'bypassPermissions') {
     if (!get().server?.allowBypass) {
-      toast('Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now.', 'error');
+      toast('Bypass permissions is off: turn it on in Settings › Claude Code, from the computer running bedrock-now.', 'error');
       return;
     }
     if (v?.mode !== 'bypassPermissions') {

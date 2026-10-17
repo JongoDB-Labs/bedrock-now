@@ -17,13 +17,13 @@ const AUTO_OFF_MS = 15000;   // how long the first prompt waits for the start's 
 const WATCH_MS = 5000;       // how long a turn's first prompt waits for the watched files' snapshot (then it goes anyway)
 const REVERTS_KEPT = 10;     // watch events per session whose Revert stays possible (the oldest go) …
 const REVERT_BYTES = 4 << 20; // … and at most this much of their copies
-const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now';
-const AUTO_OFF = 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now';
+const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Claude Code, from the computer running bedrock-now';
+const AUTO_OFF = 'Auto mode is off: turn it on in Settings › Claude Code, from the computer running bedrock-now';
 // Claude Code refused auto mode: the sandbox's managed settings (from TERMINAL_AUTO_MODE / CODE_AUTO_MODE at the
 // terminal container's start) still say off, or the session's model is not one auto mode supports
 const autoRefused = (e) => {
   const m = short(e?.message || String(e), 300);
-  if (/disabled by settings/i.test(m)) return `Auto mode is off in the sandbox's Claude Code settings: the terminal container has not taken Settings › Code page › Auto mode yet (./stack up restarts it). (${m})`;
+  if (/disabled by settings/i.test(m)) return `Auto mode is off in the sandbox's Claude Code settings: the terminal container has not taken Settings › Claude Code › Auto mode yet (./stack up restarts it). (${m})`;
   if (/unavailable|not available|not supported/i.test(m)) return `Claude Code does not offer Auto mode for this session (on Bedrock: Sonnet 5 or later, Opus 4.7 or later, Haiku 5.5). (${m})`;
   return m;
 };

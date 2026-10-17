@@ -270,7 +270,3 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 .code-default-notice p { margin: 0; max-width: 90ch; }
 .code-default-notice code { overflow-wrap: anywhere; }
 .code-default-actions { display: flex; gap: 8px; margin-top: 10px !important; }
-/* Settings, opened from the Code tab's page: the Code page's switch lights up briefly */
-.code-flash { animation: code-flash 1.6s ease-out; border-radius: 8px; }
-@keyframes code-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
-@media (prefers-reduced-motion: reduce) { .code-flash { animation: none; outline: 3px solid var(--accent); outline-offset: 2px; } }

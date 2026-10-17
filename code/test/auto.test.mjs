@@ -1,4 +1,4 @@
-// Auto mode (CODE_AUTO_MODE, Settings › Code page): Claude Code's auto mode as a page mode behind its gate — the start's
+// Auto mode (CODE_AUTO_MODE, Settings › Claude Code): Claude Code's auto mode as a page mode behind its gate — the start's
 // flag settings both ways, the gate matrix, a session started in Auto, remembered while allowed, Claude Code's own
 // switch to it, the blocked-action event and "Allow once" (a PreToolUse hook approving exactly that retry, once),
 // "Allow, and switch to Auto", a plan approved with Auto — and the same over the backend's HTTP and WebSocket API.
@@ -59,7 +59,7 @@ test('the gate: setting off → 403 (nothing sent to Claude Code); on → switch
   {
     const { mgr, queries } = manager();
     const s = mgr.get(mgr.open({}).id);
-    await assert.rejects(s.setMode('auto'), (e) => e.status === 403 && /Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now/.test(e.message));
+    await assert.rejects(s.setMode('auto'), (e) => e.status === 403 && /Auto mode is off: turn it on in Settings › Claude Code, from the computer running bedrock-now/.test(e.message));
     assert.ok(!queries[0].calls.some((c) => Array.isArray(c) && c[0] === 'setPermissionMode'));
     assert.equal(s.mode, 'default');
     mgr.closeAll();

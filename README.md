@@ -19,7 +19,7 @@ the Code page and its browser terminal are on by default (`./stack code disable`
 | [**Home, Admin, Files**](#the-portal-one-login-for-everything) | health, spend and budgets; LiteLLM's UI; the shared file store (also an MCP server for Claude Code) | on | — |
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
 | [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) | on, as the Code page's sandbox | `./stack terminal disable` / `enable` (disable turns the Code page off too) |
-| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat, permission modes, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings → Code page; the Code tab stays and says how while it is off |
+| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat, permission modes, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
@@ -490,7 +490,7 @@ In this section: [turning it on and off](#turning-the-code-page-on-and-off) ·
 **On by default.** A new install's setup turns it on, with the browser terminal (its sandbox) and the workspace
 folder `~/bedrock-now-workspace`, and says so; `./stack update` does the same on an install that never chose (no
 `CODE_ENABLED` in `.env`, or a blank one) and names it in its *What's new*. An explicit choice stays: once
-`CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is in `.env` (`./stack code disable`, Settings → Code page → Off,
+`CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is in `.env` (`./stack code disable`, Settings › Claude Code › Off,
 `./stack terminal disable`), setup and updates never turn it on. If the folder cannot be created or is refused,
 setup says why and goes on without it; if an image does not build or the terminal's key cannot be made, it is
 turned off again and the next setup or update tries again. What it can do on its own stays off until you allow it:
@@ -1012,7 +1012,7 @@ More settings) turns updates off (`./stack prices` then refuses to run).
 **Budgets.** Setup creates three LiteLLM keys, each with a monthly budget: `claude-code` **$200**, `open-webui`
 **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused until the reset date
 shown by `./stack costs`. The [browser terminal](#claude-code-in-the-browser) and the Code page get a fourth
-key, `claude-code-terminal`, **$50** (`BUDGET_TERMINAL`). To change one, use **Settings → Budgets & alerts** or
+key, `claude-code-terminal`, **$50** (`BUDGET_TERMINAL`). To change one, use **Settings › Spending & budgets** or
 `./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`; `BUDGET_TERMINAL` only this
 way): it applies at once, with no restart, and keeps the reset date. Raising a budget works only from the computer
 running bedrock-now.
@@ -1391,7 +1391,7 @@ downtime (Chat answers, `claude-bedrock` requests and MCP sessions in progress t
 setup runs without questions. What changes for you:
 
 - **New parts stay off** (until an update to the release after v0.9.0, which turns the Code page on: above): the Code
-  page (`./stack code enable`, or **Settings → Code page → On** on the computer running bedrock-now), its *Auto* and
+  page (`./stack code enable`, or **Settings › Claude Code › On** on the computer running bedrock-now), its *Auto* and
   *Bypass permissions* modes and auto mode in the terminal (Settings → Code
   page), and previews of dev servers over remote access (`REMOTE_PREVIEW`). Nothing you did not turn on starts.
 - **The browser terminal, if it is on,** gets a new image: its container is recreated, so its tmux session ends

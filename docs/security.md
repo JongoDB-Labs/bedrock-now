@@ -538,7 +538,7 @@ reaches is the container — with the three exceptions under *Threat model*.
     from this computer); no remote previews; no other folder of yours, no Docker socket, no LiteLLM master key or
     `claude-bedrock`'s key in the sandbox; the Code page's default mode asks before every command and file change.
   - *Kept:* an explicit `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is never turned on again;
-    `./stack code disable` (Settings → Code page → Off, from anywhere) or `./stack terminal disable` writes it. A
+    `./stack code disable` (Settings › Claude Code › Off, from anywhere) or `./stack terminal disable` writes it. A
     folder that cannot be created or is refused leaves both off (setup says why and goes on); an image that does not
     build is turned off again and tried once more at the next setup or update, then no more (`./stack code enable`
     turns it on); `./stack rollback` of the update that turned them on turns them off again, keeping a switch you
@@ -677,7 +677,7 @@ Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need you
 ## The Code page
 
 `./stack code enable` (on by default since the release after v0.9.0, with the terminal: [above](#the-browser-terminal);
-or Settings → Code page, see the last item below) puts Claude Code into the
+or Settings › Claude Code, see the last item below) puts Claude Code into the
 portal's Code tab as an IDE-like page: streamed answers, tool cards, permission prompts, models, sessions, the
 workspace's files in an explorer and an editor, plugins and MCP servers. It adds no new place where code runs:
 Claude Code runs in the browser terminal's sandbox (above), with its workspace, key, budget, internet and remote

@@ -262,6 +262,10 @@ test_snapshot_names_the_defaults_of_plain_keys_only() {   # Settings › "Change
   assert_contains "$s" '"key": "BUDGET_SETUP", "group": "budgets", "secret": "-"'
   assert_contains "$s" '"value": "7", "default": "5"}'
   assert_contains "$s" '"value": "true", "default": "true"}'
+  # on by default (setup turns them on while blank): true is the default, an explicit false is a change
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED false; settings_snapshot_write; s="$(cat "$(settings_snapshot_file)")"
+  assert_contains "$(printf '%s\n' "$s" | grep '"key": "CODE_ENABLED"')" '"value": "true", "default": "true"}'
+  assert_contains "$(printf '%s\n' "$s" | grep '"key": "TERMINAL_ENABLED"')" '"value": "false", "default": "true"}'
   if command -v python3 >/dev/null 2>&1; then
     python3 -I -c 'import json, sys
 d = json.load(open(sys.argv[1]))

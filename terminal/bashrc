@@ -8,7 +8,7 @@ HISTCONTROL=ignoreboth
 shopt -s histappend checkwinsize
 alias ls='ls --color=auto' ll='ls -alF' grep='grep --color=auto'
 
-# Claude Code's auto mode off for `claude` typed here unless Settings › Code page › Auto mode in the terminal is on
+# Claude Code's auto mode off for `claude` typed here unless Settings › Claude Code › Auto mode in the terminal is on
 # (TERMINAL_AUTO_MODE). The sandbox's managed settings turn it off already while both auto mode switches are off; with
 # only the Code page's on they must leave it available (the Code page's sessions need it), so this adds Claude Code's
 # flag-tier switch to sessions started here — not to a subcommand (they refuse --settings). A convenience, not a

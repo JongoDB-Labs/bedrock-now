@@ -119,7 +119,7 @@ def test_claude_steps_name_the_lean_config_folder():
 
 def test_claude_steps_point_at_the_code_tab_or_at_settings():
     # On (and usable here): both Claude Code steps open the Code tab, and spend on its key (the terminal's) counts.
-    # Off: the Code tab still (its page says what it is and how to turn it on), Settings → Code page or ./stack code
+    # Off: the Code tab still (its page says what it is and how to turn it on), Settings › Claude Code or ./stack code
     # enable. On but not over remote access: the switch that would allow it.
     js = (STATIC / "tour.js").read_text(encoding="utf-8")
     assert "document.querySelector('meta[name=\"bn-code\"]')" in js and "c.here === true && Boolean(APP_URLS.code)" in js
@@ -128,7 +128,7 @@ def test_claude_steps_point_at_the_code_tab_or_at_settings():
     for block in (setup, use):
         assert "codeLine(" in block and "actions: () => [openCode()]," in block
     line = js[js.index("function codeLine(use)"):js.index("// Chat, Admin and Files sign you in")]
-    assert 'b("Code"), " tab' in line and 'settings("Code page")' in line and 'code("./stack code enable")' in line
+    assert 'b("Code"), " tab' in line and 'settings("Claude Code", "CODE_ENABLED")' in line and 'code("./stack code enable")' in line
     assert 'code("REMOTE_TERMINAL=true")' in line and "off for now" in line
     opener = js[js.index("function openCode()"):js.index("function codeLine(use)")]
     assert 'showTab("code")' in opener and 'appUrl("code")' in opener and 'rel: "noopener"' in opener
@@ -142,10 +142,12 @@ def test_claude_steps_point_at_the_code_tab_or_at_settings():
 def test_home_card_points_at_the_code_tab_and_settings_while_the_code_page_is_off():
     js = (STATIC / "code.js").read_text(encoding="utf-8")
     off = js[js.index("    } else {\n      line ="):]
-    assert 'settingsLink("Settings → Code page")' in off and 'code("./stack code enable")' in off
+    assert 'settingsLink("Settings › Claude Code")' in off and 'code("./stack code enable")' in off
     assert '"Or in the browser with a chat: the ", tab, ", off for now. "' in off
-    link = js[js.index("function settingsLink(text)"):js.index("const code = ")]
-    assert 'el("a", { href: "#settings", text })' in link and "toSettings()" in link
+    # the Code page's switch by its address (settings.js opens its section and lights it up)
+    assert 'const SWITCH = "#settings/CODE_ENABLED";' in js and "const settingsLink = (text) => el(\"a\", { href: SWITCH, text });" in js
+    go = js[js.index("function toSettings()"):js.index("const settingsLink")]
+    assert "location.hash = SWITCH" in go and "showTab(SWITCH.slice(1))" in go
 
 
 def test_terminal_and_code_steps_only_where_offered():

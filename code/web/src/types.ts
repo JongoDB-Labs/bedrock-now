@@ -269,9 +269,9 @@ export interface ServerState {
   pending: number;
   terminalUrl: string | null;
   portalOrigin: string | null;
-  /** Settings › Code page allows Bypass permissions (CODE_ALLOW_BYPASS) */
+  /** Settings › Claude Code allows Bypass permissions (CODE_ALLOW_BYPASS) */
   allowBypass: boolean;
-  /** Settings › Code page allows Auto mode (CODE_AUTO_MODE) */
+  /** Settings › Claude Code allows Auto mode (CODE_AUTO_MODE) */
   allowAuto: boolean;
   /** the sandbox reaches the internet (TERMINAL_EGRESS); null: not known */
   egress: boolean | null;

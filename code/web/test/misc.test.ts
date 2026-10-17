@@ -156,7 +156,7 @@ test('modes: the desktop app\'s names and order, plus Read only; the Shift+Tab c
   assert.match(MODE_INFO.bypassPermissions.runs, /shell commands do not/);
 });
 
-test('Auto (Settings › Code page): offered, cycled to last after Plan (and Bypass), remembered, started in — only while allowed', () => {
+test('Auto (Settings › Claude Code): offered, cycled to last after Plan (and Bypass), remembered, started in — only while allowed', () => {
   assert.deepEqual(offeredModes(false, true), ['readOnly', 'plan', 'default', 'acceptEdits', 'auto']);
   assert.deepEqual(offeredModes(true, true), ['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions'], 'the desktop app\'s order');
   const cycle = (bypass: boolean, auto: boolean) => { const seen = []; let m: (typeof MODES)[number] = 'default'; for (let i = 0; i < 6; i++) { seen.push(m); m = nextMode(m, bypass, auto); } return seen; };

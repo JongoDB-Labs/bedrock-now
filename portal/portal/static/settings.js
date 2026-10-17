@@ -451,6 +451,8 @@
   function display(k) {
     const v = shown(k);
     if (k.key === "REMOTE_PREVIEW") return remotePreviewOn() ? "On" : "Off";
+    // (never chosen: the next setup or update turns it on — lib/code.sh code_default_on)
+    if (k.key === "CODE_ENABLED" && (v === "blank" || v === "not set")) return "Off (on by default: the next setup or update turns it on)";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
     if (k.secret === "S") return k.set ? "••••••••" : "Not set";
@@ -675,7 +677,9 @@
     const extra = [el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace: " }),
       el("code", { text: ws || (terminalOn() ? "the terminal's" : "the default folder") }))];
     if (terminalOn()) {
-      extra.push(el("p", { class: "note", text: `Claude sees only that folder (at /workspace), uses the terminal's key and budget, and ${egress ? "can reach the internet" : "has no internet (TERMINAL_EGRESS=off)"}.` }));
+      extra.push(el("p", { class: "note", text: `Claude sees only that folder (at /workspace) and uses the terminal's key and budget. ${egress
+        ? "It reaches the internet (on by default: npm, pip, git, documentation) and, on Docker Desktop, also this computer's own services through Docker's host address; TERMINAL_EGRESS=off in .env, then ./stack up, closes both."
+        : "It has no internet and no way to this computer's services (TERMINAL_EGRESS=off)."}` }));
     } else if (shown(k) !== "true") {
       extra.push(el("p", { class: "note", text: "The browser terminal is off: turning this on turns it on too, with the folder above as its workspace (Claude sees only that folder, at /workspace). Another folder: in a terminal, with the command below." }));
     }

@@ -169,9 +169,9 @@ def test_code_tab_is_always_there_and_explains_itself_while_off():
                   "off for remote access"):
         assert words in page, words
     assert "turnOn.addEventListener(\"click\", toSettings)" in page
-    # Settings, at the Code page's switch: its row (else its card), once Settings has drawn itself again
-    go = js[js.index("function toSettings()"):js.index("function settingsLink(")]
-    assert 'showTab("settings")' in go and '.set-row[data-key="CODE_ENABLED"]' in go and '#set-code' in go and "MutationObserver" in go
+    # Settings, at the Code page's switch: its address (#settings/CODE_ENABLED: settings.js goTo)
+    go = js[js.index("function toSettings()"):js.index("const settingsLink")]
+    assert "location.hash = SWITCH" in go and 'const SWITCH = "#settings/CODE_ENABLED";' in js
     # the folder as Settings names it, asked from the portal's own API when the page shows (never the code host)
     fill = js[js.index("async function fillFolder()"):js.index("// Home's \"Claude Code in your terminal\" card")]
     assert 'api("/api/settings")' in fill and "TERMINAL_WORKSPACE" in fill and "code_workspace" in fill and "textContent" in fill
@@ -179,7 +179,7 @@ def test_code_tab_is_always_there_and_explains_itself_while_off():
     assert "for (const p of PAGES) { const s = document.getElementById(p); if (s) s.hidden = tab !== p; }" in app
     assert "!PAGES.includes(tab) ? \"chat\" : tab" in mobile and "b.dataset.label || b.textContent.trim()" in mobile
     css = open("portal/static/app.css", encoding="utf-8").read()
-    assert ".code-item.off .tab svg" in css and ".tab-off" in css and ".code-off-page" in css and ".code-flash" in css
+    assert ".code-item.off .tab svg" in css and ".tab-off" in css and ".code-off-page" in css
     assert "innerHTML" not in js
 
 

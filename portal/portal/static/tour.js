@@ -35,7 +35,7 @@
   const code = (t) => el("code", { text: t });
   // the portal's Settings tab, opened at a section or a setting (settings.js: #settings/<section> or #settings/<KEY>):
   // settings(WHERE, PLACE), or settings(WHERE) for the places named here
-  const PLACES = { "Code page": "CODE_ENABLED", "Claude Code": "code", "Account & security": "account", "Spending & budgets": "spending" };
+  const PLACES = { "Claude Code": "code", "Account & security": "account", "Spending & budgets": "spending" };
   const settings = (where, place) => el("a", { href: `#settings/${place || PLACES[where] || ""}`, text: `Settings → ${where}` });
   const list = (tag, items) => el(tag, { class: "tour-list" }, ...items.map((i) => el("li", {}, ...[].concat(i))));
   const ext = (href, text) => el("a", { href, target: "_blank", rel: "noopener noreferrer", "data-k": `link:${href}`, text });
@@ -85,7 +85,7 @@
     }
     if (CODE.enabled) return note("The ", b("Code"), " tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
     return note(use ? "Prefer the browser? The " : "Claude Code in the browser, nothing to install: the ", b("Code"), " tab, off for now, says what it does; ",
-      settings("Code page"), " turns it on (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
+      settings("Claude Code", "CODE_ENABLED"), " turns it on (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
   }
   // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
   function opened(app) {
