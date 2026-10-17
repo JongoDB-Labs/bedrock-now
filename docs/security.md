@@ -536,7 +536,8 @@ what a successful attacker reaches is the container — with the three exception
   what is mounted. Claude Code's own settings and history live in the `terminal-home` volume (not part of
   `./stack backup`).
 - [x] **Its own key.** It holds `claude-code-terminal`, a LiteLLM key of its own with its own monthly budget
-  (`BUDGET_TERMINAL`, $50, in Settings → Budgets & alerts; a meter on Home, a line in `./stack costs`), never the `claude-code` key of
+  (`BUDGET_TERMINAL`, $50: `./stack config set BUDGET_TERMINAL`, listed under Settings → Advanced; a meter on Home, a
+  line in `./stack costs`), never the `claude-code` key of
   `claude-bedrock` on your computer, the master key, the portal password or AWS credentials. The key itself may
   call only Claude Code's LiteLLM routes — `/v1/messages` (with `…/count_tokens`), `/v1/models`, `/key/info`,
   `/model/info` (LiteLLM's `allowed_routes`, set when the key is made and again at every enable, setup and update,

@@ -12,6 +12,25 @@ All notable changes to bedrock-now are documented here. The format follows
   Terminal and the Code page (they ask for it once more, because they run commands); they listed only Home, Chat,
   Admin and Files.
 
+### Docs
+
+- **README checked against the code of v0.9.0, and easier to find your way in.** New: *What you get* near the top
+  (each part, whether it is on by default, and the command that turns it on and off); the Quickstart now names every
+  question setup asks (remote access, admin email, OpenRouter key, speech-to-text), the one-click-updates offer,
+  Docker's disk and memory with the terminal and the Code page, and what `./stack uninstall` keeps; *Updating from
+  v0.4.x* (what changes, what stays off, the terminal's tmux session ending) and, from v0.6–v0.8, launch.json's
+  *Start* asking again and running in an environment of its own; the Code page section in subsections, with a list
+  of them at its start; troubleshooting for a refused *Start*/*Run* and an unanswered remote Service. Corrected:
+  `BUDGET_TERMINAL` is listed under Settings › Advanced, not Budgets & alerts (`./stack config set BUDGET_TERMINAL`);
+  Settings has a *Code page* group, and the list of changes that work only from the computer running bedrock-now was
+  incomplete; launch.json's *Start* and Run & test show a task in full the first time in each browser and again after
+  a change, not every time; the cold-cache example is $0.13 for 48k tokens on Sonnet 5.5 (not $0.18); only Settings
+  rolls a failed Code page *On* back; the terminal's and the Code page's `enable`/`disable` restart the portal and
+  Caddy; Chat's budget banner is set by setup, `./stack up` and budget changes, not live; `claude-bedrock` prints a
+  config line besides the cost line; `./stack serve` on Linux; the e2e suite's `--code` costs about $0.17; the update
+  helper's commands in the security model; the remote Service count; what leaves your machine while images are built
+  and with remote access. Every link and anchor in the README and `docs/` resolves.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added
