@@ -493,7 +493,9 @@ It is a sandbox, not a shell on your computer:
   `127.0.0.1:4000`, still with its own key's limits, the shared MCP server, the portal's login, any dev server, the
   Docker API if you exposed it, and your network are reachable from it) and **Off** (only LiteLLM and the shared MCP
   server). Opening it further works only from this computer. `TERMINAL_EGRESS_ALLOW` (only these names; `name:PORT`
-  opens another port) and `TERMINAL_EGRESS_DENY` (never these) in `.env` narrow it further.
+  opens another port) and `TERMINAL_EGRESS_DENY` (never these; while it is set, no IP addresses either) in `.env`
+  narrow it further. The sandbox's internal networks resolve no outside names (no way out by DNS) with Docker Engine
+  26.0 or later (25.0.4, 23.0.11; Docker Desktop 4.29 and later); `./stack test` says so on an older one.
 - Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
   ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
   page. Whatever answers there, its page runs only ttyd's own script and can set or clear no cookies.

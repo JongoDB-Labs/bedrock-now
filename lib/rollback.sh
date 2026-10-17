@@ -158,10 +158,17 @@ cmd_rollback() {
   if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/Dockerfile" 2>/dev/null; then
     no_terminal=1; terminal_rollback_cleanup
   fi
-  # A version from before the terminal's egress proxy (v0.10.0 and earlier: the sandbox on the internet itself, which
-  # reads TERMINAL_EGRESS=internet as on): the proxy's container goes now, its network after the up
-  if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/egress/bn-egress.mjs" 2>/dev/null; then
-    no_egress=1; terminal_proxy_rm
+  # A version from before the terminal's egress proxy (v0.10.0 and earlier): its sandbox is on the internet itself, this
+  # computer's services and your network included. The proxy's container goes now, its network after the up; internet
+  # and host become blank in .env (that version's default, on — it would warn about either word at every up), off
+  # stays; and it is said, with the way to close it.
+  if declare -F terminal_proxy_rm >/dev/null && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/egress/bn-egress.mjs" 2>/dev/null; then
+    case "$(_flag "$(get_env TERMINAL_EGRESS)")" in internet | host) set_env TERMINAL_EGRESS '' ;; esac
+    if terminal_on; then
+      no_egress=1; terminal_proxy_rm
+      flag_off "$(get_env TERMINAL_EGRESS)" ||
+        warn "${fromv:-$from} has no egress proxy: the sandbox reaches the internet directly again — this computer's own services and your network included. TERMINAL_EGRESS=off in .env, then ./stack up, closes both; ./stack update brings the proxy back"
+    fi
   fi
   # A version from before the Code page, while it is on: its container goes (lib/code.sh); its network and volume
   # after the up.

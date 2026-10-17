@@ -17,7 +17,8 @@
 //
 // TERMINAL_EGRESS_ALLOW  blank or "*": every public name. Otherwise only the names listed (a name covers the names
 //                        under it). An entry NAME:PORT (or *:PORT) opens that port instead of 80, 443 and 22.
-// TERMINAL_EGRESS_DENY   names never reached (NAME, or NAME:PORT for one port), whatever ALLOW says.
+// TERMINAL_EGRESS_DENY   names never reached (NAME, or NAME:PORT for one port), whatever ALLOW says. While it is set,
+//                        IP addresses are refused too (a denied site's address would not match its name).
 // Entries are separated by commas or spaces; "*.example.com" and ".example.com" mean example.com. A bad entry is
 // skipped and named in the log; a non-blank ALLOW with no good entry allows nothing.
 //
@@ -235,6 +236,8 @@ const nameMatches = (pattern, t) => pattern === '*' || (t.name !== undefined && 
 // listsRefuse(t, port, cfg) -> null, or why the lists or the ports refuse target t (from target()) on `port`
 export function listsRefuse(t, port, cfg) {
   const ports = cfg.defaultPorts || DEFAULT_PORTS;
+  // a deny list names sites; a site's IP address would pass it unnoticed: while it is set, only names go out
+  if (t.ip !== undefined && cfg.deny.set) return 'an IP address while TERMINAL_EGRESS_DENY is set (it lists names: use the name)';
   for (const e of cfg.deny.entries) {
     if (nameMatches(e.pattern, t) && (e.port === null || e.port === port)) return 'listed in TERMINAL_EGRESS_DENY';
   }
@@ -265,12 +268,12 @@ export async function resolve(host, port, cfg, deps = {}) {
   const check = deps.classify || ((ip) => classify(ip, cfg.extra));
   const t = target(host);
   if (t.error) return { ok: false, status: t.status, why: t.error };
+  // an IP address: what it is first (the log says "metadata", not "a list"), then the lists
+  const ipWhy = t.ip ? check(t.ip) : null;
+  if (ipWhy) return { ok: false, status: 403, why: ipWhy, address: t.ip };
   const listed = listsRefuse(t, port, cfg);
   if (listed) return { ok: false, status: 403, why: listed };
-  if (t.ip) {
-    const why = check(t.ip);
-    return why ? { ok: false, status: 403, why, address: t.ip } : { ok: true, addresses: [{ address: t.ip, family: t.family }] };
-  }
+  if (t.ip) return { ok: true, addresses: [{ address: t.ip, family: t.family }] };
   let found;
   try {
     found = await withTimeout(Promise.resolve(lookup(t.name)), deps.lookupMs || LIMITS.lookupMs, 'the lookup');
@@ -440,6 +443,13 @@ export function createServer(cfg, deps = {}) {
     const pinned = r.addresses[0];
     const headers = forwardHeaders(req.rawHeaders);
     headers.push('Host', u.host);
+    // a body sent chunked goes on chunked, whatever the method (Node frames a GET or DELETE body only when told so: else
+    // its bytes would follow the request unframed); another transfer coding is not passed on
+    const te = req.headers['transfer-encoding'];
+    if (te !== undefined) {
+      if (String(te).trim().toLowerCase() !== 'chunked') return reply(res, 400, 'a transfer coding other than chunked');
+      headers.push('Transfer-Encoding', 'chunked');
+    }
     let up;
     try {
       up = http.request({ host: pinned.address, family: pinned.family, port, method: req.method, path: rawPath(req.url), headers, setHost: false,

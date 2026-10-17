@@ -417,6 +417,29 @@ test_rollback_to_a_version_without_the_egress_proxy_removes_it() {
   assert_contains "$d" "docker rm -f c0ffee"
   assert_not_contains "$d" "com.docker.compose.service=terminal-gateway"   # (that version has the terminal: it stays)
   assert_eq "$(tail -n 1 "$TMP/docker")" "docker network rm bn-t_terminal-proxy"
+  # that version's default (on: direct, this computer's services included) is blank in .env, and it is said
+  assert_eq "$(get_env TERMINAL_EGRESS)" ""
+  assert_contains "$(cat "$TMP/err")" "has no egress proxy: the sandbox reaches the internet directly again — this computer's own services and your network included"
+}
+
+# the words that version does not know become blank (it would warn at every up), off stays off and nothing is said
+test_rollback_before_the_egress_proxy_keeps_off_and_blanks_the_new_words() {
+  for v in internet host off; do
+    _fixture
+    mkdir -p "$TMP/origin/terminal"; : > "$TMP/origin/terminal/Dockerfile"; git -C "$TMP/origin" add terminal; git -C "$TMP/origin" commit -qm terminal
+    git -C "$TMP/origin" tag "v0.3.1-$v"; git -C "$STACK_DIR" fetch -q --tags
+    OLD="$(git -C "$TMP/origin" rev-parse "v0.3.1-$v")"
+    _record
+    mkdir -p "$TMP/ws"
+    printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nCODE_ENABLED=false\nTERMINAL_EGRESS=%s\n' "$TMP/ws" "$v" > "$ENV_FILE"
+    docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
+    ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+    case "$v" in
+      off) assert_eq "$(get_env TERMINAL_EGRESS)" off; assert_not_contains "$(cat "$TMP/err")" "has no egress proxy" ;;
+      *) assert_eq "$(get_env TERMINAL_EGRESS)" ""; assert_contains "$(cat "$TMP/err")" "has no egress proxy" ;;
+    esac
+    rm -rf "$TMP/origin" "$TMP/stack" "$STATE_DIR" "$TMP/calls"*
+  done
 }
 
 test_a_failed_rollback_checkout_leaves_speech_to_text_alone() {

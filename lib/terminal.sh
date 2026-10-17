@@ -498,6 +498,19 @@ terminal_test_checks() {
   out="$(dc exec -T terminal sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/ http://gateway:7682/; do curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
   _check "terminal cannot reach the portal, Open WebUI, LiteLLM/shared-mcp directly, RustFS, the main Caddy or the gateway's other ports" \
     "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000 000 000 000 000 000"
+  # No DNS way out (internet and off: internal networks only): Docker's embedded DNS answers no outside names there —
+  # since Engine 26.0 (25.0.4, 23.0.11: CVE-2024-29018); an older engine forwards them, a few bytes' way out for what is
+  # in the sandbox, said here without failing (nothing else goes out that way)
+  if [ "$(terminal_egress_mode)" != host ]; then
+    out="$(dc exec -T terminal sh -c 'getent hosts example.com >/dev/null 2>&1 && echo resolved || echo none' 2>/dev/null || true)"
+    got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    case "${got%%.*}" in '' | *[!0-9]*) got='' ;; esac
+    if [ "$out" = resolved ] && [ -n "$got" ] && [ "${got%%.*}" -lt 26 ]; then
+      _skip "the sandbox resolves no outside names" "Docker Engine $(docker version --format '{{.Server.Version}}' 2>/dev/null) forwards DNS from internal networks (CVE-2024-29018, fixed in 26.0, 25.0.4 and 23.0.11): a lookup can carry a few bytes out — update Docker"
+    else
+      _check "the sandbox resolves no outside names (no DNS way out)" "$out" none
+    fi
+  fi
   [ "$(terminal_egress_mode)" = internet ] || return 0
   # TERMINAL_EGRESS=internet: its egress proxy healthy; no route around it (a public address, directly: nothing
   # answers); through it, refused before any connection is made: this computer by Docker's name and LiteLLM's port on

@@ -813,6 +813,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
       *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
       *"exec -T terminal sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
       *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '000 403 403 403 403 403 403 403 ' ;;
+      *"exec -T terminal sh -c getent hosts example.com"*) printf '%s\n' "${DNS:-none}" ;;
       *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
   }
@@ -829,7 +830,14 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   }
   fails=0
   out="$(terminal_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 12
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 13
+  assert_contains "$out" "ok    the sandbox resolves no outside names (no DNS way out)"
+  # an outside name resolved: FAIL on a current Docker, said (not failed) on one older than 26 (CVE-2024-29018)
+  docker() { case "$*" in "version --format"*) echo "${ENGINE:-29.1.0}" ;; esac; }
+  assert_contains "$(DNS=resolved terminal_test_checks)" "FAIL  the sandbox resolves no outside names (no DNS way out) (got resolved"
+  out="$(DNS=resolved ENGINE=25.0.3 terminal_test_checks)"
+  assert_contains "$out" "skip  the sandbox resolves no outside names (Docker Engine 25.0.3 forwards DNS from internal networks (CVE-2024-29018"
+  assert_not_contains "$out" "FAIL  the sandbox resolves"
   assert_contains "$out" "ok    the sandbox's egress proxy healthy"
   assert_contains "$out" "ok    the sandbox: no route around its egress proxy; through it no host.docker.internal, LiteLLM's port, metadata, private or ::1 address, no container"
   # a way around the proxy, or something it let through: FAIL
@@ -838,7 +846,9 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   # host or off: no proxy to check
   dc() { ok_dc "$@"; }
   set_env TERMINAL_EGRESS host
-  assert_eq "$(terminal_test_checks | grep -c '^  ok ')" 10
+  assert_eq "$(terminal_test_checks | grep -c '^  ok ')" 10   # (host: outside names resolve, by design)
+  set_env TERMINAL_EGRESS off
+  assert_eq "$(terminal_test_checks | grep -c '^  ok ')" 11   # (off: no proxy, and no DNS way out either)
   set_env TERMINAL_EGRESS ''; : > "$TMP/llm"
   out="$(terminal_test_checks)"
   assert_contains "$out" "ok    Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox"

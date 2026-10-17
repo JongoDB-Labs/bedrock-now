@@ -105,18 +105,22 @@ All notable changes to bedrock-now are documented here. The format follows
   ignores the proxy has no route at all. Every process in the sandbox is told about it (`HTTP_PROXY`/`HTTPS_PROXY`,
   `NODE_USE_ENV_PROXY`, ssh's `ProxyCommand`; Run & test and launch.json's dev servers keep them), while Claude Code's
   way to LiteLLM through its gateway and the dev-server previews stay direct. Refusals are logged without paths
-  (`./stack logs terminal-egress`); `./stack test` and the e2e suite check them from inside the sandbox.
+  (`./stack logs terminal-egress`); `./stack test` and the e2e suite check them from inside the sandbox. The internal
+  networks resolve no outside names either (no way out by DNS) with Docker Engine 26.0 or later (25.0.4, 23.0.11;
+  Docker Desktop 4.29+: CVE-2024-29018); `./stack test` says so on an older engine.
 - **Settings › Claude Code › Sandbox internet access** (`TERMINAL_EGRESS`) is a choice of three: **Internet only**
   (`internet`, the new default), **+ this computer** (`host`: the sandbox itself on the internet, with this computer's
   services and your network — how v0.10.0 and earlier always worked) and **Off**. Opening it further works only from
   the computer running bedrock-now; closing it works from anywhere. The terminal restarts with the change (its shells
   and open Code sessions end). `TERMINAL_EGRESS_ALLOW` (only these names; `name:PORT` or `*:PORT` opens another port)
-  and `TERMINAL_EGRESS_DENY` (never these) in `.env` narrow the proxy further.
+  and `TERMINAL_EGRESS_DENY` (never these; while it is set, no IP addresses either, which a name list could not
+  match) in `.env` narrow the proxy further.
 - **Upgrading:** nothing to edit. A blank `TERMINAL_EGRESS` — and an explicit `on` (`true`/`1`/`yes`), which only ever
   meant "the internet" — now reads as `internet`, so an updated install loses the sandbox's way to this computer's own
   services and your network, and keeps the internet; `off` stays off. The update's *What's new* says so once, with the
-  way back (*+ this computer*, or `TERMINAL_EGRESS=host`). `./stack rollback` to v0.10.0 removes the proxy and reads
-  every value but `off` as on again.
+  way back (*+ this computer*, or `TERMINAL_EGRESS=host`). `./stack rollback` to v0.10.0 removes the proxy, puts
+  `internet` and `host` back to blank (that version's on; `off` stays) and says that the sandbox then reaches the
+  internet directly again, this computer's services and your network included.
 - **`make` in the sandbox**: the terminal's image has GNU make (Debian's, refreshed weekly with the other packages), so
   Run & test now offers a Makefile's targets (`make -- <target>`, the image's own `/usr/bin/make`) instead of only
   listing them.

@@ -356,3 +356,24 @@ test('a handler that throws ends its own connection only, logged; the proxy goes
   assert.ok(worse.listening);
   worse.close();
 });
+
+test('a chunked body goes on chunked, whatever the method (never unframed); other transfer codings are refused', async () => {
+  for (const method of ['GET', 'DELETE', 'POST']) {
+    webSeen.length = 0;
+    // after the body, a second request on the same connection: the upstream must see exactly one request with its body
+    const got = await raw(`${method} http://public.example.com:${webPort}/c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n` +
+      `GET http://public.example.com:${webPort}/next HTTP/1.1\r\nConnection: close\r\n\r\n`);
+    assert.match(got, new RegExp(`seen ${method} /c 5`), method);
+    assert.deepEqual(webSeen.map((w) => [w.method, w.url, w.body, w.headers['transfer-encoding']]),
+      [[method, '/c', 'hello', 'chunked'], ['GET', '/next', '', undefined]], method);
+  }
+  assert.match(await raw(`POST http://public.example.com:${webPort}/c HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\nConnection: close\r\n\r\n0\r\n\r\n`), /^HTTP\/1\.1 400 [\s\S]*other than chunked/);
+});
+
+test('while TERMINAL_EGRESS_DENY is set, IP addresses are refused (a denied site\'s address would not match its name)', () => {
+  const cfg = (allow, deny) => ({ allow: eg.parseList(allow), deny: eg.parseList(deny), defaultPorts: eg.DEFAULT_PORTS, extra: [] });
+  assert.equal(eg.listsRefuse({ ip: '104.16.0.1' }, 443, cfg('', '')), null);
+  assert.match(eg.listsRefuse({ ip: '104.16.0.1' }, 443, cfg('', 'pastebin.com')), /IP address while TERMINAL_EGRESS_DENY is set/);
+  assert.match(eg.listsRefuse({ ip: '2606:4700::1' }, 443, cfg('*', 'pastebin.com')), /IP address while TERMINAL_EGRESS_DENY is set/);
+  assert.equal(eg.listsRefuse({ name: 'github.com' }, 443, cfg('', 'pastebin.com')), null);
+});

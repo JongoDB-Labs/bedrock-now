@@ -697,8 +697,11 @@ reaches is the container — with the three exceptions under *Threat model*.
   Python, Go and Claude Code read them), `NODE_USE_ENV_PROXY=1` for Node's `fetch` and `http`, ssh (git over ssh)
   through `bn-ssh-proxy` (an HTTP CONNECT to port 22; `/etc/ssh/ssh_config.d/bedrock-now.conf`), and bn-coded keeps
   them in what Run & test and launch.json's *Start* run with; `NO_PROXY` keeps the gateway (LiteLLM, the shared MCP
-  server) and the sandbox's own loopback (dev servers, previews) direct. Anything that ignores them has no route at all
-  (and the internal networks resolve no outside names). The proxy:
+  server) and the sandbox's own loopback (dev servers, previews) direct. Anything that ignores them has no route at
+  all, and the internal networks resolve no outside names, so there is no way out by DNS either — with Docker Engine
+  26.0 or later (25.0.4, 23.0.11; Docker Desktop 4.29 and later): older engines forwarded those lookups
+  (CVE-2024-29018), a few bytes' way out with `TERMINAL_EGRESS=off` too. `./stack test` checks it (and says so on an
+  older engine). The proxy:
   - passes plain HTTP (absolute URLs; hop-by-hop and proxy headers dropped) and CONNECT tunnels (TLS, ssh) on ports
     80, 443 and 22 only;
   - looks each name up once itself, checks every address it gets and connects to exactly an address it checked — a
@@ -717,19 +720,20 @@ reaches is the container — with the three exceptions under *Threat model*.
     never a path, a header or a body; at most 20 per 10 seconds, then a count. Nothing it allows is logged.
 
   `TERMINAL_EGRESS_ALLOW` in `.env` narrows it to the names listed (each with the names under it; `name:PORT` or
-  `*:PORT` opens another port, `*` stands for every name) and `TERMINAL_EGRESS_DENY` refuses names whatever ALLOW
-  says; neither can open a private address or this computer. Settings › Claude Code › *Sandbox internet access*
-  offers **Internet only** (this, the default; blank and an older install's `on` mean it too), **+ this computer**
-  (`host`, next item) and **Off**; opening it further (off, internet, host) works only from this computer, closing it
-  from anywhere, and the sandbox restarts. What it does not stop: what is in the workspace can still be sent to any
-  public address (the proxy limits where, not what; names asked for can carry data too, through its lookups); a CDN
-  that fronts many sites is one name to the lists; a computer whose own address on its network is public (not RFC
-  1918) is not known to the proxy as this computer and stays reachable at that address. And a computer whose DNS
-  answers with made-up addresses (198.18.0.0/15: Clash or Surge in fake-IP mode) gets every name refused — choose
-  *+ this computer* there; IPv6-only sites stay out of reach, as Docker's networks here have no IPv6 route. `./stack test` and the e2e
-  suite check the refusals from inside the sandbox (no route around the proxy; this computer, its published ports,
-  private, link-local, ULA and loopback addresses, also behind public names that resolve to them, all 403) and that
-  npm, pip, git (https and ssh), curl and Node's fetch work through it.
+  `*:PORT` opens another port, `*` stands for every name) and `TERMINAL_EGRESS_DENY` refuses names whatever ALLOW says
+  — and, while it is set, every IP address (a denied site's address would not match its name); neither can open a
+  private address or this computer. Settings › Claude Code › *Sandbox internet access* offers **Internet only** (this,
+  the default; blank and an older install's `on` mean it too), **+ this computer** (`host`, next item) and **Off**;
+  opening it further (off, internet, host) works only from this computer, closing it from anywhere, and the sandbox
+  restarts. What it does not stop: what is in the workspace can still be sent to any public address (the proxy limits
+  where, not what; names asked for can carry data too, through its lookups); a CDN that fronts many sites is one name
+  to the lists; a computer whose own address on its network is public (not RFC 1918) is not known to the proxy as this
+  computer and stays reachable at that address. And a computer whose DNS answers with made-up addresses
+  (198.18.0.0/15: Clash or Surge in fake-IP mode) gets every name refused — choose *+ this computer* there; IPv6-only
+  sites stay out of reach, as Docker's networks here have no IPv6 route. `./stack test` and the e2e suite check the
+  refusals from inside the sandbox (no route around the proxy; this computer, its published ports, private,
+  link-local, ULA and loopback addresses, also behind public names that resolve to them, all 403) and that npm, pip,
+  git (https and ssh), curl and Node's fetch work through it.
 - [x] **`TERMINAL_EGRESS=host`: this computer's services too, as up to v0.10.0.** `compose.terminal-egress.yaml` puts
   the sandbox itself on `terminal-out` (no proxy): any address, any port, any protocol. On Docker Desktop the internet
   then includes your Mac itself through Docker's host address: services on its loopback — LiteLLM on `127.0.0.1:4000`
