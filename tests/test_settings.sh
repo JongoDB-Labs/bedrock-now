@@ -64,8 +64,8 @@ test_every_env_key_is_in_the_settings_table_once() {
   assert_eq "$dup" ""
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
-  # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 121
+  # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access, + auto mode's 2)
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 123
 }
 
 test_table_columns_are_valid() {
@@ -194,7 +194,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 122; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 124; assert d["last_change"] is None' "$f"
   fi
 }
 
@@ -518,6 +518,46 @@ test_code_allow_bypass_on_only_locally_and_it_recreates_the_code_container() {
   _lines CODE_ALLOW_BYPASS=false | _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null
   assert_eq "$(get_env CODE_ALLOW_BYPASS)" false
   assert_not_contains "$(cat "$TMP/calls")" "wait code"
+}
+
+# Auto mode (Claude Code's: a reviewer model instead of you): the Code page's and the terminal's, each on only from this
+# computer and off from anywhere; the terminal is recreated for either (bn-terminal writes the sandbox's managed
+# settings from both at its start), the code container for the Code page's — the terminal first
+test_auto_mode_settings_on_only_locally_and_they_restart_the_sandbox() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  assert_eq "$(setting_field CODE_AUTO_MODE 4)/$(setting_field CODE_AUTO_MODE 5)/$(setting_field CODE_AUTO_MODE 6)" "widen-local/bool/code-env,terminal-env"
+  assert_eq "$(setting_field TERMINAL_AUTO_MODE 4)/$(setting_field TERMINAL_AUTO_MODE 5)/$(setting_field TERMINAL_AUTO_MODE 6)" "widen-local/bool/terminal-env"
+  assert_contains "$(setting_field CODE_AUTO_MODE 8)" "Claude Sonnet 5.5"
+  assert_contains "$(setting_field CODE_AUTO_MODE 8)" "about \$0.13 for the first check in each 5 minutes"
+  for k in CODE_AUTO_MODE TERMINAL_AUTO_MODE; do
+    set_env "$k" false
+    if setting_allowed "$k" true remote; then return 1; fi
+    assert_contains "$SV_ERR" "$k can only be turned on from the computer running bedrock-now"
+    setting_allowed "$k" true local
+    setting_allowed "$k" false remote
+    if setting_validate "$k" yes; then return 1; fi
+    # remotely: refused, nothing changes
+    cp "$ENV_FILE" "$TMP/before"
+    if out="$( (_lines "$k=true" | _apply --origin remote) 2>&1)"; then return 1; fi
+    assert_contains "$out" "can only be turned on from the computer running bedrock-now"
+    assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  done
+  # here, with the Code page on: the terminal, then the code container, recreated together (one compose call)
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED true
+  : > "$TMP/calls"
+  _lines CODE_AUTO_MODE=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env CODE_AUTO_MODE)" true
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait terminal code"
+  : > "$TMP/calls"
+  _lines TERMINAL_AUTO_MODE=true | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --wait terminal"
+  assert_not_contains "$(cat "$TMP/calls")" "wait terminal code"
+  # off from anywhere; with the terminal off only .env changes
+  set_env_batch CODE_ENABLED false TERMINAL_ENABLED false
+  : > "$TMP/calls"
+  _lines CODE_AUTO_MODE=false TERMINAL_AUTO_MODE=false | TERM_READY=0 _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null
+  assert_eq "$(get_env CODE_AUTO_MODE)/$(get_env TERMINAL_AUTO_MODE)" false/false
+  assert_not_contains "$(cat "$TMP/calls")" "wait terminal"
 }
 
 test_remote_previews_are_opt_in_on_only_locally_and_they_restart_portal_and_caddy() {

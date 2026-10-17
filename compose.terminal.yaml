@@ -25,7 +25,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:size=1g,mode=1777"]
+    # /run/bn: Claude Code's managed settings, written by bn-terminal at each start (/etc/claude-code links there)
+    tmpfs: ["/tmp:size=1g,mode=1777", "/run/bn:size=64k,mode=0700,uid=${TERMINAL_UID:-10104},gid=${TERMINAL_GID:-10104}"]
     mem_limit: ${TERMINAL_MEM_LIMIT:-4g}
     pids_limit: 1024
     init: true
@@ -44,6 +45,10 @@ services:
       # (no ENABLE_TOOL_SEARCH: tool search needs a beta header, so with the betas off it changes nothing)
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"   # no telemetry, error reports or update checks
       DISABLE_AUTOUPDATER: "1"                        # the image is read-only; ./stack update rebuilds it
+      # Claude Code's auto mode in here (Settings › Terminal / Code page › Auto mode): bn-terminal writes the sandbox's
+      # managed settings from them at each start (terminal/bin/bn-claude-policy) — a change restarts this container.
+      TERMINAL_AUTO_MODE: ${TERMINAL_AUTO_MODE:-false}
+      CODE_AUTO_MODE: ${CODE_AUTO_MODE:-false}
       # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp
       SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}

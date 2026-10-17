@@ -457,6 +457,9 @@ assert [v["source"] for v in t["volumes"] if v["type"] == "bind"] == [os.environ
 assert sorted(t["networks"]) == ["terminal", "terminal-out"], t["networks"]
 assert t["user"] == "501:20" and t["read_only"] and t["cap_drop"] == ["ALL"] and "ports" not in t
 assert t["environment"]["ANTHROPIC_AUTH_TOKEN"] == "sk-term" and "sk-cc" not in json.dumps(t)
+# auto mode: off unless Settings say so (bn-terminal writes the managed settings from these), on a tmpfs of the user
+assert t["environment"]["TERMINAL_AUTO_MODE"] == "false" and t["environment"]["CODE_AUTO_MODE"] == "false", t["environment"]
+assert "/run/bn:size=64k,mode=0700,uid=501,gid=20" in t["tmpfs"], t["tmpfs"]
 hosts = sorted(h.replace("=", ":", 1) for h in t["extra_hosts"])
 assert hosts == ["gateway.docker.internal:100::1", "gateway.docker.internal:192.0.2.1", "host.docker.internal:100::1",
                  "host.docker.internal:192.0.2.1"], t["extra_hosts"]
@@ -690,4 +693,56 @@ POST /v1/chat/completions"
   assert_contains "$out" "(got 200 200 404 404 404 200"
   assert_contains "$out" "FAIL  the terminal's gateway refuses ttyd requests without the secret header (got 200"
   assert_contains "$out" "FAIL  the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions (got 400 400"
+}
+
+# Claude Code's managed settings in the sandbox follow the two auto mode switches (terminal/bin/bn-claude-policy): both
+# off → auto mode off for every claude there; the terminal's on → nothing set (Claude Code decides); only the Code
+# page's → available (the page needs it) but the terminal's claude starts in Manual and Plan asks.
+test_sandbox_managed_settings_follow_the_auto_mode_switches() {
+  pol() { TERMINAL_AUTO_MODE="$1" CODE_AUTO_MODE="$2" /bin/bash "$STACK_DIR/terminal/bin/bn-claude-policy"; }
+  off='{"disableAutoMode":"disable"}'
+  for v in "" false off no 0 nonsense; do assert_eq "$(pol "$v" "$v")" "$off"; done
+  for v in true TRUE yes on 1; do
+    assert_eq "$(pol "$v" '')" '{}'
+    assert_eq "$(pol "$v" true)" '{}'
+    assert_eq "$(pol '' "$v")" '{"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false}'
+  done
+  for t in "" true; do for c in "" true; do pol "$t" "$c" | python3 -c 'import json, sys; json.load(sys.stdin)' || return 1; done; done
+  # written first by bn-terminal (before anything can start a claude), atomically, on the tmpfs the link points to
+  f="$(cat "$STACK_DIR/terminal/bin/bn-terminal")"
+  assert_contains "$f" 'bn-claude-policy > /run/bn/managed-settings.json.tmp'
+  assert_contains "$f" 'mv /run/bn/managed-settings.json.tmp /run/bn/managed-settings.json'
+  [ "$(grep -n 'bn-claude-policy >' "$STACK_DIR/terminal/bin/bn-terminal" | cut -d: -f1)" -lt "$(grep -n 'bn-coded.mjs' "$STACK_DIR/terminal/bin/bn-terminal" | head -1 | cut -d: -f1)" ] ||
+    { echo "the policy is written after bn-coded starts" >&2; return 1; }
+  d="$(cat "$STACK_DIR/terminal/Dockerfile")"
+  assert_contains "$d" 'ln -s /run/bn/managed-settings.json /etc/claude-code/managed-settings.json'
+  assert_not_contains "$d" 'COPY managed-settings.json'
+  [ ! -e "$STACK_DIR/terminal/managed-settings.json" ] || { echo "a fixed managed-settings.json is still in the image context" >&2; return 1; }
+}
+
+# claude-bedrock in the sandbox: auto mode off in its sessions (Claude Code's flag tier) unless the terminal's switch is
+# on; never for a subcommand (they refuse --settings); the shared MCP server first, then this, then your arguments
+test_claude_bedrock_in_the_sandbox_turns_auto_mode_off_unless_the_terminal_allows_it() {
+  mkdir -p "$TMP/bin" "$TMP/home/.config/bedrock-now"
+  printf '{}\n' > "$TMP/home/.config/bedrock-now/mcp.json"
+  cat > "$TMP/bin/claude" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = --help ]; then printf 'Usage: claude\nCommands:\n  mcp  Configure MCP servers\n  doctor  Check\n'; exit 0; fi
+printf '%s\n' "$@"
+STUB
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/curl"
+  chmod 755 "$TMP/bin/claude" "$TMP/bin/curl"
+  run() { env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$TMP/home" ANTHROPIC_BASE_URL=http://gateway:8091 ANTHROPIC_AUTH_TOKEN=sk-x \
+    CLAUDE_BEDROCK_OPUS_MODEL=claude-haiku-5-5 CLAUDE_BEDROCK_QUIET=1 "$@"; }
+  off='--settings={"disableAutoMode":"disable"}'
+  out="$(run TERMINAL_AUTO_MODE=false /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" -p hi)" || return 1
+  assert_eq "$(printf '%s\n' "$out" | head -4 | tr '\n' ' ')" "--mcp-config=$TMP/home/.config/bedrock-now/mcp.json $off -p hi "
+  out="$(run /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" -p hi)" || return 1
+  assert_contains "$out" "$off"
+  out="$(run TERMINAL_AUTO_MODE=true /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" -p hi)" || return 1
+  assert_not_contains "$out" "disableAutoMode"
+  out="$(run TERMINAL_AUTO_MODE=false /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" mcp list)" || return 1
+  assert_eq "$(printf '%s\n' "$out" | tr '\n' ' ')" "mcp list "
+  assert_contains "$(run TERMINAL_AUTO_MODE=yes /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" --help)" "Auto     auto mode available (Settings › Terminal › Auto mode): its reviewer model runs on Sonnet 5.5"
+  assert_contains "$(run /bin/bash "$STACK_DIR/terminal/bin/claude-bedrock" --help)" "Auto     auto mode off (Settings › Terminal › Auto mode turns it on)"
 }

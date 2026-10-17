@@ -56,14 +56,28 @@ export function fakeQuery(log = []) {
           for await (const m of prompt) {
             log.push(m);
             n++;
-            if (n === 1) push({ type: 'system', subtype: 'init', model: options.model || 'claude-sonnet-5-5', cwd: '/workspace', permissionMode: options.permissionMode, claude_code_version: '2.1.296', tools: ['Bash'], mcp_servers: [] });
+            // (init says the mode it runs in now, as Claude Code does: a switch made before the first prompt included)
+            if (n === 1) push({ type: 'system', subtype: 'init', model: options.model || 'claude-sonnet-5-5', cwd: '/workspace', permissionMode: q.cli, claude_code_version: '2.1.296', tools: ['Bash'], mcp_servers: [] });
             const text = typeof m.message.content === 'string' ? m.message.content : m.message.content.at(-1).text;
             // Claude Code starting a new conversation in this process (/clear, a plan approved with "clear context")
             if (text.startsWith('reset:')) push({ type: 'conversation_reset', new_conversation_id: text.slice(6), uuid: 'u', session_id: 's', trigger: 'clear' });
             if (text === 'cmds') push({ type: 'system', subtype: 'commands_changed', commands: [{ name: 'new-skill', description: 'found' }], uuid: 'u', session_id: 's' });
             if (text.startsWith('mode:')) push({ type: 'system', subtype: 'status', status: null, permissionMode: text.slice(5) });
+            // Auto mode's classifier blocking a shell command (a tool_use, then the SDK's permission_denied)
+            if (text.startsWith('block:')) {
+              push({ type: 'assistant', message: { model: 'claude-haiku-5-5', content: [{ type: 'tool_use', id: 'toolu_b1', name: 'Bash', input: { command: text.slice(6), description: 'first try' } }] }, parent_tool_use_id: null });
+              push({ type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_b1', decision_reason_type: 'classifier', decision_reason: '[Code from External]',
+                message: 'Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Code from External].', uuid: 'u', session_id: 's' });
+            }
+            // Claude's retry of a command: through the PreToolUse hooks first, as Claude Code runs them
+            if (text.startsWith('retry:') || text.startsWith('Allowed once in the Code page')) {
+              const cmd = text.startsWith('retry:') ? text.slice(6) : text.split('\n').at(-1).trim();
+              const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
+              const r = hook ? await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd, description: 'again' } }, 'toolu_r', { signal: new AbortController().signal }) : null;
+              q.calls.push(['hook', cmd, r?.hookSpecificOutput?.permissionDecision ?? null]);
+            }
             if (text.startsWith('ask:')) {
-              const r = await options.canUseTool('Bash', { command: text.slice(4) }, { signal: new AbortController().signal, suggestions: [] });
+              const r = await options.canUseTool('Bash', { command: text.slice(4) }, { signal: new AbortController().signal, suggestions: [], decisionReasonType: q.reasonType });
               push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: JSON.stringify(r) }] } });
             }
             push({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'pon' } }, parent_tool_use_id: null });

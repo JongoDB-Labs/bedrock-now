@@ -799,6 +799,26 @@ def test_code_allow_bypass_on_only_here_off_from_anywhere(make, dirs):
     assert r.status_code == 202, r.text
 
 
+@pytest.mark.parametrize("key,apply_", [("CODE_AUTO_MODE", "code-env,terminal-env"), ("TERMINAL_AUTO_MODE", "terminal-env")])
+def test_auto_mode_switches_on_only_here_off_from_anywhere(make, dirs, key, apply_):
+    # Auto mode (a reviewer model approving actions instead of you): turning it on widens what runs unasked
+    sd, rq = dirs
+    write_snapshot(sd, keys=KEYS + [row(key, "advanced", "-", "widen-local", "bool", apply_, value="false")]); helper_up(sd)
+    r = apply(make(), {key: "true"})
+    assert r.status_code == 202, r.text
+    assert f"set {key} {base64.b64encode(b'true').decode()}\n" in (rq / f"cfg-{r.json()['id']}.req").read_text()
+    for f in files(rq):
+        (rq / f).unlink()
+    c = remote_client(make, True)
+    r = apply(c, {key: "true"}, headers=RH)
+    assert r.status_code == 400 and "computer running bedrock-now" in r.json()["fields"][key]
+    r = apply(c, {key: "maybe"}, headers=RH)
+    assert r.status_code == 400
+    write_snapshot(sd, keys=KEYS + [row(key, "advanced", "-", "widen-local", "bool", apply_, value="true")])
+    r = apply(c, {key: "false"}, headers=RH)
+    assert r.status_code == 202, r.text
+
+
 def test_snapshot_names_the_code_pages_folder_as_text_only(dirs):
     sd, _ = dirs
     write_snapshot(sd, choices={**CHOICES, "code_workspace": "/home/u/bedrock-now-workspace"})
@@ -823,9 +843,11 @@ def test_code_page_from_remote_access_only_off(make, dirs):
 def test_settings_page_has_the_code_page_row_and_its_read_only_workspace():
     from portal.app import STATIC
     js = (STATIC / "settings.js").read_text(encoding="utf-8")
-    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS"]' in js
-    # Bypass permissions: its own switch in the same card (widen-local: on only from this computer)
+    assert '["code", "Code page", ' in js and 'code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "TERMINAL_AUTO_MODE"]' in js
+    # Bypass permissions and the two Auto modes: their own switches in the same card (widen-local: on only from this computer)
     assert 'if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));' in js
+    assert 'if (keys.CODE_AUTO_MODE) body.append(row(keys.CODE_AUTO_MODE));' in js
+    assert 'if (keys.TERMINAL_AUTO_MODE) body.append(row(keys.TERMINAL_AUTO_MODE));' in js
     assert 'if (g === "code") { codeRow(body); return c; }' in js
     # the workspace shown, never changed here: the command that changes it, with Copy
     assert "Workspace (read-only here): " in js and '"./stack terminal enable --workspace DIR"' in js

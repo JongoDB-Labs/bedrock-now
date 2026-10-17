@@ -32,6 +32,12 @@ price_label() {
          NF == 2 { printf "%s in / %s out per 1M tokens\n", money($1), money($2) }'
 }
 
+# Settings › Terminal › Auto mode (TERMINAL_AUTO_MODE): Claude Code's auto mode in this terminal's sessions
+auto_on=0
+case "$(printf '%s' "${TERMINAL_AUTO_MODE:-}" | tr '[:upper:]' '[:lower:]')" in true | 1 | yes | on) auto_on=1 ;; esac
+if [ "$auto_on" = 1 ]; then auto_help="available (Settings › Terminal › Auto mode): its reviewer model runs on Sonnet 5.5"
+else auto_help="off (Settings › Terminal › Auto mode turns it on)"; fi
+
 case "${1:-}" in
   -h | --help)
     cat <<EOT
@@ -40,6 +46,7 @@ claude-bedrock: Claude Code on AWS Bedrock via bedrock-now, in the browser termi
   Proxy    LiteLLM through the stack's gateway ($gw), key 'claude-code-terminal' (BUDGET_TERMINAL; Home shows it)
   Files    /workspace is the folder ./stack terminal enable shared; nothing else of your computer is here
   Config   this terminal's own ~/.claude (terminal-home volume), lean: nothing from your computer's ~/.claude
+  Auto     auto mode $auto_help
   Quiet    CLAUDE_BEDROCK_QUIET=1 hides the launch line and the session cost on exit
   Below    Claude Code's own help; every option works with claude-bedrock
 
@@ -85,6 +92,10 @@ case "${1:-}" in '' | -*) ;; *) for c in $subcmds; do [ "$c" = "$1" ] && { add_m
 mcp_args=()
 # First, as one argument: after yours a `--` would make it prompt text; as two, the variadic option takes your prompt.
 [ "$add_mcp" = 1 ] && [ -f "$mcp" ] && mcp_args=("--mcp-config=$mcp")
+# Auto mode off in a session unless Settings › Terminal › Auto mode is on (TERMINAL_AUTO_MODE): Claude Code's flag tier,
+# as claude-bedrock on your computer does. The sandbox's managed settings already turn it off unless one of the two
+# auto mode switches is on; this covers the Code page's alone being on. A --settings of your own replaces it.
+[ "$auto_on" = 1 ] || [ "$add_mcp" != 1 ] || mcp_args+=('--settings={"disableAutoMode":"disable"}')
 
 # Every request carries a session id and tags (LiteLLM UI › Logs can filter by them); your own headers are kept.
 sid="cb-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"

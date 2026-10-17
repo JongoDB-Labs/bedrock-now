@@ -33,6 +33,9 @@ services:
       # Settings › Code page › Allow Bypass permissions (only this container enforces it: sessions start allowing the
       # switch, and set_mode accepts it after the page's confirmation). A change recreates this container.
       CODE_ALLOW_BYPASS: ${CODE_ALLOW_BYPASS:-false}
+      # Settings › Code page › Auto mode (enforced here too: set_mode accepts auto, and sessions are not started with
+      # auto mode off). The sandbox's managed settings must allow it as well (compose.terminal.yaml passes it there).
+      CODE_AUTO_MODE: ${CODE_AUTO_MODE:-false}
       # What the page's Bypass dialog says about the sandbox: its internet access, and the folder of yours it sees (a
       # label only: this container mounts no folder)
       TERMINAL_EGRESS: ${TERMINAL_EGRESS:-}

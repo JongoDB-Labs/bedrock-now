@@ -446,7 +446,8 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   assert.equal((await until(b.inbox, (m) => m.type === 'reply' && m.req === 'again')).ok, false);
   // bad input: errors, the socket stays
   for (const [m, re] of [[{ type: 'prompt', session: '../../etc', text: 'x', req: 'e1' }, /bad session/], [{ type: 'set_mode', session: json.id, mode: 'bypassPermissions', confirmed: true, req: 'e2' }, /Bypass permissions is off/],
-    [{ type: 'set_mode', session: json.id, mode: 'auto', req: 'e2b' }, /not offered/], [{ type: 'set_mode', session: json.id, mode: 'yolo', req: 'e2c' }, /bad mode/],
+    [{ type: 'set_mode', session: json.id, mode: 'auto', req: 'e2b' }, /Auto mode is off/],
+    [{ type: 'allow_blocked', session: json.id, id: '00000000-0000-4000-8000-000000000000', req: 'e2d' }, /no longer known/], [{ type: 'set_mode', session: json.id, mode: 'yolo', req: 'e2c' }, /bad mode/],
     [{ type: 'watch_revert', session: json.id, id: 'x', req: 'e5' }, /bad change id/],
     [{ type: 'watch_revert', session: json.id, id: '00000000-0000-4000-8000-000000000000', req: 'e6' }, /no longer known/],
     [{ type: 'nope', req: 'e3' }, /unknown/], [{ type: 'stop_task', session: json.id, task: '../x', req: 'e4' }, /bad task/]]) {

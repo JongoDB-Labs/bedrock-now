@@ -328,6 +328,8 @@ terminal_status() {
   printf '  Key        claude-code-terminal, its own monthly budget: $%s (BUDGET_TERMINAL: Settings → Budgets & alerts; spend on Home)\n' "$(get_env BUDGET_TERMINAL)"
   if terminal_egress_on; then printf '  Internet   on (git, npm, pip, web fetches); TERMINAL_EGRESS=off in .env, then ./stack up, takes it away\n'
   else printf '  Internet   off (TERMINAL_EGRESS=off): only the gateway to LiteLLM and the shared MCP server\n'; fi
+  if flag_on "$(get_env TERMINAL_AUTO_MODE)"; then printf '  Auto mode  on: Claude Code may run in auto mode here (a reviewer model on Sonnet 5.5; ~$0.13 per 5 minutes in use)\n'
+  else printf '  Auto mode  off for claude here (Settings › Code page › Auto mode in the terminal, from this computer)\n'; fi
   if [ -n "$(get_env REMOTE_TERMINAL_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_TERMINAL_HOST)"
   elif terminal_remote_wanted; then printf '  Remote     REMOTE_TERMINAL is on, but remote access is off or not finished (./stack remote status)\n'
   else printf '  Remote     off (REMOTE_TERMINAL=true in .env, then ./stack up, adds it to remote access)\n'; fi

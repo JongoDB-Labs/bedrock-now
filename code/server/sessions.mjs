@@ -6,24 +6,46 @@ import crypto from 'node:crypto';
 import { LIMITS, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
 import { Ring } from './ring.mjs';
 import { fromSdk, errorEvent } from './normalize.mjs';
-import { isUuid, isModel, isFullModel, str, short } from './validate.mjs';
-import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions } from './modes.mjs';
+import { isUuid, isModel, isFullModel, str, short, capped } from './validate.mjs';
+import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions, startFlags } from './modes.mjs';
 import { checkSnapshot, diffSnapshots, watchEvent, revertOf } from './watch.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
 const ALIAS_REFUSED = 'name the model in full (claude-…), not by an alias: with an alias Claude Code may run another model (Plan mode on Haiku plans on Sonnet)';
-const AUTO_OFF_MS = 15000;   // how long the first prompt waits for "auto mode off" to be accepted (then it goes anyway)
+const AUTO_OFF_MS = 15000;   // how long the first prompt waits for the start's flag settings (auto mode off …) and, in Auto, the switch to it
 const WATCH_MS = 5000;       // how long a turn's first prompt waits for the watched files' snapshot (then it goes anyway)
 const REVERTS_KEPT = 10;     // watch events per session whose Revert stays possible (the oldest go) …
 const REVERT_BYTES = 4 << 20; // … and at most this much of their copies
 const BYPASS_OFF = 'Bypass permissions is off: turn it on in Settings › Code page, from the computer running bedrock-now';
+const AUTO_OFF = 'Auto mode is off: turn it on in Settings › Code page, from the computer running bedrock-now';
+// Claude Code refused auto mode: the sandbox's managed settings (from TERMINAL_AUTO_MODE / CODE_AUTO_MODE at the
+// terminal container's start) still say off, or the session's model is not one auto mode supports
+const autoRefused = (e) => {
+  const m = short(e?.message || String(e), 300);
+  if (/disabled by settings/i.test(m)) return `Auto mode is off in the sandbox's Claude Code settings: the terminal container has not taken Settings › Code page › Auto mode yet (./stack up restarts it). (${m})`;
+  if (/unavailable|not available|not supported/i.test(m)) return `Claude Code does not offer Auto mode for this session (on Bedrock: Sonnet 5 or later, Opus 4.7 or later, Haiku 5.5). (${m})`;
+  return m;
+};
+const ALLOW_ONCE_MS = 10 * 60000;   // an "Allow once" for a blocked action holds this long (the retry comes right after)
+const BLOCKS_KEPT = 20;             // blocked actions per session that "Allow once" can still reach (the oldest go)
+const TOOL_INPUTS_KEPT = 200;       // the last tool calls' inputs, for the blocked-action cards (by tool_use id)
 const MODE_ECHO_MS = 3000;   // how long after its answer a switch's status echo is still taken as one (then a status is Claude Code's own again)
 const NOT_CONFIRMED = /Couldn't confirm model/i;   // Claude Code's own check of a model id (one request, 5 s) failed
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
   p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
 });
+
+// callKey(input) -> what identifies a tool call for "Allow once": its input as sorted JSON, without the free-text
+// `description` Claude writes anew on a retry
+function callKey(input) {
+  const sort = (v) => (Array.isArray(v) ? v.map(sort) : v && typeof v === 'object'
+    ? Object.fromEntries(Object.keys(v).filter((k) => k !== 'description').sort().map((k) => [k, sort(v[k])])) : v);
+  try { return JSON.stringify(sort(input && typeof input === 'object' ? input : {})); } catch { return ''; }
+}
+// what a blocked-action card shows of the call (capped like a permission prompt)
+const plainInput = (input) => capped(input ?? {}, LIMITS.permissionShownChars, LIMITS.permissionShownString).value;
 
 export class SessionError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -39,7 +61,7 @@ export class Session {
     this.id = id;
     this.taskStop = taskStop === true;   // the page stops background tasks one by one (stop_task)
     this.model = model || null;
-    this.mode = START_MODES.includes(normMode(mode)) ? normMode(mode) : 'default';   // a page mode (modes.mjs)
+    this.mode = this.startable(normMode(mode)) ? normMode(mode) : 'default';   // a page mode (modes.mjs)
     this.effort = effort || null;
     this.bypassable = false;  // this process was started with --allow-dangerously-skip-permissions
     this.flagPerms = null;    // the `permissions` object this process's flag settings hold (ours: modes.mjs)
@@ -51,6 +73,9 @@ export class Session {
     // the watchlist (watch.mjs): the watched files at this turn's start, at the last turn's end, and the Reverts kept
     this.watchBase = null; this.watchLast = null; this.watchChain = Promise.resolve(); this.watchOff = false;
     this.reverts = new Map();
+    // Auto's blocked actions: the inputs of recent tool calls (tool_use id -> {tool, input}), the blocks "Allow once"
+    // can still reach (id -> {tool, input}), and the one-shot approvals the PreToolUse hook gives ({tool, key, until})
+    this.toolInputs = new Map(); this.blocked = new Map(); this.allowOnce = [];
     // Whether Claude Code has written this session's transcript: a resumed or forked one has; a new one once it got its
     // first prompt. A process for a session without one starts with --session-id (a --resume would find nothing).
     this.hasTranscript = hasTranscript ?? Boolean(resume);
@@ -91,10 +116,13 @@ export class Session {
   // {resume}), fork (a new id from another one's transcript), resume-at (up to one message).
   start({ resume, fork, at } = {}) {
     this.mgr.makeRoom(this);
-    // a process never starts in Bypass permissions (nor auto): those are switched to, per process, by the page
-    if (!START_MODES.includes(this.mode)) this.mode = 'default';
+    // a process never starts in Bypass permissions (switched to per process, by the page), nor in auto: a session in
+    // Auto (CODE_AUTO_MODE) starts in Manual and is switched before its first prompt
+    if (!this.startable(this.mode)) this.mode = 'default';
+    const wantAuto = this.mode === 'auto';
     this.bypassable = this.mgr.allowBypass === true;
     this.flagPerms = null; this.pickerModels = []; this.echoes = []; this.cliReported = null;
+    this.toolInputs = new Map(); this.blocked = new Map(); this.allowOnce = [];
     // A page that saw this session end starts counting again from 0: the new process's events are numbered from 1
     // (what earlier processes said is in the transcript: GET /api/sessions/ID/messages).
     this.ring = new Ring();
@@ -110,7 +138,7 @@ export class Session {
       settingSources: ['user', 'project', 'local'],            // the sandbox's plugins, skills, CLAUDE.md
       includePartialMessages: true,
       enableFileCheckpointing: true,                           // backups in the sandbox: rewind_files can put files back
-      permissionMode: cliMode(this.mode),                      // explicit: omitted, the CLI may start in auto
+      permissionMode: cliMode(wantAuto ? 'default' : this.mode),   // explicit: omitted, the CLI may start in auto
       canUseTool: (tool, input, o) => this.mgr.broker.ask(this.id, tool, input, o),
       stderr: (s) => this.mgr.logStderr(this.id, `sdk ${this.id.slice(0, 8)}: ${short(s, 300)}`),
     };
@@ -119,6 +147,9 @@ export class Session {
     // CODE_ALLOW_BYPASS on: Bypass permissions can be switched to in this process (--allow-dangerously-skip-permissions;
     // never --dangerously-skip-permissions: it starts in its own mode, as before)
     if (this.bypassable) options.allowDangerouslySkipPermissions = true;
+    // CODE_AUTO_MODE on: "Allow once" on an action Auto mode blocked — Claude's retry of exactly that call is approved
+    // here, once, before the classifier sees it (Claude Code's /permissions › Recently denied › retry does the same)
+    if (this.mgr.allowAuto === true) options.hooks = { PreToolUse: [{ hooks: [(input) => Promise.resolve(this.preToolUse(input))] }] };
     // Declared only by a page with a per-task Stop: then an interrupt spares background tasks. Without it (the plain
     // page) the CLI fails closed: an interrupt ends them too.
     if (this.taskStop) options.perTaskStopAffordance = true;
@@ -133,20 +164,22 @@ export class Session {
     try {
       this.q = this.mgr.query({ prompt: this.input(feed), options });
       this.feed = feed;
-      // Auto mode off before the first prompt is read: Claude Code treats it as available behind our base URL, and
-      // then Plan mode hands writing commands to its classifier (which fails closed here) instead of asking. A
-      // control message, not an argument (bn-coded refuses --settings); the sandbox's managed settings say the same.
-      // With it, the rules the starting mode needs (Read only: the edit tools denied).
+      // Before the first prompt is read: auto mode off — Claude Code treats it as available behind our base URL, and
+      // then Plan mode hands writing commands to its classifier instead of asking — or, while Settings allow Auto,
+      // Plan kept asking (useAutoModeDuringPlan: false). A control message, not an argument (bn-coded refuses
+      // --settings); the sandbox's managed settings say the same. With it, the rules the starting mode needs (Read
+      // only: the edit tools denied). Then, for a session in Auto, the switch to it.
       const perms = permissionsFor(this.mode);
-      const flags = perms ? { disableAutoMode: 'disable', permissions: perms } : { disableAutoMode: 'disable' };
+      const flags = perms ? { ...startFlags(this.mgr.allowAuto), permissions: perms } : startFlags(this.mgr.allowAuto);
       const q = this.q;
       this.flagPerms = perms;   // (sent first, before any switch: control messages are taken in order)
-      feed.ready = withTimeout(Promise.resolve(q.applyFlagSettings?.(flags)), AUTO_OFF_MS)
+      const flagged = withTimeout(Promise.resolve(q.applyFlagSettings?.(flags)), AUTO_OFF_MS)
         .catch((e) => {
-          this.mgr.log(`session ${this.id.slice(0, 8)}: auto mode not turned off: ${short(e?.message || String(e), 200)}`);
+          this.mgr.log(`session ${this.id.slice(0, 8)}: start settings not applied (${this.mgr.allowAuto ? 'Plan keeps asking' : 'auto mode off'}): ${short(e?.message || String(e), 200)}`);
           if (this.q === q && samePermissions(this.flagPerms, perms)) this.flagPerms = null;
           if (perms && this.q === q) this.emit({ type: 'local', text: 'Read only: its rules could not be set in Claude Code; anything not allowed already is still denied (dontAsk).' });
         });
+      feed.ready = wantAuto ? flagged.then(() => this.startAuto(q)) : flagged;
     } catch (e) {
       this.q = null;
       this.setState('error', short(e.message, 300));
@@ -156,6 +189,79 @@ export class Session {
     this.setState('idle');
     this.lastActive = Date.now();
     this.pump(this.q);
+  }
+
+  /** Whether a process may start in this page mode: one of START_MODES, or auto while Settings allow it. */
+  startable(mode) { return START_MODES.includes(mode) || (mode === 'auto' && this.mgr.allowAuto === true); }
+
+  // A session in Auto: its process (started in Manual) switched to auto before its first prompt. Refused (the
+  // sandbox's settings, the model): it goes on in Manual, and says why.
+  async startAuto(q) {
+    const echo = { mode: 'auto', at: null };
+    this.echoes.push(echo);
+    try {
+      await withTimeout(Promise.resolve(q.setPermissionMode('auto')), AUTO_OFF_MS);
+      echo.at = Date.now();
+      if (this.q === q) this.cliReported = 'auto';
+    } catch (e) {
+      this.echoes = this.echoes.filter((x) => x !== echo);
+      this.mgr.log(`session ${this.id.slice(0, 8)}: not started in auto: ${short(e?.message || String(e), 200)}`);
+      if (this.q !== q) return;
+      if (this.mode === 'auto') this.mode = 'default';
+      this.emit({ type: 'local', text: `Started in Manual, not Auto: ${autoRefused(e)}` });
+      this.status();
+    }
+  }
+
+  // --- Auto's blocked actions ---
+  // the inputs of the tool calls Claude makes (a blocked-action card shows what was blocked; "Allow once" approves it)
+  noteToolUses(m) {
+    if (m?.type !== 'assistant' || !Array.isArray(m.message?.content)) return;
+    for (const b of m.message.content) {
+      if (!b || b.type !== 'tool_use' || typeof b.id !== 'string' || typeof b.name !== 'string') continue;
+      this.toolInputs.set(b.id, { tool: b.name, input: b.input && typeof b.input === 'object' ? b.input : {} });
+      if (this.toolInputs.size > TOOL_INPUTS_KEPT) this.toolInputs.delete(this.toolInputs.keys().next().value);
+    }
+  }
+  // a `blocked` event (normalize.mjs) gets what was blocked and, for a block by Auto mode's classifier (or a
+  // classifier that could not decide), the id "Allow once" answers with
+  decorateBlocked(ev) {
+    const call = ev.toolUseId ? this.toolInputs.get(ev.toolUseId) : undefined;
+    if (call && call.tool === ev.tool) ev.input = plainInput(call.input);
+    if (ev.by === 'classifier' && call && call.tool === ev.tool && this.mgr.allowAuto === true) {
+      const id = crypto.randomUUID();
+      this.blocked.set(id, { tool: call.tool, input: call.input });
+      while (this.blocked.size > BLOCKS_KEPT) this.blocked.delete(this.blocked.keys().next().value);
+      ev.allowId = id;
+    }
+    return ev;
+  }
+  /** "Allow once" on an action Auto mode blocked: Claude is told it may run exactly that call again, and its retry
+   *  of it is approved once (the PreToolUse hook), without the classifier — as Claude Code's own retry of a recent
+   *  denial does. Deny rules still deny. Only in Auto, within ALLOW_ONCE_MS. */
+  allowBlocked(id) {
+    const b = this.blocked.get(id);
+    if (!b) throw new SessionError('that blocked action is no longer known here (the session restarted, or it is old): ask Claude to run it again', 404);
+    if (this.mode !== 'auto') throw new SessionError('this session is not in Auto mode any more: ask Claude to run it again (in Manual it asks you first)', 409);
+    if (this.resetTo) throw new SessionError('this conversation continues in a new session (Claude Code started one)', 409);
+    this.blocked.delete(id);
+    const now = Date.now();
+    this.allowOnce = this.allowOnce.filter((a) => a.until > now).slice(-4);
+    this.allowOnce.push({ tool: b.tool, key: callKey(b.input), until: now + ALLOW_ONCE_MS });
+    const what = b.tool === 'Bash' && typeof b.input.command === 'string' ? `\n\n    ${short(b.input.command, 2000).replace(/\n/g, '\n    ')}` : '';
+    this.prompt({ text: `Allowed once in the Code page: the ${short(b.tool, 100)} call Auto mode just blocked. Run it again exactly as it was.${what}` });
+  }
+  // the PreToolUse hook (sessions with CODE_AUTO_MODE): Claude's retry of an action allowed once is approved, once
+  preToolUse(input) {
+    const now = Date.now();
+    this.allowOnce = this.allowOnce.filter((a) => a.until > now);
+    if (this.mode !== 'auto' || !input || typeof input.tool_name !== 'string') return {};
+    const key = callKey(input.tool_input);
+    const i = this.allowOnce.findIndex((a) => a.tool === input.tool_name && a.key === key);
+    if (i < 0) return {};
+    this.allowOnce.splice(i, 1);
+    this.mgr.log(`session ${this.id.slice(0, 8)}: ${short(input.tool_name, 60)} allowed once (a blocked action, allowed in the page)`);
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'Allowed once in the Code page' } };
   }
 
   // Each process reads its own feed: a closed one's generator can never take a later process's prompts.
@@ -224,7 +330,8 @@ export class Session {
           if (m.state === 'idle') this.setState('idle'); else if (m.state === 'running') this.setState('busy');
         }
         this.observe(m);
-        for (const ev of fromSdk(m)) this.emit(ev);
+        this.noteToolUses(m);
+        for (const ev of fromSdk(m)) this.emit(ev.type === 'blocked' ? this.decorateBlocked(ev) : ev);
         if (m?.type === 'result') {
           this.setState('idle');
           this.watchEnd();
@@ -332,7 +439,8 @@ export class Session {
   followCli() {
     const mode = this.cliReported ? pageMode(this.cliReported) : null;
     if (!mode || mode === this.mode || !this.q) return false;
-    if (mode === 'bypassPermissions' || mode === 'auto') {
+    // (Auto while Settings allow it is a mode of the page like the others: a plan approved "Yes, Auto" lands here)
+    if (mode === 'bypassPermissions' || (mode === 'auto' && this.mgr.allowAuto !== true)) {
       this.mgr.log(`session ${this.id.slice(0, 8)}: Claude Code switched to ${mode} without a request from the page; back to default`);
       this.emit({ type: 'local', text: `Claude Code switched this session to ${mode === 'auto' ? 'Auto' : 'Bypass permissions'} by itself; the Code page set it back to Manual.` });
       void this.setMode('default').catch((e) => this.mgr.log(`session ${this.id.slice(0, 8)}: back to default failed: ${short(e?.message || String(e), 200)}`));
@@ -352,8 +460,9 @@ export class Session {
   }
   async applyMode(raw, confirmed) {
     const mode = normMode(raw);
-    if (mode === 'auto') throw new SessionError('Auto mode is not offered in the Code page yet');
     if (!SET_MODES.includes(mode)) throw new SessionError('bad mode');
+    // Auto: only while Settings allow it (CODE_AUTO_MODE); no confirmation — it still asks or blocks, as in the CLI
+    if (mode === 'auto' && this.mgr.allowAuto !== true) throw new SessionError(AUTO_OFF, 403);
     if (mode === 'bypassPermissions' && this.mode !== 'bypassPermissions') {
       if (this.mgr.allowBypass !== true) throw new SessionError(BYPASS_OFF, 403);
       if (confirmed !== true) throw new SessionError('Bypass permissions needs your confirmation in the Code page (confirmed: true)', 400);
@@ -366,7 +475,7 @@ export class Session {
         this.start({ resume: this.id });
       }
     }
-    if (!this.q) { this.mode = mode; return this.status(); }   // kept for the next start (never bypass: refused above)
+    if (!this.q) { this.mode = mode; return this.status(); }   // kept for the next start (never bypass: refused above; auto: switched to then)
     // already there, as Claude Code itself said, with the rules: nothing to switch (Claude Code would not answer with a
     // status, and an echo waited for would hide its next real one)
     if (mode === this.mode && this.cliReported === cliMode(mode) && samePermissions(permissionsFor(mode), this.flagPerms)) return this.status();
@@ -391,7 +500,7 @@ export class Session {
         if (!samePermissions(from, this.flagPerms)) {
           await q.applyFlagSettings({ permissions: from }).then(() => { this.flagPerms = from; }, () => {});
         }
-        throw e;
+        throw mode === 'auto' ? new SessionError(autoRefused(e), 409) : e;
       }
       if (!samePermissions(to, this.flagPerms)) { await q.applyFlagSettings({ permissions: to }); this.flagPerms = to; }
     } finally { this.switching = false; }
@@ -408,10 +517,12 @@ export class Session {
       (e) => this.mgr.log(`session ${this.id.slice(0, 8)}: mode rules not set: ${short(e?.message || String(e), 200)}`));
   }
 
-  // The process is gone: what was its alone goes with it — Bypass permissions above all (the next start is in Manual)
+  // The process is gone: what was its alone goes with it — Bypass permissions above all (the next start is in Manual).
+  // Auto stays while Settings allow it (the next start switches to it again), as Manual and Accept edits do.
   forgetProcess() {
     this.flagPerms = null; this.bypassable = false;
-    if (this.mode === 'bypassPermissions' || this.mode === 'auto') this.mode = 'default';
+    this.blocked = new Map(); this.allowOnce = [];
+    if (this.mode === 'bypassPermissions' || (this.mode === 'auto' && this.mgr.allowAuto !== true)) this.mode = 'default';
   }
 
   // --- the watchlist (watch.mjs) ---
@@ -573,11 +684,14 @@ export class Session {
 
 export class SessionManager {
   // allowBypass: CODE_ALLOW_BYPASS (processes start allowing Bypass permissions; set_mode may switch to it)
+  // allowAuto: CODE_AUTO_MODE (Claude Code's auto mode is not turned off; set_mode may switch to it, a session may
+  //            start in it, and "Allow once" reaches the actions it blocked)
   // watcher: {snapshot() -> ws.sensitive's RESULT, restore({path, ifSha256, data, mode}) -> ws.restore's} (bn-coded),
   //          or null (no watchlist)
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
-    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, watcher = null }) {
-    Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true, watcher });
+    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null }) {
+    Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true,
+      allowAuto: allowAuto === true, watcher });
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
     this.timer = setInterval(() => this.sweepIdle(), 60000);
@@ -603,8 +717,11 @@ export class SessionManager {
   open({ model, mode, effort, resume, fork, at, taskStop } = {}) {
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
     if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
-    if (mode !== undefined && mode !== null && !START_MODES.includes(normMode(mode))) {
-      throw new SessionError('bad mode (readOnly, plan, default, acceptEdits): a session never starts in bypassPermissions or auto');
+    // auto: a session in Auto starts in Manual and is switched before its first prompt — while Settings allow it; else
+    // it starts in Manual (as Claude Code's own apps do when auto mode is not available)
+    if (mode === 'auto' && this.allowAuto !== true) mode = 'default';
+    if (mode !== undefined && mode !== null && !START_MODES.includes(normMode(mode)) && mode !== 'auto') {
+      throw new SessionError('bad mode (readOnly, plan, default, acceptEdits, auto while allowed): a session never starts in bypassPermissions');
     }
     if (effort !== undefined && effort !== null && !EFFORTS.includes(effort)) throw new SessionError('bad effort');
     if (resume !== undefined && resume !== null && !isUuid(resume)) throw new SessionError('bad session id');

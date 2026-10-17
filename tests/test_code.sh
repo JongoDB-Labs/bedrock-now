@@ -284,10 +284,11 @@ assert list(c["networks"]) == ["code-link"] and c["networks"]["code-link"]["alia
 assert d["networks"]["code-link"]["internal"] is True
 assert c["user"] == "501:20" and c["read_only"] and c["cap_drop"] == ["ALL"] and "ports" not in c
 assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] == [("code-socket", "/run/bn-code", True)], c["volumes"]
-assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "HOME", "TERMINAL_EGRESS"], c["environment"]
+assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "HOME", "TERMINAL_EGRESS"], c["environment"]
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 # Bypass permissions: off unless .env allows it; the folder only as a label (no volume of it)
 assert c["environment"]["CODE_ALLOW_BYPASS"] == "false" and c["environment"]["TERMINAL_EGRESS"] == ""
+assert c["environment"]["CODE_AUTO_MODE"] == "false" and t["environment"]["CODE_AUTO_MODE"] == "false"
 assert c["environment"]["CODE_WORKSPACE_LABEL"].endswith("/ws"), c["environment"]["CODE_WORKSPACE_LABEL"]
 assert "sk-term" not in json.dumps(c) and "sk-cc" not in json.dumps(c) and "/ws" not in json.dumps(c["volumes"])
 # the sandbox: the socket volume writable (the spawn server always runs there), never the secret

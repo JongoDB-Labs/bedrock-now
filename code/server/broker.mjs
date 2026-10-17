@@ -84,20 +84,28 @@ export function questionAnswers(input, answers) {
   return Object.keys(out).length ? out : null;
 }
 
-// the modes a plan's approval may switch to (ExitPlanMode: approve and auto-accept edits, or approve and keep asking)
+// the modes a plan's approval may switch to (ExitPlanMode: approve and auto-accept edits, or approve and keep asking;
+// and, while Settings allow Auto, approve and use auto mode — the CLI's "Yes, and use auto mode")
 const PLAN_MODES = ['acceptEdits', 'default'];
+// why Claude Code asks (the SDK's decisionReasonType): "Allow, and switch to Auto" is offered for none forced by one of
+// your ask rules or by a hook, as in the CLI
+const REASON_TYPES = ['rule', 'mode', 'subcommandResults', 'permissionPromptTool', 'hook', 'asyncAgent', 'sandboxOverride', 'workingDir', 'safetyCheck', 'classifier', 'other'];
 const jsonSize = (v) => { try { return JSON.stringify(v ?? {}).length; } catch { return Infinity; } };
 const deny = (message) => Promise.resolve({ behavior: 'deny', message });
 
 export class PermissionBroker {
+  // autoMode: CODE_AUTO_MODE (a plan may be approved with Auto)
   constructor({ onAsk = () => {}, onDone = () => {}, onCount = () => {}, timeoutMs = LIMITS.permissionMinutes * 60000,
-    maxPerSession = LIMITS.maxPendingPerSession, maxTotal = LIMITS.maxPendingTotal } = {}) {
+    maxPerSession = LIMITS.maxPendingPerSession, maxTotal = LIMITS.maxPendingTotal, autoMode = false } = {}) {
     this.pending = new Map();   // id -> {prompt, resolve, timer, input, always, project}
     Object.assign(this, { onAsk, onDone, onCount, timeoutMs, maxPerSession, maxTotal });
+    this.planModes = autoMode === true ? [...PLAN_MODES, 'auto'] : PLAN_MODES;
   }
 
   get count() { return this.pending.size; }
   forSession(session) { return [...this.pending.values()].filter((p) => p.prompt.session === session).map((p) => p.prompt); }
+  /** A waiting prompt as the pages see it, or null. */
+  peek(id) { return this.pending.get(id)?.prompt ?? null; }
 
   /** The SDK's canUseTool for one session: resolves a PermissionResult. A flood (more than maxPerSession waiting in
    *  this session, or maxTotal in all) and an input over permissionInputMax are denied at once, never queued. */
@@ -117,7 +125,7 @@ export class PermissionBroker {
     const edits = tool === 'MultiEdit' && Array.isArray(input?.edits) ? input.edits.length : 0;
     const prompt = {
       id, session, tool: short(tool, 200), input: shown.value, complete: shown.complete && edits <= LIMITS.permissionShownEdits,
-      reason: str(opts.decisionReason ?? '', 1000),
+      reason: str(opts.decisionReason ?? '', 1000), reasonType: REASON_TYPES.includes(opts.decisionReasonType) ? opts.decisionReasonType : null,
       blockedPath: short(opts.blockedPath ?? '', 4096) || null, rules: ruleText(always), projectRules: ruleText(project),
       defaultNo: opts.defaultToNo === true, noAlways, expiresAt: Date.now() + this.timeoutMs,
     };
@@ -136,7 +144,8 @@ export class PermissionBroker {
    *    once | always | always_project | deny (with an optional message for Claude) | answer (AskUserQuestion only:
    *    {answers: {question text: chosen label(s)}} — the SDK's own channel: the tool's input comes back with
    *    `answers`, as Claude Code's permission component fills it; multi-select: comma-separated)
-   *    once with `mode` (ExitPlanMode only: acceptEdits | default): the plan approved, and this session's mode set
+   *    once with `mode` (ExitPlanMode only: acceptEdits | default, or auto while Settings allow it): the plan approved,
+ *    and this session's mode set
    *  `session`, when given, must be the prompt's own session. A prompt not shown in full (complete false) can only be
    *  denied (or, AskUserQuestion, answered: that adds only your answers). */
   answer(id, decision, { message, answers, mode, session } = {}) {
@@ -152,7 +161,7 @@ export class PermissionBroker {
     // updatedInput: the input exactly as the CLI sent it (what the page showed), never something the page made up
     if (decision === 'once') {
       if (mode === undefined || mode === null) return this.#finish(id, 'once', { behavior: 'allow', updatedInput: p.input });
-      if (p.prompt.tool !== 'ExitPlanMode' || !PLAN_MODES.includes(mode)) return false;
+      if (p.prompt.tool !== 'ExitPlanMode' || !this.planModes.includes(mode)) return false;
       return this.#finish(id, 'plan', { behavior: 'allow', updatedInput: p.input, updatedPermissions: [{ type: 'setMode', mode, destination: 'session' }] });
     }
     if (decision === 'always') {

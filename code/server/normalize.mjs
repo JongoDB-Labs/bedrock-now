@@ -149,8 +149,14 @@ export function fromSdk(m) {
         }
         case 'api_retry':
           return [{ type: 'status', status: `Bedrock retry ${int(m.attempt, 0, 1000) ?? '?'}/${int(m.max_retries, 0, 1000) ?? '?'} (${short(m.error, 60) || 'error'}${int(m.error_status, 0, 999) ? `, HTTP ${m.error_status}` : ''})` }];
-        case 'permission_denied':
-          return [{ type: 'local', text: `${short(m.tool_name, LABEL)} was not allowed: ${str(m.message, 500)}` }];
+        case 'permission_denied': {
+          // a call denied without asking you: Auto mode's classifier (by: classifier; reason: the rule it matched,
+          // "[Data Exfiltration]", or why it could not decide), a deny rule, Read only … The session adds what was
+          // called and, for Auto's blocks, the id "Allow once" answers with (Session.decorateBlocked).
+          const by = short(m.decision_reason_type, 40);
+          return [{ type: 'blocked', tool: short(m.tool_name, LABEL), toolUseId: idOr(m.tool_use_id),
+            by: /^[a-zA-Z]{1,40}$/.test(by) ? by : 'other', reason: str(m.decision_reason ?? '', 1000), text: str(m.message, 2000) }];
+        }
         case 'task_started':
         case 'task_progress':
         case 'task_updated':

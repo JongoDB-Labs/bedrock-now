@@ -84,11 +84,11 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
-// allowBypass: CODE_ALLOW_BYPASS (Settings › Code page). sandbox: {egress, workspace} what the page's Bypass dialog says
+// allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Code page). sandbox: {egress, workspace} what the page's Bypass dialog says
 // about the sandbox (TERMINAL_EGRESS, the folder of yours it sees — a label). watch: false turns the watchlist off.
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
-  allowBypass = false, sandbox = {}, watch = true }) {
+  allowBypass = false, allowAuto = false, sandbox = {}, watch = true }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -118,7 +118,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const toAttached = (session, m) => { for (const c of clients) if (c.attached.has(session)) sendTo(c, m); };
   const toAll = (m) => { for (const c of clients) sendTo(c, m); };
   const broker = new PermissionBroker({
-    ...brokerOpts,
+    ...brokerOpts, autoMode: allowAuto === true,
     onAsk: (p) => toAttached(p.session, { type: 'permission', ...p }),
     onDone: (d) => toAttached(d.session, { type: 'permission_done', ...d }),
     onCount: (count) => toAll({ type: 'pending', count }),
@@ -132,7 +132,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
-    query, spawn, broker, log: logger, allowBypass: allowBypass === true, watcher,
+    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher,
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
@@ -197,7 +197,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         versions: { cli: versions.claudeCode, sdk: versions.sdk, claudeCode: versions.claudeCode },
         limits: { ...LIMITS, sessions: LIMITS.maxOpen, upload: LIMITS.maxUploadBytes, image: LIMITS.maxImageBytes },
         sessions: mgr.list(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
-        bypass: { allowed: mgr.allowBypass }, sandbox: sandboxInfo,
+        bypass: { allowed: mgr.allowBypass }, auto: { allowed: mgr.allowAuto }, sandbox: sandboxInfo,
         // over remote access (Caddy's remote sites say 1, the local one 0; a client's copy never gets here)
         remote: req.headers['x-bn-remote'] === '1',
       });
@@ -423,8 +423,26 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       // the watched files checked now (the Review pane just changed one): a `watch` event when something changed
       case 'watch_check': await sessionOf(m).watchNow(); return reply({});
       case 'set_effort': await sessionOf(m).setEffort(m.effort ?? null); return reply({ effort: m.effort ?? null });
+      // "Allow once" on an action Auto mode blocked (a `blocked` event's allowId)
+      case 'allow_blocked': {
+        if (!isUuid(m.id)) throw new SessionError('bad blocked-action id');
+        sessionOf(m).allowBlocked(m.id);
+        return reply({});
+      }
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');
+        // "Allow, and switch to Auto" (a shell command's prompt in Manual or Accept edits, as the CLI offers it): the
+        // switch first — through Auto's gate; refused, the prompt stays — then the command, once
+        if (m.decision === 'once_auto') {
+          const p = broker.peek(m.id);
+          if (!p || p.session !== m.session) throw new SessionError('that prompt is no longer waiting', 409);
+          if (p.tool !== 'Bash' || !p.complete || p.reasonType === 'rule' || p.reasonType === 'hook') throw new SessionError('this prompt cannot switch to Auto (only a shell command\'s, not one your ask rules or a hook asked for)');
+          const s = sessionOf(m);
+          if (s.mode !== 'default' && s.mode !== 'acceptEdits') throw new SessionError('"Allow, and switch to Auto" is for Manual and Accept edits');
+          await s.setMode('auto');
+          if (!broker.answer(m.id, 'once', { session: m.session })) throw new SessionError('Auto mode is on, but that prompt is no longer waiting', 409);
+          return reply({ mode: s.mode });
+        }
         if (!broker.answer(m.id, m.decision, { message: typeof m.message === 'string' ? m.message : undefined, answers: m.answers,
           mode: typeof m.mode === 'string' ? m.mode : undefined, session: m.session })) {
           throw new SessionError(m.decision === 'answer' ? 'that question is no longer waiting, or the answers do not match it' : 'that prompt is no longer waiting', 409);
@@ -501,9 +519,9 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   const off = (v) => /^(false|0|no|off)$/i.test(String(v ?? '').trim());
   const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(),
     // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
-    allowBypass: on(process.env.CODE_ALLOW_BYPASS),
+    allowBypass: on(process.env.CODE_ALLOW_BYPASS), allowAuto: on(process.env.CODE_AUTO_MODE),
     sandbox: { egress: !off(process.env.TERMINAL_EGRESS), workspace: process.env.CODE_WORKSPACE_LABEL || '' } });
-  log(`code: Bypass permissions ${mgr.allowBypass ? 'allowed (CODE_ALLOW_BYPASS)' : 'off'}`);
+  log(`code: Bypass permissions ${mgr.allowBypass ? 'allowed (CODE_ALLOW_BYPASS)' : 'off'}; Auto mode ${mgr.allowAuto ? 'allowed (CODE_AUTO_MODE)' : 'off'}`);
   const port = Number(process.env.CODE_PORT || 8095);
   server.listen(port, '0.0.0.0', () => log(`code: listening on :${port}`));
   const stop = () => { log('code: stopping'); mgr.closeAll(); server.close(); setTimeout(() => process.exit(0), 3000).unref(); };

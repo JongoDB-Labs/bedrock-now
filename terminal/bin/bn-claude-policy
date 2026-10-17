@@ -1,0 +1,21 @@
+#!/bin/bash
+# bn-claude-policy — Claude Code's managed settings for every claude in this sandbox (the terminal's, claude-bedrock's
+# and the Code page's), as JSON on stdout, from two Settings (compose.terminal.yaml passes them in):
+#   TERMINAL_AUTO_MODE  Settings › Terminal › Auto mode: the terminal's claude may use auto mode
+#   CODE_AUTO_MODE      Settings › Code page › Auto mode: the Code page may switch a session to it
+# bn-terminal writes the result to /run/bn/managed-settings.json at each start; /etc/claude-code/managed-settings.json
+# links there. Managed settings outrank every other tier, so:
+#   both off          auto mode off for everything here (behind our base URL Claude Code 2.1.283+ counts it as
+#                     available, would start an interactive claude in it, and hand Plan's commands to its classifier)
+#   TERMINAL on       nothing set: Claude Code decides as anywhere else (auto mode available; an interactive claude
+#                     starts in it unless your ~/.claude/settings.json sets permissions.defaultMode). The Code page
+#                     still turns it off for its own sessions while CODE_AUTO_MODE is off (its flag settings)
+#   only CODE on      auto mode stays available (the Code page needs it, and managed settings would win over the page),
+#                     but the terminal's claude starts in Manual and its Plan mode asks; claude-bedrock in here turns
+#                     it off for its sessions (--settings). Plain `claude` can still be switched to it with Shift+Tab
+# A convenience, not a boundary: the sandbox runs as one user, and anything in it can run a claude of its own.
+set -eu
+on() { case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in true | 1 | yes | on) return 0 ;; esac; return 1; }
+if on "${TERMINAL_AUTO_MODE:-}"; then printf '{}\n'
+elif on "${CODE_AUTO_MODE:-}"; then printf '{"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false}\n'
+else printf '{"disableAutoMode":"disable"}\n'; fi

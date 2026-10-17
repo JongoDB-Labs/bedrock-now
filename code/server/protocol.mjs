@@ -9,6 +9,7 @@
 //   GET    /api/state                      {versions: {cli, sdk}, limits: {sessions, upload, image, …}, sessions:
 //                                           [{id, state, model, mode, effort, title, pending, open, error}], pending,
 //                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
+//                                           auto: {allowed} (CODE_AUTO_MODE),
 //                                           sandbox: {egress: true|false (TERMINAL_EGRESS), workspace: the folder of
 //                                           yours the sandbox sees (a label: this container mounts nothing) | null},
 //                                           remote: true over remote access (Caddy's X-Bn-Remote)}
@@ -24,8 +25,10 @@
 //                                           50 compaction boundaries) was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, before?: PROMPT_UUID,
 //                                           taskStop?: bool}   mode: readOnly | plan | default | acceptEdits (the
-//                                           former dontAsk is readOnly) — never bypassPermissions or auto: a process
-//                                           always starts in one of these
+//                                           former dontAsk is readOnly), or auto while CODE_AUTO_MODE is on (its
+//                                           process starts in default and is switched before the first prompt; with
+//                                           the setting off, a session asked for in auto starts in default) — never
+//                                           bypassPermissions
 //                                           -> {id, existing, fresh?}: opens a session (new, resume, fork, resume-at).
 //                                           before (with resume + fork): a fork of the conversation BEFORE that prompt
 //                                           of yours (resumed at the message it answered to); its first prompt gives a
@@ -151,7 +154,10 @@
 //                                               may not set) by an error and a status with what holds. A session without
 //                                               a running process keeps them for its next start. set_mode requests of a
 //                                               session run one after another (the page sends one at a time too).
-//                                               mode: a page mode of MODES but auto (modes.mjs); bypassPermissions only
+//                                               mode: a page mode of MODES (modes.mjs); auto only with CODE_AUTO_MODE on
+//                                               (no confirmation: it still asks or blocks; kept for the session's next
+//                                               process while the setting is on — 403 when off, 409 when Claude Code
+//                                               refuses it: the sandbox's settings, the model); bypassPermissions only
 //                                               with CODE_ALLOW_BYPASS on and confirmed: true (the page's dialog), never
 //                                               kept for a next start: a process that ends (idle, closed, restarted)
 //                                               leaves it, and the session goes on in default. A process started before the
@@ -160,16 +166,26 @@
 //                                               model (here and in POST /api/sessions): a full model id (claude-…);
 //                                               Claude Code's aliases (haiku, sonnet, opus, opusplan …) are refused —
 //                                               with one Claude Code may run another model (Plan on Haiku → Sonnet)
-//   {type: "permission", id, session, decision: "once"|"always"|"always_project"|"deny", message?, mode?}
+//   {type: "permission", id, session, decision: "once"|"always"|"always_project"|"deny"|"once_auto", message?, mode?}
 //                                               session: the prompt's own (else refused). always: the prompt's `rules`;
 //                                               always_project: its `projectRules`; mode (ExitPlanMode only:
-//                                               "acceptEdits" | "default"): the plan approved and this session's mode set
-//                                               (never bypassPermissions, auto or dontAsk); "keep planning" is a deny with
+//                                               "acceptEdits" | "default", or "auto" with CODE_AUTO_MODE on): the plan
+//                                               approved and this session's mode set (never bypassPermissions or
+//                                               dontAsk); once_auto ("Allow, and switch to Auto": a Bash prompt in Manual
+//                                               or Accept edits whose reasonType is not rule or hook, CODE_AUTO_MODE on):
+//                                               the session switched to auto first, then the command allowed once — a
+//                                               refused switch leaves the prompt waiting; "keep planning" is a deny with
 //                                               a message. A prompt that is not complete can only be denied: once,
 //                                               always and always_project are refused for it
 //   {type: "permission", id, session, decision: "answer", answers: {"<question text>": "<chosen label(s)>"}}
 //                                               AskUserQuestion only: the tool's input comes back with these answers
 //                                               (the SDK's channel; multi-select labels comma-separated)
+//   {type: "allow_blocked", session, id, req}     "Allow once" on an action Auto mode blocked (a `blocked` event's
+//                                               allowId): Claude gets a prompt to run it again, and that call, exactly
+//                                               (its input but the description), is approved once without the
+//                                               classifier (a PreToolUse hook; deny rules still deny), within 10
+//                                               minutes; only while the session is in auto. 404 when the block is no
+//                                               longer known (the process ended), 409 when not in auto
 //   {type: "commands"|"models"|"mcp"|"context", session}   answered by a message of the same type (below)
 //   {type: "reload_plugins", session} · {type: "stop_task", session, task}
 //   {type: "mcp_reconnect", session, server} · {type: "mcp_toggle", session, server, enabled}   answered by "mcp"
@@ -195,8 +211,10 @@
 //   {type: "event", session, epoch, seq, ev}                  seq 1, 2, 3 … per process (holes are normal: finished
 //                                                             blocks replace their deltas); epoch: 8 hex characters,
 //                                                             new for every process of the session
-//   {type: "permission", id, session, tool, input, complete, reason, blockedPath, rules, projectRules, defaultNo,
-//          noAlways, expiresAt}
+//   {type: "permission", id, session, tool, input, complete, reason, reasonType, blockedPath, rules, projectRules,
+//          defaultNo, noAlways, expiresAt}
+//          reasonType: why Claude Code asks (the SDK's decisionReasonType: rule, hook, classifier — Auto mode paused
+//          after repeated blocks —, other …) or null
 //          input: the tool's input capped at LIMITS.permissionShownChars (strings at permissionShownString); complete:
 //          nothing was cut, and a MultiEdit has at most permissionShownEdits edits (the page offers Allow only for a
 //          complete one; the server refuses it for the others). An input over permissionInputMax never
@@ -245,7 +263,11 @@
 //          created: a Write that made a new file
 //   {type: "task", id, status, summary, description, toolUseId}
 //   {type: "local", text}                                      a local command's output (/context, /cost …), a
-//                                                              compaction, a denied tool, a closed session
+//                                                              compaction, a closed session
+//   {type: "blocked", tool, toolUseId, by, reason, text, input?, allowId?}   a call denied without asking you (the
+//          SDK's permission_denied): by "classifier" (Auto mode: reason the rule it matched, "[Data Exfiltration]",
+//          or why it could not decide), "rule", "mode" … ; text: what Claude was told; input: the call (capped as a
+//          permission prompt's); allowId: for Auto's blocks while CODE_AUTO_MODE is on — allow_blocked answers it
 //   {type: "status", status, permissionMode?, model?, effort?}  compacting | requesting | "Bedrock retry N/M (…)" | ""
 //                                                              (and the switches after set_*, or Claude Code's own)
 //   {type: "result", subtype, is_error, turns, duration, usage: {input_tokens, output_tokens,
@@ -286,8 +308,8 @@ export const LIMITS = Object.freeze({
   watchShownChars: 65536,         // a watched file's text in a `watch` event (each side of its diff)
 });
 
-// The page modes (modes.mjs: what each one is in Claude Code's terms; auto is not offered yet)
+// The page modes (modes.mjs: what each one is in Claude Code's terms; auto only with CODE_AUTO_MODE)
 export const MODES = Object.freeze(['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions']);
 export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const DECISIONS = Object.freeze(['once', 'always', 'always_project', 'deny', 'answer']);   // answer: AskUserQuestion only
+export const DECISIONS = Object.freeze(['once', 'always', 'always_project', 'deny', 'answer', 'once_auto']);   // answer: AskUserQuestion only; once_auto: a Bash prompt, with CODE_AUTO_MODE
 export const IMAGE_TYPES = Object.freeze(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

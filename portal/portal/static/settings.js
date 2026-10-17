@@ -26,7 +26,7 @@
     voice: ["STT_PROVIDER"],
     openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MODELS", "OPENROUTER_MAX_MODELS", "OPENROUTER_INCLUDE_ALIASES"],
     files: ["RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "SHARED_MCP_TOKEN"],
-    code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS"],
+    code: ["CODE_ENABLED", "CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "TERMINAL_AUTO_MODE"],
     updates: ["UPDATE_CHECK", "PRICE_UPDATES", "AUTO_UPDATE", "UPDATE_REQUIRE_SIGNED_TAGS", "BACKUP_NIGHTLY"],
     remote: ["REMOTE_MODE", "REMOTE_ADMIN_ACTIONS", "TAILSCALE_ALLOWED_LOGIN", "REMOTE_PREVIEW"],
   };
@@ -330,6 +330,9 @@
     body.append(r);
     // Bypass permissions in the Code page's mode picker: on only from this computer (widen-local), off from anywhere
     if (keys.CODE_ALLOW_BYPASS) body.append(row(keys.CODE_ALLOW_BYPASS));
+    // Auto mode (a reviewer model instead of you) in the Code page, and in the terminal: the same rule
+    if (keys.CODE_AUTO_MODE) body.append(row(keys.CODE_AUTO_MODE));
+    if (keys.TERMINAL_AUTO_MODE) body.append(row(keys.TERMINAL_AUTO_MODE));
   }
 
   function modelName(id) {

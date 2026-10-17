@@ -2,11 +2,14 @@
 // modes as Claude Code's desktop app does, plus one of its own:
 //   readOnly            Read only: Claude Code's dontAsk mode, with Edit, Write and NotebookEdit denied (flag settings).
 //                       Reads and the CLI's read-only commands run; anything else is denied, never asked
-//   plan                Plan: Claude Code's plan mode (auto mode off, so it asks rather than handing commands to a
-//                       classifier)
+//   plan                Plan: Claude Code's plan mode — it asks rather than handing commands to the auto-mode classifier
+//                       (auto mode off, or useAutoModeDuringPlan: false while Settings allow Auto)
 //   default             Manual: asks before edits and commands (Claude Code's default, "manual" in its CLI)
 //   acceptEdits         Accept edits: file edits and file commands in the workspace run without asking
-//   auto                Auto: not offered yet (Claude Code's auto mode is off: disableAutoMode)
+//   auto                Auto: Claude Code's auto mode — a reviewer model (its classifier, which asks for claude-sonnet-5:
+//                       Sonnet 5.5 through the catalog's alias) approves routine actions and blocks risky ones; ask rules
+//                       still ask. Only with CODE_AUTO_MODE; a process starts in Manual and is switched to it before its
+//                       first prompt. Off (disableAutoMode) otherwise
 //   bypassPermissions   Bypass permissions: nothing asks — except the ask rules below and AskUserQuestion; deny rules
 //                       still deny. Only with CODE_ALLOW_BYPASS, a process started with
 //                       --allow-dangerously-skip-permissions, and the page's confirmation; never at a process's start
@@ -28,10 +31,17 @@ export const BYPASS_ASK = Object.freeze([
   'Edit(//workspace/.devcontainer/**)', 'Edit(//workspace/.envrc)', 'Edit(//workspace/.mcp.json)', 'Edit(//workspace/.devcontainer.json)',
 ]);
 
-/** The modes a process may start in (a new session, a resume, a fork): never bypass, never auto. */
+/** The modes Claude Code may be started in (--permission-mode: a new session, a resume, a fork): never bypass, never
+ *  auto. A session in Auto starts its process in Manual and switches before the first prompt (Session.start). */
 export const START_MODES = Object.freeze(['readOnly', 'plan', 'default', 'acceptEdits']);
-/** The modes set_mode switches to (bypassPermissions only through its gate: Session.setMode). */
-export const SET_MODES = Object.freeze([...START_MODES, 'bypassPermissions']);
+/** The modes set_mode switches to (bypassPermissions and auto only through their gates: Session.setMode). */
+export const SET_MODES = Object.freeze([...START_MODES, 'auto', 'bypassPermissions']);
+
+/** The flag settings every process gets before its first prompt, besides its mode's rules. Auto off (CODE_AUTO_MODE
+ *  unset): Claude Code counts auto mode as available behind our base URL and would hand Plan's commands to its
+ *  classifier. Auto allowed: Plan still asks you (useAutoModeDuringPlan: false; the CLI's default is to let the
+ *  classifier approve commands in Plan). */
+export const startFlags = (allowAuto) => (allowAuto === true ? { useAutoModeDuringPlan: false } : { disableAutoMode: 'disable' });
 
 /** A mode as the page or an older client names it: dontAsk (the Code page's former "Don't ask") is Read only now. */
 export const normMode = (m) => (m === 'dontAsk' ? 'readOnly' : m);

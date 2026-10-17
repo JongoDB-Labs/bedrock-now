@@ -50,6 +50,8 @@
       }
       case "task": line("muted", `task ${ev.id}: ${ev.status}${ev.description ? ` — ${ev.description}` : ""}${ev.summary ? ` — ${ev.summary}` : ""}`); break;
       case "local": streaming = null; line("tool", ev.text); break;
+      // a call denied without asking (Auto mode's classifier, a deny rule …): the full page offers "Allow once" for Auto's
+      case "blocked": streaming = null; line("tool err", `${ev.by === "classifier" ? "Blocked by Auto mode" : "Not allowed"}: ${ev.tool}${ev.input && ev.input.command ? ` — ${ev.input.command}` : ""}${ev.reason ? ` (${ev.reason})` : ""}`); break;
       case "status": if (ev.status) line("muted", `… ${ev.status}`); break;
       case "notice": line("muted", ev.text); break;
       case "result": streaming = null; line("muted", `— ${ev.subtype}, ${ev.turns ?? "?"} turn(s), ${ev.duration ?? "?"} ms, tokens in ${ev.usage?.input_tokens ?? "?"} / out ${ev.usage?.output_tokens ?? "?"} / cache read ${ev.usage?.cache_read_input_tokens ?? 0} / cache write ${ev.usage?.cache_creation_input_tokens ?? 0}`); costSoon(); break;
