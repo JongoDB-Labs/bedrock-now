@@ -102,6 +102,8 @@
     const v = lower(k.value);
     return v !== "" && !OFF_VALUES.includes(v);
   }
+  // a switch's own value is on (true or on), whatever it shows
+  const switchedOn = (k) => Boolean(k && ["bool", "on_off", "true_blank"].includes(k.validator) && ON_VALUES.includes(lower(k.value)));
   // shown in its section: its parent switch (and that one's parent) is on
   function parentsOn(r, depth = 0) {
     if (!r || !r.parent || depth > 5) return true;
@@ -256,9 +258,13 @@
       for (const d of [...c.querySelectorAll(".set-dep")].reverse()) {
         const own = d.querySelector(":scope > .set-row, :scope > .set-adv-item");
         const off = Boolean(d.dataset.parent) && !parentsOn(rowOf[d.dataset.key]);
+        // a switch of its own that is on stays in sight while its parent is off (Bypass allowed, the Code page off):
+        // it takes effect again the moment the parent is on
+        const selfOn = off && switchedOn(keys[d.dataset.key]);
         d.classList.toggle("set-dep-off", off);
+        d.classList.toggle("set-dep-on", selfOn);
         if (!finding) {
-          d.hidden = off && !d.classList.contains("set-forced");
+          d.hidden = off && !selfOn && !d.classList.contains("set-forced");
           if (own) own.classList.remove("set-ghost");
           continue;
         }
@@ -534,10 +540,11 @@
   function row(k, r) {
     const rw = frame(k, r);
     const main = rw._main, actions = rw._actions;
+    const setValue = (text) => { const v = $(".set-value", main); v.textContent = text; v.classList.remove("set-unset"); };
     const alias = BUDGET_ALIAS[k.key];
     if (alias) main.append(el("p", { class: "set-spend note", "data-alias": alias }));
     if (k.key === "AWS_ACCESS_KEY_ID" && keys.AWS_AUTH && shown(keys.AWS_AUTH) === "instance-role") {
-      $(".set-value", main).textContent = "this computer's IAM role (no key in .env)";
+      setValue("this computer's IAM role (no key in .env)");
     }
     if (k.key === "OPENWEBUI_ADMIN_EMAIL" && keys.LITELLM_UI_USER && "value" in keys.LITELLM_UI_USER && keys.LITELLM_UI_USER.value !== k.value) {
       main.append(el("p", { class: "note set-extra", text: `Admin (LiteLLM) sign-in name until the next setup: ${keys.LITELLM_UI_USER.value || "admin"}` }));
@@ -550,12 +557,12 @@
     if (k.key === "AWS_ACCESS_KEY_ID") actions.append(actionButton("check-aws", "Check (free)"));
     if (k.validator === "model_pin") {   // a pin, and the model setup chose (shown while there is no pin)
       const d = keys[(withOf[k.key] || [])[0]];
-      $(".set-value", main).textContent = shown(k) === "blank" || !k.set ? `Automatic: ${modelName(d ? shown(d) : "")}` : `Pinned: ${modelName(shown(k))}`;
+      setValue(shown(k) === "blank" || !k.set ? `Automatic: ${modelName(d ? shown(d) : "")}` : `Pinned: ${modelName(shown(k))}`);
     }
     if (k.key === "REMOTE_PREVIEW" && ON_VALUES.includes(lower(k.value)) && !remotePreviewOn()) {
       main.append(el("p", { class: "note", text: "Switched on, not in effect: the Code page is not reachable over remote access (REMOTE_TERMINAL=true), or remote access has no names yet (./stack up)." }));
     }
-    if (k.key === "MODELS_HIDDEN") $(".set-value", main).textContent = k.value ? k.value.split(",").map(modelName).join(", ") : "None hidden";
+    if (k.key === "MODELS_HIDDEN") setValue(k.value ? k.value.split(",").map(modelName).join(", ") : "None hidden");
     if (k.key === "BACKUP_HOUR" && keys.AUTO_UPDATE && keys.AUTO_UPDATE.value === "on") {
       const h = keys.AUTO_UPDATE_HOUR && /^\d+$/.test(keys.AUTO_UPDATE_HOUR.value || "") ? Number(keys.AUTO_UPDATE_HOUR.value) : 3;
       main.append(el("p", { class: "note set-extra", text: `Automatic updates are on: nightly backups use their window (${hourRange(h)}) instead.` }));

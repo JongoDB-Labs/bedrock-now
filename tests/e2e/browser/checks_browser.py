@@ -1920,8 +1920,8 @@ def settings_sections(ctx):
     # search: every section with a match, grouped; Clear goes back to the section
     page.fill("#set-find", "budget")
     page.wait_for_timeout(200)
-    shown = page.locator("#settings .set-card:not([hidden])")
-    expect(shown.count() >= 2 and page.locator("#set-spending:not([hidden])").count() == 1, f"search: {shown.count()} sections")
+    n_found = page.locator("#settings .set-card:not([hidden])").count()
+    expect(n_found >= 2 and page.locator("#set-spending:not([hidden])").count() == 1, f"search: {n_found} sections")
     expect(page.locator("#set-spending .set-row[data-key=BUDGET_TERMINAL]").is_visible(), "search: the terminal's budget not found")
     expect(not page.locator("#settings .set-row[data-key=PORTAL_PASSWORD]").is_visible(), "search: a setting that does not match")
     shot(page, "17b-settings-search")
@@ -1948,7 +1948,9 @@ def settings_sections(ctx):
     page.keyboard.press("Enter")
     page.wait_for_selector("#set-files:not([hidden])")
     expect(page.evaluate("document.activeElement && document.activeElement.id") == "set-files-title", "focus not on the section's heading")
-    # a phone: the picker
+    probs = rec.problems()
+    rec.save()
+    # a phone: the picker (a new browser context: the desktop page above closes)
     ppage, prec = ctx.page("settings-sections-phone", device="phone")
     login(ppage)
     ppage.evaluate("location.hash = '#settings/remote'")
@@ -1957,11 +1959,11 @@ def settings_sections(ctx):
     ppage.select_option("#set-picker", "updates")
     ppage.wait_for_selector("#set-updates:not([hidden])")
     expect(ppage.evaluate("location.hash") == "#settings/updates", "phone: the address does not follow the picker")
-    probs = rec.problems() + prec.problems()
-    rec.save(); prec.save()
+    probs += prec.problems()
+    prec.save()
     expect(not probs, f"errors: {probs}")
     return (f"11 sections, one at a time; Home → Spending & budgets; More unfolds for BUDGET_SETUP; "
-            f"{'a hidden dependent shown with why; ' if off else ''}search 'budget' → {shown.count()} sections; "
+            f"{'a hidden dependent shown with why; ' if off else ''}search 'budget' → {n_found} sections; "
             f"Changed from default → {len(changed)} settings; keyboard to the heading; phone picker")
 
 

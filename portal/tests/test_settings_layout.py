@@ -236,7 +236,10 @@ def test_a_setting_shows_only_while_its_switch_is_on():
     assert "return v !== \"\" && !OFF_VALUES.includes(v);" in on and "if (!plain(k)) return Boolean(k.set);" in on
     assert "return isOn(r.parent) && parentsOn(rowOf[r.parent], depth + 1);" in on   # the whole chain of switches
     view = js[js.index("function applyView() {"):js.index("function helperBox()")]
-    assert 'd.hidden = off && !d.classList.contains("set-forced");' in view       # hidden unless opened by an address
+    # hidden unless opened by an address, or itself a switch that is on (Bypass allowed while the Code page is off)
+    assert 'd.hidden = off && !selfOn && !d.classList.contains("set-forced");' in view
+    assert "const selfOn = off && switchedOn(keys[d.dataset.key]);" in view
+    assert '["bool", "on_off", "true_blank"].includes(k.validator) && ON_VALUES.includes(lower(k.value))' in js
     assert "d.hidden = !(hit || inner);" in view                                  # a search shows it anyway
     assert "Applies while" in js
 

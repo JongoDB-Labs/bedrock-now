@@ -97,7 +97,7 @@
 .set-children { margin: -4px 0 10px 4px; padding-left: 18px; border-left: 2px solid var(--line); }
 .set-children > .set-dep > .set-row { padding: 10px 0; }
 .set-applies { display: none; margin: 10px 0 0; font-size: 12.5px; color: var(--warn); }
-.set-finding .set-dep-off > .set-applies, .set-dep-off.set-forced > .set-applies { display: block; }
+.set-finding .set-dep-off > .set-applies, .set-dep-off.set-forced > .set-applies, .set-dep-off.set-dep-on > .set-applies { display: block; }
 .set-ghost { opacity: 0.55; }
 .set-flash { animation: set-flash 2.4s ease-out; }
 @keyframes set-flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
