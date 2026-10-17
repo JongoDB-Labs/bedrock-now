@@ -447,7 +447,10 @@ export class Session {
   // turn runs (a turn's own end reports its changes; checking in between would report them twice)
   watchNow() {
     if (!this.mgr.watcher || this.watchOff || !this.watchLast || this.state === 'busy' || this.state === 'starting') return this.watchChain;
-    this.watchChain = this.watchChain.then(async () => {
+    // (one queued check covers every request made before it starts)
+    if (this.watchNowQueued) return this.watchNowQueued;
+    this.watchChain = this.watchNowQueued = this.watchChain.then(async () => {
+      this.watchNowQueued = null;
       if (this.state === 'busy' || this.state === 'starting') return;
       try {
         const snap = await withTimeout(this.snapshot(), WATCH_MS * 2);

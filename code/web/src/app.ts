@@ -2003,9 +2003,10 @@ export async function undoReview(f: ReviewFile, o: UndoOpts | string = {}): Prom
       const ids = opts.only ? [opts.only] : f.hunks.length ? f.hunks.map((h) => h.id) : [`file:${f.path}`];
       if (f.source === 'session') setReview((r) => ({ ...r, undone: { ...r.undone, ...Object.fromEntries(ids.map((id) => [id, true as const])) } }));
       afterUndo(f.path);
-      // a file that runs on your computer: its card now, not at the next turn
+      // the watched files checked now (a file that runs on your computer, also one reached through a linked folder:
+      // its card comes at once, not at the next turn — the backend runs one check at a time)
       const sid = get().active;
-      if (f.watch && sid && !busy) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
+      if (sid && !busy) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
     }
     return err;
   } finally {
@@ -2107,7 +2108,7 @@ export async function undoAllReview(files: ReviewFile[], everything = false): Pr
     await refreshReview();
   }
   const sid = get().active;
-  if (done && sid && files.some((f) => f.watch)) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
+  if (done && sid) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
   if (done) toast(`Undid the changes of ${done} file${done === 1 ? '' : 's'}${left ? ` (${left} not Claude's left as they are)` : ''}.`, 'ok');
   if (failed.length) toast(`${failed.length} not undone: ${label(failed[0].path, 80)} (${failed[0].why})${failed.length > 1 ? ' …' : ''}`, 'error');
   return { done, left, failed };

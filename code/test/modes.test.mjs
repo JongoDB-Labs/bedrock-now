@@ -287,6 +287,12 @@ test('watchlist: the page asks for a check now (the Review pane changed a watche
   s.prompt({ text: 'two' });
   await tick(60);
   assert.equal(evs().length, 1, 'the next turn does not report it again');
+  // checks asked for before the queued one starts share it (one snapshot)
+  const before = w.calls.length;
+  const p1 = s.watchNow(), p2 = s.watchNow(), p3 = s.watchNow();
+  assert.ok(p1 === p2 && p2 === p3);
+  await p3;
+  assert.equal(w.calls.length, before + 1);
   // while a turn runs it does nothing (the turn's end reports what changed)
   s.state = 'busy';
   const n = w.calls.length;

@@ -2025,7 +2025,10 @@ def review(browser):
     # after Refresh it works on the file as it is
     post(NORMAL + "/__mock/touch?path=src/http/client.ts")
     before = api_text(page, "src/http/client.ts")
+    # (the sed changed a line inside Claude's change: the hunk mixes in a line Claude did not write — not Claude's, asks)
+    expect(review_file(page, "src/http/client.ts").get_by_test_id("review-hunk").first.get_by_test_id("review-not-claude")).to_be_visible()
     review_file(page, "src/http/client.ts").get_by_test_id("review-undo-hunk").first.click()
+    page.get_by_test_id("undo-confirm").click()
     expect(page.get_by_test_id("toast").last).to_contain_text("changed since the review was loaded", timeout=10_000)
     assert api_text(page, "src/http/client.ts") == before, "written although the file changed since the review"
     page.get_by_test_id("review-refresh").click()

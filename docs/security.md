@@ -960,14 +960,20 @@ server, read-only, and both read files a hostile repository or sandbox shapes.
   `.` or `..` parts, NUL); nothing is rewritten, so a file named `.claude\settings.json` can never be shown or undone
   as `.claude/settings.json`. Undo is refused for names with a backslash, control characters or a replacement
   character (a name that is not UTF-8), and one review lists a path once. A path that goes into a prompt (a line
-  comment: `path:line — comment`) is quoted, with control, invisible and direction-changing characters escaped, when
-  it is not plain: a file name cannot add a line to a prompt that carries your authority.
-- [x] **Whose change it is.** In git's view a change is *Claude's* when it carries lines Claude's file tools wrote or
-  removed in this session; the rest (a command's, yours, older uncommitted work) is marked *not Claude's*. Undoing a
+  comment: `path:line — comment`) is quoted when it is not plain, with everything but letters, digits, punctuation,
+  symbols and the plain space escaped (controls, other spaces, marks, format and direction-changing characters,
+  unpaired surrogates, invisible fillers): a file name cannot add a line to, or hide text in, a prompt that carries
+  your authority.
+- [x] **Whose change it is.** In git's view a change is *Claude's* only when every telling line it adds or removes is
+  one Claude's file tools added or removed in this session (lines that prove nothing — blank, punctuation, `return;`,
+  `} else {`, fewer than 4 letters or digits — are not counted, and a change of only such lines is not Claude's); a
+  change that mixes in any other line, and every change of a file whose edit came only in part, is *not Claude's*
+  (a command's, yours, older uncommitted work). Undoing a
   file Claude edited reverses Claude's own edits (what was not Claude's stays); undoing a change that is not Claude's
   asks first, and *Undo all* leaves those alone unless you tick them in. A file that runs on your computer (the
-  watchlist's files, and hook folders only the sandbox knows) is marked in the pane, and after an Undo of one the
-  watched files are checked at once (`watch_check`): its card comes now, not at the next turn.
+  watchlist's files, and hook folders only the sandbox knows) is marked in the pane, and after every Undo the watched
+  files are checked at once (`watch_check`, one at a time; also a file reached through a linked folder): its card
+  comes now, not at the next turn.
 - [x] **Undo writes only what you saw, where it still is.** Undo is a reverse patch the page applies to the file's
   current text and writes through bn-coded's `fs.write` with the modification time it read as the precondition (a file
   changed meanwhile is never overwritten); for git's view the file must also still have the time the diff saw. The

@@ -18,6 +18,8 @@ import {
   withComments,
   withIds,
   promptPath,
+  overlaps,
+  telling,
   type ReviewFile,
 } from '../src/review';
 import { cleanPath, exactPath } from '../src/text';
@@ -289,4 +291,38 @@ const WATCH_TABLE: [string, string | null][] = [['.git/hooks/pre-commit', 'git-h
   ['.claude\\settings.json', null], ['README.md', null]];
 test('the watchlist\'s fixed patterns, as the backend has them', () => {
   for (const [p, kind] of WATCH_TABLE) assert.equal(watchKind(p)?.kind ?? null, kind, p);
+});
+
+test('whose change: only telling lines count, and all of a hunk\'s must be Claude\'s; an edit that came in part proves nothing', () => {
+  for (const t of ['', '   ', '}', '};', 'return;', ')', '  } ', 'a()', '} else {', 'x = 1', 'end', '  done', 'return null;']) assert.equal(telling(t), false, JSON.stringify(t));
+  for (const t of ['function f() {', 'value = 1', 'console.log(x)', 'alpha = 2', 'return total;']) assert.equal(telling(t), true, t);
+  // the PoC: Claude added `function f() {`, a blank line and `}`; your earlier change added a line and a blank line
+  const own = [{ hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 3, lines: ['+function f() {', '+', '+}'] }], original: '', content: null, complete: true, created: false }];
+  const yours: Hunk = { oldStart: 20, oldLines: 1, newStart: 23, newLines: 3, lines: [' a', '+console.log(x)', '+'] };
+  const blankOnly: Hunk = { oldStart: 30, oldLines: 0, newStart: 33, newLines: 2, lines: ['+', '+}'] };
+  const claudes: Hunk = { oldStart: 1, oldLines: 0, newStart: 1, newLines: 3, lines: ['+function f() {', '+', '+}'] };
+  const mixed: Hunk = { oldStart: 1, oldLines: 0, newStart: 1, newLines: 4, lines: ['+function f() {', '+  steal()', '+', '+}'] };
+  assert.equal(overlaps(yours, own), false, 'a blank line in common proves nothing');
+  assert.equal(overlaps(blankOnly, own), false, 'only lines that prove nothing');
+  assert.equal(overlaps(claudes, own), true);
+  assert.equal(overlaps(mixed, own), false, 'a line Claude did not write in the hunk: not Claude\'s');
+  // in git's view: an incomplete edit of Claude's makes no hunk Claude's (every Undo asks)
+  const v = newView('3f2a1b4c-5d6e-4f70-8192-a3b4c5d6e7f8');
+  const item = (complete: boolean) => ({ t: 'tool' as const, k: 1, id: 't1', name: 'Edit', input: {}, status: 'done' as const, parent: null,
+    result: { text: 'ok', isError: false, edit: { path: 'a.ts', original: '', hunks: own[0].hunks, complete } } });
+  const git: GitReview = { repo: true, reason: '', head: null, truncated: false, timedOut: false, files: [gitFile({ path: 'a.ts', hunks: [claudes, yours] })] };
+  v.items = [item(true)];
+  assert.deepEqual(buildReview(git, v, null)[0].hunks.map((h) => h.mine), [true, false]);
+  v.items = [item(false)];
+  const cut = buildReview(git, v, null)[0];
+  assert.deepEqual(cut.hunks.map((h) => h.mine), [false, false]);
+  assert.deepEqual(cut.own, []);
+});
+
+test('a path in a prompt: everything but letters, digits, punctuation, symbols and the space is escaped (invisible ones too)', () => {
+  for (const [ch, esc] of [['\u3164', '\\u3164'], ['\u115f', '\\u115f'], ['\u180e', '\\u180e'], ['\u2800', '\\u2800'], ['\u034f', '\\u034f'],
+    ['\ufe0f', '\\ufe0f'], ['\ud800', '\\ud800'], ['\u00a0', '\\u00a0'], ['\u{e0041}', '\\u{e0041}'], ['\u202e', '\\u202e']]) {
+    assert.equal(promptPath(`a${ch}b`), `"a${esc}b"`, JSON.stringify(ch));
+  }
+  assert.equal(promptPath('é/日本.txt'), '"é/日本.txt"', 'letters stay as they are');
 });

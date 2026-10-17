@@ -77,7 +77,22 @@ export function withIds(path: string, hunks: Hunk[], prefix = 'g', mine: (h: Hun
   });
 }
 
-/** Does a hunk of git's view carry lines Claude's edits added or removed (by their text, ignoring a line ending)? */
+// words that make up whole lines in many places (`return;`, `} else {`, `end`, `done` …)
+const COMMON = new Set(['return', 'break', 'continue', 'else', 'elif', 'end', 'endif', 'fi', 'done', 'esac', 'pass', 'try', 'catch',
+  'finally', 'do', 'then', 'begin', 'default', 'none', 'null', 'nil', 'true', 'false', 'self', 'this', 'super', 'fn', 'def',
+  'function', 'async', 'await', 'yield', 'export', 'import', 'var', 'let', 'const', 'public', 'private', 'static', 'void', 'new']);
+/** A changed line that says something on its own: at least 4 letters or digits, and not only words that make up whole
+ *  lines everywhere — `}`, `return;`, `} else {` or an empty line match in many places and prove nothing about who wrote
+ *  a change. */
+export function telling(text: string): boolean {
+  const words = stripCr(text).match(/[\p{L}\p{N}_]+/gu) ?? [];
+  if (words.join('').length < 4) return false;
+  return !words.every((w) => COMMON.has(w.toLowerCase()));
+}
+
+/** Is a hunk of git's view Claude's? Only when it has telling changed lines and every one of them is a line Claude's
+ *  edits added (a "+") or removed (a "−"), by its text. A hunk that mixes in a line Claude did not write, or has only
+ *  lines that prove nothing, is not Claude's (its Undo asks first). */
 export function overlaps(h: Hunk, own: SessionEdit[]): boolean {
   if (!own.length) return false;
   const plus = new Set<string>();
@@ -90,7 +105,8 @@ export function overlaps(h: Hunk, own: SessionEdit[]): boolean {
       }
     }
   }
-  return h.lines.some((l) => (l[0] === '+' && plus.has(stripCr(l.slice(1)))) || (l[0] === '-' && minus.has(stripCr(l.slice(1)))));
+  const changed = h.lines.filter((l) => (l[0] === '+' || l[0] === '-') && telling(l.slice(1)));
+  return changed.length > 0 && changed.every((l) => (l[0] === '+' ? plus : minus).has(stripCr(l.slice(1))));
 }
 
 export interface SessionEdit {
@@ -145,7 +161,9 @@ function fromSession(path: string, list: SessionEdit[]): ReviewFile {
 
 function fromGit(f: GitFile, own: SessionEdit[] | undefined, since: number | null): ReviewFile {
   const claude = !!own?.length;
-  const hunks = withIds(f.path, f.hunks, 'g', (h) => overlaps(h, own ?? []));
+  // (an edit of Claude's that came only in part proves nothing: then no hunk counts as Claude's — each Undo asks)
+  const whole = !!own?.length && own.every((e) => e.complete);
+  const hunks = withIds(f.path, f.hunks, 'g', (h) => whole && overlaps(h, own ?? []));
   // Claude's own edits of the file, for an Undo of the file that leaves what was not Claude's (only when all came whole)
   const ownHunks = claude && own!.every((e) => e.complete) ? own!.map((e, i) => withIds(f.path, createdHunks(e), `s${i}`)) : [];
   return {
@@ -369,16 +387,23 @@ export interface ReviewComment {
   side: 'new' | 'old';
   text: string;
 }
-/** A path as it goes into a prompt: as it is when it is plain; otherwise quoted, with quotes, backslashes, control
- *  and invisible or direction-changing characters escaped (a file name can never add a line or hide text in a prompt
- *  that carries your authority). */
+// letters and symbols that show as nothing (fillers, a blank Braille pattern, Khmer and Mongolian invisibles)
+const BLANK = new Set([0x115f, 0x1160, 0x3164, 0xffa0, 0x2800, 0x17b4, 0x17b5, 0x180e]);
+/** A path as it goes into a prompt: as it is when it is plain; otherwise quoted, with quotes and backslashes escaped,
+ *  and everything but letters, digits, punctuation, symbols and the plain space written as an escape (a file name can
+ *  never add a line or hide text in a prompt that carries your authority). */
 export function promptPath(p: string): string {
   if (/^[A-Za-z0-9._\-/@+~,=]+$/.test(p)) return p;
-  const esc = p
-    .replace(/[\\"]/g, (c) => `\\${c}`)
-    .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
-    .replace(/[\u{e0000}-\u{e007f}]/gu, (c) => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`);
-  return `"${esc}"`;
+  let out = '';
+  for (const ch of p) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (ch === '"' || ch === '\\') out += `\\${ch}`;
+    // only letters, digits, punctuation, symbols and the plain space as they are: marks, other spaces, formats,
+    // controls, unpaired surrogates and the invisible ones above are written as \u escapes
+    else if (ch === ' ' || (/^[\p{L}\p{N}\p{P}\p{S}]$/u.test(ch) && !BLANK.has(cp))) out += ch;
+    else out += cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, '0')}`;
+  }
+  return `"${out}"`;
 }
 /** "src/a.ts:47 — comment" (a removed line: "src/a.ts:47 (removed line) — comment") */
 export function commentLine(c: ReviewComment): string {
