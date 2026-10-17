@@ -325,8 +325,12 @@ def global_search(ctx):
     _option(page, "tour", "One store for both").click()
     page.wait_for_selector('#tour:not([hidden]) .tour-step.cur[data-step="shared"]', timeout=10000)
     page.click("#tour .tour-x")
-    # the sidebar's box opens it too; nothing typed: the pages
+    # the sidebar's box opens it too, with the last query selected (typing replaces it); nothing typed: the pages
     page.click("#search-btn")
+    page.wait_for_selector("#search[open]")
+    expect(page.evaluate("(() => { const i = document.querySelector('#search-input'); return i.value === 'One store for both' && i.selectionStart === 0 && i.selectionEnd === i.value.length; })()"),
+           "the last query is not kept, selected")
+    page.fill("#search-input", "")
     page.wait_for_selector("#search[open] #sg-pages")
     page.keyboard.press("Escape")
     result = ["setting by key → #settings/BUDGET_TERMINAL", "docs index in the image (README, docs/*)", "walkthrough step", "↑↓ Esc"]

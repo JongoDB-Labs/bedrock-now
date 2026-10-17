@@ -22,6 +22,10 @@ test("ranking: substring and word starts first, characters in order still match,
   const r = plain(F.rank([{ t: "Monthly limit", k: "BUDGET_SETUP" }], "budget_setup", (x) => x.t, (x) => x.k));
   assert.equal(r.length, 1);
   assert.deepEqual(r[0].hits, []);
+  // alt text by whole words only: letters scattered through a long summary are no match
+  const long = { t: "Claude Code", k: "The Code page (Claude Code in the browser), the browser Terminal, and the models it uses" };
+  assert.equal(F.rank([long], "costs budgets", (x) => x.t, (x) => x.k).length, 0);
+  assert.equal(F.rank([long], "browser terminal", (x) => x.t, (x) => x.k).length, 1);
 });
 
 test("KMP finds substrings; the empty query matches at 0", () => {
