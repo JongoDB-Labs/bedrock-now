@@ -325,28 +325,29 @@ x() { env -u NO_PROXY -u no_proxy curl -g -x http://egress:3128 -s -m 15 "$@" ||
 printf 'direct-internet\t%s\n' "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/ || true)"
 printf 'direct-host\t%s %s\n' "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://$HG:$LP/" || true)" \
   "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://$HG:$PP/" || true)"
+# (the proxy logs at most 20 refusals per 10 s: a fresh window, and the ones the log is checked for first)
+sleep 11
+printf 'proxy-rebind\t%s\n' "$(for u in http://127.0.0.1.nip.io/ http://10.255.255.1.nip.io/ http://169.254.169.254.nip.io/; do x "$u" | grep -c 'resolves to'; done | tr '\n' ' ')"
+# (port 22 is open through it: this computer's address on it is refused for the address itself)
+printf 'proxy-host-ssh\t%s\n' "$(x -o /dev/null -w '%{http_connect}' "https://$HG:22/")"
 printf 'proxy-host\t%s\n' "$(for u in "http://host.docker.internal:$LP/" "http://gateway.docker.internal:$LP/" "http://$HG:$LP/v1/models" "http://$HG:$PP/" \
   "http://127.0.0.1:$LP/" "http://localhost:$PP/" "http://[::1]:$LP/" "http://[::ffff:127.0.0.1]:$LP/"; do x -o /dev/null -w '%{http_code} ' "$u"; done)"
 printf 'proxy-private\t%s\n' "$(for u in http://10.255.255.1/ http://172.31.255.254/ http://192.168.255.254/ http://100.100.100.100/ \
   http://169.254.169.254/latest/meta-data/ "http://[fd00::1]/" "http://[fe80::1]/" http://portal:8000/ http://litellm:4000/; do x -o /dev/null -w '%{http_code} ' "$u"; done)"
-# (port 22 is open through it: this computer's address on it is refused for the address itself)
-printf 'proxy-host-ssh\t%s\n' "$(x -o /dev/null -w '%{http_connect}' "https://$HG:22/")"
 printf 'proxy-tls-private\t%s\n' "$(for u in https://10.255.255.1/ "https://$HG:$LP/" https://169.254.169.254/; do x -o /dev/null -w '%{http_connect} ' "$u"; done)"
-# public names that resolve to private addresses (DNS "rebinding" to this machine or the LAN): refused after the lookup
-printf 'proxy-rebind\t%s\n' "$(for u in http://127.0.0.1.nip.io/ http://10.255.255.1.nip.io/ http://169.254.169.254.nip.io/; do x "$u" | grep -c 'resolves to'; done | tr '\n' ' ')"
 printf 'proxy-port\t%s\n' "$(x -o /dev/null -w '%{http_connect}' https://registry.npmjs.org:25/)"
 printf 'proxy-public\t%s %s\n' "$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/is-number || true)" \
-  "$(curl -s -m 20 -o /dev/null -w '%{http_code}' http://registry.npmjs.org/is-number || true)"
-printf 'node-fetch\t%s\n' "$(node -e "fetch('https://registry.npmjs.org/is-number').then((r) => console.log(r.status), (e) => console.log('error', e.cause && e.cause.code))" 2>&1 | head -n 1)"
+  "$(curl -s -m 20 -o /dev/null -w '%{http_code}' http://example.com/ || true)"
+printf 'node-fetch\t%s\n' "$(</dev/null node -e "fetch('https://registry.npmjs.org/is-number').then((r) => console.log(r.status), (e) => console.log('error', e.cause && e.cause.code))" 2>&1 | head -n 1)"
 d="$(mktemp -d)"
-printf 'npm-install\t%s\n' "$(cd "$d" && npm install --no-audit --no-fund --loglevel=error is-number@7.0.0 >/dev/null 2>&1 && test -f node_modules/is-number/package.json && echo ok || echo failed)"
-printf 'pip-download\t%s\n' "$(python3 -m pip download --no-deps -q -d "$d/pip" six==1.16.0 >/dev/null 2>&1 && ls "$d/pip" | grep -c '^six-' || echo failed)"
+printf 'npm-install\t%s\n' "$(cd "$d" && </dev/null npm install --no-audit --no-fund --loglevel=error is-number@7.0.0 >/dev/null 2>&1 && test -f node_modules/is-number/package.json && echo ok || echo failed)"
+printf 'pip-download\t%s\n' "$(python3 -m pip download --no-deps -q -d "$d/pip" six==1.16.0 </dev/null >/dev/null 2>&1 && ls "$d/pip" | grep -c '^six-' || echo failed)"
 rm -rf "$d"
-printf 'git-https\t%s\n' "$(GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote https://github.com/octocat/Hello-World.git HEAD 2>/dev/null | wc -l | tr -d ' ')"
+printf 'git-https\t%s\n' "$(GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote </dev/null https://github.com/octocat/Hello-World.git HEAD 2>/dev/null | wc -l | tr -d ' ')"
 # Claude Code's own WebFetch through the proxy (one Haiku turn, about a cent; informational: a model may decline)
 printf 'claude-webfetch\t%s\n' "$(cd /tmp && timeout 150 claude -p --model "$ANTHROPIC_DEFAULT_HAIKU_MODEL" --allowedTools WebFetch --output-format text \
-  'Use the WebFetch tool to fetch https://example.com/ and reply with only the text of its h1 heading.' 2>&1 | tr '\n' ' ' | cut -c1-120)"
-printf 'git-ssh\t%s\n' "$(timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -T git@github.com 2>&1 | grep -c 'Permission denied (publickey)')"
+  'Use the WebFetch tool to fetch https://example.com/ and reply with only the text of its h1 heading.' </dev/null 2>&1 | tr '\n' ' ' | cut -c1-120)"
+printf 'git-ssh\t%s\n' "$(timeout 30 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -T git@github.com 2>&1 | grep -c 'Permission denied (publickey)')"
 SH
 }
 if [ "$TERMINAL" = 1 ]; then
