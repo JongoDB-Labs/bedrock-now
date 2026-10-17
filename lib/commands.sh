@@ -46,8 +46,8 @@ Usage: ./stack <command> [--yes]
                | enable domain HOST | disable | test   (docs/remote.md)
   rotate-aws   Replace the AWS access key (then runs test: ~$0.0001 Bedrock)
                --use-instance-role / --use-keys switch between an EC2 IAM role and a key
-  serve        Keep the stack up and this Mac awake until Ctrl-C (caffeinate; prints the URLs)
-               --background holds it without a terminal, --stop ends that
+  serve        Keep the stack up (and a Mac awake: caffeinate) until Ctrl-C; prints the URLs
+               --background (macOS) holds it without a terminal, --stop ends that
   ssh-info     How to use claude-bedrock from your phone over SSH (Tailscale name, apps, tmux)
   openrouter   Optional OpenRouter models: status | set | apply | remove | refresh | list
                | models all|free|paid|<ids>   (no Bedrock calls; see README)
