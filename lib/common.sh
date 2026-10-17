@@ -39,14 +39,28 @@ out_colors() {
   else O_RED=''; O_GRN=''; O_YEL=''; O_OFF=''; fi
 }
 
-# _cleanup_on_signal FILE... — on INT/TERM remove FILEs, then re-raise the signal (callers reset with
-# `trap - INT TERM` once the files are gone).
+# _SIGNAL_HOOK — a function run on INT/TERM (with the signal's name) before the script ends: setup sets one, which says
+# what was done, what still runs and how to go on, then exits. Empty: the signal's default (the script just ends).
+_SIGNAL_HOOK=''
+# _signal_traps_restore — INT/TERM back to the hook (or the default), after a trap of their own
+_signal_traps_restore() {
+  trap - INT TERM
+  if [ -n "$_SIGNAL_HOOK" ]; then
+    # shellcheck disable=SC2064  # the hook's name now
+    trap "$_SIGNAL_HOOK INT" INT
+    # shellcheck disable=SC2064
+    trap "$_SIGNAL_HOOK TERM" TERM
+  fi
+}
+
+# _cleanup_on_signal FILE... — on INT/TERM remove FILEs, then hand the signal on: to _SIGNAL_HOOK, else re-raise it
+# (callers end it with _signal_traps_restore once the files are gone).
 _cleanup_on_signal() {
   local q; q="$(printf '%q ' "$@")"
   # shellcheck disable=SC2064  # expand the file list now
-  trap "rm -f $q; trap - INT; kill -INT \$\$" INT
+  trap "rm -f $q; trap - INT; ${_SIGNAL_HOOK:+$_SIGNAL_HOOK INT; }kill -INT \$\$" INT
   # shellcheck disable=SC2064
-  trap "rm -f $q; trap - TERM; kill -TERM \$\$" TERM
+  trap "rm -f $q; trap - TERM; ${_SIGNAL_HOOK:+$_SIGNAL_HOOK TERM; }kill -TERM \$\$" TERM
 }
 
 # on_exit FUNC / off_exit FUNC — cleanups that must run however the script ends (die, error, Ctrl-C, kill).
@@ -58,7 +72,8 @@ _EXIT_HOOKS=' '; _EXIT_LEVEL=0
 # _shell_level -> _LEVEL: how deep a subshell this is. bash 3.2 says 0 in the EXIT trap of a $( ) subshell, so the
 # hooks use the level their list was built at (a variable, not $(...): that would be a subshell itself)
 _shell_level() { if [ -n "${_IN_EXIT_HOOKS:-}" ]; then _LEVEL="$_EXIT_LEVEL"; else _LEVEL="$BASH_SUBSHELL"; fi; }
-_run_exit_hooks() { local h; _IN_EXIT_HOOKS=1; for h in $_EXIT_HOOKS; do "$h" || true; done; }
+# (_EXIT_RC: the status the script ends with, for hooks that report it; 0 also after a signal without a trap)
+_run_exit_hooks() { _EXIT_RC=$?; local h; _IN_EXIT_HOOKS=1; for h in $_EXIT_HOOKS; do "$h" || true; done; }
 _exit_hooks_here() { _shell_level; [ "$_EXIT_LEVEL" = "$_LEVEL" ] || { _EXIT_HOOKS=' '; _EXIT_LEVEL="$_LEVEL"; }; }
 on_exit() {
   _exit_hooks_here
@@ -74,7 +89,7 @@ off_exit() {
 
 log()  { printf '%s==>%s %s\n' "$C_GRN" "$C_OFF" "$*" >&2; }
 warn() { printf '%s!!%s  %s\n' "$C_YEL" "$C_OFF" "$*" >&2; }
-die()  { printf '%sxx%s  %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+die()  { _BN_DIE_MSG="$*"; printf '%sxx%s  %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }   # (the message: for Home, lib/lock.sh)
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1${2:+ — $2}"; }
 
@@ -211,6 +226,7 @@ ask_secret() { # ask_secret "Prompt" -> answer on stdout, no echo (echo restored
   local ans='' old_int old_term
   _have_tty || die "$1: no terminal; set it via environment instead"
   old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
+  # (it runs in a $(...) subshell: the Ctrl-C reaches the calling shell too, whose own trap or hook then runs)
   trap 'stty echo < /dev/tty 2>/dev/null; printf "\n" > /dev/tty; exit 130' INT TERM
   printf '%s: ' "$1" > /dev/tty
   stty -echo < /dev/tty; IFS= read -r ans < /dev/tty || true; stty echo < /dev/tty

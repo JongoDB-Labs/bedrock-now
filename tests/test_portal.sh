@@ -308,6 +308,44 @@ test_portal_port_rootless_docker_skips_80() {
   assert_contains "$(cat "$TMP/err")" "http://bedrock-now.localhost:8801"
 }
 
+# Interactive: port 80 busy → setup says why and which port it suggests (one that is free right now), and asks; a typed
+# port in use is asked again, never taken (the rehearsal moved the portal to 8800 without a word)
+test_portal_port_is_offered_interactively_and_never_one_in_use() {
+  printf 'PORTAL_HOST=bn-x.localhost\n' > "$ENV_FILE"; _stub_ports "80 8800 8801 18930" 0
+  ASSUME_YES=0; _have_tty() { return 0; }
+  printf '18930\n\n' > "$TMP/answers"   # first a port in use, then Enter (the suggestion)
+  ask() { local a; echo "$1 [$2]" >> "$TMP/prompts"; a="$(head -n 1 "$TMP/answers")"; sed -i.bak 1d "$TMP/answers"; echo "${a:-$2}"; }
+  resolve_portal_port 2> "$TMP/err"
+  assert_eq "$(get_env PORTAL_PORT)" 8802
+  assert_eq "$(sed -n 1p "$TMP/prompts")" "  Port to use for PORTAL_PORT [8802]"
+  assert_eq "$(grep -c 'Port to use' "$TMP/prompts")" 2
+  assert_contains "$(cat "$TMP/err")" "port 80 is in use, so the portal cannot have the address http://bn-x.localhost: it needs another port"
+  assert_contains "$(cat "$TMP/err")" "port 18930 is in use right now — choose another"
+  assert_contains "$(cat "$TMP/err")" "port 80 is in use → using 8802 for the portal (PORTAL_PORT): http://bn-x.localhost:8802"
+  # a free port typed: taken
+  printf 'PORTAL_HOST=bn-x.localhost\n' > "$ENV_FILE"; : > "$TMP/prompts"; printf '18931\n' > "$TMP/answers"
+  resolve_portal_port 2> "$TMP/err"
+  assert_eq "$(get_env PORTAL_PORT)" 18931
+  assert_contains "$(cat "$TMP/err")" "→ using 18931 for the portal (PORTAL_PORT): http://bn-x.localhost:18931"
+  # three unusable answers: setup stops (nothing in use is ever written)
+  printf 'PORTAL_HOST=bn-x.localhost\n' > "$ENV_FILE"; printf '8800\nabc\n80\n' > "$TMP/answers"
+  if (resolve_portal_port) 2> "$TMP/err"; then return 1; fi
+  assert_eq "$(get_env PORTAL_PORT)" ""
+  assert_contains "$(cat "$TMP/err")" "'abc' is not a port number"
+}
+
+# --yes (or no terminal): no question, the suggestion is a port free right now, and the line says which and why
+test_portal_port_without_a_terminal_takes_a_free_port_and_says_so() {
+  : > "$ENV_FILE"; _stub_ports "80 8800" 0
+  ASSUME_YES=0; _have_tty() { return 1; }
+  ask() { echo "asked" >> "$TMP/prompts"; echo "${2:-}"; }
+  resolve_portal_port 2> "$TMP/err"
+  assert_eq "$(get_env PORTAL_PORT)" 8801
+  [ ! -e "$TMP/prompts" ] || { echo "asked without a terminal" >&2; return 1; }
+  assert_eq "$(grep -c . "$TMP/err")" 1
+  assert_contains "$(cat "$TMP/err")" "port 80 is in use → using 8801 for the portal (PORTAL_PORT)"
+}
+
 test_portal_port_keeps_80_when_it_is_ours() {
   printf 'PORTAL_PORT=80\n' > "$ENV_FILE"; _stub_ports "80" 0
   dc() { [ "$1" = port ] && echo "127.0.0.1:80"; }

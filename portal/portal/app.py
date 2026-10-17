@@ -924,10 +924,17 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(JSONResponse({"error": "missing X-Requested-With"}, status_code=400))
         return None
 
+    # Home opens with a release check older than updates.STALE_S: one more in the background (rate-limited there)
+    release_refresh = updates.Refresher(summary.update_paths(settings), transport) if settings.update_check else None
+
     async def api_summary(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
             return deny
+        if release_refresh is not None:
+            release_refresh.kick()
         data = await summary.build(request.app.state.http, settings)
+        # a check is running now: Home asks again soon, for its answer
+        data["update"]["checking"] = bool(release_refresh and release_refresh.checking)
         rem = remote(request)
         data["portal"]["url"] = settings.origin(remote=rem)
         data["apps"] = settings.app_urls(rem)
@@ -1076,6 +1083,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             try:
                 yield
             finally:
+                if release_refresh is not None and release_refresh.task is not None:
+                    tasks.append(release_refresh.task)
                 for task in tasks:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

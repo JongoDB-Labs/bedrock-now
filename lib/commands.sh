@@ -174,7 +174,7 @@ run_phase() {
     "$@" > "$out" 2>&1 || rc=$?
     [ ! -t 2 ] || printf '\r\033[K' >&2
   fi
-  [ -z "${out:-}" ] || trap - INT TERM
+  [ -z "${out:-}" ] || _signal_traps_restore
   if [ "$rc" -eq 0 ]; then
     [ -z "${out:-}" ] || rm -f "$out"
     log "$(phase_line "$label" $(($(_now) - start)))"
@@ -395,7 +395,7 @@ setup_secrets() {
   ensure_env BUDGET_OPENWEBUI 50
   ensure_env BUDGET_SETUP 5
   ensure_env LITELLM_STORE_PROMPTS false
-  local email src def
+  local email src def typed asked=0
   owner_email_lowercase   # lib/settings.sh: Chat keeps emails in lowercase
   email="$(get_env OPENWEBUI_ADMIN_EMAIL)"
   if [ -n "$email" ]; then
@@ -403,17 +403,74 @@ setup_secrets() {
   else
     def="$(git config user.email 2>/dev/null || true)"
     if [ -n "$def" ]; then src="from git config"; else def=admin@bedrock-now.local; src="default"; fi
-    email="$(ask "Open WebUI admin email" "$def")"
-    [ "$email" = "$def" ] || src="entered"
-    email="$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')"   # (as Chat keeps it)
-    case "$email" in *@*.*) set_env OPENWEBUI_ADMIN_EMAIL "$email" ;; *) die "invalid email: $email" ;; esac
-    src="$src; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup"
+    if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then asked=1; fi
+    typed="$(ask "Open WebUI admin email" "$def")"
+    # Chat (Open WebUI) keeps every email address in lowercase and ignores the case at sign-in, and the Admin
+    # (LiteLLM) sign-in uses this address as typed: so it is stored in lowercase
+    email="$(printf '%s' "$typed" | tr '[:upper:]' '[:lower:]')"
+    case "$email" in *@*.*) set_env OPENWEBUI_ADMIN_EMAIL "$email" ;; *) die "invalid email: $typed" ;; esac
+    if [ "$asked" = 1 ]; then   # you just chose it: say only what was changed about it
+      src=''
+      [ "$typed" = "$email" ] || src="in lowercase: Chat keeps email addresses in lowercase and ignores the case at sign-in"
+    else
+      src="$src; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup, or later in Settings → Owner email"
+    fi
   fi
-  log "Open WebUI admin: $email ($src)"
+  log "Open WebUI admin: $email${src:+ ($src)}"
+}
+
+# --- setup stopped by Ctrl-C (or TERM): what it did, what still runs, and how to go on ---
+SETUP_STEP=''; SETUP_DONE=''; SETUP_CODE_DEFAULT=0
+setup_step() { SETUP_STEP="$1"; }                                    # setup_step "probing which models …": doing now
+setup_done() { SETUP_DONE="${SETUP_DONE:+$SETUP_DONE; }$1"; SETUP_STEP=''; }   # setup_done "Postgres + RustFS started"
+
+# _setup_undo_code_default 1|2 — a Code page this setup turned on by default (code_default_on; 2: the terminal too) and
+# that did not settle yet: off again, blank as before (the next setup turns it on again; no failure is counted, unlike
+# code_default_settle's), its containers stopped while compose still knows them, the update's record and Home's notice
+# without it. (Caddy and the portal may still name it until ./stack setup or ./stack up.) Never fatal.
+_setup_undo_code_default() {
+  if [ "$1" = 2 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
+  else dc rm -sf code >/dev/null 2>&1 || true; fi
+  if [ "$1" = 2 ]; then (set_env_batch CODE_ENABLED '' TERMINAL_ENABLED '') 2>/dev/null || true
+  else (set_env CODE_ENABLED '') 2>/dev/null || true; fi
+  (terminal_remote_sync; code_remote_sync) >/dev/null 2>&1 || true
+  if declare -F _record_set >/dev/null && [ -n "$(_record_get code_default 2>/dev/null || true)" ]; then (_record_set code_default '') 2>/dev/null || true; fi
+  ! declare -F code_default_notice_clear >/dev/null || code_default_notice_clear
+}
+
+# _setup_interrupted INT|TERM — setup's _SIGNAL_HOOK (lib/common.sh): says what was done, which services still run,
+# and how to continue (./stack setup) or clean up (./stack down / ./stack uninstall); then ends (130 / 143) and the
+# exit hooks run (the lock, a LiteLLM config restore after the model probe). Run by another ./stack command (update's
+# setup step), it leaves the "how to go on" to that command.
+_setup_interrupted() {
+  local how running
+  trap '' INT TERM   # a second Ctrl-C does not cut this short
+  _SIGNAL_HOOK=''
+  case "$1" in INT) how="Ctrl-C" ;; *) how="$1" ;; esac
+  printf '\n' >&2
+  warn "setup stopped ($how)${SETUP_STEP:+ while $SETUP_STEP}"
+  if [ -n "$SETUP_DONE" ]; then printf '    Done: %s.\n' "$SETUP_DONE" >&2; else printf '    Nothing was started yet.\n' >&2; fi
+  if [ "${SETUP_CODE_DEFAULT:-0}" != 0 ]; then
+    _setup_undo_code_default "$SETUP_CODE_DEFAULT"
+    printf '    The Code page, turned on by default in this run, is off again: ./stack setup turns it on (./stack code disable keeps it off).\n' >&2
+  fi
+  running="$(dc ps --services --status running 2>/dev/null | tr '\n' ' ' | sed -e 's/  */ /g' -e 's/ $//' -e 's/ /, /g' || true)"
+  if [ -n "$running" ]; then printf '    Still running: %s.\n' "$running" >&2; else printf '    Nothing of the stack is running.\n' >&2; fi
+  if [ -z "${BEDROCK_NOW_LOCK_HELD:-}" ] || [ "$BEDROCK_NOW_LOCK_HELD" = "$$" ]; then
+    printf '    To go on: ./stack setup — it keeps .env (your AWS key, ports and passwords) and what was set up.\n' >&2
+    if [ -n "$running" ]; then
+      printf '    To stop instead: ./stack down (keeps the data); ./stack uninstall removes the containers and data too.\n' >&2
+    else
+      printf '    To start over instead: ./stack uninstall (removes what setup made; keeps .env), then ./stack setup.\n' >&2
+    fi
+  fi
+  trap - INT TERM
+  case "$1" in INT) exit 130 ;; *) exit 143 ;; esac
 }
 
 cmd_setup() {
   check_prereqs
+  _SIGNAL_HOOK=_setup_interrupted; _signal_traps_restore   # Ctrl-C: what was done, and how to go on
   [ ! -f "$ENV_FILE" ] || stack_lock setup
   forget_setup_commit   # lib/rollback.sh: written again only if this setup succeeds
   [ -f "$ENV_FILE" ] || { cp "$STACK_DIR/.env.example" "$ENV_FILE"; chmod 600 "$ENV_FILE"; }
@@ -426,26 +483,42 @@ cmd_setup() {
   mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
   ensure_portal_dirs; write_version_file   # lib/version.sh: what the portal mounts, and the installed version
   fix_bind_mount_perms
+  setup_step "checking your AWS key"
   setup_aws_creds
+  setup_done "AWS key checked"; setup_step "choosing ports"
   setup_ports
+  setup_done "ports chosen (the portal: $(portal_url))"; setup_step "asking about remote access"
   setup_remote_choice   # lib/remote.sh: asks once — this computer only (default), or your devices too
   remote_net_preflight  # remote access on: its Docker network usable? else this run goes on without it
+  setup_step "writing passwords and settings into .env"
   setup_secrets
+  setup_step "asking about OpenRouter and voice"
   setup_openrouter   # optional; lib/openrouter.sh
   setup_stt          # optional; lib/stt.sh
+  setup_done "passwords and settings in .env"
   setup_bringup_and_probe
   stt_after_probe    # lib/stt.sh: Bedrock speech-to-text on by default when Voxtral is usable
+  setup_step "creating keys and starting Open WebUI, the portal and the MCP server"
   setup_keys_and_ui
   write_mcp_config
+  setup_done "keys created; Open WebUI, the portal and the MCP server started"
+  setup_step "turning on the Code page and its terminal (on by default, unless turned off)"
   code_default_on       # lib/code.sh: the Code page and its sandbox (the terminal) on by default, unless turned off
+  SETUP_CODE_DEFAULT="$CODE_DEFAULT_ON"   # until it settles: a Ctrl-C undoes it (_setup_interrupted)
+  setup_step "building and starting the browser terminal and the Code page (the first time about 1.6 GB, a few minutes)"
   terminal_setup_hook   # lib/terminal.sh: the browser terminal, when on — rebuilt with the current keys; never fatal
   code_setup_hook       # lib/code.sh: the Code page, when on (after the terminal: its sandbox) — rebuilt; never fatal
   code_default_settle   # lib/code.sh: a default that did not come up is off again (said); the next setup tries again
+  SETUP_CODE_DEFAULT=0  # (settled: a Ctrl-C from here on leaves the Code page as it is)
+  ! code_ready || setup_done "the terminal and the Code page started"
+  setup_step "running the smoke test"
   cmd_test
+  setup_done "smoke test passed"; setup_step "finishing (claude-bedrock link, one-click updates, remote access)"
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
   if [ -n "$SETUP_REMOTE_MODE" ]; then remote_enable "$SETUP_REMOTE_MODE"; else remote_up_hook; fi
   record_setup_commit   # lib/rollback.sh: ./stack update calls "nothing new" only for this commit
+  _SIGNAL_HOOK=''; _signal_traps_restore   # done: Ctrl-C from here on only skips the summary or the browser
   print_summary
   [ "$(host_os)" != Darwin ] || docker_autostart_hint_weekly   # lib/host.sh: read-only check, at most weekly
   maybe_auto_open
@@ -539,11 +612,17 @@ setup_bringup_and_probe() {
   log "rendering LiteLLM config with the full catalog for probing"
   on_exit _restore_litellm_config
   render_config ""
+  setup_step "downloading images"
   ensure_images
+  setup_step "starting Postgres + RustFS"
   run_phase "Postgres + RustFS" "postgres rustfs" _up_data_services
+  setup_done "Postgres + RustFS started"
   warn "LiteLLM restarts while probing models; active claude-bedrock/Open WebUI requests may fail for ~1 min"
+  setup_step "starting LiteLLM for the model check"
   run_phase "LiteLLM (full catalog, for probing)" litellm dc up -d --no-deps --force-recreate --wait litellm
+  setup_done "LiteLLM started"
   # Probe and smoke-test spend is booked on its own key, so ./stack costs shows what setup itself cost.
+  setup_step "checking which models your AWS key can use"
   ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env BUDGET_SETUP)"
   log "probing which models your AWS key can use (chat/embedding/rerank/speech-to-text: 1-token requests, < \$0.01 total; images: free check)"
   probe_models "$en.new" "$STACK_DIR/litellm/probe-results.tsv"
@@ -552,6 +631,7 @@ setup_bringup_and_probe() {
   render_config "$en"
   off_exit _restore_litellm_config
   choose_defaults
+  setup_done "model check done"; setup_step "restarting LiteLLM with the models your key can use"
   run_phase "LiteLLM ($(wc -l < "$en" | tr -d ' ') models)" litellm dc up -d --no-deps --force-recreate --wait litellm
 }
 
@@ -945,21 +1025,24 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
 }
 
 # status_table < "service<TAB>state<TAB>health<TAB>exit code" lines (dc ps -a --format) -> SERVICE STATE HEALTH URL
+# (the SERVICE column as wide as the longest name listed, at least 11: terminal-gateway is 16)
 status_table() {
-  local ps s row state health sc hc O_RED O_GRN O_YEL O_OFF
+  local ps s row state health sc hc w=11 O_RED O_GRN O_YEL O_OFF
   local extra; extra="$(optional_services)"
   local STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"
   out_colors
   ps="$(cat)"
-  printf '  %-11s %-12s %-10s %s\n' SERVICE STATE HEALTH URL
-  for s in $STACK_SERVICES $(remote_on && echo tailscale); do
+  STACK_SERVICES="$STACK_SERVICES $(remote_on && echo tailscale || true)"
+  for s in $STACK_SERVICES; do [ "${#s}" -le "$w" ] || w="${#s}"; done
+  printf '  %-*s %-12s %-10s %s\n' "$w" SERVICE STATE HEALTH URL
+  for s in $STACK_SERVICES; do
     row="$(printf '%s\n' "$ps" | awk -F'\t' -v s="$s" '!f && $1 == s { print $2 "\t" $3; f = 1 }')"
     state="${row%%	*}"; health="${row#*	}"
     [ -n "$row" ] || { state="not created"; health=''; }
     [ -n "$health" ] || health='-'
     sc="$O_RED"; [ "$state" = running ] && sc="$O_GRN"
     case "$health" in healthy) hc="$O_GRN" ;; unhealthy) hc="$O_RED" ;; -) hc='' ;; *) hc="$O_YEL" ;; esac
-    printf '  %-11s %s%-12s%s %s%-10s%s %s\n' "$s" "$sc" "$state" "$O_OFF" "$hc" "$health" "$O_OFF" "$(status_url "$s")"
+    printf '  %-*s %s%-12s%s %s%-10s%s %s\n' "$w" "$s" "$sc" "$state" "$O_OFF" "$hc" "$health" "$O_OFF" "$(status_url "$s")"
   done
   row="$(printf '%s\n' "$ps" | awk -F'\t' '$1 == "rustfs-init" && $4 != "" && $4 != "0" { print $4 }')"
   [ -z "$row" ] || warn "bucket setup (rustfs-init) exited with code $row — see ./stack logs rustfs-init"
@@ -1537,24 +1620,49 @@ cmd_update() {
   # Only now that the new version runs: remove what the update before this one replaced (keeps one previous).
   images_after_update || warn "could not clean up old images — ./stack clean tries again"
   [ -z "$from" ] || log "updated to $(installed_version). Something wrong? ./stack rollback goes back (code, data and images)"
-  update_whats_new
+  update_whats_new "$from"
   offer_helper --after-update   # lib/helper.sh: asks (default yes) unless declined before
 }
 
-# update_whats_new — after an update to a new version, a few lines: voice, the Code page (while on: it is on by default
-# now), remote access and updates (each with the command that changes it, the last two only while off: the one-click
-# helper, or on a release its automatic updates) and the release notes of a tag
+# releases_between FROM_COMMIT -> one line per release the update brought, newest first: "v0.9.0 — Git panel and Run &
+# test" (each release tag's own subject line), the releases after the one FROM_COMMIT is (or follows) up to HEAD's;
+# at most 10, then "… and N older"
+releases_between() {
+  local from cur t subj n=0 more=0
+  [ -e "$STACK_DIR/.git" ] && [ -n "${1:-}" ] || return 0
+  from="$(_git describe --tags --abbrev=0 "$1" 2>/dev/null || true)"; cur="$(installed_version)"
+  _semver "$from" >/dev/null 2>&1 && _semver "$cur" >/dev/null 2>&1 || return 0
+  for t in $(newest_release_tags); do
+    version_newer "$t" "$from" || continue
+    ! version_newer "$t" "$cur" || continue
+    n=$((n + 1)); [ "$n" -le 10 ] || { more=$((more + 1)); continue; }
+    subj="$(_git for-each-ref --format='%(objecttype) %(contents:subject)' "refs/tags/$t" 2>/dev/null | sed -n 's/^tag //p' | head -n 1 | tr -d '\000-\037' | cut -c1-120)"
+    case "$subj" in "$t"*) printf '%s\n' "$subj" ;; '') printf '%s\n' "$t" ;; *) printf '%s — %s\n' "$t" "$subj" ;; esac
+  done
+  [ "$more" = 0 ] || printf '… and %s older\n' "$more"
+}
+# newest_release_tags -> every vX.Y.Z tag, newest first (pre-releases excluded; see newest_release_tag)
+newest_release_tags() { _git -c versionsort.suffix=- tag -l 'v[0-9]*' --sort=-v:refname 2>/dev/null | grep -v -- '-' || true; }
+
+# update_whats_new [FROM_COMMIT] — after an update to a new version: each release it brought, with its headline (all of
+# them, when it jumped over several), then a few lines: voice, the Code page (while on: it is on by default now), remote
+# access and updates (each with the command that changes it, the last two only while off: the one-click helper, or on
+# a release its automatic updates) and the release notes
 update_whats_new() {
-  local tag
+  local tag rels n
   tag="$( [ ! -e "$STACK_DIR/.git" ] || _git describe --tags --exact-match HEAD 2>/dev/null || true)"
-  printf "\nWhat's new in %s:\n" "$(installed_version)"
+  rels="$(releases_between "${1:-}")"; n="$(printf '%s' "$rels" | grep -c '^v' || true)"
+  if [ "${n:-0}" -gt 1 ]; then printf "\nWhat's new in %s (%s releases since %s):\n" "$(installed_version)" "$n" "$(_git describe --tags --abbrev=0 "$1" 2>/dev/null)"
+  else printf "\nWhat's new in %s:\n" "$(installed_version)"; fi
+  [ -z "$rels" ] || printf '%s\n' "$rels" | sed 's/^/  /'
   if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
   else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
   ! code_ready || printf '  Code page: on — the Code tab, Claude Code in the browser (sandbox folder %s); ./stack code disable turns it off\n' "$(get_env TERMINAL_WORKSPACE)"
   remote_on || printf '  Remote access: off — ./stack remote enable tailscale (docs/remote.md)\n'
   if ! helper_installed; then printf '  One-click updates from Home: ./stack helper install\n'
   elif [ -n "$tag" ] && ! auto_on; then printf '  Automatic updates: off — ./stack helper auto on installs new releases at night\n'; fi
-  case "$tag" in v[0-9]*) case "$tag" in *[!A-Za-z0-9._-]*) ;; *) printf '  Release notes: %s/tag/%s\n' "$BEDROCK_NOW_RELEASES_URL" "$tag" ;; esac ;; esac
+  if [ "${n:-0}" -gt 1 ]; then printf '  Release notes: %s\n' "$BEDROCK_NOW_RELEASES_URL"
+  else case "$tag" in v[0-9]*) case "$tag" in *[!A-Za-z0-9._-]*) ;; *) printf '  Release notes: %s/tag/%s\n' "$BEDROCK_NOW_RELEASES_URL" "$tag" ;; esac ;; esac; fi
   return 0
 }
 

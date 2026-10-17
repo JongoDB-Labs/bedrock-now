@@ -89,6 +89,21 @@ function ago(iso) {
   const days = Math.floor((Date.now() - d) / 86400000);
   return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
 }
+// checked ISO -> "just now" / "12 min ago" / "3 h ago" / "yesterday" / "4 days ago" (when the release check ran)
+function checked(iso) {
+  const ms = Date.now() - new Date(iso);
+  if (isNaN(ms)) return "";
+  if (ms < 90000) return "just now";
+  if (ms < 3600000) return `${Math.round(ms / 60000)} min ago`;
+  return ms < 86400000 ? `${Math.round(ms / 3600000)} h ago` : ago(iso);
+}
+// stamp EPOCH -> "10:32" today, else "Oct 16, 10:32"
+function stamp(sec) {
+  const d = new Date(sec * 1000);
+  if (isNaN(d)) return "";
+  const t = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${t}`;
+}
 
 // --- rendering (textContent only: nothing from the API is parsed as HTML) ---
 // Two cost views while OpenRouter is on (spend.equivalent; null otherwise): Actual (what is charged; budgets
@@ -368,9 +383,9 @@ function inline(text) {
   return frag;
 }
 
-function renderNotes(md) {
+function renderNotes(md, box) {
   // Headings, "- " lists (wrapped continuation lines included) and paragraphs; inline() for the text.
-  const box = $("#update-notes"); box.replaceChildren();
+  box.replaceChildren();
   let list = null, item = null, para = [];
   const endItem = () => { if (item) { list.append(el("li", {}, inline(item.join(" ")))); item = null; } };
   const flush = () => { endItem(); if (para.length) { box.append(el("p", {}, inline(para.join(" ")))); para = []; } };
@@ -385,6 +400,48 @@ function renderNotes(md) {
   }
   flush();
   if (!box.children.length) box.append(el("p", { class: "note", text: "No release notes." }));
+  return box;
+}
+
+// Every release the update brings, newest first (an update installs the newest release, so a jump over several
+// brings all of them): one line each under "What's new" (its tag and headline; a click opens its notes), and their
+// notes under "Release notes", the newest open, the others folded.
+function releasesOf(u) {
+  if (Array.isArray(u.releases) && u.releases.length) return u.releases;
+  return [{ tag: u.latest, name: u.name || u.latest, headline: "", notes: u.notes || "", url: u.url, published_at: u.published_at }];
+}
+function openRelease(tag) {
+  $(".update-notes").open = true;
+  for (const d of document.querySelectorAll("#update-notes details.release")) {
+    if (d.dataset.tag === tag) { d.open = true; d.scrollIntoView({ block: "nearest" }); }
+  }
+}
+function renderReleases(u) {
+  const rels = releasesOf(u);
+  const key = JSON.stringify([u.installed, u.more, rels.map((r) => [r.tag, r.headline, (r.notes || "").length])]);
+  if (lastNotes === key) return;
+  lastNotes = key;
+  const list = $("#update-releases"), box = $("#update-notes");
+  list.replaceChildren(); box.replaceChildren();
+  rels.forEach((r, i) => {
+    const open = el("button", { type: "button", class: "linkish", text: r.headline || r.name || r.tag });
+    open.addEventListener("click", () => openRelease(r.tag));
+    list.append(el("li", {}, el("span", { class: "rel-tag", text: r.tag }), open));
+    const d = el("details", { class: "release", "data-tag": r.tag });
+    d.open = i === 0;
+    d.append(el("summary", {}, el("b", { text: r.tag }), r.headline ? ` — ${r.headline}` : "",
+      el("span", { class: "rel-when", text: r.published_at ? ` · ${day(r.published_at)}` : "" })),
+    renderNotes(r.notes, el("div", { class: "notes-body" })));
+    if (r.url && /^https:\/\/github\.com\//.test(r.url)) {
+      d.append(el("p", { class: "note" }, el("a", { href: r.url, target: "_blank", rel: "noopener noreferrer", text: `${r.tag} on GitHub` })));
+    }
+    box.append(d);
+  });
+  if (u.more) box.append(el("p", { class: "update-more", text: "Older releases are part of this update too: the changelog on GitHub lists them." }));
+  const many = rels.length > 1;
+  $("#update-releases-title").textContent = many ? `What's new: ${rels.length} releases since ${u.installed}` : "What's new";
+  $("#update-releases-title").hidden = list.hidden = false;
+  $("#update-notes-title").textContent = many ? `Release notes (all ${rels.length})` : "Release notes";
 }
 
 function gb(mb) { return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`; }
@@ -401,6 +458,8 @@ function renderVersion(u) {
   const when = u.commit_date ? new Date(u.commit_date) : null;
   if (when && !isNaN(when)) tip.push(`committed ${when.toLocaleString()}`);
   if (avail) tip.push(`update available: ${u.latest}`);
+  else if (u.enabled && u.latest) tip.push(`newest release: ${u.latest}`);
+  if (u.enabled && u.checked_at) tip.push(`release check: ${u.checking ? "running now" : checked(u.checked_at)}`);
   tip.push(avail ? "Click for its release notes" : m && !m[2] ? "Click for this version's release notes" : "Click for the changelog");
   for (const a of document.querySelectorAll(".version-label")) {
     a.replaceChildren(...[avail ? el("i", { class: "v-dot", "aria-hidden": "true" }) : null,
@@ -430,15 +489,19 @@ function openVersion(ev) {
 function renderUpdate(u) {
   lastUpdate = u;  // placeHelperOff (below) puts the "one-click updates are off" hint where it is seen
   renderVersion(u);
+  // Home opened with an old release check, and the portal is running a new one: its answer in a few seconds
+  clearTimeout(renderUpdate.again);
+  if (u && u.checking) renderUpdate.again = setTimeout(refresh, 6000);
   const card = $("#update-card");
   card.hidden = !(u && u.available);
   if (card.hidden) { placeHelperOff(); return; }
   $("#update-title").textContent = `${u.latest} available`;
   const bits = [`You have ${u.installed}.`];
-  if (u.published_at) bits.push(`Released ${day(u.published_at)}.`);
-  if (u.checked_at) bits.push(`Checked ${ago(u.checked_at)}.`);
+  if (u.published_at) bits.push(`${u.latest} came out ${day(u.published_at)}.`);
+  if (u.checking) bits.push("Checking for a newer release…");
+  else if (u.checked_at) bits.push(`Checked ${checked(u.checked_at)}.`);
   $("#update-meta").textContent = bits.join(" ");
-  if (lastNotes !== u.notes) { renderNotes(u.notes); lastNotes = u.notes; }
+  renderReleases(u);
   const link = $("#update-link");
   if (u.url && /^https:\/\/github\.com\//.test(u.url)) { link.href = u.url; link.hidden = false; } else link.hidden = true;
   const e = u.estimate || {};
@@ -467,16 +530,31 @@ const autoHour = (a) => (a && a.auto && Number.isInteger(a.auto.hour) ? a.auto.h
 const autoWindow = (a) => [`${pad2(autoHour(a))}:00`, `${pad2((autoHour(a) + 3) % 24)}:00`];
 const ASLEEP = "If this computer is asleep then, it misses the window and tries the next night.";
 const REMOTE_OFF = "Update, Rollback, Clean and the automatic-updates switch are off for remote access (REMOTE_ADMIN_ACTIONS in .env).";
+// What an update or a rollback also ends: the terminal's container is recreated (its tmux windows and whatever runs in
+// them, Claude Code too), and the Code page's sessions come back from their transcripts (a turn still running stops).
+// (A turn running now: the Code page's frame tells the portal, see the listener below.)
+function endsNote() {
+  const s = lastSummary || {};
+  const term = Boolean(s.terminal && s.terminal.enabled), code = Boolean(s.code && s.code.enabled);
+  let t = "";
+  if (term) t += " The Terminal's container is recreated: its tmux windows close and what runs in them ends, Claude Code too (claude-bedrock --resume there picks a conversation up again).";
+  if (code) t += " Code page sessions resume from their transcripts; a turn still running then stops.";
+  if (code && codeTurn) t += " A Code page turn is running right now.";
+  return t;
+}
 const ACTION_TEXT = {
   update: (a) => {
     // A checkout on a branch (vX.Y.Z-N-g… versions) updates to whatever that branch has now, not to the release.
     const onBranch = (a.branch || (lastUpdate && lastUpdate.branch)) && /-\d+-g[0-9a-f]+$/.test(a.version || "");
-    const target = onBranch ? `the tip of branch ${a.branch || lastUpdate.branch} (not a release)` : (lastUpdate && lastUpdate.latest ? lastUpdate.latest : "the newest release");
-    return `Update to ${target}: a backup first, then the new code and images; Chat, Admin and Files are down for a few minutes while the services restart. This page reconnects by itself.`;
+    const u = lastUpdate || {};
+    // (the update installs the newest release there is when it runs: the check may be a few hours old)
+    const target = onBranch ? `the tip of branch ${a.branch || u.branch} (not a release)`
+      : u.latest ? `${u.latest}${u.checked_at ? ` (the newest release at the last check, ${checked(u.checked_at)})` : ""}` : "the newest release";
+    return `Update to ${target}: a backup first, then the new code and images; Chat, Admin and Files are down for a few minutes while the services restart.${endsNote()} This page reconnects by itself.`;
   },
-  rollback: (a) => `Go back to ${a.rollback.to ? (/-\d+-g[0-9a-f]+$/.test(a.rollback.to) ? `${a.rollback.to} (a commit after the release ${a.rollback.to.replace(/-\d+-g[0-9a-f]+$/, "")})` : a.rollback.to) : "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).`,
+  rollback: (a) => `Go back to ${a.rollback.to ? (/-\d+-g[0-9a-f]+$/.test(a.rollback.to) ? `${a.rollback.to} (a commit after the release ${a.rollback.to.replace(/-\d+-g[0-9a-f]+$/, "")})` : a.rollback.to) : "the previous version"}: its code, its images and the data from ${a.rollback.backup || "the pre-update backup"}. Chats, files and spend recorded since the update are replaced (a backup of the current state is taken first).${endsNote()} This page reconnects by itself.`,
   clean: () => "Remove this install's old images. The ones in use and one previous version (for rollback) stay.",
-  "auto-on": (a) => `New releases then install by themselves between ${autoWindow(a).join(" and ")} (this computer's time), the same way as Update now: a backup first, then a few minutes of downtime. Releases only, never a branch. A release that fails is not retried automatically, and Roll back is offered here. ${ASLEEP}`,
+  "auto-on": (a) => `New releases then install by themselves between ${autoWindow(a).join(" and ")} (this computer's time), the same way as Update now: a backup first, then a few minutes of downtime${lastSummary && lastSummary.terminal && lastSummary.terminal.enabled ? ", and the Terminal's container is recreated (its tmux windows close)" : ""}. Releases only, never a branch. A release that fails is not retried automatically, and Roll back is offered here. ${ASLEEP}`,
   "auto-off": () => "New releases then wait for you: Home shows them, and Update now (or ./stack update) installs them.",
 };
 const CONFIRM = {
@@ -484,6 +562,41 @@ const CONFIRM = {
   "auto-on": ["Turn on automatic updates?", "Turn on"], "auto-off": ["Turn off automatic updates?", "Turn off"],
 };
 let adminState = null, lastUpdate = null, adminTimer = null, pendingAction = null, reconnecting = false;
+// The Code page's frame reports its state to the portal ({type: "bn-code-status", busy, …}; code.js shows its badge):
+// busy = a turn is running. Only from the Code tab's own frame on the code host.
+let codeTurn = false;
+window.addEventListener("message", (e) => {
+  let origin = "";
+  try { origin = APP_URLS.code ? new URL(appUrl("code")).origin : ""; } catch (_) { return; }
+  const f = document.querySelector('#frames iframe[data-app="code"]');
+  if (!origin || e.origin !== origin || !f || e.source !== f.contentWindow || !e.data || e.data.type !== "bn-code-status") return;
+  codeTurn = e.data.busy === true;
+});
+
+// While an update or rollback restarts the portal, Home cannot reach it for a minute or two: the job card says so,
+// calmly, with the time it has taken so far, and "Reconnected: the portal was away for 1:15" once it answers again.
+let downSince = 0, downTick = null;
+const mmss = (ms) => { const t = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+function showReconnect(down) {
+  const p = $("#job-reconnect");
+  if (down) {
+    if (!downSince) downSince = Date.now();
+    const tick = () => { $("#job-reconnect-time").textContent = mmss(Date.now() - downSince); };
+    $("#job-reconnect-text").textContent = "The portal is restarting as part of this — reconnecting…";
+    p.querySelector(".spinner").hidden = false;
+    tick();
+    if (!downTick) downTick = setInterval(tick, 1000);
+    p.hidden = false;
+    return;
+  }
+  if (!downSince) return;
+  clearInterval(downTick); downTick = null;
+  $("#job-reconnect-text").textContent = `Reconnected: the portal was away for ${mmss(Date.now() - downSince)}.`;
+  $("#job-reconnect-time").textContent = "";
+  p.querySelector(".spinner").hidden = true;
+  downSince = 0;
+  setTimeout(() => { if (!downSince) p.hidden = true; }, 10000);
+}
 // A request the helper has not answered yet ({id, at}): it polls every few seconds, so until its job shows up Home
 // keeps "Waiting for the update helper…" and asks again soon (at most a minute; then it shows what the helper says).
 let awaiting = null;
@@ -578,13 +691,17 @@ function renderJob(job, inProgress) {
   const recent = job && job.finished_at && (Date.now() / 1000 - job.finished_at) < 86400;
   box.hidden = !job || !job.phase || (!inProgress && (!recent || dismissed(job.id || String(job.finished_at))));
   if (box.hidden) return;
-  const steps = PHASES[job.action] || [];
+  // a ./stack command typed in a terminal (lib/lock.sh records it) or a job of the update helper: Home shows the newest
+  const term = job.origin === "terminal";
+  const steps = term ? [] : PHASES[job.action] || [];
   const at = steps.findIndex(([p]) => p === job.phase);
   const auto = job.trigger === "auto";
-  const name = auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up", settings: "Settings change",
+  const name = term ? `./stack ${job.command || job.action}` : auto ? "Automatic update" : { update: "Update", rollback: "Rollback", clean: "Clean-up", settings: "Settings change",
     backup: "Backup", "backup-nightly": "Nightly backup", test: "Smoke test", "check-aws": "AWS key check", "models-recheck": "Model check", report: "Status report" }[job.action]
     || (/^restart-/.test(job.action || "") ? `Restart of ${job.action.slice(8)}` : "Request");
   $("#job-title").textContent = `${name}${{ failed: " failed", done: " finished", skipped: " skipped" }[job.phase] || " in progress"}`;
+  const when = job.finished_at || job.updated_at || job.started_at;
+  $("#job-origin").textContent = `${term ? "Run in a terminal" : auto ? "Run by the update helper, at night" : "Run by the update helper (from Home or Settings)"}${when ? ` · ${inProgress && job.started_at ? `started ${stamp(job.started_at)}` : stamp(when)}` : ""}`;
   const list = $("#job-steps"); list.replaceChildren();
   steps.forEach(([p, label], i) => {
     const state = job.phase === "failed" || job.phase === "skipped" ? (i < Math.max(at, 0) ? "ok" : "") : i < at || job.phase === "done" ? "ok" : i === at ? "now" : "";
@@ -598,8 +715,9 @@ function renderJob(job, inProgress) {
   $("#job-message").textContent = msg;
   $("#job-message").className = `job-message ${job.phase === "failed" ? "bad" : job.phase === "done" ? "good" : ""}`;
   let note = "";
-  if (reconnecting) note = "The portal is restarting as part of the update — reconnecting…";
-  else if (inProgress) note = `Started ${job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : ""}. You can leave this page; it is carried out on your computer.`;
+  if (reconnecting) note = "Chat, Admin and Files come back when it has finished. This page keeps trying by itself.";
+  else if (inProgress && term) note = "It runs in a terminal on your computer; Home follows it (the portal may restart during it).";
+  else if (inProgress) note = "You can leave this page; it is carried out on your computer.";
   else if (job.phase === "done" && (job.action === "update" || job.action === "rollback") && !nothingNew) note = "Reload this page to use the new version of Home.";
   else if (job.phase === "failed" && auto) note = "This release is not retried automatically: Update now tries again, and a newer release is tried as usual.";
   else if (job.phase === "skipped") note = "Nothing was changed. It tries again in the next window, or Update now runs it.";
@@ -615,12 +733,13 @@ async function pollAdmin() {
   try {
     const a = await api("/api/admin/status");
     reconnecting = false;
+    showReconnect(false);
     if (awaiting) {
       // a job answers in the job status (its id is the request's nonce; a refusal is newer than the request), a switch
       // change in the heartbeat's "switch"
       const sw = (a.auto && a.auto.switch) || {};
       const answered = awaiting.toggle ? sw.id === awaiting.id
-        : a.job && (a.job.id === awaiting.id || (a.job.started_at || 0) * 1000 >= awaiting.at - 5000);
+        : a.job && a.job.origin !== "terminal" && (a.job.id === awaiting.id || (a.job.started_at || 0) * 1000 >= awaiting.at - 5000);
       if (answered && awaiting.toggle) toast(sw.result !== "done" ? "Automatic updates: not changed" : a.auto.on ? "Automatic updates are on" : "Automatic updates are off");
       if (answered || Date.now() - awaiting.at > 60000) awaiting = null;
     }
@@ -629,10 +748,12 @@ async function pollAdmin() {
     adminTimer = setTimeout(pollAdmin, a.in_progress || awaiting ? 2500 : REFRESH_MS);
   } catch (e) {
     if (e.message === "signed out") return;
-    // The portal restarts during an update: keep asking, show where things stood.
+    // The portal restarts during an update or rollback: keep asking (every 2 s), show where things stood and how long
+    // it has been away.
     reconnecting = !!(adminState && adminState.in_progress);
+    if (reconnecting) showReconnect(true);
     if (adminState) renderJob(adminState.job, adminState.in_progress);
-    adminTimer = setTimeout(pollAdmin, 3000);
+    adminTimer = setTimeout(pollAdmin, 2000);
   }
 }
 
@@ -697,8 +818,12 @@ async function refresh() {
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     if (e.message === "signed out") return;
-    const b = $("#load-error"); b.hidden = false;
-    b.textContent = `Could not load the latest numbers (${e.message}). The portal keeps trying every 30 seconds; ./stack status shows what is running.`;
+    // during an update or rollback the portal restarts: the job card says so (reconnecting, with the time)
+    if (adminState && adminState.in_progress) { pollAdmin(); }
+    else {
+      const b = $("#load-error"); b.hidden = false;
+      b.textContent = `Could not load the latest numbers (${e.message}). The portal keeps trying every 30 seconds; ./stack status shows what is running.`;
+    }
   }
   if (!$("#home").hidden) timer = setTimeout(() => { if (!document.hidden) refresh(); else timer = setTimeout(refresh, REFRESH_MS); }, REFRESH_MS);
 }

@@ -106,9 +106,11 @@
         <h2 id="update-title">Update available</h2>
         <p class="note" id="update-meta"></p>
       </div>
+      <h3 class="update-sub" id="update-releases-title" hidden>What's new</h3>
+      <ol id="update-releases" class="update-releases" hidden></ol>
       <details class="update-notes">
-        <summary>Release notes</summary>
-        <div id="update-notes" class="notes-body"></div>
+        <summary id="update-notes-title">Release notes</summary>
+        <div id="update-notes" class="notes-list"></div>
         <p class="note"><a id="update-link" target="_blank" rel="noopener noreferrer">On GitHub</a></p>
       </details>
       <h3 class="update-sub">What happens</h3>
@@ -121,8 +123,11 @@
 
     <section id="job" class="job" aria-live="polite" hidden>
       <div class="job-head"><h2 id="job-title">Update</h2> <button type="button" class="quiet" id="job-dismiss" hidden>Dismiss</button></div>
+      <p id="job-origin" class="note job-origin"></p>
       <ol id="job-steps" class="job-steps"></ol>
       <p id="job-message" class="job-message"></p>
+      <p id="job-reconnect" class="reconnect" role="status" hidden><span class="spinner" aria-hidden="true"></span>
+        <span id="job-reconnect-text">Restarting — reconnecting…</span> <span id="job-reconnect-time" class="elapsed"></span></p>
       <p id="job-note" class="note"></p>
       <p class="job-actions" id="job-actions" hidden><button type="button" class="action" data-action="rollback" id="job-rollback">Roll back</button></p>
     </section>

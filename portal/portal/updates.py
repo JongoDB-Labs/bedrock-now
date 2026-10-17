@@ -1,12 +1,18 @@
 """Daily "is there a newer bedrock-now release?" check, for the update card on Home.
 
 Asks GitHub's public releases API (unauthenticated, https only, no redirects, a size cap and a timeout; the
-ETag makes repeat checks cheap) for the latest release of the project and, only when that is newer than the
-installed version, the new release's compose.yaml from raw.githubusercontent.com to estimate the download.
-Nothing about this install is sent. UPDATE_CHECK=false in .env turns it off.
+ETag makes repeat checks cheap) for the project's recent releases (one request: the list, newest PER_PAGE) and,
+only when the newest is newer than the installed version, the new release's compose.yaml from
+raw.githubusercontent.com to estimate the download. The newest release is the highest vX.Y.Z tag — what
+./stack update installs — and Home shows the notes of every release between the installed one and it, so a jump
+over several releases names all of them. Nothing about this install is sent. UPDATE_CHECK=false in .env turns it
+off. Besides the daily check, Home asks for one when it opens and the last is older than STALE_S (Refresher: one at
+a time, at most every ON_DEMAND_MIN_S, and not again within RETRY_AFTER_ERROR of a failed one).
 
 Files (the update-check directory is the portal's only other writable place besides the price files):
-  UPDATE_DIR/latest.json   the last answer: tag, name, notes, url, published_at, etag, checked_at, error, images
+  UPDATE_DIR/latest.json   the last answer: the newest release's tag, name, notes, url, published_at, and
+                           releases (each recent release: tag, name, headline, notes, url, published_at), etag,
+                           checked_at, error, images
   UPDATE_DIR/latest.txt    latest=vX.Y.Z / checked_at=<epoch>: what ./stack status and claude-bedrock read
 The installed version comes from STATUS_DIR/version.json, written by ./stack setup and ./stack up (the
 portal cannot see the checkout).
@@ -32,16 +38,22 @@ from . import hostfiles
 log = logging.getLogger("portal.updates")
 
 REPO = "JongoDB-Labs/bedrock-now"
-RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+PER_PAGE = 30  # the newest releases: a jump over more than this shows the newest PER_PAGE (and says so)
+RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page={PER_PAGE}"
 RAW_URL = "https://raw.githubusercontent.com/" + REPO + "/{tag}/compose.yaml"
-MAX_JSON = 1024 * 1024
+MAX_JSON = 2 * 1024 * 1024
 MAX_COMPOSE = 256 * 1024
 MAX_NOTES = 20000
+MAX_HEADLINE = 160
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 TOTAL_TIMEOUT_S = 30.0  # one whole check (both downloads), whatever the server does
 MAX_STATE = 256 * 1024  # files read from disk (ours, ./stack's)
+MAX_LATEST = 1024 * 1024  # latest.json: the recent releases' notes, at most MAX_NOTES_TOTAL of them
+MAX_NOTES_TOTAL = 512 * 1024
 DAILY = 24 * 3600
 RETRY_AFTER_ERROR = 3600
+STALE_S = 3 * 3600          # Home opens and the last check is older: one more, in the background
+ON_DEMAND_MIN_S = 15 * 60   # ... at most this often (GitHub allows 60 unauthenticated requests an hour; a 304 is free)
 RELEASE_TAG = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
 INSTALLED = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-(\d+)-g[0-9a-f]{4,40})?")
 IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,250}")
@@ -99,8 +111,12 @@ def newer(latest: str, installed: str) -> bool | None:
     return lt > inst[0]
 
 
-def _read_json(path: Path) -> dict:
-    return hostfiles.read_json(path, MAX_STATE)   # (version.json just replaced by ./stack is read again: hostfiles.py)
+def _read_json(path: Path, cap: int = MAX_STATE) -> dict:
+    return hostfiles.read_json(path, cap)   # (version.json just replaced by ./stack is read again: hostfiles.py)
+
+
+def read_latest(paths: "Paths") -> dict:
+    return _read_json(paths.json, MAX_LATEST)
 
 
 def _match(rx: re.Pattern, v) -> str:
@@ -194,12 +210,76 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _plain(text: str) -> str:
+    """Markdown inline marks out (**, `, [label](url) -> label), whitespace folded."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    return " ".join(text.replace("**", "").replace("`", "").split())
+
+
+def _cut(text: str, n: int = MAX_HEADLINE) -> str:
+    if len(text) <= n:
+        return text
+    cut = text[: n - 1].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return (cut or text[: n - 1]) + "…"
+
+
+def headline(tag: str, name: str, body: str) -> str:
+    """One line about a release: its name without the tag ("v0.9.0 — Git panel and Run & test" -> "Git panel and
+    Run & test"), else the first line of its notes (a bullet's bold lead when it starts with one), else ""."""
+    rest = _plain((name or "").replace(tag, "", 1)).strip(" —–-:·|")
+    if rest and rest.lower() not in ("bedrock-now", "release"):
+        return _cut(rest)
+    for raw in (body or "").replace("\r", "").split("\n")[:80]:
+        line = raw.strip()
+        if not line or line.startswith("#") or set(line) <= set("-=*_ "):
+            continue
+        line = re.sub(r"^[-*+]\s+", "", line)
+        m = re.match(r"\*\*([^*]{3,})\*\*", line)
+        line = _plain(m.group(1) if m else line).rstrip(":")
+        if line:
+            return _cut(line)
+    return ""
+
+
+def _releases(d) -> list[dict]:
+    """GitHub's release list -> the newest PER_PAGE releases with a vX.Y.Z tag (no drafts or pre-releases), newest
+    first, each field type-checked and bounded; the notes of all of them together at most MAX_NOTES_TOTAL (the newest
+    keep theirs; older ones keep their headline and link)."""
+    if not isinstance(d, list):
+        raise CheckError("GitHub's answer has an unexpected format")
+    out, seen = [], set()
+    for r in d[:100]:
+        if not isinstance(r, dict) or r.get("draft") or r.get("prerelease"):
+            continue
+        tag = r.get("tag_name")
+        if not isinstance(tag, str) or parse_release(tag) is None or tag in seen:
+            continue
+        seen.add(tag)
+        body = (r.get("body") if isinstance(r.get("body"), str) else "")[:MAX_NOTES]
+        name = (r.get("name") if isinstance(r.get("name"), str) and r.get("name").strip() else tag)[:200]
+        url = r.get("html_url") if isinstance(r.get("html_url"), str) else ""
+        out.append({
+            "tag": tag, "name": name, "headline": headline(tag, name, body), "notes": body,
+            "url": url if url.startswith(f"https://github.com/{REPO}/") else f"https://github.com/{REPO}/releases",
+            "published_at": r.get("published_at") if isinstance(r.get("published_at"), str) else None,
+        })
+    if not out:
+        raise CheckError("no release has a vX.Y.Z tag")
+    out.sort(key=lambda x: parse_release(x["tag"]), reverse=True)
+    out, total = out[:PER_PAGE], 0
+    for r in out:
+        total += len(r["notes"])
+        if total > MAX_NOTES_TOTAL:
+            r["notes"] = ""
+    return out
+
+
 async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = TOTAL_TIMEOUT_S) -> dict:
     """One check, at most TOTAL_TIMEOUT_S in all. Never raises: errors are recorded next to the last good answer."""
     try:
         return await asyncio.wait_for(_check(client, paths), total_timeout)
     except asyncio.TimeoutError:
-        rec = _read_json(paths.json)
+        rec = read_latest(paths)
         rec["checked_at"] = _now_iso()
         rec["error"] = f"no answer within {int(total_timeout)} s"
         rec["error_at"] = rec["checked_at"]
@@ -208,12 +288,13 @@ async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = 
 
 
 async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
-    prev = _read_json(paths.json)
+    prev = read_latest(paths)
     rec = dict(prev)
     rec["checked_at"] = _now_iso()
     try:
         hdrs = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if isinstance(prev.get("etag"), str) and prev.get("tag"):
+        # (an answer from before the list, without "releases", is asked for again in full)
+        if isinstance(prev.get("etag"), str) and prev.get("tag") and isinstance(prev.get("releases"), list):
             hdrs["If-None-Match"] = prev["etag"]
         code, body, headers = await _get(client, RELEASES_URL, MAX_JSON, hdrs)
         if code == 200:
@@ -221,18 +302,12 @@ async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
                 d = json.loads(body)
             except ValueError as e:
                 raise CheckError("GitHub's answer is not JSON") from e
-            if not isinstance(d, dict):
-                raise CheckError("GitHub's answer has an unexpected format")
-            tag = d.get("tag_name")
-            if not isinstance(tag, str) or parse_release(tag) is None or d.get("draft") or d.get("prerelease"):
-                raise CheckError("the latest release has no vX.Y.Z tag")
-            url = d.get("html_url") if isinstance(d.get("html_url"), str) else ""
+            rels = _releases(d)
+            top = rels[0]
+            tag = top["tag"]
             rec.update({
-                "tag": tag,
-                "name": (d.get("name") if isinstance(d.get("name"), str) else tag)[:200],
-                "notes": (d.get("body") if isinstance(d.get("body"), str) else "")[:MAX_NOTES],
-                "url": url if url.startswith(f"https://github.com/{REPO}/") else f"https://github.com/{REPO}/releases",
-                "published_at": d.get("published_at") if isinstance(d.get("published_at"), str) else None,
+                "tag": tag, "name": top["name"], "notes": top["notes"], "url": top["url"],
+                "published_at": top["published_at"], "releases": rels,
                 "etag": headers.get("etag") if isinstance(headers.get("etag"), str) else None,
             })
             if prev.get("tag") != tag:
@@ -257,7 +332,7 @@ async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
 def save(paths: Paths, rec: dict) -> None:
     try:
         paths.update_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(paths.json, json.dumps(rec, indent=2))
+        _atomic_write(paths.json, json.dumps(rec, separators=(",", ":")))
         tag = rec.get("tag") if parse_release(rec.get("tag") or "") else ""
         _atomic_write(paths.txt, f"latest={tag}\nchecked_at={int(time.time())}\n")
     except OSError as e:
@@ -269,13 +344,15 @@ def _age_s(rec: dict) -> float | None:
         t = datetime.fromisoformat(rec["checked_at"])
     except (KeyError, TypeError, ValueError):
         return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - t).total_seconds()
 
 
 async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = None) -> None:
     """Portal background task: at start unless checked in the last 20 h, then every 24 h (1 h after an error)."""
     while True:
-        rec = _read_json(paths.json)
+        rec = read_latest(paths)
         age = _age_s(rec)
         if age is None or age > 20 * 3600 or (rec.get("error") and age > RETRY_AFTER_ERROR):
             try:
@@ -287,28 +364,119 @@ async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = 
         await asyncio.sleep(RETRY_AFTER_ERROR if rec.get("error") else DAILY)
 
 
+def _release_list(rec: dict) -> list[dict]:
+    """latest.json's releases (newest first), each type-checked again; one built from the newest release's fields for
+    an answer from before the list."""
+    out = []
+    rels = rec.get("releases")
+    if isinstance(rels, list):
+        for r in rels[:PER_PAGE]:
+            if not isinstance(r, dict) or not parse_release(r.get("tag") or ""):
+                continue
+            url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith(f"https://github.com/{REPO}/") else None
+            out.append({"tag": r["tag"], "name": r.get("name") if isinstance(r.get("name"), str) else r["tag"],
+                        "headline": r.get("headline") if isinstance(r.get("headline"), str) else "",
+                        "notes": r.get("notes") if isinstance(r.get("notes"), str) else "", "url": url,
+                        "published_at": r.get("published_at") if isinstance(r.get("published_at"), str) else None})
+    tag = rec.get("tag")
+    if not out and parse_release(tag or ""):
+        name = rec.get("name") if isinstance(rec.get("name"), str) else tag
+        notes = rec.get("notes") if isinstance(rec.get("notes"), str) else ""
+        out.append({"tag": tag, "name": name, "headline": headline(tag, name, notes), "notes": notes,
+                    "url": rec.get("url") if isinstance(rec.get("url"), str) else None,
+                    "published_at": rec.get("published_at") if isinstance(rec.get("published_at"), str) else None})
+    out.sort(key=lambda r: parse_release(r["tag"]), reverse=True)
+    return out
+
+
+def between(rec: dict, installed_version: str, latest: str, rels: list[dict] | None = None) -> list[dict]:
+    """The releases an update from INSTALLED_VERSION to LATEST brings, newest first: newer than the installed release
+    (for a build after a tag, newer than that tag), up to and including LATEST."""
+    inst, top = parse_installed(installed_version), parse_release(latest)
+    if inst is None or top is None:
+        return []
+    return [r for r in (_release_list(rec) if rels is None else rels) if inst[0] < parse_release(r["tag"]) <= top]
+
+
+def stale(rec: dict) -> bool:
+    """True when the last check is older than STALE_S (or there is none)."""
+    age = _age_s(rec)
+    return age is None or age > STALE_S
+
+
 def status(paths: Paths, enabled: bool) -> dict:
     """The update card's data, and the installed version for Home's version label (in every state: also with the
-    check off or no answer yet)."""
+    check off or no answer yet). releases: every release the update brings, newest first (one per release between
+    the installed version and the newest; notes, a one-line headline, its page); stale: the last check is older than
+    STALE_S (Home then asks for another)."""
     inst = installed(paths)
     out = {"enabled": enabled, "installed": inst["version"] or None, "branch": inst["branch"] or None,
            "commit": inst["commit"] or None, "commit_date": inst["commit_date"] or None,
            "release_url": release_url(inst["version"]),
-           "latest": None, "available": False,
-           "checked_at": None, "error": None, "command": "./stack update"}
+           "latest": None, "available": False, "releases": [], "behind": 0, "more": False,
+           "checked_at": None, "error": None, "error_at": None, "stale": False, "command": "./stack update"}
     if not enabled:
         return out
-    rec = _read_json(paths.json)
+    rec = read_latest(paths)
     tag = rec.get("tag") if parse_release(rec.get("tag") or "") else None
-    out.update({"latest": tag, "checked_at": rec.get("checked_at"), "error": rec.get("error")})
+    out.update({"latest": tag, "checked_at": rec.get("checked_at") if isinstance(rec.get("checked_at"), str) else None,
+                "error": rec.get("error") if isinstance(rec.get("error"), str) else None,
+                "error_at": rec.get("error_at") if isinstance(rec.get("error_at"), str) else None, "stale": stale(rec)})
     if tag and newer(tag, inst["version"]):
         imgs = rec.get("images")
+        known = _release_list(rec)
+        rels = between(rec, inst["version"], tag, known)
         out.update({
             "available": True,
             "name": rec.get("name") or tag,
             "notes": rec.get("notes") or "",
             "url": rec.get("url"),
             "published_at": rec.get("published_at"),
+            "releases": rels,
+            # how many releases the jump spans; more than the list holds when the installed one is older than it
+            "behind": len(rels),
+            # True when even older releases than the list holds are part of the jump (only the newest PER_PAGE are kept)
+            "more": bool(rels) and len(known) >= PER_PAGE and rels[-1]["tag"] == known[-1]["tag"],
             "estimate": estimate(imgs if isinstance(imgs, list) else None, inst["images"]),
         })
     return out
+
+
+class Refresher:
+    """The check Home asks for when it opens and the last one is older than STALE_S: run in the background, one at a
+    time, at most every ON_DEMAND_MIN_S, and not within RETRY_AFTER_ERROR of a failed check (GitHub answers 403
+    once its unauthenticated limit is used up). Home's next summary shows the answer."""
+
+    def __init__(self, paths: Paths, transport: httpx.AsyncBaseTransport | None = None, clock=time.monotonic):
+        self.paths, self.transport, self.clock = paths, transport, clock
+        self.task: asyncio.Task | None = None
+        self.last: float | None = None
+
+    @property
+    def checking(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def due(self, rec: dict | None = None) -> bool:
+        if self.checking or (self.last is not None and self.clock() - self.last < ON_DEMAND_MIN_S):
+            return False
+        rec = read_latest(self.paths) if rec is None else rec
+        age = _age_s(rec)
+        if rec.get("error") and age is not None and age < RETRY_AFTER_ERROR:
+            return False
+        return stale(rec)
+
+    def kick(self) -> bool:
+        """Starts a check when one is due (in the running event loop); True when it did."""
+        if not self.due():
+            return False
+        self.last = self.clock()
+        self.task = asyncio.get_running_loop().create_task(self._run())
+        return True
+
+    async def _run(self) -> None:
+        try:
+            async with httpx.AsyncClient(transport=self.transport, follow_redirects=False) as client:
+                rec = await check(client, self.paths)
+            log.info("update check (Home): latest %s%s", rec.get("tag"), f" ({rec['error']})" if rec.get("error") else "")
+        except Exception:  # noqa: BLE001 — never an unhandled task error
+            log.exception("update check (Home) crashed")

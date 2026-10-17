@@ -34,7 +34,40 @@ test_admin_email_from_git_config_is_announced() {
   git() { echo "dev@example.com"; }
   setup_secrets 2> "$TMP/err"
   assert_eq "$(get_env OPENWEBUI_ADMIN_EMAIL)" "dev@example.com"
-  assert_contains "$(cat "$TMP/err")" "==> Open WebUI admin: dev@example.com (from git config; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup)"
+  assert_contains "$(cat "$TMP/err")" "==> Open WebUI admin: dev@example.com (from git config; to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup, or later in Settings → Owner email)"
+}
+
+# Interactive: you were just asked, so the line says only what was changed about your answer (the rehearsal printed
+# "to use another address, set … in .env before the first setup" right after offering to type one)
+test_admin_email_asked_is_announced_without_the_env_hint() {
+  printf 'X=1\n' > "$ENV_FILE"; ASSUME_YES=0; _have_tty() { return 0; }
+  git() { echo "dev@example.com"; }
+  ask() { echo "$1 [$2]" >> "$TMP/prompts"; echo "${2:-}"; }
+  setup_secrets 2> "$TMP/err"
+  assert_eq "$(cat "$TMP/prompts")" "Open WebUI admin email [dev@example.com]"
+  assert_contains "$(cat "$TMP/err")" "==> Open WebUI admin: dev@example.com"
+  assert_not_contains "$(cat "$TMP/err")" "OPENWEBUI_ADMIN_EMAIL in .env"
+  assert_not_contains "$(cat "$TMP/err")" "Open WebUI admin: dev@example.com ("
+}
+
+# Chat (Open WebUI) keeps every email in lowercase and ignores the case at sign-in: a mixed-case answer (or git
+# config's address) is stored in lowercase, and the line says so
+test_admin_email_in_mixed_case_is_stored_lowercase_and_says_why() {
+  printf 'X=1\n' > "$ENV_FILE"; ASSUME_YES=0; _have_tty() { return 0; }
+  git() { echo "198221045+Someone@users.noreply.github.com"; }
+  ask() { echo "${2:-}"; }
+  setup_secrets 2> "$TMP/err"
+  assert_eq "$(get_env OPENWEBUI_ADMIN_EMAIL)" "198221045+someone@users.noreply.github.com"
+  assert_contains "$(cat "$TMP/err")" "==> Open WebUI admin: 198221045+someone@users.noreply.github.com (in lowercase: Chat keeps email addresses in lowercase and ignores the case at sign-in)"
+  printf 'X=1\n' > "$ENV_FILE"
+  ask() { echo "Me@Example.ORG"; }
+  setup_secrets 2> "$TMP/err"
+  assert_eq "$(get_env OPENWEBUI_ADMIN_EMAIL)" "me@example.org"
+  assert_contains "$(cat "$TMP/err")" "(in lowercase:"
+  printf 'X=1\n' > "$ENV_FILE"
+  ask() { echo "not-an-email"; }
+  if (setup_secrets) 2> "$TMP/err"; then return 1; fi
+  assert_contains "$(cat "$TMP/err")" "invalid email: not-an-email"
 }
 
 test_admin_email_from_env_is_announced() {

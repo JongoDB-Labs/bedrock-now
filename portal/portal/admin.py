@@ -5,7 +5,9 @@ The portal never runs anything itself. For an allowed, re-authenticated request 
 REQUEST_DIR/req-<nonce>.json = {"action","requested_at","nonce"}, into the only folder it may write for this
 purpose; the helper (outside Docker, as you) validates it and runs ./stack <action> --yes (auto-on / auto-off:
 ./stack helper auto on|off, which sets AUTO_UPDATE in .env). Progress comes back through STATUS_DIR (read-only
-here): helper.json (heartbeat, rollback target, automatic updates) and helper-status.json (the last job).
+here): helper.json (heartbeat, rollback target, automatic updates) and helper-status.json (the helper's last job).
+./stack commands run in a terminal that change the stack (update, rollback, setup, config, code, …) leave their own
+record there, terminal-job.json (lib/lock.sh): Home shows whichever job is newer, and says where it ran.
 
 Hooks for remote access (the mobile/remote work wires them; defaults are the safe ones):
   is_remote(request)          a request that did not come from this machine. Caddy deletes any client-sent
@@ -116,23 +118,56 @@ def _auto(beat: dict) -> dict:
     }
 
 
+COMMAND = re.compile(r"[a-z][a-z-]{0,23}(?: [a-z][a-z-]{0,23})?")
+
+
+def _job(raw: dict, origin: str) -> dict | None:
+    if not raw:
+        return None
+    job = {
+        "id": _str(raw.get("id"), 64), "action": _str(raw.get("action"), 32),
+        "phase": _str(raw.get("phase"), 32), "message": _str(raw.get("message")),
+        "started_at": _int(raw.get("started_at")), "updated_at": _int(raw.get("updated_at")),
+        "finished_at": _int(raw.get("finished_at")), "freed_bytes": _int(raw.get("freed_bytes")),
+        "version": _str(raw.get("version"), 80),
+        "trigger": "auto" if raw.get("trigger") == "auto" else "request",
+        # where it ran: "helper" (Home, Settings, the nightly jobs) or "terminal" (a ./stack command typed in a terminal)
+        "origin": origin,
+    }
+    if origin == "terminal":
+        cmd = raw.get("command")
+        job["command"] = cmd if isinstance(cmd, str) and COMMAND.fullmatch(cmd) else job["action"] if COMMAND.fullmatch(job["action"]) else ""
+        job["trigger"] = "terminal"
+    return job
+
+
+def _running(job: dict | None, now: float) -> bool:
+    return bool(job and job.get("phase") and job["phase"] not in TERMINAL and now - (job.get("updated_at") or 0) < JOB_STALE_S)
+
+
+def _when(job: dict) -> int:
+    return job.get("finished_at") or job.get("updated_at") or job.get("started_at") or 0
+
+
+def newest_job(helper: dict | None, terminal: dict | None, now: float | None = None) -> dict | None:
+    """The job Home shows: one still running (the helper's first: it reports progress), else the one that ended last."""
+    now = time.time() if now is None else now
+    for j in (helper, terminal):
+        if _running(j, now):
+            return j
+    jobs = [j for j in (helper, terminal) if j]
+    return max(jobs, key=_when) if jobs else None   # (max keeps the first of equals: the helper's)
+
+
 def helper_state(status_dir: Path, now: float | None = None) -> dict:
-    """{running, heartbeat_at, rollback, auto, job}: what Home needs, every field type-checked (files come from the host)."""
+    """{running, heartbeat_at, rollback, auto, job}: what Home needs, every field type-checked (files come from the host).
+    job: the newest of the helper's last job and the last ./stack command run in a terminal (its "origin" says which)."""
     now = time.time() if now is None else now
     beat = _read(status_dir / "helper.json")
     hb = _int(beat.get("heartbeat"))
     rb = beat.get("rollback") if isinstance(beat.get("rollback"), dict) else {}
-    job_raw = _read(status_dir / "helper-status.json")
-    job = None
-    if job_raw:
-        job = {
-            "id": _str(job_raw.get("id"), 64), "action": _str(job_raw.get("action"), 32),
-            "phase": _str(job_raw.get("phase"), 32), "message": _str(job_raw.get("message")),
-            "started_at": _int(job_raw.get("started_at")), "updated_at": _int(job_raw.get("updated_at")),
-            "finished_at": _int(job_raw.get("finished_at")), "freed_bytes": _int(job_raw.get("freed_bytes")),
-            "version": _str(job_raw.get("version"), 80),
-            "trigger": "auto" if job_raw.get("trigger") == "auto" else "request",
-        }
+    job = newest_job(_job(_read(status_dir / "helper-status.json"), "helper"),
+                     _job(_read(status_dir / "terminal-job.json"), "terminal"), now)
     return {
         "running": hb is not None and -HEARTBEAT_SKEW_S <= now - hb <= HEARTBEAT_MAX_AGE_S,
         "heartbeat_at": hb,

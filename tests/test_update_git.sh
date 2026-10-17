@@ -364,6 +364,35 @@ test_whats_new_points_at_voice_remote_helper_and_the_release_notes() {
   assert_contains "$(update_whats_new)" "Voice: OpenAI speech-to-text is on (./stack stt status)"
 }
 
+# A jump over several releases names each of them (the rehearsal's v0.4.1 → v0.9.0 heard only of v0.9.0): each release
+# tag's own subject, newest first, after the one the update came from up to the installed one
+test_whats_new_after_a_jump_lists_every_release_it_brought() {
+  git init -q -b main "$TMP/origin"
+  _commit "$TMP/origin" one; git -C "$TMP/origin" tag -a v0.4.1 -m "v0.4.1 — one sign-in"
+  _commit "$TMP/origin" two; git -C "$TMP/origin" tag -a v0.5.0 -m "v0.5.0 — the Code page"
+  _commit "$TMP/origin" three; git -C "$TMP/origin" tag -a v0.6.0-rc1 -m "rc"
+  _commit "$TMP/origin" four; git -C "$TMP/origin" tag -a v0.6.0 -m "permission modes and previews"
+  _commit "$TMP/origin" five; git -C "$TMP/origin" tag v0.7.0   # (a tag without its own message)
+  _commit "$TMP/origin" six; git -C "$TMP/origin" tag -a v0.8.0 -m "v0.8.0 — Auto mode"
+  git clone -q "$TMP/origin" "$TMP/stack"; git -C "$TMP/stack" -c advice.detachedHead=false checkout -q v0.7.0
+  STACK_DIR="$TMP/stack"; : > "$ENV_FILE"
+  stt_enabled() { return 0; }; remote_on() { return 0; }; helper_installed() { return 0; }; auto_on() { return 0; }
+  out="$(update_whats_new "$(git -C "$STACK_DIR" rev-parse 'v0.4.1^{commit}')")"
+  assert_eq "$(printf '%s\n' "$out" | sed -n '2,5p')" "What's new in v0.7.0 (3 releases since v0.4.1):
+  v0.7.0
+  v0.6.0 — permission modes and previews
+  v0.5.0 — the Code page"
+  assert_contains "$out" "  Release notes: https://github.com/JongoDB-Labs/bedrock-now/releases"
+  assert_not_contains "$out" "v0.8.0"; assert_not_contains "$out" "rc"; assert_not_contains "$out" "v0.4.1 —"
+  # one release: its line, and its own release page
+  out="$(update_whats_new "$(git -C "$STACK_DIR" rev-parse 'v0.6.0^{commit}')")"
+  assert_contains "$out" "What's new in v0.7.0:
+  v0.7.0"
+  assert_contains "$out" "Release notes: https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v0.7.0"
+  # ./stack update passes the commit it came from
+  assert_contains "$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")" 'update_whats_new "$from"'
+}
+
 test_update_to_a_new_version_ends_with_whats_new_and_a_no_op_does_not() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack; dc() { :; }
   update_record_write() { :; }; update_record_done() { :; }

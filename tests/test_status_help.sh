@@ -23,6 +23,23 @@ test_status_table_rows_and_urls() {
   for l in $(printf '%s\n' "$out" | awk '{ print length($0) }'); do [ "$l" -le 100 ] || { echo "line too long: $l" >&2; return 1; }; done
 }
 
+# With the browser terminal on, terminal-gateway (16 characters) is the longest name: every column still lines up
+# (the rehearsal's ./stack status pushed that row's STATE, HEALTH and URL 5 characters to the right)
+test_status_table_columns_line_up_with_long_service_names() {
+  _ports_env
+  optional_services() { echo "stt terminal-gateway terminal code"; }
+  out="$(printf 'caddy\trunning\thealthy\t0\nterminal-gateway\trunning\thealthy\t0\nterminal\trunning\tstarting\t0\n' | status_table)"
+  assert_eq "$(printf '%s\n' "$out" | awk '{ print index($0, $2) }' | sort -u)" "20"   # STATE: after 2 + 16 + 1 characters
+  assert_eq "$(printf '%s\n' "$out" | grep '^  terminal-gateway ' | awk '{ print index($0, "healthy") }')" \
+    "$(printf '%s\n' "$out" | grep '^  caddy ' | awk '{ print index($0, "healthy") }')"
+  assert_contains "$out" "  terminal-gateway running      healthy    - (the terminal's only way into the stack)"
+  assert_contains "$out" "  caddy            running      healthy    - (serves the portal URLs)"
+  # without it the table is as before (SERVICE 11 wide)
+  optional_services() { echo ""; }
+  out="$(printf 'caddy\trunning\thealthy\t0\n' | status_table)"
+  assert_contains "$out" "  caddy       running      healthy    - (serves the portal URLs)"
+}
+
 test_status_table_flags_failed_bucket_setup() {
   _ports_env
   out="$(printf 'rustfs-init\texited\t\t1\n' | status_table 2>&1)"

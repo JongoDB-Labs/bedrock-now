@@ -803,7 +803,7 @@ helper_run_job() {
     rollback) helper_write_status restoring "Going back to the previous version" ;;
     update) helper_write_status backing-up "Backing up your data" ;;
   esac
-  ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$action" --yes ) </dev/null > "$logf" 2>&1 &
+  ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$action" --yes ) </dev/null > "$logf" 2>&1 &
   pid=$!
   [ "$action" = clean ] || _keep_awake "$pid"
   while kill -0 "$pid" 2>/dev/null; do
@@ -857,7 +857,7 @@ helper_run_toggle() {
   _helper_count "$1"
   logf="$(helper_dir)/last-auto.log"
   { : > "$logf" && chmod 600 "$logf"; } 2>/dev/null || logf=/dev/null
-  ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" helper auto "${1#auto-}" --yes ) </dev/null > "$logf" 2>&1 || rc=$?
+  ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper NO_COLOR=1 "$STACK_DIR/stack" helper auto "${1#auto-}" --yes ) </dev/null > "$logf" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     _switch_record "$2" "$1" failed "$(_last_error "$logf") (full log: .state/helper/last-auto.log)"; return 0
   fi
@@ -1060,6 +1060,7 @@ helper_main() {
       return 0
     fi
     helper_heartbeat || true
+    _terminal_job_sweep || true   # lib/lock.sh: a terminal command's record left "running" by a process that is gone
     # lib/settings_helper.sh: the settings snapshot, the helper's password hash, nightly backups (as above)
     if ( settings_helper_tick ); then AUTO_FRESH=0; fi
     if helper_poll_once; then helper_heartbeat || true; return 0; fi

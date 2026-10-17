@@ -23,6 +23,10 @@ export ASSUME_YES
 set -- ${args[@]+"${args[@]}"}
 
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
+# For Home's record of a command run in a terminal (lib/lock.sh): the command and its first argument when that is a
+# plain word ("code enable", "config set"), never a value
+BEDROCK_NOW_JOB_CMD="$cmd"
+case "${1:-}" in [a-z]*) case "$1" in *[!a-z-]*) ;; *) BEDROCK_NOW_JOB_CMD="$cmd $1" ;; esac ;; esac
 # -h/--help anywhere after the command (no real value is ever that): that command's part of ./stack help, before
 # any check or change (exit 0). `./stack stt set openai --help` must never store "--help" as a model.
 want_help=0
@@ -75,3 +79,4 @@ case "$cmd" in
   help | -h | --help) cmd_help ;;
   *) die "unknown command: $cmd (try ./stack help)" ;;
 esac
+_BN_CMD_DONE=1   # the command ran to its end (lib/lock.sh: an exit before this, with status 0, was a signal)

@@ -253,21 +253,40 @@ def update_card(ctx):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     states = []
     try:
-        # 1. a newer release
-        _write_json(up, {"tag": "v99.0.0", "name": "v99.0.0 (e2e)", "notes": "## e2e\n- **fake** release for the e2e suite",
-                         "url": "https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v99.0.0", "published_at": now,
-                         "checked_at": now, "error": None, "images": ["ghcr.io/berriai/litellm:9.9.9"]})
+        # 1. newer releases: three of them since the installed version (a jump over several names each one: the
+        # rehearsal's v0.4.1 → v0.9.0 showed only v0.9.0's notes)
+        rels = [{"tag": t, "name": f"{t} — {h}", "headline": h,
+                 "notes": f"## {t}\n- **fake** release {t} for the e2e suite\n<script>alert(1)</script>",
+                 "url": f"https://github.com/JongoDB-Labs/bedrock-now/releases/tag/{t}", "published_at": now}
+                for t, h in (("v99.0.0", "the newest fake release"), ("v98.0.0", "a fake release in between"),
+                             ("v97.0.0", "the oldest fake release"))]
+        _write_json(up, {"tag": "v99.0.0", "name": "v99.0.0 (e2e)", "notes": rels[0]["notes"], "url": rels[0]["url"],
+                         "published_at": now, "checked_at": now, "error": None, "images": ["ghcr.io/berriai/litellm:9.9.9"],
+                         "releases": rels})
         page.click("#refresh")
         page.wait_for_selector("#update-card:not([hidden])", timeout=15000)
         meta = page.inner_text("#update-meta")
         expect("v99.0.0" in page.inner_text("#update-card"), f"card lacks the tag: {meta}")
+        expect("Checked just now." in meta, f"the card does not say when it checked: {meta!r}")
         expect(page.inner_text("#update-cmd") == "./stack update", "update command")
         expect(page.locator("#update-now").is_hidden(), "Update now shown without the helper")
+        heads = page.eval_on_selector_all("#update-releases li", "ls => ls.map(l => l.innerText.replace(/\\s+/g, ' '))")
+        expect(heads == ["v99.0.0 the newest fake release", "v98.0.0 a fake release in between", "v97.0.0 the oldest fake release"],
+               f"one line per release, newest first: {heads}")
+        title = page.inner_text("#update-releases-title")
+        expect(re.fullmatch(r"What's new: 3 releases since v\d+\.\d+\.\d+\S*", title), f"releases title {title!r}")
         page.click(".update-notes summary")
+        opened = page.eval_on_selector_all("#update-notes details.release", "ds => ds.map(d => d.open)")
+        expect(opened == [True, False, False], f"the newest open, the others folded: {opened}")
         expect("fake" in page.inner_text("#update-notes"), "release notes not rendered")
         expect(page.locator("#update-notes script").count() == 0, "notes rendered as HTML")
+        page.click("#update-releases li:nth-child(2) button")   # a headline opens its notes
+        page.locator('#update-notes details.release[data-tag="v98.0.0"][open]').wait_for(timeout=5000)
+        expect("release v98.0.0" in page.inner_text("#update-notes"), "v98.0.0's notes not shown")
+        label = page.locator("#version").get_attribute("aria-label") or ""
+        expect("release check: just now" in label, f"the version label does not say when it checked: {label!r}")
         shot(page, "04-home-update-available")
-        states.append("available")
+        states.append("available: 3 releases listed, newest open")
         # 2. with the update helper running (fake heartbeat): Update now → password → a request file for the helper
         _write_json(beat, {"heartbeat": int(time.time()), "version": "e2e", "rollback": {"available": False}})
         page.reload()  # Home asks for the helper's state at load and every 30 s
@@ -276,6 +295,13 @@ def update_card(ctx):
         before = set((STATE / "requests").glob("req-*.json"))
         page.click("#update-now")
         page.wait_for_selector("#confirm[open]")
+        text = page.inner_text("#confirm-text")
+        expect(re.match(r"Update to v99\.0\.0 \(the newest release at the last check, [^)]+\): a backup first", text), f"confirm: {text!r}")
+        summary = page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")
+        if summary["terminal"]["enabled"]:   # the update recreates the terminal's container: its tmux session ends
+            expect("The Terminal's container is recreated: its tmux windows close" in text, f"confirm: {text!r}")
+        if summary["code"]["enabled"]:
+            expect("Code page sessions resume from their transcripts" in text, f"confirm: {text!r}")
         page.fill("#confirm-password", ENV["PORTAL_PASSWORD"])
         page.click("#confirm-ok")
         t0 = time.time()
@@ -305,6 +331,70 @@ def update_card(ctx):
             up.write_bytes(saved)
         for f in (STATE / "requests").glob("req-*.json"):
             f.unlink()
+    rec.save()
+    return "; ".join(states)
+
+
+@check("browser", "home-update-last-job-and-reconnecting")
+def update_last_job_and_reconnecting(ctx):
+    """Home's last job is the newest of any origin (a ./stack command run in a terminal records one too); while an update
+    restarts the portal, the job card says so calmly, with the time so far, instead of an error banner."""
+    if real_helper_running():
+        raise Skip("a real update helper is running: this check fakes its heartbeat and its job")
+    st = STATE / "status"
+    files = {n: st / n for n in ("helper.json", "helper-status.json", "terminal-job.json")}
+    saved = {n: f.read_bytes() for n, f in files.items() if f.exists()}
+    page, rec = ctx.page("update-reconnecting")
+    login(page)
+    api = re.compile(r"/api/")
+    states = []
+    try:
+        now = int(time.time())
+        # 1. a rollback from Home, then ./stack code enable in a terminal: the terminal's is newer, so it shows
+        _write_json(files["helper-status.json"], {"id": "e" * 32, "action": "rollback", "phase": "done", "message": "Rolled back to v0.4.1",
+                                                  "started_at": now - 600, "updated_at": now - 500, "finished_at": now - 500,
+                                                  "version": "v0.4.1", "trigger": "request"})
+        _write_json(files["terminal-job.json"], {"id": f"t-{now - 60}-1", "action": "code", "command": "code enable", "phase": "done",
+                                                 "message": "Finished", "started_at": now - 60, "updated_at": now - 5,
+                                                 "finished_at": now - 5, "version": "v0.9.0", "pid": 1})
+        page.reload()
+        page.wait_for_selector("#job:not([hidden])", timeout=15000)
+        expect(page.inner_text("#job-title") == "./stack code enable finished", f"last job: {page.inner_text('#job-title')!r}")
+        expect(page.inner_text("#job-origin").startswith("Run in a terminal · "), f"origin: {page.inner_text('#job-origin')!r}")
+        shot(page, "06a-home-last-job-from-a-terminal")
+        states.append("newest job: ./stack code enable (terminal)")
+        # 2. an update from Home, restarting the services (heartbeat and job faked) ...
+        _write_json(files["helper.json"], {"heartbeat": int(time.time()), "version": "e2e", "rollback": {"available": False}})
+        _write_json(files["helper-status.json"], {"id": "f" * 32, "action": "update", "phase": "restarting",
+                                                  "message": "Restarting the services and checking them", "started_at": now - 40,
+                                                  "updated_at": int(time.time()), "finished_at": None, "version": "", "trigger": "request"})
+        page.reload()
+        page.locator("#job-title", has_text="in progress").wait_for(timeout=15000)
+        # ... and the portal away (every /api/ request fails, as while it restarts): reconnecting, with the time so far
+        page.route(api, lambda route: route.abort())
+        page.locator("#job-reconnect:not([hidden])").wait_for(timeout=15000)
+        t0 = page.inner_text("#job-reconnect-time")
+        page.wait_for_timeout(2500)
+        t1 = page.inner_text("#job-reconnect-time")
+        expect(re.fullmatch(r"\d+:\d\d", t1) and t1 != t0, f"elapsed time {t0!r} → {t1!r}")
+        expect("reconnecting" in page.inner_text("#job-reconnect-text"), page.inner_text("#job-reconnect-text"))
+        expect(page.locator("#load-error").is_hidden(), "an error banner while the portal restarts")
+        shot(page, "06-home-update-reconnecting")
+        states.append(f"portal away: reconnecting {t1}")
+        # 3. back
+        page.unroute(api)
+        page.locator("#job-reconnect-text", has_text="Reconnected: the portal was away for").wait_for(timeout=15000)
+        states.append("back: " + page.inner_text("#job-reconnect-text"))
+    finally:
+        try:
+            page.unroute(api)
+        except Exception:  # noqa: BLE001
+            pass
+        for n, f in files.items():
+            if n in saved:
+                f.write_bytes(saved[n])
+            else:
+                f.unlink(missing_ok=True)
     rec.save()
     return "; ".join(states)
 

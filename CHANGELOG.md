@@ -80,6 +80,57 @@ All notable changes to bedrock-now are documented here. The format follows
 - **Settings: speech-to-text's cost** said "about $0.002 a minute" for Bedrock; Voxtral Small is an estimated
   ~$0.00014 a minute (Mini ~$0.00004), as `./stack stt` and docs/voice.md say.
 
+- **Home's "What's new" across a jump over several releases.** The update card showed only the newest release's
+  notes, so an update from v0.4.1 to v0.9.0 never mentioned the Code page, previews or Auto mode. It now lists every
+  release between the installed version and the newest (one line each: tag and headline, newest first; a click opens
+  its notes) and their notes, the newest open and the others folded. The portal's release check reads GitHub's list of
+  releases (one request, as before) instead of only the latest, and takes the highest `vX.Y.Z` tag, which is what
+  `./stack update` installs. `./stack update`'s closing "What's new" lists each release it brought, with its tag's
+  headline, too.
+
+- **Home's newest release could be a day old.** The daily check said v0.6.0 while v0.9.0 was out (an update always
+  installs the newest). Opening Home now asks for a new check when the last one is more than 3 hours old (in the
+  background, at most every 15 minutes, not within an hour of a failed one, and never with `UPDATE_CHECK=false`);
+  the update card and the version label say when it last checked, and Update now's confirmation names the release
+  "at the last check".
+
+- **Home's last job went stale.** Only the update helper wrote it, so after a failed Settings change and a rollback
+  from Home, commands run in a terminal (`./stack code enable`, `./stack update`, `./stack config set`, …) never
+  showed: Home kept saying "Rolled back to v0.4.1". A `./stack` command that changes the stack, run in a terminal,
+  now leaves its own record (`.state/status/terminal-job.json`: running, then done or failed with its error), and
+  Home shows the newest job of either origin, with where it ran and when ("./stack code enable finished · Run in a
+  terminal · 10:32"). A record whose command was killed is ended by the update helper.
+
+- **The silent minute while an update or a rollback restarts the portal.** Home could not reach the portal for about
+  75 s during Update now (45 s during a rollback) and showed an error banner. The progress card now says the portal
+  is restarting and reconnecting, with the time so far, and "Reconnected: the portal was away for 1:15" when it
+  answers again.
+
+- **`./stack status`**: the `terminal-gateway` row pushed its state, health and URL out of their columns; the
+  service column is now as wide as the longest name.
+
+- **Setup moved the portal off port 80 without asking.** With port 80 taken, setup now says why and which port it
+  suggests (8800 or the next one free at that moment), asks (Enter takes it; a port in use is asked again, never
+  taken; `--yes` takes the suggestion), and names the new address. Other ports typed at the same question are
+  asked again too instead of ending setup.
+
+- **Setup's admin-email line contradicted the question just asked**: after "Open WebUI admin email [you@…]:" it said
+  "to use another address, set OPENWEBUI_ADMIN_EMAIL in .env before the first setup". That hint now only appears
+  when setup did not ask (`--yes`, no terminal). The address is still stored in lowercase — Open WebUI keeps every
+  email in lowercase and ignores the case at sign-in, and the Admin sign-in uses the same address — and setup says so
+  when that changed what you typed (or git's address).
+
+- **Ctrl-C during the first setup** ended it without a word and left Postgres, RustFS and LiteLLM running. Setup now
+  says what it had done, which services still run, and how to go on (`./stack setup`) or clean up (`./stack down`,
+  `./stack uninstall`); the temp-file traps of its phases hand the signal on instead of swallowing it.
+
+### Changed
+
+- **Update now and Roll back say what they end besides the downtime**: the browser terminal's container is recreated
+  (its tmux windows close; Claude Code running there ends, its conversations stay), Code page sessions resume from
+  their transcripts (a running turn stops), and — when the Code page reports one — that a Code page turn is running
+  right now. The README's *Updating* says the same.
+
 ### Docs
 
 - **README checked against the code of v0.9.0, and easier to find your way in.** New: *What you get* near the top

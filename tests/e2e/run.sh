@@ -239,7 +239,8 @@ stage() {
   ( umask 022; mkdir -p "$STACK/.state/update-check" )
   chmod 700 "$STACK/.state"; : > "$STACK/.state/portal-password-shown"
   # The portal's daily release check counts as done: no GitHub call during the run, and nothing races the update
-  # card's own (fake) latest.json. Its age decides the next check (24 h), so the portal never asks GitHub here.
+  # card's own (fake) latest.json. Its age decides the next check (24 h; Home asks for one after 3 h), so the portal
+  # never asks GitHub here.
   printf '{"checked_at": "%s", "error": null}\n' "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" > "$STACK/.state/update-check/latest.json"
   chmod 644 "$STACK/.state/update-check/latest.json"
   say "throwaway: project $PROJECT, http://$HOST:$pp  (LiteLLM 127.0.0.1:$lp, shared-mcp 127.0.0.1:$mp)"

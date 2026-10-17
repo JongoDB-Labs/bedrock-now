@@ -402,6 +402,6 @@ probe_models() {
   fn="$(model_footnotes < "$res")"
   [ -z "$fn" ] || printf '\n%s\n' "$fn" >&2
   if [ -n "$results" ]; then chmod 644 "$res"; mv "$res" "$results"; else rm -f "$res"; fi
-  rm -f "$tmp"; trap - INT TERM
+  rm -f "$tmp"; _signal_traps_restore
   log "$n_on model(s) enabled, $n_off unavailable for this AWS key (./stack models shows this table again; ./stack models --recheck re-checks)"
 }

@@ -182,7 +182,7 @@ helper_run_settings() {
   _kind_count settings-jobs settings
   logf="$(helper_dir)/last-settings.log"
   : > "$logf"; chmod 600 "$logf"
-  printf '%s' "$SREQ_LINES" | ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" config apply --stdin \
+  printf '%s' "$SREQ_LINES" | ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" config apply --stdin \
     --base "$SREQ_BASE" --origin "$SREQ_ORIGIN" --via portal ${SREQ_CONFIRM:+--confirm "$SREQ_CONFIRM"} --yes ) > "$logf" 2>&1 &
   pid=$!
   SREQ_LINES=''; SREQ_AUTH=''
@@ -266,12 +266,12 @@ helper_run_diag() {
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   if [ "$action" = report ]; then
-    ( cd "$STACK_DIR" && exec env NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf.out" 2> "$logf" &
+    ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf.out" 2> "$logf" &
     _wait_beating $! || rc=$?
     if [ "$rc" = 0 ]; then head -c 262144 "$logf.out" > "$(report_file).tmp" && chmod 640 "$(report_file).tmp" && mv "$(report_file).tmp" "$(report_file)"; fi
     rm -f "$logf.out"
   else
-    ( cd "$STACK_DIR" && exec env BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 &
+    ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 &
     _wait_beating $! || rc=$?
   fi
   JOB_FINISHED="$(date +%s)"

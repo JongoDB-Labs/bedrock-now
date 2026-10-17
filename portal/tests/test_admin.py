@@ -443,3 +443,83 @@ def test_home_scripts_say_what_the_helper_reports():
     # while a job runs, the helper sees its own update as "unfinished": Home does not say so then
     assert '!(a.in_progress && auto.state === "unfinished")' in js and 'a.in_progress && auto.state === "unfinished" ? "On."' in js
     assert "innerHTML" not in js
+
+
+# --- the last job of any origin: the helper's, or a ./stack command run in a terminal (lib/lock.sh) ---
+
+def term_job(st, phase, age=0, **kw):
+    now = int(time.time()) - age
+    (st / "terminal-job.json").write_text(json.dumps({
+        "id": f"t-{now - 30}-123", "action": "code", "command": "code enable", "phase": phase, "message": "Finished",
+        "started_at": now - 30, "updated_at": now, "finished_at": now if phase in ("done", "failed") else None,
+        "version": "v0.9.0", "pid": 123, **kw}))
+
+
+def test_home_shows_the_newest_job_whatever_ran_it(make_client, dirs):
+    st, rq = dirs
+    beat(st)
+    c = make_client()
+    now = int(time.time())
+    # the rehearsal: a Settings change failed (helper), later ./stack code enable in a terminal succeeded
+    job(st, "failed", action="settings", message="setup failed", updated_at=now - 600, finished_at=now - 600)
+    term_job(st, "done")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["job"]["origin"] == "terminal" and s["job"]["command"] == "code enable" and s["job"]["phase"] == "done"
+    assert s["job"]["trigger"] == "terminal" and s["in_progress"] is False
+    # then a rollback from Home: newer, so it shows
+    job(st, "done", action="rollback", message="Rolled back to v0.4.1", updated_at=now + 5, finished_at=now + 5)
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["job"]["origin"] == "helper" and s["job"]["action"] == "rollback"
+    # a ./stack update running in a terminal now: it shows, and blocks a request like a helper job would
+    term_job(st, "running", action="update", command="update", message="Running in a terminal")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["job"]["origin"] == "terminal" and s["in_progress"] is True
+    assert ask(c, "clean").status_code == 409
+    # a helper job in progress wins over a newer terminal record (its progress is what Home follows)
+    job(st, "backing-up", updated_at=now - 30)
+    term_job(st, "done")
+    s = c.get("/api/admin/status", headers=API).json()
+    assert s["job"]["origin"] == "helper" and s["job"]["phase"] == "backing-up" and s["in_progress"] is True
+
+
+def test_a_terminal_record_left_running_for_hours_does_not_block(dirs):
+    st, rq = dirs
+    term_job(st, "running", age=admin.JOB_STALE_S + 60)
+    job(st, "done", updated_at=int(time.time()) - 10, finished_at=int(time.time()) - 10)
+    s = admin.helper_state(st)
+    assert admin.job_in_progress(s) is False and s["job"]["origin"] == "helper"
+
+
+def test_terminal_records_are_type_checked(dirs):
+    st, rq = dirs
+    term_job(st, "done", command="config set; rm -rf /", action="config", message=["x"], version="<b>")
+    j = admin.helper_state(st)["job"]
+    assert j["command"] == "config" and j["message"] == "" and j["origin"] == "terminal"
+    term_job(st, "done", command="code enable", action="<script>")
+    j = admin.helper_state(st)["job"]
+    assert j["command"] == "code enable"
+    term_job(st, "done", command=5, action="<script>")
+    assert admin.helper_state(st)["job"]["command"] == ""
+
+
+def test_home_names_where_a_job_ran():
+    js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
+    assert 'const term = job.origin === "terminal";' in js and "`./stack ${job.command || job.action}`" in js
+    assert '"Run in a terminal"' in js and '"Run by the update helper (from Home or Settings)"' in js
+    # a terminal job is never mistaken for the helper's answer to a request just sent
+    assert 'a.job.origin !== "terminal" && (a.job.id === awaiting.id' in js
+
+
+def test_home_says_what_an_update_ends_and_reconnects_calmly():
+    js = (Path(__file__).parent.parent / "portal" / "static" / "app.js").read_text()
+    html = _page().by_id
+    # Update and Roll back: the terminal's container is recreated, Code page sessions resume, a running turn is named
+    assert "The Terminal's container is recreated: its tmux windows close" in js
+    assert "Code page sessions resume from their transcripts" in js and "A Code page turn is running right now." in js
+    assert js.count("${endsNote()} This page reconnects by itself.") == 2
+    assert 'e.data.type !== "bn-code-status"' in js and "e.source !== f.contentWindow" in js
+    # the gap while the portal restarts: a line with a spinner and the time so far, not an error banner
+    assert html["job-reconnect"][1].get("role") == "status" and "hidden" in html["job-reconnect"][1]
+    assert "job-reconnect-time" in html and "The portal is restarting as part of this — reconnecting…" in js
+    assert "Reconnected: the portal was away for ${mmss(" in js
+    assert "if (adminState && adminState.in_progress) { pollAdmin(); }" in js

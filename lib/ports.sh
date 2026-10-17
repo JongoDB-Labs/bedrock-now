@@ -29,6 +29,40 @@ check_port() {
   { [ "$2" -ge 1024 ] && [ "$2" -le 65535 ]; } || die "port $2 for $1 is out of range (1024-65535)"
 }
 
+# port_problem KEY PORT -> why PORT cannot be KEY's right now (status 1, nothing printed, when it can): not a port
+# number, out of range, another *_PORT key's in .env, or in use on this machine at this moment
+port_problem() {
+  case "$2" in '' | *[!0-9]*) echo "'$2' is not a port number"; return 0 ;; esac
+  if [ "$1:$2" != PORTAL_PORT:80 ] && { [ "$2" -lt 1024 ] || [ "$2" -gt 65535 ]; }; then echo "port $2 is out of range (1024-65535)"; return 0; fi
+  if port_taken_by_other "$1" "$2"; then echo "port $2 is already assigned to another service in .env"; return 0; fi
+  if port_in_use "$2"; then echo "port $2 is in use right now"; return 0; fi
+  return 1
+}
+
+# free_port_near KEY START -> the first port from START on (up to START+99) that is free right now and not another
+# *_PORT key's in .env (fails when there is none)
+free_port_near() {
+  local p="$2"
+  while port_in_use "$p" || port_taken_by_other "$1" "$p"; do
+    p=$((p + 1))
+    [ "$p" -lt $(($2 + 100)) ] && [ "$p" -le 65535 ] || return 1
+  done
+  printf '%s\n' "$p"
+}
+
+# ask_port KEY SUGGESTION -> the port to use: SUGGESTION with --yes or without a terminal, else what you type (Enter
+# accepts it), asked again (3 times) while it is not usable — never one that is in use at that moment
+ask_port() {
+  local ans why n=0
+  while :; do
+    ans="$(ask "  Port to use for $1" "$2")"
+    why="$(port_problem "$1" "$ans")" || { printf '%s\n' "$ans"; return 0; }
+    n=$((n + 1))
+    if [ "${ASSUME_YES:-0}" = 1 ] || ! _have_tty || [ "$n" -ge 3 ]; then die "$why — choose another port for $1"; fi
+    warn "$why — choose another"
+  done
+}
+
 svc_label() { # svc_label COMPOSE_SERVICE -> name used in messages
   case "$1" in
     litellm) echo LiteLLM ;; open-webui) echo "Open WebUI" ;; rustfs) echo "the RustFS console" ;;
@@ -51,19 +85,10 @@ resolve_port() {
     why="port $cur ($key) is already in use on this machine"; short="in use"
   fi
   if [ -n "$why" ]; then
-    sugg=$((cur + 1))
-    while port_in_use "$sugg" || port_taken_by_other "$key" "$sugg"; do
-      sugg=$((sugg + 1))
-      [ "$sugg" -lt $((cur + 100)) ] && [ "$sugg" -le 65535 ] || die "no free port near $cur for $key"
-    done
+    sugg="$(free_port_near "$key" $((cur + 1)))" || die "no free port near $cur for $key"
     # Interactive runs explain before asking; the one-line decision below is printed either way.
     if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then warn "$why"; fi
-    ans="$(ask "  Port to use for $key" "$sugg")"
-    check_port "$key" "$ans"
-    if [ "$ans" != "$sugg" ]; then
-      if port_in_use "$ans"; then die "port $ans is also in use"; fi
-      if port_taken_by_other "$key" "$ans"; then die "port $ans is already assigned to another service"; fi
-    fi
+    ans="$(ask_port "$key" "$sugg")" || exit 1   # (its die ended only the $(...))
     warn "port $cur is $short → using $ans for $(svc_label "$svc") ($key)"
     cur="$ans"
   fi

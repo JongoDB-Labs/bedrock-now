@@ -42,9 +42,10 @@ Back to the [README](../README.md#security-model).
 - LiteLLM does **not** store prompt or response text, only metadata and spend. To store it, set
   `LITELLM_STORE_PROMPTS=true` (Settings → Account & security, or `./stack config set LITELLM_STORE_PROMPTS`). Spend logs are kept for 90 days (LiteLLM's
   built-in cleanup job, `maximum_spend_logs_retention_period`).
-- The portal's daily update check asks GitHub's public releases API for the latest release (unauthenticated,
-  https only, no redirects followed, answers capped at 1 MB, release notes shown as plain text). It sends
-  nothing about your install; `UPDATE_CHECK=false` turns it off.
+- The portal's daily update check asks GitHub's public releases API for the project's recent releases, one request
+  (unauthenticated, https only, no redirects followed, answers capped at 2 MB, release notes shown as plain text);
+  opening Home asks again when the last check is more than 3 hours old (at most every 15 minutes). It sends nothing
+  about your install; `UPDATE_CHECK=false` turns it off.
 - `claude-bedrock` sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so Bedrock sessions send no telemetry,
   error reports or update checks. Plain `claude` is not affected and follows Claude Code's own settings.
 
@@ -407,7 +408,8 @@ or systemd user unit (Linux, `~/.config/systemd/user/bedrock-now-helper-<project
 outside Docker, polls that folder every 3 seconds, and runs **only** `./stack update --yes`, `./stack rollback
 --yes` or `./stack clean --yes` in its own checkout, or `./stack helper auto on|off` for the automatic-updates
 switch (it writes `AUTO_UPDATE` to `.env`; nothing else). It reports progress in `.state/status/helper-status.json`
-and a heartbeat in `.state/status/helper.json`; both are read-only in the portal. After each update, rollback or
+and a heartbeat in `.state/status/helper.json`; both are read-only in the portal (as is
+`.state/status/terminal-job.json`, the record a `./stack` command run in a terminal leaves for Home). After each update, rollback or
 clean it exits and launchd/systemd start it again (so it runs the code an update brought); after a crash it is
 **not** restarted (`KeepAlive` → `SuccessfulExit`, `Restart=on-success`).
 

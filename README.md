@@ -74,7 +74,8 @@ then asks, once each:
 - whether to use the portal **only on this computer** (the default) or also from your phone or laptop through
   Tailscale ([Remote access](#remote-access); it is set up at the end, and `./stack remote enable tailscale` does it
   later);
-- an **admin email** for Chat and Admin (default: your `git config user.email`);
+- an **admin email** for Chat and Admin (default: your `git config user.email`; kept in lowercase, as Chat keeps
+  every address, and setup says so when it changed yours);
 - an optional **OpenRouter key** (Enter skips; [Optional: OpenRouter](#optional-openrouter));
 - **speech-to-text** for Chat's microphone and voice calls: Bedrock (the default), OpenAI, Groq or the browser only
   ([Voice](#voice-speech-to-text)).
@@ -82,7 +83,9 @@ then asks, once each:
 Then it:
 
 1. verifies the key with AWS, picks free ports and the portal address, and generates every secret into `.env`
-   (mode 600, never committed), including the portal password;
+   (mode 600, never committed), including the portal password. When port 80 is taken, it says so and asks which port
+   the portal should use instead (Enter takes the suggestion, 8800 or the next port free at that moment; a port in
+   use is asked again; `--yes` takes the suggestion), and names the new address;
 2. starts the stack and **probes every model** with a 1-token request (< $0.01 in total) to see which ones
    your key can use, and prints a table of ENABLED/DISABLED models with prices and reasons;
 3. creates LiteLLM keys with monthly budgets, configures Open WebUI and runs a smoke test;
@@ -127,6 +130,8 @@ and the `claude-bedrock` link (it keeps `.env`, `backups/`, the terminal's works
 then delete the folder.
 
 `./stack setup` is safe to re-run at any time: it keeps your keys and data and re-checks which models work.
+Stopped with Ctrl-C, it says what it had done, which services still run, and how to go on (`./stack setup`) or
+clean up (`./stack down` keeps the data; `./stack uninstall` removes it too).
 
 ## Using it
 
@@ -1301,10 +1306,13 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 ./stack update --to main       # or any tag / branch
 ```
 
-When a newer release is out, Home shows an **update card** with its release notes, what the update will do
-(backup, roughly how much it downloads, a few minutes of downtime) and the command to copy; `./stack status`
-and the `claude-bedrock` launch line mention it too (they read the portal's last check; no network of their
-own). Settings → Updates & backups (`UPDATE_CHECK=false`) turns the daily check off.
+When a newer release is out, Home shows an **update card**: one line for **every release since yours** (an update
+installs the newest, so a jump from v0.4.1 to v0.9.0 lists v0.5.0 to v0.9.0, each with its headline) and their
+release notes (the newest open), what the update will do (backup, roughly how much it downloads, a few minutes of
+downtime) and the command to copy; `./stack status` and the `claude-bedrock` launch line mention it too (they read
+the portal's last check; no network of their own). The portal checks once a day, and again when you open Home and
+its last check is more than 3 hours old (at most every 15 minutes); the card and the version label say when it last
+checked. Settings → Updates & backups (`UPDATE_CHECK=false`) turns the check off.
 
 The update first asks git whether there is anything new. If not, and the last successful setup ran on exactly
 this code, it says so (`already on v0.9.0 — nothing to update`) and stops: no backup, no restart, no Bedrock
@@ -1315,13 +1323,21 @@ the last update moved the code but did not finish (its image pull or setup faile
 Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest 5 are kept, plus the one
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
-by the new code. It ends with a short "What's new": voice, remote access and one-click or automatic updates
-(with the command that turns each on) and the release notes. Local changes to tracked files stop the update before
+by the new code. It ends with a short "What's new": each release it brought with its headline (all of them after a
+jump over several), voice, remote access and one-click or automatic updates (with the command that turns each on)
+and the release notes. Local changes to tracked files stop the update before
 anything happens; they are never discarded. If a later step fails, or the new version misbehaves,
 **`./stack rollback`** goes back: it checks out the code from before the update, restores the update's own
 pre-update backup (taking a backup of the current state first) and starts the previous images, which are still on
 disk. It also works when the update failed half-way. The failure message also shows the manual way
 (`git … && ./stack restore <backup>`).
+
+**What an update or a rollback ends:** besides a few minutes of downtime (answers in Chat, `claude-bedrock`
+requests and MCP sessions in progress fail; start them again), both recreate the **browser terminal's** container
+when it is on: its tmux windows close and whatever runs in them ends, Claude Code too (its conversations are kept:
+`claude-bedrock --resume` there picks one up again). **Code page** sessions come back by themselves from their
+transcripts, but a turn still running then stops (send it again); processes you started in the terminal do not come
+back. Home's Update and Roll back say this before you confirm, and that a Code page turn is running when one is.
 
 **One click from Home:** the update helper is a small background job under your user (a launchd agent on
 macOS, a systemd user unit on Linux). Setup asks *Turn on one-click updates from Home? (Y/n)*, and so does the
@@ -1331,8 +1347,11 @@ remembered and not asked again (an install that said no to the earlier opt-in qu
 time. The portal cannot install software on your computer by design, so this one step happens in a terminal;
 until then Home shows "One-click updates are off" with that command and a Copy button. With the helper, Home
 shows **Update now**, **Roll back** and **Clean up old images**. Each asks for the portal password again, and
-Home shows the progress (it reconnects when the portal restarts during the update) and the result, e.g.
-"Updated to v0.3.0 · freed 3.1 GB". The portal itself still cannot run anything: it can only leave a request
+Home shows the progress and the result, e.g. "Updated to v0.3.0 · freed 3.1 GB". While the update restarts the
+portal (about a minute or two), Home cannot reach it: the progress card then says it is reconnecting and for how
+long, and picks up by itself. Home's last job is the newest of any origin: a `./stack update`, `rollback`, `setup`,
+`config`, `code` or similar command you run in a terminal shows there too ("./stack code enable finished · Run in
+a terminal"). The portal itself still cannot run anything: it can only leave a request
 that the helper checks strictly. The helper then runs one of those three `./stack` commands, one at a time (a
 terminal `./stack update`, `rollback`, `clean`, `restore` or `setup` makes it answer "Busy"), with its own
 limits (one a minute, 12 a day). It does not update a checkout that follows a branch unless
@@ -1395,8 +1414,8 @@ setup runs without questions. What changes for you:
   *Bypass permissions* modes and auto mode in the terminal (Settings → Code
   page), and previews of dev servers over remote access (`REMOTE_PREVIEW`). Nothing you did not turn on starts.
 - **The browser terminal, if it is on,** gets a new image: its container is recreated, so its tmux session ends
-  (Claude Code's history stays; `claude-bedrock --resume` there). Claude Code's *auto* mode is now off there (and
-  for `claude-bedrock` on your computer: `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code;
+  (as at every update; Claude Code's history stays: `claude-bedrock --resume` there). Claude Code's *auto* mode is
+  now off there (and for `claude-bedrock` on your computer: `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code;
   [why](#a-lean-config-folder-for-bedrock)).
 - **Remote access with the terminal shared** (`REMOTE_TERMINAL=true`, Tailscale): turning the Code page on adds one
   more Tailscale Service (`<name>-code`), and remote previews another (`<name>-preview`); `./stack up` names each

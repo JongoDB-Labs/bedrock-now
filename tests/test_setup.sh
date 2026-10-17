@@ -236,3 +236,68 @@ test_litellm_ui_user_follows_db_admin_state() {
   printf 'LITELLM_DB_ADMIN_READY=true\n' >> "$ENV_FILE"
   assert_eq "$(litellm_ui_user)" "me@x.io"
 }
+
+# --- setup stopped with Ctrl-C (the rehearsal: no message, and postgres/rustfs/litellm left running) ---
+
+test_setup_stopped_says_what_was_done_what_runs_and_how_to_go_on() {
+  dc() { case "$*" in "ps --services --status running") printf 'postgres\nrustfs\nlitellm\n' ;; esac; }
+  unset BEDROCK_NOW_LOCK_HELD
+  setup_done "AWS key checked"; setup_done "Postgres + RustFS started"; setup_step "checking which models your AWS key can use"
+  if (_setup_interrupted INT) 2> "$TMP/err"; then return 1; else rc=$?; fi
+  assert_eq "$rc" 130
+  out="$(cat "$TMP/err")"
+  assert_contains "$out" "!!  setup stopped (Ctrl-C) while checking which models your AWS key can use"
+  assert_contains "$out" "    Done: AWS key checked; Postgres + RustFS started."
+  assert_contains "$out" "    Still running: postgres, rustfs, litellm."
+  assert_contains "$out" "    To go on: ./stack setup — it keeps .env (your AWS key, ports and passwords) and what was set up."
+  assert_contains "$out" "    To stop instead: ./stack down (keeps the data); ./stack uninstall removes the containers and data too."
+  # TERM; nothing running yet
+  dc() { :; }; SETUP_DONE=''; SETUP_STEP=''
+  if (_setup_interrupted TERM) 2> "$TMP/err"; then return 1; else rc=$?; fi
+  assert_eq "$rc" 143
+  out="$(cat "$TMP/err")"
+  assert_contains "$out" "!!  setup stopped (TERM)"
+  assert_contains "$out" "    Nothing was started yet."
+  assert_contains "$out" "    Nothing of the stack is running."
+  assert_contains "$out" "    To start over instead: ./stack uninstall (removes what setup made; keeps .env), then ./stack setup."
+  # run by ./stack update (its child, under its lock): the update says how to go on
+  BEDROCK_NOW_LOCK_HELD=1
+  if (_setup_interrupted INT) 2> "$TMP/err"; then return 1; fi
+  assert_not_contains "$(cat "$TMP/err")" "To go on"
+}
+
+# A real signal while a phase runs: run_phase's own trap removes its temp file and hands the signal to setup's hook
+# (before: it re-raised it, and setup ended without a word). TERM here: a background job of a script ignores SIGINT,
+# and Ctrl-C takes the same path (the trap's INT twin).
+test_setup_hook_runs_on_a_real_signal_during_a_phase() {
+  cat > "$TMP/run.sh" <<'SH'
+set -euo pipefail
+. "$STACK_DIR/lib/common.sh"; . "$STACK_DIR/lib/ports.sh"; . "$STACK_DIR/lib/portal.sh"; . "$STACK_DIR/lib/models.sh"
+. "$STACK_DIR/lib/commands.sh"
+dc() { case "$*" in "ps --services --status running") echo postgres ;; esac; }
+unset BEDROCK_NOW_LOCK_HELD
+_SIGNAL_HOOK=_setup_interrupted; _signal_traps_restore
+setup_done "Postgres + RustFS started"; setup_step "starting LiteLLM for the model check"
+run_phase "LiteLLM" litellm "$BASH" -c 'echo $$ > "$MARK.tmp"; mv "$MARK.tmp" "$MARK"; while :; do sleep 0.1; done'
+SH
+  MARK="$TMP/started" "$BASH" "$TMP/run.sh" 2> "$TMP/err" &
+  pid=$!
+  i=0; while [ ! -e "$TMP/started" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  child="$(cat "$TMP/started")"
+  # (Ctrl-C reaches both: the shell, and the command it waits for — e.g. docker compose up)
+  kill -TERM "$pid"; kill -TERM "$child"
+  ( sleep 15; kill -KILL "$pid" "$child" 2>/dev/null ) >/dev/null 2>&1 &   # (a hang must not hang the suite)
+  watchdog=$!
+  if wait "$pid"; then return 1; else rc=$?; fi
+  kill "$watchdog" 2>/dev/null || true
+  assert_eq "$rc" 143
+  assert_contains "$(cat "$TMP/err")" "setup stopped (TERM) while starting LiteLLM for the model check"
+  assert_contains "$(cat "$TMP/run.sh")" "_SIGNAL_HOOK=_setup_interrupted"
+  assert_contains "$(sed -n '/^_cleanup_on_signal() {/,/^}/p' "$STACK_DIR/lib/common.sh")" '${_SIGNAL_HOOK:+$_SIGNAL_HOOK INT; }kill -INT'
+  assert_contains "$(cat "$TMP/err")" "Still running: postgres."
+  assert_contains "$(cat "$TMP/err")" "To go on: ./stack setup"
+  # cmd_setup sets the hook first, and clears it once setup is done (the summary is only output)
+  c="$(sed -n '/^cmd_setup() {/,/^}/p' "$STACK_DIR/lib/commands.sh")"
+  assert_contains "$c" "_SIGNAL_HOOK=_setup_interrupted; _signal_traps_restore"
+  assert_contains "$c" "_SIGNAL_HOOK=''; _signal_traps_restore"
+}

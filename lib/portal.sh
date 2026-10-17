@@ -117,21 +117,30 @@ _port80_usable() {
   dc port caddy 8080 2>/dev/null | grep -q ':80$'
 }
 
-# resolve_portal_port — PORTAL_PORT: 80 when usable (URLs need no port), else 8800 (or the next free one,
-# with resolve_port's semantics). A port other than 80 in .env is kept while it is free or ours.
+# resolve_portal_port — PORTAL_PORT: 80 when usable (URLs need no port), else 8800 or the next port that is free at
+# that moment. An interactive setup says why and asks (Enter accepts the suggestion; a port in use is asked again);
+# --yes takes the suggestion. Either way one line names the port, the reason and the new address. A port other than
+# 80 in .env is kept while it is free or ours (resolve_port).
 resolve_portal_port() {
-  local cur why
+  local cur why port
   cur="$(get_env PORTAL_PORT)"
   if [ -n "$cur" ] && [ "$cur" != 80 ]; then resolve_port PORTAL_PORT "$cur" caddy 8080; save_portal_origin; return 0; fi
   if _port80_usable; then set_env PORTAL_PORT 80; save_portal_origin; return 0; fi
   if _docker_rootless; then why="rootless Docker cannot publish port 80"
   elif port_taken_by_other PORTAL_PORT 80; then why="port 80 is already assigned to another service in .env"
   else why="port 80 is in use"; fi
-  set_env PORTAL_PORT "$PORTAL_FALLBACK_PORT"
-  resolve_port PORTAL_PORT "$PORTAL_FALLBACK_PORT" caddy 8080
+  port="$(free_port_near PORTAL_PORT "$PORTAL_FALLBACK_PORT")" || die "$why, and no port from $PORTAL_FALLBACK_PORT to $((PORTAL_FALLBACK_PORT + 99)) is free — set PORTAL_PORT in .env"
+  if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then
+    warn "$why, so the portal cannot have the address $(_portal_url_at 80): it needs another port (its address then ends in :PORT)"
+    port="$(ask_port PORTAL_PORT "$port")" || exit 1   # (its die ended only the $(...))
+  fi
+  set_env PORTAL_PORT "$port"
   save_portal_origin
-  warn "$why → using $(get_env PORTAL_PORT) for the portal (PORTAL_PORT): $(portal_url)"
+  warn "$why → using $port for the portal (PORTAL_PORT): $(portal_url)"
 }
+
+# _portal_url_at PORT -> the portal's address on PORT
+_portal_url_at() { if [ "$1" = 80 ]; then printf 'http://%s\n' "$(portal_host)"; else printf 'http://%s:%s\n' "$(portal_host)" "$1"; fi; }
 
 # migrate_direct_ports — v0.1.x published Open WebUI and the RustFS console on their own ports; both are now
 # reached only through the portal, so those keys are dropped from .env (they would only confuse port checks).
