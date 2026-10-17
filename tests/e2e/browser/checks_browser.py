@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from playwright.sync_api import Error as PwError
+
 from common import (CHECKS_RE, ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, host_of, need, origin, real_helper_running,
                     redact, url_path)
 
@@ -760,9 +762,17 @@ def chat_frame(page, query: str = ""):
 
 
 def owui_api(frame, path: str, method="GET", body=None):
-    return frame.evaluate("""async ([p, m, b]) => { const r = await fetch(p, {method: m, headers: {Authorization: 'Bearer ' +
-        localStorage.token, 'Content-Type': 'application/json'}, body: b ? JSON.stringify(b) : undefined});
-        return {status: r.status, body: await r.text()}; }""", [path, method, body])
+    """Open WebUI's API from its frame (its token). A GET or DELETE is asked again (once the frame has loaded) when the
+    frame navigated while it ran — the portal gives the frame a new address to open a conversation; a POST never is."""
+    for attempt in range(3):
+        try:
+            return frame.evaluate("""async ([p, m, b]) => { const r = await fetch(p, {method: m, headers: {Authorization: 'Bearer ' +
+                localStorage.token, 'Content-Type': 'application/json'}, body: b ? JSON.stringify(b) : undefined});
+                return {status: r.status, body: await r.text()}; }""", [path, method, body])
+        except PwError as e:
+            if method not in ("GET", "DELETE") or "Execution context was destroyed" not in str(e) or attempt == 2:
+                raise
+            frame.wait_for_load_state("load", timeout=30000)
 
 
 @check("browser", "chat-loads-models")

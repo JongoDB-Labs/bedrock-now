@@ -341,7 +341,10 @@ def global_search(ctx):
         need("open-webui")
         fl, f = chat_frame(page)
         tag = f"bnsearch{secrets.token_hex(4)}"
-        r = owui_api(f, "/api/v1/chats/new", "POST", {"chat": {"title": f"Trip planning {tag}", "messages": []}})
+        # (in the shape Open WebUI's own new chat has: one without a history throws in its page when opened)
+        chat = {"title": f"Trip planning {tag}", "models": [], "params": {}, "history": {"messages": {}, "currentId": None},
+                "messages": [], "tags": [], "timestamp": int(time.time() * 1000)}
+        r = owui_api(f, "/api/v1/chats/new", "POST", {"chat": chat})
         expect(r["status"] == 200, f"new chat {r['status']}")
         cid = json.loads(r["body"])["id"]
         try:
@@ -351,9 +354,13 @@ def global_search(ctx):
             o.click()
             page.wait_for_function("id => document.querySelector('iframe[data-app=chat]').src.endsWith('/c/' + id)", arg=cid, timeout=10000)
             expect(page.locator(".tab[data-tab=chat][aria-current=page]").count() == 1, "the Chat tab is not shown")
+            # the frame's new address loads a new document in it (the page the chat was made from goes, and anything
+            # still running there): wait for the conversation's page before the frame is used again
+            f.wait_for_url(re.compile(re.escape(origin("chat")) + "/c/" + re.escape(cid) + "$"), timeout=30000)
+            fl.locator("#chat-input").wait_for(timeout=45000)
             result.append("a Chat conversation through Open WebUI's search → /c/<id>")
         finally:
-            owui_api(f, f"/api/v1/chats/{cid}", "DELETE")
+            owui_api(f, f"/api/v1/chats/{cid}", "DELETE")   # (asked again if the frame was still loading)
     except Skip as e:
         result.append(f"chat skipped ({e})")
     probs = rec.problems(allow=[r"^401 GET " + re.escape(origin("files")) + r"/rustfs/admin/v3/", r"console\.error .*No token found in localStorage"])
