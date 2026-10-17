@@ -160,7 +160,7 @@ _terminal_job_end() {
       update) if [ -n "$v" ] && [ "$v" != "${BEDROCK_NOW_JOB_FROM:-}" ]; then msg="Updated to $v"; else msg="No new version: still $v"; fi ;;
       rollback) msg="Rolled back to $v" ;;
       setup) msg="Setup finished ($v)" ;;
-      *) msg="Finished" ;;
+      *) msg='' ;;   # (Home's title says "./stack code enable finished" already)
     esac
   else
     phase=failed

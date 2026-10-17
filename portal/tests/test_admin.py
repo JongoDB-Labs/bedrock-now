@@ -450,7 +450,7 @@ def test_home_scripts_say_what_the_helper_reports():
 def term_job(st, phase, age=0, **kw):
     now = int(time.time()) - age
     (st / "terminal-job.json").write_text(json.dumps({
-        "id": f"t-{now - 30}-123", "action": "code", "command": "code enable", "phase": phase, "message": "Finished",
+        "id": f"t-{now - 30}-123", "action": "code", "command": "code enable", "phase": phase, "message": "",
         "started_at": now - 30, "updated_at": now, "finished_at": now if phase in ("done", "failed") else None,
         "version": "v0.9.0", "pid": 123, **kw}))
 

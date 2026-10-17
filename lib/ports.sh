@@ -89,7 +89,8 @@ resolve_port() {
     # Interactive runs explain before asking; the one-line decision below is printed either way.
     if [ "${ASSUME_YES:-0}" != 1 ] && _have_tty; then warn "$why"; fi
     ans="$(ask_port "$key" "$sugg")" || exit 1   # (its die ended only the $(...))
-    warn "port $cur is $short → using $ans for $(svc_label "$svc") ($key)"
+    # (the portal's new address too: it is the one you open)
+    warn "port $cur is $short → using $ans for $(svc_label "$svc") ($key)$( [ "$key" != PORTAL_PORT ] || ! declare -F _portal_url_at >/dev/null || printf ': %s' "$(_portal_url_at "$ans")")"
     cur="$ans"
   fi
   set_env "$key" "$cur"

@@ -109,7 +109,7 @@ test_a_terminal_command_records_running_then_done() {
   f="$(terminal_job_file)"
   assert_contains "$(cat "$TMP/during")" '"action": "code", "command": "code enable", "phase": "running", "message": "Running in a terminal"'
   assert_contains "$(cat "$TMP/during")" '"finished_at": null'
-  assert_contains "$(cat "$f")" '"phase": "done", "message": "Finished"'
+  assert_contains "$(cat "$f")" '"phase": "done", "message": ""'
   assert_contains "$(cat "$f")" '"version": "v0.9.0"'
   case "$(cat "$f")" in *'"finished_at": null'*) echo "no finish time" >&2; return 1 ;; esac
   _json_ok "$f" || return 1

@@ -353,6 +353,19 @@ test_portal_port_keeps_80_when_it_is_ours() {
   assert_eq "$(get_env PORTAL_PORT)" 80
 }
 
+# A port of its own in .env that something else holds now: asked again (with the new address in the decision line)
+test_portal_port_of_its_own_taken_is_asked_again_with_the_address() {
+  printf 'PORTAL_HOST=bn-x.localhost\nPORTAL_PORT=18952\n' > "$ENV_FILE"; _stub_ports "18952" 0
+  ASSUME_YES=0; _have_tty() { return 0; }
+  printf '18952\n18950\n' > "$TMP/answers"
+  ask() { local a; a="$(head -n 1 "$TMP/answers")"; sed -i.bak 1d "$TMP/answers"; echo "${a:-$2}"; }
+  resolve_portal_port 2> "$TMP/err"
+  assert_eq "$(get_env PORTAL_PORT)" 18950
+  assert_contains "$(cat "$TMP/err")" "port 18952 is in use right now — choose another"
+  assert_contains "$(cat "$TMP/err")" "port 18952 is in use → using 18950 for the portal (PORTAL_PORT): http://bn-x.localhost:18950"
+  assert_eq "$(get_env PORTAL_ORIGIN)" "http://bn-x.localhost:18950"
+}
+
 test_portal_port_keeps_a_custom_port() {
   printf 'PORTAL_PORT=8900\n' > "$ENV_FILE"; _stub_ports "" 0
   ASSUME_YES=1 resolve_portal_port 2>/dev/null

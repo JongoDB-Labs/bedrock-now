@@ -355,7 +355,7 @@ def update_last_job_and_reconnecting(ctx):
                                                   "started_at": now - 600, "updated_at": now - 500, "finished_at": now - 500,
                                                   "version": "v0.4.1", "trigger": "request"})
         _write_json(files["terminal-job.json"], {"id": f"t-{now - 60}-1", "action": "code", "command": "code enable", "phase": "done",
-                                                 "message": "Finished", "started_at": now - 60, "updated_at": now - 5,
+                                                 "message": "", "started_at": now - 60, "updated_at": now - 5,
                                                  "finished_at": now - 5, "version": "v0.9.0", "pid": 1})
         page.reload()
         page.wait_for_selector("#job:not([hidden])", timeout=15000)
