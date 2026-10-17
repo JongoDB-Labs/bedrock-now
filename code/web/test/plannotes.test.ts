@@ -12,6 +12,7 @@ import {
   keepPlanningMessage,
   planLines,
   planNotes,
+  prunePlanComments,
   setPlanComment,
 } from '../src/plannotes';
 
@@ -91,4 +92,8 @@ test('the store: one comment a line, edit and remove, at most 50 a plan, dropped
   dropPlanComments(id);
   assert.equal(planNotes.get()[id], undefined);
   assert.ok(planNotes.get().p2);
+  // a plan answered elsewhere (or timed out): its comments go when a card looks
+  setPlanComment('p3', 1, 'x');
+  prunePlanComments(new Set(['p3']));
+  assert.deepEqual(Object.keys(planNotes.get()), ['p3']);
 });

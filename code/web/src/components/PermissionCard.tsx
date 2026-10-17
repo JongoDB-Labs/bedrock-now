@@ -15,7 +15,7 @@ import { destinationText, modeName, rulePreview, sentence } from '../permission'
 import { compact, lineDiff } from '../diff';
 import { commandShape, label, prettyJson, safe } from '../text';
 import { answerPermission, answerQuestions, allowAndSwitchToAuto, store, autoOk, sendToSession, toast } from '../app';
-import { approvedFollowUp, dropPlanComments, keepPlanningMessage, planLines, planNotes, setPlanComment, PLAN_COMMENT_MAX, PLAN_COMMENTS_MAX, type PlanComment } from '../plannotes';
+import { approvedFollowUp, dropPlanComments, keepPlanningMessage, planLines, planNotes, prunePlanComments, setPlanComment, PLAN_COMMENT_MAX, PLAN_COMMENTS_MAX, type PlanComment } from '../plannotes';
 import { useSel } from '../store';
 import { PERMISSION_SHOWN_CHARS, PERMISSION_SHOWN_EDITS, PERMISSION_SHOWN_STRING, type Decision } from '../api';
 import { typingIn } from '../focus';
@@ -244,6 +244,8 @@ function PlanCard({ req, index, total }: { req: PermissionReq; index: number; to
   useEffect(() => {
     if (keep) box.current?.focus();
   }, [keep]);
+  // (comments of plans no longer waiting — answered in another tab, timed out — go)
+  useEffect(() => prunePlanComments(new Set(Object.values(store.get().views).flatMap((v) => v.permissions.map((p) => p.id)))), [req.id]);
   const ok = armed && req.complete;
   const n = comments.length;
   const approve = (mode: 'default' | 'acceptEdits' | 'auto') => {

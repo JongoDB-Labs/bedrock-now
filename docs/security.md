@@ -1244,7 +1244,8 @@ selection, Alt+K). And a plan Claude presents takes comments on its lines.
   answer holds the last N lines without trailing blanks, each at most 4,000 characters, at most 64 KiB (the newest
   lines kept; a cut is said). The code container cleans the text again (controls out, CR as a line break), caps it and
   checks every field (pane id, window index, the window's name and command as one printable line); the page shows it
-  as text. **Proof**: `code/test/bn-coded-capture.test.mjs` (a stand-in tmux records every argument; hostile pane ids,
+  as text. It is what you could copy from the panel yourself: whatever shows there — a secret you printed too — goes
+  to the model (through Bedrock, as every prompt) once you send it; the chip shows it first. **Proof**: `code/test/bn-coded-capture.test.mjs` (a stand-in tmux records every argument; hostile pane ids,
   answers and contents; hooks; caps; timing), `code/test/capture-api.test.mjs`.
 - [x] **The workspace's text in a prompt is data — and still part of your message.** A mention quotes text anything in
   the sandbox can write: a file's lines, a command's output in the terminal, git's diff, a task's output. It goes

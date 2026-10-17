@@ -408,7 +408,15 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
                 if (el && i === pick) el.scrollIntoView({ block: 'nearest' });
               }}
             >
-              <span class="palette-label">{o.special && <Icon name={ICONS[o.special.kind]} size={12} />} {label(o.label, 300)}</span>
+              <span class="palette-label">
+                {o.special ? (
+                  <>
+                    <Icon name={ICONS[o.special.kind]} size={12} /> {o.label}
+                  </>
+                ) : (
+                  o.label
+                )}
+              </span>
               {o.hint && <span class="palette-hint">{o.hint}</span>}
               {o.desc && <span class="palette-desc">{o.desc}</span>}
             </button>

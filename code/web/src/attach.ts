@@ -94,8 +94,9 @@ export async function addLines(path: string, from: number, to: number, given?: {
 
 /** The `@path#L…` you typed that no chip holds: read now (for a prompt on its way), never kept as chips. */
 export async function typedLines(text: string): Promise<{ mentions: Mention[]; error: string }> {
-  const have = new Set(mentionStore.get().items.filter((m) => m.kind === 'lines' && m.path !== undefined).map((m) => rangeKey(m.path as string, m.from ?? 0, m.to ?? 0)));
-  const refs = lineRefs(text).filter((r) => !have.has(rangeKey(r.path, r.from, r.to)));
+  // (a chip of the same file whose lines overlap is the same mention: a range past the file's end was clamped there)
+  const have = mentionStore.get().items.filter((m) => m.kind === 'lines' && m.path !== undefined);
+  const refs = lineRefs(text).filter((r) => !have.some((m) => m.path === r.path && (m.from ?? 0) <= r.to && r.from <= (m.to ?? 0)));
   const out: Mention[] = [];
   for (const r of refs.slice(0, MENTIONS_MAX)) {
     try {

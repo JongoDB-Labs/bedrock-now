@@ -6,6 +6,7 @@
 // (test/plannotes.test.ts).
 import { createStore, type Store } from './store';
 import { visible } from './text';
+import { cutAt } from './mentions';
 
 export interface PlanComment {
   /** 1-based, in the plan's text */
@@ -36,7 +37,7 @@ export function commentList(comments: PlanComment[], lines: string[]): string {
     .map((c) => {
       const raw = (lines[c.line - 1] ?? '').trim();
       const line = visible(raw).replace(/\n/g, ' ');
-      const quote = line.length > QUOTE_MAX ? `${line.slice(0, QUOTE_MAX)} …` : line;
+      const quote = line.length > QUOTE_MAX ? `${cutAt(line, QUOTE_MAX)} …` : line;
       return `line ${c.line}:\n> ${quote || '(an empty line)'}\n${cleanComment(c.text)}`;
     })
     .join('\n\n');
@@ -50,7 +51,7 @@ export function keepPlanningMessage(note: string, comments: PlanComment[], lines
   const text = list ? `${n}\n\nMy comments on lines of the plan:\n\n${list}` : n;
   if (text.length <= PLAN_NOTE_MAX) return text;
   const tail = '\n… (more comments did not fit)';
-  return text.slice(0, PLAN_NOTE_MAX - tail.length) + tail;
+  return cutAt(text, PLAN_NOTE_MAX - tail.length) + tail;
 }
 
 /** After an approval: the comments as your next prompt (empty: none). */
@@ -71,6 +72,17 @@ export function setPlanComment(id: string, line: number, text: string): boolean 
   const next = t ? [...others, { line, text: t }].sort((a, b) => a.line - b.line) : others;
   planNotes.set((s) => ({ ...s, [id]: next }));
   return true;
+}
+
+/** Only the comments of plans still waiting (`waiting`: their ids) stay — a plan answered elsewhere, or timed out. */
+export function prunePlanComments(waiting: Set<string>): void {
+  planNotes.set((s) => {
+    const gone = Object.keys(s).filter((id) => !waiting.has(id));
+    if (!gone.length) return s;
+    const next = { ...s };
+    for (const id of gone) delete next[id];
+    return next;
+  });
 }
 
 /** The plan was answered (or went): its comments go. */
