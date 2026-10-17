@@ -205,7 +205,7 @@ image_size_mb() { # rough on-disk size of a pinned image, for the first-run down
 missing_images() {
   local img
   dc config --images 2>/dev/null | while IFS= read -r img; do
-    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local | */terminal:local | */code:local) continue ;; esac
+    case "$img" in '' | */shared-mcp:local | */portal:local | */stt:local | */caddy-dns:local | */terminal:local | */terminal-egress:local | */code:local) continue ;; esac
     docker image inspect "$img" >/dev/null 2>&1 || printf '%s\n' "$img"
   done
 }
