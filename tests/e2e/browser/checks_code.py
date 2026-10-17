@@ -1658,10 +1658,14 @@ def ui_guardrails(ctx):
     see(page.locator(".chat-head .pane-title")).to_have_text("New session", timeout=20000)
     page.get_by_test_id("mode-picker").click()
     page.get_by_test_id("mode-default").click()
-    ask(page, "Use the Bash tool to run exactly this command, once, and nothing else: echo bn-e2e-always")
+    # a command that changes something asks in Manual (echo would not: a read-only command); Always on its card
+    mark = f"bn-e2e-always-{int(time.time())}.txt"
+    ask(page, f"Use the Bash tool to run exactly this command, once, and nothing else: touch {mark}")
     card = page.get_by_test_id("permission")
     see(card).to_be_visible(timeout=150000)
-    see(card).to_contain_text("echo bn-e2e-always")
+    see(card).to_contain_text(mark)
+    rules = [r for r in (card.get_by_test_id("perm-always").get_attribute("title") or "").split("\n") if r.strip()]
+    expect(rules, "the card's Always offers no rule")
     card.get_by_test_id("perm-always").click()
     answered(page)
     sid = page.evaluate("() => JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
@@ -1669,15 +1673,18 @@ def ui_guardrails(ctx):
     page.get_by_test_id("more-menu").click()
     page.get_by_test_id("menu-permissions").click()
     user = page.get_by_test_id("perm-file-user")
-    rule = user.get_by_test_id("perm-rule").filter(has_text="bn-e2e-always")
-    see(rule).to_have_count(1, timeout=20000)
+    rule = user.get_by_test_id("perm-rule").filter(has=page.locator("code.perm-rule", has_text=rules[0]))
+    see(rule.first).to_be_visible(timeout=20000)
     see(page.get_by_test_id("perm-bypass-ask")).to_contain_text("Edit(//workspace/.git/**)")
     shot(page, "80-code-ui-permissions")
-    rule.get_by_test_id("perm-remove").click()
-    see(user.get_by_test_id("perm-rule").filter(has_text="bn-e2e-always")).to_have_count(0, timeout=20000)
+    rule.first.get_by_test_id("perm-remove").click()
+    t0 = time.time()
+    while time.time() - t0 < 20 and rules[0] in c.api("GET", "/api/permissions")["json"]["user"]["allow"]:
+        page.wait_for_timeout(500)
     perm = c.api("GET", "/api/permissions")["json"]
-    expect(not any("bn-e2e-always" in r for r in perm["user"]["allow"]), f"the rule is still there: {perm['user']['allow'][:5]}")
+    expect(rules[0] not in perm["user"]["allow"], f"the rule {rules[0]!r} is still there: {perm['user']['allow'][:5]}")
     page.get_by_test_id("permissions-dialog").get_by_role("button", name="Close").click()
+    c.api("DELETE", f"/api/fs?path={mark}")
     # a budget with its stop: the backend holds it, the next prompt restarts Claude Code for it (said), the answer comes
     page.get_by_test_id("more-menu").click()
     page.get_by_test_id("menu-budget").click()
@@ -1749,7 +1756,7 @@ def ui_guardrails(ctx):
     see(page.locator(f"section.code-card .code-sessions a[href*='session={sid}']")).to_have_count(1, timeout=30000)
     see(page.locator("#code-budget")).to_contain_text("this period", timeout=40000)
     shot(page, "84-home-code-card")
-    return f"Always rule listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not sent; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
+    return f"Always rule {rules[0]!r} listed and removed; budget $5 with its stop (restart said, answer came); Done group; link draft not sent; terminal typed the resume, a resume here refused, then allowed after /exit; Home's card lists the session"
 
 
 @check("browser", "code-settings-row")
