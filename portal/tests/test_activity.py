@@ -212,6 +212,12 @@ def test_the_page_builds_text_only_and_asks_for_notifications_only_when_turned_o
     assert 'chip.addEventListener("click", () => setNotify(!state.notify))' in js
     # nothing about an item but its id and times goes into localStorage
     assert 'localStorage.setItem(STORE, JSON.stringify(state))' in js and 'const MAPS = ["read", "dismissed", "first", "notified", "codeEp"]' in js
+    # a notification says fixed words only (notificationText): never an item's title or text (a Code session's title, a
+    # job's message, an error) — those stay in the panel
+    show = js[js.index("function showNotification(it)"):js.index("function maybeNotify()")]
+    assert "const t = notificationText(it);" in show and "it.title" not in show and "it.text" not in show
+    note = js[js.index("function notificationText(it)"):js.index("const isUnread")]
+    assert "it.title" not in note and "it.text" not in note
     # what was there when the page opened is never a notification; none while the page has the focus
     assert "if (!primed) { primed = true; return; }" in js and 'document.visibilityState === "visible" && document.hasFocus()' in js
     # the Code page's report: only through code.js's checked event

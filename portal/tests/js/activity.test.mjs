@@ -95,3 +95,24 @@ test("merge: newest first, an item without a time takes when this browser first 
   const st = { read: { "l:1": 1 }, dismissed: {} };
   assert.equal(A.unreadCount(m, st), 1, "s:2 only shows a state (a job running); l:1 is read");
 });
+
+test("a browser notification says fixed words only: no session title, prompt, job message or error on a lock screen", () => {
+  const now = 1_800_000_000_000;
+  const secret = "SECRET-prompt: deploy with key sk-live-123";
+  const code = A.codeItems({ sessions: [{ id: U1, state: "waiting", title: secret }] }, {}, now).items[0];
+  const job = A.takeServerItem({ id: "job:terminal:t-1-2:failed", kind: "job", level: "bad", title: `./stack config set failed ${secret}`,
+    text: secret, at: 5, link: "#home", data: { origin: "terminal", action: "config", phase: "failed" } });
+  const done = A.takeServerItem({ id: "job:helper:a:done", kind: "job", level: "good", title: "Update finished", text: secret, at: 5, link: "#home",
+    data: { phase: "done" } });
+  const [warn, over] = A.budgetItems({ alert_pct: 80, keys: [key("claude-code", 42.5, 50, { label: "Claude Code" }), key("setup", 9, 5, { label: "Setup and tests" })] });
+  const or = A.openrouterItems({ openrouter_usage: { failures: { groups: [{ label: secret, count: 2, last_at: "2026-10-17T10:00:00+00:00", fix: secret }] } } })[0];
+  const other = A.takeServerItem({ id: "models:5", kind: "models", level: "warn", title: secret, text: secret, at: 5, link: "" });
+  const got = [code, job, done, warn, over, or, other].map((it) => plain(A.notificationText(it)));
+  assert.deepEqual(got.map((n) => n.title), ["A Code session needs you", "A job failed", "A job finished", "Budget alert: Claude Code at 85 %",
+    "Budget used up: Setup and tests", "OpenRouter requests failed", "A model check could not check every model"]);
+  for (const n of got) {
+    assert.equal(n.body, "Details in Activity, in the bedrock-now portal.");
+    assert.ok(!JSON.stringify(n).includes("SECRET") && !JSON.stringify(n).includes("sk-live"), JSON.stringify(n));
+  }
+  assert.equal(A.notificationText({ kind: "whatever", title: secret }).title, "Something new in Activity");
+});

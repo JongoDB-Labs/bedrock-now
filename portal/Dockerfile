@@ -1,7 +1,8 @@
 # repo: the repository's catalog/settings*.tsv, README.md and docs/: for the tests that check the real files (the
 # Settings page's layout, its links), and for the global search's docs index (stage docs). portal/test.sh passes them
-# (--build-context repo=..), and so does compose.yaml (additional_contexts: only the files named below are sent); a plain
-# `docker build portal` has none: this empty stage stands in, those tests skip and the docs index is empty. The
+# (--build-context repo=..), and so does compose.portal-docs.yaml (additional_contexts, where Docker Compose 2.17+ reads
+# it: only the files named below are sent); with an older Compose, or a plain `docker build portal`, there is none:
+# this empty stage stands in, those tests skip and the docs index is empty. The
 # repository's files themselves never reach the runtime image: only the index built from them.
 FROM scratch AS repo
 

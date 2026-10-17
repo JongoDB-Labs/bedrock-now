@@ -4,7 +4,7 @@
 // diagnostics, updates, rollbacks, ./stack commands), the Code page turned on by an update nobody watched (Keep / Turn
 // off: what used to be a banner on Home), a model check that could not check every model, failed OpenRouter requests.
 //
-// Where each comes from — nothing new leaves this computer, and nothing here is sent anywhere:
+// Where each comes from — nothing new is sent outside the stack, and nothing here is sent anywhere:
 //   /api/activity   what the status files say (portal/activity.py): the jobs, the update, the Code page notice, the
 //                   model check — the same for every browser
 //   /api/summary    budgets and OpenRouter failures (Home loads it; here at most every 5 minutes while Home is not shown)
@@ -55,7 +55,7 @@
         title: over ? `${label}: budget used up` : `${label}: ${Math.floor(pct)}% of its budget used`,
         text: (over ? "Requests with this key are refused until it resets. " : "") +
           `${money(k.spend)} of ${money(k.max_budget)} this period${resets}.`,
-        at: null, link: `#settings/${BUDGET_SETTING[k.alias] || "spending"}`, notify: true });
+        at: null, link: `#settings/${BUDGET_SETTING[k.alias] || "spending"}`, notify: true, data: { label, pct: Math.floor(pct), over } });
     }
     return out;
   }
@@ -152,10 +152,30 @@
     return all.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
   }
 
+  // What a browser notification says: fixed words only, never an item's title or text — a Code session's title or
+  // prompt, a job's message, a model name or an error would otherwise show on a lock screen or in the system's
+  // notification history. The details stay in the Activity panel, behind the portal's sign-in. A budget names its
+  // key's label (this stack's own wording: "Chat (Open WebUI)") and the percentage.
+  const NOTE_BODY = "Details in Activity, in the bedrock-now portal.";
+  function notificationText(it) {
+    const d = it && it.data && typeof it.data === "object" ? it.data : {};
+    let title = "Something new in Activity";
+    if (it && it.kind === "budget") {
+      const label = typeof d.label === "string" && d.label ? d.label.slice(0, 40) : "a key";
+      title = d.over === true ? `Budget used up: ${label}` : `Budget alert: ${label} at ${Number.isInteger(d.pct) ? d.pct : "?"} %`;
+    } else if (it && it.kind === "code") title = "A Code session needs you";
+    else if (it && it.kind === "job") title = d.phase === "failed" ? "A job failed" : d.phase === "skipped" ? "A job was skipped" : "A job finished";
+    else if (it && it.kind === "update") title = "A bedrock-now update is available";
+    else if (it && it.kind === "code-default") title = "The Code page was turned on";
+    else if (it && it.kind === "models") title = "A model check could not check every model";
+    else if (it && it.kind === "openrouter") title = "OpenRouter requests failed";
+    return { title, body: NOTE_BODY };
+  }
+
   const isUnread = (it, s) => it.notify !== false && !s.read[it.id] && !s.dismissed[it.id];
   const unreadCount = (items, s) => items.filter((it) => isUnread(it, s)).length;
 
-  const pure = { budgetItems, openrouterItems, codeItems, takeServerItem, loadState, prune, merge, unreadCount, isUnread };
+  const pure = { budgetItems, openrouterItems, codeItems, takeServerItem, loadState, prune, merge, unreadCount, isUnread, notificationText };
   root.bnActivity = { _pure: pure };
   if (typeof document === "undefined" || typeof document.querySelector !== "function") return;
 
@@ -198,14 +218,15 @@
   // --- notifications (opt-in, while a portal tab is open) ---
   const canNotify = () => "Notification" in window;
   function showNotification(it) {
-    const opts = { body: `${it.text}`.slice(0, 180), tag: `bn-${it.id}`.slice(0, 120), icon: "/icons/app-192.png" };
+    const t = notificationText(it);   // (generic words only: see above)
+    const opts = { body: t.body, tag: `bn-${it.id}`.slice(0, 120), icon: "/icons/app-192.png" };
     try {
-      const n = new Notification(it.title, opts);
+      const n = new Notification(t.title, opts);
       n.onclick = () => { try { window.focus(); } catch (_) { /* fine */ } n.close(); setOpen(true); };
     } catch (_) {
       // Android Chrome: notifications only through the service worker (sw.js focuses the portal on a click)
       if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-        navigator.serviceWorker.getRegistration().then((r) => r && r.showNotification(it.title, opts)).catch(() => { /* fine */ });
+        navigator.serviceWorker.getRegistration().then((r) => r && r.showNotification(t.title, opts)).catch(() => { /* fine */ });
       }
     }
   }

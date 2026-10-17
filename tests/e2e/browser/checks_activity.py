@@ -252,7 +252,9 @@ def activity_notifications(ctx):
         page.evaluate("() => window.bnActivity.refresh()")
         page.wait_for_function("() => window.__notes.length > 0", timeout=15000)
         notes = page.evaluate("window.__notes")
-        expect(len(notes) == 1 and notes[0]["title"] == "./stack update failed" and notes[0]["tag"] == f"bn-job:terminal:{jid}:failed", f"notifications {notes}")
+        # fixed words only: nothing of the job's message (it could be on a lock screen)
+        expect(len(notes) == 1 and notes[0]["title"] == "A job failed" and notes[0]["body"] == "Details in Activity, in the bedrock-now portal."
+               and notes[0]["tag"] == f"bn-job:terminal:{jid}:failed" and "e2e" not in json.dumps(notes), f"notifications {notes}")
         # the same item again (another poll): no second one; with the focus: none
         page.evaluate("() => window.bnActivity.refresh()")
         page.wait_for_timeout(800)
@@ -265,7 +267,7 @@ def activity_notifications(ctx):
         rec.save()
         expect(not probs, f"errors: {probs}")
         return ("nothing asked until the click; refused → stays off and says where to allow them; allowed → asked once, none for "
-                "what was there, one for a new job while unfocused, none again, none while focused")
+                "what was there, one (fixed words, no job message) for a new job while unfocused, none again, none while focused")
     finally:
         saved.restore()
 

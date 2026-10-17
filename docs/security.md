@@ -280,8 +280,9 @@ or MCP token — it is restarted with them, as it holds the current ones), and c
 ## Activity and search
 
 The portal's notification centre (the bell, `static/activity.js`) and its global search (Ctrl/⌘+K, `static/search.js`)
-only read what the portal already has, and **no new data leaves this computer**: nothing is sent to a third party, no
-push service is used, and there is no new store — the server keeps no list of its own.
+only read what the portal already has, and **nothing new is sent outside your stack**: nothing goes to a third party,
+no push service is used, and there is no new store — the server keeps no list of its own. (Over remote access, what
+you type into the search travels from your device to the portal, as every request there does.)
 
 - **What Activity reads.** `GET /api/activity` (a session and `X-Requested-With`, like every `/api/*`) derives its
   items, each time it is asked, from files that exist already, read-only through the same reader as Home (no
@@ -298,9 +299,13 @@ push service is used, and there is no new store — the server keeps no list of 
   UUID); entries older than 45 days are dropped. A Code page notice kept with the old Home banner's **Keep** stays
   kept (`bn.code.defaultNotice`).
 - **Browser notifications** are off until you turn them on in the panel, which asks the browser's permission; then
-  only items that appear while a portal tab is open and not focused raise one (title and text, which the browser
-  shows as plain text; a Code session's title is sandbox text), at most three at a time, never for what was there
-  when the page opened. There is no Web Push: no subscription, no push service, no server-sent notification.
+  only items that appear while a portal tab is open and not focused raise one, at most three at a time, never for
+  what was there when the page opened. A notification says **fixed words only** — what kind of thing happened ("A
+  Code session needs you", "A job failed", "A bedrock-now update is available"; for a budget its key's label from
+  this stack and the percentage) and "Details in Activity" — never an item's title or text: a Code session's title
+  (sandbox text, often the prompt), a job's message, a model name or an error could otherwise show on a lock screen,
+  in the system's notification history or on a paired watch. The details stay in the panel, behind the portal's
+  sign-in. There is no Web Push: no subscription, no push service, no server-sent notification.
   `sw.js` only handles a click on one (it focuses the portal); on Android Chrome, which allows notifications only
   through a service worker, it shows them.
 - **The Code tab's frame and the portal** talk by `postMessage`, and each side checks the other's origin *and*
@@ -332,8 +337,10 @@ push service is used, and there is no new store — the server keeps no list of 
 - **Settings and docs.** `GET /api/search/index` returns the Settings page's sections and settings (titles and
   one-line summaries from `catalog/settings-layout.tsv` and `catalog/settings.tsv`: never a value of `.env`) and an
   index of README.md and `docs/*.md` (headings, GitHub's anchors, a line of text each) built when the portal's image
-  is built (`portal/Dockerfile`, stage `docs`; compose's `additional_contexts` sends BuildKit only those files, never
-  `.env`, `.state` or `backups/`). A docs result opens the section on github.com in a new tab
+  is built (`portal/Dockerfile`, stage `docs`; `compose.portal-docs.yaml` gives BuildKit this checkout as a named
+  context, and BuildKit sends only the files the Dockerfile names — never `.env`, `.state` or `backups/`). `./stack`
+  adds that file only where Docker Compose reads `additional_contexts` (2.17 or newer): with an older Compose the
+  portal is built without it, its docs index is empty and the search says so. A docs result opens the section on github.com in a new tab
   (`noopener,noreferrer`) — a link you click, like the release notes' — at your release's tag.
 - **Matching is linear.** Every query and candidate is capped (64 and 256 characters, 5,000 candidates per search)
   and matched by one greedy pass plus a Knuth–Morris–Pratt substring search (`static/fuzzy.js`, the Code palette's

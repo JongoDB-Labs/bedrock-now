@@ -446,3 +446,57 @@ test_exit_trap_is_gone_once_every_hook_is_off() {
   off_exit _hook_b
   assert_eq "$(trap -p EXIT)" ""
 }
+
+# --- the portal's docs index needs Docker Compose 2.17+ (additional_contexts): an overlay only where it is read ---
+
+test_compose_version_that_reads_additional_contexts() {
+  for v in 2.17.0 v2.17.0 2.40.3-desktop.1 2.24.6+ds1-0ubuntu1 3.0.0 10.1; do compose_contexts_ok "$v" || { echo "should read: $v" >&2; return 1; }; done
+  for v in 2.16.9 v2.3.3 1.29.2 2 '' x.y.z 2.x; do ! compose_contexts_ok "$v" || { echo "should not read: $v" >&2; return 1; }; done
+}
+
+test_dc_adds_the_docs_overlay_only_where_compose_reads_it() {
+  docker() { case "$*" in "compose version --short") echo "$VER"; echo asked >> "$TMP/asked" ;; *) printf '%s\n' "$*" >> "$TMP/args" ;; esac; }
+  : > "$ENV_FILE"
+  unset BEDROCK_NOW_COMPOSE_CONTEXTS _BN_COMPOSE_CTX _BN_COMPOSE_VERSION
+  VER=2.40.3-desktop.1; dc ps; dc ps
+  assert_contains "$(cat "$TMP/args")" "-f $STACK_DIR/compose.yaml -f $STACK_DIR/compose.portal-docs.yaml"
+  assert_eq "$(wc -l < "$TMP/asked" | tr -d ' ')" 1   # asked once per command
+  : > "$TMP/args"; unset _BN_COMPOSE_CTX; VER=2.16.2; dc ps
+  assert_not_contains "$(cat "$TMP/args")" "compose.portal-docs.yaml"
+  assert_eq "$_BN_COMPOSE_VERSION" 2.16.2
+  : > "$TMP/args"; unset _BN_COMPOSE_CTX; VER=''; dc ps   # (no answer: an older one)
+  assert_not_contains "$(cat "$TMP/args")" "compose.portal-docs.yaml"
+  : > "$TMP/args"; : > "$TMP/asked"; BEDROCK_NOW_COMPOSE_CONTEXTS=1 dc ps
+  assert_contains "$(cat "$TMP/args")" "compose.portal-docs.yaml"
+  assert_eq "$(cat "$TMP/asked")" ""   # the override asks nothing
+  # ./stack asks before anything else (once), never for help
+  assert_contains "$(cat "$STACK_DIR/stack")" 'case "$cmd" in help | -h | --help) ;; *) compose_reads_contexts || true ;; esac'
+}
+
+test_an_older_compose_builds_the_portal_without_the_docs_index_and_says_so() {
+  ensure_portal_password_hash() { :; }
+  dc() { echo "dc $*" >> "$TMP/dc"; }
+  BEDROCK_NOW_COMPOSE_CONTEXTS=0; _BN_COMPOSE_VERSION=2.12.2
+  out="$(_build_and_up_portal 2>&1)"
+  assert_contains "$out" "Docker Compose 2.12.2 is older than 2.17: the portal is built without its search's docs index"
+  assert_contains "$(cat "$TMP/dc")" "dc build -q portal"   # it still builds and starts
+  : > "$TMP/dc"; BEDROCK_NOW_COMPOSE_CONTEXTS=1
+  assert_not_contains "$(_build_and_up_portal 2>&1)" "older than 2.17"
+}
+
+test_compose_renders_the_portals_docs_context_only_with_the_overlay() {
+  [ -n "${BN_REAL_DOCKER:-}" ] && compose_contexts_ok "$("$BN_REAL_DOCKER" compose version --short 2>/dev/null)" \
+    || { echo "no docker compose 2.17+" >&2; return 77; }
+  docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
+  printf 'POSTGRES_PASSWORD=p\nRUSTFS_ACCESS_KEY=a\nRUSTFS_SECRET_KEY=s\nLITELLM_MASTER_KEY=m\nLITELLM_SALT_KEY=s\nLITELLM_UI_PASSWORD=u\nWEBUI_SECRET_KEY=w\nOPENWEBUI_ADMIN_EMAIL=a@b.c\nOPENWEBUI_ADMIN_PASSWORD=p\nSHARED_MCP_TOKEN=t\n' > "$ENV_FILE"
+  _build() { dc config --format json 2>/dev/null | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)["services"]["portal"]["build"], sort_keys=True))'; }
+  local b
+  b="$(BEDROCK_NOW_COMPOSE_CONTEXTS=1 _build)"
+  assert_contains "$b" "\"additional_contexts\": {\"repo\": \"$STACK_DIR\"}"
+  assert_contains "$b" "\"context\": \"$STACK_DIR/portal\"" && assert_contains "$b" '"target": "runtime"'
+  b="$(BEDROCK_NOW_COMPOSE_CONTEXTS=0 _build)"
+  assert_not_contains "$b" "additional_contexts"
+  assert_contains "$b" '"target": "runtime"'
+  # compose.yaml itself never names it (an older Compose refuses the whole file for an unknown key)
+  assert_not_contains "$(cat "$STACK_DIR/compose.yaml")" "additional_contexts"
+}

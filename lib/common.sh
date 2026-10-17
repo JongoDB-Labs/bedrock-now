@@ -269,6 +269,8 @@ dc() {
   # The same for AWS: .env decides the key (or none, with AWS_AUTH=instance-role) and the region, never the shell
   # (./stack warns once per command when your shell's key differs: warn_shell_aws_ignored in lib/host.sh).
   local f=() o
+  # the portal's docs index (compose.portal-docs.yaml): only where this Docker Compose reads additional_contexts
+  if compose_reads_contexts; then f+=(-f "$STACK_DIR/compose.portal-docs.yaml"); fi
   for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
   # Bedrock speech-to-text: its container is in the "stt" profile (lib/stt.sh), so down/ps/logs include it too.
   if [ "${_STT_PROFILE:-}" = 1 ] || [ "$(get_env STT_PROVIDER)" = bedrock ]; then f+=(--profile stt); fi
@@ -283,6 +285,31 @@ dc() {
     TERMINAL_CLAUDE_POLICY="$(claude_policy)" \
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
+}
+
+# compose_contexts_ok VERSION -> 0 for a Docker Compose version (2.40.3-desktop.1, v2.17.0) that reads a service's
+# build.additional_contexts: 2.17 or newer. Anything unreadable counts as older.
+compose_contexts_ok() {
+  local v="${1#v}" maj min
+  maj="${v%%.*}"; v="${v#*.}"; min="${v%%.*}"; min="${min%%[!0-9]*}"
+  case "$maj" in '' | *[!0-9]*) return 1 ;; esac
+  case "$min" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$maj" -gt 2 ] || { [ "$maj" -eq 2 ] && [ "$min" -ge 17 ]; }
+}
+
+# compose_reads_contexts -> 0 when this machine's Docker Compose reads build.additional_contexts, which the portal's
+# docs index needs (compose.portal-docs.yaml). Asked once per command (./stack asks before anything else; the answer
+# is exported to the commands it runs); BEDROCK_NOW_COMPOSE_CONTEXTS=1|0 decides instead (tests/run.sh sets 0).
+# _BN_COMPOSE_VERSION keeps the version for the message of an older one.
+compose_reads_contexts() {
+  case "${BEDROCK_NOW_COMPOSE_CONTEXTS:-}" in 0) return 1 ;; 1) return 0 ;; esac
+  if [ -z "${_BN_COMPOSE_CTX:-}" ]; then
+    _BN_COMPOSE_VERSION="$(docker compose version --short 2>/dev/null || true)"
+    _BN_COMPOSE_CTX=no
+    if compose_contexts_ok "$_BN_COMPOSE_VERSION"; then _BN_COMPOSE_CTX=yes; fi
+    export _BN_COMPOSE_CTX _BN_COMPOSE_VERSION
+  fi
+  [ "$_BN_COMPOSE_CTX" = yes ]
 }
 
 # compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)

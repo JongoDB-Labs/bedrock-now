@@ -15,8 +15,8 @@
 //   Walkthrough         its steps (tour.js); Enter opens the walkthrough at that step
 //   Docs                README.md and docs/*.md, an index built into the portal's image; Enter opens the section on
 //                       GitHub, at the installed release
-// Nothing typed here leaves this computer: the text goes to the portal and, for the Code page's part, to the Code
-// tab's frame. Every node is built with el()/textContent. Loaded after app.js, code.js, tour.js and fuzzy.js (deferred).
+// Nothing typed here is sent outside the stack: the text goes to the portal (over remote access, from your device to it,
+// as every request) and, for the Code page's part, to the Code tab's frame. Every node is built with el()/textContent. Loaded after app.js, code.js, tour.js and fuzzy.js (deferred).
 "use strict";
 
 (function (root) {
@@ -250,6 +250,8 @@
     const out = [];
     if (indexErr) out.push(indexErr);
     if (q.length < MIN_ASYNC) return out;
+    // an image built without the docs (Docker Compose older than 2.17, or a plain docker build): say where they are
+    if (index && !((index.docs && index.docs.pages) || []).length) out.push("Docs: this portal's image has no index of them (Docker Compose older than 2.17 builds it without): README and docs/ are on GitHub.");
     if (PHONE.matches) out.push("Workspace files: search them in the Code page itself (More → Code).");
     else if (!APP_URLS.code) { /* the Code page is off here: nothing to say */ }
     else if (!codeReady()) out.push("Workspace files and every Code session: open the Code tab once (unlocked), and it answers here too.");

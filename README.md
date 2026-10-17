@@ -30,7 +30,9 @@ the Code page and its browser terminal are on by default (`./stack code disable`
 
 **Prerequisites**
 
-- macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux)
+- macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux). Compose 2.17 or
+  newer (2023 on) also gives the portal's Search its index of this README and `docs/`; with an older one everything
+  else works, and `./stack` says so when it builds the portal
 - `git`, `curl`, `openssl` (macOS's built-in bash 3.2 is fine). Nothing else on your computer: no Node or Python
   (the browser terminal and the Code page bring Claude Code in their own image)
 - Room for Docker: about 6 GB of disk for the downloaded images and about 1.6 GB more for the two built on your
@@ -227,14 +229,19 @@ what you have not read yet, and its panel lists, newest first:
 **Mark as read**, **Mark all as read** and **✕** (dismiss; **Show dismissed** brings them back) are kept in this
 browser only. **Browser notifications** in the panel are off until you turn them on (the browser asks once): then a new
 item raises one while a portal tab is open but you are not looking at it — never for what was there already, never
-when the tab is closed (there is no push service).
+when the tab is closed (there is no push service). A notification says only what kind of thing happened ("A Code
+session needs you", "A job failed", "Budget alert: Claude Code at 85 %"), never a session's title, a prompt or a job's
+message, which can show on a lock screen: those stay in the panel.
 
 **Search** (**Ctrl+K**, **⌘K** on a Mac, or the box at the top of the sidebar; on a phone **More → Search**) finds, as
 you type: the portal's pages, every Settings section and setting by name or key (Enter opens it, lit up), Code
 sessions and **workspace file names** (asked from the Code tab while this browser has it open; Enter opens the file in
 its editor), **Chat conversations** (Open WebUI's own search), the walkthrough's steps, and the sections of this README
-and `docs/` (on GitHub, as of your release). ↑ ↓ choose, Enter opens, Esc closes. Nothing typed there leaves your
-computer; [docs/security.md](docs/security.md#activity-and-search) says what each part reads.
+and `docs/` (on GitHub, as of your release; indexed when the portal's image is built, with Docker Compose 2.17 or
+newer). ↑ ↓ choose, Enter opens, Esc closes. Ctrl/⌘+K works while the focus is in the portal itself: inside the Chat
+or Code tab the key goes to that app (Open WebUI and the Code page have a Ctrl+K of their own) — click the sidebar's
+search box there. Nothing typed there is sent outside your stack (over remote access it goes from your device to the
+portal, like everything else); [docs/security.md](docs/security.md#activity-and-search) says what each part reads.
 
 ### Desktop app
 

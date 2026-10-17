@@ -1,0 +1,12 @@
+# The portal's image with the docs index of its global search (README.md and docs/*.md: headings and a line each;
+# portal/Dockerfile, stage docs). BuildKit gets this checkout as the named build context "repo" and sends only the
+# files the Dockerfile names from it — never .env, .state or backups/.
+#
+# ./stack adds this file to every docker compose call (lib/common.sh dc) when Docker Compose reads
+# build.additional_contexts: 2.17 or newer. With an older Compose the portal builds without it — an empty docs index,
+# everything else the same; ./stack says so when it builds the portal, and the portal's search says so too.
+services:
+  portal:
+    build:
+      additional_contexts:
+        repo: .

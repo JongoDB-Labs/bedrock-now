@@ -274,6 +274,13 @@ def test_the_search_page_builds_text_only_and_talks_to_the_code_frame_on_its_ori
         assert "origin !== portal || !parent || source !== parent" in b and "win.parent.postMessage(" in b and ", portal);" in b
 
 
+def test_an_image_without_the_docs_index_says_where_the_docs_are():
+    # Docker Compose older than 2.17 builds the portal without compose.portal-docs.yaml: an empty index, said so
+    js = (STATIC / "search.js").read_text(encoding="utf-8")
+    assert "if (index && !((index.docs && index.docs.pages) || []).length) out.push(\"Docs: this portal's image has no index" in js
+    assert "Docker Compose older than 2.17" in js
+
+
 def test_ctrl_k_never_opens_over_the_password_dialogs():
     js = (STATIC / "search.js").read_text(encoding="utf-8")
     assert 'if (document.querySelector("dialog[open]:not(#search)")) return;' in js

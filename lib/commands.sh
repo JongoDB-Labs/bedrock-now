@@ -643,6 +643,7 @@ _build_and_up_mcp() { dc build -q shared-mcp && dc up -d --wait shared-mcp; }
 _build_and_up_portal() {
   local out rc=0
   ensure_portal_password_hash   # lib/settings.sh: the portal starts only with a hash that matches PORTAL_PASSWORD
+  compose_reads_contexts || warn "Docker Compose ${_BN_COMPOSE_VERSION:-(this one)} is older than 2.17: the portal is built without its search's docs index (README and docs/ sections; everything else works) — update Docker Compose to get it"
   dc build -q portal && dc up -d --wait portal || return 1
   out="$(dc up -d --wait --force-recreate caddy 2>&1)" || rc=$?
   printf '%s\n' "$out"

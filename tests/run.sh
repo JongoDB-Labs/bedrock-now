@@ -32,6 +32,8 @@ export BN_SHIM_LOG BN_REAL_CURL BN_REAL_DOCKER BN_REAL_OPENSSL BN_PBKDF2_CACHE B
 CHILD='
 TMP=$(mktemp -d)
 export STACK_DIR="$T_ROOT" ENV_FILE="$TMP/.env" STATE_DIR="$TMP/.state" BEDROCK_NOW_NO_OPEN=1 PATH="$T_ROOT/tests/shims:$PATH"
+# dc() never asks the Compose version in a test (a test that stubs docker would see an extra call): the docs overlay off
+export BEDROCK_NOW_COMPOSE_CONTEXTS=0
 export HOME="$TMP/home" DOCKER_CONFIG="$BN_REAL_DOCKER_CONFIG"; mkdir -p "$HOME"
 ( set -euo pipefail
   . lib/common.sh; . lib/ports.sh; . lib/portal.sh; . lib/models.sh; . lib/prices.sh; . tests/assert.sh

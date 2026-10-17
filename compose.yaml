@@ -259,9 +259,8 @@ services:
 
   # Login, Home dashboard, and the auth check Caddy asks before every request (/auth/verify).
   portal:
-    # repo: README.md and docs/*.md for the global search's docs index (portal/Dockerfile, stage docs) — BuildKit sends
-    # only the files the Dockerfile names from it, never the rest of this folder (.env, .state, backups)
-    build: { context: ./portal, target: runtime, additional_contexts: { repo: . } }
+    # (+ compose.portal-docs.yaml, which ./stack adds where Docker Compose reads it: the search's docs index)
+    build: { context: ./portal, target: runtime }
     image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/portal:local   # per project, like shared-mcp
     restart: unless-stopped
     # User 10102 owns /state (portal-state). Linux: PORTAL_GID (set by ./stack) is your group, so the price

@@ -34,7 +34,8 @@ All notable changes to bedrock-now are documented here. The format follows
   changes, backups, diagnostics) and the last `./stack` command typed in a terminal, running and then finished or
   failed, for a week; a model check that could not check every model; failed OpenRouter requests. **Mark as read**,
   **Mark all as read** and dismiss are kept in the browser (ids and times only). Optional **browser notifications**
-  (the browser asks once) for new items while a portal tab is open and not looked at — no push service. The server
+  (the browser asks once) for new items while a portal tab is open and not looked at — fixed words only, no push
+  service. The server
   side derives everything from status files that exist already (`/api/activity`); nothing new is stored
   ([README](README.md#activity-and-search), [docs/security.md](docs/security.md#activity-and-search)).
 - **Search** in the portal: **Ctrl+K** (**⌘K** on a Mac), the box at the top of the sidebar, or **More → Search** on
@@ -48,8 +49,12 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **The Code page turned on by an update nobody watched** is now an item in Activity, with the same **Keep** and
   **Turn off**, instead of a banner on Home (a **Keep** pressed on the banner still counts).
-- The portal's image is built with `additional_contexts: { repo: . }` in `compose.yaml`, for the search's docs index:
-  BuildKit sends it only `README.md` and `docs/*.md` from that folder. Docker Compose 2.17 or newer reads it.
+- The portal's image gets the search's docs index through `compose.portal-docs.yaml` (`additional_contexts`: BuildKit
+  sends only `README.md` and `docs/*.md` from this folder), which `./stack` adds only where Docker Compose reads it
+  (2.17 or newer). With an older Compose the portal builds as before, without the docs index; `./stack` says so when
+  it builds the portal, and the search too. `compose.yaml` itself is unchanged for older Composes.
+- Browser notifications from Activity say only what kind of thing happened, never a session's title, a prompt or a
+  job's message (those stay in the panel).
 
 ## [0.10.0] - 2026-10-17
 
