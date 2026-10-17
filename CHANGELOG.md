@@ -84,6 +84,8 @@ All notable changes to bedrock-now are documented here. The format follows
   it builds the portal, and the search too. `compose.yaml` itself is unchanged for older Composes.
 - Browser notifications from Activity say only what kind of thing happened, never a session's title, a prompt or a
   job's message (those stay in the panel).
+- Settings is marked busy (`aria-busy`) while it reads the settings again and draws itself anew (when it is shown, after
+  a link to a place in it, Reload or a finished change), so assistive technology waits for the new page.
 - **The status bar's quick actions are bigger and say what they do**: *Terminal*, *Run*, *Ports*, the permission mode
   and the model are 28 px buttons (40 px on touch screens) with an icon and a label, each with a tip — what it does
   and its shortcut — on hover and on keyboard focus. New shortcuts: `Alt+R` opens Run & test, `Alt+P` Ports &

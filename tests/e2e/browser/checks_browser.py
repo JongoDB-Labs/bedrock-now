@@ -1875,17 +1875,32 @@ def _need_helper(ctx) -> dict:
     return d
 
 
+def settings_drawn(page, timeout=30000):
+    """Wait for Settings drawn from /api/settings' last answer. Every load of it — the tab shown, a link to a place in
+    it, Reload, a change the helper finished — draws the whole page anew (its rows replaced); settings.js marks #settings
+    aria-busy from the load's start until then. A row found before that may be gone when it is used ("Element is not
+    attached to the DOM")."""
+    page.wait_for_function("() => !document.querySelector('#settings[aria-busy]')", timeout=timeout)
+
+
 def open_settings(page, place=None):
-    page.click(".tab[data-tab=settings]")
+    page.click(".tab[data-tab=settings]")   # (the tab shown: settings.js loads the page again, aria-busy at once)
     page.wait_for_selector("#settings .set-card:not([hidden])", timeout=20000)
+    settings_drawn(page)
     if place:
         goto_setting(page, place)
 
 
 def goto_setting(page, place):
     """Settings at a section or a setting, as a link does (#settings/<section> or #settings/<KEY>): the section shown,
-    More unfolded or a setting whose switch is off shown anyway. Returns the setting's row (or the section)."""
-    page.evaluate("p => { location.hash = '#settings'; location.hash = '#settings/' + p; }", place)
+    More unfolded or a setting whose switch is off shown anyway. Returns the setting's row (or the section) of the page
+    drawn last: the address change shows Settings again (the portal's hashchange), which loads it again — this waits
+    for the hashchange (the load has then begun: aria-busy) and then for the page drawn from its answer."""
+    page.evaluate("""p => new Promise((done) => {
+        addEventListener('hashchange', () => done(), {once: true});   // (after the portal's own listener)
+        setTimeout(done, 5000);
+        location.hash = '#settings'; location.hash = '#settings/' + p; })""", place)
+    settings_drawn(page)
     if re.fullmatch(r"[A-Z][A-Z0-9_]+", place):
         row = page.locator(f"#settings .set-row[data-key={place}], #settings .set-adv-item[data-key={place}]").first
     else:
@@ -1928,6 +1943,9 @@ def _wait_job(page, timeout=240):
             .filter(n => !n.hidden && n.textContent.trim()).map(n => n.textContent.trim().slice(0, 160))""")
         shot(page, "settings-job-timeout", mask=[".set-value", ".set-adv-value"])
         raise AssertionError(f"no result from the helper within {timeout} s; the page shows: {shown or 'nothing'}")
+    # settings.js loads the page again in the same tick it shows the result (aria-busy already set): its rows are
+    # replaced once that answers
+    settings_drawn(page)
     return page.locator("#set-job .job-message.good").count() > 0, page.inner_text("#set-job-message")
 
 
@@ -1986,6 +2004,7 @@ def settings_sections(ctx):
     page.wait_for_selector("#home:not([hidden])")
     page.click("#home a[href='#settings/spending']")
     page.wait_for_selector("#set-spending:not([hidden])", timeout=20000)
+    settings_drawn(page)   # (a link: the page is loaded and drawn again)
     expect(page.evaluate("location.hash") == "#settings/spending", f"address {page.evaluate('location.hash')}")
     nav = page.locator(".set-nav .set-nav-item")
     expect(nav.count() == 11, f"{nav.count()} sections in the list")
@@ -1997,6 +2016,7 @@ def settings_sections(ctx):
     expect(page.evaluate("location.hash") == "#settings/code", f"address {page.evaluate('location.hash')}")
     page.reload()
     page.wait_for_selector("#set-code:not([hidden])", timeout=20000)
+    settings_drawn(page)
     # a setting under More: unfolded, scrolled to
     row = goto_setting(page, "BUDGET_SETUP")
     expect(page.locator("#set-spending details.set-more[open]").count() == 1, "More not unfolded for a setting in it")
@@ -2035,6 +2055,7 @@ def settings_sections(ctx):
     page.click(".tab[data-tab=home]")
     page.evaluate("location.hash = '#settings/CODE_ENABLED'")
     page.wait_for_selector("#set-code:not([hidden]) .set-row[data-key=CODE_ENABLED]", timeout=20000)
+    settings_drawn(page)   # (the list's buttons below: of the page drawn last)
     # keyboard: the list's buttons, then the section's heading
     page.locator(".set-nav-item", has_text="Files & sharing").focus()
     page.keyboard.press("Enter")
@@ -2047,6 +2068,7 @@ def settings_sections(ctx):
     login(ppage)
     ppage.evaluate("location.hash = '#settings/remote'")
     ppage.wait_for_selector("#set-remote:not([hidden])", timeout=20000)
+    settings_drawn(ppage)   # (the picker below: of the page drawn last)
     expect(ppage.input_value("#set-picker") == "remote", "phone: the picker does not show the section")
     ppage.select_option("#set-picker", "updates")
     ppage.wait_for_selector("#set-updates:not([hidden])")
@@ -2092,6 +2114,7 @@ def settings_page(ctx):
     ppage.click("#more-btn")
     ppage.click("#more-sheet .sheet-link[data-page=settings]")
     ppage.wait_for_selector("#settings .set-card:not([hidden])", timeout=20000)
+    settings_drawn(ppage)
     expect(ppage.locator("#settings").is_visible() and ppage.locator("#more-sheet").is_hidden(), "phone: Settings not shown")
     expect(ppage.locator("#set-picker").is_visible() and ppage.locator(".set-nav").is_hidden(), "phone: no section picker")
     width = ppage.evaluate("document.querySelector('#settings').scrollWidth")
@@ -2370,16 +2393,15 @@ def settings_nightly(ctx):
         time.sleep(3)
     expect(nightly, "no nightly backup within 3 minutes of turning it on in its window")
     goto_setting(page, "updates")
-    # Reload reads /api/settings again and then draws the page anew: wait for that answer, so nothing below holds a row
-    # of the page it replaces
-    with page.expect_response(lambda r: "/api/settings" in r.url and r.request.method == "GET", timeout=20000):
-        page.click("#set-reload")
+    # Reload reads /api/settings again and then draws the page anew: wait for that, so nothing below holds a row of the
+    # page it replaces
+    page.click("#set-reload")
+    settings_drawn(page)
     page.wait_for_selector(f"#settings .set-backups td:text-is('{nightly[0]['name']}')", timeout=20000)
     kinds = page.inner_text("#settings .set-backups")
     expect("nightly" in kinds, f"backup list: {kinds[:200]}")
     if not CHECKS_RE:   # (in a full run, the Back up now check made one before this one)
         expect("Back up now" in kinds, f"backup list: {kinds[:200]}")
-    page.wait_for_timeout(300)   # the redraw after the answer
     page.locator("#settings .set-row[data-key=BACKUP_NIGHTLY]").scroll_into_view_if_needed()
     shot(page, "26b-settings-backup-list", mask=[".set-value", ".set-adv-value"])
     sw, on = _switch(goto_setting(page, "BACKUP_NIGHTLY"))

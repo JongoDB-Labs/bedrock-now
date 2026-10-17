@@ -56,7 +56,13 @@
   // --- data ---
   let loading = null;
   function load() {   // one request at a time: the tab switch and the page's own start may both ask
-    if (!loading) loading = loadNow().finally(() => { loading = null; });
+    // aria-busy while it loads: the page is drawn anew when /api/settings answers (assistive technology, and the e2e
+    // checks, wait for that rather than act on rows about to be replaced)
+    if (!loading) {
+      const p = page();
+      if (p) p.setAttribute("aria-busy", "true");
+      loading = loadNow().finally(() => { loading = null; if (p) p.removeAttribute("aria-busy"); });
+    }
     return loading;
   }
   async function loadNow() {
