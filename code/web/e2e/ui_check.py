@@ -2968,6 +2968,13 @@ def polish_groups(browser):
     p.shot("polish-groups.png")
     page.locator(f"[data-testid=session-row][data-session='{first}'] .sess-main").click()
     expect(page.locator(f"[data-testid=session-row][data-session='{first}'] [data-testid=session-unseen]")).to_have_count(0)
+    # a page that opens later replays old turns: never a dot for those
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.get_by_test_id("session-switch").click()
+    page.wait_for_timeout(2500)
+    expect(page.get_by_test_id("session-unseen")).to_have_count(0)
+    page.locator(f"[data-testid=session-row][data-session='{first}'] .sess-main").click()
     # Open in the terminal: the page's process ends, the terminal types the resume command; a resume here is refused
     # until Claude Code exits there
     row = page.locator(f"[data-testid=session-row][data-session='{first}']")

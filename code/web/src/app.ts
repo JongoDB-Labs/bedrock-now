@@ -556,7 +556,7 @@ function handle(m: ServerMsg): void {
       if (next === v) return;
       updateView(m.session, () => next);
       if (m.ev.kind === 'user' || m.ev.kind === 'result') turnMarks.set(m.session, (turnMarks.get(m.session) ?? 0) + 1);
-      onEvent(m.session, m.ev, v.state === 'busy');
+      onEvent(m.session, m.ev, v.state === 'busy', m.seq <= (replayTo.get(m.session) ?? 0));
       return;
     }
     case 'attached': {
@@ -564,6 +564,8 @@ function handle(m: ServerMsg): void {
       // process now: start over from what the replay brings next, and put the transcript in front of it once the
       // replay has settled.
       reattaching.delete(m.session);
+      // what follows up to `last` is a replay of what already happened (not news: no dot in the session list)
+      replayTo.set(m.session, m.last);
       const v = get().views[m.session];
       if (!v) return;
       const otherProcess = !!m.epoch && !!v.epoch && m.epoch !== v.epoch;
@@ -748,10 +750,12 @@ function notify(title: string, body: string, session: string): void {
   }
 }
 
-function onEvent(id: string, ev: Ev, wasBusy = false): void {
+/** Per session, the last event seq an attach replays (a page that just opened sees old turns end again). */
+const replayTo = new Map<string, number>();
+function onEvent(id: string, ev: Ev, wasBusy = false, replayed = false): void {
   if (ev.kind === 'result') {
-    // finished while you were elsewhere: a dot in the session list until you look
-    if (wasBusy && (id !== get().active || (typeof document !== 'undefined' && document.hidden))) updateView(id, (v) => (v.unseen ? v : { ...v, unseen: true }));
+    // finished while you were elsewhere: a dot in the session list until you look (never for a replayed turn)
+    if (wasBusy && !replayed && (id !== get().active || (typeof document !== 'undefined' && document.hidden))) updateView(id, (v) => (v.unseen ? v : { ...v, unseen: true }));
     // (a turn seen running here: not one replayed into a page that just opened)
     if (wasBusy) notify(ev.isError ? 'Claude stopped' : 'Claude is done', get().views[id]?.title || 'A turn ended in the Code page.', id);
     scheduleSpend(id);
