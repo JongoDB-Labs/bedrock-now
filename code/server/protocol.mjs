@@ -123,7 +123,8 @@
 //   POST   /api/git/draft {model?}         {message, denied, turns} — "Write message": a commit message for what is
 //                                           staged, from a Claude Code process of its own that can use no tool (never a
 //                                           session, never your mode: gitdraft.mjs); the prompt is built here from the
-//                                           sandbox's staged diff; model: a full id. 400 nothing staged, 429 two at once,
+//                                           sandbox's staged diff; model: a full id. 400 nothing staged, 429 two at once
+//                                           or 6 started in the last minute,
 //                                           502 the helper failed or was offered a tool, 504 no answer within 2 minutes
 //   POST   /api/git/discard {path, ifMtimeMs?}    {ok, action: restored|trashed, trash} — a file's unstaged changes
 //                                           gone: its current version to the workspace trash, the staged one written

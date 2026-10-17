@@ -14,6 +14,7 @@ import { createServer } from '../server/main.mjs';
 import { SandboxError } from '../server/spawn-client.mjs';
 import { DRAFT_DENY, DRAFT_FLAGS, DIFF_MAX, PROPOSAL_MAX, draftOptions, draftPrompt, longestRun, proposedMessage, runDraft } from '../server/gitdraft.mjs';
 import { tmp } from './helpers.mjs';
+import { DRAFTS_PER_MINUTE } from '../server/api.mjs';
 
 const H = 'd'.repeat(40);
 const file = (p, lines, status = 'modified') => ({ path: p, status, binary: false, cut: false,
@@ -193,4 +194,15 @@ test('POST /api/git/draft: refusals — a model that is not a full id, nothing s
   assert.equal((await req('POST', '/api/git/draft', {}, 'https://evil.example')).status, 403);
   assert.equal((await req('POST', '/api/git/draft', {}, null)).status, 403);
   assert.equal(dq.seen.prompts.length, n, 'no helper started');
+});
+
+// (last: it uses up the minute's drafts)
+test('POST /api/git/draft: at most DRAFTS_PER_MINUTE started in a minute (each is a model call), then 429', async () => {
+  const statuses = [];
+  for (let i = 0; i < DRAFTS_PER_MINUTE + 3; i++) statuses.push((await req('POST', '/api/git/draft', {})).status);
+  assert.ok(statuses.includes(429), statuses.join(' '));
+  assert.ok(statuses.filter((s) => s === 200).length <= DRAFTS_PER_MINUTE, statuses.join(' '));
+  const r = await req('POST', '/api/git/draft', {});
+  assert.equal(r.status, 429);
+  assert.match(r.json.error, /at most 6 commit messages a minute/);
 });

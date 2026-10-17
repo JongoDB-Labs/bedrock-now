@@ -12,7 +12,7 @@
 #            lacks, are proven switched off there (the test may not skip)
 #   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
 #            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox)
-#   (last)   the runtime image
+#   (last)   the runtime image — what setup and update build (no target): web and deps only, never webtest, gitnew or test
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS web
 WORKDIR /src
 # build-web.sh always exists; "web*" adds code/web's files when there is such a folder (nothing otherwise)
@@ -23,9 +23,13 @@ FROM web AS webtest
 RUN if [ -f package.json ]; then npm test; else echo "no code/web: no frontend tests"; fi && touch /tmp/web-tested
 
 # gitnew: the Git panel's proof again with a newer git than Debian's — 2.54 (Alpine 3.24's), which has config-based hooks
-# (hook.<name>.command + hook.<name>.event) that core.hooksPath does not turn off: here that vector must run, never skip
+# (hook.<name>.command + hook.<name>.event) that core.hooksPath does not turn off: here that vector must run, never skip.
+# The base is pinned by digest; the packages by series only (git 2.54.*, node 24.*): Alpine's mirrors drop superseded
+# -rN builds, so an exact pin would stop building at the next one. Only code/test.sh (--target test) builds this stage
+# and `test`: setup and update build the runtime stage at the end (compose.code.yaml: no target), which needs neither —
+# an Alpine change here can never break an install or an update.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS gitnew
-RUN apk add --no-cache git=2.54.0-r0 nodejs=24.18.1-r0
+RUN apk add --no-cache "git~2.54" "nodejs~24"
 WORKDIR /opt/code
 COPY server/frames.mjs ./server/frames.mjs
 COPY test/helpers.mjs test/bn-coded-git.test.mjs ./test/

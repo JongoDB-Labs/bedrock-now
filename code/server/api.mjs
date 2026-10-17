@@ -339,11 +339,17 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   // "Write message": a commit message proposed by a Claude Code process of its own that can use no tool (gitdraft.mjs) —
   // never the open session, never your mode. The prompt is built here from the sandbox's staged diff; the page gets
   // text for its commit box. Two at once at most.
+  // (each one is a model call that costs a few cents: at most DRAFTS_PER_MINUTE started in any minute)
   let drafting = 0;
+  const drafted = [];
   async function gitDraft(body, signal) {
     const model = body?.model === undefined || body?.model === null || body?.model === '' ? null : body.model;
     if (model !== null && !isFullModel(model)) throw new HttpError(400, 'model: a full model id');
     if (drafting >= 2) throw new HttpError(429, 'two commit messages are being drafted already');
+    const now = Date.now();
+    while (drafted.length && now - drafted[0] >= 60000) drafted.shift();
+    if (drafted.length >= DRAFTS_PER_MINUTE) throw new HttpError(429, `at most ${DRAFTS_PER_MINUTE} commit messages a minute: try again in a moment`);
+    drafted.push(now);
     drafting++;
     try {
       const st = await gitStatus();
@@ -732,6 +738,8 @@ export function reviewOf(r, patch) {
 // --- the Git panel: the page's requests checked (bn-coded checks them again) and what bn-coded answers checked for the
 // --- page (the sandbox can say anything): every path a workspace path, every code from a short list, every count capped
 export const GIT_LIST_MAX = 2000;
+/** "Write message": at most this many helper runs started in any minute (each is a model call) */
+export const DRAFTS_PER_MINUTE = 6;
 const GIT_CODES = ['M', 'A', 'D', 'T', 'R', 'C', 'U'];
 const GIT_STATES = ['merge', 'rebase', 'cherry-pick', 'revert', 'bisect'];
 const GIT_HEX = /^[0-9a-f]{40}([0-9a-f]{24})?$/;

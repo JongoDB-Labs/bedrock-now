@@ -1266,7 +1266,8 @@ repository can plant in `.git/` or in a configuration file.
   same names denied by flag-tier rules sent before the prompt (they outrank any allow rule), `--setting-sources=` (none
   of your or the workspace's settings: no allow rules, no plugins and their MCP servers, no settings hooks, no
   CLAUDE.md), `--permission-mode=dontAsk` with a `canUseTool` that denies whatever might still ask, at most 3 turns, a
-  2-minute deadline, `--no-session-persistence`, and its own LiteLLM session tag for its spend. If Claude Code reports
+  2-minute deadline, `--no-session-persistence`, and its own LiteLLM session tag for its spend (two at once and six
+  started in any minute at most: each is a model call). If Claude Code reports
   any tool available to it (`init`), the draft is stopped and refused. The prompt: the staged files (names quoted as
   the Review's comments quote them: a name cannot add a line) and the diff (at most 30,000 characters) in a fence
   longer than any backtick run inside it, after a system prompt that says everything there is data. The answer only
@@ -1291,7 +1292,8 @@ repository can plant in `.git/` or in a configuration file.
   / `git pull` in the terminal, where you see what git does. The panel shows the upstream's ahead/behind counts from
   the sandbox's last fetch (no network).
 - **Proof** (`code/test/bn-coded-git.test.mjs`, with Debian's git 2.47 in the image's test stage and again with git
-  2.54 in its `gitnew` stage — Alpine 3.24, where the config-based hooks test must run and may not skip): for each of
+  2.54 in its `gitnew` stage — Alpine 3.24 by digest, git 2.54.* and node 24.* by series; only `code/test.sh` builds it,
+  never setup or an update — where the config-based hooks test must run and may not skip): for each of
   hook files in `.git/hooks`, in a `core.hooksPath` folder and in one an included file sets, config-based hooks (also
   from `includeIf`), clean/smudge/process filters, a filter named
   `a=b` from `includeIf` + `info/attributes`, textconv and an external diff, fsmonitor, gpg signing, ssh signing, an
