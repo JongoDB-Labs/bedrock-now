@@ -10,6 +10,7 @@ import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num } from './validate.mjs';
 import { watched } from './watch.mjs';
+import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -131,6 +132,65 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     if (s && !s.hasTranscript) { s.pendingTitle = t; return { ok: true, pending: true }; }
     await call({ op: 'sessions.title', id, title: t });
     return { ok: true };
+  }
+
+  // --- "Open in the terminal": this side's process ends (sessions.mjs toTerminal), then the sandbox types
+  // `claude-bedrock --resume <id>` into a new window of the terminal's tmux session (bn-coded terminal.resume) ---
+  async function toTerminal(id) {
+    if (!isUuid(id)) throw new HttpError(400, 'bad session id');
+    const s = sessions.get?.(id);
+    if (s) await s.toTerminal();
+    let result;
+    try {
+      ({ result } = await call({ op: 'terminal.resume', id }, { timeoutMs: 20000 }));
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused' && /no such session/.test(e.message)) throw new HttpError(404, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /unknown op/.test(e.message)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+      throw e;
+    }
+    const window = typeof result?.window === 'string' && /^resume-[0-9a-f]{8}$/.test(result.window) ? result.window : null;
+    return { ok: true, window, command: `claude-bedrock --resume ${id}` };
+  }
+  // notRunning(id) — throws 409 while a process in the sandbox other than this side's runs that conversation (resumed
+  // in the terminal): the page never resumes it a second time. This side's own process for it, just closed, is waited
+  // for first (it is gone within seconds). An older sandbox without the check: not checked.
+  async function notRunning(id) {
+    if (!isUuid(id)) return;
+    const s = sessions.get?.(id);
+    if (s && !s.open && s.exited) await Promise.race([s.exited, new Promise((r) => { const t = setTimeout(r, 8000); t.unref?.(); })]);
+    let result;
+    try {
+      ({ result } = await call({ op: 'sessions.running', id }, { timeoutMs: 10000 }));
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused' && /unknown op/.test(e.message)) return;
+      throw e;
+    }
+    if (result?.running === true) {
+      throw new HttpError(409, 'This conversation is open in the terminal (or elsewhere in the sandbox) right now: exit Claude Code there (/exit), then try again here.');
+    }
+    if (s) s.inTerminal = null;
+  }
+
+  // --- the Permissions view: the sandbox's user settings (the rules "Always" wrote; removable) and the workspace's
+  // .claude/settings*.json (read only), plus the rules the page's modes add on their own ---
+  async function permissions() {
+    const { result } = await call({ op: 'perm.read' });
+    return { user: permSide(result?.user, '~/.claude/settings.json'), project: permSide(result?.project, '.claude/settings.json'),
+      local: permSide(result?.local, '.claude/settings.local.json'), bypassAsk: [...BYPASS_ASK], readOnlyDeny: [...READ_ONLY_DENY] };
+  }
+  async function permissionRemove(body) {
+    const list = body?.list, rule = body?.rule, sha = body?.sha256;
+    if (!['allow', 'ask', 'deny'].includes(list)) throw new HttpError(400, 'list: allow, ask or deny');
+    if (typeof rule !== 'string' || !rule.length || rule.length > PERM_RULE) throw new HttpError(400, 'bad rule');
+    if (typeof sha !== 'string' || !/^[0-9a-f]{64}$/.test(sha)) throw new HttpError(400, 'sha256: the hash of the file as shown');
+    let result;
+    try {
+      ({ result } = await call({ op: 'perm.remove', list, rule, ifSha256: sha }));
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused' && /changed since|no such rule/.test(e.message)) throw new HttpError(409, e.message);
+      throw e;
+    }
+    return { ok: result?.ok === true, removed: int(result?.removed, 0, 1e6) ?? 0, sha256: /^[0-9a-f]{64}$/.test(result?.sha256 ?? '') ? result.sha256 : null };
   }
 
   // --- files ---
@@ -414,9 +474,22 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
 
-  return { listSessions, messages, parentOf, title, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff, memory, memoryWrite, plugins, available, pluginAction,
+  return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
     ports, stopPort, launch, launchStart };
+}
+
+// --- what bn-coded answers about one settings file (perm.read), checked for the page: rules as text (each one line or
+// not, shown as text; removed by its exact text), the hash a removal must name ---
+const PERM_RULE = 4000, PERM_RULES = 500;
+export function permSide(x, path) {
+  const rules = (v) => (Array.isArray(v) ? v.slice(0, PERM_RULES).filter((r) => typeof r === 'string' && r.length >= 1 && r.length <= PERM_RULE) : []);
+  if (!x || typeof x !== 'object') return { path, exists: false, error: 'no answer from the sandbox', sha256: null, allow: [], ask: [], deny: [], other: 0, truncated: false, defaultMode: null, directories: [] };
+  return { path, exists: x.exists === true, error: short(x.error, 200) || null, sha256: /^[0-9a-f]{64}$/.test(x.sha256 ?? '') ? x.sha256 : null,
+    allow: rules(x.allow), ask: rules(x.ask), deny: rules(x.deny), other: int(x.other, 0, 1e6) ?? 0,
+    truncated: x.truncated === true || [x.allow, x.ask, x.deny].some((l) => Array.isArray(l) && l.length > PERM_RULES),
+    defaultMode: short(x.defaultMode, 40) || null,
+    directories: (Array.isArray(x.directories) ? x.directories : []).filter((d) => typeof d === 'string' && d.length <= 4096).slice(0, 50).map((d) => short(d, 4096)) };
 }
 
 // --- search in files: the page's request, checked (bn-coded checks it again), and the sandbox's answer, checked ---

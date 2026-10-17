@@ -18,8 +18,10 @@
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
-//   sessions.list / sessions.load / sessions.title
-//                   this sandbox's Claude Code transcripts for /workspace (~/.claude/projects/-workspace/*.jsonl)
+//   sessions.list / sessions.load / sessions.title / sessions.running
+//                   this sandbox's Claude Code transcripts for /workspace (~/.claude/projects/-workspace/*.jsonl), and
+//                   whether a process other than this one's children runs a session now (the terminal, after Open in
+//                   the terminal: the page then does not resume it a second time)
 //   ports.list / ports.stop
 //                   the servers listening on the sandbox's loopback or all addresses (/proc/net/tcp, tcp6) with their
 //                   process, for the page's previews (bn-preview); stop: SIGTERM/SIGKILL to such a server's process only
@@ -33,6 +35,14 @@
 //                   package.json, dev container files) with their SHA-256 and a copy up to 1 MiB; and one of them put
 //                   back as a turn's start saw it, only while it is still as its end saw it (the code container decides
 //                   what changed: code/server/watch.mjs)
+//   perm.read / perm.remove
+//                   the permission rules Claude Code applies here: the sandbox's user settings (~/.claude/settings.json,
+//                   where "Always" writes), and /workspace/.claude/settings.json and settings.local.json (read only); one
+//                   rule taken out of the user settings — that one fixed file, only while it is as the page saw it, every
+//                   other key kept, written to a temporary file and renamed
+//   terminal.resume a session continued in the terminal: a new window of the terminal's tmux session, with
+//                   `claude-bedrock --resume <id>` typed into its shell (a checked UUID of a transcript that is there;
+//                   nothing else is ever typed)
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
 // Nothing here is a secret boundary for the sandbox (anything in it can run claude itself); the allowlist keeps the
 // socket from being a general "run anything" primitive, and keeps paths inside /workspace. The code container treats
@@ -1050,13 +1060,21 @@ const TMUX = process.env.BN_TMUX_BIN || 'tmux';
 function run(cmd, args, timeoutMs = 10000) {
   return new Promise((resolve) => {
     let c;
-    try { c = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message }); return; }
-    let err = '';
+    try { c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv({}, null) }); } catch (e) { resolve({ code: -1, err: e.message, out: '' }); return; }
+    let err = '', out = '';
+    c.stdout.on('data', (d) => { if (out.length < 2000) out += d; });
     c.stderr.on('data', (d) => { if (err.length < 2000) err += d; });
     const t = setTimeout(() => c.kill('SIGKILL'), timeoutMs);
-    c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, err: e.code || e.message }); });
-    c.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
+    c.on('error', (e) => { clearTimeout(t); resolve({ code: -1, err: e.code || e.message, out: '' }); });
+    c.on('close', (code) => { clearTimeout(t); resolve({ code, err, out }); });
   });
+}
+// tmuxSession(tmux) — the terminal's tmux session, created as bn-session would (Claude Code in its first window) when
+// none runs yet
+async function tmuxSession(tmux) {
+  if ((await run(tmux, ['has-session', '-t', `=${TMUX_SESSION}`])).code === 0) return;
+  const r = await run(tmux, ['new-session', '-d', '-s', TMUX_SESSION, '-n', 'claude', '-c', WORKSPACE, 'claude-bedrock; exec bash']);
+  if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
 }
 // launchStart(name, digest) — that entry (read from the file now: it must still be what the page showed, its digest)
 // in a new tmux window of the terminal's session, named after it, in its folder, with PORT=<port> and its env; when
@@ -1072,10 +1090,7 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
   const cwd = confine(c.cwd);
   if (!cwd) throw new Error('cwd: not a folder in the workspace');
   try { if (!fs.statSync(cwd).isDirectory()) throw new Error('x'); } catch { throw new Error('cwd: not a folder in the workspace'); }
-  if ((await run(tmux, ['has-session', '-t', `=${TMUX_SESSION}`])).code !== 0) {
-    const r = await run(tmux, ['new-session', '-d', '-s', TMUX_SESSION, '-n', 'claude', '-c', WORKSPACE, 'claude-bedrock; exec bash']);
-    if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
-  }
+  await tmuxSession(tmux);
   const env = { ...c.env, ...(c.port ? { PORT: String(c.port) } : {}) };
   const window = c.name.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40) || 'server';
   const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd];
@@ -1086,6 +1101,147 @@ export async function launchStart(name, digest, { tmux = TMUX } = {}) {
   const r = await run(tmux, args);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
   return { ok: true, name: c.name, window, port: c.port, command: c.command };
+}
+
+// terminalResume(id) — a Code-page session continued in the terminal: a new window of the terminal's tmux session
+// (made the current one, so the terminal panel shows it), in /workspace, and `claude-bedrock --resume <id>` typed into
+// its fresh shell and run — there, in your shell's history. Only a checked UUID of a transcript that is there is ever
+// part of what is typed (the page's own process for that session is closed first, by the code container).
+const RESUME_CMD = (id) => `claude-bedrock --resume ${id}`;
+export async function terminalResume(id, { tmux = TMUX } = {}) {
+  if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
+  let st;
+  try { st = fs.lstatSync(path.join(projectDir(), `${id}.jsonl`)); } catch { throw new Error('no such session in this workspace (it has no prompts yet?)'); }
+  if (!st.isFile()) throw new Error('no such session in this workspace');
+  await tmuxSession(tmux);
+  const window = `resume-${id.slice(0, 8)}`;
+  const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', WORKSPACE]);
+  if (w.code !== 0) throw new Error(`tmux: ${printable(w.err, 200) || `exit ${w.code}`}`);
+  const pane = w.out.trim();
+  if (!/^%[0-9]{1,6}$/.test(pane)) throw new Error('tmux: no pane for the new window');
+  // -l: the text as it is (no key names); then Enter on its own
+  const t = await run(tmux, ['send-keys', '-t', pane, '-l', RESUME_CMD(id)]);
+  const e = t.code === 0 ? await run(tmux, ['send-keys', '-t', pane, 'Enter']) : t;
+  if (e.code !== 0) throw new Error(`tmux: ${printable(e.err, 200) || `exit ${e.code}`}`);
+  return { ok: true, window, command: RESUME_CMD(id) };
+}
+
+// sessionRunning(id) -> {running, pid?}: whether a process in the sandbox other than this bn-coded's own children has
+// that session id as an argument (`claude-bedrock --resume <id>` in the terminal, `claude -r <id>` …): the code
+// container resumes a conversation in the page only while nothing else runs it — two Claude Code processes would both
+// append to its transcript. A process that only mentions it (grep <id>) counts too: the safe side.
+export function sessionRunning(id, procDir = '/proc') {
+  if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
+  const mine = new Set();
+  try { for (const n of fs.readdirSync(CHILDREN)) mine.add(n); } catch { /* none */ }
+  let pids = [];
+  try { pids = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)); } catch { return { running: false, checked: false } }
+  for (const n of pids.slice(0, 16384)) {
+    if (mine.has(n) || Number(n) === process.pid) continue;
+    let fd;
+    try { fd = fs.openSync(path.join(procDir, n, 'cmdline'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); } catch { continue; }
+    let argv;
+    try { argv = readSlice(fd, 0, 64 << 10).toString('utf8').split('\0'); } catch { continue; } finally { fs.closeSync(fd); }
+    if (argv.some((a) => a === id || a.endsWith(`=${id}`))) return { running: true, pid: Number(n) };
+  }
+  return { running: false };
+}
+
+// --- permission rules (perm.read / perm.remove): the sandbox's user settings, where Claude Code writes the rules
+// --- "Always" adds, and the workspace's .claude/settings.json and settings.local.json (read only here: your folder,
+// --- which Claude Code on your computer reads too). Rules are text to the page; a file that is not a regular file of
+// --- at most PERM_MAX_FILE bytes, or not a JSON object, is reported (never parsed beyond that, never changed).
+export const PERM_LISTS = ['allow', 'ask', 'deny'];
+const PERM_MAX_FILE = 256 << 10, PERM_MAX_RULES = 500, PERM_RULE_CHARS = 4000;
+const USER_SETTINGS = () => path.join(CONFIG_DIR, 'settings.json');
+// permOf(buf) -> what a settings file says about permissions (rules as strings; anything else counted as `other`)
+export function permOf(buf) {
+  const out = { allow: [], ask: [], deny: [], other: 0, truncated: false, defaultMode: null, directories: [] };
+  let j;
+  try { j = JSON.parse(buf.toString('utf8')); } catch { return { ...out, error: 'not valid JSON' }; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ...out, error: 'not a JSON object' };
+  const p = j.permissions;
+  if (p === undefined || p === null) return out;
+  if (typeof p !== 'object' || Array.isArray(p)) return { ...out, error: '"permissions" is not an object' };
+  for (const k of PERM_LISTS) {
+    const list = Array.isArray(p[k]) ? p[k] : [];
+    for (const r of list) {
+      if (typeof r !== 'string' || !r.length || r.length > PERM_RULE_CHARS) { out.other++; continue; }
+      if (out[k].length >= PERM_MAX_RULES) { out.truncated = true; continue; }
+      out[k].push(r);
+    }
+  }
+  if (typeof p.defaultMode === 'string' && p.defaultMode.length <= 40) out.defaultMode = p.defaultMode;
+  if (Array.isArray(p.additionalDirectories)) out.directories = p.additionalDirectories.filter((d) => typeof d === 'string' && d.length <= 4096).slice(0, 50);
+  return out;
+}
+// permRead(abs, display) -> {path, exists, sha256, size, mtimeMs, allow, ask, deny, …} for one settings file
+function permFile(abs, display) {
+  if (!abs) return { path: display, exists: false, error: 'a folder on its way is a link' };
+  let fd;
+  try { fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
+    return e.code === 'ENOENT' ? { path: display, exists: false } : { path: display, exists: true, error: e.code === 'ELOOP' ? 'a link: not read' : printable(e.code || e.message, 60) };
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { path: display, exists: true, error: 'not a regular file' };
+    if (st.size > PERM_MAX_FILE) return { path: display, exists: true, size: st.size, error: `larger than ${PERM_MAX_FILE >> 10} KiB: not read` };
+    const b = readSlice(fd, 0, st.size);
+    return { path: display, exists: true, size: st.size, mtimeMs: st.mtimeMs, sha256: sha256(b), ...permOf(b) };
+  } finally { fs.closeSync(fd); }
+}
+// a file of the workspace's .claude folder: never through a link on the way (missing folder: not there)
+function workspacePerm(rel) {
+  let st = null;
+  try { st = fs.lstatSync(path.join(WORKSPACE, '.claude')); } catch { return { path: rel, exists: false }; }
+  if (!st.isDirectory()) return { path: rel, exists: false, error: 'a folder on its way is a link (or not a folder): not read' };
+  return permFile(watchPath(rel), rel);
+}
+export function permRead() {
+  return {
+    user: permFile(USER_SETTINGS(), '~/.claude/settings.json'),
+    project: workspacePerm('.claude/settings.json'),
+    local: workspacePerm('.claude/settings.local.json'),
+  };
+}
+// permRemove({list, rule, ifSha256}) — that rule (every copy of it) out of the user settings' permissions[list], only
+// while the file's SHA-256 is still ifSha256; every other key and value kept (the file is JSON with 2-space indents
+// afterwards, as Claude Code writes it); a temporary file beside it, renamed into place, its mode kept
+export function permRemove(req) {
+  const list = req?.list, rule = req?.rule;
+  if (!PERM_LISTS.includes(list)) throw new Error('list: allow, ask or deny');
+  if (typeof rule !== 'string' || !rule.length || rule.length > PERM_RULE_CHARS) throw new Error('bad rule');
+  if (typeof req.ifSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(req.ifSha256)) throw new Error('ifSha256: the SHA-256 of the file as shown');
+  const file = USER_SETTINGS();
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
+    throw new Error(e.code === 'ENOENT' ? 'there are no user settings (any more)' : 'the user settings cannot be read');
+  }
+  let buf, mode;
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > PERM_MAX_FILE) throw new Error('the user settings are not a regular file of at most 256 KiB: change them in the terminal');
+    buf = readSlice(fd, 0, st.size); mode = st.mode & 0o777;
+  } finally { fs.closeSync(fd); }
+  if (sha256(buf) !== req.ifSha256) throw new Error('the user settings changed since they were shown: look again');
+  let j;
+  try { j = JSON.parse(buf.toString('utf8')); } catch { throw new Error('the user settings are not valid JSON: change them in the terminal'); }
+  const arr = j && typeof j === 'object' && !Array.isArray(j) && j.permissions && typeof j.permissions === 'object' && !Array.isArray(j.permissions) ? j.permissions[list] : null;
+  if (!Array.isArray(arr)) throw new Error('no such rule');
+  const kept = arr.filter((r) => r !== rule);
+  if (kept.length === arr.length) throw new Error('no such rule');
+  j.permissions[list] = kept;
+  const data = Buffer.from(`${JSON.stringify(j, null, 2)}\n`, 'utf8');
+  const tmp = path.join(CONFIG_DIR, `.bn-upload-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  const out = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    for (let off = 0; off < data.length;) off += fs.writeSync(out, data, off);
+    fs.fchmodSync(out, mode || 0o600);
+    fs.fsyncSync(out);
+  } catch (e) { fs.closeSync(out); try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  fs.closeSync(out);
+  try { if (fs.lstatSync(file).isSymbolicLink()) throw new Error('a link now: not changed'); fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  return { ok: true, removed: arr.length - kept.length, sha256: sha256(data) };
 }
 // --- the watchlist (ws.sensitive / ws.restore): files of /workspace that run on your computer later. Never through a
 // --- link: every folder on the way must be a real folder, a watched link is reported as a link (with a hash of what it
@@ -1518,6 +1674,12 @@ export function serve(sock) {
           if (typeof req.name !== 'string') return fail('bad name');
           launchStart(req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
+        case 'perm.read': return finish(T.RESULT, permRead());
+        case 'perm.remove': return finish(T.RESULT, permRemove(req));
+        case 'terminal.resume':
+          terminalResume(req.id).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
+        case 'sessions.running': return finish(T.RESULT, sessionRunning(req.id));
         default: return fail('unknown op');
       }
     } catch (e) { return fail(e.code || e.message); }

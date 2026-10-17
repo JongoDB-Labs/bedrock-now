@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { LIMITS, EFFORTS, IMAGE_TYPES } from './protocol.mjs';
 import { Ring } from './ring.mjs';
 import { fromSdk, errorEvent } from './normalize.mjs';
-import { isUuid, isModel, isFullModel, str, short, capped } from './validate.mjs';
+import { isUuid, isModel, isFullModel, str, short, capped, num } from './validate.mjs';
 import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions, startFlags } from './modes.mjs';
 import { checkSnapshot, diffSnapshots, watchEvent, revertOf } from './watch.mjs';
 
@@ -32,6 +32,14 @@ const BLOCKS_KEPT = 20;             // blocked actions per session that "Allow o
 const TOOL_INPUTS_KEPT = 200;       // the last tool calls' inputs, for the blocked-action cards (by tool_use id)
 const MODE_ECHO_MS = 3000;   // how long after its answer a switch's status echo is still taken as one (then a status is Claude Code's own again)
 const NOT_CONFIRMED = /Couldn't confirm model/i;   // Claude Code's own check of a model id (one request, 5 s) failed
+const EXIT_WAIT_MS = 8000;   // how long a hand-off to the terminal waits for this side's process to end
+// A session's budget (set_budget): USD, at least a cent, below bn-coded's limit for --max-budget-usd (1–3 digits)
+export const BUDGET_MIN = 0.01, BUDGET_MAX = 999;
+const money = (v) => `$${v.toFixed(2)}`;
+// limitFor(left) -> maxBudgetUsd for a process: what is left of the budget, 6 decimals at most (bn-coded's pattern),
+// never 0 (nothing left: a millionth of a dollar — Claude Code stops after its first request)
+export const limitFor = (left) => Math.min(999.999999, Math.max(0.000001, Math.floor(left * 1e6) / 1e6));
+const sameBudget = (a, b) => (a?.usd ?? null) === (b?.usd ?? null) && (a?.hard === true) === (b?.hard === true);
 const withTimeout = (p, ms) => new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error(`no answer in ${ms / 1000} s`)), ms);
   p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
@@ -60,9 +68,18 @@ const pluginsKey = (list) => (Array.isArray(list) ? list.filter((p) => p && type
   .map((p) => `${short(p.name, 200)}@${short(p.version, 60)}`).sort().join('\n') : null);
 
 export class Session {
-  constructor(mgr, { id, model, mode, effort, resume, fork, at, taskStop, hasTranscript }) {
+  constructor(mgr, { id, model, mode, effort, resume, fork, at, taskStop, hasTranscript, budget }) {
     this.mgr = mgr;
     this.id = id;
+    // The budget (set_budget; null: none). hard: Claude Code's own stop, maxBudgetUsd — its estimate, checked after
+    // every request, per process — at what is left when a process starts (left()); a budget changed while a process
+    // runs restarts it at the next prompt that starts a turn. spent: the page's figure (LiteLLM's spend logs);
+    // cliCost: Claude Code's estimate for the session (its results' total_cost_usd, earlier processes included).
+    this.budget = null; this.spent = 0; this.cliCost = 0;
+    this.limit = null;       // the budget the running process was started with (null: none)
+    this.budgetHit = false;  // the running process stopped at its budget (it refuses every prompt after that)
+    this.inTerminal = null;  // the time this session was handed to the terminal (main.mjs checks before resuming here)
+    this.exited = Promise.resolve();   // resolves when the running process's events end
     this.taskStop = taskStop === true;   // the page stops background tasks one by one (stop_task)
     this.model = model || null;
     this.mode = this.startable(normMode(mode)) ? normMode(mode) : 'default';   // a page mode (modes.mjs)
@@ -95,6 +112,7 @@ export class Session {
     this.pluginsKey = null;   // what the process last reported loading (init, a reload)
     this.lastInitModel = null; this.modelSet = false;
     this.lastActive = Date.now();
+    if (budget) this.setBudget(budget, { quiet: true });   // (before the first process: it starts with the stop)
     this.start({ resume, fork, at });
   }
 
@@ -102,8 +120,34 @@ export class Session {
 
   info() {
     return { id: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, title: this.title, open: this.open,
-      pending: this.mgr.broker.forSession(this.id).length, lastActive: this.lastActive, error: this.error, epoch: this.epoch };
+      pending: this.mgr.broker.forSession(this.id).length, lastActive: this.lastActive, error: this.error, epoch: this.epoch,
+      budget: this.budget ? { ...this.budget } : null, terminal: this.inTerminal !== null };
   }
+
+  // --- the budget ---
+  /** What is left of the budget: its amount less the larger of the page's figure and Claude Code's estimate. */
+  left() { return this.budget ? this.budget.usd - Math.max(this.spent, this.cliCost) : Infinity; }
+  /** set_budget: {usd (null: no budget), hard, spent?} -> {budget, restart} (restart: the next prompt restarts the
+   *  process so that the new stop applies). Throws for a bad request. */
+  setBudget(b, { quiet = false } = {}) {
+    if (!b || typeof b !== 'object') throw new SessionError('budget: {usd, hard}');
+    if (b.spent !== undefined && b.spent !== null) this.noteSpent(b.spent);
+    if (b.usd === null) this.budget = null;
+    else {
+      if (typeof b.usd !== 'number' || !Number.isFinite(b.usd) || b.usd < BUDGET_MIN || b.usd > BUDGET_MAX) throw new SessionError(`budget: ${BUDGET_MIN} to ${BUDGET_MAX} USD`);
+      if (b.hard !== undefined && typeof b.hard !== 'boolean') throw new SessionError('hard: true or false');
+      this.budget = { usd: Math.round(b.usd * 100) / 100, hard: b.hard === true };
+    }
+    if (!quiet) this.mgr.onState(this);
+    return { budget: this.budget ? { ...this.budget } : null, restart: this.open && this.budgetRestart() };
+  }
+  /** The page's spend for this session (LiteLLM's logs: they only grow — an older figure is ignored). */
+  noteSpent(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1e6) throw new SessionError('spent: a number of USD');
+    this.spent = Math.max(this.spent, v);
+  }
+  /** Whether the running process's stop differs from what the budget says now (a stop to add, change or lift). */
+  budgetRestart() { return !sameBudget(this.limit, this.budget) && (this.budget?.hard === true || this.limit?.hard === true); }
 
   emit(ev) {
     const seq = this.ring.push(ev);
@@ -148,6 +192,9 @@ export class Session {
     };
     if (this.model) options.model = this.model;
     if (this.effort) options.effort = this.effort;
+    // stop at the budget: Claude Code's own limit for this process, what is left of it now
+    this.limit = this.budget ? { ...this.budget } : null; this.budgetHit = false;
+    if (this.budget?.hard) options.maxBudgetUsd = limitFor(this.left());
     // CODE_ALLOW_BYPASS on: Bypass permissions can be switched to in this process (--allow-dangerously-skip-permissions;
     // never --dangerously-skip-permissions: it starts in its own mode, as before)
     if (this.bypassable) options.allowDangerouslySkipPermissions = true;
@@ -192,7 +239,9 @@ export class Session {
     // (Claude Code says init with its first turn; until a prompt comes the session simply waits.)
     this.setState('idle');
     this.lastActive = Date.now();
-    this.pump(this.q);
+    let ended;
+    this.exited = new Promise((r) => { ended = r; });
+    this.pump(this.q).finally(ended);
   }
 
   /** Whether a process may start in this page mode: one of START_MODES, or auto while Settings allow it. */
@@ -337,6 +386,7 @@ export class Session {
         this.noteToolUses(m);
         for (const ev of fromSdk(m)) this.emit(ev.type === 'blocked' ? this.decorateBlocked(ev) : ev);
         if (m?.type === 'result') {
+          this.costOf(m);
           this.setState('idle');
           this.watchEnd();
           if (this.resetTo) void this.mgr.handover(this);
@@ -346,6 +396,18 @@ export class Session {
     } catch (e) {
       if (this.q === q) this.ended(short(e?.message || String(e), 500));
     }
+  }
+
+  // A turn's result: Claude Code's estimate of the session's cost so far (its total_cost_usd counts earlier processes
+  // of the session too) for what is left of the budget, and its stop at the budget said plainly. Sandbox data: a
+  // number in range or nothing (the page's figure, from the spend logs, counts as well: left()).
+  costOf(m) {
+    const c = num(m.total_cost_usd, 0, 1e6);
+    if (c !== null && this.q) this.cliCost = Math.max(this.cliCost, c);
+    if (m.subtype !== 'error_max_budget_usd') return;
+    this.budgetHit = true;
+    const b = this.limit;
+    this.emit({ type: 'local', text: `Stopped at this session's budget${b ? ` of ${money(b.usd)}` : ''}: Claude Code's own estimate of its spend reached it. Raise the budget or turn its stop off (⋯ › Budget) to go on; the cost meter shows what Bedrock billed.` });
   }
 
   ended(error) {
@@ -370,6 +432,13 @@ export class Session {
     }
     content.push({ type: 'text', text });
     if (this.resetTo) throw new SessionError('this conversation continues in a new session (Claude Code started one): send it there', 409);
+    // the stop at the budget: nothing is sent once it is reached (by the page's figure or Claude Code's estimate), and
+    // a process whose stop no longer matches the budget is restarted first, between turns
+    const startsTurn = this.state !== 'busy' && this.state !== 'starting';
+    if (this.budget?.hard && (this.left() <= 0 || (this.budgetHit && sameBudget(this.limit, this.budget)))) {
+      throw new SessionError(`This session reached its budget of ${money(this.budget.usd)}, and its stop is on: raise the budget or turn the stop off (⋯ › Budget) to go on.`, 409);
+    }
+    if (this.open && startsTurn && this.budgetRestart()) this.close('budget');
     if (!this.open) this.start({ resume: this.id });
     const id = isUuid(uuid) ? uuid : crypto.randomUUID();
     // typed in the page: a human origin, stamped explicitly (absent, the CLI's strict trust gates fail closed)
@@ -524,7 +593,7 @@ export class Session {
   // The process is gone: what was its alone goes with it — Bypass permissions above all (the next start is in Manual).
   // Auto stays while Settings allow it (the next start switches to it again), as Manual and Accept edits do.
   forgetProcess() {
-    this.flagPerms = null; this.bypassable = false;
+    this.flagPerms = null; this.bypassable = false; this.limit = null; this.budgetHit = false;
     this.blocked = new Map(); this.allowOnce = [];
     if (this.mode === 'bypassPermissions' || (this.mode === 'auto' && this.mgr.allowAuto !== true)) this.mode = 'default';
   }
@@ -669,6 +738,20 @@ export class Session {
   async mcpReconnect(name) { await this.need().reconnectMcpServer(name); }
   async mcpToggle(name, enabled) { await this.need().toggleMcpServer(name, enabled === true); }
 
+  /** "Open in the terminal": this side's process ends first (and is waited for, ≤ EXIT_WAIT_MS); the caller then has
+   *  the sandbox resume the conversation in the terminal. Refused mid-turn (closing would stop Claude). */
+  async toTerminal() {
+    if (this.state === 'busy' || this.state === 'starting') throw new SessionError('Claude is working in this session: wait for the turn to end (or stop it), then open it in the terminal', 409);
+    if (this.resetTo) throw new SessionError('this conversation continues in a new session (Claude Code started one)', 409);
+    if (!this.hasTranscript) throw new SessionError('this session has no prompts yet: nothing to resume in the terminal', 409);
+    if (this.q) {
+      const exited = this.exited;
+      this.close('terminal');
+      await withTimeout(exited, EXIT_WAIT_MS).catch(() => this.mgr.log(`session ${this.id.slice(0, 8)}: its process did not end within ${EXIT_WAIT_MS / 1000} s`));
+    }
+    this.inTerminal = Date.now();
+  }
+
   close(reason = 'closed') {
     const q = this.q;
     if (!q) return;
@@ -680,7 +763,9 @@ export class Session {
     const text = reason === 'idle' ? `Closed after ${LIMITS.idleMinutes} idle minutes; your next prompt resumes it${wasBypass ? ' (in Manual: Bypass permissions ends with its process)' : ''}.`
       : reason === 'reset' ? 'This conversation continues in a new session.'
         : reason === 'bypass' ? 'Restarting Claude Code for this session so it can run without asking (its next turn writes the prompt cache again).'
-          : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
+          : reason === 'budget' ? `Restarting Claude Code for this session so its new budget applies${this.budget?.hard ? ` (stop at ${money(this.budget.usd)})` : ''}${wasBypass ? ', in Manual (Bypass permissions ends with its process)' : ''}; its next turn may write the prompt cache again.`
+            : reason === 'terminal' ? `Continued in the terminal${wasBypass ? ' (in Manual)' : ''}: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.`
+              : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
     this.emit({ type: 'local', text });
     this.setState('ended');
   }
@@ -718,7 +803,7 @@ export class SessionManager {
   }
 
   /** POST /api/sessions -> {id, existing} */
-  open({ model, mode, effort, resume, fork, at, taskStop } = {}) {
+  open({ model, mode, effort, resume, fork, at, taskStop, budget } = {}) {
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
     if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
     // auto: a session in Auto starts in Manual and is switched before its first prompt — while Settings allow it; else
@@ -731,17 +816,19 @@ export class SessionManager {
     if (resume !== undefined && resume !== null && !isUuid(resume)) throw new SessionError('bad session id');
     if (at !== undefined && at !== null && !isUuid(at)) throw new SessionError('bad message id');
     if ((fork || at) && !resume) throw new SessionError('fork and at need resume');
+    if (budget !== undefined && budget !== null && (typeof budget !== 'object' || Array.isArray(budget))) throw new SessionError('budget: {usd, hard, spent?}');
     if (resume && !fork) {
       const s = this.sessions.get(resume);
       if (s && s.open) return { id: s.id, existing: true };   // never two processes on one transcript
       if (s) {
         if (model) s.model = model; if (mode) s.mode = normMode(mode); if (effort) s.effort = effort; if (taskStop === true) s.taskStop = true;
+        if (budget) s.setBudget(budget, { quiet: true });
         s.start({ resume, at });
         return { id: s.id, existing: false };
       }
     }
     const id = resume && !fork ? resume : crypto.randomUUID();
-    const s = new Session(this, { id, model, mode, effort, resume, fork, at, taskStop });
+    const s = new Session(this, { id, model, mode, effort, resume, fork, at, taskStop, budget: budget || undefined });
     this.sessions.set(id, s);
     this.trim();
     return { id, existing: false };
@@ -763,7 +850,8 @@ export class SessionManager {
       let has = false;
       try { has = (await this.transcriptExists(id)) === true; } catch { has = false; }
       if (this.sessions.has(id)) throw new Error('already a session here');   // (one opened meanwhile)
-      const ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has });
+      const ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has,
+        budget: s.budget ? { ...s.budget } : undefined });
       this.sessions.set(id, ns);
       this.trim();
       this.onReset(s, ns);

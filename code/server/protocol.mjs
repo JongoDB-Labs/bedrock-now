@@ -7,7 +7,8 @@
 // 403 another site's Origin, 404, 409 conflict, 413 too large, 502 the sandbox failed or refused, 504 it timed out).
 // Requests other than GET/HEAD must carry the page's own Origin (browsers add it to fetch() by themselves).
 //   GET    /api/state                      {versions: {cli, sdk}, limits: {sessions, upload, image, …}, sessions:
-//                                           [{id, state, model, mode, effort, title, pending, open, error}], pending,
+//                                           [{id, state, model, mode, effort, title, pending, open, error, lastActive,
+//                                           budget: {usd, hard} | null, terminal (handed to the terminal)}], pending,
 //                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
 //                                           auto: {allowed} (CODE_AUTO_MODE),
 //                                           sandbox: {egress: true|false (TERMINAL_EGRESS), workspace: the folder of
@@ -24,10 +25,12 @@
 //                                           truncated: only the transcript's last 3 MiB (and at most 20,000 entries,
 //                                           50 compaction boundaries) was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, before?: PROMPT_UUID,
-//                                           taskStop?: bool}   mode: readOnly | plan | default | acceptEdits (the
-//                                           former dontAsk is readOnly), or auto while CODE_AUTO_MODE is on (its
-//                                           process starts in default and is switched before the first prompt; with
-//                                           the setting off, a session asked for in auto starts in default) — never
+//                                           taskStop?: bool, budget?: {usd, hard, spent?}}   budget: as set_budget, before
+//                                           the process starts (409 for a resume while another process in the sandbox
+//                                           runs that conversation: the terminal)   mode: readOnly | plan | default |
+//                                           acceptEdits (the former dontAsk is readOnly), or auto while CODE_AUTO_MODE is
+//                                           on (its process starts in default and is switched before the first prompt;
+//                                           with the setting off, a session asked for in auto starts in default) — never
 //                                           bypassPermissions
 //                                           -> {id, existing, fresh?}: opens a session (new, resume, fork, resume-at).
 //                                           before (with resume + fork): a fork of the conversation BEFORE that prompt
@@ -40,6 +43,18 @@
 //   DELETE /api/sessions/ID                {ok}: ends its process (the transcript stays; a later prompt resumes it)
 //   POST   /api/sessions/ID/title {title}  {ok}: renames it (a custom-title line, as /rename writes; a session open
 //                                           here that has no transcript yet keeps it until it has one)
+//   POST   /api/sessions/ID/terminal       {ok, window, command}: "Open in the terminal" — this side's process for it
+//                                           ends (409 while a turn runs), then a new window of the terminal's tmux
+//                                           session runs `claude-bedrock --resume ID` (typed into its shell: bn-coded's
+//                                           terminal.resume); until Claude Code exits there, resuming it here is refused
+//   GET    /api/permissions                {user, project, local: {path, exists, error, sha256, allow, ask, deny, other,
+//                                           truncated, defaultMode, directories}, bypassAsk, readOnlyDeny} — the permission
+//                                           rules: the sandbox's ~/.claude/settings.json (where "Always" writes), the
+//                                           workspace's .claude/settings.json and settings.local.json (shown only:
+//                                           Claude Code on your computer reads them too), and the rules the page's modes
+//                                           add (Bypass: still ask; Read only: denied)
+//   POST   /api/permissions/remove {list: allow|ask|deny, rule, sha256}   {ok, removed, sha256}: that rule out of the
+//                                           sandbox's user settings, only while the file is still as shown (409)
 //   GET    /api/fs?path=P                  {path, entries: [{name, type: dir|file|symlink|other, size, mtimeMs}],
 //                                           truncated} — P relative to /workspace ("" or "." = the workspace)
 //   GET    /api/fs/file?path=P             {path, size, mtimeMs, truncated, binary, text, head?} — text null when binary
@@ -142,12 +157,21 @@
 //                                               epoch: the process the page last saw; another one (the session was
 //                                               restarted meanwhile, maybe by another device) replays from 1, gap true
 //   {type: "detach", session}
-//   {type: "prompt", session, text, uuid?, images?: [{media_type, data(base64)}], req?}   a prompt typed by you
+//   {type: "prompt", session, text, uuid?, images?: [{media_type, data(base64)}], spent?: N, req?}   a prompt typed by you
+//                                               (spent: the session's spend as the page knows it, for the budget's stop)
 //                                               (slash commands too: "/context"); while busy it waits for the turn to
 //                                               end; an ended session is resumed first (a new process, a new ring).
 //                                               Refused (empty, too long, bad image, the session gone …): reply ok false
 //                                               with req, and nothing was queued
 //   {type: "interrupt", session}
+//   {type: "set_budget", session, usd: N | null, hard: bool, spent?: N, req}   the session's budget (USD 0.01–999; null:
+//                                               none) -> reply data {budget, restart}; hard: Claude Code's own stop
+//                                               (maxBudgetUsd, its estimate, after every request) at what is left (usd
+//                                               less the larger of `spent` — the page's figure from the spend logs — and
+//                                               Claude Code's estimate) when a process starts; restart: the next prompt
+//                                               starts the process again so a changed stop applies. With the stop on and
+//                                               nothing left, a prompt is refused (409); a turn stopped at it says so (a
+//                                               local event). Pages get it in session_state
 //   {type: "set_model", session, model} · {type: "set_mode", session, mode, confirmed?} · {type: "set_effort", session,
 //                                               effort} (effort null = the model's default); each answered by a status
 //                                               event — a refused one (Claude Code could not confirm a model, a mode it
@@ -228,7 +252,7 @@
 //          rule may be offered (rules and projectRules are then empty)
 //   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
 //                                                             timeout|cancelled
-//   {type: "session_state", session, state, model, mode, effort, error}   state: starting|idle|busy|ended
+//   {type: "session_state", session, state, model, mode, effort, error, budget}   state: starting|idle|busy|ended
 //                                                             (ended with `error` when the process failed); mode: a
 //                                                             page mode (MODES)
 //   {type: "reset", session, new_session}                     Claude Code started a new conversation (/clear, a plan

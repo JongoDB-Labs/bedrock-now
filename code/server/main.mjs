@@ -123,7 +123,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     onDone: (d) => toAttached(d.session, { type: 'permission_done', ...d }),
     onCount: (count) => toAll({ type: 'pending', count }),
   });
-  const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error });
+  const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error,
+    budget: s.budget ? { ...s.budget } : null });
   // the watchlist's two ops in the sandbox (bn-coded): the watched files (hashes, copies ≤ 1 MiB), and one put back
   const watcher = watch === false ? null : {
     snapshot: async () => (await call({ op: 'ws.sensitive' }, { timeoutMs: 15000 })).result,
@@ -205,7 +206,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
     if (p === '/api/sessions' && m === 'POST') {
       const b = await readJson(req);
-      const base = { model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined, taskStop: b.taskStop === true };
+      const base = { model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined, taskStop: b.taskStop === true, budget: b.budget ?? undefined };
+      // a conversation resumed here that runs in the terminal (or anywhere else in the sandbox) right now: refused
+      if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
       if (b.before !== undefined && b.before !== null) {
         // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
         if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
@@ -219,6 +222,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, await api.messages(mm[1], n('offset'), n('limit'), n('tail')));
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/title$/.exec(p)) && m === 'POST') return send(res, 200, await api.title(mm[1], await readJson(req)));
+    if ((mm = /^\/api\/sessions\/([^/]+)\/terminal$/.exec(p)) && m === 'POST') return send(res, 200, await api.toTerminal(mm[1]));
+    if (p === '/api/permissions' && m === 'GET') return send(res, 200, await api.permissions());
+    if (p === '/api/permissions/remove' && m === 'POST') return send(res, 200, await api.permissionRemove(await readJson(req)));
     if ((mm = /^\/api\/sessions\/([^/]+)$/.exec(p)) && m === 'DELETE') {
       const s = mgr.get(mm[1]);
       if (!s) throw new HttpError(404, 'no such open session');
@@ -403,6 +409,13 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'detach': c.attached.delete(m.session); return reply({});
       case 'prompt': {
         const s = sessionOf(m);
+        if (m.spent !== undefined && m.spent !== null) s.noteSpent(m.spent);   // (the page's spend figure: the budget's stop)
+        // a prompt that resumes the session here while the conversation runs in the terminal (Open in the terminal, or
+        // claude --resume typed there): refused. Checks of one session run in order, so its prompts keep theirs.
+        if (!s.open) {
+          const check = s.resumeCheck = (s.resumeCheck ?? Promise.resolve()).catch(() => {}).then(() => (s.open ? null : api.notRunning(s.id)));
+          await check;
+        }
         s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
         c.attached.add(s.id);
         return reply({});
@@ -429,6 +442,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         sessionOf(m).allowBlocked(m.id);
         return reply({});
       }
+      // the session's budget: {usd: null} for none; hard: Claude Code's own stop (applies from its next process start)
+      case 'set_budget': return reply(sessionOf(m).setBudget({ usd: m.usd === undefined ? null : m.usd, hard: m.hard, spent: m.spent }));
       case 'permission': {
         if (!isUuid(m.id) || !DECISIONS.includes(m.decision) || !isUuid(m.session)) throw new SessionError('bad permission answer');
         // "Allow, and switch to Auto" (a shell command's prompt in Manual or Accept edits, as the CLI offers it): the
