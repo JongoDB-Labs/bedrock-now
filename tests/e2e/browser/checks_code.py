@@ -331,7 +331,8 @@ def host(ctx):
     expect(re.search(r"'nonce-([0-9a-f-]{36})'", r2.header("content-security-policy")).group(1) != nonce, "the nonce is per request")
     # the portal's answers on the code host, after the check
     m = http("GET", "code", "/.bn/models", cookie=jar)
-    expect(m.status == 200 and m.json()["models"] and all(x["id"].startswith("claude-") for x in m.json()["models"]), f"/.bn/models {m.status}")
+    # (every enabled chat model, Claude first: browser/code-models-catalog checks the rest)
+    expect(m.status == 200 and m.json()["models"] and m.json()["models"][0]["id"].startswith("claude-"), f"/.bn/models {m.status}")
     expect(http("GET", "code", "/.bn/models", cookie=s).status == 401, "/.bn/models without the unlock")
     expect(http("GET", "code", "/.bn/spend?session=../../etc", cookie=jar).status == 400, "/.bn/spend bad session")
     expect(http("GET", "code", "/.bn/whatever", cookie=jar).status == 404, "other /.bn/ paths")

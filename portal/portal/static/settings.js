@@ -708,7 +708,7 @@
     }
     return g.filter((x) => x[1].length);
   }
-  function codeModelLabel(m) { return `${m[1]}${m[3] && lower(m[3]) !== "anthropic" ? ` (${m[3]})` : ""} · ${COMPAT_WORD[m[4]] || "not tested"}${m[5] ? " · free" : ""}`; }
+  function codeModelLabel(m) { return `${m[1]}${m[3] && lower(m[3]) !== "anthropic" ? ` (${m[3]})` : ""} · ${COMPAT_WORD[m[4]] || "not tested"}${m[5] && !/free/i.test(m[1]) ? " · free" : ""}`; }
 
   // --- the Code page (./stack code enable | disable, run by the update helper) and the browser terminal ---
   function codeSwitch(val) {

@@ -102,7 +102,14 @@ def snapshot(state):
         "choices": {"stt_models": {"bedrock": ["voxtral-small"], "openai": ["gpt-4o-mini-transcribe"], "groq": []},
                     "stt_bedrock_ready": ["voxtral-small"], "restart": ["litellm"],
                     "chat_models": [["claude-haiku-5-5", "Claude Haiku 5.5"], ["claude-opus-5-5", "Claude Opus 5.5"]],
-                    "code_workspace": "/home/you/work"},
+                    "code_workspace": "/home/you/work",
+                    # Settings › Claude Code › Models: [id, name, provider, vendor, compat, free, listed]
+                    "code_models": [["claude-opus-5-5", "Claude Opus 5.5", "Bedrock", "Anthropic", "works", False, True],
+                                    ["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
+                                    ["llama-3-3-70b", "Llama 3.3 70B", "Bedrock", "Meta", "chat-only", False, True],
+                                    ["mistral-large-3", "Mistral Large 3", "Bedrock", "Mistral", "works", False, True],
+                                    ["or/google/gemma-4-31b-it:free", "Gemma 4 31B (free)", "OpenRouter", "Google", "untested", True, True],
+                                    ["or/meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct", "OpenRouter", "Meta", "untested", False, True]]},
         "keys": keys}))
     snap = st.snapshot(Path(d))
     assert snap and len(snap["keys"]) == len(TABLE), "the portal did not read the snapshot"
@@ -302,6 +309,52 @@ def check_forms(page, remote, failures, label):
                 form.locator("button", has_text="Cancel").click()
 
 
+def check_code_models(page, failures, label):
+    """Settings › Claude Code › Models: All enabled · Anthropic only · Pick… (a filtered checklist in groups), and the
+    default model's select in groups; screenshots for the record."""
+    page.evaluate("k => { location.hash = '#settings'; location.hash = '#settings/' + k; }", "CODE_MODELS")
+    row = page.locator("#settings .set-row[data-key=CODE_MODELS]")
+    row.wait_for(state="visible", timeout=10000)
+    chips = row.locator(".set-seg button").all_inner_texts()
+    if chips != ["All enabled", "Anthropic only", "Pick…"]:
+        failures.append(f"{label}: CODE_MODELS offers {chips}")
+    if "6 enabled chat models, 3 of them checked" not in row.inner_text():
+        failures.append(f"{label}: CODE_MODELS does not say how many models work: {row.inner_text()[:200]}")
+    page.screenshot(path=str(OUT / "settings-code-models.png"), clip=row.bounding_box())
+    row.locator(".set-seg button", has_text="Pick…").click()
+    form = row.locator(".set-form")
+    heads = form.locator(".set-code-head").all_text_contents()
+    if heads != ["Anthropic (Bedrock)", "Other providers on Bedrock", "OpenRouter: free", "OpenRouter: paid"]:
+        failures.append(f"{label}: the checklist's groups are {heads}")
+    form.locator("input[type=search]").fill("free")
+    visible = [x for x in form.locator("label.set-radio").all() if x.is_visible()]
+    if len(visible) != 1 or "Gemma 4 31B (free)" not in visible[0].inner_text():
+        failures.append(f"{label}: the filter 'free' shows {[x.inner_text() for x in visible]}")
+    form.locator("input[type=search]").fill("")
+    page.screenshot(path=str(OUT / "settings-code-models-pick.png"), clip=row.bounding_box())
+    form.locator("button[type=submit]").click()
+    page.wait_for_timeout(150)
+    if "Pick at least one model" not in form.locator(".error").inner_text():
+        failures.append(f"{label}: an empty list is not refused before the password")
+    form.locator("label.set-radio", has_text="Llama 3.3 70B").first.locator("input").check()
+    form.locator("button[type=submit]").click()
+    page.wait_for_timeout(150)
+    if page.locator("#set-confirm[open]").count() != 1:
+        failures.append(f"{label}: a list with a model does not reach the password dialog")
+    else:
+        page.click("#set-confirm-cancel")
+    if form.count():
+        form.locator("button", has_text="Cancel").click()
+    page.evaluate("k => { location.hash = '#settings'; location.hash = '#settings/' + k; }", "CODE_DEFAULT_MODEL")
+    row = page.locator("#settings .set-row[data-key=CODE_DEFAULT_MODEL]")
+    row.wait_for(state="visible", timeout=10000)
+    row.locator(".set-actions .action", has_text=re.compile("Change|Set")).first.click()
+    groups = row.locator(".set-form select optgroup").evaluate_all("els => els.map((e) => e.label)")
+    if groups != ["Anthropic (Bedrock)", "Other providers on Bedrock", "OpenRouter: free", "OpenRouter: paid"]:
+        failures.append(f"{label}: CODE_DEFAULT_MODEL's select groups are {groups}")
+    row.locator(".set-form button", has_text="Cancel").click()
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Stub)
@@ -325,6 +378,8 @@ def main():
                 check_controls(seen, state, remote, failures, label, layout)
                 if layout and state == "off":
                     check_forms(page, remote, failures, label)
+                if layout and state == "off" and not remote:
+                    check_code_models(page, failures, label)
                 summary[label] = {"settings": len(seen), "changeable": sum(1 for o in seen.values() if changes(o))}
             except Exception:  # noqa: BLE001
                 failures.append(f"{label}: {traceback.format_exc(limit=3)}")
