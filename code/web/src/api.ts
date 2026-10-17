@@ -650,6 +650,7 @@ export async function getState(): Promise<ServerState> {
     allowBypass: obj(o.bypass)?.allowed === true,
     allowAuto: obj(o.auto)?.allowed === true,
     egress: typeof obj(o.sandbox)?.egress === 'boolean' ? (obj(o.sandbox)?.egress as boolean) : null,
+    egressHost: typeof obj(o.sandbox)?.egressHost === 'boolean' ? (obj(o.sandbox)?.egressHost as boolean) : null,
     workspace: typeof obj(o.sandbox)?.workspace === 'string' ? label(obj(o.sandbox)?.workspace, 1000) || null : null,
     remote: o.remote === true,
   };

@@ -1,0 +1,57 @@
+# The browser terminal's way out to the internet by default (TERMINAL_EGRESS=internet, or blank): lib/common.sh adds
+# this file after compose.terminal.yaml. The sandbox (terminal) stays on internal networks only; its one way out is an
+# egress proxy (terminal/egress/bn-egress.mjs), "egress:3128" on a network the two share alone, "terminal-proxy"
+# (internal). Only the proxy is also on "terminal-out", the internet. It passes HTTP, and HTTPS (any TCP) by CONNECT,
+# to public addresses only, on ports 80, 443 and 22 — checked after its own DNS lookup, and connected to exactly the
+# address it checked — so this computer's services (Docker's host address, ports published on its 127.0.0.1), your
+# network, private and link-local addresses (the cloud's metadata address) stay closed. Anything in the sandbox that
+# ignores the proxy has no route at all. TERMINAL_EGRESS=host (compose.terminal-egress.yaml) is the older way: the
+# sandbox itself on the internet, this computer's services included; TERMINAL_EGRESS=off neither.
+services:
+  terminal-egress:
+    build:
+      context: ./terminal/egress
+    image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/terminal-egress:local   # per project, like the terminal
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    pids_limit: 64
+    init: true
+    environment:
+      # Settings › Claude Code (.env): which names, and which ports beside 80, 443 and 22 (bn-egress.mjs says how)
+      TERMINAL_EGRESS_ALLOW: ${TERMINAL_EGRESS_ALLOW:-}
+      TERMINAL_EGRESS_DENY: ${TERMINAL_EGRESS_DENY:-}
+      BN_EGRESS_BIND: egress   # it listens on its address on terminal-proxy alone, never on the internet's side
+    networks:
+      terminal-proxy:
+        aliases: [egress]
+      terminal-out: {}
+    logging:   # (YAML anchors do not reach across compose files: same values as x-logging in compose.yaml)
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # The sandbox: internal networks only (its gateway's, and the proxy's), and every process told about the proxy. The
+  # variables are the ones curl, git, npm, pip, Python, Go, Claude Code and Node (NODE_USE_ENV_PROXY) read; NO_PROXY keeps
+  # the gateway (LiteLLM, the shared MCP server) and the sandbox's own loopback (dev servers, previews) direct. ssh (git
+  # over ssh) uses it too: terminal/ssh_config, through bn-ssh-proxy (a CONNECT to port 22). bn-coded keeps these in
+  # what Run & test and launch.json's dev servers run with.
+  terminal:
+    networks: [terminal, terminal-proxy]
+    environment:
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,::1,0.0.0.0,gateway,terminal
+      no_proxy: localhost,127.0.0.1,::1,0.0.0.0,gateway,terminal
+      NODE_USE_ENV_PROXY: "1"
+    depends_on:
+      terminal-egress: { condition: service_started }
+
+networks:
+  terminal-proxy:
+    internal: true
+  terminal-out:

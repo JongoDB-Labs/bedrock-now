@@ -278,7 +278,7 @@ dc() {
   ( unset OPENROUTER_API_KEY OPENROUTER_MODELS OPENROUTER_MAX_MODELS STT_PROVIDER STT_API_KEY STT_MODEL OWUI_STT_ENGINE \
       OWUI_STT_BASE_URL STT_BEDROCK_MODEL COMPOSE_PROFILES \
       AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION_NAME \
-      TERMINAL_ENABLED TERMINAL_WORKSPACE TERMINAL_EGRESS TERMINAL_HOST TERMINAL_UID TERMINAL_GID TERMINAL_MEM_LIMIT \
+      TERMINAL_ENABLED TERMINAL_WORKSPACE TERMINAL_EGRESS TERMINAL_EGRESS_ALLOW TERMINAL_EGRESS_DENY TERMINAL_HOST TERMINAL_UID TERMINAL_GID TERMINAL_MEM_LIMIT \
       REMOTE_TERMINAL REMOTE_TERMINAL_HOST CODE_ENABLED CODE_HOST CODE_PROXY_SECRET REMOTE_CODE_HOST PREVIEW_DOMAIN PREVIEW_PROXY_SECRET CODE_ALLOW_BYPASS \
       CODE_AUTO_MODE TERMINAL_AUTO_MODE
     # which of terminal/managed/*.json the sandbox gets as Claude Code's managed settings (read-only): from .env alone
@@ -314,8 +314,10 @@ compose_reads_contexts() {
 
 # compose_overlays -> extra compose files for this checkout: remote access (REMOTE_MODE in .env, lib/remote.sh)
 # adds the Tailscale sidecar, and own-domain mode also the Caddy build with a DNS plugin; the browser terminal
-# (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet unless TERMINAL_EGRESS=off;
-# the Code page (CODE_ENABLED=true, lib/code.sh) its container, only together with the terminal (its sandbox).
+# (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet (TERMINAL_EGRESS, read by
+# egress_mode below): the egress proxy (internet, the default), the sandbox on the internet itself
+# (host) or none (off); the Code page (CODE_ENABLED=true, lib/code.sh) its container, only together with the terminal
+# (its sandbox).
 compose_overlays() {
   if [ "${REMOTE_DEGRADED:-0}" != 1 ]; then   # remote network unusable this run (lib/remote.sh remote_net_preflight)
     case "$(get_env REMOTE_MODE)" in
@@ -327,7 +329,10 @@ compose_overlays() {
   # says why — lib/terminal.sh terminal_up_hook.)
   if flag_on "$(get_env TERMINAL_ENABLED)" && [ -n "$(get_env TERMINAL_WORKSPACE)" ]; then
     echo compose.terminal.yaml
-    flag_off "$(get_env TERMINAL_EGRESS)" || echo compose.terminal-egress.yaml
+    case "$(egress_mode "$(get_env TERMINAL_EGRESS)")" in
+      internet) echo compose.terminal-proxy.yaml ;;
+      host) echo compose.terminal-egress.yaml ;;
+    esac
     ! flag_on "$(get_env CODE_ENABLED)" || echo compose.code.yaml
   fi
   return 0
@@ -338,6 +343,19 @@ compose_overlays() {
 _flag() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]'; }
 flag_on() { case "$(_flag "$1")" in true | 1 | yes | on) return 0 ;; esac; return 1; }
 flag_off() { case "$(_flag "$1")" in false | 0 | no | off) return 0 ;; esac; return 1; }
+
+# egress_mode VALUE -> internet | host | off: TERMINAL_EGRESS as the stack reads it (portal/portal/settings.py
+# egress_mode and code/server/main.mjs read it the same way). internet, the default (blank, and the old on values:
+# true/1/yes/on, which meant the internet): through the egress proxy, public addresses only; host: the sandbox on the
+# internet itself, this computer's services and your network included (how v0.10.0 and earlier always did it); off
+# (false/0/no/off): neither. Anything else reads as the default (lib/terminal.sh terminal_flag_warnings says so).
+egress_mode() {
+  case "$(_flag "$1")" in
+    host) echo host ;;
+    false | 0 | no | off) echo off ;;
+    *) echo internet ;;
+  esac
+}
 
 # claude_policy -> off | code-auto | on: the browser terminal's Claude Code managed settings, terminal/managed/<it>.json,
 # from the two auto mode switches in .env (compose.terminal.yaml mounts that file read-only; managed settings outrank

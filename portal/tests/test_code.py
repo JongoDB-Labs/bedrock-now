@@ -165,7 +165,8 @@ def test_code_tab_is_always_there_and_explains_itself_while_off():
     assert 'PAGES.push("code")' in page and 'id: "code"' in page and "appUrl(" not in page and "appFrame(" not in page
     for words in ("Turn on in Settings", "on the computer running bedrock-now", './stack code enable', "./stack code enable --workspace DIR",
                   "~/bedrock-now-workspace", "its own key and budget", "Manual mode", "Bypass permissions and Auto mode stay off",
-                  "portal password again", "TERMINAL_EGRESS=off", "reload this page", "REMOTE_TERMINAL=true", "./stack up",
+                  "portal password again", "TERMINAL_EGRESS=off", "public internet addresses only", "not this computer's own services",
+                  "Sandbox internet access", "reload this page", "REMOTE_TERMINAL=true", "./stack up",
                   "off for remote access"):
         assert words in page, words
     assert "turnOn.addEventListener(\"click\", toSettings)" in page
@@ -700,7 +701,13 @@ def test_an_update_nobody_watched_is_said_once_in_activity(tmp_path):
     f = tmp_path / "code-default.json"
     assert cp.default_notice(tmp_path, now) is None
     f.write_text(json.dumps({"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "terminal": True}))
-    assert cp.default_notice(tmp_path, now) == {"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "terminal": True}
+    assert cp.default_notice(tmp_path, now) == {"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "egress_mode": "internet",
+                                               "terminal": True}
+    for mode in ("internet", "host", "off"):
+        f.write_text(json.dumps({"at": now - 60, "workspace": "/w", "egress": mode != "off", "egress_mode": mode, "terminal": False}))
+        assert cp.default_notice(tmp_path, now)["egress_mode"] == mode
+    f.write_text(json.dumps({"at": now - 60, "workspace": "/w", "egress": False, "egress_mode": "<b>", "terminal": False}))
+    assert cp.default_notice(tmp_path, now)["egress_mode"] == "off"
     # stale (30 days), from the future, odd values: nothing
     for bad in ({"at": now - 31 * 86400, "workspace": "/w", "egress": True}, {"at": now + 3600, "workspace": "/w", "egress": True},
                 {"at": "1", "workspace": "/w", "egress": True}, {"at": True, "workspace": "/w", "egress": True},

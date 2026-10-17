@@ -246,4 +246,6 @@ def default_notice(status_dir: Path, now: float | None = None) -> dict | None:
         return None
     if any(ord(c) < 32 or ord(c) == 127 for c in ws):
         return None
-    return {"at": at, "workspace": ws, "egress": d["egress"], "terminal": d.get("terminal") is True}
+    # (egress_mode: internet — public addresses only — host or off; a notice from before it had one: from egress)
+    mode = d.get("egress_mode") if d.get("egress_mode") in ("internet", "host", "off") else ("internet" if d["egress"] else "off")
+    return {"at": at, "workspace": ws, "egress": d["egress"], "egress_mode": mode, "terminal": d.get("terminal") is True}

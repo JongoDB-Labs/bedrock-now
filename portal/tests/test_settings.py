@@ -162,7 +162,7 @@ def test_every_snapshot_validator_has_a_python_twin():
     # the names catalog/settings.tsv uses (the shell test compares that list with this one)
     for name in ("portal_password", "litellm_password", "email", "aws_key_id", "aws_secret", "budget", "webhook", "bool",
                  "on_off", "true_blank", "hour", "stt_provider", "stt_key", "stt_model", "or_key", "or_mode",
-                 "int_1_5000", "login", "code_models", "code_model"):
+                 "int_1_5000", "login", "code_models", "code_model", "egress"):
         assert name in st.VALIDATORS
 
 
@@ -874,6 +874,40 @@ def test_auto_mode_switches_on_only_here_off_from_anywhere(make, dirs, key, appl
     write_snapshot(sd, keys=KEYS + [row(key, "advanced", "-", "widen-local", "bool", apply_, value="true")])
     r = apply(c, {key: "false"}, headers=RH)
     assert r.status_code == 202, r.text
+
+
+def test_sandbox_internet_access_opens_further_only_here_and_closes_from_anywhere(make, dirs):
+    """TERMINAL_EGRESS: internet (the default, and an older install's on), host (this computer's services too), off.
+    Opening it further — off, internet, host — only from this computer (lib/settings.sh setting_weakens is the same)."""
+    assert [st.egress_mode(v) for v in ("", "internet", "on", "TRUE", " yes", "nonsense", "host", " Host ", "off", "0", "No")] == \
+        ["internet"] * 6 + ["host"] * 2 + ["off"] * 3
+    for new, old in (("host", "internet"), ("host", ""), ("host", "on"), ("internet", "off"), ("", "off"), ("host", "off")):
+        assert st.weakens("TERMINAL_EGRESS", new, old), (new, old)
+    for new, old in (("internet", ""), ("internet", "on"), ("off", "host"), ("internet", "host"), ("off", "internet"), ("host", "host")):
+        assert not st.weakens("TERMINAL_EGRESS", new, old), (new, old)
+    sd, rq = dirs
+    key, apply_ = "TERMINAL_EGRESS", "terminal-egress,code-env"
+    write_snapshot(sd, keys=KEYS + [row(key, "advanced", "-", "widen-local", "egress", apply_, value="")]); helper_up(sd)
+    r = apply(make(), {key: "host"})
+    assert r.status_code == 202, r.text
+    assert f"set {key} {base64.b64encode(b'host').decode()}\n" in (rq / f"cfg-{r.json()['id']}.req").read_text()
+    for f in files(rq):
+        (rq / f).unlink()
+    c = remote_client(make, True)
+    r = apply(c, {key: "host"}, headers=RH)
+    assert r.status_code == 400 and "can only be opened further from the computer running bedrock-now" in r.json()["fields"][key]
+    for bad in ("on", "lan", "Internet"):
+        r = apply(c, {key: bad}, headers=RH)
+        assert r.status_code == 400 and "must be internet, host or off" in r.json()["fields"][key]
+    r = apply(c, {key: "off"}, headers=RH)
+    assert r.status_code == 202, r.text
+    # the page: three choices, the ones that open it further disabled remotely, its words for each
+    from portal.app import STATIC
+    js = (STATIC / "settings.js").read_text(encoding="utf-8")
+    assert 'for (const [val, label] of [["internet", "Internet only"], ["host", "+ this computer"], ["off", "Off"]])' in js
+    assert "b.disabled = !canChange() || (val !== cur && localOnlyHere(k, val));" in js
+    assert 'if (k.key === "TERMINAL_EGRESS") return EGRESS_RANK[egressMode(v)] > EGRESS_RANK[egressMode(old)];' in js
+    assert '"terminal-egress": ["Terminal"]' in js
 
 
 def test_snapshot_names_the_code_pages_folder_as_text_only(dirs):

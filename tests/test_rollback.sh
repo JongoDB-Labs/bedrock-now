@@ -398,6 +398,27 @@ test_rollback_to_a_version_without_bedrock_speech_to_text_removes_it() {   # rev
   assert_eq "$(head -n 1 "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
 }
 
+# A version from before the terminal's egress proxy (v0.10.0 had the terminal, not the proxy): the proxy's container goes
+# before that version's ./stack up (its compose files do not know it), its network after; the terminal itself stays
+test_rollback_to_a_version_without_the_egress_proxy_removes_it() {
+  _fixture
+  mkdir -p "$TMP/origin/terminal"; : > "$TMP/origin/terminal/Dockerfile"; git -C "$TMP/origin" add terminal; git -C "$TMP/origin" commit -qm terminal
+  git -C "$TMP/origin" tag v0.3.1; git -C "$STACK_DIR" fetch -q --tags
+  OLD="$(git -C "$TMP/origin" rev-parse v0.3.1)"
+  _write_stack "$TMP/origin" newer; git -C "$TMP/origin" commit -qam three; git -C "$TMP/origin" tag v0.3.2
+  git -C "$STACK_DIR" fetch -q --tags; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.3.2
+  _record
+  mkdir -p "$TMP/ws"
+  printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nCODE_ENABLED=false\n' "$TMP/ws" > "$ENV_FILE"
+  docker() { echo "docker $*" >> "$TMP/docker"; case "$1" in ps) echo c0ffee ;; esac; return 0; }
+  ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err"
+  d="$(cat "$TMP/docker")"
+  assert_contains "$d" "docker ps -aq --filter label=com.docker.compose.project=bn-t --filter label=com.docker.compose.service=terminal-egress"
+  assert_contains "$d" "docker rm -f c0ffee"
+  assert_not_contains "$d" "com.docker.compose.service=terminal-gateway"   # (that version has the terminal: it stays)
+  assert_eq "$(tail -n 1 "$TMP/docker")" "docker network rm bn-t_terminal-proxy"
+}
+
 test_a_failed_rollback_checkout_leaves_speech_to_text_alone() {
   _fixture; _record
   printf 'POSTGRES_PASSWORD=p\nCOMPOSE_PROJECT_NAME=bn-t\nSTT_PROVIDER=bedrock\n' > "$ENV_FILE"; : > "$TMP/docker"

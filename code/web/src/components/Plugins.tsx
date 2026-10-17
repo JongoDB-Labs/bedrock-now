@@ -267,7 +267,7 @@ function Marketplaces({ list, busy, run }: { list: Marketplace[]; busy: string |
         </button>
       </form>
       <p class="muted small">
-        GitHub and https sources are fetched by the sandbox over its internet access (none when the terminal's egress is off); a marketplace in a folder of
+        GitHub and https sources are fetched by the sandbox over its internet access (none with TERMINAL_EGRESS=off); a marketplace in a folder of
         the workspace works offline.
       </p>
       <ul class="plg-list" data-testid="marketplaces">

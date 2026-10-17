@@ -642,6 +642,54 @@ test_auto_mode_settings_on_only_locally_and_they_restart_the_sandbox() {
   assert_not_contains "$(cat "$TMP/calls")" "wait terminal"
 }
 
+# Settings › Claude Code › Sandbox internet access (TERMINAL_EGRESS): internet, host or off. Opening it further (off →
+# internet → host; an older install's on is internet) only from this computer, closing it from anywhere; the egress proxy
+# and the sandbox follow — the terminal first, then the code container (its Bypass dialog names the choice)
+test_sandbox_internet_access_opens_further_only_locally_and_recreates_the_sandbox() {
+  _env; _in_checkout; _stub_stack; _stub_code
+  docker() { echo "docker $*" >> "$TMP/calls"; }
+  assert_eq "$(setting_field TERMINAL_EGRESS 4)/$(setting_field TERMINAL_EGRESS 5)/$(setting_field TERMINAL_EGRESS 6)" "widen-local/egress/terminal-egress,code-env"
+  for v in internet host off ''; do setting_validate TERMINAL_EGRESS "$v" || return 1; done
+  for v in on true yes nope 'internet ' HOST; do if setting_validate TERMINAL_EGRESS "$v"; then echo "accepted '$v'" >&2; return 1; fi; done
+  for nv in "host internet" "host ''" "host on" "internet off" "'' off" "host off" "internet false"; do
+    eval "set -- $nv"; setting_weakens TERMINAL_EGRESS "$1" "$2" || { echo "not further: $nv" >&2; return 1; }
+  done
+  for nv in "internet ''" "internet on" "'' internet" "off host" "internet host" "off internet" "host host"; do
+    eval "set -- $nv"; if setting_weakens TERMINAL_EGRESS "$1" "$2"; then echo "further: $nv" >&2; return 1; fi
+  done
+  set_env TERMINAL_EGRESS ''
+  if setting_allowed TERMINAL_EGRESS host remote; then return 1; fi
+  assert_contains "$SV_ERR" "TERMINAL_EGRESS can only be opened further from the computer running bedrock-now"
+  setting_allowed TERMINAL_EGRESS host local || return 1
+  setting_allowed TERMINAL_EGRESS off remote || return 1
+  # the egress proxy's lists: .env only (read-only here)
+  for k in TERMINAL_EGRESS_ALLOW TERMINAL_EGRESS_DENY; do assert_eq "$(setting_field "$k" 4)" ro; done
+  # here, with the Code page on: the terminal on its new networks (the proxy and its network gone), then the code container
+  set_env_batch CODE_ENABLED true TERMINAL_ENABLED true LITELLM_KEY_TERMINAL sk-t
+  : > "$TMP/calls"
+  _lines TERMINAL_EGRESS=host | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env TERMINAL_EGRESS)" host
+  c="$(cat "$TMP/calls")"
+  assert_contains "$c" "docker network rm $(project_name)_terminal-proxy"
+  t="$(printf '%s\n' "$c" | grep -n 'dc up -d --no-deps --wait terminal$' | head -n 1 | cut -d: -f1)"
+  k="$(printf '%s\n' "$c" | grep -n 'dc up -d --no-deps --wait code$' | head -n 1 | cut -d: -f1)"
+  [ -n "$t" ] && [ -n "$k" ] && [ "$t" -lt "$k" ] || { echo "terminal ($t) before code ($k): $c" >&2; return 1; }
+  # remotely: closing works (host → off); opening again (off → internet) is refused and nothing changes
+  _lines TERMINAL_EGRESS=off | _apply --via portal --origin remote --base "$(env_sha256)" 2>/dev/null || return 1
+  assert_eq "$(get_env TERMINAL_EGRESS)" off
+  cp "$ENV_FILE" "$TMP/before"
+  if out="$( (_lines TERMINAL_EGRESS=internet | _apply --origin remote) 2>&1)"; then return 1; fi
+  assert_contains "$out" "can only be opened further from the computer running bedrock-now"
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  # back to internet here: the proxy built and up before the terminal
+  : > "$TMP/calls"
+  _lines TERMINAL_EGRESS=internet | _apply --via portal --origin local --base "$(env_sha256)" 2>/dev/null || return 1
+  c="$(cat "$TMP/calls")"
+  p="$(printf '%s\n' "$c" | grep -n 'dc up -d --wait --build --no-deps terminal-egress$' | head -n 1 | cut -d: -f1)"
+  t="$(printf '%s\n' "$c" | grep -n 'dc up -d --no-deps --wait terminal$' | head -n 1 | cut -d: -f1)"
+  [ -n "$p" ] && [ -n "$t" ] && [ "$p" -lt "$t" ] || { echo "proxy ($p) before terminal ($t): $c" >&2; return 1; }
+}
+
 test_remote_previews_are_opt_in_on_only_locally_and_they_restart_portal_and_caddy() {
   _env; _in_checkout; _stub_stack; _stub_code
   assert_eq "$(setting_field REMOTE_PREVIEW 4)/$(setting_field REMOTE_PREVIEW 5)/$(setting_field REMOTE_PREVIEW 6)" "widen-local/bool/remote-preview"

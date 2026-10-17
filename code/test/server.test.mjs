@@ -115,7 +115,7 @@ test('the page: the plain one without a build, with the CSP nonce and the portal
   assert.equal(st.json.portal_origin, 'https://bn.tail1.ts.net');
   assert.equal(st.json.remote, true, 'Caddy\'s remote site says so');
   assert.equal(st.json.terminal_url, 'https://bn-terminal.tail1.ts.net/');
-  assert.deepEqual([st.json.bypass, st.json.sandbox], [{ allowed: false }, { egress: null, workspace: null }]);
+  assert.deepEqual([st.json.bypass, st.json.sandbox], [{ allowed: false }, { egress: null, egressHost: null, workspace: null }]);
   assert.deepEqual([st.json.versions.cli, st.json.versions.sdk, st.json.limits.sessions, st.json.limits.upload, st.json.limits.image],
     ['2.1.296', '0.3.296', 4, 25 << 20, 5 << 20]);
   const local = await req('GET', '/api/state', { headers: { 'X-Bn-Portal-Origin': 'http://bedrock-now.localhost:8800', 'X-Bn-Terminal-Host': 'terminal.bedrock-now.localhost', 'X-Bn-Remote': '0' } });
@@ -581,13 +581,13 @@ test('Bypass permissions allowed (CODE_ALLOW_BYPASS): the state says so; set_mod
     return call(r);
   };
   const s2 = createServer({ secret: SECRET, query: fakeQuery(), spawn: () => {}, call: call2, distDir: tmp('bndist2'), plainDir: path.resolve(import.meta.dirname, '../plain'),
-    logger: () => {}, allowBypass: true, sandbox: { egress: false, workspace: '/home/u/projects' } });
+    logger: () => {}, allowBypass: true, sandbox: { egress: false, egressHost: false, workspace: '/home/u/projects' } });
   await new Promise((r) => s2.server.listen(0, '127.0.0.1', r));
   const b2 = `http://127.0.0.1:${s2.server.address().port}`;
   try {
     const get = async (p, init = {}) => { const r = await fetch(b2 + p, { ...init, headers: { 'X-Bn-Code-Proxy': SECRET, Origin: b2, 'Content-Type': 'application/json', ...(init.headers || {}) } }); return r.json(); };
     const st = await get('/api/state');
-    assert.deepEqual([st.bypass, st.sandbox], [{ allowed: true }, { egress: false, workspace: '/home/u/projects' }]);
+    assert.deepEqual([st.bypass, st.sandbox], [{ allowed: true }, { egress: false, egressHost: false, workspace: '/home/u/projects' }]);
     const open = await get('/api/sessions', { method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', mode: 'bypassPermissions' }) });
     assert.match(open.error, /never starts in bypassPermissions/);
     const { id } = await get('/api/sessions', { method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', mode: 'default' }) });

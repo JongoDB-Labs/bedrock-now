@@ -65,7 +65,9 @@ CODE_ALLOW_BYPASS	code	main	CODE_ENABLED	Offer Bypass permissions: Claude runs e
 CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves routine actions and blocks risky ones (it costs extra).
 TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
 TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
-TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet (on by default; on Docker Desktop also this computer's services). Off closes both.
+TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet: public addresses only (the default), with this computer's services too, or off.
+TERMINAL_EGRESS_ALLOW	code	more	TERMINAL_ENABLED	Only these names on the internet, and other ports (blank: every public name on 80, 443 and 22).
+TERMINAL_EGRESS_DENY	code	more	TERMINAL_ENABLED	Never these names on the internet.
 TERMINAL_AUTO_MODE	code	main	TERMINAL_ENABLED	Auto mode for claude typed in the Terminal too (it costs extra).
 CLAUDE_MODEL_OPUS	code	main	-	The model Claude Code works with: claude-bedrock's main (opus) slot.
 CLAUDE_BEDROCK_OPUS_MODEL	code	with	CLAUDE_MODEL_OPUS	-

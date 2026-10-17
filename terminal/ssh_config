@@ -1,0 +1,6 @@
+# bedrock-now's sandbox (/etc/ssh/ssh_config.d/bedrock-now.conf): ssh — git over ssh included — through its egress
+# proxy while that is its way out (TERMINAL_EGRESS=internet sets HTTPS_PROXY; the sandbox has no other route then): a
+# CONNECT to port 22 of a public address (bn-ssh-proxy). A ProxyCommand or ProxyJump of yours in ~/.ssh/config comes
+# first (ssh keeps the first value it reads). With TERMINAL_EGRESS=host there is no proxy and ssh connects itself.
+Match exec "test -n \"${HTTPS_PROXY:-}\""
+    ProxyCommand /usr/local/bin/bn-ssh-proxy %h %p

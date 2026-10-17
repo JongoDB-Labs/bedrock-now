@@ -11,7 +11,8 @@
 //                                           budget: {usd, hard} | null, terminal (handed to the terminal)}], pending,
 //                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
 //                                           auto: {allowed} (CODE_AUTO_MODE),
-//                                           sandbox: {egress: true|false (TERMINAL_EGRESS), workspace: the folder of
+//                                           sandbox: {egress: true|false (TERMINAL_EGRESS: any internet), egressHost:
+//                                           true|false (TERMINAL_EGRESS=host: this computer's services too), workspace: the folder of
 //                                           yours the sandbox sees (a label: this container mounts nothing) | null},
 //                                           remote: true over remote access (Caddy's X-Bn-Remote)}
 //   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}

@@ -1,0 +1,11 @@
+#!/bin/sh
+# ssh's ProxyCommand in the sandbox (terminal/ssh_config) while its way out is the egress proxy (HTTPS_PROXY): HOST
+# PORT through it as an HTTP CONNECT, which the proxy allows to public addresses only, on port 22 (or one
+# TERMINAL_EGRESS_ALLOW opens). netcat-openbsd speaks CONNECT (-X connect); the proxy's refusal is its error.
+p="${HTTPS_PROXY:-${https_proxy:-}}"
+p="${p#*://}"; p="${p%%/*}"
+case "$p" in
+  '' | *[!A-Za-z0-9.:_-]*) echo "bn-ssh-proxy: no egress proxy in HTTPS_PROXY (TERMINAL_EGRESS is not internet)" >&2; exit 1 ;;
+esac
+[ $# -eq 2 ] || { echo "usage: bn-ssh-proxy HOST PORT" >&2; exit 2; }
+exec /usr/bin/nc.openbsd -X connect -x "$p" "$1" "$2"

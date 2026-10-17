@@ -161,6 +161,7 @@ _sv_webhook() {
 _sv_bool() { case "$1" in true | false) return 0 ;; esac; SV_ERR="must be true or false"; return 1; }
 _sv_on_off() { case "$1" in on | off) return 0 ;; esac; SV_ERR="must be on or off"; return 1; }
 _sv_true_blank() { case "$1" in true | '') return 0 ;; esac; SV_ERR="must be true or blank"; return 1; }
+_sv_egress() { case "$1" in internet | host | off | '') return 0 ;; esac; SV_ERR="must be internet, host or off (blank = internet)"; return 1; }
 _sv_hour() { case "$1" in [0-9] | 1[0-9] | 2[0-3]) return 0 ;; esac; SV_ERR="must be an hour from 0 to 23"; return 1; }
 _sv_stt_provider() { case "$1" in bedrock | openai | groq | '') return 0 ;; esac; SV_ERR="must be bedrock, openai, groq or blank (the browser)"; return 1; }
 _sv_stt_key() { [ -z "$1" ] || valid_stt_key "$1" || { SV_ERR="must be an API key: 20-512 letters, digits, - and _"; return 1; }; }
@@ -228,6 +229,7 @@ setting_weakens() {
     BACKUP_NIGHTLY | AUTO_UPDATE) [ "$2" != on ] && [ "$3" = on ] ;;                              # turned off
     UPDATE_CHECK) [ "$2" = false ] && [ "$3" != false ] ;;                                       # no release checks
     REMOTE_PREVIEW) _remote_preview_may_be_on "$2" && ! flag_on "$3" ;;                          # previews may turn on
+    TERMINAL_EGRESS) [ "$(_egress_rank "$2")" -gt "$(_egress_rank "$3")" ] ;;                    # off → internet → host
     *) [ "$2" = true ] && [ "$3" != true ] ;;                                                    # remote admin, stored prompts
   esac
 }
@@ -239,8 +241,11 @@ _remote_preview_may_be_on() {
   flag_off "$1" && return 1
   [ "$(get_env REMOTE_MODE)" = domain ] && [ -n "$(get_env REMOTE_PREVIEW_DOMAIN)" ]
 }
+# _egress_rank VALUE -> how far TERMINAL_EGRESS=VALUE lets the sandbox reach: 0 off, 1 internet (public addresses), 2 host
+_egress_rank() { case "$(egress_mode "$1")" in off) echo 0 ;; internet) echo 1 ;; *) echo 2 ;; esac; }
 _weaken_word() {
   case "$1" in
+    TERMINAL_EGRESS) echo "opened further" ;;
     BACKUP_KEEP) echo lowered ;; PORTAL_SESSION_DAYS) echo "made longer" ;; BUDGET_*) echo raised ;;
     BACKUP_NIGHTLY | AUTO_UPDATE | UPDATE_CHECK) echo "turned off" ;; *) echo "turned on" ;;
   esac
@@ -482,7 +487,9 @@ settings_snapshot_write() {
               # blank in .env.example, but on by default: setup turns them on (lib/code.sh code_default_on), so on is
               # not "Changed from default" and an explicit false is (no .env.example: no defaults at all)
               if ("CODE_ENABLED" in def) def["CODE_ENABLED"] = "true"
-              if ("TERMINAL_ENABLED" in def) def["TERMINAL_ENABLED"] = "true" }
+              if ("TERMINAL_ENABLED" in def) def["TERMINAL_ENABLED"] = "true"
+              # blank means internet (lib/common.sh egress_mode): an explicit internet is not "Changed from default"
+              if ("TERMINAL_EGRESS" in def) def["TERMINAL_EGRESS"] = "internet" }
       function js(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, " ", s); gsub(/[\001-\037\177]/, "", s); return "\"" s "\"" }
       function mask(code, v,  n, m) {
         n = length(v)
@@ -885,6 +892,9 @@ _cfg_post() {
   # the terminal's managed settings follow TERMINAL_AUTO_MODE / CODE_AUTO_MODE (a read-only file of terminal/managed,
   # lib/common.sh claude_policy: compose recreates it when that file changes): first, so the code container finds it ready
   if _cfg_on terminal-env && terminal_ready; then svc="$svc terminal"; fi
+  # the sandbox's way out (TERMINAL_EGRESS): its egress proxy up or gone, the terminal on its new networks — before the
+  # code container's restart below, which waits for a healthy terminal
+  if _cfg_on terminal-egress; then terminal_egress_apply || die "the terminal did not come back with its new way to the internet"; fi
   # the code container reads CODE_ALLOW_BYPASS / CODE_AUTO_MODE at its start (compose recreates it for the new value)
   if _cfg_on code-env && code_ready && ! _cfg_on code; then svc="$svc code"; fi
   # previews over remote access: the sidecar's Services (it reads its config again by itself), the portal and Caddy

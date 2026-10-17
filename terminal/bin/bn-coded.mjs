@@ -1522,8 +1522,10 @@ export function imageProgram(name) {
 }
 // taskEnv(extra) -> the environment a command runs with: only these variables of this container's own environment
 // (never tmux's global one), the PATH above, TERM, and npm told to read neither the user's nor the global npmrc (two
-// different paths: npm refuses one file as both; /nonexistent is never there, and only root could make it)
-const ENV_KEEP = /^(HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]{1,20}|TZ|TMPDIR|COLORTERM)$/;
+// different paths: npm refuses one file as both; /nonexistent is never there, and only root could make it). Kept: the
+// way out to the internet (TERMINAL_EGRESS=internet: the egress proxy, compose.terminal-proxy.yaml), which npm, pip,
+// git, curl and Node (NODE_USE_ENV_PROXY) read — without it a task's npm install has no route at all
+const ENV_KEEP = /^(HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|LC_[A-Z]{1,20}|TZ|TMPDIR|COLORTERM|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy|NODE_USE_ENV_PROXY)$/;
 export const TASK_ENV_FIXED = { TERM: 'tmux-256color', NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_GLOBALCONFIG: '/nonexistent/npmrc', NPM_CONFIG_UPDATE_NOTIFIER: 'false' };
 export function taskEnv(extra = {}, base = process.env) {
   const env = {};
@@ -2109,8 +2111,8 @@ export function runList() {
       tasks.push(...(r.tasks || []));
     }
   }
-  // the Makefile GNU make reads, in its order (its targets listed even without the image's own make — it has none —
-  // but not offered then)
+  // the Makefile GNU make reads, in its order (its targets listed even without the image's own make — an image from
+  // before it had one — but not offered then)
   let mfName = 'Makefile', mf = null;
   let here = [];
   try { here = fs.readdirSync(confine('.') || WORKSPACE).slice(0, 100000); } catch { /* none */ }

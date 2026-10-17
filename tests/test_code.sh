@@ -32,11 +32,11 @@ test_code_is_off_by_default_and_needs_the_terminal() {
   assert_eq "$(code_services)" ""
   mkdir -p "$TMP/ws"
   printf 'CODE_ENABLED=true\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\n' "$TMP/ws" > "$ENV_FILE"
-  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml compose.code.yaml "
+  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-proxy.yaml compose.code.yaml "
   assert_eq "$(code_services)" "code"
-  assert_eq "$(optional_services)" "terminal-gateway terminal code"
+  assert_eq "$(optional_services)" "terminal-egress terminal-gateway terminal code"
   printf 'CODE_ENABLED=false\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\n' "$TMP/ws" > "$ENV_FILE"
-  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml "
+  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-proxy.yaml "
   [ -f "$STACK_DIR/compose.code.yaml" ] || return 1
 }
 
@@ -246,11 +246,12 @@ test_an_update_nobody_watched_leaves_a_notice_for_home() {
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["workspace"] == sys.argv[2] and d["egress"] is True and d["terminal"] is True and isinstance(d["at"], int), d
+assert d["egress_mode"] == "internet", d
 PY
   case "$(uname -s)" in Darwin) assert_eq "$(stat -f %Lp "$f")" 644 ;; *) assert_eq "$(stat -c %a "$f")" 644 ;; esac
   # internet off: said so
   set_env CODE_ENABLED ''; set_env TERMINAL_EGRESS off; code_default_on > /dev/null 2>&1 || return 1
-  assert_contains "$(cat "$f")" '"egress": false'
+  assert_contains "$(cat "$f")" '"egress": false, "egress_mode": "off"'
   # disable, or a default undone, takes it away
   code_disable > /dev/null 2>&1 || return 1
   [ ! -e "$f" ] || { echo "the notice outlived disable" >&2; return 1; }
@@ -394,7 +395,7 @@ test_status_names_address_container_sandbox_and_remote() {
   out="$(code_status)"
   assert_contains "$out" "Code page: on — http://code.bedrock-now.localhost (the Code tab"
   assert_contains "$out" "Container  running healthy"
-  assert_contains "$out" "Sandbox    the terminal's: $(get_env TERMINAL_WORKSPACE) → /workspace, key claude-code-terminal (budget \$50), internet on"
+  assert_contains "$out" "Sandbox    the terminal's: $(get_env TERMINAL_WORKSPACE) → /workspace, key claude-code-terminal (budget \$50), internet public addresses only"
   assert_contains "$out" "Remote     off (with the terminal's: REMOTE_TERMINAL=true"
   assert_contains "$out" "Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.bedrock-now-preview.localhost"
   assert_not_contains "$out" "remote: "

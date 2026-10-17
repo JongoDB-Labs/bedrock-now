@@ -109,7 +109,7 @@ _rollback_litellm_hook() {
 
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
-  local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 no_terminal=0 q quiet=()
+  local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 no_terminal=0 no_egress=0 q quiet=()
   [ $# -eq 0 ] || die "usage: ./stack rollback [--yes]   (goes back to the version before the last ./stack update)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   stack_lock rollback
@@ -158,6 +158,11 @@ cmd_rollback() {
   if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/Dockerfile" 2>/dev/null; then
     no_terminal=1; terminal_rollback_cleanup
   fi
+  # A version from before the terminal's egress proxy (v0.10.0 and earlier: the sandbox on the internet itself, which
+  # reads TERMINAL_EGRESS=internet as on): the proxy's container goes now, its network after the up
+  if declare -F terminal_on >/dev/null && terminal_on && ! git -C "$STACK_DIR" cat-file -e "$from:terminal/egress/bn-egress.mjs" 2>/dev/null; then
+    no_egress=1; terminal_proxy_rm
+  fi
   # A version from before the Code page, while it is on: its container goes (lib/code.sh); its network and volume
   # after the up.
   no_code=0
@@ -184,6 +189,7 @@ cmd_rollback() {
   [ "$no_stt" = 0 ] || stt_rollback_network_cleanup
   [ "$no_code" = 0 ] || code_network_cleanup
   [ "$no_terminal" = 0 ] || terminal_network_cleanup
+  [ "$no_egress" = 0 ] || docker network rm "$(project_name)_terminal-proxy" >/dev/null 2>&1 || true
   _record_set result rolled-back
   # The images of the version rolled back from are now the "previous version": kept until the next update
   # replaces them as previous-previous (or ./stack clean, once they are no longer the previous version).

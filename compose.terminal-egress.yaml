@@ -1,6 +1,9 @@
-# The browser terminal's way out to the internet (git clone, npm, pip, Claude Code's web fetches): added with
-# compose.terminal.yaml unless TERMINAL_EGRESS=off in .env. Only the terminal container is on this network. On Docker
-# Desktop it also reaches services of your computer through host.docker.internal; TERMINAL_EGRESS=off removes both.
+# The browser terminal's direct way out (TERMINAL_EGRESS=host, chosen in Settings › Claude Code; the only way up to
+# v0.10.0): the sandbox itself on "terminal-out", a network with the internet — and through it this computer's own
+# services (on Docker Desktop, Docker's host address answers for its 127.0.0.1; on Linux, the network's gateway for
+# services listening on every address) and your local network, on any port, by any protocol. Added with
+# compose.terminal.yaml only when chosen; the default, TERMINAL_EGRESS=internet (compose.terminal-proxy.yaml), reaches
+# the internet through an egress proxy that refuses all of those; TERMINAL_EGRESS=off neither.
 services:
   terminal:
     networks: [terminal, terminal-out]

@@ -293,6 +293,8 @@ export interface ServerState {
   allowAuto: boolean;
   /** the sandbox reaches the internet (TERMINAL_EGRESS); null: not known */
   egress: boolean | null;
+  /** …and this computer's own services and your network with it (TERMINAL_EGRESS=host); null: not known */
+  egressHost: boolean | null;
   /** the folder of yours the sandbox sees (a label), when known */
   workspace: string | null;
   /** this page came over remote access (Caddy's remote sites tell the code container; never from the browser) */

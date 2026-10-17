@@ -310,6 +310,7 @@ def bypass(browser):
     expect(dlg).to_be_visible()
     expect(dlg.get_by_test_id("bypass-risk-folder")).to_contain_text("/home/you/projects/acme-api")
     expect(dlg.get_by_test_id("bypass-risk-egress")).to_contain_text("has internet access")
+    expect(dlg.get_by_test_id("bypass-risk-egress")).to_contain_text("public addresses only")   # (TERMINAL_EGRESS=internet)
     expect(dlg.get_by_test_id("bypass-risk-budget")).to_contain_text("left this period")
     expect(dlg).to_contain_text("shell commands do not")
     expect(dlg.get_by_test_id("bypass-risk-remote")).to_have_count(0)   # (plain HTTP: the computer itself)
@@ -352,6 +353,14 @@ def bypass(browser):
     page.get_by_test_id("mode-picker").click()
     page.get_by_test_id("mode-bypassPermissions").click()
     expect(page.get_by_test_id("bypass-risk-egress")).to_contain_text("no internet access")
+    page.get_by_test_id("bypass-cancel").click()
+    # TERMINAL_EGRESS=host: the internet, and this computer's services with it
+    post(NORMAL + "/__mock/bypass?egress=1&host=1")
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.get_by_test_id("mode-picker").click()
+    page.get_by_test_id("mode-bypassPermissions").click()
+    expect(page.get_by_test_id("bypass-risk-egress")).to_contain_text("this computer's own services")
     page.get_by_test_id("bypass-cancel").click()
     # Settings turned it off meanwhile: the switch is refused, nothing changes
     post(NORMAL + "/__mock/bypass?allow=0")

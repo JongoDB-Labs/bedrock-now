@@ -265,7 +265,7 @@
           item("It sees ", el("strong", { text: "one folder" }), " of this computer, its workspace: ", ws, " (created if it is not there). Another folder: ", other, "."),
           item("It has ", el("strong", { text: "its own key and budget" }), " (the terminal's, $50 a month unless you change it), apart from Chat's and ", code("claude-bedrock"), "'s; its spend shows on Home."),
           item("Claude ", el("strong", { text: "asks before acting" }), ": in Manual mode every command and file change waits for your OK. Bypass permissions and Auto mode stay off unless you allow them in Settings › Claude Code."),
-          item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches the internet — and, on Docker Desktop, services on this computer through Docker's host address — unless ", code("TERMINAL_EGRESS=off"), " is in ", code(".env"), ", which closes both."),
+          item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches ", el("strong", { text: "public internet addresses only" }), ", through its egress proxy: not this computer's own services, your local network or private addresses. Settings › Claude Code › Sandbox internet access changes that (", code("TERMINAL_EGRESS=off"), " in ", code(".env"), ": no internet at all)."),
           item("The first time, it builds the Code page's image: a few minutes.")),
         el("h2", { text: "Turning it on" }),
         el("p", { class: "note", text: "Turn on in Settings works only on the computer running bedrock-now: from another device, Settings shows the switch but leaves it to that computer. Or in a terminal, in your bedrock-now folder:" }),

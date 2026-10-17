@@ -34,9 +34,15 @@ export function BypassDialog() {
           <li data-testid="bypass-risk-egress">
             {server?.egress === false ? (
               <>The sandbox has no internet access (TERMINAL_EGRESS=off).</>
+            ) : server?.egressHost === true ? (
+              <>
+                <strong>The sandbox has internet access, and this computer's own services and your network with it</strong> (TERMINAL_EGRESS=host), so
+                anything in the workspace can be sent anywhere, and services on this computer can be reached.
+              </>
             ) : (
               <>
-                <strong>The sandbox has internet access</strong>, so anything in the workspace can be sent anywhere.
+                <strong>The sandbox has internet access</strong> (public addresses only, not this computer's services), so anything in the workspace can be
+                sent anywhere.
               </>
             )}
           </li>

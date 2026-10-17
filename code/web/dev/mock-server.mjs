@@ -23,7 +23,8 @@
 // in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
 // name= changes a launch.json entry behind the page's back; /__mock/run-swap?name= changes a Run & test task's script
 // behind its back (GET /__mock/run-shown lists the runs whose window the page asked for); /__mock/reset restores the fixtures;
-// /__mock/bypass?allow=1|0&egress=1|0&remote=1|0 sets what Settings allow (CODE_ALLOW_BYPASS), the sandbox's internet
+// /__mock/bypass?allow=1|0&egress=1|0&host=1|0&remote=1|0 sets what Settings allow (CODE_ALLOW_BYPASS), the sandbox's internet
+// (host: this computer's services with it, TERMINAL_EGRESS=host)
 // access and whether the page came over remote access;
 // /__mock/auto?allow=1|0 sets whether Settings allow Auto mode (CODE_AUTO_MODE): in Auto, the "reviewer" blocks shell
 // commands that pipe a download into a shell, force-push or rm -rf ("install script" plays one), with "Allow once";
@@ -73,6 +74,7 @@ let remote = false;
 let modeDelay = 0;
 let watchIncomplete = false;   // /__mock/watch-incomplete?on=1: as a sandbox that could not list every watched file    // /__mock/bypass?delay=ms: set_mode answers take this long (as a slow Claude Code)   // /__mock/bypass?remote=1: as if this page came over remote access (Caddy's remote site)   // the next N model switches fail as Claude Code's model check does on a slow API
 let egress = true;
+let egressHost = false;
 let keyBudget;
 const resetBudget = () => (keyBudget = { alias: 'claude-code-terminal', spend: 1.23, max_budget: 50, reset_at: new Date(Date.now() + 9 * 86400e3).toISOString() });
 resetBudget();
@@ -1375,7 +1377,7 @@ async function api(req, res, url) {
       pending: totalPending(),
       bypass: { allowed: allowBypass },
       auto: { allowed: allowAuto },
-      sandbox: { egress, workspace: '/home/you/projects/acme-api' },
+      sandbox: { egress, egressHost, workspace: '/home/you/projects/acme-api' },
       remote,
     });
   }
@@ -2063,6 +2065,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/__mock/bypass') {
         if (url.searchParams.has('allow')) allowBypass = url.searchParams.get('allow') === '1';
         if (url.searchParams.has('egress')) egress = url.searchParams.get('egress') !== '0';
+        if (url.searchParams.has('host')) egressHost = url.searchParams.get('host') === '1';
         if (url.searchParams.has('remote')) remote = url.searchParams.get('remote') === '1';
         if (url.searchParams.has('delay')) modeDelay = Math.min(5000, Number(url.searchParams.get('delay')) || 0);
         return json(res, 200, { ok: true, allowBypass, egress, remote });
@@ -2165,6 +2168,7 @@ const server = http.createServer(async (req, res) => {
         allowBypass = process.env.MOCK_BYPASS === '1';
         allowAuto = process.env.MOCK_AUTO === '1';
         egress = true;
+        egressHost = false;
         modelFail = 0;
         remote = false;
         modeDelay = 0;

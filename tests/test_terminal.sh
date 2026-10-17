@@ -43,34 +43,70 @@ test_switches_read_like_the_portal() {
   out="$(terminal_flag_warnings 2>&1)"
   assert_contains "$out" "REMOTE_TERMINAL=sometimes in .env is neither on nor off"
   assert_contains "$out" "read as off"
-  assert_contains "$out" "TERMINAL_EGRESS=nope in .env is neither on nor off"
+  assert_contains "$out" "TERMINAL_EGRESS=nope in .env is not internet, host or off — read as internet (the default: public addresses only)"
   if terminal_remote_wanted; then return 1; fi
   terminal_egress_on || return 1
+  assert_eq "$(terminal_egress_mode)" internet
+}
+
+# TERMINAL_EGRESS: internet (the default, and what an older install's on meant), host (v0.10.0's way: the sandbox on the
+# internet itself), off — read the same here, in the portal (settings.py egress_mode) and in the code container
+test_egress_mode_reads_three_choices_and_the_old_switch() {
+  for v in '' internet INTERNET ' internet' on true 1 yes On nonsense; do assert_eq "$(egress_mode "$v")" internet; done
+  for v in host HOST ' Host '; do assert_eq "$(egress_mode "$v")" host; done
+  for v in off false 0 no OFF; do assert_eq "$(egress_mode "$v")" off; done
+  # an older install's explicit on (or blank) needs no change in .env: it is the new default, no warning
+  for v in on true '' internet host off; do
+    printf 'TERMINAL_EGRESS=%s\n' "$v" > "$ENV_FILE"
+    assert_eq "$(terminal_flag_warnings 2>&1)" ""
+  done
+  printf 'TERMINAL_EGRESS=on\n' > "$ENV_FILE"
+  assert_eq "$(terminal_egress_mode)" internet
+  # the code container reads it the same way (code/server/main.mjs), and so does the portal (settings.py egress_mode)
+  assert_contains "$(cat "$STACK_DIR/code/server/main.mjs")" "return s === 'host' ? 'host' : /^(false|0|no|off)\$/.test(s) ? 'off' : 'internet';"
+  assert_contains "$(cat "$STACK_DIR/portal/portal/settings.py")" 'return "host" if v == "host" else "off" if v in _OFF else "internet"'
+}
+
+# TERMINAL_EGRESS_ALLOW / _DENY entries the egress proxy would skip are named at ./stack up and in status
+test_egress_lists_skipped_entries_are_said() {
+  assert_eq "$(egress_list_bad 'github.com, *.npmjs.org .pypi.org *:8443 git.example.com:9000 * _dmarc.example.com xn--r8jz45g.jp example.com.')" ""
+  assert_eq "$(egress_list_bad '例え.jp')" ""   # (IDNA: the proxy's to check)
+  assert_eq "$(egress_list_bad '10.0.0.1 127.1 bad..name x.com:99999 x.com:0 x.com:port -x.com foo.123 0x7f a/b')" \
+    " 10.0.0.1 127.1 bad..name x.com:99999 x.com:0 x.com:port -x.com foo.123 0x7f a/b"
+  printf 'TERMINAL_EGRESS_ALLOW=github.com,10.0.0.1\nTERMINAL_EGRESS_DENY=pastebin.com\n' > "$ENV_FILE"
+  out="$(terminal_flag_warnings 2>&1)"
+  assert_contains "$out" "TERMINAL_EGRESS_ALLOW in .env: the egress proxy skips 10.0.0.1"
+  assert_not_contains "$out" "TERMINAL_EGRESS_DENY"
 }
 
 test_compose_overlays_add_the_terminal_and_its_way_out() {
-  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"
+  # the default (blank, internet, or an older install's on): the egress proxy; host: the sandbox on the internet itself
+  for v in '' internet on true; do
+    printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\nTERMINAL_EGRESS=%s\n' "$v" > "$ENV_FILE"
+    assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-proxy.yaml "
+  done
+  printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\nTERMINAL_EGRESS=host\n' > "$ENV_FILE"
   assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml "
   printf 'TERMINAL_ENABLED=yes\nTERMINAL_WORKSPACE=/w\nTERMINAL_EGRESS=no\n' > "$ENV_FILE"
   assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml "
   printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\nREMOTE_MODE=tailscale\n' > "$ENV_FILE"
-  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.tailscale.yaml compose.terminal.yaml compose.terminal-egress.yaml "
-  REMOTE_DEGRADED=1; assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-egress.yaml "; REMOTE_DEGRADED=0
+  assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.tailscale.yaml compose.terminal.yaml compose.terminal-proxy.yaml "
+  REMOTE_DEGRADED=1; assert_eq "$(compose_overlays | tr '\n' ' ')" "compose.terminal.yaml compose.terminal-proxy.yaml "; REMOTE_DEGRADED=0
   printf 'TERMINAL_ENABLED=false\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"; assert_eq "$(compose_overlays)" ""
   # on, but no folder: compose could not read the file at all, so it stays out (./stack up says why)
   printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=\n' > "$ENV_FILE"; assert_eq "$(compose_overlays)" ""
   assert_contains "$(terminal_why_out)" "TERMINAL_WORKSPACE is empty"
   docker() { printf '%s\n' "$*" > "$TMP/args"; }
   printf 'TERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=/w\n' > "$ENV_FILE"; dc ps
-  assert_contains "$(cat "$TMP/args")" "-f $STACK_DIR/compose.terminal.yaml -f $STACK_DIR/compose.terminal-egress.yaml --env-file"
-  for f in compose.terminal.yaml compose.terminal-egress.yaml; do [ -f "$STACK_DIR/$f" ] || { echo "missing $f" >&2; return 1; }; done
+  assert_contains "$(cat "$TMP/args")" "-f $STACK_DIR/compose.terminal.yaml -f $STACK_DIR/compose.terminal-proxy.yaml --env-file"
+  for f in compose.terminal.yaml compose.terminal-proxy.yaml compose.terminal-egress.yaml; do [ -f "$STACK_DIR/$f" ] || { echo "missing $f" >&2; return 1; }; done
 }
 
 test_dc_never_takes_terminal_settings_from_the_shell() {
   mkdir -p "$TMP/bin"
   printf '#!/bin/sh\nenv | grep -E "^(TERMINAL_|REMOTE_TERMINAL)" || true\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"
   : > "$ENV_FILE"
-  out="$(PATH="$TMP/bin:$PATH" TERMINAL_ENABLED=true TERMINAL_WORKSPACE=/ TERMINAL_EGRESS=on TERMINAL_HOST=x.localhost \
+  out="$(PATH="$TMP/bin:$PATH" TERMINAL_ENABLED=true TERMINAL_WORKSPACE=/ TERMINAL_EGRESS=host TERMINAL_EGRESS_ALLOW='*' TERMINAL_EGRESS_DENY=x TERMINAL_HOST=x.localhost \
     TERMINAL_UID=0 TERMINAL_GID=0 TERMINAL_MEM_LIMIT=64g REMOTE_TERMINAL=true REMOTE_TERMINAL_HOST=evil.example \
     TERMINAL_AUTO_MODE=true CODE_AUTO_MODE=true TERMINAL_CLAUDE_POLICY=on dc ps)"
   # (only what ./stack itself sets: the managed settings it chose from .env — off here, whatever the shell says)
@@ -205,6 +241,9 @@ test_disable_removes_containers_and_networks_and_keeps_folder_and_key() {
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-out"
   assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-link"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-proxy"
+  # its egress proxy, by its labels (whatever TERMINAL_EGRESS says now)
+  assert_contains "$(cat "$TMP/docker")" "docker ps -aq --filter label=com.docker.compose.project=bedrock-now --filter label=com.docker.compose.service=terminal-egress"
   assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_terminal-socket"
   assert_contains "$(cat "$TMP/out")" "volume bedrock-now_terminal-home"
   assert_contains "$(cat "$TMP/out")" "LiteLLM and shared-mcp restart once as they leave the terminal's gateway network"
@@ -222,8 +261,17 @@ test_status_names_folder_key_address_internet_and_remote() {
   assert_contains "$out" "Workspace  $(get_env TERMINAL_WORKSPACE) → /workspace"
   assert_contains "$out" "Container  running healthy"
   assert_contains "$out" 'Key        claude-code-terminal, its own monthly budget: $50 (BUDGET_TERMINAL'
-  assert_contains "$out" "Internet   on"
+  assert_contains "$out" "Internet   public addresses only, through its egress proxy"
+  assert_contains "$out" "not this computer's services, your network or private addresses (refusals: ./stack logs terminal-egress)"
+  assert_contains "$out" "Settings › Claude Code › Sandbox internet access, or TERMINAL_EGRESS=internet|host|off in .env"
   assert_contains "$out" "Remote     off (REMOTE_TERMINAL=true"
+  assert_not_contains "$out" "only:"
+  set_env TERMINAL_EGRESS_ALLOW github.com,npmjs.org; set_env TERMINAL_EGRESS_DENY pastebin.com
+  out="$(terminal_status)"
+  assert_contains "$out" "only: github.com,npmjs.org (TERMINAL_EGRESS_ALLOW)"
+  assert_contains "$out" "never: pastebin.com (TERMINAL_EGRESS_DENY)"
+  set_env TERMINAL_EGRESS host
+  assert_contains "$(terminal_status)" "Internet   on, with this computer's services and your network (TERMINAL_EGRESS=host): any address, any port"
   set_env TERMINAL_EGRESS off
   assert_contains "$(terminal_status)" "Internet   off (TERMINAL_EGRESS=off)"
   assert_eq "$(status_url terminal)" "http://terminal.bedrock-now.localhost   (the Terminal tab; ./stack terminal status)"
@@ -236,8 +284,12 @@ test_status_names_folder_key_address_internet_and_remote() {
 test_a_workspace_gone_or_no_longer_allowed_leaves_the_terminal_out() {
   _stubs
   terminal_enable > /dev/null 2>&1 || return 1
-  assert_eq "$(terminal_services)" "terminal-gateway terminal"
-  assert_eq "$(stack_services)" "$STACK_BASE_SERVICES terminal-gateway terminal"
+  assert_eq "$(terminal_services)" "terminal-egress terminal-gateway terminal"
+  assert_eq "$(stack_services)" "$STACK_BASE_SERVICES terminal-egress terminal-gateway terminal"
+  set_env TERMINAL_EGRESS host; assert_eq "$(terminal_services)" "terminal-gateway terminal"
+  set_env TERMINAL_EGRESS off; assert_eq "$(terminal_services)" "terminal-gateway terminal"
+  set_env TERMINAL_EGRESS ''
+  assert_contains "$(status_url terminal-egress)" "public internet addresses only"
   ws="$(get_env TERMINAL_WORKSPACE)"
   rmdir "$ws"
   assert_eq "$(terminal_services)" ""
@@ -281,7 +333,49 @@ test_up_makes_a_missing_key_and_drops_the_way_out_when_asked() {
   terminal_after_up || return 1
   assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-claude-code-terminal
   assert_contains "$(cat "$TMP/dc")" "dc up -d --no-deps terminal"
-  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-out"
+  # off: the proxy (by its labels) and both networks of the way out
+  docker() { echo "docker $*" >> "$TMP/docker"; case "$*" in "ps -aq"*terminal-egress) echo c0ffee ;; esac; return 0; }
+  : > "$TMP/docker"; terminal_after_up || return 1
+  assert_contains "$(cat "$TMP/docker")" "docker rm -f c0ffee"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-proxy bedrock-now_terminal-out"
+  # host: the sandbox is on terminal-out itself; only the proxy and its network go
+  set_env TERMINAL_EGRESS host; : > "$TMP/docker"; terminal_after_up || return 1
+  assert_contains "$(cat "$TMP/docker")" "docker rm -f c0ffee"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-proxy"
+  assert_not_contains "$(cat "$TMP/docker")" "terminal-out"
+  # internet (the default): nothing goes
+  set_env TERMINAL_EGRESS ''; : > "$TMP/docker"; terminal_after_up || return 1
+  assert_eq "$(cat "$TMP/docker")" ""
+  # ./stack up, before compose: a proxy left from internet goes once the choice is host or off (never an orphan)
+  set_env TERMINAL_EGRESS host; : > "$TMP/docker"; terminal_up_hook 2>/dev/null || return 1
+  assert_contains "$(cat "$TMP/docker")" "docker rm -f c0ffee"
+  set_env TERMINAL_EGRESS internet; : > "$TMP/docker"; terminal_up_hook 2>/dev/null || return 1
+  assert_not_contains "$(cat "$TMP/docker")" "rm -f"
+}
+
+# Settings › Claude Code › Sandbox internet access (apply terminal-egress): the proxy built and up, or gone; the sandbox
+# recreated on its new networks; then what is no longer used goes. The build and the image keep: the proxy too.
+test_egress_apply_brings_the_proxy_and_the_sandbox_to_the_choice() {
+  _stubs
+  terminal_enable > /dev/null 2>&1 || return 1
+  assert_contains "$(cat "$TMP/dc")" "dc build -q terminal-egress"   # (enable: built with the terminal's image)
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --wait terminal-egress"
+  : > "$TMP/dc"; : > "$TMP/docker"
+  set_env TERMINAL_EGRESS internet
+  terminal_egress_apply || return 1
+  assert_eq "$(cat "$TMP/dc")" "dc up -d --wait --build --no-deps terminal-egress
+dc up -d --no-deps --wait terminal"
+  : > "$TMP/dc"; set_env TERMINAL_EGRESS host
+  terminal_egress_apply || return 1
+  assert_eq "$(cat "$TMP/dc")" "dc up -d --no-deps --wait terminal"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_terminal-proxy"
+  # host: no proxy to build at enable or setup
+  : > "$TMP/dc"; terminal_build || return 1
+  assert_not_contains "$(cat "$TMP/dc")" "terminal-egress"
+  # the terminal off: nothing at all
+  set_env TERMINAL_ENABLED false; : > "$TMP/dc"
+  terminal_egress_apply || return 1
+  assert_eq "$(cat "$TMP/dc")" ""
 }
 
 test_remote_terminal_only_with_remote_terminal_on() {
@@ -356,7 +450,8 @@ test_restore_brings_the_backups_terminal_key_or_none() {
 
 test_update_keeps_and_rollback_restores_the_terminal_build() {
   printf 'TERMINAL_ENABLED=true\n' > "$ENV_FILE"
-  assert_eq "$(terminal_image_refs)" "bedrock-now/terminal:local"
+  assert_eq "$(terminal_image_refs | tr '\n' ' ')" "bedrock-now/terminal:local bedrock-now/terminal-egress:local "
+  case " $LOCAL_BUILDS " in *" terminal-egress "*) ;; *) echo "terminal-egress is not a local build" >&2; return 1 ;; esac
   assert_contains "$(sed -n '/^images_snapshot_before() {/,/^}/p' "$STACK_DIR/lib/images.sh")" "terminal_image_refs"
   docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
   _rollback_local_builds
@@ -374,6 +469,8 @@ test_uninstall_removes_the_terminal_even_while_off() {
   assert_contains "$d" "docker network rm bedrock-now_terminal"
   assert_contains "$d" "docker network rm bedrock-now_terminal-link"
   assert_contains "$d" "docker image rm bedrock-now/terminal:local bedrock-now/terminal:previous"
+  assert_contains "$d" "docker image rm bedrock-now/terminal-egress:local bedrock-now/terminal-egress:previous"
+  assert_contains "$d" "docker network rm bedrock-now_terminal-proxy"
   assert_contains "$(sed -n '/^cmd_uninstall() {/,/^}/p' "$STACK_DIR/lib/commands.sh")" "terminal_uninstall_cleanup"
 }
 
@@ -439,10 +536,36 @@ test_compose_terminal_is_a_sandbox() {
               'REMOTE_TERMINAL: ${REMOTE_TERMINAL:-false}' 'LITELLM_KEY_TERMINAL: ${LITELLM_KEY_TERMINAL:-}'; do
     assert_contains "$f" "$want"
   done
-  # only the terminal is on the way out
+  # host: only the terminal is on the way out
   e="$(cat "$STACK_DIR/compose.terminal-egress.yaml")"
   assert_contains "$e" "networks: [terminal, terminal-out]"
   assert_eq "$(grep -c '^  [a-z]' "$STACK_DIR/compose.terminal-egress.yaml")" 2   # terminal: and terminal-out:
+  # internet: the egress proxy — hardened, built here, its own uid, on the sandbox's side only by its alias — and the
+  # sandbox on internal networks, told about it
+  p="$(awk '/^  terminal-egress:$/,/^  terminal:$/' "$STACK_DIR/compose.terminal-proxy.yaml")"
+  for want in "read_only: true" "cap_drop: [ALL]" 'security_opt: ["no-new-privileges:true"]' 'user: "65534:65534"' "pids_limit:" "mem_limit:" \
+              "context: ./terminal/egress" 'image: ${COMPOSE_PROJECT_NAME:-bedrock-now}/terminal-egress:local' "aliases: [egress]" "terminal-out: {}" \
+              'TERMINAL_EGRESS_ALLOW: ${TERMINAL_EGRESS_ALLOW:-}' 'TERMINAL_EGRESS_DENY: ${TERMINAL_EGRESS_DENY:-}' "BN_EGRESS_BIND: egress"; do
+    assert_contains "$p" "$want"
+  done
+  for bad in "ports:" "cap_add" "privileged" "network_mode" "volumes:" "docker.sock" "SECRET" "KEY"; do assert_not_contains "$p" "$bad"; done
+  t="$(awk '/^  terminal:$/,/^networks:$/' "$STACK_DIR/compose.terminal-proxy.yaml")"
+  for want in "networks: [terminal, terminal-proxy]" "HTTPS_PROXY: http://egress:3128" "https_proxy: http://egress:3128" "HTTP_PROXY: http://egress:3128" \
+              "http_proxy: http://egress:3128" "NO_PROXY: localhost,127.0.0.1,::1,0.0.0.0,gateway,terminal" 'NODE_USE_ENV_PROXY: "1"'; do
+    assert_contains "$t" "$want"
+  done
+  assert_not_contains "$t" "terminal-out"
+  assert_eq "$(awk '/^networks:$/,0' "$STACK_DIR/compose.terminal-proxy.yaml" | grep -c 'internal: true')" 1   # terminal-proxy; terminal-out is the internet
+  # its image: the terminal's pinned Node base, nothing installed, its own uid, a syntax check at build
+  d="$(cat "$STACK_DIR/terminal/egress/Dockerfile")"
+  assert_contains "$d" "$(grep -m1 '^FROM node:' "$STACK_DIR/terminal/Dockerfile")"
+  assert_contains "$d" "node --check /opt/bn-egress/bn-egress.mjs"
+  assert_contains "$d" "USER 65534:65534"
+  assert_not_contains "$d" "apt-get"
+  assert_not_contains "$d" "npm ci"
+  assert_not_contains "$d" "npm install"
+  # Node built-ins only
+  assert_eq "$(grep -E "^import " "$STACK_DIR/terminal/egress/bn-egress.mjs" | grep -vcE "from 'node:")" 0
 }
 
 test_compose_render_with_the_terminal() {
@@ -456,7 +579,16 @@ import json, os, sys
 d = json.load(sys.stdin)
 t, g, c = d["services"]["terminal"], d["services"]["terminal-gateway"], d["services"]["caddy"]
 assert [v["source"] for v in t["volumes"] if v["type"] == "bind" and v["target"] == "/workspace"] == [os.environ["WS"]], t["volumes"]
-assert sorted(t["networks"]) == ["terminal", "terminal-out"], t["networks"]
+assert sorted(t["networks"]) == ["terminal", "terminal-proxy"], t["networks"]
+e = d["services"]["terminal-egress"]
+assert sorted(e["networks"]) == ["terminal-out", "terminal-proxy"] and e["networks"]["terminal-proxy"]["aliases"] == ["egress"], e["networks"]
+assert e["read_only"] and e["cap_drop"] == ["ALL"] and e["user"] == "65534:65534" and "ports" not in e and "volumes" not in e
+assert t["environment"]["HTTPS_PROXY"] == "http://egress:3128" and t["environment"]["NODE_USE_ENV_PROXY"] == "1"
+assert "gateway" in t["environment"]["NO_PROXY"].split(",") and "localhost" in t["environment"]["NO_PROXY"].split(",")
+assert d["networks"]["terminal-proxy"]["internal"] is True
+# the internet: the proxy alone on it
+assert sorted(n for n, v in d["services"].items() if "terminal-out" in (v.get("networks") or {})) == ["terminal-egress"]
+assert "sk-term" not in json.dumps(e) and "sk-cc" not in json.dumps(e)
 assert t["user"] == "501:20" and t["read_only"] and t["cap_drop"] == ["ALL"] and "ports" not in t
 assert t["environment"]["ANTHROPIC_AUTH_TOKEN"] == "sk-term" and "sk-cc" not in json.dumps(t)
 # auto mode: the Claude Code managed settings are a repo file, mounted read-only (off unless Settings say so); the
@@ -470,6 +602,7 @@ hosts = sorted(h.replace("=", ":", 1) for h in t["extra_hosts"])
 assert hosts == ["gateway.docker.internal:100::1", "gateway.docker.internal:192.0.2.1", "host.docker.internal:100::1",
                  "host.docker.internal:192.0.2.1"], t["extra_hosts"]
 assert d["networks"]["terminal"]["internal"] is True and not d["networks"]["terminal-out"].get("internal")
+assert d["services"]["terminal"]["depends_on"]["terminal-egress"]["condition"] == "service_started"
 assert d["networks"]["terminal-link"]["internal"] is True
 assert g["networks"]["terminal"]["aliases"] == ["gateway"] and g["networks"]["terminal-link"]["aliases"] == ["terminal-upstream"]
 assert sorted(g["networks"]) == ["terminal", "terminal-link"], g["networks"]
@@ -489,12 +622,20 @@ for n in ("caddy", "litellm", "shared-mcp"):
 assert "stt" in d["services"]["litellm"]["networks"] and "stt" in c["networks"]
 assert d["services"]["portal"]["environment"]["TERMINAL_ENABLED"] == "true"
 assert d["services"]["portal"]["environment"]["REMOTE_TERMINAL"] == "false"' || return 1
+  printf 'TERMINAL_EGRESS=host\n' >> "$ENV_FILE"
+  dc config --format json 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+t = d["services"]["terminal"]
+assert sorted(t["networks"]) == ["terminal", "terminal-out"], t["networks"]
+assert "terminal-egress" not in d["services"] and "terminal-proxy" not in d["networks"]
+assert not any(k.lower().endswith("_proxy") for k in t["environment"]), t["environment"]' || return 1
   printf 'TERMINAL_EGRESS=off\n' >> "$ENV_FILE"
   dc config --format json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 assert list(d["services"]["terminal"]["networks"]) == ["terminal"], d["services"]["terminal"]["networks"]
-assert "terminal-out" not in d["networks"]' || return 1
+assert "terminal-out" not in d["networks"] and "terminal-proxy" not in d["networks"] and "terminal-egress" not in d["services"]' || return 1
   # off: no terminal service, nothing of it on Caddy or the portal
   printf 'TERMINAL_ENABLED=false\n' >> "$ENV_FILE"
   dc config --format json 2>/dev/null | python3 -c '
@@ -670,6 +811,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
       *"exec -T terminal sh -c g="*) printf '200 404 404 404 404 404 ' ;;
       *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
       *"exec -T terminal sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
+      *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '000 403 403 403 403 403 403 403 ' ;;
       *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
   }
@@ -686,7 +828,18 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   }
   fails=0
   out="$(terminal_test_checks)"
-  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 10
+  assert_eq "$(printf '%s\n' "$out" | grep -c '^  ok ')" 12
+  assert_contains "$out" "ok    the sandbox's egress proxy healthy"
+  assert_contains "$out" "ok    the sandbox: no route around its egress proxy; through it no host.docker.internal, LiteLLM's port, metadata, private or ::1 address, no container"
+  # a way around the proxy, or something it let through: FAIL
+  dc() { case "$*" in *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '200 403 403 200 403 403 403 403 ' ;; *) ok_dc "$@" ;; esac; }
+  assert_contains "$(terminal_test_checks)" "FAIL  the sandbox: no route around its egress proxy"
+  # host or off: no proxy to check
+  dc() { ok_dc "$@"; }
+  set_env TERMINAL_EGRESS host
+  assert_eq "$(terminal_test_checks | grep -c '^  ok ')" 10
+  set_env TERMINAL_EGRESS ''; : > "$TMP/llm"
+  out="$(terminal_test_checks)"
   assert_contains "$out" "ok    Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox"
   assert_contains "$out" "ok    terminal gateway: the shared MCP server's tools"
   assert_contains "$out" "ok    the terminal's gateway refuses ttyd requests without the secret header"

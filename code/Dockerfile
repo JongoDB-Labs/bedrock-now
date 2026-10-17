@@ -11,7 +11,8 @@
 #   gitnew   the Git panel's unit tests once more with git 2.54 (Alpine 3.24): config-based hooks, which Debian's git
 #            lacks, are proven switched off there (the test may not skip)
 #   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
-#            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox)
+#            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox),
+#            and the sandbox's egress proxy (terminal/egress/bn-egress.mjs)
 #   (last)   the runtime image — what setup and update build (no target): web and deps only, never webtest, gitnew or test
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS web
 WORKDIR /src
@@ -57,6 +58,7 @@ COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
 COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs /opt/terminal/bin/
+COPY --from=terminal egress/bn-egress.mjs /opt/terminal/egress/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json
 ENV BN_TERMINAL_DIR=/opt/terminal
 RUN node --test --test-reporter=spec test/*.test.mjs

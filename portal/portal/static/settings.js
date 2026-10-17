@@ -21,7 +21,7 @@
   const RESTARTS = { "portal-pw": ["portal"], email: ["Chat", "portal"], "litellm-pw": ["portal"], portal: ["portal"],
     "litellm-cfg": ["LiteLLM"], aws: ["LiteLLM"], pins: ["Chat", "portal"], "alert-pct": ["portal"], stt: ["LiteLLM", "Chat", "portal"],
     openrouter: ["LiteLLM", "portal"], rustfs: ["Files", "Chat", "shared-mcp", "portal"], mcp: ["shared-mcp", "portal"],
-    code: ["portal", "Caddy"], "code-env": ["Code page"], "terminal-env": ["Terminal"], "remote-preview": ["portal", "Caddy"] };
+    code: ["portal", "Caddy"], "code-env": ["Code page"], "terminal-env": ["Terminal"], "terminal-egress": ["Terminal"], "remote-preview": ["portal", "Caddy"] };
   const ON_VALUES = ["true", "1", "yes", "on"], OFF_VALUES = ["false", "0", "no", "off"];
   const KEY_NAME = /^[A-Z][A-Z0-9_]{1,40}$/;
   const SECTION_MEMO = "bn.settings.section";
@@ -442,7 +442,7 @@
   }
   // what a blank value means (the stack's own default), for the keys whose default is not .env.example's value
   const BLANK = { PORTAL_SESSION_DAYS: "30 days", BUDGET_ALERT_PCT: "80%", BACKUP_HOUR: hourRange(2), BACKUP_KEEP: "7",
-    AUTO_UPDATE_HOUR: hourRange(3), OPENROUTER_MODELS: "all", OPENROUTER_MAX_MODELS: "1000", TERMINAL_EGRESS: "on",
+    AUTO_UPDATE_HOUR: hourRange(3), OPENROUTER_MODELS: "all", OPENROUTER_MAX_MODELS: "1000", TERMINAL_EGRESS: "Internet only",
     TERMINAL_MEM_LIMIT: "4g", REMOTE_MODE: "off", AWS_AUTH: "an access key", REMOTE_SUBNET: "10.255.255.248/29",
     PORTAL_HOST: "bedrock-now.localhost", PORTAL_PORT: "80, else 8800", CHAT_HOST: "chat. + the portal's address",
     ADMIN_HOST: "admin. + the portal's address", FILES_HOST: "files. + the portal's address",
@@ -456,6 +456,7 @@
     if (k.key === "CODE_ENABLED" && (v === "blank" || v === "not set")) return "Off (on by default: the next setup or update turns it on)";
     if (k.validator === "bool" || k.validator === "true_blank") return v === "true" ? "On" : "Off";
     if (k.validator === "on_off") return v === "on" ? "On" : "Off";
+    if (k.validator === "egress") return EGRESS_LABEL[egressMode(k.value)];
     if (k.secret === "S") return k.set ? "••••••••" : "Not set";
     if (!plain(k)) return v === "not set" ? "Not set" : v === "set" ? "Set" : v;
     if (v === "blank" || v === "not set") return BLANK[k.key] ? `${BLANK[k.key]} (default)` : "Not set";
@@ -482,12 +483,36 @@
     if (k.key === "BACKUP_NIGHTLY" || k.key === "AUTO_UPDATE") return v !== "on" && old === "on";
     if (k.key === "UPDATE_CHECK") return v === "false" && old !== "false";
     if (k.key === "REMOTE_PREVIEW") return remotePreviewMayBeOn(v) && !ON_VALUES.includes(lower(old));
+    if (k.key === "TERMINAL_EGRESS") return EGRESS_RANK[egressMode(v)] > EGRESS_RANK[egressMode(old)];
     return v === "true" && old !== "true";
+  }
+  // TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode; portal/portal/settings.py egress_mode): host, off
+  // (false/0/no/off), else internet — the default (blank, and the old on values)
+  function egressMode(v) { const s = lower(v); return s === "host" ? "host" : OFF_VALUES.includes(s) ? "off" : "internet"; }
+  const EGRESS_RANK = { off: 0, internet: 1, host: 2 };
+  const EGRESS_LABEL = { internet: "Internet only (not this computer's services)", host: "Internet and this computer's services", off: "Off" };
+  const EGRESS_WHAT = {
+    internet: "The sandbox reaches public internet addresses (npm, pip, git, documentation, Claude Code's web fetch) through its egress proxy, on ports 80, 443 and 22 — never this computer's own services, your local network or private addresses. The terminal restarts (about 10 s; its shells and open Code sessions end).",
+    host: "The sandbox itself goes on the internet, and reaches this computer's own services with it — on Docker Desktop LiteLLM, the shared MCP server, the portal's login and dev servers on its 127.0.0.1, through Docker's host address — and your local network, on any port: how v0.10.0 and earlier worked. Choose it only for a service of this computer or your network that the sandbox needs. The terminal restarts (about 10 s; its shells and open Code sessions end).",
+    off: "The sandbox gets no internet: only LiteLLM and the shared MCP server through its gateway (npm, pip and git clone stop working there). The terminal restarts (about 10 s; its shells and open Code sessions end)." };
+  // Settings › Claude Code › Sandbox internet access: Internet only · + this computer · Off (opening it further: only here)
+  function egressChoice(k) {
+    const cur = egressMode(k.value);
+    const g = el("div", { class: "chips seg set-seg", role: "group", "aria-labelledby": `set-name-${k.key}` });
+    for (const [val, label] of [["internet", "Internet only"], ["host", "+ this computer"], ["off", "Off"]]) {
+      const b = el("button", { type: "button", class: "chip", "aria-pressed": String(val === cur), text: label, "data-value": val });
+      b.disabled = !canChange() || (val !== cur && localOnlyHere(k, val));
+      b.addEventListener("click", () => { if (val !== cur) confirmApply({ [k.key]: val }, `${k.label}: ${EGRESS_LABEL[val]}`, EGRESS_WHAT[val], [k.key]); });
+      g.append(b);
+    }
+    const wrap = el("div", { class: "set-toggle" }, g);
+    if (data.here.remote && cur !== "host") wrap.append(el("span", { class: "note", text: "Opening it further only from the computer running bedrock-now." }));
+    return wrap;
   }
   // portal/portal/settings.py _WEAKEN_WORD: how the less protective direction is said
   const WEAKEN_WORD = { BACKUP_KEEP: "lowered", BACKUP_NIGHTLY: "turned off", PORTAL_SESSION_DAYS: "made longer", BUDGET_ALERT_PCT: "raised",
     BUDGET_CLAUDE_CODE: "raised", BUDGET_OPENWEBUI: "raised", BUDGET_SETUP: "raised", BUDGET_TERMINAL: "raised", AUTO_UPDATE: "turned off",
-    UPDATE_CHECK: "turned off" };
+    UPDATE_CHECK: "turned off", TERMINAL_EGRESS: "opened further" };
   function localOnlyHere(k, value) {
     if (!data.here.remote) return false;
     return k.policy === "local" || (k.policy === "widen-local" && weakens(k, value));
@@ -622,6 +647,9 @@
     } else if (k.validator === "code_models") {
       main.append(el("p", { class: "note set-extra", text: codeModelsNote() }));
       actions.append(codeModelsSeg(k, rw));
+    } else if (k.validator === "egress") {   // the chips show the value
+      $(".set-value", main).remove();
+      actions.append(egressChoice(k));
     } else {
       const b = el("button", { type: "button", class: "action", text: plain(k) || k.set ? "Change" : "Set",
         "aria-describedby": `set-name-${k.key}` });
@@ -722,13 +750,14 @@
     const k = keys.CODE_ENABLED;
     const rw = row(k, r);
     const ws = codeFolder();
-    const egress = !(keys.TERMINAL_EGRESS && keys.TERMINAL_EGRESS.value === "off");
+    const egress = egressMode(keys.TERMINAL_EGRESS ? keys.TERMINAL_EGRESS.value : "");
     const extra = [el("p", { class: "set-code-ws" }, el("span", { class: "note", text: "Workspace: " }),
       el("code", { text: ws || (terminalOn() ? "the terminal's" : "the default folder") }))];
     if (terminalOn()) {
-      extra.push(el("p", { class: "note", text: `Claude sees only that folder (at /workspace) and uses the terminal's key and budget. ${egress
-        ? "It reaches the internet (on by default: npm, pip, git, documentation) and, on Docker Desktop, also this computer's own services through Docker's host address; TERMINAL_EGRESS=off in .env, then ./stack up, closes both."
-        : "It has no internet and no way to this computer's services (TERMINAL_EGRESS=off)."}` }));
+      extra.push(el("p", { class: "note", text: `Claude sees only that folder (at /workspace) and uses the terminal's key and budget. ${{
+        internet: "It reaches public internet addresses (npm, pip, git, documentation) through the sandbox's egress proxy — not this computer's own services or your network (Sandbox internet access, below).",
+        host: "It reaches the internet and, with it, this computer's own services and your network (Sandbox internet access, below: host).",
+        off: "It has no internet and no way to this computer's services (Sandbox internet access, below: off)." }[egress]}` }));
     } else if (shown(k) !== "true") {
       extra.push(el("p", { class: "note", text: "The browser terminal is off: turning this on turns it on too, with the folder above as its workspace (Claude sees only that folder, at /workspace). Another folder: in a terminal, with the command below." }));
     }

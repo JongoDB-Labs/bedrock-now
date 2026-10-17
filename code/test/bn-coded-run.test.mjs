@@ -38,8 +38,8 @@ exit 0
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), BN_TMUX_BIN: TMUX,
   BN_CODE_RUNS: RUNS, HOME: ROOT, CLAUDE_CONFIG_DIR: path.join(ROOT, '.claude') });
 // the image's own folders, and one more of root's with a stand-in make and python3 (the test runs as root, so its files
-// are root's alone, as the image's are; the sandbox's image has no make: its targets are then listed, not offered —
-// below). A stand-in "tmux" of the test's own (ROOT/tmuxenv: what tmux's global environment would give a new window).
+// are root's alone, as the image's are; without the image's own make — an image from before it had one — its targets
+// are listed, not offered: below). A stand-in "tmux" of the test's own (ROOT/tmuxenv: what tmux's global environment would give a new window).
 const SYSBIN = path.join(ROOT, 'sysbin');
 fs.mkdirSync(SYSBIN, { mode: 0o755 });
 fs.writeFileSync(path.join(SYSBIN, 'make'), '#!/bin/sh\necho "make $*"\n', { mode: 0o755 });
@@ -231,7 +231,7 @@ test('run.list over the socket: every source with its file; a link or a FIFO is 
   assert.equal(s.sources[1].file, 'GNUmakefile');
   assert.deepEqual(s.tasks.filter((t) => t.source === 'make').map((t) => t.name), ['gnu']);
   rm('GNUmakefile');
-  // without the image's own make (the sandbox's image has none; one in PATH only does not count): the targets are
+  // without the image's own make (an older sandbox image had none; one in PATH only does not count): the targets are
   // listed with the reason, none offered
   process.env.BN_SYSTEM_BIN = SYSTEM;
   try {
@@ -456,13 +456,16 @@ test('what runs: the image\'s own programs (root\'s alone, through their links) 
   assert.equal(coded.imageFile(path.join(SYSBIN, 'node-link')), false);
   assert.equal(coded.imageProgram('node-link'), null);
   fs.rmSync(path.join(SYSBIN, 'node-link'));
-  // taskEnv: a few variables of this container's own, the PATH reordered, npm's user and global config off; the rest
-  // (what makes a program or shell run code first, secrets) never
+  // taskEnv: a few variables of this container's own — the egress proxy's among them (TERMINAL_EGRESS=internet: npm,
+  // pip, git and Node find their only way out there) — the PATH reordered, npm's user and global config off; the rest
+  // (what makes a program or shell run code first, secrets, other proxies) never
+  const proxy = { HTTP_PROXY: 'http://egress:3128', HTTPS_PROXY: 'http://egress:3128', http_proxy: 'http://egress:3128', https_proxy: 'http://egress:3128',
+    NO_PROXY: 'localhost,127.0.0.1,::1,0.0.0.0,gateway,terminal', no_proxy: 'localhost,127.0.0.1,::1,0.0.0.0,gateway,terminal', NODE_USE_ENV_PROXY: '1' };
   const env = coded.taskEnv({ PORT: '5173' }, { HOME: '/home/claude', USER: 'claude', LANG: 'C.UTF-8', LC_ALL: 'C', TZ: 'UTC', PATH: `${mine}:/usr/bin`,
     BASH_ENV: '/x', ENV: '/x', SHELLOPTS: 'xtrace', PS4: '$(id)', NODE_OPTIONS: '--require /x', LD_PRELOAD: '/x.so', npm_config_script_shell: '/x',
     NPM_CONFIG_PREFIX: '/home/claude/.local', NPM_CONFIG_USERCONFIG: '/x', PYTHONSTARTUP: '/x', PYTHONPATH: '/x', ANTHROPIC_AUTH_TOKEN: 'sk-x',
-    BASH_FUNC_ls: '() { id; }', GIT_SSH_COMMAND: 'x', HOME2: 'x', TERM: 'evil' });
-  assert.deepEqual(env, { HOME: '/home/claude', USER: 'claude', LANG: 'C.UTF-8', LC_ALL: 'C', TZ: 'UTC', PATH: `/usr/bin:${mine}`, TERM: 'tmux-256color',
+    BASH_FUNC_ls: '() { id; }', GIT_SSH_COMMAND: 'x', HOME2: 'x', TERM: 'evil', ALL_PROXY: 'socks5://x', npm_config_proxy: 'http://x', ...proxy });
+  assert.deepEqual(env, { HOME: '/home/claude', USER: 'claude', LANG: 'C.UTF-8', LC_ALL: 'C', TZ: 'UTC', ...proxy, PATH: `/usr/bin:${mine}`, TERM: 'tmux-256color',
     NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_GLOBALCONFIG: '/nonexistent/npmrc', NPM_CONFIG_UPDATE_NOTIFIER: 'false', PORT: '5173' });
   // the window: bash without BASH_ENV & co. only starts `env -i <that environment> <program> …`
   assert.deepEqual(coded.windowCommand('label', { A: '1' }, ['/usr/bin/true', 'x']), ['/usr/bin/env', '-u', 'BASH_ENV', '-u', 'ENV', '-u', 'SHELLOPTS', '-u', 'BASHOPTS',

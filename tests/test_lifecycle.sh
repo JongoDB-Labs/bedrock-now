@@ -295,6 +295,7 @@ test_uninstall_removes_this_installs_built_images_by_exact_name() {
   # lib/terminal.sh); never forced or pruned
   assert_eq "$(grep '^docker image rm' "$TMP/calls")" "docker image rm bn-x/code:local bn-x/code:previous
 docker image rm bn-x/terminal:local bn-x/terminal:previous
+docker image rm bn-x/terminal-egress:local bn-x/terminal-egress:previous
 docker image rm bn-x/portal:local
 docker image rm bn-x/portal:previous
 docker image rm bn-x/shared-mcp:local

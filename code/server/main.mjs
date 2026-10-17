@@ -84,8 +84,9 @@ export function ownOrigin(req) {
   return HOST.test(host) ? `${proto}://${host}` : null;
 }
 
-// allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Claude Code). sandbox: {egress, workspace} what the page's Bypass dialog says
-// about the sandbox (TERMINAL_EGRESS, the folder of yours it sees — a label). watch: false turns the watchlist off.
+// allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Claude Code). sandbox: {egress, egressHost, workspace} what the page's
+// Bypass dialog says about the sandbox (TERMINAL_EGRESS: any internet, and this computer's services with it; the folder
+// of yours it sees — a label). watch: false turns the watchlist off.
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
   allowBypass = false, allowAuto = false, sandbox = {}, watch = true }) {
@@ -131,6 +132,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     restore: async (r) => (await call({ op: 'ws.restore', ...r }, { timeoutMs: 20000 })).result,
   };
   const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
+    egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
     query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher,
@@ -551,11 +553,13 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
   const { sandboxProcess, sandboxCall } = await import('./spawn-client.mjs');
   const on = (v) => /^(true|1|yes|on)$/i.test(String(v ?? '').trim());
-  const off = (v) => /^(false|0|no|off)$/i.test(String(v ?? '').trim());
+  // TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode): host, off (false/0/no/off), else internet
+  const egress = (v) => { const s = String(v ?? '').trim().toLowerCase(); return s === 'host' ? 'host' : /^(false|0|no|off)$/.test(s) ? 'off' : 'internet'; };
   const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(),
     // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
     allowBypass: on(process.env.CODE_ALLOW_BYPASS), allowAuto: on(process.env.CODE_AUTO_MODE),
-    sandbox: { egress: !off(process.env.TERMINAL_EGRESS), workspace: process.env.CODE_WORKSPACE_LABEL || '' } });
+    sandbox: { egress: egress(process.env.TERMINAL_EGRESS) !== 'off', egressHost: egress(process.env.TERMINAL_EGRESS) === 'host',
+      workspace: process.env.CODE_WORKSPACE_LABEL || '' } });
   log(`code: Bypass permissions ${mgr.allowBypass ? 'allowed (CODE_ALLOW_BYPASS)' : 'off'}; Auto mode ${mgr.allowAuto ? 'allowed (CODE_AUTO_MODE)' : 'off'}`);
   const port = Number(process.env.CODE_PORT || 8095);
   server.listen(port, '0.0.0.0', () => log(`code: listening on :${port}`));

@@ -992,7 +992,7 @@ cmd_up() {
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
   # shellcheck disable=SC2086  # word-split the service list on purpose
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
-  terminal_after_up   # TERMINAL_EGRESS=off: the network to the internet goes once the container has left it
+  terminal_after_up   # TERMINAL_EGRESS: what its way out no longer uses goes once the container has left it
   remote_up_hook
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup).
   # The same session updates Open WebUI's prices once: after Bedrock price changes, on_prices_changed (cost
@@ -1031,6 +1031,7 @@ status_url() { # status_url SERVICE -> where to open it (browser UIs: through th
     tailscale) if [ -n "$(remote_url)" ]; then echo "$(remote_url)   (your devices; ./stack remote status)"; else echo "- (./stack remote status)"; fi ;;
     terminal) echo "$(portal_url terminal)   (the Terminal tab; ./stack terminal status)" ;;
     terminal-gateway) echo "- (the terminal's only way into the stack)" ;;
+    terminal-egress) echo "- (the terminal's way out: public internet addresses only)" ;;
     code) echo "$(portal_url code)   (the Code tab; ./stack code status)" ;;
     *) echo "- (internal only)" ;;
   esac

@@ -375,6 +375,7 @@ VALIDATORS = {
     "bool": _one_of("true", "false", msg="must be true or false"),
     "on_off": _one_of("on", "off", msg="must be on or off"),
     "true_blank": _one_of("true", "", msg="must be true or blank"),
+    "egress": _one_of("internet", "host", "off", "", msg="must be internet, host or off (blank = internet)"),
     "hour": _hour,
     "stt_provider": _one_of("bedrock", "openai", "groq", "", msg="must be bedrock, openai, groq or blank (the browser)"),
     "stt_key": _stt_key, "stt_model": _stt_model, "or_key": _or_key, "or_mode": _or_mode, "int_1_5000": _int_1_5000,
@@ -400,7 +401,7 @@ def validate(validator: str, value: str, remote_on: bool = False) -> str | None:
     return fn(value, remote_on)
 
 
-_WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer",
+_WEAKEN_WORD = {"BACKUP_KEEP": "lowered", "BACKUP_NIGHTLY": "turned off", "PORTAL_SESSION_DAYS": "made longer", "TERMINAL_EGRESS": "opened further",
                 "BUDGET_ALERT_PCT": "raised", "BUDGET_CLAUDE_CODE": "raised", "BUDGET_OPENWEBUI": "raised",
                 "BUDGET_SETUP": "raised", "BUDGET_TERMINAL": "raised", "AUTO_UPDATE": "turned off",
                 "UPDATE_CHECK": "turned off"}
@@ -418,6 +419,16 @@ def _eff_budget(key: str, v: str) -> float:
 
 _ON = ("true", "1", "yes", "on")
 _OFF = ("false", "0", "no", "off")
+
+
+def egress_mode(v: str) -> str:
+    """TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode): host; off (false/0/no/off); else internet, the
+    default (blank, and the old on values)."""
+    v = (v or "").strip().lower()
+    return "host" if v == "host" else "off" if v in _OFF else "internet"
+
+
+_EGRESS_RANK = {"off": 0, "internet": 1, "host": 2}
 
 
 def _remote_preview_may_be_on(v: str, ctx: dict) -> bool:
@@ -449,6 +460,8 @@ def weakens(key: str, new: str, old: str, ctx: dict | None = None) -> bool:
         return new == "false" and old != "false"
     if key == "REMOTE_PREVIEW":
         return _remote_preview_may_be_on(new, ctx or {}) and (old or "").strip().lower() not in _ON
+    if key == "TERMINAL_EGRESS":   # off → internet (public addresses) → host (this computer's services too)
+        return _EGRESS_RANK[egress_mode(new)] > _EGRESS_RANK[egress_mode(old)]
     return new == "true" and old != "true"
 
 

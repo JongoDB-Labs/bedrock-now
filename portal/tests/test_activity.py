@@ -142,7 +142,11 @@ def test_the_code_page_turned_on_by_an_update_nobody_watched(s):
     [it] = activity.items(cs, False)
     assert it["id"] == f"code-default:{now - 60}" and it["link"] == "#settings/CODE_ENABLED"
     assert it["data"] == {"at": now - 60, "workspace": "/home/me/bedrock-now-workspace", "egress": True, "terminal": True}
-    assert "and its sandbox (workspace /home/me/bedrock-now-workspace, internet on)" in it["text"]
+    assert "and its sandbox (workspace /home/me/bedrock-now-workspace, internet: public addresses only)" in it["text"]
+    # the sandbox's internet as the notice names it: this computer's services too (TERMINAL_EGRESS=host), or none
+    for mode, words in (("host", "internet and this computer's services"), ("off", "no internet")):
+        write(s.status_dir, "code-default.json", {"at": now - 60, "workspace": "/w", "egress": mode != "off", "egress_mode": mode, "terminal": False})
+        assert f"(workspace /w, {words})" in activity.items(cs, False)[0]["text"]
     assert activity.items(cs, True) == []   # remote, without REMOTE_TERMINAL: the Code page is not here
 
 

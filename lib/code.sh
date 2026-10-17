@@ -271,7 +271,7 @@ code_up_hook() {
 # false) turns both on, in the terminal's folder (TERMINAL_WORKSPACE, or ~/bedrock-now-workspace, created with mode 700
 # and checked as ./stack terminal enable does), with the terminal's own key and budget. An explicit off is kept —
 # CODE_ENABLED=false, or TERMINAL_ENABLED=false (its sandbox). What stays opt-in is unchanged: Bypass permissions and
-# Auto mode, the sandbox's internet (TERMINAL_EGRESS keeps its default), remote access to the terminal and the Code
+# Auto mode, the sandbox's internet (TERMINAL_EGRESS keeps its default: public addresses only), remote access to the terminal and the Code
 # page (REMOTE_TERMINAL) and remote previews. Never fatal: a folder that cannot be made or used leaves both off this
 # time (said, with the way out), and code_default_settle undoes a default that did not come up. Idempotent: once on,
 # CODE_ENABLED is no longer blank.
@@ -295,8 +295,8 @@ code_default_notice() {
   ws="$(get_env TERMINAL_WORKSPACE | sed 's/\\/\\\\/g; s/"/\\"/g')"
   if terminal_egress_on; then egress=true; else egress=false; fi
   tmp="$(mktemp "$d/.code-default.XXXXXX")" 2>/dev/null || return 0
-  printf '{"at": %s, "workspace": "%s", "egress": %s, "terminal": %s}\n' "$(date +%s)" "$ws" "$egress" \
-    "$([ "$CODE_DEFAULT_ON" = 2 ] && echo true || echo false)" > "$tmp" && chmod 644 "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+  printf '{"at": %s, "workspace": "%s", "egress": %s, "egress_mode": "%s", "terminal": %s}\n' "$(date +%s)" "$ws" "$egress" \
+    "$(terminal_egress_mode)" "$([ "$CODE_DEFAULT_ON" = 2 ] && echo true || echo false)" > "$tmp" && chmod 644 "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
 }
 code_default_notice_clear() { rm -f "$(status_dir)/code-default.json" 2>/dev/null || true; }
 code_default_on() {
@@ -450,7 +450,7 @@ code_status() {
   elif ! terminal_ready; then printf '             !! left out: %s\n' "$(terminal_why_out)"; fi
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
   printf '  Sandbox    the terminal'"'"'s: %s → /workspace, key claude-code-terminal (budget $%s), internet %s\n' \
-    "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_on && echo on || echo off)"
+    "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_words)"
   printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s\n' "$(get_env PREVIEW_DOMAIN)"
   if [ -n "$(get_env REMOTE_PREVIEW_HOST)" ]; then
     printf '             remote: https://%s (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW false)\n' "$(get_env REMOTE_PREVIEW_HOST)"

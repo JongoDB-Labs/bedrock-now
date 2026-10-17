@@ -143,6 +143,10 @@ def job_items(status_dir: Path, now: float) -> list[dict]:
     return out
 
 
+# the sandbox's internet as the notice names it (TERMINAL_EGRESS: lib/common.sh egress_mode)
+_EGRESS_WORDS = {"internet": "internet: public addresses only", "host": "internet and this computer's services", "off": "no internet"}
+
+
 def code_default_item(s: Settings, rem: bool) -> dict | None:
     """An update nobody watched turned the Code page on by default (what Home's one-time banner used to say): its folder
     and whether the sandbox reaches the internet; the page offers Keep and Turn off."""
@@ -151,7 +155,8 @@ def code_default_item(s: Settings, rem: bool) -> dict | None:
         return None
     sandbox = "and its sandbox " if n["terminal"] else ""
     text = (f"The last update turned on the Code page {sandbox}(workspace {n['workspace']}, "
-            f"{'internet on' if n['egress'] else 'no internet'}). Claude Code runs there in a container that sees only "
+            f"{_EGRESS_WORDS.get(n.get('egress_mode'), 'internet on' if n['egress'] else 'no internet')}). Claude Code runs there in a "
+            "container that sees only "
             "that folder, and asks before each command or file change.")
     return _item(f"code-default:{n['at']}", "code-default", "info", "The Code page was turned on", text, n["at"],
                  "#settings/CODE_ENABLED", data={"at": n["at"], "workspace": _clean(n["workspace"], 1024),

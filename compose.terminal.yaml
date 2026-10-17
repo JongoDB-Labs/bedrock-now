@@ -10,7 +10,10 @@
 # second, minimal Caddy that forwards the few LiteLLM and shared-mcp paths Claude Code needs (:8091, as "gateway")
 # and nothing else. The gateway's other network, "terminal-link" (internal too), holds only what it talks to:
 # LiteLLM, shared-mcp and the main Caddy. The portal, Open WebUI and the databases are on no network with either.
-# "terminal-out" (compose.terminal-egress.yaml, unless TERMINAL_EGRESS=off) is the terminal's way out to the internet.
+# Its way out to the internet (TERMINAL_EGRESS): by default an egress proxy on a network of their own
+# (compose.terminal-proxy.yaml: public addresses only — never this computer's services or your network); with
+# TERMINAL_EGRESS=host the sandbox itself on "terminal-out" (compose.terminal-egress.yaml: this computer's services
+# too); with off, none.
 services:
   terminal:
     build:
@@ -51,8 +54,8 @@ services:
       # The shared MCP server (bn-terminal writes ~/.config/bedrock-now/mcp.json from these).
       BN_MCP_URL: http://gateway:8091/mcp
       SHARED_MCP_TOKEN: ${SHARED_MCP_TOKEN:-}
-    # Docker Desktop's names for your computer point nowhere in here. A speed bump only: the address behind them stays
-    # reachable while the terminal has internet access (TERMINAL_EGRESS=off removes that).
+    # Docker Desktop's names for your computer point nowhere in here (the egress proxy refuses them by name and by
+    # address too). With TERMINAL_EGRESS=host a speed bump only: the address behind them stays reachable there.
     extra_hosts:   # IPv4 TEST-NET and the IPv6 discard prefix: nothing answers there
       - "host.docker.internal:192.0.2.1"
       - "host.docker.internal:100::1"

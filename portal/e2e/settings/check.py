@@ -273,6 +273,13 @@ def check_controls(seen, state, remote, failures, label, layout=True):
                 failures.append(f"{label}: {key} ({p}) switch {o['switch']}, policy says enabled={want} on={cur_on}")
         elif not remote and p in CHANGE_POLICIES and not ch:
             failures.append(f"{label}: {key} ({p}) has no control on this computer: {o}")
+        if key == "TERMINAL_EGRESS":   # three choices; remotely only those that do not open it further
+            cur = st.egress_mode(ctx_values(state).get(key, ""))
+            got = dict(o["change"])
+            for val, chip in (("internet", "Internet only"), ("host", "+ this computer"), ("off", "Off")):
+                want = not (remote and val != cur and st.weakens(key, val, cur))
+                if got.get(chip) is not want:
+                    failures.append(f"{label}: TERMINAL_EGRESS choice {chip!r} enabled={got.get(chip)}, policy says {want}")
         if key == "BACKUP_KEEP" and o["selects"]:
             cur = ctx_values(state)["BACKUP_KEEP"] or "7"
             for val, disabled in o["selects"][0]["options"]:
