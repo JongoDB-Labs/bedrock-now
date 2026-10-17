@@ -15,7 +15,9 @@ from git, one hunk undone, a line comment in the next prompt) with the command p
 — each with zero CSP violations (Trusted Types enforced). Read only denies a write without a card while a read-only command runs; with the update
 helper (settings/*), Bypass permissions is allowed in Settings, then runs a command without a card, while a deny rule
 still denies, an ask rule on .git still asks, and a git hook written by Bash shows the watchlist's card, whose Revert
-puts it back — then it is turned off again. With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
+puts it back — then it is turned off again; and Auto mode is allowed in Settings, a routine command runs without a card
+(Claude Code's reviewer approves it, on Sonnet 5.5), a risky one is blocked with the rule it matched, Allow once runs it
+again, the reviewer's spend lands on the terminal's key — then it is turned off again. With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
 in the sandbox could start one) the page stays safe. Every check skips while the Code page is off (but the first two,
 which check that state)."""
 
@@ -1957,8 +1959,18 @@ def settings_code_auto(ctx):
         sid = c.new_session(HAIKU, "auto")
         wait_state(c, sid, "mode", "auto")
         n0 = len(c.msgs())
-        # 1. a routine command: the reviewer approves it, no card
-        evs = c.turn(sid, 'Run exactly this shell command with the Bash tool, nothing else, then say what it printed: node -e "console.log(6*7)"')
+        # 1. a routine command: the reviewer approves it, no card (a card here: the session did not get into auto mode —
+        # the sandbox's managed settings, the model — and the page's notes say why)
+        c.request({"type": "prompt", "session": sid, "text": 'Run exactly this shell command with the Bash tool, nothing else, then say what it printed: node -e "console.log(6*7)"'})
+        m = c.wait(lambda x: x.get("session") == sid and (x.get("type") == "permission" or (x.get("type") == "event" and x["ev"]["type"] == "result")),
+                   "a card or the turn's end", 150, since=n0)
+        if m.get("type") == "permission":
+            c.request({"type": "permission", "id": m["id"], "session": sid, "decision": "deny", "message": "e2e: Auto expected"})
+            notes_ = [e.get("text", "") for e in c.events(sid, n0) if e["type"] == "local"]
+            raise AssertionError(f"a permission card in Auto ({m['tool']}): not in auto mode? notes: {notes_[-2:]}")
+        evs = c.events(sid, n0)
+        inits = [e for e in evs if e["type"] == "init"]
+        expect(inits and inits[-1]["permissionMode"] == "auto", f"Claude Code started in {inits and inits[-1]['permissionMode']}, not auto")
         bash = [e for e in evs if e["type"] == "tool_use" and e["name"] == "Bash"]
         expect(bash, f"Haiku ran no command: {text_of(evs)[:200]}")
         res = tool_result(evs, bash[0]["id"])

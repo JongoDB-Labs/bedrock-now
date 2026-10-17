@@ -110,7 +110,7 @@ const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--includ
 // Refused on purpose (tests: code/test/bn-coded.test.mjs): --settings, --mcp-config, --plugin-dir, --debug-file,
 // --betas (Bedrock refuses beta headers), --task-budget (adds one), --managed-settings, --add-dir,
 // --dangerously-skip-permissions and the starting modes bypassPermissions / auto (a session is switched to Bypass
-// permissions over the control channel, after the page's confirmation; auto is not offered).
+// permissions over the control channel, after the page's confirmation; auto likewise, while CODE_AUTO_MODE allows it).
 const VALUED = {
   '--model': (v) => MODEL.test(v),
   '--fallback-model': (v) => MODEL.test(v),

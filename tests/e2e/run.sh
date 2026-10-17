@@ -22,6 +22,8 @@
 #   --no-claude      skip the claude-bedrock check
 #   --only PARTS     run only these parts (comma list of cli, browser, voice, claude, mutating; default all).
 #                    Setup, the spend guard and the claude-bedrock link check always run.
+#   E2E_CHECKS=REGEX only the browser checks whose suite/id matches (a Python regex, on top of each pass's own
+#                    filter): a focused run that spends less on Bedrock, e.g. E2E_CHECKS='code-settings-row|code-auto'
 #   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
 #                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
 #                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
@@ -506,7 +508,8 @@ browser_run() {
   got="$(grep -c . "$OUT/browser/results.tsv" 2>/dev/null || true)"; got="${got:-0}"
   want="$(cat "$OUT/browser/expected.txt" 2>/dev/null || echo '?')"
   [ -f "$OUT/browser/results.tsv" ] && cat "$OUT/browser/results.tsv" >> "$RESULTS"
-  if [ "$rc" != 0 ] || [ "$got" = 0 ] || [ "$got" != "$want" ]; then
+  # (E2E_CHECKS may leave a pass with no check at all: that is not a failure)
+  if [ "$rc" != 0 ] || { [ "$got" = 0 ] && [ "$want" != 0 ]; } || [ "$got" != "$want" ]; then
     record browser "$runner" FAIL "$(( $(now) - t0 ))" "$label: exit $rc, $got of $want checks reported (see $OUT/browser/run.log)"
   else record browser "$runner" PASS "$(( $(now) - t0 ))" "$label: $got checks reported"; fi
 }

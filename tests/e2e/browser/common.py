@@ -35,6 +35,8 @@ PORT = int(os.environ["E2E_PORT"])
 LITELLM_PORT = int(os.environ["E2E_LITELLM_PORT"])
 MCP_PORT = int(os.environ["E2E_MCP_PORT"])
 FILTER = os.environ.get("E2E_FILTER", "")
+# tests/e2e/run.sh: E2E_CHECKS narrows every pass further (a focused run that spends less on Bedrock)
+CHECKS_RE = os.environ.get("E2E_CHECKS", "")
 # The app versions the app-specific selectors were written against (compose.yaml pins them; browser.sh passes the
 # pinned tags). Checks that drive these UIs skip, saying why, on any other version instead of failing obscurely.
 TESTED_WITH = {"open-webui": "v0.12.0-slim", "litellm": "1.105.0", "rustfs": "1.0.1"}
@@ -192,7 +194,7 @@ def _record(suite: str, cid: str, status: str, secs: float, msg: str) -> None:
 
 def run_all(ctx) -> int:
     fails = 0
-    selected = [c for c in CHECKS if not FILTER or re.search(FILTER, f"{c[0]}/{c[1]}")]
+    selected = [c for c in CHECKS if (not FILTER or re.search(FILTER, f"{c[0]}/{c[1]}")) and (not CHECKS_RE or re.search(CHECKS_RE, f"{c[0]}/{c[1]}"))]
     (OUT / "expected.txt").write_text(f"{len(selected)}\n", encoding="ascii")   # run.sh: every check must report
     for suite, cid, fn in selected:
         t0 = time.time()
