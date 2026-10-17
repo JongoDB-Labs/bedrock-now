@@ -292,6 +292,10 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/ports/stop' && m === 'POST') return send(res, 200, await api.stopPort(await readJson(req)));
     if (p === '/api/launch' && m === 'GET') return send(res, 200, await api.launch());
     if (p === '/api/launch/start' && m === 'POST') return send(res, 200, await api.launchStart(await readJson(req)));
+    if (p === '/api/run' && m === 'GET') return send(res, 200, await api.runTasks());
+    if (p === '/api/run/start' && m === 'POST') return send(res, 200, await api.runStart(await readJson(req)));
+    if (p === '/api/run/results' && m === 'GET') return send(res, 200, await api.runResults(q.get('id')));
+    if (p === '/api/run/show' && m === 'POST') return send(res, 200, await api.runShow(await readJson(req)));
     if (p.startsWith('/api/')) throw new HttpError(404, 'not found');
     return page(req, res, p);
   }

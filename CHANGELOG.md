@@ -25,6 +25,19 @@ All notable changes to bedrock-now are documented here. The format follows
   bn-coded also allows `--tools=` (empty: no tool) and `--no-session-persistence` for the helper. The Git tests run a
   second time with git 2.54 (code/Dockerfile's `gitnew` stage), where config-based hooks exist
   ([docs/security.md](docs/security.md#the-git-panel)).
+- **Code page: Run & test.** *Run* in the status bar (⋯ → *Run & test* on a phone, or the command palette) lists the
+  workspace's tasks from the files in its top folder — `package.json`'s scripts, a Makefile's targets (read from its
+  `name:` lines; `make` is never asked, and they are offered only where the sandbox has `make`), `pyproject.toml`'s
+  entry points (`[project.scripts]`, `[tool.poetry.scripts]`) — next to `.claude/launch.json`'s dev servers. **Run**
+  shows the task in full first, like *Start*: each argument of its fixed wrapper (`npm run -- <name>`,
+  `make -- <target>`, or `python3` with bedrock-now's loader), the script with npm's pre/post scripts, the recipe or
+  entry point, a workspace `.npmrc` and its settings; then bn-coded runs it in a new window of the terminal's tmux, only
+  while it is still what you saw (a SHA-256 of the wrapper, the texts and the `.npmrc` / whole Makefile; asked again
+  whenever it changes). The new **Problems** list has each run's exit status, duration and the end of its output (the
+  last 64 KiB kept); a row opens its window in the terminal panel, and *Run* counts the tasks whose last run failed.
+  **Ask Claude** drafts "Run `npm test` and fix failures." in the prompt box instead (never sent by itself). bn-coded's
+  new ops `run.list`, `run.start`, `run.results`, `run.show`; `GET /api/run`, `POST /api/run/start`,
+  `GET /api/run/results`, `POST /api/run/show`.
 
 ### Fixed
 

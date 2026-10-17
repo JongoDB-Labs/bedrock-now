@@ -47,6 +47,13 @@
 //   terminal.resume a session continued in the terminal: a new window of the terminal's tmux session, with
 //                   `claude-bedrock --resume <id>` typed into its shell (a checked UUID of a transcript that is there;
 //                   nothing else is ever typed)
+//   run.list / run.start / run.results / run.show
+//                   Run & test: the workspace's tasks read from its files (package.json's scripts, the Makefile's
+//                   targets, pyproject.toml's entry points — nothing runs to list them), one started by name through a
+//                   fixed wrapper (npm run -- <name>, make -- <target>, python3 with a fixed loader) in a new window of
+//                   the terminal's tmux session, only while it is still what the page showed (its digest); each run's
+//                   exit status and last 64 KiB of output (this file's runner, --run-task, keeps them); a run's window
+//                   made the terminal's current one
 // Frames, both ways: 1 byte type, 4 bytes big-endian length, payload (JSON for control frames, raw bytes for data).
 // Nothing here is a secret boundary for the sandbox (anything in it can run claude itself); the allowlist keeps the
 // socket from being a general "run anything" primitive, and keeps paths inside /workspace. The code container treats
@@ -58,7 +65,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const SOCK_DIR = process.env.BN_CODE_SOCK_DIR || '/run/bn-code';
 export const SOCK = path.join(SOCK_DIR, 'coded.sock');
@@ -1599,6 +1606,393 @@ export async function terminalResume(id, { tmux = TMUX, procDir = '/proc' } = {}
   return { ok: true, window, command: RESUME_CMD(id) };
 }
 
+// --- Run & test (run.list / run.start / run.results / run.show): the workspace's tasks, read from its own files —
+// --- package.json's scripts, the targets of the Makefile make would read, pyproject.toml's entry points
+// --- ([project.scripts], [tool.poetry.scripts]) — nothing is run to list them. One is run by its name through a fixed
+// --- wrapper (`npm run -- <name>`, `make -- <target>`, `python3 -c <the loader below> <name> <module:function>`: never
+// --- a command line put together from the files, and the name is one listed now) in a new window of the terminal's tmux
+// --- session, by this file's runner (--run-task), which shows its output there and keeps its exit status and last 64
+// --- KiB for the page's Problems list — and only while the task is what the page showed (its digest). The files are the
+// --- workspace's, which anything in the sandbox can write (Claude too): the page shows the task in full first.
+const RUN_DIR = process.env.BN_CODE_RUNS || '/tmp/bn-coded/runs';
+const SELF = fileURLToPath(import.meta.url);
+const TASK_FILE_MAX = 1 << 20;           // package.json, the Makefile, pyproject.toml, .npmrc: read up to 1 MiB
+export const TASKS_MAX = 100;            // tasks listed per file
+export const TASK_TEXT_MAX = 8000;       // a script, recipe or entry point shown in full up to this many characters
+export const RUN_TAIL = 64 << 10;        // a run's output kept: its last 64 KiB
+const RUN_LIST_TAIL = 4 << 10;           // (of it in the list: the last 4 KiB)
+const RUNS_KEEP = 20, RUNS_AT_ONCE = 8;
+// the names a wrapper takes (after `--`: never an option); a task with another name is listed, not offered
+export const RUN_NAME = {
+  npm: /^[A-Za-z0-9_][A-Za-z0-9_.:@\/+-]{0,99}$/,
+  make: /^[A-Za-z0-9_][A-Za-z0-9_.\/+-]{0,99}$/,
+  python: /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/,
+};
+const PY_REF = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+// an entry point called as the script pip installs for it would call it: its name as sys.argv[0], its return value the
+// exit status (the module imported from the workspace's top folder, or wherever python3 finds it installed)
+export const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+  "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
+const RUN_ID = /^[0-9a-f]{16}$/;
+const RUN_WINDOW = /^@[0-9]{1,9}$/;
+export const shq = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${String(a).replace(/'/g, `'\\''`)}'`);
+
+export function runArgv(source, name, ref) {
+  if (source === 'npm') return ['npm', 'run', '--', name];
+  if (source === 'make') return ['make', '--', name];
+  return ['python3', '-c', PY_LOADER, name, ref];
+}
+// runDigest(task) -> SHA-256 (hex) of what Run runs and what decides it: the wrapper's arguments, the folder, the texts
+// shown (the script with npm's pre/post scripts, the target's recipe, the entry point) and the files read besides (a
+// .npmrc, the whole Makefile) by their SHA-256. The code container computes the same over what it passes to the page
+// (code/server/api.mjs runDigest; code/test checks that the two agree); a task changed meanwhile is refused.
+export function runDigest({ source, name, argv, cwd, detail, files }) {
+  return crypto.createHash('sha256').update(JSON.stringify([source, name, argv, cwd,
+    (detail || []).map((d) => [d.name, d.text]), (files || []).map((f) => [f.path, f.sha256])])).digest('hex');
+}
+function taskRow(source, name, argv, detail, files = [], notes = []) {
+  const t = { source, name, argv, cwd: '.', command: argv.map(shq).join(' '), detail, files, notes };
+  t.digest = runDigest(t);
+  return t;
+}
+const taskError = (source, name, error) => ({ source, name: String(name).slice(0, 200), error });
+
+// taskFile(rel) -> {text, sha256} of a regular file in the workspace's top folder (never through a link, never a FIFO
+// or device), {error} when one is there that cannot be used, null when there is none
+function taskFile(rel) {
+  const top = confine('.');
+  if (!top) return null;
+  let fd;
+  try { fd = fs.openSync(path.join(top, rel), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
+    return e.code === 'ENOENT' || e.code === 'ENOTDIR' ? null : { error: e.code === 'ELOOP' ? 'a link (not followed here)' : 'not readable' };
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { error: 'not a file' };
+    if (st.size > TASK_FILE_MAX) return { error: 'larger than 1 MiB' };
+    const b = Buffer.alloc(st.size);
+    let pos = 0;
+    while (pos < st.size) { const n = fs.readSync(fd, b, pos, st.size - pos, pos); if (!n) break; pos += n; }
+    const buf = b.subarray(0, pos);
+    return { text: buf.toString('utf8'), sha256: sha256(buf) };
+  } catch { return { error: 'not readable' }; } finally { fs.closeSync(fd); }
+}
+
+// npmrcKeys(text) -> the setting names a .npmrc sets (at most 20, printable): shown before Run, since npm reads the
+// workspace's .npmrc first — script-shell, node-options and others there change what a script runs
+export function npmrcKeys(text) {
+  const keys = [];
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t || t[0] === '#' || t[0] === ';') continue;
+    const eq = t.indexOf('=');
+    const k = printable((eq < 0 ? t : t.slice(0, eq)).trim(), 60);
+    if (k && keys.length < 20 && !keys.includes(k)) keys.push(k);
+  }
+  return keys;
+}
+
+// npmTasks(text, npmrc) -> {tasks, more} | {error}: package.json's scripts, each with the pre<name> and post<name>
+// scripts npm runs around it by itself
+export function npmTasks(text, npmrc = null) {
+  let j;
+  try { j = JSON.parse(text); } catch { return { error: 'not valid JSON' }; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { error: 'not a JSON object' };
+  if (!Object.hasOwn(j, 'scripts')) return { tasks: [], more: false };
+  const scripts = j.scripts;
+  if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return { error: '"scripts" is not an object' };
+  const own = (k) => (Object.hasOwn(scripts, k) && typeof scripts[k] === 'string' ? scripts[k] : null);
+  const files = npmrc ? [{ path: '.npmrc', sha256: npmrc.sha256 }] : [];
+  const notes = npmrc ? [`The workspace's .npmrc is read first (it sets ${npmrc.keys.length ? npmrc.keys.join(', ') : 'nothing'}): settings such as script-shell or node-options there change what runs.`] : [];
+  const names = Object.keys(scripts);
+  const tasks = [];
+  for (const name of names.slice(0, TASKS_MAX)) {
+    const script = scripts[name];
+    if (typeof script !== 'string') { tasks.push(taskError('npm', name, 'its script is not a string')); continue; }
+    if (!RUN_NAME.npm.test(name)) { tasks.push(taskError('npm', name, 'not a name the Run menu passes on (letters, digits and _ . : @ / + -): run it in the terminal')); continue; }
+    const pre = own(`pre${name}`), post = own(`post${name}`);
+    const detail = [...(pre !== null ? [{ name: `pre${name}`, text: pre }] : []), { name, text: script }, ...(post !== null ? [{ name: `post${name}`, text: post }] : [])];
+    if (detail.some((d) => d.text.length > TASK_TEXT_MAX)) { tasks.push(taskError('npm', name, 'its script is too long to show here: run it in the terminal')); continue; }
+    tasks.push(taskRow('npm', name, runArgv('npm', name), detail, files, notes));
+  }
+  return { tasks, more: names.length > TASKS_MAX };
+}
+
+// makeTargets(text) -> {targets: [{name, recipe} | {name, error}], includes, more}: the `name:` lines of a Makefile
+// (make itself is not asked: it would run $(shell …) in the file), each with the tab-indented recipe after it.
+// Skipped: special targets (.PHONY …), pattern rules, names made of variables, assignments (=, :=, ::=).
+export function makeTargets(text) {
+  const lines = text.split('\n');
+  const found = new Map();
+  let includes = false, more = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || line[0] === '\t' || line[0] === ' ' || line[0] === '#') continue;
+    if (/^[-s]?include[ \t]/.test(line)) { includes = true; continue; }
+    const c = line.indexOf(':');
+    if (c <= 0 || line[c + 1] === '=' || (line[c + 1] === ':' && line[c + 2] === '=')) continue;
+    const head = line.slice(0, c);
+    if (/[=$%(){};\\]/.test(head)) continue;
+    const recipe = [];
+    let j = i + 1;
+    for (; j < lines.length && lines[j][0] === '\t'; j++) if (recipe.length < 40) recipe.push(lines[j].slice(1).replace(/\r$/, ''));
+    const extra = j - i - 1 - recipe.length;
+    const text1 = recipe.join('\n') + (extra > 0 ? `\n… (${extra} more lines in the file)` : '');
+    for (const name of head.trim().split(/[ \t]+/)) {
+      if (!name || name[0] === '.') continue;
+      const had = found.get(name);
+      if (had) { if (!had.error && !had.recipe && text1) had.recipe = text1; continue; }
+      if (found.size >= TASKS_MAX) { more = true; continue; }
+      found.set(name, RUN_NAME.make.test(name) ? { name, recipe: text1 }
+        : { name: name.slice(0, 200), error: 'not a name the Run menu passes on (letters, digits and _ . / + -): run it in the terminal' });
+    }
+  }
+  return { targets: [...found.values()], includes, more };
+}
+
+// pyEntries(text) -> {entries: [{name, ref, table} | {name, error}], more}: the `name = "module:function"` lines of
+// pyproject.toml's [project.scripts] and [tool.poetry.scripts] (a line-by-line reading: no TOML parser here)
+const unquote = (s) => (s.length >= 2 && (s[0] === '"' || s[0] === "'") && s[s.length - 1] === s[0] ? s.slice(1, -1) : s);
+export function pyEntries(text) {
+  const entries = [], seen = new Set();
+  let table = null, more = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line[0] === '[') {
+      const end = line.indexOf(']');
+      const inner = end > 0 ? line.slice(1, end).replace(/[ \t"']/g, '') : '';
+      table = inner === 'project.scripts' || inner === 'tool.poetry.scripts' ? inner : null;
+      continue;
+    }
+    if (!table || !line || line[0] === '#') continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const name = unquote(line.slice(0, eq).trim());
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (entries.length >= TASKS_MAX) { more = true; break; }
+    const v = line.slice(eq + 1).trim();
+    const close = v[0] === '"' || v[0] === "'" ? v.indexOf(v[0], 1) : -1;
+    const ref = close > 0 ? v.slice(1, close) : null;
+    if (!RUN_NAME.python.test(name)) entries.push({ name: name.slice(0, 200), error: 'not a name the Run menu passes on (letters, digits and _ . -): run it in the terminal' });
+    else if (ref === null || ref.length > 300 || !PY_REF.test(ref)) entries.push({ name, error: 'not a "module:function" entry point (extras, a table or another form): run it in the terminal' });
+    else entries.push({ name, ref, table });
+  }
+  return { entries, more };
+}
+
+// onPath(name) -> whether a program of that name is on the sandbox's PATH (an executable file)
+function onPath(name) {
+  for (const dir of (process.env.PATH || '').split(':')) {
+    if (!dir.startsWith('/')) continue;
+    try { const f = path.join(dir, name); fs.accessSync(f, fs.constants.X_OK); if (fs.statSync(f).isFile()) return true; } catch { /* not here */ }
+  }
+  return false;
+}
+
+// runList() -> {sources: [{source, file, exists, error, more}], tasks}: every task of the workspace's top folder, each
+// with its wrapper's arguments, its texts and its digest (or why it is not offered)
+export function runList() {
+  const sources = [], tasks = [];
+  const pkg = taskFile('package.json');
+  const src = (source, file, f, r = {}) => sources.push({ source, file, exists: f !== null, error: f?.error ?? r.error ?? null, more: r.more === true });
+  if (!pkg || pkg.error) src('npm', 'package.json', pkg);
+  else {
+    const rc = taskFile('.npmrc');
+    if (rc?.error) src('npm', 'package.json', pkg, { error: `the workspace's .npmrc is ${rc.error}: npm would read it — run npm in the terminal` });
+    else {
+      const r = npmTasks(pkg.text, rc && { sha256: rc.sha256, keys: npmrcKeys(rc.text) });
+      src('npm', 'package.json', pkg, r);
+      tasks.push(...(r.tasks || []));
+    }
+  }
+  // the Makefile GNU make reads, in its order (its targets listed even without make in the sandbox — the image has
+  // none — but not offered then)
+  let mfName = 'Makefile', mf = null;
+  let here = [];
+  try { here = fs.readdirSync(confine('.') || WORKSPACE).slice(0, 100000); } catch { /* none */ }
+  // (by the names in the folder: on a case-insensitive disk "makefile" would open "Makefile" too)
+  for (const n of ['GNUmakefile', 'makefile', 'Makefile']) { if (!here.includes(n)) continue; const f = taskFile(n); if (f !== null) { mfName = n; mf = f; break; } }
+  if (!mf || mf.error) src('make', mfName, mf);
+  else if (!onPath('make')) {
+    const r = makeTargets(mf.text);
+    src('make', mfName, mf, { error: 'make is not installed in the sandbox: its targets are listed, not run', more: r.more });
+    for (const t of r.targets) tasks.push(taskError('make', t.name, 'make is not installed in the sandbox'));
+  } else {
+    const r = makeTargets(mf.text);
+    src('make', mfName, mf, r);
+    const files = [{ path: mfName, sha256: mf.sha256 }];
+    const notes = r.includes ? [`${mfName} includes other files: make reads them too (and its variables decide what the recipe runs).`] : [];
+    for (const t of r.targets) {
+      tasks.push(t.error ? taskError('make', t.name, t.error) : t.recipe.length > TASK_TEXT_MAX ? taskError('make', t.name, 'its recipe is too long to show here: run it in the terminal')
+        : taskRow('make', t.name, runArgv('make', t.name), [{ name: `${mfName}: ${t.name}`, text: t.recipe }], files, notes));
+    }
+  }
+  const py = taskFile('pyproject.toml');
+  if (!py || py.error) src('python', 'pyproject.toml', py);
+  else {
+    const r = pyEntries(py.text);
+    src('python', 'pyproject.toml', py, r);
+    for (const e of r.entries) {
+      tasks.push(e.error ? taskError('python', e.name, e.error)
+        : taskRow('python', e.name, runArgv('python', e.name, e.ref), [{ name: `pyproject.toml [${e.table}]`, text: `${e.name} = "${e.ref}"` }]));
+    }
+  }
+  return { sources, tasks };
+}
+
+// --- runs: <RUN_DIR>/<id>.json (bn-coded: what was started, its window), <id>.pid.json and <id>.result.json (the
+// --- runner: its process, then the exit status and the output's tail). The sandbox can write them all: the code
+// --- container and the page treat them as text.
+function readRunFile(name, max) {
+  const b = readRegular(path.join(RUN_DIR, name), max);
+  if (!b) return null;
+  try { const j = JSON.parse(b.toString('utf8')); return j && typeof j === 'object' && !Array.isArray(j) ? j : null; } catch { return null; }
+}
+function writeRunFile(dir, name, obj) {
+  const tmp = path.join(dir, `.${name}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
+  fs.renameSync(tmp, path.join(dir, name));
+}
+const runFiles = (id) => [`${id}.json`, `${id}.pid.json`, `${id}.result.json`];
+// runIds() -> the runs' ids in the folder, newest first (by their record's time on disk: nothing read yet)
+function runIds() {
+  let names = [];
+  try { names = fs.readdirSync(RUN_DIR); } catch { return []; }
+  const out = [];
+  for (const n of names.slice(0, 5000)) {
+    const m = n.match(/^([0-9a-f]{16})\.json$/);
+    if (!m) continue;
+    try { const st = fs.lstatSync(path.join(RUN_DIR, n)); if (st.isFile()) out.push([m[1], st.mtimeMs]); } catch { /* gone */ }
+  }
+  return out.sort((a, b) => b[1] - a[1]).map(([id]) => id);
+}
+// runRecords() -> the newest runs' records (at most 40 read), newest first
+function runRecords() {
+  const recs = [];
+  for (const id of runIds().slice(0, 2 * RUNS_KEEP)) {
+    const r = readRunFile(`${id}.json`, 16 << 10);
+    if (r && r.id === id) recs.push(r);
+  }
+  return recs.sort((a, b) => (Number(b.startedAt) || 0) - (Number(a.startedAt) || 0));
+}
+const procStartIn = (pid, procDir) => {
+  try { return fs.readFileSync(path.join(procDir, String(pid), 'stat'), 'utf8').replace(/^.*\) /s, '').split(' ')[19] || ''; } catch { return ''; }
+};
+function runState(rec, procDir) {
+  const res = readRunFile(`${rec.id}.result.json`, 6 * RUN_TAIL + (16 << 10));
+  if (res) return { state: 'done', res };
+  const p = readRunFile(`${rec.id}.pid.json`, 1024);
+  const alive = p && Number.isInteger(p.pid) && p.pid > 1 && typeof p.start === 'string' && p.start !== '' && procStartIn(p.pid, procDir) === p.start;
+  // (a runner not started yet: a few seconds' grace)
+  return { state: alive || (!p && Date.now() - (Number(rec.startedAt) || 0) < 15000) ? 'running' : 'lost', res: null };
+}
+
+// runStart(source, name, digest) — that task (listed again now: it must still be what the page showed) in a new window
+// of the terminal's tmux session, through its fixed wrapper, run by this file's runner; the window stays (a shell in
+// the workspace) when it ends
+export async function runStart(source, name, digest, { tmux = TMUX, procDir = '/proc' } = {}) {
+  if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the task shown');
+  if (typeof source !== 'string' || !Object.hasOwn(RUN_NAME, source) || typeof name !== 'string' || !RUN_NAME[source].test(name)) throw new Error('no such task');
+  const t = runList().tasks.find((x) => x.source === source && x.name === name);
+  if (!t) throw new Error('no such task in the workspace (any more)');
+  if (t.error) throw new Error(`${name}: ${t.error}`);
+  if (t.digest !== digest) throw new Error('the task changed since it was shown: review it again');
+  const top = confine('.');
+  if (!top) throw new Error('no workspace');
+  const recs = runRecords();
+  if (recs.filter((r) => runState(r, procDir).state === 'running').length >= RUNS_AT_ONCE) throw new Error(`${RUNS_AT_ONCE} tasks run already: wait for one to end, or close its window`);
+  await tmuxSession(tmux);
+  fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 });
+  // (the last 20 runs are kept: the oldest go, with their files)
+  for (const old of runIds().slice(RUNS_KEEP - 1)) for (const f of runFiles(old)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
+  const id = crypto.randomBytes(8).toString('hex');
+  const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null };
+  writeRunFile(RUN_DIR, `${id}.json`, rec);
+  const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
+  // the runner as its own arguments (no shell parses them: bash only runs them, then stays as the window's shell)
+  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', top, '--',
+    'bash', '-c', '"$@"; exec bash', 'bedrock-now run', process.execPath, SELF, '--run-task', RUN_DIR, id, '--', ...t.argv];
+  const r = await run(tmux, args);
+  if (r.code !== 0) {
+    for (const f of runFiles(id)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
+    throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
+  }
+  const win = r.out.trim();
+  rec.window = RUN_WINDOW.test(win) ? win : null;
+  writeRunFile(RUN_DIR, `${id}.json`, rec);
+  return { ok: true, id, window: rec.window, source, name, command: t.command };
+}
+
+// runResults(id?) -> {runs}: the last runs, newest first (with the last 4 KiB of each one's output), or that one run
+// with all that was kept of it (64 KiB)
+export function runResults(id = null, { procDir = '/proc' } = {}) {
+  if (id !== null && (typeof id !== 'string' || !RUN_ID.test(id))) throw new Error('bad run id');
+  const recs = runRecords().filter((r) => id === null || r.id === id).slice(0, RUNS_KEEP);
+  const max = id === null ? RUN_LIST_TAIL : RUN_TAIL;
+  return { runs: recs.map((rec) => {
+    const { state, res } = runState(rec, procDir);
+    const row = { id: rec.id, source: rec.source, name: rec.name, command: rec.command, window: rec.window, startedAt: rec.startedAt, state };
+    if (res) {
+      const tail = typeof res.tail === 'string' ? res.tail : '';
+      Object.assign(row, { exitCode: res.exitCode, signal: res.signal, error: res.error ?? null, endedAt: res.endedAt, bytes: res.bytes,
+        tail: tail.length > max ? tail.slice(-max) : tail, cut: res.cut === true || tail.length > max });
+    }
+    return row;
+  }) };
+}
+
+// runShow(id) — that run's window made the current one of the terminal's tmux session (the terminal panel shows it)
+export async function runShow(id, { tmux = TMUX } = {}) {
+  if (typeof id !== 'string' || !RUN_ID.test(id)) throw new Error('bad run id');
+  const rec = readRunFile(`${id}.json`, 16 << 10);
+  if (!rec || typeof rec.window !== 'string' || !RUN_WINDOW.test(rec.window)) throw new Error('no window for that run');
+  const r = await run(tmux, ['select-window', '-t', rec.window]);
+  if (r.code !== 0) throw new Error('its window is closed');
+  return { ok: true, window: rec.window };
+}
+
+// runTask(dir, id, argv) — the runner, in the task's tmux window (bn-coded.mjs --run-task <dir> <id> -- <argv>): the
+// task without input (a test runner then runs once instead of watching), its output shown here as it comes, and its
+// exit status with the last 64 KiB of that output in <dir>/<id>.result.json. Ctrl-C reaches the task (the same process
+// group); the runner waits for it and records how it ended.
+export function runTask(dir, id, argv, { out = process.stdout, procDir = '/proc' } = {}) {
+  return new Promise((resolve) => {
+    if (typeof id !== 'string' || !RUN_ID.test(id) || !Array.isArray(argv) || !argv.length) { out.write('bn-coded --run-task: bad arguments\n'); resolve(2); return; }
+    const t0 = Date.now();
+    const save = (name, obj) => { try { writeRunFile(dir, name, obj); } catch { /* the list then says the run was lost */ } };
+    save(`${id}.pid.json`, { pid: process.pid, start: procStartIn(process.pid, procDir) });
+    out.write(`\x1b[2m▶ ${argv.map(shq).join(' ')}\n  (bedrock-now's Run: its exit status and the last 64 KiB of its output go to the Code page's Problems list)\x1b[0m\n\n`);
+    const chunks = [];
+    let size = 0, total = 0, done = false, child = null;
+    const keep = (d) => {
+      chunks.push(d); size += d.length; total += d.length;
+      while (chunks.length > 1 && size - chunks[0].length >= RUN_TAIL) size -= chunks.shift().length;
+    };
+    const finish = ({ exitCode = null, signal = null, error = null }) => {
+      if (done) return;
+      done = true;
+      let b = Buffer.concat(chunks);
+      if (b.length > RUN_TAIL) b = b.subarray(b.length - RUN_TAIL);
+      let k = 0;
+      while (k < b.length && k < 4 && (b[k] & 0xc0) === 0x80) k++;   // (not from the middle of a character)
+      const endedAt = Date.now();
+      save(`${id}.result.json`, { id, exitCode, signal, error, startedAt: t0, endedAt, bytes: total, cut: total > RUN_TAIL, tail: b.subarray(k).toString('utf8') });
+      const secs = ((endedAt - t0) / 1000).toFixed(1);
+      out.write(`\n\x1b[2m■ ${error ? printable(error, 200) : signal ? `ended by ${signal}` : `exited with status ${exitCode}`} after ${secs} s\x1b[0m\n`);
+      resolve(Number.isInteger(exitCode) ? exitCode : signal ? 128 + (os.constants.signals[signal] || 0) : 1);
+    };
+    try {
+      child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { finish({ error: `${argv[0]}: ${e.code || e.message}` }); return; }
+    process.on('SIGINT', () => {});
+    for (const s of ['SIGTERM', 'SIGHUP']) process.on(s, () => { try { child.kill(s); } catch { /* gone */ } });
+    for (const s of [child.stdout, child.stderr]) s.on('data', (d) => { out.write(d); keep(d); });
+    child.on('error', (e) => finish({ error: `${argv[0]}: ${e.code === 'ENOENT' ? 'not found' : e.code || e.message}` }));
+    child.on('close', (code, signal) => finish({ exitCode: code, signal }));
+  });
+}
+
 // sessionRunning(id) -> {running, pid?}: whether a process in the sandbox other than this bn-coded's own children has
 // an argument holding that session id, in any form (`claude-bedrock --resume <id>` in the terminal, `-r<id>`,
 // `--resume=<id>`, `--session-id <id>`, a path to its transcript …): the code container resumes a conversation in the
@@ -2179,6 +2573,14 @@ export function serve(sock) {
           if (typeof req.name !== 'string') return fail('bad name');
           launchStart(req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
+        case 'run.list': return finish(T.RESULT, runList());
+        case 'run.start':
+          runStart(req.source, req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
+        case 'run.results': return finish(T.RESULT, runResults(req.id ?? null));
+        case 'run.show':
+          runShow(req.id).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
         case 'perm.read': return finish(T.RESULT, permRead());
         case 'perm.remove': return finish(T.RESULT, permRemove(req));
         case 'terminal.resume':
@@ -2246,4 +2648,10 @@ export function start() {
   return server;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) start();
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+  // (--run-task: the runner of a Run & test task, in its tmux window — runStart above)
+  if (process.argv[2] === '--run-task') {
+    const [dir, id, sep, ...argv] = process.argv.slice(3);
+    runTask(dir, id, sep === '--' ? argv : []).then((status) => process.exit(status));
+  } else start();
+}

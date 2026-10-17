@@ -686,7 +686,8 @@ spawn server, Claude Code or any file at will.
   checked again when Claude worked since that dry run.
 - [x] **The spawn server allows a few shapes.** One op per connection: `claude` (Claude Code in stream-json mode),
   a `claude plugin|mcp` listing or change, the file ops, the session ops, the previews' ops (below: the listening
-  ports, stopping one, the workspace's `.claude/launch.json`), the watchlist's two ops (below), the Review pane's
+  ports, stopping one, the workspace's `.claude/launch.json`), Run & test's (below: the workspace's tasks, one run
+  through a fixed wrapper, the runs, a run's window), the watchlist's two ops (below), the Review pane's
   `git.diff`, the Git panel's `git.status`, `git.log`, `git.file`, `git.stage`, `git.unstage`, `git.commit` and
   `git.discard`, and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
   Permissions view's, *Open in the terminal*'s and the resume check's ops (`perm.read`, `perm.remove`,
@@ -1406,6 +1407,33 @@ browser ─ http://p5173-<capability>.<PREVIEW_DOMAIN>:<PORTAL_PORT>/   (another
   changes (the page remembers the digests you started, in this browser). The confirmation binds the command line,
   not what the program then reads or which binary it is: `npm run dev` runs whatever the workspace's `package.json`
   says at that moment, and the sandbox's `PATH` decides which `npm` runs — both are the sandbox's to change.
+- [x] **Run & test.** bn-coded lists the workspace's tasks from its top folder's files, read as text — regular files of
+  at most 1 MiB, never through a link or from a FIFO, and `make` is never asked (a Makefile's `$(shell …)` would run):
+  `package.json`'s scripts, a Makefile's `name:` lines, `pyproject.toml`'s `[project.scripts]` and
+  `[tool.poetry.scripts]` lines, each read in linear time (tested on crafted files). A task runs only through a fixed
+  wrapper with its name as one argument after `--` — `npm run -- <name>`, `make -- <target>`, or `python3 -c <a fixed
+  loader> <name> <module:function>` — never a command line built from the files or sent by the page, and only with a
+  name of a fixed set of characters (letters, digits and `_ . : @ / + -` for npm; others are listed with the reason,
+  not offered), in a new window of the terminal's tmux (each argument its own; bash only runs them, then stays as the
+  window's shell). The files are the workspace's, which anything in the sandbox can write — Claude in *Accept edits*
+  too — so **Run** shows the task in full first: each argument, the script with the `pre…`/`post…` scripts npm runs
+  around it by itself, the recipe or the entry point, and a workspace `.npmrc` with the names of its settings
+  (`script-shell`, `node-options` … change what runs). The page sends the task's source and name and a SHA-256 of what
+  it showed — the wrapper, those texts, and the files read besides by their own SHA-256 (`.npmrc`; the whole Makefile,
+  whose variables decide its recipes) — computed by the code container over what it passed on (only the fixed
+  wrappers' shapes pass); bn-coded lists the files again and refuses a task that no longer matches ("changed since it
+  was shown", 409). The confirmation comes again whenever the task changes (the page remembers the digests you ran,
+  in this browser). It binds the command and the texts shown, not what they then run: the programs a script names are
+  the workspace's (`node_modules/.bin` comes first on npm's `PATH`) and a Makefile may include other files — both the
+  sandbox's to change, and the confirmation says so. A `.npmrc` that is a link (or larger than 1 MiB) refuses npm's
+  tasks. The runner (bn-coded's `--run-task`, in that window) gives the task no input (`/dev/null`: a test runner runs
+  once instead of watching), shows its output there and keeps its exit status and last 64 KiB in `/tmp/bn-coded/runs`
+  (the last 20 runs; at most 8 at once); anything in the sandbox can write those files, so the code container and the
+  page check what comes back and show it as text. A Problems row makes the run's window the terminal's current one
+  (`tmux select-window` on an id checked to be `@<number>`). **Ask Claude** only drafts a prompt, never sent by itself;
+  what Claude then runs goes through the session's permission mode and its cards like any other command. Everything
+  runs in the sandbox, never on your computer: a `package.json` whose scripts changed is still flagged by the
+  watchlist (your own `npm` would run them there).
 - [x] **Over remote access: off unless turned on; then one host, a cookie naming the port.** `REMOTE_PREVIEW=true`
   (blank is off: the preview host would be the same site as every other app of your tailnet or domain — except with a
   `REMOTE_PREVIEW_DOMAIN` of its own, where blank is on), and wherever the Code page is remote, its previews have one

@@ -56,6 +56,11 @@ import type {
   PortInfo,
   PreviewInfo,
   PreviewLink,
+  RunList,
+  RunResult,
+  RunSource,
+  RunSourceInfo,
+  RunTask,
   ServerMsg,
   ServerState,
   SessionInfo,
@@ -1448,6 +1453,64 @@ export async function getLaunch(): Promise<LaunchList> {
 export async function startLaunch(name: string, digest: string): Promise<{ window: string; port: number | null }> {
   const o = await request('POST', '/api/launch/start', { name, digest });
   return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
+}
+
+// ---------------------------------------------------------------- Run & test
+
+const RUN_SOURCES: RunSource[] = ['npm', 'make', 'python'];
+const RUN_ID = /^[0-9a-f]{16}$/;
+const runSource = (v: unknown): RunSource | null => (RUN_SOURCES.includes(v as RunSource) ? (v as RunSource) : null);
+/** A task as the code container checked it: shown before Run as it is (its digest binds it), or not offered. */
+export function normRunTask(v: unknown): RunTask | null {
+  const o = obj(v);
+  const source = runSource(o?.source);
+  if (!o || !source) return null;
+  const name = typeof o.name === 'string' ? o.name : '';
+  const none: RunTask = { source, name: label(name, 200) || '(no name)', argv: null, command: null, detail: [], files: [], notes: [], digest: null, error: null };
+  if (typeof o.error === 'string') return { ...none, error: label(o.error, 300) };
+  const argvIn = arr(o.argv, 9);
+  const argv = argvIn.length >= 1 && argvIn.length <= 8 && argvIn.every((a) => typeof a === 'string' && a.length <= 2000) ? (argvIn as string[]) : null;
+  const detailIn = arr(o.detail, 4).map((d) => obj(d));
+  const detail = detailIn.length >= 1 && detailIn.length <= 3 && detailIn.every((d) => !!d && typeof d.name === 'string' && d.name.length <= 300 && typeof d.text === 'string' && d.text.length <= 8000)
+    ? detailIn.map((d) => ({ name: String(d!.name), text: String(d!.text) })) : null;
+  const files = arr(o.files, 4).map((f) => obj(f)).filter((f): f is Obj => !!f && typeof f.path === 'string' && typeof f.sha256 === 'string' && SHA.test(f.sha256))
+    .map((f) => ({ path: label(f.path, 100), sha256: String(f.sha256) }));
+  const digest = typeof o.digest === 'string' && SHA.test(o.digest) ? o.digest : null;
+  if (!argv || !detail || !digest || !name || name.length > 100) return { ...none, error: 'It cannot be shown here in full: run it in the terminal.' };
+  return { source, name, argv, command: typeof o.command === 'string' ? safe(o.command, 4000) : argv.join(' '), detail, files,
+    notes: arr(o.notes, 4).filter((n): n is string => typeof n === 'string').map((n) => safe(n, 600)), digest, error: null };
+}
+export function normRunResult(v: unknown): RunResult | null {
+  const o = obj(v);
+  const source = runSource(o?.source);
+  if (!o || !source || typeof o.id !== 'string' || !RUN_ID.test(o.id) || !['running', 'done', 'lost'].includes(o.state as string)) return null;
+  const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : null);
+  const code = typeof o.exitCode === 'number' && Number.isInteger(o.exitCode) && o.exitCode >= 0 && o.exitCode <= 255 ? o.exitCode : null;
+  return { id: o.id, source, name: label(o.name, 100), command: safe(o.command, 4000), window: typeof o.window === 'string' && /^@[0-9]{1,9}$/.test(o.window) ? o.window : null,
+    startedAt: n(o.startedAt), state: o.state as RunResult['state'], exitCode: o.state === 'done' ? code : null,
+    signal: typeof o.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(o.signal) ? o.signal : null, error: typeof o.error === 'string' && o.error ? label(o.error, 300) : null,
+    endedAt: n(o.endedAt), tail: typeof o.tail === 'string' ? o.tail.slice(-70_000) : '', cut: o.cut === true };
+}
+/** The workspace's tasks (package.json's scripts, the Makefile's targets, pyproject.toml's entry points). */
+export async function getRunTasks(): Promise<RunList> {
+  const o = await request('GET', '/api/run');
+  const sources = arr(o.sources, 3).map((x) => obj(x)).filter((x): x is Obj => !!x && !!runSource(x.source))
+    .map((x): RunSourceInfo => ({ source: x.source as RunSource, file: label(x.file, 40), exists: x.exists === true, error: typeof x.error === 'string' && x.error ? label(x.error, 300) : null, more: x.more === true }));
+  return { sources, tasks: arr(o.tasks, 300).map(normRunTask).filter((t): t is RunTask => t !== null) };
+}
+/** Run a task by its name and the digest of what was shown (a 409 when it changed since). */
+export async function startRun(t: RunTask): Promise<{ id: string | null; window: string | null }> {
+  const o = await request('POST', '/api/run/start', { source: t.source, name: t.name, digest: t.digest });
+  return { id: typeof o.id === 'string' && RUN_ID.test(o.id) ? o.id : null, window: typeof o.window === 'string' && /^@[0-9]{1,9}$/.test(o.window) ? o.window : null };
+}
+/** The last runs (each with the end of its output), or one run with all that was kept of it. */
+export async function getRunResults(id?: string): Promise<RunResult[]> {
+  const o = await request('GET', '/api/run/results' + (id ? q({ id }) : ''));
+  return arr(o.runs, 20).map(normRunResult).filter((r): r is RunResult => r !== null);
+}
+/** Make a run's window the terminal's current one. */
+export async function showRun(id: string): Promise<void> {
+  await request('POST', '/api/run/show', { id });
 }
 
 /** Whether previews work here, and how they are routed (the portal: a capability per host on this computer, one host

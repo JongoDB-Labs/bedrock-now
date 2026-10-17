@@ -9,7 +9,8 @@ import { appendMemory, memoryLine } from './palette';
 import { fullModel, modelCommand } from './models';
 import { sentence } from './permission';
 import { remembered, startMode } from './modes';
-import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, ServerMsg, ServerState, SessionInfo } from './types';
+import type { Ev, FsEntry, Hunk, ImageBlock, KeyBudget, LaunchEntry, LaunchList, Mode, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunTask, ServerMsg, ServerState, SessionInfo } from './types';
+import { approveRun, approvedRun, askDraft, outcome, outcomeText, plainCommand } from './run';
 import { approveLaunch, approvedLaunch, switchedAway, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
@@ -119,8 +120,8 @@ export interface GitDiffTab {
 }
 export type Tab = FileTab | DiffTab | PreviewTab | ReviewTab | GitDiffTab;
 
-export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search' | 'git';
-export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all' | 'budget' | 'permissions';
+export type Sheet = null | 'files' | 'sessions' | 'editor' | 'menu' | 'ports' | 'search' | 'git' | 'run';
+export type Dialog = null | 'shortcuts' | 'plugins' | 'mcp' | 'memory' | 'ports' | 'launch' | 'undo-all' | 'budget' | 'permissions' | 'run' | 'run-confirm';
 
 /** The Review pane's state: git's answer (the files themselves are derived: reviewFiles) and what you kept. */
 export interface ReviewState {
@@ -248,6 +249,13 @@ export interface AppState {
   launch: LaunchList | null;
   /** a launch.json entry shown in full before it starts (the Start confirmation) */
   launchConfirm: LaunchEntry | null;
+  /** Run & test: the workspace's tasks (null: not read yet) */
+  run: RunList | null;
+  runError: string | null;
+  /** the last runs, newest first (the Problems list) */
+  runs: RunResult[];
+  /** a task shown in full before it runs (the Run confirmation) */
+  runConfirm: RunTask | null;
   /** the session whose switch to Bypass permissions waits for the dialog's confirmation */
   bypassAsk: string | null;
   /** bumped to open the mode menu (Alt+M) */
@@ -302,6 +310,10 @@ export const store: Store<AppState> = createStore<AppState>({
   preview: null,
   launch: null,
   launchConfirm: null,
+  run: null,
+  runError: null,
+  runs: [],
+  runConfirm: null,
   bypassAsk: null,
   modeMenu: 0,
   startWith: null,
@@ -908,6 +920,7 @@ export async function boot(): Promise<void> {
   announce();
   startPortWatch();
   startBudgetWatch();
+  void refreshRuns();
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
       const id = get().active;
@@ -1833,6 +1846,112 @@ export async function startLaunchEntry(e: LaunchEntry): Promise<void> {
     }
     toast(`Could not start "${label(e.name, 60)}": ${errText(err)}`, 'error');
   }
+}
+
+// ---------------------------------------------------------------- Run & test
+
+/** The workspace's tasks, read again (package.json's scripts, the Makefile's targets, pyproject.toml's entry points). */
+export async function loadRun(): Promise<void> {
+  try {
+    const run = await api.getRunTasks();
+    set((s) => ({ ...s, run, runError: null }));
+  } catch (e) {
+    set((s) => ({ ...s, runError: errText(e) }));
+  }
+}
+
+/** The runs this page started: a toast when one ends. */
+const myRuns = new Set<string>();
+let runTimer: ReturnType<typeof setTimeout> | null = null;
+/** The runs again (the Problems list); every 2 s while one runs. */
+export async function refreshRuns(): Promise<void> {
+  if (runTimer) clearTimeout(runTimer);
+  runTimer = null;
+  let runs: RunResult[];
+  try {
+    runs = await api.getRunResults();
+  } catch {
+    if (get().runs.some((r) => r.state === 'running')) runTimer = setTimeout(() => void refreshRuns(), 5000);
+    return;
+  }
+  const before = get().runs;
+  set((s) => ({ ...s, runs }));
+  for (const r of runs) {
+    if (!myRuns.has(r.id) || r.state === 'running' || before.find((b) => b.id === r.id)?.state !== 'running') continue;
+    myRuns.delete(r.id);
+    const ok = outcome(r) === 'ok';
+    toast(`${plainCommand(r)}: ${outcomeText(r)}`, ok ? 'ok' : 'error', { label: 'Problems', run: () => openRun() });
+  }
+  if (runs.some((r) => r.state === 'running')) runTimer = setTimeout(() => void refreshRuns(), 2000);
+}
+
+/** The Run panel: the tasks and the Problems list (a sheet on a phone, a dialog elsewhere). */
+export function openRun(): void {
+  if (isPhone()) set((s) => ({ ...s, sheet: 'run' }));
+  else setDialog('run');
+  void loadRun();
+  void refreshRuns();
+}
+
+/** Run on a task: shown in full first — the first time, and again whenever it changed (its digest); a task this
+ *  browser already ran as it is now runs at once. */
+export function requestRun(t: RunTask): void {
+  if (!t.argv || !t.digest || t.error) return;
+  if (approvedRun(t.digest)) {
+    void startRunTask(t);
+    return;
+  }
+  set((s) => ({ ...s, runConfirm: t, dialog: 'run-confirm', sheet: s.sheet === 'run' ? null : s.sheet }));
+}
+export function confirmRun(): void {
+  const t = get().runConfirm;
+  set((s) => ({ ...s, runConfirm: null, dialog: null }));
+  if (!t?.digest) return;
+  approveRun(t.digest);
+  void startRunTask(t);
+}
+
+/** Run a task: its fixed wrapper (`npm run -- <name>` …) in a new window of the terminal's tmux, while the task is what
+ *  was shown (its digest: a 409 otherwise); its exit status and output then come to the Problems list. */
+export async function startRunTask(t: RunTask): Promise<void> {
+  if (!t.digest) return;
+  try {
+    const r = await api.startRun(t);
+    if (r.id) myRuns.add(r.id);
+    const msg = `Running ${plainCommand(t)} in the terminal${r.window ? ` (window ${r.window})` : ''}: its result goes to Problems.`;
+    toast(msg, 'ok', isPhone() ? undefined : { label: 'Show the terminal', run: () => setLayout({ terminal: true }) });
+  } catch (err) {
+    if (err instanceof api.ApiError && err.status === 409) {
+      toast(`"${label(t.name, 60)}" changed since it was shown: it did not run. Look at it again (Run).`, 'error');
+      void loadRun();
+      return;
+    }
+    toast(`Could not run "${label(t.name, 60)}": ${errText(err)}`, 'error');
+  }
+  await refreshRuns();
+}
+
+/** A run's window, made the terminal's current one: in the terminal panel (a new tab on a phone — opened first, by
+ *  your tap). */
+export async function showRunWindow(r: RunResult): Promise<void> {
+  if (isPhone()) window.open(terminalUrl() ?? '/.bn/terminal', '_blank', 'noopener,noreferrer');
+  try {
+    await api.showRun(r.id);
+  } catch (e) {
+    toast(`Its window: ${errText(e)}`, 'error');
+    return;
+  }
+  if (!isPhone()) {
+    set((s) => ({ ...s, dialog: s.dialog === 'run' ? null : s.dialog }));
+    setLayout({ terminal: true });
+  }
+}
+
+/** "Ask Claude to run it": a draft in the prompt box ("Run `npm test` and fix failures."), never sent by itself. */
+export function askClaudeToRun(t: RunTask): void {
+  const text = askDraft(t);
+  set((s) => ({ ...s, insert: { n: (s.insert?.n ?? 0) + 1, text }, dialog: s.dialog === 'run' ? null : s.dialog, sheet: s.sheet === 'run' ? null : s.sheet,
+    focusComposer: s.focusComposer + 1 }));
 }
 
 async function loadFile(key: string, path: string): Promise<void> {

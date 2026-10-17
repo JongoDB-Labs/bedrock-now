@@ -956,3 +956,37 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 }
 .pv-hint { flex: 1 1 100%; }
 .pv-hint summary { cursor: pointer; width: max-content; }
+/* ---------- Run & test (components/Run.tsx): tasks, the confirmation, the Problems list ---------- */
+.sb-run .sb-bad { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; color: var(--bad); font-weight: 600; }
+.run-panel { width: min(560px, calc(100vw - 16px)); max-width: min(560px, calc(100vw - 16px)); overflow-y: auto; }
+.run-panel-body { white-space: normal; }
+.run-group h4 { margin: 6px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: none; }
+.run-group h4 .muted { font-weight: 400; font-family: var(--mono); margin-left: 4px; }
+.run-list, .problem-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.run-row { display: flex; flex-direction: column; gap: 1px; padding: 3px 6px; border-radius: 6px; min-width: 0; }
+.run-row:hover { background: var(--hover); }
+.run-line { display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; }
+.run-line .launch-name { max-width: 55%; }
+.run-why { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.run-cmd { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.run-cmd .run-wrapper { color: var(--ink); }
+.run-detail pre, .problem-tail { margin: 2px 0 6px; padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--surface-2);
+  font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; }
+.problem-tail.full { max-height: 50vh; }
+.problems { margin: 4px 0; padding: 4px 0; border-bottom: 1px solid var(--line-soft); }
+.problems:last-child { border-bottom: 0; border-top: 1px solid var(--line-soft); }
+.problem { display: flex; flex-direction: column; padding: 2px 4px; border-left: 3px solid var(--line); border-radius: 3px; }
+.problem.failed, .problem.lost { border-left-color: var(--bad); }
+.problem.ok { border-left-color: var(--ok); }
+.problem-main { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 2px 4px; border: 0; border-radius: 4px; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; }
+.problem-main:hover:not(:disabled) { background: var(--hover); }
+.problem-main:disabled { cursor: default; }
+.problem-icon { flex: none; display: inline-flex; }
+.problem.failed .problem-icon, .problem.lost .problem-icon, .problem.failed .problem-status { color: var(--bad); }
+.problem.ok .problem-icon { color: var(--ok); }
+.problem-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.problem-status { flex: none; font-size: 12px; }
+.problem-time { flex: none; }
+.problem-more { align-self: flex-start; margin: 0 0 4px 4px; }
+.sheet-body > .run-panel-body .problem-main { min-height: 40px; }

@@ -27,6 +27,7 @@ import {
   showSearch,
   showGit,
   openInTerminal,
+  openRun,
 } from '../app';
 import { GitPanel } from './GitPanel';
 import { changedCount } from '../git';
@@ -51,6 +52,7 @@ import { McpPanel } from './Mcp';
 import { MemoryDialog } from './Memory';
 import { Icon, Spinner } from './icons';
 import { LaunchConfirm, PortsPanel } from './DevPreview';
+import { RunConfirm, RunPanel, RunStatus } from './Run';
 
 // ---------------------------------------------------------------- pieces
 
@@ -103,6 +105,9 @@ function MoreMenu() {
           </MenuItem>
           <MenuItem icon="port" onSelect={() => (close(), setDialog('ports'))} testid="menu-ports">
             Ports & previews…
+          </MenuItem>
+          <MenuItem icon="play" onSelect={() => (close(), openRun())} testid="menu-run">
+            Run & test…
           </MenuItem>
           <MenuItem icon="refresh" onSelect={() => (close(), reloadPlugins())}>
             Reload plugins & skills
@@ -335,6 +340,7 @@ function StatusBar() {
         </span>
       )}
       {activeTab?.kind === 'file' && activeTab.dirty && <span class="sb-item">● unsaved</span>}
+      <RunStatus />
       <PortsStatus />
       {v && <span class="sb-item">{modeName(v.mode)}</span>}
       {modelName && <span class="sb-item">{modelName}</span>}
@@ -393,6 +399,7 @@ function Toasts() {
 function Dialogs() {
   const dialog = useSel(store, (s) => s.dialog);
   const launchConfirm = useSel(store, (s) => s.launchConfirm);
+  const runConfirm = useSel(store, (s) => s.runConfirm);
   const close = () => setDialog(null);
   if (dialog === 'shortcuts') {
     const all = shortcuts();
@@ -427,6 +434,14 @@ function Dialogs() {
   if (dialog === 'budget') return <BudgetDialog onClose={close} />;
   if (dialog === 'permissions') return <PermissionsDialog onClose={close} />;
   if (dialog === 'launch') return launchConfirm ? <LaunchConfirm entry={launchConfirm} /> : null;
+  if (dialog === 'run-confirm') return runConfirm ? <RunConfirm task={runConfirm} /> : null;
+  if (dialog === 'run') {
+    return (
+      <Dialog title="Run & test" onClose={close} wide testid="run-dialog">
+        <RunPanel onDone={close} />
+      </Dialog>
+    );
+  }
   if (dialog === 'ports') {
     return (
       <Dialog title="Ports & previews" onClose={close} testid="ports-dialog">
@@ -630,6 +645,9 @@ function PhoneMenu() {
         <button type="button" class="pm-link" onClick={() => setSheet('ports')} data-testid="phone-menu-ports">
           <Icon name="port" /> Ports & previews
         </button>
+        <button type="button" class="pm-link" onClick={() => openRun()} data-testid="phone-menu-run">
+          <Icon name="play" /> Run & test
+        </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('mcp'))}>
           <Icon name="server" /> MCP servers
         </button>
@@ -715,6 +733,11 @@ function Phone() {
       {sheet === 'ports' && (
         <Sheet title="Ports & previews" onClose={() => setSheet(null)} testid="sheet-ports">
           <PortsPanel />
+        </Sheet>
+      )}
+      {sheet === 'run' && (
+        <Sheet title="Run & test" onClose={() => setSheet(null)} testid="sheet-run">
+          <RunPanel />
         </Sheet>
       )}
     </div>

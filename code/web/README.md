@@ -97,6 +97,9 @@ and `GET /__mock/terminal-log` (what the terminal typed). Plugins: one marketpla
 `/api/ports`, `/api/launch` (three entries, one broken) and `/.bn/preview`, whose links point at a fake preview site
 on the mock's port + 100 (`p<port>-<capability>.localhost`: Chromium's loopback); a *vite* or *preview* prompt runs a
 dev server that prints Vite's banner; `POST /__mock/port?port=&cmd=` adds a listening server (`&del=1` removes it).
+Run & test: `/api/run` lists three npm scripts (`test` fails with Vitest's output, `build` passes), one odd name, two
+make targets and an entry point; a run ends a moment after it starts; `POST /__mock/run-swap?name=` changes a script
+behind the page's back and `GET /__mock/run-shown` lists the runs whose window the page asked for.
 Review and search: `/api/git/diff` compares the workspace with its state at the start (or at `POST /__mock/git?commit=1`;
 `?repo=0` makes it no git repository: the page then reviews the session's edits), `PUT /api/fs/file` takes `create`,
 `DELETE /api/fs` `ifMtimeMs`; a *… with sed* prompt changes two files and creates one by a Bash command (no edit event:

@@ -549,10 +549,45 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
 
+  // --- Run & test: the workspace's tasks (bn-coded reads package.json, the Makefile, pyproject.toml — nothing runs to list
+  // them), one run by name through its fixed wrapper in a window of the terminal's tmux while it is what the page showed
+  // (its digest), and the runs' exit status and output (the Problems list) ---
+  async function runTasks() {
+    const { result } = await call({ op: 'run.list' });
+    return { sources: (Array.isArray(result.sources) ? result.sources : []).slice(0, 3).map(runSourceRow).filter(Boolean),
+      tasks: (Array.isArray(result.tasks) ? result.tasks : []).slice(0, 300).map(runTaskRow).filter(Boolean) };
+  }
+  async function runStart(body) {
+    const source = body?.source, name = body?.name, digest = body?.digest;
+    if (typeof source !== 'string' || !Object.hasOwn(RUN_NAMES, source)) throw new HttpError(400, 'source: npm, make or python');
+    if (typeof name !== 'string' || !RUN_NAMES[source].test(name)) throw new HttpError(400, 'bad name');
+    if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new HttpError(400, 'digest: the SHA-256 of the task shown');
+    let result;
+    try {
+      ({ result } = await call({ op: 'run.start', source, name, digest }, { timeoutMs: 30000 }));
+    } catch (e) {
+      if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
+      throw e;
+    }
+    return { ok: result.ok === true, id: RUN_ID.test(result.id ?? '') ? result.id : null, window: RUN_WINDOW.test(result.window ?? '') ? result.window : null,
+      source, name, command: str(typeof result.command === 'string' ? result.command : '', 4000) };
+  }
+  async function runResults(id) {
+    if (id !== null && id !== undefined && (typeof id !== 'string' || !RUN_ID.test(id))) throw new HttpError(400, 'bad run id');
+    const { result } = await call({ op: 'run.results', ...(id ? { id } : {}) });
+    return { runs: (Array.isArray(result.runs) ? result.runs : []).slice(0, 20).map((x) => runResultRow(x, id ? RUN_TAIL : RUN_LIST_TAIL)).filter(Boolean) };
+  }
+  async function runShow(body) {
+    const id = body?.id;
+    if (typeof id !== 'string' || !RUN_ID.test(id)) throw new HttpError(400, 'bad run id');
+    await call({ op: 'run.show', id });
+    return { ok: true, id };
+  }
+
   return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
     gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, gitDraft, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
-    ports, stopPort, launch, launchStart };
+    ports, stopPort, launch, launchStart, runTasks, runStart, runResults, runShow };
 }
 
 // --- what bn-coded answers about one settings file (perm.read), checked for the page: rules as text (each one line or
@@ -870,6 +905,79 @@ export function launchRow(x) {
     command: typeof x.command === 'string' ? str(x.command, 4000) : null };
   row.digest = argv ? launchDigest({ argv, cwd, env, port }) : null;
   return row;
+}
+
+// --- what bn-coded answers about the workspace's tasks and their runs (Run & test), checked for the page ---
+// the names each wrapper takes (bn-coded's RUN_NAME): a task is offered only with one of these
+export const RUN_NAMES = {
+  npm: /^[A-Za-z0-9_][A-Za-z0-9_.:@\/+-]{0,99}$/,
+  make: /^[A-Za-z0-9_][A-Za-z0-9_.\/+-]{0,99}$/,
+  python: /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/,
+};
+const RUN_FILES = { npm: ['package.json'], make: ['GNUmakefile', 'makefile', 'Makefile'], python: ['pyproject.toml'] };
+const RUN_ID = /^[0-9a-f]{16}$/, RUN_WINDOW = /^@[0-9]{1,9}$/;
+export const RUN_TAIL = 64 << 10, RUN_LIST_TAIL = 4 << 10;
+const RUN_TEXT = 8000;
+// runDigest(task) -> SHA-256 (hex) of what Run runs and what decides it — the same as bn-coded's (terminal/bin/
+// bn-coded.mjs runDigest; code/test checks that they agree), computed here over exactly what goes to the page
+export function runDigest({ source, name, argv, cwd, detail, files }) {
+  return crypto.createHash('sha256').update(JSON.stringify([source, name, argv, cwd,
+    (detail || []).map((d) => [d.name, d.text]), (files || []).map((f) => [f.path, f.sha256])])).digest('hex');
+}
+// the entry-point loader bn-coded runs a pyproject.toml task with (its PY_LOADER; code/test checks that they agree)
+export const PY_LOADER = "import functools, importlib, sys; n, r = sys.argv[1:3]; m, _, a = r.partition(':'); sys.argv = [n]; " +
+  "sys.exit(functools.reduce(getattr, a.split('.'), importlib.import_module(m))())";
+// wrapperOk(source, name, argv): one of the fixed wrappers bn-coded runs, for this name
+function wrapperOk(source, name, argv) {
+  if (source === 'npm') return argv.length === 4 && argv[0] === 'npm' && argv[1] === 'run' && argv[2] === '--' && argv[3] === name;
+  if (source === 'make') return argv.length === 3 && argv[0] === 'make' && argv[1] === '--' && argv[2] === name;
+  return argv.length === 5 && argv[0] === 'python3' && argv[1] === '-c' && argv[2] === PY_LOADER && argv[3] === name && /^[A-Za-z_][A-Za-z0-9_.]{0,200}:[A-Za-z_][A-Za-z0-9_.]{0,200}$/.test(argv[4]);
+}
+export function runSourceRow(x) {
+  if (!x || typeof x !== 'object' || typeof x.source !== 'string' || !Object.hasOwn(RUN_FILES, x.source)) return null;
+  return { source: x.source, file: RUN_FILES[x.source].includes(x.file) ? x.file : RUN_FILES[x.source].at(-1), exists: x.exists === true,
+    error: short(x.error, 300) || null, more: x.more === true };
+}
+// runTaskRow(x) -> a task for the page, whole or not at all: its arguments, the texts shown (scripts, recipe, entry
+// point) and the files bound by their hash are shown before Run, so nothing of them is cut — a task beyond these
+// limits is listed with a reason instead
+export function runTaskRow(x) {
+  if (!x || typeof x !== 'object' || typeof x.source !== 'string' || !Object.hasOwn(RUN_NAMES, x.source)) return null;
+  const source = x.source;
+  if (typeof x.error === 'string') return { source, name: short(x.name, 200) || '(no name)', error: short(x.error, 300) };
+  if (typeof x.name !== 'string' || !RUN_NAMES[source].test(x.name)) return null;
+  const name = x.name;
+  const bad = (why) => ({ source, name, error: why });
+  const argv = x.argv;
+  if (!(Array.isArray(argv) && argv.every((a) => typeof a === 'string' && a.length <= 2000 && ONE_LINE.test(a)) && wrapperOk(source, name, argv))) {
+    return bad('not run the way bedrock-now runs tasks: run it in the terminal');
+  }
+  const detail = Array.isArray(x.detail) && x.detail.length >= 1 && x.detail.length <= 3 && x.detail.every((d) => d && typeof d === 'object'
+    && typeof d.name === 'string' && d.name.length <= 300 && ONE_LINE.test(d.name) && typeof d.text === 'string' && d.text.length <= RUN_TEXT) ? x.detail : null;
+  if (!detail) return bad('its script cannot be shown here in full: run it in the terminal');
+  const filesIn = x.files === undefined ? [] : x.files;
+  const files = Array.isArray(filesIn) && filesIn.length <= 3 && filesIn.every((f) => f && typeof f === 'object' && typeof f.path === 'string'
+    && /^[A-Za-z0-9._-]{1,100}$/.test(f.path) && typeof f.sha256 === 'string' && /^[0-9a-f]{64}$/.test(f.sha256)) ? filesIn : null;
+  if (!files) return bad('the files it depends on cannot be shown here: run it in the terminal');
+  if ((x.cwd ?? '.') !== '.') return bad('not run in the workspace\'s top folder: run it in the terminal');
+  const row = { source, name, argv: [...argv], cwd: '.', command: typeof x.command === 'string' ? str(x.command, 4000) : argv.join(' '),
+    detail: detail.map((d) => ({ name: d.name, text: d.text })), files: files.map((f) => ({ path: f.path, sha256: f.sha256 })),
+    notes: (Array.isArray(x.notes) ? x.notes : []).slice(0, 4).map((n) => str(typeof n === 'string' ? n : '', 600)).filter(Boolean) };
+  row.digest = runDigest(row);
+  return row;
+}
+// runResultRow(x, max) -> a run for the Problems list: what ran, whether it runs still, its exit status or signal, and
+// the end of its output (text from the sandbox)
+export function runResultRow(x, max = RUN_TAIL) {
+  if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !RUN_ID.test(x.id)) return null;
+  if (typeof x.source !== 'string' || !Object.hasOwn(RUN_NAMES, x.source) || !['running', 'done', 'lost'].includes(x.state)) return null;
+  const row = { id: x.id, source: x.source, name: short(x.name, 100), command: str(typeof x.command === 'string' ? x.command : '', 4000),
+    window: RUN_WINDOW.test(x.window ?? '') ? x.window : null, startedAt: num(x.startedAt, 0, 1e14), state: x.state };
+  if (x.state !== 'done') return row;
+  const tail = typeof x.tail === 'string' ? x.tail : '';
+  return { ...row, exitCode: int(x.exitCode, 0, 255), signal: /^SIG[A-Z0-9]{1,12}$/.test(x.signal ?? '') ? x.signal : null,
+    error: short(x.error, 300) || null, endedAt: num(x.endedAt, 0, 1e14), bytes: int(x.bytes, 0, Number.MAX_SAFE_INTEGER),
+    tail: tail.length > max ? tail.slice(-max) : tail, cut: x.cut === true || tail.length > max };
 }
 
 // --- what the CLI answers, checked for the page ---

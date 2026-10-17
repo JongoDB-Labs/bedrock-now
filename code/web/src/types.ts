@@ -386,6 +386,60 @@ export interface LaunchList {
   entries: LaunchEntry[];
 }
 
+// ---------------------------------------------------------------- Run & test (the workspace's tasks, their runs)
+
+export type RunSource = 'npm' | 'make' | 'python';
+/** A task of the workspace: a package.json script, a Makefile target or a pyproject.toml entry point. */
+export interface RunTask {
+  source: RunSource;
+  name: string;
+  /** exactly what Run runs: the fixed wrapper and the name (null with an error) */
+  argv: string[] | null;
+  /** as one line (shell-quoted) */
+  command: string | null;
+  /** the texts that decide what it does, shown in full: the script (with npm's pre/post ones), the recipe, the entry point */
+  detail: { name: string; text: string }[];
+  /** files read besides, bound by their SHA-256 (a .npmrc, the whole Makefile) */
+  files: { path: string; sha256: string }[];
+  /** warnings shown before Run */
+  notes: string[];
+  /** SHA-256 of all of the above: Run sends it back, a task changed meanwhile is refused */
+  digest: string | null;
+  /** why it is not offered (then the rest is empty) */
+  error: string | null;
+}
+export interface RunSourceInfo {
+  source: RunSource;
+  file: string;
+  exists: boolean;
+  error: string | null;
+  more: boolean;
+}
+export interface RunList {
+  sources: RunSourceInfo[];
+  tasks: RunTask[];
+}
+/** A run of a task (the Problems list): text from the sandbox. */
+export interface RunResult {
+  id: string;
+  source: RunSource;
+  name: string;
+  command: string;
+  /** its tmux window (@N), when known */
+  window: string | null;
+  startedAt: number | null;
+  /** lost: its runner ended without a result (its window closed while it ran) */
+  state: 'running' | 'done' | 'lost';
+  exitCode: number | null;
+  signal: string | null;
+  error: string | null;
+  endedAt: number | null;
+  /** the end of its output (ANSI escapes left in: the page strips them) */
+  tail: string;
+  /** more was printed than kept */
+  cut: boolean;
+}
+
 /** Whether previews work on this site, and how the portal routes them. */
 export interface PreviewInfo {
   available: boolean;
