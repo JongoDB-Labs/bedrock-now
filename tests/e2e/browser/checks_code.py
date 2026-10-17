@@ -1256,8 +1256,12 @@ def ui_review(ctx):
     row = lambda n: page.locator(f"[data-testid=review-file][data-path='{REVIEW}/{n}']")
     for n in files:
         see(row(n)).to_have_count(1, timeout=30000)
-    see(row("a.txt")).to_contain_text("Claude")
-    see(row("c.txt")).not_to_contain_text("Claude")
+    claude_pill = lambda n: row(n).locator(".rv-file-head .pill").filter(has_text=re.compile(r"^Claude$"))
+    see(claude_pill("a.txt")).to_have_count(1)
+    see(claude_pill("c.txt")).to_have_count(0)
+    # the sed's change is not Claude's file edit: marked (its Undo would ask first)
+    see(row("c.txt").get_by_test_id("review-not-claude")).to_have_count(1)
+    see(row("a.txt").get_by_test_id("review-not-claude")).to_have_count(0)
     see(row("a.txt").get_by_test_id("review-hunk")).to_have_count(2)
     page.mouse.move(0, 0)
     shot(page, "93-code-ui-review")
@@ -1294,7 +1298,7 @@ def ui_review(ctx):
         c.api("DELETE", "/api/fs?path=.git")
     csp_clean(page, rec, [r"^400 POST .*/api/fs/mkdir$"])
     return (f"session {sid[:8]} (Haiku): git init by Bash; two Edits (a.txt twice, b.txt) and a sed (c.txt) — the Review pane listed all three "
-            f"from git (Claude's marked), a.txt's second hunk undone (omega back to 1, alpha kept), a comment on a.txt:{line_no} went with "
+            f"from git (Claude's marked, the sed's change \"not Claude's\"), a.txt's second hunk undone (omega back to 1, alpha kept), a comment on a.txt:{line_no} went with "
             f"the next prompt (in the transcript); the palette by keyboard; Search found the sed's change; no CSP violations")
 
 
