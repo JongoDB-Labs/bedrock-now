@@ -446,11 +446,15 @@ _settings_choices() {
 }
 
 # _settings_code_models -> JSON rows for Settings › Claude Code › Models: [id, name, provider, vendor, compat, free,
-# listed] of litellm/code-models.tsv (lib/code_models.sh; at most 1500), nothing before ./stack wrote it
+# listed, price] of litellm/code-models.tsv (lib/code_models.sh; at most 1500; price: "$0.72/$0.72 per 1M", "free ($0)"
+# or "price unknown"), nothing before ./stack wrote it
 _settings_code_models() {
   declare -F _code_rows >/dev/null || return 0
   _code_rows | awk -F'\t' 'function js(s) { gsub(/[\001-\037"\\]/, "", s); return "\"" s "\"" }
-    NF >= 12 && $1 ~ /^[A-Za-z0-9][A-Za-z0-9._:\/@-]*$/ && n < 1500 { printf "%s[%s, %s, %s, %s, %s, %s, %s]", (n++ ? ", " : ""), js($1), js($2), js($3), js($4), js($10), ($9 == 1 ? "true" : "false"), ($11 == 1 ? "true" : "false") }'
+    function m(v,  s) { s = sprintf("%.4f", v); while (s ~ /\.[0-9][0-9][0-9]+$/ && s ~ /0$/) s = substr(s, 1, length(s) - 1); return "$" s }
+    NF >= 12 && $1 ~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/ && length($1) <= 128 && n < 1500 {
+      p = ($9 == 1) ? "free ($0)" : ($5 == "-" || $6 == "-") ? "price unknown" : m($5) "/" m($6) " per 1M"
+      printf "%s[%s, %s, %s, %s, %s, %s, %s, %s]", (n++ ? ", " : ""), js($1), js($2), js($3), js($4), js($10), ($9 == 1 ? "true" : "false"), ($11 == 1 ? "true" : "false"), js(p) }'
 }
 
 # _settings_display NAME -> its friendly name from catalog/display.tsv (the name itself without one); no quotes

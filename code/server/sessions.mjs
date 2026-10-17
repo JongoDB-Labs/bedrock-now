@@ -126,7 +126,12 @@ export class Session {
 
   // --- the budget ---
   /** What is left of the budget: its amount less the larger of the page's figure and Claude Code's estimate. */
-  left() { return this.budget ? this.budget.usd - Math.max(this.spent, this.cliCost) : Infinity; }
+  left() { return this.budget ? this.budget.usd - Math.max(this.spent, this.estimates() ? this.cliCost : 0) : Infinity; }
+  /** Whether Claude Code's own cost estimate means anything for this session's model: Claude's (the catalog's claude-…;
+   *  none named: the default, Claude's). Another provider's model — Llama, Mistral, an OpenRouter one, free or not — it
+   *  prices at its own default rates: then only the page's figure (what LiteLLM billed) counts, and there is no
+   *  maxBudgetUsd for Claude Code to stop at (the stop refuses the next prompt once LiteLLM's figure reaches it). */
+  estimates() { return !this.model || /^claude-/i.test(this.model); }
   /** set_budget: {usd (null: no budget), hard, spent?} -> {budget, restart} (restart: the next prompt restarts the
    *  process so that the new stop applies). Throws for a bad request. */
   setBudget(b, { quiet = false } = {}) {
@@ -148,7 +153,11 @@ export class Session {
     this.spent = Math.max(this.spent, v);
   }
   /** Whether the running process's stop differs from what the budget says now (a stop to add, change or lift). */
-  budgetRestart() { return !sameBudget(this.limit, this.budget) && (this.budget?.hard === true || this.limit?.hard === true); }
+  budgetRestart() {
+    return (!sameBudget(this.limit, this.budget) && (this.budget?.hard === true || this.limit?.hard === true)) ||
+      // (a switch between Claude and another provider's model: Claude Code's stop on, or off)
+      (this.budget?.hard === true && this.limit !== null && this.limit.est !== this.estimates());
+  }
 
   emit(ev) {
     const seq = this.ring.push(ev);
@@ -194,8 +203,8 @@ export class Session {
     if (this.model) options.model = this.model;
     if (this.effort) options.effort = this.effort;
     // stop at the budget: Claude Code's own limit for this process, what is left of it now
-    this.limit = this.budget ? { ...this.budget } : null; this.budgetHit = false;
-    if (this.budget?.hard) options.maxBudgetUsd = limitFor(this.left());
+    this.limit = this.budget ? { ...this.budget, est: this.estimates() } : null; this.budgetHit = false;
+    if (this.budget?.hard && this.estimates()) options.maxBudgetUsd = limitFor(this.left());
     // CODE_ALLOW_BYPASS on: Bypass permissions can be switched to in this process (--allow-dangerously-skip-permissions;
     // never --dangerously-skip-permissions: it starts in its own mode, as before)
     if (this.bypassable) options.allowDangerouslySkipPermissions = true;

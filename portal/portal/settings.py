@@ -55,7 +55,9 @@ DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "rest
                 "restart-shared-mcp", "restart-stt", "restart-rustfs", "restart-caddy")
 NAME = re.compile(r"[A-Z][A-Z0-9_]{1,40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
-MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}")   # a model the Code page may name (code/server validate.mjs)
+# A model id of Settings › Claude Code › Models — the one rule of lib/code_models.sh valid_code_model_id (and code.py):
+# a letter or digit, then letters, digits and . _ : / -, at most 128 characters; never ~, @ or [ ]
+MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 COMPAT = ("works", "chat-only", "fails", "untested")            # catalog/code-models.tsv
 
 
@@ -109,11 +111,12 @@ def snapshot(status_dir: Path) -> dict | None:
                         if isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m[0])],
         # the folder the Code page's sandbox would see (Settings names it before turning the terminal on with it)
         "code_workspace": _s(ch.get("code_workspace"), 1024),
-        # Settings › Claude Code › Models: [id, name, provider, vendor, compat, free, listed] (lib/code_models.sh)
+        # Settings › Claude Code › Models: [id, name, provider, vendor, compat, free, listed, price] (lib/code_models.sh;
+        # an older snapshot has no price)
         "code_models": [[m[0], _s(m[1], 80) or m[0], _s(m[2], 20), _s(m[3], 40), m[4] if m[4] in COMPAT else "untested",
-                         m[5] is True, m[6] is True]
+                         m[5] is True, m[6] is True, _s(m[7], 40) if len(m) == 8 else ""]
                         for m in (ch.get("code_models") or [])[:1500]
-                        if isinstance(m, list) and len(m) == 7 and isinstance(m[0], str) and MODEL_ID.fullmatch(m[0])],
+                        if isinstance(m, list) and len(m) in (7, 8) and isinstance(m[0], str) and MODEL_ID.fullmatch(m[0])],
     }
     written = d.get("written_at") if isinstance(d.get("written_at"), int) else None
     base = d.get("base") if isinstance(d.get("base"), str) and HEX64.fullmatch(d.get("base")) else ""
@@ -348,12 +351,12 @@ def _model_pin(v, remote_on=False):
 
 
 def _code_models(v, remote_on=False):
-    ok = v in ("", "all", "anthropic") or (re.fullmatch(r"[A-Za-z0-9._/:~-]+(,[A-Za-z0-9._/:~-]+)*", v) and len(v) <= MAX_VALUE)
+    ok = v in ("", "all", "anthropic") or (len(v) <= MAX_VALUE and all(MODEL_ID.fullmatch(m) for m in v.split(",")))
     return None if ok else "must be all, anthropic or a comma list of model ids"
 
 
 def _code_model(v, remote_on=False):
-    return None if v == "" or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:~-]{0,127}", v) else "must be a model id (blank = the main model)"
+    return None if v == "" or MODEL_ID.fullmatch(v) else "must be a model id (blank = the main model)"
 
 
 def _models_list(v, remote_on=False):

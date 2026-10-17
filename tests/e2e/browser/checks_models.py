@@ -135,7 +135,7 @@ def other_provider(ctx):
 @check("browser", "code-session-llama-capped")
 def llama_capped(ctx):
     """Llama 3.3 70B (chat only): Bedrock refuses more than 8,192 output tokens and Claude Code asks for 32,000 — LiteLLM's
-    hook (litellm/bn_hooks.py) lowers it, so the session answers."""
+    hook (lib/litellm-hooks/bn_hooks.py) lowers it, so the session answers."""
     need_haiku()
     c = Code(ctx, "code-llama")
     bn = _models(c)

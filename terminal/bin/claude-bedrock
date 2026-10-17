@@ -43,9 +43,12 @@ load_model_info() { info_json="$(curl -fsS -m 4 -H "Authorization: Bearer $key" 
 model_info_json() { printf '%s' "$info_json"; }
 model_rows() {
   # (an alias of the catalog — claude-sonnet-5 — comes with its target's model_info: only the entry bn_id names counts)
-  model_info_json | jq -r --arg all "${1:-}" '.data[]? | select(.model_info.bn_name != null) | select((.model_info.bn_id // .model_name) == .model_name)
+  # (names: printable text only — never a control, C1, bidi or line-separator character on the terminal or in /model;
+  # ./stack writes a name only when it is plain ASCII, else the id stands in)
+  model_info_json | jq -r --arg all "${1:-}" 'def safe: tostring | gsub("[\u0001-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffe\uffff]"; "");
+    .data[]? | select(.model_info.bn_compat != null) | select((.model_info.bn_id // .model_name) == .model_name)
     | select($all == "all" or .model_info.bn_code == true)
-    | [.model_name, .model_info.bn_name, (.model_info.bn_vendor // "-"), (.model_info.input_cost_per_token // "-" | tostring),
+    | [.model_name, ((.model_info.bn_name // .model_name) | safe), ((.model_info.bn_vendor // "-") | safe), (.model_info.input_cost_per_token // "-" | tostring),
        (.model_info.output_cost_per_token // "-" | tostring), (.model_info.bn_compat // "untested"),
        (if .model_info.bn_code == true then 1 else 0 end), (if .model_info.bn_default == true then 1 else 0 end)] | @tsv' 2>/dev/null |
     awk -F'\t' -v OFS='\t' 'function m(v,  s) { if (v !~ /^[0-9.eE+-]+$/) return "-"; s = sprintf("%.6f", v * 1000000); sub(/0+$/, "", s); sub(/\.$/, "", s); return s }

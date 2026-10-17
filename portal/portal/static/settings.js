@@ -914,6 +914,12 @@
       form.append(el("label", { for: id, text: "Model" }), sel,
         el("p", { class: "note", text: "A browser's own last pick still wins for its new sessions; --model and CLAUDE_BEDROCK_MODEL win for claude-bedrock." }));
       collect = () => ({ [k.key]: sel.value });
+      // the confirmation names what the model costs and how it works with Claude Code
+      form._note = () => {
+        const m = codeModels().find((x) => x[0] === sel.value);
+        if (!m) return k.note;
+        return `${m[1]} (${m[0]}): ${m[7] || "price unknown"}, ${COMPAT_WORD[m[4]] || "not tested"} with Claude Code. ${k.note}`;
+      };
     } else if (k.validator === "or_key" || k.validator === "stt_key") {
       form.append(...field(id, "New key", "password", { maxlength: "512" }));
       collect = () => ({ [k.key]: $(`#${id}`, form).value.trim() });
@@ -959,7 +965,7 @@
         err.hidden = false;
         return;
       }
-      confirmApply(values, `Save ${k.label}?`, k.note, Object.keys(values), form, form.dataset.confirm ? [form.dataset.confirm] : []);
+      confirmApply(values, `Save ${k.label}?`, typeof form._note === "function" ? form._note() : k.note, Object.keys(values), form, form.dataset.confirm ? [form.dataset.confirm] : []);
     });
     r.insertBefore(form, r.querySelector(":scope > .set-details"));
     const first = form.querySelector("input, select");

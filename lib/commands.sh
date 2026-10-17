@@ -528,16 +528,24 @@ cmd_setup() {
 
 # render_config ENABLED_FILE("" = all) [OUT] — atomic: OUT is replaced only if rendering succeeds.
 render_config() {
-  local out="${2:-$STACK_DIR/litellm/config.yaml}" tmp
+  local out="${2:-$STACK_DIR/litellm/config.yaml}" tmp hook htmp
   tmp="$(mktemp "$out.XXXXXX")" || die "cannot create a temp file next to $out"
+  # LiteLLM's hook first, next to the config that will name it (the config names it while its source exists)
+  hook="$(dirname "$out")/bn_hooks.py"
+  if [ -r "$(bn_hook_src)" ] && ! cmp -s "$(bn_hook_src)" "$hook"; then
+    htmp="$(mktemp "$hook.XXXXXX")" && cp "$(bn_hook_src)" "$htmp" && chmod 644 "$htmp" && mv "$htmp" "$hook" ||
+      { rm -f "$tmp" "${htmp:-}"; die "could not copy LiteLLM's hook to $hook"; }
+  fi
   if ! (render_litellm_config "$1" "$(get_env AWS_REGION_NAME)" "$(get_env LITELLM_STORE_PROMPTS)" \
         "$([ -n "$(get_env ALERT_WEBHOOK_URL)" ] && echo true || echo false)" "$(get_env LITELLM_DB_ADMIN_READY)") > "$tmp"; then
     rm -f "$tmp"; die "could not render $out"
   fi
+  # never a config LiteLLM cannot read (a model name with a character YAML refuses): the old one stays
+  litellm_config_safe "$tmp" || { rm -f "$tmp"; die "the rendered $out is not valid YAML — kept the previous one (a model name with a character YAML refuses?)"; }
   chmod 644 "$tmp"   # read by the litellm container
   mv "$tmp" "$out"
   # the models of the Code page and claude-bedrock (lib/code_models.sh), next to the config: the portal, claude-bedrock
-  # and LiteLLM's litellm/bn_hooks.py read it
+  # and LiteLLM's hook (lib/litellm-hooks/bn_hooks.py) read it
   ! declare -F code_models_write >/dev/null || code_models_write "$1" "$(dirname "$out")/code-models.tsv"
 }
 

@@ -36,6 +36,9 @@ export function Tip(props: { text: string; keys?: string; id: string; children: 
     const w = Math.min(t.offsetWidth, innerWidth - 16);
     const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8));
     t.style.left = `${left}px`;
+    // (one of top and bottom: what the last showing set is cleared first — the tip stays mounted between showings)
+    t.style.top = '';
+    t.style.bottom = '';
     if (r.top > t.offsetHeight + 12) t.style.bottom = `${innerHeight - r.top + 6}px`;
     else t.style.top = `${r.bottom + 6}px`;
   }, [open]);

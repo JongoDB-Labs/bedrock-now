@@ -28,7 +28,7 @@ ALIAS_ORDER = ("opus", "sonnet", "haiku")
 
 CODE_MODELS = "code-models.tsv"   # written by ./stack (lib/code_models.sh) next to LiteLLM's config
 MAX_CODE_MODELS = 2000
-MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}")   # what the code server takes (code/server/validate.mjs)
+MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")    # settings.MODEL_ID, lib/code_models.sh valid_code_model_id
 COMPAT = ("works", "chat-only", "fails", "untested")
 PROVIDERS = ("Bedrock", "OpenRouter")
 SCOPES = ("all", "anthropic", "list")

@@ -165,8 +165,11 @@ or_models_tsv() {
 # decimals (YAML 1.1 reads "1e-7" as a string). Names lose quotes/backslashes (they go into JSON unescaped).
 # Only prompt/completion/input_cache_read/input_cache_write are used; README › Optional: OpenRouter lists the rest.
 or_classify() {
-  # Control characters go first, with tr: mawk (Debian's default awk) has no [[:cntrl:]] class.
-  tr -d '\001-\010\013-\037\177' | awk -F'\t' -v OFS='\t' '
+  # Control characters go first, with tr: mawk (Debian's default awk) has no [[:cntrl:]] class. Byte by byte (LC_ALL=C)
+  # from there: a name loses what YAML refuses or a terminal or the page may act on (C1 controls, U+2028/U+2029, bidi
+  # overrides and isolates, zero-width marks, U+FEFF, U+FFFE/U+FFFF) — names reach LiteLLM's config, claude-bedrock's
+  # output and Claude Code's /model menu.
+  tr -d '\001-\010\013-\037\177' | LC_ALL=C awk -F'\t' -v OFS='\t' '
     # A price: plain decimal, or e-notation with |exponent| <= 30 (dec() pads zeros, so a huge exponent would
     # hang it; no real per-token price is anywhere near 1e-30). Anything else is invalid → model left out.
     function num(v,  x) {
@@ -193,7 +196,9 @@ or_classify() {
     $8 != "text" { next }
     !num($4) || !num($5) { next }
     {
-      name = $2; gsub(/["\\]/, "", name); gsub(/  +/, " ", name); if (name == "") name = $1
+      name = $2; gsub(/["\\]/, "", name)
+      gsub(/\302[\200-\237]|\342\200[\213-\217\250-\256]|\342\201[\240-\244\246-\251]|\357\273\277|\357\277[\276\277]/, "", name)
+      gsub(/  +/, " ", name); if (name == "") name = $1
       ctx = ($3 ~ /^[0-9]+$/) ? $3 : ""
       rd = num($6) ? dec($6) : ""; wr = num($7) ? dec($7) : ""
       tier = ($4 + 0 == 0 && $5 + 0 == 0) ? "free" : "paid"

@@ -116,16 +116,18 @@ test_render_config_writes_the_file_and_litellm_gets_the_bn_keys_and_the_hook() {
 '
   printf 'AWS_REGION_NAME=us-east-1\n' >> "$ENV_FILE"
   printf 'claude-big\nclaude-small\nllama-x\n' > "$TMP/en"
-  : > "$TMP/litellm/bn_hooks.py"
+  mkdir -p "$TMP/lib/litellm-hooks"; printf '# the hook\n' > "$TMP/lib/litellm-hooks/bn_hooks.py"
   render_config "$TMP/en"
+  assert_eq "$(cat "$TMP/litellm/bn_hooks.py")" "# the hook"   # copied next to the config that names it
+  assert_eq "$(ls -l "$TMP/litellm/bn_hooks.py" | cut -c1-10)" "-rw-r--r--"
   cfg="$(cat "$TMP/litellm/config.yaml")"
   assert_contains "$cfg" "$(printf '      bn_id: "claude-big"\n      bn_name: "Claude Big"\n      bn_vendor: "Anthropic"\n      bn_compat: "works"\n      bn_code: true\n      bn_default: true')"
   assert_contains "$cfg" "$(printf '      bn_name: "Llama X"\n      bn_vendor: "Meta"\n      bn_compat: "chat-only"\n      bn_code: false')"
   assert_contains "$cfg" '  callbacks: ["bn_hooks.proxy_handler_instance"]'
   assert_eq "$(_code_rows "$TMP/litellm/code-models.tsv" | awk -F'\t' '$11 == 1 { print $1 }' | tr '\n' ' ')" "claude-big claude-small "
-  rm "$TMP/litellm/bn_hooks.py"
+  rm "$TMP/lib/litellm-hooks/bn_hooks.py"
   render_config "$TMP/en"
-  assert_not_contains "$(cat "$TMP/litellm/config.yaml")" callbacks   # no hook file, no hook (LiteLLM would not start)
+  assert_not_contains "$(cat "$TMP/litellm/config.yaml")" callbacks   # no hook source, no hook (LiteLLM would not start)
 }
 
 test_validators_for_the_settings() {
@@ -145,7 +147,7 @@ test_litellm_hook_caps_max_tokens_from_code_models() {
   mkdir -p "$TMP/h/litellm/integrations"
   printf '' > "$TMP/h/litellm/__init__.py"; printf '' > "$TMP/h/litellm/integrations/__init__.py"
   printf 'class CustomLogger:\n    pass\n' > "$TMP/h/litellm/integrations/custom_logger.py"
-  cp "$STACK_DIR/litellm/bn_hooks.py" "$TMP/h/bn_hooks.py"
+  cp "$STACK_DIR/lib/litellm-hooks/bn_hooks.py" "$TMP/h/bn_hooks.py"
   printf '# x\n# id\nllama-x\tL\tBedrock\tMeta\t1\t1\t-\t-\t0\tchat-only\t1\t0\t8192\t-\t-\nclaude-big\tC\tBedrock\tAnthropic\t1\t1\t-\t-\t0\tworks\t1\t1\t-\t-\t-\n' > "$TMP/h/code-models.tsv"
   PYTHONPATH="$TMP/h" python3 -c '
 import asyncio, bn_hooks as h
@@ -157,4 +159,54 @@ assert h.cap_request({"model": "llama-x", "max_completion_tokens": 9000})["max_c
 assert asyncio.run(h.proxy_handler_instance.async_pre_call_hook(None, None, {"model": ["odd"], "max_tokens": "x"}, "x")) == {"model": ["odd"], "max_tokens": "x"}
 assert asyncio.run(h.proxy_handler_instance.async_pre_call_hook(None, None, None, "x")) is None
 '
+}
+
+
+# Names that YAML refuses or a terminal acts on (C1 controls such as U+009B, CSI; U+2028; bidi overrides; U+FFFE) never
+# reach LiteLLM's config, the model list or a terminal; a config that is not valid YAML is never put in place
+test_unsafe_model_names_never_reach_yaml_or_a_terminal() {
+  _cm_env
+  c1="$(printf '\302\233')"; ls2028="$(printf '\342\200\250')"; rlo="$(printf '\342\200\256')"; fffe="$(printf '\357\277\276')"; esc="$(printf '\033')"
+  # OpenRouter's list: or_classify drops them
+  out="$(printf 'a/b\tBad%s31mName%s x%sy%s\t1\t0\t0\t\t\ttext\t1\t1\t\n' "$c1" "$ls2028" "$rlo" "$fffe" | or_classify | cut -f2)"
+  assert_eq "$out" "Bad31mName xy"
+  # a cache edited by hand (or an older one): code_models_rows drops them too, and so does every reader of the file
+  printf 'OPENROUTER_API_KEY=sk-or-v1-abc\n' >> "$ENV_FILE"
+  printf '# fetched_at: x\na/b\tVendor: N%s1%s\t1\t0\t0\t\t\tfree\t1\t1\t\nc/d\tCafé %sOK\t1\t0\t0\t\t\tfree\t1\t1\t\n' "$c1" "$esc" "$rlo" > "$TMP/litellm/openrouter-models.tsv"
+  code_models_write ""
+  f="$TMP/litellm/code-models.tsv"
+  ! LC_ALL=C grep -q "$(printf '\302[\200-\237]')" "$f" || { echo "C1 in the file" >&2; return 1; }
+  ! LC_ALL=C grep -q "$(printf '\033')" "$f" || { echo "ESC in the file" >&2; return 1; }
+  assert_eq "$(_col 2 or/a/b < "$f")" "N1"
+  assert_eq "$(_col 2 or/c/d < "$f")" "Café OK"
+  # LiteLLM's model_info: a name only when it is plain ASCII (the id stands in otherwise)
+  yaml="$(printf '  - model_name: "or/c/d"\n    model_info:\n      mode: "chat"\n  - model_name: "or/a/b"\n    model_info:\n      mode: "chat"\n' | code_models_inject "$f")"
+  assert_contains "$yaml" "$(printf '      bn_id: "or/c/d"\n      bn_vendor: "c"\n      bn_compat:')"
+  assert_contains "$yaml" '      bn_name: "N1"'
+  assert_not_contains "$yaml" "Café"
+  # the host's table and /model menu: nothing a terminal acts on, even from a file edited by hand
+  printf 'x/y\tE%s[2Jvil%s\tOpenRouter\tV%s]0;t\t0\t0\t-\t-\t1\tuntested\t1\t0\t-\t-\t-\n' "$esc" "$c1" "$esc" >> "$f"
+  t="$(code_models_table "" all; code_picker_json "" 0)"
+  ! printf '%s' "$t" | LC_ALL=C grep -q "$(printf '\033')" || { echo "ESC reaches the terminal" >&2; return 1; }
+  ! printf '%s' "$t" | LC_ALL=C grep -q "$(printf '\302[\200-\237]')" || { echo "C1 reaches the terminal" >&2; return 1; }
+  # the last guard: a config YAML would refuse is never put in place (the previous one stays)
+  printf 'model_list:\n  - model_name: "ok"\n' > "$TMP/good.yaml"; litellm_config_safe "$TMP/good.yaml"
+  for bad in "$c1" "$ls2028" "$fffe" "$(printf '\001')" "$(printf '\377')"; do
+    printf 'model_list:\n  - model_name: "x%sy"\n' "$bad" > "$TMP/bad.yaml"
+    ! litellm_config_safe "$TMP/bad.yaml" || { echo "taken: $(printf '%s' "$bad" | od -An -c)" >&2; return 1; }
+  done
+  printf 'AWS_REGION_NAME=us-east-1\n' >> "$ENV_FILE"; printf 'old config\n' > "$TMP/litellm/config.yaml"
+  litellm_config_safe() { return 1; }
+  if (render_config "") 2> "$TMP/err"; then return 1; fi
+  assert_contains "$(cat "$TMP/err")" "not valid YAML — kept the previous one"
+  assert_eq "$(cat "$TMP/litellm/config.yaml")" "old config"
+}
+
+# Settings' list of the models (the snapshot's choices): each with its price, a free one at $0, never an unusable id
+test_settings_choices_name_each_models_price() {
+  . "$STACK_DIR/lib/settings.sh"
+  _cm_env
+  printf '# x\nllama-x\tLlama X\tBedrock\tMeta\t0.72\t0.72\t-\t-\t0\tchat-only\t1\t0\t8192\t-\t-\nor/a/b:free\tB\tOpenRouter\tA\t0\t0\t-\t-\t1\tuntested\t0\t0\t-\t-\t-\nor/~a/x\tX\tOpenRouter\tA\t1\t1\t-\t-\t0\tworks\t1\t0\t-\t-\t-\n' > "$TMP/litellm/code-models.tsv"
+  out="$(_settings_code_models)"
+  assert_eq "$out" '["llama-x", "Llama X", "Bedrock", "Meta", "chat-only", false, true, "$0.72/$0.72 per 1M"], ["or/a/b:free", "B", "OpenRouter", "A", "untested", true, false, "free ($0)"]'
 }

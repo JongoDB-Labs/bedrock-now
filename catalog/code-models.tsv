@@ -2,11 +2,11 @@
 # Claude Code speaks Anthropic's Messages API with tools; LiteLLM translates /v1/messages for every other provider, but
 # tool use, thinking, prompt caching and long contexts vary. lib/code_models.sh reads this file (first matching row
 # wins; a pattern is a model name, an "or/<OpenRouter id>", or a prefix ending in *) and ./stack writes the result to
-# litellm/code-models.tsv for the portal, claude-bedrock and LiteLLM (litellm/bn_hooks.py).
+# litellm/code-models.tsv for the portal, claude-bedrock and LiteLLM (lib/litellm-hooks/bn_hooks.py).
 #   status   works (a Claude Code turn with a tool call round-trips) | chat-only (answers, but cannot use tools: Claude
 #            Code cannot read, edit or run anything) | fails (a session errors) | untested
 #   max_out  the most output tokens the provider accepts in one answer, or -: Claude Code asks for up to 32,000 and some
-#            providers refuse more than their limit, so LiteLLM lowers a larger request to this (litellm/bn_hooks.py)
+#            providers refuse more than their limit, so LiteLLM lowers a larger request to this (lib/litellm-hooks/bn_hooks.py)
 #   note     shown in the Code page's picker, claude-bedrock --models and the terminal's /model menu
 # Not listed here: OpenRouter models are "untested" when OpenRouter lists tool use for them (supported_parameters),
 # "chat-only" when it does not; any other model is "untested".

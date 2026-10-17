@@ -658,12 +658,20 @@ reaches is the container — with the three exceptions under *Threat model*.
   learns of the models comes from `/model/info`, which it could already read: per chat model a name, its vendor, how
   it works with Claude Code and whether that list includes it (`bn_*` keys of LiteLLM's model_info, rendered by
   `./stack` from the catalog) — no secret.
-- [x] **LiteLLM's one hook.** `litellm/bn_hooks.py` (part of the repository, in LiteLLM's read-only config folder,
-  loaded through `litellm_settings.callbacks` only while the file is there) runs before every request of every key:
-  it lowers `max_tokens` (and a thinking budget that no longer fits) to the model's limit from
-  `litellm/code-models.tsv`, which `./stack` writes next to the config (Bedrock's Llama refuses more than 8,192; Claude
-  Code asks for 32,000). It changes nothing else, reads no secret, makes no network call, and any problem in it leaves
-  the request as it came.
+- [x] **LiteLLM's one hook.** `lib/litellm-hooks/bn_hooks.py` (part of the repository; `./stack` copies it into
+  LiteLLM's read-only config folder whenever it renders the config, which names it in `litellm_settings.callbacks` only
+  while the source is there) runs before every request of every key: it lowers `max_tokens` (and a thinking budget that
+  no longer fits) to the model's limit from `litellm/code-models.tsv`, which `./stack` writes next to the config
+  (Bedrock's Llama refuses more than 8,192; Claude Code asks for 32,000). It changes nothing else, reads no secret,
+  makes no network call, and any problem in it leaves the request as it came. `./stack rollback` to a version without
+  it takes the `callbacks:` line out of the running config before the checkout (that version starts LiteLLM with it).
+- [x] **Model names are data.** A name from OpenRouter's list reaches LiteLLM's config, `claude-bedrock --models`,
+  Claude Code's `/model` menu and the pages: C1 controls (U+009B is a terminal's CSI), U+2028/U+2029, bidi embeddings,
+  overrides and isolates, zero-width marks, U+FEFF and U+FFFE/U+FFFF are dropped where the list is read
+  (`or_classify`), again wherever `litellm/code-models.tsv` is read, and in the terminal's own reading of `/model/info`;
+  LiteLLM's config gets a name only when it is plain ASCII, and a rendered config that is not valid YAML (UTF-8, no
+  control character YAML refuses; parsed too where a python3 with PyYAML is) is never put in place — the previous one
+  stays, so a model name can never stop LiteLLM.
 - [x] **Inside the stack: one neighbour, a few paths.** Its network `terminal` is internal and holds only the
   container and its gateway, a second minimal Caddy (`terminal-gateway`, the main Caddy's pinned image, read-only,
   no capabilities but binding, no admin API, no published port). The gateway listens there only on `:8091`

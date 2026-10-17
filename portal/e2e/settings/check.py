@@ -104,10 +104,10 @@ def snapshot(state):
                     "chat_models": [["claude-haiku-5-5", "Claude Haiku 5.5"], ["claude-opus-5-5", "Claude Opus 5.5"]],
                     "code_workspace": "/home/you/work",
                     # Settings › Claude Code › Models: [id, name, provider, vendor, compat, free, listed]
-                    "code_models": [["claude-opus-5-5", "Claude Opus 5.5", "Bedrock", "Anthropic", "works", False, True],
+                    "code_models": [["claude-opus-5-5", "Claude Opus 5.5", "Bedrock", "Anthropic", "works", False, True, "$4.40/$22.00 per 1M"],
                                     ["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
                                     ["llama-3-3-70b", "Llama 3.3 70B", "Bedrock", "Meta", "chat-only", False, True],
-                                    ["mistral-large-3", "Mistral Large 3", "Bedrock", "Mistral", "works", False, True],
+                                    ["mistral-large-3", "Mistral Large 3", "Bedrock", "Mistral", "works", False, True, "$0.50/$1.50 per 1M"],
                                     ["or/google/gemma-4-31b-it:free", "Gemma 4 31B (free)", "OpenRouter", "Google", "untested", True, True],
                                     ["or/meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct", "OpenRouter", "Meta", "untested", False, True]]},
         "keys": keys}))
@@ -352,7 +352,16 @@ def check_code_models(page, failures, label):
     groups = row.locator(".set-form select optgroup").evaluate_all("els => els.map((e) => e.label)")
     if groups != ["Anthropic (Bedrock)", "Other providers on Bedrock", "OpenRouter: free", "OpenRouter: paid"]:
         failures.append(f"{label}: CODE_DEFAULT_MODEL's select groups are {groups}")
-    row.locator(".set-form button", has_text="Cancel").click()
+    # the confirmation names the model's price and how it works
+    row.locator(".set-form select").select_option("mistral-large-3")
+    row.locator(".set-form button[type=submit]").click()
+    page.wait_for_selector("#set-confirm[open]", timeout=5000)
+    said = page.inner_text("#set-confirm")
+    if "Mistral Large 3 (mistral-large-3): $0.50/$1.50 per 1M, works with Claude Code" not in said:
+        failures.append(f"{label}: CODE_DEFAULT_MODEL's confirmation does not name the price: {said[:300]!r}")
+    page.click("#set-confirm-cancel")
+    if row.locator(".set-form").count():
+        row.locator(".set-form button", has_text="Cancel").click()
 
 
 def main():

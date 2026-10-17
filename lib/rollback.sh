@@ -97,6 +97,16 @@ _rollback_redate_backup_files() {
   warn "to be sure afterwards: make the files yours (sudo chown -R \"\$(id -un)\" $b), then find $b/s3 -type f -exec touch {} + && ./stack restore $b --yes"
 }
 
+# _rollback_litellm_hook — litellm/config.yaml without its `callbacks:` line naming bedrock-now's hook (atomically, the
+# file's mode kept 644); nothing to do without one
+_rollback_litellm_hook() {
+  local cfg="$STACK_DIR/litellm/config.yaml" tmp
+  [ -f "$cfg" ] && grep -q '^  callbacks: \["bn_hooks\.' "$cfg" || return 0
+  tmp="$(mktemp "$cfg.XXXXXX")" || return 1
+  if grep -v '^  callbacks: \["bn_hooks\.' "$cfg" > "$tmp" && chmod 644 "$tmp" && mv "$tmp" "$cfg"; then return 0; fi
+  rm -f "$tmp"; return 1
+}
+
 # shellcheck disable=SC2120  # arguments come from the ./stack dispatcher
 cmd_rollback() {
   local from branch fromv backup result at now_imgs d no_helper=0 no_stt=0 no_terminal=0 q quiet=()
@@ -131,6 +141,11 @@ cmd_rollback() {
   # the version gone back from: automatic updates never install it again (lib/helper.sh), whatever happens next
   _record_set rolled_back_version "$(installed_version)"
   log "rollback: 1/3 code ($(installed_version) → ${fromv:-$from})"
+  # A version from before LiteLLM's hook (lib/litellm-hooks/bn_hooks.py) starts LiteLLM with the running config before
+  # it renders one of its own: that config must not name the hook (its copy in litellm/ stays, unused)
+  if ! git -C "$STACK_DIR" cat-file -e "$from:lib/litellm-hooks/bn_hooks.py" 2>/dev/null; then
+    _rollback_litellm_hook || die "could not take LiteLLM's hook out of litellm/config.yaml — nothing else was changed"
+  fi
   _rollback_checkout "$from" "$branch" || die "could not check out $from — nothing else was changed"
   # A version from before Bedrock speech-to-text has no stt service: its container and settings go (lib/stt.sh).
   no_stt=0

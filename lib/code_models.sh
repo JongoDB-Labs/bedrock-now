@@ -7,7 +7,7 @@
 # render_config writes them to litellm/code-models.tsv (code_models_write) and into LiteLLM's model_info (bn_* keys,
 # code_models_inject): the portal's /.bn/models reads the file, claude-bedrock on your computer reads the file, the one
 # in the terminal reads LiteLLM's /model/info (the only way the sandbox learns anything of this), and LiteLLM's
-# litellm/bn_hooks.py lowers a request's max_tokens to a model's max_out from the file.
+# lib/litellm-hooks/bn_hooks.py (copied next to it) lowers a request's max_tokens to a model's max_out from the file.
 #
 #   code_models_rows ENABLED_FILE("" = all)   the rows (below) on stdout
 #   code_models_write ENABLED_FILE [OUT]      litellm/code-models.tsv, atomically
@@ -22,28 +22,43 @@
 
 CODE_MODELS_MAX=2000   # rows in the file (OPENROUTER_MAX_MODELS caps OpenRouter at 1000 by default)
 CODE_PICKER_MAX=150    # rows in claude-bedrock's /model menu
+# What a model name never keeps, byte by byte (LC_ALL=C; an awk ERE): C1 controls (U+0080–U+009F: U+009B is a terminal's
+# CSI), U+200B–U+200F, U+2028–U+202E (line/paragraph separators, bidi embeddings and overrides), U+2060–U+2064,
+# U+2066–U+2069 (bidi isolates), U+FEFF, U+FFFE/U+FFFF — YAML refuses some (LiteLLM would refuse the whole config), a
+# terminal or the page may act on the rest. lib/openrouter.sh or_classify drops the same from OpenRouter's names.
+CODE_UNSAFE='\302[\200-\237]|\342\200[\213-\217\250-\256]|\342\201[\240-\244\246-\251]|\357\273\277|\357\277[\276\277]'
+
 # Where they are, at call time (tests point STACK_DIR elsewhere after sourcing; CODE_COMPAT, CODE_DISPLAY_TSV and
 # CODE_MODELS_FILE override them)
 _code_compat() { printf '%s\n' "${CODE_COMPAT:-$STACK_DIR/catalog/code-models.tsv}"; }
 _code_display() { printf '%s\n' "${CODE_DISPLAY_TSV:-$STACK_DIR/catalog/display.tsv}"; }
 code_models_file() { printf '%s\n' "${CODE_MODELS_FILE:-$STACK_DIR/litellm/code-models.tsv}"; }
 
-# valid_code_models VALUE -> 0 for blank, all, anthropic or a comma list of model ids (Bedrock names, or/<OpenRouter id>)
+# A model id here — one rule for the Settings values, the list's rows, the portal (portal/portal/settings.py and code.py
+# MODEL_ID) and claude-bedrock: a letter or digit, then letters, digits and . _ : / - (Bedrock's names, or/<OpenRouter
+# id> with its :free or :nitro); at most 128 characters. Never ~ (OpenRouter's ~vendor/…-latest aliases are no model
+# here), @ or [ ] (the code server also takes Claude Code's "[1m]" suffix for a session's model: not an id of the list).
+# valid_code_model_id ID -> 0 when ID is one
+valid_code_model_id() {
+  case "$1" in '' | [!A-Za-z0-9]* | *[!A-Za-z0-9._:/-]*) return 1 ;; esac
+  [ "${#1}" -le 128 ]
+}
+# valid_code_models VALUE -> 0 for blank, all, anthropic or a comma list of model ids
 valid_code_models() {
-  case "$1" in '' | all | anthropic) return 0 ;; esac
-  case "$1" in *[!A-Za-z0-9._/:~,-]* | ,* | *, | *,,*) return 1 ;; esac
-  return 0
+  local m rest
+  case "$1" in '' | all | anthropic) return 0 ;; ,* | *, | *,,*) return 1 ;; esac
+  rest="$1,"
+  while [ -n "$rest" ]; do
+    m="${rest%%,*}"; rest="${rest#*,}"
+    valid_code_model_id "$m" || return 1
+  done
 }
 # code_models_scope -> all | anthropic | list: what CODE_MODELS says
 code_models_scope() {
   case "$(get_env CODE_MODELS)" in '' | all) echo all ;; anthropic) echo anthropic ;; *) echo list ;; esac
 }
 # valid_code_model VALUE -> 0 for blank or one model id
-valid_code_model() {
-  [ -z "$1" ] && return 0
-  case "$1" in *[!A-Za-z0-9._/:~-]* | [!A-Za-z0-9]*) return 1 ;; esac
-  [ "${#1}" -le 128 ]
-}
+valid_code_model() { [ -z "$1" ] || valid_code_model_id "$1"; }
 
 # code_models_rows ENABLED_FILE -> the rows. Inputs: the catalog's chat models enabled in ENABLED_FILE (all of them for
 # ""), their names and vendors (display.tsv: name, tags' first entry), prices ($PRICES: the prices in use), OpenRouter's
@@ -58,8 +73,8 @@ code_models_rows() {
   if declare -F openrouter_enabled >/dev/null && openrouter_enabled; then or_selected > "$orf" 2>/dev/null || :; fi
   F_EN="$en" F_DISP="$disp" F_PRICES="${PRICES:-/dev/null}" F_COMPAT="$compat" F_CAT="$CATALOG" F_OR="$orf" \
   ALL="$all" SCOPE="$(get_env CODE_MODELS)" DEF="$(get_env CODE_DEFAULT_MODEL)" MAIN="$(get_env CLAUDE_BEDROCK_OPUS_MODEL)" \
-  MAX="$CODE_MODELS_MAX" awk -F'\t' -v OFS='\t' '
-    function clean(s) { gsub(/[\001-\037\177"\\]/, "", s); gsub(/  +/, " ", s); sub(/^ +/, "", s); sub(/ +$/, "", s); return s }
+  MAX="$CODE_MODELS_MAX" LC_ALL=C awk -F'\t' -v OFS='\t' -v UNSAFE="$CODE_UNSAFE" '
+    function clean(s) { gsub(/[\001-\037\177"\\]/, "", s); gsub(UNSAFE, "", s); gsub(/  +/, " ", s); sub(/^ +/, "", s); sub(/ +$/, "", s); return s }
     function d(v) { return (v == "" ? "-" : v) }
     # per million tokens from a per-token price (OpenRouter): plain decimals, no float noise
     function mt(v,  s) { if (v == "" || v == "-") return "-"; s = sprintf("%.6f", v * 1000000); sub(/0+$/, "", s); sub(/\.$/, "", s); return s }
@@ -75,8 +90,8 @@ code_models_rows() {
       else { cs = "untested"; cn = "Not checked with Claude Code here: tool use, thinking and prompt caching may not work." }
     }
     function add(id, name, prov, vend, pin, pout, pcr, pcw, free, tools, maxo, ctx) {
-      # (an id the Code page and the code server take: no "~" alias of OpenRouter, at most 128 characters)
-      if (n >= ENVIRON["MAX"] + 0 || (id in seen) || id !~ /^[A-Za-z0-9][A-Za-z0-9._:\/@-]*$/ || length(id) > 128) return
+      # (a model id by the one rule above, valid_code_model_id: no "~" alias of OpenRouter, at most 128 characters)
+      if (n >= ENVIRON["MAX"] + 0 || (id in seen) || id !~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/ || length(id) > 128) return
       seen[id] = 1; compat(id, tools)
       if ((cm == "" || cm == "-") && maxo != "" && maxo != "-") cm = maxo   # the provider limit OpenRouter names, unless a row of ours says
       if (cm !~ /^[1-9][0-9]*$/) cm = "-"
@@ -148,9 +163,12 @@ code_models_write() {
 # with its target's model_info), bn_name, bn_vendor, bn_compat, bn_code (listed in the Code page and the terminal) and
 # bn_default (the one new sessions start with). Only what the terminal's claude-bedrock needs from /model/info.
 code_models_inject() {
-  F="$1" awk -F'\t' '
+  F="$1" LC_ALL=C awk -F'\t' '
     BEGIN { f = ENVIRON["F"]; while ((getline line < f) > 0) { if (line ~ /^#/) continue; split(line, c, "\t"); if (c[1] == "") continue
-              info[c[1]] = sprintf("      bn_id: \"%s\"\n      bn_name: \"%s\"\n      bn_vendor: \"%s\"\n      bn_compat: \"%s\"\n      bn_code: %s\n%s", c[1], c[2], c[4], c[10], (c[11] == 1 ? "true" : "false"), (c[12] == 1 ? "      bn_default: true\n" : "")) }
+              # a name or vendor only when it is plain printable ASCII (anything else: left out, the id stands in)
+              nm = (c[2] ~ /^[ -~]+$/ && c[2] !~ /["\\]/) ? sprintf("      bn_name: \"%s\"\n", c[2]) : ""
+              vd = (c[4] ~ /^[ -~]+$/ && c[4] !~ /["\\]/) ? sprintf("      bn_vendor: \"%s\"\n", c[4]) : ""
+              info[c[1]] = sprintf("      bn_id: \"%s\"\n%s%s      bn_compat: \"%s\"\n      bn_code: %s\n%s", c[1], nm, vd, c[10], (c[11] == 1 ? "true" : "false"), (c[12] == 1 ? "      bn_default: true\n" : "")) }
             close(f) }
     /^  - model_name: "/ { cur = $0; sub(/^  - model_name: "/, "", cur); sub(/".*$/, "", cur) }
     { print }
@@ -158,7 +176,12 @@ code_models_inject() {
 }
 
 # _code_rows [FILE] -> the rows of litellm/code-models.tsv (or FILE), without comments
-_code_rows() { local f="${1:-$(code_models_file)}"; [ -r "$f" ] || return 0; grep -v '^#' "$f" || true; }
+_code_rows() {
+  local f="${1:-$(code_models_file)}"
+  [ -r "$f" ] || return 0
+  # (what it prints reaches a terminal: never a control character or one of CODE_UNSAFE, even from a file edited by hand)
+  LC_ALL=C awk -F'\t' -v OFS='\t' -v U="$CODE_UNSAFE" '!/^#/ { for (i = 1; i <= NF; i++) { gsub(/[\001-\010\013-\037\177]/, "", $i); gsub(U, "", $i) } print }' "$f"
+}
 
 # code_model_resolve NAME [FILE] -> the id NAME means (an id, a name — case-insensitive —, an OpenRouter id without
 # "or/", or Claude Code's alias opus/sonnet/haiku: claude-bedrock's slot, as an id), or nothing

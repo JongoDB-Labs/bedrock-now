@@ -420,3 +420,33 @@ test_rollback_to_a_version_with_speech_to_text_keeps_it() {
   assert_contains "$(cat "$ENV_FILE")" "STT_PROVIDER=bedrock"
   assert_not_contains "$(cat "$TMP/docker" 2>/dev/null)" "rm -sf stt"
 }
+
+
+# LiteLLM's hook (lib/litellm-hooks/bn_hooks.py, copied into litellm/ by render_config): a version without it starts
+# LiteLLM with the running config before rendering its own — so that config names the hook no more, before the checkout
+test_rollback_to_a_version_without_litellms_hook_takes_it_out_of_the_config_first() {
+  _fixture; _record
+  mkdir -p "$STACK_DIR/litellm"
+  printf 'model_list:\n  - model_name: "x"\n\nlitellm_settings:\n  drop_params: true\n  callbacks: ["bn_hooks.proxy_handler_instance"]\n' > "$STACK_DIR/litellm/config.yaml"
+  chmod 644 "$STACK_DIR/litellm/config.yaml"; : > "$STACK_DIR/litellm/bn_hooks.py"
+  _rollback_checkout() { cp "$STACK_DIR/litellm/config.yaml" "$TMP/at-checkout"; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q "$1"; }
+  ASSUME_YES=1 cmd_rollback > /dev/null 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_not_contains "$(cat "$TMP/at-checkout")" "callbacks"          # gone before the checkout
+  assert_contains "$(cat "$STACK_DIR/litellm/config.yaml")" "drop_params: true"
+  assert_eq "$(ls -l "$STACK_DIR/litellm/config.yaml" | cut -c1-10)" "-rw-r--r--"
+  [ -e "$STACK_DIR/litellm/bn_hooks.py" ]   # the copy stays (untracked; unused)
+  assert_eq "$(head -n 1 "$CALLS")" "old restore $STACK_DIR/backups/20261012-000000-auto --yes"
+}
+
+test_rollback_to_a_version_with_litellms_hook_keeps_it() {
+  _fixture
+  mkdir -p "$TMP/origin/lib/litellm-hooks"; : > "$TMP/origin/lib/litellm-hooks/bn_hooks.py"
+  git -C "$TMP/origin" add lib; git -C "$TMP/origin" commit -qm hook; git -C "$TMP/origin" tag v0.3.1
+  OLD="$(git -C "$TMP/origin" rev-parse v0.3.1)"
+  _write_stack "$TMP/origin" newer; git -C "$TMP/origin" commit -qam three; git -C "$TMP/origin" tag v0.3.2
+  git -C "$STACK_DIR" fetch -q --tags; git -C "$STACK_DIR" -c advice.detachedHead=false checkout -q v0.3.2
+  _record
+  mkdir -p "$STACK_DIR/litellm"; printf 'litellm_settings:\n  callbacks: ["bn_hooks.proxy_handler_instance"]\n' > "$STACK_DIR/litellm/config.yaml"
+  ASSUME_YES=1 cmd_rollback > /dev/null 2>&1
+  assert_contains "$(cat "$STACK_DIR/litellm/config.yaml")" "callbacks"
+}

@@ -647,13 +647,14 @@ def test_code_models_choices_are_sanitized(dirs):
     sd, _ = dirs
     write_snapshot(sd)
     d = json.loads((sd / "settings.json").read_text())
-    d["choices"]["code_models"] = [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
+    d["choices"]["code_models"] = [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True, "$0.11/$0.55 per 1M"],
                                    ["or/x/y:free", "Y <b>", "OpenRouter", "X", "bogus", True, "yes"],
+                                   ["or/~x/y", "alias", "OpenRouter", "X", "works", False, True, "x"],
                                    ["../../etc", "bad", "Bedrock", "A", "works", False, True], ["short"], "nope"]
     (sd / "settings.json").write_text(json.dumps(d))
     ch = st.snapshot(sd)["choices"]["code_models"]
-    assert ch == [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True],
-                  ["or/x/y:free", "Y <b>", "OpenRouter", "X", "untested", True, False]]
+    assert ch == [["claude-haiku-5-5", "Claude Haiku 5.5", "Bedrock", "Anthropic", "works", False, True, "$0.11/$0.55 per 1M"],
+                  ["or/x/y:free", "Y <b>", "OpenRouter", "X", "untested", True, False, ""]]
 
 
 def test_backup_list_is_sanitized(make, dirs):

@@ -681,12 +681,14 @@ each model has a badge from [`catalog/code-models.tsv`](catalog/code-models.tsv)
 
 Picking a model that is not "works" says what to expect (a toast); it stays selectable. OpenRouter models whose
 listing names no tool use count as *chat only*. Two fixes in LiteLLM make more models answer at all: `drop_params`
-(parameters a provider does not take are dropped) and a small hook, [`litellm/bn_hooks.py`](litellm/bn_hooks.py),
+(parameters a provider does not take are dropped) and a small hook, [`lib/litellm-hooks/bn_hooks.py`](lib/litellm-hooks/bn_hooks.py)
+(copied into LiteLLM's config folder whenever `./stack` renders the config),
 that lowers a request's `max_tokens` to the model's limit — Claude Code asks for up to 32,000 output tokens and
 Bedrock's Llama refuses more than 8,192 (OpenRouter's limits come from its model list). Not fixed: Claude Code assumes a
 200K context for a model it does not know, so a long session on a smaller one (Llama: 128K) can fail before it
-compacts; its own cost estimate (the per-session *Stop at the budget*) prices models it does not know at its own
-default rates, while the meter and the budget's notes use what LiteLLM billed.
+compacts. Claude Code's own cost estimate prices a model it does not know at its own rates, so for another provider's
+model a session's *Stop at the budget* goes by what LiteLLM billed alone (the cost meter's figure): no Claude Code
+stop mid-turn, the next prompt is refused once the spend logs reach the budget; on a Claude model it works as before.
 
 **Settings › Claude Code › Models for Claude Code** picks which models the picker and claude-bedrock's `/model`
 menu list (`CODE_MODELS`): **All enabled** (the default), **Anthropic only** (Claude, Bedrock's and OpenRouter's), or

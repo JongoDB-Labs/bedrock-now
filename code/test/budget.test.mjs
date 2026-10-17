@@ -181,3 +181,29 @@ test('Open in the terminal: refused mid-turn or without a transcript; else this 
   assert.match(locals(events).at(-1), /^Continued in the terminal: exit Claude Code there \(\/exit\)/);
   mgr.closeAll();
 });
+
+test('another provider\'s model: no Claude Code stop (it prices that model at its own rates), only what LiteLLM billed counts; a switch to Claude puts the stop back at the next turn', async () => {
+  const { mgr, queries } = manager();
+  const s = mgr.get(mgr.open({ model: 'or/google/gemma-4-31b-it:free', budget: { usd: 5, hard: true } }).id);
+  assert.equal(queries[0].options.maxBudgetUsd, undefined);
+  s.prompt({ text: 'one' });
+  await tick();
+  assert.equal(s.cliCost, 99);           // the stand-in's estimate …
+  assert.equal(s.left(), 5);             // … is not what is left: LiteLLM billed $0
+  s.noteSpent(5.01);
+  assert.throws(() => s.prompt({ text: 'two' }), /reached its budget/);
+  s.setBudget({ usd: 500, hard: true });
+  await s.setModel('claude-haiku-5-5');
+  assert.equal(s.left(), 401);           // Claude's estimate counts again
+  s.prompt({ text: 'three' });           // the next turn restarts the process with Claude Code's stop
+  await tick();
+  assert.equal(queries.length, 2);
+  assert.equal(queries[1].options.maxBudgetUsd, 401);
+  // the same budget, another provider's model again: the next turn restarts without Claude Code's stop
+  await s.setModel('llama-3-3-70b');
+  s.prompt({ text: 'four' });
+  await tick();
+  assert.equal(queries.length, 3);
+  assert.equal(queries[2].options.maxBudgetUsd, undefined);
+  mgr.closeAll();
+});

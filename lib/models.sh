@@ -205,9 +205,27 @@ litellm_settings:
   drop_params: true
   turn_off_message_logging: $msg_off
 EOT
-  # litellm/bn_hooks.py (part of the repository, in LiteLLM's config folder): lowers a request's max_tokens to the
-  # model's limit from litellm/code-models.tsv (Claude Code asks for up to 32,000; Bedrock's Llama refuses over 8,192)
-  [ ! -r "$STACK_DIR/litellm/bn_hooks.py" ] || printf '  callbacks: ["bn_hooks.proxy_handler_instance"]\n'
+  # LiteLLM's one hook (lib/litellm-hooks/bn_hooks.py, copied next to the config by render_config): lowers a request's
+  # max_tokens to the model's limit from litellm/code-models.tsv (Claude Code asks for up to 32,000; Bedrock's Llama
+  # refuses over 8,192)
+  [ ! -r "$(bn_hook_src)" ] || printf '  callbacks: ["bn_hooks.proxy_handler_instance"]\n'
+}
+
+# bn_hook_src -> the source of LiteLLM's hook (the config names it while it exists: render_config copies it in)
+bn_hook_src() { printf '%s\n' "$STACK_DIR/lib/litellm-hooks/bn_hooks.py"; }
+
+# litellm_config_safe FILE -> 0 when FILE can be read as YAML: valid UTF-8, no control character but tab and line
+# breaks, no C1 control, U+2028/U+2029 or U+FFFE/U+FFFF (a YAML reader refuses them, and LiteLLM then refuses the whole
+# config); parsed too when a python3 with PyYAML is there. A model name from OpenRouter must never stop LiteLLM.
+litellm_config_safe() {
+  local f="$1"
+  ! LC_ALL=C grep -q "$(printf '[\001-\010\013\014\016-\037\177]')" "$f" || return 1
+  ! LC_ALL=C grep -qE "$(printf '\302[\200-\237]|\342\200[\250\251]|\357\277[\276\277]')" "$f" || return 1
+  if command -v iconv >/dev/null 2>&1; then iconv -f UTF-8 -t UTF-8 < "$f" > /dev/null 2>&1 || return 1; fi
+  if command -v python3 >/dev/null 2>&1 && python3 -I -c 'import yaml' 2>/dev/null; then
+    python3 -I -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$f" 2>/dev/null || return 1
+  fi
+  return 0
 }
 
 # classify_probe KIND STATUS BODY_FILE [REGION] -> one line: "ENABLED|DISABLED<TAB>human-readable reason"

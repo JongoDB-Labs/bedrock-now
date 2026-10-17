@@ -829,6 +829,7 @@ STUB
  {"model_name": "mistral-large-3", "model_info": {"mode": "chat", "input_cost_per_token": 5e-07, "output_cost_per_token": 1.5e-06, "bn_name": "Mistral Large 3", "bn_vendor": "Mistral", "bn_compat": "works", "bn_code": false}},
  {"model_name": "or/google/gemma-4-31b-it:free", "model_info": {"mode": "chat", "input_cost_per_token": 0, "output_cost_per_token": 0, "bn_name": "Gemma 4 31B (free)", "bn_vendor": "Google", "bn_compat": "untested", "bn_code": true}},
  {"model_name": "claude-sonnet-5", "model_info": {"mode": "chat", "input_cost_per_token": 4.4e-06, "output_cost_per_token": 2.2e-05, "bn_id": "claude-opus-5-5", "bn_name": "Claude Opus 5.5", "bn_vendor": "Anthropic", "bn_compat": "works", "bn_code": true}},
+ {"model_name": "or/x/esc", "model_info": {"mode": "chat", "input_cost_per_token": 0, "output_cost_per_token": 0, "bn_id": "or/x/esc", "bn_name": "E\u001b[2Jvil\u009b31m\u202e", "bn_vendor": "V\u001b]0;t\u0007", "bn_compat": "untested", "bn_code": false}},
  {"model_name": "cohere-embed-v4", "model_info": {"mode": "embedding", "input_cost_per_token": 1.2e-07}}
 ]}
 JSON
@@ -842,7 +843,11 @@ JSON
   assert_not_contains "$out" "mistral-large-3"
   assert_not_contains "$out" "cohere"
   assert_not_contains "$out" "claude-sonnet-5 "   # an alias of the catalog is not a model of its own
-  ARGS=(--models all); assert_contains "$(run 2>&1)" "mistral-large-3"
+  ARGS=(--models all); out="$(run 2>&1)"
+  assert_contains "$out" "mistral-large-3"
+  assert_contains "$out" "E[2Jvil31m"   # what a terminal or the menu would act on is gone, the rest stays readable
+  ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf '')" || { echo "ESC reaches the terminal" >&2; return 1; }
+  ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf 'Â[-]')" || { echo "C1 reaches the terminal" >&2; return 1; }
   # the default of Settings (bn_default), the /model menu with the listed models, auto mode off
   ARGS=(-p hi); out="$(run CLAUDE_BEDROCK_QUIET=1)" || return 1
   assert_contains "$out" "MODEL llama-3-3-70b"

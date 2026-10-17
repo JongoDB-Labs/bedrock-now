@@ -67,7 +67,7 @@ All notable changes to bedrock-now are documented here. The format follows
   price and how they work instead of its alias rows (a `modelPicker` in the wrapper's `--settings`). The launch line
   says `openrouter ·` for an OpenRouter model, `free ($0)` for a free one, and "chat only" / "not tested" where it
   applies.
-- **LiteLLM caps a request's output at the model's limit** (`litellm/bn_hooks.py`): Claude Code asks for up to 32,000
+- **LiteLLM caps a request's output at the model's limit** (`lib/litellm-hooks/bn_hooks.py`, copied next to the config): Claude Code asks for up to 32,000
   output tokens and Bedrock's Llama 3.3 70B refused anything over 8,192 — it answers now. OpenRouter's limits come from
   its model list, which also gives each model's tool use.
 
@@ -87,6 +87,11 @@ All notable changes to bedrock-now are documented here. The format follows
   previews. The mode opens the mode menu, the model the model picker. On a phone they stay in the ⋯ sheet.
 - **The cold-cache line** shows only for models that write the prompt cache at a price (Claude's, and those with
   cache prices): not for Llama, Mistral or a free model.
+- **A session's Stop at the budget on another provider's model** goes by what LiteLLM billed: Claude Code prices a
+  model it does not know at its own rates (a free model would have been stopped at the budget of a paid one), so its own
+  stop is left out there and the next prompt is refused once the spend logs reach the budget. A switch between Claude
+  and another provider restarts the process for it at the next turn.
+- **The Default model's confirmation** in Settings names the model's price and how it works with Claude Code.
 
 ## [0.10.0] - 2026-10-17
 

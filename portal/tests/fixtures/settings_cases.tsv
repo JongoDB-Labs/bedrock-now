@@ -184,3 +184,9 @@ code_model	0	ok	or/google/gemma-4-31b-it:free
 code_model	0	bad	-dash-first
 code_model	0	bad	a,b
 code_model	0	bad	Claude Opus
+code_models	0	bad	or/~anthropic/claude-sonnet-latest
+code_models	0	bad	claude-opus-5-5,a@b
+code_model	0	bad	or/~anthropic/claude-sonnet-latest
+code_model	0	bad	a@b
+code_model	0	bad	claude-haiku-5-5[1m]
+code_model	0	ok	or/meta-llama/llama-3.3-70b-instruct:free

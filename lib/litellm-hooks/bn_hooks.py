@@ -1,4 +1,6 @@
-"""bedrock-now's one LiteLLM hook (litellm/config.yaml: litellm_settings.callbacks, rendered by lib/models.sh).
+"""bedrock-now's one LiteLLM hook (litellm/config.yaml: litellm_settings.callbacks, rendered by lib/models.sh). Its
+source lives here; ./stack copies it into litellm/ (LiteLLM's config folder) whenever it renders the config, so a
+checkout of a version without it (./stack rollback) never deletes a file a running config still names.
 
 Claude Code asks every model for up to 32,000 output tokens; some providers refuse a request above their own limit
 (Bedrock's Llama 3.3 70B: 8,192) instead of answering shorter. Before each request this lowers max_tokens (and a
