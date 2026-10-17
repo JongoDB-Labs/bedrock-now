@@ -11,6 +11,7 @@
 //   bounded), one byte fewer is an error too.
 // No CRC check: a corrupt file shows wrong text, which is no security property; refusing bombs is.
 import { Inflate } from 'fflate';
+import { stopAt } from '../limits';
 
 const MiB = 1024 * 1024;
 
@@ -23,6 +24,8 @@ export interface ZipLimits {
   total: number;
   /** all entries' uncompressed bytes per byte of the file (beyond the first 16 MiB) */
   ratio: number;
+  /** a small device's caps (the messages say "on this device") */
+  device?: boolean;
 }
 
 export const ZIP_LIMITS: ZipLimits = { entries: 10_000, entry: 64 * MiB, total: 128 * MiB, ratio: 200 };
@@ -109,9 +112,9 @@ export function readZip(b: Uint8Array, limits: ZipLimits = ZIP_LIMITS): Zip {
     if (method !== 0 && method !== 8) throw new ZipError(`a zip file with an unusual compression (method ${method})`);
     if (method === 0 && csz !== usz) throw new ZipError('a damaged zip file (a stored part whose sizes differ)');
     if (method === 8 && usz > csz * DEFLATE_MAX_RATIO + 1024) throw new ZipError(`a zip bomb (a part says it unpacks ${Math.round(usz / Math.max(1, csz))} times its size)`);
-    if (usz > limits.entry) throw new ZipError(`one of its parts unpacks to ${(usz / MiB).toFixed(0)} MB (previews stop at ${limits.entry / MiB} MB)`);
+    if (usz > limits.entry) throw new ZipError(`one of its parts unpacks to ${(usz / MiB).toFixed(0)} MB (${stopAt(limits.entry)})`);
     total += usz;
-    if (total > limits.total) throw new ZipError(`its parts unpack to more than ${limits.total / MiB} MB (previews stop there)`);
+    if (total > limits.total) throw new ZipError(`its parts unpack to more than ${limits.total / MiB} MB (${stopAt(limits.total, limits.device)})`);
     if (byName.has(name)) throw new ZipError('a zip file with two parts of the same name (not previewed)');
     // the local header: the data follows its name and extra field; it must lie before the directory
     if (!sig(b, at, LOCAL) || at + 30 > cdAt) throw new ZipError('a damaged zip file (a part is not where the directory says)');

@@ -6,7 +6,8 @@ import { runJob } from './run';
 import { DECK_LIMITS, type PvImage, type Slide } from './limits';
 import { checkImages } from './DocView';
 import { BlobImg } from './BlobImg';
-import { PreviewMsg, errText, type ViewerProps } from './Preview';
+import { NotShown, errText, type ViewerProps } from './Preview';
+import { smallDevice } from './device';
 import { Spinner } from '../components/icons';
 
 function checkSlides(v: unknown): Slide[] {
@@ -35,7 +36,7 @@ export function View({ tab, pv, data }: ViewerProps) {
     setErr(null);
     const buf = data.buf ? data.buf.slice(0) : null;
     if (!buf) return setErr('The deck could not be read.');
-    const job = runJob<Record<string, unknown>>('deck', { buf }, [buf], { timeoutMs: 60_000 });
+    const job = runJob<Record<string, unknown>>('deck', { buf, small: smallDevice() }, [buf], { timeoutMs: 60_000 });
     job.promise.then(
       (m) =>
         setDeck({
@@ -49,7 +50,7 @@ export function View({ tab, pv, data }: ViewerProps) {
     return () => job.cancel();
   }, [data]);
   const blobs = useMemo(() => (deck ? deck.images.map((i) => new Blob([i.buf], { type: i.mime })) : []), [deck]);
-  if (err) return <PreviewMsg tab={tab} err>This deck is not shown: {err}</PreviewMsg>;
+  if (err) return <NotShown tab={tab} what="This deck" err={err} />;
   if (!deck) {
     return (
       <div class="pane-msg">

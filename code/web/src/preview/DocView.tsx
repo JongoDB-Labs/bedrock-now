@@ -9,7 +9,8 @@ import { runJob } from './run';
 import { DOC_LIMITS, type DNode, type PvImage } from './limits';
 import { docHref } from './office/links';
 import { BlobImg } from './BlobImg';
-import { PreviewMsg, errText, type ViewerProps } from './Preview';
+import { NotShown, errText, type ViewerProps } from './Preview';
+import { smallDevice } from './device';
 import { Spinner } from '../components/icons';
 
 const TAGS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption', 'blockquote', 'pre', 'code',
@@ -76,7 +77,7 @@ export function View({ tab, pv, data }: ViewerProps) {
     setErr(null);
     const buf = data.buf ? data.buf.slice(0) : null;
     if (!buf) return setErr('The document could not be read.');
-    const job = runJob<Record<string, unknown>>('docx', { buf }, [buf], { timeoutMs: 60_000 });
+    const job = runJob<Record<string, unknown>>('docx', { buf, small: smallDevice() }, [buf], { timeoutMs: 60_000 });
     job.promise.then(
       (m) =>
         setDoc({
@@ -95,7 +96,7 @@ export function View({ tab, pv, data }: ViewerProps) {
     const el = body.current?.querySelector(`[data-id="${CSS.escape(id)}"]`);
     el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   };
-  if (err) return <PreviewMsg tab={tab} err>This document is not shown: {err}</PreviewMsg>;
+  if (err) return <NotShown tab={tab} what="This document" err={err} />;
   if (!doc) {
     return (
       <div class="pane-msg">

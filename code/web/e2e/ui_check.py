@@ -70,11 +70,14 @@ document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(e.
 class Page:
     """A fresh browser context + page with the safety listeners attached."""
 
-    def __init__(self, browser, base, name, **ctx):
+    def __init__(self, browser, base, name, memory=8, **ctx):
         self.base = base
         self.name = name
         self.ctx = browser.new_context(**ctx)
         self.ctx.add_init_script(GUARD)
+        # the device's memory as the page sees it (src/preview/device.ts): fixed, whatever runs the checks — 2 GB makes it
+        # a small device, with the previews' smaller caps
+        self.ctx.add_init_script(f"Object.defineProperty(Navigator.prototype, 'deviceMemory', {{ get: () => {int(memory)}, configurable: true }});")
         self.page = self.ctx.new_page()
         self.errors, self.dialogs, self.requests = [], [], []
         self.page.on("pageerror", lambda e: self.errors.append(str(e)))
@@ -1894,6 +1897,25 @@ def previews2_desktop(browser):
     expect(md.locator("code", has_text="echo $HOME $PATH")).to_have_count(1)
     decoded(page, ".pane:not(.hidden) [data-testid=diagram] img", timeout=30_000)
     p.shot("preview2-math-diagram.png")
+    # a formula paints only inside its boxes: text a negative \\kern moves over the words before it is clipped (the
+    # point under it hits the paragraph, not the formula)
+    boxes = md.locator("p", has_text="Formulas stay in their boxes")
+    boxes.scroll_into_view_if_needed()
+    expect(boxes.locator("[data-testid=math] .katex")).to_have_count(2)
+    moved = page.evaluate("""() => {
+      const p = [...document.querySelectorAll('.pane:not(.hidden) [data-testid=preview-md] p')].find((x) => x.textContent.includes('Formulas stay'));
+      const math = [...p.querySelectorAll('[data-testid=math]')].find((m) => m.textContent.includes('MOVEDLEFT'));
+      const w = document.createTreeWalker(math, NodeFilter.SHOW_TEXT);
+      let t;
+      while ((t = w.nextNode()) && !t.data.includes('M'));
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      const b = r.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + 2, b.top + b.height / 2);
+      return { left: b.left - math.getBoundingClientRect().left, contain: getComputedStyle(math.querySelector('.katex-base')).contain, inFormula: math.contains(hit), hit: hit && hit.tagName };
+    }""")
+    assert moved["left"] < -20 and "paint" in moved["contain"] and not moved["inFormula"], moved
+    boxes.screenshot(path=f"{OUT}/preview2-math-boxes.png")
     katex = [u for u in p.requests if "/assets/katex-" in u]
     assert any(u.endswith("katex.min.css") for u in katex) and any(u.endswith(".woff2") for u in katex), katex
     # an HTML file: first without its scripts (the static page); then, on request, its own scripts run — in the
@@ -2092,6 +2114,43 @@ def previews2_phone(browser):
         assert over <= 0, f"{path}: {over}px wider than the phone"
         sheet.get_by_role("button", name="Close", exact=True).click()
     sandbox_errors(p)
+    p.assert_clean()
+    p.close()
+
+
+@check("previews 2 on a small device (a phone with 2 GB): files over its caps say the preview is limited here, with Download")
+def previews2_small(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "previews2-small", memory=2, viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+    page = p.open()
+    assert page.evaluate("navigator.deviceMemory") == 2
+    for path, kind, want in (
+        # a Word document part of 2.5 MB (read on a computer; here over 1.5 MB)
+        ("previews/long.docx", "docx", r"Its part word/document\.xml unpacks to 2\.\d+ MB \(previews stop at 1\.5 MB on this device\)"),
+        # a 12 MB PDF (previews stop at 10 MB here, 25 MB on a computer)
+        ("previews/phone.pdf", "pdf", r"This file is 12\.0 MB; previews of PDF documents stop at 10\.0 MB here"),
+    ):
+        page.get_by_test_id("phone-files").click()
+        expect(page.get_by_test_id("sheet-files")).to_be_visible()
+        expand(page, "previews")
+        tree_click(page, path)
+        sheet = page.get_by_test_id("sheet-editor")
+        expect(sheet.locator(f".pane:not(.hidden) [data-testid=preview][data-kind='{kind}']")).to_be_visible(timeout=20_000)
+        msg = sheet.locator(".pane:not(.hidden) [data-testid=preview-limited]")
+        expect(msg).to_contain_text("This preview is limited on this device.", timeout=20_000)
+        expect(msg).to_contain_text(re.compile(want))
+        dl = msg.get_by_role("link", name="Download")
+        expect(dl).to_have_attribute("download", path.split("/")[-1])
+        p.shot(f"phone-preview2-limited-{kind}.png")
+        over = page.evaluate("document.documentElement.scrollWidth - innerWidth")
+        assert over <= 0, f"{path}: {over}px wider than the phone"
+        sheet.get_by_role("button", name="Close", exact=True).click()
+    # an ordinary Word file still shows
+    page.get_by_test_id("phone-files").click()
+    expect(page.get_by_test_id("sheet-files")).to_be_visible()
+    expand(page, "previews")
+    tree_click(page, "previews/report.docx")
+    expect(page.locator("[data-testid=sheet-editor] .pane:not(.hidden) [data-testid=preview-docx] h1")).to_be_visible(timeout=20_000)
     p.assert_clean()
     p.close()
 

@@ -21,7 +21,7 @@ import { read, type CellObject, type WorkBook, type WorkSheet } from 'xlsx';
 import { zipSync, type Zippable } from 'fflate';
 import { ZipError, ZipReader } from './zip';
 import { readOds } from './ods';
-import { SHEET_LIMITS, SHEET_ZIP, isNumeric, type SheetMeta } from '../limits';
+import { SHEET_LIMITS, SHEET_ZIP, isNumeric, mb, stopAt, type SheetMeta } from '../limits';
 
 const ascii = (b: Uint8Array, s: string) => b.length >= s.length && [...s].every((c, i) => b[i] === c.charCodeAt(0));
 
@@ -85,14 +85,13 @@ export function sheetDataOnly(xml: string): string {
 }
 
 /** An .xlsx zip → the parts SheetJS needs, its sheets reduced to their values, packed again without compression. */
-export function repack(src: Uint8Array | ZipReader): Uint8Array {
-  const z = src instanceof ZipReader ? src : new ZipReader(src, SHEET_ZIP);
+export function repack(src: Uint8Array | ZipReader, zip = SHEET_ZIP): Uint8Array {
+  const z = src instanceof ZipReader ? src : new ZipReader(src, zip);
   const files: Zippable = {};
-  let xml = 0;
-  for (const e of z.zip.entries) {
-    if (!keepPart(e.name)) continue;
-    xml += e.usz;
-    if (xml > SHEET_ZIP.xml) throw new ZipError(`its sheets unpack to more than ${SHEET_ZIP.xml / 1048576} MB (previews stop there)`);
+  const kept = z.zip.entries.filter((e) => keepPart(e.name));
+  const xml = kept.reduce((n, e) => n + e.usz, 0);
+  if (xml > zip.xml) throw new ZipError(`its sheets unpack to ${mb(xml)} (${stopAt(zip.xml, zip.device)})`);
+  for (const e of kept) {
     const b = z.bytesOf(e.name);
     files[e.name] = [SHEET_PART.test(e.name.toLowerCase()) ? new TextEncoder().encode(sheetDataOnly(new TextDecoder('utf-8').decode(b))) : b, { level: 0 }];
   }
@@ -120,13 +119,13 @@ const cellText = (c: CellObject | undefined): string => {
 };
 
 /** Read a workbook; `onSheet(i, rows)` gets each sheet's rows (text, at most `cols` per row) as it is done. */
-export function readWorkbook(buf: ArrayBuffer, onSheet: (i: number, rows: string[][]) => void, limits = SHEET_LIMITS): SheetResult {
+export function readWorkbook(buf: ArrayBuffer, onSheet: (i: number, rows: string[][]) => void, limits = SHEET_LIMITS, zip = SHEET_ZIP): SheetResult {
   const b = new Uint8Array(buf);
   if (!ascii(b, 'PK\x03\x04')) throw new Error('not a workbook this preview reads (.xlsx, .xlsm, .ods)');
-  const z = new ZipReader(b, SHEET_ZIP);
-  if (z.has('content.xml') && !z.has('xl/workbook.xml')) return readOds(z, onSheet, limits);
+  const z = new ZipReader(b, zip);
+  if (z.has('content.xml') && !z.has('xl/workbook.xml')) return readOds(z, onSheet, limits, zip);
   if (!z.has('xl/workbook.xml')) throw new Error('not an Excel workbook (no xl/workbook.xml)');
-  const data = repack(z);
+  const data = repack(z, zip);
   const wb: WorkBook = read(data, {
     type: 'array',
     dense: true,

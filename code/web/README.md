@@ -133,8 +133,9 @@ caps (entries, declared and actual sizes, ratio, overlap, zip64, encryption; the
 allowlist on hostile markup, Word/Excel/PowerPoint/notebook readers on ordinary and hostile files, the ANSI and formula
 scanners (timed on crafted input), formulas and diagrams in Markdown, Office kinds by bytes and name, the artifact
 viewer's address, and the vendored SheetJS tarball against the lockfile; `test/math.test.ts`: formulas (the macro
-blow-up refused, the tree's allowlist, timing); `test/memory.test.ts`: each reader at its caps in a child process with
-a 1 GB heap (`test/mem.child.ts`; a worker that runs out of heap takes the page down).
+blow-up refused, the tree's allowlist, timing); `test/memory.test.ts`: each reader just under its caps in a child
+process with a 1 GB heap, and under a small device's caps with a 256 MB heap (`test/mem.child.ts`; a worker that runs
+out of heap takes the page down), files over those refused with "on this device".
 
 `e2e/run.sh` runs `e2e/ui_check.py` in the Playwright image the e2e suite pins (`tests/e2e/run.sh` `PW_IMAGE`,
 packages from `tests/e2e/Dockerfile`), with two mocks inside the container (normal and `--hostile`). It walks the
@@ -152,7 +153,8 @@ panel (status, off/on, reconnect, a server of your own, restart), file previews 
 violations, Split following the editor, PDF find and links, CSV sort and filter, a Write card's Preview; hostile files
 that do nothing — no request outside the page, no dialog, no popup; phone sheets; part 2: Word, Excel, PowerPoint,
 notebooks, formulas, HTML and Mermaid in the sandboxed viewer, hostile Office files, zip bombs and pages that try every
-way out — each request refused before it leaves the browser — over remote access and on a phone), the Review pane (two edits and a
+way out — each request refused before it leaves the browser — over remote access, on a phone, and on a phone with
+2 GB, whose smaller caps say the preview is limited there), the Review pane (two edits and a
 Bash change, per-hunk Undo, Keep, a line comment reaching the next prompt, Undo all; without git, a changed file refused
 and a new file trashed; a hostile diff and search as text), Search in files (case, regex, globs, a hit opening the
 editor at its line), the command palette by keyboard alone and the shortcut sheet, and these on a phone — and a hostile session (markup in every field,

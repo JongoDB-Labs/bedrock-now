@@ -59,7 +59,10 @@ export function styleOf(v: string): [string, string][] {
     if (i < 0) continue;
     const name = part.slice(0, i).trim().toLowerCase();
     const value = part.slice(i + 1).trim();
-    if (PROPS.has(name) && VALUE.test(value) && !/url|expression|var\(/i.test(value)) out.push([name, value]);
+    if (!PROPS.has(name) || !VALUE.test(value) || /url|expression|var\(/i.test(value)) continue;
+    // KaTeX positions inside the formula's box only; fixed or sticky would put a piece of it anywhere on the page
+    if (name === 'position' && value !== 'relative' && value !== 'absolute') continue;
+    out.push([name, value]);
   }
   return out;
 }

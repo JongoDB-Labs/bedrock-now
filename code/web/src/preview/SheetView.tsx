@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { runJob } from './run';
 import { SHEET_LIMITS, type SheetMeta } from './limits';
 import { Grid } from './TableView';
-import { PreviewMsg, errText, type ViewerProps } from './Preview';
+import { NotShown, PreviewMsg, errText, type ViewerProps } from './Preview';
+import { smallDevice } from './device';
 import { Spinner } from '../components/icons';
 
 function checkSheets(v: unknown): SheetMeta[] {
@@ -39,7 +40,7 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
       setErr('The workbook could not be read.');
       return;
     }
-    const job = runJob<Record<string, unknown>>('sheet', { buf }, [buf], {
+    const job = runJob<Record<string, unknown>>('sheet', { buf, small: smallDevice() }, [buf], {
       timeoutMs: 60_000,
       onChunk: (m) => {
         const i = typeof m.sheet === 'number' && Number.isInteger(m.sheet) && m.sheet >= 0 && m.sheet < SHEET_LIMITS.sheets ? m.sheet : -1;
@@ -61,7 +62,7 @@ export function View({ tab, pv, data, phone }: ViewerProps) {
     return () => job.cancel();
   }, [data]);
 
-  if (err) return <PreviewMsg tab={tab} err>This workbook is not shown: {err}</PreviewMsg>;
+  if (err) return <NotShown tab={tab} what="This workbook" err={err} />;
   if (!metas) {
     return (
       <div class="pane-msg">

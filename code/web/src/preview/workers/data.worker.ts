@@ -2,13 +2,14 @@
 // cells and outputs (src/preview/notebook.ts; images as transferred bytes).
 import { readJson, readJsonl, readYaml } from '../tree';
 import { readNotebook } from '../notebook';
+import { capsFor } from '../limits';
 import { on, reportCsp, scope, textOf } from './common';
 
 reportCsp();
 on((m) => {
   const text = textOf(m);
   if (m.kind === 'notebook') {
-    const { transfer, ...nb } = readNotebook(text);
+    const { transfer, ...nb } = readNotebook(text, capsFor(m.small === true).nb);
     return scope.postMessage({ type: 'done', notebook: nb }, transfer);
   }
   const r = m.kind === 'yaml' ? readYaml(text) : m.kind === 'jsonl' ? readJsonl(text) : readJson(text);

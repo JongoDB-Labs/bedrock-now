@@ -506,7 +506,11 @@ per browser.
   first 2 MB; YAML 5 MB; SVG and HTML 10 MB; Mermaid 1 MB; notebooks 20 MB; everything else 25 MB; images up to 100
   million pixels; tables 1,000,000 rows, 200 columns and 5,000,000 cells (workbooks 2,000,000 cells, 100 sheets);
   trees 300,000 values and 100 levels; an Office file's parts at most 128 MB unpacked, a Word document's text part 8
-  MB, a workbook's sheets 48 MB; at most 2,000 formulas and 50 diagrams a notebook. Old `.doc`/`.ppt`/`.xls`, binary
+  MB, a workbook's sheets 48 MB; at most 2,000 formulas and 50 diagrams a notebook. On a phone or small tablet (the
+  browser reports 4 GB of memory or less; Safari and Firefox: a touch screen under 768 pixels on its short side) the
+  limits are smaller, so the browser does not end the tab: a Word document's text part 1.5 MB, a workbook's sheets 8
+  MB, a slide 4 MB, notebooks 5 MB, PDFs 10 MB, images 25 million pixels and half the bytes of pictures; above them
+  the preview says it is limited on this device and offers **Download**. Old `.doc`/`.ppt`/`.xls`, binary
   `.xlsb`, OpenDocument text and slides, RTF, EPUB, HEIC and TIFF are not shown.
 - **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
   tab's `claude --resume`, which

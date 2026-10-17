@@ -419,7 +419,12 @@ export function previewFiles({ big = true } = {}) {
     'previews/tags.yaml': 'run: !!python/object/apply:os.system ["touch /tmp/pwned"]\nok: plain\n__proto__: {polluted: yes}\n',
     ...officeFiles(),
   };
-  if (big) f['previews/too-big.pdf'] = Buffer.concat([Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1'), Buffer.alloc(26 * 1024 * 1024 + 7, 0x20)]);
+  if (big) {
+    f['previews/too-big.pdf'] = Buffer.concat([Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1'), Buffer.alloc(26 * 1024 * 1024 + 7, 0x20)]);
+    // over a small device's caps only (src/preview/limits.ts SMALL, sniff.ts SMALL_CAPS): a 12 MB PDF, a 2.5 MB Word part
+    f['previews/phone.pdf'] = Buffer.concat([Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n', 'latin1'), Buffer.alloc(12 * 1024 * 1024 - 15, 0x20)]);
+    f['previews/long.docx'] = office.bigDocx(2.5 * 1024 * 1024);
+  }
   return f;
 }
 

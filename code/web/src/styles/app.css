@@ -918,6 +918,9 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .nb-code .tok-propertyName { color: var(--syn-property); }
 .nb-code .tok-meta { color: var(--syn-meta); }
 .nb-code .tok-punctuation { color: var(--syn-punct); }
+/* a formula paints only inside its own boxes: each KaTeX base (an inline-block: inline formulas still wrap between
+   them) clips what a negative \kern, \hspace or \raisebox would move out of it, over the text around */
+.math .katex-base { contain: paint; }
 .math.display { display: block; margin: 10px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .math-src { white-space: pre-wrap; text-decoration: underline dotted var(--bad); }
 .math-pending { color: var(--muted); font-family: var(--mono); font-size: 0.92em; }

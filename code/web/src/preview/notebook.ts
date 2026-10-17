@@ -96,7 +96,7 @@ export function readNotebook(src: string, limits = NB_LIMITS): Notebook & { tran
       if (images >= limits.images) return { k: 'note', text: `(more than ${limits.images} images: not shown)` };
       const bytes = b64(v, limits.output);
       if (!bytes) return { k: 'note', text: `(an image larger than ${limits.output / 1048576} MB, or not base64: not shown)` };
-      const c = classify('output', bytes);
+      const c = classify('output', bytes, limits.picture);
       if ('err' in c || c.mime !== mime) return { k: 'note', text: `(an image that is not a ${mime.slice(6).toUpperCase()}: not shown)` };
       if (pixels + c.w * c.h > limits.pixels) return { k: 'note', text: `(images over ${limits.pixels / 1e6} million pixels in all: not shown)` };
       if (!budget(bytes.length)) return null;

@@ -25,8 +25,8 @@ interface MammothImage {
   contentType?: string;
 }
 
-export async function readDocx(buf: ArrayBuffer, limits = DOC_LIMITS): Promise<DocResult> {
-  setLimits(DOCX_ZIP);
+export async function readDocx(buf: ArrayBuffer, limits = DOC_LIMITS, zip = DOCX_ZIP): Promise<DocResult> {
+  setLimits(zip);
   const images: PvImage[] = [];
   const seen = new Map<unknown, number>();
   const skipped: string[] = [];
@@ -47,7 +47,7 @@ export async function readDocx(buf: ArrayBuffer, limits = DOC_LIMITS): Promise<D
     if (prev !== undefined) return { src: `bnimg:${prev}` };
     if (images.length >= limits.images) return skip(`more than ${limits.images} pictures`);
     const b = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-    const c = classify('picture', b);
+    const c = classify('picture', b, limits.picture);
     if ('err' in c) return skip(c.err === 'not an image' ? 'a format browsers do not show (EMF, WMF, TIFF…)' : c.err);
     if (bytes + b.length > limits.imageBytes || pixels + c.w * c.h > limits.pixels) return skip('over the preview\'s budget for pictures');
     bytes += b.length;

@@ -42,6 +42,12 @@ export const CAPS: Record<Kind, number> = {
 /** Images larger than this many pixels (by their header) are not decoded: a small file can claim a huge canvas. */
 export const MAX_PIXELS = 100_000_000;
 
+/** A small device's file caps where they are lower (device.ts; limits.ts SMALL): PDF (pdf.js keeps the file and its
+ *  pages' canvases) and notebooks (the JSON is parsed whole). */
+export const SMALL_CAPS: Partial<Record<Kind, number>> = { pdf: 10 * MiB, notebook: 5 * MiB };
+/** The size cap of a kind on this device. */
+export const capOf = (kind: Kind, small: boolean): number => (small ? Math.min(CAPS[kind], SMALL_CAPS[kind] ?? CAPS[kind]) : CAPS[kind]);
+
 export function extOf(path: string): string {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const i = name.lastIndexOf('.');
@@ -289,11 +295,15 @@ export function imageSize(mime: string, b: Uint8Array): { w: number; h: number }
 }
 
 /** Why an image will not be decoded (too many pixels, or a header that cannot be read), or null when it may be. */
-export function imageRefusal(mime: string, b: Uint8Array): string | null {
+export function imageRefusal(mime: string, b: Uint8Array, max = MAX_PIXELS): string | null {
   const d = imageSize(mime, b);
   // the simple formats must have a readable header; for the others the browser's decoder refuses a malformed one
   if (!d) return ['image/png', 'image/gif', 'image/bmp', 'image/jpeg'].includes(mime) ? 'its header could not be read' : null;
   if (d.w === 0 || d.h === 0) return 'it has no pixels';
-  if (d.w * d.h > MAX_PIXELS) return `it is ${d.w.toLocaleString('en-US')} × ${d.h.toLocaleString('en-US')} pixels (previews stop at ${MAX_PIXELS / 1e6} million)`;
+  if (d.w * d.h > max) {
+    // (this device's cap only when the image is within everyone's: a picture too large anywhere is not "limited here")
+    const here = max < MAX_PIXELS && d.w * d.h <= MAX_PIXELS;
+    return `it is ${d.w.toLocaleString('en-US')} × ${d.h.toLocaleString('en-US')} pixels (previews stop at ${(here ? max : MAX_PIXELS) / 1e6} million${here ? ' on this device' : ''})`;
+  }
   return null;
 }

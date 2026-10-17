@@ -7,7 +7,7 @@
 // (<text:p>: what the application displayed), never a formula.
 import { Parser } from 'htmlparser2';
 import { ZipError, type ZipReader } from './zip';
-import { SHEET_LIMITS, SHEET_ZIP, type SheetMeta } from '../limits';
+import { SHEET_LIMITS, SHEET_ZIP, mb, stopAt, type SheetMeta } from '../limits';
 import { guessHeader, type SheetResult } from './sheet';
 
 const num = (v: string | undefined, max: number): number => {
@@ -15,8 +15,9 @@ const num = (v: string | undefined, max: number): number => {
   return Math.max(1, Math.min(n, max));
 };
 
-export function readOds(z: ZipReader, onSheet: (i: number, rows: string[][]) => void, limits = SHEET_LIMITS): SheetResult {
-  if ((z.size('content.xml') ?? 0) > SHEET_ZIP.xml) throw new ZipError(`its content unpacks to more than ${SHEET_ZIP.xml / 1048576} MB (previews stop there)`);
+export function readOds(z: ZipReader, onSheet: (i: number, rows: string[][]) => void, limits = SHEET_LIMITS, zip = SHEET_ZIP): SheetResult {
+  const size = z.size('content.xml') ?? 0;
+  if (size > zip.xml) throw new ZipError(`its content unpacks to ${mb(size)} (${stopAt(zip.xml, zip.device)})`);
   const xml = z.text('content.xml');
   const sheets: SheetMeta[] = [];
   const errors: string[] = [];

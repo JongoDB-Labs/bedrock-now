@@ -5,17 +5,15 @@
 // browser shows, within a byte and pixel budget, each once. (No renderer that draws slides as they look is both
 // small and free of innerHTML; this outline is what the Code page shows, with Download for the rest.)
 import { Parser } from 'htmlparser2';
-import { ZipReader } from './zip';
+import { ZipError, ZipReader } from './zip';
 import { classify } from '../images';
-import { DECK_LIMITS, DECK_ZIP, type DeckPara, type PvImage, type Slide } from '../limits';
+import { DECK_LIMITS, DECK_ZIP, mb, stopAt, type DeckPara, type PvImage, type Slide } from '../limits';
 
 interface XEl {
   n: string;
   a: Record<string, string>;
   c: (XEl | string)[];
 }
-
-const XML_CAP = DECK_ZIP.xml;
 
 /** A small XML tree (elements, attributes, text) — enough for slide parts; capped in elements. */
 export function parseXml(xml: string, maxEls = 400_000): XEl {
@@ -25,7 +23,7 @@ export function parseXml(xml: string, maxEls = 400_000): XEl {
   const p = new Parser(
     {
       onopentag(name: string, attribs: Record<string, string>) {
-        if (++els > maxEls) throw new Error('too many elements');
+        if (++els > maxEls) throw new ZipError(`it has more than ${maxEls.toLocaleString('en-US')} elements (previews stop there)`);
         const el: XEl = { n: name, a: attribs, c: [] };
         stack[stack.length - 1].c.push(el);
         stack.push(el);
@@ -70,7 +68,7 @@ const relsCache = new WeakMap<ZipReader, Map<string, Map<string, { target: strin
 
 /** A part's relationships: rId → absolute part name (targets relative to the part's folder; external ones dropped).
  *  Each part's are read once. */
-export function rels(z: ZipReader, part: string): Map<string, { target: string; type: string }> {
+export function rels(z: ZipReader, part: string, cap = DECK_ZIP.xml): Map<string, { target: string; type: string }> {
   let cache = relsCache.get(z);
   if (!cache) relsCache.set(z, (cache = new Map()));
   const had = cache.get(part);
@@ -79,7 +77,7 @@ export function rels(z: ZipReader, part: string): Map<string, { target: string; 
   cache.set(part, out);
   const dir = part.slice(0, part.lastIndexOf('/'));
   const relPart = `${dir}/_rels/${part.slice(part.lastIndexOf('/') + 1)}.rels`;
-  if (!z.has(relPart) || (z.size(relPart) ?? 0) > XML_CAP) return out;
+  if (!z.has(relPart) || (z.size(relPart) ?? 0) > cap) return out;
   for (const r of walk(parseXml(z.text(relPart)))) {
     if (r.n !== 'Relationship') continue;
     const id = own(r.a, 'Id');
@@ -108,12 +106,14 @@ export interface DeckResult {
   skipped: string[];
 }
 
-export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
-  const z = new ZipReader(new Uint8Array(buf), DECK_ZIP);
+export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS, zip = DECK_ZIP): DeckResult {
+  const z = new ZipReader(new Uint8Array(buf), zip);
+  const cap = zip.xml;
   const pres = 'ppt/presentation.xml';
   if (!z.has(pres)) throw new Error('not a PowerPoint deck (no ppt/presentation.xml)');
-  if ((z.size(pres) ?? 0) > XML_CAP) throw new Error('its presentation part is too large to preview');
-  const presRels = rels(z, pres);
+  const presSize = z.size(pres) ?? 0;
+  if (presSize > cap) throw new ZipError(`its presentation part unpacks to ${mb(presSize)} (${stopAt(cap, zip.device)})`);
+  const presRels = rels(z, pres, cap);
   const order: string[] = [];
   for (const e of walk(parseXml(z.text(pres)))) {
     if (e.n !== 'p:sldId') continue;
@@ -144,7 +144,7 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
       return null;
     }
     const b = z.bytesOf(part);
-    const c = classify(part, b);
+    const c = classify(part, b, limits.picture);
     if ('err' in c) {
       note(c.err === 'not an image' ? 'a format browsers do not show (EMF, WMF, TIFF…)' : c.err);
       return null;
@@ -161,11 +161,27 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
   };
 
   const slides: Slide[] = [];
+  const left = (i: number, why: string): Slide => ({ n: i + 1, title: '', paras: [{ lvl: 0, text: `(not shown: ${why})`, bullet: false }], images: [], notes: '', hidden: false });
   for (const [i, part] of order.slice(0, limits.slides).entries()) {
-    if (!z.has(part) || (z.size(part) ?? 0) > XML_CAP) continue;
-    const doc = parseXml(z.text(part));
+    if (!z.has(part)) continue;
+    const size = z.size(part) ?? 0;
+    if (size > cap) {
+      // a slide too large to read: its place, and why
+      cut = true;
+      slides.push(left(i, `this slide unpacks to ${mb(size)}; ${stopAt(cap, zip.device)}`));
+      continue;
+    }
+    let doc: XEl;
+    try {
+      doc = parseXml(z.text(part));
+    } catch (e) {
+      if (!(e instanceof ZipError)) throw e;
+      cut = true;
+      slides.push(left(i, e.message.replace(/^it /, 'this slide ')));
+      continue;
+    }
     const sld = kid(doc, 'p:sld');
-    const r = rels(z, part);
+    const r = rels(z, part, cap);
     const slide: Slide = { n: i + 1, title: '', paras: [], images: [], notes: '', hidden: !!sld && own(sld.a, 'show') === '0' };
     const add = (p: DeckPara) => {
       if (paras >= limits.paras || chars + p.text.length > limits.chars) {
@@ -211,8 +227,14 @@ export function readDeck(buf: ArrayBuffer, limits = DECK_LIMITS): DeckResult {
     }
     // speaker notes: the notes slide's body placeholder (one notes part per slide; its paragraphs: p:txBody > a:p)
     for (const t of r.values()) {
-      if (!/\/notesSlide$/.test(t.type) || !z.has(t.target) || (z.size(t.target) ?? 0) > XML_CAP) continue;
-      const nd = parseXml(z.text(t.target));
+      if (!/\/notesSlide$/.test(t.type) || !z.has(t.target) || (z.size(t.target) ?? 0) > cap) continue;
+      let nd: XEl;
+      try {
+        nd = parseXml(z.text(t.target));
+      } catch (e) {
+        if (!(e instanceof ZipError)) throw e;
+        break;
+      }
       const out: string[] = [];
       let n = 0;
       for (const sp of walk(nd)) {

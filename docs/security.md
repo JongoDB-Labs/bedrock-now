@@ -894,8 +894,22 @@ spawn server, Claude Code or any file at will.
     `\includegraphics`, `\html…` do nothing; `maxSize` 20 em; 10,000 characters a formula), htmlparser2 turns it into
     a tree of span/svg/path/line, classes, the SVG attributes KaTeX uses (numbers and path data) and style properties
     from a short list with plain values (no `url(`, `var(` or `expression`), at most 20,000 elements; the page draws
-    that tree with Preact, styles through the CSSOM. Formulas are drawn only as they come near the view. KaTeX's
+    that tree with Preact, styles through the CSSOM (`position` only `relative` or `absolute`: inside the formula's
+    box, never `fixed`). Each of KaTeX's boxes (`.katex-base`) clips what it paints (`contain: paint`): a negative `\kern`,
+    `\hspace` or `\raisebox` — which `maxSize` does not limit — cannot move a formula's text over the words around it
+    (a browser check hit-tests where such text would land). Formulas are drawn only as they come near the view. KaTeX's
     stylesheet and fonts are the build's copy (`style-src`/`font-src 'self'`), loaded with the first formula.
+  - *Phones and small tablets*: a mobile browser often ends a tab well below 1 GB (and a reload loses unsaved edits),
+    so a small device — `navigator.deviceMemory` of 4 GB or less where the browser tells it (Chromium); else (Safari,
+    Firefox) a touch screen (`pointer: coarse`) whose shorter side is under 768 CSS pixels — gets smaller caps
+    (`src/preview/device.ts`, `limits.ts` `SMALL`): a Word part 1.5 MB, a workbook's sheets 8 MB (and 500,000 cells),
+    a slide 4 MB, a notebook 5 MB, a PDF 10 MB, one picture 25 million pixels and a document's, deck's, notebook's or
+    Markdown file's pictures 50 million in all, half the bytes of pictures, Office parts 64–80 MB in all. Measured
+    under a 256 MB heap (`test/memory.test.ts` runs every reader just under these caps in a child Node process with
+    `--max-old-space-size=256`), the whole process peaks near 175 MB (Word), 205 MB (sheets), 170 MB (a slide) and
+    75 MB (a notebook), Node's own ~36 MB included. Over one of them the preview says it is limited on this device,
+    with the size and the limit, and offers Download (a browser check on a phone with 2 GB); the page tells the worker
+    which caps to use with each job.
   The browser checks preview every format with zero CSP violations on the page and open hostile files (an SVG with a script, an
   `onload` handler and external references; a PDF with JavaScript in its open action, page and link actions, a
   launch action, `javascript:`/`file:` links and a form submit; a PNG claiming 50,000 × 50,000 pixels; a line of

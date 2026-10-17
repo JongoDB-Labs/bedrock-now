@@ -106,6 +106,12 @@ All notable changes to bedrock-now are documented here. The format follows
   takes the page down with it (a unit test runs each reader at its caps within a 1 GB heap). Formulas are drawn in a
   worker with a 3 s budget each; one that defines macros is shown as source. See docs/security.md, "File previews"
   and "The artifact viewer".
+- **Previews on phones stay within a phone's memory.** A small device (the browser reports 4 GB or less; Safari and
+  Firefox: a touch screen under 768 pixels on its short side) previews with smaller caps — a Word part 1.5 MB, a
+  workbook's sheets 8 MB, a slide 4 MB, notebooks 5 MB, PDFs 10 MB, pictures 25 million pixels — measured to keep a
+  reader near 200 MB (a unit test runs each one under a 256 MB heap); above them the preview says it is limited on
+  this device and offers Download. A formula's `position` is only `relative` or `absolute`, and each of its boxes
+  clips what it paints: a negative `\kern` or `\raisebox` cannot move its text over the words around it.
 - **The Code page frames bedrock-now's hosts on the portal's port only.** Its `frame-src` allowed the terminal host
   and the previews' site on any port (`http://<TERMINAL_HOST>:*`, `http://*.<PREVIEW_DOMAIN>:*`); those names resolve
   to this computer's loopback, so a framed page of sandbox content could navigate its frame to any service listening

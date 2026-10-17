@@ -3,6 +3,7 @@
 // this answers them from ZipReader, whose directory checks and bounded inflating stop zip bombs (zip.ts). So no other
 // zip code ever reads a .docx in the page.
 import { ZIP_LIMITS, ZipError, ZipReader, type ZipLimits } from './zip';
+import { mb, stopAt } from '../limits';
 
 let limits: ZipLimits & { xml?: number } = ZIP_LIMITS;
 /** The caps the next loadAsync applies (the DOCX worker sets them); `xml`: the largest part read, whatever its name
@@ -26,7 +27,7 @@ export function loadAsync(data: ArrayBuffer | Uint8Array): Promise<{ file(name: 
             try {
               const xml = limits.xml;
               if (xml !== undefined && (z.size(name) ?? 0) > xml) {
-                throw new ZipError(`${name.slice(0, 100)} unpacks to more than ${Math.round(xml / 1048576)} MB (previews stop there)`);
+                throw new ZipError(`its part ${name.slice(0, 100)} unpacks to ${mb(z.size(name) ?? 0)} (${stopAt(xml, limits.device)})`);
               }
               const b = z.bytesOf(name);
               if (type === 'string' || type === 'text') return Promise.resolve(new TextDecoder('utf-8').decode(b));

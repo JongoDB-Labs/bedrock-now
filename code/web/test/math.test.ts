@@ -51,7 +51,9 @@ test('math: the tree holds KaTeX\'s elements, classes, SVG numbers and listed st
   }
   // styles: listed properties with plain values only
   assert.deepEqual(styleOf('height:1em;vertical-align:-0.25em;background:url(http://x);color:red;position:fixed;width:calc(1em);border-style:solid;color:expression(alert(1));top:var(--x)'),
-    [['height', '1em'], ['vertical-align', '-0.25em'], ['color', 'red'], ['position', 'fixed'], ['width', 'calc(1em)'], ['border-style', 'solid']]);
+    [['height', '1em'], ['vertical-align', '-0.25em'], ['color', 'red'], ['width', 'calc(1em)'], ['border-style', 'solid']]);
+  // position: relative or absolute only (inside the formula's box, which .math contains); fixed and sticky dropped
+  assert.deepEqual(styleOf('position:relative;position:absolute;position:fixed;position:sticky;position:static'), [['position', 'relative'], ['position', 'absolute']]);
   // anything else in the HTML is dropped with what it holds; a tree larger than MATH_NODES is an error
   const t = katexTree('<span class="mord" onclick="x" id="i" style="color:red"><script>alert(1)</script><img src=x><a href="javascript:x">a</a><svg onload=x><path d="M0 0L1 1" onclick="x"/></svg></span>');
   assert.deepEqual(t, [{ t: 'span', c: 'mord', s: [['color', 'red']], k: [{ t: 'svg', k: [{ t: 'path', a: { d: 'M0 0L1 1' }, k: [] }] }] }]);

@@ -14,7 +14,8 @@ import type { Parser } from '@lezer/common';
 import { BlobImg } from './BlobImg';
 import { MathTex } from './MathTex';
 import { MermaidBlock, RichOutput } from './ArtifactView';
-import { PreviewMsg, errText, type ViewerProps } from './Preview';
+import { NotShown, errText, type ViewerProps } from './Preview';
+import { smallDevice } from './device';
 import { MarkdownView } from '../components/MarkdownView';
 import { Spinner } from '../components/icons';
 
@@ -151,7 +152,8 @@ export function View({ tab, pv, data }: ViewerProps) {
     setErr(null);
     setShown(NB_DRAW.page);
     const buf = data.buf ? data.buf.slice(0) : null;
-    const job = runJob<Record<string, unknown>>('data', buf ? { buf, kind: 'notebook' } : { text: data.text ?? '', kind: 'notebook' }, buf ? [buf] : [], { timeoutMs: 30_000 });
+    const small = smallDevice();
+    const job = runJob<Record<string, unknown>>('data', buf ? { buf, kind: 'notebook', small } : { text: data.text ?? '', kind: 'notebook', small }, buf ? [buf] : [], { timeoutMs: 30_000 });
     job.promise.then(
       (m) => {
         const x = checkNotebook(m.notebook);
@@ -170,7 +172,13 @@ export function View({ tab, pv, data }: ViewerProps) {
       live = false;
     };
   }, [nb?.lang]);
-  if (err) return <PreviewMsg tab={tab} err>This notebook is not shown: {err}. <strong>Source</strong> has it as JSON.</PreviewMsg>;
+  if (err) {
+    return (
+      <NotShown tab={tab} what="This notebook" err={err}>
+        . <strong>Source</strong> has it as JSON.
+      </NotShown>
+    );
+  }
   if (!nb || !budget) {
     return (
       <div class="pane-msg">

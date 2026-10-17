@@ -15,8 +15,10 @@ import { setTabView, store, type FileTab, type FileView } from '../app';
 import { basename, bytes, dirname } from '../text';
 import { Icon, Spinner } from '../components/icons';
 import { MarkdownView } from '../components/MarkdownView';
-import { CAPS, hasSource, imageRefusal, needsBytes, looksLikeSvg, type Kind, type Sniffed } from './sniff';
-import { ImageCache, type ImageEntry } from './images';
+import { CAPS, capOf, hasSource, imageRefusal, needsBytes, looksLikeSvg, type Kind, type Sniffed } from './sniff';
+import { ImageCache, MD_IMAGES, MD_IMAGES_SMALL, type ImageEntry } from './images';
+import { SMALL } from './limits';
+import { smallDevice } from './device';
 
 const KIND_NAME: Record<Kind, string> = {
   markdown: 'Markdown files', image: 'images', svg: 'SVG images', audio: 'audio files', video: 'videos', pdf: 'PDF documents',
@@ -58,15 +60,37 @@ export function PreviewBar({ tab, phone }: { tab: FileTab; phone: boolean }) {
 
 // ---------------------------------------------------------------- messages
 
-export function PreviewMsg({ tab, children, err }: { tab: FileTab; children: ComponentChildren; err?: boolean }) {
+export function PreviewMsg({ tab, children, err, limited }: { tab: FileTab; children: ComponentChildren; err?: boolean; limited?: boolean }) {
   return (
-    <div class={`pane-msg pv-msg${err ? ' err' : ''}`} data-testid="preview-msg">
+    <div class={`pane-msg pv-msg${err ? ' err' : ''}`} data-testid={limited ? 'preview-limited' : 'preview-msg'}>
       <Icon name={err ? 'alert' : 'file'} size={26} />
-      <div>{children}</div>
+      <div>
+        {limited && <strong>This preview is limited on this device. </strong>}
+        {children}
+        {limited && ' Download the file to open it in full (or open it on a computer).'}
+      </div>
       <a class="btn small" href={api.downloadUrl(tab.path)} download={basename(tab.path)} rel="noopener">
         <Icon name="download" size={14} /> Download
       </a>
     </div>
+  );
+}
+
+/** A file a viewer did not show, and why — on a small device, when one of its caps stopped the reader (its message
+ *  says "on this device"), as a preview limited here. */
+export function NotShown({ tab, what, err, children }: { tab: FileTab; what: string; err: string; children?: ComponentChildren }) {
+  if (/ on this device\b/.test(err)) {
+    return (
+      <PreviewMsg tab={tab} limited>
+        {err.charAt(0).toUpperCase() + err.slice(1)}.
+      </PreviewMsg>
+    );
+  }
+  return (
+    <PreviewMsg tab={tab} err>
+      {what} is not shown: {err}
+      {children}
+    </PreviewMsg>
   );
 }
 
@@ -143,7 +167,8 @@ function Lazy({ name, load, props }: { name: string; load: () => Promise<{ View:
 
 export function Preview({ tab, text, phone, active = true }: { tab: FileTab; text: string | null; phone: boolean; active?: boolean }) {
   const pv = tab.preview;
-  const cap = pv ? CAPS[pv.kind] : 0;
+  const small = smallDevice();
+  const cap = pv ? capOf(pv.kind, small) : 0;
   const tooBig = !!pv && pv.kind !== 'markdown' && tab.size !== null && tab.size > cap;
   // binary kinds always come as bytes; text kinds from the editor's text unless the editor got only part of the file
   const wantBytes = !!pv && pv.kind !== 'markdown' && (needsBytes(pv.kind) || tab.binary || tab.truncated || text === null);
@@ -160,9 +185,11 @@ export function Preview({ tab, text, phone, active = true }: { tab: FileTab; tex
     );
   }
   if (tooBig) {
+    // over this device's cap only (a small device: device.ts)
+    const here = cap < CAPS[pv.kind] && (tab.size ?? 0) <= CAPS[pv.kind];
     return (
-      <PreviewMsg tab={tab}>
-        This file is {bytes(tab.size)}; previews of {KIND_NAME[pv.kind]} stop at {bytes(cap)}.
+      <PreviewMsg tab={tab} limited={here}>
+        This file is {bytes(tab.size)}; previews of {KIND_NAME[pv.kind]} stop at {bytes(cap)}{here ? ' here' : ''}.
       </PreviewMsg>
     );
   }
@@ -232,7 +259,7 @@ function listedSize(path: string): number | null {
 
 function MarkdownPreview({ tab, text }: { tab: FileTab; text: string }) {
   // one cache per file version: re-renders (typing in Split) and repeated images fetch nothing again
-  const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max), undefined, listedSize), [tab.path, tab.version]);
+  const cache = useMemo(() => new ImageCache((p, max) => api.fsBytes(p, max), smallDevice() ? MD_IMAGES_SMALL : MD_IMAGES, listedSize), [tab.path, tab.version]);
   const renderImage = useCallback((path: string, alt: string, key: number) => <WorkspaceImage key={`${key}:${path}`} path={path} alt={alt} cache={cache} />, [cache]);
   // this file's diagrams share one renderer (a frame of the viewer), its own
   const owner = `${tab.path}\u0000${tab.version}`;
@@ -296,7 +323,7 @@ function ImageView({ tab, pv, data }: ViewerProps) {
   const bytesOf = useMemo(() => (data.buf ? new Uint8Array(data.buf) : new TextEncoder().encode(data.text ?? '')), [data]);
   const refusal = useMemo(() => {
     if (pv.kind === 'svg') return looksLikeSvg(new TextDecoder().decode(bytesOf.subarray(0, 8192))) ? null : 'it does not look like an SVG document';
-    return imageRefusal(pv.mime, bytesOf);
+    return imageRefusal(pv.mime, bytesOf, smallDevice() ? SMALL.picture : undefined);
   }, [bytesOf, pv]);
   const [url, setUrl] = useState<string | null>(null);
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
@@ -319,7 +346,7 @@ function ImageView({ tab, pv, data }: ViewerProps) {
     el.style.width = zoom === 'fit' || !dims ? '' : `${Math.max(1, Math.round(dims.w * zoom))}px`;
   }, [zoom, dims]);
 
-  if (refusal) return <PreviewMsg tab={tab} err>This image is not shown: {refusal}.</PreviewMsg>;
+  if (refusal) return <NotShown tab={tab} what="This image" err={refusal}>.</NotShown>;
   if (failed) return <PreviewMsg tab={tab} err>The browser could not decode this {pv.what}.</PreviewMsg>;
   const step = (dir: 1 | -1) => {
     const cur = zoom === 'fit' ? (dims && img.current ? img.current.clientWidth / dims.w : 1) : zoom;

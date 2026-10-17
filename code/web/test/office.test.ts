@@ -22,10 +22,12 @@ import { DOCX_ZIP, NB_DRAW } from '../src/preview/limits';
 import { ansiRuns, overwrite } from '../src/preview/ansi';
 import { extractMath, restoreMath, splitMath, MATH_MAX } from '../src/mathtext';
 import { renderMarkdown, textOf, type MdNode, type MdEl } from '../src/markdown';
-import { sniff, sniffBinary, previewableName, hasSource, needsBytes, viewFor, CAPS } from '../src/preview/sniff';
+import { sniff, sniffBinary, previewableName, hasSource, needsBytes, viewFor, CAPS, capOf, imageRefusal } from '../src/preview/sniff';
+import { isSmallDevice } from '../src/preview/device';
+import { MD_IMAGES, MD_IMAGES_SMALL, classify } from '../src/preview/images';
 import { artifactOriginOk } from '../src/api';
 import { workerUrl } from '../src/preview/tt';
-import { DOC_LIMITS, SHEET_LIMITS, type DNode, type DEl } from '../src/preview/limits';
+import { DOC_LIMITS, SHEET_LIMITS, SMALL, capsFor, stopAt, type DNode, type DEl } from '../src/preview/limits';
 
 const MiB = 1024 * 1024;
 const chart = png(160, 100, (x) => (x % 2 ? [29, 106, 132, 255] : [0, 0, 0, 0]));
@@ -234,7 +236,7 @@ test('docx: every part read is capped, whatever its name (mammoth finds its part
   setLimits({ ...DOCX_ZIP, xml: MiB });
   const { loadAsync } = await import('../src/preview/office/jszip-shim');
   const z = await loadAsync(u8(doc));
-  await assert.rejects(z.file('word/document.dat')!.async('string'), /more than 1 MB/);
+  await assert.rejects(z.file('word/document.dat')!.async('string'), /unpacks to [\d.]+ MB \(previews stop at 1 MB\)/);
   // and with the real caps the document reads
   const r = await readDocx(ab(fx.oddNameDocx(4096)));
   assert.ok(textIn(r.root).startsWith('x'));
@@ -496,4 +498,49 @@ test('SheetJS: the vendored CDN tarball, pinned by its SHA-512 in the lockfile; 
   // mammoth's JSZip and CLI argparse are empty stand-ins (never installed for real)
   assert.equal(lock.packages['node_modules/jszip'].resolved, 'vendor/no-jszip');
   assert.equal(lock.packages['node_modules/argparse'].resolved, 'vendor/no-argparse');
+});
+
+test('small devices: which they are, and their caps', () => {
+  // deviceMemory where the browser tells it (Chromium); else a touch screen with a short side under 768 px
+  assert.equal(isSmallDevice({ deviceMemory: 4, coarse: false, shortSide: 1440 }), true);
+  assert.equal(isSmallDevice({ deviceMemory: 2, coarse: false, shortSide: 1440 }), true);
+  assert.equal(isSmallDevice({ deviceMemory: 8, coarse: true, shortSide: 390 }), false, 'a phone that says it has 8 GB');
+  assert.equal(isSmallDevice({ coarse: true, shortSide: 390 }), true, 'an iPhone (Safari: no deviceMemory)');
+  assert.equal(isSmallDevice({ coarse: true, shortSide: 744 }), true, 'an iPad mini');
+  assert.equal(isSmallDevice({ coarse: true, shortSide: 820 }), false, 'a larger tablet');
+  assert.equal(isSmallDevice({ coarse: false, shortSide: 390 }), false, 'a narrow desktop window: the screen, with a mouse');
+  for (const bad of [NaN, 0, -1, '2', null]) assert.equal(isSmallDevice({ deviceMemory: bad, coarse: false, shortSide: 1080 }), false, String(bad));
+
+  const full = capsFor(false);
+  const small = capsFor(true);
+  assert.equal(full.docxZip, DOCX_ZIP);
+  assert.equal(small.docxZip.xml, SMALL.docxXml);
+  assert.equal(small.sheetZip.xml, SMALL.sheetXml);
+  assert.equal(small.deckZip.xml, SMALL.deckXml);
+  assert.equal(small.nb.total, SMALL.notebook);
+  assert.ok(small.docxZip.device && small.sheetZip.device && small.deckZip.device && !full.docxZip.device);
+  assert.ok(small.doc.imageBytes === full.doc.imageBytes / 2 && small.deck.imageBytes === full.deck.imageBytes / 2, 'picture budgets halved');
+  assert.ok(small.doc.picture === 25_000_000 && small.nb.picture === 25_000_000 && small.deck.pixels === SMALL.pictures);
+  assert.ok(MD_IMAGES_SMALL.bytes === MD_IMAGES.bytes / 2 && MD_IMAGES_SMALL.perImage === MD_IMAGES.perImage / 2);
+  for (const [k, v] of Object.entries(small)) {
+    if (typeof v !== 'object') continue;
+    for (const [f, n] of Object.entries(v)) {
+      const was = (full as unknown as Record<string, Record<string, unknown>>)[k][f];
+      if (typeof n === 'number') assert.ok(n <= (was as number), `${k}.${f}: never above the full caps`);
+    }
+  }
+  // files: a PDF and a notebook stop sooner; the others as everywhere
+  assert.equal(capOf('pdf', true), 10 * MiB);
+  assert.equal(capOf('notebook', true), 5 * MiB);
+  assert.equal(capOf('pdf', false), CAPS.pdf);
+  assert.equal(capOf('docx', true), CAPS.docx);
+  // one picture: 25 million pixels here
+  const big = png(4, 4, () => [0, 0, 0, 255], [6000, 5000]);
+  assert.equal(imageRefusal('image/png', big), null);
+  assert.match(imageRefusal('image/png', big, SMALL.picture) ?? '', /6,000 × 5,000 pixels \(previews stop at 25 million on this device\)/);
+  assert.ok('err' in classify('p.png', big, SMALL.picture));
+  // too large anywhere: not "limited on this device"
+  assert.match(imageRefusal('image/png', png(4, 4, () => [0, 0, 0, 255], [50_000, 50_000]), SMALL.picture) ?? '', /50,000 × 50,000 pixels \(previews stop at 100 million\)$/);
+  assert.equal(stopAt(SMALL.docxXml, true), 'previews stop at 1.5 MB on this device');
+  assert.equal(stopAt(8 * MiB), 'previews stop at 8 MB');
 });
