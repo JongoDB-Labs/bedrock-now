@@ -38,9 +38,9 @@ the Code page and its browser terminal are on by default (`./stack code disable`
 - Room for Docker: about 6 GB of disk for the downloaded images and about 1.6 GB more for the two built on your
   computer for the Code page and its browser terminal (on by default: the terminal's about 1.2 GB, the Code page's
   about 0.4 GB; an update keeps the previous version of each, so allow more), and about 2 GB of memory for the stack
-  (~1.3 GB when idle; the terminal and the Code page about 110 MB of that while idle). While Claude works there their
-  containers may use up to 4 GB (`TERMINAL_MEM_LIMIT`) and 768 MB of memory; on Docker Desktop, *Settings →
-  Resources* sets what Docker may use
+  (~1.3 GB when idle; the terminal, its egress proxy and the Code page about 130 MB of that while idle). While Claude
+  works there their containers may use up to 4 GB (`TERMINAL_MEM_LIMIT`), 192 MB and 768 MB of memory; on Docker
+  Desktop, *Settings → Resources* sets what Docker may use
 - An **AWS access key ID and secret** for an IAM user with Bedrock access (long-lived `AKIA…` key; see
   [Asking your AWS admin for model access](#asking-your-aws-admin-for-model-access)), or, on an EC2 VM, an
   **IAM role** instead (no keys stored; see [Run it on a cloud VM](#run-it-on-a-cloud-vm))

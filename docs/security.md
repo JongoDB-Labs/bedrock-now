@@ -724,7 +724,9 @@ reaches is the container — with the three exceptions under *Threat model*.
   from anywhere, and the sandbox restarts. What it does not stop: what is in the workspace can still be sent to any
   public address (the proxy limits where, not what; names asked for can carry data too, through its lookups); a CDN
   that fronts many sites is one name to the lists; a computer whose own address on its network is public (not RFC
-  1918) is not known to the proxy as this computer and stays reachable at that address. `./stack test` and the e2e
+  1918) is not known to the proxy as this computer and stays reachable at that address. And a computer whose DNS
+  answers with made-up addresses (198.18.0.0/15: Clash or Surge in fake-IP mode) gets every name refused — choose
+  *+ this computer* there; IPv6-only sites stay out of reach, as Docker's networks here have no IPv6 route. `./stack test` and the e2e
   suite check the refusals from inside the sandbox (no route around the proxy; this computer, its published ports,
   private, link-local, ULA and loopback addresses, also behind public names that resolve to them, all 403) and that
   npm, pip, git (https and ssh), curl and Node's fetch work through it.

@@ -312,7 +312,9 @@ respond 407
 
 test_bn_preview_in_the_terminal_image() {
   t="$(cat "$STACK_DIR/terminal/bin/bn-terminal")"
-  assert_contains "$t" '( ( set +e; while :; do env -u SHARED_MCP_TOKEN node /usr/local/bin/bn-preview.mjs; sleep 2; done ) </dev/null & )'
+  # (without the MCP token, and without the egress proxy's variables: it only ever reaches this container's loopback)
+  assert_contains "$t" '( ( set +e; while :; do env -u SHARED_MCP_TOKEN -u NODE_USE_ENV_PROXY -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \'
+  assert_contains "$t" '    node /usr/local/bin/bn-preview.mjs; sleep 2; done ) </dev/null & )'
   [ "$(grep -n 'bn-preview.mjs' "$STACK_DIR/terminal/bin/bn-terminal" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n '^exec env' "$STACK_DIR/terminal/bin/bn-terminal" | cut -d: -f1)" ] || return 1
   d="$(cat "$STACK_DIR/terminal/Dockerfile")"
   assert_contains "$d" "chmod 700 /home/claude /run/bn-ttyd /run/bn-code /run/bn-preview"
