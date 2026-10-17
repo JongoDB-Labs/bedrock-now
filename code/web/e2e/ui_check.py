@@ -2917,12 +2917,18 @@ def git_panel(browser):
     page.get_by_test_id("git-discard-confirm").click()
     expect(page.get_by_test_id("toast").last).to_contain_text("Discarded the changes to src/http/client.ts", timeout=10_000)
     assert api_text(page, "src/http/client.ts") == orig, "client.ts is not back"
-    # Commit waits for a message; Write message asks the session and fills the box — no commit
+    # Commit waits for a message; Write message asks the backend's helper (a process of its own with no tools) and
+    # fills the box — no commit, nothing in the conversation, no session opened
     expect(page.get_by_test_id("git-commit")).to_be_disabled()
+    users = page.get_by_test_id("msg-user").count()
+    sessions = len(json.loads(urllib.request.urlopen(NORMAL + "/api/state", timeout=5).read())["sessions"])
+    drafts = json.loads(urllib.request.urlopen(NORMAL + "/__mock/drafts", timeout=5).read())["drafts"]
     page.get_by_test_id("git-write-message").click()
+    expect(page.get_by_test_id("git-drafting")).to_contain_text("no tools")
     expect(page.get_by_test_id("git-message")).to_have_value(re.compile(r"^Update format\.ts\n\nKeep the retry policy"), timeout=15_000)
-    expect(page.get_by_test_id("msg-user").last).to_contain_text("Propose a git commit message for the changes staged")
-    expect(page.get_by_test_id("msg-user").last).to_contain_text("timeout: 15 s")
+    assert json.loads(urllib.request.urlopen(NORMAL + "/__mock/drafts", timeout=5).read())["drafts"] == drafts + 1
+    assert page.get_by_test_id("msg-user").count() == users, "Write message went into the conversation"
+    assert len(json.loads(urllib.request.urlopen(NORMAL + "/api/state", timeout=5).read())["sessions"]) == sessions, "Write message opened a session"
     assert log_subjects(page) == commits0, "Write message committed something"
     p.shot("git-draft.png")
     # your own message, Ctrl+Enter
@@ -3005,10 +3011,8 @@ def git_hostile(browser):
     expect(panel).to_contain_text("<img src=x")
     expect(panel.locator("[data-testid=git-log-entry]").first).to_contain_text("<script>")
     expect(page.get_by_test_id("git-state")).to_have_count(0)
-    # Write message: the proposal's control and direction-changing characters never reach the box (in a session of its
-    # own: an earlier hostile check may leave one at work, and then Write message waits for the turn)
-    page.get_by_test_id("chat-new").click()
-    expect(page.get_by_test_id("git-write-message")).to_be_enabled(timeout=10_000)
+    # Write message: the proposal's control and direction-changing characters never reach the box (the helper is not a
+    # session: a session at work does not hold it up)
     page.get_by_test_id("git-write-message").click()
     expect(page.get_by_test_id("git-message")).to_have_value(re.compile("^Fix "), timeout=15_000)
     v = page.get_by_test_id("git-message").input_value()

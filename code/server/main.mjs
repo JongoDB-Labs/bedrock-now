@@ -266,6 +266,13 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/git/unstage' && m === 'POST') return send(res, 200, await api.gitUnstage(await readJson(req, 512 << 10)));
     if (p === '/api/git/commit' && m === 'POST') return send(res, 200, await api.gitCommit(await readJson(req, 512 << 10)));
     if (p === '/api/git/discard' && m === 'POST') return send(res, 200, await api.gitDiscard(await readJson(req)));
+    if (p === '/api/git/draft' && m === 'POST') {
+      const body = await readJson(req);
+      // (the page went away or gave up: the helper's process is stopped)
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableFinished) ac.abort(); });
+      return send(res, 200, await api.gitDraft(body, ac.signal));
+    }
     if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope')));
     if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10))));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));

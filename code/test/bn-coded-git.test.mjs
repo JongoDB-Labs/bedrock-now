@@ -230,7 +230,12 @@ const VECTORS = {
 };
 for (const [name, v] of Object.entries(VECTORS)) {
   test(`git panel: ${name} — plain git runs it (control), the panel's ops do not`, async (t) => {
-    if (v.needs && !v.needs()) { t.skip(`this git (${git(WS, '--version').trim()}) has no such feature`); return; }
+    if (v.needs && !v.needs()) {
+      // (code/Dockerfile's gitnew stage runs this file with a newer git and BN_TEST_REQUIRE_CONFIG_HOOKS=1: there it must run)
+      assert.notEqual(process.env.BN_TEST_REQUIRE_CONFIG_HOOKS, '1', `this git (${git(WS, '--version').trim()}) has no config-based hooks, and this run requires them`);
+      t.skip(`this git (${git(WS, '--version').trim()}) has no such feature`);
+      return;
+    }
     baseRepo();
     v.setup();
     change();
@@ -498,6 +503,51 @@ test('caps and the deadline: thousands of files are truncated; a configuration i
   assert.ok(Date.now() - t0 < 8000, `${Date.now() - t0} ms`);
   assert.equal(x.repo, false);
   assert.match(x.reason, /in time/);
+});
+
+test('a file in a repository of its own is refused (git would stage nothing and say nothing); stage all leaves it', async () => {
+  baseRepo();
+  fs.mkdirSync(path.join(WS, 'inner'));
+  git(path.join(WS, 'inner'), 'init', '-q');
+  write('inner/f.txt', 'x\n');
+  write('inner/deep/g.txt', 'y\n');
+  await assert.rejects(coded.gitStage({ paths: ['inner/f.txt'] }, O), /a repository of its own \(inner\): stage it there/);
+  await assert.rejects(coded.gitStage({ paths: ['inner/deep/g.txt'] }, O), /a repository of its own \(inner\)/);
+  write('a.txt', 'changed\n');
+  await coded.gitStage({ all: true }, O);
+  assert.deepEqual((await coded.gitStatus(O)).staged.map((f) => f.path), ['a.txt']);
+});
+
+test('a git stopped at the deadline: the index.lock it left is removed when it is this op\'s and no git runs; else the error names it', async () => {
+  baseRepo();
+  const lock = path.join(WS, '.git', 'index.lock');
+  // a git that takes the lock in `add`, then hangs
+  const slow = path.join(ROOT, 'slow-git', 'git');
+  fs.mkdirSync(path.dirname(slow), { recursive: true });
+  fs.writeFileSync(slow, `#!/bin/sh\nfor a in "$@"; do if [ "$a" = add ]; then : > '${lock}'; sleep 30; fi; done\nexec '${GIT}' "$@"\n`, { mode: 0o755 });
+  const noGit = path.join(ROOT, 'proc-none'), someGit = path.join(ROOT, 'proc-git');
+  fs.mkdirSync(noGit, { recursive: true });
+  fs.mkdirSync(path.join(someGit, '4242'), { recursive: true });
+  fs.writeFileSync(path.join(someGit, '4242', 'comm'), 'git\n');
+  assert.equal(coded.gitRunning(noGit), false);
+  assert.equal(coded.gitRunning(someGit), true);
+  assert.equal(coded.gitRunning(path.join(ROOT, 'no-such-proc')), true, 'unknown: as if one ran');
+  write('b.dat', 'changed\n');
+  let t0 = Date.now();
+  await assert.rejects(coded.gitStage({ paths: ['b.dat'] }, { git: slow, deadlineMs: 4000, procDir: noGit }), /did not answer in time \(the index\.lock it left was removed\)/);
+  assert.ok(Date.now() - t0 < 12000, `${Date.now() - t0} ms`);
+  assert.ok(!fs.existsSync(lock), 'the lock is gone');
+  t0 = Date.now();
+  await assert.rejects(coded.gitStage({ paths: ['b.dat'] }, { git: slow, deadlineMs: 4000, procDir: someGit }), (e) => e.message.includes('if no git runs any more, remove') && e.message.includes('index.lock'));
+  assert.ok(fs.existsSync(lock), 'another git runs: the lock stays');
+  // a lock older than the op (someone else's) stays too
+  fs.utimesSync(lock, new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+  const plainAdd = path.join(ROOT, 'slow-git2', 'git');
+  fs.mkdirSync(path.dirname(plainAdd), { recursive: true });
+  fs.writeFileSync(plainAdd, `#!/bin/sh\nfor a in "$@"; do if [ "$a" = add ]; then sleep 30; fi; done\nexec '${GIT}' "$@"\n`, { mode: 0o755 });
+  await assert.rejects(coded.gitStage({ paths: ['b.dat'] }, { git: plainAdd, deadlineMs: 4000, procDir: noGit }), /remove .*index\.lock/);
+  assert.ok(fs.existsSync(lock), 'a lock from before the op stays');
+  fs.rmSync(lock);
 });
 
 test('not a repository, a repository around the workspace, core.worktree elsewhere, no git', async () => {

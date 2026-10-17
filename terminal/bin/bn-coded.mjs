@@ -120,7 +120,9 @@ const oneOf = (...v) => (x) => v.includes(x);
 // --allow-dangerously-skip-permissions: the code container passes it while CODE_ALLOW_BYPASS is on, so the page can switch a
 // session to Bypass permissions (Claude Code refuses that switch otherwise); it changes no other mode. A process still
 // starts in one of --permission-mode's modes below.
-const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events', '--allow-dangerously-skip-permissions']);
+// --no-session-persistence and --tools= (empty: no built-in tool at all) only take away: the Git panel's "Write message"
+// helper runs with them (code/server/gitdraft.mjs) — no transcript, no tool.
+const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence']);
 // Refused on purpose (tests: code/test/bn-coded.test.mjs): --settings, --mcp-config, --plugin-dir, --debug-file,
 // --betas (Bedrock refuses beta headers), --task-budget (adds one), --managed-settings, --add-dir,
 // --dangerously-skip-permissions and the starting modes bypassPermissions / auto (a session is switched to Bypass
@@ -140,6 +142,7 @@ const VALUED = {
   '--max-budget-usd': (v) => /^[0-9]{1,3}(\.[0-9]{1,6})?$/.test(v),
   '--allowedTools': (v) => RULES.test(v),
   '--disallowedTools': (v) => RULES.test(v),
+  '--tools': (v) => v === '',
 };
 export function checkClaudeArgs(args) {
   if (!Array.isArray(args) || args.length > 64 || FIXED.some((a, i) => args[i] !== a)) return 'the stream-json prefix is missing';
@@ -879,7 +882,7 @@ function sandboxIdentity() {
 // gitPrep() -> {run, head, base, gitdir, left} for a repository that is /workspace, or {no: reason}. run(args, opts)
 // runs git with the panel's arguments before `args`, its environment (and opts.env: the identity), and what is left of
 // the op's deadline.
-async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
   const t0 = Date.now();
   const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
   let extra = [...GIT_PANEL_CONFIG];
@@ -902,7 +905,7 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
   if (r.timedOut) return { no: 'git did not answer in time' };
   const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
   if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: 'git: an unexpected HEAD' };
-  return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left };
+  return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left, t0, procDir };
 }
 const gitWhy = (r) => printable(`${r.err || ''}\n${r.out ? r.out.toString('utf8').slice(0, 2000) : ''}`.trim().split('\n').filter(Boolean).pop() || `exit ${r.code}`, 300);
 // a merge, rebase … in progress (from the git folder's own files)
@@ -1074,14 +1077,50 @@ export async function gitFile(send, req, { git = GIT, deadlineMs = GIT_PANEL_DEA
   return { repo: true, scope, path: p, mtimeMs: st?.mtimeMs ?? null, truncated: r.stopped === true };
 }
 
-// a changing command's answer: {ok: true, …} or the error git gave (its last line)
-const gitFailed = (r, what) => { throw new Error(`${what}: ${r.timedOut ? 'git did not answer in time' : gitWhy(r)}`); };
+// gitRunning(procDir) -> whether any git process runs in the sandbox now (true when that cannot be known)
+export function gitRunning(procDir = '/proc') {
+  let pids;
+  try { pids = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)); } catch { return true; }
+  for (const n of pids.slice(0, 16384)) {
+    let comm = '';
+    try { comm = fs.readFileSync(path.join(procDir, n, 'comm'), 'utf8').trim(); } catch { continue; }
+    if (comm === 'git' || comm.startsWith('git-')) return true;
+  }
+  return false;
+}
+// staleLock(g) -> what to add to the error of a git that was stopped at the deadline: its index.lock (git's, in the
+// git folder) removed when it is ours — made since this op began — and no git runs any more; else where it is
+const staleLock = (g) => {
+  const lock = path.join(g.gitdir, 'index.lock');
+  let st;
+  try { st = fs.lstatSync(lock); } catch { return ''; }
+  if (st.isFile() && st.mtimeMs >= g.t0 - 1000 && !gitRunning(g.procDir)) {
+    try { fs.unlinkSync(lock); return ' (the index.lock it left was removed)'; } catch { /* below */ }
+  }
+  return `; if no git runs any more, remove ${printable(lock, 300)}`;
+};
+// a changing command's answer: {ok: true, …} or the error git gave (its last line); stopped at the deadline, the lock
+// it may have left is dealt with
+const gitFailed = (r, what, g = null) => {
+  throw new Error(`${what}: ${r.timedOut ? `git did not answer in time${g ? staleLock(g) : ''}` : gitWhy(r)}`);
+};
+// nestedRepo(rel) -> the folder of a repository of its own on rel's way (a .git there), or null: git does not stage a
+// file in it from here (it would say nothing and stage nothing)
+export function nestedRepo(rel) {
+  const segs = rel.split('/');
+  let p = WORKSPACE;
+  for (let i = 0; i < segs.length - 1; i++) {
+    p = path.join(p, segs[i]);
+    try { fs.lstatSync(path.join(p, '.git')); return segs.slice(0, i + 1).join('/'); } catch { /* none here */ }
+  }
+  return null;
+}
 
 // git.stage {paths | all} — `git add -- paths`: the files' changes, a new file, a deletion. all: every change and
 // untracked file git.status lists (conflicts left out: stage those one by one). A folder or a submodule is refused.
-export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
   let paths = gitPaths(req);
-  const g = await gitPrep({ git, deadlineMs });
+  const g = await gitPrep({ git, deadlineMs, procDir });
   if (g.no) throw new Error(g.no);
   if (paths === null) {
     const r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
@@ -1092,32 +1131,36 @@ export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE
       .map((e) => e.path);
     if (paths.length > GIT_NAMES_MAX) throw new Error(`more than ${GIT_NAMES_MAX} changed files: stage them in the terminal`);
   } else {
-    for (const p of paths) if (statRel(p)?.type === 'dir') throw new Error(`a folder: stage the files in it (${printable(p, 80)})`);
+    for (const p of paths) {
+      if (statRel(p)?.type === 'dir') throw new Error(`a folder: stage the files in it (${printable(p, 80)})`);
+      const nested = nestedRepo(p);
+      if (nested) throw new Error(`in a repository of its own (${printable(nested, 80)}): stage it there, in the terminal`);
+    }
     const r = await g.run(GIT_PANEL_ARGS.lsFiles(paths), { maxOut: 1 << 20 });
     if (r.code !== 0) gitFailed(r, 'git ls-files');
     for (const rec of r.out.toString('utf8').split('\0')) if (rec.startsWith('160000 ')) throw new Error('a submodule: stage it in the terminal');
   }
   for (let i = 0; i < paths.length; i += 500) {
     const r = await g.run(GIT_PANEL_ARGS.stage(paths.slice(i, i + 500)), { maxOut: 64 << 10 });
-    if (r.code !== 0) gitFailed(r, 'git add');
+    if (r.code !== 0) gitFailed(r, 'git add', g);
   }
   return { ok: true, staged: paths.length };
 }
 // git.unstage {paths | all} — `git reset -q HEAD -- paths` (before the first commit: `git rm --cached`): the index
 // as the last commit had it, the files as they are
-export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
   const paths = gitPaths(req);
-  const g = await gitPrep({ git, deadlineMs });
+  const g = await gitPrep({ git, deadlineMs, procDir });
   if (g.no) throw new Error(g.no);
   const r = await g.run(GIT_PANEL_ARGS.unstage(g.head, paths), { maxOut: 64 << 10 });
-  if (r.code !== 0) gitFailed(r, g.head ? 'git reset' : 'git rm --cached');
+  if (r.code !== 0) gitFailed(r, g.head ? 'git reset' : 'git rm --cached', g);
   return { ok: true, unstaged: paths ? paths.length : 'all' };
 }
 // git.commit {message} — what is staged, with that message (stdin), as the identity above; never during a rebase,
 // cherry-pick, revert or bisect (finish those in the terminal)
-export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
   const message = gitMessage(req?.message);
-  const g = await gitPrep({ git, deadlineMs });
+  const g = await gitPrep({ git, deadlineMs, procDir });
   if (g.no) throw new Error(g.no);
   const state = repoState(g.gitdir);
   if (state && state !== 'merge') throw new Error(`a ${state} is in progress: finish it in the terminal`);
@@ -1126,7 +1169,7 @@ export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLIN
   const r = await g.run(GIT_PANEL_ARGS.commit, { maxOut: 64 << 10, input: Buffer.from(message, 'utf8'), env });
   if (r.code !== 0) {
     if (/nothing (added )?to commit|no changes added to commit/i.test(`${r.out}\n${r.err}`)) throw new Error('nothing is staged to commit');
-    gitFailed(r, 'git commit');
+    gitFailed(r, 'git commit', g);
   }
   const h = await g.run(GIT_ARGS.head, { maxOut: 4096 });
   const head = h.code === 0 ? h.out.toString('utf8').trim() : null;
@@ -1158,10 +1201,10 @@ function trashEntry(rel) {
 // tracked one's current version moves there too, then git writes the staged version back (`git checkout -- path`); a
 // deleted one is written back. Only while the file still has the time the page saw (ifMtimeMs). A file with only staged
 // changes, or a conflict, is refused.
-export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
   const p = req?.path;
   if (typeof p !== 'string' || !gitPathOk(p)) throw new Error('not a path in the workspace');
-  const g = await gitPrep({ git, deadlineMs });
+  const g = await gitPrep({ git, deadlineMs, procDir });
   if (g.no) throw new Error(g.no);
   const r = await g.run(GIT_PANEL_ARGS.pathStatus(p), { maxOut: 64 << 10 });
   if (r.code !== 0) gitFailed(r, 'git status');
@@ -1181,7 +1224,7 @@ export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
   const c = await g.run(GIT_PANEL_ARGS.restore([p]), { maxOut: 64 << 10 });
   if (c.code !== 0) {
     if (moved) { try { fs.renameSync(moved.dest, moved.abs); } catch { /* left in the trash: said below */ } }
-    gitFailed(c, 'git checkout');
+    gitFailed(c, 'git checkout', g);
   }
   return { ok: true, action: 'restored', ...(moved ? { trash: path.relative(WORKSPACE, moved.dest) } : {}) };
 }

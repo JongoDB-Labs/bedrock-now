@@ -120,6 +120,11 @@
 //                                           on git's stdin (no NUL, no control or direction-changing characters but tab
 //                                           and newline; ≤ 64 KiB), --no-verify --no-gpg-sign; refused during a rebase,
 //                                           cherry-pick, revert or bisect; 400 "nothing is staged to commit"
+//   POST   /api/git/draft {model?}         {message, denied, turns} — "Write message": a commit message for what is
+//                                           staged, from a Claude Code process of its own that can use no tool (never a
+//                                           session, never your mode: gitdraft.mjs); the prompt is built here from the
+//                                           sandbox's staged diff; model: a full id. 400 nothing staged, 429 two at once,
+//                                           502 the helper failed or was offered a tool, 504 no answer within 2 minutes
 //   POST   /api/git/discard {path, ifMtimeMs?}    {ok, action: restored|trashed, trash} — a file's unstaged changes
 //                                           gone: its current version to the workspace trash, the staged one written
 //                                           back (`git checkout -- path`); an untracked file to the trash; 409 when the

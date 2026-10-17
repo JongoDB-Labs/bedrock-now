@@ -12,14 +12,18 @@ All notable changes to bedrock-now are documented here. The format follows
   its ahead/behind, the changed files grouped Staged / Changes / Untracked (and conflicts) with their `+/−`, a file's
   staged or unstaged diff in the editor area, Stage / Unstage per file or group, Discard (asks; the file as it is goes
   to the workspace trash, only while it is as the panel saw it), a commit box (`Ctrl/⌘+Enter`) with **Write
-  message** — the open session proposes a message from the staged diff, as a draft in the box, never a commit — who
-  the commit is by, and the last 20 commits. It refreshes after every turn and action. git runs in the sandbox with
+  message** — Claude proposes a message from the staged diff in a helper process that can use no tool (never your
+  session or its mode: the diff is untrusted), as a draft in the box, never a commit — who the commit is by, and the
+  last 20 commits. A git stopped at its deadline has its `index.lock` cleaned up when it is safe (else the error names
+  it); a file inside a nested repository is refused instead of being silently skipped. It refreshes after every turn and action. git runs in the sandbox with
   the Review's hardening plus: **no hook ever runs** (`core.hooksPath=/dev/null`, `--no-verify`, and every
   config-based hook of git 2.54+ — which `core.hooksPath` does not turn off — switched off by name), no signing
   program, no editor, no automatic gc; fixed argument lists, paths after `--` as literal pathspecs, the message on
   stdin. **No push or pull**, by decision (they would send the workspace with the sandbox's credentials to a remote
   Claude can change): use the terminal. New bn-coded ops `git.status`, `git.log`, `git.file`, `git.stage`,
-  `git.unstage`, `git.commit`, `git.discard`; routes `/api/git/status|log|file|stage|unstage|commit|discard`
+  `git.unstage`, `git.commit`, `git.discard`; routes `/api/git/status|log|file|stage|unstage|commit|discard|draft`;
+  bn-coded also allows `--tools=` (empty: no tool) and `--no-session-persistence` for the helper. The Git tests run a
+  second time with git 2.54 (code/Dockerfile's `gitnew` stage), where config-based hooks exist
   ([docs/security.md](docs/security.md#the-git-panel)).
 
 ## [0.8.0] - 2026-10-17

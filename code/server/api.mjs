@@ -8,7 +8,8 @@ import { LIMITS } from './protocol.mjs';
 import { fromHistory, sessionRow } from './normalize.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
-import { isUuid, relPath, fileName, short, str, int, num, oneOf } from './validate.mjs';
+import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } from './validate.mjs';
+import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
 import { watched } from './watch.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
@@ -335,6 +336,27 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return { ok: result?.ok === true, head: typeof result?.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(result.head) ? result.head : null,
       subject: short(result?.subject, 300), author: { name: short(a.name, 200), email: short(a.email, 200), from: oneOf(a.from, ['repository', 'sandbox', 'default'], 'default') } };
   }
+  // "Write message": a commit message proposed by a Claude Code process of its own that can use no tool (gitdraft.mjs) —
+  // never the open session, never your mode. The prompt is built here from the sandbox's staged diff; the page gets
+  // text for its commit box. Two at once at most.
+  let drafting = 0;
+  async function gitDraft(body, signal) {
+    const model = body?.model === undefined || body?.model === null || body?.model === '' ? null : body.model;
+    if (model !== null && !isFullModel(model)) throw new HttpError(400, 'model: a full model id');
+    if (drafting >= 2) throw new HttpError(429, 'two commit messages are being drafted already');
+    drafting++;
+    try {
+      const st = await gitStatus();
+      if (!st.repo) throw new HttpError(400, st.reason || 'not a git repository');
+      if (!st.staged.length) throw new HttpError(400, 'nothing is staged');
+      const f = await gitFile({ scope: 'staged' });
+      const r = await runDraft({ query: sessions.query, spawn: sessions.spawn, model, prompt: draftPrompt(st.staged, f.files), log: sessions.log ?? (() => {}), signal });
+      return { message: r.message, denied: r.denied, turns: r.turns };
+    } catch (e) {
+      if (e instanceof DraftError) throw new HttpError(e.status, e.message);
+      throw e;
+    } finally { drafting--; }
+  }
   async function gitDiscard(body) {
     const p = body?.path;
     if (!gitPathOk(p)) throw new HttpError(400, 'bad path');
@@ -522,7 +544,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   }
 
   return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
-    gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, memory, memoryWrite, plugins, available, pluginAction,
+    gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, gitDraft, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
     ports, stopPort, launch, launchStart };
 }

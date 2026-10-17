@@ -45,14 +45,20 @@ test('claude arguments: the SDK prefix, then only allowlisted --name=value / fla
     '--setting-sources=user,project,local', '--setting-sources=', `--session-id=${SID}`, `--resume=${SID}`, `--resume-session-at=${SID}`,
     '--thinking=adaptive', '--effort=xhigh', '--max-turns=12', '--max-budget-usd=1.5', '--allowedTools=Bash(npm test:*)',
     '--disallowedTools=WebFetch', '--include-partial-messages', '--fork-session', '--include-hook-events',
-    '--allow-dangerously-skip-permissions'];   // (CODE_ALLOW_BYPASS: the page may switch a session to Bypass permissions)
+    '--allow-dangerously-skip-permissions',   // (CODE_ALLOW_BYPASS: the page may switch a session to Bypass permissions)
+    '--tools=', '--no-session-persistence'];   // (the Git panel's Write-message helper: no tool, no transcript)
   assert.equal(coded.checkClaudeArgs([...FIXED, ...ok]), null);
+  // the helper's whole argument list, as the SDK builds it for code/server/gitdraft.mjs (recorded by the fake-API probe)
+  assert.equal(coded.checkClaudeArgs([...FIXED, '--max-turns=3', '--permission-prompt-tool=stdio',
+    '--disallowedTools=Bash,BashOutput,KillShell,KillBash,Edit,MultiEdit,Write,Read,Glob,Grep,NotebookEdit,NotebookRead,WebFetch,WebSearch,Task,Agent,TodoWrite,Skill,SlashCommand,ExitPlanMode,EnterPlanMode,AskUserQuestion,LSP,ListMcpResourcesTool,ReadMcpResourceTool,mcp__bedrock-shared',
+    '--tools=', '--setting-sources=', '--permission-mode=dontAsk', '--no-session-persistence']), null);
   const refused = ['--settings={"x":1}', '--mcp-config=/tmp/x.json', '--plugin-dir=/tmp', '--debug-file=/tmp/d', '--betas=x',
     '--task-budget=10', '--managed-settings=x', '--add-dir=/', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions=1',
     '--permission-mode=bypassPermissions', '--permission-mode=auto', '--permission-mode=readOnly', '--permission-mode=manual', '--model', '--model=', '--model=-x', '--model=a b',
     '--model=x\ny', '--model=ü', `--session-id=${SID.toUpperCase()}`, '--resume=../../etc', '--setting-sources=user,policy',
     '--max-turns=0', '--max-turns=10000', '--max-budget-usd=-1', '--allowedTools=a\nb', '--include-partial-messages=1',
-    '-p', 'positional', '--permission-prompt-tool=mcp__x', '--effort=ultra', '--thinking=enabled'];
+    '-p', 'positional', '--permission-prompt-tool=mcp__x', '--effort=ultra', '--thinking=enabled', '--tools=Bash', '--tools=default', '--tools',
+    '--no-session-persistence=0'];
   for (const a of refused) assert.notEqual(coded.checkClaudeArgs([...FIXED, a]), null, a);
   assert.notEqual(coded.checkClaudeArgs(FIXED.slice(1)), null, 'prefix');
   assert.notEqual(coded.checkClaudeArgs(['--verbose', ...FIXED]), null, 'prefix moved');

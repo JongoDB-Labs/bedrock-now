@@ -16,7 +16,7 @@ import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 import type { GitCommit, GitEntry, GitFile, GitReview, GitScope, GitStatus, GrepResult } from './types';
-import { messagePrompt, proposedMessage } from './git';
+import { proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from './budget';
 import { pageTitle, waitingSessions } from './groups';
@@ -149,9 +149,8 @@ export interface GitState {
   busy: string | null;
   /** the commit box (kept while the panel is closed) */
   message: string;
-  /** "Write message": the prompt sent to a session (its answer becomes the commit box's draft); session null until
-   *  the prompt was delivered */
-  drafting: { session: string | null; prompt: string; since: number } | null;
+  /** "Write message" on its way (a helper process of its own, with no tools: POST /api/git/draft) */
+  drafting: { since: number } | null;
   /** the panel was opened in this page: git is asked again after each turn */
   engaged: boolean;
   /** bumped to focus the commit box */
@@ -813,7 +812,6 @@ function onEvent(id: string, ev: Ev, wasBusy = false, replayed = false): void {
     refreshExpandedDirs();
     if (wasBusy && get().review.engaged && id === get().active) scheduleReview();   // (a turn that ran here, not a replay)
     if (wasBusy && get().git.engaged) scheduleGit();
-    if (!replayed && get().git.drafting) finishDraft(id);
     announce();
   } else if ((ev.kind === 'error' || (ev.kind === 'text' && /API Error/i.test(ev.text))) && BUDGET_WORDS.test(ev.text)) {
     // LiteLLM refused the request (Claude Code shows the API's error as its answer)
@@ -2560,53 +2558,32 @@ export async function commitGit(): Promise<boolean> {
   });
   return done;
 }
-/** "Write message": the open session (a new one if none is open) is asked to propose a message for the staged changes
- *  — their diff goes with the prompt —; its answer becomes the commit box's draft when the turn ends. Never commits. */
+/** "Write message": Claude proposes a message for the staged changes in a helper process of its own — never the open
+ *  session, never your mode, no tool at all (code/server/gitdraft.mjs) —; it goes into the commit box as a draft (your
+ *  text, if any, can be put back). Never commits. */
 export async function writeCommitMessage(): Promise<void> {
   const st = get().git.status;
   if (!st?.repo || !st.staged.length || get().git.drafting) return;
-  const v = activeView();
-  if (v && (v.state === 'busy' || v.state === 'starting')) return toast('Claude is working in this session: ask for a message once the turn is over.', 'error');
-  let files: GitFile[] = [];
+  const since = Date.now();
+  setGit((g) => ({ ...g, drafting: { since } }));
+  const current = () => get().git.drafting?.since === since;
   try {
-    files = (await api.getGitFile('staged', null)).files;
+    const r = await api.gitDraft(sendModel(activeView()?.model) ?? (defaultModel() || null));
+    if (!current()) return;   // (you said "Don't use it")
+    const msg = proposedMessage(r.message);
+    if (!msg) return toast('Claude\'s answer had no commit message in it.', 'error');
+    const before = get().git.message;
+    setGit((g) => ({ ...g, message: msg, focus: g.focus + 1 }));
+    if (before.trim() && before !== msg) toast('Claude\'s message replaced what was in the box.', 'info', { label: 'Put mine back', run: () => setGitMessage(before) });
+    else toast('A message from Claude is in the commit box: read it, then commit.', 'ok');
   } catch (e) {
-    return toast(`The staged changes could not be read: ${errText(e)}`, 'error');
+    if (current()) toast(`No message from Claude: ${errText(e)}`, 'error');
+  } finally {
+    if (current()) setGit((g) => ({ ...g, drafting: null }));
   }
-  const prompt = messagePrompt(st.staged, files);
-  setGit((g) => ({ ...g, drafting: { session: null, prompt, since: Date.now() } }));
-  const sent = await sendPrompt(prompt, []);
-  if (!sent) return setGit((g) => ({ ...g, drafting: null }));
-  const sid = get().active;
-  setGit((g) => (g.drafting?.prompt === prompt ? { ...g, drafting: { ...g.drafting, session: sid } } : g));
-  // (a session started for this request is named for it, not after the prompt's first words)
-  if (sid) updateView(sid, (x) => (x.title === label(prompt, 80) ? { ...x, title: 'Commit message' } : x));
 }
 export function cancelDraft(): void {
   setGit((g) => ({ ...g, drafting: null }));
-}
-/** A turn ended in session `id`: if it answered "Write message", the message it proposed goes into the commit box. */
-function finishDraft(id: string): void {
-  const d = get().git.drafting;
-  const v = get().views[id];
-  if (!d || (d.session !== null && d.session !== id) || !v) return;
-  let at = -1;
-  for (let i = v.items.length - 1; i >= 0; i--) {
-    const it = v.items[i];
-    if (it.t === 'user' && it.text === d.prompt) {
-      at = i;
-      break;
-    }
-  }
-  if (at < 0) return;   // (another session's turn: this one's answer is still to come)
-  let answer = '';
-  for (const it of v.items.slice(at + 1)) if (it.t === 'assistant' && it.parent === null && it.text.trim()) answer = it.text;
-  const msg = proposedMessage(answer);
-  const before = get().git.message;
-  setGit((g) => ({ ...g, drafting: null, ...(msg ? { message: msg, focus: g.focus + 1 } : {}) }));
-  if (!msg) return toast('Claude\'s answer had no commit message in it.', 'error');
-  if (before.trim() && before !== msg) toast('Claude\'s message replaced what was in the box.', 'info', { label: 'Put mine back', run: () => setGitMessage(before) });
-  else toast('A message from Claude is in the commit box: read it, then commit.', 'ok');
 }
 
 /** A file's staged or unstaged (or new) changes in a tab of the editor area (the editor sheet on a phone). */

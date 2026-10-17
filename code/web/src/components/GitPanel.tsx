@@ -1,15 +1,14 @@
 // The Git panel (the side panel's Git tab; a sheet on a phone): the branch and how far it is from its upstream, the
 // changed files grouped Staged / Changes / Untracked (and Conflicts) with +/−; a file opens its diff in the editor area
 // (the Review's rows, read only); Stage / Unstage / Discard per file and per group (Discard asks first: the file's
-// current version goes to the workspace trash); the commit box (Ctrl/⌘+Enter commits; "Write message" asks the open
-// session for a draft — it never commits); the last 20 commits. git runs in the sandbox with no hook, signing program
+// current version goes to the workspace trash); the commit box (Ctrl/⌘+Enter commits; "Write message" has a helper
+// process with no tools — never your session — draft a message; it never commits); the last 20 commits. git runs in the sandbox with no hook, signing program
 // or editor (docs/security.md); no push, no pull — those run in the terminal. Every text from the sandbox is shown as
 // text (label/safe).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
   store,
-  activeView,
   cancelDraft,
   commitGit,
   discardGit,
@@ -123,10 +122,6 @@ function CommitBox({ st }: { st: GitStatus }) {
   const busy = useSel(store, (s) => s.git.busy);
   const drafting = useSel(store, (s) => s.git.drafting);
   const focus = useSel(store, (s) => s.git.focus);
-  const sessionBusy = useSel(store, (s) => {
-    const v = activeView(s);
-    return !!v && (v.state === 'busy' || v.state === 'starting');
-  });
   const ref = useRef<HTMLTextAreaElement>(null);
   // focused when asked (Write message's draft arrived, the palette) — not when the panel opens
   useEffect(() => {
@@ -164,7 +159,7 @@ function CommitBox({ st }: { st: GitStatus }) {
       />
       {drafting && (
         <div class="gitp-drafting small" data-testid="git-drafting">
-          <Spinner size={11} /> Claude is writing a message (in the chat)…
+          <Spinner size={11} /> Claude is writing a message (a helper of its own, with no tools)…
           <button type="button" class="linkish" onClick={cancelDraft}>
             Don't use it
           </button>
@@ -174,13 +169,11 @@ function CommitBox({ st }: { st: GitStatus }) {
         <button
           type="button"
           class="btn small"
-          disabled={!st.staged.length || !!drafting || sessionBusy}
+          disabled={!st.staged.length || !!drafting}
           title={
             !st.staged.length
               ? 'Stage changes first'
-              : sessionBusy
-                ? 'Claude is working: ask once the turn is over'
-                : 'Ask Claude (the open session, with the staged diff) to propose a message — it goes into this box as a draft; nothing is committed'
+              : 'Claude proposes a message from the staged diff — in a helper of its own that can use no tool (never your session or its mode); it goes into this box as a draft, nothing is committed'
           }
           onClick={() => void writeCommitMessage()}
           data-testid="git-write-message"

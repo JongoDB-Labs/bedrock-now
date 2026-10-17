@@ -520,8 +520,9 @@ per browser.
   a file opens its staged or unstaged diff in the editor area; **Stage** / **Unstage** per file or per group;
   **Discard** asks first, then moves the file as it is now to the workspace trash and writes the staged (or last
   committed) version back — only while the file is still as the panel saw it. The commit box commits what is staged
-  (`Ctrl/⌘+Enter`); **Write message** asks the open session (with the staged diff) to propose a message, which lands in
-  the box as a draft for you to read — it never commits by itself. The panel shows who the commit is by (the
+  (`Ctrl/⌘+Enter`); **Write message** has Claude propose a message from the staged diff — in a helper process of its
+  own that can use no tool at all (never your session, whatever its mode: a diff could carry instructions) — which
+  lands in the box as a draft for you to read; it never commits by itself. The panel shows who the commit is by (the
   repository's `user.name`/`user.email`, else the sandbox's `~/.gitconfig`, else "bedrock-now Code page"), and the last
   20 commits. Commits made here run **no git hooks** (`pre-commit`, `commit-msg` …), no signing program and no editor,
   whatever the repository configures — your computer's git would run its hooks, so staged files that run on your
@@ -1219,7 +1220,7 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   its card, an @-mentioned file edited and its diff, the palette, an upload, a reload without duplicates, an
   AskUserQuestion answered, plugins from a marketplace in the workspace with the install command confirmed by its
   SHA-256, the MCP panel, a phone, the Settings row, the Git panel (Claude edits a file; stage, commit and the log from
-  the panel, while planted hooks never run) — each with zero CSP violations; previews of a dev server in the
+  the panel, Write message's helper ignoring an instruction planted in the diff, while planted hooks never run) — each with zero CSP violations; previews of a dev server in the
   sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`, isolation checked from inside
   the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel, PowerPoint, notebook, HTML and
   Mermaid previews and the sandboxed viewer's site (its policies, refused capabilities, isolation from inside it);

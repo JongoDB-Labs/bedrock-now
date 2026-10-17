@@ -8,6 +8,8 @@
 #            code/web exists; otherwise an empty dist, and the backend serves the plain page (code/plain)
 #   webtest  the frontend's checks on that same install: npm test (tsc --noEmit, then its unit tests)
 #   deps     the backend's node_modules, checked: no native binaries, no peer dependencies, the SDK imports
+#   gitnew   the Git panel's unit tests once more with git 2.54 (Alpine 3.24): config-based hooks, which Debian's git
+#            lacks, are proven switched off there (the test may not skip)
 #   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
 #            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox)
 #   (last)   the runtime image
@@ -20,6 +22,17 @@ RUN sh /src/build-web.sh
 FROM web AS webtest
 RUN if [ -f package.json ]; then npm test; else echo "no code/web: no frontend tests"; fi && touch /tmp/web-tested
 
+# gitnew: the Git panel's proof again with a newer git than Debian's — 2.54 (Alpine 3.24's), which has config-based hooks
+# (hook.<name>.command + hook.<name>.event) that core.hooksPath does not turn off: here that vector must run, never skip
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS gitnew
+RUN apk add --no-cache git=2.54.0-r0 nodejs=24.18.1-r0
+WORKDIR /opt/code
+COPY server/frames.mjs ./server/frames.mjs
+COPY test/helpers.mjs test/bn-coded-git.test.mjs ./test/
+COPY --from=terminal bin/bn-coded.mjs /opt/terminal/bin/
+ENV BN_TERMINAL_DIR=/opt/terminal BN_TEST_REQUIRE_CONFIG_HOOKS=1
+RUN git --version && node --test --test-reporter=spec test/bn-coded-git.test.mjs && touch /tmp/gitnew-tested
+
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS deps
 WORKDIR /opt/code
 COPY package.json package-lock.json .npmrc ./
@@ -30,8 +43,9 @@ RUN npm ci --omit=optional --omit=dev --ignore-scripts --no-audit --no-fund --lo
  && node -e 'import("@anthropic-ai/claude-agent-sdk").then((m) => { if (typeof m.query !== "function" || typeof m.getSessionMessages !== "function") process.exit(1); })'
 
 FROM deps AS test
-# (the frontend's tests first: this stage needs their stage)
+# (the frontend's tests first, and the Git panel's with a newer git: this stage needs their stages)
 COPY --from=webtest /tmp/web-tested /tmp/web-tested
+COPY --from=gitnew /tmp/gitnew-tested /tmp/gitnew-tested
 # git and ripgrep, as the sandbox image has them (Debian's): bn-coded's git.diff is proven against a hostile repository
 # with the same git, and fs.grep with the same ripgrep
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep && rm -rf /var/lib/apt/lists/*

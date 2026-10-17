@@ -693,7 +693,9 @@ spawn server, Claude Code or any file at will.
   `terminal.resume`, `sessions.running`: below, "Budgets, Permissions, Open in the terminal, links"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
   `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
-  a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*); refused, among
+  a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
+  away, for the Git panel's *Write message* helper: `--tools=` with an empty value — no built-in tool — and
+  `--no-session-persistence`; `--tools` naming any tool is refused); refused, among
   others: `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
   `--betas` (Bedrock refuses beta headers), `--dangerously-skip-permissions` and the starting modes
   `bypassPermissions` and `auto` (a process never starts in them). Plugin commands never get `-y`. Claude Code gets the container's environment without the MCP token, the
@@ -1239,19 +1241,42 @@ repository can plant in `.git/` or in a configuration file.
   while the file still has the modification time the panel saw (409 otherwise), only for unstaged changes (a file
   with only staged changes, or a conflict, is refused), and the page asks first. After a discard the watched files are
   checked at once (`watch_check`), as after a Review Undo.
+- [x] **A git stopped at the deadline leaves no lock behind unsaid.** git takes `.git/index.lock` while it writes the
+  index; killed at the 30-second deadline it can leave it, and every later git command (yours in the terminal too)
+  would fail. When a changing op times out, bn-coded removes that `index.lock` only if it was made since the op began
+  and no git process runs in the sandbox (`/proc/*/comm`; unknown counts as running); otherwise the error names the
+  file to remove once no git runs.
+- [x] **A file in a repository of its own is refused, not silently skipped.** `git add` of a file inside a nested
+  repository (a folder with its own `.git`, not registered as a submodule) succeeds and stages nothing; the panel says
+  "in a repository of its own (folder): stage it there, in the terminal" instead. "Stage all" never names such files
+  (git's status lists the folder, not its files).
 - [x] **Who a commit is by.** The repository's `user.name` / `user.email` (read by git, includes and all), else the
   sandbox's own `~/.config/git/config` and `~/.gitconfig` — read by bn-coded itself, regular files only, never through
   a link, includes not followed (the global configuration is never given to git) — else a fixed identity, "bedrock-now
   Code page" `<code-page@bedrock-now.invalid>`. A name or e-mail with `<`, `>` or a control character is not used. It
   is set as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` (nothing else of the environment can be added), and the panel shows it
   before you commit. Commits are refused during a rebase, cherry-pick, revert or bisect (finish those in the terminal).
-- [x] **Write message asks, it never commits.** It sends the open session (or a new one) a prompt you see in the
-  conversation: the staged files (names quoted as the Review's comments quote them: a name cannot add a line) and their
-  diff (at most 30,000 characters) in a fence longer than any backtick run inside it, and the request to answer with the
-  message only, without tools. The diff is workspace content — instructions in it are text in a fence, but a model can
-  still be swayed by them; in *Manual* every tool still asks, and the answer only ever becomes the commit box's text:
-  the first fenced block (else the whole answer), with control and direction-changing characters taken out, at most
-  8,000 characters. You read it; Commit is yours.
+- [x] **Write message runs a helper that can use no tool — never your session.** The staged diff is file content, and
+  so untrusted: sent as your prompt into the open session, an "also run …" planted in it would run in *Bypass
+  permissions*, and in *Auto* the reviewer counts what your message names as your approval. So the code container
+  (`code/server/gitdraft.mjs`, `POST /api/git/draft`) builds the prompt itself from the sandbox's staged diff — the
+  page sends only a model id, checked — and gives it to a Claude Code process of its own, never a session (nothing in
+  the session list or the conversation), whatever your mode: `--tools=` (no built-in tool is offered to the model),
+  `--disallowedTools` naming every tool there is and the shared MCP server (removed from the model's context), the
+  same names denied by flag-tier rules sent before the prompt (they outrank any allow rule), `--setting-sources=` (none
+  of your or the workspace's settings: no allow rules, no plugins and their MCP servers, no settings hooks, no
+  CLAUDE.md), `--permission-mode=dontAsk` with a `canUseTool` that denies whatever might still ask, at most 3 turns, a
+  2-minute deadline, `--no-session-persistence`, and its own LiteLLM session tag for its spend. If Claude Code reports
+  any tool available to it (`init`), the draft is stopped and refused. The prompt: the staged files (names quoted as
+  the Review's comments quote them: a name cannot add a line) and the diff (at most 30,000 characters) in a fence
+  longer than any backtick run inside it, after a system prompt that says everything there is data. The answer only
+  ever becomes the commit box's text — the first fenced block (else the whole answer), control and
+  direction-changing characters taken out (by the backend and again by the page), at most 8,000 characters — as a
+  draft you read; Commit is yours. **Probe** (`code/test/probe/draft-fake-api.mjs`, with the real Claude Code 2.1.296
+  and a fake API that answers every request with tool calls — Bash, Write and the shared MCP server's tool — then a
+  message; an MCP server named like the shared one configured as bn-coded adds it): with Bypass permissions and the
+  default tools (the control) Claude Code offered 21 tools and all three calls ran; with the helper's own options
+  every request to the model carried no tool at all, none ran, and the message came back.
 - [x] **The code container checks every answer.** Paths as workspace paths (once per group), status letters from a
   short list, counts and times as bounded integers, hashes as 40/64 hex digits, the branch, upstream, identity and
   subjects as one-line text; at most 2,000 entries and 20 commits; the page checks again and shows all of it as text.
@@ -1265,9 +1290,10 @@ repository can plant in `.git/` or in a configuration file.
   vetted ssh configuration and the sandbox's egress setting — more than a minimal panel should carry. Run `git push`
   / `git pull` in the terminal, where you see what git does. The panel shows the upstream's ahead/behind counts from
   the sandbox's last fetch (no network).
-- **Proof** (`code/test/bn-coded-git.test.mjs`, with Debian's git in the image's test stage, and locally with git
-  2.54): for each of hook files in `.git/hooks`, in a `core.hooksPath` folder and in one an included file sets,
-  config-based hooks (also from `includeIf`; skipped where git has none), clean/smudge/process filters, a filter named
+- **Proof** (`code/test/bn-coded-git.test.mjs`, with Debian's git 2.47 in the image's test stage and again with git
+  2.54 in its `gitnew` stage — Alpine 3.24, where the config-based hooks test must run and may not skip): for each of
+  hook files in `.git/hooks`, in a `core.hooksPath` folder and in one an included file sets, config-based hooks (also
+  from `includeIf`), clean/smudge/process filters, a filter named
   `a=b` from `includeIf` + `info/attributes`, textconv and an external diff, fsmonitor, gpg signing, ssh signing, an
   editor, and automatic gc with a `pre-auto-gc` hook plus parallel checkout, plain git in that repository runs the
   marker program (the control) and the panel's whole round — status, log, a file's diff, stage, the staged diff,
@@ -1277,7 +1303,10 @@ repository can plant in `.git/` or in a configuration file.
   of every command the panel runs, in that repository, records no child process. Also: messages with newlines kept
   exactly and NUL, escape and direction characters refused; paths out of the workspace, `.git` parts and folders
   refused; discard's trash, precondition and links; the identity's order (a link or an include in `~/.gitconfig` not
-  followed); states; caps; a FIFO include stopped by the deadline.
+  followed); states; caps; a FIFO include stopped by the deadline; a git killed at the deadline (its `index.lock`
+  removed only when it is the op's and no git runs); a file in a nested repository refused. The helper:
+  `code/test/git-draft.test.mjs` (its options, the rules before the prompt, a model that tries a tool, the fail-closed
+  check, the deadline and a cancel, the prompt with an injection kept in its fence, the route: no session opened).
 
 ### Previews of dev servers in the sandbox
 

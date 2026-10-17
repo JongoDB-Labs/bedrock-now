@@ -103,6 +103,7 @@ let gitRepo = true;
 let gitIndex = new Map();
 let gitCommits = [];
 let gitAhead = 0;
+let draftCount = 0;   // GET /__mock/drafts: how many messages the helper drafted
 const MOCK_ID = { name: 'Mock User', email: 'mock@example.invalid', from: 'sandbox' };
 const hex40 = () => crypto.randomBytes(20).toString('hex');
 const MOCK_COMMITS = () => [
@@ -288,6 +289,18 @@ async function gitPanel(p, m, url, req) {
     gitCommits.unshift(c);
     gitAhead++;
     return [200, { ok: true, head: c.hash, subject: c.subject, author: MOCK_ID }];
+  }
+  if (p === '/api/git/draft') {
+    // the backend's helper process (no tools, never a session): a message for what is staged, after a moment
+    if (b.model !== undefined && (typeof b.model !== 'string' || /^(haiku|sonnet|opus)$/i.test(b.model))) return [400, { error: 'model: a full model id' }];
+    const st = gitStatusMock().staged.filter((e) => e && relOk(e.path));
+    if (!st.length) return [400, { error: 'nothing is staged' }];
+    draftCount++;
+    await sleep(400);
+    const name = st[0].path.split('/').pop();
+    const message = HOSTILE_MODE ? `Fix ${HOSTILE.bidi}it\u0007 now ${HOSTILE.script}\n\nBody line`
+      : `Update ${name}${st.length === 1 ? '' : ` and ${st.length - 1} more`}\n\nKeep the retry policy in one place.`;
+    return [200, { message, denied: 0, turns: 1 }];
   }
   if (p === '/api/git/discard') {
     const x = b.path;
@@ -864,7 +877,6 @@ async function runScenario(s, text, images) {
     return 1;
   }
   if (t.startsWith('/')) return slash(s, text.trim());
-  if (text.startsWith('Propose a git commit message')) return commitMessage(s, text);
   if (s.mode === 'plan') return plan(s);
   if (t.includes('another model')) {
     // a turn Claude Code ran on a model other than the one picked: the page says what ran
@@ -898,16 +910,6 @@ async function runScenario(s, text, images) {
     return 1;
   }
   await s.stream(ANSWER, { thinking: true });
-  return 1;
-}
-
-// the Git panel's "Write message": an answer with the message in a block (the page takes it as the box's draft)
-async function commitMessage(s, text) {
-  const first = /^- ("?)([^\n"(]+?)\1 \(/m.exec(text);
-  const file = first ? first[2].split('/').pop() : 'the workspace';
-  const n = (text.match(/^Staged: (\d+) file/m) || [])[1] || '1';
-  const msg = HOSTILE_MODE ? `Fix ${HOSTILE.bidi}it\u0007 now ${HOSTILE.script}\n\nBody line` : `Update ${file}${n === '1' ? '' : ` and ${Number(n) - 1} more`}\n\nKeep the retry policy in one place.`;
-  await s.stream(`Here is a message for the ${n} staged file${n === '1' ? '' : 's'}:\n\n\`\`\`text\n${msg}\n\`\`\``);
   return 1;
 }
 
@@ -1907,6 +1909,7 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (url.pathname === '/__mock/beacons' && req.method === 'GET') return json(res, 200, { beacons });
+    if (url.pathname === '/__mock/drafts' && req.method === 'GET') return json(res, 200, { drafts: draftCount });
     if (url.pathname === '/__mock/terminal-log' && req.method === 'GET') return json(res, 200, { typed: terminalLog });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {

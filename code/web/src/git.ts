@@ -1,81 +1,10 @@
-// The Git panel's model, kept free of DOM and network (test/git.test.ts): the prompt "Write message" sends to the open
-// session (the staged diff in a fence it cannot close, file names quoted as the Review quotes them), the message taken
-// out of Claude's answer (a draft for the commit box — never committed by itself), and small labels. Every scan here is
-// linear in its input (a crafted diff or answer cannot make it slow).
-import type { GitEntry, GitFile, GitStatus } from './types';
-import { promptPath } from './review';
+// The Git panel's model, kept free of DOM and network (test/git.test.ts): the message "Write message" brings back, cleaned
+// once more for the commit box (the helper that drafts it, and its prompt, are the backend's: code/server/gitdraft.mjs),
+// the Commit blocker and small labels. Every scan here is linear in its input.
+import type { GitStatus } from './types';
 
-/** At most this much diff goes into the prompt (the rest is said to be cut). */
-export const MESSAGE_DIFF_MAX = 30_000;
 /** A proposal longer than this is cut (git takes 64 KiB; a commit message is a few lines). */
 export const PROPOSAL_MAX = 8_000;
-/** The first words of the prompt: how the page knows its own request in the conversation. */
-export const MESSAGE_ASK = 'Propose a git commit message for the changes staged in /workspace';
-
-/** The longest run of `ch` in `s` (one pass). */
-export function longestRun(s: string, ch: string): number {
-  let best = 0;
-  let run = 0;
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === ch) {
-      run++;
-      if (run > best) best = run;
-    } else run = 0;
-  }
-  return best;
-}
-
-/** The staged changes as unified-diff text (headers with quoted names), at most `max` characters. */
-export function diffText(files: GitFile[], max = MESSAGE_DIFF_MAX): { text: string; cut: boolean } {
-  const parts: string[] = [];
-  let size = 0;
-  let cut = false;
-  const push = (line: string): boolean => {
-    if (size + line.length + 1 > max) {
-      cut = true;
-      return false;
-    }
-    parts.push(line);
-    size += line.length + 1;
-    return true;
-  };
-  outer: for (const f of files) {
-    const name = promptPath(f.path);
-    const what = f.status === 'added' ? ' (new file)' : f.status === 'deleted' ? ' (deleted)' : '';
-    if (!push(`--- ${name}${what}`)) break;
-    if (f.binary) {
-      if (!push('(binary file)')) break;
-      continue;
-    }
-    for (const h of f.hunks) {
-      if (!push(`@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`)) break outer;
-      for (const l of h.lines) if (!push(l)) break outer;
-    }
-    if (f.cut) push('(this file\'s diff is cut here)');
-  }
-  return { text: parts.join('\n'), cut };
-}
-
-/** The prompt "Write message" sends: the staged files, their diff, and what to answer (only the message, in a block). */
-export function messagePrompt(staged: GitEntry[], files: GitFile[]): string {
-  const add = staged.reduce((n, e) => n + (e.add ?? 0), 0);
-  const del = staged.reduce((n, e) => n + (e.del ?? 0), 0);
-  const list = staged.slice(0, 50).map((e) => `- ${promptPath(e.path)}${e.binary ? ' (binary)' : ` (+${e.add ?? 0} −${e.del ?? 0})`}`);
-  if (staged.length > 50) list.push(`- … and ${staged.length - 50} more`);
-  const d = diffText(files);
-  const fence = '`'.repeat(Math.max(3, longestRun(d.text, '`') + 1));
-  return [
-    `${MESSAGE_ASK} (the diff is below). Reply with only the message, in one \`\`\`text block: a subject line of at most 72 characters, in the imperative mood, then — only if it helps — a blank line and a short body. Do not use any tools, do not run git and do not commit: the message goes into the Code page's commit box as a draft for me to read and edit.`,
-    '',
-    `Staged: ${staged.length} file${staged.length === 1 ? '' : 's'}, +${add} −${del}`,
-    ...list,
-    '',
-    `${fence}diff`,
-    d.text,
-    fence,
-    ...(d.cut ? [`(The diff is longer: only its first ${MESSAGE_DIFF_MAX.toLocaleString('en-US')} characters are shown.)`] : []),
-  ].join('\n');
-}
 
 // what a commit message may hold (the backend refuses the rest): no control characters but tab and newline, nothing that
 // changes the direction of text

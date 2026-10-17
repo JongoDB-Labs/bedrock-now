@@ -1154,6 +1154,11 @@ export async function gitCommit(message: string): Promise<{ head: string | null;
   const o = await request('POST', '/api/git/commit', { message });
   return { head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null, subject: label(o.subject, 300), author: normGitIdentity(o.author) };
 }
+/** "Write message": a commit message for the staged changes, from a helper process with no tools (never a session). */
+export async function gitDraft(model: string | null): Promise<{ message: string; denied: number }> {
+  const o = await request('POST', '/api/git/draft', model ? { model } : {});
+  return { message: typeof o.message === 'string' ? o.message.slice(0, 20_000) : '', denied: typeof o.denied === 'number' && Number.isInteger(o.denied) && o.denied >= 0 ? o.denied : 0 };
+}
 /** A file's unstaged changes gone (its current version to the workspace trash), only while it is as shown. */
 export async function gitDiscard(path: string, ifMtimeMs: number | null): Promise<{ action: 'restored' | 'trashed'; trash: string | null }> {
   const o = await request('POST', '/api/git/discard', { path, ...(ifMtimeMs === null ? {} : { ifMtimeMs }) });
