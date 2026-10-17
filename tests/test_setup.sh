@@ -301,3 +301,32 @@ SH
   assert_contains "$c" "_SIGNAL_HOOK=_setup_interrupted; _signal_traps_restore"
   assert_contains "$c" "_SIGNAL_HOOK=''; _signal_traps_restore"
 }
+
+# Stopped while the Code page it was turning on by default builds: off again, blank as before (the next setup turns it
+# on; no failure counted), its containers stopped — never left half on
+test_setup_stopped_while_turning_the_code_page_on_by_default_undoes_it() {
+  unset BEDROCK_NOW_LOCK_HELD
+  dc() { echo "dc $*" >> "$TMP/dc"; case "$*" in "ps --services --status running") printf 'postgres\nlitellm\n' ;; esac; }
+  printf 'CODE_ENABLED=true\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\n' "$TMP/ws" > "$ENV_FILE"
+  setup_done "keys created"; setup_step "building and starting the browser terminal and the Code page"; SETUP_CODE_DEFAULT=2
+  if (_setup_interrupted INT) 2> "$TMP/err"; then return 1; fi
+  assert_eq "$(get_env CODE_ENABLED)|$(get_env TERMINAL_ENABLED)" "|"
+  assert_contains "$(cat "$TMP/dc")" "dc rm -sf code terminal terminal-gateway"
+  [ ! -e "$STATE_DIR/code-default-failed" ] || { echo "an interrupted default counted as a failure" >&2; return 1; }
+  out="$(cat "$TMP/err")"
+  assert_contains "$out" "setup stopped (Ctrl-C) while building and starting the browser terminal and the Code page"
+  assert_contains "$out" "The Code page, turned on by default in this run, is off again: ./stack setup turns it on (./stack code disable keeps it off)."
+  # the terminal was on before (only the Code page was turned on): the terminal stays
+  : > "$TMP/dc"; printf 'CODE_ENABLED=true\nTERMINAL_ENABLED=true\n' > "$ENV_FILE"; SETUP_CODE_DEFAULT=1
+  if (_setup_interrupted INT) 2> "$TMP/err"; then return 1; fi
+  assert_eq "$(get_env CODE_ENABLED)|$(get_env TERMINAL_ENABLED)" "|true"
+  assert_contains "$(cat "$TMP/dc")" "dc rm -sf code"; assert_not_contains "$(cat "$TMP/dc")" "terminal-gateway"
+  # settled (it came up, or code_default_settle undid it): a Ctrl-C later leaves it as it is
+  printf 'CODE_ENABLED=true\n' > "$ENV_FILE"; SETUP_CODE_DEFAULT=0
+  if (_setup_interrupted INT) 2> "$TMP/err"; then return 1; fi
+  assert_eq "$(get_env CODE_ENABLED)" true
+  assert_not_contains "$(cat "$TMP/err")" "The Code page"
+  c="$(sed -n '/^cmd_setup() {/,/^}/p' "$STACK_DIR/lib/commands.sh")"
+  assert_contains "$c" 'SETUP_CODE_DEFAULT="$CODE_DEFAULT_ON"'
+  assert_contains "$c" "SETUP_CODE_DEFAULT=0"
+}

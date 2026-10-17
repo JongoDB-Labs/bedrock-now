@@ -131,7 +131,8 @@ then delete the folder.
 
 `./stack setup` is safe to re-run at any time: it keeps your keys and data and re-checks which models work.
 Stopped with Ctrl-C, it says what it had done, which services still run, and how to go on (`./stack setup`) or
-clean up (`./stack down` keeps the data; `./stack uninstall` removes it too).
+clean up (`./stack down` keeps the data; `./stack uninstall` removes it too); a Code page it was turning on by default
+is off again, and the next setup turns it on.
 
 ## Using it
 
@@ -1324,8 +1325,8 @@ Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
 by the new code. It ends with a short "What's new": each release it brought with its headline (all of them after a
-jump over several), voice, remote access and one-click or automatic updates (with the command that turns each on)
-and the release notes. Local changes to tracked files stop the update before
+jump over several), voice, the Code page (while on), remote access and one-click or automatic updates (with the
+command that turns each on or off) and the release notes. Local changes to tracked files stop the update before
 anything happens; they are never discarded. If a later step fails, or the new version misbehaves,
 **`./stack rollback`** goes back: it checks out the code from before the update, restores the update's own
 pre-update backup (taking a backup of the current state first) and starts the previous images, which are still on

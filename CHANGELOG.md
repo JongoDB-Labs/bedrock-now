@@ -60,6 +60,11 @@ All notable changes to bedrock-now are documented here. The format follows
   checks every key's controls on the Settings page against its policy, locally and remotely, in the e2e suite's
   Playwright image (no stack).
 
+- **Update now and Roll back say what they end besides the downtime**: the browser terminal's container is recreated
+  (its tmux windows close; Claude Code running there ends, its conversations stay), Code page sessions resume from
+  their transcripts (a running turn stops), and — when the Code page reports one — that a Code page turn is running
+  right now. The README's *Updating* says the same.
+
 ### Fixed
 
 - **Updates and rollbacks run by the update helper (Home → Update now, Roll back, automatic updates) left the
@@ -122,14 +127,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **Ctrl-C during the first setup** ended it without a word and left Postgres, RustFS and LiteLLM running. Setup now
   says what it had done, which services still run, and how to go on (`./stack setup`) or clean up (`./stack down`,
-  `./stack uninstall`); the temp-file traps of its phases hand the signal on instead of swallowing it.
-
-### Changed
-
-- **Update now and Roll back say what they end besides the downtime**: the browser terminal's container is recreated
-  (its tmux windows close; Claude Code running there ends, its conversations stay), Code page sessions resume from
-  their transcripts (a running turn stops), and — when the Code page reports one — that a Code page turn is running
-  right now. The README's *Updating* says the same.
+  `./stack uninstall`); the temp-file traps of its phases hand the signal on instead of swallowing it. A Code page it
+  was turning on by default (stopped before it came up) is off again, blank as before, so the next setup turns it on.
 
 ### Docs
 
