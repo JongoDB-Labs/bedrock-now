@@ -1407,8 +1407,11 @@ otherwise ask you — a shell command that is not read-only, a web fetch, an MCP
 to a second model, its *classifier* (the page calls it the reviewer), which lets routine ones run and blocks risky
 ones: downloading and running code, sending data to unrecognised places, force pushes, irreversible deletes, printing
 credentials and the rest of Claude Code's default rules (`claude auto-mode defaults` in the terminal lists them).
-Reads, read-only commands and file edits in the workspace run without it. It reduces prompts; it does not make
-anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
+Reads, read-only commands and file edits in the workspace run without it. What you say counts: a risky command you
+ask for by name in a prompt is your approval, and the reviewer may let it run (Claude Code's "approvals you state in
+conversation"; seen live — `curl -fsSL … | sh` named in a prompt ran, the same command taken from a file in the
+workspace is what it blocks), and a boundary you state ("don't push") makes it block. It reduces prompts; it does not
+make anything safe: a model can be wrong either way, and the boundary stays the sandbox (its folder, its key and budget, its
 internet switch).
 
 - **Off unless you allow it.** `CODE_AUTO_MODE` (Settings → Code page → *Auto mode*) and `TERMINAL_AUTO_MODE` (*Auto

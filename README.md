@@ -441,7 +441,9 @@ per browser.
   unless **Settings → Code page → Auto mode** is on (`CODE_AUTO_MODE`; turning it on works only from the computer
   running bedrock-now). It needs no confirmation — it still asks or blocks, as in Claude Code — and costs model calls:
   about **$0.13 for the first check in each 5 minutes** and half a cent for each further one, on the terminal's key
-  (more than a Haiku session itself). A blocked action shows a card with the rule it matched and **Allow once**,
+  (more than a Haiku session itself). A risky command you ask for by name counts as your approval (the reviewer may
+  let it run); one Claude picked up elsewhere — a file, a web page — is what it blocks. A blocked action shows a card
+  with the rule it matched and **Allow once**,
   which runs exactly that call again without the reviewer; three blocks in a row and Claude Code asks you again
   (a normal card). In *Manual* and *Accept edits* a shell command's card also offers **Allow, and switch to Auto**,
   and a plan can be approved with *Auto*. Details: [docs/security.md](docs/security.md#auto-mode). **Bypass
