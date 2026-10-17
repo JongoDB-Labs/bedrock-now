@@ -58,7 +58,7 @@ Usage: ./stack <command> [--yes]
   terminal     Claude Code in the browser: a Terminal tab, a sandbox that sees only one folder of yours
                status | enable [--workspace DIR] | disable   (asks for the portal password again)
   code         Claude Code in the browser with a chat: a Code tab with permission prompts, models and
-               your files, in the terminal's sandbox (turned on too)
+               your files, in the terminal's sandbox (on by default with the terminal; disable keeps it off)
                status | enable [--workspace DIR] | disable   (asks for the portal password again)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
@@ -437,8 +437,10 @@ cmd_setup() {
   stt_after_probe    # lib/stt.sh: Bedrock speech-to-text on by default when Voxtral is usable
   setup_keys_and_ui
   write_mcp_config
+  code_default_on       # lib/code.sh: the Code page and its sandbox (the terminal) on by default, unless turned off
   terminal_setup_hook   # lib/terminal.sh: the browser terminal, when on — rebuilt with the current keys; never fatal
   code_setup_hook       # lib/code.sh: the Code page, when on (after the terminal: its sandbox) — rebuilt; never fatal
+  code_default_settle   # lib/code.sh: a default that did not come up is off again (said); the next setup tries again
   cmd_test
   offer_symlink
   offer_helper   # lib/helper.sh: asks once; --yes installs it only with BEDROCK_NOW_HELPER=1
@@ -1539,15 +1541,16 @@ cmd_update() {
   offer_helper --after-update   # lib/helper.sh: asks (default yes) unless declined before
 }
 
-# update_whats_new — after an update to a new version, at most 5 lines: voice, remote access and updates (each with
-# the command that changes it, the last two only while off: the one-click helper, or on a release its automatic
-# updates) and the release notes of a tag
+# update_whats_new — after an update to a new version, a few lines: voice, the Code page (while on: it is on by default
+# now), remote access and updates (each with the command that changes it, the last two only while off: the one-click
+# helper, or on a release its automatic updates) and the release notes of a tag
 update_whats_new() {
   local tag
   tag="$( [ ! -e "$STACK_DIR/.git" ] || _git describe --tags --exact-match HEAD 2>/dev/null || true)"
   printf "\nWhat's new in %s:\n" "$(installed_version)"
   if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
   else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
+  ! code_ready || printf '  Code page: on — the Code tab, Claude Code in the browser (sandbox folder %s); ./stack code disable turns it off\n' "$(get_env TERMINAL_WORKSPACE)"
   remote_on || printf '  Remote access: off — ./stack remote enable tailscale (docs/remote.md)\n'
   if ! helper_installed; then printf '  One-click updates from Home: ./stack helper install\n'
   elif [ -n "$tag" ] && ! auto_on; then printf '  Automatic updates: off — ./stack helper auto on installs new releases at night\n'; fi
@@ -1646,9 +1649,9 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/host.sh"
 # Remote access from your devices (./stack remote; Tailscale sidecar, remote Caddy site).
 . "$STACK_DIR/lib/remote.sh"
-# The optional browser terminal (./stack terminal; Claude Code in a sandbox container, the portal's Terminal tab).
+# The browser terminal (./stack terminal; Claude Code in a sandbox container, the portal's Terminal tab; on by default).
 . "$STACK_DIR/lib/terminal.sh"
-# The optional Code page (./stack code; Claude Code with a chat and files, in the terminal's sandbox; the Code tab).
+# The Code page (./stack code; Claude Code with a chat and files, in the terminal's sandbox; the Code tab; on by default).
 . "$STACK_DIR/lib/code.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
 . "$STACK_DIR/lib/claude_config.sh"

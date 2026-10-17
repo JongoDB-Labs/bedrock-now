@@ -1,8 +1,10 @@
 # shellcheck shell=bash
-# The optional Code page (./stack code): Claude Code in the portal's Code tab, with a chat, permission prompts, model
+# The Code page (./stack code; on by default): Claude Code in the portal's Code tab, with a chat, permission prompts, model
 # switching and the workspace's files (code/, compose.code.yaml, caddy/code-on.caddy). It runs Claude Code in the
 # browser terminal's sandbox (lib/terminal.sh) — the same container, workspace folder, key and budget — so it needs
-# the terminal on: enable turns the terminal on first when it is off. Off unless you turn it on.
+# the terminal on: enable turns the terminal on first when it is off. On by default: setup and ./stack update turn both
+# on while CODE_ENABLED is blank in .env (never chosen; code_default_on); disable (or Settings) writes false, which
+# stays.
 #
 #   enable [--workspace DIR]   CODE_ENABLED=true (the terminal too, with DIR, when it is off or DIR is given)
 #   disable                    the code container and its network go; the terminal stays (untouched)
@@ -20,7 +22,8 @@
 # The terminal always runs bn-coded on the code-socket volume (compose.terminal.yaml, terminal/bin/bn-terminal), so
 # turning the Code page on or off never recreates the terminal container (its tmux session goes on).
 #
-# Hooks for other parts of ./stack: code_services (status, up), code_up_hook (up), code_setup_hook (setup, update),
+# Hooks for other parts of ./stack: code_services (status, up), code_up_hook (up), code_default_on / code_setup_hook /
+# code_default_settle (setup, update),
 # code_remote_sync / code_remote_app (remote host names), code_test_checks (./stack test), code_summary_line,
 # code_image_refs (update/rollback), code_terminal_off (./stack terminal disable), code_rollback_cleanup,
 # code_uninstall_cleanup.
@@ -141,7 +144,11 @@ code_enable() {
 code_disable() {
   local own=1
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  if ! code_on; then log "the Code page is already off"; return 0; fi
+  if ! code_on; then
+    # blank (never chosen) would be turned on by the next setup or update: false keeps it off
+    [ -n "$(get_env CODE_ENABLED)" ] || set_env CODE_ENABLED false
+    log "the Code page is already off (and stays off: setup and ./stack update no longer turn it on)"; return 0
+  fi
   ! stack_lock_ours || own=0
   stack_lock code
   check_prereqs
@@ -256,10 +263,68 @@ code_up_hook() {
   return 0
 }
 
+# --- on by default (setup and ./stack update) ---
+# The Code page, and the browser terminal it runs in, are on unless you turned them off: a setup that finds
+# CODE_ENABLED blank in .env (never chosen: enable writes true; disable, ./stack terminal disable and Settings write
+# false) turns both on, in the terminal's folder (TERMINAL_WORKSPACE, or ~/bedrock-now-workspace, created with mode 700
+# and checked as ./stack terminal enable does), with the terminal's own key and budget. An explicit off is kept —
+# CODE_ENABLED=false, or TERMINAL_ENABLED=false (its sandbox). What stays opt-in is unchanged: Bypass permissions and
+# Auto mode, the sandbox's internet (TERMINAL_EGRESS keeps its default), remote access to the terminal and the Code
+# page (REMOTE_TERMINAL) and remote previews. Never fatal: a folder that cannot be made or used leaves both off this
+# time (said, with the way out), and code_default_settle undoes a default that did not come up. Idempotent: once on,
+# CODE_ENABLED is no longer blank.
+CODE_DEFAULT_ON=0   # set by code_default_on: 2 = it turned the terminal and the Code page on, 1 = the Code page only
+code_default_wanted() { [ -z "$(get_env CODE_ENABLED)" ] && ! flag_off "$(get_env TERMINAL_ENABLED)"; }
+code_default_on() {
+  local ws real why created=0 ids
+  CODE_DEFAULT_ON=0
+  code_default_wanted || return 0
+  if ! terminal_on; then
+    ws="$(get_env TERMINAL_WORKSPACE)"; [ -n "$ws" ] || ws="$(terminal_default_workspace)"
+    case "$ws" in "~") ws="$HOME" ;; "~/"*) ws="$HOME/${ws#"~/"}" ;; esac
+    case "$ws" in /*) ;; *) _code_default_skip "its folder $ws is not an absolute path"; return 0 ;; esac
+    if why="$(env_value_problem "$ws")"; then _code_default_skip "the path of its folder $ws $why"; return 0; fi
+    if [ ! -e "$ws" ]; then
+      if ! (umask 077; mkdir -p "$ws") 2>/dev/null; then _code_default_skip "cannot create its folder $ws"; return 0; fi
+      chmod 700 "$ws" 2>/dev/null || true; created=1
+    fi
+    if [ ! -d "$ws" ]; then _code_default_skip "$ws is not a folder"; return 0; fi
+    if ! real="$(terminal_workspace_check "$ws")"; then
+      [ "$created" = 0 ] || rmdir "$ws" 2>/dev/null || true
+      _code_default_skip "$ws cannot be its folder: $real"; return 0
+    fi
+    [ "$created" = 0 ] || log "created the workspace folder $real (mode 700)"
+    ids="$(terminal_ids)"
+    set_env TERMINAL_WORKSPACE "$real"
+    set_env TERMINAL_UID "${ids% *}"; set_env TERMINAL_GID "${ids#* }"
+    [ "${ids% *}" != 10104 ] || [ "$(id -u)" != 0 ] || warn "running as root: the terminal runs as uid 10104 — give it $real (chown -R 10104:10104 $real)"
+    terminal_secrets rotate
+    set_env TERMINAL_ENABLED true
+    CODE_DEFAULT_ON=2
+  else
+    CODE_DEFAULT_ON=1
+  fi
+  code_secrets rotate
+  set_env CODE_ENABLED true
+  terminal_remote_sync
+  code_remote_sync
+  # (during ./stack update: in its record, so ./stack rollback puts it back as it was — code_default_rollback)
+  if declare -F _record_set >/dev/null && [ "$(_record_get result)" = running ]; then _record_set code_default "$CODE_DEFAULT_ON"; fi
+  log "The Code page is now on by default: Claude Code in the browser (the Code tab), in a sandbox that sees only" \
+    "$(get_env TERMINAL_WORKSPACE) — ./stack code disable turns it off"
+  log "its images are built next (the first time: about 1.6 GB on disk and a few minutes)"
+}
+_code_default_skip() {
+  warn "the Code page (on by default) stays off this time: $1. ./stack code enable --workspace DIR turns it on with" \
+    "another folder; ./stack code disable keeps it off (setup and updates then stop trying)"
+}
+
 # code_setup_hook — setup / ./stack update (after the terminal's): a new image (new code) and the container. Never
-# stops setup: a failure leaves the previous one running, with a warning.
+# stops setup: a failure leaves the previous one running, with a warning (CODE_SETUP_FAILED=1 for code_default_settle).
+CODE_SETUP_FAILED=0
 code_setup_hook() {
   local out start
+  CODE_SETUP_FAILED=0
   code_remote_sync
   code_ready || return 0
   code_secrets
@@ -268,16 +333,61 @@ code_setup_hook() {
   if { code_build && dc up -d --wait terminal-gateway && dc up -d --wait code; } > "$out" 2>&1; then
     rm -f "$out"; log "$(phase_line "Code page" $(($(_now) - start)))"; return 0
   fi
+  CODE_SETUP_FAILED=1
   warn "Code page: could not build or start it — its last messages:"
   tail -n 15 "$out" | sed 's/^/    /' >&2; rm -f "$out"
   warn "Code page: setup goes on without it; ./stack code enable tries again"
 }
 
+# code_default_settle — after the setup hooks: a default this setup turned on that did not come up (the terminal's
+# image, its key or the Code page's image) is undone — blank again, its containers gone, the portal, Caddy (and LiteLLM
+# and shared-mcp, off the terminal's network) without it — so setup, its checks and an update go on; the next setup
+# or update tries again.
+code_default_settle() {
+  local both
+  [ "$CODE_DEFAULT_ON" != 0 ] || return 0
+  [ "${TERMINAL_SETUP_FAILED:-0}" = 1 ] || [ "$CODE_SETUP_FAILED" = 1 ] || return 0
+  both=0; [ "$CODE_DEFAULT_ON" != 2 ] || both=1
+  warn "the Code page (on by default) did not come up (see above): it is off again for now, and setup goes on." \
+    "The next ./stack setup or update tries again; ./stack code enable tries now (./stack code disable: keep it off)"
+  # (while compose still knows them)
+  if [ "$both" = 1 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
+  else dc rm -sf code >/dev/null 2>&1 || true; fi
+  set_env CODE_ENABLED ''
+  [ "$both" = 0 ] || set_env TERMINAL_ENABLED ''
+  terminal_remote_sync
+  code_remote_sync
+  if [ "$both" = 1 ]; then _terminal_front >/dev/null 2>&1 || warn "could not restart the portal and Caddy without the terminal — ./stack up"
+  else _code_front >/dev/null 2>&1 || warn "could not restart the portal and Caddy without the Code page — ./stack up"; fi
+  code_network_cleanup
+  [ "$both" = 0 ] || terminal_network_cleanup
+  if declare -F _record_set >/dev/null && [ -n "$(_record_get code_default)" ]; then _record_set code_default ''; fi
+  CODE_DEFAULT_ON=0
+}
+
+# code_default_rollback MODE — ./stack rollback of an update whose setup turned the Code page on by default (its record's
+# code_default: 2 = with the terminal, 1 = the Code page alone): off again, as before that update — blank, so the next
+# update turns it on again — before the restored code's restore and up. The data restored is from before the update:
+# it has no LiteLLM key for a terminal that update turned on, so that key goes from .env too. Their containers go while
+# compose still knows them; their networks after the up (cmd_rollback). The workspace folder stays.
+code_default_rollback() {
+  case "${1:-}" in 1 | 2) ;; *) return 1 ;; esac
+  if [ "$1" = 2 ]; then dc rm -sf code terminal terminal-gateway >/dev/null 2>&1 || true
+  else dc rm -sf code >/dev/null 2>&1 || true; fi
+  set_env CODE_ENABLED ''
+  if [ "$1" = 2 ]; then set_env TERMINAL_ENABLED ''; set_env LITELLM_KEY_TERMINAL ''; fi
+  terminal_remote_sync
+  code_remote_sync
+  log "rollback: that update turned the Code page$([ "$1" = 2 ] && echo ' and its terminal') on by default — off again, as before it (the next ./stack update turns $([ "$1" = 2 ] && echo them || echo it) on again)"
+}
+
 code_status() {
   local st
   if ! code_on; then
-    printf 'Code page: off — ./stack code enable adds a Code tab to the portal: Claude Code with a chat,\n'
+    printf 'Code page: off — ./stack code enable turns it on: the Code tab, Claude Code with a chat,\n'
     printf '  permission prompts, models and your files, in the terminal'"'"'s sandbox (README: "The Code page")\n'
+    [ -n "$(get_env CODE_ENABLED)" ] || ! code_default_wanted ||
+      printf '  (on by default: the next ./stack setup or update turns it on; ./stack code disable keeps it off)\n'
     return 0
   fi
   st="$(dc ps -a --format '{{.State}} {{.Health}}' code 2>/dev/null | head -n 1 || true)"

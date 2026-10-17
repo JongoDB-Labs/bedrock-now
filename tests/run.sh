@@ -40,6 +40,9 @@ live_before="$(_live_state)"
 # claude-bedrock creates ~/.claude-bedrock (its own Claude Code config folder): tests run it with a throwaway HOME.
 # Only its appearance is checked — a claude-bedrock of yours running meanwhile may change what is inside.
 cb_home_before=0; [ ! -e "${HOME:-/nonexistent}/.claude-bedrock" ] || cb_home_before=1
+# Setup turns the Code page on by default with the workspace ~/bedrock-now-workspace (lib/code.sh code_default_on):
+# a test that runs it unstubbed must not create that folder in your real home.
+ws_home_before=0; [ ! -e "${HOME:-/nonexistent}/bedrock-now-workspace" ] || ws_home_before=1
 
 for f in $pattern; do
   if ! err="$("$SH" -n "$f" 2>&1)"; then
@@ -65,6 +68,9 @@ if [ "$(_live_state)" != "$live_before" ]; then
 fi
 if [ "$cb_home_before" = 0 ] && [ -e "${HOME:-/nonexistent}/.claude-bedrock" ]; then
   fail=$((fail + 1)); printf 'FAIL live-state guard: the suite created ~/.claude-bedrock in your real home (remove it)\n'
+fi
+if [ "$ws_home_before" = 0 ] && [ -e "${HOME:-/nonexistent}/bedrock-now-workspace" ]; then
+  fail=$((fail + 1)); printf 'FAIL live-state guard: the suite created ~/bedrock-now-workspace in your real home (remove it)\n'
 fi
 if [ -s "$BN_SHIM_LOG" ]; then
   fail=$((fail + 1)); printf 'FAIL isolation guard: tests called real docker/aws/tailscale or curl to this computer\n'

@@ -328,16 +328,18 @@ tests/e2e/run.sh --aws-env /path/to/a/file/with/AWS_keys    # or export AWS_ACCE
   those leftovers first (only when they are the suite's own). `--only cli,mutating` (any of `cli`, `browser`,
   `voice`, `claude`, `mutating`) runs only those parts; `--skip-cli-mutating` skips backup/restore, down/up, rotate-aws,
   update and rollback.
-- **The browser terminal:** `--terminal` (or `E2E_TERMINAL=1`) also runs `./stack terminal enable` in the
-  throwaway, with a workspace folder of its own next to the checkout (`tests/e2e/work/<project>-workspace`, removed
-  at teardown): its isolation probe from inside the container, `./stack test`'s terminal checks, and the browser
+- **The browser terminal:** on by default with the Code page, as on a new install (setup turns it on, in a workspace
+  folder of the suite's own next to the checkout seeded as `TERMINAL_WORKSPACE`: `tests/e2e/work/<project>-workspace`,
+  removed at teardown; with `--no-code`, `--terminal` or `E2E_TERMINAL=1` runs `./stack terminal enable` there): its isolation probe from inside the container, `./stack test`'s terminal checks, and the browser
   suite's terminal checks (locked → unlock → xterm + tmux, a shell window, the session outliving the browser, the
   Origin rules at the terminal host, the phone's full-screen path, Sign out). With the `claude` part it also runs
   one `claude-bedrock -p` inside the terminal (~$0.001-0.02), on the terminal's own key (budget $0.06; the run's
   limit is then $0.16). The probe also checks the gateway's 404s (`..` paths included), its secret header before
   ttyd's socket (and that a failed request logs no secret), the terminal key's 403s on LiteLLM past the gateway,
   the gateway's neighbours and `caddy validate` of every terminal/remote combination.
-- **The Code page:** `--code` (or `E2E_CODE=1`; implies `--terminal`) also runs `./stack code enable`: its
+- **The Code page:** on by default, as on a new install — `cli/code-on-by-default` checks that setup turned it on
+  and said so; `--no-code` (or `E2E_NO_CODE=1`) seeds `CODE_ENABLED=false` instead (the tab's off page and its
+  Settings link are checked then; `--code`, `E2E_CODE=1`: the default). With it on: its
   isolation probe (the code container reaches only Caddy, mounts no workspace, holds no key; the sandbox cannot
   reach it), `./stack test`'s code checks, `caddy validate` with the Code page on, and the browser suite's code
   checks — the tab under Chat, the unlock, the code host's CSP and Origin rules, and through the page's own API

@@ -24,13 +24,17 @@
 #                    Setup, the spend guard and the claude-bedrock link check always run.
 #   E2E_CHECKS=REGEX only the browser checks whose suite/id matches (a Python regex, on top of each pass's own
 #                    filter): a focused run that spends less on Bedrock, e.g. E2E_CHECKS='code-settings-row|code-auto'
-#   --terminal       also turn on the browser terminal (./stack terminal enable; E2E_TERMINAL=1 does the same), in
-#                    a workspace folder next to the checkout: its isolation probe, the browser suite's terminal checks
-#                    and, with the claude part, one claude-bedrock -p inside it (~$0.02; its own key, budget $0.06)
-#   --code           also turn on the Code page (./stack code enable; E2E_CODE=1 does the same; implies --terminal):
-#                    its isolation probe, its Caddy combinations, the browser suite's code checks (a few dozen Haiku
-#                    turns, ~$0.17 on the terminal's key, whose budget becomes $0.30) and, after the suite, a hostile stand-in
-#                    on bn-coded's socket
+#   (default)        the Code page and its browser terminal are on, as on a new install: setup turns them on by
+#                    default, in a workspace folder next to the checkout (TERMINAL_WORKSPACE, seeded): the terminal's
+#                    isolation probe, the browser suite's terminal checks and, with the claude part, one
+#                    claude-bedrock -p inside it (~$0.02); the Code page's isolation probe, its Caddy combinations, the
+#                    browser suite's code checks (a few dozen Haiku turns, ~$0.17 on the terminal's key, whose budget
+#                    becomes $0.30) and, after the suite, a hostile stand-in on bn-coded's socket
+#   --no-code        the Code page off, as a person who turned it off (CODE_ENABLED=false; E2E_NO_CODE=1 does the
+#                    same): its tab's "off" page; the terminal off too, unless --terminal (./stack terminal enable,
+#                    its own key with a budget of $0.06)
+#   --terminal       with --no-code: the browser terminal on (E2E_TERMINAL=1 does the same)
+#   --code           the default (kept for older scripts; E2E_CODE=1 does the same)
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -58,7 +62,7 @@ NOTTY="$HERE/notty"
 OUT="$ROOT/tests/e2e/out"; WORK=''; PROJECT=bne2e; AWS_ENV_FILE=''; KEEP=0; REUSE=0; TEARDOWN_ONLY=0
 SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,mutating"
 TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
-CODE=0; [ "${E2E_CODE:-0}" != 1 ] || { CODE=1; TERMINAL=1; }
+CODE=1; [ "${E2E_NO_CODE:-0}" != 1 ] || CODE=0   # (on by default, as on a new install; E2E_CODE=1 is that too)
 HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -73,13 +77,16 @@ while [ $# -gt 0 ]; do
     --deep-update) DEEP_UPDATE=1; shift ;;
     --no-claude) NO_CLAUDE=1; shift ;;
     --terminal) TERMINAL=1; shift ;;
-    --code) CODE=1; TERMINAL=1; shift ;;
+    --code) CODE=1; shift ;;
+    --no-code) CODE=0; shift ;;
     --helper) HELPER=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
   esac
 done
+
+[ "$CODE" = 0 ] || TERMINAL=1   # (the Code page runs in the terminal's sandbox)
 
 # shellcheck source=tests/e2e/lib.sh
 . "$HERE/lib.sh"
@@ -217,6 +224,18 @@ stage() {
   set_env OPENWEBUI_ADMIN_EMAIL "e2e-admin@example.com"
   for kv in $BUDGETS; do set_env "${kv%%=*}" "${kv#*=}"; done
   set_env PORTAL_PASSWORD "$(openssl rand -hex 10)"
+  # The Code page (on by default) and its terminal: setup turns them on in a folder of the suite's own next to the
+  # checkout (never one in your home folder); --no-code turns it off as a person would (and the terminal unless
+  # --terminal, which ./stack terminal enable turns on after setup)
+  if [ "$CODE" = 1 ]; then
+    tws="$(terminal_workspace_dir)"
+    [ ! -e "$tws" ] || [ -f "$tws/.bedrock-now-e2e" ] || die "$tws exists and was not created by this suite — nothing was changed"
+    ( umask 077; mkdir -p "$tws" ) && : > "$tws/.bedrock-now-e2e"
+    set_env TERMINAL_WORKSPACE "$tws"
+  else
+    set_env CODE_ENABLED false
+    [ "$TERMINAL" = 1 ] || set_env TERMINAL_ENABLED false
+  fi
   ( umask 022; mkdir -p "$STACK/.state/update-check" )
   chmod 700 "$STACK/.state"; : > "$STACK/.state/portal-password-shown"
   # The portal's daily release check counts as done: no GitHub call during the run, and nothing races the update
@@ -414,6 +433,12 @@ if [ "$CODE" = 1 ]; then
   if [ "$(get_env CODE_ENABLED)" != true ]; then
     say "code: ./stack code enable (its image is built the first time)"
     cli code-enable 0 'Code page: on' code enable || die "code enable failed — see $LOGS/cli-code-enable.log"
+  elif [ "$REUSE" = 0 ]; then
+    # on by default: setup turned it on (with the terminal, in the seeded folder) and said so
+    if grep -q 'The Code page is now on by default' "$LOGS/cli-setup.log" && [ "$(get_env TERMINAL_ENABLED)" = true ] &&
+       [ "$(get_env TERMINAL_WORKSPACE)" = "$(cd "$(terminal_workspace_dir)" && pwd -P)" ]; then
+      record cli code-on-by-default PASS 0 "setup turned the Code page and the terminal on (TERMINAL_WORKSPACE next to the checkout) and said so"
+    else record cli code-on-by-default FAIL 0 "after setup: CODE_ENABLED=$(get_env CODE_ENABLED) TERMINAL_ENABLED=$(get_env TERMINAL_ENABLED), or no 'now on by default' line"; fi
   fi
   cli code-status 0 'Container  running' code status
   t0="$(now)"; bad=''

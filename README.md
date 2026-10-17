@@ -9,7 +9,8 @@ Install it with one command; nothing listens beyond `127.0.0.1`.
 
 ## What you get
 
-Everything below runs on your computer, behind one portal sign-in. The optional parts are off until you turn them on.
+Everything below runs on your computer, behind one portal sign-in. The optional parts are off until you turn them on;
+the Code page and its browser terminal are on by default (`./stack code disable` turns them off, and they stay off).
 
 | Part | What it is | Default | On / off |
 |---|---|---|---|
@@ -17,8 +18,8 @@ Everything below runs on your computer, behind one portal sign-in. The optional 
 | [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock, with a lean config folder and each session's cost | on (needs `claude`) | setup offers to put it on your `PATH` |
 | [**Home, Admin, Files**](#the-portal-one-login-for-everything) | health, spend and budgets; LiteLLM's UI; the shared file store (also an MCP server for Claude Code) | on | — |
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
-| [**Terminal**](#claude-code-in-the-browser-optional) | Claude Code in the browser, in a sandbox that sees one folder of yours | off | `./stack terminal enable` / `disable` |
-| [**Code page**](#the-code-page-optional) | Claude Code as an IDE-like page: chat, permission modes, editor, file and dev-server previews, review changes, Git, Run & test | off | `./stack code enable` / `disable`, or Settings → Code page |
+| [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) | on, as the Code page's sandbox | `./stack terminal disable` / `enable` (disable turns the Code page off too) |
+| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat, permission modes, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings → Code page; the Code tab stays and says how while it is off |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
@@ -32,10 +33,12 @@ Everything below runs on your computer, behind one portal sign-in. The optional 
 - macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux)
 - `git`, `curl`, `openssl` (macOS's built-in bash 3.2 is fine). Nothing else on your computer: no Node or Python
   (the browser terminal and the Code page bring Claude Code in their own image)
-- Room for Docker: about 6 GB of disk for the images (an update keeps the previous version of each, so allow more),
-  and about 2 GB of memory for the stack (~1.3 GB when idle). The optional browser terminal and Code page add about
-  1 GB of images, and their containers may use up to 4 GB (`TERMINAL_MEM_LIMIT`) and 768 MB of memory; on Docker
-  Desktop, *Settings → Resources* sets what Docker may use
+- Room for Docker: about 6 GB of disk for the downloaded images and about 1.6 GB more for the two built on your
+  computer for the Code page and its browser terminal (on by default: the terminal's about 1.2 GB, the Code page's
+  about 0.4 GB; an update keeps the previous version of each, so allow more), and about 2 GB of memory for the stack
+  (~1.3 GB when idle; the terminal and the Code page about 110 MB of that while idle). While Claude works there their
+  containers may use up to 4 GB (`TERMINAL_MEM_LIMIT`) and 768 MB of memory; on Docker Desktop, *Settings →
+  Resources* sets what Docker may use
 - An **AWS access key ID and secret** for an IAM user with Bedrock access (long-lived `AKIA…` key; see
   [Asking your AWS admin for model access](#asking-your-aws-admin-for-model-access)), or, on an EC2 VM, an
   **IAM role** instead (no keys stored; see [Run it on a cloud VM](#run-it-on-a-cloud-vm))
@@ -83,7 +86,11 @@ Then it:
 2. starts the stack and **probes every model** with a 1-token request (< $0.01 in total) to see which ones
    your key can use, and prints a table of ENABLED/DISABLED models with prices and reasons;
 3. creates LiteLLM keys with monthly budgets, configures Open WebUI and runs a smoke test;
-4. offers to link `claude-bedrock` into `~/.local/bin`, and to turn on one-click updates from Home (the
+4. turns on the [Code page](#the-code-page) — Claude Code in the browser, like its desktop app — and the
+   [browser terminal](#claude-code-in-the-browser) it runs in: a sandbox container that sees only one folder of
+   yours, `~/bedrock-now-workspace` (created, mode 700), with its own LiteLLM key and budget. It builds their images
+   (a few minutes the first time) and says so; no question is asked, and `./stack code disable` turns it off;
+5. offers to link `claude-bedrock` into `~/.local/bin`, and to turn on one-click updates from Home (the
    [update helper](#updating), which also makes Settings editable; default yes). Both only in interactive runs;
    `--yes` installs the helper only with `BEDROCK_NOW_HELPER=1`. It never edits your shell rc files or `~/.claude`.
 
@@ -94,11 +101,12 @@ turns that off). On your first visit (not on a phone) the [walkthrough](#walkthr
 
 **What it takes:** about 5 GB of Docker images (downloaded once, announced first), 5–15 minutes on the first
 run depending on your connection (about 2 minutes after that), and under $0.05 of Bedrock usage to try it
-(the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04). The optional browser
-terminal and Code page are built on your computer the first time you turn them on (a few minutes, about 1 GB more).
+(the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04). The browser terminal
+and the Code page are built on your computer during the first setup (a few minutes more, about 1.6 GB).
 
-**Next:** the browser terminal and the Code page are off; `./stack code enable` turns both on
-([the Code page](#the-code-page-optional)). Remote access, OpenRouter and voice can be changed at any time
+**Next:** open the **Code** tab, under Chat, to use Claude Code in the browser: it asks for the portal password
+once more, and in its default mode every command and file change waits for your OK ([the Code page](#the-code-page);
+`./stack code disable` turns it off). Remote access, OpenRouter and voice can be changed at any time
 ([What you get](#what-you-get) lists the commands).
 
 **Stop or remove:** `./stack down` stops everything and keeps your data; `./stack up` starts it again.
@@ -122,10 +130,10 @@ your browser.
 |---|---|---|
 | **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Refreshes every 30 s; makes no Bedrock calls. | the portal |
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
-| **Code** | Only while it is on: Claude Code with a chat and your files, at `code.bedrock-now.localhost` ([The Code page](#the-code-page-optional)) | the portal, then the portal password again (12 hours) |
+| **Code** | On by default: Claude Code with a chat and your files, at `code.bedrock-now.localhost` ([The Code page](#the-code-page)); while it is off the tab stays, muted, and says how to turn it on | the portal, then the portal password again (12 hours) |
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
 | **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | automatic |
-| **Terminal** | Only while it is on: Claude Code in a sandbox, at `terminal.bedrock-now.localhost` ([Claude Code in the browser](#claude-code-in-the-browser-optional)) | the portal, then the portal password again (12 hours) |
+| **Terminal** | While it is on (by default, as the Code page's sandbox): Claude Code in a sandbox, at `terminal.bedrock-now.localhost` ([Claude Code in the browser](#claude-code-in-the-browser)) | the portal, then the portal password again (12 hours) |
 | **Settings** | Every setting of `.env`, secrets masked; change passwords, the owner email, the AWS key, budgets, voice, OpenRouter, the Code page and updates; backups and diagnostics ([Settings](#settings); changes need the update helper) | the portal (each change asks for the password again) |
 
 One sign-in is all there is: the portal signs you in to every app, in its tab, a pop-out window, on the remote
@@ -365,19 +373,22 @@ claude.ai plan that is invisible; billed per token it is not. So:
 
 More details (session headers, signals, `--help`, the config folder): [docs/advanced.md](docs/advanced.md#claude-code-wrapper-details).
 
-### Claude Code in the browser (optional)
+### Claude Code in the browser
 
-```bash
-./stack terminal enable                           # workspace: ~/bedrock-now-workspace (created, mode 700)
-./stack terminal enable --workspace ~/projects    # or a folder of yours
-./stack terminal status                           # ./stack terminal disable turns it off again
-```
-
-The stack must be running. The first `enable` builds the sandbox's image on your computer (a few minutes); a later
-`enable` without `--workspace` keeps the folder it had (a second copy's default folder is
+On by default, as the sandbox of the [Code page](#the-code-page): setup (and `./stack update`, on an install that
+never chose) turns it on with the workspace `~/bedrock-now-workspace` (a second copy's default folder is
 `~/bedrock-now-<project>-workspace`).
 
-This adds a **Terminal** tab to the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
+```bash
+./stack terminal status                           # on or off, the folder, the container, its key
+./stack terminal enable --workspace ~/projects    # another folder of yours (or on again after a disable)
+./stack terminal disable                          # off, with the Code page; it stays off across updates
+```
+
+The stack must be running to turn it on. The first `enable` builds the sandbox's image on your computer (a few
+minutes); a later `enable` without `--workspace` keeps the folder it had.
+
+This is the **Terminal** tab of the portal (on a phone: **More → Terminal**, full screen): `claude-bedrock` in a
 tmux session, set up like the one on your computer (same models, the shared MCP server, the cost line and the
 session cost on exit), but with **its own LiteLLM key**, `claude-code-terminal`, and its own monthly budget
 (`BUDGET_TERMINAL`, $50: Settings → Spending & budgets or `./stack config set BUDGET_TERMINAL`; a Terminal
@@ -439,15 +450,17 @@ MCP server (they join or leave the terminal's gateway network): Chat answers, `c
 sessions in progress drop for a few seconds. Details and what was weighed:
 [docs/security.md](docs/security.md#the-browser-terminal).
 
-### The Code page (optional)
+### The Code page
+
+**On by default**, with the browser terminal it runs in:
 
 ```bash
-./stack code enable                        # turns the browser terminal on too when it is off
-./stack code enable --workspace ~/projects # its sandbox's folder, as for ./stack terminal enable
-./stack code status                        # ./stack code disable turns it off again (the terminal stays)
+./stack code status                        # on or off, its address, the container, the sandbox it uses
+./stack code disable                       # off, and it stays off across updates (the terminal stays)
+./stack code enable --workspace ~/projects # on again, or another folder for its sandbox
 ```
 
-This adds a **Code** tab to the portal, directly under Chat (on a phone: **More → Code**, full screen): Claude Code
+The **Code** tab sits in the portal directly under Chat (on a phone: **More → Code**, full screen): Claude Code
 in an IDE-like page instead of a terminal — an explorer of the workspace on the left, an editor (CodeMirror) in the
 middle, the chat on the right and the sandbox's terminal in a bottom panel (`Ctrl+\``); on a tablet the chat and
 one of explorer/editor, on a phone the chat first with files, editor and diffs as sheets. Pane sizes are remembered
@@ -461,6 +474,21 @@ In this section: [turning it on and off](#turning-the-code-page-on-and-off) ·
 [where it runs](#where-it-runs) · [costs](#costs-on-the-code-page) · [the page's code](#the-pages-code)
 
 #### Turning the Code page on and off
+
+**On by default.** A new install's setup turns it on, with the browser terminal (its sandbox) and the workspace
+folder `~/bedrock-now-workspace`, and says so; `./stack update` does the same on an install that never chose (no
+`CODE_ENABLED` in `.env`, or a blank one) and names it in its *What's new*. An explicit choice stays: once
+`CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is in `.env` (`./stack code disable`, Settings → Code page → Off,
+`./stack terminal disable`), setup and updates never turn it on. If the folder cannot be created or is refused,
+setup says why and goes on without it; if an image does not build or the terminal's key cannot be made, it is
+turned off again and the next setup or update tries again. What it can do on its own stays off until you allow it:
+*Bypass permissions* and *Auto mode*, remote access to the sandbox (`REMOTE_TERMINAL`) and remote previews; the
+sandbox's internet access keeps its default (on; `TERMINAL_EGRESS=off`).
+
+While it is off, the **Code** tab stays in the sidebar, muted with an *off* pill (on a phone **More → Code (off)**):
+it then shows what the Code page is, what turning it on does (with the folder Claude would see) and **Turn on in
+Settings**, which opens Settings at the Code page's switch, with `./stack code enable` beside it — nothing is loaded
+from the Code page's host. Over remote access without `REMOTE_TERMINAL=true` it says how to allow it there.
 
 The first `enable` builds the page's image (a few minutes; with the terminal off, the stack must be running to turn
 it on). `enable` and `disable` restart the portal and Caddy (open apps reload) but not the terminal: its tmux session
@@ -775,7 +803,7 @@ cannot install a service worker there. Details:
 
 #### Where it runs
 
-It runs in the [browser terminal's](#claude-code-in-the-browser-optional) sandbox — the same container, workspace
+It runs in the [browser terminal's](#claude-code-in-the-browser) sandbox — the same container, workspace
 folder, key (`claude-code-terminal`) and budget (`BUDGET_TERMINAL`), internet switch (`TERMINAL_EGRESS`) and
 remote switch (`REMOTE_TERMINAL`) — so `enable` turns the terminal on when it is off, and `./stack terminal
 disable` turns the Code page off with it. The page itself comes from a separate container that holds no LiteLLM
@@ -827,7 +855,7 @@ SSH into the machine from a phone SSH app (Blink or Termius on iOS, Termius or J
 -A -s claude` and run `claude-bedrock` in it; a dropped connection then loses nothing. Tailscale on both devices makes
 this work from anywhere without open ports. `./stack ssh-info` prints the exact commands for this machine (its
 Tailscale name, the SSH command, apps, mosh). Without SSH, the optional [browser
-terminal](#claude-code-in-the-browser-optional) runs Claude Code in a sandbox from the portal's More menu. Claude
+terminal](#claude-code-in-the-browser) runs Claude Code in a sandbox from the portal's More menu. Claude
 Code's Remote Control doesn't work with Bedrock or a custom API URL. A sleeping Mac answers no SSH: `./stack serve`
 keeps the stack up and the Mac awake (on AC power, lid open) until Ctrl-C (`--background` without a terminal, `--stop`
 ends that; on Linux only laptops get a sleep inhibitor, in the foreground). Step by step, incl. the lid-closed
@@ -971,7 +999,7 @@ More settings) turns updates off (`./stack prices` then refuses to run).
 
 **Budgets.** Setup creates three LiteLLM keys, each with a monthly budget: `claude-code` **$200**, `open-webui`
 **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused until the reset date
-shown by `./stack costs`. The [browser terminal](#claude-code-in-the-browser-optional) and the Code page get a fourth
+shown by `./stack costs`. The [browser terminal](#claude-code-in-the-browser) and the Code page get a fourth
 key, `claude-code-terminal`, **$50** (`BUDGET_TERMINAL`). To change one, use **Settings → Budgets & alerts** or
 `./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`; `BUDGET_TERMINAL` only this
 way): it applies at once, with no restart, and keeps the reset date. Raising a budget works only from the computer
@@ -1241,8 +1269,8 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack ssh-info` | How to run `claude-bedrock` from your phone over SSH | none |
 | `./stack openrouter …` | Optional OpenRouter: `status`, `set`, `apply` (the key pasted into `.env`), `remove`, `refresh`, `list`, `models` | none |
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
-| `./stack terminal status\|enable [--workspace DIR]\|disable` | Optional: Claude Code in the browser, a sandbox that sees one folder ([above](#claude-code-in-the-browser-optional)) | none (its sessions: per token) |
-| `./stack code status\|enable [--workspace DIR]\|disable` | Optional: the Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox ([above](#the-code-page-optional)) | none (its sessions: per token) |
+| `./stack terminal status\|enable [--workspace DIR]\|disable` | Claude Code in the browser, a sandbox that sees one folder; on by default with the Code page ([above](#claude-code-in-the-browser)) | none (its sessions: per token) |
+| `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |
@@ -1332,12 +1360,22 @@ question). `./stack status` shows how much disk the images, data volumes and bac
 `./stack clean` would free when there is something to free. Backups are unchanged: the newest 5 automatic ones are kept, and the one `./stack rollback`
 restores is never pruned, however old.
 
+**Updating from v0.9.0 or earlier** turns the Code page on, with the browser terminal it runs in, unless you chose
+otherwise: an install with no `CODE_ENABLED` in `.env` (or a blank one) gets both, in `~/bedrock-now-workspace` (or
+the terminal's folder, if it was on), with the terminal's own key and budget; the update says so ("The Code page is
+now on by default …") and its *What's new* names it. Building their images takes a few minutes more the first time
+(about 1.6 GB). `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` in `.env` stays off; `./stack code disable`
+afterwards turns it off for good. Bypass, Auto, remote access to the sandbox and remote previews stay off.
+`./stack rollback` of that update turns them off again, as they were (the data it restores has no key for the
+sandbox), and the next update turns them on again.
+
 **Updating from v0.4.x** (to v0.5.0 or later) is an ordinary update: the four steps above, a few minutes of
 downtime (Chat answers, `claude-bedrock` requests and MCP sessions in progress then fail; start them again), and
 setup runs without questions. What changes for you:
 
-- **New parts stay off:** the Code page (`./stack code enable`, or **Settings → Code page → On** on the computer
-  running bedrock-now), its *Auto* and *Bypass permissions* modes and auto mode in the terminal (Settings → Code
+- **New parts stay off** (until an update to the release after v0.9.0, which turns the Code page on: above): the Code
+  page (`./stack code enable`, or **Settings → Code page → On** on the computer running bedrock-now), its *Auto* and
+  *Bypass permissions* modes and auto mode in the terminal (Settings → Code
   page), and previews of dev servers over remote access (`REMOTE_PREVIEW`). Nothing you did not turn on starts.
 - **The browser terminal, if it is on,** gets a new image: its container is recreated, so its tmux session ends
   (Claude Code's history stays; `claude-bedrock --resume` there). Claude Code's *auto* mode is now off there (and
@@ -1423,10 +1461,11 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   Chat with a streamed answer and a file question, voice calls and speech-to-text, Admin, the RustFS console's
   upload/download/delete, phone and tablet layouts, sign-out), checks every portal route, header and CSRF rule, runs
   the safe `./stack` commands (backup/restore, down/up, update, rollback) and `claude-bedrock -p`, then removes
-  everything it created. About 10-15 minutes and about half a cent of Bedrock (capped by small budgets; the total is
-  printed); results as a table and JUnit XML in `tests/e2e/out/`. `--terminal` (or `E2E_TERMINAL=1`) also turns on the
-  browser terminal and checks it (lock, unlock, tmux, Origin, isolation; with the claude part one `claude-bedrock -p`
-  inside it, ~$0.02). `--code` (or `E2E_CODE=1`) also turns on the Code page and checks it (unlock, CSP, a Haiku
+  everything it created. About 15-25 minutes and up to about 20 cents of Bedrock, most of it the Code page's Haiku
+  turns (capped by small budgets; the total is printed; with `--no-code` about half a cent); results as a table and
+  JUnit XML in `tests/e2e/out/`. As on a new install, the Code page and the browser terminal are on (setup turns them
+  on, in a folder next to the throwaway): the terminal is checked (lock, unlock, tmux, Origin, isolation; with the
+  claude part one `claude-bedrock -p` inside it, ~$0.02), and the Code page (unlock, CSP, a Haiku
   session: streaming, permission allow/deny and the badge, model switch, interrupt, a slash command, re-attach and
   resume, files, spend; then the page itself as a person uses it — a Bash prompt allowed in its card, an @-mentioned
   file edited and its diff, the palette, an upload, a reload without duplicates, an AskUserQuestion answered, plugins
@@ -1437,7 +1476,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   isolation checked from inside the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel,
   PowerPoint, notebook, HTML and Mermaid previews and the sandboxed viewer's site (its policies, refused capabilities,
   isolation from inside it); isolation; a hostile stand-in on its spawn socket; ~$0.17 on the terminal's key, whose
-  budget the run sets to $0.30). Its unit tests (frontend and backend) run in its image's test stage: `code/test.sh`
+  budget the run sets to $0.30). `--no-code` (or `E2E_NO_CODE=1`) runs it with the Code page turned off, as a person
+  who turned it off: its tab's page on how to turn it on (the terminal off too, unless `--terminal`). Its unit tests (frontend and backend) run in its image's test stage: `code/test.sh`
   (needs Docker); the page's browser checks against a mock: `sh code/web/e2e/run.sh`. `--helper` (or `E2E_HELPER=1`)
   also runs the throwaway's update helper in the foreground (never installed as a service) for the Settings checks.
   What is covered, and what stays manual: [tests/e2e/INVENTORY.md](tests/e2e/INVENTORY.md). Options: `tests/e2e/run.sh
@@ -1471,12 +1511,14 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   only a hash of it, never the password), its own allowlist and each value, and runs `./stack config apply`
   with the values on stdin; keys that could send data elsewhere, and settings that would protect less, change
   only from this computer.
-- The browser terminal is off by default. When on, it is a container (not a shell on your computer) that sees
-  one folder of yours, has its own LiteLLM key and budget, and reaches inside the stack only a gateway that passes
+- The browser terminal is on by default, as the Code page's sandbox (`./stack terminal disable` turns both off). It
+  is a container (not a shell on your computer) that sees one folder of yours (`~/bedrock-now-workspace` unless you
+  pick another), has its own LiteLLM key and budget, and reaches inside the stack only a gateway that passes
   Claude Code's few LiteLLM paths and the shared MCP server; opening it needs the portal password again, it refuses
   other sites' connections, and remote access leaves it out unless `REMOTE_TERMINAL=true`. What it writes into
   the workspace can run on your computer when you open that folder there.
-- The Code page is off by default too, and runs Claude Code in that same sandbox. Its page comes from a container
+- The Code page is on by default too, and runs Claude Code in that same sandbox; in its default mode every command
+  and file change waits for your OK. Its page comes from a container
   with no LiteLLM key, no folder of yours and no network but the one it shares with Caddy; it needs its own
   password unlock, treats everything from the sandbox as untrusted text (a strict CSP with Trusted Types, set by
   Caddy whoever answers), and takes models, prices and costs from the portal, never from the sandbox. Its *Bypass
@@ -1499,8 +1541,8 @@ bin/bedrock-now-helper        the update helper: one-click and automatic updates
 compose.yaml                  all services (images pinned)
 compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
 compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin
-compose.terminal*.yaml        the optional browser terminal and its gateway (only while ./stack terminal is on)
-compose.code.yaml             the optional Code page (only while ./stack code is on, with the terminal)
+compose.terminal*.yaml        the browser terminal and its gateway (only while ./stack terminal is on; on by default)
+compose.code.yaml             the Code page (only while ./stack code is on, with the terminal; on by default)
 caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site,
                               caddy/terminal-*.caddy the terminal's site and its gateway, caddy/code-*.caddy
                               the Code page's site, caddy/preview-*.caddy and artifact-*.caddy its previews' and

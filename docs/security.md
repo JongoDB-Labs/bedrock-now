@@ -515,10 +515,30 @@ character; `./stack helper install` refuses such a path. `%` and `$` are escaped
 
 ## The browser terminal
 
-`./stack terminal enable` (off by default) puts Claude Code and a shell into the portal's Terminal tab. Earlier
-versions refused to offer this at all: a shell in the browser is one stolen session away from running commands.
-It is now offered as a **sandbox** with the checks below, so a stolen session cookie alone opens nothing, and
-what a successful attacker reaches is the container — with the three exceptions under *Threat model*.
+`./stack terminal enable` puts Claude Code and a shell into the portal's Terminal tab. Earlier versions refused to
+offer this at all: a shell in the browser is one stolen session away from running commands. It is now offered as a
+**sandbox** with the checks below, so a stolen session cookie alone opens nothing, and what a successful attacker
+reaches is the container — with the three exceptions under *Threat model*.
+
+- [x] **On by default, as the Code page's sandbox (since the release after v0.9.0).** Setup — and `./stack update`
+  on an install that never chose (`CODE_ENABLED` blank or absent in `.env`) — turns the terminal and the Code page
+  on, with the workspace `~/bedrock-now-workspace` (created with mode 700 and checked like any other: below). What
+  that adds to a default install, and what it does not:
+  - *Adds:* a container running Claude Code and a shell, as your user id, that can read and write that one folder,
+    spend its own key (`claude-code-terminal`, `BUDGET_TERMINAL`: $50 a month by default), reach the internet and,
+    on Docker Desktop, your computer's own services through Docker's host address (*Threat model* below), and two
+    more host names on `127.0.0.1` behind the portal (`terminal.` and `code.`), each needing the portal session
+    **and** the portal password again (12 hours per browser). Anything that later opens the workspace on your
+    computer runs what Claude wrote there (threat 1).
+  - *Does not add:* nothing listens beyond `127.0.0.1`; no access over remote access (`REMOTE_TERMINAL` stays off
+    unless you set it, and it is not a Settings switch); no Bypass permissions or Auto mode (each off until allowed
+    from this computer); no remote previews; no other folder of yours, no Docker socket, no LiteLLM master key or
+    `claude-bedrock`'s key in the sandbox; the Code page's default mode asks before every command and file change.
+  - *Kept:* an explicit `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` is never turned on again;
+    `./stack code disable` (Settings → Code page → Off, from anywhere) or `./stack terminal disable` writes it. A
+    folder that cannot be created or is refused leaves both off (setup says why and goes on); an image that does not
+    build is turned off again and tried at the next setup or update; `./stack rollback` of the update that turned
+    them on turns them off again. `TERMINAL_EGRESS` keeps its default (on).
 
 - [x] **Not a shell on your computer.** ttyd runs `tmux` in its own container (`terminal/`, built locally; base
   image pinned by digest, Claude Code by version and SHA-512 in `terminal/claude-code/package-lock.json`, ttyd's
@@ -647,7 +667,8 @@ Prefer SSH ([docs/phone-claude-code.md](phone-claude-code.md)) when you need you
 
 ## The Code page
 
-`./stack code enable` (off by default; or Settings → Code page, see the last item below) puts Claude Code into the
+`./stack code enable` (on by default since the release after v0.9.0, with the terminal: [above](#the-browser-terminal);
+or Settings → Code page, see the last item below) puts Claude Code into the
 portal's Code tab as an IDE-like page: streamed answers, tool cards, permission prompts, models, sessions, the
 workspace's files in an explorer and an editor, plugins and MCP servers. It adds no new place where code runs:
 Claude Code runs in the browser terminal's sandbox (above), with its workspace, key, budget, internet and remote

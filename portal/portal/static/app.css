@@ -241,3 +241,31 @@ a.install-btn, .install-actions a.action { text-decoration: none; cursor: pointe
 .code-ask input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--ink); }
 .code-card .note { margin: 6px 0 0; }
+
+/* The Code tab while the Code page is off here (code.js): muted, an "off" pill; its page is the portal's own. */
+.code-item.off .tab svg { opacity: 0.55; }
+.tab-off { margin-left: auto; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted);
+  font-size: 11px; font-weight: 500; line-height: 16px; }
+.code-off-page { height: 100%; overflow-y: auto; padding: 28px clamp(16px, 4vw, 48px) 48px; }
+.code-off-head h1 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.code-off-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: var(--surface);
+  border: 1px solid var(--line); color: var(--accent); }
+.code-off-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.code-off-pill { padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 13px;
+  font-weight: 500; letter-spacing: 0; }
+.code-off-card { max-width: 780px; margin-top: 20px; padding: 22px 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.code-off-lede { margin: 0; font-size: 16px; line-height: 1.5; max-width: 66ch; }
+.code-off-card h2 { margin: 24px 0 10px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.code-off-features { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.code-off-features li { display: grid; align-content: start; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.code-off-features span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.code-off-list { margin: 0; padding-left: 20px; display: grid; gap: 8px; line-height: 1.5; max-width: 70ch; }
+.code-off-list code, .code-off-card .cmdline code { overflow-wrap: anywhere; }
+.code-off-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 16px 0 0; }
+.code-off-actions .note { margin: 0; }
+.code-off-card .cmdline { margin: 8px 0 0; }
+.code-off-card h2 + .note { margin-top: 0; }
+/* Settings, opened from the Code tab's page: the Code page's switch lights up briefly */
+.code-flash { animation: code-flash 1.6s ease-out; border-radius: 8px; }
+@keyframes code-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .code-flash { animation: none; outline: 3px solid var(--accent); outline-offset: 2px; } }

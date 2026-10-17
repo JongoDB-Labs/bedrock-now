@@ -7,7 +7,7 @@ phone you reach it the way you'd reach any server: **SSH**, inside **tmux** so a
 the session. That is what this page describes: Claude Code on the machine itself, with your projects and tools.
 
 There is also an easier, more limited way: the optional **browser terminal** (`./stack terminal enable`;
-[README](../README.md#claude-code-in-the-browser-optional)). On a phone it opens from the portal's **More →
+[README](../README.md#claude-code-in-the-browser)). On a phone it opens from the portal's **More →
 Terminal**, full screen, and needs no SSH app. It is a sandbox rather than a shell on your machine: Claude Code
 runs in a container that sees only one folder you choose, opening it takes the portal password again, and it
 stays off for [remote access](remote.md) unless you set `REMOTE_TERMINAL=true`. Its tmux session also survives a

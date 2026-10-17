@@ -119,7 +119,9 @@ def _meta(page, name):
     return json.loads(html.unescape(m.group(1)))
 
 
-def test_tab_is_offered_only_when_on(settings, cs):
+def test_code_page_is_framed_only_when_on(settings, cs):
+    # (the tab is always there: code.js — while off, a page of the portal's own with no frame; the code host is offered
+    # only while the Code page is on here)
     for s, want in ((settings, False), (replace(settings, terminal=True), False), (cs, True)):
         with _client(s) as c:
             tok = session(c)
@@ -138,6 +140,46 @@ def test_code_tab_sits_under_chat_and_under_more_on_phones():
     assert '#more-sheet .sheet-links' in js and "e.origin !== codeOrigin" in js
     assert '"code"' in open("portal/static/mobile.js", encoding="utf-8").read().split("DESKTOP_ONLY", 1)[1].split("\n", 1)[0]
     assert ".tabs .code-item" in open("portal/static/mobile.css", encoding="utf-8").read()
+    assert "innerHTML" not in js
+
+
+def test_code_tab_is_always_there_and_explains_itself_while_off():
+    js = open("portal/static/code.js", encoding="utf-8").read()
+    app = open("portal/static/app.js", encoding="utf-8").read()
+    mobile = open("portal/static/mobile.js", encoding="utf-8").read()
+    # the tab and the More entry whatever the state; the frame, its badge, the preload and the code host only while on
+    tail = js[js.rindex("// (Home's Code card first"):]
+    assert "\n  addTab(); addSheetLink();\n" in tail
+    assert "if (here) { listen(); window.addEventListener(\"load\", preload, { once: true }); } else offPage();" in tail
+    add = js[js.index("function addTab()"):js.index("function addSheetLink()")]
+    off = add[add.index("if (!here) {"):]
+    off = off[:off.index("return;")]
+    assert 'class: "code-item off"' in off and 'class: "tab-off", text: "off"' in off and '"data-label": "Code (off)"' in off
+    assert "appUrl(" not in off and "badge" not in off and "popout" not in off
+    sheet = js[js.index("function addSheetLink()"):js.index("// --- Home's Code card ---")]
+    off = sheet[sheet.index("if (!here) {"):]
+    off = off[:off.index("return;")]
+    assert "appUrl(" not in off and 'showTab("code")' in off and "what it is, and how to turn it on" in off
+    # while off, "code" is a page of the portal (app.js PAGES: a section of that id, no frame), on a phone too
+    page = js[js.index("function offPage()"):js.index("// The folder Claude would see")]
+    assert 'PAGES.push("code")' in page and 'id: "code"' in page and "appUrl(" not in page and "appFrame(" not in page
+    for words in ("Turn on in Settings", "on the computer running bedrock-now", './stack code enable', "./stack code enable --workspace DIR",
+                  "~/bedrock-now-workspace", "its own key and budget", "Manual mode", "Bypass permissions and Auto mode stay off",
+                  "portal password again", "TERMINAL_EGRESS=off", "reload this page", "REMOTE_TERMINAL=true", "./stack up",
+                  "off for remote access"):
+        assert words in page, words
+    assert "turnOn.addEventListener(\"click\", toSettings)" in page
+    # Settings, at the Code page's switch: its row (else its card), once Settings has drawn itself again
+    go = js[js.index("function toSettings()"):js.index("function settingsLink(")]
+    assert 'showTab("settings")' in go and '.set-row[data-key="CODE_ENABLED"]' in go and '#set-code' in go and "MutationObserver" in go
+    # the folder as Settings names it, asked from the portal's own API when the page shows (never the code host)
+    fill = js[js.index("async function fillFolder()"):js.index("// Home's \"Claude Code in your terminal\" card")]
+    assert 'api("/api/settings")' in fill and "TERMINAL_WORKSPACE" in fill and "code_workspace" in fill and "textContent" in fill
+    assert "const PAGES = [\"home\", \"settings\"];" in app
+    assert "for (const p of PAGES) { const s = document.getElementById(p); if (s) s.hidden = tab !== p; }" in app
+    assert "!PAGES.includes(tab) ? \"chat\" : tab" in mobile and "b.dataset.label || b.textContent.trim()" in mobile
+    css = open("portal/static/app.css", encoding="utf-8").read()
+    assert ".code-item.off .tab svg" in css and ".tab-off" in css and ".code-off-page" in css and ".code-flash" in css
     assert "innerHTML" not in js
 
 

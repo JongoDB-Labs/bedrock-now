@@ -20,8 +20,8 @@ still denies, an ask rule on .git still asks, and a git hook written by Bash sho
 puts it back — then it is turned off again; and Auto mode is allowed in Settings, a routine command runs without a card
 (Claude Code's reviewer approves it, on Sonnet 5.5), a risky one is blocked with the rule it matched, Allow once runs it
 again, the reviewer's spend lands on the terminal's key — then it is turned off again. With E2E_CODE_HOSTILE=1 (run.sh, after the suite: a stand-in on bn-coded's socket, as code
-in the sandbox could start one) the page stays safe. Every check skips while the Code page is off (but the first two,
-which check that state)."""
+in the sandbox could start one) the page stays safe. Every check skips while the Code page is off (--no-code) but the
+tab's: then the tab is still there, muted, and shows a page of the portal's own on how to turn it on."""
 
 from __future__ import annotations
 
@@ -194,19 +194,83 @@ def text_of(evs):
 
 # --- the tab and the host (no Bedrock calls) ---
 
+CODE_SETTINGS_ROW = '#settings .set-row[data-key="CODE_ENABLED"]'
+
+
+def _off_page(ctx) -> str:
+    """The Code page off (--no-code): the tab is still under Chat, muted with an "off" pill; it shows a page of the
+    portal's own (no frame) that says what the Code page is and how to turn it on, whose button opens Settings at the
+    Code page's switch; on a phone More → Code (off) shows the same page; and nothing is asked from the code host."""
+    page, rec = ctx.page("code-tab-off")
+    asked = []
+    page.on("request", lambda r: asked.append(r.url))
+    login(page)
+    page.wait_for_selector("#home:not([hidden])")
+    t = page.locator(".tab[data-tab=code]")
+    order = page.eval_on_selector_all(".tabs > li > .tab", "els => els.map(e => e.dataset.tab)")
+    expect(order[:3] == ["home", "chat", "code"], f"tab order {order}")
+    expect(t.is_visible() and page.locator(".code-item.off .tab-off").inner_text().strip() == "off", "no muted Code tab with its off pill")
+    expect(page.locator(".popout[data-app=code]").count() == 0 and page.locator(".tab[data-tab=code] .tab-badge").count() == 0, "a pop-out or badge while off")
+    line = page.inner_text("section.claude .code-line")
+    expect("Code tab" in line and "./stack code enable" in line and "Settings → Code page" in line, f"card {line!r}")
+    t.click()
+    page.wait_for_selector("#code:not([hidden]) .code-off-card")
+    expect(page.locator("#frames iframe[data-app=code]").count() == 0, "a Code frame while off")
+    expect(page.locator(".tab[data-tab=code][aria-current=page]").count() == 1 and page.evaluate("location.hash") == "#code", "the tab is not current")
+    text = page.inner_text("#code")
+    for words in ("Claude Code in your browser", "Permission prompts", "Previews", "Run & test", "What turning it on does",
+                  "one folder", "its own key and budget", "Manual mode", "Bypass permissions and Auto mode stay off",
+                  "Turn on in Settings", "on the computer running bedrock-now", "./stack code enable"):
+        expect(words in text, f"the off page lacks {words!r}")
+    # the folder as Settings names it (from the portal's own /api/settings)
+    page.wait_for_function("() => /-workspace$/.test(document.querySelector('#code-off-ws').textContent) && document.querySelector('#code-off-ws').textContent.startsWith('/')", timeout=15000)
+    ws = page.inner_text("#code-off-ws")
+    page.wait_for_timeout(300)
+    shot(page, "50-code-tab-off")
+    page.click("#code-off-settings")
+    page.wait_for_selector(f"#settings:not([hidden]) {CODE_SETTINGS_ROW[len('#settings '):]}", timeout=20000)
+    page.wait_for_function(f"""() => {{ const r = document.querySelector('{CODE_SETTINGS_ROW}').getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= innerHeight; }}""", timeout=15000)
+    expect(page.evaluate("location.hash") == "#settings", "Settings is not shown")
+    page.wait_for_timeout(400)
+    shot(page, "50b-code-off-settings")
+    # #code by hand (a bookmark): the page, not Home
+    page.evaluate("location.hash = '#code'")
+    page.wait_for_selector("#code:not([hidden])", timeout=10000)
+    probs = rec.problems()
+    rec.save()
+    expect(not probs, f"errors: {probs}")
+    # a phone: not in the bottom bar; More → Code (off) shows the same page of the portal
+    phone, prec = ctx.page("code-tab-off-phone", "phone")
+    phone.on("request", lambda r: asked.append(r.url))
+    login(phone)
+    phone.wait_for_selector(".shell")
+    expect(not phone.locator(".tab[data-tab=code]").is_visible(), "the Code tab in the phone's bottom bar")
+    phone.click("#more-btn")
+    phone.locator("#more-sheet .code-off-link").click()
+    phone.wait_for_selector("#code:not([hidden]) .code-off-card")
+    expect(phone.locator("#more-sheet").is_hidden(), "the More sheet stayed open")
+    phone.wait_for_timeout(300)
+    shot(phone, "51-code-off-phone")
+    pprobs = prec.problems()
+    prec.save()
+    expect(not pprobs, f"phone errors: {pprobs}")
+    to_code = [u for u in asked if u.startswith(CODE)]
+    expect(not to_code, f"requests to the code host while off: {to_code[:3]}")
+    return (f"off: tabs {order[:3]}, muted with its off pill; its page (no frame) names {ws}, Turn on in Settings shows "
+            f"the Code page's switch; #code shows it; phone: More → Code (off); {len(asked)} requests, none to the code host")
+
+
 @check("browser", "code-tab-under-chat")
 def tab(ctx):
+    if not ON:
+        return _off_page(ctx)
     page, rec = ctx.page("code-tab")
     login(page)
     page.wait_for_selector("#home:not([hidden])")
     t = page.locator(".tab[data-tab=code]")
     line = page.inner_text("section.claude .code-line")
-    if not ON:
-        expect(t.count() == 0 and "./stack code enable" in line, f"off: tab {t.count()}, card {line!r}")
-        page.evaluate("location.hash = '#code'")
-        page.locator(".tab[data-tab=home][aria-current=page]").wait_for(timeout=10000)
-        rec.save()
-        return "off: no tab, #code falls back to Home, the card says ./stack code enable"
+    expect(page.locator(".code-item.off").count() == 0 and page.locator("#code").count() == 0, "the off page while on")
     order = page.eval_on_selector_all(".tabs > li > .tab", "els => els.map(e => e.dataset.tab)")
     expect(order[:3] == ["home", "chat", "code"], f"tab order {order}")
     expect(page.locator(".popout[data-app=code]").get_attribute("href") == CODE + "/", "pop-out")

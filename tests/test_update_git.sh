@@ -288,6 +288,7 @@ _setup_stubs() { # every step of cmd_setup stubbed: only its own order and the r
   for f in check_prereqs guard_project persist_project_name ensure_portal_dirs write_version_file fix_bind_mount_perms \
     setup_aws_creds setup_ports setup_remote_choice remote_net_preflight setup_secrets setup_openrouter setup_stt \
     setup_bringup_and_probe stt_after_probe setup_keys_and_ui write_mcp_config offer_symlink offer_helper \
+    code_default_on terminal_setup_hook code_setup_hook code_default_settle \
     remote_up_hook print_summary docker_autostart_hint_weekly maybe_auto_open; do
     eval "$f() { :; }"
   done

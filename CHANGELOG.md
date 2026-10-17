@@ -6,6 +6,31 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The Code page is on by default**, with the browser terminal it runs in (its sandbox): a new install's setup
+  turns both on, with the workspace `~/bedrock-now-workspace` (created with mode 700) and the terminal's own key and
+  budget, and says so — no extra question, also with `--yes`. `./stack update` does the same on an install that never
+  chose (`CODE_ENABLED` blank or absent in `.env`) and says so in its *What's new* ("Code page: on — …; ./stack code
+  disable turns it off"); an explicit `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` stays off. A folder that cannot
+  be created or used leaves it off with the reason and setup goes on; an image that does not build is turned off
+  again and tried at the next setup or update; `./stack rollback` of the update that turned it on turns it off again
+  (the data it restores has no key for the sandbox). `./stack code disable` and `./stack terminal disable` now record
+  the choice even while it was off, so updates no longer turn it on. What stays opt-in is unchanged: Bypass permissions,
+  Auto mode, remote access to the sandbox (`REMOTE_TERMINAL`), remote previews; the sandbox's internet access keeps
+  its default. About 1.6 GB more images are built on a new install (the terminal ~1.2 GB, the Code page ~0.4 GB);
+  idle they use about 110 MB of memory ([README](README.md#the-code-page),
+  [docs/security.md](docs/security.md#the-browser-terminal)).
+- **The Code tab is always in the sidebar**; while the Code page is off it explains what it is and how to turn it
+  on. Muted, with an *off* pill (on a phone **More → Code (off)**), it shows a page of the portal's own — no frame,
+  nothing loaded from the Code page's host: what the Code page does, what turning it on does (the folder Claude would
+  see, its own key and budget, Manual mode asking first, Bypass and Auto staying off) and **Turn on in Settings**,
+  which opens Settings at the Code page's switch, with `./stack code enable` beside it. Over remote access without
+  `REMOTE_TERMINAL=true` it says how to allow it there. Home's Claude Code card and the walkthrough point at the tab
+  too. The Terminal tab is unchanged: it shows only while the terminal is on.
+- **The end-to-end suite** (`tests/e2e/run.sh`) runs with the Code page on by default, as a new install does;
+  `--no-code` (or `E2E_NO_CODE=1`) runs it turned off, for the tab's off page.
+
 ### Fixed
 
 - **Updates and rollbacks run by the update helper (Home → Update now, Roll back, automatic updates) left the

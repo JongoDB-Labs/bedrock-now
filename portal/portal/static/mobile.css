@@ -47,6 +47,9 @@
   .sidebar .version-label { align-self: center; flex-direction: column; margin: -16px 0 0; font-size: 10px; text-align: center; }
   .sidebar .version-label .v-commit { display: none; }   /* the rail is 76 px: the full version is in the tooltip */
   .sidebar .version-label .v-dot { margin-left: 0; }
+  /* the Code tab while off (code.js): the pill in the icon's corner */
+  .code-item.off .tab { position: relative; }
+  .tab-off { position: absolute; top: 3px; right: 4px; padding: 0 4px; font-size: 9.5px; line-height: 13px; background: var(--sidebar); }
 }
 
 /* ---------- Phones and tablets: the models table becomes a card list ---------- */
@@ -96,6 +99,9 @@
   /* Home, compact: spend, then health, then models as cards, then sign-ins. Claude Code stays on the desktop. */
   .home { padding: max(18px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
   .home-head h1 { font-size: 24px; }
+  .code-off-page { padding: max(18px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+  .code-off-card { padding: 16px; }
+  .code-off-lede { font-size: 15px; }
   .grid { display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; }
   .col { display: contents; }
   .col > section { padding: 16px; border-radius: 12px; }

@@ -20,7 +20,8 @@
 
   window.bnMobile = {
     // Admin, Files, the Terminal and Code are desktop apps: on a phone they open from the More sheet in a new tab instead.
-    allowTab: (tab) => (PHONE.matches && DESKTOP_ONLY.has(tab) ? "chat" : tab),
+    // A page of the portal shows on a phone too (app.js PAGES: the Code tab's explanation while the Code page is off).
+    allowTab: (tab) => (PHONE.matches && DESKTOP_ONLY.has(tab) && !PAGES.includes(tab) ? "chat" : tab),
     defaultTab: () => (PHONE.matches ? "chat" : "home"),
   };
 
@@ -174,7 +175,7 @@
     const TABLET = window.matchMedia("(min-width: 768px) and (max-width: 1099.98px)");
     const titles = () => {
       for (const b of document.querySelectorAll(".tab")) {
-        if (TABLET.matches) b.title = b.textContent.trim(); else b.removeAttribute("title");
+        if (TABLET.matches) b.title = b.dataset.label || b.textContent.trim(); else b.removeAttribute("title");
       }
     };
     titles(); TABLET.addEventListener("change", titles);
@@ -187,7 +188,7 @@
     const hint = voiceHint();
     if (hint) { hint.hidden = current !== "chat"; $("#frames").classList.toggle("hint-on", current === "chat"); }
     // Rotating a tablet down to phone width while Admin or Files is open: fall back to Chat.
-    PHONE.addEventListener("change", () => { if (PHONE.matches && DESKTOP_ONLY.has(current)) showTab("chat"); });
+    PHONE.addEventListener("change", () => { if (PHONE.matches && window.bnMobile.allowTab(current) !== current) showTab("chat"); });
     // Installability on Android Chrome. Needs a secure context (HTTPS, or *.localhost); plain-http LAN skips it.
     if ("serviceWorker" in navigator && window.isSecureContext) {
       navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => { /* not installable here: fine */ });

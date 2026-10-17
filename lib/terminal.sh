@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # The optional browser terminal (./stack terminal): Claude Code in a sandbox container, in the portal's Terminal tab
-# (ttyd + tmux; terminal/, compose.terminal.yaml, caddy/terminal-on.caddy, caddy/terminal-gateway.caddy). Off unless
-# you turn it on.
+# (ttyd + tmux; terminal/, compose.terminal.yaml, caddy/terminal-on.caddy, caddy/terminal-gateway.caddy). On by
+# default with the Code page, which runs in its sandbox (lib/code.sh code_default_on: setup and ./stack update turn both
+# on while CODE_ENABLED is blank); an explicit TERMINAL_ENABLED=false (disable) stays.
 #
 #   enable [--workspace DIR]   TERMINAL_ENABLED=true. DIR (default ~/bedrock-now-workspace, created with mode 700)
 #                              is the only folder of this computer the container sees, at /workspace.
@@ -204,7 +205,11 @@ terminal_enable() {
 terminal_disable() {
   local own=1
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
-  if ! terminal_on; then log "the terminal is already off"; return 0; fi
+  if ! terminal_on; then
+    # blank (never chosen): setup and ./stack update would turn it on with the Code page — false keeps both off
+    [ -n "$(get_env TERMINAL_ENABLED)" ] || set_env TERMINAL_ENABLED false
+    log "the terminal is already off (and stays off, with the Code page: setup and ./stack update no longer turn them on)"; return 0
+  fi
   ! stack_lock_ours || own=0
   stack_lock terminal
   check_prereqs
@@ -294,19 +299,27 @@ terminal_after_up() {
 }
 
 # terminal_setup_hook — setup / ./stack update: its key (budget synced), a new image (new code, this week's packages)
-# and containers with the current keys. Never stops setup: a failure leaves the previous ones running, with a warning.
+# and containers with the current keys. Never stops setup: a failure leaves the previous ones running, with a warning
+# (TERMINAL_SETUP_FAILED=1: lib/code.sh code_default_settle undoes a default that did not come up).
+TERMINAL_SETUP_FAILED=0
+# shellcheck disable=SC2034  # TERMINAL_SETUP_FAILED: read by lib/code.sh
 terminal_setup_hook() {
   local out start why
+  TERMINAL_SETUP_FAILED=0
   terminal_remote_sync
   terminal_on || return 0
   terminal_secrets
   why="$(terminal_why_out)"
-  if [ -n "$why" ]; then warn "Terminal: not started — $why (./stack terminal enable --workspace DIR)"; return 0; fi
-  terminal_key || warn "Terminal: could not create or update its LiteLLM key (claude-code-terminal) — see ./stack logs litellm"
+  if [ -n "$why" ]; then TERMINAL_SETUP_FAILED=1; warn "Terminal: not started — $why (./stack terminal enable --workspace DIR)"; return 0; fi
+  if ! terminal_key; then
+    warn "Terminal: could not create or update its LiteLLM key (claude-code-terminal) — see ./stack logs litellm"
+    [ -n "$(get_env LITELLM_KEY_TERMINAL)" ] || TERMINAL_SETUP_FAILED=1   # (none at all: its sandbox cannot reach Bedrock)
+  fi
   out="$(mktemp)"; start="$(_now)"
   if _terminal_build_and_up > "$out" 2>&1; then
     rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; terminal_after_up; return 0
   fi
+  TERMINAL_SETUP_FAILED=1
   warn "Terminal: could not build or start it — its last messages:"
   tail -n 15 "$out" | sed 's/^/    /' >&2; rm -f "$out"
   warn "Terminal: setup goes on without it; ./stack terminal enable tries again"

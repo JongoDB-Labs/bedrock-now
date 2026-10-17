@@ -30,7 +30,9 @@ function el(tag, props = {}, ...children) {
 function remember(tab) { try { localStorage.setItem("bn.tab", tab); } catch (_) { /* storage blocked: fine */ } }
 function recalled() { try { return localStorage.getItem("bn.tab"); } catch (_) { return null; } }
 
-const PAGES = ["home", "settings"];  // the portal's own pages; everything else is an app in a frame
+// the portal's own pages (each a section with that id); everything else is an app in a frame. code.js adds "code" while
+// the Code page is off on this site: its tab then shows what the Code page is and how to turn it on, with no frame.
+const PAGES = ["home", "settings"];
 // appFrame TAB -> its frame: created (hidden) on first need and kept, so switching tabs never reloads an app
 function appFrame(tab) {
   let f = $(`#frames iframe[data-app="${tab}"]`);
@@ -49,12 +51,11 @@ function showTab(tab) {
   // not "constructor" etc.; the terminal and the Code page only where the server offers them (APP_URLS: ./stack
   // terminal / ./stack code; terminal.js, code.js)
   if (!PAGES.includes(tab) && !Object.prototype.hasOwnProperty.call(APPS, tab) && !(["terminal", "code"].includes(tab) && APP_URLS[tab])) tab = "home";
-  if (window.bnMobile) tab = window.bnMobile.allowTab(tab);  // phones: Home and Chat only (mobile.js)
+  if (window.bnMobile) tab = window.bnMobile.allowTab(tab);  // phones: no desktop apps in the page (mobile.js)
   for (const b of document.querySelectorAll(".tab")) {
     if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }
-  $("#home").hidden = tab !== "home";
-  if ($("#settings")) $("#settings").hidden = tab !== "settings";
+  for (const p of PAGES) { const s = document.getElementById(p); if (s) s.hidden = tab !== p; }
   for (const f of document.querySelectorAll("#frames iframe")) f.hidden = f.dataset.app !== tab;
   if (!PAGES.includes(tab)) appFrame(tab).hidden = false;
   remember(tab);

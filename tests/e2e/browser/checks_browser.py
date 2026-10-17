@@ -1394,6 +1394,8 @@ def phone(ctx):
         if ENV.get("CODE_ENABLED") == "true":   # the Code page (--code): first in More
             want.insert(0, ["code", origin("code") + "/", "_blank"])
     expect(links == want, f"More links {links}")
+    if not (ENV.get("TERMINAL_ENABLED") == "true" and ENV.get("CODE_ENABLED") == "true"):   # off: its page, first in More
+        expect(page.locator("#more-sheet .sheet-links li:first-child .code-off-link").is_visible(), "no Code (off) in More")
     expect(page.locator("#more-sheet .sheet-link[data-page=settings]").is_visible(), "no Settings in More")
     expect(page.locator(".sheet-logout button").is_visible(), "no Sign out in More")
     shot(page, "13-phone-more")

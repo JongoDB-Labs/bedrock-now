@@ -40,6 +40,186 @@ test_code_is_off_by_default_and_needs_the_terminal() {
   [ -f "$STACK_DIR/compose.code.yaml" ] || return 1
 }
 
+# --- on by default: setup and ./stack update turn it on while CODE_ENABLED is blank (never chosen) ---
+
+test_setup_turns_the_code_page_and_its_terminal_on_by_default() {
+  _stubs
+  code_default_on > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
+  ws="$(terminal_default_workspace)"
+  assert_eq "$CODE_DEFAULT_ON" 2
+  assert_eq "$(get_env CODE_ENABLED)" true
+  assert_eq "$(get_env TERMINAL_ENABLED)" true
+  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$(cd "$ws" && /bin/pwd -P)"
+  case "$(uname -s)" in Darwin) assert_eq "$(ls -ld "$ws" | cut -c1-10)" "drwx------" ;; *) assert_eq "$(stat -c %a "$ws")" 700 ;; esac
+  assert_eq "$(get_env TERMINAL_UID) $(get_env TERMINAL_GID)" "$(terminal_ids)"
+  assert_eq "$(get_env BUDGET_TERMINAL)" 50
+  for k in TERMINAL_PROXY_SECRET CODE_PROXY_SECRET PREVIEW_PROXY_SECRET; do v="$(get_env "$k")"; [ "${#v}" -ge 32 ] || { echo "no $k" >&2; return 1; }; done
+  out="$(cat "$TMP/out")"
+  assert_contains "$out" "created the workspace folder"
+  assert_contains "$out" "The Code page is now on by default"
+  assert_contains "$out" "./stack code disable turns it off"
+  # only .env and the folder: the hooks that follow build and start it (setup), nothing here
+  [ ! -s "$TMP/dc" ] || { echo "code_default_on ran compose: $(cat "$TMP/dc")" >&2; return 1; }
+  # what stays opt-in is untouched
+  for k in CODE_ALLOW_BYPASS CODE_AUTO_MODE TERMINAL_AUTO_MODE TERMINAL_EGRESS REMOTE_TERMINAL REMOTE_PREVIEW; do assert_eq "$(get_env "$k")" ""; done
+  # idempotent: on now, so the next setup or update changes nothing
+  cp "$ENV_FILE" "$TMP/env.1"
+  code_default_on > "$TMP/out" 2>&1 || return 1
+  assert_eq "$CODE_DEFAULT_ON" 0; assert_eq "$(cat "$TMP/out")" ""
+  cmp -s "$ENV_FILE" "$TMP/env.1" || { echo ".env changed on the second run" >&2; return 1; }
+}
+
+test_an_explicit_off_is_kept_and_the_terminal_on_gets_the_code_page() {
+  _stubs
+  cp "$ENV_FILE" "$TMP/env.0"
+  for kv in CODE_ENABLED=false TERMINAL_ENABLED=false TERMINAL_ENABLED=no; do
+    cp "$TMP/env.0" "$ENV_FILE"; set_env "${kv%%=*}" "${kv#*=}"; cp "$ENV_FILE" "$TMP/env.1"
+    code_default_on > "$TMP/out" 2>&1 || return 1
+    assert_eq "$CODE_DEFAULT_ON" 0
+    cmp -s "$ENV_FILE" "$TMP/env.1" || { echo "$kv: .env changed" >&2; return 1; }
+    [ ! -e "$(terminal_default_workspace)" ] || { echo "$kv: a folder was made" >&2; return 1; }
+  done
+  # the terminal already on (a folder of its own), the Code page never chosen: only the Code page is turned on
+  cp "$TMP/env.0" "$ENV_FILE"; mkdir -p "$TMP/proj"
+  set_env TERMINAL_ENABLED true; set_env TERMINAL_WORKSPACE "$TMP/proj"; set_env TERMINAL_PROXY_SECRET "$(printf 'a%.0s' $(seq 1 32))"
+  code_default_on > "$TMP/out" 2>&1 || return 1
+  assert_eq "$CODE_DEFAULT_ON" 1
+  assert_eq "$(get_env CODE_ENABLED)" true
+  assert_eq "$(get_env TERMINAL_WORKSPACE)" "$TMP/proj"
+  assert_eq "$(get_env TERMINAL_PROXY_SECRET)" "$(printf 'a%.0s' $(seq 1 32))"   # the running terminal's secret stays
+  assert_contains "$(cat "$TMP/out")" "in a sandbox that sees only $TMP/proj"
+}
+
+test_a_folder_that_cannot_be_made_or_used_leaves_it_off_and_says_why() {
+  _stubs
+  cp "$ENV_FILE" "$TMP/env.0"
+  mkdir -p "$TMP/ro"; chmod 500 "$TMP/ro"
+  if [ "$(id -u)" != 0 ]; then
+    set_env TERMINAL_WORKSPACE "$TMP/ro/ws"; cp "$ENV_FILE" "$TMP/env.1"
+    code_default_on > "$TMP/out" 2>&1 || return 1
+    chmod 700 "$TMP/ro"
+    assert_eq "$CODE_DEFAULT_ON" 0
+    cmp -s "$ENV_FILE" "$TMP/env.1" || { echo ".env changed" >&2; return 1; }
+    assert_contains "$(cat "$TMP/out")" "the Code page (on by default) stays off this time: cannot create its folder $TMP/ro/ws"
+    assert_contains "$(cat "$TMP/out")" "./stack code enable --workspace DIR"
+    assert_contains "$(cat "$TMP/out")" "./stack code disable keeps it off"
+  fi
+  # a folder the sandbox must never see (your home folder): refused, nothing written
+  cp "$TMP/env.0" "$ENV_FILE"; set_env TERMINAL_WORKSPACE "$HOME"; cp "$ENV_FILE" "$TMP/env.1"
+  code_default_on > "$TMP/out" 2>&1 || return 1
+  assert_eq "$CODE_DEFAULT_ON" 0
+  cmp -s "$ENV_FILE" "$TMP/env.1" || { echo ".env changed" >&2; return 1; }
+  assert_contains "$(cat "$TMP/out")" "cannot be its folder: it is your home folder"
+  # a file where the folder would be
+  cp "$TMP/env.0" "$ENV_FILE"; : > "$TMP/afile"; set_env TERMINAL_WORKSPACE "$TMP/afile"
+  code_default_on > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" ""
+  assert_contains "$(cat "$TMP/out")" "$TMP/afile is not a folder"
+}
+
+test_a_default_that_did_not_come_up_is_off_again_and_tried_next_time() {
+  _stubs
+  code_default_on > /dev/null 2>&1 || return 1
+  # nothing failed: it stays on
+  TERMINAL_SETUP_FAILED=0; CODE_SETUP_FAILED=0
+  code_default_settle > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" true; assert_eq "$(cat "$TMP/out")" ""
+  # the terminal's image did not build: both off again (blank: the next setup tries again), their containers removed
+  # while compose still knew them, then the portal, Caddy, LiteLLM and shared-mcp without them
+  : > "$TMP/dc"; : > "$TMP/docker"; TERMINAL_SETUP_FAILED=1
+  code_default_settle > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" ""; assert_eq "$(get_env TERMINAL_ENABLED)" ""
+  assert_eq "$(head -n 1 "$TMP/dc")" "dc rm -sf code terminal terminal-gateway"
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --wait --force-recreate caddy"
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --wait --no-deps litellm shared-mcp"
+  assert_contains "$(cat "$TMP/docker")" "docker network rm bedrock-now_code-link"
+  assert_contains "$(cat "$TMP/out")" "did not come up"
+  assert_contains "$(cat "$TMP/out")" "The next ./stack setup or update tries again"
+  assert_eq "$CODE_DEFAULT_ON" 0
+  code_default_wanted || { echo "not wanted again" >&2; return 1; }
+  # the terminal was on already and only the Code page failed: the Code page alone goes, the terminal stays
+  code_default_on > /dev/null 2>&1 || return 1; set_env CODE_ENABLED ''
+  code_default_on > /dev/null 2>&1 || return 1; assert_eq "$CODE_DEFAULT_ON" 1
+  : > "$TMP/dc"; TERMINAL_SETUP_FAILED=0; CODE_SETUP_FAILED=1
+  code_default_settle > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" ""; assert_eq "$(get_env TERMINAL_ENABLED)" true
+  assert_eq "$(head -n 1 "$TMP/dc")" "dc rm -sf code"
+  assert_not_contains "$(cat "$TMP/dc")" "terminal"
+  # a failure with the Code page on by choice (not this run's default): untouched, as before
+  set_env CODE_ENABLED true; CODE_DEFAULT_ON=0; CODE_SETUP_FAILED=1; : > "$TMP/dc"
+  code_default_settle > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" true; [ ! -s "$TMP/dc" ] || return 1
+}
+
+test_rollback_of_the_update_that_turned_it_on_turns_it_off_again() {
+  _stubs
+  # during ./stack update (its record says running): the default is recorded, so rollback can put it back
+  mkdir -p "$STATE_DIR/update"; printf 'from=abc\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"
+  code_default_on > /dev/null 2>&1 || return 1
+  assert_eq "$(_record_get code_default)" 2
+  set_env LITELLM_KEY_TERMINAL sk-term
+  : > "$TMP/dc"
+  code_default_rollback "$(_record_get code_default)" > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" ""; assert_eq "$(get_env TERMINAL_ENABLED)" ""
+  assert_eq "$(get_env LITELLM_KEY_TERMINAL)" ""   # (the data restored has no such key)
+  assert_eq "$(head -n 1 "$TMP/dc")" "dc rm -sf code terminal terminal-gateway"
+  assert_contains "$(cat "$TMP/out")" "that update turned the Code page and its terminal on by default — off again"
+  code_default_wanted || return 1   # the next update turns them on again
+  # the terminal was on before: only the Code page goes, the terminal's key stays
+  set_env TERMINAL_ENABLED true; set_env CODE_ENABLED true; set_env LITELLM_KEY_TERMINAL sk-term; : > "$TMP/dc"
+  code_default_rollback 1 > /dev/null 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" ""; assert_eq "$(get_env TERMINAL_ENABLED)" true; assert_eq "$(get_env LITELLM_KEY_TERMINAL)" sk-term
+  assert_eq "$(cat "$TMP/dc")" "dc rm -sf code"
+  # an update that did not turn it on (nothing recorded): nothing changes
+  set_env CODE_ENABLED true; : > "$TMP/dc"
+  if code_default_rollback "" > /dev/null 2>&1; then return 1; fi
+  assert_eq "$(get_env CODE_ENABLED)" true; [ ! -s "$TMP/dc" ] || return 1
+  # outside an update (a plain ./stack setup): nothing recorded
+  printf 'from=abc\nbackup=backups/x-auto\nresult=done\n' > "$(update_record_file)"; set_env CODE_ENABLED ''
+  code_default_on > /dev/null 2>&1 || return 1
+  assert_eq "$(_record_get code_default)" ""
+  # a default that did not come up is no longer in the record either
+  printf 'from=abc\nbackup=backups/x-auto\nresult=running\n' > "$(update_record_file)"; set_env CODE_ENABLED ''
+  code_default_on > /dev/null 2>&1 || return 1; assert_eq "$(_record_get code_default)" 1
+  CODE_SETUP_FAILED=1; code_default_settle > /dev/null 2>&1 || return 1
+  assert_eq "$(_record_get code_default)" ""
+  # cmd_rollback: before the restored code's restore, and their networks after its up
+  body="$(sed -n '/^cmd_rollback() {/,/^}/p' "$STACK_DIR/lib/rollback.sh" | tr -d ' ')"
+  case "$body" in *'code_default_rollback"$(_record_getcode_default)"'*'"$STACK_DIR/stack"restore'*'[ "$no_code" = 0 ] || code_network_cleanup'*) ;; *'code_default_rollback"$(_record_getcode_default)"'*'"$STACK_DIR/stack"restore'*code_network_cleanup*) ;;
+    *) echo "rollback order" >&2; return 1 ;; esac
+}
+
+test_disable_while_it_was_never_chosen_keeps_it_off() {
+  _stubs
+  code_disable > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env CODE_ENABLED)" false
+  assert_contains "$(cat "$TMP/out")" "stays off"
+  if code_default_wanted; then return 1; fi
+  printf '' > "$TMP/dc"
+  _stubs
+  terminal_disable > "$TMP/out" 2>&1 || return 1
+  assert_eq "$(get_env TERMINAL_ENABLED)" false
+  if code_default_wanted; then return 1; fi
+  # status says the default while it is blank, and not once it was turned off
+  _stubs
+  assert_contains "$(code_status)" "on by default: the next ./stack setup or update turns it on"
+  set_env CODE_ENABLED false
+  assert_not_contains "$(code_status)" "on by default"
+}
+
+test_setup_turns_it_on_before_the_hooks_and_settles_after_them() {
+  body="$(sed -n '/^cmd_setup() {/,/^}/p' "$STACK_DIR/lib/commands.sh" | tr -d ' ')"
+  case "$body" in *setup_keys_and_ui*code_default_on*terminal_setup_hook*code_setup_hook*code_default_settle*cmd_test*) ;;
+    *) echo "setup order" >&2; return 1 ;; esac
+  # ./stack update's What's new says it while it is on
+  _stubs; code_default_on > /dev/null 2>&1 || return 1
+  stt_enabled() { return 1; }; helper_installed() { return 0; }; remote_on() { return 0; }
+  out="$(update_whats_new)"
+  assert_contains "$out" "Code page: on — the Code tab, Claude Code in the browser (sandbox folder $(get_env TERMINAL_WORKSPACE)); ./stack code disable turns it off"
+  set_env CODE_ENABLED false
+  assert_not_contains "$(update_whats_new)" "Code page"
+}
+
 test_dc_never_takes_code_settings_from_the_shell() {
   mkdir -p "$TMP/bin"
   printf '#!/bin/sh\nenv | grep -E "^(CODE_|REMOTE_CODE)" || true\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"

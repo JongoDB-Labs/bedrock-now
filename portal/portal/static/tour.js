@@ -59,8 +59,10 @@
     }
     return button(label, `open-${app}`, () => { showTab(app); away(); });
   }
-  // The Code tab (on a phone: full screen in a new browser tab, as under More)
+  // The Code tab (on a phone: full screen in a new browser tab, as under More). While the Code page is off here, the
+  // tab is still there: its page (the portal's own, on a phone too) says what it is and how to turn it on.
   function openCode() {
+    if (!CODE.here) return button("About the Code tab", "open-code", () => { showTab("code"); away(); });
     if (PHONE.matches) {
       return el("a", { class: "action", href: appUrl("code"), target: "_blank", rel: "noopener", "data-k": "open-code" },
         "Open Code", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
@@ -75,15 +77,15 @@
     }
     return button("Open the terminal", "open-terminal", () => { showTab("terminal"); away(); });
   }
-  // Where Claude Code also runs: the Code tab when it is on here, else how to turn it on
+  // Where Claude Code also runs: the Code tab when it is on here, else the tab's own page (how to turn it on)
   function codeLine(use) {
     if (CODE.here) {
       return use ? p("Or in the ", b("Code"), " tab: start a session and paste the same prompt. In its Manual mode (the picker next to Send) it shows each command and edit for your OK first; unlock it with the portal password.")
         : p("Or nothing to install: the ", b("Code"), " tab is Claude Code in the browser, with a chat, your workspace's files and permission prompts, in the browser terminal's sandbox.");
     }
-    if (CODE.enabled) return note("The Code tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
-    return note(use ? "Prefer the browser? " : "Claude Code in the browser, nothing to install: ", settings("Code page"),
-      " turns on a Code tab (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
+    if (CODE.enabled) return note("The ", b("Code"), " tab is off for remote access (", code("REMOTE_TERMINAL=true"), " in ", code(".env"), " turns it on with the terminal).");
+    return note(use ? "Prefer the browser? The " : "Claude Code in the browser, nothing to install: the ", b("Code"), " tab, off for now, says what it does; ",
+      settings("Code page"), " turns it on (from the computer running bedrock-now; it turns the browser terminal on too, as ", code("./stack code enable"), " does).");
   }
   // Chat, Admin and Files sign you in by themselves: opening one (its tab, or on a phone its new-tab link) is the step.
   function opened(app) {
@@ -154,7 +156,7 @@
         list("ul", [
           [b("Chat"), " (Open WebUI): conversations, voice and your documents."],
           [b("Claude Code"), " in your terminal (", code("claude-bedrock"), "): coding",
-            ...(APP_URLS.code ? [" — or in the ", b("Code"), " tab, with a chat, your files and permission prompts."] : ["."])],
+            ...(APP_URLS.code ? [" — or in the ", b("Code"), " tab, with a chat, your files and permission prompts."] : [" — or, once it is on, in the ", b("Code"), " tab."])],
           [b("Files"), " (RustFS): the shared store both of them use."],
           [b("Admin"), " (LiteLLM): keys, budgets, logs."]]),
         p("One sign-in, the portal's, opens all of them. Every model call goes through one gateway to your AWS Bedrock account (plus OpenRouter, if you add it), and every answer shows what it cost."),
@@ -242,7 +244,7 @@
           code("CLAUDE_BEDROCK_USE_MY_CONFIG=1"), " loads your whole setup."),
         codeLine(false),
       ],
-      actions: () => (CODE.here ? [openCode()] : []),
+      actions: () => [openCode()],   // (while it is off here: its tab's page, how to turn it on)
     },
     budgets: {
       title: "Budgets", info: true, live: true,
@@ -365,7 +367,7 @@
         PHONE.matches && !CODE.here ? note("From a phone, ", code("./stack ssh-info"), " shows how to reach Claude Code over SSH.") : null,
         codeLine(true),
       ],
-      actions: () => (CODE.here ? [openCode()] : []),
+      actions: () => [openCode()],   // (while it is off here: its tab's page, how to turn it on)
     },
     // (when: only where that app is offered here — the browser terminal, the Code page)
     terminal: {

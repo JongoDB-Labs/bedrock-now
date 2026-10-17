@@ -8,6 +8,9 @@
 // nothing from the code host. Home's Code card: the sessions that need you and the recent ones as the framed page
 // reports them (titles are sandbox data: text only, capped), Resume and Ask links (deep links: ?session=, and ?prompt=
 // — a draft the Code page marks as coming from a link, never sent by itself), and the terminal key's budget.
+// The tab is there while the Code page is off on this site too (turned off, or not allowed over remote access): muted,
+// with an "off" pill, it then shows a page of the portal's own — what the Code page is, what turning it on does and how —
+// with no frame, no badge and nothing loaded from the code host.
 "use strict";
 
 (() => {
@@ -29,11 +32,18 @@
   const used = () => { try { return localStorage.getItem(USED) === "1"; } catch (_) { return false; } };
   const markUsed = () => { try { if (!used()) localStorage.setItem(USED, "1"); } catch (_) { /* storage blocked: fine */ } };
 
-  // Sidebar: directly under Chat, with a pop-out like the other apps and a badge for permission prompts waiting.
+  // Sidebar: directly under Chat, with a pop-out like the other apps and a badge for permission prompts waiting — or,
+  // while the Code page is off here, muted with an "off" pill (no pop-out, no badge: its page is the portal's own).
   function addTab() {
     const chat = $(".tabs .tab[data-tab=chat]");
     const after = chat ? chat.closest("li") : null;
     if (!after) return;
+    if (!here) {
+      after.after(el("li", { class: "code-item off" },
+        el("button", { type: "button", class: "tab", "data-tab": "code", "data-label": "Code (off)" }, icon(BRACKETS), "Code",
+          el("span", { class: "tab-off", text: "off" }))));
+      return;
+    }
     badge = el("span", { class: "tab-badge", "aria-label": "permission prompts waiting", hidden: "" });
     after.after(el("li", { class: "code-item" },
       el("button", { type: "button", class: "tab", "data-tab": "code" }, icon(BRACKETS), "Code", badge),
@@ -41,10 +51,18 @@
         title: "Open Code in its own window", "aria-label": "Open Code in its own window" }, icon(POPOUT))));
   }
 
-  // Phone: under More, full screen in a new tab (chat-first; an on-screen keyboard leaves no room for a framed IDE).
+  // Phone: under More, full screen in a new tab (chat-first; an on-screen keyboard leaves no room for a framed IDE) —
+  // or, while it is off here, its page of the portal (on a phone too: it is no frame; mobile.js closes the sheet).
   function addSheetLink() {
     const list = $("#more-sheet .sheet-links");
     if (!list) return;
+    if (!here) {
+      const b = el("button", { type: "button", class: "sheet-link code-off-link" }, "Code (off)",
+        el("span", { text: "Claude Code in the browser: what it is, and how to turn it on" }));
+      b.addEventListener("click", () => showTab("code"));
+      list.prepend(el("li", {}, b));
+      return;
+    }
     list.prepend(el("li", {}, el("a", { class: "sheet-link", "data-app": "code", href: appUrl("code"), target: "_blank",
       rel: "noopener" }, "Code", el("span", { text: "Claude Code with a chat and your files, full screen" }))));
   }
@@ -168,29 +186,133 @@
     else setTimeout(make, 2000);
   }
 
+  // --- the Code tab while the Code page is off here: a page of the portal (no frame, nothing from the code host) ---
+  // Settings, at the Code page's switch (its row, else its card), which lights up briefly: now if Settings is drawn,
+  // and once more when it has redrawn itself (it reloads each time it is shown, keeping its scroll position).
+  function toSettings() {
+    showTab("settings");
+    const box = $("#settings");
+    const go = () => {
+      const r = $('#settings .set-row[data-key="CODE_ENABLED"]') || $("#set-code");
+      if (!r) return false;
+      r.scrollIntoView({ block: "center" });
+      r.classList.remove("code-flash"); void r.offsetWidth; r.classList.add("code-flash");
+      clearTimeout(r.flashT); r.flashT = setTimeout(() => r.classList.remove("code-flash"), 1800);
+      return true;
+    };
+    go();
+    if (!box) return;
+    const mo = new MutationObserver(() => { if (go()) mo.disconnect(); });
+    mo.observe(box, { childList: true });
+    setTimeout(() => mo.disconnect(), 15000);
+  }
+  function settingsLink(text) {
+    const a = el("a", { href: "#settings", text });
+    a.addEventListener("click", (e) => { e.preventDefault(); toSettings(); });
+    return a;
+  }
+  const code = (t, id) => el("code", id ? { id, text: t } : { text: t });
+  function copyCmd(text) {
+    const b = el("button", { type: "button", class: "copy", text: "Copy" });
+    b.addEventListener("click", () => copy(text, "the command"));
+    return el("p", { class: "cmdline" }, code(text), " ", b);
+  }
+  const item = (...c) => el("li", {}, ...c);
+  const FEATURES = [
+    ["Chat", "Ask in plain words. Answers stream in, with each command and its output, and each file change as a diff."],
+    ["Your files", "An explorer and an editor for the workspace folder; drop files in to upload them."],
+    ["Permission prompts", "Allow once, Always or Deny, before a command runs or a file changes."],
+    ["Previews", "The dev servers Claude starts, shown beside the chat."],
+    ["Review and Git", "Every change with Keep and Undo; stage, commit and discard."],
+    ["Run & test", "Your project's scripts and tests, with the problems they report."],
+  ];
+
+  function offPage() {
+    const remoteOnly = state.enabled === true;   // on, but not over remote access (REMOTE_TERMINAL)
+    const features = el("ul", { class: "code-off-features" },
+      ...FEATURES.map(([t, d]) => el("li", {}, el("strong", { text: t }), el("span", { text: d }))));
+    const card = el("div", { class: "code-off-card" });
+    if (remoteOnly) {
+      card.append(
+        el("p", { class: "code-off-lede", text: "The Code page is on, on the computer running bedrock-now: open the portal there and this tab opens it. Over remote access it stays off unless you allow it, because Claude runs commands on that computer." }),
+        el("p", { class: "note", text: "It is Claude Code in your browser, like its desktop app:" }), features,
+        el("h2", { text: "Using it from your devices too" }),
+        el("ol", { class: "code-off-list" },
+          item("On the computer running bedrock-now, set ", code("REMOTE_TERMINAL=true"), " in ", code(".env"), ", then run ", code("./stack up"), "."),
+          item("The same switch shares the browser terminal over remote access too (a shell from your phone), so it is a step in a terminal on purpose: Settings shows it, read-only."),
+          item("With Tailscale, approve the new Services (", code("…-terminal"), " and ", code("…-code"), ") in the admin console like the others; ", code("./stack remote status"), " lists them."),
+          item("Both still ask for the portal password again before they open.")));
+    } else {
+      const ws = code("~/bedrock-now-workspace", "code-off-ws");
+      const other = code("./stack code enable --workspace DIR", "code-off-other");
+      const turnOn = el("button", { type: "button", class: "action primary", id: "code-off-settings", text: "Turn on in Settings" });
+      turnOn.addEventListener("click", toSettings);
+      card.append(
+        el("p", { class: "code-off-lede", text: "Claude Code in your browser, like its desktop app: a chat with Claude beside your project's files, and every command and file change shown to you first." }),
+        el("p", { class: "code-off-actions" }, turnOn, el("span", { class: "note", text: "on the computer running bedrock-now" })),
+        features,
+        el("h2", { text: "What turning it on does" }),
+        el("ul", { class: "code-off-list" },
+          item("Claude runs in the browser terminal's ", el("strong", { text: "sandbox" }), ", not on your computer itself; the terminal is turned on too if it is off (a Terminal tab comes with it)."),
+          item("It sees ", el("strong", { text: "one folder" }), " of this computer, its workspace: ", ws, " (created if it is not there). Another folder: ", other, "."),
+          item("It has ", el("strong", { text: "its own key and budget" }), " (the terminal's, $50 a month unless you change it), apart from Chat's and ", code("claude-bedrock"), "'s; its spend shows on Home."),
+          item("Claude ", el("strong", { text: "asks before acting" }), ": in Manual mode every command and file change waits for your OK. Bypass permissions and Auto mode stay off unless you allow them in Settings."),
+          item("It asks for the portal password again before it opens, because it runs commands. The sandbox reaches the internet unless ", code("TERMINAL_EGRESS=off"), " is in ", code(".env"), "."),
+          item("The first time, it builds the Code page's image: a few minutes.")),
+        el("h2", { text: "Turning it on" }),
+        el("p", { class: "note", text: "Turn on in Settings works only on the computer running bedrock-now: from another device, Settings shows the switch but leaves it to that computer. Or in a terminal, in your bedrock-now folder:" }),
+        copyCmd("./stack code enable"),
+        el("p", { class: "note", text: "Once it is on, reload this page: this tab then opens Claude Code. Turning it off again works from anywhere and keeps the terminal." }));
+    }
+    const head = el("header", { class: "home-head code-off-head" },
+      el("h1", { id: "code-off-title" }, el("span", { class: "code-off-icon", "aria-hidden": "true" }, icon(BRACKETS)), "Code",
+        el("span", { class: "code-off-pill", text: remoteOnly ? "off for remote access" : "off" })));
+    const page = el("section", { id: "code", class: "code-off-page", "aria-labelledby": "code-off-title", hidden: "" }, head, card);
+    $("#frames").before(page);
+    PAGES.push("code");
+    if (!remoteOnly) document.addEventListener("bn:tab", (e) => { if (e.detail === "code") fillFolder(); });
+  }
+  // The folder Claude would see, as Settings names it: the terminal's (TERMINAL_WORKSPACE) while the terminal is on,
+  // else the one ./stack code enable would give it (the snapshot's choices.code_workspace). Asked when the page shows.
+  let folderAsked = false;
+  async function fillFolder() {
+    if (folderAsked) return;
+    folderAsked = true;
+    try {
+      const d = await api("/api/settings");
+      const keys = {};
+      for (const k of (d.snapshot && d.snapshot.keys) || []) keys[k.key] = k;
+      const termOn = Boolean(keys.TERMINAL_ENABLED && keys.TERMINAL_ENABLED.value === "true");
+      const ws = termOn ? (keys.TERMINAL_WORKSPACE && keys.TERMINAL_WORKSPACE.value) || ""
+        : (d.snapshot && d.snapshot.choices && d.snapshot.choices.code_workspace) || "";
+      if (ws) $("#code-off-ws").textContent = ws;
+      if (termOn) $("#code-off-other").textContent = "./stack terminal enable --workspace DIR";
+    } catch (_) { folderAsked = false; /* the default folder's name stays */ }
+  }
+
   // Home's "Claude Code in your terminal" card: where else it runs.
   function cardLine() {
     const card = $("section.claude");
     if (!card) return;
     let line;
+    const tab = el("button", { type: "button", class: "linkish", text: "Code tab" });
+    tab.addEventListener("click", () => showTab("code"));
     if (here) {
-      const open = el("button", { type: "button", class: "linkish", text: "Code tab" });
-      open.addEventListener("click", () => showTab("code"));
-      line = el("p", { class: "note code-line" }, "Or with a chat, your files and permission prompts: the ", open,
+      line = el("p", { class: "note code-line" }, "Or with a chat, your files and permission prompts: the ", tab,
         ". Claude runs in the terminal's sandbox; it asks for the portal password again.");
     } else if (state.enabled) {
-      line = el("p", { class: "note code-line" }, "The Code tab is off for remote access (", el("code", { text: "REMOTE_TERMINAL=true" }),
-        " in ", el("code", { text: ".env" }), " turns it on with the terminal).");
+      line = el("p", { class: "note code-line" }, "The ", tab, " is off for remote access (", code("REMOTE_TERMINAL=true"),
+        " in ", code(".env"), " turns it on with the terminal).");
     } else {
-      line = el("p", { class: "note code-line" }, "Or in the browser with a chat: ", el("a", { href: "#settings", text: "Settings → Code page" }),
-        " (on this computer) or ", el("code", { text: "./stack code enable" }),
-        " adds a Code tab (Claude Code in the terminal's sandbox, with permission prompts and your files).");
+      line = el("p", { class: "note code-line" }, "Or in the browser with a chat: the ", tab, ", off for now. ",
+        settingsLink("Settings → Code page"), " (on the computer running bedrock-now) or ", code("./stack code enable"), " turns it on.");
     }
     card.append(line);
   }
 
   // (Home's Code card first: the framed page's first report finds it there)
   if (here) { codeCard(); document.addEventListener("bn:summary", (e) => budgetLine(e.detail)); }
-  if (here) { addTab(); addSheetLink(); listen(); window.addEventListener("load", preload, { once: true }); }
+  addTab(); addSheetLink();
+  if (here) { listen(); window.addEventListener("load", preload, { once: true }); } else offPage();
   cardLine();
 })();
