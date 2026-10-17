@@ -65,7 +65,7 @@ test_every_env_key_is_in_the_settings_table_once() {
   # (the 85 keys of the inventory, + the portal password hash, + 11 new ones: session length, alert threshold, five
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
   # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access, + auto mode's 2)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 125
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 127
 }
 
 test_table_columns_are_valid() {
@@ -250,7 +250,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 126; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 128; assert d["last_change"] is None' "$f"
   fi
 }
 
