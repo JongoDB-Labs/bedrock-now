@@ -55,8 +55,9 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
     el.style.transform = vp.w && scale < 1 ? `scale(${scale})` : '';
   });
 
-  const go = () => {
-    const p = cleanPreviewPath(addr);
+  // the field's own value: an Enter right after typing may come before the re-render that updates `addr`
+  const go = (value: string) => {
+    const p = cleanPreviewPath(value);
     setBad(p === null);
     if (p !== null) navigatePreview(tab.key, p);
   };
@@ -94,7 +95,7 @@ export function PreviewPane({ tab, active }: { tab: PreviewTab; active: boolean 
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
-                go();
+                go((e.currentTarget as HTMLInputElement).value);
               }
             }}
           />
