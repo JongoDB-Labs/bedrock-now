@@ -3005,7 +3005,10 @@ def git_hostile(browser):
     expect(panel).to_contain_text("<img src=x")
     expect(panel.locator("[data-testid=git-log-entry]").first).to_contain_text("<script>")
     expect(page.get_by_test_id("git-state")).to_have_count(0)
-    # Write message: the proposal's control and direction-changing characters never reach the box
+    # Write message: the proposal's control and direction-changing characters never reach the box (in a session of its
+    # own: an earlier hostile check may leave one at work, and then Write message waits for the turn)
+    page.get_by_test_id("chat-new").click()
+    expect(page.get_by_test_id("git-write-message")).to_be_enabled(timeout=10_000)
     page.get_by_test_id("git-write-message").click()
     expect(page.get_by_test_id("git-message")).to_have_value(re.compile("^Fix "), timeout=15_000)
     v = page.get_by_test_id("git-message").input_value()

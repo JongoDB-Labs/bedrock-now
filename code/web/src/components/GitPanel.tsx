@@ -41,7 +41,9 @@ export function GitPanel() {
   const error = useSel(store, (s) => s.git.error);
   const busy = useSel(store, (s) => s.git.busy);
   const [ask, setAsk] = useState<{ e: GitEntry; kind: Kind } | null>(null);
+  // shown (also by a layout remembered from last time): git is asked now, and again after each turn
   useEffect(() => {
+    if (!store.get().git.engaged) store.set((s) => ({ ...s, git: { ...s.git, engaged: true } }));
     if (!store.get().git.status && !store.get().git.loading) void refreshGit();
   }, []);
   return (
