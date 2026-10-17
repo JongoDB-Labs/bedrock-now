@@ -63,7 +63,7 @@ test("untrusted text: control and direction characters made visible, line breaks
   assert.ok(Date.now() - t0 < 500);
 });
 
-test("grouping: each group capped, in a fixed order; what a source matched itself stays", () => {
+test("grouping: each group capped, the group with the best match first; what a source matched itself stays", () => {
   const entries = [
     ...Array.from({ length: 20 }, (_, i) => ({ group: "settings", key: `s${i}`, title: `Budget ${i}`, sub: "", alt: "" })),
     { group: "chats", key: "c1", title: "Trip planning", sub: "", alt: "", prefiltered: true },   // Chat found "budget" in its text
@@ -71,9 +71,18 @@ test("grouping: each group capped, in a fixed order; what a source matched itsel
     { group: "pages", key: "p1", title: "Home", sub: "", alt: "" },
   ];
   const g = plain(S.searchEntries(entries, "budget"));
-  assert.deepEqual(Object.keys(g), ["settings", "chats", "docs"]);
+  assert.deepEqual(Object.keys(g), ["settings", "docs", "chats"], "the best match's group first; Chat's own match last");
   assert.equal(g.settings.shown.length, 8);
   assert.equal(g.settings.more, 12);
   assert.equal(g.chats.shown[0].entry.title, "Trip planning");
   assert.deepEqual(g.docs.shown[0].hits, [8, 9, 10, 11, 12, 13]);
+});
+
+test("an exact title in a later group comes before letters scattered through settings", () => {
+  const entries = [
+    ...Array.from({ length: 5 }, (_, i) => ({ group: "settings", key: `s${i}`, title: `Owner email notes store for both ${i} things`, sub: "", alt: "" })),
+    { group: "settings", key: "x", title: "Only some text sharing the letters o n e s t o r e", sub: "", alt: "" },
+    { group: "tour", key: "t", title: "One store for both", sub: "", alt: "" },
+  ];
+  assert.equal(Object.keys(plain(S.searchEntries(entries, "One store for both")))[0], "tour");
 });

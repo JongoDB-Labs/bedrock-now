@@ -204,13 +204,15 @@ def activity_phone(ctx):
         saved.restore()
 
 
+# The browser's Notification, recorded: its permission starts at "default" and becomes what window.__answer says once
+# the page asks (the headless browser's own answer is not what is under test here — the page's use of it is)
 NOTIFY_JS = """() => {
-  window.__notes = [];
-  const Real = window.Notification;
+  window.__notes = []; window.__asked = 0; window.__answer = 'granted';
+  let perm = 'default';
   function Fake(title, opts) { window.__notes.push({ title, body: opts && opts.body, tag: opts && opts.tag }); }
   Fake.prototype.close = function () {};
-  Object.defineProperty(Fake, 'permission', { get: () => (Real ? Real.permission : 'granted') });
-  Fake.requestPermission = (...a) => (Real ? Real.requestPermission(...a) : Promise.resolve('granted'));
+  Object.defineProperty(Fake, 'permission', { get: () => perm });
+  Fake.requestPermission = () => { window.__asked++; perm = window.__answer; return Promise.resolve(perm); };
   window.Notification = Fake;
 }"""
 
@@ -221,19 +223,30 @@ def activity_notifications(ctx):
     try:
         _terminal_job("backup", "done", "Backed up (e2e, before)", ago=300)
         page, rec = ctx.page("activity-notify")
-        page.context.grant_permissions(["notifications"], origin=origin())
         page.add_init_script(f"({NOTIFY_JS})()")
         login(page)
         page.wait_for_selector("#activity-btn:not([hidden])")
         _wait_items(page, lambda xs: any(x["id"].startswith("job:terminal:") for x in xs), "the first job")
         page.wait_for_timeout(500)
-        expect(page.evaluate("window.__notes.length") == 0, "a notification without being asked")
+        expect(page.evaluate("window.__notes.length") == 0 and page.evaluate("window.__asked") == 0, "asked or notified without a click")
+        # refused by the browser: off, and the panel says where to allow them
+        page.click("#activity-btn")
+        page.evaluate("window.__answer = 'denied'")
+        page.click("#activity-notify")
+        page.locator("#activity-notify-note", has_text="blocks notifications").wait_for(timeout=5000)
+        expect(page.get_attribute("#activity-notify", "aria-pressed") == "false", "on although the browser refused")
+        page.keyboard.press("Escape")
+        # allowed (a new page: the permission is the browser's, asked again from "default")
+        page.reload()
+        page.wait_for_selector("#activity-btn:not([hidden])")
         page.click("#activity-btn")
         page.click("#activity-notify")
         page.locator("#activity-notify[aria-pressed=true]").wait_for(timeout=5000)
+        expect(page.evaluate("window.__asked") == 1, "the permission was not asked exactly once")
         expect("while a portal tab is open" in page.inner_text("#activity-notify-note"), "the note does not say how it works")
+        expect(page.evaluate("window.__notes.length") == 0, "a notification for what was there already")
         page.keyboard.press("Escape")
-        # a new item while the page is not looked at: one notification; what was there before: none
+        # a new item while the page is not looked at: one notification
         page.evaluate("() => { document.hasFocus = () => false; }")
         jid = _terminal_job("update", "failed", "Could not download (e2e)", ago=5)
         page.evaluate("() => window.bnActivity.refresh()")
@@ -248,8 +261,11 @@ def activity_notifications(ctx):
         page.evaluate("() => window.bnActivity.refresh()")
         page.wait_for_timeout(1500)
         expect(page.evaluate("window.__notes.length") == 1, f"more notifications: {page.evaluate('window.__notes')}")
+        probs = rec.problems()
         rec.save()
-        return "off until turned on (permission granted to the browser: still none); on: one for a new job while unfocused, none again, none while focused"
+        expect(not probs, f"errors: {probs}")
+        return ("nothing asked until the click; refused → stays off and says where to allow them; allowed → asked once, none for "
+                "what was there, one for a new job while unfocused, none again, none while focused")
     finally:
         saved.restore()
 
@@ -306,8 +322,7 @@ def global_search(ctx):
     expect(page.locator("#search[open]").count() == 0, "Escape did not close")
     # a walkthrough step opens the walkthrough there
     _search(page, "One store for both")
-    _option(page, "tour", "One store for both")
-    page.keyboard.press("Enter")
+    _option(page, "tour", "One store for both").click()
     page.wait_for_selector('#tour:not([hidden]) .tour-step.cur[data-step="shared"]', timeout=10000)
     page.click("#tour .tour-x")
     # the sidebar's box opens it too; nothing typed: the pages
@@ -370,7 +385,7 @@ def global_search_code(ctx):
         o.click()
         page.wait_for_selector('iframe[data-app="code"]:not([hidden])')
         f = code_frame(page)
-        f.locator(f"text={name}").first.wait_for(timeout=15000)
+        f.locator(f'.etab.on[title="{name}"]').wait_for(timeout=15000)   # the editor's active tab: that file
         # the frame's status report, a session waiting: an Activity item with Answer; from another origin: nothing
         sid = "5e55a0b1-0c2d-4e3f-8a9b-0c1d2e3f4a5b"
         page.evaluate("""s => window.postMessage({type: 'bn-code-status', pending: 1, waiting: 1, sessions: [{id: s, title: 'forged', state: 'waiting'}]}, '*')""", sid)

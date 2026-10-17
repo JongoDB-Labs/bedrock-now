@@ -92,8 +92,10 @@
       .map((p) => ({ path: p, shown: shownText(p, 300) }));
     return { sessions, files, truncated: d.truncated === true, error: typeof d.error === "string" ? shownText(d.error, 200) : "" };
   }
-  // Ranked groups for query Q: {group id: [{entry, hits}]}, each at most its PER_GROUP. Entries a source already
-  // matched by itself (prefiltered: the Code page's, Chat's) stay even when fuzzy finds none of the query in their title.
+  // Ranked groups for query Q: {group id: {shown: [{entry, hits}], more}}, each at most its PER_GROUP, the group with
+  // the best match first (ties in GROUPS' order: what you typed exactly, in a walkthrough step's title, comes before
+  // settings that merely contain its letters). Entries a source already matched by itself (prefiltered: the Code
+  // page's, Chat's) stay even when fuzzy finds none of the query in their title.
   function searchEntries(entries, q) {
     const by = {};
     for (const e of entries) (by[e.group] = by[e.group] || []).push(e);
@@ -108,9 +110,14 @@
         const seen = new Set(ranked.map((r) => r.item));
         ranked = ranked.concat(list.filter((e) => e.prefiltered && !seen.has(e)).map((e) => ({ item: e, score: -1, hits: [] })));
       }
-      if (ranked.length) out[g] = { shown: ranked.slice(0, max).map((r) => ({ entry: r.item, hits: r.hits })), more: Math.max(0, ranked.length - max) };
+      if (ranked.length) out[g] = { best: ranked[0].score, shown: ranked.slice(0, max).map((r) => ({ entry: r.item, hits: r.hits })), more: Math.max(0, ranked.length - max) };
     }
-    return out;
+    const order = GROUPS.map(([g]) => g).filter((g) => out[g]);
+    const rank = (g) => GROUPS.findIndex(([x]) => x === g);
+    order.sort((a, b) => out[b].best - out[a].best || rank(a) - rank(b));
+    const sorted = {};
+    for (const g of order) sorted[g] = out[g];
+    return sorted;
   }
 
   const pure = { shownText, settingsEntries, docEntries, docsBase, takeCodeReply, searchEntries };
@@ -261,7 +268,11 @@
     const keep = active >= 0 && options[active] ? options[active].key : null;
     options = [];
     const parts = [];
-    for (const [g, name] of GROUPS) {
+    const NAMES = Object.fromEntries(GROUPS);
+    // the groups with results, best first; a source still searching after them
+    const order = [...Object.keys(groups), ...GROUPS.map(([g]) => g).filter((g) => !groups[g])];
+    for (const g of order) {
+      const name = NAMES[g];
       const busy = q.length >= MIN_ASYNC && ((g === "chats" && chats.busy && chats.q === q) || (g === "files" && code.busy && code.q === q));
       const grp = groups[g];
       if (!grp && !busy) continue;
