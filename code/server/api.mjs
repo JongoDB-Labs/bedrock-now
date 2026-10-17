@@ -8,7 +8,7 @@ import { LIMITS } from './protocol.mjs';
 import { fromHistory, sessionRow } from './normalize.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
-import { isUuid, relPath, fileName, short, str, int, num } from './validate.mjs';
+import { isUuid, relPath, fileName, short, str, int, num, oneOf } from './validate.mjs';
 import { watched } from './watch.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
@@ -305,6 +305,45 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return reviewOf(result, stdout.toString('utf8'));
   }
 
+  // --- the Git panel: bn-coded's git.* ops (the requests checked here and there; every answer checked here) ---
+  async function gitCall(req, opts = {}) {
+    try {
+      return await call(req, { timeoutMs: 45000, maxBytes: 4 << 20, ...opts });
+    } catch (e) {
+      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, e.message);
+      throw e;
+    }
+  }
+  const gitStatus = async () => gitStatusOf((await gitCall({ op: 'git.status' })).result);
+  const gitLog = async () => gitLogOf((await gitCall({ op: 'git.log' })).result);
+  // one file's staged or unstaged (or new) changes; scope staged without a path: every staged change (a commit message)
+  async function gitFile(params) {
+    const scope = ['staged', 'unstaged', 'untracked'].includes(params?.scope) ? params.scope : null;
+    if (!scope) throw new HttpError(400, 'scope: staged, unstaged or untracked');
+    const p = params.path === undefined || params.path === null || params.path === '' ? null : params.path;
+    if (p !== null && !gitPathOk(p)) throw new HttpError(400, 'bad path');
+    if (p === null && scope !== 'staged') throw new HttpError(400, 'a path, please');
+    const { result, stdout } = await gitCall({ op: 'git.file', scope, ...(p ? { path: p } : {}) }, { maxBytes: 3 << 20 });
+    return gitFileOf(result, stdout.toString('utf8'), p, scope);
+  }
+  const gitStage = async (body) => ({ ok: (await gitCall({ op: 'git.stage', ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
+  const gitUnstage = async (body) => ({ ok: (await gitCall({ op: 'git.unstage', ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
+  async function gitCommit(body) {
+    const message = commitMessage(body?.message);
+    const { result } = await gitCall({ op: 'git.commit', message }, { timeoutMs: 60000 });
+    const a = result?.author && typeof result.author === 'object' ? result.author : {};
+    return { ok: result?.ok === true, head: typeof result?.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(result.head) ? result.head : null,
+      subject: short(result?.subject, 300), author: { name: short(a.name, 200), email: short(a.email, 200), from: oneOf(a.from, ['repository', 'sandbox', 'default'], 'default') } };
+  }
+  async function gitDiscard(body) {
+    const p = body?.path;
+    if (!gitPathOk(p)) throw new HttpError(400, 'bad path');
+    const pre = body.ifMtimeMs === undefined || body.ifMtimeMs === null ? undefined : num(body.ifMtimeMs, 0, 1e14);
+    if (pre === null) throw new HttpError(400, 'bad ifMtimeMs');
+    const { result } = await gitCall({ op: 'git.discard', path: p, ...(pre === undefined ? {} : { ifMtimeMs: pre }) }, { timeoutMs: 60000 });
+    return { ok: result?.ok === true, action: oneOf(result?.action, ['restored', 'trashed'], 'restored'), trash: relOk(result?.trash) ? result.trash : null };
+  }
+
   // --- memory (CLAUDE.md): this workspace's (/workspace/CLAUDE.md, a file of the workspace) or your user one in the
   // sandbox (~/.claude/CLAUDE.md, a fixed file bn-coded reads and writes) ---
   const MEMORY_MAX = 1 << 20;
@@ -482,7 +521,8 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
 
-  return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff, memory, memoryWrite, plugins, available, pluginAction,
+  return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
+    gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
     ports, stopPort, launch, launchStart };
 }
@@ -665,6 +705,97 @@ export function reviewOf(r, patch) {
   for (const x of Array.isArray(r.untracked) ? r.untracked.slice(0, DIFF.files) : []) add(x, true);
   const head = typeof r.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(r.head) ? r.head : null;
   return { repo: true, reason: null, head, files, truncated: r.truncated === true || files.length >= DIFF.files, timedOut: r.timedOut === true };
+}
+
+// --- the Git panel: the page's requests checked (bn-coded checks them again) and what bn-coded answers checked for the
+// --- page (the sandbox can say anything): every path a workspace path, every code from a short list, every count capped
+export const GIT_LIST_MAX = 2000;
+const GIT_CODES = ['M', 'A', 'D', 'T', 'R', 'C', 'U'];
+const GIT_STATES = ['merge', 'rebase', 'cherry-pick', 'revert', 'bisect'];
+const GIT_HEX = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const GIT_FROM = ['repository', 'sandbox', 'default'];
+const GIT_WATCH = { kind: 'git', why: 'git on your computer runs or reads it (a hook folder or configuration this repository names)' };
+// a path a git command of the page may name (bn-coded's gitPathOk): a workspace path, no .git part
+export const gitPathOk = (p) => relOk(p) && Buffer.byteLength(p) <= 4096 && !p.split('/').some((x) => x.toLowerCase() === '.git');
+// gitTargets(body) -> {paths} (1 to 100 workspace paths) or {all: true}
+export function gitTargets(b) {
+  if (b?.all === true) {
+    if (b.paths !== undefined) throw new HttpError(400, 'all or paths, not both');
+    return { all: true };
+  }
+  const paths = b?.paths;
+  if (!Array.isArray(paths) || !paths.length || paths.length > 100 || !paths.every(gitPathOk)) throw new HttpError(400, 'paths: 1 to 100 files of the workspace');
+  return { paths };
+}
+// commitMessage(m) -> the message (bn-coded's rules): 1 character besides blanks to 64 KiB, no NUL, no control or
+// direction-changing characters but tabs and newlines (a CR only before a newline)
+export function commitMessage(m) {
+  if (typeof m !== 'string' || !m.trim()) throw new HttpError(400, 'a commit message, please');
+  if (m.includes('\0')) throw new HttpError(400, 'the message has a NUL character');
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(m.replace(/\r\n/g, '\n'))) throw new HttpError(400, 'the message has control or direction-changing characters');
+  if (Buffer.byteLength(m) > 64 << 10) throw new HttpError(400, 'the message is longer than 64 KiB');
+  return m;
+}
+const gitWatchOf = (x) => {
+  const w = watched(x.path) ?? (x.watched === true ? GIT_WATCH : null);
+  return w ? { kind: w.kind, why: w.why } : null;
+};
+// gitStatusOf(result) -> what GET /api/git/status answers
+export function gitStatusOf(r) {
+  const lists = { staged: [], unstaged: [], untracked: [], conflicts: [] };
+  if (!r || r.repo !== true) {
+    return { repo: false, reason: short(r?.reason, 300) || 'git is not available', branch: null, detached: false, head: null, upstream: null, ahead: null, behind: null,
+      state: null, identity: null, ...lists, truncated: false };
+  }
+  let n = 0;
+  let truncated = r.truncated === true;
+  const counts = (x) => (x.binary === true ? { add: null, del: null, binary: true } : { add: int(x.add, 0, 1e9), del: int(x.del, 0, 1e9), binary: false });
+  const where = (x) => ({ mtimeMs: num(x.mtimeMs, 0, 1e14), size: int(x.size, 0, 1e15) ?? 0, type: oneOf(x.type, ['file', 'symlink', 'dir', 'other', 'missing'], 'other') });
+  const list = (v, fn) => {
+    const seen = new Set();
+    const out = [];
+    if (Array.isArray(v) && v.length > GIT_LIST_MAX) truncated = true;
+    for (const x of Array.isArray(v) ? v.slice(0, GIT_LIST_MAX) : []) {
+      if (!x || typeof x !== 'object' || !relOk(x.path) || seen.has(x.path)) continue;
+      if (++n > GIT_LIST_MAX) { truncated = true; break; }
+      seen.add(x.path);
+      out.push({ path: x.path, ...fn(x), watch: gitWatchOf(x) });
+    }
+    return out;
+  };
+  const id = r.identity && typeof r.identity === 'object' ? r.identity : null;
+  return {
+    repo: true, reason: null,
+    branch: short(r.branch, 250) || null, detached: r.detached === true, head: typeof r.head === 'string' && GIT_HEX.test(r.head) ? r.head : null,
+    upstream: short(r.upstream, 250) || null, ahead: int(r.ahead, 0, 1e9), behind: int(r.behind, 0, 1e9), state: oneOf(r.state, GIT_STATES, null),
+    identity: id ? { name: short(id.name, 200), email: short(id.email, 200), from: oneOf(id.from, GIT_FROM, 'default') } : null,
+    staged: list(r.staged, (x) => ({ code: oneOf(x.code, GIT_CODES, 'M'), ...counts(x) })),
+    unstaged: list(r.unstaged, (x) => ({ code: oneOf(x.code, GIT_CODES, 'M'), ...counts(x), ...where(x) })),
+    untracked: list(r.untracked, (x) => ({ add: int(x.add, 0, 1e9), ...where(x) })),
+    conflicts: list(r.conflicts, (x) => ({ code: typeof x.code === 'string' && /^[ADU]{2}$/.test(x.code) ? x.code : 'UU' })),
+    truncated,
+  };
+}
+// gitLogOf(result) -> what GET /api/git/log answers: the last 20 commits
+export function gitLogOf(r) {
+  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', commits: [], error: null };
+  const commits = [];
+  for (const c of Array.isArray(r.commits) ? r.commits.slice(0, 20) : []) {
+    if (!c || typeof c !== 'object' || typeof c.hash !== 'string' || !GIT_HEX.test(c.hash)) continue;
+    commits.push({ hash: c.hash, author: short(c.author, 200), email: short(c.email, 200), time: int(c.time, 0, 1e11), subject: short(c.subject, 300) });
+  }
+  return { repo: true, reason: null, commits, error: short(r.error, 300) || null };
+}
+// gitFileOf(result, patch, path, scope) -> what GET /api/git/file answers: the file's changes (one; or every staged one)
+// as the Review parses them — only the file asked for, when one was
+export function gitFileOf(r, patch, path, scope) {
+  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', scope, path, files: [], mtimeMs: null, truncated: false };
+  const parsed = parseGitDiff(patch);
+  const cut = r.truncated === true;
+  const pick = (f) => ({ path: f.path, status: f.status, binary: f.binary, symlink: f.symlink, modeChange: f.modeChange, hunks: f.hunks, cut: f.cut || cut, bad: f.bad, watch: gitWatchOf(f) });
+  const files = path ? (parsed.has(path) ? [pick(parsed.get(path))] : []) : [...parsed.values()].slice(0, DIFF.files).map(pick);
+  return { repo: true, reason: null, scope, path, files, mtimeMs: num(r.mtimeMs, 0, 1e14), truncated: cut };
 }
 
 // --- what bn-coded answers about ports and launch.json, checked for the page (the sandbox can say anything) ---

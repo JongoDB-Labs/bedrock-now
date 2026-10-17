@@ -258,6 +258,14 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, await api.grep({ q: q.get('q') ?? '', regex: q.get('regex') ?? '', case: q.get('case') ?? '', include: q.get('include') ?? '', exclude: q.get('exclude') ?? '' }));
     }
     if (p === '/api/git/diff' && m === 'GET') return send(res, 200, await api.gitDiff());
+    // the Git panel (changes only with the page's own Origin: checked above for every request but GET/HEAD)
+    if (p === '/api/git/status' && m === 'GET') return send(res, 200, await api.gitStatus());
+    if (p === '/api/git/log' && m === 'GET') return send(res, 200, await api.gitLog());
+    if (p === '/api/git/file' && m === 'GET') return send(res, 200, await api.gitFile({ scope: q.get('scope'), path: q.get('path') }));
+    if (p === '/api/git/stage' && m === 'POST') return send(res, 200, await api.gitStage(await readJson(req, 512 << 10)));
+    if (p === '/api/git/unstage' && m === 'POST') return send(res, 200, await api.gitUnstage(await readJson(req, 512 << 10)));
+    if (p === '/api/git/commit' && m === 'POST') return send(res, 200, await api.gitCommit(await readJson(req, 512 << 10)));
+    if (p === '/api/git/discard' && m === 'POST') return send(res, 200, await api.gitDiscard(await readJson(req)));
     if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope')));
     if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10))));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));

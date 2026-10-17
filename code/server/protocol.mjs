@@ -98,6 +98,32 @@
 //                                           of patch, 20,000 lines a file); bad: its patch did not add up. Neither is
 //                                           ever undone. watch: a file of the watchlist (it runs on your computer).
 //                                           At most 2,000 files and 1 MiB of names: beyond, truncated
+//   The Git panel (git in the sandbox with the same hardening; no hook, signing program or editor ever runs — also
+//   no config-based hook; no push, no pull; docs/security.md). 429 while two reads or one change run already:
+//   GET    /api/git/status                 {repo, reason, branch, detached, head, upstream, ahead, behind, state: null |
+//                                           merge|rebase|cherry-pick|revert|bisect, identity: {name, email, from:
+//                                           repository|sandbox|default} (who a commit is by), staged: [{path, code:
+//                                           M|A|D|T|…, add, del, binary, watch}], unstaged: [{path, code, add, del, binary,
+//                                           mtimeMs, size, type, watch}], untracked: [{path, add, mtimeMs, size, type, watch}],
+//                                           conflicts: [{path, code}], truncated} — at most 2,000 entries in all
+//   GET    /api/git/log                    {repo, reason, commits: [{hash, author, email, time (s), subject}], error}
+//                                           — HEAD's last 20 commits
+//   GET    /api/git/file?scope=staged|unstaged|untracked&path=P   {repo, reason, scope, path, files: [{path, status,
+//                                           binary, symlink, modeChange, hunks, cut, bad, watch}], mtimeMs, truncated} —
+//                                           one file's staged (HEAD → index) or unstaged (index → file) changes, or a new
+//                                           file's; scope=staged without a path: every staged change (for a commit message)
+//   POST   /api/git/stage {paths | all: true}     {ok} — `git add -- paths` (1 to 100 files; not a folder or a
+//                                           submodule); all: every change and new file git.status lists (no conflicts)
+//   POST   /api/git/unstage {paths | all: true}   {ok} — `git reset -q HEAD -- paths` (before a first commit: `git rm
+//                                           --cached`): the files keep their changes
+//   POST   /api/git/commit {message}       {ok, head, subject, author: {name, email, from}} — what is staged, the message
+//                                           on git's stdin (no NUL, no control or direction-changing characters but tab
+//                                           and newline; ≤ 64 KiB), --no-verify --no-gpg-sign; refused during a rebase,
+//                                           cherry-pick, revert or bisect; 400 "nothing is staged to commit"
+//   POST   /api/git/discard {path, ifMtimeMs?}    {ok, action: restored|trashed, trash} — a file's unstaged changes
+//                                           gone: its current version to the workspace trash, the staged one written
+//                                           back (`git checkout -- path`); an untracked file to the trash; 409 when the
+//                                           file changed since ifMtimeMs; only staged changes or a conflict: 400
 //   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
 //                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
 //                                           (~/.claude/CLAUDE.md); at most 1 MiB

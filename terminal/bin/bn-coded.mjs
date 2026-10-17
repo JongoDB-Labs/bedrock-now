@@ -16,6 +16,10 @@
 //                   a bounded walk (literal text only); caps on hits, file size and time
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
+//   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
+//                   the Git panel: the branch and its changes, the last 20 commits, a file's diff; staging, a commit
+//                   (message on stdin), discarding a file's changes (its current version to the workspace trash) — the
+//                   same hardening, and no hook, signing program or editor ever runs (no push, no pull)
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title / sessions.running
@@ -535,14 +539,15 @@ export function fsFind(q, limit) {
   return { paths, truncated };
 }
 
-// --- runCapped: a helper program (git, rg) with fixed arguments, no stdin, a deadline and an output cap. Resolves
-// --- {code, signal, out: Buffer, err: string, cut: the output went past maxOut (the program was killed), timedOut}.
-// --- onData(chunk) may return false to stop it early (killed; `stopped`).
-function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut = 1 << 20, onData } = {}) {
+// --- runCapped: a helper program (git, rg) with fixed arguments, no stdin (or `input`: these bytes, then EOF), a
+// --- deadline and an output cap. Resolves {code, signal, out: Buffer, err: string, cut: the output went past maxOut
+// --- (the program was killed), timedOut}. onData(chunk) may return false to stop it early (killed; `stopped`).
+function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut = 1 << 20, onData, input } = {}) {
   return new Promise((resolve) => {
     let c;
     // (its own process group: a stop ends whatever it started too)
-    try { c = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true }); } catch (e) { resolve({ code: -1, signal: null, out: Buffer.alloc(0), err: e.code || e.message, missing: e.code === 'ENOENT' }); return; }
+    try { c = spawn(bin, args, { cwd, env, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: true }); } catch (e) { resolve({ code: -1, signal: null, out: Buffer.alloc(0), err: e.code || e.message, missing: e.code === 'ENOENT' }); return; }
+    if (input) { c.stdin.on('error', () => {}); c.stdin.end(input); }
     const parts = [];
     let size = 0, err = '', cut = false, timedOut = false, stopped = false, done = false;
     const stop = () => {
@@ -598,14 +603,18 @@ export const GIT_CONFIG = [
   ['protocol.allow', 'never'], ['protocol.file.allow', 'never'], ['protocol.ext.allow', 'never'], ['protocol.ssh.allow', 'never'],
   ['protocol.git.allow', 'never'], ['protocol.http.allow', 'never'], ['protocol.https.allow', 'never'], ['uploadpack.packObjectsHook', ''],
 ];
-// gitEnv(extra) -> the whole environment of a git run: nothing inherited but a fixed PATH and HOME
-export function gitEnv(extra = []) {
+// gitEnv(extra, more) -> the whole environment of a git run: nothing inherited but a fixed PATH and HOME (`more`: the
+// Git panel's commit identity, set here — never taken from outside)
+export function gitEnv(extra = [], more = {}) {
   const env = {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: 'bn-none', GIT_TERMINAL_PROMPT: '0',
     GIT_NO_REPLACE_OBJECTS: '1', GIT_LITERAL_PATHSPECS: '1', GIT_PAGER: 'cat', PAGER: 'cat', GIT_ADVICE: '0',
+    // ":" is git's own "no editor": it never starts one (the Git panel's commit takes its message on stdin)
+    GIT_EDITOR: ':', GIT_SEQUENCE_EDITOR: ':',
     GIT_CEILING_DIRECTORIES: path.dirname(WORKSPACE),
   };
+  for (const [k, v] of Object.entries(more)) if (/^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/.test(k) && typeof v === 'string') env[k] = v;
   const cfg = [...GIT_CONFIG, ...extra];
   env.GIT_CONFIG_COUNT = String(cfg.length);
   cfg.forEach(([k, v], i) => { env[`GIT_CONFIG_KEY_${i}`] = k; env[`GIT_CONFIG_VALUE_${i}`] = v; });
@@ -756,6 +765,418 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
     }
   }
   return { repo: true, head, files, untracked, truncated, timedOut: r.timedOut === true };
+}
+
+// --- the Git panel: git.status, git.log, git.file (one file's staged or unstaged changes, or all staged ones), and
+// --- the four that change something — git.stage, git.unstage, git.commit, git.discard. Every run has git.diff's
+// --- hardening above (its environment, GIT_PRE, every filter and diff driver switched off, the repository must be
+// --- /workspace itself, a deadline, caps), plus what commands that write need:
+// ---   no hook runs: core.hooksPath=/dev/null (hook files: .git/hooks, a core.hooksPath folder, husky …), and every
+// ---     config-based hook (hook.<name>.command + hook.<name>.event, git 2.54 and later: core.hooksPath does NOT turn
+// ---     those off) listed first and switched off one by one (hook.<name>.enabled=false); commit adds --no-verify
+// ---   no signing: --no-gpg-sign, commit.gpgSign=false, and gpg/ssh/x509 programs that are not there
+// ---   no editor (GIT_EDITOR=":", core.editor=":": git's own "do not start one"), no automatic gc or maintenance
+// ---     (gc.auto=0, maintenance.auto=false), one checkout worker (checkout.workers=1: no helper processes), no
+// ---     mailmap and no signature check in the log
+// --- Fixed argument lists only. The page names paths — each checked (workspace-relative, no empty, "." or ".." part,
+// --- no NUL, no .git part), after `--`, as literal pathspecs — and a commit message (on stdin: `-F -`; checked: no NUL,
+// --- no control or direction-changing characters but tabs and newlines). The identity of a commit is the repository's
+// --- user.name / user.email, else the sandbox's own ~/.gitconfig's (read here, never through a link, no includes),
+// --- else GIT_DEFAULT_IDENTITY — set as GIT_AUTHOR_* / GIT_COMMITTER_*. Push and pull are not here (docs/security.md:
+// --- they would send the workspace to a remote that Claude can change, with the sandbox's credentials).
+export const GIT_PANEL_CONFIG = [
+  ['commit.gpgSign', 'false'], ['tag.gpgSign', 'false'], ['gpg.program', '/dev/null/gpg'], ['gpg.ssh.program', '/dev/null/ssh-keygen'],
+  ['gpg.x509.program', '/dev/null/gpgsm'], ['gpg.ssh.defaultKeyCommand', ''], ['core.editor', ':'], ['sequence.editor', ':'],
+  ['gc.auto', '0'], ['gc.autoDetach', 'false'], ['maintenance.auto', 'false'], ['checkout.workers', '1'],
+  ['log.showSignature', 'false'], ['log.mailmap', 'false'], ['mailmap.file', '/dev/null'], ['commit.template', ''],
+  ['commit.cleanup', 'whitespace'], ['commit.status', 'false'], ['commit.verbose', 'false'], ['status.showStash', 'false'],
+  ['status.submoduleSummary', 'false'], ['status.relativePaths', 'false'],
+];
+export const GIT_DEFAULT_IDENTITY = { name: 'bedrock-now Code page', email: 'code-page@bedrock-now.invalid' };
+const GIT_MESSAGE_MAX = 64 << 10, GIT_PATHS_MAX = 100, GIT_PATHS_BYTES = 64 << 10, GIT_LOG_N = 20, GIT_FILE_PATCH_MAX = 2 << 20;
+// the Git panel's argument lists (a test checks that nothing else is ever run)
+export const GIT_PANEL_PRE = [...GIT_PRE, '--literal-pathspecs'];
+const DIFF_OPTS = ['--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=all', '--no-color'];
+export const GIT_PANEL_ARGS = {
+  top: ['rev-parse', '--show-toplevel', '--show-object-format', '--absolute-git-dir'],
+  config: ['config', '-z', '--get-regexp', '^(filter|diff|hook)\\.'],
+  identity: ['config', '-z', '--get-regexp', '^user\\.(name|email)$'],
+  status: ['status', '--porcelain=v2', '-z', '--branch', '--untracked-files=all', '--ignore-submodules=all', '--no-renames'],
+  numstat: (base) => (base ? ['diff', '--cached', base, '--numstat', '-z', ...DIFF_OPTS] : ['diff', '--numstat', '-z', ...DIFF_OPTS]),
+  patch: (base, paths) => [...(base ? ['diff', '--cached', base] : ['diff']), ...DIFF_OPTS, '--unified=3', '--src-prefix=a/', '--dst-prefix=b/',
+    '--submodule=short', '--', ...paths],
+  log: (head) => ['log', `--max-count=${GIT_LOG_N}`, '--no-show-signature', '--no-notes', '--no-color', '--no-decorate', '-z',
+    '--format=%H%x00%an%x00%ae%x00%at%x00%s', head, '--'],
+  // (never `add --all` or a folder: git would look into a submodule with a `git status` of its own — a child process
+  // with the submodule's own configuration; "stage all" is the list git.status gives, which never names one)
+  stage: (paths) => ['add', '--', ...paths],
+  lsFiles: (paths) => ['ls-files', '-s', '-z', '--', ...paths],
+  unstage: (head, paths) => (head ? ['reset', '-q', head, '--', ...(paths || ['.'])] : ['rm', '--cached', '-q', '-r', '-f', '--', ...(paths || ['.'])]),
+  commit: ['commit', '--no-verify', '--no-gpg-sign', '--cleanup=whitespace', '--quiet', '-F', '-'],
+  restore: (paths) => ['checkout', '-q', '--', ...paths],
+  pathStatus: (p) => ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all', '--no-renames', '--', p],
+  subject: ['log', '-1', '--no-show-signature', '--no-notes', '--format=%s', 'HEAD', '--'],
+};
+const GIT_PANEL_DEADLINE = 30000;
+
+// panelOverrides(text) -> the overrides for every filter and diff driver (as driverOverrides) and every config-based
+// hook (hook.<name>.enabled=false) `git config -z --get-regexp` listed, or null when there are more than
+// GIT_DRIVERS_MAX of them
+export function panelOverrides(text) {
+  const hooks = new Set();
+  for (const rec of String(text).split('\0')) {
+    const m = rec.split('\n')[0].match(/^hook\.([^\n]+)\.([A-Za-z0-9-]+)$/);
+    if (m) hooks.add(m[1]);
+  }
+  const drivers = driverOverrides(text);
+  if (!drivers || drivers.length / 3 + hooks.size > GIT_DRIVERS_MAX) return null;
+  return [...drivers, ...[...hooks].map((n) => [`hook.${n}.enabled`, 'false'])];
+}
+// a path the page names for a git command: one git can name too (gitRel), no .git part, at most 4096 bytes
+export const gitPathOk = (p) => gitRel(p) && Buffer.byteLength(p) <= 4096 && !p.split('/').some((s) => s.toLowerCase() === '.git');
+// gitPaths(req) -> the paths of a request, checked (null: `all`); throws on anything else
+export function gitPaths(req, { allowAll = true } = {}) {
+  if (req?.all === true) {
+    if (req.paths !== undefined || !allowAll) throw new Error('all or paths, not both');
+    return null;
+  }
+  const list = req?.paths;
+  if (!Array.isArray(list) || list.length < 1 || list.length > GIT_PATHS_MAX) throw new Error(`paths: 1 to ${GIT_PATHS_MAX} files`);
+  let bytes = 0;
+  for (const p of list) {
+    if (typeof p !== 'string' || !gitPathOk(p)) throw new Error(`not a path in the workspace: ${printable(p, 80)}`);
+    bytes += Buffer.byteLength(p);
+  }
+  if (bytes > GIT_PATHS_BYTES) throw new Error('too many path bytes at once');
+  return [...new Set(list)];
+}
+// gitMessage(m) -> a commit message as it goes to git, or throws: 1 to 64 KiB, something besides blanks, and no NUL,
+// control characters (but tab, newline; a CR before a newline is dropped) or characters that change the direction
+// of text (a log shown in a terminal later must read as it was written)
+export function gitMessage(m) {
+  if (typeof m !== 'string') throw new Error('a commit message, please');
+  if (m.includes('\0')) throw new Error('the message has a NUL character');
+  const t = m.replace(/\r\n/g, '\n');
+  if (/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f؜‎‏‪-‮⁦-⁩]/.test(t)) throw new Error('the message has control or direction-changing characters');
+  if (!t.trim()) throw new Error('the message is empty');
+  if (Buffer.byteLength(t) > GIT_MESSAGE_MAX) throw new Error('the message is longer than 64 KiB');
+  return t.endsWith('\n') ? t : `${t}\n`;
+}
+const identName = (v) => typeof v === 'string' && v.length >= 1 && v.length <= 200 && v.trim() === v && !/[\x00-\x1f\x7f<>]/.test(v);
+const identEmail = (v) => typeof v === 'string' && /^[^\s<>\x00-\x1f\x7f]{1,200}$/.test(v);
+// the sandbox's own git identity: ~/.config/git/config, then ~/.gitconfig (later wins, as git reads them), parsed
+// here — regular files only, never through a link, no includes followed
+function sandboxIdentity() {
+  const out = {};
+  for (const f of [path.join(os.homedir(), '.config', 'git', 'config'), path.join(os.homedir(), '.gitconfig')]) {
+    const b = readRegular(f, 256 << 10);
+    if (!b) continue;
+    for (const { section, key, value } of gitConfigLines(b.toString('utf8'))) if (section === 'user' && (key === 'name' || key === 'email')) out[key] = value;
+  }
+  return out;
+}
+
+// gitPrep() -> {run, head, base, gitdir, left} for a repository that is /workspace, or {no: reason}. run(args, opts)
+// runs git with the panel's arguments before `args`, its environment (and opts.env: the identity), and what is left of
+// the op's deadline.
+async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  const t0 = Date.now();
+  const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
+  let extra = [...GIT_PANEL_CONFIG];
+  const run = (args, { env: more = {}, ...opts } = {}) => runCapped(git, [...GIT_PANEL_PRE, ...args], { env: gitEnv(extra, more), timeoutMs: left(), ...opts });
+  let r = await run(GIT_PANEL_ARGS.top, { maxOut: 16384 });
+  if (r.missing) return { no: 'git is not installed in the sandbox' };
+  if (r.timedOut) return { no: 'git did not answer in time' };
+  if (r.code !== 0) return { no: /not a git repository/i.test(r.err) ? 'not a git repository' : `git: ${gitWhy(r)}` };
+  const [top, format, gitdir] = r.out.toString('utf8').split('\n');
+  let realTop = '';
+  try { realTop = fs.realpathSync(top); } catch { /* below */ }
+  if (realTop !== fs.realpathSync(WORKSPACE)) return { no: 'the repository is not the workspace folder itself' };
+  if (!gitdir || !path.isAbsolute(gitdir)) return { no: 'git: no git folder' };
+  r = await run(GIT_PANEL_ARGS.config, { maxOut: 1 << 20 });
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { no: `git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : gitWhy(r)}` };
+  const ov = panelOverrides(r.out.toString('utf8'));
+  if (!ov) return { no: 'the repository defines too many diff or filter drivers or hooks to check' };
+  extra = [...GIT_PANEL_CONFIG, ...ov];
+  r = await run(GIT_ARGS.head, { maxOut: 4096 });
+  if (r.timedOut) return { no: 'git did not answer in time' };
+  const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
+  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: 'git: an unexpected HEAD' };
+  return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left };
+}
+const gitWhy = (r) => printable(`${r.err || ''}\n${r.out ? r.out.toString('utf8').slice(0, 2000) : ''}`.trim().split('\n').filter(Boolean).pop() || `exit ${r.code}`, 300);
+// a merge, rebase … in progress (from the git folder's own files)
+function repoState(gitdir) {
+  const has = (n) => { try { fs.lstatSync(path.join(gitdir, n)); return true; } catch { return false; } };
+  return has('rebase-merge') || has('rebase-apply') ? 'rebase' : has('MERGE_HEAD') ? 'merge' : has('CHERRY_PICK_HEAD') ? 'cherry-pick'
+    : has('REVERT_HEAD') ? 'revert' : has('BISECT_LOG') ? 'bisect' : null;
+}
+// afterSpace(s, n) -> the index after s's n-th space, or -1 (indexOf steps: linear)
+function afterSpace(s, n) {
+  let i = -1;
+  for (let k = 0; k < n; k++) { i = s.indexOf(' ', i + 1); if (i < 0) return -1; }
+  return i + 1;
+}
+// parseStatusV2(text) -> {oid, branch, detached, upstream, ahead, behind, entries: [{kind: changed|unmerged|untracked,
+// xy, path}]}: `git status --porcelain=v2 -z --branch` (no renames asked for; a rename's second name is skipped)
+export function parseStatusV2(text) {
+  const out = { oid: null, branch: null, detached: false, upstream: null, ahead: null, behind: null, entries: [] };
+  const recs = String(text).split('\0');
+  for (let i = 0; i < recs.length; i++) {
+    const r = recs[i];
+    if (!r) continue;
+    if (r.startsWith('# ')) {
+      const sp = r.indexOf(' ', 2);
+      const key = sp < 0 ? r.slice(2) : r.slice(2, sp), val = sp < 0 ? '' : r.slice(sp + 1);
+      if (key === 'branch.oid') out.oid = /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(val) ? val : null;
+      else if (key === 'branch.head') { if (val === '(detached)') out.detached = true; else out.branch = val; }
+      else if (key === 'branch.upstream') out.upstream = val;
+      else if (key === 'branch.ab') {
+        const [a, b] = val.split(' ');
+        if (/^\+[0-9]{1,9}$/.test(a || '') && /^-[0-9]{1,9}$/.test(b || '')) { out.ahead = Number(a.slice(1)); out.behind = Number(b.slice(1)); }
+      }
+      continue;
+    }
+    const t = r[0];
+    if (t === '?' && r[1] === ' ') out.entries.push({ kind: 'untracked', xy: '??', path: r.slice(2) });
+    else if (t === '1' || t === '2') {
+      const at = afterSpace(r, t === '1' ? 8 : 9);
+      if (at > 0) out.entries.push({ kind: 'changed', xy: r.slice(2, 4), path: r.slice(at) });
+      if (t === '2') i++;   // (the original name)
+    } else if (t === 'u') {
+      const at = afterSpace(r, 10);
+      if (at > 0) out.entries.push({ kind: 'unmerged', xy: r.slice(2, 4), path: r.slice(at) });
+    }
+  }
+  return out;
+}
+// parseNumstat(text) -> Map(path -> {add, del, binary}) from `git diff --numstat -z` (no renames)
+export function parseNumstat(text) {
+  const m = new Map();
+  for (const rec of String(text).split('\0')) {
+    const a = rec.indexOf('\t'), b = a < 0 ? -1 : rec.indexOf('\t', a + 1);
+    if (b < 0) continue;
+    const add = rec.slice(0, a), del = rec.slice(a + 1, b), p = rec.slice(b + 1);
+    if (add === '-' && del === '-') m.set(p, { add: null, del: null, binary: true });
+    else if (/^[0-9]{1,9}$/.test(add) && /^[0-9]{1,9}$/.test(del)) m.set(p, { add: Number(add), del: Number(del), binary: false });
+  }
+  return m;
+}
+// the lines of a new file (null: binary, not a regular file, larger than GIT_UNTRACKED_TEXT or past the budget)
+function lineCount(rel, st, budget) {
+  if (st.type !== 'file' || st.size > GIT_UNTRACKED_TEXT || st.size > budget.left) return null;
+  const b = readRegular(path.join(WORKSPACE, rel), GIT_UNTRACKED_TEXT);
+  if (!b) return null;
+  budget.left -= b.length;
+  if (b.subarray(0, 8000).includes(0)) return null;
+  let n = 0;
+  for (let i = b.indexOf(10); i >= 0; i = b.indexOf(10, i + 1)) n++;
+  return b.length && b[b.length - 1] !== 10 ? n + 1 : n;
+}
+// gitIdentity(run) -> {name, email, from: repository|sandbox|default}: who a commit is by
+async function gitIdentity(run) {
+  const repo = {};
+  const r = await run(GIT_PANEL_ARGS.identity, { maxOut: 64 << 10 });
+  if (r.code === 0) {
+    for (const rec of r.out.toString('utf8').split('\0')) {
+      const nl = rec.indexOf('\n');
+      const k = nl < 0 ? rec : rec.slice(0, nl), v = nl < 0 ? '' : rec.slice(nl + 1);
+      if (k === 'user.name' || k === 'user.email') repo[k.slice(5)] = v;
+    }
+  }
+  const box = sandboxIdentity();
+  const name = identName(repo.name) ? repo.name : identName(box.name) ? box.name : null;
+  const email = identEmail(repo.email) ? repo.email : identEmail(box.email) ? box.email : null;
+  if (!name || !email) return { ...GIT_DEFAULT_IDENTITY, from: 'default' };
+  return { name, email, from: identName(repo.name) && identEmail(repo.email) ? 'repository' : 'sandbox' };
+}
+
+// git.status -> {repo, reason?, branch, detached, head, upstream, ahead, behind, state, identity, staged: [{path, code,
+// add, del, binary}], unstaged: [{path, code, add, del, binary, mtimeMs, type}], untracked: [{path, add, size, mtimeMs,
+// type}], conflicts: [{path, code}], truncated} — every list together at most GIT_NAMES_MAX entries and GIT_LIST_BYTES
+export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, listBytes = GIT_LIST_BYTES } = {}) {
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) return { repo: false, reason: g.no };
+  let r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: false, reason: `git status: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  let truncated = r.cut;
+  const recs = r.out.toString('utf8');
+  const st = parseStatusV2(r.cut ? recs.slice(0, recs.lastIndexOf('\0') + 1) : recs);
+  const staged = await g.run(GIT_PANEL_ARGS.numstat(g.base), { maxOut: 4 << 20 });
+  const unstaged = await g.run(GIT_PANEL_ARGS.numstat(null), { maxOut: 4 << 20 });
+  const sn = parseNumstat(staged.code === 0 || staged.cut ? staged.out.toString('utf8') : '');
+  const un = parseNumstat(unstaged.code === 0 || unstaged.cut ? unstaged.out.toString('utf8') : '');
+  if (staged.cut || unstaged.cut) truncated = true;
+  let targets = null;
+  try { targets = watchTargets(); } catch { /* not marked */ }
+  const w = (p) => { try { return targets && isWatched(p, targets) ? { watched: true } : {}; } catch { return {}; } };
+  let room = listBytes, n = 0;
+  const fits = (p) => { room -= Buffer.byteLength(p) + 128; n++; if (room < 0 || n > GIT_NAMES_MAX) truncated = true; return room >= 0 && n <= GIT_NAMES_MAX; };
+  const out = { staged: [], unstaged: [], untracked: [], conflicts: [] };
+  const budget = { left: GIT_UNTRACKED_TOTAL };
+  const counts = (m, p) => { const c = m.get(p); return c ? { add: c.add, del: c.del, binary: c.binary } : { add: null, del: null, binary: false }; };
+  for (const e of st.entries) {
+    if (!gitRel(e.path) || e.path.split('/')[0] === TRASH) continue;
+    if (!fits(e.path)) break;
+    if (e.kind === 'unmerged') { out.conflicts.push({ path: e.path, code: e.xy, ...w(e.path) }); continue; }
+    const s = statRel(e.path);
+    const where = s ? { mtimeMs: s.mtimeMs, size: s.size, type: s.type } : { mtimeMs: null, size: 0, type: 'missing' };
+    if (e.kind === 'untracked') { out.untracked.push({ path: e.path, add: s ? lineCount(e.path, s, budget) : null, ...where, ...w(e.path) }); continue; }
+    if (e.xy[0] !== '.') out.staged.push({ path: e.path, code: e.xy[0], ...counts(sn, e.path), ...w(e.path) });
+    if (e.xy[1] !== '.') out.unstaged.push({ path: e.path, code: e.xy[1], ...counts(un, e.path), ...where, ...w(e.path) });
+  }
+  return { repo: true, branch: st.branch, detached: st.detached, head: g.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind,
+    state: repoState(g.gitdir), identity: await gitIdentity(g.run), ...out, truncated };
+}
+
+// git.log -> {repo, commits: [{hash, author, email, time (s), subject}]}: the last GIT_LOG_N commits of HEAD
+export async function gitLog({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) return { repo: false, reason: g.no };
+  if (!g.head) return { repo: true, commits: [] };
+  const r = await g.run(GIT_PANEL_ARGS.log(g.head), { maxOut: 1 << 20 });
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: true, commits: [], error: `git log: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  const f = r.out.toString('utf8').split('\0');
+  const commits = [];
+  // five fields a commit; a record that does not read as one ends the list (a crafted commit cannot shift the rest)
+  for (let i = 0; i + 4 < f.length && commits.length < GIT_LOG_N; i += 5) {
+    const [hash, author, email, time, subject] = f.slice(i, i + 5);
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(hash) || !/^[0-9]{1,12}$/.test(time)) break;
+    commits.push({ hash, author: printable(author, 200), email: printable(email, 200), time: Number(time), subject: subject.slice(0, 1000) });
+  }
+  return { repo: true, commits };
+}
+
+// git.file {scope: staged|unstaged|untracked, path?} -> STDOUT: the patch (one file's; or every staged change, for a
+// commit message), RESULT {repo, scope, path, mtimeMs, truncated}
+export async function gitFile(send, req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, max = GIT_FILE_PATCH_MAX } = {}) {
+  const scope = req?.scope;
+  if (!['staged', 'unstaged', 'untracked'].includes(scope)) throw new Error('scope: staged, unstaged or untracked');
+  const p = req.path === undefined || req.path === null ? null : req.path;
+  if (p !== null && !gitPathOk(p)) throw new Error('not a path in the workspace');
+  if (p === null && scope !== 'staged') throw new Error('a path, please');
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) return { repo: false, reason: g.no };
+  const st = p ? statRel(p) : null;
+  if (scope === 'untracked') {
+    const d = st ? untrackedDiff(p, st, { left: GIT_UNTRACKED_TOTAL }) : null;
+    if (d !== null) send(T.STDOUT, Buffer.from(d));
+    return { repo: true, scope, path: p, mtimeMs: st?.mtimeMs ?? null, truncated: !!st && d === null };
+  }
+  let sent = 0;
+  const r = await g.run(GIT_PANEL_ARGS.patch(scope === 'staged' ? g.base : null, p ? [p] : []), { onData: (d) => {
+    const room = max - sent;
+    if (d.length > room) { if (room > 0) send(T.STDOUT, d.subarray(0, room)); sent = max; return false; }
+    send(T.STDOUT, d); sent += d.length;
+    return true;
+  } });
+  if (!r.stopped && (r.timedOut || r.code !== 0)) return { repo: false, reason: `git diff: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  return { repo: true, scope, path: p, mtimeMs: st?.mtimeMs ?? null, truncated: r.stopped === true };
+}
+
+// a changing command's answer: {ok: true, …} or the error git gave (its last line)
+const gitFailed = (r, what) => { throw new Error(`${what}: ${r.timedOut ? 'git did not answer in time' : gitWhy(r)}`); };
+
+// git.stage {paths | all} — `git add -- paths`: the files' changes, a new file, a deletion. all: every change and
+// untracked file git.status lists (conflicts left out: stage those one by one). A folder or a submodule is refused.
+export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  let paths = gitPaths(req);
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) throw new Error(g.no);
+  if (paths === null) {
+    const r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
+    if (r.cut) throw new Error('too many changes to stage at once: stage them in the terminal');
+    if (r.code !== 0) gitFailed(r, 'git status');
+    paths = parseStatusV2(r.out.toString('utf8')).entries
+      .filter((e) => e.kind !== 'unmerged' && gitPathOk(e.path) && e.path.split('/')[0] !== TRASH && (e.kind === 'untracked' || e.xy[1] !== '.'))
+      .map((e) => e.path);
+    if (paths.length > GIT_NAMES_MAX) throw new Error(`more than ${GIT_NAMES_MAX} changed files: stage them in the terminal`);
+  } else {
+    for (const p of paths) if (statRel(p)?.type === 'dir') throw new Error(`a folder: stage the files in it (${printable(p, 80)})`);
+    const r = await g.run(GIT_PANEL_ARGS.lsFiles(paths), { maxOut: 1 << 20 });
+    if (r.code !== 0) gitFailed(r, 'git ls-files');
+    for (const rec of r.out.toString('utf8').split('\0')) if (rec.startsWith('160000 ')) throw new Error('a submodule: stage it in the terminal');
+  }
+  for (let i = 0; i < paths.length; i += 500) {
+    const r = await g.run(GIT_PANEL_ARGS.stage(paths.slice(i, i + 500)), { maxOut: 64 << 10 });
+    if (r.code !== 0) gitFailed(r, 'git add');
+  }
+  return { ok: true, staged: paths.length };
+}
+// git.unstage {paths | all} — `git reset -q HEAD -- paths` (before the first commit: `git rm --cached`): the index
+// as the last commit had it, the files as they are
+export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  const paths = gitPaths(req);
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) throw new Error(g.no);
+  const r = await g.run(GIT_PANEL_ARGS.unstage(g.head, paths), { maxOut: 64 << 10 });
+  if (r.code !== 0) gitFailed(r, g.head ? 'git reset' : 'git rm --cached');
+  return { ok: true, unstaged: paths ? paths.length : 'all' };
+}
+// git.commit {message} — what is staged, with that message (stdin), as the identity above; never during a rebase,
+// cherry-pick, revert or bisect (finish those in the terminal)
+export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  const message = gitMessage(req?.message);
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) throw new Error(g.no);
+  const state = repoState(g.gitdir);
+  if (state && state !== 'merge') throw new Error(`a ${state} is in progress: finish it in the terminal`);
+  const who = await gitIdentity(g.run);
+  const env = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
+  const r = await g.run(GIT_PANEL_ARGS.commit, { maxOut: 64 << 10, input: Buffer.from(message, 'utf8'), env });
+  if (r.code !== 0) {
+    if (/nothing (added )?to commit|no changes added to commit/i.test(`${r.out}\n${r.err}`)) throw new Error('nothing is staged to commit');
+    gitFailed(r, 'git commit');
+  }
+  const h = await g.run(GIT_ARGS.head, { maxOut: 4096 });
+  const head = h.code === 0 ? h.out.toString('utf8').trim() : null;
+  const s = await g.run(GIT_PANEL_ARGS.subject, { maxOut: 4096 });
+  return { ok: true, head: head && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head) ? head : null, subject: s.code === 0 ? s.out.toString('utf8').trim().slice(0, 1000) : '',
+    author: { name: who.name, email: who.email, from: who.from } };
+}
+// trashEntry(rel) -> the entry itself (a file, or a link as a link) moved into /workspace/.bedrock-now-trash/<time>/,
+// never through a link on its way
+function trashEntry(rel) {
+  const abs = watchPath(rel);
+  if (!abs) throw new Error('a folder on its way is a link');
+  const trash = path.join(WORKSPACE, TRASH);
+  const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.writeFileSync(path.join(trash, '.gitignore'), '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
+  const dest = path.join(dir, path.basename(rel));
+  fs.renameSync(abs, dest);
+  return { abs, dest };
+}
+// git.discard {path, ifMtimeMs?} — a file's unstaged changes gone: an untracked file moves to the workspace trash; a
+// tracked one's current version moves there too, then git writes the staged version back (`git checkout -- path`); a
+// deleted one is written back. Only while the file still has the time the page saw (ifMtimeMs). A file with only staged
+// changes, or a conflict, is refused.
+export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
+  const p = req?.path;
+  if (typeof p !== 'string' || !gitPathOk(p)) throw new Error('not a path in the workspace');
+  const g = await gitPrep({ git, deadlineMs });
+  if (g.no) throw new Error(g.no);
+  const r = await g.run(GIT_PANEL_ARGS.pathStatus(p), { maxOut: 64 << 10 });
+  if (r.code !== 0) gitFailed(r, 'git status');
+  const e = parseStatusV2(r.out.toString('utf8')).entries.find((x) => x.path === p);
+  if (!e) throw new Error('no changes to discard (it changed since?)');
+  if (e.kind === 'unmerged') throw new Error('a conflict: resolve it in the terminal');
+  const st = statRel(p);
+  if (req.ifMtimeMs !== undefined && req.ifMtimeMs !== null && (st ? st.mtimeMs : null) !== req.ifMtimeMs) throw new Error('changed on disk since it was shown');
+  if (e.kind === 'untracked') {
+    if (!st || st.type === 'dir') throw new Error('not a file');
+    const { dest } = trashEntry(p);
+    return { ok: true, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
+  }
+  if (e.xy[1] === '.') throw new Error('only staged changes: unstage it first');
+  let moved = null;
+  if (st && st.type !== 'dir') moved = trashEntry(p);
+  const c = await g.run(GIT_PANEL_ARGS.restore([p]), { maxOut: 64 << 10 });
+  if (c.code !== 0) {
+    if (moved) { try { fs.renameSync(moved.dest, moved.abs); } catch { /* left in the trash: said below */ } }
+    gitFailed(c, 'git checkout');
+  }
+  return { ok: true, action: 'restored', ...(moved ? { trash: path.relative(WORKSPACE, moved.dest) } : {}) };
 }
 
 // --- fs.grep: search the workspace's files — ripgrep (the sandbox image's) with fixed arguments: its own regex engine
@@ -1615,7 +2036,7 @@ export function sweepOrphans({ kill = process.kill } = {}) {
 
 // --- one connection, one op ---
 const running = { claude: 0, cli: 0 };
-const helpers = { git: 0, grep: 0 };
+const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0 };
 export function serve(sock) {
   const parser = new FrameParser();
   let child = null, opened = false, writer = null, done = false;
@@ -1679,6 +2100,22 @@ export function serve(sock) {
           if (helpers[kind] >= 2) return fail('busy: try again in a moment');
           helpers[kind]++;
           (kind === 'git' ? gitDiff(send) : fsGrep(req)).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
+          return undefined;
+        }
+        // the Git panel: two reads at once, one change at a time (git's index lock; a second click waits for the first)
+        case 'git.status':
+        case 'git.log':
+        case 'git.file':
+        case 'git.stage':
+        case 'git.unstage':
+        case 'git.commit':
+        case 'git.discard': {
+          const kind = ['git.status', 'git.log', 'git.file'].includes(req.op) ? 'gitRead' : 'gitWrite';
+          if (helpers[kind] >= (kind === 'gitRead' ? 2 : 1)) return fail(kind === 'gitRead' ? 'busy: try again in a moment' : 'busy: another git change is on its way');
+          helpers[kind]++;
+          const job = { 'git.status': () => gitStatus(), 'git.log': () => gitLog(), 'git.file': () => gitFile(send, req), 'git.stage': () => gitStage(req),
+            'git.unstage': () => gitUnstage(req), 'git.commit': () => gitCommit(req), 'git.discard': () => gitDiscard(req) }[req.op];
+          Promise.resolve().then(job).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
           return undefined;
         }
         case 'memory.read': return finish(T.RESULT, memoryRead(send));
