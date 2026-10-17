@@ -17,7 +17,8 @@ export function BudgetDialog({ onClose }: { onClose: () => void }) {
   const cur = v?.budget ?? null;
   const [amount, setAmount] = useState(cur ? cur.usd.toFixed(2) : next ? next.usd.toFixed(2) : '');
   const [hard, setHard] = useState(cur ? cur.hard : next?.hard ?? false);
-  const [forNew, setForNew] = useState(!!next);
+  // (no session open: the budget is the one new sessions start with)
+  const [forNew, setForNew] = useState(!!next || !v);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const spent = v?.spend ? sessionCost(v.spend) : null;
@@ -31,7 +32,10 @@ export function BudgetDialog({ onClose }: { onClose: () => void }) {
     }
     setBusy(true);
     const b = off ? null : { usd: usd as number, hard };
-    const why = await setSessionBudget(v?.id ?? null, b, off ? (forNew ? undefined : false) : forNew);
+    // forNew: true / false sets or clears the budget new sessions start with; undefined leaves it. Without a session
+    // the dialog is about that one alone.
+    const forNewArg = !v ? !off : off ? (forNew ? undefined : false) : forNew;
+    const why = await setSessionBudget(v?.id ?? null, b, forNewArg);
     setBusy(false);
     if (why) setError(why);
     else onClose();
@@ -69,10 +73,12 @@ export function BudgetDialog({ onClose }: { onClose: () => void }) {
             restarts for it, which may write the prompt cache again.
           </span>
         </label>
-        <label class="check">
-          <input type="checkbox" checked={forNew} onChange={(e) => setForNew((e.target as HTMLInputElement).checked)} data-testid="budget-for-new" />
-          <span>New sessions start with this budget too (in this browser).</span>
-        </label>
+        {v && (
+          <label class="check">
+            <input type="checkbox" checked={forNew} onChange={(e) => setForNew((e.target as HTMLInputElement).checked)} data-testid="budget-for-new" />
+            <span>New sessions start with this budget too (in this browser).</span>
+          </label>
+        )}
         {key && key.max !== null && (
           <p class="muted small">
             The Code page's key (claude-code-terminal) has its own monthly budget: {money(key.spend)} of {money(key.max)}. That one always applies.
