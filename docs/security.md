@@ -46,7 +46,8 @@ Back to the [README](../README.md#security-model).
   (unauthenticated, https only, no redirects followed, answers capped at 2 MB, release notes shown as plain text);
   opening Home asks again when the last check is more than 3 hours old (at most every 15 minutes), and so does a
   click on **Check for updates** (`POST /api/update/check`: a session, `X-Requested-With` and the portal's own Origin;
-  at most every 30 seconds and 20 times an hour, one check at a time, not before GitHub's own rate limit allows). It
+  at most every 30 seconds and 20 times an hour, one check at a time, not within an hour of GitHub refusing one —
+  sooner when its rate limit says so). It
   sends nothing about your install; `UPDATE_CHECK=false` turns the daily and Home checks off (a click still asks).
 - `claude-bedrock` sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so Bedrock sessions send no telemetry,
   error reports or update checks. Plain `claude` is not affected and follows Claude Code's own settings.

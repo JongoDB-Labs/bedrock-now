@@ -1583,18 +1583,19 @@ When a newer release is out, Home shows an **update card**: one line for **every
 installs the newest, so a jump from v0.4.1 to v0.9.0 lists v0.5.0 to v0.9.0, each with its headline) and their
 release notes (the newest open), what the update will do (backup, roughly how much it downloads, a few minutes of
 downtime) and the command to copy; `./stack status` and the `claude-bedrock` launch line mention it too (they read
-the portal's last check; no network of their own). The portal checks once a day, and again when you open Home and
-its last check is more than 3 hours old (at most every 15 minutes); the card and the version label say when it last
-checked. Settings → Updates & backups (`UPDATE_CHECK=false`) turns the check off.
+the portal's last check, not with `UPDATE_CHECK=false`; no network of their own). The portal checks once a day, and
+again when you open Home and its last check is more than 3 hours old (at most every 15 minutes); the card and the
+version label say when it last checked. Settings → Updates & backups (`UPDATE_CHECK=false`) turns the check off.
 
 To ask now, click **Check for updates** under Home's title (also in Settings → Updates & backups → *Daily release
-check*, and as *Check for updates* in Ctrl/⌘+K search). The line then says *Checking for updates…*, then *Up to
-date · checked just now* or *Update available — v0.x.y* (the update card opens, as on any visit), or why it could not
-check: *GitHub could not be reached — try again later*, or *GitHub's limit for this hour — try again after 14:05*
-(GitHub answers 60 requests an hour from one address without an account; the button waits until then). A click asks
-at most every 30 seconds and 20 times an hour, and never while a check runs. It works with `UPDATE_CHECK=false` too:
-a click is an explicit request, and the daily and Home checks stay off. Like them, it asks GitHub's public list of
-releases and sends nothing about your install.
+check*, and as *Check for updates* in Ctrl/⌘+K search). The line then says *Checking for updates…*, then *Up to date ·
+checked just now* or *Update available — v0.x.y* (the update card opens, as on any visit), or why it could not check:
+*GitHub could not be reached — try again later*, or *GitHub's limit for this hour — try again after 14:05* (GitHub
+answers 60 requests an hour from one address without an account; the button waits until then; another refusal from
+GitHub waits up to an hour). **About this check** at the end of the line says why. A click asks at most every 30 seconds
+and 20 times an hour, and never while a check runs. It works with `UPDATE_CHECK=false` too: a click is an explicit
+request, and the daily and Home checks stay off. Like them, it asks GitHub's public list of releases and sends nothing
+about your install.
 
 The update first asks git whether there is anything new. If not, and the last successful setup ran on exactly
 this code, it says so (`already on v0.9.0 — nothing to update`) and stops: no backup, no restart, no Bedrock
