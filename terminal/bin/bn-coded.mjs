@@ -2498,6 +2498,9 @@ function run(cmd, args, timeoutMs = 10000, maxOut = 2000, env = {}) {
     c.on('close', (code) => { clearTimeout(t); resolve({ code, err, out, cut }); });
   });
 }
+// tmuxDir(p) — a folder for tmux's -c, which tmux expands as a format: every # doubled, so a folder named
+// `a#{pane_id}` (a project's, a session's) is that folder, never a format
+const tmuxDir = (p) => String(p).replaceAll('#', '##');
 // tmuxSession(tmux) — the terminal's tmux session, created as bn-session would (Claude Code in its first window) when
 // none runs yet
 async function tmuxSession(tmux) {
@@ -2576,7 +2579,7 @@ export async function launchStart(name, digest, { tmux = tmuxBin(), root = WS_RO
   const window = c.name.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40) || 'server';
   // the command as its own arguments (no shell parses them), the program file shown before Start, in the window's
   // terminal; this file's runner (--run-tty) says how it ended; then bash stays as the window's shell
-  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', cwd, ...WINDOW_CLEAR, '--',
+  const args = ['new-window', '-d', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', tmuxDir(cwd), ...WINDOW_CLEAR, '--',
     ...windowCommand('bedrock-now launch', env, [node, SELF, '--run-tty', `launch.json "${c.name}"`.slice(0, 120), '--', c.program, ...c.argv.slice(1)])];
   const r = await run(tmux, args);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);
@@ -2602,7 +2605,7 @@ export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc', 
   if (sessionRunning(id, procDir).running) throw new Error('that conversation is already open in the sandbox (the terminal?)');
   await tmuxSession(tmux);
   const window = `resume-${id.slice(0, 8)}`;
-  const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', where]);
+  const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', tmuxDir(where)]);
   if (w.code !== 0) throw new Error(`tmux: ${printable(w.err, 200) || `exit ${w.code}`}`);
   const pane = w.out.trim();
   if (!/^%[0-9]{1,6}$/.test(pane)) throw new Error('tmux: no pane for the new window');
@@ -2620,7 +2623,7 @@ export async function terminalWindow(root = WS_ROOT, { tmux = tmuxBin() } = {}) 
   if (!where) throw new Error('the project folder is not there');
   await tmuxSession(tmux);
   const window = (path.basename(root.abs).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 30) || 'workspace');
-  const w = await run(tmux, ['new-window', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', where]);
+  const w = await run(tmux, ['new-window', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', tmuxDir(where)]);
   if (w.code !== 0) throw new Error(`tmux: ${printable(w.err, 200) || `exit ${w.code}`}`);
   const id = w.out.trim();
   return { ok: true, window, id: RUN_WINDOW.test(id) ? id : null };
@@ -3094,7 +3097,7 @@ export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir
   const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
   // the runner and the wrapper as their own arguments (no shell parses them), in the environment made here (taskEnv;
   // windowCommand: bash without BASH_ENV and the like only starts it, then stays as the window's shell)
-  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', top, ...WINDOW_CLEAR, '--',
+  const args = ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', tmuxDir(top), ...WINDOW_CLEAR, '--',
     ...windowCommand('bedrock-now run', taskEnv(), [node, SELF, '--run-task', RUN_DIR, id, '--', ...t.argv])];
   const r = await run(tmux, args);
   if (r.code !== 0) {

@@ -247,6 +247,14 @@ test('sessions by the working folder their transcript records: two folders shari
   const nw = calls.find((c) => c[0] === 'new-window');
   assert.deepEqual(nw.slice(-2), ['-c', path.join(WS, 'a/b')]);
   assert.match((await call({ op: 'terminal.resume', id: nested })).error, /no such session/);
+  // a session's folder named like a tmux format: -c gets every # doubled
+  const hashed = crypto.randomUUID(), hdir = `${WS}/h#{pane_id}`;
+  fs.mkdirSync(hdir);
+  transcript(enc(hdir), hashed, hdir, 'in h#');
+  fs.rmSync(LOG, { force: true });
+  assert.equal((await call({ op: 'terminal.resume', id: hashed, cwd: hdir })).ok, true);
+  const nw3 = fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.trim().split('\n')).find((c) => c[0] === 'new-window');
+  assert.deepEqual(nw3.slice(-2), ['-c', `${WS}/h##{pane_id}`]);
 });
 
 test('project.create: a new folder of the workspace, git init without a template; project.check; git.init', async (t) => {
@@ -286,4 +294,13 @@ test('terminal.window: a new window of the terminal\'s session in the project\'s
   assert.deepEqual(nw, ['new-window', '-P', '-F', '#{window_id}', '-t', '=claude:', '-n', 'p1', '-c', P1]);
   assert.ok(!calls.some((c) => c[0] === 'send-keys'), 'nothing typed');
   for (const root of [OUT, `${WS}/link-to-p2`, 'p1', `${WS}/missing`]) assert.ok((await call({ op: 'terminal.window', root })).error, root);
+  // tmux expands -c as a format: a folder named like one is passed with every # doubled (that folder, never a format)
+  const odd = path.join(WS, 'a#{pane_id}#(id)');
+  fs.mkdirSync(odd);
+  fs.rmSync(LOG, { force: true });
+  assert.equal((await call({ op: 'terminal.window', root: odd })).ok, true);
+  const nw2 = fs.readFileSync(LOG, 'utf8').split('---\n').filter(Boolean).map((c) => c.trim().split('\n')).find((c) => c[0] === 'new-window');
+  assert.equal(nw2[nw2.indexOf('-c') + 1], path.join(WS, 'a##{pane_id}##(id)'));
+  assert.equal(nw2[nw2.indexOf('-n') + 1], 'a--pane_id---id-', 'the window name: plain characters only');
+  fs.rmSync(odd, { recursive: true });
 });
