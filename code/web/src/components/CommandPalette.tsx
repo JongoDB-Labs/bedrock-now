@@ -1,5 +1,6 @@
-// The command palette (⌘K / Ctrl+K, Ctrl+Shift+P; ⌘P / Ctrl+P opens it as "Go to file"): actions (a new session, the
-// mode, model and effort, panels, Ports, export, memory, plugins, MCP, settings), sessions to resume, files (what the
+// The command palette (⌘K / Ctrl+K, Ctrl+Shift+P; ⌘P / Ctrl+P opens it as "Go to file"): actions (a new session — in
+// any project —, switching project, a new project, the mode, model and effort, panels, Ports, export, memory, plugins,
+// MCP, settings), sessions to resume, files (what the
 // explorer listed, and from two characters on a bounded search of the whole workspace), and what you ran last. A fuzzy
 // match (fuzzy.ts: linear time, capped), entirely by keyboard (↑ ↓ Tab, Enter, Esc; ">" only actions, "#" only
 // sessions). On a phone it is a sheet (⋯ → Command palette).
@@ -33,6 +34,12 @@ import {
   showSessions,
   toggleExplorer,
   toggleTerminal,
+  setProject,
+  openProjectDialog,
+  connectGitRepo,
+  openProjectTerminal,
+  currentProject,
+  sessionProject,
   type AppState,
 } from '../app';
 import { fsFind } from '../api';
@@ -91,7 +98,10 @@ function actions(s: AppState): Item[] {
     a('git-push', 'Git: push…', () => { showGit(); void gitNet('push'); }, 'upload', 'you confirm where it goes first'),
     a('git-branches', 'Git: branches (switch, create)…', () => { showGit(); openGitDialog('branches'); }, 'branch'),
     a('go-to-file', 'Go to file…', () => setTimeout(() => openPalette('files'), 0), 'file', '', keysFor('go-to-file')),
-    a('sessions', 'Show the session list', showSessions, 'history'),
+    a('sessions', 'Show the projects and their sessions', showSessions, 'folder'),
+    a('project-new', 'New project…', () => openProjectDialog({ kind: 'new', tab: 'empty' }), 'folder', 'an empty folder (git init), a clone, or a folder of the workspace'),
+    a('project-git', 'Connect a git repository', () => void connectGitRepo(currentProject(s).id), 'branch', `${label(currentProject(s).name, 60)}: git init, its remote`),
+    a('project-terminal', 'Open a terminal in this project', () => void openProjectTerminal(currentProject(s).id), 'terminal', label(currentProject(s).path, 120)),
     a('terminal', s.prefs.layout.terminal ? 'Hide the terminal' : 'Show the terminal', toggleTerminal, 'terminal', '', keysFor('terminal')),
     a('explorer', s.prefs.layout.explorer ? 'Hide the explorer' : 'Show the explorer', toggleExplorer, 'sidebar', '', keysFor('explorer')),
     a('ports', 'Ports & previews…', () => setDialog('ports'), 'port', '', keysFor('ports')),
@@ -110,6 +120,11 @@ function actions(s: AppState): Item[] {
     a('shortcuts', 'Keyboard shortcuts', () => setDialog('shortcuts'), 'keyboard', '', keysFor('shortcuts')),
   ];
   if (v && v.state !== 'closed') list.push(a('restart', 'Restart this session (load new MCP servers)', () => void restartSession(), 'refresh'));
+  // every project: a new session in it, and switching to it (ids: what you ran last stays one project's)
+  for (const p of s.projects) {
+    list.push(a(`newin:${p.id}`, `New session in ${label(p.name, 80)}`, () => void newSession({ project: p.id }), 'plus', label(p.path, 120)));
+    if (p.id !== s.project) list.push(a(`switch:${p.id}`, `Switch project: ${label(p.name, 80)}`, () => setProject(p.id), 'folder', label(p.path, 120)));
+  }
   // modes, models, effort: one entry each, so typing "plan" or "haiku" finds them
   for (const m of offeredModes(s.server?.allowBypass === true, s.server?.allowAuto === true)) {
     const info = MODE_INFO[m];
@@ -127,11 +142,13 @@ function actions(s: AppState): Item[] {
 }
 
 function sessionItems(s: AppState): Item[] {
-  return s.sessions.slice(0, 200).map((x) => ({
+  const name = (id: string) => s.projects.find((p) => p.id === sessionProject(id, s))?.name ?? '';
+  return s.sessions.slice(0, 300).map((x) => ({
     id: `s:${x.id}`,
     group: 'Sessions' as const,
     label: label(x.title || x.firstPrompt || x.id.slice(0, 8), 200),
-    detail: [s.views[x.id] && s.views[x.id].state !== 'closed' ? 'open' : '', x.branch ? label(x.branch, 60) : '', x.modified ? ago(x.modified) : ''].filter(Boolean).join(' · '),
+    detail: [s.views[x.id] && s.views[x.id].state !== 'closed' ? 'open' : '', s.projects.length > 1 ? label(name(x.id), 60) : '', x.branch ? label(x.branch, 60) : '',
+      x.modified ? ago(x.modified) : ''].filter(Boolean).join(' · '),
     keys: '',
     icon: 'history',
     run: () => void resumeSession(x.id),
@@ -162,6 +179,9 @@ function PaletteBody({ mode }: { mode: 'all' | 'files' }) {
     useSel(store, (s) => s.server),
     useSel(store, (s) => s.fs.dirs),
     useSel(store, (s) => activeView(s)?.state),
+    useSel(store, (s) => s.projects),
+    useSel(store, (s) => s.project),
+    useSel(store, (s) => s.where),
   ];
   const st = useMemo(() => store.get(), slices);
   // (focused as it renders: keys typed right after the shortcut land here)

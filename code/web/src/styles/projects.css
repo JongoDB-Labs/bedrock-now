@@ -1,0 +1,66 @@
+/* Projects: the Projects tab (each project with its sessions under it), the top bar's project chip, the New project,
+   Remove and Add to project dialogs. */
+.projects .sess-scroll { padding-top: 2px; }
+.proj { border-top: 1px solid var(--line-soft); }
+.proj:first-child { border-top: 0; }
+.proj-head { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 4px 6px 4px 4px; }
+.proj.current > .proj-head { background: var(--active); }
+.proj-toggle { flex: none; color: var(--muted); }
+.proj-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 6px; background: none;
+  color: var(--ink); text-align: left; }
+.proj-name:hover { background: var(--hover); }
+.proj-name { -webkit-tap-highlight-color: transparent; }
+.proj-name .ic { flex: none; color: var(--muted); }
+.proj-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.proj-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+.proj-tag { flex: none; display: inline-grid; place-items: center; width: 18px; color: var(--muted); }
+.proj-rename { flex: 1; min-width: 0; }
+.proj-rename input { width: 100%; height: 26px; padding: 0 6px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); }
+.proj-body { padding: 0 0 6px 12px; }
+.proj-body .group-head { padding-left: 10px; }
+.proj-new { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 0 14px; font-size: 12px; }
+.proj-add { display: flex; align-items: center; gap: 6px; width: calc(100% - 12px); margin: 8px 6px 0; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px;
+  background: none; color: var(--accent); font-weight: 500; }
+.proj-add:hover { border-color: var(--accent); background: var(--hover); }
+.proj-pickbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--surface-2); }
+.proj-pickbar .muted { margin-right: auto; }
+.sess-pick { flex: none; margin: 0 0 0 8px; }
+.side-tools .icon-btn.on { color: var(--accent); background: var(--active); }
+
+/* the top bar's chip */
+.proj-chip-dd { min-width: 0; }
+.proj-chip { max-width: 360px; border-color: var(--line) !important; background: var(--surface); }
+.proj-chip .ic { flex: none; color: var(--muted); }
+.proj-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.proj-chip-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.proj-chip-branch { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dd-sep { height: 1px; margin: 4px 2px; background: var(--line-soft); }
+
+/* dialogs */
+.np { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.np-opt { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.np-opt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.np-opt > input { margin-top: 3px; }
+.np-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.np-title { font-weight: 600; }
+.np-fields { margin-top: 4px; }
+.np-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 50vh; overflow: auto; }
+.np-confirm { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.np-confirm input { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+
+/* the Git panel: repositories in a folder that are no project yet */
+.gitr-loose { margin: 10px 0 0; text-align: left; }
+.gitr-loose ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+
+/* phones: the project above the session's title */
+.pt-project { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 0; border: 0; background: none; color: var(--muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (pointer: coarse) {
+  .proj-name { height: 40px; }
+  .proj-add { padding: 12px; }
+  .sess-pick { width: 20px; height: 20px; }
+}
+/* (a project's ⋯: on hover, always for the project shown, and on a touch screen) */
+.proj-head .proj-more { opacity: 0; }
+.proj-head:hover .proj-more, .proj.current .proj-more, .proj-head .proj-more:focus-within { opacity: 1; }
+@media (pointer: coarse) { .proj-head .proj-more { opacity: 0.7; } }

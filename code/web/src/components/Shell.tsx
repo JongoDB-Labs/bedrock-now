@@ -30,6 +30,8 @@ import {
   openRun,
   openPorts,
   openModelMenu,
+  openProjectDialog,
+  currentProject,
 } from '../app';
 import { GitPanel } from './GitPanel';
 import { SandboxSaid } from './Said';
@@ -47,7 +49,7 @@ import { ChatPane } from './Chat';
 import { EditorPanes, EditorTabs, saveActiveTab, mentionSelection, MOD } from './EditorArea';
 import { addTerminal } from '../attach';
 import { FileTree } from './FileTree';
-import { SessionList } from './SessionList';
+import { ProjectChip, ProjectDialogs, ProjectsPanel } from './Projects';
 import { ContextMeter, CostMeter, EffortPicker, ModelPicker, currentModel, modelLabel } from './Pickers';
 import { COMPAT_INFO } from '../models';
 import type { Compat, Mode } from '../types';
@@ -84,6 +86,9 @@ function MoreMenu() {
         <>
           <MenuItem icon="plus" onSelect={() => (close(), void newSession())}>
             New session
+          </MenuItem>
+          <MenuItem icon="folder" onSelect={() => (close(), openProjectDialog({ kind: 'new', tab: 'empty' }))} testid="menu-new-project">
+            New project…
           </MenuItem>
           <MenuItem icon="search" hint={`${MOD}+K`} onSelect={() => (close(), openPalette())} testid="menu-palette">
             Command palette…
@@ -153,7 +158,7 @@ function SessionTitle({ onClick }: { onClick: () => void }) {
   const v = useSel(store, (s) => activeView(s));
   const pendingOther = useSel(store, (s) => Object.values(s.views).filter((x) => x.id !== s.active).reduce((n, x) => n + x.permissions.length, 0));
   return (
-    <button type="button" class="sess-switch" onClick={onClick} title="Sessions" data-testid="session-switch">
+    <button type="button" class="sess-switch" onClick={onClick} title="Projects and their sessions" data-testid="session-switch">
       <Icon name="history" size={15} />
       <span class="sess-switch-title">{v ? v.title || 'New session' : 'No session'}</span>
       {pendingOther > 0 && (
@@ -196,6 +201,7 @@ function TopBar({ tablet }: { tablet?: boolean }) {
           </button>
         )}
         <Brand />
+        <ProjectChip compact={tablet} />
         <SessionTitle
           onClick={() => {
             if (tablet) setLayout({ tabletPane: 'files', side: 'sessions' });
@@ -247,12 +253,12 @@ function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
           <Icon name="branch" size={15} /> <span class="st-label">Git</span>
           {changes > 0 && <span class="badge" data-testid="git-count">{changes > 999 ? '999+' : changes}</span>}
         </button>
-        <button type="button" role="tab" aria-selected={side === 'sessions'} onClick={() => setLayout({ side: 'sessions' })} title="Sessions" data-testid="side-sessions">
-          <Icon name="history" size={15} /> <span class="st-label">Sessions</span>
+        <button type="button" role="tab" aria-selected={side === 'sessions'} onClick={() => setLayout({ side: 'sessions' })} title="Projects and their sessions" data-testid="side-sessions">
+          <Icon name="folder" size={15} /> <span class="st-label">Projects</span>
           {pending > 0 && <span class="badge warn">{pending}</span>}
         </button>
       </div>
-      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : side === 'search' ? <SearchPanel onOpen={onOpenFile} /> : side === 'git' ? <GitPanel /> : <SessionList />}
+      {side === 'files' ? <FileTree onOpen={onOpenFile} /> : side === 'search' ? <SearchPanel onOpen={onOpenFile} /> : side === 'git' ? <GitPanel /> : <ProjectsPanel />}
     </aside>
   );
 }
@@ -712,6 +718,12 @@ function PhoneMenu() {
         <button type="button" class="pm-link" onClick={() => (setSheet(null), void newSession())}>
           <Icon name="plus" /> New session
         </button>
+        <button type="button" class="pm-link" onClick={() => setSheet('sessions')} data-testid="phone-menu-projects">
+          <Icon name="folder" /> Projects
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), openProjectDialog({ kind: 'new', tab: 'empty' }))} data-testid="phone-menu-new-project">
+          <Icon name="plus" /> New project
+        </button>
         <button type="button" class="pm-link" onClick={openPaletteFromMenu} data-testid="phone-menu-palette">
           <Icon name="search" /> Command palette
         </button>
@@ -769,7 +781,7 @@ function Phone() {
   return (
     <div class="app phone">
       <header class="topbar phone-top" data-testid="topbar">
-        <button type="button" class="icon-btn" aria-label="Sessions" title="Sessions" onClick={() => setSheet('sessions')} data-testid="phone-sessions">
+        <button type="button" class="icon-btn" aria-label="Projects" title="Projects and their sessions" onClick={() => setSheet('sessions')} data-testid="phone-sessions">
           <Icon name="menu" size={20} />
           {pending > 0 && <span class="badge warn dot-badge">{pending}</span>}
         </button>
@@ -789,8 +801,8 @@ function Phone() {
       </header>
       <ChatPane header={false} />
       {sheet === 'sessions' && (
-        <Sheet title="Sessions" onClose={() => setSheet(null)} testid="sheet-sessions">
-          <SessionList />
+        <Sheet title="Projects" onClose={() => setSheet(null)} testid="sheet-sessions">
+          <ProjectsPanel />
         </Sheet>
       )}
       {sheet === 'files' && (
@@ -847,8 +859,12 @@ function PhoneConn() {
 function ChatHeaderPhone() {
   const v = useSel(store, (s) => activeView(s));
   const model = useSel(store, (s) => modelLabel(s.models?.models, activeView(s)?.model ?? ''));
+  const project = useSel(store, (s) => currentProject(s));
   return (
     <div class="phone-title">
+      <button type="button" class="pt-project" onClick={() => setSheet('sessions')} title={`Project: ${project.name} (${project.path})`} data-testid="phone-project">
+        <Icon name={project.workspace ? 'files' : 'folder'} size={11} /> {project.name}
+      </button>
       <span class="pt-title">{v?.title || (v ? 'New session' : 'Code')}</span>
       {v && (
         <span class={`state state-${v.state}`}>
@@ -869,6 +885,7 @@ export function AppShell(): ComponentChildren {
     <>
       {phone ? <Phone /> : tablet ? <Tablet /> : <Desktop />}
       <Dialogs />
+      <ProjectDialogs />
       <CommandPalette />
       <Toasts />
     </>

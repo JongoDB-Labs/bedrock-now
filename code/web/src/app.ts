@@ -24,6 +24,7 @@ import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from '
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
 import { sessionCost } from './spend';
+import { WORKSPACE, WORKSPACE_ID, inProject, mentionPath, projectFor, projectIdOk, projectOfCwd, type Project, type Where } from './projects';
 
 export interface Toast {
   id: number;
@@ -220,6 +221,13 @@ export interface RewindState {
   mark: number;
 }
 
+/** The Projects tab's dialogs: New project (an empty folder, a clone, a folder of the workspace), Remove from Code,
+ *  Add to project (one or more sessions). */
+export type ProjectDialog =
+  | { kind: 'new'; tab: 'empty' | 'clone' | 'folder' }
+  | { kind: 'remove'; id: string }
+  | { kind: 'file'; ids: string[] };
+
 /** A draft that came from a link (?prompt=): never focused, never sent by Enter until you said you read it, and always
  *  sent into a NEW session in Manual mode — never into the session shown, never in your remembered mode. */
 export interface LinkDraft {
@@ -306,6 +314,15 @@ export interface AppState {
   linkDraft: LinkDraft | null;
   /** the budget new sessions start with (this browser's; null: none) */
   budgetNext: Budget | null;
+  /** the projects (GET /api/projects: the Workspace first, always there) */
+  projects: Project[];
+  projectsError: string | null;
+  /** the project shown: what the file tree, Search, Git, Review, Run & test, launch.json, memory, @-mentions and new
+   *  sessions work on (remembered per browser) */
+  project: string;
+  /** where each session runs and which project it is shown in (the backend's lists; one this page starts: its own) */
+  where: Record<string, Where>;
+  projectDialog: ProjectDialog | null;
 }
 
 export const store: Store<AppState> = createStore<AppState>({
@@ -352,13 +369,18 @@ export const store: Store<AppState> = createStore<AppState>({
   startWith: null,
   modeSwitching: false,
   review: { git: null, loading: false, error: null, kept: {}, undone: {}, busy: null, filter: 'session', engaged: false },
-  git: { status: null, commits: [], loading: false, error: null, busy: null, message: '', drafting: null, engaged: false, focus: 0, repo: storedRepo(), repos: [], remote: null,
+  git: { status: null, commits: [], loading: false, error: null, busy: null, message: '', drafting: null, engaged: false, focus: 0, repo: '', repos: [], remote: null,
     net: null, plan: null, pushed: null, dialog: null, hosts: null, events: [] },
   search: { q: '', regex: false, caseSensitive: false, include: '', exclude: '', globs: false, loading: false, result: null, error: null, focus: 0 },
   palette: null,
   comments: [],
   linkDraft: null,
   budgetNext: nextBudget(),
+  projects: [{ ...WORKSPACE }],
+  projectsError: null,
+  project: WORKSPACE_ID,
+  where: {},
+  projectDialog: null,
 });
 
 const set = store.set;
@@ -464,6 +486,7 @@ export const socket = new api.Socket({
 async function syncOpenSessions(): Promise<void> {
   try {
     const server = await api.getState();
+    noteWhere(server.sessions);
     const open = new Set(server.sessions.map((o) => o.id));
     set((s) => {
       let changed = false;
@@ -812,6 +835,8 @@ function onReset(old: string, next: string): void {
     if (views[old]) views[old] = { ...views[old], state: 'ended', seq: 0, permissions: [] };
     return { ...s, views, active: s.active === old ? next : s.active };
   });
+  // (the new conversation runs where the old one did)
+  set((s) => (s.where[old] && !s.where[next] ? { ...s, where: { ...s.where, [next]: s.where[old] } } : s));
   // its transcript, when Claude Code already wrote one (a plan approved with a cleared context starts with the plan),
   // after the replay of its events
   loadedHistory.add(next);
@@ -954,13 +979,18 @@ export async function boot(): Promise<void> {
       restore: { n: (s.restore?.n ?? 0) + 1, text }, startWith: 'default' }));   // (the mode picker shows Manual: what it starts in)
   }
   socket.start();
-  const results = await Promise.allSettled([api.getState(), api.getModels(), refreshSessions()]);
+  const results = await Promise.allSettled([api.getState(), api.getModels(), refreshSessions(), refreshProjects()]);
   const [st, models] = results;
   if (models.status === 'fulfilled') set((s) => ({ ...s, models: models.value }));
   else set((s) => ({ ...s, modelsError: errText(models.reason) }));
+  // the project shown: a link's (one of the list — a link never makes one), else the one this browser showed last
+  const linked = link.project ? get().projects.find((p) => p.id === link.project) : undefined;
+  if (link.project && !linked) toast('The link named a project that is not here (any more).', 'error');
+  setProject(linked?.id ?? (get().projects.some((p) => p.id === storedProject()) ? storedProject() : WORKSPACE_ID), { keepSession: true });
   if (st.status === 'fulfilled') {
     const server = st.value;
     set((s) => ({ ...s, server }));
+    noteWhere(server.sessions);
     for (const o of server.sessions) {
       ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title, budget: o.budget, lastActive: o.lastActive });
     }
@@ -968,14 +998,16 @@ export async function boot(): Promise<void> {
     // (a link's draft without a session: no session shown — sending it starts a new one, in Manual)
     if (!shown && !link.prompt) {
       const last = get().prefs.lastSession;
-      const pick = server.sessions.find((o) => o.id === last) ?? server.sessions.find((o) => o.state !== 'closed' && o.state !== 'ended');
+      // (a link to a project shows that project's own sessions: the last one of it, if open)
+      const inLinked = (o: { id: string }) => !linked || sessionProject(o.id) === linked.id;
+      const pick = server.sessions.filter(inLinked).find((o) => o.id === last) ?? server.sessions.filter(inLinked).find((o) => o.state !== 'closed' && o.state !== 'ended');
       if (pick) await activate(pick.id);
     }
     if (socket.isOpen) for (const o of server.sessions) attach(o.id);
-    // on a phone, sessions waiting for you come first: the session list opens on its "Needs you" group
+    // on a phone, sessions waiting for you come first: the Projects sheet opens (its projects' "Needs you" groups)
     if (!link.session && !link.prompt && isPhone() && (server.pending > 0 || server.sessions.some((o) => o.pending > 0))) setSheet('sessions');
   } else set((s) => ({ ...s, serverError: errText(st.reason) }));
-  void loadDir('');
+  void loadDir(projectRoot());
   // Git hosts' recent uses (for Activity: Claude's own git getting a credential is said there), and a link from
   // Settings › Claude Code › Git hosts (?git=hosts) or one that clones (?git=clone)
   void api.getGitHosts().then((h) => { setGit((g) => ({ ...g, hosts: h, events: h.events })); announce(); }, () => {});
@@ -1038,6 +1070,7 @@ export async function refreshSessions(query = get().sessionsQuery): Promise<void
   try {
     const sessions = await api.listSessions(query);
     if (get().sessionsQuery !== query) return;
+    noteWhere(sessions);
     set((s) => ({ ...s, sessions, sessionsLoading: false, sessionsError: null }));
   } catch (e) {
     set((s) => ({ ...s, sessionsLoading: false, sessionsError: errText(e) }));
@@ -1047,6 +1080,8 @@ export async function refreshSessions(query = get().sessionsQuery): Promise<void
 /** Show a session that the backend has open (attach + history). */
 export async function activate(id: string): Promise<void> {
   if (!isUuid(id)) return;
+  // (its project is shown with it: the file tree, Git, Review … are the ones it works in — once the page knows where it runs)
+  if (get().where[id] && sessionProject(id) !== get().project) setProject(sessionProject(id), { keepSession: true });
   ensureView(id);
   set((s) => ({ ...s, active: id, sheet: s.sheet === 'sessions' ? null : s.sheet }));
   updateView(id, (v) => (v.unseen ? { ...v, unseen: false } : v));
@@ -1103,6 +1138,8 @@ export interface NewSessionOptions {
   effort?: string | null;
   /** its budget (undefined: the one new sessions start with) */
   budget?: Budget | null;
+  /** its project (undefined: the one shown): it runs in that project's folder */
+  project?: string;
 }
 
 export function newSession(opts: NewSessionOptions = {}): Promise<string | null> {
@@ -1119,8 +1156,10 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
     const effort = opts.effort === undefined ? s.prefs.effort : opts.effort;
     // the budget new sessions start with (this browser's; ⋯ › Budget sets it)
     const budget = opts.budget === undefined ? s.budgetNext : opts.budget;
-    const { id } = await api.openSession({ model: sendModel(model, s), mode, effort, budget });
-    set((x) => ({ ...x, startWith: null }));
+    const proj = s.projects.find((p) => p.id === (opts.project ?? s.project)) ?? currentProject(s);
+    if (proj.id !== s.project) setProject(proj.id, { keepSession: true });
+    const { id } = await api.openSession({ model: sendModel(model, s), mode, effort, budget, project: proj.id });
+    set((x) => ({ ...x, startWith: null, where: { ...x.where, [id]: { project: proj.id, cwd: proj.path } } }));
     loadedHistory.add(id);
     ensureView(id, { state: 'idle', model, mode, effort, budget });
     if (budget) rememberBudget(id, budget);
@@ -1178,6 +1217,10 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
       void refreshSessions();
       return;
     }
+    // (a fork runs where its session did; the list says which project it is shown in)
+    const was = get().where[id];
+    if (was && fork) set((x) => ({ ...x, where: { ...x.where, [newId]: { cwd: was.cwd, project: projectOfCwd(was.cwd, x.projects) } } }));
+    if (sessionProject(newId) !== get().project) setProject(sessionProject(newId), { keepSession: true });
     set((x) => {
       const views = { ...x.views };
       delete views[newId];
@@ -1321,8 +1364,9 @@ export async function addMemoryLine(line: string): Promise<boolean> {
       const r = await api.putMemory('project', appendMemory(m.text, line), m.exists ? m.mtimeMs : null);
       if (r.ok) {
         toast(`Added to ${m.path}: ${label(line, 80)}`, 'ok');
-        refreshDirOf('CLAUDE.md');
-        const key = 'file:CLAUDE.md';
+        const file = joinPath(projectRoot(), 'CLAUDE.md');
+        refreshDirOf(file);
+        const key = `file:${file}`;
         const t = get().tabs.find((x) => x.key === key);
         if (t?.kind === 'file' && !t.dirty) reloadFile(key);
         return true;
@@ -1658,6 +1702,218 @@ export async function restartSession(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- projects
+
+/** The project shown (the Workspace while the list does not have the one remembered). */
+export function currentProject(s: AppState = get()): Project {
+  return s.projects.find((p) => p.id === s.project) ?? s.projects[0] ?? { ...WORKSPACE };
+}
+/** The project folder shown, as a path of the workspace ('' : the workspace itself). */
+export const projectRoot = (s: AppState = get()): string => currentProject(s).root;
+/** The project a session is shown in (the backend's word for one of the list; else the Workspace). */
+export const sessionProject = (id: string, s: AppState = get()): string => projectFor(id, s.where, s.projects);
+/** The folder an @-mention in the prompt box is relative to: the session's shown (where it runs), else the project's. */
+export function promptBase(s: AppState = get()): string {
+  const w = s.active ? s.where[s.active] : undefined;
+  return w?.cwd ?? currentProject(s).path;
+}
+/** A path of the workspace as an @-mention for the session shown (projects.ts mentionPath). */
+export const promptPathOf = (wsPath: string, s: AppState = get()): string => mentionPath(wsPath, promptBase(s));
+
+// the project shown, per browser (an id: validated against the list once it is in)
+const PROJECT_KEY = 'bn.code.project.v1';
+function storedProject(): string {
+  try {
+    const v = globalThis.localStorage?.getItem(PROJECT_KEY) ?? '';
+    return projectIdOk(v) ? v : WORKSPACE_ID;
+  } catch {
+    return WORKSPACE_ID;
+  }
+}
+function storeProject(id: string): void {
+  try {
+    globalThis.localStorage?.setItem(PROJECT_KEY, id);
+  } catch {
+    /* storage blocked: fine */
+  }
+}
+
+/** Where sessions run, from a list of the backend's (rows it left out stay as they were). */
+function noteWhere(rows: { id: string; cwd: string; project: string }[]): void {
+  if (!rows.length) return;
+  set((s) => {
+    const where = { ...s.where };
+    for (const r of rows) where[r.id] = { project: r.project, cwd: r.cwd };
+    return { ...s, where };
+  });
+}
+
+/** The projects again (GET /api/projects). A remembered project that is gone: the Workspace. */
+export async function refreshProjects(): Promise<void> {
+  try {
+    const projects = await api.getProjects();
+    set((s) => ({ ...s, projects, projectsError: null }));
+  } catch (e) {
+    // (an older backend has no projects: the Workspace alone, as before)
+    set((s) => ({ ...s, projectsError: e instanceof api.ApiError && e.status === 404 ? null : errText(e) }));
+  }
+  if (!get().projects.some((p) => p.id === get().project)) setProject(WORKSPACE_ID);
+}
+
+/** Show another project: the file tree, Search, Git, Review, Run & test, launch.json, memory and @-mentions follow;
+ *  so does the session shown (this project's most recent open one, or none: the next prompt starts one here) — unless
+ *  keepSession (a session of it was just picked). */
+export function setProject(id: string, { keepSession = false }: { keepSession?: boolean } = {}): void {
+  const p = get().projects.find((x) => x.id === id);
+  if (!p) return;
+  storeProject(p.id);
+  api.setScope(p.id);
+  const was = get().project;
+  if (was !== p.id || get().git.repo !== p.root) {
+    set((s) => ({
+      ...s,
+      project: p.id,
+      fs: { ...s.fs, expanded: { ...s.fs.expanded, [p.root]: true }, selected: null },
+      search: { ...s.search, result: null, error: null, loading: false },
+      run: null,
+      runError: null,
+      launch: null,
+      // (a task or launch.json entry shown for confirmation is the old project's: it never runs in this one)
+      runConfirm: null,
+      launchConfirm: null,
+      dialog: s.dialog === 'run-confirm' || s.dialog === 'launch' ? null : s.dialog,
+      review: { ...s.review, git: null, error: null, errorSaid: null },
+      git: { ...s.git, repo: p.root, status: null, commits: [], remote: null, pushed: null, error: null, errorSaid: null, plan: null, repos: [] },
+    }));
+  }
+  if (!keepSession) {
+    const s = get();
+    if (s.active && sessionProject(s.active, s) !== p.id) {
+      const mine = Object.values(s.views).filter((v) => v.state !== 'closed' && sessionProject(v.id, s) === p.id).sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0));
+      if (mine[0]) void activate(mine[0].id);
+      else set((x) => ({ ...x, active: null }));
+    }
+  }
+  if (was === p.id) return;
+  void loadDir(p.root);
+  if (get().review.engaged) void refreshReview();
+  if (get().git.engaged) void refreshGit(true);
+  announce();
+}
+
+export function openProjectDialog(d: ProjectDialog | null): void {
+  set((s) => ({ ...s, projectDialog: d, sheet: d && s.sheet === 'sessions' ? null : s.sheet }));
+}
+
+/** New project: an empty folder of the workspace (git: `git init` in it) or a folder that is there — then shown.
+ *  -> '' or why not */
+export async function createProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<string> {
+  try {
+    const r = await api.addProject(b);
+    await refreshProjects();
+    const p = r.project && get().projects.find((x) => x.id === r.project?.id);
+    if (!p) return 'The project was made, but the list does not show it: reload the page.';
+    setProject(p.id);
+    if (r.gitError) toast(`${p.name}: the folder is there, but git init failed (${r.gitError}).`, 'error');
+    else toast(b.kind === 'new' ? `New project ${p.name} in ${p.path}${r.git ? ', a git repository' : ''}` : `${p.name} (${p.path}) is a project now`, 'ok');
+    void refreshSessions();
+    return '';
+  } catch (e) {
+    return errText(e);
+  }
+}
+
+/** A clone through the Git panel's Clone dialog: the new folder becomes a project, shown. */
+async function cloneBecomesProject(folder: string): Promise<void> {
+  const had = get().projects.find((p) => p.root === folder);
+  if (had) return setProject(had.id);
+  try {
+    const r = await api.addProject({ kind: 'folder', folder });
+    await refreshProjects();
+    if (r.project) setProject(r.project.id);
+  } catch (e) {
+    toast(`The clone is in ${folder}, but it did not become a project: ${errText(e)} (New project › A folder in the workspace).`, 'error');
+  }
+}
+
+export async function renameProjectTo(id: string, name: string): Promise<void> {
+  try {
+    await api.renameProject(id, name.trim());
+    await refreshProjects();
+  } catch (e) {
+    toast(`Not renamed: ${errText(e)}`, 'error');
+  }
+}
+
+/** Remove from Code: the record goes (its sessions are shown where their folder is); `trash` with the folder named
+ *  again: the folder too, into the workspace trash. -> '' or why not */
+export async function removeProjectById(id: string, opts: { trash?: boolean; confirm?: string } = {}): Promise<string> {
+  const p = get().projects.find((x) => x.id === id);
+  if (!p || p.workspace) return 'The Workspace is always there.';
+  try {
+    const r = await api.removeProject(id, opts);
+    if (get().project === id) setProject(WORKSPACE_ID);
+    await refreshProjects();
+    void refreshSessions();
+    toast(r.trash ? `Removed ${p.name}; its folder is in the workspace trash (${r.trash}).` : `Removed ${p.name} from Code; its folder ${p.path} is still there.`, 'ok');
+    return '';
+  } catch (e) {
+    return errText(e);
+  }
+}
+
+/** Add to project: these sessions shown in that project (a label: each still runs in its own folder). */
+export async function addToProject(ids: string[], pid: string): Promise<boolean> {
+  const p = get().projects.find((x) => x.id === pid);
+  if (!p || !ids.length) return false;
+  try {
+    await api.fileSessions(pid, ids);
+    set((s) => {
+      const where = { ...s.where };
+      for (const id of ids) where[id] = { cwd: where[id]?.cwd ?? p.path, project: pid };
+      return { ...s, where };
+    });
+    toast(ids.length === 1 ? `In ${p.name} now.` : `${ids.length} sessions in ${p.name} now.`, 'ok');
+    void refreshSessions();
+    return true;
+  } catch (e) {
+    toast(`Not moved: ${errText(e)}`, 'error');
+    return false;
+  }
+}
+
+/** A terminal in the project's folder: a new window of the terminal panel (a new tab on a phone). */
+export async function openProjectTerminal(id: string): Promise<void> {
+  // (a phone: the tab first, by your tap — no popup blocker stops it)
+  if (isPhone()) window.open(terminalUrl() ?? '/.bn/terminal', '_blank', 'noopener,noreferrer');
+  try {
+    const r = await api.projectTerminal(id);
+    if (!isPhone()) setLayout({ terminal: true });
+    toast(`A terminal window in ${get().projects.find((p) => p.id === id)?.path ?? 'the project'}${r.window ? ` (${r.window})` : ''}.`, 'ok');
+  } catch (e) {
+    toast(`No terminal window: ${errText(e)}`, 'error');
+  }
+}
+
+/** Connect a git repository: the project shown, its Git panel; a folder that is no repository yet becomes one (git
+ *  init) first — then the remote's URL (and Git hosts) to add or change. */
+export async function connectGitRepo(id: string): Promise<void> {
+  setProject(id);
+  showGit();
+  await refreshGit(true);
+  if (!get().git.status?.repo) {
+    try {
+      await api.projectGitInit(id);
+      toast('A git repository now (git init): add its remote.', 'ok');
+    } catch (e) {
+      if (!(e instanceof api.ApiError && e.status === 409)) return toast(`git init: ${errText(e)}`, 'error');
+    }
+    await refreshGit(true);
+    void refreshProjects();
+  }
+  if (get().git.status?.repo) openGitDialog('remote');
+}
+
 // ---------------------------------------------------------------- files
 
 /** The workspace trash (deletes move there): kept out of the tree. */
@@ -1667,7 +1923,8 @@ export async function loadDir(path: string): Promise<void> {
   set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: true, error: null, truncated: s.fs.dirs[path]?.truncated ?? false } } } }));
   try {
     const { entries: all, truncated } = await api.fsList(path);
-    const entries = path === '' ? all.filter((e) => e.name !== TRASH) : all;
+    // (the trash of the workspace, and of the project shown, out of the tree)
+    const entries = path === '' || path === projectRoot() ? all.filter((e) => e.name !== TRASH) : all;
     entries.sort((a, b) => (a.type === 'dir') === (b.type === 'dir') ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
     set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries, loading: false, error: null, truncated } } } }));
     reloadChangedTabs(path, entries);
@@ -1695,7 +1952,7 @@ export function toggleDir(path: string): void {
   if (open && !get().fs.dirs[path]) void loadDir(path);
 }
 export function collapseAll(): void {
-  set((s) => ({ ...s, fs: { ...s.fs, expanded: { '': true } } }));
+  set((s) => ({ ...s, fs: { ...s.fs, expanded: { [projectRoot(s)]: true } } }));
 }
 export function selectPath(path: string | null): void {
   set((s) => ({ ...s, fs: { ...s.fs, selected: path } }));
@@ -1708,7 +1965,8 @@ export function refreshExpandedDirs(): void {
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     const s = get();
-    for (const p of Object.keys(s.fs.dirs)) if (p === '' || s.fs.expanded[p]) void loadDir(p);
+    const root = projectRoot(s);
+    for (const p of Object.keys(s.fs.dirs)) if (inProject(p, root) && (p === root || s.fs.expanded[p])) void loadDir(p);
   }, 1000);
 }
 
@@ -1887,11 +2145,12 @@ export async function stopServer(p: PortInfo, force = false): Promise<void> {
 
 /** The workspace's .claude/launch.json, read again. */
 export async function loadLaunch(): Promise<void> {
+  const proj = get().project;
   try {
     const launch = await api.getLaunch();
-    set((s) => ({ ...s, launch }));
+    if (get().project === proj) set((s) => ({ ...s, launch }));
   } catch (e) {
-    set((s) => ({ ...s, launch: { exists: false, error: errText(e), entries: [] } }));
+    if (get().project === proj) set((s) => ({ ...s, launch: { exists: false, error: errText(e), entries: [] } }));
   }
 }
 
@@ -1937,11 +2196,12 @@ export async function startLaunchEntry(e: LaunchEntry): Promise<void> {
 
 /** The workspace's tasks, read again (package.json's scripts, the Makefile's targets, pyproject.toml's entry points). */
 export async function loadRun(): Promise<void> {
+  const proj = get().project;
   try {
     const run = await api.getRunTasks();
-    set((s) => ({ ...s, run, runError: null }));
+    if (get().project === proj) set((s) => ({ ...s, run, runError: null }));
   } catch (e) {
-    set((s) => ({ ...s, runError: errText(e) }));
+    if (get().project === proj) set((s) => ({ ...s, runError: errText(e) }));
   }
 }
 
@@ -2210,20 +2470,23 @@ export async function deletePath(path: string): Promise<void> {
   try {
     await api.fsDelete(path);
     await loadDir(dirname(path));
-    toast(`Moved ${basename(path)} to the workspace trash`, 'ok');
+    toast(`Moved ${basename(path)} to the ${inProject(path, projectRoot()) && projectRoot() ? 'project\'s' : 'workspace'} trash`, 'ok');
   } catch (e) {
     toast(errText(e), 'error');
   }
 }
 
+/** "Mention in chat": the path as the session shown resolves it (relative to the folder it runs in). */
 export function mention(path: string): void {
-  set((s) => ({ ...s, insert: { n: (s.insert?.n ?? 0) + 1, text: `@${path} ` }, sheet: s.sheet === 'files' ? null : s.sheet }));
+  set((s) => ({ ...s, insert: { n: (s.insert?.n ?? 0) + 1, text: `@${promptPathOf(path, s)} ` }, sheet: s.sheet === 'files' ? null : s.sheet }));
 }
 
-/** All file paths the explorer knows so far (for the @ picker). */
+/** All file paths the explorer knows so far in the project shown (for the @ picker and Go to file). */
 export function knownPaths(s: AppState = get()): string[] {
   const out: string[] = [];
+  const root = projectRoot(s);
   for (const [dir, d] of Object.entries(s.fs.dirs)) {
+    if (!inProject(dir, root)) continue;
     for (const e of d.entries) out.push(e.type === 'dir' ? `${joinPath(dir, e.name)}/` : joinPath(dir, e.name));
     if (out.length > 20_000) break;
   }
@@ -2427,10 +2690,14 @@ export function refreshReview(): Promise<void> {
     try {
       do {
         reviewAgain = false;
+        const proj = get().project;
         try {
           const git = await api.getGitDiff();
+          // (another project shown meanwhile: asked again for that one)
+          if (get().project !== proj) { reviewAgain = true; continue; }
           setReview((r) => ({ ...r, git, error: null, errorSaid: null }));
         } catch (e) {
+          if (get().project !== proj) { reviewAgain = true; continue; }
           // without git's answer the pane shows the session's own edits (and says why)
           setReview((r) => ({ ...r, git: null, error: errText(e), errorSaid: api.saidOf(e) }));
         }
@@ -2662,15 +2929,6 @@ function setGit(fn: (g: GitState) => GitState): void {
     return g === s.git ? s : { ...s, git: g };
   });
 }
-// the repository folder the panel shows, per browser ('' : the workspace folder itself)
-const REPO_KEY = 'bn.code.git.repo.v1';
-function storedRepo(): string {
-  try {
-    return api.repoPath(globalThis.localStorage?.getItem(REPO_KEY) ?? '') ?? '';
-  } catch {
-    return '';
-  }
-}
 /** A path git names in the panel's repository, as a path of the workspace (for the editor, the trash, the watchlist). */
 export function repoFile(path: string, repo = get().git.repo): string {
   return repo ? `${repo}/${path}` : path;
@@ -2683,16 +2941,13 @@ export function showGit(focusMessage = false): void {
   else setLayout({ explorer: true, side: 'git' });
   void refreshGit(true);
 }
-/** The panel shows another repository folder of the workspace ('' : the workspace folder itself). */
-export function selectGitRepo(repo: string): void {
+/** The panel shows another project's repository (the repository picker is the project chip's list: the panel follows the
+ *  project shown). A repository folder of the workspace that is no project yet becomes one (Open as a project). */
+export async function selectGitRepo(repo: string): Promise<void> {
   const r = api.repoPath(repo) ?? '';
-  try {
-    globalThis.localStorage?.setItem(REPO_KEY, r);
-  } catch {
-    /* storage blocked: fine */
-  }
-  setGit((g) => (g.repo === r ? g : { ...g, repo: r, status: null, commits: [], remote: null, pushed: null, error: null, errorSaid: null }));
-  void refreshGit(true);
+  const p = get().projects.find((x) => x.root === r);
+  if (p) return setProject(p.id);
+  if (r) await cloneBecomesProject(r);
 }
 /** git is asked once at a time (status, then the log and the remotes); asked again meanwhile, once more when that answer
  *  is in. repos: the workspace's repository folders are listed again too. */
@@ -2721,12 +2976,9 @@ export function refreshGit(repos = false): Promise<void> {
           try {
             status = await api.getGitStatus(repo);
           } catch (e) {
-            // a remembered folder that is gone (or no longer a folder): the workspace folder itself
-            if (repo && e instanceof api.ApiError && e.status === 400) {
-              selectGitRepo('');   // (asks again: gitAgain)
-              continue;
-            }
-            throw e;
+            // the project's folder is gone (or no longer a folder): said as git says it
+            if (repo && e instanceof api.ApiError && e.status === 400) status = { ...api.normGitStatus({}), reason: `${e.message} (${repo})` };
+            else throw e;
           }
           const log = status.repo ? await api.getGitLog(repo) : { commits: [] as GitCommit[], error: null, said: null };
           const remote = status.repo ? await api.getGitRemote(repo).catch(() => null) : null;
@@ -2911,7 +3163,10 @@ export async function runGitPlan(plan: GitPlan | null = get().git.plan): Promise
     if (plan.action === 'clone') {
       toast(`Cloned ${label(plan.display, 120)} into ${plan.target ? label(plan.target, 120) : 'the workspace folder'}`, 'ok');
       setGit((g) => ({ ...g, dialog: g.dialog === 'clone' ? null : g.dialog }));
-      selectGitRepo(r.path ?? plan.target ?? '');
+      // a clone into a new folder is a project of its own (shown); into the workspace folder itself: the Workspace
+      const folder = r.path ?? plan.target ?? '';
+      if (folder) await cloneBecomesProject(folder);
+      else setProject(WORKSPACE_ID);
       return;
     }
     if (r.action === 'push' || r.action === 'publish') {
@@ -2992,8 +3247,10 @@ export async function runSearch(): Promise<void> {
   if (!q.q.trim()) return setSearch({ result: null, error: null, loading: false });
   const n = ++searchSeq;
   setSearch({ loading: true, error: null });
+  const proj = get().project;
   try {
     const result = await api.grep({ q: q.q, regex: q.regex, caseSensitive: q.caseSensitive, include: q.include, exclude: q.exclude });
+    if (get().project !== proj) return setSearch({ loading: false });
     if (n === searchSeq) setSearch({ result, loading: false, error: result.error });
   } catch (e) {
     if (n === searchSeq) setSearch({ loading: false, error: e instanceof api.ApiError && e.status === 429 ? 'Two searches are running already: try again in a moment.' : errText(e) });

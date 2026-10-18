@@ -1,4 +1,5 @@
-// The Git panel's remotes: the repository folder it shows, the branch (switch, create, track a remote one), the remote
+// The Git panel's remotes: the project whose repository it shows (the project chip's list), the branch (switch, create,
+// track a remote one), the remote
 // (where it is, and with which Git host's credential), Fetch / Pull / Push / Publish — each one's destination shown
 // before anything is sent (a push or publish every time, a fetch or pull the first time per remote URL) —, the link to
 // open a pull request after a push, Clone, a remote's URL, and Git hosts: the git servers you connect (GitHub, GitLab
@@ -8,7 +9,7 @@
 // shown again —, Test connection, and whether Claude's own git may use a host (off by default). The
 // Hosts button is labelled, and a one-line hint offers "Connect a git host" while no connected host covers the remote
 // (or none is connected at all). Every text from the sandbox or a server is shown as text (label).
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
   store,
@@ -23,11 +24,15 @@ import {
   selectGitRepo,
   setGitRemoteUrl,
   toast,
+  connectGitRepo,
+  currentProject,
+  openProjectDialog,
 } from '../app';
 import * as api from '../api';
 import type { GitAuth, GitHostKind, GitHostView, GitPlan, GitRemoteState, GitSignInConfig, GitSignInFlow, GitStatus, SandboxWords } from '../types';
 import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState } from '../git';
 import { SandboxSaid } from './Said';
+import { inProject } from '../projects';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
@@ -38,20 +43,18 @@ const authName = (auth: GitAuth): string => (auth === 'token' ? 'HTTPS token' : 
 const credSuffix = (r: { source?: string; account?: string | null }): string =>
   r.source ? ` (${r.source}'s login${r.account ? `, ${label(r.account, 100)}` : ''})` : r.account ? ` (${label(r.account, 100)})` : '';
 
-/** The repository folder the panel shows, when the workspace has more than one (or the shown one is a folder in it). */
+/** The project whose repository the panel shows (the project chip's list: picking one here shows that project). */
 export function RepoPicker() {
   const repo = useSel(store, (s) => s.git.repo);
-  const repos = useSel(store, (s) => s.git.repos);
-  const list = useMemo(() => (repos.includes(repo) ? repos : [repo, ...repos]), [repos, repo]);
-  if (list.length < 2 && repo === '') return null;
+  const projects = useSel(store, (s) => s.projects);
+  if (projects.length < 2) return null;
   return (
-    <label class="gitr-repo small" title="The repository the Git panel shows: the workspace folder itself, or a repository in it (a clone)">
+    <label class="gitr-repo small" title="The project whose repository the Git panel shows (the top bar's project chip: its folder)">
       <Icon name="folder" size={13} />
-      <select value={repo} onChange={(e) => selectGitRepo((e.currentTarget as HTMLSelectElement).value)} aria-label="Repository" data-testid="git-repo">
-        {!list.includes('') && <option value="">The workspace folder</option>}
-        {list.map((r) => (
-          <option key={r} value={r}>
-            {r === '' ? 'The workspace folder' : label(r, 120)}
+      <select value={repo} onChange={(e) => void selectGitRepo((e.currentTarget as HTMLSelectElement).value)} aria-label="Project" data-testid="git-repo">
+        {projects.map((p) => (
+          <option key={p.id} value={p.root}>
+            {p.workspace ? 'Workspace (the workspace folder)' : `${p.name} (${label(p.root, 120)})`}
           </option>
         ))}
       </select>
@@ -181,18 +184,62 @@ function Since({ t }: { t: number }) {
   return <span class="muted">({s}s)</span>;
 }
 
-/** Not a repository: clone one (or start one in the terminal), and Git hosts ("Connect a git host" while none is). */
+/** Not a repository: clone one (a new project), make this project's folder one (Connect a git repository: git init,
+ *  then its remote), Git hosts ("Connect a git host" while none is) — and the repositories in it that are no project
+ *  yet (a clone from before projects), each one click from being one. */
 export function NoRepoActions() {
   const hosts = useSel(store, (s) => s.git.hosts);
+  const project = useSel(store, (s) => currentProject(s));
+  const projects = useSel(store, (s) => s.projects);
+  const [inside, setInside] = useState<string[]>([]);
+  useEffect(() => {
+    let gone = false;
+    api.getGitRepos(project.id).then((r) => !gone && setInside(r.filter((x) => x && x !== project.root && inProject(x, project.root))), () => undefined);
+    return () => {
+      gone = true;
+    };
+  }, [project.id]);
+  const loose = inside.filter((r) => !projects.some((p) => p.root === r));
   return (
-    <div class="gitr-norepo">
-      <button type="button" class="btn small primary" onClick={() => openGitDialog('clone')} data-testid="git-clone-open">
-        <Icon name="download" size={13} /> Clone a repository…
-      </button>
-      <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone — or sign in with GitHub or GitLab" data-testid="git-hosts-open">
-        <Icon name="server" size={13} /> {hosts && !hosts.hosts.length ? 'Connect a git host…' : 'Git hosts…'}
-      </button>
-    </div>
+    <>
+      <div class="gitr-norepo">
+        <button type="button" class="btn small primary" onClick={() => openGitDialog('clone')} data-testid="git-clone-open">
+          <Icon name="download" size={13} /> Clone a repository…
+        </button>
+        {!project.workspace && (
+          <button type="button" class="btn small" onClick={() => void connectGitRepo(project.id)} title="git init in this project's folder, then its remote's URL" data-testid="git-init">
+            <Icon name="branch" size={13} /> Start a git repository here
+          </button>
+        )}
+        <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone — or sign in with GitHub or GitLab" data-testid="git-hosts-open">
+          <Icon name="server" size={13} /> {hosts && !hosts.hosts.length ? 'Connect a git host…' : 'Git hosts…'}
+        </button>
+      </div>
+      {loose.length > 0 && (
+        <div class="gitr-loose small" data-testid="git-loose">
+          <div class="muted">Repositories in this folder that are no project yet:</div>
+          <ul role="list">
+            {loose.slice(0, 20).map((r) => (
+              <li key={r}>
+                <code>{label(r, 160)}</code>{' '}
+                <button type="button" class="linkish" onClick={() => void selectGitRepo(r)} data-testid="git-loose-open" data-repo={r}>
+                  Open as a project
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {project.workspace && (
+        <div class="muted small gitr-pad">
+          Or{' '}
+          <button type="button" class="linkish" onClick={() => openProjectDialog({ kind: 'new', tab: 'empty' })}>
+            make a new project
+          </button>{' '}
+          (a folder of its own, with git init).
+        </div>
+      )}
+    </>
   );
 }
 
@@ -305,8 +352,8 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
         </label>
       </div>
       <p class="muted small">
-        A private repository needs its host connected (Git hosts): an https:// URL with a sign-in or an access token, an ssh one with an SSH key. Submodules
-        are not cloned, and no hook of the repository runs.
+        The new folder becomes a project of its own. A private repository needs its host connected (Git hosts): an https:// URL with a sign-in or an
+        access token, an ssh one with an SSH key. Submodules are not cloned, and no hook of the repository runs.
       </p>
       {err && (
         <div class="plg-err small" role="alert" data-testid="git-clone-error">

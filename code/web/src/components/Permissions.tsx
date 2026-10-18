@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import * as api from '../api';
 import type { PermFile, Permissions } from '../api';
-import { toast } from '../app';
+import { toast, currentProject } from '../app';
 import { safe } from '../text';
 import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
@@ -148,7 +148,7 @@ export function PermissionsDialog({ onClose }: { onClose: () => void }) {
             <Rules id="user" file={p.user} removable={!!p.user.sha256} onRemove={(l, r) => void remove(l, r)} busy={busy} />
           </section>
           <section class="perm-sec">
-            <h3>This workspace — .claude/settings.json and settings.local.json</h3>
+            <h3>This project — {currentProject().path}/.claude/settings.json and settings.local.json</h3>
             <p class="muted small">
               In your folder: <strong>Claude Code on your computer honours these too.</strong> Shown here only — change them in the editor or on your computer.
             </p>

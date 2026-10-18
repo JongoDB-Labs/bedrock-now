@@ -1,5 +1,6 @@
 // Deep links into the Code page (Home's Code card, a bookmark, a link someone sent): ?session=<id> shows or resumes
-// that session, ?prompt=<text> puts a DRAFT into the prompt box — never sent by itself; ?git=hosts opens the Git panel's
+// that session, ?project=<id> shows that project (an id of the list only: nothing is created by a link), ?prompt=<text>
+// puts a DRAFT into the prompt box — never sent by itself; ?git=hosts opens the Git panel's
 // Git hosts (Settings › Claude Code links there), ?git=clone its Clone dialog (empty: nothing is cloned by a link). A link is anyone's to make, so
 // the draft is marked as coming from a link, capped, its invisible characters made visible (as everything untrusted
 // on this page), and the parameters leave the address bar at once (a reload does not bring the draft back).
@@ -21,13 +22,15 @@ export interface DeepLink {
   cut: boolean;
   /** a Git panel dialog to open: hosts or clone, or null */
   git: 'hosts' | 'clone' | null;
+  /** a project to show (an id's shape: the page then looks it up in the list), or null */
+  project: string | null;
   /** the link carried parameters this page knows (they are to be taken out of the address) */
   any: boolean;
 }
 
 /** parseDeepLink(location.search) — the parameters this page takes; anything else is left alone. */
 export function parseDeepLink(search: string): DeepLink {
-  const out: DeepLink = { session: null, prompt: null, cut: false, git: null, any: false };
+  const out: DeepLink = { session: null, prompt: null, cut: false, git: null, project: null, any: false };
   if (typeof search !== 'string' || !search) return out;
   let p: URLSearchParams;
   try {
@@ -39,6 +42,11 @@ export function parseDeepLink(search: string): DeepLink {
   if (s !== null) {
     out.any = true;
     if (UUID.test(s)) out.session = s.toLowerCase();
+  }
+  const pr = p.get('project');
+  if (pr !== null) {
+    out.any = true;
+    if (pr === 'ws' || /^p_[0-9a-f]{8}$/.test(pr)) out.project = pr;
   }
   const g = p.get('git');
   if (g !== null) {
@@ -63,6 +71,7 @@ export function withoutDeepLink(href: string): string {
     u.searchParams.delete('session');
     u.searchParams.delete('prompt');
     u.searchParams.delete('git');
+    u.searchParams.delete('project');
     return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '') + u.hash;
   } catch {
     return '/';

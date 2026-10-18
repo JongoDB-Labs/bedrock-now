@@ -9,6 +9,7 @@ import './styles/review.css';
 import './styles/polish.css';
 import './styles/git.css';
 import './styles/mentions.css';
+import './styles/projects.css';
 
 const root = document.createElement('div');
 root.id = 'app';

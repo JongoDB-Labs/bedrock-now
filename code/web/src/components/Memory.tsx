@@ -1,5 +1,6 @@
-// Memory: the CLAUDE.md files Claude Code reads at the start of every session — this workspace's (/workspace/CLAUDE.md,
-// shared with Claude Code on your computer when it opens that folder) and your user one in the sandbox
+// Memory: the CLAUDE.md files Claude Code reads at the start of every session — the project's (<its folder>/CLAUDE.md:
+// /workspace/CLAUDE.md for the Workspace; shared with Claude Code on your computer when it opens that folder) and your
+// user one in the sandbox
 // (~/.claude/CLAUDE.md). A plain text editor; a save carries the modification time it read, so a change made
 // meanwhile (Claude, the terminal, another tab) is never overwritten unasked.
 import { useEffect, useState } from 'preact/hooks';
@@ -10,7 +11,7 @@ import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
 
 const SCOPES: [MemoryScope, string, string][] = [
-  ['project', 'Project', "This workspace's CLAUDE.md: in your folder, so Claude Code on your computer reads it there too."],
+  ['project', 'Project', "This project's CLAUDE.md: in your folder, so Claude Code on your computer reads it there too."],
   ['user', 'User', 'Your own CLAUDE.md in the sandbox: every session here reads it, in any project.'],
 ];
 

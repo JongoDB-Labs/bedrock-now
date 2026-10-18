@@ -6,7 +6,7 @@
 // sandbox); a row opens its window in the terminal.
 import { useEffect, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, askClaudeToRun, confirmRun, loadLaunch, loadRun, refreshRuns, requestLaunch, requestRun, setDialog, showRunWindow } from '../app';
+import { store, askClaudeToRun, confirmRun, loadLaunch, loadRun, refreshRuns, requestLaunch, requestRun, setDialog, showRunWindow, currentProject } from '../app';
 import { getRunResults } from '../api';
 import { duration, failing, lastLines, outcome, outcomeText, plainCommand, plainOutput } from '../run';
 import type { RunResult, RunSource, RunTask } from '../types';
@@ -172,7 +172,7 @@ export function RunPanel({ onDone }: { onDone?: () => void }) {
       {error && <div class="banner warn small">Could not list the tasks: {label(error, 200)}</div>}
       {run === null && !error && (
         <p class="muted small">
-          <Spinner size={11} /> Reading the workspace…
+          <Spinner size={11} /> Reading {currentProject().path}…
         </p>
       )}
       {run &&
@@ -223,7 +223,7 @@ export function RunPanel({ onDone }: { onDone?: () => void }) {
       )}
       {nothing && (
         <p class="muted small pp-empty" data-testid="run-none">
-          No package.json, Makefile, pyproject.toml or .claude/launch.json in the workspace's top folder.
+          No package.json, Makefile, pyproject.toml or .claude/launch.json in {currentProject().path}.
         </p>
       )}
       {!anyRuns && <Problems onDone={onDone} />}
@@ -270,7 +270,7 @@ export function RunConfirm({ task }: { task: RunTask }) {
   return (
     <Dialog title={`Run "${label(task.name, 80)}"?`} onClose={close} wide testid="run-confirm">
       <p>
-        From the workspace's <code>{file}</code>, which anything in the sandbox (Claude too) can write. It runs in the sandbox, in a new window of the
+        From the project's <code>{file}</code>, which anything in the sandbox (Claude too) can write. It runs in the sandbox, in a new window of the
         terminal, without input — check that it is what you expect:
       </p>
       <h3>Program and arguments</h3>
@@ -291,7 +291,7 @@ export function RunConfirm({ task }: { task: RunTask }) {
       </ol>
       <h3>Folder</h3>
       <p>
-        <code class="launch-cwd">/workspace</code>
+        <code class="launch-cwd" data-testid="run-cwd">{currentProject().path}</code>
       </p>
       <h3>{task.source === 'npm' ? 'What npm runs' : task.source === 'make' ? 'Its recipe' : 'The entry point'}</h3>
       {task.detail.map((d, i) => (

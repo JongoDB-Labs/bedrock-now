@@ -257,6 +257,10 @@ export interface SessionInfo {
   branch: string;
   modified: number;
   size: number | null;
+  /** the folder it ran in (/workspace or a folder of it: the backend leaves out any other) */
+  cwd: string;
+  /** the project it is shown in, as the backend says (projects.ts: only one of the list counts) */
+  project: string;
 }
 
 export interface OpenSession {
@@ -272,6 +276,9 @@ export interface OpenSession {
   budget: Budget | null;
   /** handed to the terminal (Open in the terminal) */
   terminal: boolean;
+  /** the folder it runs in, and the project it is shown in */
+  cwd: string;
+  project: string;
 }
 
 export interface ServerState {
@@ -466,6 +473,8 @@ export interface RunResult {
   tail: string;
   /** more was printed than kept */
   cut: boolean;
+  /** the project folder it ran in ('' : the workspace) */
+  root: string;
 }
 
 /** Whether previews work on this site, and how the portal routes them. */

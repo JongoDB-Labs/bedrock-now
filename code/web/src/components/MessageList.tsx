@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/ho
 import type { Item, Queued, SessionView } from '../session';
 import { shownCost, turnCosts } from '../spend';
 import { duration, money, tokens } from '../text';
-import { forkFrom, loadEarlier, openGitDialog, rewindCancel, rewindConfirm, rewindPreview, sendPrompt, showGit, store } from '../app';
+import { forkFrom, loadEarlier, openGitDialog, rewindCancel, rewindConfirm, rewindPreview, sendPrompt, showGit, store, currentProject, openProjectDialog } from '../app';
 import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
@@ -242,13 +242,17 @@ function gitDialog(d: 'clone' | 'hosts'): void {
 function Welcome() {
   const ideas = ['Explain how this project is organised', 'Find and fix a failing test', 'Add a README section about setup', '/init'];
   const hosts = useSel(store, (s) => s.git.hosts);
+  const project = useSel(store, (s) => currentProject(s));
   return (
     <div class="welcome">
       <div class="welcome-mark">
         <Icon name="code" size={28} />
       </div>
       <h2>What should we work on?</h2>
-      <p class="muted">Claude Code runs in your sandbox's /workspace. It asks before it runs commands or edits files, unless you choose a mode that doesn't.</p>
+      <p class="muted" data-testid="welcome-where">
+        {project.workspace ? 'Claude Code runs in your sandbox\'s /workspace.' : `A new session runs in ${project.name}, your sandbox's ${project.path}.`} It asks before it runs commands or
+        edits files, unless you choose a mode that doesn't.
+      </p>
       <div class="ideas">
         {ideas.map((t) => (
           <button key={t} type="button" class="idea" onClick={() => void sendPrompt(t, [])}>
@@ -264,8 +268,11 @@ function Welcome() {
         <button type="button" class="btn small" onClick={() => gitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone of private repositories" data-testid="welcome-hosts">
           <Icon name="server" size={13} /> {hosts && hosts.hosts.length ? 'Git hosts' : 'Connect a git host'}
         </button>
+        <button type="button" class="btn small" onClick={() => openProjectDialog({ kind: 'new', tab: 'empty' })} data-testid="welcome-new-project">
+          <Icon name="folder" size={13} /> New project
+        </button>
       </div>
-      <p class="muted small">Project settings in /workspace/.claude (including hooks) apply here as they do in the terminal.</p>
+      <p class="muted small">Project settings in {project.path}/.claude (including hooks) apply here as they do in the terminal.</p>
     </div>
   );
 }

@@ -7,7 +7,7 @@ import type { RunResult, RunTask } from '../src/types';
 const task = (x: Partial<RunTask> = {}): RunTask => ({ source: 'npm', name: 'test', argv: ['npm', 'run', '--', 'test'], command: 'npm run -- test',
   detail: [{ name: 'test', text: 'vitest run' }], files: [], notes: [], digest: 'a'.repeat(64), error: null, ...x });
 const run = (x: Partial<RunResult> = {}): RunResult => ({ id: '0123456789abcdef', source: 'npm', name: 'test', command: 'npm run -- test', window: '@7',
-  startedAt: 1000, state: 'done', exitCode: 0, signal: null, error: null, endedAt: 13300, tail: '', cut: false, ...x });
+  startedAt: 1000, state: 'done', exitCode: 0, signal: null, error: null, endedAt: 13300, tail: '', cut: false, root: '', ...x });
 const ms = (f: () => unknown) => { const t = performance.now(); f(); return performance.now() - t; };
 
 test('the commands as you would type them, and "Ask Claude"\'s draft', () => {

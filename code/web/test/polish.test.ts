@@ -77,14 +77,14 @@ test('the Opus hint: only on an Opus model with a cheaper Sonnet served and know
 
 test('deep links: a session id, a draft — visible characters, capped, never anything else', () => {
   const id = '3F2A7C1E-9B4D-4E8A-A1C2-0D9E8F7A6B5C';
-  assert.deepEqual(parseDeepLink(`?session=${id}`), { session: id.toLowerCase(), prompt: null, cut: false, git: null, any: true });
-  assert.deepEqual(parseDeepLink('?session=../../etc'), { session: null, prompt: null, cut: false, git: null, any: true });
-  assert.deepEqual(parseDeepLink('?other=1'), { session: null, prompt: null, cut: false, git: null, any: false });
-  assert.deepEqual(parseDeepLink(''), { session: null, prompt: null, cut: false, git: null, any: false });
+  assert.deepEqual(parseDeepLink(`?session=${id}`), { session: id.toLowerCase(), prompt: null, cut: false, git: null, project: null, any: true });
+  assert.deepEqual(parseDeepLink('?session=../../etc'), { session: null, prompt: null, cut: false, git: null, project: null, any: true });
+  assert.deepEqual(parseDeepLink('?other=1'), { session: null, prompt: null, cut: false, git: null, project: null, any: false });
+  assert.deepEqual(parseDeepLink(''), { session: null, prompt: null, cut: false, git: null, project: null, any: false });
   // Settings › Claude Code › Git hosts links here; nothing else of git is taken from a link
   assert.equal(parseDeepLink('?git=hosts').git, 'hosts');
   assert.equal(parseDeepLink('?git=clone&url=https://evil.example/x').git, 'clone');
-  assert.deepEqual(parseDeepLink('?git=push'), { session: null, prompt: null, cut: false, git: null, any: true });
+  assert.deepEqual(parseDeepLink('?git=push'), { session: null, prompt: null, cut: false, git: null, project: null, any: true });
   assert.equal(withoutDeepLink('https://code.x/?git=hosts&keep=1'), '/?keep=1');
   const p = parseDeepLink(`?prompt=${encodeURIComponent('Fix the login bug‮ txt.exe\u0007\r\nthen run tests  ')}`);
   assert.equal(p.prompt, 'Fix the login bug⟨U+202E⟩ txt.exe⟨U+0007⟩\nthen run tests');

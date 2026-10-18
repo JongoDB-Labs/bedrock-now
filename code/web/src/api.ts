@@ -22,6 +22,7 @@ import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, Cl
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
+import { cwdOk, normProject, normProjects, projectIdOk, WORKSPACE_ID, WORKSPACE_PATH, type Project } from './projects';
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -558,6 +559,17 @@ const q = (params: Record<string, string | number | undefined>) => {
   return s ? `?${s}` : '';
 };
 
+// The project the calls that work in one go to (Search, @-search, Review, memory, permissions, Run & test,
+// launch.json, the Git panel's repositories, deletes): its id only — the backend looks its folder up. The Workspace
+// sends nothing (every call as it was before projects). app.ts sets it whenever the project shown changes.
+let scope = WORKSPACE_ID;
+export function setScope(id: string): void {
+  scope = projectIdOk(id) ? id : WORKSPACE_ID;
+}
+export const currentScope = (): string => scope;
+/** ?project=… for a query (none for the Workspace) */
+const inScope = (id = scope): { project?: string } => (id !== WORKSPACE_ID && projectIdOk(id) ? { project: id } : {});
+
 function normOpen(v: unknown): OpenSession | null {
   const o = obj(v);
   if (!o || !isUuid(o.id)) return null;
@@ -571,6 +583,8 @@ function normOpen(v: unknown): OpenSession | null {
     lastActive: time(o.lastActive) || null,
     budget: normBudget(o.budget),
     terminal: o.terminal === true,
+    cwd: cwdOk(o.cwd) ? o.cwd : WORKSPACE_PATH,
+    project: projectIdOk(o.project) ? o.project : WORKSPACE_ID,
   };
 }
 
@@ -609,10 +623,13 @@ export async function getState(): Promise<ServerState> {
   };
 }
 
-function normSessionInfo(v: unknown): SessionInfo | null {
+export function normSessionInfo(v: unknown): SessionInfo | null {
   const o = obj(v);
   const id = o?.id ?? o?.sessionId;
   if (!o || !isUuid(id)) return null;
+  // (a folder outside the workspace: a row the backend leaves out — and so does the page, whatever it is told)
+  const cwd = o.cwd === undefined || o.cwd === null ? WORKSPACE_PATH : o.cwd;
+  if (!cwdOk(cwd)) return null;
   return {
     id: id.toLowerCase(),
     title: label(o.title ?? o.customTitle ?? o.summary, LIMITS.title),
@@ -620,6 +637,8 @@ function normSessionInfo(v: unknown): SessionInfo | null {
     branch: label(o.branch ?? o.gitBranch, 100),
     modified: time(o.modified ?? o.lastModified ?? o.mtimeMs),
     size: nonneg(o.size ?? o.fileSize),
+    cwd,
+    project: projectIdOk(o.project) ? o.project : WORKSPACE_ID,
   };
 }
 
@@ -664,6 +683,8 @@ export interface OpenOptions {
   before?: string;
   /** the session's budget, before its process starts (spent: what the spend logs say it cost so far) */
   budget?: (SessionBudget & { spent?: number }) | null;
+  /** a new session's project (its folder: the backend's records); a resumed or forked one runs in its own folder */
+  project?: string;
 }
 /** POST /api/sessions -> its id, and `existing` when the backend already had that session open (then it is the
  *  same process: attach to it, never start a second one). A full house answers 409 (shown as the error). */
@@ -676,6 +697,7 @@ export async function openSession(opts: OpenOptions): Promise<{ id: string; exis
   if (opts.at) body.at = opts.at;
   if (opts.before) body.before = opts.before;
   if (opts.budget) body.budget = { usd: opts.budget.usd, hard: opts.budget.hard, ...(opts.budget.spent !== undefined ? { spent: opts.budget.spent } : {}) };
+  if (!opts.resume && opts.project && opts.project !== WORKSPACE_ID && projectIdOk(opts.project)) body.project = opts.project;
   // this page has a Stop per background task, so an interrupt spares them (the backend's taskStop)
   body.taskStop = true;
   const o = await request('POST', '/api/sessions', body);
@@ -728,7 +750,7 @@ export function normPermFile(v: unknown, path: string): PermFile {
     directories: arr(o.directories, 50).filter((d): d is string => typeof d === 'string').map((d) => label(d, 1000)) };
 }
 export async function getPermissions(): Promise<Permissions> {
-  const o = await request('GET', '/api/permissions');
+  const o = await request('GET', '/api/permissions' + q(inScope()));
   const list = (v: unknown) => arr(v, 50).filter((r): r is string => typeof r === 'string').map((r) => label(r, 300));
   return { user: normPermFile(o.user, '~/.claude/settings.json'), project: normPermFile(o.project, '.claude/settings.json'),
     local: normPermFile(o.local, '.claude/settings.local.json'), bypassAsk: list(o.bypassAsk), readOnlyDeny: list(o.readOnlyDeny) };
@@ -742,6 +764,45 @@ export async function removePermission(list: 'allow' | 'ask' | 'deny', rule: str
 export async function renameSession(id: string, title: string): Promise<void> {
   if (!isUuid(id)) return;
   await request('POST', `/api/sessions/${id}/title`, { title: title.slice(0, 200) });
+}
+
+// ---------------------------------------------------------------- projects
+
+/** The projects (the Workspace first), as the code container keeps them and the sandbox says of their folders. */
+export async function getProjects(): Promise<Project[]> {
+  const o = await request('GET', '/api/projects');
+  return normProjects(o.projects ?? o.items);
+}
+/** A new project: a new folder of the workspace (git: `git init` in it) or a folder that is there. */
+export async function addProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<{ project: Project | null; git: boolean; gitError: string }> {
+  const o = await request('POST', '/api/projects', { kind: b.kind, folder: b.folder, ...(b.name ? { name: b.name } : {}), ...(b.kind === 'new' ? { git: b.git === true } : {}) });
+  return { project: normProject(o.project), git: o.git === true, gitError: label(o.gitError, 300) };
+}
+export async function renameProject(id: string, name: string): Promise<void> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  await request('POST', `/api/projects/${id}`, { name });
+}
+/** The record goes; with `trash` (and the folder named again: `confirm`) its folder into the workspace trash too. */
+export async function removeProject(id: string, opts: { trash?: boolean; confirm?: string } = {}): Promise<{ trash: string | null }> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  const o = await request('DELETE', `/api/projects/${id}` + q(opts.trash ? { trash: 1, confirm: opts.confirm ?? '' } : {}));
+  return { trash: typeof o.trash === 'string' ? exactPath(o.trash) : null };
+}
+/** Add to project: those sessions shown in that project (a label; each still runs in its own folder). */
+export async function fileSessions(id: string, ids: string[]): Promise<void> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  await request('POST', `/api/projects/${id}/sessions`, { ids: ids.filter(isUuid).slice(0, 100) });
+}
+/** A new window of the terminal in the project's folder. */
+export async function projectTerminal(id: string): Promise<{ window: string }> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  const o = await request('POST', `/api/projects/${id}/terminal`);
+  return { window: label(o.window, 40) };
+}
+/** Connect a git repository, first step: the project's folder made a repository (git init). */
+export async function projectGitInit(id: string): Promise<void> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  await request('POST', `/api/projects/${id}/git-init`);
 }
 
 // ---------------------------------------------------------------- files
@@ -856,8 +917,8 @@ export async function fsWrite(path: string, text: string, ifMtimeMs: number | nu
 
 /** Raw-body upload; the name travels percent-encoded in X-Filename (header values must be Latin-1). */
 /** The @ picker over the whole workspace: relative paths containing `text` (folders end in "/"). */
-export async function fsFind(text: string, limit = 100): Promise<{ paths: string[]; truncated: boolean }> {
-  const o = await request('GET', '/api/fs/find' + q({ q: text.slice(0, 200), limit: Math.max(1, Math.min(200, Math.floor(limit))) }));
+export async function fsFind(text: string, limit = 100, project = scope): Promise<{ paths: string[]; truncated: boolean }> {
+  const o = await request('GET', '/api/fs/find' + q({ q: text.slice(0, 200), limit: Math.max(1, Math.min(200, Math.floor(limit))), ...inScope(project) }));
   const paths = arr(o.paths, 200)
     .map((p) => {
       if (typeof p !== 'string') return null;
@@ -883,8 +944,9 @@ export interface Memory {
   /** larger than the editor gets: read-only here */
   truncated: boolean;
 }
-export async function getMemory(scope: MemoryScope): Promise<Memory> {
-  const o = await request('GET', '/api/memory' + q({ scope }));
+export async function getMemory(which: MemoryScope): Promise<Memory> {
+  const scope = which;
+  const o = await request('GET', '/api/memory' + q({ scope, ...(which === 'project' ? inScope() : {}) }));
   return {
     scope,
     path: label(o.path, 300) || (scope === 'project' ? '/workspace/CLAUDE.md' : '~/.claude/CLAUDE.md'),
@@ -896,11 +958,11 @@ export async function getMemory(scope: MemoryScope): Promise<Memory> {
   };
 }
 /** Saves a CLAUDE.md; `ifMtimeMs` (the one you read): refused when it changed meanwhile ({conflict}). */
-export async function putMemory(scope: MemoryScope, text: string, ifMtimeMs: number | null): Promise<WriteResult> {
+export async function putMemory(which: MemoryScope, text: string, ifMtimeMs: number | null): Promise<WriteResult> {
   const body: Obj = { text };
   if (ifMtimeMs !== null) body.ifMtimeMs = ifMtimeMs;
   try {
-    const o = await request('PUT', '/api/memory' + q({ scope }), body);
+    const o = await request('PUT', '/api/memory' + q({ scope: which, ...(which === 'project' ? inScope() : {}) }), body);
     return { ok: true, mtimeMs: nonneg(o.mtimeMs) };
   } catch (e) {
     if (e instanceof ApiError && (e.status === 409 || e.status === 412)) return { ok: false, conflict: true, mtimeMs: nonneg(e.body?.mtimeMs) };
@@ -948,9 +1010,10 @@ export async function fsMkdir(path: string): Promise<void> {
 export async function fsRename(from: string, to: string): Promise<void> {
   await request('POST', '/api/fs/rename', { from, to });
 }
-/** Into the workspace trash; `ifMtimeMs`: only while the file is unchanged (a 409 ApiError otherwise). */
+/** Into the trash (the project's, for a file in it); `ifMtimeMs`: only while the file is unchanged (a 409 ApiError
+ *  otherwise). */
 export async function fsDelete(path: string, ifMtimeMs?: number | null): Promise<void> {
-  await request('DELETE', '/api/fs' + q({ path, ifMtimeMs: ifMtimeMs ?? undefined }));
+  await request('DELETE', '/api/fs' + q({ path, ifMtimeMs: ifMtimeMs ?? undefined, ...inScope() }));
 }
 
 // ---------------------------------------------------------------- review (git) and search in files
@@ -1011,7 +1074,7 @@ export function normGitReview(o: Obj): GitReview {
 }
 /** What changed in the workspace since its last commit (git in the sandbox, read-only). */
 export async function getGitDiff(): Promise<GitReview> {
-  return normGitReview(await request('GET', '/api/git/diff'));
+  return normGitReview(await request('GET', '/api/git/diff' + q(inScope())));
 }
 
 // ---------------------------------------------------------------- the Git panel
@@ -1300,8 +1363,9 @@ export async function testGitHost(id: string, url: string): Promise<{ ok: boolea
   return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), said: o.ok !== true ? wordsOf(o) : null, host: normGitHost(o.host),
     learned: arr(o.learned, 8).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })) };
 }
-export async function getGitRepos(): Promise<string[]> {
-  const o = await request('GET', '/api/git/repos');
+/** The repositories in a project's folder (and two levels down), as folders of the workspace. */
+export async function getGitRepos(project = scope): Promise<string[]> {
+  const o = await request('GET', '/api/git/repos' + q(inScope(project)));
   const out: string[] = [];
   for (const v of arr(o.repos, 50)) {
     const p = repoPath(obj(v)?.path);
@@ -1415,7 +1479,8 @@ export function normGrep(o: Obj): GrepResult {
 /** Search the workspace's files (the backend: ripgrep in the sandbox, or a literal walk). */
 export async function grep(p: GrepQuery, signal?: AbortSignal): Promise<GrepResult> {
   if (signal?.aborted) throw new ApiError(0, 'cancelled');
-  return normGrep(await request('GET', '/api/fs/grep' + q({ q: p.q.slice(0, 1000), regex: p.regex ? 1 : undefined, case: p.caseSensitive ? 1 : undefined, include: p.include || undefined, exclude: p.exclude || undefined })));
+  return normGrep(await request('GET', '/api/fs/grep' + q({ q: p.q.slice(0, 1000), regex: p.regex ? 1 : undefined, case: p.caseSensitive ? 1 : undefined, include: p.include || undefined,
+    exclude: p.exclude || undefined, ...inScope() })));
 }
 export function downloadUrl(path: string): string {
   return '/api/fs/file' + q({ path, download: 1 });
@@ -1674,7 +1739,7 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
 
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */
 export async function getLaunch(): Promise<LaunchList> {
-  const o = await request('GET', '/api/launch');
+  const o = await request('GET', '/api/launch' + q(inScope()));
   return { exists: o.exists === true, error: typeof o.error === 'string' ? label(o.error, 200) : null,
     entries: arr(o.configurations, 20).map(normLaunchEntry).filter((e): e is LaunchEntry => e !== null) };
 }
@@ -1682,7 +1747,7 @@ export async function getLaunch(): Promise<LaunchList> {
 /** Start a launch.json entry by name and the digest of what was shown (in a new window of the terminal's tmux
  *  session; the command is the file's — a 409 when the file changed since). */
 export async function startLaunch(name: string, digest: string): Promise<{ window: string; port: number | null }> {
-  const o = await request('POST', '/api/launch/start', { name, digest });
+  const o = await request('POST', '/api/launch/start', { name, digest, ...inScope() });
   return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
 }
 
@@ -1720,18 +1785,19 @@ export function normRunResult(v: unknown): RunResult | null {
   return { id: o.id, source, name: label(o.name, 100), command: safe(o.command, 4000), window: typeof o.window === 'string' && /^@[0-9]{1,9}$/.test(o.window) ? o.window : null,
     startedAt: n(o.startedAt), state: o.state as RunResult['state'], exitCode: o.state === 'done' ? code : null,
     signal: typeof o.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(o.signal) ? o.signal : null, error: typeof o.error === 'string' && o.error ? label(o.error, 300) : null,
-    endedAt: n(o.endedAt), tail: typeof o.tail === 'string' ? o.tail.slice(-70_000) : '', cut: o.cut === true };
+    endedAt: n(o.endedAt), tail: typeof o.tail === 'string' ? o.tail.slice(-70_000) : '', cut: o.cut === true,
+    root: typeof o.root === 'string' && /^[^\x00-\x1f\x7f]{0,160}$/.test(o.root) && !o.root.split('/').some((x) => x === '..' || x === '.') && !o.root.startsWith('/') ? o.root : '' };
 }
 /** The workspace's tasks (package.json's scripts, the Makefile's targets, pyproject.toml's entry points). */
 export async function getRunTasks(): Promise<RunList> {
-  const o = await request('GET', '/api/run');
+  const o = await request('GET', '/api/run' + q(inScope()));
   const sources = arr(o.sources, 3).map((x) => obj(x)).filter((x): x is Obj => !!x && !!runSource(x.source))
     .map((x): RunSourceInfo => ({ source: x.source as RunSource, file: label(x.file, 40), exists: x.exists === true, error: typeof x.error === 'string' && x.error ? label(x.error, 300) : null, more: x.more === true }));
   return { sources, tasks: arr(o.tasks, 300).map(normRunTask).filter((t): t is RunTask => t !== null) };
 }
 /** Run a task by its name and the digest of what was shown (a 409 when it changed since). */
 export async function startRun(t: RunTask): Promise<{ id: string | null; window: string | null }> {
-  const o = await request('POST', '/api/run/start', { source: t.source, name: t.name, digest: t.digest });
+  const o = await request('POST', '/api/run/start', { source: t.source, name: t.name, digest: t.digest, ...inScope() });
   return { id: typeof o.id === 'string' && RUN_ID.test(o.id) ? o.id : null, window: typeof o.window === 'string' && /^@[0-9]{1,9}$/.test(o.window) ? o.window : null };
 }
 /** The last runs (each with the end of its output), or one run with all that was kept of it. */

@@ -37,6 +37,13 @@
 // again); /__mock/git-signin?app=0 is a stack with no GitHub App set up.
 // /__mock/git-said?text= is a hostile sandbox: push, pull, fetch, clone, Test connection, stage and commit fail in its
 // words (as main.mjs answers them: a fixed sentence of ours, its words apart — said); /__mock/git-said ends it.
+// Projects (projects.mjs as the backend has them): the Workspace, and folders of the workspace made projects (New project
+// makes a folder, git init marks it a repository of its own; a clone's folder is one too); each session runs in a folder
+// (cwd) and is shown in the project filed by hand, else the one whose folder holds it. /__mock/projects?seed=1 adds a
+// project "website" with files, a repository and two sessions of its own; GET /__mock/project-log lists what the
+// project endpoints were asked (terminal windows, git init). In --hostile mode the projects list also carries records a
+// backend should never send (a folder outside the workspace, bad ids, markup in a name) and the session list sessions
+// that claim folders outside the workspace and projects that are not there.
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -289,7 +296,13 @@ function gitRemoteMock() {
     remoteBranches: gitRemoteBranches.map((name) => ({ remote: 'origin', name })), remoteHeads: { origin: 'main' } };
 }
 async function gitRemotePanel(p, m, url, req) {
-  if (p === '/api/git/repos' && m === 'GET') return [200, { repos: gitRepo ? [{ path: '' }] : [] }];
+  if (p === '/api/git/repos' && m === 'GET') {
+    // the repositories in a project's folder (the Workspace: itself, and the folders in it that are repositories)
+    const root = projectRoot(url);
+    if (root === null) return [404, { error: 'no such project (it was removed?)' }];
+    const inside = [...projectGit.keys()].filter((r) => !root || r === root || r.startsWith(`${root}/`)).sort();
+    return [200, { repos: [...(!root && gitRepo ? [{ path: '' }] : []), ...inside.map((r) => ({ path: r }))] }];
+  }
   if (p === '/api/git/hosts' && m === 'GET') return [200, { hosts: gitHostsMock.map(hostView), events: gitEventsMock.slice(0, 50), local: true, signIn: signInConfig() }];
   if (p === '/api/git/oauth' && m === 'POST') {
     const b = await jsonBody(req);
@@ -375,7 +388,7 @@ async function gitRemotePanel(p, m, url, req) {
       : action === 'fetch' ? `Fetch origin ← github.com/mock/app via ${via}` : action === 'pull' ? `Pull ${dst} of github.com/mock/app into ${gitCurrent} (a fast-forward only) via ${via}`
         : `${action === 'publish' ? 'Publish' : 'Push'} ${gitCurrent} → github.com/mock/app (${dst}${newBranch ? ', a new branch there' : ''}) via ${via}`;
     const planId = crypto.randomBytes(16).toString('hex');
-    gitPlans.set(planId, { action, dst, target: b.target ?? '' });
+    gitPlans.set(planId, { action, dst, target: b.target ?? '', url: typeof b.url === 'string' ? b.url : null });
     return [200, { planId, action, repo: '', remote: action === 'clone' ? null : 'origin', url: action === 'clone' ? b.url : MOCK_URL, display, scheme: 'https', branch: action === 'clone' ? null : gitCurrent,
       dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.oauth ? { account: h.oauth.account } : h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null,
       auth: h ? h.auth : 'none', summary,
@@ -400,12 +413,54 @@ async function gitRemotePanel(p, m, url, req) {
       return [200, { ok: true, action: pl.action, display: 'github.com/mock/app', branch: gitCurrent, dst: pl.dst, created, upToDate: false, sha: gitCommits[0]?.hash,
         prLink: pl.dst === 'main' ? null : `https://github.com/mock/app/pull/new/${pl.dst}` }];
     }
-    if (pl.action === 'clone') return [200, { ok: true, action: 'clone', display: 'github.com/mock/app', path: pl.target, shallow: false }];
+    if (pl.action === 'clone') {
+      // the clone's folder: a README and a repository of its own, its remote the URL cloned
+      if (pl.target) {
+        fsState.set(`${pl.target}/README.md`, { data: Buffer.from(`# ${pl.target}\n\nCloned from ${pl.url ?? MOCK_URL}.\n`), mtimeMs: Date.now(), bin: false });
+        projectGit.set(pl.target, { remote: pl.url ?? MOCK_URL });
+      }
+      return [200, { ok: true, action: 'clone', display: 'github.com/mock/app', path: pl.target, shallow: false }];
+    }
     return [200, { ok: true, action: pl.action, display: 'github.com/mock/app', updated: false }];
   }
   return null;
 }
+// a project's repository (repo: its folder): a fresh one (git init) or a clone — no commits, its remote's URL settable
+async function projectGitPanel(p, m, url, req) {
+  const body = m === 'POST' ? await jsonBody(req) : {};
+  const repo = url.searchParams.get('repo') ?? body.repo ?? '';
+  if (!repo) return { fallthrough: true, body };
+  if (p === '/api/git/repos') return null;
+  const g = projectGit.get(repo);
+  const files = [...fsState.keys()].filter((k) => k.startsWith(`${repo}/`) && !k.includes('/.bedrock-now-trash/')).map((k) => k.slice(repo.length + 1));
+  if (!g) {
+    if (p === '/api/git/status') return [200, { repo: false, reason: 'not a git repository', root: repo, staged: [], unstaged: [], untracked: [], conflicts: [] }];
+    if (p === '/api/git/log') return [200, { repo: false, reason: 'not a git repository', commits: [] }];
+    if (p === '/api/git/remote' && m === 'GET') return [200, { repo: false, reason: 'not a git repository' }];
+    return [400, { error: 'not a git repository' }];
+  }
+  if (p === '/api/git/status') {
+    return [200, { repo: true, reason: null, root: repo, branch: 'main', detached: false, head: null, upstream: null, ahead: null, behind: null, state: null,
+      identity: MOCK_ID, staged: [], unstaged: [], untracked: files.slice(0, 200).map((f) => ({ path: f, add: 1, mtimeMs: fsState.get(`${repo}/${f}`)?.mtimeMs ?? 0, size: 1, type: 'file' })), conflicts: [], truncated: false }];
+  }
+  if (p === '/api/git/log') return [200, { repo: true, commits: [] }];
+  if (p === '/api/git/remote' && m === 'GET') {
+    const ref = g.remote ? { url: g.remote, ok: true, display: g.remote.replace(/^https:\/\//, '').replace(/\.git$/, ''), scheme: 'https', host: null } : null;
+    return [200, { repo: true, root: repo, branch: 'main', detached: false, head: null, state: null, rewrites: 0,
+      remotes: g.remote ? [{ name: 'origin', urls: [g.remote], pushUrls: [], multiple: false, fetch: ref, push: ref }] : [],
+      branches: [{ name: 'main', head: null, upstream: null, ahead: null, behind: null, gone: false }], remoteBranches: [], remoteHeads: {} }];
+  }
+  if (p === '/api/git/remote' && m === 'POST') {
+    if (typeof body.url !== 'string' || !/^(https:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@)/.test(body.url)) return [400, { error: 'not a remote URL (https://…, ssh://… or user@host:path)' }];
+    const added = !g.remote;
+    g.remote = body.url;
+    return [200, { ok: true, added }];
+  }
+  return [400, { error: 'not in this mock: a project repository has no commits yet' }];
+}
 async function gitPanel(p, m, url, req) {
+  const proj = await projectGitPanel(p, m, url, req);
+  if (proj && !proj.fallthrough) return proj;
   const remote = await gitRemotePanel(p, m, url, req);
   if (remote) return remote;
   if (!gitRepo) {
@@ -641,7 +696,66 @@ function mcpServers(s) {
 // ------------------------------------------------------------------ sessions
 
 const sessions = new Map(); // id -> Session (open)
-const saved = new Map(); // id -> {id, title, firstPrompt, branch, modified, transcript}
+const saved = new Map(); // id -> {id, title, firstPrompt, branch, modified, transcript, cwd}
+// projects: [{id, name, root, created}]; the sessions filed by hand (id -> project id); the project folders that are
+// repositories of their own (root -> {remote: url | null}); what the project endpoints were asked
+let projectsMock = [];
+const filedMock = new Map();
+const projectGit = new Map();
+const projectLog = [];
+const WS = '/workspace';
+const absOf = (root) => (root ? `${WS}/${root}` : WS);
+const PROJ_ODD = /[\x00-\x1f\x7f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+const rootOk = (v) => typeof v === 'string' && !!v && Buffer.byteLength(v) <= 160 && !PROJ_ODD.test(v) && !v.includes('\\')
+  && v.split('/').length <= 4 && v.split('/').every((x) => x.length >= 1 && x.length <= 100 && !x.startsWith('.') && x.trim() === x);
+const folderOf = (cwd) => {
+  let best = null;
+  for (const p of projectsMock) if ((cwd === absOf(p.root) || cwd.startsWith(`${absOf(p.root)}/`)) && (!best || p.root.length > best.root.length)) best = p;
+  return best?.id ?? 'ws';
+};
+const placeOf = (id, cwd) => (filedMock.has(id) && (filedMock.get(id) === 'ws' || projectsMock.some((p) => p.id === filedMock.get(id))) ? filedMock.get(id) : folderOf(cwd));
+const projectRoot = (url, body) => {
+  const id = (url.searchParams.get('project') ?? body?.project) || 'ws';
+  if (id === 'ws') return '';
+  const p = projectsMock.find((x) => x.id === id);
+  return p ? p.root : null;
+};
+const isDir = (d) => d === '' || dirs().has(d) || extraDirs.has(d);
+function projectView(p) {
+  return { id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created, workspace: false, folder: isDir(p.root) ? 'dir' : 'missing', git: projectGit.has(p.root) };
+}
+function projectsView() {
+  const list = [{ id: 'ws', name: 'Workspace', root: '', path: WS, created: null, workspace: true, folder: 'dir', git: gitRepo }, ...[...projectsMock].sort((a, b) => a.name.localeCompare(b.name)).map(projectView)];
+  if (HOSTILE_MODE) {
+    // records a backend never sends: the page drops them (a folder outside the workspace, bad ids, the same folder twice)
+    list.push({ id: 'p_0bad0bad', name: 'Outside', root: '../../etc', path: '/etc', folder: 'dir', git: false },
+      { id: 'p_0bad0bae', name: 'Absolute', root: '/etc', path: '/etc' }, { id: '../../etc', name: 'bad id', root: 'x' }, { id: 'p_ZZZZZZZZ', name: 'bad id 2', root: 'y' },
+      { id: 'p_0bad0baf', name: HOSTILE.img, root: 'hostile', path: '/workspace/hostile', folder: 'dir', git: 'yes' },
+      { id: 'p_0bad0bb0', name: `x${HOSTILE.bidi}`, root: 'hostile2', path: '/elsewhere', folder: 'gone' });
+  }
+  return { projects: list, max: 64 };
+}
+function seedProject() {
+  if (projectsMock.some((p) => p.root === 'website')) return projectsMock.find((p) => p.root === 'website');
+  const now = Date.now() - 3_600_000;
+  const add = (f, t) => fsState.set(`website/${f}`, { data: Buffer.from(t), mtimeMs: now + fsState.size, bin: false });
+  add('index.html', '<!doctype html>\n<title>Acme</title>\n<h1>Acme status</h1>\n');
+  add('package.json', JSON.stringify({ name: 'acme-website', scripts: { dev: 'vite', build: 'vite build' } }, null, 2) + '\n');
+  add('README.md', '# Acme website\n\nThe status page.\n');
+  add('src/main.ts', 'export const greeting = "hello from the website";\n');
+  const p = { id: `p_${crypto.randomBytes(4).toString('hex')}`, name: 'website', root: 'website', created: Date.now() - 86400e3 };
+  projectsMock.push(p);
+  projectGit.set('website', { remote: 'https://github.com/mock/website.git' });
+  const mk = (title, ago) => {
+    const id = crypto.randomUUID();
+    saved.set(id, { id, title, firstPrompt: title, branch: 'main', modified: Date.now() - ago, cwd: `${WS}/website`,
+      transcript: [{ type: 'user', text: title, uuid: crypto.randomUUID() }, { type: 'text', text: 'Done: the website builds again.' },
+        { type: 'result', subtype: 'success', turns: 1, duration: 3000, usage: { input_tokens: 600, output_tokens: 90 } }] });
+  };
+  mk('Fix the status page build', 3 * 3600e3);
+  mk('Add a dark mode to the website', 2 * 86400e3);
+  return p;
+}
 const checkpoints = new Map(); // id -> {prompts, changes}: a session's file checkpoints, across its processes
 const spendRows = new Map(); // id -> rows
 const inTerminal = new Set(); // sessions handed to the terminal (a resume here is refused until /__mock/terminal-exit)
@@ -717,6 +831,14 @@ function seedSaved() {
     mk(HOSTILE.img + HOSTILE.bidi, HOSTILE.script, 3600e3, [{ type: 'user', text: HOSTILE.svg, uuid: crypto.randomUUID() }, { type: 'text', text: hostileMarkdown() }]);
     // a bogus id that must never be shown or requested
     saved.set('../../etc', { id: '../../etc', title: 'bogus id', firstPrompt: '', branch: '', modified: Date.now(), transcript: [] });
+    // sessions that claim folders outside the workspace, or a project that is not there: never shown under one
+    for (const [title, cwd] of [['claims /etc', '/etc'], ['claims ..', '/workspace/../etc'], ['claims a home', '/home/claude/.ssh'], ['claims relative', 'workspace/x']]) {
+      const id = crypto.randomUUID();
+      saved.set(id, { id, title, firstPrompt: title, branch: '', modified: Date.now() - 60e3, cwd, transcript: [{ type: 'user', text: title, uuid: crypto.randomUUID() }] });
+    }
+    const ghost = crypto.randomUUID();
+    saved.set(ghost, { id: ghost, title: 'claims a project that is not there', firstPrompt: '', branch: '', modified: Date.now() - 90e3, cwd: '/workspace/ghost', transcript: [] });
+    filedMock.set(ghost, 'p_00000000');
   }
 }
 function RETRY_BEFORE() {
@@ -1010,7 +1132,7 @@ class Session {
       if (HOSTILE_MODE) rows.push({ startTime: new Date(started + 700).toISOString(), model: HOSTILE.img, spend: -1, tokens: 'NaN' });
       spendRows.set(this.id, rows);
     }, FAST ? 10 : 900);
-    saved.set(this.id, { id: this.id, title: this.title, firstPrompt: saved.get(this.id)?.firstPrompt || text, branch: 'main', modified: Date.now(), transcript: this.transcript });
+    saved.set(this.id, { id: this.id, title: this.title, firstPrompt: saved.get(this.id)?.firstPrompt || text, branch: 'main', modified: Date.now(), transcript: this.transcript, cwd: this.cwd ?? WS });
     this.lastActive = Date.now();
     this.setState('idle');
     const next = this.queue.shift();
@@ -1516,17 +1638,21 @@ const body = (req, max = 30 * 1024 * 1024) =>
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+// (read once per request, then kept: more than one handler may look at it)
 const jsonBody = async (req) => {
+  if (req.bnBody !== undefined) return req.bnBody;
   try {
-    return JSON.parse((await body(req, 5 * 1024 * 1024)).toString() || '{}');
+    req.bnBody = JSON.parse((await body(req, 5 * 1024 * 1024)).toString() || '{}');
   } catch {
-    return {};
+    req.bnBody = {};
   }
+  return req.bnBody;
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function sessionInfo(x) {
-  return { id: x.id, title: x.title, first_prompt: x.firstPrompt, branch: x.branch, modified: x.modified };
+  const cwd = x.cwd ?? WS;
+  return { id: x.id, title: x.title, first_prompt: x.firstPrompt, branch: x.branch, modified: x.modified, cwd, project: placeOf(x.id, cwd) };
 }
 
 // the backend's download: the bytes (≤ 25 MiB) as an attachment, never anything a browser would render
@@ -1556,7 +1682,7 @@ async function api(req, res, url) {
       versions: { cli: '2.1.296', sdk: '0.3.296' },
       limits: { sessions: 4, upload: 25 * 1024 * 1024, image: 5 * 1024 * 1024, maxImages: LIMITS.maxImages },
       sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null,
-        lastActive: s.lastActive, budget: s.budget, terminal: false })),
+        lastActive: s.lastActive, budget: s.budget, terminal: false, cwd: s.cwd, project: placeOf(s.id, s.cwd) })),
       pending: totalPending(),
       bypass: { allowed: allowBypass },
       auto: { allowed: allowAuto },
@@ -1574,6 +1700,16 @@ async function api(req, res, url) {
     await sleep(250);   // (as a real start takes a moment: a prompt typed meanwhile must still reach the new session)
     let id = crypto.randomUUID();
     let title = '';
+    // the folder it runs in: a resumed or forked session's own, a new one's its project's
+    let cwd = WS;
+    if (b.resume && UUID.test(b.resume)) cwd = sessions.get(b.resume)?.cwd ?? saved.get(b.resume)?.cwd ?? WS;
+    else if (b.project !== undefined && b.project !== 'ws') {
+      const pr = projectsMock.find((x) => x.id === b.project);
+      if (!pr) return json(res, 404, { error: 'no such project (it was removed?)' });
+      if (!isDir(pr.root)) return json(res, 409, { error: `the project's folder ${absOf(pr.root)} is not there (any more)` });
+      cwd = absOf(pr.root);
+    }
+    if (!/^\/workspace(\/|$)/.test(cwd) || cwd.includes('..')) cwd = WS;
     if (b.resume && UUID.test(b.resume) && !b.fork) {
       // the backend never opens a second process on one transcript: an open session is simply returned
       if (sessions.has(b.resume)) return json(res, 200, { id: b.resume, existing: true });
@@ -1585,6 +1721,7 @@ async function api(req, res, url) {
     if (typeof b.model === 'string' && ALIAS.test(b.model)) return json(res, 400, { error: 'name the model in full (claude-…), not by an alias' });
     if (b.mode === 'bypassPermissions') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits, auto while allowed): a session never starts in bypassPermissions' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
+    s.cwd = cwd;
     if (b.budget) {
       const bb = mockBudget(b.budget);
       if (bb === false) return json(res, 400, { error: 'budget: 0.01 to 999 USD' });
@@ -1674,7 +1811,96 @@ async function api(req, res, url) {
   }
   if (p === '/api/fs/find' && m === 'GET') {
     await sleep(80);
-    return json(res, 200, find(String(url.searchParams.get('q') || '').slice(0, 200), Math.min(200, Number(url.searchParams.get('limit')) || 50)));
+    const root = projectRoot(url);
+    if (root === null) return json(res, 404, { error: 'no such project (it was removed?)' });
+    const r = find(String(url.searchParams.get('q') || '').slice(0, 200), 5000);
+    // (a project's: only paths in its folder — as paths of the workspace, as the backend answers them)
+    const paths = r.paths.filter((x) => !root || x.startsWith(`${root}/`)).filter((x) => x !== `${root}/`);
+    const lim = Math.min(200, Number(url.searchParams.get('limit')) || 50);
+    return json(res, 200, { paths: paths.slice(0, lim), truncated: paths.length > lim });
+  }
+  // projects (the backend's projects.mjs, in memory)
+  if (p === '/api/projects' && m === 'GET') return json(res, 200, projectsView());
+  if (p === '/api/projects' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (b.kind !== 'new' && b.kind !== 'folder') return json(res, 400, { error: 'kind: new or folder' });
+    const folder = typeof b.folder === 'string' ? b.folder.trim().replace(/^\/workspace\//, '').replace(/\/+$/, '') : '';
+    if (!rootOk(folder)) return json(res, 400, { error: 'a folder of the workspace: 1 to 4 levels of names (none starting with "."), at most 160 bytes' });
+    const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim() : folder.split('/').pop();
+    if (name.length > 80 || PROJ_ODD.test(name)) return json(res, 400, { error: 'a name of 1 to 80 characters, one line' });
+    const had = projectsMock.find((x) => x.root === folder);
+    if (had) return json(res, 409, { error: `that folder is the project ${had.name} already` });
+    if (projectsMock.length >= 64) return json(res, 409, { error: 'at most 64 projects: remove one first' });
+    let git = false;
+    if (b.kind === 'new') {
+      if (isDir(folder) || fsState.has(folder)) return json(res, 400, { error: 'something of that name is there already' });
+      const parent = folder.includes('/') ? folder.slice(0, folder.lastIndexOf('/')) : '';
+      if (!isDir(parent)) return json(res, 400, { error: 'its parent folder is not there (or a link is on its way)' });
+      extraDirs.add(folder);
+      if (b.git === true) { projectGit.set(folder, { remote: null }); git = true; }
+    } else {
+      if (!isDir(folder)) return json(res, 404, { error: 'no such folder in the workspace' });
+      git = projectGit.has(folder);
+    }
+    await sleep(150);
+    const pr = { id: `p_${crypto.randomBytes(4).toString('hex')}`, name, root: folder, created: Date.now() };
+    projectsMock.push(pr);
+    projectLog.push(`add ${b.kind} ${folder}${git ? ' (git)' : ''}`);
+    return json(res, 200, { project: projectView(pr), git, gitError: null });
+  }
+  let pm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init))?$/.exec(p);
+  if (pm) {
+    const id = pm[1], what = pm[2] || '';
+    const pr = id === 'ws' ? { id: 'ws', name: 'Workspace', root: '' } : projectsMock.find((x) => x.id === id);
+    if (!pr) return json(res, 404, { error: 'no such project (it was removed?)' });
+    if (!what && m === 'POST') {
+      const b = await jsonBody(req);
+      if (id === 'ws') return json(res, 400, { error: 'the Workspace keeps its name' });
+      const n = typeof b.name === 'string' ? b.name.trim() : '';
+      if (!n || n.length > 80 || PROJ_ODD.test(n)) return json(res, 400, { error: 'a name of 1 to 80 characters, one line' });
+      pr.name = n;
+      return json(res, 200, { project: projectView(pr) });
+    }
+    if (!what && m === 'DELETE') {
+      if (id === 'ws') return json(res, 400, { error: 'the Workspace is always there' });
+      let trash = null;
+      if (url.searchParams.get('trash') === '1') {
+        if (url.searchParams.get('confirm') !== pr.root) return json(res, 400, { error: `to move its folder to the trash too, name it again: ${pr.root}` });
+        if ([...sessions.values()].some((x) => x.cwd === absOf(pr.root) || x.cwd?.startsWith(`${absOf(pr.root)}/`))) return json(res, 409, { error: 'a session of this project is open: close it first (its folder would vanish under it)' });
+        const stamp = Date.now().toString(36);
+        for (const k of [...fsState.keys()]) if (k.startsWith(`${pr.root}/`)) { fsState.set(`.bedrock-now-trash/${stamp}/${k}`, fsState.get(k)); fsState.delete(k); }
+        extraDirs.delete(pr.root);
+        projectGit.delete(pr.root);
+        trash = `.bedrock-now-trash/${stamp}/${pr.root.split('/').pop()}`;
+      }
+      projectsMock = projectsMock.filter((x) => x !== pr);
+      for (const [k, v] of [...filedMock]) if (v === id) filedMock.delete(k);
+      projectLog.push(`remove ${pr.root}${trash ? ' (trash)' : ''}`);
+      return json(res, 200, { ok: true, removed: { id, name: pr.name, root: pr.root }, trash });
+    }
+    if (what === 'sessions' && m === 'POST') {
+      const b = await jsonBody(req);
+      if (!Array.isArray(b.ids) || !b.ids.length || b.ids.length > 100 || !b.ids.every((x) => UUID.test(x))) return json(res, 400, { error: 'ids: 1 to 100 session ids' });
+      for (const x of b.ids) filedMock.set(x, id);
+      return json(res, 200, { ok: true, filed: b.ids.length });
+    }
+    if (what === 'terminal' && m === 'POST') {
+      projectLog.push(`terminal ${absOf(pr.root)}`);
+      return json(res, 200, { ok: true, window: pr.root ? pr.root.split('/').pop() : 'workspace' });
+    }
+    if (what === 'git-init' && m === 'POST') {
+      if (!pr.root) return json(res, 409, { error: 'it is a git repository already' });
+      if (projectGit.has(pr.root)) return json(res, 409, { error: 'it is a git repository already' });
+      projectGit.set(pr.root, { remote: null });
+      projectLog.push(`git init ${pr.root}`);
+      return json(res, 200, { ok: true });
+    }
+  }
+  if (p === '/api/git/diff' && m === 'GET' && projectRoot(url) !== '') {
+    const root = projectRoot(url);
+    if (root === null) return json(res, 404, { error: 'no such project (it was removed?)' });
+    if (!projectGit.has(root)) return json(res, 200, { repo: false, reason: 'not a git repository', head: null, files: [], truncated: false, timedOut: false });
+    return json(res, 200, { repo: true, reason: null, head: null, files: [], truncated: false, timedOut: false });
   }
   if (p === '/api/git/diff' && m === 'GET') {
     await sleep(120);
@@ -1736,7 +1962,10 @@ async function api(req, res, url) {
     try { re = new RegExp(regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), cs ? '' : 'i'); } catch (e) { return json(res, 400, { error: `search: ${e.message}` }); }
     const out = [];
     let total = 0;
+    const groot = projectRoot(url);
+    if (groot === null) return json(res, 404, { error: 'no such project (it was removed?)' });
     for (const [path, e] of [...fsState].sort(([x], [y]) => (x < y ? -1 : 1))) {
+      if (groot && !path.startsWith(`${groot}/`)) continue;
       if (/(^|\/)(\.git|node_modules|\.bedrock-now-trash|dist|build)(\/|$)/.test(path) || e.bin || e.data.length > 1 << 20) continue;
       if ((inc.length && !inc.some((g) => fits(g, path))) || exc.some((g) => fits(g, path))) continue;
       const hits = [];
@@ -1762,37 +1991,43 @@ async function api(req, res, url) {
   if (p === '/api/memory') {
     const scope = url.searchParams.get('scope');
     if (scope !== 'project' && scope !== 'user') return json(res, 400, { error: 'scope: project or user' });
-    const path = scope === 'project' ? '/workspace/CLAUDE.md' : '~/.claude/CLAUDE.md';
-    const cur = scope === 'project' ? fsState.get('CLAUDE.md') : userMemory;
+    const root = projectRoot(url);
+    if (root === null) return json(res, 404, { error: 'no such project (it was removed?)' });
+    const file = root ? `${root}/CLAUDE.md` : 'CLAUDE.md';
+    const path = scope === 'project' ? `${WS}/${file}` : '~/.claude/CLAUDE.md';
+    const cur = scope === 'project' ? fsState.get(file) : userMemory;
     if (m === 'GET') return json(res, 200, { scope, path, exists: !!cur, text: cur ? cur.data.toString() : '', size: cur ? cur.data.length : 0, mtimeMs: cur ? cur.mtimeMs : null, truncated: false });
     if (m === 'PUT') {
       const b = await jsonBody(req);
       if (typeof b.text !== 'string') return json(res, 400, { error: 'text missing' });
       if (Buffer.byteLength(b.text) > 1 << 20) return json(res, 413, { error: 'a memory file of at most 1 MiB' });
       if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && cur && cur.mtimeMs !== b.ifMtimeMs) return json(res, 409, { error: 'changed on disk since it was opened', mtimeMs: cur.mtimeMs });
-      if (scope === 'project') writeFile('CLAUDE.md', b.text);
+      if (scope === 'project') writeFile(file, b.text);
       else userMemory = { data: Buffer.from(b.text), mtimeMs: Math.max(Date.now(), (userMemory?.mtimeMs ?? 0) + 1) };
-      const now = scope === 'project' ? fsState.get('CLAUDE.md') : userMemory;
+      const now = scope === 'project' ? fsState.get(file) : userMemory;
       return json(res, 200, { path, size: now.data.length, mtimeMs: now.mtimeMs });
     }
   }
   if (p === '/api/fs' && m === 'DELETE') {
     const d = clean(url.searchParams.get('path') || '');
     if (!d) return json(res, 400, { error: 'bad path' });
+    const droot = projectRoot(url);
+    if (droot === null) return json(res, 404, { error: 'no such project (it was removed?)' });
     const pre = url.searchParams.get('ifMtimeMs');
     if (pre !== null && fsState.get(d) && fsState.get(d).mtimeMs !== Number(pre)) return json(res, 409, { error: 'changed on disk since it was opened' });
-    // moved into the workspace's trash (which git ignores), as the backend does
+    // moved into the trash (which git ignores) — a project's own for a file in it — as the backend does
+    const home = droot && d.startsWith(`${droot}/`) ? `${droot}/` : '';
     let n = 0;
     const stamp = Date.now().toString(36);
     for (const k of [...fsState.keys()]) {
       if (k !== d && !k.startsWith(d + '/')) continue;
-      fsState.set(`.bedrock-now-trash/${stamp}/${k}`, fsState.get(k));
+      fsState.set(`${home}.bedrock-now-trash/${stamp}/${home ? k.slice(home.length) : k}`, fsState.get(k));
       fsState.delete(k);
       n++;
     }
-    if (n && !fsState.has('.bedrock-now-trash/.gitignore')) fsState.set('.bedrock-now-trash/.gitignore', { data: Buffer.from('*\n'), mtimeMs: Date.now(), bin: false });
-    extraDirs.delete(d);
-    return n ? json(res, 200, { trash: `.bedrock-now-trash/${stamp}/${d}` }) : json(res, 404, { error: 'not found' });
+    if (n && !fsState.has(`${home}.bedrock-now-trash/.gitignore`)) fsState.set(`${home}.bedrock-now-trash/.gitignore`, { data: Buffer.from('*\n'), mtimeMs: Date.now(), bin: false });
+    const wasDir = extraDirs.delete(d);
+    return n || wasDir ? json(res, 200, { trash: `.bedrock-now-trash/${stamp}/${d.split('/').pop()}` }) : json(res, 404, { error: 'not found' });
   }
   if (p === '/api/fs/file' && m === 'GET') {
     const f = clean(url.searchParams.get('path') || '');
@@ -2050,6 +2285,16 @@ const runShown = [];
 const runRowOut = (r, max) => ({ ...r, ...(typeof r.tail === 'string' ? { tail: r.tail.length > max ? r.tail.slice(-max) : r.tail, cut: r.cut || r.tail.length > max } : {}) });
 async function runApi(req, res, url) {
   const p = url.pathname, m = req.method;
+  // a project's tasks: its own package.json's scripts (the Workspace's: the fixtures below)
+  const rroot = projectRoot(url, m === 'POST' ? await jsonBody(req) : {});
+  if (rroot === null && (p === '/api/run' || p === '/api/run/start')) return json(res, 404, { error: 'no such project (it was removed?)' });
+  if (rroot && p === '/api/run' && m === 'GET') {
+    let scripts = {};
+    try { scripts = JSON.parse(fsState.get(`${rroot}/package.json`)?.data.toString() ?? '{}').scripts ?? {}; } catch { /* none */ }
+    const tasks = Object.entries(scripts).filter(([, v]) => typeof v === 'string').map(([k, v]) => npmTask(k, v)).map((t) => ({ ...t, digest: runDigest(t) }));
+    return json(res, 200, { sources: [{ source: 'npm', file: 'package.json', exists: fsState.has(`${rroot}/package.json`), error: null, more: false },
+      { source: 'make', file: 'Makefile', exists: false, error: null, more: false }, { source: 'python', file: 'pyproject.toml', exists: false, error: null, more: false }], tasks });
+  }
   if (p === '/api/run' && m === 'GET') {
     return json(res, 200, { sources: [{ source: 'npm', file: 'package.json', exists: true, error: null, more: false },
       { source: 'make', file: 'Makefile', exists: true, error: null, more: false }, { source: 'python', file: 'pyproject.toml', exists: true, error: null, more: false }],
@@ -2057,11 +2302,17 @@ async function runApi(req, res, url) {
   }
   if (p === '/api/run/start' && m === 'POST') {
     const b = await jsonBody(req);
-    const t = RUN_TASKS.find((x) => x.source === b.source && x.name === b.name && !x.error);
+    let own = RUN_TASKS;
+    if (rroot) {
+      let scripts = {};
+      try { scripts = JSON.parse(fsState.get(`${rroot}/package.json`)?.data.toString() ?? '{}').scripts ?? {}; } catch { /* none */ }
+      own = Object.entries(scripts).filter(([, v]) => typeof v === 'string').map(([k, v]) => npmTask(k, v));
+    }
+    const t = own.find((x) => x.source === b.source && x.name === b.name && !x.error);
     if (!t) return json(res, 400, { error: 'no such task in the workspace (any more)' });
     if (b.digest !== runDigest(t)) return json(res, 409, { error: 'the task changed since it was shown: review it again' });
     const id = crypto.randomBytes(8).toString('hex');
-    const r = { id, source: t.source, name: t.name, command: t.command, window: `@${10 + runs.length}`, startedAt: Date.now(), state: 'running' };
+    const r = { id, source: t.source, name: t.name, command: t.command, window: `@${10 + runs.length}`, startedAt: Date.now(), state: 'running', root: rroot || '' };
     runs.unshift(r);
     const [code, out] = RUN_OUT[`${t.source}:${t.name}`] ?? [0, HOSTILE_MODE ? `${HOSTILE.script}\n${HOSTILE.controls}\n${HOSTILE.bidi}\n${'y'.repeat(70_000)}\nlast line ${HOSTILE.img}\n` : 'ok\n'];
     setTimeout(() => Object.assign(r, { state: 'done', exitCode: code, signal: null, error: null, endedAt: Date.now(), bytes: out.length,
@@ -2210,6 +2461,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/__mock/prompts' && req.method === 'GET') return json(res, 200, { prompts: promptLog });
     if (url.pathname === '/__mock/answers' && req.method === 'GET') return json(res, 200, { answers: answerLog });
     if (url.pathname === '/__mock/run-shown' && req.method === 'GET') return json(res, 200, { shown: runShown });
+    if (url.pathname === '/__mock/project-log' && req.method === 'GET') return json(res, 200, { log: projectLog, filed: Object.fromEntries(filedMock) });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {
         for (const ws of wss.clients) ws.terminate();
@@ -2378,7 +2630,15 @@ const server = http.createServer(async (req, res) => {
         permUser.permissions.allow.push('Bash(ls:*)');
         return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/__mock/projects') {
+        const pr = url.searchParams.get('seed') === '1' ? seedProject() : null;
+        return json(res, 200, { ok: true, project: pr ? projectView(pr) : null });
+      }
       if (url.pathname === '/__mock/reset') {
+        projectsMock = [];
+        filedMock.clear();
+        projectGit.clear();
+        projectLog.length = 0;
         inTerminal.clear();
         terminalLog.length = 0;
         promptLog.length = 0;

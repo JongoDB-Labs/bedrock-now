@@ -1,4 +1,5 @@
-// The explorer: /workspace as a lazily loaded tree (a folder is listed when first opened), rendered virtually (only
+// The explorer: the project's folder (the Workspace: /workspace) as a lazily loaded tree (a folder is listed when first
+// opened; paths stay the workspace's), rendered virtually (only
 // the rows in view exist in the DOM, so a 5,000-entry folder stays fast). Files Claude changed in this session are
 // marked A/M. Drop files on a folder to upload them there. Names come from the sandbox: shown as text.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -17,6 +18,7 @@ import {
   toggleDir,
   uploadFiles,
   activeView,
+  currentProject,
 } from '../app';
 import { downloadUrl } from '../api';
 import { changedFiles } from '../session';
@@ -50,6 +52,8 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
   const expanded = useSel(store, (s) => s.fs.expanded);
   const selected = useSel(store, (s) => s.fs.selected);
   const view = useSel(store, (s) => activeView(s));
+  const project = useSel(store, (s) => currentProject(s));
+  const root = project.root;
   const coarse = useMedia('(pointer: coarse)');
   const rowH = coarse ? 36 : 24;
   const [edit, setEdit] = useState<Edit>(null);
@@ -89,9 +93,13 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
       }
       if (d.truncated) out.push({ path: `${dir}\u0000more`, name: '', depth, entry: null, note: 'more' });
     };
-    walk('', 0);
+    walk(root, 0);
     return out;
-  }, [dirs, expanded, edit]);
+  }, [dirs, expanded, edit, root]);
+  // (the project's folder listed when it is shown first)
+  useEffect(() => {
+    if (!store.get().fs.dirs[root]) void loadDir(root);
+  }, [root]);
 
   useEffect(() => {
     const el = scroller.current;
@@ -105,7 +113,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
   const last = Math.min(rows.length, Math.ceil((win.top + win.height) / rowH) + 10);
 
   const targetDir = (): string => {
-    if (selected === null) return '';
+    if (selected === null || (root && selected !== root && !selected.startsWith(`${root}/`))) return root;
     return dirs[selected] || store.get().fs.expanded[selected] ? selected : selected.includes('/') ? selected.slice(0, selected.lastIndexOf('/')) : '';
   };
 
@@ -140,16 +148,16 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
       onDragOver={(e) => {
         if (e.dataTransfer?.types.includes('Files')) {
           e.preventDefault();
-          if (drop === null) setDrop('');
+          if (drop === null) setDrop(root);
         }
       }}
       onDragLeave={(e) => {
         if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDrop(null);
       }}
-      onDrop={(e) => onDropFiles(e, drop ?? '')}
+      onDrop={(e) => onDropFiles(e, drop ?? root)}
     >
       <div class="side-tools tree-tools">
-        <span class="side-title">Workspace</span>
+        <span class="side-title" title={project.path} data-testid="tree-title">{project.name}</span>
         <button type="button" class="icon-btn tiny" title="New file" aria-label="New file" onClick={() => startNew('newFile', targetDir())}>
           <Icon name="newFile" size={15} />
         </button>
@@ -165,7 +173,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
           title="Refresh"
           aria-label="Refresh"
           onClick={() => {
-            for (const p of Object.keys(store.get().fs.dirs)) if (p === '' || store.get().fs.expanded[p]) void loadDir(p);
+            for (const p of Object.keys(store.get().fs.dirs)) if (p === root || (store.get().fs.expanded[p] && (!root || p.startsWith(`${root}/`)))) void loadDir(p);
           }}
         >
           <Icon name="refresh" size={15} />
@@ -186,7 +194,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
           }}
         />
       </div>
-      <div class="tree-scroll" ref={scroller} role="tree" aria-label="Workspace files" onScroll={(e) => setWin({ top: (e.currentTarget as HTMLElement).scrollTop, height: (e.currentTarget as HTMLElement).clientHeight })}>
+      <div class="tree-scroll" ref={scroller} role="tree" aria-label={`${project.name}: files`} onScroll={(e) => setWin({ top: (e.currentTarget as HTMLElement).scrollTop, height: (e.currentTarget as HTMLElement).clientHeight })}>
         <div class="tree-space" ref={(el) => {
             if (el) el.style.height = `${rows.length * rowH}px`;
           }}>
@@ -330,7 +338,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
       {confirmDel !== null && (
         <Dialog title="Delete?" onClose={() => setConfirmDel(null)}>
           <p>
-            Move <code>{confirmDel}</code> to <code>/workspace/.bedrock-now-trash/</code>?
+            Move <code>{confirmDel}</code> to <code>{project.path}/.bedrock-now-trash/</code>?
           </p>
           <div class="dlg-buttons">
             <button type="button" class="btn ghost" onClick={() => setConfirmDel(null)}>

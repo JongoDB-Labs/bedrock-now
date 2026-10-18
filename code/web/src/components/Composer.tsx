@@ -11,7 +11,8 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast, promptWithComments, clearComments, removeComment, openReview, dropLinkDraft } from '../app';
+import { store, interrupt, sendPrompt, setMode, uploadFiles, knownPaths, loadDir, toast, promptWithComments, clearComments, removeComment, openReview, dropLinkDraft, promptBase, promptPathOf } from '../app';
+import { workspacePath } from '../projects';
 import { commentLine } from '../review';
 import { label } from '../text';
 import { fsFind } from '../api';
@@ -174,7 +175,9 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     if (trigger?.kind !== 'mention') return;
     const slash = trigger.query.lastIndexOf('/');
     if (slash < 0) return;
-    const dir = cleanPath(trigger.query.slice(0, slash));
+    // (typed relative to the folder the session runs in, or absolute in /workspace)
+    const typed = workspacePath(trigger.query.slice(0, slash), promptBase());
+    const dir = typed === null ? null : cleanPath(typed);
     if (dir !== null && !store.get().fs.dirs[dir]) void loadDir(dir);
   }, [trigger?.kind, trigger?.query]);
 
@@ -204,7 +207,10 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
     if (special.some((o) => o.special?.kind === 'lines' || /^terminal:/.test(o.key))) return special;
     const all = new Set(knownPaths(store.get()));
     if (trigger.query.length >= 2) for (const p of found.paths) all.add(p);
-    return [...special, ...rankPaths([...all], trigger.query, 40).map((p) => ({ key: p, label: p, hint: '', desc: '' }))];
+    // each path as the session shown resolves it (relative to its folder, else absolute): what is matched and inserted
+    const shown = new Map<string, string>();
+    for (const p of all) shown.set(promptPathOf(p), p);
+    return [...special, ...rankPaths([...shown.keys()], trigger.query, 40).map((m) => ({ key: m, label: m, hint: '', desc: '' }))];
   }, [trigger, commands, dirs, found]);
 
   useEffect(() => setPick(0), [trigger?.kind, trigger?.query]);
@@ -256,7 +262,7 @@ export function Composer({ footer }: { footer?: ComponentChildren }) {
       const sel = s.fs.selected;
       const dir = sel !== null && s.fs.dirs[sel] ? sel : sel ? dirname(sel) : '';
       const paths = await uploadFiles(others, dir);
-      if (paths.length) setText((t) => `${t}${t && !/\s$/.test(t) ? ' ' : ''}${paths.map((p) => `@${p}`).join(' ')} `);
+      if (paths.length) setText((t) => `${t}${t && !/\s$/.test(t) ? ' ' : ''}${paths.map((p) => `@${promptPathOf(p)}`).join(' ')} `);
     }
   };
 

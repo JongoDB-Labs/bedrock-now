@@ -4592,6 +4592,262 @@ def models_picker(browser):
     p.close()
 
 
+# ---------------------------------------------------------------- projects (components/Projects.tsx, src/projects.ts)
+
+def project_ids(base=NORMAL):
+    return {x["root"]: x["id"] for x in mock_get(base, "/api/projects")["projects"]}
+
+
+def palette_run(page, text):
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    page.get_by_test_id("cp-input").fill(text)
+    page.get_by_test_id("cp-input").press("Enter")
+
+
+def proj(page, pid):
+    return page.locator(f"[data-testid=project][data-project='{pid}']")
+
+
+@check("projects: the Projects tab (each project's sessions), the chip, a project's files, Search, @-mentions and new sessions in its folder; Add to project; the palette's entries; New project (empty with git init, a folder of the workspace, a clone); Connect a git repository; a terminal there; rename; Remove from Code (the record; the folder only when named again); ?project= links")
+def projects_desktop(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/projects?seed=1")
+    ids = project_ids()
+    web = ids["website"]
+    p = Page(browser, NORMAL, "projects", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    expect(page.get_by_test_id("project")).to_have_count(2)
+    expect(page.get_by_test_id("side-sessions")).to_contain_text("Projects")
+    ws = proj(page, "ws")
+    expect(ws.get_by_test_id("session-row")).to_have_count(4, timeout=10_000)
+    # the website's own sessions are under it (folded until shown)
+    proj(page, web).get_by_test_id("project-toggle").click()
+    expect(proj(page, web).get_by_test_id("session-row")).to_have_count(2)
+    expect(ws.get_by_test_id("session-row").filter(has_text="Fix the status page build")).to_have_count(0)
+    # show the project: the chip, the tree, Search, the @ picker follow it
+    proj(page, web).get_by_test_id("project-show").click()
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website")
+    p.shot("projects-tab.png")
+    page.get_by_test_id("side-files").click()
+    expect(page.get_by_test_id("tree-title")).to_have_text("website")
+    expect(page.locator(".tree-row[data-path='website/index.html']")).to_have_count(1, timeout=10_000)
+    expect(page.locator(".tree-row[data-path='README.md']")).to_have_count(0)
+    page.keyboard.press("Control+Shift+F")
+    page.get_by_test_id("search-input").fill("greeting")
+    page.get_by_test_id("search-input").press("Enter")
+    expect(page.get_by_test_id("search-file")).to_have_count(1, timeout=10_000)
+    expect(page.get_by_test_id("search-file").first).to_have_attribute("data-path", "website/src/main.ts")
+    page.get_by_test_id("search-input").fill("retry")
+    page.get_by_test_id("search-input").press("Enter")
+    expect(page.get_by_test_id("search-status")).to_contain_text("No", timeout=10_000)
+    box = page.get_by_test_id("prompt")
+    box.click()
+    box.type("look at @main")
+    expect(page.get_by_test_id("palette")).to_contain_text("src/main.ts", timeout=5000)
+    expect(page.get_by_test_id("palette")).not_to_contain_text("website/src/main.ts")
+    box.press("Tab")
+    expect(box).to_have_value("look at @src/main.ts ")
+    box.fill("")
+    # a new session in the project: it runs in its folder
+    page.get_by_test_id("side-sessions").click()
+    proj(page, web).get_by_test_id("project-new-session").click()
+    send(page, "Explain how this project is organised")
+    wait_turns(page, 1)
+    st = mock_get(NORMAL, "/api/state")["sessions"]
+    assert [s["cwd"] for s in st] == ["/workspace/website"], st
+    expect(proj(page, web).get_by_test_id("session-row")).to_have_count(3, timeout=10_000)
+    # the chip: switch to the Workspace (the session shown follows: none of the Workspace's is open)
+    page.get_by_test_id("project-chip").click()
+    p.shot("project-chip.png")
+    page.get_by_test_id("project-chip-item").filter(has_text="Workspace").click()
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("Workspace")
+    expect(page.get_by_test_id("welcome-where")).to_contain_text("/workspace")
+    # Add to project: a session of the website's, filed in the Workspace
+    proj(page, web).get_by_test_id("project-toggle").click()
+    row = proj(page, web).get_by_test_id("session-row").filter(has_text="Add a dark mode")
+    row.hover()
+    row.get_by_test_id("session-menu").click()
+    page.get_by_test_id("session-add-to-project").click()
+    page.get_by_test_id("file-dialog").locator("[data-testid=file-dialog-item][data-project=ws]").click()
+    expect(ws.get_by_test_id("session-row").filter(has_text="Add a dark mode")).to_have_count(1, timeout=10_000)
+    assert "ws" in mock_get(NORMAL, "/__mock/project-log")["filed"].values()
+    # several at once: select, then Add to project
+    page.get_by_test_id("sessions-select").click()
+    ws.get_by_test_id("session-pick").first.check()
+    ws.get_by_test_id("session-pick").nth(1).check()
+    page.get_by_test_id("sessions-add-to-project").click()
+    page.get_by_test_id("file-dialog").locator(f"[data-testid=file-dialog-item][data-project='{web}']").click()
+    expect(page.get_by_test_id("file-dialog")).to_have_count(0)
+    page.get_by_test_id("sessions-select").click()
+    # the palette: New session in …, Switch project …
+    palette_run(page, "switch project: website")
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website")
+    palette_run(page, "new session in workspace")
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("Workspace")
+    # New project: an empty folder with git init
+    page.get_by_test_id("new-project").click()
+    dlg = page.get_by_test_id("new-project-dialog")
+    page.get_by_test_id("new-project-name").fill("../escape")
+    expect(page.get_by_test_id("new-project-create")).to_be_disabled()
+    page.get_by_test_id("new-project-name").fill("my-app")
+    p.shot("new-project.png")
+    page.get_by_test_id("new-project-create").click()
+    expect(dlg).to_have_count(0, timeout=10_000)
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("my-app")
+    assert "add new my-app (git)" in mock_get(NORMAL, "/__mock/project-log")["log"]
+    page.keyboard.press("Control+Shift+G")
+    expect(page.get_by_test_id("git-repo")).to_have_value("my-app", timeout=10_000)
+    expect(page.get_by_test_id("git-branch")).to_have_text("main", timeout=10_000)
+    # a folder of the workspace
+    page.get_by_test_id("side-sessions").click()
+    page.get_by_test_id("new-project").click()
+    page.get_by_test_id("new-project-folder").check()
+    page.get_by_test_id("new-project-folder-pick").select_option("docs")
+    page.get_by_test_id("new-project-create").click()
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("docs", timeout=10_000)
+    docs = project_ids()["docs"]
+    # Connect a git repository: git init, then its remote's URL (the Git panel's dialog)
+    head = proj(page, docs)
+    head.get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-git").click()
+    expect(page.get_by_test_id("git-remote-dialog")).to_be_visible(timeout=10_000)
+    page.get_by_test_id("git-remote-url-input").fill("https://github.com/mock/docs.git")
+    page.get_by_test_id("git-remote-save").click()
+    expect(page.get_by_test_id("git-remote")).to_contain_text("github.com/mock/docs", timeout=10_000)
+    assert "git init docs" in mock_get(NORMAL, "/__mock/project-log")["log"]
+    # a terminal in its folder
+    page.get_by_test_id("side-sessions").click()
+    proj(page, docs).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-terminal").click()
+    expect(page.get_by_test_id("terminal")).to_be_visible(timeout=10_000)
+    assert "terminal /workspace/docs" in mock_get(NORMAL, "/__mock/project-log")["log"]
+    # rename
+    proj(page, docs).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-rename").click()
+    page.get_by_test_id("project-rename-input").fill("Docs")
+    page.get_by_test_id("project-rename-input").press("Enter")
+    expect(proj(page, docs).get_by_test_id("project-show")).to_contain_text("Docs", timeout=10_000)
+    # Remove from Code: the record only — the folder stays
+    proj(page, docs).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-remove").click()
+    page.get_by_test_id("remove-project-go").click()
+    expect(proj(page, docs)).to_have_count(0, timeout=10_000)
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("Workspace")
+    assert "docs" in {e["name"] for e in mock_get(NORMAL, "/api/fs?path=")["entries"]}, "the folder stayed"
+    # … and with its folder: only once it is named again
+    mine = project_ids()["my-app"]
+    proj(page, mine).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-remove").click()
+    page.get_by_test_id("remove-project-trash").check()
+    expect(page.get_by_test_id("remove-project-go")).to_be_disabled()
+    page.get_by_test_id("remove-project-confirm").fill("my-app")
+    page.get_by_test_id("remove-project-go").click()
+    expect(proj(page, mine)).to_have_count(0, timeout=10_000)
+    assert "remove my-app (trash)" in mock_get(NORMAL, "/__mock/project-log")["log"]
+    # a clone becomes a project of its own
+    palette_run(page, "git: clone")
+    page.get_by_test_id("git-clone-url").fill("https://github.com/mock/other.git")
+    page.get_by_test_id("git-clone-next").click()
+    page.get_by_test_id("git-plan-run").click()
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("other", timeout=10_000)
+    expect(page.get_by_test_id("git-repo")).to_have_value("other")
+    p.assert_clean()
+    p.close()
+    # ?project= links: a project of the list is shown; any other id is said, and nothing is made
+    before = project_ids()
+    p = Page(browser, NORMAL, "projects-link", **DESKTOP)
+    page = p.page
+    page.goto(f"{NORMAL}/?project={web}")
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website", timeout=10_000)
+    assert "project=" not in page.url, page.url
+    # (an id that is no project: said; the project this browser showed last stays)
+    page.goto(f"{NORMAL}/?project=p_00000000")
+    expect(page.get_by_test_id("toast").first).to_contain_text("not here", timeout=10_000)
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website")
+    page.goto(f"{NORMAL}/?project=..%2F..%2Fetc")
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website", timeout=10_000)
+    assert "project=" not in page.url, page.url
+    assert project_ids() == before, "a link made a project"
+    p.assert_clean()
+    p.close()
+
+
+@check("projects (tablet 900×1180, phone 390×844): the chip, the Projects tab and sheet, a project shown by touch, New project from ⋯, no horizontal overflow")
+def projects_small(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/projects?seed=1")
+    web = project_ids()["website"]
+    p = Page(browser, NORMAL, "projects-tablet", viewport={"width": 900, "height": 1180}, color_scheme="light")
+    page = p.open()
+    page.get_by_test_id("project-chip").click()
+    page.get_by_test_id("project-chip-item").filter(has_text="website").click()
+    expect(page.get_by_test_id("project-chip-name")).to_have_text("website")
+    page.get_by_test_id("side-sessions").click()
+    expect(proj(page, web).get_by_test_id("session-row")).to_have_count(2, timeout=10_000)
+    p.shot("projects-tablet.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (tablet)"
+    p.assert_clean()
+    p.close()
+    p = Page(browser, NORMAL, "projects-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    expect(page.get_by_test_id("phone-project")).to_contain_text("Workspace")
+    page.get_by_test_id("phone-sessions").tap()
+    sheet = page.get_by_test_id("sheet-sessions")
+    expect(sheet).to_contain_text("Projects")
+    expect(sheet.get_by_test_id("project")).to_have_count(2)
+    proj(sheet, web).get_by_test_id("project-show").tap()
+    expect(proj(sheet, web).get_by_test_id("session-row")).to_have_count(2, timeout=10_000)
+    p.shot("projects-phone.png")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (phone sheet)"
+    sheet.get_by_role("button", name="Close", exact=True).tap()
+    expect(page.get_by_test_id("phone-project")).to_contain_text("website")
+    page.get_by_test_id("phone-menu-btn").tap()
+    page.get_by_test_id("phone-menu-new-project").tap()
+    expect(page.get_by_test_id("new-project-dialog")).to_be_visible()
+    p.shot("new-project-phone.png")
+    assert page.evaluate("(() => { const d = document.querySelector('dialog[open]').getBoundingClientRect(); return d.left >= 0 && d.right <= innerWidth; })()"), "dialog wider than the phone"
+    page.get_by_test_id("new-project-name").fill("phone-app")
+    page.get_by_test_id("new-project-create").tap()
+    expect(page.get_by_test_id("phone-project")).to_contain_text("phone-app", timeout=10_000)
+    p.assert_clean()
+    p.close()
+
+
+@check("projects (hostile backend): records with a folder outside the workspace, bad ids and markup are dropped or shown as text; sessions claiming folders outside the workspace are not listed; a session filed in a project that is not there stays in the Workspace; requests name projects by id only")
+def projects_hostile(browser):
+    post(HOSTILE + "/__mock/reset")
+    p = Page(browser, HOSTILE, "projects-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    projects = page.get_by_test_id("project")
+    expect(projects).to_have_count(3, timeout=10_000)
+    shown = [projects.nth(i).get_attribute("data-project") for i in range(projects.count())]
+    assert shown == ["ws", "p_0bad0baf", "p_0bad0bb0"], shown
+    expect(projects.nth(1)).to_contain_text("<img")
+    # (a name with direction-changing characters: its folder's name instead)
+    expect(projects.nth(2).get_by_test_id("project-show")).to_contain_text("hostile2")
+    assert page.locator("[data-testid=project] img").count() == 0, "markup in a name became an element"
+    for t in ("claims /etc", "claims ..", "claims a home", "claims relative"):
+        expect(page.get_by_test_id("session-row").filter(has_text=t)).to_have_count(0)
+    expect(proj(page, "ws").get_by_test_id("session-row").filter(has_text="claims a project that is not there")).to_have_count(1, timeout=10_000)
+    expect(page.locator("text=/etc")).to_have_count(0)
+    proj(page, "p_0bad0baf").get_by_test_id("project-show").click()
+    expect(page.get_by_test_id("project-chip-name")).to_contain_text("<img")
+    page.keyboard.press("Control+Shift+F")
+    page.get_by_test_id("search-input").fill("x")
+    page.get_by_test_id("search-input").press("Enter")
+    page.wait_for_timeout(800)
+    bad = [u for u in p.requests if "project=" in u and not re.search(r"project=(ws|p_[0-9a-f]{8})(&|$)", u)]
+    assert not bad, bad[:3]
+    p.shot("projects-hostile.png")
+    # (expected: the hostile record's folder is not in the mock's workspace — its listing is a 404, said in the tree)
+    p.errors = [e for e in p.errors if "status of 404" not in e]
+    p.assert_clean()
+    p.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     procs = start_mocks()

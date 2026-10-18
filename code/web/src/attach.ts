@@ -5,7 +5,8 @@
 // captured when you add it (a chip shows what will go; "Capture again" takes it anew); nothing is sent by itself.
 import * as api from './api';
 import { createStore } from './store';
-import { store, toast, reviewFiles, refreshReview, activeView } from './app';
+import { store, toast, reviewFiles, refreshReview, activeView, promptBase } from './app';
+import { workspacePath } from './projects';
 import { sessionStart, shownFiles } from './review';
 import { duration, outcome, outcomeText, plainCommand, plainOutput } from './run';
 import {
@@ -83,7 +84,10 @@ export async function addLines(path: string, from: number, to: number, given?: {
       // the editor's own lines (the selection's, as they are there: saved or not)
       fields = fileLines(path, given.text, from, to, { unsaved: given.unsaved, first: from, total: given.total });
     } else {
-      const f = await api.fsRead(path);
+      // (a path typed in the prompt is the session's: relative to the folder it runs in, or absolute in /workspace)
+      const file = opts.typed ? workspacePath(path, promptBase()) : path;
+      if (file === null) throw new Error('not a file of the workspace');
+      const f = await api.fsRead(file);
       if (f.binary || f.text === null) throw new Error('a binary file: its lines cannot be quoted');
       fields = fileLines(path, f.text, from, to, { truncated: f.truncated });
       if (f.truncated && fields.to < to) fields.note = 'only the file\'s first 2 MiB could be read';

@@ -9,7 +9,7 @@
 // there, and every app host refuses its requests (the same-site guard, caddy/Caddyfile not_from_preview).
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, navigatePreview, openPreview, reloadPreview, setPreviewViewport, stopServer, loadLaunch, loadPreviewInfo, refreshPorts, requestLaunch,
+import { store, currentProject, navigatePreview, openPreview, reloadPreview, setPreviewViewport, stopServer, loadLaunch, loadPreviewInfo, refreshPorts, requestLaunch,
   confirmLaunch, setDialog, type PreviewTab } from '../app';
 import { previewTabUrl } from '../api';
 import { VIEWPORTS, cleanPreviewPath, fitScale, loaderWhy } from '../devpreview';
@@ -333,7 +333,7 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
       ) : launch.error && !launch.entries.length ? (
         <p class="muted small">It cannot be used: {launch.error}</p>
       ) : !launch.exists ? (
-        <p class="muted small">None in this workspace. The Claude Code desktop app's dev-server list works here too: its entries can be started from this panel.</p>
+        <p class="muted small">None in this project. The Claude Code desktop app's dev-server list works here too: its entries can be started from this panel.</p>
       ) : (
         <ul class="launch-list">
           {launch.entries.map((e, i) => (
@@ -380,7 +380,7 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
   return (
     <Dialog title={`Start "${label(entry.name, 80)}"?`} onClose={close} wide testid="launch-confirm">
       <p>
-        From the workspace's <code>.claude/launch.json</code>, which anything in the sandbox (Claude too) can write. It runs in the sandbox, in a new
+        From the project's <code>.claude/launch.json</code>, which anything in the sandbox (Claude too) can write. It runs in the sandbox, in a new
         window of the terminal — check that it is what you expect:
       </p>
       <h3>Program and arguments</h3>
@@ -409,7 +409,7 @@ export function LaunchConfirm({ entry }: { entry: LaunchEntry }) {
       )}
       <h3>Folder</h3>
       <p>
-        <code class="launch-cwd" data-testid="launch-cwd">/workspace{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
+        <code class="launch-cwd" data-testid="launch-cwd">{currentProject().path}{entry.cwd === '.' ? '' : `/${visible(entry.cwd)}`}</code>
       </p>
       <h3>Environment</h3>
       <ul class="launch-env" data-testid="launch-env">
