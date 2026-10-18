@@ -885,8 +885,10 @@ function announce(): void {
   const origin = s.server?.portalOrigin;
   if (origin && window.parent !== window) {
     try {
-      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass, waiting: waitingSessions(s.views, s.pendingTotal), sessions: portalSessions(s), git: portalGitEvents(s) },
-        new URL(origin).origin);
+      // (hosts: how many Git hosts are connected — a number only, for the walkthrough's "Connect a git host" step;
+      // null until this page has asked)
+      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass, waiting: waitingSessions(s.views, s.pendingTotal), sessions: portalSessions(s), git: portalGitEvents(s),
+        hosts: s.git.hosts ? s.git.hosts.hosts.length : null }, new URL(origin).origin);
     } catch {
       /* not framed by the portal */
     }
@@ -2836,6 +2838,7 @@ export async function loadGitHosts(): Promise<void> {
   try {
     const hosts = await api.getGitHosts();
     setGit((g) => ({ ...g, hosts, events: hosts.events }));
+    announce();   // (the portal: its Activity's Git hosts uses, the walkthrough's count of hosts)
   } catch (e) {
     toast(`Git hosts: ${errText(e)}`, 'error');
   }

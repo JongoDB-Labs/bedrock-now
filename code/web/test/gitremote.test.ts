@@ -3,7 +3,7 @@
 // the small model (src/git.ts): which remote, ahead/behind, a clone's folder name, where to make a token or add a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cloneTarget, compareHint, hostLinks, remoteFor, syncState } from '../src/git';
+import { cloneTarget, compareHint, hostHint, hostLinks, remoteFor, remoteRef, syncState } from '../src/git';
 import { normGitEvent, normGitHost, normGitPlan, normGitRemoteState, repoPath, isBranchName } from '../src/api';
 import type { GitHostView } from '../src/types';
 
@@ -57,4 +57,32 @@ test('a clone\'s folder; where to make a token; where to add a key (a deploy key
   assert.deepEqual(hostLinks(h, st), { accountKey: 'https://github.com/settings/ssh/new', deployKey: 'https://github.com/o/r/settings/keys/new' });
   assert.deepEqual(hostLinks(normGitHost(host({ kind: 'gitlab', host: 'gitlab.com' })) as GitHostView, st), { accountKey: 'https://gitlab.com/-/user_settings/ssh_keys', deployKey: null });
   assert.deepEqual(hostLinks(normGitHost(host({ kind: 'other', host: 'h.example' })) as GitHostView, st), { accountKey: null, deployKey: null });
+});
+
+test('the panel\'s hint to connect a git host: only while no connected host covers the remote, or none is connected', () => {
+  const remote = (ref: Record<string, unknown> | null, over: Record<string, unknown> = {}) => normGitRemoteState({ repo: true, branch: 'main',
+    remotes: ref ? [{ name: 'origin', urls: [String(ref.url)], pushUrls: [], fetch: ref }] : [], branches: [{ name: 'main' }], ...over });
+  const https = { url: 'https://github.com/o/r.git', ok: true, display: 'github.com/o/r', scheme: 'https' };
+  const ssh = { url: 'git@gitlab.example.com:o/r.git', ok: true, display: 'gitlab.example.com/o/r', scheme: 'ssh' };
+  const covered = { ...https, host: { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'token' } };
+  const none = { hosts: [] }, one = { hosts: [{}] };
+  // hosts not known yet, or not a repository: nothing said
+  assert.equal(hostHint(remote(https), null), null);
+  assert.equal(hostHint(normGitRemoteState({ repo: false }), none), null);
+  assert.equal(hostHint(null, none), null);
+  // a remote no connected host covers: its host, and what its URL needs (a token for https, a key for ssh)
+  assert.deepEqual(hostHint(remote(https), none), { kind: 'uncovered', host: 'github.com', scheme: 'https' });
+  assert.deepEqual(hostHint(remote(https), one), { kind: 'uncovered', host: 'github.com', scheme: 'https' });
+  assert.deepEqual(hostHint(remote(ssh), one), { kind: 'uncovered', host: 'gitlab.example.com', scheme: 'ssh' });
+  // covered: never
+  assert.equal(hostHint(remote(covered), one), null);
+  assert.equal(remoteRef(remoteFor(remote(covered)))?.host?.label, 'GitHub');
+  // no remote (or one the panel does not use): only while no host is connected at all
+  assert.deepEqual(hostHint(remote(null), none), { kind: 'none' });
+  assert.equal(hostHint(remote(null), one), null);
+  assert.deepEqual(hostHint(remote({ url: 'file:///x', ok: false, why: 'a local path', display: '', scheme: null }), none), { kind: 'none' });
+  assert.equal(hostHint(remote({ url: 'file:///x', ok: false, why: 'a local path', display: '', scheme: null }), one), null);
+  // a push URL the panel uses wins over the fetch URL
+  const both = normGitRemoteState({ repo: true, branch: 'main', branches: [{ name: 'main' }], remotes: [{ name: 'origin', urls: [https.url], pushUrls: [ssh.url], fetch: covered, push: ssh }] });
+  assert.deepEqual(hostHint(both, one), { kind: 'uncovered', host: 'gitlab.example.com', scheme: 'ssh' });
 });

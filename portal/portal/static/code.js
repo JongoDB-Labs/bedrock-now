@@ -179,14 +179,16 @@
       badge.title = bypass ? "A Code session runs without asking (Bypass permissions)" : "";
       document.title = n ? `(${n}) bedrock-now` : "bedrock-now";
       if (e.data.type === "bn-code-status") {
-        reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions), git: takeGit(e.data.git) };
+        reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions), git: takeGit(e.data.git),
+          // how many Git hosts are connected (a number only; the walkthrough's "Connect a git host" step), null: not known
+          hosts: Number.isInteger(e.data.hosts) && e.data.hosts >= 0 ? Math.min(e.data.hosts, 99) : null };
         renderCard();
         // the frame reported since it (re)loaded: the global search may ask it (search.js); a reload (a deep link, the
         // unlock ending) waits for its next report
         if (!hooked.has(f)) { hooked.add(f); f.addEventListener("load", () => { loadedAt = Date.now(); }); }
         reportedAt = Date.now();
         // Activity (activity.js): the sessions that wait for you — the same checked copy the card shows
-        document.dispatchEvent(new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map((x) => ({ ...x })), git: reported.git.map((x) => ({ ...x })) } }));
+        document.dispatchEvent(new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map((x) => ({ ...x })), git: reported.git.map((x) => ({ ...x })), hosts: reported.hosts } }));
       }
     });
   }
@@ -200,8 +202,12 @@
     ready: () => Boolean(reported) && reportedAt > loadedAt && Boolean(document.querySelector('#frames iframe[data-app="code"]')),
     sessions: () => (reported ? reported.sessions.map((x) => ({ id: x.id, title: x.title, state: x.state })) : []),
     openSession: (id) => { if (typeof id === "string" && UUID.test(id)) openLink({ session: id }); },
-    // Settings › Claude Code › Git hosts, and an Activity item of one: the Code page's Git hosts
+    // Settings › Claude Code › Git hosts, an Activity item of one, the walkthrough: the Code page's Git hosts — and its
+    // Clone dialog (the walkthrough; empty: nothing is cloned by a link)
     openGitHosts: () => openLink({ git: "hosts" }),
+    openClone: () => openLink({ git: "clone" }),
+    // how many Git hosts the Code page last said are connected, or null (it has not said: not loaded in this browser)
+    gitHosts: () => (reported && Number.isInteger(reported.hosts) ? reported.hosts : null),
     openFile: (path) => {
       const f = document.querySelector('#frames iframe[data-app="code"]');
       let origin = "";

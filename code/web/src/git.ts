@@ -88,6 +88,23 @@ export function syncState(r: GitRemoteState | null): { upstream: { remote: strin
   const b = r?.repo ? r.branches.find((x) => x.name === r.branch) : null;
   return { upstream: b?.upstream ?? null, ahead: b?.ahead ?? null, behind: b?.behind ?? null };
 }
+/** The URL the panel shows for a remote: its push URL when that is one it uses, else its fetch URL. */
+export function remoteRef(r: GitRemote | null): GitRemote['fetch'] {
+  return r?.push?.ok ? r.push : r?.fetch ?? null;
+}
+/** The Git panel's one-line hint to connect a git host: the remote's host is not one of the connected Git hosts
+ *  ('uncovered', with the host's name and how its URL connects), or no Git host is connected at all ('none'). null
+ *  while the hosts are not known yet, when a connected host covers the remote, or with hosts and no remote it uses. */
+export function hostHint(r: GitRemoteState | null, hosts: { hosts: readonly unknown[] } | null): { kind: 'uncovered'; host: string; scheme: 'https' | 'ssh' } | { kind: 'none' } | null {
+  if (!r?.repo || !hosts) return null;
+  const ref = remoteRef(remoteFor(r));
+  if (ref?.ok) {
+    if (ref.host) return null;
+    const host = ref.display.split('/')[0] ?? '';
+    if (host) return { kind: 'uncovered', host, scheme: ref.scheme === 'ssh' ? 'ssh' : 'https' };
+  }
+  return hosts.hosts.length ? null : { kind: 'none' };
+}
 /** A folder name for a clone: the URL's last part without .git (letters, digits, . _ -), or '' */
 export function cloneTarget(url: string): string {
   const s = String(url ?? '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');

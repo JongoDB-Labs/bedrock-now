@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/ho
 import type { Item, Queued, SessionView } from '../session';
 import { shownCost, turnCosts } from '../spend';
 import { duration, money, tokens } from '../text';
-import { forkFrom, loadEarlier, rewindCancel, rewindConfirm, rewindPreview, sendPrompt, store } from '../app';
+import { forkFrom, loadEarlier, openGitDialog, rewindCancel, rewindConfirm, rewindPreview, sendPrompt, showGit, store } from '../app';
 import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
@@ -233,8 +233,15 @@ function ResultLine({ it, cost }: { it: Extract<Item, { t: 'result' }>; cost: nu
   );
 }
 
+/** The Git panel with one of its dialogs (Clone, Git hosts) open, as the command palette and a ?git= link do. */
+function gitDialog(d: 'clone' | 'hosts'): void {
+  showGit();
+  openGitDialog(d);
+}
+
 function Welcome() {
   const ideas = ['Explain how this project is organised', 'Find and fix a failing test', 'Add a README section about setup', '/init'];
+  const hosts = useSel(store, (s) => s.git.hosts);
   return (
     <div class="welcome">
       <div class="welcome-mark">
@@ -248,6 +255,15 @@ function Welcome() {
             {t}
           </button>
         ))}
+      </div>
+      <div class="welcome-repo" data-testid="welcome-repo">
+        <span class="muted small">Start from a repository:</span>
+        <button type="button" class="btn small" onClick={() => gitDialog('clone')} data-testid="welcome-clone">
+          <Icon name="download" size={13} /> Clone a repository
+        </button>
+        <button type="button" class="btn small" onClick={() => gitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone of private repositories" data-testid="welcome-hosts">
+          <Icon name="server" size={13} /> {hosts && hosts.hosts.length ? 'Git hosts' : 'Connect a git host'}
+        </button>
       </div>
       <p class="muted small">Project settings in /workspace/.claude (including hooks) apply here as they do in the terminal.</p>
     </div>

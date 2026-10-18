@@ -66,6 +66,9 @@
 .gitr-host { margin-left: 4px; }
 .gitr-actions .btn { gap: 4px; }
 .gitr-more { margin-left: auto; display: inline-flex; }
+.gitr-hosts-btn { margin-left: auto; gap: 4px; }
+.gitr-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 6px; border-radius: 6px; background: var(--hover); color: var(--muted); overflow-wrap: anywhere; }
+.gitr-hint .btn { gap: 4px; }
 .gitr-net { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); }
 .gitr-pad { padding: 0 2px; }
 .gitr-pushed { border-radius: 6px; }

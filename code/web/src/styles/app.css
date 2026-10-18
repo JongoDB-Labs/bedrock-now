@@ -446,6 +446,8 @@ body.resizing-x iframe, body.resizing-y iframe { pointer-events: none; }
 .ideas { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 8px 0 10px; max-width: 520px; }
 .idea { padding: 7px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); font-size: 12.5px; }
 .idea:hover { border-color: var(--accent); }
+.welcome-repo { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 8px; margin: 0 0 8px; }
+.welcome-repo .btn { gap: 4px; }
 
 .msg-user { position: relative; align-self: flex-end; max-width: min(88%, calc(100% - 56px)); padding: 9px 13px; border-radius: 12px 12px 4px 12px; background: var(--user-bg); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); }
 .msg-actions { position: absolute; right: 100%; top: 4px; display: flex; gap: 2px; padding-right: 6px; }

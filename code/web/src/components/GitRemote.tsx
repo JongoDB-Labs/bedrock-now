@@ -3,8 +3,9 @@
 // before anything is sent (a push or publish every time, a fetch or pull the first time per remote URL) —, the link to
 // open a pull request after a push, Clone, a remote's URL, and Git hosts: the git servers you connect (GitHub, GitLab
 // or any https/ssh host) with an access token or an SSH key made here, kept by the code container — never in the
-// sandbox, never shown again —, Test connection, and whether Claude's own git may use a host (off by default).
-// Every text from the sandbox or a server is shown as text (label).
+// sandbox, never shown again —, Test connection, and whether Claude's own git may use a host (off by default). The
+// Hosts button is labelled, and a one-line hint offers "Connect a git host" while no connected host covers the remote
+// (or none is connected at all). Every text from the sandbox or a server is shown as text (label).
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
@@ -22,7 +23,7 @@ import {
 } from '../app';
 import * as api from '../api';
 import type { GitHostView, GitPlan, GitRemoteState, GitStatus } from '../types';
-import { cloneTarget, compareHint, hostLinks, remoteFor, syncState } from '../git';
+import { cloneTarget, compareHint, hostHint, hostLinks, remoteFor, remoteRef, syncState } from '../git';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
@@ -54,11 +55,13 @@ export function RemoteBar({ st }: { st: GitStatus }) {
   const net = useSel(store, (s) => s.git.net);
   const busy = useSel(store, (s) => s.git.busy);
   const pushed = useSel(store, (s) => s.git.pushed);
+  const hosts = useSel(store, (s) => s.git.hosts);
   if (!remote?.repo) return null;
   const sync = syncState(remote);
   const r = remoteFor(remote);
   const off = !!net || !!busy || !!st.state;
-  const ref = r?.push?.ok ? r.push : r?.fetch ?? null;
+  const ref = remoteRef(r);
+  const hint = hostHint(remote, hosts);
   return (
     <div class="gitr" data-testid="git-remote-bar">
       <div class="gitr-row">
@@ -69,15 +72,11 @@ export function RemoteBar({ st }: { st: GitStatus }) {
         {r ? (
           <span class="gitr-where small" title={ref ? `${label(r.name, 64)}: ${label(ref.url, 600)}` : ''} data-testid="git-remote">
             {label(r.name, 40)} → {ref?.ok ? label(ref.display, 120) : <span class="warn-text">{label(ref?.why || 'a URL the panel does not use', 160)}</span>}{' '}
-            {ref?.ok && (ref.host ? (
+            {ref?.ok && ref.host && (
               <span class="pill gitr-host" title={`${ref.host.auth === 'token' ? 'HTTPS token' : 'SSH key'} of the Git host '${label(ref.host.label, 60)}'`}>
                 <Icon name="check" size={11} /> {label(ref.host.label, 40)}
               </span>
-            ) : (
-              <button type="button" class="linkish" onClick={() => openGitDialog('hosts')} title="This host is not connected: fetching a public repository works, pushing needs its credential" data-testid="git-connect-host">
-                connect {ref.scheme === 'ssh' ? 'an SSH key' : 'a token'}
-              </button>
-            ))}
+            )}
           </span>
         ) : (
           <span class="gitr-where small muted">
@@ -87,7 +86,22 @@ export function RemoteBar({ st }: { st: GitStatus }) {
             </button>
           </span>
         )}
+        <button type="button" class="btn small ghost gitr-hosts-btn" title="Git hosts: tokens and SSH keys for push, pull and clone" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
+          <Icon name="server" size={13} /> Hosts
+        </button>
       </div>
+      {hint && (
+        <div class="gitr-hint small" data-testid="git-host-hint">
+          <span>
+            {hint.kind === 'uncovered'
+              ? `${label(hint.host, 120)} is not a connected git host: pushing, and fetching a private repository, need its ${hint.scheme === 'ssh' ? 'SSH key' : 'access token'}.`
+              : 'No git host is connected: pushing, and private repositories, need one.'}
+          </span>
+          <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} data-testid="git-connect-host">
+            <Icon name="plus" size={13} /> Connect a git host
+          </button>
+        </div>
+      )}
       {r && (
         <div class="gitr-row gitr-actions">
           <button type="button" class="btn small" disabled={off} onClick={() => void gitNet('fetch', r.name)} title={`Fetch ${label(r.name, 40)}: its branches, nothing of yours changes`} data-testid="git-fetch">
@@ -110,9 +124,6 @@ export function RemoteBar({ st }: { st: GitStatus }) {
             )
           )}
           <span class="gitr-more">
-            <button type="button" class="icon-btn" title="Git hosts: tokens and SSH keys for push, pull and clone" aria-label="Git hosts" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
-              <Icon name="server" size={14} />
-            </button>
             <button type="button" class="icon-btn" title="The remote's URL" aria-label="The remote's URL" onClick={() => openGitDialog('remote')} data-testid="git-remote-url">
               <Icon name="pencil" size={14} />
             </button>
@@ -160,15 +171,16 @@ function Since({ t }: { t: number }) {
   return <span class="muted">({s}s)</span>;
 }
 
-/** Not a repository: clone one (or start one in the terminal), and Git hosts. */
+/** Not a repository: clone one (or start one in the terminal), and Git hosts ("Connect a git host" while none is). */
 export function NoRepoActions() {
+  const hosts = useSel(store, (s) => s.git.hosts);
   return (
     <div class="gitr-norepo">
       <button type="button" class="btn small primary" onClick={() => openGitDialog('clone')} data-testid="git-clone-open">
         <Icon name="download" size={13} /> Clone a repository…
       </button>
-      <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
-        <Icon name="server" size={13} /> Git hosts…
+      <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone" data-testid="git-hosts-open">
+        <Icon name="server" size={13} /> {hosts && !hosts.hosts.length ? 'Connect a git host…' : 'Git hosts…'}
       </button>
     </div>
   );
