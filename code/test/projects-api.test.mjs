@@ -184,6 +184,17 @@ test('sessions: placed by the folder the sandbox lists; a folder outside the wor
   assert.equal((await req('GET', '/api/sessions')).json.sessions.find((s) => s.id === S.ws).project, app.id);
   assert.equal((await req('POST', `/api/projects/${app.id}/sessions`, { ids: ['nope'] })).status, 400);
   assert.equal((await req('POST', '/api/projects/p_00000000/sessions', { ids: [S.ws] })).status, 404);
+  // a records file that cannot be read: the sessions are still listed (each in the Workspace), and so is /api/state
+  const kept = fs.readFileSync(store.jsonFile);
+  try {
+    fs.writeFileSync(store.jsonFile, 'garbage');
+    const broken = await req('GET', '/api/sessions');
+    assert.equal(broken.status, 200);
+    assert.equal(broken.json.sessions.length, 4);
+    assert.ok(broken.json.sessions.every((x) => x.project === 'ws'));
+    assert.equal((await req('GET', '/api/state')).status, 200);
+    assert.equal((await req('GET', '/api/projects')).status, 500, 'the list of projects says the file is broken');
+  } finally { fs.writeFileSync(store.jsonFile, kept); }
 });
 
 test('a new session starts in its project\'s folder; a resumed one in its own (from the list); history and titles there too', async () => {

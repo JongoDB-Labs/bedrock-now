@@ -77,7 +77,7 @@ export const rootField = (root) => (root?.rel ? { root: root.abs } : {});
 // a path bn-coded answered relative to a root, as a path of the workspace (the page's)
 export const inRoot = (root, p) => (root?.rel ? `${root.rel}/${p}` : p);
 
-export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, reloadMaxMs = 10000 }) {
+export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, reloadMaxMs = 10000, log = () => {} }) {
   const need = (v, what) => { if (v === null) throw new HttpError(400, `bad ${what}`); return v; };
   const okPath = (v) => short(v, 4096);
 
@@ -89,7 +89,12 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   const noteCwd = (id, cwd) => { if (cwds.size >= 5000 && !cwds.has(id)) cwds.clear(); cwds.set(id, cwd); };
   async function listSessions(q) {
     const { result } = await call({ op: 'sessions.list' });
-    const place = projects ? projects.placer() : () => WORKSPACE_ID;
+    // (a records file that cannot be read: every session by its folder in the Workspace, said in the log — the list
+    // itself never fails for it)
+    let place = () => WORKSPACE_ID;
+    if (projects) {
+      try { place = projects.placer(); } catch (e) { log(`projects: ${short(e?.message || String(e), 200)}: sessions listed in the Workspace`); }
+    }
     const rows = [];
     for (const raw of (Array.isArray(result.sessions) ? result.sessions : []).slice(0, SESSIONS_MAX)) {
       const r = sessionRow(raw);

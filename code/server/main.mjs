@@ -184,7 +184,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   });
   function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
   const api = makeApi({ call, sessions: mgr, projects: { list: () => proj().list(), get: (id) => proj().get(id), add: (b) => proj().add(b), rename: (id, n) => proj().rename(id, n),
-    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs });
+    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs, log: logger });
   // rootFor(v) -> the project a request names (?project= or {project}): its {id, rel, abs} from the records — never a
   // folder the page names; null (none, or the Workspace): the workspace, as every call was before projects
   const rootFor = (v) => {
