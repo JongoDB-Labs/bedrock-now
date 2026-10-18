@@ -25,7 +25,12 @@ case "$*" in
   *" ps -q --status running code") echo c0de ;;
   *" exec -T code node server/import-host.mjs")
     cat > "$T_LOG/docker.stdin"
-    printf '%s\n' '{"ok":true,"host":{"label":"GitHub","host":"github.com","account":"octocat"}}' ;;
+    case "$(cat "$T_LOG/docker.mode" 2>/dev/null)" in
+      refused) printf '%s\n' '{"ok":false,"error":"github.com is connected with a token already"}'; exit 1 ;;
+      old) echo "Error: Cannot find module '/opt/code/server/import-host.mjs'" >&2; exit 1 ;;
+      *) echo 'WARN[0000] a warning of compose on stderr' >&2
+         printf '%s\n' '{"ok":true,"host":{"label":"GitHub","host":"github.com","account":"octocat"}}' ;;
+    esac ;;
   *) echo "unexpected docker $*" >&2; exit 97 ;;
 esac
 EOF
@@ -36,7 +41,10 @@ env | grep -q '^GH_TOKEN=' && { echo "GH_TOKEN reached gh" >&2; exit 3; }
 case "$*" in
   "auth token --hostname github.com") cat "$T_LOG/../tok"; echo ;;
   "api --hostname github.com user --jq .login") echo octocat ;;
-  "api --hostname github.com -i user") printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, read:org, repo, workflow\r\nContent-Type: application/json\r\n\r\n{"login":"octocat"}\n' ;;
+  "api --hostname github.com -i user")
+    printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: %s\r\n' "$(cat "$T_LOG/gh.scopes" 2>/dev/null || echo 'gist, read:org, repo, workflow')"
+    [ ! -f "$T_LOG/gh.expires" ] || printf 'github-authentication-token-expiration: %s\r\n' "$(cat "$T_LOG/gh.expires")"
+    printf 'Content-Type: application/json\r\n\r\n{"login":"octocat"}\n' ;;
   "auth token --hostname ghe.example.com") exit 1 ;;
   *) echo "unexpected gh $*" >&2; exit 97 ;;
 esac
@@ -52,7 +60,7 @@ case "$*" in
   "config get token --host gitlab.com") cat "$T_LOG/../gltok"; echo ;;
   "api --hostname gitlab.com personal_access_tokens/self")
     [ "$mode" = notpat ] && { echo '{"message":"404 Not Found"}'; exit 1; }
-    printf '{\n  "id": 4,\n  "name": "cli",\n  "scopes": ["read_repository", "write_repository"],\n  "expires_at": "2027-01-31",\n  "active": true\n}\n' ;;
+    printf '{\n  "id": 4,\n  "name": "cli",\n  "scopes": [%s],\n  "expires_at": "2027-01-31",\n  "active": true\n}\n' "$(cat "$T_LOG/glab.scopes" 2>/dev/null || echo '"read_repository", "write_repository"')" ;;
   "api --hostname gitlab.com user") printf '{\n  "id": 9,\n  "username": "gl-user"\n}\n' ;;
   *) echo "unexpected glab $*" >&2; exit 97 ;;
 esac
@@ -80,7 +88,7 @@ test_git_host_help() {
   out="$("$BASH" "$STACK_DIR/stack" git-host import gh --help 2>&1)" || return 1
   assert_contains "$out" "Usage: ./stack git-host import gh"
   assert_contains "$(cmd_help)" "  git-host     The Code page's Git hosts from a CLI login on this computer: import gh | import glab"
-  assert_contains "$(cat "$STACK_DIR/README.md")" '| `./stack git-host import gh|glab [--host HOST]` |'
+  assert_contains "$(cat "$STACK_DIR/README.md")" '| `./stack git-host import gh\|glab [--host HOST]` |'
   if (cmd_git_host import svn) > /dev/null 2>&1; then return 1; fi
   if (cmd_git_host import gh --host 'evil;rm') > /dev/null 2>&1; then return 1; fi
 }
@@ -92,10 +100,11 @@ test_import_gh_hands_the_token_on_stdin_only_after_the_warning() {
   assert_contains "$out" "Import gh's login for github.com into the Code page's Git hosts?"
   assert_contains "$out" "  Account   octocat"
   assert_contains "$out" "  Scopes    gist, read:org, repo, workflow"
-  assert_contains "$out" "This token reaches every repository your GitHub account can"
-  assert_contains "$out" "and gh uses the same"
-  assert_contains "$out" "removing it here does not sign gh out; revoke it at https://github.com/settings/applications"
-  assert_contains "$out" "GitHub CLI), which signs gh out too"
+  assert_contains "$out" "  Token     gh's own OAuth token; it does not expire"
+  assert_contains "$out" "This token reaches every repository your GitHub account can (with the scopes above), and gh uses the same token"
+  assert_contains "$out" "does not sign gh out; revoke it at https://github.com/settings/applications (Authorized OAuth Apps › GitHub CLI, which signs gh out too)"
+  assert_contains "$out" "Remove it there (Git hosts) any time; revoke it at https://github.com/settings/applications."
+  assert_not_contains "$out" "WARN[0000]"
   assert_contains "$out" "Imported: github.com is a Git host of the Code page now (account octocat"
   _nowhere_but_stdin "$TOK" "$out" || return 1
   assert_eq "$(cat "$T_LOG/docker.stdin")" "{\"source\":\"gh\",\"host\":\"github.com\",\"account\":\"octocat\",\"scopes\":[\"gist\",\"read:org\",\"repo\",\"workflow\"],\"token\":\"$TOK\"}"
@@ -162,8 +171,65 @@ test_import_glab_personal_access_token() {
   out="$(cmd_git_host import glab 2>&1)" || { echo "$out" >&2; return 1; }
   assert_contains "$out" "  Account   gl-user"
   assert_contains "$out" "a personal access token glab was given; it expires on 2027-01-31"
-  assert_contains "$out" "  Scopes    read_repository,write_repository"
+  assert_contains "$out" "  Scopes    read_repository, write_repository"
+  assert_not_contains "$out" "The api scope"
   assert_contains "$out" "glab uses the same token"
   _nowhere_but_stdin "$GLTOK" "$out" || return 1
   assert_contains "$(cat "$T_LOG/docker.stdin")" '"source":"glab","host":"gitlab.com","account":"gl-user","scopes":["read_repository","write_repository"],"expiresAt":1801353600000,'
+}
+
+test_import_says_why_the_code_container_refused_and_stops() {
+  _fakes
+  printf refused > "$T_LOG/docker.mode"
+  if out="$(cmd_git_host import gh 2>&1)"; then echo "a refusal went on: $out" >&2; return 1; fi
+  assert_contains "$out" "not imported: github.com is connected with a token already"
+  assert_not_contains "$out" "Imported:"
+  printf old > "$T_LOG/docker.mode"
+  if out="$(cmd_git_host import gh 2>&1)"; then return 1; fi
+  assert_contains "$out" "the Code page's container is older than this checkout (no import in it yet): ./stack update (or ./stack up), then import again"
+  assert_not_contains "$out" "Imported:"
+}
+
+test_import_gh_by_the_kind_of_token_its_expiry_and_scopes_never_globbed() {
+  _fakes
+  # a fine-grained token gh was given, with an expiry: not "every repository"; its own revoke page
+  printf '%s' "$(printf 'github%spat_' _)$(printf 'F%.0s' $(seq 1 30))" > "$TMP/tok"
+  printf '' > "$T_LOG/gh.scopes"
+  printf '2027-03-01 09:00:00 UTC' > "$T_LOG/gh.expires"
+  out="$(cmd_git_host import gh 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "  Token     a fine-grained personal access token gh was given; it expires on 2027-03-01"
+  assert_contains "$out" "This token reaches the repositories and permissions it was given, and gh uses the same token"
+  assert_not_contains "$out" "every repository"
+  assert_contains "$out" "revoke it at https://github.com/settings/personal-access-tokens."
+  assert_contains "$(cat "$T_LOG/docker.stdin")" '"scopes":[],"expiresAt":1803859200000,'
+  # a classic one: every repository its scopes allow; Tokens (classic); "names no expiry" without the header
+  rm -f "$T_LOG/gh.expires" "$T_LOG/docker.stdin"
+  printf '%s' "$(printf 'gh%s_' p)$(printf 'C%.0s' $(seq 1 30))" > "$TMP/tok"
+  # (a "*" among the scopes: dropped, never expanded to the names of files here)
+  : > "$TMP/CHANGELOG.md"
+  printf 'repo, *, workflow' > "$T_LOG/gh.scopes"
+  out="$(cd "$TMP" && cmd_git_host import gh 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "  Token     a classic personal access token gh was given; it names no expiry"
+  assert_contains "$out" "  Scopes    repo, workflow"
+  assert_contains "$out" "revoke it at https://github.com/settings/tokens."
+  assert_contains "$(cat "$T_LOG/docker.stdin")" '"scopes":["repo","workflow"],"token":'
+}
+
+test_import_never_traces_the_token() {
+  _fakes
+  out="$( (set -x; cmd_git_host import gh) 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "Imported:"
+  assert_not_contains "$out" "$(cat "$TMP/tok")"
+  printf '' > "$T_LOG/glab.mode"
+  out="$( (set -x; cmd_git_host import glab) 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_not_contains "$out" "$(cat "$TMP/gltok")"
+}
+
+test_import_glab_says_what_the_api_scope_is() {
+  _fakes
+  : > "$T_LOG/glab.mode"
+  printf '"api", "read_repository"' > "$T_LOG/glab.scopes"
+  out="$(cmd_git_host import glab 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "  Scopes    api, read_repository"
+  assert_contains "$out" "The api scope is full read and write access to GitLab's API as you"
 }
