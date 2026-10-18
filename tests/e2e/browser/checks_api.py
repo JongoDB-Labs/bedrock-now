@@ -94,6 +94,41 @@ def completions(ctx):
     return f"{m}: chat/completions (+ SSE stream) and Anthropic /v1/messages (+ stream)"
 
 
+@check("litellm", "virtual-key-for-a-tool")
+def tool_key(ctx):
+    """What the walkthrough's API step and README's "The models from your own code" say: a key of its own for a tool
+    (as Admin › Virtual Keys makes one), with its own budget and models, works with the OpenAI-style path (Bearer) and
+    the Anthropic-style one (x-api-key, as the anthropic SDK sends it); another model is refused; deleting it revokes it."""
+    m = chat_model()
+    master = ENV["LITELLM_MASTER_KEY"]
+    r = lite("POST", "/key/generate", key=master, body={"key_alias": f"{E2E_MARK}-tool", "models": [m], "max_budget": 0.02, "budget_duration": "30d"})
+    expect(r.status == 200 and r.json().get("key"), f"/key/generate {r.status} {r.text[:200]}")
+    key = r.json()["key"]
+    try:
+        r = lite("GET", "/v1/models", key=key)
+        ids = sorted(x["id"] for x in r.json().get("data", []))
+        expect(r.status == 200 and ids == [m], f"/v1/models {r.status} {ids}")
+        r = lite("POST", "/v1/chat/completions", key=key, timeout=120,
+                 body={"model": m, "max_tokens": 5, "messages": [{"role": "user", "content": "Say: ok"}]})
+        expect(r.status == 200 and r.json()["choices"][0]["message"]["content"], f"chat/completions {r.status} {r.text[:200]}")
+        h = {"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"}
+        r = http("POST", None, "/v1/messages", h, json.dumps({"model": m, "max_tokens": 5, "messages": [{"role": "user", "content": "Say: ok"}]}),
+                 port=LITELLM_PORT, host_header=f"127.0.0.1:{LITELLM_PORT}", timeout=120)
+        expect(r.status == 200 and r.json().get("type") == "message", f"/v1/messages with x-api-key {r.status} {r.text[:200]}")
+        other = next((x for x in ctx.enabled_models() if x != m and x.startswith("claude-")), None)
+        if other:   # (refused before any model call: free)
+            r = lite("POST", "/v1/chat/completions", key=key, body={"model": other, "max_tokens": 5, "messages": [{"role": "user", "content": "x"}]})
+            expect(r.status in (400, 401, 403), f"{other} with a key for {m} only: {r.status}")
+        info = lite("GET", "/key/info", key=key).json().get("info", {})
+        expect(float(info.get("max_budget") or 0) == 0.02 and info.get("models") == [m], f"key/info {info.get('max_budget')} {info.get('models')}")
+    finally:
+        r = lite("POST", "/key/delete", key=master, body={"keys": [key]})
+    expect(r.status == 200, f"/key/delete {r.status}")
+    r = lite("GET", "/v1/models", key=key)
+    expect(r.status in (400, 401, 403), f"a deleted key still works: {r.status}")
+    return f"a key for {m} with a $0.02 budget: /v1/models lists it alone, chat/completions (Bearer) and /v1/messages (x-api-key) answer{f', {other} refused' if other else ''}; deleted → refused"
+
+
 @check("litellm", "embeddings-and-rerank")
 def embeddings(ctx):
     em = ENV.get("OWUI_EMBED_MODEL")

@@ -262,3 +262,19 @@ def test_new_steps_are_marked_for_a_browser_that_did_an_older_walkthrough():
     assert "seen" in js[js.index("function save()"):js.index("let st = load();")]
     css = (STATIC / "tour.css").read_text(encoding="utf-8")
     assert ".tour-new {" in css and ".tour-btn.has-new" in css
+
+
+def test_its_links_into_the_readme_reach_a_heading():
+    # doc("anchor", …) links the README on GitHub at that heading: each one must be a heading of README.md
+    readme = Path(os.environ.get("BN_REPO_DIR") or Path(__file__).resolve().parents[2]) / "README.md"
+    if not readme.is_file():
+        pytest.skip("the repository's README is not here: portal/test.sh passes it to the test image")
+    heads = set()
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"#{1,6} (.+)", line)
+        if m:   # GitHub's anchors: lower case, punctuation dropped, spaces to hyphens
+            heads.add(re.sub(r"[^\w\- ]", "", m.group(1).strip().lower()).replace(" ", "-"))
+    js = (STATIC / "tour.js").read_text(encoding="utf-8")
+    anchors = re.findall(r'doc\("([a-z0-9-]+)"', js)
+    assert len(anchors) >= 10
+    assert not [a for a in anchors if a not in heads], [a for a in anchors if a not in heads]

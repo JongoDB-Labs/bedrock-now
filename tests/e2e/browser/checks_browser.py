@@ -1534,8 +1534,17 @@ def tablet(ctx):
 
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
 
-# 19, plus the browser terminal's and the Code page's own steps where this run offers them (tour.js: when)
-TOUR_STEPS = 19 + (ENV.get("TERMINAL_ENABLED") == "true") + (ENV.get("TERMINAL_ENABLED") == "true" and (ENV.get("CODE_ENABLED") or "").lower() == "true")
+# 23 steps everywhere; where the Code page is on, its 9 steps and Connect a git host (else one on how to turn it on);
+# with the browser terminal, its step and What the sandbox can reach (tour.js: when)
+TOUR_TERM = ENV.get("TERMINAL_ENABLED") == "true"
+TOUR_CODE = TOUR_TERM and (ENV.get("CODE_ENABLED") or "").lower() == "true"
+TOUR_STEPS = 23 + (10 if TOUR_CODE else 1) + (2 if TOUR_TERM else 0)
+# The walkthrough as a browser that went through it before this version left it (the step ids of v0.4–v0.12): the steps
+# it never saw are New — the Code page's (or the step on turning it on), What the sandbox can reach, the API step,
+# Activity and search, Updates, From your phone.
+OLD_TOUR_IDS = ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras", "signin-portal", "signin-chat",
+                "signin-admin", "signin-files", "home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"]
+TOUR_NEW = 4 + (11 if TOUR_CODE else 1) + (1 if TOUR_TERM and not TOUR_CODE else 0)
 # What the app frames may log by themselves while they load, before their own sign-in (as in the Chat and Files
 # checks): not the walkthrough's doing.
 FRAME_NOISE = [r"^401 GET " + re.escape(origin("files")) + r"/rustfs/admin/v3/",
@@ -1597,6 +1606,12 @@ def walkthrough(ctx):
     shot(page, "w01-walkthrough-desktop")
     steps = page.eval_on_selector_all("#tour .tour-step", "els => els.map(e => e.dataset.step)")
     expect(len(steps) == TOUR_STEPS, f"{len(steps)} steps listed")
+    secs = [" ".join(t.split()) for t in page.eval_on_selector_all("#tour .tour-sec-name", "els => els.map(e => e.textContent)")]
+    expect(secs == ["1. Set up", "2. Your apps (one sign-in)", "3. Chat", "4. Code with Claude", "5. Your own tools", "6. Keep it running"],
+           f"sections {secs}")
+    # a first visit: nothing is marked New, the button counts steps (not new ones)
+    expect(page.locator("#tour .tour-new, #tour .tour-badge.new, #tour .tour-newline").count() == 0, "a first visit sees New marks")
+    expect("new" not in page.inner_text("#tour-count"), f"the button says {page.inner_text('#tour-count')!r} on a first visit")
 
     # Set up: Next walks through; the AWS step counts the enabled chat models from /api/summary and is done by itself.
     page.click("#tour [data-k=next]")
@@ -1609,7 +1624,7 @@ def walkthrough(ctx):
     page.wait_for_timeout(65000)
     asked = _summaries(rec, since)
     expect(asked <= 3, f"{asked} /api/summary requests in 65 s with Home visible and the walkthrough on a live step")
-    for want in ("openrouter", "voice", "claude-setup", "budgets"):
+    for want in ("openrouter", "voice", "claude-setup", *(["git-hosts"] if TOUR_CODE else []), "budgets"):
         page.click("#tour [data-k=next]")
         _to_step(page, want)
     page.locator("#tour .tour-step.cur li", has_text="a month").first.wait_for(timeout=40000)   # each key's budget
@@ -1717,6 +1732,7 @@ def walkthrough(ctx):
     page.click("#tour [data-k=undo]")
     page.locator("#tour .tour-step.cur [data-k=skip]").wait_for(timeout=5000)
     expect(page.locator("#tour .tour-step[data-step=voice-use].skipped").count() == 0, "Undo left the step skipped")
+    page.click("#tour [data-k=sec-5]")   # (Keep it running: the last step)
     page.click("#tour [data-k=go-done]")
     _to_step(page, "done")
     page.click("#tour [data-k=next]")   # Finish
@@ -1821,6 +1837,155 @@ def walkthrough_phone(ctx):
     rec.save()
     return ("closed at first and after a reload; More → Walkthrough opens a sheet above the tab bar; Open Admin is a "
             "new-tab link that lands signed in (step done); Escape closes")
+
+
+def _seed_tour(page, state: dict):
+    """bn.tour holds STATE when the portal first loads in this context (and is left to the page after that)."""
+    page.context.add_init_script(f"(o => {{ try {{ if (location.origin === o && !localStorage.getItem('bn.tour')) "
+                                 f"localStorage.setItem('bn.tour', {json.dumps(json.dumps(state))}); }} catch (e) {{}} }})({json.dumps(origin())});")
+
+
+def _tour_btn(page) -> str:
+    return " ".join(page.inner_text("#tour-btn").split())
+
+
+@check("browser", "walkthrough-new-since")
+def walkthrough_new(ctx):
+    """A browser that went through the walkthrough of an earlier version (bn.tour without a list of the steps it saw):
+    not opened again; the button says how many steps are new, each is marked New until opened."""
+    page, rec = ctx.page("walkthrough-new", tour=True)
+    _seed_tour(page, {"open": False, "cur": "", "done": OLD_TOUR_IDS, "skipped": [], "base": {}})
+    login(page)
+    page.wait_for_selector("#tour-btn:not([hidden])")
+    page.wait_for_timeout(500)
+    expect(page.locator("#tour").is_hidden(), "the walkthrough opened by itself for a browser that went through it before")
+    label = _tour_btn(page)
+    expect(label == f"Walkthrough {TOUR_NEW} new", f"the button reads {label!r}, not 'Walkthrough {TOUR_NEW} new'")
+    expect("has-new" in (page.get_attribute("#tour-btn", "class") or ""), "the button is not marked")
+    shot(page, "w11-walkthrough-new-button")
+    page.click("#tour-btn")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    head = page.inner_text("#tour #tour-cur")
+    expect(head == f"{TOUR_NEW} new steps since you last looked", f"the finished view says {head!r}")
+    marked = page.eval_on_selector_all("#tour .tour-step .tour-new", "els => els.map(e => e.closest('.tour-step').dataset.step)")
+    want = ["git-hosts", "code-open", "code-clone", "api", "activity", "updates", "phone"] if TOUR_CODE else ["code-off", "api", "updates"]
+    expect(all(w in marked for w in want), f"New on {marked}")
+    expect(not any(w in marked for w in ("welcome", "aws", "chat", "shared", "admin")), f"New on old steps: {marked}")
+    shot(page, "w12-walkthrough-new-open")
+    page.click("#tour [data-k=first-new-card]")
+    first = "git-hosts" if TOUR_CODE else "code-off"
+    _to_step(page, first)
+    expect(page.locator("#tour .tour-step.cur .tour-badge.new").count() == 1, "the step opened has no New badge on its card")
+    expect(page.inner_text("#tour-count") == f"{TOUR_NEW - 1} new", f"after opening one: {page.inner_text('#tour-count')!r}")
+    page.reload()
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    expect(page.inner_text("#tour-count") == f"{TOUR_NEW - 1} new", f"after a reload: {page.inner_text('#tour-count')!r}")
+    expect(page.locator("#tour .tour-step.cur .tour-badge.new").count() == 0, "a step opened before is New again after a reload")
+    saved = page.evaluate("() => JSON.parse(localStorage.getItem('bn.tour'))")
+    expect(first in saved.get("seen", []) and "welcome" in saved["seen"], f"seen {saved.get('seen')}")
+    # the phone's More says it too
+    page2, rec2 = ctx.page("walkthrough-new-phone", device="phone", tour=True)
+    _seed_tour(page2, {"open": False, "cur": "", "done": OLD_TOUR_IDS, "skipped": [], "base": {}})
+    login(page2)
+    page2.wait_for_selector("#tour-btn:not([hidden])", state="attached")
+    page2.click("#more-btn")
+    page2.wait_for_selector("#more-sheet:not([hidden])")
+    note = page2.inner_text("#more-tour-note")
+    expect(note.startswith(f"{TOUR_NEW} new steps since you last looked"), f"More says {note!r}")
+    shot(page2, "w13-walkthrough-new-phone-more")
+    probs = rec.problems(allow=FRAME_NOISE) + rec2.problems(allow=FRAME_NOISE)
+    rec.save(); rec2.save()
+    expect(not probs, f"errors: {probs[:6]}")
+    return (f"not opened again; button {label!r}; {head!r}; New on {len(marked)} steps; one opened → {TOUR_NEW - 1} new, "
+            f"kept across a reload; phone More: {note!r}")
+
+
+@check("browser", "walkthrough-git-hosts")
+def walkthrough_git_hosts(ctx):
+    """The Connect a git host step's Open Git hosts: the Code tab, unlocked, at its Git hosts dialog (?git=hosts); the
+    step then shows how many hosts the Code page reports (a number only)."""
+    from checks_code import LOCKED_OK, code_frame, unlock_page
+    if not TOUR_CODE:
+        raise Skip("the Code page is off in this throwaway: no Connect a git host step")
+    page, rec = ctx.page("walkthrough-git-hosts", tour=True)
+    login(page)
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur", timeout=15000)
+    page.evaluate("() => window.bnTour.open('git-hosts')")
+    _to_step(page, "git-hosts")
+    card = page.inner_text("#tour .tour-step.cur")
+    for words in ("Connect a git host…", "Contents: Read and write", "read_repository", "write_repository", "SSH key",
+                  "Test connection", "Let Claude use this host", "only from the computer running bedrock-now"):
+        expect(words in card, f"the step lacks {words!r}")
+    shot(page, "w14-walkthrough-git-hosts")
+    page.click("#tour [data-k=open-git-hosts]")
+    page.wait_for_selector("iframe[data-app=code]:not([hidden])")
+    f = code_frame(page)
+    unlock_page(f)
+    f = code_frame(page)
+    dlg = f.locator("[data-testid=git-hosts-dialog]")
+    dlg.wait_for(timeout=30000)
+    expect("git=" not in f.url, f"the deep link stayed in the frame's address: {f.url}")
+    # the frame reported its count: the step says it (no host connected in this throwaway unless the git server ran)
+    page.locator("#tour .tour-step.cur .tour-status", has_text="git host").wait_for(timeout=20000)
+    status = page.inner_text("#tour .tour-step.cur .tour-status")
+    shot(page, "w15-walkthrough-git-hosts-dialog")
+    probs = rec.problems(allow=FRAME_NOISE + LOCKED_OK)
+    rec.save()
+    expect(not probs, f"errors: {probs[:6]}")
+    return f"Open Git hosts → the Code tab, unlocked, its Git hosts dialog; the step: {status!r}"
+
+
+@check("browser", "walkthrough-api-step")
+def walkthrough_api(ctx):
+    """The models from your own code: the throwaway's own LiteLLM port (from the Settings snapshot), the examples with
+    YOUR_KEY, and no secret of .env anywhere in the page."""
+    page, rec = ctx.page("walkthrough-api", tour=True)
+    login(page)
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur", timeout=15000)
+    page.evaluate("() => window.bnTour.open('api')")
+    _to_step(page, "api")
+    port = os.environ["E2E_LITELLM_PORT"]
+    base = f"http://127.0.0.1:{port}"
+    page.locator("#tour .tour-step.cur .tour-cmd code", has_text=base).wait_for(timeout=20000)
+    expect(page.inner_text("#tour .tour-step.cur .tour-cmd code").strip() == base, "the API's address")
+    expect(port != "4000", "the throwaway's LiteLLM port is the default one (the check would not tell a hard-coded port)")
+    for k in ("openai", "anthropic"):
+        page.click(f"#tour [data-k=snip-{k}] summary")
+    snips = page.eval_on_selector_all("#tour .tour-snip pre", "els => els.map(e => e.textContent)")
+    expect(len(snips) == 3, f"{len(snips)} examples")
+    expect(snips[0].startswith(f"curl {base}/v1/chat/completions") and "Bearer YOUR_KEY" in snips[0], f"curl: {snips[0][:120]!r}")
+    expect(f'base_url="{base}/v1", api_key="YOUR_KEY"' in snips[1], "the openai example")
+    expect(f'base_url="{base}", api_key="YOUR_KEY"' in snips[2], "the anthropic example")
+    model = ENV.get("CLAUDE_BEDROCK_HAIKU_MODEL") or "claude-haiku-5-5"
+    expect(all(f'"{model}"' in t for t in snips), f"the examples do not name {model}")
+    # (Home's Credentials shows the RustFS access key and the LiteLLM user as text, by design: not secrets of this kind)
+    html = page.content()
+    leaked = [k for k in (*SECRET_ENV, "LITELLM_KEY_TERMINAL", "OPENROUTER_API_KEY", "AWS_ACCESS_KEY_ID")
+              if len(ENV.get(k) or "") >= 8 and ENV[k] in html]
+    expect(not leaked, f"in the page: {leaked}")
+    shot(page, "w16-walkthrough-api")
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin())
+    expect(_clipboard_after(page, "#tour [data-k=copy-api-base]") == base, "Copy of the address")
+    page.evaluate("navigator.clipboard.writeText('')")
+    # what the step names in Admin: Virtual Keys › + Create New Key, with Optional Settings and a budget (LiteLLM's UI)
+    need("litellm")
+    page.click("#tour [data-k=open-admin]")
+    fl = page.frame_locator("iframe[data-app=admin]")
+    sso_signed_in(page, fl, rec, "admin", "walkthrough: the API step's Open Admin", "w-api-admin")
+    create = fl.get_by_role("button", name=re.compile(r"Create New Key")).first
+    create.wait_for(timeout=30000)
+    btn = " ".join(create.inner_text().split())
+    expect(btn == "+ Create New Key", f"Admin's button reads {btn!r} (the step and the README say + Create New Key)")
+    create.click()
+    fl.get_by_text("Optional Settings").first.wait_for(timeout=15000)
+    fl.get_by_text("Optional Settings").first.click()
+    fl.get_by_text(re.compile(r"Max Budget")).first.wait_for(timeout=15000)
+    shot(page, "w17-walkthrough-api-admin-create-key")
+    probs = rec.problems(allow=FRAME_NOISE)
+    rec.save()
+    expect(not probs, f"errors: {probs[:6]}")
+    return (f"{base} (LITELLM_PORT of the throwaway), 3 examples with YOUR_KEY and {model}, no secret in the page; Admin: "
+            f"Virtual Keys › {btn} › Optional Settings › Max Budget")
 
 
 @check("browser", "walkthrough-storage")
