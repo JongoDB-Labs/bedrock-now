@@ -52,11 +52,14 @@ _portal_port_answers() {   # -> 0 unless every try is a connection failure (000)
 }
 # recreate_caddy — Caddy recreated (it reads its config and the app hosts at start), then ensure_portal_reachable: every
 # place that replaces Caddy goes through here, so a stale port forward is caught wherever it happens
+# (non-zero when the port still does not answer after that, so a run_phase around it shows the advice instead of "ready")
 recreate_caddy() {
   dc up -d --wait --force-recreate caddy || return
   ensure_portal_reachable
+  [ "${PORTAL_FORWARD_BROKEN:-0}" = 0 ]
 }
 ensure_portal_reachable() {
+  PORTAL_FORWARD_BROKEN=0
   [ -n "$(dc ps -q --status running caddy 2>/dev/null)" ] || return 0
   _portal_port_answers && return 0   # (Caddy's catch-all site answers /caddy-health for any host name)
   dc exec -T caddy wget -q -O /dev/null http://127.0.0.1:8080/caddy-health >/dev/null 2>&1 || return 0
@@ -65,6 +68,7 @@ ensure_portal_reachable() {
   if _portal_port_answers; then
     log "Caddy recreated: the portal answers again"
   else
+    PORTAL_FORWARD_BROKEN=1
     warn "port $(portal_port) still does not reach Caddy: restart Docker (on a Mac: quit Docker Desktop and open it again), then ./stack up"
   fi
   return 0

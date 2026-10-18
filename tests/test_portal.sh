@@ -567,7 +567,7 @@ test_every_caddy_recreate_checks_the_port_forward() {
   # Caddy is replaced only through recreate_caddy (lib/portal.sh), except setup's first start of it, which captures
   # the output for its port-80 fallback and is followed by ensure_portal_reachable in setup_keys_and_ui
   local direct
-  direct="$(grep -nE 'force-recreate caddy' "$T_ROOT"/lib/*.sh | grep -vE 'lib/portal\.sh:|out="\$\(dc up -d --wait --force-recreate caddy 2>&1\)"' || true)"
+  direct="$(grep -nE 'force-recreate.*caddy' "$T_ROOT"/lib/*.sh | grep -vE 'lib/portal\.sh:|out="\$\(dc up -d --wait --force-recreate caddy 2>&1\)"' || true)"
   assert_eq "$direct" ""
   for f in _code_front _terminal_front _remote_up_front; do
     assert_contains "$(grep -hE "^$f\(\)" -A3 "$T_ROOT"/lib/*.sh)" "recreate_caddy"
@@ -580,6 +580,9 @@ test_every_caddy_recreate_checks_the_port_forward() {
   recreate_caddy 2>/dev/null
   assert_contains "$(head -n 1 "$TMP/calls")" "dc up -d --wait --force-recreate caddy"
   assert_contains "$(cat "$TMP/calls")" "/caddy-health"
+  # the port still dead after it: non-zero, so the run_phase around it shows the advice
+  : > "$TMP/calls"; FWD="000" _stub_forward
+  if recreate_caddy 2>/dev/null; then echo "recreate_caddy hid a port that still does not answer" >&2; return 1; fi
   dc() { echo "dc $*" >> "$TMP/calls"; return 1; }; : > "$TMP/calls"
   if recreate_caddy 2>/dev/null; then echo "a failed recreate reported success" >&2; return 1; fi
   assert_not_contains "$(cat "$TMP/calls")" "curl"
