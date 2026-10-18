@@ -14,7 +14,7 @@ pattern="${1:-tests/test_*.sh}"
 pass=0; fail=0; skip=0
 
 # Isolation from the real machine (a live bedrock-now may run on 127.0.0.1:80/4000/8765): every test child has
-# tests/shims first on PATH. docker, aws and tailscale never run for real; curl does, except towards this
+# tests/shims first on PATH. docker, aws, tailscale, gh and glab never run for real; curl does, except towards this
 # computer (only the closed port 9 there). A refused call is logged to $BN_SHIM_LOG; any entry fails the suite.
 # BN_REAL_DOCKER is for the one test that renders compose.yaml (`docker compose config`: no daemon, no containers).
 BN_SHIM_LOG="$(mktemp)"; BN_REAL_CURL="$(command -v curl || echo /usr/bin/curl)"; BN_REAL_DOCKER="$(command -v docker || true)"
@@ -121,10 +121,10 @@ if [ "$ws_home_before" = 0 ] && [ -e "${HOME:-/nonexistent}/bedrock-now-workspac
 fi
 if [ -s "$BN_SHIM_LOG" ]; then
   fail=$((fail + 1)); _failed "isolation guard"
-  printf 'FAIL isolation guard: tests called real docker/aws/tailscale or curl to this computer\n'
+  printf 'FAIL isolation guard: tests called real docker/aws/tailscale/gh/glab or curl to this computer\n'
   sed 's/^/     /' "$BN_SHIM_LOG"
 else
-  printf 'isolation guard: no real docker/aws/tailscale call and no curl to this computer\n'
+  printf 'isolation guard: no real docker/aws/tailscale/gh/glab call and no curl to this computer\n'
 fi
 rm -f "$BN_SHIM_LOG"; rm -rf "${BN_PBKDF2_CACHE:?}"
 printf '\n%d passed, %d skipped, %d failed%s\n' "$pass" "$skip" "$fail" "${failed:+: $failed}"

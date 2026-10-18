@@ -60,6 +60,8 @@ Usage: ./stack <command> [--yes]
   code         Claude Code in the browser with a chat: a Code tab with permission prompts, models and
                your files, in the terminal's sandbox (on by default with the terminal; disable keeps it off)
                status | enable [--workspace DIR] | disable   (asks for the portal password again)
+  git-host     The Code page's Git hosts from a CLI login on this computer: import gh | import glab
+               [--host HOST]   (the token goes to the code container on stdin, never printed; you confirm)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
@@ -1787,5 +1789,7 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/terminal.sh"
 # The Code page (./stack code; Claude Code with a chat and files, in the terminal's sandbox; the Code tab; on by default).
 . "$STACK_DIR/lib/code.sh"
+# Its Git hosts from a gh / glab login on this computer (./stack git-host import).
+. "$STACK_DIR/lib/githost.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
 . "$STACK_DIR/lib/claude_config.sh"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Test shim (tests/run.sh puts tests/shims first on PATH): gh and glab never run for real in tests — never against your
+# own logins (./stack git-host import reads their tokens). A test that needs one puts a fake earlier on PATH (it runs
+# through env -u, so a shell function would not do); reaching this file is a bug, logged for the suite to fail.
+n="${0##*/}"
+printf 'real %s called by test %s: %s\n' "$n" "${T_NAME:-?}" "$*" >> "${BN_SHIM_LOG:-/dev/null}"
+echo "real $n called by test" >&2
+exit 97
