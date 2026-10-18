@@ -30,6 +30,8 @@
 // commands that pipe a download into a shell, force-push or rm -rf ("install script" plays one), with "Allow once";
 // /__mock/model-fail?n=1 makes the next model switch fail as Claude Code's model check does on a slow API;
 // /__mock/watch-incomplete?on=1 is a sandbox that could not list every watched file (the cards say so).
+// /__mock/git-import?source=gh|glab&account= adds a Git host as ./stack git-host import would (an access token of gh's or
+// glab's login, its account and scopes).
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -238,7 +240,7 @@ let gitCurrent = 'main';
 const gitPlans = new Map();
 const hostId = () => `h_${crypto.randomBytes(6).toString('hex')}`;
 const hostView = (h) => ({ id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username, hasToken: h.auth === 'token',
-  tokenSetAt: h.createdAt, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
+  tokenSetAt: h.createdAt, imported: h.imported ?? null, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
   builtinHostKeys: ['github.com', 'gitlab.com', 'bitbucket.org'].includes(h.host), ca: false, claude: h.claude === true, claudeSince: null, createdAt: h.createdAt });
 const gitEvent = (e) => { const ev = { id: crypto.randomBytes(6).toString('hex'), at: Date.now(), who: 'you', ok: true, text: '', ...e }; gitEventsMock.unshift(ev); return ev; };
 const mockHost = (scheme) => gitHostsMock.find((h) => h.host === 'github.com' && h.auth === (scheme === 'https' ? 'token' : 'ssh')) || null;
@@ -253,7 +255,8 @@ function resetGitRemote() {
 }
 function gitRemoteMock() {
   const h = mockHost('https');
-  const ref = { url: MOCK_URL, ok: true, display: 'github.com/mock/app', scheme: 'https', host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null };
+  const ref = { url: MOCK_URL, ok: true, display: 'github.com/mock/app', scheme: 'https',
+    host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null };
   return { repo: true, root: '', branch: gitCurrent, detached: false, head: gitCommits[0]?.hash ?? null, state: null, rewrites: 0,
     remotes: [{ name: 'origin', urls: [MOCK_URL], pushUrls: [], multiple: false, fetch: ref, push: ref }],
     branches: gitBranchesMock.map((b) => ({ name: b.name, head: gitCommits[0]?.hash ?? null, upstream: b.upstream, ahead: b.upstream ? (b.name === gitCurrent ? gitAhead : 0) : null, behind: b.upstream ? 0 : null, gone: false })),
@@ -279,7 +282,12 @@ async function gitRemotePanel(p, m, url, req) {
   if (mm) {
     const h = gitHostsMock.find((x) => x.id === mm[1]);
     if (!h) return [404, { error: 'no such git host' }];
-    if (!mm[2] && m === 'DELETE') { gitHostsMock = gitHostsMock.filter((x) => x !== h); return [200, { host: hostView(h) }]; }
+    if (!mm[2] && m === 'DELETE') {
+      gitHostsMock = gitHostsMock.filter((x) => x !== h);
+      const revokeAt = h.auth !== 'token' || h.kind === 'other' ? null : h.kind === 'github' ? `https://${h.host}/settings/${h.imported?.source === 'gh' ? 'applications' : 'personal-access-tokens'}`
+        : `https://${h.host}/-/user_settings/personal_access_tokens`;
+      return [200, { host: hostView(h), revokeAt }];
+    }
     const b = m === 'POST' ? await jsonBody(req) : {};
     if (mm[2] === 'claude') { h.claude = b.on === true; return [200, { host: hostView(h) }]; }
     if (mm[2] === 'token') return [200, { host: hostView(h) }];
@@ -306,7 +314,7 @@ async function gitRemotePanel(p, m, url, req) {
     const cur = gitBranchesMock.find((x) => x.name === gitCurrent);
     const dst = action === 'publish' ? gitCurrent : cur?.upstream?.branch ?? gitCurrent;
     if (action === 'push' && !cur?.upstream) return [400, { error: `${gitCurrent} tracks no branch of origin yet: publish it` }];
-    const via = h ? `HTTPS token '${h.label}'` : 'no credential (a public repository)';
+    const via = h ? `HTTPS token '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}` : 'no credential (a public repository)';
     const display = action === 'clone' ? String(b.url || '').replace(/^https:\/\//, '').replace(/\.git$/, '') : 'github.com/mock/app';
     const newBranch = !gitRemoteBranches.includes(dst);
     const summary = action === 'clone' ? `Clone ${display} into ${b.target ? `${b.target}/` : 'the workspace folder'} via ${via}`
@@ -315,7 +323,8 @@ async function gitRemotePanel(p, m, url, req) {
     const planId = crypto.randomBytes(16).toString('hex');
     gitPlans.set(planId, { action, dst, target: b.target ?? '' });
     return [200, { planId, action, repo: '', remote: action === 'clone' ? null : 'origin', url: action === 'clone' ? b.url : MOCK_URL, display, scheme: 'https', branch: action === 'clone' ? null : gitCurrent,
-      dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null, auth: h ? 'token' : 'none', summary,
+      dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch,
+      host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null, auth: h ? 'token' : 'none', summary,
       confirm: true, target: action === 'clone' ? b.target ?? '' : null, depth: b.depth ?? null }];
   }
   if (p === '/api/git/run') {
@@ -2153,6 +2162,19 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/__mock/lock' || url.pathname === '/__mock/unlock') {
         locked = url.pathname === '/__mock/lock';
         if (locked) for (const ws of wss.clients) ws.terminate();
+        return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/__mock/git-import') {
+        const source = url.searchParams.get('source') === 'glab' ? 'glab' : 'gh';
+        const host = source === 'gh' ? 'github.com' : 'gitlab.com';
+        if (gitHostsMock.some((x) => x.host === host && x.auth === 'token')) return json(res, 409, { error: `${host} is connected with a token already` });
+        const account = url.searchParams.get('account') || 'mock-user';
+        const h = { id: hostId(), kind: source === 'gh' ? 'github' : 'gitlab', label: source === 'gh' ? 'GitHub' : 'GitLab', host, port: null, auth: 'token',
+          username: source === 'gh' ? 'x-access-token' : 'oauth2', createdAt: Date.now(),
+          imported: { source, account, scopes: source === 'gh' ? ['gist', 'read:org', 'repo', 'workflow'] : ['read_repository', 'write_repository'], app: source === 'gh' ? 'oauth-app' : null,
+            expiresAt: source === 'glab' ? Date.now() + 90 * 86400000 : null, importedAt: Date.now() } };
+        gitHostsMock.push(h);
+        gitEvent({ action: 'host', host: h.label, target: host, text: `connected with ${source}'s login as ${account} (./stack git-host import)` });
         return json(res, 200, { ok: true });
       }
       if (url.pathname === '/__mock/watch-incomplete') {

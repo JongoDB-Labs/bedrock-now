@@ -132,3 +132,23 @@ export function hostLinks(h: GitHostView, r: GitRemoteState | null): { accountKe
   const deployKey = !okPath ? null : h.kind === 'github' ? `https://${h.host}/${okPath}/settings/keys/new` : `https://${h.host}/${okPath}/-/settings/repository#js-deploy-keys-settings`;
   return { accountKey, deployKey };
 }
+
+// --- an access token imported from gh / glab (./stack git-host import) ---
+
+/** The CLI command that imports an existing gh / glab login (from the computer running bedrock-now). */
+export const importCommand = (kind: 'github' | 'gitlab', host = ''): string => {
+  const h = (host || '').trim().toLowerCase();
+  const extra = h && h !== (kind === 'github' ? 'github.com' : 'gitlab.com') && HOSTNAME.test(h) ? ` --host ${h}` : '';
+  return `./stack git-host import ${kind === 'github' ? 'gh' : 'glab'}${extra}`;
+};
+/** What an imported login's token reaches, and that the CLI goes on using it. */
+export function importedReach(h: GitHostView, now = Date.now()): string {
+  const o = h.imported;
+  if (!o) return '';
+  const scopes = o.scopes.length ? ` (${o.scopes.join(', ')})` : '';
+  if (o.source === 'gh') {
+    return `Every repository your GitHub account can reach${scopes}. It is gh's own token: gh goes on using it, and removing it here does not sign gh out.`;
+  }
+  const until = o.expiresAt ? (o.expiresAt > now ? ` It expires on ${new Date(o.expiresAt).toLocaleDateString()}.` : ' It expired: import it again, or replace it.') : '';
+  return `What this personal access token may do${scopes}, on every project your account can reach. glab uses the same token.${until}`;
+}

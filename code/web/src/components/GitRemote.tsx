@@ -3,7 +3,8 @@
 // before anything is sent (a push or publish every time, a fetch or pull the first time per remote URL) —, the link to
 // open a pull request after a push, Clone, a remote's URL, and Git hosts: the git servers you connect (GitHub, GitLab
 // or any https/ssh host) with an access token or an SSH key made here, kept by the code container — never in the
-// sandbox, never shown again —, Test connection, and whether Claude's own git may use a host (off by default). The
+// sandbox, never shown again; or a gh / glab login imported by ./stack git-host import, which the dialog names —, Test
+// connection, and whether Claude's own git may use a host (off by default). The
 // Hosts button is labelled, and a one-line hint offers "Connect a git host" while no connected host covers the remote
 // (or none is connected at all). Every text from the sandbox or a server is shown as text (label).
 import { useEffect, useMemo, useState } from 'preact/hooks';
@@ -20,10 +21,11 @@ import {
   runGitPlan,
   selectGitRepo,
   setGitRemoteUrl,
+  toast,
 } from '../app';
 import * as api from '../api';
 import type { GitHostView, GitPlan, GitRemoteState, GitStatus } from '../types';
-import { cloneTarget, compareHint, hostHint, hostLinks, remoteFor, remoteRef, syncState } from '../git';
+import { cloneTarget, compareHint, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, syncState } from '../git';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
@@ -73,7 +75,7 @@ export function RemoteBar({ st }: { st: GitStatus }) {
           <span class="gitr-where small" title={ref ? `${label(r.name, 64)}: ${label(ref.url, 600)}` : ''} data-testid="git-remote">
             {label(r.name, 40)} → {ref?.ok ? label(ref.display, 120) : <span class="warn-text">{label(ref?.why || 'a URL the panel does not use', 160)}</span>}{' '}
             {ref?.ok && ref.host && (
-              <span class="pill gitr-host" title={`${ref.host.auth === 'token' ? 'HTTPS token' : 'SSH key'} of the Git host '${label(ref.host.label, 60)}'`}>
+              <span class="pill gitr-host" title={`${ref.host.auth === 'token' ? 'HTTPS token' : 'SSH key'} of the Git host '${label(ref.host.label, 60)}'${ref.host.source ? ` (${ref.host.source}'s login${ref.host.account ? `, ${label(ref.host.account, 100)}` : ''})` : ''}`}>
                 <Icon name="check" size={11} /> {label(ref.host.label, 40)}
               </span>
             )}
@@ -206,7 +208,8 @@ const VERB: Record<GitPlan['action'], string> = { fetch: 'Fetch', pull: 'Pull', 
 /** What a remote operation will do — where, which branch, with which credential — before anything is sent. */
 function PlanDialog({ plan }: { plan: GitPlan }) {
   const title = plan.action === 'clone' ? `Clone ${label(plan.display, 80)}?` : `${VERB[plan.action]} ${plan.action === 'fetch' || plan.action === 'pull' ? 'from' : 'to'} ${label(plan.display, 80)}?`;
-  const cred = plan.host ? `${plan.host.auth === 'token' ? 'the HTTPS token' : 'the SSH key'} of '${label(plan.host.label, 60)}'` : 'none (a public repository works without one)';
+  const cred = plan.host ? `${plan.host.auth === 'token' ? 'the HTTPS token' : 'the SSH key'} of '${label(plan.host.label, 60)}'${plan.host.source ? ` (${plan.host.source}'s login${plan.host.account ? `, ${label(plan.host.account, 100)}` : ''})` : ''}`
+    : 'none (a public repository works without one)';
   return (
     <Dialog title={title} onClose={cancelGitPlan} testid="git-plan-dialog">
       <p class="gitr-summary" data-testid="git-plan-summary">{label(plan.summary, 600)}</p>
@@ -462,6 +465,15 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   const [claudeAsk, setClaudeAsk] = useState(false);
   const [keys, setKeys] = useState('');
   const links = hostLinks(h, remote);
+  // (where to revoke it on the host: gh's login at GitHub's authorized OAuth apps, a token where you made it)
+  const remove = async () => {
+    let text = '';
+    const ok = await gitHostChange(async () => {
+      const r = await api.removeGitHost(h.id);
+      text = r.revokeAt ? `Removed ${label(h.label, 60)} — revoke it on the host too: ${r.revokeAt}` : `Removed ${label(h.label, 60)} (revoke its token or key on the host too)`;
+    });
+    if (ok && text) toast(text, 'ok');
+  };
   const test = async () => {
     setTesting(true);
     setResult('');
@@ -482,12 +494,22 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
         <strong>{label(h.label, 60)}</strong>
         <span class="muted small">
           {label(h.host, 120)}
-          {h.port ? `:${h.port}` : ''} · {h.auth === 'token' ? 'HTTPS access token' : 'SSH key'} · {KIND_LABEL[h.kind]}
+          {h.port ? `:${h.port}` : ''} · {h.auth === 'token' ? (h.imported ? `HTTPS access token, imported from ${h.imported.source}` : 'HTTPS access token') : 'SSH key'} · {KIND_LABEL[h.kind]}
         </span>
-        <button type="button" class="btn small ghost danger gitr-remove" onClick={() => void gitHostChange(() => api.removeGitHost(h.id), `Removed ${label(h.label, 60)} (revoke its token or key on the host too)`)} data-testid="git-host-remove">
+        <button type="button" class="btn small ghost danger gitr-remove" onClick={() => void remove()} data-testid="git-host-remove">
           <Icon name="trash" size={13} /> Remove
         </button>
       </div>
+      {h.auth === 'token' && h.imported && (
+        <div class="small gitr-imported" data-testid="git-host-imported">
+          <div>
+            {h.imported.source === 'gh' ? "gh's login" : "glab's login"} on this computer
+            {h.imported.account ? <> — account <strong data-testid="git-host-account">{label(h.imported.account, 100)}</strong></> : null}, imported with{' '}
+            <code>{importCommand(h.kind === 'gitlab' ? 'gitlab' : 'github', h.host)}</code>.
+          </div>
+          <div data-testid="git-host-reach">Reaches: {importedReach(h)}</div>
+        </div>
+      )}
       {h.auth === 'token' ? (
         <div class="small">
           A token is set{h.tokenSetAt ? ` (${ago(h.tokenSetAt)})` : ''}; it is never shown again. Sent as user <code>{label(h.username, 60)}</code>.
@@ -587,6 +609,22 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   );
 }
 
+/** For people who use gh or glab already: the command that imports that login (on the computer running bedrock-now). */
+function ImportHint({ kind, host }: { kind: 'github' | 'gitlab'; host: string }) {
+  const cmd = importCommand(kind, host);
+  const [copied, setCopied] = useState(false);
+  return (
+    <p class="muted small gitr-import wide" data-testid="git-host-import-hint">
+      Signed in with {kind === 'github' ? 'gh' : 'glab'} on this computer already? <code>{cmd}</code>{' '}
+      <button type="button" class="linkish" onClick={() => { void navigator.clipboard?.writeText(cmd).then(() => setCopied(true), () => setCopied(false)); }} data-testid="git-host-import-copy">
+        {copied ? 'Copied' : 'Copy'}
+      </button>{' '}
+      — run in the bedrock-now folder, it imports that login (
+      {kind === 'github' ? "gh's token reaches every repository your account can, and gh goes on using it" : "a personal access token only: an OAuth login of glab's is refused"}).
+    </p>
+  );
+}
+
 function AddHost({ onDone }: { onDone: () => void }) {
   const [kind, setKind] = useState<'github' | 'gitlab' | 'other'>('github');
   const [host, setHost] = useState('');
@@ -635,6 +673,7 @@ function AddHost({ onDone }: { onDone: () => void }) {
             <input type="radio" name="gitr-auth" checked={auth === 'ssh'} onChange={() => setAuth('ssh')} data-testid="git-host-auth-ssh" /> An SSH key made here (for git@… URLs; you add its public key on the host)
           </label>
         </fieldset>
+        {auth === 'token' && kind !== 'other' && <ImportHint kind={kind} host={host} />}
         {auth === 'token' && (
           <label class="wide">
             The token (kept here, never shown again)

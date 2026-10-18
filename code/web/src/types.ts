@@ -571,6 +571,16 @@ export type GitScope = 'staged' | 'unstaged' | 'untracked';
 // --- the Git panel's remotes and Git hosts (GET /api/git/remote, /api/git/hosts …: code/server/gitremote.mjs) ---
 export type GitHostKind = 'github' | 'gitlab' | 'other';
 export type GitAuth = 'token' | 'ssh';
+/** Where an imported access token came from: gh's or glab's login, its account, scopes and (glab) expiry. */
+export interface GitImported {
+  source: 'gh' | 'glab';
+  account: string | null;
+  scopes: string[];
+  /** gh's own OAuth token (gho_…) */
+  app: 'oauth-app' | null;
+  expiresAt: number | null;
+  importedAt: number | null;
+}
 /** A connected git host as the page sees it: never its token or private key. */
 export interface GitHostView {
   id: string;
@@ -582,6 +592,8 @@ export interface GitHostView {
   username: string;
   hasToken: boolean;
   tokenSetAt: number | null;
+  /** an access token imported from a gh / glab login on the computer running bedrock-now (./stack git-host import) */
+  imported: GitImported | null;
   /** an SSH host's public key ("ssh-ed25519 AAAA… comment"): to add to the repository or your account */
   publicKey: string | null;
   fingerprint: string | null;
@@ -612,6 +624,9 @@ export interface GitHostRef {
   label: string;
   kind: GitHostKind;
   auth: GitAuth;
+  /** an imported login's source and account */
+  source?: 'gh' | 'glab';
+  account?: string | null;
 }
 export interface GitRemoteUrl {
   url: string;

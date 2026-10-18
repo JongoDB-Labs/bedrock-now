@@ -3,7 +3,7 @@
 // the small model (src/git.ts): which remote, ahead/behind, a clone's folder name, where to make a token or add a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cloneTarget, compareHint, hostHint, hostLinks, remoteFor, remoteRef, syncState } from '../src/git';
+import { cloneTarget, compareHint, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, syncState } from '../src/git';
 import { normGitEvent, normGitHost, normGitPlan, normGitRemoteState, repoPath, isBranchName } from '../src/api';
 import type { GitHostView } from '../src/types';
 
@@ -85,4 +85,25 @@ test('the panel\'s hint to connect a git host: only while no connected host cove
   // a push URL the panel uses wins over the fetch URL
   const both = normGitRemoteState({ repo: true, branch: 'main', branches: [{ name: 'main' }], remotes: [{ name: 'origin', urls: [https.url], pushUrls: [ssh.url], fetch: covered, push: ssh }] });
   assert.deepEqual(hostHint(both, one), { kind: 'uncovered', host: 'gitlab.example.com', scheme: 'ssh' });
+});
+
+// --- an access token imported from gh / glab (./stack git-host import) ---
+test('an imported login: where it came from, its account and scopes (never a token); what it reaches; the command', () => {
+  const tok = ['secret', 'never', 'here'].join('-');
+  const h = normGitHost(host({ auth: 'token', publicKey: null, hasToken: true, token: tok,
+    imported: { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], app: 'oauth-app', expiresAt: null, importedAt: 5, token: tok } })) as GitHostView;
+  assert.ok(!JSON.stringify(h).includes(tok));
+  assert.deepEqual(h.imported, { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], app: 'oauth-app', expiresAt: null, importedAt: 5 });
+  assert.equal(importedReach(h), "Every repository your GitHub account can reach (repo, read:org). It is gh's own token: gh goes on using it, and removing it here does not sign gh out.");
+  assert.equal(normGitHost(host({ auth: 'token', imported: { source: 'svn' } }))?.imported, null);
+  assert.equal(normGitHost(host({ auth: 'ssh', imported: { source: 'gh' } }))?.imported, null, 'an SSH key is never imported');
+  assert.equal(normGitHost(host({ auth: 'token', imported: { source: 'glab', account: 'a b<script>' } }))?.imported?.account, null);
+  const gl = normGitHost(host({ auth: 'token', kind: 'gitlab', host: 'gitlab.com', imported: { source: 'glab', scopes: ['read_repository'], expiresAt: 1000 } })) as GitHostView;
+  assert.match(importedReach(gl, 2000), /glab uses the same token\. It expired: import it again, or replace it\.$/);
+  assert.match(importedReach(gl, 500), /It expires on /);
+  assert.deepEqual(normGitPlan({ planId: 'a'.repeat(32), action: 'push', auth: 'token', host: { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'token', source: 'gh', account: 'octocat' } }).host,
+    { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'token', source: 'gh', account: 'octocat' });
+  assert.equal(importCommand('github'), './stack git-host import gh');
+  assert.equal(importCommand('gitlab', 'gitlab.example.com'), './stack git-host import glab --host gitlab.example.com');
+  assert.equal(importCommand('gitlab', 'evil; rm -rf'), './stack git-host import glab');
 });

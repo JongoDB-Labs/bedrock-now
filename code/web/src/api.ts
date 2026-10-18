@@ -40,6 +40,7 @@ import type {
   GitFileDiff,
   GitHostRef,
   GitHostView,
+  GitImported,
   GitIdentity,
   GitPlan,
   GitRemote,
@@ -1206,10 +1207,22 @@ const KINDS = ['github', 'gitlab', 'other'] as const;
 const hostKind = (v: unknown): GitHostView['kind'] => (KINDS.includes(v as (typeof KINDS)[number]) ? (v as GitHostView['kind']) : 'other');
 const authOf = (v: unknown): 'token' | 'ssh' => (v === 'ssh' ? 'ssh' : 'token');
 const msTime = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1e14 ? v : null);
+const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
+const importSource = (v: unknown): 'gh' | 'glab' | null => (v === 'gh' || v === 'glab' ? v : null);
+function normImported(v: unknown): GitImported | null {
+  const o = obj(v);
+  const source = o ? importSource(o.source) : null;
+  if (!o || !source) return null;
+  return { source, account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null,
+    scopes: arr(o.scopes, 32).filter((x): x is string => typeof x === 'string').map((x) => label(x, 80)), app: o.app === 'oauth-app' ? 'oauth-app' : null,
+    expiresAt: msTime(o.expiresAt), importedAt: msTime(o.importedAt) };
+}
 function normHostRef(v: unknown): GitHostRef | null {
   const o = obj(v);
   if (!o || typeof o.id !== 'string' || !HOST_ID.test(o.id)) return null;
-  return { id: o.id, label: label(o.label, 60), kind: hostKind(o.kind), auth: authOf(o.auth) };
+  const source = importSource(o.source);
+  return { id: o.id, label: label(o.label, 60), kind: hostKind(o.kind), auth: authOf(o.auth),
+    ...(source ? { source, account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null } : {}) };
 }
 export function normGitHost(v: unknown): GitHostView | null {
   const o = obj(v);
@@ -1217,7 +1230,7 @@ export function normGitHost(v: unknown): GitHostView | null {
   const pub = typeof o.publicKey === 'string' && /^ssh-ed25519 [A-Za-z0-9+/]{68}={0,2}( [\x21-\x7e]{1,100})?$/.test(o.publicKey) ? o.publicKey : null;
   return {
     id: o.id, kind: hostKind(o.kind), label: label(o.label, 60), host: label(o.host, 253), port: count(o.port) || null, auth: authOf(o.auth), username: label(o.username, 100),
-    hasToken: o.hasToken === true, tokenSetAt: msTime(o.tokenSetAt), publicKey: pub, fingerprint: o.fingerprint ? label(o.fingerprint, 80) : null, keySetAt: msTime(o.keySetAt),
+    hasToken: o.hasToken === true, tokenSetAt: msTime(o.tokenSetAt), imported: authOf(o.auth) === 'token' ? normImported(o.imported) : null, publicKey: pub, fingerprint: o.fingerprint ? label(o.fingerprint, 80) : null, keySetAt: msTime(o.keySetAt),
     knownHosts: arr(o.knownHosts, 32).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })),
     builtinHostKeys: o.builtinHostKeys === true, ca: o.ca === true, claude: o.claude === true, claudeSince: msTime(o.claudeSince), createdAt: msTime(o.createdAt),
   };
@@ -1261,7 +1274,13 @@ export const newGitHostKey = async (id: string): Promise<GitHostView> => hostOf(
 export const setGitHostClaude = async (id: string, on: boolean): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/claude`, { on }));
 export const addGitHostKnown = async (id: string, lines: string): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/known`, { lines }));
 export const forgetGitHostKnown = async (id: string): Promise<GitHostView> => hostOf(await request('DELETE', `/api/git/hosts/${id}/known`));
-export const removeGitHost = async (id: string): Promise<void> => void (await request('DELETE', `/api/git/hosts/${id}`));
+// (a page the page may link: GitHub's or GitLab's, https — the backend builds it; checked again)
+const HTTPS_LINK = /^https:\/\/[a-z0-9.-]{1,253}(:[0-9]{1,5})?\/[\x21-\x7e]{1,400}$/;
+/** Remove a host: revokeAt — where to revoke its token on the host yourself (null: an SSH key, another server). */
+export async function removeGitHost(id: string): Promise<{ revokeAt: string | null }> {
+  const o = await request('DELETE', `/api/git/hosts/${id}`);
+  return { revokeAt: typeof o.revokeAt === 'string' && HTTPS_LINK.test(o.revokeAt) ? o.revokeAt : null };
+}
 export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
   const o = await request('POST', `/api/git/hosts/${id}/test`, { url });
   return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), host: normGitHost(o.host),
