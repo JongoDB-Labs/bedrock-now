@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-18
+
 ### Fixed
 
 - **An update could leave the portal unreachable** — "This site can't be reached" for `http://bedrock-now.localhost`,
@@ -1823,7 +1825,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.11.0...v0.12.0
