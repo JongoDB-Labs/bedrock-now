@@ -65,7 +65,6 @@
 .gitr-where { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
 .gitr-host { margin-left: 4px; }
 .gitr-actions .btn { gap: 4px; }
-.gitr-ab { font-variant-numeric: tabular-nums; }
 .gitr-more { margin-left: auto; display: inline-flex; }
 .gitr-net { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); }
 .gitr-pad { padding: 0 2px; }

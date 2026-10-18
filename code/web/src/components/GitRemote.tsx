@@ -109,11 +109,6 @@ export function RemoteBar({ st }: { st: GitStatus }) {
               </button>
             )
           )}
-          {sync.upstream && (
-            <span class="gitr-ab small muted" title={`As the last fetch saw ${label(sync.upstream.remote, 40)}/${label(sync.upstream.branch, 80)}`} data-testid="git-ab">
-              ↑{sync.ahead ?? 0} ↓{sync.behind ?? 0}
-            </span>
-          )}
           <span class="gitr-more">
             <button type="button" class="icon-btn" title="Git hosts: tokens and SSH keys for push, pull and clone" aria-label="Git hosts" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
               <Icon name="server" size={14} />

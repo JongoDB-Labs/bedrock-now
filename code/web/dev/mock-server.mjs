@@ -215,7 +215,8 @@ function gitStatusMock() {
     if (i !== undefined && !bufEq(i, f?.data)) unstaged.push({ path: x, code: !f ? 'D' : 'M', ...gitCounts(i, f?.data), mtimeMs: f?.mtimeMs ?? null, size: f?.data.length ?? 0, type: f ? 'file' : 'missing', watch: watchOf(x) });
     if (i === undefined && f) untracked.push({ path: x, add: gitCounts(undefined, f.data).add, mtimeMs: f.mtimeMs, size: f.data.length, type: 'file', watch: watchOf(x) });
   }
-  const st = { repo: true, reason: null, branch: 'main', detached: false, head: gitCommits[0]?.hash ?? null, upstream: 'origin/main', ahead: gitAhead, behind: 0, state: null,
+  const up = gitBranchesMock.find((b) => b.name === gitCurrent)?.upstream;
+  const st = { repo: true, reason: null, branch: gitCurrent, detached: false, head: gitCommits[0]?.hash ?? null, upstream: up ? `${up.remote}/${up.branch}` : null, ahead: up ? gitAhead : null, behind: up ? 0 : null, state: null,
     identity: MOCK_ID, staged, unstaged, untracked, conflicts: [], truncated: false };
   if (HOSTILE_MODE) {
     // what a hostile sandbox could answer: markup and bidi in names, paths out of the workspace, bad codes and counts
@@ -227,7 +228,119 @@ function gitStatusMock() {
   }
   return st;
 }
+// --- the Git panel's remotes and Git hosts (code/server/gitremote.mjs's API, in memory): one remote, origin on
+// github.com; Git hosts added here keep their token in memory only and never answer it; a plan, then a run
+let gitHostsMock = [];
+const gitEventsMock = [];
+let gitRemoteBranches = ['main'];
+let gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'main' } }];
+let gitCurrent = 'main';
+const gitPlans = new Map();
+const hostId = () => `h_${crypto.randomBytes(6).toString('hex')}`;
+const hostView = (h) => ({ id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username, hasToken: h.auth === 'token',
+  tokenSetAt: h.createdAt, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
+  builtinHostKeys: ['github.com', 'gitlab.com', 'bitbucket.org'].includes(h.host), ca: false, claude: h.claude === true, claudeSince: null, createdAt: h.createdAt });
+const gitEvent = (e) => { const ev = { id: crypto.randomBytes(6).toString('hex'), at: Date.now(), who: 'you', ok: true, text: '', ...e }; gitEventsMock.unshift(ev); return ev; };
+const mockHost = (scheme) => gitHostsMock.find((h) => h.host === 'github.com' && h.auth === (scheme === 'https' ? 'token' : 'ssh')) || null;
+const MOCK_URL = 'https://github.com/mock/app.git';
+function resetGitRemote() {
+  gitHostsMock = [];
+  gitEventsMock.length = 0;
+  gitRemoteBranches = ['main'];
+  gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'main' } }];
+  gitCurrent = 'main';
+  gitPlans.clear();
+}
+function gitRemoteMock() {
+  const h = mockHost('https');
+  const ref = { url: MOCK_URL, ok: true, display: 'github.com/mock/app', scheme: 'https', host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null };
+  return { repo: true, root: '', branch: gitCurrent, detached: false, head: gitCommits[0]?.hash ?? null, state: null, rewrites: 0,
+    remotes: [{ name: 'origin', urls: [MOCK_URL], pushUrls: [], multiple: false, fetch: ref, push: ref }],
+    branches: gitBranchesMock.map((b) => ({ name: b.name, head: gitCommits[0]?.hash ?? null, upstream: b.upstream, ahead: b.upstream ? (b.name === gitCurrent ? gitAhead : 0) : null, behind: b.upstream ? 0 : null, gone: false })),
+    remoteBranches: gitRemoteBranches.map((name) => ({ remote: 'origin', name })), remoteHeads: { origin: 'main' } };
+}
+async function gitRemotePanel(p, m, url, req) {
+  if (p === '/api/git/repos' && m === 'GET') return [200, { repos: gitRepo ? [{ path: '' }] : [] }];
+  if (p === '/api/git/hosts' && m === 'GET') return [200, { hosts: gitHostsMock.map(hostView), events: gitEventsMock.slice(0, 50), local: true }];
+  if (p === '/api/git/hosts' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (!['github', 'gitlab', 'other'].includes(b.kind) || !['token', 'ssh'].includes(b.auth)) return [400, { error: 'kind and auth, please' }];
+    if (b.auth === 'token' && (typeof b.token !== 'string' || b.token.length < 8)) return [400, { error: 'the access token, please (printable characters, no spaces)' }];
+    const host = (b.host || (b.kind === 'github' ? 'github.com' : b.kind === 'gitlab' ? 'gitlab.com' : '')).toLowerCase();
+    if (!host) return [400, { error: 'a host name, please' }];
+    const label = b.label || (b.kind === 'github' ? 'GitHub' : b.kind === 'gitlab' ? 'GitLab' : host);
+    const h = { id: hostId(), kind: b.kind, label, host, port: b.port ?? null, auth: b.auth, username: b.username || (b.auth === 'ssh' ? 'git' : b.kind === 'gitlab' ? 'oauth2' : 'x-access-token'), createdAt: Date.now() };
+    if (b.auth === 'ssh') { h.publicKey = `ssh-ed25519 ${Buffer.from(`\0\0\0\x0bssh-ed25519\0\0\0\x20${crypto.randomBytes(32).toString('binary')}`, 'binary').toString('base64')} bedrock-now-${label}`; h.fingerprint = `SHA256:${crypto.randomBytes(32).toString('base64').replace(/=+$/, '')}`; }
+    gitHostsMock.push(h);
+    gitEvent({ action: 'host', host: label, target: host, text: `connected with ${b.auth === 'token' ? 'an access token' : 'a new SSH key'}` });
+    return [200, { host: hostView(h) }];
+  }
+  let mm = p.match(/^\/api\/git\/hosts\/(h_[0-9a-f]{12})(?:\/(token|key|claude|test|known|ca))?$/);
+  if (mm) {
+    const h = gitHostsMock.find((x) => x.id === mm[1]);
+    if (!h) return [404, { error: 'no such git host' }];
+    if (!mm[2] && m === 'DELETE') { gitHostsMock = gitHostsMock.filter((x) => x !== h); return [200, { host: hostView(h) }]; }
+    const b = m === 'POST' ? await jsonBody(req) : {};
+    if (mm[2] === 'claude') { h.claude = b.on === true; return [200, { host: hostView(h) }]; }
+    if (mm[2] === 'token') return [200, { host: hostView(h) }];
+    if (mm[2] === 'key') return [200, { host: hostView(h) }];
+    if (mm[2] === 'test') { await sleep(300); gitEvent({ action: 'test', host: h.label, target: String(b.url || '').slice(0, 200), text: '2 branches listed' }); return [200, { ok: true, branches: 2, why: null, learned: [], host: hostView(h) }]; }
+    return [200, { host: hostView(h) }];
+  }
+  if (!gitRepo) return null;
+  if (p === '/api/git/remote' && m === 'GET') return [200, gitRemoteMock()];
+  if (m !== 'POST' || !['/api/git/branch', '/api/git/remote', '/api/git/plan', '/api/git/clone', '/api/git/run'].includes(p)) return null;
+  const b = await jsonBody(req);
+  if (p === '/api/git/branch') {
+    if (typeof b.name !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9._/+-]{0,199}$/.test(b.name)) return [400, { error: 'not a branch name git takes' }];
+    if (b.action === 'create') { if (gitBranchesMock.some((x) => x.name === b.name)) return [400, { error: 'a branch of that name exists already' }]; gitBranchesMock.push({ name: b.name, upstream: null }); }
+    else if (!gitBranchesMock.some((x) => x.name === b.name)) return [400, { error: 'no such local branch' }];
+    gitCurrent = b.name;
+    return [200, { ok: true }];
+  }
+  if (p === '/api/git/remote') return [200, { ok: true, added: false }];
+  if (p === '/api/git/plan' || p === '/api/git/clone') {
+    const action = p === '/api/git/clone' ? 'clone' : b.action;
+    const h = mockHost('https');
+    if ((action === 'push' || action === 'publish') && !h) return [400, { error: 'github.com is not a connected git host: connect it (Git hosts) with an access token to push over https' }];
+    const cur = gitBranchesMock.find((x) => x.name === gitCurrent);
+    const dst = action === 'publish' ? gitCurrent : cur?.upstream?.branch ?? gitCurrent;
+    if (action === 'push' && !cur?.upstream) return [400, { error: `${gitCurrent} tracks no branch of origin yet: publish it` }];
+    const via = h ? `HTTPS token '${h.label}'` : 'no credential (a public repository)';
+    const display = action === 'clone' ? String(b.url || '').replace(/^https:\/\//, '').replace(/\.git$/, '') : 'github.com/mock/app';
+    const newBranch = !gitRemoteBranches.includes(dst);
+    const summary = action === 'clone' ? `Clone ${display} into ${b.target ? `${b.target}/` : 'the workspace folder'} via ${via}`
+      : action === 'fetch' ? `Fetch origin ← github.com/mock/app via ${via}` : action === 'pull' ? `Pull ${dst} of github.com/mock/app into ${gitCurrent} (a fast-forward only) via ${via}`
+        : `${action === 'publish' ? 'Publish' : 'Push'} ${gitCurrent} → github.com/mock/app (${dst}${newBranch ? ', a new branch there' : ''}) via ${via}`;
+    const planId = crypto.randomBytes(16).toString('hex');
+    gitPlans.set(planId, { action, dst, target: b.target ?? '' });
+    return [200, { planId, action, repo: '', remote: action === 'clone' ? null : 'origin', url: action === 'clone' ? b.url : MOCK_URL, display, scheme: 'https', branch: action === 'clone' ? null : gitCurrent,
+      dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null, auth: h ? 'token' : 'none', summary,
+      confirm: true, target: action === 'clone' ? b.target ?? '' : null, depth: b.depth ?? null }];
+  }
+  if (p === '/api/git/run') {
+    const pl = gitPlans.get(b.planId);
+    gitPlans.delete(b.planId);
+    if (!pl) return [409, { error: 'that confirmation is out of date: look again' }];
+    await sleep(500);
+    gitEvent({ action: pl.action, host: mockHost('https')?.label ?? '', target: `github.com/mock/app (${gitCurrent} → ${pl.dst})` });
+    if (pl.action === 'push' || pl.action === 'publish') {
+      const created = !gitRemoteBranches.includes(pl.dst);
+      if (created) gitRemoteBranches.push(pl.dst);
+      const cur = gitBranchesMock.find((x) => x.name === gitCurrent);
+      if (cur) cur.upstream = { remote: 'origin', branch: pl.dst };
+      gitAhead = 0;
+      return [200, { ok: true, action: pl.action, display: 'github.com/mock/app', branch: gitCurrent, dst: pl.dst, created, upToDate: false, sha: gitCommits[0]?.hash,
+        prLink: pl.dst === 'main' ? null : `https://github.com/mock/app/pull/new/${pl.dst}` }];
+    }
+    if (pl.action === 'clone') return [200, { ok: true, action: 'clone', display: 'github.com/mock/app', path: pl.target, shallow: false }];
+    return [200, { ok: true, action: pl.action, display: 'github.com/mock/app', updated: false }];
+  }
+  return null;
+}
 async function gitPanel(p, m, url, req) {
+  const remote = await gitRemotePanel(p, m, url, req);
+  if (remote) return remote;
   if (!gitRepo) {
     if (p === '/api/git/status') return [200, { repo: false, reason: 'not a git repository', staged: [], unstaged: [], untracked: [], conflicts: [] }];
     if (p === '/api/git/log') return [200, { repo: false, reason: 'not a git repository', commits: [] }];
@@ -2156,6 +2269,7 @@ const server = http.createServer(async (req, res) => {
         permUser = PERM_USER();
         resetLaunch();
         resetRun();
+        resetGitRemote();
         runShown.length = 0;
         mockPorts.clear();
         checkpoints.clear();
