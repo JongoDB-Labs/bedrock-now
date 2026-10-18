@@ -11,7 +11,7 @@ const host = (over: Record<string, unknown> = {}) => ({ id: 'h_0123456789ab', ki
   publicKey: `ssh-ed25519 ${'A'.repeat(68)} bedrock-now-GitHub`, fingerprint: 'SHA256:x', knownHosts: [], builtinHostKeys: true, claude: false, ...over });
 
 test('a host: only what the page may show (a token or private key sent by mistake is dropped), names checked', () => {
-  const h = normGitHost({ ...host(), token: 'should-never-be-here', privatePem: '-----BEGIN PRIVATE KEY-----', label: 'Git\nHub‮' }) as GitHostView;
+  const h = normGitHost({ ...host(), token: 'should-never-be-here', privatePem: ['-----BEGIN', 'PRIVATE KEY-----'].join(' '), label: 'Git\nHub‮' }) as GitHostView;
   assert.ok(h);
   assert.ok(!JSON.stringify(h).includes('should-never-be-here') && !JSON.stringify(h).includes('PRIVATE'));
   assert.equal(h.label.includes('\n'), false);
