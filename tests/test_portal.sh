@@ -65,6 +65,11 @@ _stub_up() {
   portal_login() { echo 303; }; aws_auth_check() { :; }   # (tested in test_host.sh)
   dc() { :; }; refresh_prices() { :; }   # never the real Compose project (it may be a live install)
   owui_apply_hidden() { :; }   # (lib/owui.sh: tested in test_settings.sh)
+  # never this checkout's litellm/ either (STACK_DIR is the checkout): in one that ran setup, the re-render would copy
+  # LiteLLM's hook into it whenever lib/litellm-hooks/bn_hooks.py had changed (right after a pull) and write a temp
+  # config next to it (tested with a folder of their own in test_price_updates.sh, test_stt.sh, test_openrouter.sh)
+  config_prices_line() { echo p; }; stt_up_hook() { return 1; }; reprice_litellm_config() { return 1; }
+  openrouter_up_hook() { :; }
 }
 
 test_up_rewrites_portal_origin() {
