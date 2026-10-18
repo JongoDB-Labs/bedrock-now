@@ -6,6 +6,12 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tests:** right after a pull that changed LiteLLM's hook, the shell suite failed once with an unnamed live-state
+  guard (a `./stack up` test re-rendered into the checkout's `litellm/`). It no longer does; `tests/run.sh` names the
+  test that trips a guard and lists every failure on its last line.
+
 ## [0.11.0] - 2026-10-17
 
 ### Added
