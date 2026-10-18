@@ -35,8 +35,8 @@
 // /__mock/git-signin?action=approve|deny|expire|end&account= plays the user (and the provider) for the Git hosts
 // dialog's sign-in in progress: approved (as account), declined, expired; end: a signed-in host's sign-in ended (Sign in
 // again); /__mock/git-signin?app=0 is a stack with no GitHub App set up.
-// /__mock/git-said?text= is a hostile sandbox: git operations and Test connection fail in its words (as gitremote.mjs
-// labels them: said, apart, with the fixed line); /__mock/git-said with no text ends it.
+// /__mock/git-said?text= is a hostile sandbox: push, pull, fetch, clone, Test connection, stage and commit fail in its
+// words (as main.mjs answers them: a fixed sentence of ours, its words apart — said); /__mock/git-said ends it.
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -243,10 +243,12 @@ let gitRemoteBranches = ['main'];
 let gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'main' } }];
 let gitCurrent = 'main';
 const gitPlans = new Map();
-// a hostile sandbox's words (/__mock/git-said): its failures labelled as gitremote.mjs does — never as a sentence of ours
+// a hostile sandbox's words (/__mock/git-said): its failures answered as main.mjs does — a fixed sentence of ours, its
+// words apart (said) — never in a sentence of ours
 let gitSaid = '';
 const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
-const saidLabel = (t) => `git in the sandbox said: “${t}”`;
+const GIT_SAID = 'git in the sandbox refused';
+const sandboxWords = (said) => ({ error: GIT_SAID, said, saidBy: 'git', neverAsks: NEVER_ASKS });
 const hostId = () => `h_${crypto.randomBytes(6).toString('hex')}`;
 const hostView = (h) => ({ id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username, hasToken: h.auth !== 'ssh' && !h.oauth?.needsSignIn,
   tokenSetAt: h.createdAt, imported: h.imported ?? null, oauth: h.oauth ?? null, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
@@ -339,8 +341,8 @@ async function gitRemotePanel(p, m, url, req) {
     if (mm[2] === 'key') return [200, { host: hostView(h) }];
     if (mm[2] === 'test' && gitSaid) {
       await sleep(300);
-      gitEvent({ action: 'test', host: h.label, target: String(b.url || '').slice(0, 200), ok: false, text: saidLabel(gitSaid) });
-      return [200, { ok: false, branches: null, why: saidLabel(gitSaid), said: gitSaid, neverAsks: NEVER_ASKS, learned: [], host: hostView(h) }];
+      gitEvent({ action: 'test', host: h.label, target: String(b.url || '').slice(0, 200), ok: false, text: 'the test did not pass', said: gitSaid });
+      return [200, { ok: false, branches: null, why: 'the test did not pass', said: gitSaid, saidBy: 'git', neverAsks: NEVER_ASKS, learned: [], host: hostView(h) }];
     }
     if (mm[2] === 'test') { await sleep(300); gitEvent({ action: 'test', host: h.label, target: String(b.url || '').slice(0, 200), text: '2 branches listed' }); return [200, { ok: true, branches: 2, why: null, learned: [], host: hostView(h) }]; }
     return [200, { host: hostView(h) }];
@@ -384,8 +386,8 @@ async function gitRemotePanel(p, m, url, req) {
     if (!pl) return [409, { error: 'that confirmation is out of date: look again' }];
     await sleep(500);
     if (gitSaid) {
-      gitEvent({ action: pl.action, host: mockHost('https')?.label ?? '', target: 'github.com/mock/app', ok: false, text: saidLabel(gitSaid) });
-      return [400, { error: `${saidLabel(gitSaid)} (${NEVER_ASKS})`, said: gitSaid, neverAsks: NEVER_ASKS }];
+      gitEvent({ action: pl.action, host: mockHost('https')?.label ?? '', target: 'github.com/mock/app', ok: false, text: GIT_SAID, said: gitSaid });
+      return [400, sandboxWords(gitSaid)];
     }
     gitEvent({ action: pl.action, host: mockHost('https')?.label ?? '', target: `github.com/mock/app (${gitCurrent} → ${pl.dst})` });
     if (pl.action === 'push' || pl.action === 'publish') {
@@ -437,6 +439,7 @@ async function gitPanel(p, m, url, req) {
     if (b.all === true) return which();
     return Array.isArray(b.paths) && b.paths.length && b.paths.length <= 100 && b.paths.every(relOk) ? b.paths : null;
   };
+  if ((p === '/api/git/stage' || p === '/api/git/commit') && gitSaid) return [400, sandboxWords(gitSaid)];
   if (p === '/api/git/stage') {
     const st = gitStatusMock();
     const list = targets(() => [...st.unstaged, ...st.untracked].filter((e) => e && relOk(e.path)).map((e) => e.path));
@@ -445,7 +448,7 @@ async function gitPanel(p, m, url, req) {
       const f = fsState.get(x);
       if (f) gitIndex.set(x, Buffer.from(f.data));
       else if (gitIndex.has(x)) gitIndex.delete(x);
-      else return [400, { error: `git add: pathspec '${x}' did not match any files` }];
+      else return [400, sandboxWords(`git add: pathspec '${x}' did not match any files`)];
     }
     return [200, { ok: true }];
   }
@@ -486,7 +489,7 @@ async function gitPanel(p, m, url, req) {
     const x = b.path;
     if (!relOk(x)) return [400, { error: 'bad path' }];
     const f = fsState.get(x), i = gitIndex.get(x);
-    if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && (f ? f.mtimeMs : null) !== b.ifMtimeMs) return [409, { error: 'changed on disk since it was shown' }];
+    if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && (f ? f.mtimeMs : null) !== b.ifMtimeMs) return [409, sandboxWords('changed on disk since it was shown')];
     const stamp = Date.now().toString(36);
     const trash = () => {
       fsState.set(`.bedrock-now-trash/${stamp}/${x}`, f);

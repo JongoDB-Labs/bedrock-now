@@ -371,7 +371,9 @@ export class GitHosts {
   // many of Claude's (a flood of Claude's never pushes yours out, nor the other way)
   event(e) {
     const ev = { id: crypto.randomBytes(6).toString('hex'), at: this.now(), who: e.who === 'claude' ? 'claude' : 'you', action: String(e.action || '').slice(0, 20),
-      host: String(e.host || '').slice(0, 60), target: String(e.target || '').slice(0, 300), ok: e.ok !== false, text: String(e.text || '').slice(0, 300) };
+      host: String(e.host || '').slice(0, 60), target: String(e.target || '').slice(0, 300), ok: e.ok !== false, text: String(e.text || '').slice(0, 300),
+      // (said: a failure's words from git in the sandbox — the page shows them apart, never as a text of ours)
+      ...(typeof e.said === 'string' && e.said ? { said: e.said.slice(0, 300) } : {}) };
     this.update((v) => {
       v.events.push(ev);
       const mine = v.events.filter((x) => x.who === ev.who);

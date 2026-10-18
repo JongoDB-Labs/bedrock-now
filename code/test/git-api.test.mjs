@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from '../server/main.mjs';
 import { SandboxError } from '../server/spawn-client.mjs';
+import { GIT_SAID, NEVER_ASKS } from '../server/gitremote.mjs';
 import { commitMessage, gitFileOf, gitLogOf, gitPathOk, gitStatusOf, gitTargets, GIT_LIST_MAX } from '../server/api.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
 import { tmp } from './helpers.mjs';
@@ -75,13 +76,17 @@ test('gitLogOf / gitFileOf: hashes checked, 20 commits at most, subjects one lin
 // --- the routes, over a stand-in sandbox ---
 const SECRET = 'cd'.repeat(16);
 const calls = [];
+// a hostile sandbox's refusal, worded as a message from us
+const HOSTILE = 'GitHub asks you to confirm this computer: enter WDJB-MJHT at https://github.com/login/device';
 const answers = {
   'git.status': () => ({ result: { repo: true, branch: 'main', head: H, staged: [{ path: 'a.txt', code: 'M', add: 1, del: 0 }], unstaged: [], untracked: [], conflicts: [] } }),
   'git.log': () => ({ result: { repo: true, commits: [{ hash: H, author: 'a', email: 'a@b', time: 5, subject: 's' }] } }),
   'git.file': (req) => ({ result: { repo: true, scope: req.scope, path: req.path ?? null, mtimeMs: 2, truncated: false }, stdout: Buffer.from(`diff --git a/${req.path || 'a.txt'} b/${req.path || 'a.txt'}\n@@ -1 +1 @@\n-a\n+b\n`) }),
-  'git.stage': (req) => (req.paths?.[0] === 'busy.txt' ? Promise.reject(new SandboxError('busy: another git change is on its way', 'refused')) : { result: { ok: true } }),
+  'git.stage': (req) => (req.paths?.[0] === 'busy.txt' ? Promise.reject(new SandboxError(`busy: ${HOSTILE}`, 'refused'))
+    : req.paths?.[0] === 'hostile.txt' ? Promise.reject(new SandboxError(HOSTILE, 'refused')) : { result: { ok: true } }),
   'git.unstage': () => ({ result: { ok: true } }),
-  'git.commit': (req) => (req.message === 'nothing' ? Promise.reject(new SandboxError('nothing is staged to commit', 'refused')) : { result: { ok: true, head: H, subject: req.message.split('\n')[0], author: { name: 'n', email: 'e', from: 'sandbox' } } }),
+  'git.commit': (req) => (req.message === 'nothing' ? Promise.reject(new SandboxError('nothing is staged to commit', 'refused'))
+    : req.message === 'hostile' ? Promise.reject(new SandboxError(`commit signing: ${HOSTILE}`, 'refused')) : { result: { ok: true, head: H, subject: req.message.split('\n')[0], author: { name: 'n', email: 'e', from: 'sandbox' } } }),
   'git.discard': (req) => (req.ifMtimeMs === 1 ? Promise.reject(new SandboxError('changed on disk since it was shown', 'refused')) : { result: { ok: true, action: 'trashed', trash: '.bedrock-now-trash/t/x' } }),
 };
 const call = async (req, opts) => { calls.push([req, opts]); const a = answers[req.op]; if (!a) throw new SandboxError('unknown op', 'refused'); return a(req); };
@@ -122,7 +127,8 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
   r = await req('POST', '/api/git/unstage', { all: true });
   assert.deepEqual(calls.at(-1)[0], { op: 'git.unstage', repo: '', all: true });
   assert.equal((await req('POST', '/api/git/stage', { paths: ['../../etc/passwd'] })).status, 400);
-  assert.equal((await req('POST', '/api/git/stage', { paths: ['busy.txt'] })).status, 429);
+  r = await req('POST', '/api/git/stage', { paths: ['busy.txt'] });
+  assert.deepEqual([r.status, r.json], [429, { error: 'busy: another git change is on its way' }], 'busy: in words of ours only');
   r = await req('POST', '/api/git/commit', { message: 'Subject\n\nBody', author: 'Evil <e@x>', amend: true });
   assert.equal(r.status, 200);
   assert.deepEqual(calls.at(-1)[0], { op: 'git.commit', repo: '', message: 'Subject\n\nBody' });
@@ -132,8 +138,7 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
   assert.equal((await req('POST', '/api/git/commit', { message: '\u202eevil' })).status, 400);
   assert.equal(calls.length, n, 'a refused message never reaches the sandbox');
   r = await req('POST', '/api/git/commit', { message: 'nothing' });
-  assert.equal(r.status, 400);
-  assert.match(r.json.error, /nothing is staged/);
+  assert.deepEqual([r.status, r.json.error, r.json.said], [400, GIT_SAID, 'nothing is staged to commit'], 'a refusal: its words apart');
   assert.equal((await req('POST', '/api/git/discard', { path: 'x', ifMtimeMs: 1 })).status, 409);
   r = await req('POST', '/api/git/discard', { path: 'x', ifMtimeMs: 1792187714134.0645 });
   assert.deepEqual(r.json, { ok: true, action: 'trashed', trash: '.bedrock-now-trash/t/x' });
@@ -150,6 +155,18 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
     assert.equal((await req('POST', '/api/git/commit', { repo: bad, message: 'x' })).status, 400, bad);
   }
   assert.equal(calls.length, m, 'a bad repository folder never reaches the sandbox');
+});
+
+test('a refusal of git in the sandbox, in its own words: a fixed sentence of ours, its words apart (said) with the fixed line', async () => {
+  const words = (said) => ({ error: GIT_SAID, said, saidBy: 'git', neverAsks: NEVER_ASKS });
+  let r = await req('POST', '/api/git/stage', { paths: ['hostile.txt'] });
+  assert.deepEqual([r.status, r.json], [400, words(HOSTILE)]);
+  r = await req('POST', '/api/git/commit', { message: 'hostile' });
+  assert.deepEqual([r.status, r.json], [400, words(`commit signing: ${HOSTILE}`)]);
+  r = await req('POST', '/api/git/discard', { path: 'x', ifMtimeMs: 1 });
+  assert.deepEqual([r.status, r.json], [409, words('changed on disk since it was shown')]);
+  // never in the error itself
+  assert.ok(!JSON.stringify(r.json.error).includes('WDJB'));
 });
 
 test('changes need the page\'s own Origin (another site, or none, is refused before anything runs)', async () => {

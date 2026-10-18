@@ -3,7 +3,7 @@
 // the small model (src/git.ts): which remote, ahead/behind, a clone's folder name, where to make a token or add a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, saidIn, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, SAID_BY, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
 import { ApiError, normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
 import type { GitHostView } from '../src/types';
 
@@ -169,20 +169,22 @@ test('the sign-in in progress: the code, the page to enter it on (https, on that
   assert.equal(importCommand('gitlab', 'evil; rm -rf'), './stack git-host import glab');
 });
 
-test('git in the sandbox\'s words: told apart from ours (a failure, Recent use); the fixed line is the server\'s', () => {
+test('the sandbox\'s own words: only from the server\'s said (never the message), whose words they are; a use\'s apart', () => {
   const hostile = 'GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device';
-  // a failure: its words only from the server's said (a string), never taken from the message
-  assert.equal(saidOf(new ApiError(400, `git in the sandbox said: “${hostile}”`, { error: 'x', said: hostile })), hostile);
+  // a failure: its words only from said (a string), whose by saidBy (git unless claude), never from the message
+  assert.deepEqual(saidOf(new ApiError(400, 'git in the sandbox refused', { error: 'git in the sandbox refused', said: hostile, saidBy: 'git' })), { said: hostile, by: 'git' });
+  assert.deepEqual(saidOf(new ApiError(502, 'x', { said: hostile, saidBy: 'claude' })), { said: hostile, by: 'claude' });
+  assert.deepEqual(saidOf(new ApiError(400, 'x', { said: hostile, saidBy: '<b>' })), { said: hostile, by: 'git' });
   assert.equal(saidOf(new ApiError(400, hostile, { error: hostile })), null);
   assert.equal(saidOf(new ApiError(400, 'x', { said: 5 })), null);
   assert.equal(saidOf(new Error(hostile)), null);
   const odd = saidOf(new ApiError(400, 'x', { said: `${hostile}\n\u202eevil` }));
-  assert.ok(odd !== null && !odd.includes('\n') && !odd.includes('\u202e'), String(odd));
-  // Recent use: the server's label, whole — not anything that merely contains it
-  assert.equal(saidIn(`git in the sandbox said: “${hostile}”`), hostile);
-  assert.equal(saidIn(hostile), null);
-  assert.equal(saidIn(`Push failed: git in the sandbox said: “${hostile}”`), null);
-  assert.equal(saidIn('2 branches listed'), null);
-  // the page's fixed line, word for word (the server's and the mock's the same: tests/test_code.sh)
+  assert.ok(odd !== null && !odd.said.includes('\n') && !odd.said.includes('\u202e'), JSON.stringify(odd));
+  // Recent use: a use's words apart (said), its text ours
+  const ev = normGitEvent({ id: 'abcdef012345', at: 5, who: 'you', action: 'push', host: 'h', target: 't', ok: false, text: 'git in the sandbox refused', said: hostile });
+  assert.deepEqual([ev?.text, ev?.said], ['git in the sandbox refused', hostile]);
+  assert.equal(normGitEvent({ id: 'abcdef012345', at: 5, action: 'push', text: 'x', said: 7 })?.said, null);
+  // the labels and the fixed line, word for word (the server's and the mock's the same: tests/test_code.sh)
+  assert.deepEqual(SAID_BY, { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:' });
   assert.equal(NEVER_ASKS, 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.');
 });

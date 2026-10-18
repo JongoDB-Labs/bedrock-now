@@ -32,6 +32,7 @@ import { Icon, Spinner } from './icons';
 import { ReadOnlyHunks } from './Review';
 import { Dialog, useMedia } from './ui';
 import { GitDialogs, NoRepoActions, RemoteBar, RepoPicker } from './GitRemote';
+import { SandboxSaid } from './Said';
 
 type Kind = 'staged' | 'unstaged' | 'untracked' | 'conflicts';
 const PAGE = 200;
@@ -41,6 +42,7 @@ export function GitPanel() {
   const st = useSel(store, (s) => s.git.status);
   const loading = useSel(store, (s) => s.git.loading);
   const error = useSel(store, (s) => s.git.error);
+  const errorSaid = useSel(store, (s) => s.git.errorSaid ?? null);
   const busy = useSel(store, (s) => s.git.busy);
   const [ask, setAsk] = useState<{ e: GitEntry; kind: Kind } | null>(null);
   // shown (also by a layout remembered from last time): git is asked now, and again after each turn
@@ -61,6 +63,7 @@ export function GitPanel() {
       {error && (
         <div class="banner subtle small" role="alert" data-testid="git-error">
           {label(error, 300)}
+          {errorSaid && <SandboxSaid words={errorSaid} />}
         </div>
       )}
       {!st ? (
@@ -443,7 +446,10 @@ export function GitDiffPane({ tab, active }: { tab: GitDiffTab; active: boolean 
       </div>
       <div class="rv-body">
         {tab.error ? (
-          <div class="pane-msg err">{label(tab.error, 300)}</div>
+          <div class="pane-msg err">
+            {label(tab.error, 300)}
+            {tab.said && <SandboxSaid words={tab.said} />}
+          </div>
         ) : !f ? (
           <div class="pane-msg" data-testid="git-diff-empty">
             {tab.loading ? 'Asking git…' : `No ${tab.scope === 'staged' ? 'staged' : 'unstaged'} changes in this file (any more).`}

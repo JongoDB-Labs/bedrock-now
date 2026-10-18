@@ -27,6 +27,7 @@ import { label, safe } from '../text';
 import type { Hunk } from '../types';
 import { Icon, Spinner } from './icons';
 import { Dialog, useMedia } from './ui';
+import { SandboxSaid } from './Said';
 import { addDiff } from '../attach';
 
 const FILES_PAGE = 20;
@@ -104,6 +105,7 @@ export function ReviewPane({ active }: { active: boolean }) {
               : st.loading
                 ? 'Asking git what changed…'
                 : "Claude's own edits in this session."}
+        {source !== 'git' && !(st.git && !st.git.repo) && st.error && st.errorSaid && <SandboxSaid words={st.errorSaid} />}
         {git?.truncated && <span class="warn-text"> Not every change could be listed (the diff is larger than 6 MB): the rest is in the terminal (git diff).</span>}
         {git?.timedOut && <span class="warn-text"> git took too long: the list may be incomplete.</span>}
       </div>

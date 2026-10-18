@@ -25,8 +25,9 @@ import {
   toast,
 } from '../app';
 import * as api from '../api';
-import type { GitAuth, GitHostKind, GitHostView, GitPlan, GitRemoteState, GitSignInConfig, GitSignInFlow, GitStatus } from '../types';
-import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, saidIn, signInLife, signInReach, signInReady, syncState } from '../git';
+import type { GitAuth, GitHostKind, GitHostView, GitPlan, GitRemoteState, GitSignInConfig, GitSignInFlow, GitStatus, SandboxWords } from '../types';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState } from '../git';
+import { SandboxSaid } from './Said';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
@@ -450,38 +451,26 @@ export function GitHostsDialog({ onClose }: { onClose: () => void }) {
       {events.length > 0 && (
         <details class="gitr-events small" data-testid="git-events">
           <summary>Recent use ({events.length})</summary>
+          {/* (the fixed line above the list, when any use's failure is in the sandbox's words: those apart, each in its box) */}
+          {events.slice(0, 30).some((e) => e.said !== null) && <p class="said-never" data-testid="git-events-never">{NEVER_ASKS}</p>}
           <ul role="list">
-            {events.slice(0, 30).map((e) => {
-              const said = e.text ? saidIn(e.text) : null;
-              return (
-                <li key={e.id} class={e.ok ? '' : 'warn-text'}>
-                  <span class="muted">{ago(e.at)}</span> {e.who === 'claude' ? <strong>Claude</strong> : 'You'} · {label(e.action, 20)} · {label(e.host, 60)} {label(e.target, 200)}
-                  {said !== null ? <> — <span class="said-who">git in the sandbox said:</span> <q class="said-text" data-testid="git-event-said">{label(said, 200)}</q></>
-                    : e.text ? ` — ${label(e.text, 200)}` : ''}
-                </li>
-              );
-            })}
+            {events.slice(0, 30).map((e) => (
+              <li key={e.id} class={e.ok ? '' : 'warn-text'}>
+                <span class="muted">{ago(e.at)}</span> {e.who === 'claude' ? <strong>Claude</strong> : 'You'} · {label(e.action, 20)} · {label(e.host, 60)} {label(e.target, 200)}
+                {e.text ? ` — ${label(e.text, 200)}` : ''}
+                {e.said !== null && <SandboxSaid words={{ said: e.said, by: 'git' }} compact never={false} />}
+              </li>
+            ))}
           </ul>
-          {events.slice(0, 30).some((e) => e.text && saidIn(e.text) !== null) && <p class="said-never" data-testid="git-events-never">{NEVER_ASKS}</p>}
         </details>
       )}
     </Dialog>
   );
 }
 
-/** What git in the sandbox said: apart and labelled as its words — never as a sentence of ours — with NEVER_ASKS. */
-export function SandboxSaid({ said }: { said: string }) {
-  return (
-    <div class="said" data-testid="sandbox-said">
-      <span class="said-who">git in the sandbox said:</span> <q class="said-text" data-testid="sandbox-said-text">{label(said, 300)}</q>
-      <span class="said-never" data-testid="sandbox-said-never">{NEVER_ASKS}</span>
-    </div>
-  );
-}
-
 function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote: GitRemoteState | null }) {
   const [testUrl, setTestUrl] = useState('');
-  const [result, setResult] = useState<{ text: string; said: string | null } | null>(null);
+  const [result, setResult] = useState<{ text: string; said: SandboxWords | null } | null>(null);
   const [testing, setTesting] = useState(false);
   const [token, setToken] = useState('');
   const [replacing, setReplacing] = useState(false);
@@ -658,7 +647,7 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
       {result && (
         <div class="small gitr-result" role="status" data-testid="git-host-test-result">
           {label(result.text, 600)}
-          {result.said !== null && <SandboxSaid said={result.said} />}
+          {result.said !== null && <SandboxSaid words={result.said} />}
         </div>
       )}
       <div class="gitr-claude small">

@@ -642,6 +642,14 @@ export interface GitEvent {
   target: string;
   ok: boolean;
   text: string;
+  /** a failure's words from git in the sandbox: shown apart (SandboxSaid), never as a text of ours */
+  said: string | null;
+}
+/** A failure in the sandbox's own words (the server's said, saidBy): shown apart and labelled, under NEVER_ASKS —
+ *  never as a sentence of ours. by: whose words — git's, or Claude Code's (Write message's helper). */
+export interface SandboxWords {
+  said: string;
+  by: 'git' | 'claude';
 }
 export interface GitHostRef {
   id: string;

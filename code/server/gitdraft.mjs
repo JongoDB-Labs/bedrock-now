@@ -147,8 +147,9 @@ export function draftOptions({ id, model, spawn, abortController, log = () => {}
 /** The flag settings the helper gets before its prompt: auto mode off, and every tool name denied. */
 export const DRAFT_FLAGS = Object.freeze({ disableAutoMode: 'disable', permissions: { deny: [...DRAFT_DENY] } });
 
+// said: Claude Code's own words (from the sandbox) — shown apart, never in a sentence of ours
 export class DraftError extends Error {
-  constructor(message, status = 502) { super(message); this.status = status; }
+  constructor(message, status = 502, said = null) { super(message); this.status = status; this.said = said; }
 }
 /** runDraft({query, spawn, model, prompt}) -> {message, denied, turns}: one process, one prompt, its answer's message.
  *  spawn(options, extra) is the code container's sandbox spawn (mgr.spawn); a test passes its own query/spawn. */
@@ -170,7 +171,7 @@ export async function runDraft({ query, spawn, model, prompt, timeoutMs = DRAFT_
     yield { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' };
     await finished;
   }
-  let answer = '', denied = 0, turns = 0, refused = '', result = null;
+  let answer = '', denied = 0, turns = 0, refused = null, result = null;
   try {
     q = query({ prompt: input(), options });
     flagged = Promise.resolve(q.applyFlagSettings?.(DRAFT_FLAGS)).catch((e) => {
@@ -182,7 +183,7 @@ export async function runDraft({ query, spawn, model, prompt, timeoutMs = DRAFT_
       if (m.type === 'system' && m.subtype === 'init') {
         const tools = Array.isArray(m.tools) ? m.tools.filter((t) => typeof t === 'string') : [];
         // fail closed: the helper must have no tool at all
-        if (tools.length) { refused = `Claude Code offered the helper tools (${tools.slice(0, 5).join(', ')}): stopped`; stop(); break; }
+        if (tools.length) { refused = tools.slice(0, 5).join(', ').slice(0, 300); stop(); break; }
       } else if (m.type === 'assistant' && m.parent_tool_use_id == null) {
         const blocks = Array.isArray(m.message?.content) ? m.message.content : [];
         const text = blocks.filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('');
@@ -196,16 +197,16 @@ export async function runDraft({ query, spawn, model, prompt, timeoutMs = DRAFT_
       }
     }
   } catch (e) {
-    if (!abortController.signal.aborted) throw new DraftError(`Claude Code: ${String(e?.message || e).slice(0, 200)}`);
+    if (!abortController.signal.aborted) throw new DraftError('Claude Code stopped with an error', 502, String(e?.message || e).slice(0, 200));
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', stop);
     done();
     try { q?.close?.(); } catch { /* ended */ }
   }
-  if (refused) throw new DraftError(refused);
+  if (refused !== null) throw new DraftError('Claude Code offered the helper tools: stopped', 502, refused);
   if (!result) throw new DraftError(signal?.aborted ? 'cancelled' : 'Claude Code took too long to propose a message', signal?.aborted ? 499 : 504);
   const message = proposedMessage(answer);
-  if (!message) throw new DraftError(result.is_error ? `Claude Code stopped: ${String(result.subtype || 'error').slice(0, 60)}` : 'Claude\'s answer had no commit message in it');
+  if (!message) throw result.is_error ? new DraftError('Claude Code stopped', 502, String(result.subtype || 'error').slice(0, 60)) : new DraftError('Claude\'s answer had no commit message in it');
   return { message, denied, turns };
 }

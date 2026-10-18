@@ -18,71 +18,7 @@ import {
   num,
   safe,
 } from './text';
-import type {
-  AvailablePlugin,
-  BnModel,
-  Compat,
-  Catalog,
-  KeyBudget,
-  RuleLine,
-  CliModel,
-  Command,
-  ContextUsage,
-  EditInfo,
-  Ev,
-  FileData,
-  FsEntry,
-  GitBranch,
-  GitCommit,
-  GitEntry,
-  GitEvent,
-  GitFile,
-  GitFileDiff,
-  GitHostRef,
-  GitHostView,
-  GitImported,
-  GitOAuthView,
-  GitSignInConfig,
-  GitSignInFlow,
-  GitIdentity,
-  GitPlan,
-  GitRemote,
-  GitRemoteState,
-  GitRemoteUrl,
-  GitReview,
-  GitRunResult,
-  GitScope,
-  GitStatus,
-  GrepResult,
-  Hunk,
-  ImageBlock,
-  InitInfo,
-  InstalledPlugin,
-  LoadedPlugin,
-  Marketplace,
-  McpServer,
-  Mode,
-  LaunchEntry,
-  LaunchList,
-  OpenSession,
-  Outcome,
-  PermissionReq,
-  PortInfo,
-  PreviewInfo,
-  PreviewLink,
-  RunList,
-  RunResult,
-  RunSource,
-  RunSourceInfo,
-  RunTask,
-  ServerMsg,
-  ServerState,
-  SessionInfo,
-  SessionState,
-  SpendRow,
-  Suggestion,
-  WatchChange,
-} from './types';
+import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, CliModel, Command, ContextUsage, EditInfo, Ev, FileData, FsEntry, GitBranch, GitCommit, GitEntry, GitEvent, GitFile, GitFileDiff, GitHostRef, GitHostView, GitImported, GitOAuthView, GitSignInConfig, GitSignInFlow, GitIdentity, GitPlan, GitRemote, GitRemoteState, GitRemoteUrl, GitReview, GitRunResult, GitScope, GitStatus, GrepResult, Hunk, ImageBlock, InitInfo, InstalledPlugin, LoadedPlugin, Marketplace, McpServer, Mode, LaunchEntry, LaunchList, OpenSession, Outcome, PermissionReq, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunSource, RunSourceInfo, RunTask, ServerMsg, ServerState, SessionInfo, SessionState, SpendRow, Suggestion, WatchChange, SandboxWords } from './types';
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
@@ -1263,7 +1199,8 @@ export function normGitEvent(v: unknown): GitEvent | null {
   if (!o || typeof o.id !== 'string' || !/^[0-9a-f]{12}$/.test(o.id)) return null;
   const at = msTime(o.at);
   if (at === null) return null;
-  return { id: o.id, at, who: o.who === 'claude' ? 'claude' : 'you', action: label(o.action, 20), host: label(o.host, 60), target: label(o.target, 300), ok: o.ok !== false, text: label(o.text, 300) };
+  return { id: o.id, at, who: o.who === 'claude' ? 'claude' : 'you', action: label(o.action, 20), host: label(o.host, 60), target: label(o.target, 300), ok: o.ok !== false, text: label(o.text, 300),
+    said: typeof o.said === 'string' && o.said ? label(o.said, 300) : null };
 }
 export interface GitHostsView {
   hosts: GitHostView[];
@@ -1347,13 +1284,18 @@ export async function removeGitHost(id: string): Promise<{ revoked: boolean | nu
   const o = await request('DELETE', `/api/git/hosts/${id}`);
   return { revoked: typeof o.revoked === 'boolean' ? o.revoked : null, revokeAt: typeof o.revokeAt === 'string' && HTTPS_LINK.test(o.revokeAt) ? o.revokeAt : null };
 }
-/** saidOf(e) -> what git in the sandbox said when a failure is its words (the server's `said`: shown as its own), else null */
-export function saidOf(e: unknown): string | null {
-  return e instanceof ApiError && typeof e.body?.said === 'string' ? label(e.body.said, 300) : null;
+/** wordsOf(o) -> the sandbox's own words in an answer (said, saidBy), or null */
+function wordsOf(o: Obj | null | undefined): SandboxWords | null {
+  return o && typeof o.said === 'string' ? { said: label(o.said, 300), by: o.saidBy === 'claude' ? 'claude' : 'git' } : null;
 }
-export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; said: string | null; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
+/** saidOf(e) -> the sandbox's own words when a failure is in them (the server's said: shown apart), else null — never
+ *  taken from the message, which is a fixed sentence of ours then */
+export function saidOf(e: unknown): SandboxWords | null {
+  return e instanceof ApiError ? wordsOf(e.body) : null;
+}
+export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; said: SandboxWords | null; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
   const o = await request('POST', `/api/git/hosts/${id}/test`, { url });
-  return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), said: o.ok !== true && typeof o.said === 'string' ? label(o.said, 300) : null, host: normGitHost(o.host),
+  return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), said: o.ok !== true ? wordsOf(o) : null, host: normGitHost(o.host),
     learned: arr(o.learned, 8).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })) };
 }
 export async function getGitRepos(): Promise<string[]> {

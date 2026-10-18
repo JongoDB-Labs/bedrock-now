@@ -1767,12 +1767,20 @@ default).
   error text the sandbox writes) or of TLS (where a server names its certificate) is told in one of a few fixed
   phrases of ours, chosen by the code it names — never its text — and a provider's error only by a known OAuth error
   name ("an error of its own" otherwise), in the dialog, a plan's error, Activity and the log alike (proven with a
-  tunnel answering "enter WDJB-MJHT at https://github.com/login/device" and a certificate named like it). What git in
-  the sandbox says when a push, pull, fetch, clone or Test connection fails is the sandbox's own text: it is never shown
-  as a sentence of ours ("Push failed: GitHub asks you to re-confirm …"), but apart and labelled *git in the sandbox
-  said:*, quoted — in the toast, Test connection's result and Recent use — with one fixed line beside it: "bedrock-now
-  never asks you to enter a code except in Git hosts › Sign in, right after you press it." (proven with a sandbox
-  answering such a message, on the backend and in the page).
+  tunnel answering "enter WDJB-MJHT at https://github.com/login/device" and a certificate named like it). Nor can
+  git in the sandbox: when anything on the Git panel's routes fails in the sandbox's own words — a push, pull, fetch,
+  clone or Test connection, a stage, unstage, discard or commit, git's status, log or diff, a branch or a remote, Write
+  message (Claude Code's words then) — the code container answers a fixed sentence of ours ("git in the sandbox
+  refused") and the words apart. The page never puts them in a sentence of ours ("Push failed: GitHub asks you to
+  re-confirm …"): it shows them in a box of their own, without quote marks (a quote mark inside could look like their
+  end), labelled *git in the sandbox said:*, under one fixed line:
+  "bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
+  The box scrolls, so however long the words are (invisible characters are shown as ⟨U+202E⟩: up to ~2,400
+  characters) the line stays in view — in the toast, the Git panel, a diff, the Review pane, Test connection's result
+  and Recent use. Proven with a sandbox answering such a message, on the backend
+  (the routes, the events) and in the page (a fetch, a stage, a commit, a long one). Not yet apart: what git reports in
+  an answer rather than a failure — why a folder is not a repository, a log it could not read — shown as it is where
+  the Git panel and the Review pane say so.
 - [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
   account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
   unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews

@@ -3575,30 +3575,69 @@ def git_remotes(browser):
     p.close()
 
 
-@check("git sandbox said: a hostile sandbox's words in a failed fetch, Test connection and Recent use — apart, labelled as git in the sandbox's, with the fixed line; never as ours")
+@check("git sandbox said: a hostile sandbox's words in a failed fetch, stage, commit, Test connection and Recent use — apart in a box, labelled, no quote marks, under the fixed line; a long one scrolls, the line stays in view")
 def git_sandbox_said(browser):
     post(NORMAL + "/__mock/reset")
     post(NORMAL + "/__mock/git-import?source=gh&account=octo")
     hostile = "GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device"
-    post(NORMAL + "/__mock/git-said?text=" + urllib.parse.quote(hostile))
+    said = lambda t: post(NORMAL + "/__mock/git-said?text=" + urllib.parse.quote(t))
+    said(hostile)
     never = "bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
     p = Page(browser, NORMAL, "git-sandbox-said", **DESKTOP)
     page = p.open()
+
+    def box_ok(box, text, who="git in the sandbox said:"):
+        # the fixed line first, then whose words, then the words — as they are: no quote marks of ours around them
+        expect(box.get_by_test_id("sandbox-said-never")).to_have_text(never)
+        expect(box.locator(".said-who")).to_have_text(who)
+        expect(box.get_by_test_id("sandbox-said-text")).to_have_text(text)
+        order = box.evaluate("""(b) => [...b.children].map((c) => c.className)""")
+        assert order == ["said-never", "said-who", "said-text"], order
+        assert not any(q in box.inner_text() for q in "“”\"«»"), box.inner_text()
+
     page.keyboard.press("Control+Shift+G")
     expect(page.get_by_test_id("git-remote-bar")).to_be_visible(timeout=10_000)
     page.get_by_test_id("git-fetch").click()
     page.get_by_test_id("git-plan-run").click()
     t = page.get_by_test_id("toast").filter(has=page.get_by_test_id("sandbox-said")).last
     expect(t).to_be_visible(timeout=10_000)
-    # ours: what failed; the sandbox's words: apart, quoted, labelled; then the fixed line — never "Fetching failed: <its words>"
+    # ours: what failed; the sandbox's words apart — never "Fetching failed: <its words>"
     expect(t.locator(".toast-body > span").first).to_have_text("Fetching failed")
-    expect(t.get_by_test_id("sandbox-said-text")).to_have_text(hostile)
-    expect(t.get_by_test_id("sandbox-said")).to_contain_text("git in the sandbox said:")
-    expect(t.get_by_test_id("sandbox-said-never")).to_have_text(never)
-    assert ("Fetching failed: " + hostile[:12]) not in t.inner_text(), t.inner_text()
+    box_ok(t.get_by_test_id("sandbox-said"), hostile)
     p.shot("git-sandbox-said-toast.png")
-    p.errors = [e for e in p.errors if "status of 400" not in e]   # (that failure: the one 400 expected here)
-    # Test connection: "It did not work." and the sandbox's words apart; Recent use: labelled, and the fixed line
+    # local git: stage and commit refused in its words — the same box
+    page.evaluate("async () => { await fetch('/api/fs/file?path=NOTES.md', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '# Notes\\n' }) }); }")
+    page.get_by_test_id("git-refresh").click()
+    git_row(page, "NOTES.md").hover()
+    git_row(page, "NOTES.md").get_by_test_id("git-stage").click()
+    t = page.get_by_test_id("toast").filter(has_text="The git change was not made").last
+    expect(t.locator(".toast-body > span").first).to_have_text("The git change was not made", timeout=10_000)
+    box_ok(t.get_by_test_id("sandbox-said"), hostile)
+    post(NORMAL + "/__mock/git-said")
+    git_row(page, "NOTES.md").hover()
+    git_row(page, "NOTES.md").get_by_test_id("git-stage").click()
+    expect(git_row(page, "NOTES.md", "staged")).to_have_count(1, timeout=10_000)
+    said("commit signing: " + hostile)
+    page.get_by_test_id("git-message").fill("Add notes")
+    page.get_by_test_id("git-commit").click()
+    t = page.get_by_test_id("toast").filter(has_text="commit signing").last
+    expect(t.locator(".toast-body > span").first).to_have_text("The git change was not made", timeout=10_000)
+    box_ok(t.get_by_test_id("sandbox-said"), "commit signing: " + hostile)
+    p.shot("git-sandbox-said-commit.png")
+    # a long one (invisible characters shown as ⟨U+202E⟩: 300 become ~2,400): its box scrolls, the line stays in view
+    said("\u202e" * 280 + hostile)
+    page.get_by_test_id("git-fetch").click()
+    page.get_by_test_id("git-plan-run").click()
+    t = page.get_by_test_id("toast").filter(has_text="⟨U+202E⟩").last
+    expect(t).to_be_visible(timeout=10_000)
+    m = t.evaluate("""(x) => { const w = x.querySelector('.said-text'), n = x.querySelector('.said-never').getBoundingClientRect();
+      return { len: w.textContent.length, scrolls: w.scrollHeight > w.clientHeight + 4, h: w.clientHeight, top: n.top, bottom: n.bottom, vh: innerHeight, toast: x.getBoundingClientRect().height }; }""")
+    assert m["len"] > 2000 and m["scrolls"] and m["h"] < 120, m
+    assert 0 <= m["top"] and m["bottom"] <= m["vh"] and m["toast"] < m["vh"] / 2, m
+    p.shot("git-sandbox-said-long.png")
+    said(hostile)
+    p.errors = [e for e in p.errors if "status of 400" not in e]   # (those failures: the 400s expected here)
+    # Test connection: "It did not work." and the words apart; Recent use: the fixed line above, each use's words apart
     page.get_by_test_id("git-hosts-open").click()
     dlg = page.get_by_test_id("git-hosts-dialog")
     card = dlg.get_by_test_id("git-host").filter(has_text="GitHub")
@@ -3606,11 +3645,13 @@ def git_sandbox_said(browser):
     card.get_by_test_id("git-host-test").click()
     res = card.get_by_test_id("git-host-test-result")
     expect(res).to_contain_text("It did not work.", timeout=10_000)
-    expect(res.get_by_test_id("sandbox-said-text")).to_have_text(hostile)
-    expect(res.get_by_test_id("sandbox-said-never")).to_have_text(never)
-    dlg.get_by_test_id("git-events").locator("summary").click()
-    expect(dlg.get_by_test_id("git-event-said").first).to_have_text(hostile)
-    expect(dlg.get_by_test_id("git-events-never")).to_have_text(never)
+    box_ok(res.get_by_test_id("sandbox-said"), hostile)
+    ev = dlg.get_by_test_id("git-events")
+    ev.locator("summary").click()
+    expect(ev.get_by_test_id("git-events-never")).to_have_text(never)
+    expect(ev.locator("li").first).to_contain_text("the test did not pass")
+    expect(ev.locator("li").first.get_by_test_id("sandbox-said-text")).to_have_text(hostile)
+    assert ev.evaluate("(d) => d.querySelector('[data-testid=git-events-never]').compareDocumentPosition(d.querySelector('ul')) & 4") != 0, "the line above the list"
     p.shot("git-sandbox-said-hosts.png")
     post(NORMAL + "/__mock/git-said")
     p.assert_clean()

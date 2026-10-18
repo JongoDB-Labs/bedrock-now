@@ -16,7 +16,7 @@ import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
-import type { GitCommit, GitEntry, GitEvent, GitFile, GitNetAction, GitPlan, GitRemoteState, GitReview, GitScope, GitStatus, GrepResult } from './types';
+import type { GitCommit, GitEntry, GitEvent, GitFile, GitNetAction, GitPlan, GitRemoteState, GitReview, GitScope, GitStatus, GrepResult, SandboxWords } from './types';
 import { proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 import { promptTitle } from './mentions';
@@ -31,8 +31,8 @@ export interface Toast {
   level: 'info' | 'ok' | 'error';
   /** a button on the toast ("Preview" when a new server listens) */
   action?: { label: string; run: () => void };
-  /** what git in the sandbox said: shown apart, as its words (never as a sentence of ours), with NEVER_ASKS */
-  said?: string;
+  /** the sandbox's own words: shown apart, labelled, under NEVER_ASKS (never as a sentence of ours) */
+  said?: SandboxWords;
 }
 
 export interface DirState {
@@ -118,6 +118,8 @@ export interface GitDiffTab {
   scope: GitScope;
   loading: boolean;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  said?: SandboxWords | null;
   /** null: no change of that kind (any more) */
   file: GitFile | null;
   /** bumped by each load (an older answer is dropped) */
@@ -134,6 +136,8 @@ export interface ReviewState {
   git: GitReview | null;
   loading: boolean;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  errorSaid?: SandboxWords | null;
   /** hunk ids you kept (reviewed): out of the pending list until they change */
   kept: Record<string, true>;
   /** session changes undone here (without git there is no fresh diff to show it) */
@@ -151,6 +155,8 @@ export interface GitState {
   commits: GitCommit[];
   loading: boolean;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  errorSaid?: SandboxWords | null;
   /** an action on its way (stage, unstage, discard, commit): what it acts on */
   busy: string | null;
   /** the commit box (kept while the panel is closed) */
@@ -361,9 +367,9 @@ const get = store.get;
 // ---------------------------------------------------------------- small helpers
 
 let toastId = 1;
-export function toast(text: string, level: Toast['level'] = 'info', action?: Toast['action'], said?: string | null): void {
+export function toast(text: string, level: Toast['level'] = 'info', action?: Toast['action'], said?: SandboxWords | null): void {
   const id = toastId++;
-  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level, ...(action ? { action } : {}), ...(said != null ? { said: label(said, 300) } : {}) }] }));
+  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level, ...(action ? { action } : {}), ...(said != null ? { said } : {}) }] }));
   setTimeout(() => dismissToast(id), said != null ? 15000 : level === 'error' || action ? 8000 : 4000);
 }
 export function dismissToast(id: number): void {
@@ -372,7 +378,7 @@ export function dismissToast(id: number): void {
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : 'Something went wrong.';
 }
-/** A Git host operation's failure: ours as `text` says it — or, when it is git in the sandbox's own words, `what`
+/** A Git panel operation's failure: ours as `text` says it — or, when it is in the sandbox's own words, `what`
  *  failed and its words apart (Toast.said), never as a sentence of ours. */
 function gitFailed(e: unknown, text: (msg: string) => string, what: string): void {
   const said = api.saidOf(e);
@@ -2423,10 +2429,10 @@ export function refreshReview(): Promise<void> {
         reviewAgain = false;
         try {
           const git = await api.getGitDiff();
-          setReview((r) => ({ ...r, git, error: null }));
+          setReview((r) => ({ ...r, git, error: null, errorSaid: null }));
         } catch (e) {
           // without git's answer the pane shows the session's own edits (and says why)
-          setReview((r) => ({ ...r, git: null, error: errText(e) }));
+          setReview((r) => ({ ...r, git: null, error: errText(e), errorSaid: api.saidOf(e) }));
         }
       } while (reviewAgain);
     } finally {
@@ -2685,7 +2691,7 @@ export function selectGitRepo(repo: string): void {
   } catch {
     /* storage blocked: fine */
   }
-  setGit((g) => (g.repo === r ? g : { ...g, repo: r, status: null, commits: [], remote: null, pushed: null, error: null }));
+  setGit((g) => (g.repo === r ? g : { ...g, repo: r, status: null, commits: [], remote: null, pushed: null, error: null, errorSaid: null }));
   void refreshGit(true);
 }
 /** git is asked once at a time (status, then the log and the remotes); asked again meanwhile, once more when that answer
@@ -2725,10 +2731,10 @@ export function refreshGit(repos = false): Promise<void> {
           const log = status.repo ? await api.getGitLog(repo) : { commits: [] as GitCommit[], error: null };
           const remote = status.repo ? await api.getGitRemote(repo).catch(() => null) : null;
           if (get().git.repo !== repo) continue;
-          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error, remote }));
+          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error, errorSaid: null, remote }));
         } catch (e) {
           // (two reads run already: the next refresh has the answer)
-          if (!(e instanceof api.ApiError && e.status === 429)) setGit((g) => ({ ...g, error: errText(e) }));
+          if (!(e instanceof api.ApiError && e.status === 429)) setGit((g) => ({ ...g, error: errText(e), errorSaid: api.saidOf(e) }));
         }
       } while (gitAgain);
     } finally {
@@ -2755,7 +2761,7 @@ async function gitChange(what: string, fn: (repo: string) => Promise<string | vo
   if (get().git.busy || get().git.net) return false;
   setGit((g) => ({ ...g, busy: what }));
   let failed = '';
-  let said: string | null = null;
+  let said: SandboxWords | null = null;
   try {
     const ok = await fn(get().git.repo);
     if (ok) toast(ok, 'ok');
@@ -2830,7 +2836,7 @@ export async function writeCommitMessage(): Promise<void> {
     if (before.trim() && before !== msg) toast('Claude\'s message replaced what was in the box.', 'info', { label: 'Put mine back', run: () => setGitMessage(before) });
     else toast('A message from Claude is in the commit box: read it, then commit.', 'ok');
   } catch (e) {
-    if (current()) toast(`No message from Claude: ${errText(e)}`, 'error');
+    if (current()) gitFailed(e, (m) => `No message from Claude: ${m}`, 'No message from Claude');
   } finally {
     if (current()) setGit((g) => ({ ...g, drafting: null }));
   }
@@ -2958,12 +2964,12 @@ export async function loadGitDiff(key: string): Promise<void> {
   const t = get().tabs.find((x) => x.key === key);
   if (t?.kind !== 'gitdiff') return;
   const n = t.n + 1;
-  updateTab(key, (x) => (x.kind === 'gitdiff' ? { ...x, loading: true, error: null, n } : x));
+  updateTab(key, (x) => (x.kind === 'gitdiff' ? { ...x, loading: true, error: null, said: null, n } : x));
   try {
     const d = await api.getGitFile(t.scope, t.path, t.repo);
     updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: d.repo ? null : d.reason || 'not a git repository', file: d.files[0] ?? null } : x));
   } catch (e) {
-    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: errText(e) } : x));
+    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: errText(e), said: api.saidOf(e) } : x));
   }
 }
 

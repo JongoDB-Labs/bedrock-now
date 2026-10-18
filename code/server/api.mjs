@@ -10,7 +10,7 @@ import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } from './validate.mjs';
 import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
-import { repoOk } from './gitremote.mjs';
+import { repoOk, SandboxSaid } from './gitremote.mjs';
 import { watched } from './watch.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
@@ -313,7 +313,8 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     try {
       return await call(req, { timeoutMs: 45000, maxBytes: 4 << 20, ...opts });
     } catch (e) {
-      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, e.message);
+      // (busy: a fixed sentence of ours — the sandbox's own words never travel in a text of ours)
+      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, 'busy: another git change is on its way');
       throw e;
     }
   }
@@ -361,13 +362,14 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     try {
       const repo = repoOf(body?.repo);
       const st = await gitStatus(repo);
-      if (!st.repo) throw new HttpError(400, st.reason || 'not a git repository');
+      if (!st.repo) throw new SandboxSaid(400, st.reason || 'not a git repository');   // (git's reason: its words, apart)
       if (!st.staged.length) throw new HttpError(400, 'nothing is staged');
       const f = await gitFile({ scope: 'staged', repo });
       const r = await runDraft({ query: sessions.query, spawn: sessions.spawn, model, prompt: draftPrompt(st.staged, f.files), log: sessions.log ?? (() => {}), signal });
       return { message: r.message, denied: r.denied, turns: r.turns };
     } catch (e) {
-      if (e instanceof DraftError) throw new HttpError(e.status, e.message);
+      // (Claude Code's own words, from the sandbox: apart, never in a sentence of ours)
+      if (e instanceof DraftError) throw e.said ? new SandboxSaid(e.status, e.said, 'claude', e.message) : new HttpError(e.status, e.message);
       throw e;
     } finally { drafting--; }
   }

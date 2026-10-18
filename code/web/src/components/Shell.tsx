@@ -32,7 +32,7 @@ import {
   openModelMenu,
 } from '../app';
 import { GitPanel } from './GitPanel';
-import { SandboxSaid } from './GitRemote';
+import { SandboxSaid } from './Said';
 import { changedCount } from '../git';
 import { BudgetDialog } from './Budget';
 import { PermissionsDialog } from './Permissions';
@@ -450,7 +450,7 @@ function Toasts() {
           {t.said != null ? (
             <div class="toast-body">
               <span>{t.text}</span>
-              <SandboxSaid said={t.said} />
+              <SandboxSaid words={t.said} />
             </div>
           ) : (
             <span>{t.text}</span>

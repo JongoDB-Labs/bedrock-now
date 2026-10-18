@@ -112,25 +112,36 @@ export function remoteStateOf(r) {
 const PLAN_MS = 10 * 60000;
 const CLAUDE_PER_MINUTE = 30;
 const err = (status, m) => new HostError(status, m);
-// What git in the sandbox says is the sandbox's text — a hostile sandbox could word it as a message from us ("Push
-// failed: GitHub asks you to re-confirm this computer: enter … at github.com/login/device"). It travels labelled as
-// its own (said), never as a sentence of ours, and the page shows this fixed line beside it.
+// What git (or Claude Code) in the sandbox says is the sandbox's text — a hostile sandbox could word it as a message
+// from us ("Push failed: GitHub asks you to re-confirm this computer: enter … at github.com/login/device"). A failure in
+// its words is told with a fixed sentence of ours (GIT_SAID, CLAUDE_SAID) and its words apart (said, saidBy): the
+// page shows them in a box of their own, labelled, under this fixed line — never as a sentence of ours.
 export const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
+export const GIT_SAID = 'git in the sandbox refused';
+export const CLAUDE_SAID = 'Claude Code in the sandbox stopped';
+// (message: a fixed sentence of ours, GIT_SAID or CLAUDE_SAID by default — never one with the sandbox's words in it)
 export class SandboxSaid extends HostError {
-  constructor(status, said) {
-    super(status, `git in the sandbox said: “${said}” (${NEVER_ASKS})`);
-    this.said = said;
+  constructor(status, said, by = 'git', message = null) {
+    super(status, message || (by === 'claude' ? CLAUDE_SAID : GIT_SAID));
+    this.said = short(String(said ?? ''), 300) || 'no reason given';
+    this.saidBy = by === 'claude' ? 'claude' : 'git';
   }
 }
-// sandboxFailure(e) -> the sandbox's refusal (its ERROR, in its own words) labelled as the sandbox's (SandboxSaid);
-// anything else as it is — ours (a timeout, an unreachable socket, a malformed answer: main.mjs's sandboxStatus)
+// sandboxFailure(e) -> the sandbox's refusal (its ERROR, in its own words) as SandboxSaid; anything else as it is —
+// ours (a timeout, an unreachable socket, a malformed answer: main.mjs's sandboxStatus)
 export function sandboxFailure(e) {
   if (!(e instanceof SandboxError) || e.kind !== 'refused') return e;
   if (/ENOENT/.test(e.message)) return err(404, 'no such file or folder');
-  return new SandboxSaid(/changed on disk|exists already/.test(e.message) ? 409 : 400, short(e.message, 300) || 'refused');
+  return new SandboxSaid(/changed on disk|exists already/.test(e.message) ? 409 : 400, e.message);
 }
-// failText(e) -> what Activity notes of a failure: ours as it is, the sandbox's labelled
-const failText = (e, n = 300) => (e instanceof SandboxSaid ? `git in the sandbox said: “${short(e.said, n - 40)}”` : short(e?.message, n));
+// sandboxWords(e, path) -> {error, said, saidBy} when a failure on the Git panel's routes (/api/git/…) is in the
+// sandbox's words (main.mjs answers the fixed sentence, its words apart and NEVER_ASKS), else null
+export function sandboxWords(e, path) {
+  const w = e instanceof SandboxSaid ? e : String(path).startsWith('/api/git/') ? sandboxFailure(e) : null;
+  return w instanceof SandboxSaid ? { error: w.message, said: w.said, saidBy: w.saidBy } : null;
+}
+// failNote(e) -> what Activity notes of a failure: ours as it is; the sandbox's words apart (said)
+const failNote = (e, n = 300) => (e instanceof SandboxSaid ? { text: e.message, said: short(e.said, n) } : { text: short(e?.message, n) });
 const localOnly = (remote, what) => { if (remote) throw err(403, `${what} only from the computer running bedrock-now (not over remote access)`); };
 
 // makeGitRemote({call, openBroker, store, onEvent, connect, apps}) -> the API of Git hosts and remote operations (main.mjs
@@ -240,24 +251,24 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
     let p;
     try { p = parseRemoteUrl(b?.url); } catch (e) { throw err(400, e.message); }
     if (store.match(p, [h]) !== h) throw err(400, `that URL is not on ${h.host}${h.port ? `:${h.port}` : ''} over ${httpsAuth(h.auth) ? 'https' : 'ssh'} (this host's ${httpsAuth(h.auth) ? 'token is for https://' : 'key is for ssh'} URLs)`);
-    try { h = await fresh(h); } catch (e) { event({ action: 'test', host: h.label, target: p.display, ok: false, text: failText(e, 200) }); throw e; }
+    try { h = await fresh(h); } catch (e) { event({ action: 'test', host: h.label, target: p.display, ok: false, ...failNote(e) }); throw e; }
     // (a key is learned only from the computer running bedrock-now, and never for a host whose keys are built in)
     const learn = h.auth === 'ssh' && !remote && !((p.port ?? 22) === 22 && (KNOWN_HOSTS[h.host] || []).length);
     let result;
     try {
       ({ result } = await call({ op: 'git.test', url: b.url, auth: authFor(h, p, { learn }) }, { timeoutMs: 90000, onAsk: askFor(h, p, { learn }) }));
     } catch (e) {
-      event({ action: 'test', host: h.label, target: p.display, ok: false, text: failText(e, 200) });
+      event({ action: 'test', host: h.label, target: p.display, ok: false, ...failNote(e) });
       throw e;
     }
     const learned = (Array.isArray(result?.learned) ? result.learned : []).filter((l) => typeof l === 'string').slice(0, 8);
     let kept = [];
     if (learned.length && learn) { try { store.addKnown(id, learned); kept = learned; } catch (e) { log(`host keys: ${e.message}`); } }
     const ok = result?.ok === true;
-    // (why it did not work: git's own words, from the sandbox — labelled as such, the page shows NEVER_ASKS beside it)
+    // (why it did not work: git's own words, from the sandbox — apart, the page shows them under NEVER_ASKS)
     const said = ok ? null : short(result?.why, 300) || 'no reason given';
-    event({ action: 'test', host: h.label, target: p.display, ok, text: ok ? `${int(result.branches, 0, 1e6) ?? 0} branches listed` : `git in the sandbox said: “${short(said, 160)}”` });
-    return { ok, branches: ok ? int(result.branches, 0, 1e6) ?? 0 : null, why: ok ? null : `git in the sandbox said: “${said}”`, said, neverAsks: ok ? null : NEVER_ASKS,
+    event({ action: 'test', host: h.label, target: p.display, ok, ...(ok ? { text: `${int(result.branches, 0, 1e6) ?? 0} branches listed` } : { text: 'the test did not pass', said }) });
+    return { ok, branches: ok ? int(result.branches, 0, 1e6) ?? 0 : null, why: ok ? null : 'the test did not pass', ...(ok ? {} : { said, saidBy: 'git', neverAsks: NEVER_ASKS }),
       learned: kept.map(knownHostFingerprint).filter(Boolean), host: GitHosts.public(store.get(id) || h) };
   }
 
@@ -365,7 +376,7 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
     if (pl.hostId && !h) throw err(409, 'that git host was removed meanwhile');
     const target = pl.p.display;
     // (a sign-in's token renewed first when it expires within 5 minutes: written, then used — or "Sign in again")
-    try { h = await fresh(h); } catch (e) { event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: failText(e) }); throw e; }
+    try { h = await fresh(h); } catch (e) { event({ action: pl.action, host: h?.label ?? '', target, ok: false, ...failNote(e) }); throw e; }
     const auth = authFor(h, pl.p);
     let result;
     try {
@@ -375,7 +386,7 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
           ...(pl.action !== 'fetch' && pl.head ? { expect: pl.head } : {}), auth },
           { timeoutMs: 6 * 60000, onAsk: askFor(h, pl.p) }));
     } catch (e) {
-      event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: failText(e) });
+      event({ action: pl.action, host: h?.label ?? '', target, ok: false, ...failNote(e) });
       throw e;
     }
     const ok = result?.ok === true;

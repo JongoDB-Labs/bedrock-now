@@ -6,13 +6,10 @@ import type { GitHostKind, GitHostView, GitRemote, GitRemoteState, GitSignInConf
 /** A proposal longer than this is cut (git takes 64 KiB; a commit message is a few lines). */
 export const PROPOSAL_MAX = 8_000;
 
-/** Shown beside anything git in the sandbox said: its words could be worded as ours ("enter … at github.com/login/device"). */
+/** Shown above anything the sandbox said: its words could be worded as ours ("enter … at github.com/login/device"). */
 export const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
-/** saidIn(text) -> what git in the sandbox said, when a Recent use text is its words (the server labels them so), else null */
-export function saidIn(text: string): string | null {
-  const m = /^git in the sandbox said: “([\s\S]*)”$/.exec(text);
-  return m ? m[1] : null;
-}
+/** The label before the sandbox's words (SandboxWords.by): whose words they are. */
+export const SAID_BY = { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:' } as const;
 
 // what a commit message may hold (the backend refuses the rest): no control characters but tab and newline, nothing that
 // changes the direction of text
