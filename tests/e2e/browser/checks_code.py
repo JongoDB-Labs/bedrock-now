@@ -1518,8 +1518,10 @@ def ui_git_remotes(ctx):
     c = Code.on(page, rec, goto=False)
     https_url, ssh_url = "https://gitsrv:8443/e2e/demo.git", "ssh://git@gitsrv:2222/srv/git/e2e/demo.git"
     a, b = "e2e-remote-a", "e2e-remote-b"
+    there = {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}
     for d in (a, b):
-        c.api("DELETE", f"/api/fs?path={d}")
+        if d in there:
+            c.api("DELETE", f"/api/fs?path={d}")
     page.keyboard.press("Control+Shift+G")
     see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
     # Git hosts: the https one (kind GitHub, for its pull request link), with the token and the server's CA
@@ -1630,9 +1632,10 @@ def ui_git_remotes(ctx):
     see(plan).to_be_visible(timeout=30000)   # (the first fetch from this remote URL: asked)
     page.get_by_test_id("git-plan-run").click()
     see(page.get_by_test_id("git-pull")).to_contain_text("Pull 1", timeout=120000)
+    # (the same remote URL, confirmed by that fetch: the pull runs without asking again)
     page.get_by_test_id("git-pull").click()
-    page.get_by_test_id("git-plan-run").click()
     see(page.get_by_test_id("toast").last).to_contain_text("Pulled", timeout=120000)
+    see(page.get_by_test_id("git-plan-dialog")).to_have_count(0)
     expect(c.api("GET", f"/api/fs/file?path={b}/e2e2.txt")["status"] == 200, "the pull did not bring e2e2.txt")
     shot(page, "r5-code-git-pulled")
     # Activity's record of it: the uses, never the token

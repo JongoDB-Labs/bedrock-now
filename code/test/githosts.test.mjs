@@ -192,17 +192,18 @@ test('a plan says what will happen before anything is sent; run gives the creden
   // the run: questions for the right host get the token (three times at most), any other gets nothing
   fakeSandbox.asks = [{ kind: 'cred', protocol: 'https', host: 'github.com', path: 'o/r.git' }, { kind: 'cred', protocol: 'https', host: 'github.com.evil.example' },
     { kind: 'cred', protocol: 'http', host: 'github.com' }, { kind: 'cred', protocol: 'https', host: 'github.com:443' }, { kind: 'agent', data: Buffer.from([11]).toString('base64') },
-    { kind: 'cred', protocol: 'https', host: 'github.com' }, { kind: 'cred', protocol: 'https', host: 'github.com' }, { kind: 'cred', protocol: 'https', host: 'github.com' }];
+    { kind: 'cred', protocol: 'https', host: 'GitHub.com' }, { kind: 'cred', protocol: 'https', host: 'github.com' }, { kind: 'cred', protocol: 'https', host: 'github.com' }];
   const r = await g.run({ planId: p.planId });
-  assert.deepEqual(fakeSandbox.answers.map((a) => a.password === TOKEN), [true, false, false, false, false, true, true, false]);
+  // (github.com:443 and GitHub.com are the URL's host as git may name it: the same host; three at most)
+  assert.deepEqual(fakeSandbox.answers.map((a) => a.password === TOKEN), [true, false, false, true, false, true, false, false]);
   assert.equal(fakeSandbox.answers[4].data, FAILURE.toString('base64'), 'a token host signs nothing');
   assert.equal(r.prLink, 'https://github.com/o/r/pull/new/feature');
   const net = fx.calls.find((c) => c.req.op === 'git.net').req;
-  assert.deepEqual(net, { op: 'git.net', repo: '', action: 'push', remote: 'origin', url: 'https://github.com/o/r.git', branch: 'feature', dst: 'feature', auth: { kind: 'token' } });
+  assert.deepEqual(net, { op: 'git.net', repo: '', action: 'push', remote: 'origin', url: 'https://github.com/o/r.git', branch: 'feature', dst: 'feature', expect: 'a'.repeat(40), auth: { kind: 'token' } });
   assert.ok(!JSON.stringify(fx.calls.map((c) => c.req)).includes(TOKEN), 'never in a request to the sandbox — only in an answer to its question');
   assert.ok(!JSON.stringify(events).includes(TOKEN) && !JSON.stringify(s.read().events).includes(TOKEN));
   await assert.rejects(g.run({ planId: p.planId }), /out of date/, 'a plan runs once');
-  // fetch: confirmed the first time per URL only; public https without a host: no credential
+  // fetch: confirmed the first time per URL (and credential) only; public https without a host: no credential
   s.remove(h.id);
   fakeSandbox.asks = [{ kind: 'cred', protocol: 'https', host: 'github.com' }];
   p = await g.plan({ action: 'fetch' });
@@ -228,7 +229,7 @@ test('a plan says what will happen before anything is sent; run gives the creden
   }
 });
 
-test('ssh: the operation\'s agent signs a login for the URL\'s user, twice at most; the sandbox gets the public key and known hosts only', async () => {
+test('ssh: the operation\'s agent signs one login, for the URL\'s user and (host-bound) a trusted server; the sandbox gets the public key and known hosts only', async () => {
   const s = store('ssh');
   const h = s.add({ kind: 'gitlab', auth: 'ssh' });
   const fx = fakeSandbox(() => repoState({ remotes: [{ name: 'origin', urls: ['git@gitlab.com:g/r.git'], pushUrls: [] }] }));
@@ -236,12 +237,15 @@ test('ssh: the operation\'s agent signs a login for the URL\'s user, twice at mo
   const p = await g.plan({ action: 'push' });
   assert.equal(p.summary, "Push feature → gitlab.com/g/r (feature) via SSH key 'GitLab'");
   const k = GitHosts.key(s.get(h.id));
-  const login = (user) => Buffer.concat([Buffer.from([AGENT.SIGN_REQUEST]), sshString(k.blob), sshString(Buffer.concat([sshString(crypto.randomBytes(32)), Buffer.from([50]), sshString(user),
-    sshString('ssh-connection'), sshString('publickey'), Buffer.from([1]), sshString('ssh-ed25519'), sshString(k.blob)])), Buffer.alloc(4)]).toString('base64');
-  fakeSandbox.asks = [{ kind: 'agent', data: login('git') }, { kind: 'agent', data: login('root') }, { kind: 'agent', data: login('git') }, { kind: 'agent', data: login('git') },
-    { kind: 'cred', protocol: 'https', host: 'gitlab.com' }];
+  const gitlabKey = Buffer.from(KNOWN_HOSTS['gitlab.com'][0].split(' ')[2], 'base64');
+  const login = (user, hostKey = null) => Buffer.concat([Buffer.from([AGENT.SIGN_REQUEST]), sshString(k.blob), sshString(Buffer.concat([sshString(crypto.randomBytes(32)), Buffer.from([50]), sshString(user),
+    sshString('ssh-connection'), sshString(hostKey ? 'publickey-hostbound-v00@openssh.com' : 'publickey'), Buffer.from([1]), sshString('ssh-ed25519'), sshString(k.blob),
+    ...(hostKey ? [sshString(hostKey)] : [])])), Buffer.alloc(4)]).toString('base64');
+  fakeSandbox.asks = [{ kind: 'agent', data: login('root') }, { kind: 'agent', data: login('git', keyBlob(crypto.randomBytes(32))) }, { kind: 'agent', data: login('git', gitlabKey) },
+    { kind: 'agent', data: login('git') }, { kind: 'cred', protocol: 'https', host: 'gitlab.com' }];
   await g.run({ planId: p.planId });
-  assert.deepEqual(fakeSandbox.answers.map((a) => (a.data ? Buffer.from(a.data, 'base64')[0] : 'none')), [AGENT.SIGN_RESPONSE, AGENT.FAILURE, AGENT.SIGN_RESPONSE, AGENT.FAILURE, 'none']);
+  // another user; a server that is not gitlab.com's (host-bound); gitlab.com's: signed; a second login: refused
+  assert.deepEqual(fakeSandbox.answers.map((a) => (a.data ? Buffer.from(a.data, 'base64')[0] : 'none')), [AGENT.FAILURE, AGENT.FAILURE, AGENT.SIGN_RESPONSE, AGENT.FAILURE, 'none']);
   const net = fx.calls.find((c) => c.req.op === 'git.net').req;
   assert.deepEqual(Object.keys(net.auth).sort(), ['kind', 'knownHosts', 'publicKey']);
   assert.deepEqual(net.auth.knownHosts, KNOWN_HOSTS['gitlab.com']);

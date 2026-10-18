@@ -1576,8 +1576,10 @@ operation you started, sent only where you saw it go.
   cleared — URL-scoped ones too, proven) then the image's `bn-git-credential`. When the server asks for a credential,
   git runs that helper, which asks over fd 3; bn-coded passes the question (`protocol`, `host`, `path`) to the code
   container as an ASK frame, and the code container answers with the token only when the protocol is https and the
-  host is exactly the confirmed URL's (and at most 3 times an operation). bn-coded keeps nothing; git's `store` and
-  `erase` calls do nothing. A public repository's fetch never asks, so the token never leaves the code container. The
+  host is the confirmed URL's (as git names it: any case, with or without `:443`; at most 3 times an operation).
+  bn-coded keeps nothing; git's `store` and `erase` calls do nothing. The network command's `HOME` is the operation's
+  private folder: libcurl's `~/.netrc`, which the sandbox could fill with a credential of its own, is never read
+  (proven: plain git used a planted one, the panel did not). A public repository's fetch never asks, so the token never leaves the code container. The
   token is never in an environment variable or a command line (proven: none of the sandbox's processes has it in
   `/proc/<pid>/environ` or `cmdline` while the operation runs), never in an answer, error, Activity entry or log.
 - [x] **One operation, its host, while it runs — SSH key.** ssh is the image's (`/usr/bin/ssh`, through
@@ -1590,16 +1592,18 @@ operation you started, sent only where you saw it go.
   `GlobalKnownHostsFile`, no control socket, forwarding, local command, password or keyboard authentication, the egress
   proxy's `ProxyCommand` (`bn-ssh-proxy`) as the only way out. The agent socket relays every request to the code
   container, which answers with the host's public key and signs only an SSH login (a `publickey` user authentication
-  for `ssh-connection`, also OpenSSH's host-bound one, for the user the URL names), at most twice an operation —
-  never other data (a `ssh-keygen -Y` signature, a commit signature).
+  for `ssh-connection` for the user the URL names; OpenSSH's host-bound one only for a server whose host key the
+  operation trusts), once an operation — never other data (a `ssh-keygen -Y` signature, a commit signature). *Test
+  connection* never learns a key for github.com, gitlab.com or bitbucket.org (theirs are built in).
 - [x] **The URL is the one you saw.** Before anything is sent, the page shows what will happen — *"Push main →
   github.com/owner/repo (main) via HTTPS token 'GitHub'"*, with the URL in full — every time for a push or publish, the
-  first time for a fetch or pull from a remote URL (remembered in Git hosts' file), and for a clone. The plan is good
-  for one run within 10 minutes. bn-coded then re-reads the remote's URL from the configuration and refuses when it is
-  not the one shown (or when there are two). Only `https://` and ssh (`ssh://`, `user@host:path`) URLs are used —
+  first time for a fetch or pull from a remote URL with that credential (remembered in Git hosts' file), and for a
+  clone. The plan is good for one run within 10 minutes. bn-coded then re-reads the remote's URL from the configuration
+  and refuses when it is not the one shown (or when there are two), and a push or pull when the branch is no longer
+  the commit you confirmed (a commit made while the dialog was open would otherwise go out unseen). Only `https://` and ssh (`ssh://`, `user@host:path`) URLs are used —
   never `http://`, `git://`, `file://`, a local path, a transport helper (`ext::`, `fd::`, `<name>::`), a password or
-  token in the URL, an option-like host or path (`-oProxyCommand=…`), a space or a control or non-ASCII character
-  (the code container and bn-coded check the same rules) — and `GIT_ALLOW_PROTOCOL` allows the URL's one protocol. A
+  token in the URL, an option-like host or path (`-oProxyCommand=…`), an encoded `.`, `/` or `\` in the path, a space or
+  a control or non-ASCII character (the code container and bn-coded check the same rules) — and `GIT_ALLOW_PROTOCOL` allows the URL's one protocol. A
   push or an SSH remote needs its host connected; a public https fetch or clone may go without (no credential).
 - [x] **The repository's configuration cannot send it elsewhere.** git gets the URL through an alias: a random name
   that this run's configuration rewrites to the URL with `url.<URL>.insteadOf` and `.pushInsteadOf` — the longest
@@ -1633,15 +1637,17 @@ operation you started, sent only where you saw it go.
   `/tmp/bn-git/claude/cred.sock` (the image's `/etc/gitconfig` names `bn-git-credential`, which asks there when it is
   not inside an operation of yours) and `/tmp/bn-git/claude/agent.sock` (the image's ssh configuration names it as
   `IdentityAgent` while it exists). The code container answers only for the hosts you let Claude use, at most 30
-  times a minute, and notes each use in Activity (and the host's *Recent use*); turned off (from anywhere), the broker
-  closes and both sockets go.
+  times a minute, and notes each use in Activity (and the host's *Recent use*) — refusals once a minute with their
+  count, and Claude's entries never push yours out of the log (each keeps its last 200); turned off (from anywhere),
+  the broker closes and both sockets go.
 - [x] **Activity.** Each operation and each use by Claude's git is an entry of Git hosts' file (the last 200: who, what,
   the host's name and the URL — never a credential). The Code page shows them; framed by the portal it reports the
   last 10 of the past week to Activity (`bn-code-status`, checked by code.js: ids, times and a few words, shown as
   text), Claude's uses and failures as items to look at.
 - **What remains.** The sandbox is one user: a process there that runs while an operation of yours runs — and can
   read other processes' memory (`ptrace`, `/proc/<pid>/mem`: the same user, as the kernel allows it) or race git to
-  the operation's agent socket — could take the token from git's memory or have one SSH login signed for itself. That
+  the operation's agent socket — could take the token from git's memory or have the operation's one SSH login signed
+  for itself (to that same server, when it is host-bound; git's own login then fails). That
   window is the operation's (seconds); the token, once taken, is valid until you revoke it, a signed login is good
   for one connection. So: prefer fine-grained, repository-scoped tokens with an expiry, and deploy keys; revoke a
   token that may have been seen. bn-coded itself runs in the sandbox: a sandbox that replaced it could ask for the

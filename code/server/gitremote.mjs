@@ -7,7 +7,7 @@
 // noted in Activity. Everything the sandbox says is checked here first (its answers are data).
 import crypto from 'node:crypto';
 import { GitHosts, HostError } from './githosts.mjs';
-import { agentAnswer, FAILURE, knownHostFingerprint } from './sshagent.mjs';
+import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
 
 // --- the URL rules (bn-coded's parseRemoteUrl, the same: the sandbox checks again, and re-reads the URL itself) ---
@@ -47,12 +47,16 @@ export function parseRemoteUrl(u) {
   if (port !== null && (port < 1 || port > 65535)) no('not a port');
   const bare = form === 'url' ? path.replace(/^\//, '') : path;
   if (!bare || !URL_PATH.test(bare) || bare.startsWith('-') || bare.split('/').some((x) => x === '..' || x === '.')) no('not a repository path (letters, digits and ._~/@%+=,- only; no "..")');
+  if (/%(2e|2f|5c|00)/i.test(bare)) no('an encoded ".", "/" or "\\" in the path: write it plainly');
   const host = hp[1].toLowerCase();
   const display = `${host}${port !== null ? `:${port}` : ''}/${bare.replace(/^~?\/*/, '').replace(/\.git\/?$/, '')}`;
   return { scheme, user: userinfo, host, port, path: bare, form, display };
 }
 // the host[:port] git names to a credential helper for an https URL (the default port left out)
 export const credHost = (p) => (p.port !== null && p.port !== 443 ? `${p.host}:${p.port}` : p.host);
+// sameCredHost(asked, p): the host git's question names is the URL's — in any case, with or without :443 (git names it
+// as the URL writes it)
+export const sameCredHost = (asked, p) => typeof asked === 'string' && asked.toLowerCase().replace(/:443$/, '') === credHost(p);
 // webPath(p) -> owner/repo of a parsed URL (no .git, no leading ~/ or /)
 const webPath = (p) => p.path.replace(/^~?\/*/, '').replace(/\.git\/?$/, '').replace(/\/+$/, '');
 const seg = (b) => b.split('/').map(encodeURIComponent).join('/');
@@ -113,19 +117,23 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
   const plans = new Map();
   const event = (e) => { try { const ev = store.event(e); onEvent(ev); return ev; } catch (x) { log(`git event: ${x.message}`); return null; } };
 
-  // the answers to one operation's credential questions: its host's credential, for its URL's host, a few times
-  function askFor(h, p) {
+  // the answers to one operation's credential questions: its host's credential, for its URL's host, a few times — a
+  // token at most 3 times, one SSH login signed (ssh needs one), for the URL's user, and (a host-bound login, OpenSSH
+  // 8.9 and later) only for a server whose host key is one this operation trusts (learn: a test learning it)
+  function askFor(h, p, { learn = false } = {}) {
     let creds = 0, signs = 0;
+    const trusted = h?.auth === 'ssh' ? GitHosts.knownHosts(h, p.port).map((l) => Buffer.from(l.split(' ')[2] || '', 'base64')) : [];
     return async (q) => {
       if (!h || !q || typeof q !== 'object') return {};
       if (q.kind === 'cred') {
-        if (h.auth !== 'token' || p.scheme !== 'https' || q.protocol !== 'https' || q.host !== credHost(p) || ++creds > 3) return {};
+        if (h.auth !== 'token' || p.scheme !== 'https' || q.protocol !== 'https' || !sameCredHost(q.host, p) || ++creds > 3) return {};
         return { username: h.username, password: h.token };
       }
       if (q.kind === 'agent') {
         const key = h.auth === 'ssh' && p.scheme === 'ssh' ? GitHosts.key(h) : null;
         if (!key || typeof q.data !== 'string' || q.data.length > 400000) return { data: FAILURE.toString('base64') };
-        const ans = agentAnswer(Buffer.from(q.data, 'base64'), [key], ({ user }) => (!p.user || user === p.user) && ++signs <= 2);
+        const ans = agentAnswer(Buffer.from(q.data, 'base64'), [key], ({ user, hostKey }) => (!p.user || user === p.user)
+          && (learn || !hostKey || trusted.some((b) => b.equals(hostKey))) && ++signs <= 1);
         return { data: ans.toString('base64') };
       }
       return {};
@@ -139,6 +147,9 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     return { kind: 'ssh', publicKey: h.ssh.publicKey, knownHosts: GitHosts.knownHosts(h, p.port), ...(learn ? { learn: true } : {}) };
   }
   const via = (h) => (h ? `${h.auth === 'token' ? 'HTTPS token' : 'SSH key'} '${h.label}'` : 'no credential (a public repository)');
+  // a fetch or pull asks the first time for a remote URL with that credential (a public fetch first, then a host's
+  // token for the same URL: asked again)
+  const fetchKey = (h, url) => `${h?.id ?? 'none'} ${url}`;
 
   // --- Git hosts ---
   const hostsView = (remote) => ({ hosts: store.list(), events: store.events(50), local: !remote });
@@ -176,8 +187,15 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     let p;
     try { p = parseRemoteUrl(b?.url); } catch (e) { throw err(400, e.message); }
     if (store.match(p, [h]) !== h) throw err(400, `that URL is not on ${h.host}${h.port ? `:${h.port}` : ''} over ${h.auth === 'token' ? 'https' : 'ssh'} (this host's ${h.auth === 'token' ? 'token is for https://' : 'key is for ssh'} URLs)`);
-    const learn = h.auth === 'ssh' && !remote;
-    const { result } = await call({ op: 'git.test', url: b.url, auth: authFor(h, p, { learn }) }, { timeoutMs: 90000, onAsk: askFor(h, p) });
+    // (a key is learned only from the computer running bedrock-now, and never for a host whose keys are built in)
+    const learn = h.auth === 'ssh' && !remote && !((p.port ?? 22) === 22 && (KNOWN_HOSTS[h.host] || []).length);
+    let result;
+    try {
+      ({ result } = await call({ op: 'git.test', url: b.url, auth: authFor(h, p, { learn }) }, { timeoutMs: 90000, onAsk: askFor(h, p, { learn }) }));
+    } catch (e) {
+      event({ action: 'test', host: h.label, target: p.display, ok: false, text: short(e.message, 200) });
+      throw e;
+    }
     const learned = (Array.isArray(result?.learned) ? result.learned : []).filter((l) => typeof l === 'string').slice(0, 8);
     let kept = [];
     if (learned.length && learn) { try { store.addKnown(id, learned); kept = learned; } catch (e) { log(`host keys: ${e.message}`); } }
@@ -264,13 +282,13 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     const planId = keep({ action, repo, remote: name, url, p, branch: cur, dst, hostId: h?.id ?? null, head: st.head });
     return { planId, action, repo, remote: name, url, display: p.display, scheme: p.scheme, branch: cur, dst, newBranch: !exists,
       host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null, auth: h ? h.auth : 'none', summary,
-      confirm: push || !store.fetchedBefore(url), ahead: br?.ahead ?? null, behind: br?.behind ?? null, defaultBranch: st.remoteHeads[name] ?? null };
+      confirm: push || !store.fetchedBefore(fetchKey(h, url)), ahead: br?.ahead ?? null, behind: br?.behind ?? null, defaultBranch: st.remoteHeads[name] ?? null };
   }
   async function clonePlan(b) {
     let p;
     try { p = parseRemoteUrl(b?.url); } catch (e) { throw err(400, e.message); }
     const target = b.target ?? '';
-    if (!repoOk(target)) throw err(400, 'a new folder of the workspace (a name, or a path in it), or none: the workspace folder itself');
+    if (!repoOk(target) || target.split('/')[0] === '.bedrock-now-trash') throw err(400, 'a new folder of the workspace (a name, or a path in it), or none: the workspace folder itself');
     const depth = b.depth === undefined || b.depth === null || b.depth === '' ? null : Number(b.depth);
     if (depth !== null && (!Number.isInteger(depth) || depth < 1 || depth > 1000)) throw err(400, 'depth: 1 to 1000 commits (or none: the whole history)');
     const h = store.match(p);
@@ -288,25 +306,26 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     const h = pl.hostId ? store.get(pl.hostId) : null;
     if (pl.hostId && !h) throw err(409, 'that git host was removed meanwhile');
     const auth = authFor(h, pl.p);
-    const target = pl.action === 'clone' ? pl.p.display : pl.p.display;
+    const target = pl.p.display;
     let result;
     try {
       ({ result } = pl.action === 'clone'
         ? await call({ op: 'git.clone', url: pl.url, target: pl.target, ...(pl.depth ? { depth: pl.depth } : {}), auth }, { timeoutMs: 16 * 60000, onAsk: askFor(h, pl.p) })
-        : await call({ op: 'git.net', repo: pl.repo, action: pl.action, remote: pl.remote, url: pl.url, ...(pl.branch ? { branch: pl.branch, dst: pl.dst } : {}), auth },
+        : await call({ op: 'git.net', repo: pl.repo, action: pl.action, remote: pl.remote, url: pl.url, ...(pl.branch ? { branch: pl.branch, dst: pl.dst } : {}),
+          ...(pl.action !== 'fetch' && pl.head ? { expect: pl.head } : {}), auth },
           { timeoutMs: 6 * 60000, onAsk: askFor(h, pl.p) }));
     } catch (e) {
       event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: short(e.message, 300) });
       throw e;
     }
     const ok = result?.ok === true;
-    if (ok && (pl.action === 'fetch' || pl.action === 'pull')) { try { store.markFetched(pl.url); } catch { /* remembered next time */ } }
+    if (ok && (pl.action === 'fetch' || pl.action === 'pull')) { try { store.markFetched(fetchKey(h, pl.url)); } catch { /* remembered next time */ } }
     const what = pl.action === 'clone' ? `into ${pl.target || 'the workspace folder'}` : pl.action === 'fetch' ? `${pl.remote}` : `${pl.branch} → ${pl.dst}`;
     event({ action: pl.action, host: h?.label ?? '', target: `${target} (${what})`, ok, text: ok ? '' : 'failed' });
     const out = { ok, action: pl.action, display: pl.p.display };
     if (pl.action === 'push' || pl.action === 'publish') {
       out.branch = pl.branch; out.dst = pl.dst;
-      out.created = result?.created === true; out.upToDate = result?.upToDate === true;
+      out.created = result?.created === true; out.upToDate = result?.upToDate === true; out.upstream = result?.upstream !== false;
       out.sha = HEX.test(result?.sha || '') ? result.sha : null;
       out.prLink = ok && !out.upToDate ? prLink(kindOf(h, pl.p), pl.p, pl.dst) : null;
     }
@@ -316,8 +335,17 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
   }
 
   // --- Claude's own git (git.broker): open while any host lets Claude use it ---
-  let brokerConn = null, brokerOpening = false, retry = null;
+  let brokerConn = null, brokerOpening = false, retry = null, closing = false;
   const recent = [];
+  // refusals over the limit: one event a minute with their count (never one each: the log keeps its grants)
+  let refused = 0, refusedAt = 0;
+  const refusedOnce = (h, target) => {
+    refused++;
+    if (now() - refusedAt < 60000) return;
+    refusedAt = now();
+    event({ who: 'claude', action: 'credential', host: h.label, target, ok: false, text: `refused ${refused}× in the last minute: more than ${CLAUDE_PER_MINUTE} a minute` });
+    refused = 0;
+  };
   const rate = () => {
     const t = now();
     while (recent.length && t - recent[0] > 60000) recent.shift();
@@ -335,7 +363,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       const port = m[2] ? Number(m[2]) : 443;
       const h = hosts.find((x) => x.auth === 'token' && x.host === m[1] && (x.port ?? 443) === port);
       if (!h) return {};
-      if (!rate()) { event({ who: 'claude', action: 'credential', host: h.label, target: q.host, ok: false, text: `refused: more than ${CLAUDE_PER_MINUTE} a minute` }); return {}; }
+      if (!rate()) { refusedOnce(h, q.host); return {}; }
       event({ who: 'claude', action: 'credential', host: h.label, target: `${q.host}/${short(q.path || '', 200)}`, text: 'git in the sandbox got the token' });
       return { username: h.username, password: h.token };
     }
@@ -344,7 +372,8 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       if (typeof q.data !== 'string' || q.data.length > 400000) return { data: FAILURE.toString('base64') };
       const ans = agentAnswer(Buffer.from(q.data, 'base64'), keyed.map((x) => x.k), ({ user, key }) => {
         const h = keyed.find((x) => x.k === key)?.h;
-        if (!h || !rate()) return false;
+        if (!h) return false;
+        if (!rate()) { refusedOnce(h, `${user}@${h.host}`); return false; }
         event({ who: 'claude', action: 'ssh-login', host: h.label, target: `${user}@${h.host}`, text: 'ssh in the sandbox logged in with the key' });
         return true;
       });
@@ -353,7 +382,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     return {};
   }
   async function syncBroker() {
-    if (!openBroker) return;
+    if (!openBroker || closing) return;
     let want = false;
     try { want = store.read().hosts.some((h) => h.claude === true); } catch { want = false; }
     if (!want) { if (brokerConn) { const c = brokerConn; brokerConn = null; c.close(); } return; }
@@ -364,10 +393,15 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       brokerConn = c;
       c.closed.then(() => {
         if (brokerConn === c) brokerConn = null;
+        if (closing) return;
         clearTimeout(retry);
         retry = setTimeout(() => { void syncBroker(); }, 5000);
         retry.unref?.();
       });
+      // (turned off while it was opening: closed again at once)
+      let still = false;
+      try { still = store.read().hosts.some((h) => h.claude === true); } catch { still = false; }
+      if (!still) { brokerConn = null; c.close(); }
     } catch (e) {
       log(`git broker: ${e.message}`);
       clearTimeout(retry);
@@ -375,7 +409,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       retry.unref?.();
     } finally { brokerOpening = false; }
   }
-  const close = () => { clearTimeout(retry); if (brokerConn) { const c = brokerConn; brokerConn = null; c.close(); } };
+  const close = () => { closing = true; clearTimeout(retry); if (brokerConn) { const c = brokerConn; brokerConn = null; c.close(); } };
 
   return { hostsView, addHost, setToken, newKey, setCa, addKnown, forgetKnown, removeHost, setClaude, testHost, repos, state, branch, remoteSet, plan, clonePlan, run, syncBroker, close,
     get brokerOpen() { return Boolean(brokerConn); } };

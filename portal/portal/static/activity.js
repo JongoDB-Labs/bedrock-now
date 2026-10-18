@@ -94,13 +94,16 @@
     // Git hosts' uses the Code page reports (code.js checked them): Claude's own git getting a credential (it may push
     // where the token reaches: worth a look, and a notification), a failed operation, your pushes and pulls
     const git = report && Array.isArray(report.git) ? report.git.slice(0, 10) : [];
-    const VERB = { fetch: "Fetched", pull: "Pulled", push: "Pushed", publish: "Published", clone: "Cloned", test: "Tested a git host" };
+    const VERB = { fetch: "Fetched", pull: "Pulled", push: "Pushed", publish: "Published", clone: "Cloned", test: "Tested a git host",
+      claude: "Changed whether Claude may use a Git host" };
     for (const g of git) {
       if (!g || typeof g.id !== "string" || !Number.isFinite(g.at)) continue;
       const claude = g.who === "claude";
-      const title = claude ? `Claude's git used the Git host ${g.host || ""}`.trim() : g.ok ? `${VERB[g.action] || "Git"}${g.host ? ` (${g.host})` : ""}` : `A git ${g.action} failed`;
-      items.push({ id: `git:${g.id}`, kind: "git", level: claude || !g.ok ? "warn" : "info", title, text: String(g.target || "").slice(0, 200),
-        at: Math.floor(g.at / 1000), link: "", notify: claude || !g.ok, data: null });
+      const title = claude ? (g.ok ? `Claude's git used the Git host ${g.host || ""}`.trim() : `Claude's git was refused the Git host ${g.host || ""}`.trim())
+        : g.ok ? `${VERB[g.action] || "Git"}${g.host ? ` (${g.host})` : ""}` : `A git ${g.action} failed`;
+      const look = claude || !g.ok || g.action === "claude";
+      items.push({ id: `git:${g.id}`, kind: "git", level: look ? "warn" : "info", title, text: String(g.target || "").slice(0, 200),
+        at: Math.floor(g.at / 1000), link: "", notify: look, data: null });
     }
     return { items, episodes: eps };
   }

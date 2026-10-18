@@ -574,7 +574,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
   }
 
-  return { server, wss, mgr, broker, site };
+  return { server, wss, mgr, broker, site, closeGit: () => gitRemoteApi?.close() };
 }
 
 // --- the container's entry point ---
@@ -591,7 +591,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   const on = (v) => /^(true|1|yes|on)$/i.test(String(v ?? '').trim());
   // TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode): host, off (false/0/no/off), else internet
   const egress = (v) => { const s = String(v ?? '').trim().toLowerCase(); return s === 'host' ? 'host' : /^(false|0|no|off)$/.test(s) ? 'off' : 'internet'; };
-  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(), openBroker: sandboxBroker,
+  const { server, mgr, closeGit } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(), openBroker: sandboxBroker,
     // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
     allowBypass: on(process.env.CODE_ALLOW_BYPASS), allowAuto: on(process.env.CODE_AUTO_MODE),
     sandbox: { egress: egress(process.env.TERMINAL_EGRESS) !== 'off', egressHost: egress(process.env.TERMINAL_EGRESS) === 'host',
@@ -599,7 +599,7 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   log(`code: Bypass permissions ${mgr.allowBypass ? 'allowed (CODE_ALLOW_BYPASS)' : 'off'}; Auto mode ${mgr.allowAuto ? 'allowed (CODE_AUTO_MODE)' : 'off'}`);
   const port = Number(process.env.CODE_PORT || 8095);
   server.listen(port, '0.0.0.0', () => log(`code: listening on :${port}`));
-  const stop = () => { log('code: stopping'); mgr.closeAll(); server.close(); setTimeout(() => process.exit(0), 3000).unref(); };
+  const stop = () => { log('code: stopping'); mgr.closeAll(); closeGit(); server.close(); setTimeout(() => process.exit(0), 3000).unref(); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

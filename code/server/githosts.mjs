@@ -49,7 +49,7 @@ export class GitHosts {
     try { v = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return empty(); throw new HostError(500, 'the Git hosts file cannot be read'); }
     if (!v || v.version !== 1 || !Array.isArray(v.hosts)) throw new HostError(500, 'the Git hosts file is not one this version reads');
     return { version: 1, hosts: v.hosts.filter((h) => h && typeof h.id === 'string').slice(0, HOSTS_MAX), fetched: v.fetched && typeof v.fetched === 'object' ? v.fetched : {},
-      events: Array.isArray(v.events) ? v.events.slice(-EVENTS_MAX) : [] };
+      events: Array.isArray(v.events) ? v.events.slice(-2 * EVENTS_MAX) : [] };
   }
   write(v) {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
@@ -169,11 +169,16 @@ export class GitHosts {
   fetchedBefore(url) { return Boolean(this.read().fetched[url]); }
   markFetched(url) { this.update((v) => { v.fetched[url] = this.now(); const keys = Object.keys(v.fetched); if (keys.length > 500) delete v.fetched[keys[0]]; }); }
 
-  // the uses (Activity): {id, at, who: you|claude, action, host, target, ok, text}
+  // the uses (Activity): {id, at, who: you|claude, action, host, target, ok, text} — at most EVENTS_MAX of yours and as
+  // many of Claude's (a flood of Claude's never pushes yours out, nor the other way)
   event(e) {
     const ev = { id: crypto.randomBytes(6).toString('hex'), at: this.now(), who: e.who === 'claude' ? 'claude' : 'you', action: String(e.action || '').slice(0, 20),
       host: String(e.host || '').slice(0, 60), target: String(e.target || '').slice(0, 300), ok: e.ok !== false, text: String(e.text || '').slice(0, 300) };
-    this.update((v) => { v.events.push(ev); if (v.events.length > EVENTS_MAX) v.events.splice(0, v.events.length - EVENTS_MAX); });
+    this.update((v) => {
+      v.events.push(ev);
+      const mine = v.events.filter((x) => x.who === ev.who);
+      if (mine.length > EVENTS_MAX) { const drop = new Set(mine.slice(0, mine.length - EVENTS_MAX)); v.events = v.events.filter((x) => !drop.has(x)); }
+    });
     return ev;
   }
   events(n = 50) { return this.read().events.slice(-n).reverse(); }

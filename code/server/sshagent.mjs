@@ -94,8 +94,9 @@ export function userauth(data) {
 const one = (type, ...parts) => Buffer.concat([Buffer.from([type]), ...parts]);
 export const FAILURE = one(MSG.FAILURE);
 // agentAnswer(msg, keys, mayLogin) -> the answer to one agent request (without its length): the identities (keys:
-// [{blob, privateKey, comment}]), a signature of an SSH login for one of them when mayLogin({user, key}) says yes, a
-// failure for everything else (other requests, other data, extensions, adding or removing keys …)
+// [{blob, privateKey, comment}]), a signature of an SSH login for one of them when mayLogin({user, key, hostKey})
+// says yes (hostKey: the server's host key blob a host-bound login names, else null), a failure for everything else
+// (other requests, other data, extensions, adding or removing keys …)
 export function agentAnswer(msg, keys, mayLogin) {
   if (!Buffer.isBuffer(msg) || msg.length < 1) return FAILURE;
   if (msg[0] === MSG.REQUEST_IDENTITIES && msg.length === 1) {
@@ -112,7 +113,7 @@ export function agentAnswer(msg, keys, mayLogin) {
     const key = keys.find((k) => k.blob.equals(blob));
     const login = userauth(data);
     if (!key || !login || login.alg !== 'ssh-ed25519' || !login.blob.equals(blob)) return FAILURE;
-    if (!mayLogin({ user: login.user, key })) return FAILURE;
+    if (!mayLogin({ user: login.user, key, hostKey: login.hostKey })) return FAILURE;
     const sig = crypto.sign(null, data, key.privateKey);
     return one(MSG.SIGN_RESPONSE, sshString(Buffer.concat([sshString('ssh-ed25519'), sshString(sig)])));
   } catch { return FAILURE; }

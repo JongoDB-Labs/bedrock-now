@@ -145,7 +145,7 @@ test('remote URLs: https and ssh only; never a transport helper, a local path, a
   const bad = ['http://github.com/o/r', 'git://github.com/o/r', 'file:///etc', '/srv/r.git', './r', '../r', 'ext::sh -c touch% /tmp/x', 'fd::17', 'evil::https://x/y',
     'https://u:pw@github.com/o/r', 'https://-oProxyCommand=x/r', 'ssh://-oProxyCommand=touch/r', 'git@-oProxyCommand=x:r', 'https://github.com/-r',
     'https://github.com/../etc', 'https://git hub.com/r', 'https://github.com/o/r\n', 'ssh://host:99999/r', 'https://github.com', 'github.com:22:r',
-    'https://gith\u00fcb.com/r', 'C:\\repo', '\\\\server\\share', 'https://[::1]/r', ''];
+    'https://gith\u00fcb.com/r', 'C:\\repo', '\\\\server\\share', 'https://[::1]/r', 'https://h.example/o/%2e%2e/x', 'https://h.example/o/%2F/x', ''];
   for (const u of bad) assert.throws(() => coded.parseRemoteUrl(u), `${u} refused`);
   // (an IDN host in ASCII is a host name: allowed; the Unicode one is not)
   assert.equal(coded.parseRemoteUrl('https://xn--80ak6aa92e.com/r').host, 'xn--80ak6aa92e.com');
@@ -222,6 +222,28 @@ test('HTTPS with a token: push, publish, fetch and pull; the token only for the 
   // no answer at all (the host is not connected): git asks, gets nothing, fails
   r = await op({ op: 'git.net', action: 'fetch', remote: 'origin', url, auth: tokenAuth() }, async () => ({}));
   assert.match(r.result.error, /credential|Username|terminal prompts/);
+});
+
+test('the sandbox\'s ~/.netrc is never a credential of the panel\'s (control: plain git uses it); a push goes only while the branch is the commit you confirmed', { skip: !OPENSSL && 'no openssl' }, async () => {
+  workspaceClone();
+  const url = REAL();
+  fs.writeFileSync(path.join(HOME, '.netrc'), `machine 127.0.0.1 login u password ${TOKEN}\n`, { mode: 0o600 });
+  try {
+    const plain = await run(['-c', `http.sslCAInfo=${path.join(ROOT, 'ca.pem')}`, 'ls-remote', url], PLAIN);
+    assert.equal(plain.code, 0, `the control: plain git used ~/.netrc (${plain.err.slice(0, 200)})`);
+    good.log.length = 0;
+    const r = await op({ op: 'git.net', action: 'fetch', remote: 'origin', url, auth: { kind: 'none', ca: ca.ca } });
+    assert.match(r.result.error, /credential|Username|password/i, JSON.stringify(r.result));
+    assert.ok(good.log.every((l) => !l.auth), 'no credential reached the server');
+  } finally { fs.rmSync(path.join(HOME, '.netrc'), { force: true }); }
+  // the branch moved on after the confirmation: refused, nothing pushed
+  const before = git(WS, 'rev-parse', 'HEAD').trim();
+  commit(WS, 'late.txt', 'late\n', 'a commit made after the confirmation');
+  let r = await op({ op: 'git.net', action: 'push', remote: 'origin', url, branch: 'main', dst: 'main', expect: before, auth: tokenAuth() }, credAnswer);
+  assert.match(r.result.error, /moved since you confirmed/);
+  assert.equal(r.asks.length, 0);
+  r = await op({ op: 'git.net', action: 'push', remote: 'origin', url, branch: 'main', dst: 'main', expect: git(WS, 'rev-parse', 'HEAD').trim(), auth: tokenAuth() }, credAnswer);
+  assert.equal(r.result.ok, true, JSON.stringify(r.result));
 });
 
 test('the remote\'s URL is the one the page showed: a changed URL, a second URL, a URL-scoped setting the panel does not know: refused', { skip: !OPENSSL && 'no openssl' }, async () => {
