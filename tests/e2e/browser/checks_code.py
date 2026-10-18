@@ -1906,6 +1906,15 @@ def ui_projects(ctx):
         hook = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"touch {cwd}/{marker}"}]}]}}
         r = c.api("PUT", f"/api/fs/file?path={PROJ_CLONE}/.claude/settings.json", {"text": json.dumps(hook)})
         expect(r["status"] == 200, f"write the clone's settings: {r['status']} {r['text'][:100]}")
+        # and a skill of its own (a skill alone needs trust too): not offered until trusted
+        for d in (f"{PROJ_CLONE}/.claude/skills", f"{PROJ_CLONE}/.claude/skills/e2e-proj-skill"):
+            c.api("POST", "/api/fs/mkdir", {"path": d})
+        r = c.api("PUT", f"/api/fs/file?path={PROJ_CLONE}/.claude/skills/e2e-proj-skill/SKILL.md",
+                  {"text": "---\nname: e2e-proj-skill\ndescription: An e2e skill of the clone\nallowed-tools: Bash(true)\n---\nReply with the word skill.\n"})
+        expect(r["status"] == 200, f"write the clone's skill: {r['status']} {r['text'][:100]}")
+
+        def skills(session):
+            return {x["name"] for x in (c.request({"type": "commands", "session": session}) or [])}
 
         def marked():
             return marker in {e["name"] for e in (c.api("GET", f"/api/fs?path={PROJ_CLONE}")["json"] or {}).get("entries", [])}
@@ -1921,6 +1930,7 @@ def ui_projects(ctx):
         proj(clone["id"]).get_by_test_id("project-new-session").click()
         sdlg = page.get_by_test_id("settings-dialog")
         see(sdlg.get_by_test_id("settings-hooks")).to_contain_text(f"SessionStart: touch {cwd}/{marker}", timeout=30000)
+        see(sdlg.get_by_test_id("settings-tree")).to_contain_text("e2e-proj-skill/SKILL.md: allowed-tools: Bash(true)")
         shot(page, "p1b-code-project-settings")
         page.get_by_test_id("settings-start-without").click()
         see(sdlg).to_have_count(0, timeout=30000)
@@ -1936,6 +1946,7 @@ def ui_projects(ctx):
         expect((st.get("settings") or {}).get("state") == "untrusted", f"its folder's settings: {st.get('settings')}")
         see(page.get_by_test_id("settings-guard")).to_be_visible(timeout=30000)
         expect(not marked(), "the untrusted SessionStart hook ran")
+        expect("e2e-proj-skill" not in skills(sid), "the untrusted project's skill was offered")
         # trusted (⋯ › Claude Code settings…): the resumed session below starts with them — its hook runs
         proj(clone["id"]).get_by_test_id("project-menu").click()
         page.get_by_test_id("project-menu-settings").click()
@@ -1961,6 +1972,7 @@ def ui_projects(ctx):
         answered(page)
         expect(cwd in last_answer(page), f"after the resume: {last_answer(page)!r}")
         expect(marked(), "the trusted SessionStart hook did not run at the resume")
+        expect("e2e-proj-skill" in skills(sid), f"the trusted project's skill is not offered: {sorted(skills(sid))[:20]}")
         expect(state_of(c, page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")).get("cwd") == cwd, "the resumed session's folder")
         sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
         # Open a terminal here: a window of the terminal in the clone's folder
