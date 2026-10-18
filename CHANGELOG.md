@@ -6,6 +6,11 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`./stack update`'s What's new** cut a long release title at 120 bytes — mid-word ("… credentials that never en"),
+  and on a Mac possibly inside a character. It is now cut at a word, with "…".
+
 ## [0.12.0] - 2026-10-17
 
 ### Added

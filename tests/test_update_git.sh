@@ -393,6 +393,21 @@ test_whats_new_after_a_jump_lists_every_release_it_brought() {
   assert_contains "$(sed -n '/^cmd_update() {/,/^}/p' "$T_ROOT/lib/commands.sh")" 'update_whats_new "$from"'
 }
 
+# A long tag subject (v0.12.0's ended "… credentials that never en") is shortened at a word, with "…", to 120 characters
+test_whats_new_shortens_a_long_release_subject_at_a_word() {
+  local long="v0.9.0 — remote repositories on the Code page: Git hosts, clone, fetch, pull and push, with credentials that never enter the sandbox"
+  git init -q -b main "$TMP/origin"
+  _commit "$TMP/origin" one; git -C "$TMP/origin" tag -a v0.8.0 -m "v0.8.0 — short"
+  _commit "$TMP/origin" two; git -C "$TMP/origin" tag -a v0.9.0 -m "$long"
+  git clone -q "$TMP/origin" "$TMP/stack"; git -C "$TMP/stack" -c advice.detachedHead=false checkout -q v0.9.0
+  STACK_DIR="$TMP/stack"
+  out="$(releases_between "$(git -C "$STACK_DIR" rev-parse 'v0.8.0^{commit}')")"
+  assert_eq "$out" "v0.9.0 — remote repositories on the Code page: Git hosts, clone, fetch, pull and push, with credentials that never …"
+  # a subject that fits is left as it is
+  git -C "$STACK_DIR" tag -d v0.9.0 >/dev/null; git -C "$STACK_DIR" tag -a v0.9.0 -m "v0.9.0 — Git panel and Run & test"
+  assert_eq "$(releases_between "$(git -C "$STACK_DIR" rev-parse 'v0.8.0^{commit}')")" "v0.9.0 — Git panel and Run & test"
+}
+
 test_update_to_a_new_version_ends_with_whats_new_and_a_no_op_does_not() {
   printf 'X=1\n' > "$ENV_FILE"; STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"; _fake_stack; dc() { :; }
   update_record_write() { :; }; update_record_done() { :; }

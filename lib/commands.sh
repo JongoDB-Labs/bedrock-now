@@ -1649,7 +1649,9 @@ releases_between() {
     version_newer "$t" "$from" || continue
     ! version_newer "$t" "$cur" || continue
     n=$((n + 1)); [ "$n" -le 10 ] || { more=$((more + 1)); continue; }
-    subj="$(_git for-each-ref --format='%(objecttype) %(contents:subject)' "refs/tags/$t" 2>/dev/null | sed -n 's/^tag //p' | head -n 1 | tr -d '\000-\037' | cut -c1-120)"
+    subj="$(_git for-each-ref --format='%(objecttype) %(contents:subject)' "refs/tags/$t" 2>/dev/null | sed -n 's/^tag //p' | head -n 1 | tr -d '\000-\037')"
+    # at most 120 characters, cut at a word (never inside a word, nor inside a character where bash counts bytes)
+    [ "${#subj}" -le 120 ] || { subj="${subj:0:119}"; subj="${subj% *}"; subj="${subj%[,;:]} …"; }
     case "$subj" in "$t"*) printf '%s\n' "$subj" ;; '') printf '%s\n' "$t" ;; *) printf '%s — %s\n' "$t" "$subj" ;; esac
   done
   [ "$more" = 0 ] || printf '… and %s older\n' "$more"
