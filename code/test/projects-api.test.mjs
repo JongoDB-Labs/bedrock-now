@@ -19,7 +19,7 @@ const SECRET = 'ef'.repeat(16);
 const calls = [];
 const S = { app: crypto.randomUUID(), ws: crypto.randomUUID(), nested: crypto.randomUUID(), etc: crypto.randomUUID(), up: crypto.randomUUID(), rel: crypto.randomUUID(),
   ssh: crypto.randomUUID(), old: crypto.randomUUID() };
-const state = { folders: {}, check: 'ok', sessions: null };
+const state = { folders: {}, real: {}, check: 'ok', sessions: null };
 const row = (id, cwd, extra = {}) => ({ id, mtimeMs: 1_700_000_000_000, size: 10, firstPrompt: `in ${cwd}`, ...(cwd === undefined ? {} : { cwd }), ...extra });
 const answers = {
   'sessions.list': () => ({ result: { sessions: state.sessions ?? [
@@ -33,7 +33,9 @@ const answers = {
   'sessions.running': () => ({ result: { running: false } }),
   'ws.sensitive': () => ({ result: { files: [] } }),
   'project.check': (req) => (state.check === 'old' ? Promise.reject(new SandboxError('unknown op', 'refused'))
-    : { result: { roots: req.roots.map((r) => ({ root: r, type: state.folders[r] ?? 'dir', git: r.endsWith('/app') })) } }),
+    : { result: { roots: req.roots.map((r) => ({ root: r, type: state.folders[r] ?? 'dir', git: r.endsWith('/app'),
+      real: state.real[r] ?? ((state.folders[r] ?? 'dir') === 'dir' ? r : null) })) } }),
+  'project.trash': (req) => ({ result: { trash: `.bedrock-now-trash/t/${path.basename(req.root)}` } }),
   'project.create': (req) => ({ result: { ok: true, root: req.root.slice('/workspace/'.length), git: req.git === true } }),
   'fs.delete': (req) => ({ result: { trash: `.bedrock-now-trash/t/${path.basename(req.path)}` } }),
   'fs.find': () => ({ result: { paths: ['src/a.ts', 'src/', '../escape', '/workspace/other/x', 'a\nb'], truncated: false } }),
@@ -251,10 +253,12 @@ test('a project\'s terminal, git init; removal: the record only, its folder into
   assert.deepEqual(last('git.init'), { op: 'git.init', repo: 'app' });
   const website = (await req('GET', '/api/projects')).json.projects.find((p) => p.root === 'website');
   // the record only: no file is touched
-  const deletes = calls.filter((c) => c.op === 'fs.delete').length;
+  const moves = () => calls.filter((c) => c.op === 'fs.delete' || c.op === 'project.trash').length;
+  const deletes = moves();
+  const fsDeletes = calls.filter((c) => c.op === 'fs.delete').length;
   r = await req('DELETE', `/api/projects/${website.id}`);
   assert.deepEqual(r.json, { ok: true, removed: { id: website.id, name: 'website', root: 'website' }, trash: null });
-  assert.equal(calls.filter((c) => c.op === 'fs.delete').length, deletes, 'removing a project never touches its files');
+  assert.equal(moves(), deletes, 'removing a project never touches its files');
   assert.equal((await req('DELETE', `/api/projects/${website.id}`)).status, 404);
   assert.equal((await req('DELETE', '/api/projects/ws')).status, 400);
   // with its folder: named again, and no session of it open (one is: a new session in app above)
@@ -264,11 +268,27 @@ test('a project\'s terminal, git init; removal: the record only, its folder into
   assert.equal(r.status, 400);
   r = await req('DELETE', `/api/projects/${app.id}?trash=1&confirm=app`);
   assert.equal(r.status, 409, 'a session of it is open');
-  assert.equal(calls.filter((c) => c.op === 'fs.delete').length, deletes);
+  assert.equal(moves(), deletes);
+  srv.mgr.closeAll();
+  // its folder a link (or not a folder) in the sandbox: nothing is moved through it, the record stays
+  for (const type of ['link', 'other', 'missing']) {
+    state.folders['/workspace/app'] = type;
+    r = await req('DELETE', `/api/projects/${app.id}?trash=1&confirm=app`);
+    assert.equal(r.status, 409, type);
+    assert.match(r.json.error, /remove the record only/);
+  }
+  delete state.folders['/workspace/app'];
+  // a session open in a folder that leads into it (a link): open there too, whatever its path says
+  state.real['/workspace/applink'] = '/workspace/app/sub';
+  srv.mgr.open({ cwd: '/workspace/applink' });
+  r = await req('DELETE', `/api/projects/${app.id}?trash=1&confirm=app`);
+  assert.equal(r.status, 409, 'a session open through a link');
+  assert.equal(moves(), deletes);
   srv.mgr.closeAll();
   r = await req('DELETE', `/api/projects/${app.id}?trash=1&confirm=app`);
   assert.equal(r.status, 200, JSON.stringify(r.json));
-  assert.deepEqual(last('fs.delete'), { op: 'fs.delete', path: 'app' }, 'into the workspace\'s trash');
+  assert.deepEqual(last('project.trash'), { op: 'project.trash', root: '/workspace/app' }, 'the folder itself, into the workspace\'s trash');
+  assert.equal(calls.filter((c) => c.op === 'fs.delete').length, fsDeletes, 'never fs.delete (it follows a link)');
   assert.equal(r.json.trash, '.bedrock-now-trash/t/app');
   assert.deepEqual((await req('GET', '/api/projects')).json.projects.map((p) => p.id), ['ws']);
   // its sessions are shown where their folder is: the Workspace

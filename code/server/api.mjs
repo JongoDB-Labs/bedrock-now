@@ -730,10 +730,30 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     if (trash) {
       if (confirm !== p.root) throw new HttpError(400, `to move its folder to the trash too, name it again: ${p.root}`);
       const at = absOf(p.root);
-      if (sessions.list().some((s) => s.open && typeof s.cwd === 'string' && (s.cwd === at || s.cwd.startsWith(`${at}/`)))) {
-        throw new HttpError(409, 'a session of this project is open: close it first (its folder would vanish under it)');
+      // where the folder and every open session's folder lead, in the sandbox (a session may run in a link to it)
+      const cwds = [...new Set(sessions.list().filter((s) => s.open && typeof s.cwd === 'string').map((s) => s.cwd))].slice(0, 63);
+      let rows;
+      try {
+        rows = (await call({ op: 'project.check', roots: [at, ...cwds] }, { timeoutMs: 15000 })).result?.roots;
+      } catch (e) {
+        if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+        throw e;
       }
-      moved = okPath((await call({ op: 'fs.delete', path: p.root })).result.trash);
+      const me = Array.isArray(rows) ? rows[0] : null;
+      if (!me || me.root !== at || me.type !== 'dir' || typeof me.real !== 'string') {
+        throw new HttpError(409, me?.type === 'missing' ? 'its folder is not there: remove the record only' : 'its folder is a link or not a folder: remove the record only (nothing is moved through a link)');
+      }
+      const under = (x, top) => typeof x === 'string' && (x === top || x.startsWith(`${top}/`));
+      const running = cwds.some((c, i) => under(c, at) || under(rows[i + 1]?.root === c ? rows[i + 1].real : null, me.real));
+      if (running) throw new HttpError(409, 'a session of this project is open: close it first (its folder would vanish under it)');
+      let result;
+      try {
+        ({ result } = await call({ op: 'project.trash', root: at }));
+      } catch (e) {
+        if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+        throw e;
+      }
+      moved = okPath(result?.trash);
     }
     store().remove(id);
     return { ok: true, removed: { id: p.id, name: p.name, root: p.root }, trash: moved };

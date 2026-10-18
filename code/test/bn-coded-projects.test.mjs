@@ -270,6 +270,20 @@ test('project.create: a new folder of the workspace, git init without a template
   const check = await call({ op: 'project.check', roots: [WS, P1, `${WS}/fresh`, `${WS}/gone`, `${WS}/link-to-p2`, `${WS}/a-file`, '/etc', 'p1', 7] });
   assert.deepEqual(check.roots.map((x) => [x.type, x.git]), [['dir', false], ['dir', true], ['dir', false], ['missing', false], ['link', false], ['other', false],
     ['bad', false], ['bad', false], ['bad', false]]);
+  // where each leads: a link into the workspace, its target; outside it or not there, null
+  assert.deepEqual(check.roots.slice(0, 6).map((x) => x.real), [WS, P1, path.join(WS, 'fresh'), null, P2, path.join(WS, 'a-file')]);
+  assert.equal((await call({ op: 'project.check', roots: [`${WS}/link-out`] })).roots[0].real, null, 'out of the workspace: not said');
+  // project.trash: the folder itself into the workspace's trash — never through a link, never the workspace
+  fs.mkdirSync(path.join(WS, 'doomed/inner'), { recursive: true });
+  fs.symlinkSync(path.join(WS, 'doomed'), path.join(WS, 'doomed-link'));
+  for (const root of [`${WS}/doomed-link`, `${WS}/link-to-p2`, `${WS}/link-out`, `${WS}/a-file`, `${WS}/gone`, WS, `${WS}/`, 'doomed', `${WS}/doomed/../p1`, `${WS}/.bedrock-now-trash`]) {
+    assert.ok((await call({ op: 'project.trash', root })).error, root);
+  }
+  assert.ok(fs.existsSync(P2) && fs.existsSync(path.join(OUT, 'secret.txt')) && fs.existsSync(path.join(WS, 'doomed/inner')), 'nothing moved through a link');
+  const tr = await call({ op: 'project.trash', root: `${WS}/doomed` });
+  assert.match(tr.trash, /^\.bedrock-now-trash\/[^/]+\/doomed$/);
+  assert.ok(!fs.existsSync(path.join(WS, 'doomed')) && fs.existsSync(path.join(WS, tr.trash, 'inner')));
+  fs.rmSync(path.join(WS, 'doomed-link'));
   if (!GIT) { t.skip('no git'); return; }
   r = await call({ op: 'project.create', root: `${WS}/withgit`, git: true });
   assert.deepEqual(r, { ok: true, root: 'withgit', git: true });

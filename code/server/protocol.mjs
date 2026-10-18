@@ -71,6 +71,8 @@
 //   DELETE /api/projects/ID?trash=1&confirm=FOLDER   {ok, removed, trash} — the record goes (its sessions are shown
 //                                           where their folder is); trash=1 with its folder named again (confirm): the
 //                                           folder too, into the workspace trash — 409 while a session of it runs
+//                                           (also one in a link that leads there), or when its folder is a link or not a
+//                                           folder (never moved through a link: the record only then)
 //   POST   /api/projects/ID/sessions {ids}  {ok, filed} — Add to project: those sessions shown there (a label; each
 //                                           still runs in its own folder); "ws": back to the Workspace
 //   POST   /api/projects/ID/terminal       {ok, window} — a new window of the terminal in its folder

@@ -1252,7 +1252,9 @@ direction-changing character; a record that does not fit (a file someone changed
   *A folder in the workspace*: the folders `project.check` reports as real folders (at most 64 asked at once; a link
   is never offered). *Clone*: the Git panel's clone ([below](#git-remotes-and-git-hosts)), then the record. *Remove
   from Code* removes the record and its labels only. The folder moves to the workspace trash only when you tick it and
-  type its name again, and not while a session runs in it (409).
+  type its name again, and not while a session runs in it — also one whose folder leads there through a link, by the
+  sandbox's realpaths (409). The folder itself is moved (`project.trash`), only when it and every folder above it are
+  real folders: a project folder that has become a link is refused, never followed.
 - [x] **Open a terminal here** asks bn-coded for a new window of the terminal's tmux session in the root
   (`terminal.window`, the root checked as above); nothing is typed into it.
 - [x] **The page checks what it is sent.** Records and sessions from the backend are checked again (ids, folders,

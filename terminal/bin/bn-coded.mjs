@@ -20,9 +20,10 @@
 //   fs.find         paths under the root whose name matches (a bounded walk: the @-picker over the whole folder)
 //   fs.grep         a text (or a ripgrep regex) searched in the files of the root: ripgrep with fixed arguments, or
 //                   a bounded walk (literal text only); caps on hits, file size and time
-//   project.create / project.check
+//   project.create / project.check / project.trash
 //                   a new project's folder (and `git init`, no template: no hook); whether the project folders the code
-//                   container names are there (a real folder, a git repository)
+//                   container names are there (a real folder, a git repository; where they lead); a project's folder
+//                   itself into the workspace trash (Remove from Code, named again: never through a link)
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
@@ -1717,27 +1718,49 @@ export async function projectCreate(req, { git = GIT } = {}) {
   if (req.git !== true) return { ok: true, root: r, git: false };
   return { ok: true, root: r, ...(await gitInitIn(abs, { git })) };
 }
-// project.check {roots: [abs…]} -> {roots: [{root, type: dir|missing|link|other|bad, git}]}: whether the project folders
-// the code container names are there — a real folder (never through a link), and a git repository (a .git in it)
+// project.check {roots: [abs…]} -> {roots: [{root, type: dir|missing|link|other|bad, git, real}]}: whether the folders
+// the code container names (projects', open sessions') are there — a real folder (never through a link) — a git
+// repository (a .git in it), and where each leads (real: its realpath when that is in the workspace, else null)
 export const CHECK_ROOTS = 64;
+// rootType(r) -> dir | missing | link | other: what a workspace-relative folder is, every part looked at (lstat)
+function rootType(r) {
+  let p = WORKSPACE;
+  for (const seg of r ? r.split('/') : []) {
+    p = path.join(p, seg);
+    let st;
+    try { st = fs.lstatSync(p); } catch { return 'missing'; }
+    if (st.isSymbolicLink()) return 'link';
+    if (!st.isDirectory()) return 'other';
+  }
+  return 'dir';
+}
 export function projectCheck(req) {
   const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
   return { roots: list.map((v) => {
-    if (typeof v !== 'string') return { root: '', type: 'bad', git: false };
+    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null };
     const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
-    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false };
-    let p = WORKSPACE, type = 'dir';
-    for (const seg of r ? r.split('/') : []) {
-      p = path.join(p, seg);
-      let st;
-      try { st = fs.lstatSync(p); } catch { type = 'missing'; break; }
-      if (st.isSymbolicLink()) { type = 'link'; break; }
-      if (!st.isDirectory()) { type = 'other'; break; }
-    }
+    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null };
+    const type = rootType(r);
     let isGit = false;
-    if (type === 'dir') { try { fs.lstatSync(path.join(p, '.git')); isGit = true; } catch { /* none */ } }
-    return { root: v, type, git: isGit };
+    if (type === 'dir') { try { fs.lstatSync(path.join(WORKSPACE, r, '.git')); isGit = true; } catch { /* none */ } }
+    let real = null;
+    try { const x = fs.realpathSync(path.join(WORKSPACE, r)); real = inside(x) ? x : null; } catch { /* not there */ }
+    return { root: v, type, git: isGit, real };
   }) };
+}
+// project.trash {root} -> {trash}: Remove from Code with its folder — the project's folder itself (a real folder of
+// the workspace, every part of its path too: never through a link, never the workspace) moved to the workspace's trash
+// (/workspace/.bedrock-now-trash/<time>-<random>/<name>). The entry is moved, not what a link points to.
+export function projectTrash(req) {
+  const v = req?.root;
+  const r = typeof v === 'string' && v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
+  if (!r || !rootRel(r)) throw new Error('not a project folder of the workspace');
+  const type = rootType(r);
+  if (type !== 'dir') throw new Error(type === 'missing' ? 'the project\'s folder is not there' : 'the project\'s folder is a link or not a folder: nothing was moved');
+  const at = path.join(WORKSPACE, r);
+  const dest = path.join(newTrashDir(path.join(WORKSPACE, TRASH)), path.basename(at));
+  fs.renameSync(at, dest);
+  return { trash: path.relative(WORKSPACE, dest) };
 }
 // git.init {repo} — `git init` in a folder of the workspace that is no repository yet (Connect a git repository)
 export async function gitInit(req, { git = GIT } = {}) {
@@ -3771,6 +3794,7 @@ export function serve(sock) {
           projectCreate(req).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers.gitWrite--; });
           return undefined;
         case 'project.check': return finish(T.RESULT, projectCheck(req));
+        case 'project.trash': return finish(T.RESULT, projectTrash(req));
         // the Git panel's remotes: no network for these two; a branch switch or a remote's URL is a change
         case 'git.repos': return finish(T.RESULT, gitRepos({ root: root() }));
         case 'git.remote.state':
