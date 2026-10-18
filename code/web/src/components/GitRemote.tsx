@@ -68,7 +68,7 @@ export function RemoteBar({ st }: { st: GitStatus }) {
         </button>
         {r ? (
           <span class="gitr-where small" title={ref ? `${label(r.name, 64)}: ${label(ref.url, 600)}` : ''} data-testid="git-remote">
-            {label(r.name, 40)} → {ref?.ok ? label(ref.display, 120) : <span class="warn-text">{label(ref?.why || 'a URL the panel does not use', 160)}</span>}
+            {label(r.name, 40)} → {ref?.ok ? label(ref.display, 120) : <span class="warn-text">{label(ref?.why || 'a URL the panel does not use', 160)}</span>}{' '}
             {ref?.ok && (ref.host ? (
               <span class="pill gitr-host" title={`${ref.host.auth === 'token' ? 'HTTPS token' : 'SSH key'} of the Git host '${label(ref.host.label, 60)}'`}>
                 <Icon name="check" size={11} /> {label(ref.host.label, 40)}

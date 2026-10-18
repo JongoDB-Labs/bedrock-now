@@ -54,6 +54,7 @@ test('the store: a token and a private key never leave it; replace-only; mode 60
   const s = store('store');
   const gh = s.add({ kind: 'github', auth: 'token', token: TOKEN });
   assert.deepEqual([gh.host, gh.label, gh.username, gh.hasToken], ['github.com', 'GitHub', 'x-access-token', true]);
+  assert.equal(s.add({ kind: 'github', host: 'ghe.example', auth: 'token', token: TOKEN }).label, 'ghe.example', 'GitHub on a server of your own: its name');
   const key = s.add({ kind: 'gitlab', auth: 'ssh' });
   assert.match(key.publicKey, /^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA[A-Za-z0-9+/]{44} bedrock-now-GitLab$/);
   assert.match(key.fingerprint, /^SHA256:[A-Za-z0-9+/]{43}$/);

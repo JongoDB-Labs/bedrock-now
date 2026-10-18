@@ -331,7 +331,7 @@ test_bn_preview_in_the_terminal_image() {
   assert_contains "$c" "server.maxConnections = MAX_CONNECTIONS"
   assert_contains "$c" "process.umask(0o077)"
   # the code image's test stage runs its tests too
-  assert_contains "$(cat "$STACK_DIR/code/Dockerfile")" "COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs /opt/terminal/bin/"
+  assert_contains "$(cat "$STACK_DIR/code/Dockerfile")" "COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs bin/bn-git-credential /opt/terminal/bin/"
 }
 
 test_uninstall_and_terminal_disable_remove_its_socket_volume() {

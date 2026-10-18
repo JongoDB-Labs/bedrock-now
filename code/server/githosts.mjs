@@ -83,7 +83,8 @@ export class GitHosts {
     if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new HostError(400, 'a port from 1 to 65535 (or none: the default)');
     const auth = b.auth === 'token' || b.auth === 'ssh' ? b.auth : null;
     if (!auth) throw new HostError(400, 'auth: token or ssh');
-    const label = String(b.label || d.label || host).trim();
+    // (GitHub or GitLab on a server of your own: named after the server, not github.com's or gitlab.com's name)
+    const label = String(b.label || (host === d.host ? d.label : host)).trim();
     if (!LABEL.test(label)) throw new HostError(400, 'a name of one line, up to 60 characters');
     const username = String(b.username || (auth === 'token' ? d.tokenUser : d.sshUser) || '').trim();
     if (!USER.test(username)) throw new HostError(400, auth === 'token' ? 'the user name git sends with the token (your account name, or any for GitHub and GitLab)' : 'the SSH user (git, usually)');

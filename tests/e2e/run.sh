@@ -513,7 +513,7 @@ if [ "$CODE" = 1 ]; then
              terminal-upstream:7681 1.1.1.1:443 host.docker.internal:80; do
       printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
     done
-    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/run/bn-code,/tmp,/usr/sbin/docker-init rootfs-writable=no \
+    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/run/bn-code,/tmp,/usr/sbin/docker-init,/var/lib/bn-code rootfs-writable=no \
               socket-dir-writable=no claude-binary=absent; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
@@ -529,7 +529,7 @@ if [ "$CODE" = 1 ]; then
     for k in LITELLM_KEY_TERMINAL LITELLM_KEY_CLAUDE_CODE LITELLM_MASTER_KEY SHARED_MCP_TOKEN TERMINAL_PROXY_SECRET; do ! env_has "$k" "$ins" || bad="$bad has-$k"; done
     unset ins
     if [ -z "$bad" ]; then
-      record code code-isolation PASS "$(( $(now) - t0 ))" "code container: only Caddy (code-link), no LiteLLM, portal, Open WebUI, data, stt, sandbox, gateway or internet; no workspace mount (mounts: the socket folder :ro, /tmp, Docker's init), read-only, no Claude Code binary, its only secret CODE_PROXY_SECRET, your uid; 407 without the secret; the sandbox cannot reach it; bn-coded's socket folder 700"
+      record code code-isolation PASS "$(( $(now) - t0 ))" "code container: only Caddy (code-link), no LiteLLM, portal, Open WebUI, data, stt, sandbox, gateway or internet; no workspace mount (mounts: the socket folder :ro, /tmp, Docker's init, its own state volume for Git hosts), read-only, no Claude Code binary, its only secret CODE_PROXY_SECRET, your uid; 407 without the secret; the sandbox cannot reach it; bn-coded's socket folder 700"
     else record code code-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/code-isolation.log)"; fi
   fi
 fi

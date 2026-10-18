@@ -268,7 +268,7 @@ async function gitRemotePanel(p, m, url, req) {
     if (b.auth === 'token' && (typeof b.token !== 'string' || b.token.length < 8)) return [400, { error: 'the access token, please (printable characters, no spaces)' }];
     const host = (b.host || (b.kind === 'github' ? 'github.com' : b.kind === 'gitlab' ? 'gitlab.com' : '')).toLowerCase();
     if (!host) return [400, { error: 'a host name, please' }];
-    const label = b.label || (b.kind === 'github' ? 'GitHub' : b.kind === 'gitlab' ? 'GitLab' : host);
+    const label = b.label || (host === 'github.com' ? 'GitHub' : host === 'gitlab.com' ? 'GitLab' : host);
     const h = { id: hostId(), kind: b.kind, label, host, port: b.port ?? null, auth: b.auth, username: b.username || (b.auth === 'ssh' ? 'git' : b.kind === 'gitlab' ? 'oauth2' : 'x-access-token'), createdAt: Date.now() };
     if (b.auth === 'ssh') { h.publicKey = `ssh-ed25519 ${Buffer.from(`\0\0\0\x0bssh-ed25519\0\0\0\x20${crypto.randomBytes(32).toString('binary')}`, 'binary').toString('base64')} bedrock-now-${label}`; h.fingerprint = `SHA256:${crypto.randomBytes(32).toString('base64').replace(/=+$/, '')}`; }
     gitHostsMock.push(h);
