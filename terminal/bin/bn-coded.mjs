@@ -1741,15 +1741,16 @@ function rootType(r) {
 export function projectCheck(req) {
   const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
   return { roots: list.map((v) => {
-    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null, settings: null };
+    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null, settings: null, settingsVerifiable: null };
     const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
-    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null, settings: null };
+    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null, settings: null, settingsVerifiable: null };
     const type = rootType(r);
     let isGit = false;
     if (type === 'dir') { try { fs.lstatSync(path.join(WORKSPACE, r, '.git')); isGit = true; } catch { /* none */ } }
     let real = null;
     try { const x = fs.realpathSync(path.join(WORKSPACE, r)); real = inside(x) ? x : null; } catch { /* not there */ }
-    return { root: v, type, git: isGit, real, settings: type === 'dir' ? settingsFiles(path.join(WORKSPACE, r)).hash : null };
+    const st = type === 'dir' ? settingsFiles(path.join(WORKSPACE, r)) : null;
+    return { root: v, type, git: isGit, real, settings: st?.hash ?? null, settingsVerifiable: st ? st.verifiable : null };
   }) };
 }
 
@@ -1760,8 +1761,10 @@ export function projectCheck(req) {
 // what is in the workspace (a link out of it is named, never read); a FIFO or device is never opened.
 export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']);
 const SETTINGS_MAX = 8 << 20, SETTINGS_TEXT = 256 << 10;
-// settingsFiles(abs, {text}) -> {files: [{name, type: missing|file|link|big|other, size, sha256, target, text}], hash}:
-// hash: the SHA-256 of what is there (null when none of them is)
+// settingsFiles(abs, {text}) -> {files: [{name, type: missing|file|link|big|other, size, sha256, target, text}], hash,
+// verifiable}: hash: the SHA-256 of what is there (null when none of them is); verifiable: every one there was read
+// whole as text (≤ 256 KiB of UTF-8) — a link out of the workspace, a big file, a FIFO or a folder is not, and so can
+// never be trusted (its hash does not cover what Claude Code would read)
 export function settingsFiles(abs, { text = false } = {}) {
   const files = SETTINGS_FILES.map((name) => {
     const p = path.join(abs, name);
@@ -1778,13 +1781,16 @@ export function settingsFiles(abs, { text = false } = {}) {
     if (st.size > SETTINGS_MAX) return { name, type: 'big', target, size: st.size, sha256: sha256(`big:${st.size}:${st.mtimeMs}`) };
     const b = readRegular(real, SETTINGS_MAX);
     if (!b) return { name, type: 'other', target, sha256: sha256('other') };
-    const out = { name, type: target ? 'link' : 'file', target, size: b.length, sha256: sha256(b) };
-    if (text) out.text = b.length <= SETTINGS_TEXT && isUtf8Buf(b) ? b.toString('utf8') : null;
+    const shown = b.length <= SETTINGS_TEXT && isUtf8Buf(b);
+    const out = { name, type: target ? 'link' : 'file', target, size: b.length, sha256: sha256(b), readable: shown };
+    if (text) out.text = shown ? b.toString('utf8') : null;
     return out;
   });
   const present = files.filter((f) => f.type !== 'missing');
   const hash = present.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
-  return { files, hash };
+  const verifiable = present.every((f) => f.readable === true);
+  for (const f of files) delete f.readable;
+  return { files, hash, verifiable };
 }
 const isUtf8Buf = (b) => { try { new TextDecoder('utf-8', { fatal: true }).decode(b); return true; } catch { return false; } };
 // project.settings {root?} -> {files (with their text, ≤ 256 KiB each), hash}: a project's folder (none: the workspace)

@@ -310,6 +310,7 @@ test('project.settings: a folder\'s own Claude Code settings and .mcp.json as Cl
   fs.writeFileSync(path.join(D, '.mcp.json'), '{"mcpServers": {"x": {"command": "evil"}}}');
   r = await call({ op: 'project.settings', root: D });
   assert.match(r.hash, /^[0-9a-f]{64}$/);
+  assert.equal(r.verifiable, true);
   assert.equal(r.files[0].text, hooks);
   assert.equal(r.files[2].type, 'file');
   const check = async () => (await call({ op: 'project.check', roots: [D] })).roots[0].settings;
@@ -323,17 +324,26 @@ test('project.settings: a folder\'s own Claude Code settings and .mcp.json as Cl
   r = await call({ op: 'project.settings', root: D });
   assert.equal(r.files[1].type, 'link');
   assert.equal(r.files[1].text, undefined, 'out of the workspace: never read');
+  assert.equal(r.verifiable, false, 'its hash does not cover what Claude Code would read: never trustable');
+  assert.equal((await call({ op: 'project.check', roots: [D] })).roots[0].settingsVerifiable, false);
   assert.equal(r.files[1].size, undefined, 'nothing of the file outside: not even its size');
   assert.equal(r.files[1].sha256, crypto.createHash('sha256').update(`link:${r.files[1].target}`).digest('hex'), 'its hash: the link\'s, not the file\'s');
   fs.rmSync(path.join(D, '.claude/settings.local.json'));
   fs.symlinkSync(path.join(D, '.claude/settings.json'), path.join(D, '.claude/settings.local.json'));
   r = await call({ op: 'project.settings', root: D });
   assert.deepEqual([r.files[1].type, r.files[1].text], ['link', hooks], 'a link into the workspace: what Claude Code reads through it');
+  assert.equal(r.verifiable, true);
   // a FIFO is never opened (the op answers)
   fs.rmSync(path.join(D, '.mcp.json'));
   execFileSync('mkfifo', [path.join(D, '.mcp.json')]);
   r = await call({ op: 'project.settings', root: D });
   assert.equal(r.files[2].type, 'other');
+  assert.equal(r.verifiable, false);
+  // a file too large to show (over 256 KiB): read for its hash, never shown — and so never trustable
+  fs.rmSync(path.join(D, '.mcp.json'));
+  fs.writeFileSync(path.join(D, '.mcp.json'), `{"x": "${'y'.repeat(300 << 10)}"}`);
+  r = await call({ op: 'project.settings', root: D });
+  assert.deepEqual([r.files[2].type, r.files[2].text, r.verifiable], ['file', null, false]);
   assert.match((await call({ op: 'project.settings', root: OUT })).error, /not a project folder/);
   fs.rmSync(D, { recursive: true });
 });
