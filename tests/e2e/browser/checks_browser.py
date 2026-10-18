@@ -2572,16 +2572,34 @@ def settings_nightly(ctx):
         expect(ok, f"BACKUP_NIGHTLY: {msg}")
         # the page reads the settings again after the job: the window's row then belongs to a switch that is on
         page.wait_for_selector("#settings .set-row[data-key=BACKUP_NIGHTLY] [role=switch][aria-checked=true]", state="attached", timeout=30000)
-    if cur != str(hour):
+    def new_nightly(secs):
+        t0, found = time.time(), []
+        while time.time() - t0 < secs and not found:
+            found = [b for b in _settings_api(ctx)["backups"]["backups"] if b["kind"] == "nightly" and b["name"] not in before]
+            if not found:
+                time.sleep(3)
+        return found
+
+    def helper_idle(secs=180):   # the helper refuses a change while an action runs ("Another action is still running")
+        t0 = time.time()
+        while _settings_api(ctx)["helper"]["in_progress"]:
+            expect(time.time() - t0 < secs, f"the update helper still busy after {secs} s")
+            time.sleep(2)
+
+    nightly = []
+    # Turned on inside its own window (BACKUP_HOUR 2 and a run between 2:00 and 5:00), the helper starts that window's
+    # backup at once: wait for it, and move the window only when it had its backup already (a reused throwaway)
+    if cur.isdigit() and now_h in {(int(cur) + i) % 24 for i in range(3)}:
+        nightly = new_nightly(180)
+    if not nightly and cur != str(hour):
+        helper_idle()
         goto_setting(page, "BACKUP_HOUR").locator("select").first.select_option(str(hour))
         _confirm(page)
         ok, msg = _wait_job(page)
         expect(ok, f"BACKUP_HOUR: {msg}")
-    t0, nightly = time.time(), []
-    while time.time() - t0 < 180 and not nightly:
-        nightly = [b for b in _settings_api(ctx)["backups"]["backups"] if b["kind"] == "nightly" and b["name"] not in before]
-        time.sleep(3)
+    nightly = nightly or new_nightly(180)
     expect(nightly, "no nightly backup within 3 minutes of turning it on in its window")
+    helper_idle()   # (the backup is listed before its action ends)
     goto_setting(page, "updates")
     # Reload reads /api/settings again and then draws the page anew: wait for that, so nothing below holds a row of the
     # page it replaces
