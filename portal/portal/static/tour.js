@@ -957,7 +957,9 @@
     clearTimeout(cfgT); cfgT = null;
     const s = STEPS[st.cur];
     if (!st.open || !s || !s.cfg || document.hidden) return;
-    if ((cfg && Date.now() - cfgAt < CFG_MS) || Date.now() - cfgAsked < POLL_MS) return;
+    if (cfg && Date.now() - cfgAt < CFG_MS) return;
+    const wait = cfgAsked + POLL_MS - Date.now();   // (at most every 30 s: asked again when that is up)
+    if (wait > 0) { cfgT = setTimeout(askCfg, wait); return; }
     cfgAsked = Date.now();
     api("/api/settings").then((d) => { cfg = cfgFrom(d); cfgAt = Date.now(); cfgFailed = 0; settle(); }, (e) => {
       if (e && e.message === "signed out") return;
