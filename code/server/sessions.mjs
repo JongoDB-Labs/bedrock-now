@@ -284,7 +284,7 @@ export class Session {
     // (Claude Code says init with its first turn; until a prompt comes the session simply waits.)
     this.setState('idle');
     if (!APPLIED_STATES.includes(settings.state)) this.emit({ type: 'local', settings: settings.state, text: withheldText(settings) });
-    else if (settings.state === 'trusted') this.recheckSettings(this.q, settings);
+    else if (settings.state === 'trusted' || settings.state === 'none') this.recheckSettings(this.q, settings);
     this.lastActive = Date.now();
     let ended;
     this.exited = new Promise((r) => { ended = r; });
@@ -808,16 +808,16 @@ export class Session {
     this.inTerminal = Date.now();
   }
 
-  // recheckSettings(q, settings) — a process started with a project's trusted settings: once Claude Code has read them
-  // (its initialization), they are checked again; changed in between (the sandbox wrote them after the check): it is
-  // closed at once, and the next start decides again (not applied: they changed)
+  // recheckSettings(q, settings) — a process started with its folder's own configuration applied (trusted, or none
+  // there): once Claude Code has read it (its initialization), it is checked again; changed in between (the sandbox wrote
+  // or added files after the check): the process is closed at once, and the next start decides again
   recheckSettings(q, settings) {
     if (!this.mgr.decideSettings) return;
     Promise.resolve(typeof q?.initializationResult === 'function' ? q.initializationResult() : null).catch(() => null)
       .then(() => (this.q === q ? this.mgr.decideSettings(this.cwd) : null))
       .then((d) => {
         if (!d || this.q !== q) return;
-        if (d.state !== 'trusted' || d.hash !== settings.hash) this.close('settings-changed');
+        if (d.state !== settings.state || d.hash !== settings.hash) this.close('settings-changed');
       })
       .catch((e) => { if (this.q === q) { this.mgr.log(`session ${this.id.slice(0, 8)}: settings not checked again (${short(e?.message || String(e), 200)}): stopped`); this.close('settings-changed'); } });
   }
@@ -834,7 +834,7 @@ export class Session {
       : reason === 'reset' ? 'This conversation continues in a new session.'
         : reason === 'bypass' ? 'Restarting Claude Code for this session so it can run without asking (its next turn writes the prompt cache again).'
           : reason === 'budget' ? `Restarting Claude Code for this session so its new budget applies${this.budget?.hard ? ` (stop at ${money(this.budget.usd)})` : ''}${wasBypass ? ', in Manual (Bypass permissions ends with its process)' : ''}; its next turn may write the prompt cache again.`
-            : reason === 'settings-changed' ? 'Claude Code stopped here: this project\'s own Claude Code settings changed while it started (after they were checked). Your next prompt starts it again without them until you look at them again.'
+            : reason === 'settings-changed' ? 'Claude Code stopped here: this folder\'s own Claude Code configuration changed while it started (after it was checked). Your next prompt starts it again without it until you look at it again.'
             : reason === 'settings' ? 'Restarting Claude Code for this session: the folder\'s own Claude Code settings apply differently now (you trusted them, or they changed); its next turn writes the prompt cache again.'
             : reason === 'terminal' ? `Continued in the terminal${wasBypass ? ' (in Manual)' : ''}: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.`
               : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;

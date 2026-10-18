@@ -4803,6 +4803,8 @@ def projects_settings(browser):
     expect(dlg.get_by_test_id("settings-allow")).to_contain_text("Bash(npm run *)")
     expect(dlg.get_by_test_id("settings-env")).to_contain_text("NODE_ENV=development")
     expect(dlg.get_by_test_id("settings-mcp")).to_contain_text("docs: npx -y @acme/docs-mcp")
+    expect(dlg.get_by_test_id("settings-tree")).to_contain_text(".claude/skills/release/SKILL.md: allowed-tools: Bash(npm version *), Bash(git tag *)")
+    expect(dlg.get_by_test_id("settings-not-covered")).to_contain_text("not covered")
     # Start without them: the session runs with your own settings only, and says so above the prompt
     page.get_by_test_id("settings-start-without").click()
     expect(dlg).to_have_count(0, timeout=10_000)

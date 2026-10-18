@@ -132,6 +132,13 @@ test('a project\'s own Claude Code settings: its state in the list, a session\'s
   assert.deepEqual(v.summary.notes, []);
   assert.equal(v.summary.complete, true);
   assert.equal(v.hash, 'a'.repeat(64));
+  // every file under .claude/ with what its front matter grants; a list longer than shown: incomplete
+  const tree = normSettingsView({ ...whole, files: [{ name: '.claude/skills/setup/SKILL.md', type: 'file', size: 40 }],
+    summary: { ...whole.summary, files: [{ name: '.claude/skills/setup/SKILL.md', size: 40, grants: [{ key: 'allowed-tools', value: 'Bash(*)' }, 7] }] } });
+  assert.deepEqual(tree?.summary.files, [{ name: '.claude/skills/setup/SKILL.md', size: 40, grants: [{ key: 'allowed-tools', value: 'Bash(*)' }] }]);
+  assert.deepEqual(tree?.files.map((f) => f.name), ['.claude/skills/setup/SKILL.md']);
+  const many = normSettingsView({ ...whole, summary: { ...whole.summary, files: Array.from({ length: 501 }, (_, i) => ({ name: `.claude/f${i}.md`, size: 1, grants: [] })) } });
+  assert.equal(many?.summary.complete, false);
   assert.equal(normSettingsView({ ...whole, state: 'mine' }), null);
   assert.equal(normSettingsView({ ...whole, project: '/etc' }), null);
   assert.equal(normSettingsView({ ...whole, hash: 'zz' })?.hash, null, 'a hash that is not one: nothing to trust');

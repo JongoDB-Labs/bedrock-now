@@ -168,8 +168,9 @@ export const shownIn = (wsPath: string, root: string): string => (root && wsPath
 
 /** GET /api/projects/ID/settings: a project's own Claude Code settings — what they set (text only), their hash. */
 export interface SettingsFile {
+  /** .mcp.json, or a path under .claude/ */
   name: string;
-  type: 'missing' | 'file' | 'link' | 'big' | 'other';
+  type: 'file' | 'link' | 'big' | 'other';
   size: number | null;
   target: string | null;
 }
@@ -193,6 +194,8 @@ export interface SettingsSummary {
   mcpServers: ({ name: string; run: string } & SettingsEntry)[];
   other: { file: string; key: string; value: string }[];
   notes: { file: string; note: string }[];
+  /** every file under .claude/ but the two settings files, with the front matter keys that grant something */
+  files: { name: string; size: number | null; grants: { key: string; value: string }[] }[];
   /** every key and value of the files is above, whole (else: never trustable — what was left out, in `missing`) */
   complete: boolean;
   missing: string[];
@@ -223,7 +226,8 @@ export interface SettingsView {
   files: SettingsFile[];
   summary: SettingsSummary;
 }
-const FILE_TYPES = ['missing', 'file', 'link', 'big', 'other'];
+const FILE_TYPES = ['file', 'link', 'big', 'other'];
+const FILES_MAX = 500;
 // the backend shows at most 200 entries a section and 2,000 characters a value (with its own "… more characters not
 // shown"): anything beyond that here, too, makes the summary incomplete — never trustable
 const LIST_MAX = 200, TEXT_MAX = 2100;
@@ -264,7 +268,13 @@ export function normSettingsView(v: unknown): SettingsView | null {
     mcp: rows(s.mcp, (c) => ({ file: one(c.file, 60), key: one(c.key, 60), value: many(c.value) })),
     mcpServers: rows(s.mcpServers, (m) => ({ name: many(m.name), run: many(m.run), ...entry(m) })),
     other: rows(s.other, (x) => ({ file: one(x.file, 60), key: many(x.key), value: many(x.value) })),
-    notes: rows(s.notes, (x) => ({ file: one(x.file, 60), note: one(x.note, 500) })),
+    notes: rows(s.notes, (x) => ({ file: many(x.file), note: one(x.note, 1200) })),
+    files: (() => {
+      if (!Array.isArray(s.files)) return [];
+      if (s.files.length > FILES_MAX) cut = true;
+      return s.files.slice(0, FILES_MAX).map((f) => obj(f)).filter((f): f is Obj => !!f)
+        .map((f) => ({ name: many(f.name), size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, grants: rows(f.grants, (g) => ({ key: many(g.key), value: many(g.value) })) }));
+    })(),
     complete: false,
     missing: Array.isArray(s.missing) ? s.missing.slice(0, 20).filter((x) => typeof x === 'string').map((x) => label(x, 200)) : [],
   };
@@ -275,8 +285,8 @@ export function normSettingsView(v: unknown): SettingsView | null {
     // (a hash to trust only with a summary shown whole)
     hash: summary.complete && typeof o.hash === 'string' && /^[0-9a-f]{64}$/.test(o.hash) ? o.hash : null,
     trustedAt: typeof o.trustedAt === 'number' && Number.isFinite(o.trustedAt) && o.trustedAt > 0 ? o.trustedAt : null,
-    files: Array.isArray(o.files) ? o.files.slice(0, 3).map((f) => obj(f)).filter((f): f is Obj => !!f && typeof f.name === 'string' && FILE_TYPES.includes(f.type as string))
-      .map((f) => ({ name: label(f.name, 60), type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? label(f.target, 300) : null }))
+    files: Array.isArray(o.files) ? o.files.slice(0, FILES_MAX).map((f) => obj(f)).filter((f): f is Obj => !!f && typeof f.name === 'string' && FILE_TYPES.includes(f.type as string))
+      .map((f) => ({ name: f.name as string, type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? label(f.target, 300) : null }))
       : [],
     summary,
   };

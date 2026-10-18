@@ -25,19 +25,20 @@ const state = { folders: {}, real: {}, check: 'ok', sessions: null, settings: {}
 const row = (id, cwd, extra = {}) => ({ id, mtimeMs: 1_700_000_000_000, size: 10, firstPrompt: `in ${cwd}`, ...(cwd === undefined ? {} : { cwd }), ...extra });
 // a folder's own settings as the sandbox reports them: state.settings[folder] is a fixture, or a list of them (each
 // call takes the next: what a sandbox changes between two looks)
-const NO_SETTINGS = { files: [{ name: '.claude/settings.json', type: 'missing' }, { name: '.claude/settings.local.json', type: 'missing' }, { name: '.mcp.json', type: 'missing' }],
-  hash: null, verifiable: true };
+const NO_SETTINGS = { files: [], hash: null, verifiable: true, over: null };
 const settingsOf = (dir, take = false) => {
   const v = state.settings[dir];
   if (Array.isArray(v)) return (take && v.length > 1 ? v.shift() : v[0]) ?? NO_SETTINGS;
   return v ?? NO_SETTINGS;
 };
-// fixture({settings, local, mcp}) -> what bn-coded's project.settings answers for those texts (a value {type, …}: as is)
+// fixture({settings, local, mcp}, {other files under .claude/}) -> what bn-coded's project.settings answers for those
+// texts (a value {type, …}: as is), sorted by name
 const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
-function fixture(texts) {
-  const files = [['.claude/settings.json', texts.settings], ['.claude/settings.local.json', texts.local], ['.mcp.json', texts.mcp]].map(([name, t]) => (
-    t === undefined ? { name, type: 'missing' } : typeof t === 'string' ? { name, type: 'file', size: Buffer.byteLength(t), sha256: sha(t), text: t, target: null } : { name, ...t }));
-  return { files, hash: hashOf(files), verifiable: files.every((f) => f.type === 'missing' || typeof f.text === 'string') };
+function fixture(texts, more = {}) {
+  const named = { '.claude/settings.json': texts.settings, '.claude/settings.local.json': texts.local, '.mcp.json': texts.mcp, ...more };
+  const files = Object.entries(named).filter(([, t]) => t !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, t]) => (
+    typeof t === 'string' ? { name, type: 'file', size: Buffer.byteLength(t), sha256: sha(t), text: t, target: null } : { name, ...t }));
+  return { files, hash: hashOf(files), verifiable: files.every((f) => typeof f.text === 'string'), over: null };
 }
 const answers = {
   'sessions.list': () => ({ result: { sessions: state.sessions ?? [
@@ -421,6 +422,51 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     }
     state.settings[W] = fixture({ settings: { type: 'big', size: 9 << 20, sha256: sha('big') } });
     assert.equal((await req('GET', '/api/projects')).json.projects.find((p) => p.id === website.id).settings, 'unverifiable', 'the list says so too');
+    // a repository with no settings file but a skill whose front matter grants a tool: it needs trust too (not
+    // "none"); the dialog lists the file with what it grants; untrusted, a session gets no project skills (user only)
+    const SKILL = '---\nname: setup\nallowed-tools: Bash(*)\n---\nRun the setup with Bash.\n';
+    const S1 = fixture({}, { '.claude/skills/setup/SKILL.md': SKILL });
+    state.settings[W] = S1;
+    await req('DELETE', `/api/projects/${website.id}/trust`);
+    v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+    assert.equal(v.state, 'untrusted', 'a skill alone needs trust');
+    assert.deepEqual(v.summary.files, [{ name: '.claude/skills/setup/SKILL.md', size: Buffer.byteLength(SKILL), grants: [{ key: 'allowed-tools', value: 'Bash(*)' }] }]);
+    assert.equal((await req('GET', '/api/projects')).json.projects.find((p) => p.id === website.id).settings, 'untrusted');
+    r = await req('POST', '/api/sessions', { project: website.id });
+    assert.deepEqual(lastSources(), ['user'], 'untrusted: no project skills, commands, agents or settings');
+    srv.mgr.closeAll();
+    // trusted; then a pull adds an agent: changed — not applied until trusted again
+    assert.equal((await req('POST', `/api/projects/${website.id}/trust`, { hash: v.hash })).json.state, 'trusted');
+    r = await req('POST', '/api/sessions', { project: website.id });
+    assert.deepEqual(lastSources(), ['user', 'project', 'local']);
+    srv.mgr.closeAll();
+    state.settings[W] = fixture({}, { '.claude/skills/setup/SKILL.md': SKILL, '.claude/agents/helper.md': '---\nname: helper\ntools: Bash\nmcpServers: [evil]\n---\n' });
+    v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+    assert.equal(v.state, 'changed');
+    assert.deepEqual(v.summary.files.find((f) => f.name === '.claude/agents/helper.md').grants, [{ key: 'tools', value: 'Bash' }, { key: 'mcpServers', value: '[evil]' }]);
+    r = await req('POST', '/api/sessions', { project: website.id });
+    assert.deepEqual(lastSources(), ['user'], 'a pulled agent: not applied until trusted again');
+    srv.mgr.closeAll();
+    // beyond bn-coded's bounds (more than 500 files …): unverifiable, never trusted
+    state.settings[W] = { ...fixture({}, { '.claude/a.md': 'x' }), verifiable: false, over: 'more than 500 files' };
+    v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+    assert.equal(v.state, 'unverifiable');
+    assert.ok(v.summary.missing.includes('more than 500 files'));
+    // a list that does not fit what bn-coded lists (out of order, a name outside .claude/): unverifiable
+    for (const files of [[{ name: '.mcp.json', type: 'file', sha256: sha('{}'), text: '{}' }, { name: '.claude/x.md', type: 'file', sha256: sha('x'), text: 'x' }],
+      [{ name: '../etc/passwd', type: 'file', sha256: sha('x'), text: 'x' }]]) {
+      state.settings[W] = { files, hash: hashOf(files), verifiable: true, over: null };
+      assert.equal((await req('GET', `/api/projects/${website.id}/settings`)).json.state, 'unverifiable', files[0].name);
+    }
+    // nothing there when checked, files there once Claude Code started (written in between): closed at once
+    await req('DELETE', `/api/projects/${website.id}/trust`);
+    state.settings[W] = [NO_SETTINGS, S1];
+    r = await req('POST', '/api/sessions', { project: website.id });
+    assert.deepEqual(lastSources(), ['user', 'project', 'local'], 'nothing to trust: started with the folder\'s (none)');
+    s = srv.mgr.get(r.json.id);
+    for (let i = 0; i < 100 && s.open; i++) await new Promise((res) => setTimeout(res, 10));
+    assert.equal(s.open, false, 'files appeared between the check and Claude Code reading them: closed');
+    srv.mgr.closeAll();
     // no longer trusted (DELETE); a sandbox that cannot say: not applied
     state.settings[W] = A;
     assert.equal((await req('DELETE', `/api/projects/${website.id}/trust`)).json.state, 'untrusted');

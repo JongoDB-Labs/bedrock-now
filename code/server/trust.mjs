@@ -1,12 +1,15 @@
-// A project's own Claude Code settings: .claude/settings.json and settings.local.json (hooks, permission rules, env,
-// a default mode, helper commands …) and .mcp.json (MCP servers it starts). Claude Code started by the SDK applies
-// what it finds in its folder with no trust step (the terminal's claude asks whether to trust a folder first): a cloned
-// repository's SessionStart hook would run, its allow rules would silence the page's permission cards. So a session in a
-// project's folder starts with your own settings only (the sandbox's ~/.claude) — and only the stack's own MCP server —
-// until you trusted exactly these files: the page shows what they set, and the project's record keeps their hash
-// (bn-coded's project.settings). Changed since: not applied again until you look again. A folder without any of them
-// needs nothing. The Workspace (/workspace itself) keeps applying its own, as before projects: it is the folder you
-// chose for the sandbox. Everything here came from the sandbox: shown as text, capped.
+// A project's own Claude Code configuration: everything under its .claude/ — settings.json and settings.local.json
+// (hooks, permission rules, env, a default mode, helper commands …), and the skills, commands, agents, output styles …
+// whose front matter can grant tools (allowed-tools), declare hooks or MCP servers — and .mcp.json (MCP servers it
+// starts). Claude Code started by the SDK applies what it finds in its folder with no trust step (the terminal's claude
+// asks whether to trust a folder first): a cloned repository's SessionStart hook would run, its allow rules or a skill's
+// allowed-tools would silence the page's permission cards. So a session in a project's folder starts with your own
+// settings only (the sandbox's ~/.claude) — and only the stack's own MCP server — until you trusted exactly these files:
+// the page shows what they set, and the project's record keeps their hash (bn-coded's project.settings). Changed since
+// (a pull adding an agent): not applied again until you look again. A folder with neither a .claude/ holding a file nor
+// a .mcp.json needs nothing (a lone CLAUDE.md is read as instructions; it grants nothing). The Workspace (/workspace
+// itself) keeps applying its own, as before projects: it is the folder you chose for the sandbox. Everything here came
+// from the sandbox: shown as text, capped.
 import crypto from 'node:crypto';
 import { short, str } from './validate.mjs';
 import { WS, WORKSPACE_ID, absOf } from './projects.mjs';
@@ -14,20 +17,29 @@ import { WS, WORKSPACE_ID, absOf } from './projects.mjs';
 export const ALL_SOURCES = Object.freeze(['user', 'project', 'local']);
 export const USER_SOURCES = Object.freeze(['user']);
 const SHA = /^[0-9a-f]{64}$/;
-export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']);
-const TYPES = ['missing', 'file', 'link', 'big', 'other'];
+export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json']);
+const TYPES = ['file', 'link', 'big', 'other'];
+export const FILES_MAX = 500;
+// a name bn-coded may list: .mcp.json, .claude itself (a link or not a folder), or a path under .claude/ — relative,
+// one line, no "." or ".." part
+const nameOk = (n) => typeof n === 'string' && n.length <= 1024 && !/[\x00-\x1f\x7f]/.test(n)
+  && (n === '.mcp.json' || n === '.claude' || (n.startsWith('.claude/') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
 
-/** checkFiles(project.settings' RESULT) -> the three files, checked: {name, type, size, sha256, target, text} */
+/** checkFiles(project.settings' RESULT) -> {files: [{name, type, size, sha256, target, text}], ok}: ok false when the
+ *  list does not fit what bn-coded lists (a bad name, the same name twice, out of order, too many): then unverifiable */
 export function checkFiles(r) {
   const rows = Array.isArray(r?.files) ? r.files : [];
-  return SETTINGS_FILES.map((name, i) => {
-    const f = rows[i] && typeof rows[i] === 'object' && rows[i].name === name ? rows[i] : { type: 'other' };
-    return {
-      name, type: TYPES.includes(f.type) ? f.type : 'other', size: Number.isInteger(f.size) && f.size >= 0 ? f.size : null,
+  let ok = rows.length <= FILES_MAX;
+  const files = [];
+  for (const f of rows.slice(0, FILES_MAX)) {
+    if (!f || typeof f !== 'object' || !nameOk(f.name) || (files.length && files.at(-1).name >= f.name)) { ok = false; continue; }
+    files.push({
+      name: f.name, type: TYPES.includes(f.type) ? f.type : 'other', size: Number.isInteger(f.size) && f.size >= 0 ? f.size : null,
       sha256: SHA.test(f.sha256 ?? '') ? f.sha256 : null, target: typeof f.target === 'string' ? short(f.target, 1000) : null,
       text: typeof f.text === 'string' && f.text.length <= 256 << 10 ? f.text : null,
-    };
-  });
+    });
+  }
+  return { files, ok };
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
@@ -48,10 +60,27 @@ const NOT_PLAIN = /[^\x20-\x7e\t\n]/;
 const looksHidden = (t) => NOT_PLAIN.test(t) || /\s{20,}/.test(t) || (t.match(/\s/g) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5;
 // --- end of the rule ---
 export const careful = (t) => typeof t === 'string' && looksHidden(t);
+// the front matter keys of a skill, command, agent … that grant or change something (tools, hooks, MCP servers, the
+// permission mode, the model) — shown for every file under .claude/; the rest of such a file is instructions for Claude
+const GRANT_KEYS = new Set(['allowed-tools', 'allowedtools', 'disallowed-tools', 'disallowedtools', 'tools', 'hooks', 'mcpservers', 'mcp-servers',
+  'permissionmode', 'permission-mode', 'model']);
+/** frontMatter(text) -> [{key, value}] of those keys (a value with its indented lines) */
+export function frontMatter(t) {
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(t);
+  if (!m) return [];
+  const out = [];
+  let cur = null;
+  for (const line of m[1].split(/\r?\n/)) {
+    const k = /^([A-Za-z0-9_-]+)[ \t]*:(.*)$/.exec(line);
+    if (k) { cur = { key: k[1], value: k[2].trim() }; out.push(cur); } else if (cur && /^[ \t]/.test(line)) cur.value += `\n${line}`;
+  }
+  return out.filter((x) => GRANT_KEYS.has(x.key.toLowerCase()));
+}
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
 const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
 
-/** summarize(files) -> what they set, all of it or said to be incomplete: {hooks: [{file, event, matcher, command,
+/** summarize(files) -> what they set, all of it or said to be incomplete — files: [{name, size, grants: [{key, value}]}]
+ *  every file under .claude/ but the two settings files, with its front matter keys that grant something; {hooks: [{file, event, matcher, command,
  *  json, mixed, careful}], allow, ask, deny, defaultMode, directories, env: [{file, name, value}], commands: [{file,
  *  key, command}], mcp: [{file, key, value}], mcpServers: [{file, name, run, json, mixed, careful}], other: [{file,
  *  key, value}], notes: [{file, note}], complete, missing: [why …], careful} — complete: every key and value of the
@@ -61,7 +90,7 @@ const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object'
  *  runs of whitespace or many lines (the page asks you to look at them in full). */
 export function summarize(files) {
   const out = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [],
-    complete: true, missing: [], careful: 0 };
+    files: [], complete: true, missing: [], careful: 0 };
   const why = new Map();
   const incomplete = (reason) => { out.complete = false; why.set(reason, (why.get(reason) ?? 0) + 1); };
   // text(v) -> a value as the page shows it (a string as is; anything else as JSON), whole or said
@@ -77,12 +106,15 @@ export function summarize(files) {
     out[section].push(item);
   };
   for (const f of files) {
-    if (f.type === 'missing') continue;
     const note = (t) => out.notes.push({ file: f.name, note: t });
+    const settings = f.name === '.mcp.json' || SETTINGS_FILES.includes(f.name);
+    // every other file under .claude/ is listed, with the front matter keys that grant something
+    if (!settings) out.files.push({ name: text(f.name), size: f.size, grants: f.text === null ? [] : frontMatter(f.text).map((g) => ({ key: text(g.key), value: text(g.value) })) });
     if (f.type === 'link') note(`a link to ${f.target ?? '?'}${f.text === null ? ' (not read: outside the workspace, or not a file)' : ''}`);
-    if (f.type === 'big') { note('too large to show (over 8 MiB)'); incomplete('a file too large to show'); continue; }
-    if (f.type === 'other') { note('not a file it could read'); incomplete('a file that could not be read'); continue; }
-    if (f.text === null) { note('not shown (over 256 KiB, or not text)'); incomplete('a file that could not be shown'); continue; }
+    if (f.type === 'big') { note('too large to show (over 256 KiB)'); incomplete('a file too large to show'); continue; }
+    if (f.type === 'other') { note('not a file it could read (a FIFO, a folder through a link …)'); incomplete('a file that could not be read'); continue; }
+    if (f.text === null) { note('not shown (not text, or too much in all)'); incomplete('a file that could not be shown'); continue; }
+    if (!settings) continue;
     let v;
     try { v = JSON.parse(f.text); } catch { note('not valid JSON (Claude Code may still read parts of it)'); incomplete('a file that is not valid JSON'); continue; }
     if (!obj(v)) { note('not a JSON object'); incomplete('a file that is not a JSON object'); continue; }
@@ -154,13 +186,12 @@ export const stateOf = ({ workspace = false, present, hash, trust, verifiable = 
 };
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 /** hashOf(files) -> the hash bn-coded's settingsFiles makes, from the checked rows (null when none is there) */
-export const hashOf = (files) => (files.some((f) => f.type !== 'missing')
-  ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null);
+export const hashOf = (files) => (files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null);
 
 /** What a session says when its folder's own settings are not applied (a `local` event at its process's start). */
 export function withheldText(d) {
-  const what = 'its own Claude Code settings (.claude/settings.json, settings.local.json, .mcp.json — and with them its CLAUDE.md, commands and agents)';
-  const why = 'their hooks, permission rules, environment and MCP servers could run commands or silence the permission cards';
+  const what = 'its own Claude Code configuration (everything under .claude/ — settings, skills, commands, agents … — and .mcp.json; with it, its CLAUDE.md)';
+  const why = 'its hooks, permission rules, granted tools, environment and MCP servers could run commands or silence the permission cards';
   if (d.state === 'unverifiable') return `This ${d.project ? 'project' : 'folder'}'s ${what.slice(4)} are not applied in this session: one of these files cannot be checked (a link out of the workspace, too large to show, or not a file), so they cannot be trusted either. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared).`;
   if (d.state === 'unchecked') return `This folder's ${what.slice(4)} are not applied in this session: the sandbox did not say what they hold. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared).`;
   const how = d.project ? 'Review them: the project\'s ⋯ › Claude Code settings… — once you trust them, Claude Code here restarts with them at your next prompt.'
@@ -175,14 +206,14 @@ export function makeTrust({ call, store, log = () => {} }) {
   // read(abs) -> {files, present, hash, verifiable}: the hash recomputed here from what was shown — each text's own
   // SHA-256 checked against the one the sandbox gave — so a trusted hash covers exactly the texts the page showed
   async function read(abs) {
-    const { result } = await call({ op: 'project.settings', ...(abs === WS ? {} : { root: abs }) }, { timeoutMs: 15000 });
-    const files = checkFiles(result);
+    const { result } = await call({ op: 'project.settings', ...(abs === WS ? {} : { root: abs }) }, { timeoutMs: 20000 });
+    const { files, ok } = checkFiles(result);
     for (const f of files) if (f.text !== null && (!f.sha256 || sha256(Buffer.from(f.text, 'utf8')) !== f.sha256)) f.text = null;
-    const present = files.some((f) => f.type !== 'missing');
+    const present = files.length > 0 || !ok || (result?.over !== null && result?.over !== undefined);
     const hash = hashOf(files);
-    const verifiable = present && result?.verifiable === true && hash !== null && result?.hash === hash
-      && files.every((f) => f.type === 'missing' || ((f.type === 'file' || f.type === 'link') && f.text !== null));
-    return { files, present, hash: verifiable ? hash : null, verifiable };
+    const verifiable = ok && present && result?.verifiable === true && !result?.over && hash !== null && result?.hash === hash
+      && files.every((f) => (f.type === 'file' || f.type === 'link') && f.text !== null);
+    return { files, present, hash: verifiable ? hash : null, verifiable, over: typeof result?.over === 'string' ? short(result.over, 200) : null };
   }
   /** decide(cwd) -> {state, sources, strictMcp, project, hash}: what a Claude Code process started there now gets.
    *  Anything that cannot be decided (the records, the sandbox): not applied. */
@@ -206,6 +237,7 @@ export function makeTrust({ call, store, log = () => {} }) {
     const r = await read(abs);
     const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust, verifiable: r.verifiable });
     const summary = summarize(r.files);
+    if (r.over) { summary.complete = false; summary.missing.push(r.over); }
     return {
       // (a hash to trust only for settings the summary shows whole: nothing you were not shown can apply)
       project: rec.id, path: abs, state, hash: state === 'workspace' || !summary.complete ? null : r.hash, trustedAt: rec.trust?.at ?? null,

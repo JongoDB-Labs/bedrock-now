@@ -722,11 +722,16 @@ const sessionSettings = (cwd) => {
 function settingsView(pr) {
   const st = settingsMock.get(pr.root);
   const state = settingsStateOf(pr);
-  const files = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'].map((name) => (st?.files?.[name] !== undefined
-    ? { name, type: st.unverifiable && name === '.mcp.json' ? 'link' : 'file', size: Buffer.byteLength(st.files[name]), target: st.unverifiable && name === '.mcp.json' ? '/home/claude/elsewhere.json' : null }
-    : { name, type: 'missing', size: null, target: null }));
+  const files = Object.keys(st?.files ?? {}).sort().map((name) => ({ name, type: st.unverifiable && name === '.mcp.json' ? 'link' : 'file',
+    size: Buffer.byteLength(st.files[name]), target: st.unverifiable && name === '.mcp.json' ? '/home/claude/elsewhere.json' : null }));
   const summary = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [],
-    complete: true, missing: [] };
+    files: [], complete: true, missing: [] };
+  for (const name of Object.keys(st?.files ?? {}).sort()) {
+    if (name === '.mcp.json' || name === '.claude/settings.json' || name === '.claude/settings.local.json') continue;
+    const fm = /^---\n([\s\S]*?)\n---/.exec(st.files[name])?.[1] ?? '';
+    summary.files.push({ name, size: Buffer.byteLength(st.files[name]), grants: fm.split('\n').map((l) => /^(allowed-tools|tools|hooks|mcpServers|model):\s*(.*)$/.exec(l))
+      .filter(Boolean).map((m) => ({ key: m[1], value: m[2] })) });
+  }
   if (st) {
     const set = JSON.parse(st.files['.claude/settings.json'] ?? '{}');
     const sorted = (v) => JSON.stringify(Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])));
@@ -798,6 +803,7 @@ function seedProject() {
     '.claude/settings.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'npm install --silent' }] }], PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'npx prettier --write .' }] }] },
       permissions: { allow: ['Bash(npm run *)', 'Bash(npx prettier *)'] }, env: { NODE_ENV: 'development' } }),
     '.mcp.json': JSON.stringify({ mcpServers: { docs: { command: 'npx', args: ['-y', '@acme/docs-mcp'] } } }),
+    '.claude/skills/release/SKILL.md': '---\nname: release\nallowed-tools: Bash(npm version *), Bash(git tag *)\n---\nBump the version and tag it.\n',
   } });
   const mk = (title, ago) => {
     const id = crypto.randomUUID();

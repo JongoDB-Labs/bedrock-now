@@ -610,16 +610,16 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
   };
   const when = v?.trustedAt ? new Date(v.trustedAt).toLocaleString() : '';
   const lead: Record<string, string> = {
-    untrusted: 'Claude Code reads these files when a session starts in this folder. They are not applied until you trust them: hooks run commands, allow rules skip the permission cards, env changes what runs, MCP servers start programs. Read them first.',
+    untrusted: 'Claude Code reads these files when a session starts in this folder. They are not applied until you trust them: hooks run commands, allow rules and a skill\'s allowed-tools skip the permission cards, env changes what runs, MCP servers start programs. Read them first.',
     changed: `They changed since you trusted them${when ? ` (${when})` : ''}: not applied until you look again.`,
     trusted: `Trusted${when ? ` ${when}` : ''}: they apply to sessions in this folder while they stay exactly as they are.`,
     unverifiable: 'One of these files cannot be checked (a link out of the workspace, too large to show, or not a file): they are not applied, and cannot be trusted until it is a plain file of the project.',
-    none: 'This project has no Claude Code settings of its own (.claude/settings.json, settings.local.json, .mcp.json): nothing to trust.',
+    none: 'This project has no Claude Code configuration of its own (no file under .claude/, no .mcp.json): nothing to trust. Its CLAUDE.md, if any, is read as instructions.',
     workspace: 'The Workspace\'s own settings always apply, as they did before projects.',
     unchecked: 'The sandbox did not say what they hold: they are not applied.',
   };
   const fileNote = (f: SettingsView['files'][number]) =>
-    f.type === 'missing' ? 'not there' : f.type === 'big' ? 'too large to show' : f.type === 'other' ? 'not a file' : f.type === 'link' ? `a link to ${f.target ?? '?'}` : `${f.size ?? 0} bytes`;
+    f.type === 'big' ? 'too large to show' : f.type === 'other' ? 'not a file it could read' : f.type === 'link' ? `a link to ${f.target ?? '?'}` : `${f.size ?? 0} bytes`;
   const sm = v?.summary;
   // a row: its text with whitespace made visible; a hook's or an MCP server's whole entry below it; one that could
   // hide something in whitespace or lines folded until opened
@@ -637,6 +637,8 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
     ['MCP servers (.mcp.json)', sm.mcpServers.map((m) => ({ text: `${m.name}: ${m.run}`, json: m.json, mixed: m.mixed, careful: m.careful })), 'settings-mcp'],
     ['MCP settings', sm.mcp.map((m) => ({ text: `${m.key}: ${m.value}` })), 'settings-mcp-keys'],
     ['Other settings', sm.other.map((o) => ({ text: `${o.key}: ${o.value}` })), 'settings-other'],
+    ['Skills, commands, agents … in .claude/ — what their front matter grants', sm.files.flatMap((f) => (f.grants.length
+      ? f.grants.map((g) => ({ text: `${f.name}: ${g.key}: ${g.value}` })) : [{ text: `${f.name}: grants nothing in its front matter` }])), 'settings-tree'],
     ['Notes', sm.notes.map((n) => ({ text: `${n.file}: ${n.note}` })), 'settings-notes'],
   ] : [];
   const all = sections.flatMap(([title, rows]) => rowsOf(title, rows));
@@ -673,11 +675,13 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
       {v && (
         <>
           <p class={`small${settingsApplied(v.state) ? '' : ' warn-text'}`} data-testid="settings-state" data-state={v.state}>{lead[v.state]}</p>
-          <ul class="ps-files small" data-testid="settings-files">
-            {v.files.map((f) => (
-              <li key={f.name}><code>{label(`${v.path}/${f.name}`, 300)}</code> — {label(fileNote(f), 300)}</li>
-            ))}
-          </ul>
+          {v.files.length > 0 && (
+            <ul class="ps-files small" data-testid="settings-files">
+              {v.files.slice(0, 500).map((f) => (
+                <li key={f.name}><code>{visibleWs(f.name)}</code> — {label(fileNote(f), 300)}</li>
+              ))}
+            </ul>
+          )}
           {sm && <div class="ps-body">{sections.map(([title, rows, testid]) => section(title, rows, testid))}</div>}
           {canTrust && unopened > 0 && (
             <p class="warn-text small" data-testid="settings-look">
@@ -689,6 +693,12 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
             <p class="warn-text small" data-testid="settings-incomplete">
               Not everything in them can be shown here ({label(v.summary.missing.join('; ') || 'not said', 400)}): they cannot be trusted. Shorten them, or use the
               folder without them.
+            </p>
+          )}
+          {v.state !== 'workspace' && v.state !== 'none' && (
+            <p class="muted small" data-testid="settings-not-covered">
+              The rest of a skill, command or agent file is instructions for Claude: open it in the explorer to read it. Not covered here: the scripts and
+              packages a trusted hook or MCP server runs (bash scripts/x.sh, npx some-package) — read those too before you trust them.
             </p>
           )}
           {!settingsApplied(v.state) && (
