@@ -104,6 +104,23 @@ export function checkSnapshot(r) {
   return out;
 }
 
+/** mergeSnapshots([{root, snap}]) -> one Map of the watched files of several folders: the workspace's own (root null)
+ *  and a project's (root {rel, abs}: its paths keyed as paths of the workspace, rel/…). Each entry keeps where it is
+ *  (`root`) and its path there (`rel`), for Revert; incomplete when any part is. A path both name is the same file:
+ *  the first one's. */
+export function mergeSnapshots(parts) {
+  const out = new Map();
+  out.incomplete = false;
+  for (const { root, snap } of parts) {
+    out.incomplete ||= snap.incomplete === true;
+    for (const [p, e] of snap) {
+      const key = root?.rel ? `${root.rel}/${p}` : p;
+      if (!out.has(key)) out.set(key, { ...e, path: key, rel: p, root: root?.rel ? root : null });
+    }
+  }
+  return out;
+}
+
 const textOf = (e) => (e && e.type === 'file' && e.data && !e.data.subarray(0, 8192).includes(0) ? e.data.toString('utf8') : '');
 const RUNS_SCRIPTS = /\b(npm|npx|pnpm|yarn|bun)\b/;
 /** Whether something that runs at commit time runs package scripts: a hook or a hook manager's configuration that
@@ -197,7 +214,12 @@ export function watchEvent(id, when, changes, incomplete = false) {
 }
 
 /** What Revert needs of a change: the start's copy (or none: the file was not there) and the end's hash. */
-export const revertOf = (c) => ({
-  path: c.path, kind: c.kind, ok: revertable(c), afterSha: c.after ? c.after.sha256 : null,
-  before: c.before ? { data: c.before.data, mode: c.before.mode & 0o777 } : null,
-});
+export const revertOf = (c) => {
+  const e = c.after || c.before;
+  return {
+    path: c.path, kind: c.kind, ok: revertable(c), afterSha: c.after ? c.after.sha256 : null,
+    before: c.before ? { data: c.before.data, mode: c.before.mode & 0o777 } : null,
+    // where it is (mergeSnapshots): its folder's root and its path there — a file of the workspace's own: as named
+    root: e?.root ?? null, rel: e?.rel ?? c.path,
+  };
+};

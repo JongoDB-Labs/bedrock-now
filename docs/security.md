@@ -1236,8 +1236,12 @@ direction-changing character; a record that does not fit (a file someone changed
   project into another is followed (the sandbox can go there anyway), a link out of the workspace is refused, as are
   NUL bytes and names over the limits. `/workspace`, a root itself and a trash folder are never deleted or renamed;
   a delete in a project goes to its folder's `.bedrock-now-trash/`. git runs with the root as its repository (its
-  parent as `GIT_CEILING_DIRECTORIES`): a repository above the project is not used. The watchlist, Run & test,
-  launch.json and the Permissions view read the root's files. Tests: `code/test/bn-coded-projects.test.mjs`.
+  parent as `GIT_CEILING_DIRECTORIES`): a repository above the project is not used. Run & test, launch.json and the
+  Permissions view read the root's files. Tests: `code/test/bn-coded-projects.test.mjs`.
+- [x] **The watchlist of a session in a project covers both folders**: the workspace's own top folder (its `.git`,
+  hooks, `.envrc`, `.vscode`, `.claude` … — what runs when you open the workspace on your computer) and the project's
+  folder, whose files the cards name as paths of the workspace (`app/.envrc`); Revert puts each back in its own
+  folder. Other projects' folders are checked by their own sessions' turns, not this one's.
 - [x] **Sessions are placed by their folder, checked twice.** Claude Code keeps a conversation in
   `~/.claude/projects/<its folder, every character but letters and digits as ->/`, a lossy name (`/workspace/a-b` and
   `/workspace/a/b` share one). bn-coded reads only the `-workspace` and `-workspace-*` store folders (real folders,

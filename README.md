@@ -711,8 +711,9 @@ sessions from before projects are listed under it.
 
 - **What follows the project.** New sessions start in its folder, so Claude Code reads that folder's `CLAUDE.md` and
   `.claude/` settings. The file tree, Search in files, the `@` picker, the Git panel, Review, Run & test,
-  `.claude/launch.json`'s dev servers, the watchlist and ⋯ › *Memory (CLAUDE.md)* work on its folder. An `@`-mention
-  is written relative to the session's folder (a file of another project: its full path in `/workspace`).
+  `.claude/launch.json`'s dev servers and ⋯ › *Memory (CLAUDE.md)* work on its folder; the watchlist checks its folder
+  and the workspace's own top folder. An `@`-mention is written relative to the session's folder (a file of another
+  project: its full path in `/workspace`).
 - **The Projects tab.** Each project with its sessions: the open ones grouped **Needs you**, **Working**, **Done**,
   then the others it ran (resume, fork, rename, search). The project shown is unfolded. A project's ⋯: *New session*,
   *Open a terminal here*, *Connect a git repository*, *Rename*, *Remove from Code…*. The limits on open sessions

@@ -8,7 +8,7 @@ import { Ring } from './ring.mjs';
 import { fromSdk, errorEvent } from './normalize.mjs';
 import { isUuid, isModel, isFullModel, str, short, capped, num } from './validate.mjs';
 import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions, startFlags } from './modes.mjs';
-import { checkSnapshot, diffSnapshots, watchEvent, revertOf } from './watch.mjs';
+import { checkSnapshot, diffSnapshots, mergeSnapshots, watchEvent, revertOf } from './watch.mjs';
 import { WS, cwdOk } from './projects.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
@@ -619,10 +619,17 @@ export class Session {
   }
 
   // --- the watchlist (watch.mjs) ---
+  // the watched files of the workspace's own top folder and, for a session in a project, of its project's folder too
+  // (a project is no boundary: a session there can write the workspace's hooks as well); a project's paths as paths
+  // of the workspace
   async snapshot() {
-    const snap = checkSnapshot(await this.mgr.watcher.snapshot(this.watchRoot));
-    if (!snap) throw new Error('not a snapshot');
-    return snap;
+    const roots = [null, ...(this.watchRoot?.rel ? [this.watchRoot] : [])];
+    const parts = await Promise.all(roots.map(async (root) => {
+      const snap = checkSnapshot(await this.mgr.watcher.snapshot(root));
+      if (!snap) throw new Error('not a snapshot');
+      return { root, snap };
+    }));
+    return parts.length === 1 ? parts[0].snap : mergeSnapshots(parts);
   }
   watchFailed(e) {
     const msg = short(e?.message || String(e), 200);
@@ -698,8 +705,8 @@ export class Session {
     const results = new Map();
     const restore = async (c) => {
       try {
-        const r = await this.mgr.watcher.restore({ path: c.path, ifSha256: c.afterSha,
-          data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null }, this.watchRoot);
+        const r = await this.mgr.watcher.restore({ path: c.rel ?? c.path, ifSha256: c.afterSha,
+          data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null }, c.root ?? null);
         c.done = true;
         results.set(c.path, { path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
       } catch (e) { results.set(c.path, { path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
