@@ -177,7 +177,7 @@ test('POST /api/git/draft: the prompt from the sandbox\'s staged diff, the helpe
   assert.ok(o.disallowedTools.includes('Bash') && typeof o.spawnClaudeCodeProcess === 'function');
   assert.deepEqual(srv.mgr.list(), [], 'no session was opened');
   assert.deepEqual(calls.slice(-2).map((c) => c.op), ['git.status', 'git.file']);
-  assert.deepEqual(calls.at(-1), { op: 'git.file', scope: 'staged' });
+  assert.deepEqual(calls.at(-1), { op: 'git.file', repo: '', scope: 'staged' });
 });
 
 test('POST /api/git/draft: refusals — a model that is not a full id, nothing staged, another site', async () => {

@@ -9,8 +9,8 @@
 #   webtest  the frontend's checks on that same install: npm test (tsc --noEmit, then its unit tests)
 #   deps     the backend's node_modules, checked: no native binaries, no peer dependencies, the SDK imports
 #   gitnew   the Git panel's unit tests once more with git 2.54 (Alpine 3.24): config-based hooks, which Debian's git
-#            lacks, are proven switched off there (the test may not skip) — its remote operations' too (with openssl
-#            and OpenSSH for their test servers)
+#            lacks, are proven switched off there (the test may not skip) — its remote operations' too (with openssl,
+#            OpenSSH and git-daemon's git http-backend for their test servers)
 #   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
 #            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox),
 #            and the sandbox's egress proxy (terminal/egress/bn-egress.mjs)
@@ -31,7 +31,7 @@ RUN if [ -f package.json ]; then npm test; else echo "no code/web: no frontend t
 # and `test`: setup and update build the runtime stage at the end (compose.code.yaml: no target), which needs neither —
 # an Alpine change here can never break an install or an update.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS gitnew
-RUN apk add --no-cache "git~2.54" "nodejs~24" openssh-client openssh-server openssl
+RUN apk add --no-cache "git~2.54" "git-daemon~2.54" "nodejs~24" openssh-client openssh-server openssl
 WORKDIR /opt/code
 COPY server/frames.mjs server/sshagent.mjs ./server/
 COPY test/helpers.mjs test/git-servers.mjs test/bn-coded-git.test.mjs test/bn-coded-remote.test.mjs ./test/
@@ -61,6 +61,7 @@ COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
 COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs bin/bn-git-credential /opt/terminal/bin/
+COPY --from=terminal ssh_known_hosts /opt/terminal/ssh_known_hosts
 COPY --from=terminal egress/bn-egress.mjs /opt/terminal/egress/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json
 ENV BN_TERMINAL_DIR=/opt/terminal

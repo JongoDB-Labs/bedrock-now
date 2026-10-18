@@ -6,6 +6,25 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Remote repositories on the Code page: Git hosts, clone, fetch, pull, push.** Connect GitHub, GitLab or any
+  https/ssh git server under the Git panel's **Git hosts** (also Settings › Claude Code › Git hosts) with an access
+  token or an SSH key the Code page makes (ed25519; its public half shown with links to add it to your account or as
+  a deploy key). Then **Clone a repository**, and in the Git panel **Fetch**, **Pull** (a fast-forward only),
+  **Push** and **Publish branch** — each showing where it goes before anything is sent ("Push main →
+  github.com/owner/repo (main) via HTTPS token 'GitHub'"; every push, the first fetch from a remote URL) — **Open a
+  pull request** after a push to GitHub or GitLab, branches (switch, create, track a remote one), a remote's URL, and
+  a picker for the repositories in the workspace (a clone in a folder of it). The credentials are kept by the code
+  container in a volume of its own (`code-state`), never in `.env`, the portal or the sandbox: an operation you start
+  gets its host's token through a channel only its git process has, or an SSH login signed by the code container (the
+  key never enters the sandbox), only for the host of the URL you confirmed — URL rewrites, proxies, credential
+  helpers and ssh commands in the repository's configuration are neutralised, and no hook, filter or merge driver
+  runs. Claude's own git gets no credential unless you turn on **Let Claude use this host** for a host (off by default;
+  only from the computer running bedrock-now; each use in Activity). Adding a host, a token or a key works only from
+  that computer too. The sandbox image trusts github.com's, gitlab.com's and bitbucket.org's SSH host keys
+  (`/etc/ssh/ssh_known_hosts`). README: *Remote repositories*; docs/security.md: *Git remotes and Git hosts*.
+
 ### Fixed
 
 - **Hints that showed `./stack config set KEY VALUE`** (remote previews, sandbox internet access) — `config set` asks

@@ -579,15 +579,17 @@ test('Claude\'s own git through the broker: only while the code container keeps 
       c.write(frame(T.ANSWER, { ...(allow ? credAnswer(q) : {}), id: q.id }));
     }
   });
-  for (let i = 0; i < 50 && !fs.existsSync(path.join(GTMP, 'claude/cred.sock')); i++) await sleep(20);
-  const r1 = await claudeGit();
-  assert.equal(r1.code, 0, `answered: ${r1.err}`);
-  assert.match(r1.out, /refs\/heads\/main/);
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].host, `127.0.0.1:${good.port}`);
-  allow = false;
-  assert.notEqual((await claudeGit()).code, 0, 'the code container said no');
-  c.destroy();
+  // (in finally: a failure must not leave the broker's connection keeping this process alive)
+  try {
+    for (let i = 0; i < 50 && !fs.existsSync(path.join(GTMP, 'claude/cred.sock')); i++) await sleep(20);
+    const r1 = await claudeGit();
+    assert.equal(r1.code, 0, `answered: ${r1.err}`);
+    assert.match(r1.out, /refs\/heads\/main/);
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].host, `127.0.0.1:${good.port}`);
+    allow = false;
+    assert.notEqual((await claudeGit()).code, 0, 'the code container said no');
+  } finally { c.destroy(); }
   for (let i = 0; i < 50 && fs.existsSync(path.join(GTMP, 'claude/cred.sock')); i++) await sleep(20);
   assert.equal(fs.existsSync(path.join(GTMP, 'claude/cred.sock')), false, 'the socket goes with the broker');
   assert.notEqual((await claudeGit()).code, 0);

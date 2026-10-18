@@ -19,7 +19,13 @@
 //   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
 //                   the Git panel: the branch and its changes, the last 20 commits, a file's diff; staging, a commit
 //                   (message on stdin), discarding a file's changes (its current version to the workspace trash) — the
-//                   same hardening, and no hook, signing program or editor ever runs (no push, no pull)
+//                   same hardening, and no hook, signing program or editor ever runs; in /workspace or a repository
+//                   folder of it (repo)
+//   git.repos / git.remote.state / git.branch / git.remote.set / git.net / git.clone / git.test / git.broker
+//                   its remotes: the repositories in the workspace, the remotes and branches (no network), a branch
+//                   switched or made, a remote's URL; fetch, pull (a fast-forward), push, publish, clone and a test of
+//                   a Git host's credential — which the code container gives for that one operation (ASK frames), never
+//                   kept here; and Claude's own git's credential, only while the code container allows it (git.broker)
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title / sessions.running
@@ -805,8 +811,8 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
 // --- no NUL, no .git part), after `--`, as literal pathspecs — and a commit message (on stdin: `-F -`; checked: no NUL,
 // --- no control or direction-changing characters but tabs and newlines). The identity of a commit is the repository's
 // --- user.name / user.email, else the sandbox's own ~/.gitconfig's (read here, never through a link, no includes),
-// --- else GIT_DEFAULT_IDENTITY — set as GIT_AUTHOR_* / GIT_COMMITTER_*. Push and pull are not here (docs/security.md:
-// --- they would send the workspace to a remote that Claude can change, with the sandbox's credentials).
+// --- else GIT_DEFAULT_IDENTITY — set as GIT_AUTHOR_* / GIT_COMMITTER_*. Push and pull are below (Git remotes): never with
+// --- the sandbox's own credentials, never to a URL other than the one the page showed.
 export const GIT_PANEL_CONFIG = [
   ['commit.gpgSign', 'false'], ['tag.gpgSign', 'false'], ['gpg.program', '/dev/null/gpg'], ['gpg.ssh.program', '/dev/null/ssh-keygen'],
   ['gpg.x509.program', '/dev/null/gpgsm'], ['gpg.ssh.defaultKeyCommand', ''], ['core.editor', ':'], ['sequence.editor', ':'],

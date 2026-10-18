@@ -867,7 +867,8 @@ spawn server, Claude Code or any file at will.
   ports, stopping one, the workspace's `.claude/launch.json`), Run & test's (below: the workspace's tasks, one run
   through a fixed wrapper, the runs, a run's window), the watchlist's two ops (below), the Review pane's
   `git.diff`, the Git panel's `git.status`, `git.log`, `git.file`, `git.stage`, `git.unstage`, `git.commit` and
-  `git.discard`, and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
+  `git.discard`, its remotes' `git.repos`, `git.remote.state`, `git.branch`, `git.remote.set`, `git.net`, `git.clone`,
+  `git.test` and `git.broker` (below, "Git remotes and Git hosts"), and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
   Permissions view's, *Open in the terminal*'s and the resume check's ops (`perm.read`, `perm.remove`,
   `terminal.resume`, `sessions.running`: below, "Budgets, Permissions, Open in the terminal, links"), and @terminal's
   read-only `terminal.capture` (below, "Context mentions and plan comments"). Claude Code's
@@ -1527,14 +1528,13 @@ repository can plant in `.git/` or in a configuration file.
   subjects as one-line text; at most 2,000 entries and 20 commits; the page checks again and shows all of it as text.
   The changing routes need the page's own Origin (as every other); two reads and one change run at once in the
   sandbox (git's index lock is never fought over: a second change gets "busy", 429).
-- [x] **No push, no pull.** They are not in the panel, by decision: a push sends the workspace's code to a remote
-  with whatever credentials the sandbox holds (`~/.git-credentials`, a token in a URL, an SSH key), the remote's URL
-  is something Claude can change in `.git/config` (`remote.*.url`, `url.*.insteadOf` / `pushInsteadOf` rewriting it,
-  an `ext::` transport), and ssh would read `~/.ssh/config` (`ProxyCommand`, `LocalCommand`). A safe button would need
-  the effective URL shown and confirmed, an https/ssh-only protocol list, credential helpers limited to git's own, a
-  vetted ssh configuration and the sandbox's egress setting — more than a minimal panel should carry. Run `git push`
-  / `git pull` in the terminal, where you see what git does. The panel shows the upstream's ahead/behind counts from
-  the sandbox's last fetch (no network).
+- [x] **Push, pull, fetch and clone never use the sandbox's own credentials, and never a URL you did not see.** A
+  push sends the workspace's code to a remote, and the remote's URL is something Claude can change in `.git/config`
+  (`remote.*.url`, `url.*.insteadOf` / `pushInsteadOf` rewriting it, an `ext::` transport), as it can `~/.ssh/config`
+  (`ProxyCommand`, `LocalCommand`) and `~/.git-credentials`. So the panel's remote operations take their credential
+  from Git hosts — kept outside the sandbox — for exactly the URL you confirmed, and ignore everything of the
+  repository's and the sandbox's that would send it elsewhere: next section. (Git in the terminal stays yours: `git
+  push` there uses whatever you configured in the sandbox.)
 - **Proof** (`code/test/bn-coded-git.test.mjs`, with Debian's git 2.47 in the image's test stage and again with git
   2.54 in its `gitnew` stage — Alpine 3.24 by digest, git 2.54.* and node 24.* by series; only `code/test.sh` builds it,
   never setup or an update — where the config-based hooks test must run and may not skip): for each of
@@ -1553,6 +1553,117 @@ repository can plant in `.git/` or in a configuration file.
   removed only when it is the op's and no git runs); a file in a nested repository refused. The helper:
   `code/test/git-draft.test.mjs` (its options, the rules before the prompt, a model that tries a tool, the fail-closed
   check, the deadline and a cancel, the prompt with an injection kept in its fence, the route: no session opened).
+
+### Git remotes and Git hosts
+
+The Git panel clones, fetches, pulls and pushes (README: *Remote repositories*), with the credentials of **Git hosts**
+— GitHub, GitLab or any https/ssh server you connect with an access token or an SSH key the Code page makes. The
+sandbox runs git, so the question is how git there can use a credential that the sandbox never holds, for one
+operation you started, sent only where you saw it go.
+
+- [x] **The credentials live in the code container, never in the sandbox.** Git hosts are one JSON file of mode 600 in
+  a folder of mode 700 in the code container's own volume (`code-state`, `/var/lib/bn-code/git`; compose.code.yaml):
+  not in `.env`, not in the portal or the update helper's requests (the secrets never pass them), not in backups or
+  diagnostic reports, and no other container mounts it — the sandbox has no path to it. A token is entered once and
+  never shown again (*Replace it* takes a new one; replace-only); an SSH key is an ed25519 key made there, whose
+  private half never leaves it — the page sees the public half and the fingerprint. Adding a host, a token or a key,
+  trusting a host key and turning on Claude's use of a host work only from the computer running bedrock-now: the code
+  container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy is stripped before
+  it gets there). Removing a host and turning Claude's use off work everywhere. `./stack uninstall` removes the volume.
+- [x] **One operation, its host, while it runs — HTTPS token.** The network command (`git fetch`, `push`, `clone`,
+  `ls-remote`) gets one more descriptor, a socket pair as its fd 3, which only it and its children inherit, and the
+  configuration `credential.helper=` (empty: every helper the repository's or the sandbox's configuration names is
+  cleared — URL-scoped ones too, proven) then the image's `bn-git-credential`. When the server asks for a credential,
+  git runs that helper, which asks over fd 3; bn-coded passes the question (`protocol`, `host`, `path`) to the code
+  container as an ASK frame, and the code container answers with the token only when the protocol is https and the
+  host is exactly the confirmed URL's (and at most 3 times an operation). bn-coded keeps nothing; git's `store` and
+  `erase` calls do nothing. A public repository's fetch never asks, so the token never leaves the code container. The
+  token is never in an environment variable or a command line (proven: none of the sandbox's processes has it in
+  `/proc/<pid>/environ` or `cmdline` while the operation runs), never in an answer, error, Activity entry or log.
+- [x] **One operation, its host, while it runs — SSH key.** ssh is the image's (`/usr/bin/ssh`, through
+  `GIT_SSH_COMMAND`, which wins over `core.sshCommand`) with `-F /dev/null` — neither `~/.ssh/config` nor the system's
+  (no `ProxyCommand`, `LocalCommand`, `Include` of the sandbox's) — and every option set: `BatchMode`,
+  `IdentitiesOnly` with the host's public key as `IdentityFile`, `IdentityAgent` a socket in a private folder of this
+  operation, `UserKnownHostsFile` the host keys the code container sends (github.com's, gitlab.com's and
+  bitbucket.org's built in, checked against their published fingerprints; another host's learned by *Test connection*
+  from the computer running bedrock-now, its fingerprint shown, or pasted), `StrictHostKeyChecking=yes`, no
+  `GlobalKnownHostsFile`, no control socket, forwarding, local command, password or keyboard authentication, the egress
+  proxy's `ProxyCommand` (`bn-ssh-proxy`) as the only way out. The agent socket relays every request to the code
+  container, which answers with the host's public key and signs only an SSH login (a `publickey` user authentication
+  for `ssh-connection`, also OpenSSH's host-bound one, for the user the URL names), at most twice an operation —
+  never other data (a `ssh-keygen -Y` signature, a commit signature).
+- [x] **The URL is the one you saw.** Before anything is sent, the page shows what will happen — *"Push main →
+  github.com/owner/repo (main) via HTTPS token 'GitHub'"*, with the URL in full — every time for a push or publish, the
+  first time for a fetch or pull from a remote URL (remembered in Git hosts' file), and for a clone. The plan is good
+  for one run within 10 minutes. bn-coded then re-reads the remote's URL from the configuration and refuses when it is
+  not the one shown (or when there are two). Only `https://` and ssh (`ssh://`, `user@host:path`) URLs are used —
+  never `http://`, `git://`, `file://`, a local path, a transport helper (`ext::`, `fd::`, `<name>::`), a password or
+  token in the URL, an option-like host or path (`-oProxyCommand=…`), a space or a control or non-ASCII character
+  (the code container and bn-coded check the same rules) — and `GIT_ALLOW_PROTOCOL` allows the URL's one protocol. A
+  push or an SSH remote needs its host connected; a public https fetch or clone may go without (no credential).
+- [x] **The repository's configuration cannot send it elsewhere.** git gets the URL through an alias: a random name
+  that this run's configuration rewrites to the URL with `url.<URL>.insteadOf` and `.pushInsteadOf` — the longest
+  possible match, and git takes the longest, so no rewrite in the repository's configuration applies (proven against
+  `insteadOf`, `pushInsteadOf` and prefix rules aimed at the alias), and as the remote is that random name, no
+  `remote.<name>.*` of the repository applies either (`vcs`, `proxy`, `uploadpack`, `receivepack`, `pushurl` …).
+  Every `http.*` setting that decides where a request goes, whom it trusts or what it carries is set for the plain key
+  **and for the exact URL** — a URL-scoped setting in the repository's configuration beats a plain one (proven: a
+  repository's `http.<url>.proxy` won over a plain override, never over the exact URL's): `sslVerify=true`, the
+  image's CA bundle (or the host's own CA, from Git hosts) as `sslCAInfo` and an empty folder as `sslCAPath` (also as
+  `GIT_SSL_CAINFO` / `GIT_SSL_CAPATH`), `proxy` the egress proxy (none with `TERMINAL_EGRESS=host`), no extra headers,
+  cookies, `curloptResolve`, redirects (`followRedirects=false`) or proactive or empty authentication. A URL-scoped
+  `http.*` setting the panel does not know is refused, by name. A client certificate the repository names (sslCert)
+  is left as it is: it only says who the client is to that same server.
+- [x] **Nothing of the repository runs.** On top of the Git panel's hardening (no hook file or config-based hook — the
+  `pre-push`, `post-merge`, `post-checkout` and `reference-transaction` ones included —, filter, fsmonitor, signing
+  program, editor, pager, automatic gc or maintenance): `fetch.recurseSubmodules=false`, `push.recurseSubmodules=no`,
+  `--no-recurse-submodules`, no bundle URIs, `push.gpgSign=false` and `--no-signed`, no push options, no lazy fetch,
+  `core.alternateRefsCommand=true`, every merge driver named as a program that is not there, and `merge
+  --verify-signatures` off. Pull is fetch, then `git merge --ff-only` of the upstream into the current branch (which
+  must still be the one shown): a fast-forward runs no merge driver; diverged branches are refused with a plain
+  message (merge or rebase in the terminal, or ask Claude), as are local changes git would overwrite. A push sends the
+  commit the branch points to (`<sha>:refs/heads/<dst>`), never forced; the tracking branch follows (`update-ref`),
+  and *Publish* sets `branch.<b>.remote` / `.merge`. Clone runs outside every repository (a private folder), with no
+  template (no hooks), no submodules, nothing of the sandbox's git configuration, into a new folder of the workspace
+  (or the workspace folder while it is empty).
+- [x] **Claude's own git gets nothing — unless you let it, per host.** Neither `~/.git-credentials` nor an agent of
+  the Code page is anywhere in the sandbox by default. *Let Claude use this host* (off by default; turned on only from
+  the computer running bedrock-now, after a warning that Claude, or text it reads, could then push to any repository
+  the token or key reaches) makes the code container keep `git.broker` open: bn-coded then answers
+  `/tmp/bn-git/claude/cred.sock` (the image's `/etc/gitconfig` names `bn-git-credential`, which asks there when it is
+  not inside an operation of yours) and `/tmp/bn-git/claude/agent.sock` (the image's ssh configuration names it as
+  `IdentityAgent` while it exists). The code container answers only for the hosts you let Claude use, at most 30
+  times a minute, and notes each use in Activity (and the host's *Recent use*); turned off (from anywhere), the broker
+  closes and both sockets go.
+- [x] **Activity.** Each operation and each use by Claude's git is an entry of Git hosts' file (the last 200: who, what,
+  the host's name and the URL — never a credential). The Code page shows them; framed by the portal it reports the
+  last 10 of the past week to Activity (`bn-code-status`, checked by code.js: ids, times and a few words, shown as
+  text), Claude's uses and failures as items to look at.
+- **What remains.** The sandbox is one user: a process there that runs while an operation of yours runs — and can
+  read other processes' memory (`ptrace`, `/proc/<pid>/mem`: the same user, as the kernel allows it) or race git to
+  the operation's agent socket — could take the token from git's memory or have one SSH login signed for itself. That
+  window is the operation's (seconds); the token, once taken, is valid until you revoke it, a signed login is good
+  for one connection. So: prefer fine-grained, repository-scoped tokens with an expiry, and deploy keys; revoke a
+  token that may have been seen. bn-coded itself runs in the sandbox: a sandbox that replaced it could ask for the
+  operation's credential in its place — which the code container gives only during an operation you started, only for
+  its host, a few times. With *Let Claude use this host* on, the token or key logins are Claude's to use for that host
+  as long as it is on.
+- **Proof** (`code/test/bn-coded-remote.test.mjs`, with Debian's git 2.47 and again in the `gitnew` stage with git
+  2.54; real servers on 127.0.0.1: smart HTTPS — `git http-backend` behind Node's https with a CA of the test's own —
+  and the system's sshd with a key whose private half only the test's stand-in code container holds): push, publish,
+  fetch, pull (and a pull that cannot fast-forward, a push the remote is ahead of, a wrong token, no token) over HTTPS
+  and SSH; a hostile repository — URL rewrites aimed at the URL and at the alias, credential helpers plain and
+  URL-scoped, a proxy, extra headers, `sslVerify=false`, its own CA for the URL, redirects, `remote.origin.vcs`,
+  `uploadpack` / `receivepack`, `core.alternateRefsCommand` with alternates, hook files and config-based hooks,
+  `mergeOptions`, smudge and clean filters, a merge driver with `.gitattributes`, fsmonitor, `core.sshCommand`,
+  `~/.ssh/config`'s `ProxyCommand` and `LocalCommand` — with a plain-git control for each kind showing it live: no
+  marker, nothing reaches the evil server or the proxy; a second git asking at the same time, even with the operation's
+  nonce read from `/proc`, gets nothing and only the operation asked; the token in no process's environment or command
+  line; host keys pinned (an unknown one refused, learned only when asked); clone's refusals; repositories in the
+  workspace, branches, a remote's URL; the broker. `code/test/githosts.test.mjs`: the store (modes, never a secret in
+  an answer or event), the URL rules equal to bn-coded's, the built-in host keys' fingerprints, the agent (only a
+  login, verifiable), plans and the answers to an operation's questions (another host, protocol, a fourth question:
+  nothing), Claude's broker (only allowed hosts, 30 a minute), and the routes over remote access.
 
 ### Previews of dev servers in the sandbox
 

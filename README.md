@@ -555,6 +555,7 @@ In this section: [turning it on and off](#turning-the-code-page-on-and-off) ·
 [permissions and modes](#permissions-and-modes) (with comments on a plan's lines) ·
 [files, search and previews](#files-search-and-previews-of-files) ·
 [review changes, Git, Run & test](#review-changes-git-run--test) ·
+[remote repositories](#remote-repositories-git-hosts-clone-push-and-pull) (Git hosts, clone, push and pull) ·
 [previews of dev servers](#previews-of-dev-servers) · [plugins and MCP servers](#plugins-and-mcp-servers) ·
 [where it runs](#where-it-runs) · [costs](#costs-on-the-code-page) · [the page's code](#the-pages-code)
 
@@ -873,8 +874,8 @@ maps to it).
   repository's `user.name`/`user.email`, else the sandbox's `~/.gitconfig`, else "bedrock-now Code page"), and the last
   20 commits. Commits made here run **no git hooks** (`pre-commit`, `commit-msg` …), no signing program and no editor,
   whatever the repository configures — your computer's git would run its hooks, so staged files that run on your
-  computer are marked. There is no push or pull: run `git push` / `git pull` in the terminal, where you see the remote
-  and the credentials git uses. [docs/security.md](docs/security.md#the-git-panel)
+  computer are marked. Fetch, pull, push, clone and branches: [Remote repositories](#remote-repositories-git-hosts-clone-push-and-pull)
+  below. [docs/security.md](docs/security.md#the-git-panel)
 - **Run & test** (*Run* in the status bar, ⋯ → *Run & test*, or the command palette). The workspace's tasks, read from
   the files in its top folder — `package.json`'s scripts, the targets of the Makefile `make` would read (its `name:`
   lines, run by the sandbox image's own GNU `make`), `pyproject.toml`'s entry points (`[project.scripts]`,
@@ -895,6 +896,59 @@ maps to it).
   `npm test` and fix failures." into the prompt box instead — never sent by itself; Claude then runs it under the
   session's permission mode. Like anything in the terminal, tasks run in the sandbox, not on your computer. Details:
   [docs/security.md](docs/security.md#previews-of-dev-servers-in-the-sandbox) (*Run & test*).
+
+#### Remote repositories: Git hosts, clone, push and pull
+
+The Git panel works with remotes too — GitHub, GitLab or any git server over https or ssh — without your
+credentials ever being kept in the sandbox.
+
+- **Connect a git host** (the Git panel's server button, *Git hosts…* when the workspace is not a repository yet, the
+  command palette's *Git: Git hosts*, or Settings › Claude Code › **Git hosts**). Choose GitHub, GitLab or another
+  server and how to connect:
+  - **An access token**, for `https://` URLs. The dialog links to the place to create one: on GitHub a
+    *fine-grained* token for only the repositories you need, with *Contents: Read and write*; on GitLab one with
+    `read_repository` and `write_repository`. Paste it once; it is kept by the Code page and never shown again (*Replace
+    it* takes a new one).
+  - **An SSH key**, for `git@host:owner/repo.git` URLs. The Code page makes an ed25519 key and shows its public half,
+    with *Copy* and links to add it to your account, or as a *deploy key* of the repository the panel shows (tick
+    *Allow write access* to push). The private half never leaves the Code page. github.com's, gitlab.com's and
+    bitbucket.org's host keys are built in; for another server **Test connection** learns its host key and shows the
+    fingerprint to compare with the one the server publishes (or paste the line `ssh-keyscan` prints).
+
+  **Test connection** lists a repository's branches with the host's credential. A server whose certificate a private
+  CA signed takes that CA (*More*). Adding a host, a token or a key, trusting a host key, and letting Claude use a host
+  work only from the computer running bedrock-now; over remote access you can still use the hosts, remove one, or turn
+  Claude's use off.
+- **Clone** (*Clone a repository…* in the Git panel or the command palette): a URL, a new folder of the workspace
+  (named after the repository; or the workspace folder itself while it is empty) and, if you like, only the latest
+  commit. A public repository needs no git host; a private one needs its host connected. Submodules are not cloned and
+  no hook of the repository runs. The panel then shows the new repository: a **repository picker** at its top lists the
+  workspace folder and the repositories in it (two levels down).
+- **Fetch, pull, push.** Under the branch, the panel shows the remote (`origin → github.com/owner/repo`, with the Git
+  host whose credential it uses) and **Fetch**, **Pull** (with how many commits are new there) and **Push** (with how
+  many are yours) — or **Publish branch** for a branch that is not on the remote yet. Before anything is sent the page
+  shows where it goes: *"Push main → github.com/owner/repo (main) via HTTPS token 'GitHub'"*, with the full URL — every
+  time for a push or publish, the first time for a fetch or pull from a remote URL. Pull is a fast-forward only: when
+  both sides have new commits, merge or rebase in the terminal (or ask Claude). A push the remote is ahead of is
+  refused as git refuses it ("pull first"). After a push to GitHub or GitLab, **Open a pull request** opens the host's
+  page for it (nothing is sent to the host's API).
+- **Branches** (the branch button): switch, create one from the current branch (and switch to it), or make a local
+  branch of a remote one. **The remote's URL** (the pencil) adds `origin` to a repository you started with `git init`,
+  or changes it — to publish to a new repository, create it on the host first (empty), then put its URL there.
+- **What Claude's own git gets: nothing, by default.** Claude's `git push` in the sandbox, or yours in the terminal,
+  has no credential from Git hosts. **Let Claude use this host** (a switch on each host, off by default, turned on only
+  from the computer running bedrock-now) changes that: git and ssh in the sandbox then get that host's token or key
+  logins too — so Claude, or text it reads and follows, could push to any repository the token or key reaches — and
+  each use is listed in the host's *Recent use* and in Activity. Prefer a fine-grained token or a deploy key for that.
+
+The credentials are kept by the code container, in its own volume (`<project>_code-state`): not in `.env`, not in the
+portal, not in backups, never in the sandbox. A push, pull, fetch or clone you start gets its host's credential for
+that one operation, through a channel only that git process has, and only for the host of the URL you confirmed — the
+repository's configuration cannot send it elsewhere (URL rewrites, proxies, credential helpers, ssh commands are
+neutralised; hooks, filters and merge drivers do not run). `./stack code disable` keeps them; `./stack uninstall`, or
+`docker volume rm <project>_code-state`, forgets them — revoke tokens and keys on the host too. Details, and what
+remains possible for a process in the sandbox while an operation runs:
+[docs/security.md](docs/security.md#git-remotes-and-git-hosts).
 
 #### Previews of dev servers
 
@@ -1674,7 +1728,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   file edited and its diff, the palette, an upload, a reload without duplicates, an AskUserQuestion answered, plugins
   from a marketplace in the workspace with the install command confirmed by its SHA-256, the MCP panel, a phone, the
   Settings row, the Git panel (Claude edits a file; stage, commit and the log from the panel, Write message's helper
-  ignoring an instruction planted in the diff, while planted hooks never run) — each with zero CSP violations;
+  ignoring an instruction planted in the diff, while planted hooks never run), its remotes when `E2E_GIT_SERVER=1`
+  (a throwaway git server of the suite's own, reached with `TERMINAL_EGRESS=host`: a Git host with a token and one with
+  an SSH key, clone, push with its confirmation, Open a pull request, pull — never a real host) — each with zero CSP
+  violations;
   previews of a dev server in the sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`,
   isolation checked from inside the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel,
   PowerPoint, notebook, HTML and Mermaid previews and the sandboxed viewer's site (its policies, refused capabilities,
