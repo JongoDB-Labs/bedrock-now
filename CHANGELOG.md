@@ -12,6 +12,30 @@ All notable changes to bedrock-now are documented here. The format follows
   guard (a `./stack up` test re-rendered into the checkout's `litellm/`). It no longer does; `tests/run.sh` names the
   test that trips a guard and lists every failure on its last line.
 
+### Docs
+
+- **README checked against the code of v0.11.0.** *What you get* has a row for Activity & search, and its rows say
+  what v0.10–v0.11 added: `claude-bedrock --models` / `--model`, the Code page's models from the whole catalog,
+  @-mentions and comments on a plan's lines, the Terminal's internet through its egress proxy (not this computer's
+  services or your network). The Code page's list of subsections links *Models for Claude Code*; *Updating* has a
+  paragraph for updates from v0.10.0 or earlier (a blank or `on` `TERMINAL_EGRESS` now reads as `internet`, the way
+  back with **+ this computer**, the terminal recreated, what `./stack rollback` puts back); Troubleshooting has rows
+  for a *chat only* model, a site the egress proxy refuses (`TERMINAL_EGRESS_ALLOW`, or `host`), Ctrl/⌘+K inside
+  Chat or the Code page, and Search without its docs index (Docker Compose older than 2.17); *Testing* says that
+  `tests/run.sh`'s last line names every failure, and that a test tripping a guard fails by name. Corrected:
+  `./stack config set` takes names only and asks for each value — `./stack config set CODE_MODELS anthropic` and
+  `./stack config set REMOTE_PREVIEW true` stopped with "… is not a bedrock-now setting" (README, docs/remote.md);
+  `./stack code disable` leaves the browser terminal on (`./stack terminal disable` turns both off); the sandbox has
+  GNU `make` now; `BUDGET_TERMINAL` changes on Settings › Spending & budgets like the other budgets;
+  `TERMINAL_EGRESS_ALLOW`'s `name:PORT` allows that port *instead of* 80, 443 and 22 for that name (`*,name:PORT`
+  adds it); `host` reaches this computer's `127.0.0.1` on Docker Desktop, what listens on every address on Linux;
+  Activity's note on an update that turned the Code page on says "internet: public addresses only"; "Settings → Code
+  page" is Settings › Claude Code; Settings' Claude Code section, and what can be changed there, include *Models for
+  Claude Code*, *Default model for new sessions* and *Sandbox internet access* (opened further only from this
+  computer; the terminal restarts); the phone's More sheet has Activity and Search; `./stack logs terminal-egress`;
+  the status bar's buttons are 40 px on a touch screen; the egress proxy in the prerequisites, `./stack test`, the
+  security model and the repo layout. Every link and anchor in the README and `docs/` resolves.
+
 ## [0.11.0] - 2026-10-17
 
 ### Added

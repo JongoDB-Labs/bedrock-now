@@ -95,8 +95,8 @@ The Code page's previews of a server running in the sandbox ([README](../README.
 over remote access too, wherever the Code page does (`REMOTE_TERMINAL=true`). They are **off unless you turn them on**:
 
 ```bash
-./stack config set REMOTE_PREVIEW true     # or Settings › Remote access — on the computer running bedrock-now only
-./stack config set REMOTE_PREVIEW false    # off again (from anywhere, also Settings on your phone)
+./stack config set REMOTE_PREVIEW    # it asks for the value: true (or Settings › Remote access), on the computer
+                                     # running bedrock-now only; false, off again, from anywhere (also your phone)
 ```
 
 **What turning them on means.** A preview shows whatever the sandbox serves — script included. Over remote access its
@@ -113,7 +113,8 @@ computer running bedrock-now.
 - **With Tailscale: define and approve the Service first, then turn them on.** In the admin console: *Services → Define
   a Service* `<base>-preview` (port `tcp:443`), and add `svc:<base>-preview` to your policy's `autoApprovers` and
   `grants` (steps 2 and 4 below; with previews on, `./stack remote enable tailscale` prints them with it). Then
-  `./stack config set REMOTE_PREVIEW true`; `./stack up` names any Service the sidecar has not served before. (A
+  `./stack config set REMOTE_PREVIEW` (it asks for the value: `true`); `./stack up` names any Service the sidecar
+  has not served before. (A
   Service the sidecar advertises before it is defined has not been tried on a real tailnet: define it first.)
 - **One address for every port.** On this computer each preview has a host of its own,
   `p<port>-<capability>.bedrock-now-preview.localhost`. A Tailscale Service is one host name — no wildcards, and

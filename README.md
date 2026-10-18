@@ -10,16 +10,18 @@ Install it with one command; nothing listens beyond `127.0.0.1`.
 ## What you get
 
 Everything below runs on your computer, behind one portal sign-in. The optional parts are off until you turn them on;
-the Code page and its browser terminal are on by default (`./stack code disable` turns them off, and they stay off).
+the Code page and its browser terminal are on by default (`./stack terminal disable` turns both off, `./stack code
+disable` the Code page alone; either stays off across updates).
 
 | Part | What it is | Default | On / off |
 |---|---|---|---|
 | [**Chat**](#chat-open-webui) | Open WebUI with the Bedrock models your key can use: the cost under every answer, documents and knowledge bases, images | on | — |
-| [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock, with a lean config folder and each session's cost | on (needs `claude`) | setup offers to put it on your `PATH` |
+| [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock, with a lean config folder and each session's cost; any chat model of the catalog (`--models` lists them and how each works, `--model` picks one) | on (needs `claude`) | setup offers to put it on your `PATH` |
 | [**Home, Admin, Files**](#the-portal-one-login-for-everything) | health, spend and budgets; LiteLLM's UI; the shared file store (also an MCP server for Claude Code) | on | — |
+| [**Activity & search**](#activity-and-search) | a bell for budget alerts, updates, Code sessions that need you and jobs; **Ctrl/⌘+K** finds pages, settings, Code sessions and workspace files, Chat conversations, the walkthrough and these docs | on (the docs part with Docker Compose 2.17+) | — |
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
-| [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) | on, as the Code page's sandbox | `./stack terminal disable` / `enable` (disable turns the Code page off too) |
-| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat, permission modes, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
+| [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) and reaches public internet addresses through an egress proxy of its own — not this computer's services or your network | on, as the Code page's sandbox (internet: public addresses only) | `./stack terminal disable` / `enable` (disable turns the Code page off too); its internet: Settings › Claude Code › Sandbox internet access |
+| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat with any chat model of the catalog, @-mentions of the terminal, the changes, failed runs and file lines, permission modes, comments on a plan's lines, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
@@ -32,12 +34,14 @@ the Code page and its browser terminal are on by default (`./stack code disable`
 
 - macOS or Linux, with **Docker Desktop** (macOS) or **Docker Engine 28+ with Compose v2** (Linux). Compose 2.17 or
   newer (2023 on) also gives the portal's Search its index of this README and `docs/`; with an older one everything
-  else works, and `./stack` says so when it builds the portal
+  else works, and `./stack` says so when it builds the portal. Docker Desktop 4.29 or newer (Engine 26+) also keeps
+  the sandbox from looking up outside names, a way out by DNS; with an older one `./stack test` says so
 - `git`, `curl`, `openssl` (macOS's built-in bash 3.2 is fine). Nothing else on your computer: no Node or Python
   (the browser terminal and the Code page bring Claude Code in their own image)
 - Room for Docker: about 6 GB of disk for the downloaded images and about 1.6 GB more for the two built on your
   computer for the Code page and its browser terminal (on by default: the terminal's about 1.2 GB, the Code page's
-  about 0.4 GB; an update keeps the previous version of each, so allow more), and about 2 GB of memory for the stack
+  about 0.4 GB, the sandbox's egress proxy a few kB on the same base; an update keeps the previous version of each, so
+  allow more), and about 2 GB of memory for the stack
   (~1.3 GB when idle; the terminal, its egress proxy and the Code page about 130 MB of that while idle). While Claude
   works there their containers may use up to 4 GB (`TERMINAL_MEM_LIMIT`), 192 MB and 768 MB of memory; on Docker
   Desktop, *Settings → Resources* sets what Docker may use
@@ -106,8 +110,9 @@ turns that off). On your first visit (not on a phone) the [walkthrough](#walkthr
 
 **What it takes:** about 5 GB of Docker images (downloaded once, announced first), 5–15 minutes on the first
 run depending on your connection (about 2 minutes after that), and under $0.05 of Bedrock usage to try it
-(the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04). The browser terminal
-and the Code page are built on your computer during the first setup (a few minutes more, about 1.6 GB).
+(the probe and smoke test cost < $0.01; a short `claude-bedrock -p` prompt about $0.02–0.04). The browser terminal,
+its egress proxy and the Code page are built on your computer during the first setup (a few minutes more, about
+1.6 GB).
 
 **On a server, or in a script (`--yes`, nobody at the screen):** the Code page and its sandbox come on by default,
 with internet access to public addresses through the sandbox's egress proxy (not this computer's own services or your
@@ -154,7 +159,7 @@ your browser.
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
 | **Files** | The RustFS console at `files.bedrock-now.localhost`: the shared object store | automatic |
 | **Terminal** | While it is on (by default, as the Code page's sandbox): Claude Code in a sandbox, at `terminal.bedrock-now.localhost` ([Claude Code in the browser](#claude-code-in-the-browser)) | the portal, then the portal password again (12 hours) |
-| **Settings** | Every setting of `.env`, secrets masked; change passwords, the owner email, the AWS key, budgets, voice, OpenRouter, the Code page and updates; backups and diagnostics ([Settings](#settings); changes need the update helper) | the portal (each change asks for the password again) |
+| **Settings** | Every setting of `.env`, secrets masked; change passwords, the owner email, the AWS key, budgets, voice, OpenRouter, the Code page, Claude Code's models, the sandbox's internet and updates; backups and diagnostics ([Settings](#settings); changes need the update helper) | the portal (each change asks for the password again) |
 
 One sign-in is all there is: the portal signs you in to every app, in its tab, a pop-out window, on the remote
 site and on a phone. Chat trusts the portal's word for who you are; for Admin and Files, which cannot, the portal
@@ -298,9 +303,11 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   (tap it for every service), the update card when there is one, and the models as cards with an
   **Enabled only** filter (on by default on a phone). Chat fills the screen and shrinks above the keyboard, so
   the message box stays visible.
-- **More** in the tab bar holds the rest: Code and Terminal (while they are on, full screen in a new tab), Admin
+- **More** in the tab bar holds the rest: Code and Terminal (while they are on, full screen in a new tab; Code shows
+  as *Code (off)* while it is off), Admin
   and Files (desktop apps: they open in a new browser tab, already signed in; from an iPhone or iPad Home Screen app
-  they open in Safari, which asks for the portal password once), Settings, the walkthrough and **Sign out**.
+  they open in Safari, which asks for the portal password once), Settings, **Activity** (a dot on More while
+  something is unread) and **Search**, the walkthrough and **Sign out**.
 - **Over remote access** (so on a phone) Update, Rollback, Clean, the automatic-updates switch, Settings changes
   and Diagnostics are off unless `REMOTE_ADMIN_ACTIONS=true`; Home then says to use a desktop browser on the
   computer running bedrock-now.
@@ -350,11 +357,12 @@ folder, `~/.claude-bedrock`**, not your `~/.claude` ([why and how](#a-lean-confi
 - Models: main/opus = `claude-opus-5-5`, sonnet = `claude-sonnet-5-5`, haiku (background tasks, subagents) =
   `claude-haiku-5-5`. Any chat model of the catalog works too — Bedrock's other providers and the OpenRouter models
   you enabled ([which work with Claude Code's tools](#models-for-claude-code)): `claude-bedrock --models` lists them
-  with prices and how each works (`--models all`: also those Settings › Claude Code › Models leaves out), and
+  with prices and how each works (`--models all`: also those Settings › Claude Code › Models for Claude Code leaves
+  out), and
   `claude-bedrock --model mistral-large-3` (or a name: `--model "Mistral Large 3"`; an OpenRouter id with or without
   `or/`) starts on one. An unknown model is refused before Claude Code starts, naming the choices. For a cheaper
   session: `CLAUDE_BEDROCK_MODEL=claude-haiku-5-5 claude-bedrock`. Without either, a session starts on Settings ›
-  Claude Code › Default model (`CODE_DEFAULT_MODEL`; blank: the main model).
+  Claude Code › Default model for new sessions (`CODE_DEFAULT_MODEL`; blank: the main model).
 - **`/model` in a session** lists the same models by name, price and how they work, instead of Claude Code's own
   lineup of aliases (`Opus`, `Sonnet`, `Haiku`: with an alias Claude Code picks the model itself, and *Plan* mode on
   Haiku plans on Sonnet) — a `modelPicker` in the wrapper's `--settings` (Claude Code's flag tier; at most 150 rows,
@@ -444,7 +452,7 @@ never chose) turns it on with the workspace `~/bedrock-now-workspace` (a second 
 `~/bedrock-now-<project>-workspace`).
 
 ```bash
-./stack terminal status                           # on or off, the folder, the container, its key
+./stack terminal status                           # on or off, the folder, the container, its key and internet
 ./stack terminal enable --workspace ~/projects    # another folder of yours (or on again after a disable)
 ./stack terminal disable                          # off, with the Code page; it stays off across updates
 ```
@@ -459,18 +467,19 @@ Claude Code's own `/model` lineup), but with **its own LiteLLM key**, `claude-co
 (`BUDGET_TERMINAL`, $50: Settings → Spending & budgets or `./stack config set BUDGET_TERMINAL`; a Terminal
 meter on Home). Its `claude-bedrock` prints no `resume:` line (`claude-bedrock --resume` without an id is the
 picker), and its session cost is how much the terminal key's spend grew meanwhile, so a Code page session running at
-the same time counts too. `Ctrl-b c` opens a shell window, `Ctrl-b n` switches. Its other settings are shown under
-Settings → Claude Code, read-only: they change with `./stack terminal`.
+the same time counts too. `Ctrl-b c` opens a shell window, `Ctrl-b n` switches. Its internet access and *Auto mode in
+the terminal* change under Settings → Claude Code; its other settings are shown there read-only (they change with
+`./stack terminal` or in `.env`).
 Reloading, closing the tab or losing the phone's connection only detaches: the session keeps running and opens
 where you left it (until the container restarts: `./stack update`, a new image or folder at `./stack terminal
-enable`, an *Auto mode* switch in Settings → Claude Code, a reboot). Hold
+enable`, an *Auto mode* or *Sandbox internet access* change in Settings → Claude Code, a reboot). Hold
 Shift (Option on a Mac) to select text; an external keyboard helps a lot on a phone.
 
 It is a sandbox, not a shell on your computer:
 
 - Claude Code and the shell run in their own container, built on your machine from `terminal/` (Claude Code
   pinned by version and checksum, ttyd for the browser, git, node/npm, `python3` with pip and venv, ripgrep, jq,
-  curl, ssh; no `make` or C compiler, so packages that build native code do not install): as your user id,
+  curl, ssh, GNU `make`; no C compiler, so packages that build native code do not install): as your user id,
   without root, capabilities or the Docker socket, on a read-only system. Of your files it sees **only the
   workspace folder** (at `/workspace`); `enable` — and every later `./stack up` — refuses your home folder
   itself and the folders above it, hidden folders like `~/.ssh`, `~/Library`, system folders, `/Volumes`, `/mnt`
@@ -489,13 +498,16 @@ It is a sandbox, not a shell on your computer:
   link-local (the cloud metadata address) or IPv6 unique-local addresses. Anything that ignores the proxy has no
   route at all; refusals are logged (`./stack logs terminal-egress`). Settings › Claude Code › **Sandbox internet
   access** (`TERMINAL_EGRESS`) offers three choices: **Internet only** (the default), **+ this computer**
-  (`host`: the sandbox on the internet itself, as v0.10.0 and earlier always had it — then LiteLLM on
-  `127.0.0.1:4000`, still with its own key's limits, the shared MCP server, the portal's login, any dev server, the
-  Docker API if you exposed it, and your network are reachable from it) and **Off** (only LiteLLM and the shared MCP
-  server). Opening it further works only from this computer. `TERMINAL_EGRESS_ALLOW` (only these names; `name:PORT`
-  opens another port) and `TERMINAL_EGRESS_DENY` (never these; while it is set, no IP addresses either) in `.env`
-  narrow it further. The sandbox's internal networks resolve no outside names (no way out by DNS) with Docker Engine
-  26.0 or later (25.0.4, 23.0.11; Docker Desktop 4.29 and later); `./stack test` says so on an older one.
+  (`host`: the sandbox on the internet itself, on any address and port, as v0.10.0 and earlier always had it — then
+  this computer's own services are reachable from it: on Docker Desktop everything on its `127.0.0.1`, such as LiteLLM
+  on port 4000, still with its own key's limits, the shared MCP server, the portal's login and any dev server; on
+  Linux what listens on every address; and so are the Docker API if you exposed it and your network) and **Off** (only
+  LiteLLM and the shared MCP server). Opening it further works only from this computer. `TERMINAL_EGRESS_ALLOW` (only
+  these names, each with the names under it; `name:PORT` allows that name on that port instead of 80, 443 and 22,
+  and `*,name:PORT` keeps every name and adds that port for that name) and `TERMINAL_EGRESS_DENY` (never these; while
+  it is set, no IP addresses either) in `.env`, then `./stack up`, narrow it further. The sandbox's internal networks
+  resolve no outside names (no way out by DNS) with Docker Engine 26.0 or later (25.0.4, 23.0.11; Docker Desktop 4.29
+  and later); `./stack test` says so on an older one.
 - Opening it asks for the **portal password again**; that unlock lasts 12 hours in that browser, and Sign out
   ends it. Another website cannot drive it with your cookies: the terminal accepts connections only from its own
   page. Whatever answers there, its page runs only ttyd's own script and can set or clear no cookies.
@@ -539,7 +551,8 @@ one of explorer/editor, on a phone the chat first with files, editor and diffs a
 per browser.
 
 In this section: [turning it on and off](#turning-the-code-page-on-and-off) ·
-[chat and sessions](#chat-and-sessions) · [permissions and modes](#permissions-and-modes) ·
+[chat and sessions](#chat-and-sessions) (with @-mentions of context) · [models](#models-for-claude-code) ·
+[permissions and modes](#permissions-and-modes) (with comments on a plan's lines) ·
 [files, search and previews](#files-search-and-previews-of-files) ·
 [review changes, Git, Run & test](#review-changes-git-run--test) ·
 [previews of dev servers](#previews-of-dev-servers) · [plugins and MCP servers](#plugins-and-mcp-servers) ·
@@ -603,8 +616,9 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   of their output) and `@file#L5-10` (those lines of a file — also the editor's selected lines: **Alt+K**, the button a
   selection shows, or the command palette); the terminal panel, the Review pane and the Problems list have an *Add to
   prompt* button too; an `@file#L5-10` typed in the box (or in a link's draft) becomes a chip as well. Each is a chip in
-  the prompt box: click it to see exactly what goes (*Capture again* takes the terminal, the changes or the Problems list
-  anew), × drops it — nothing goes that is not a chip. They go after your text as quoted context — one
+  the prompt box: click it to see exactly what goes (*Capture again*, *Take the changes again*, *Take the list again*
+  take the terminal, the changes or the Problems list anew), × drops it — nothing goes that is not a chip. They go
+  after your text as quoted context — one
   block each, headed with what it is, its content in a fence it cannot close, invisible and direction-changing
   characters shown as `⟨U+…⟩`, a line over 2,000 characters and a block over its share cut (and said), at most 80,000
   characters in all — between markers with an id made for that prompt, labelled as data from the workspace, not
@@ -663,9 +677,9 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   type and run by keyboard alone (`>` only actions, `#` only sessions). **Keyboard shortcuts** (`Ctrl/⌘+/` or `?`)
   lists every shortcut of the page.
 - **The status bar's quick actions** (desktop and tablet): *Terminal* (`Ctrl+\``), *Run* (`Alt+R`), *Ports*
-  (`Alt+P`), the permission mode (`Shift+Tab`, `Alt+M`) and the model — 28 px buttons with an icon and a label (on a
-  tablet the less used ones as icons), each with a tip that says what it does and its shortcut, on hover and on
-  keyboard focus. On a phone they are in the ⋯ sheet, as 48 px rows.
+  (`Alt+P`), the permission mode (`Shift+Tab`, `Alt+M`) and the model — 28 px buttons (40 px on a touch screen) with an
+  icon and a label (on a tablet the less used ones as icons), each with a tip that says what it does and its shortcut,
+  on hover and on keyboard focus. On a phone they are in the ⋯ sheet, as 48 px rows.
 
 #### Models for Claude Code
 
@@ -707,7 +721,8 @@ use every model either way, and *Show all models* in the picker shows the rest. 
 (`CODE_DEFAULT_MODEL`): the model a new Code page session starts on (unless this browser picked another one last) and
 claude-bedrock starts with; blank = the main model (`CLAUDE_MODEL_OPUS`). Both re-render LiteLLM's config (the browser
 terminal learns the list from LiteLLM's `/model/info`), so LiteLLM restarts (about 15 s). In a terminal:
-`./stack config set CODE_MODELS anthropic`, `./stack config set CODE_DEFAULT_MODEL mistral-large-3`.
+`./stack config set CODE_MODELS` (it asks: `all`, `anthropic` or a comma list of ids), `./stack config set
+CODE_DEFAULT_MODEL` (a model id, such as `mistral-large-3`).
 
 Not every switch is free: switching to a model that caches writes ~30k tokens of prompt cache at its price (the picker
 says how much); a model without cache prices writes none, and has no cold-cache line above the prompt box. Auto mode's
@@ -913,8 +928,8 @@ new password end it. In the pane it is a frame from another site, so *the app's 
 third-party cookies keep none) — an app you sign in to works in **Open in a new tab**. Calls to *another* port from
 the app's page (`fetch('http://localhost:3000')`) reach your computer, not the sandbox: use the dev server's proxy.
 
-**Over remote access** previews are **off unless you turn them on** (`./stack config set REMOTE_PREVIEW true`, or
-Settings › Remote access, on this computer; the Code page must be remote too). Read
+**Over remote access** previews are **off unless you turn them on** (`./stack config set REMOTE_PREVIEW`, then
+`true`, or Settings › Remote access, on this computer; the Code page must be remote too). Read
 [docs/remote.md](docs/remote.md#previews-of-dev-servers-over-remote-access) first: their one address —
 `https://bedrock-now-preview.<tailnet>.ts.net`, one more Tailscale Service to define and approve *before* you turn
 them on, or `preview.<your domain>` — is on the same *site* as every other app of your tailnet or domain, so a page
@@ -1021,7 +1036,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
 | **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
 | **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
-| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, internet access, *Auto mode in the terminal*), Claude Code's main model; *More*: its sonnet/haiku slots, the sandbox's memory |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code* and the *Default model for new sessions*; *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
 | **Updates & backups** | daily release check, automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
@@ -1052,14 +1067,18 @@ reads `.env`: `./stack` writes a masked copy, `.state/status/settings.json`, whe
 - your own model choices: Chat's default model, its title/tag model and Claude Code's three slots (blank =
   automatic; Claude Code's slots take Claude models; setup keeps a pin while that model is enabled and warns
   when it is not), and which models Chat's picker
-  leaves out (a tidier picker only: the API and Claude Code can still use them);
+  leaves out (a tidier picker only: the API and Claude Code can still use them); which models the Code page and
+  `claude-bedrock`'s `/model` list and which one they start on (*Models for Claude Code*, *Default model for new
+  sessions*: LiteLLM restarts, about 15 s);
 - the four budgets of `claude-code`, `open-webui`, `claude-code-terminal` (the Terminal and the Code page) and
   `setup` (at once, no restart; a warning when one is below this period's spend), the alert threshold (50-99%,
   default 80%) and the budget alert webhook;
 - speech-to-text (Bedrock, OpenAI, Groq or the browser), OpenRouter's key, model set, model cap and `-latest`
   aliases;
 - the **Code page** (on and off, with the folder it would use) and its *Allow Bypass permissions* and *Auto mode*;
-  the browser terminal's *Auto mode in the terminal* ([The Code page](#turning-the-code-page-on-and-off));
+  the browser terminal's *Auto mode in the terminal* ([The Code page](#turning-the-code-page-on-and-off)) and the
+  sandbox's internet access (*Internet only*, *+ this computer*, *Off*: the terminal restarts, its shells and open
+  Code sessions end; [Claude Code in the browser](#claude-code-in-the-browser));
 - the daily release and price checks, automatic updates and their hour, signed releases only (on only);
   **Back up now** (the newest 5 made here are kept), **nightly backups** (by the update helper, in a three-hour
   window you pick or, with automatic updates on, theirs, keeping the newest 1-60) and the list of backups (name,
@@ -1070,7 +1089,8 @@ reads `.env`: `./stack` writes a masked copy, `.state/status/settings.json`, whe
   *Previews over remote access* (`REMOTE_PREVIEW`); the same rule for anything that would protect less — storing
   prompts, longer sign-ins, a higher budget or alert threshold, release checks, automatic updates or nightly backups
   off, fewer backups kept, remote previews, the Code page, its *Allow Bypass permissions*, *Auto mode* and *Auto
-  mode in the terminal*: that direction only from this computer, the other from anywhere;
+  mode in the terminal*, the sandbox's internet opened further: that direction only from this computer, the other
+  from anywhere;
 - **Diagnostics** (the password again): the smoke test (~$0.0001), the AWS key check (free), a restart of one
   service, a status report to
   copy (your home folder shown as `~`; no secrets, emails, tailnet names or account numbers).
@@ -1141,8 +1161,8 @@ More settings) turns updates off (`./stack prices` then refuses to run).
 **$50** and `setup` **$5** (the model probe and `./stack test`). At its budget a key is refused until the reset date
 shown by `./stack costs`. The [browser terminal](#claude-code-in-the-browser) and the Code page get a fourth
 key, `claude-code-terminal`, **$50** (`BUDGET_TERMINAL`). To change one, use **Settings › Spending & budgets** or
-`./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`; `BUDGET_TERMINAL` only this
-way): it applies at once, with no restart, and keeps the reset date. Raising a budget works only from the computer
+`./stack config set BUDGET_OPENWEBUI` (likewise `BUDGET_CLAUDE_CODE`, `BUDGET_SETUP`, `BUDGET_TERMINAL`): it applies
+at once, with no restart, and keeps the reset date. Raising a budget works only from the computer
 running bedrock-now.
 
 **Alerts.** Each key has a soft budget at **80%** (Settings → Spending & budgets → Alert threshold, 50-99%;
@@ -1321,8 +1341,8 @@ $31/month in `us-east-1` before Bedrock usage; you reach it over Tailscale. The 
 policy, IMDSv2 hop limit 2 (containers need it to reach the role), Docker on AL2023, data residency, costs and a
 request template for your AWS admin — is in [docs/cloud-vm.md](docs/cloud-vm.md). Other providers (Hetzner,
 DigitalOcean, …) work the same way with an access key. The Code page and its sandbox are on by default there too;
-to keep them off on a server, put `CODE_ENABLED=false` (or `TERMINAL_EGRESS=off`) into `.env` before the first setup
-([how](#quickstart)).
+to keep them off on a server, put `CODE_ENABLED=false` (or, to keep them on without internet, `TERMINAL_EGRESS=off`)
+into `.env` before the first setup ([how](#quickstart)).
 
 ## Voice: speech-to-text
 
@@ -1393,8 +1413,8 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack up` / `down` | Start / stop (data is kept) | none |
 | `./stack status [--disk]` | Services, health, URLs and the disk this install uses (images, data, backups, and old images `./stack clean` would remove, if any; reused for 5 minutes, `--disk` measures now) | none |
 | `./stack open` | The installed bedrock-now app, else the portal in a browser tab | none |
-| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`, `stt`; while on: `terminal`, `terminal-gateway`, `code`, `tailscale`) | none |
-| `./stack test` | End-to-end smoke test, incl. the portal login | ~$0.0001 |
+| `./stack logs [service]` | Follow logs (`litellm`, `open-webui`, `rustfs`, `postgres`, `shared-mcp`, `portal`, `caddy`, `stt`; while on: `terminal`, `terminal-gateway`, `terminal-egress` (the sandbox's refusals), `code`, `tailscale`) | none |
+| `./stack test` | End-to-end smoke test, incl. the portal login (and, while the terminal is on, its isolation and its egress proxy's refusals) | ~$0.0001 |
 | `./stack costs` | Prices for your enabled models + spend per key | none |
 | `./stack prices [--accept]` | Check prices now; `--accept` applies a refused change | none |
 | `./stack models [--recheck]` | Which models your key can use; `--recheck` re-probes | `--recheck`: < $0.01 |
@@ -1447,8 +1467,9 @@ Otherwise it runs four steps: **1/4** a backup (`backups/<ts>-auto/`; the newest
 `./stack rollback` needs), **2/4** the code (an install from a release tag moves to the newest release, never an
 older one; a branch gets `git pull --ff-only`), **3/4** the pinned images, **4/4** setup and the smoke test, run
 by the new code. It ends with a short "What's new": each release it brought with its headline (all of them after a
-jump over several), voice, the Code page (while on), remote access and one-click or automatic updates (with the
-command that turns each on or off) and the release notes. Local changes to tracked files stop the update before
+jump over several), voice, the Code page (while on), the sandbox's internet (once, after an update from v0.10.0 or
+earlier), remote access and one-click or automatic updates (with the command that turns each on or off) and the
+release notes. Local changes to tracked files stop the update before
 anything happens; they are never discarded. If a later step fails, or the new version misbehaves,
 **`./stack rollback`** goes back: it checks out the code from before the update, restores the update's own
 pre-update backup (taking a backup of the current state first) and starts the previous images, which are still on
@@ -1516,13 +1537,27 @@ question). `./stack status` shows how much disk the images, data volumes and bac
 `./stack clean` would free when there is something to free. Backups are unchanged: the newest 5 automatic ones are kept, and the one `./stack rollback`
 restores is never pruned, however old.
 
+**Updating from v0.10.0 or earlier** (to v0.11.0 or later) puts the sandbox's internet behind its egress proxy.
+Nothing to edit: a blank `TERMINAL_EGRESS` — and an explicit `on` (`true`, `1`, `yes`), which only ever meant the
+internet — now reads as `internet`, public addresses only, so the sandbox of the terminal and the Code page no
+longer reaches this computer's own services (on Docker Desktop, anything on its `127.0.0.1`: a dev server, a
+database, LiteLLM) or your local network; `off` stays off. The update's *What's new* says so once, with the way
+back: Settings › Claude Code › Sandbox internet access › **+ this computer** (or `./stack config set
+TERMINAL_EGRESS`, then `host`; from the computer running bedrock-now). The terminal's container is recreated on its
+new networks, as at every update (its tmux session ends: above), and the proxy's small image is built. Also new:
+the Code page's model picker and `claude-bedrock`'s `/model` menu list every enabled chat model
+([Models for Claude Code](#models-for-claude-code); Settings › Claude Code › Models for Claude Code › *Anthropic
+only* lists Claude's alone). `./stack rollback` of that update removes the proxy, puts `internet` and `host` back
+to blank (that version's *on*; `off` stays) and says that the sandbox then reaches the internet directly again,
+this computer's services and your network included.
+
 **Updating from v0.9.0 or earlier** turns the Code page on, with the browser terminal it runs in, unless you chose
 otherwise: an install with no `CODE_ENABLED` in `.env` (or a blank one) gets both, in `~/bedrock-now-workspace` (or
 the terminal's folder, if it was on), with the terminal's own key and budget; the update says so ("The Code page is
 now on by default …") and its *What's new* names it. An update nobody watched — **Update now** on Home, or the
 nightly automatic update — also leaves a one-time item in [Activity](#activity-and-search) (the bell): "The last
-update turned on the Code page and its sandbox (workspace …, internet on)", with **Keep** and **Turn off** (Settings,
-at its switch). Building their images takes a few minutes more the first time
+update turned on the Code page and its sandbox (workspace …, internet: public addresses only)", with **Keep** and
+**Turn off** (Settings, at its switch). Building their images takes a few minutes more the first time
 (about 1.6 GB). `CODE_ENABLED=false` or `TERMINAL_ENABLED=false` in `.env` stays off; `./stack code disable`
 afterwards turns it off for good. Bypass, Auto, remote access to the sandbox and remote previews stay off.
 `./stack rollback` of that update turns them off again, as they were (the data it restores has no key for the
@@ -1533,10 +1568,10 @@ twice (no network, a full disk), setup and updates stop trying: `./stack code en
 downtime (Chat answers, `claude-bedrock` requests and MCP sessions in progress then fail; start them again), and
 setup runs without questions. What changes for you:
 
-- **New parts stay off** (until an update to the release after v0.9.0, which turns the Code page on: above): the Code
+- **New parts stay off** (until an update to v0.10.0 or later, which turns the Code page on: above): the Code
   page (`./stack code enable`, or **Settings › Claude Code › On** on the computer running bedrock-now), its *Auto* and
-  *Bypass permissions* modes and auto mode in the terminal (Settings → Code
-  page), and previews of dev servers over remote access (`REMOTE_PREVIEW`). Nothing you did not turn on starts.
+  *Bypass permissions* modes and auto mode in the terminal (Settings → Claude
+  Code), and previews of dev servers over remote access (`REMOTE_PREVIEW`). Nothing you did not turn on starts.
 - **The browser terminal, if it is on,** gets a new image: its container is recreated, so its tmux session ends
   (as at every update; Claude Code's history stays: `claude-bedrock --resume` there). Claude Code's *auto* mode is
   now off there (and for `claude-bedrock` on your computer: `CLAUDE_BEDROCK_AUTO_MODE=1` leaves it to Claude Code;
@@ -1584,6 +1619,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | Settings shows everything but nothing can be changed | Changes need the update helper: `./stack helper install` (or use `./stack config set KEY` in a terminal). From a remote device they also need `REMOTE_ADMIN_ACTIONS=true`. |
 | The Code page's **Start** or **Run** says "the terminal's tmux has hooks … or loader variables … set" | Something in the sandbox (or your tmux settings) changed the terminal's tmux, so a new window might not run what you saw. Run the command in the terminal yourself, remove them (`tmux set-hook -gu …`, `tmux set-environment -gu …`), or restart the terminal (`./stack terminal disable`, then `enable`; that ends its tmux session). |
 | A remote address of the terminal, the Code page or its previews does not answer | Each is a Tailscale Service of its own: define it in the admin console and approve it (`./stack remote status` lists the Services; [docs/remote.md](docs/remote.md)). |
+| On the Code page or in `claude-bedrock`, a model answers but never reads, edits or runs anything (or writes its tool calls out as text) | It is marked **chat only** (Llama 3.3 70B; OpenRouter models whose listing names no tool use): it cannot use Claude Code's tools. Pick a Claude model or one marked **works** — in the picker, with `/model`, or `claude-bedrock --model` (`claude-bedrock --models` says how each works); a **not tested** one may do the same ([Models for Claude Code](#models-for-claude-code)). |
+| In the sandbox, a download, `npm install` or `git clone` fails with 403 from the proxy (curl: `CONNECT tunnel failed, response 403`) | The egress proxy refused it: `./stack logs terminal-egress` says why. A name left out by `TERMINAL_EGRESS_ALLOW` or listed in `TERMINAL_EGRESS_DENY`: change the list in `.env`, then `./stack up`; a port other than 80, 443 and 22: `TERMINAL_EGRESS_ALLOW=*,name:PORT`. Something on this computer or your network (a dev server or registry on your Mac, a git server on your LAN) is never reached through the proxy: Settings › Claude Code › Sandbox internet access › **+ this computer** (`host`, from this computer only; [what it opens](#claude-code-in-the-browser)). |
+| Ctrl/⌘+K opens Chat's search or the Code page's command palette, not the portal's Search | While the focus is inside an app's tab, the key goes to that app (Chat and the Code page have a Ctrl/⌘+K of their own). Click the search box at the top of the sidebar (on a phone **More → Search**), or click the sidebar first. |
+| Search finds no sections of the README or `docs/` ("this portal's image has no index of them") | Docker Compose older than 2.17 builds the portal without that index (`./stack` says so when it builds it). Update Docker Compose (`docker compose version` shows yours), then `./stack setup` rebuilds the portal. Meanwhile the docs are on GitHub. |
 | Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#voice-speech-to-text) works there: `./stack stt set bedrock`. |
 | "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#voice-speech-to-text): `./stack stt set bedrock` (no key; `./stack stt status` says why it is off), or `openai` / `groq`. |
 | "Error transcribing chunk: External: …" | The message after it says what failed (budget, model access, throttling, a too-long recording); see [docs/voice.md](docs/voice.md#troubleshooting). |
@@ -1610,7 +1649,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 
 ## Testing
 
-- **Unit tests** (no Docker, no AWS): `/bin/bash tests/run.sh` (bash 3.2), plus the Python tests in
+- **Unit tests** (no Docker, no AWS): `/bin/bash tests/run.sh` (bash 3.2). Its last line counts what passed, was
+  skipped and failed, and names every failure (each test with its file, or a guard); a test that changes this
+  checkout's `.env`, `.state/`, `litellm/` or `backups/`, calls the real docker, aws or tailscale, or curls this
+  computer fails by name (the live-state and isolation guards). Plus the Python tests in
   `portal/tests`, `shared-mcp/tests`, `stt/tests` and `owui/tests` (the portal's in its image's test stage, with the
   repository files some of them check: `portal/test.sh`). The Settings page's controls, key by key, against each
   setting's policy (on this computer and from a remote device) in a browser, without a stack:
@@ -1624,7 +1666,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   everything it created. About 15-25 minutes and up to about 20 cents of Bedrock, most of it the Code page's Haiku
   turns (capped by small budgets; the total is printed; with `--no-code` about half a cent); results as a table and
   JUnit XML in `tests/e2e/out/`. As on a new install, the Code page and the browser terminal are on (setup turns them
-  on, in a folder next to the throwaway): the terminal is checked (lock, unlock, tmux, Origin, isolation; with the
+  on, in a folder next to the throwaway): the terminal is checked (lock, unlock, tmux, Origin, isolation and its
+  egress proxy's refusals, `make`, Claude Code's web fetch; with the
   claude part one `claude-bedrock -p` inside it, ~$0.02), and the Code page (unlock, CSP, a Haiku
   session: streaming, permission allow/deny and the badge, model switch, interrupt, a slash command, re-attach and
   resume, files, spend; then the page itself as a person uses it — a Bash prompt allowed in its card, an @-mentioned
@@ -1674,7 +1717,9 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 - The browser terminal is on by default, as the Code page's sandbox (`./stack terminal disable` turns both off). It
   is a container (not a shell on your computer) that sees one folder of yours (`~/bedrock-now-workspace` unless you
   pick another), has its own LiteLLM key and budget, and reaches inside the stack only a gateway that passes
-  Claude Code's few LiteLLM paths and the shared MCP server; opening it needs the portal password again, it refuses
+  Claude Code's few LiteLLM paths and the shared MCP server, and outside only public internet addresses, through an
+  egress proxy of its own (not this computer's services or your network, unless `TERMINAL_EGRESS=host`); opening it
+  needs the portal password again, it refuses
   other sites' connections, and remote access leaves it out unless `REMOTE_TERMINAL=true`. What it writes into
   the workspace can run on your computer when you open that folder there.
 - The Code page is on by default too, and runs Claude Code in that same sandbox; in its default mode every command
@@ -1701,8 +1746,10 @@ bin/bedrock-now-helper        the update helper: one-click and automatic updates
 compose.yaml                  all services (images pinned)
 compose.tailscale.yaml        remote access: the Tailscale sidecar (only while ./stack remote is on)
 compose.domain.yaml           remote access under your own domain: Caddy with a DNS plugin
-compose.terminal*.yaml        the browser terminal and its gateway (only while ./stack terminal is on; on by default)
+compose.terminal*.yaml        the browser terminal and its gateway (only while ./stack terminal is on; on by default);
+                              -proxy: its egress proxy (TERMINAL_EGRESS=internet), -egress: host mode
 compose.code.yaml             the Code page (only while ./stack code is on, with the terminal; on by default)
+compose.portal-docs.yaml      the portal's search index of README and docs/ (added with Docker Compose 2.17+)
 caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.caddy the remote site,
                               caddy/terminal-*.caddy the terminal's site and its gateway, caddy/code-*.caddy
                               the Code page's site, caddy/preview-*.caddy and artifact-*.caddy its previews' and
@@ -1710,7 +1757,7 @@ caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.cad
 tailscale/                    the sidecar's serve config (written by ./stack remote)
 portal/                       login + Home service (Python; tests: portal/test.sh)
 terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux, the Code page's
-                              spawn server (bin/bn-coded.mjs)
+                              spawn server (bin/bn-coded.mjs); egress/ its egress proxy (bn-egress.mjs)
 code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code), the page
                               (web/: Preact + CodeMirror 6, built into the image; a mock backend in web/dev) and
                               a plain fallback page (plain/); tests: code/test.sh, code/web/e2e/run.sh
@@ -1718,9 +1765,11 @@ shared-mcp/                   MCP server for shared files and knowledge (Python;
 stt/                          the speech-to-text service for Voxtral on Bedrock (Python, ffmpeg; tests in stt/tests)
 owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map; settings.tsv: every setting
-                              (the Settings page, ./stack config and the update helper's allowlist)
+                              (the Settings page, ./stack config and the update helper's allowlist),
+                              settings-layout.tsv where the page shows each; code-models.tsv: how each model works
+                              with Claude Code
 litellm/, postgres/           LiteLLM's rendered config (written by setup) and the databases' init script
-lib/*.sh                      the shell code (bash 3.2-compatible)
+lib/*.sh                      the shell code (bash 3.2-compatible); lib/litellm-hooks/ LiteLLM's one hook (bn_hooks.py)
 tests/run.sh                  shell tests
 tests/e2e/                    opt-in end-to-end suite (throwaway stack + Playwright; INVENTORY.md)
 docs/                         longer reference pages
