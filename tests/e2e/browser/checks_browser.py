@@ -2591,6 +2591,7 @@ def settings_nightly(ctx):
     # backup at once: wait for it, and move the window only when it had its backup already (a reused throwaway)
     if cur.isdigit() and now_h in {(int(cur) + i) % 24 for i in range(3)}:
         nightly = new_nightly(180)
+    at = int(cur) if nightly else hour   # (the window the backup came from)
     if not nightly and cur != str(hour):
         helper_idle()
         goto_setting(page, "BACKUP_HOUR").locator("select").first.select_option(str(hour))
@@ -2619,7 +2620,7 @@ def settings_nightly(ctx):
     ok, msg = _wait_job(page)
     expect(ok, f"BACKUP_NIGHTLY off: {msg}")
     rec.save()
-    return f"nightly backups on at {hour:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with Back up now's"
+    return f"nightly backups on at {at:02d}:00 (local) → {nightly[0]['name']} ({nightly[0]['bytes']} bytes) in the list with Back up now's"
 
 
 @check("settings", "settings-portal-password")
