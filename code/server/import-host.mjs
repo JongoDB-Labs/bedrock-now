@@ -6,6 +6,7 @@
 // before this runs: its single-use refresh tokens would break glab or this). Prints what was added as one JSON line —
 // never the token. Node built-ins only (githosts.mjs).
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { GitHosts, HostError } from './githosts.mjs';
 
 const MAX_INPUT = 64 << 10;
@@ -23,7 +24,7 @@ export function importLogin(input, store = new GitHosts()) {
   return { label: h.label, host: h.host, account: h.imported.account, scopes: h.imported.scopes, source };
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === new URL(import.meta.url).pathname) {
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let input = '';
   try { input = fs.readFileSync(0, 'utf8'); } catch { out({ ok: false, error: 'no input on stdin' }, 2); }
   if (input.length > MAX_INPUT) out({ ok: false, error: 'the input is too long' }, 2);

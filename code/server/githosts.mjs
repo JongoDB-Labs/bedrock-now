@@ -30,6 +30,10 @@ export const knownOk = (l) => typeof l === 'string' && KNOWN.test(l);
 const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
 const SCOPE = /^[A-Za-z0-9:_./-]{1,80}$/;
 export const IMPORT_SOURCES = ['gh', 'glab'];
+// githubTokenType(token) -> what a GitHub token is, by its prefix (GitHub's documented ones): gh's or another OAuth
+// app's token (gho_), a classic personal access token (ghp_), a fine-grained one (github_pat_); null: none of these
+export const githubTokenType = (t) => (typeof t !== 'string' ? null : t.startsWith('gho_') ? 'oauth' : t.startsWith('ghp_') ? 'classic'
+  : t.startsWith('github_pat_') ? 'fine-grained' : null);
 // the defaults of the well-known hosts: the name, and the user name git sends with a token (any non-empty one works)
 export const DEFAULTS = {
   github: { host: 'github.com', label: 'GitHub', tokenUser: 'x-access-token', sshUser: 'git' },
@@ -69,21 +73,64 @@ export class GitHosts {
     fs.renameSync(tmp, this.file);
   }
   // update(fn): read, change, write — under a lock file, so that ./stack git-host import (another process: import-host.mjs)
-  // and this server never write over each other's change (a lock older than 10 s was left by a process that died)
+  // and this server never write over each other's change
   update(fn) { return this.locked(() => { const v = this.read(); const out = fn(v); this.write(v); return out; }); }
+  // locked(fn): fn() while this process holds .lock — a file created exclusively, holding "<pid> <random>" (its owner).
+  // A lock whose process is gone (this container's PIDs: the importer runs here too), or older than 10 s, is stale: it
+  // is taken over by renaming it to a name of this attempt's own (one rename wins), checked to be the very lock found
+  // stale (else put back, without replacing a newer one), then removed. Every attempt counts towards one limit — a lock
+  // that cannot be taken over (read-only, EPERM) is waited for like a live one, then "busy": never a spin. Only a lock
+  // this process still owns is removed afterwards.
   locked(fn) {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const lock = path.join(this.dir, '.lock');
+    const me = `${process.pid} ${crypto.randomBytes(8).toString('hex')}`;
     let fd = null;
     for (let i = 0; fd === null; i++) {
-      try { fd = fs.openSync(lock, 'wx', 0o600); } catch (e) {
+      if (i >= 300) throw new HostError(503, 'the Git hosts file is busy: try again');
+      try {
+        fd = fs.openSync(lock, 'wx', 0o600);
+        fs.writeSync(fd, me);
+        break;
+      } catch (e) {
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch { /* closed */ }
+          fd = null;
+          try { fs.unlinkSync(lock); } catch { /* gone */ }
+          throw new HostError(500, 'the Git hosts file cannot be written');
+        }
         if (e.code !== 'EEXIST') throw new HostError(500, 'the Git hosts file cannot be written');
-        try { if (Date.now() - fs.statSync(lock).mtimeMs > 10000) { fs.unlinkSync(lock); continue; } } catch { continue; }
-        if (i >= 300) throw new HostError(503, 'the Git hosts file is busy: try again');
-        sleepSync(10);
       }
+      if (this.takeOver(lock, me)) continue;
+      sleepSync(10);
     }
-    try { return fn(); } finally { fs.closeSync(fd); try { fs.unlinkSync(lock); } catch { /* gone */ } }
+    try { return fn(); } finally {
+      try { fs.closeSync(fd); } catch { /* closed */ }
+      try { if (fs.readFileSync(lock, 'utf8') === me) fs.unlinkSync(lock); } catch { /* gone, or another's now */ }
+    }
+  }
+  // takeOver(lock, me) -> true when a stale lock was removed (or the lock is gone): try again at once; false: wait
+  takeOver(lock, me) {
+    let owner, st;
+    try { st = fs.statSync(lock); owner = fs.readFileSync(lock, 'utf8'); } catch (e) { return e.code === 'ENOENT'; }
+    const pid = /^([0-9]{1,10}) [0-9a-f]{16}$/.exec(owner)?.[1];
+    let alive = Boolean(pid);
+    if (pid) { try { process.kill(Number(pid), 0); } catch (e) { alive = e.code === 'EPERM'; } }
+    if (alive && Date.now() - st.mtimeMs <= 10000) return false;
+    if (!pid && Date.now() - st.mtimeMs <= 1000) return false;   // (being written: its owner is about to fill it)
+    const aside = `${lock}.${me.split(' ')[1]}`;
+    try { fs.renameSync(lock, aside); } catch (e) { return e.code === 'ENOENT'; }
+    let taken = '';
+    try { taken = fs.readFileSync(aside, 'utf8'); } catch { /* gone */ }
+    if (taken !== owner) {
+      // (another attempt took the stale one over first, and this rename caught its fresh lock: put back, unless a
+      // newer one exists)
+      try { fs.linkSync(aside, lock); } catch { /* a newer lock: that one stands */ }
+      try { fs.unlinkSync(aside); } catch { /* gone */ }
+      return false;
+    }
+    try { fs.unlinkSync(aside); } catch { /* left aside: harmless */ }
+    return true;
   }
 
   // public(h) -> what the page may see of a host: never the token or the private key
@@ -99,7 +146,8 @@ export class GitHosts {
 
   // add({kind, label, host, port, auth, username, token, ca, knownHosts}) -> the new host (public), with its public
   // key when one was made
-  add(b) {
+  // (imported: only addImport's own, checked object — never from a request: the page's POST cannot claim a login)
+  add(b, { imported = null } = {}) {
     const kind = KINDS.includes(b?.kind) ? b.kind : null;
     if (!kind) throw new HostError(400, 'kind: github, gitlab or other');
     const d = DEFAULTS[kind];
@@ -118,7 +166,7 @@ export class GitHosts {
     if (auth === 'token') {
       if (typeof b.token !== 'string' || !TOKEN.test(b.token)) throw new HostError(400, 'the access token, please (printable characters, no spaces)');
       h.token = b.token; h.tokenSetAt = this.now();
-      if (b.imported && typeof b.imported === 'object' && IMPORT_SOURCES.includes(b.imported.source)) h.imported = b.imported;
+      if (imported) h.imported = imported;
       if (b.ca !== undefined && b.ca !== null && b.ca !== '') h.ca = checkCa(b.ca);
     } else {
       const k = newKey(`bedrock-now ${label}`);
@@ -139,9 +187,11 @@ export class GitHosts {
     const source = IMPORT_SOURCES.includes(b?.source) ? b.source : null;
     if (!source) throw new HostError(400, 'source: gh or glab');
     if (b.account !== undefined && b.account !== null && b.account !== '' && (typeof b.account !== 'string' || !ACCOUNT.test(b.account))) throw new HostError(400, 'not an account name');
+    // (tokenType: gh's own OAuth token, or a classic / fine-grained token gh was given; glab's: a personal access
+    // token)
     const imported = { source, account: b.account || null, scopes: (Array.isArray(b.scopes) ? b.scopes : []).filter((x) => typeof x === 'string' && SCOPE.test(x)).slice(0, 32),
-      app: source === 'gh' && typeof b.token === 'string' && b.token.startsWith('gho_') ? 'oauth-app' : null, expiresAt: msTime(b.expiresAt), importedAt: this.now() };
-    const h = this.add({ kind: source === 'gh' ? 'github' : 'gitlab', host: b.host, label: b.label, auth: 'token', token: b.token, imported });
+      tokenType: source === 'gh' ? githubTokenType(b.token) : 'pat', expiresAt: msTime(b.expiresAt), importedAt: this.now() };
+    const h = this.add({ kind: source === 'gh' ? 'github' : 'gitlab', host: b.host, label: b.label, auth: 'token', token: b.token }, { imported });
     return h;
   }
   // a host's token replaced (never shown: replace-only)

@@ -26,7 +26,7 @@ test('a gh login from stdin: an access token with its source, account and scopes
   const store = new GitHosts({ dir });
   const h = store.read().hosts[0];
   assert.deepEqual([h.auth, h.kind, h.username, h.token], ['token', 'github', 'x-access-token', tok]);
-  assert.deepEqual({ ...h.imported, importedAt: 0 }, { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], app: 'oauth-app', expiresAt: null, importedAt: 0 });
+  assert.deepEqual({ ...h.imported, importedAt: 0 }, { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], tokenType: 'oauth', expiresAt: null, importedAt: 0 });
   const view = GitHosts.public(h);
   assert.deepEqual([view.hasToken, view.imported.source, view.imported.account], [true, 'gh', 'octocat']);
   assert.ok(!JSON.stringify(store.list()).includes(tok) && !JSON.stringify(store.events(5)).includes(tok));
@@ -55,7 +55,7 @@ test('a glab personal access token with its expiry; the plan names the login; Re
   assert.equal(r.status, 0, r.stdout);
   const store = new GitHosts({ dir });
   const h = store.read().hosts[0];
-  assert.deepEqual([h.kind, h.username, h.label, h.imported.expiresAt, h.imported.app], ['gitlab', 'oauth2', 'gitlab.example.com', 1801353600000, null]);
+  assert.deepEqual([h.kind, h.username, h.label, h.imported.expiresAt, h.imported.tokenType], ['gitlab', 'oauth2', 'gitlab.example.com', 1801353600000, 'pat']);
   const answers = [];
   const call = async (req, opts = {}) => {
     if (req.op === 'git.remote.state') {
@@ -73,8 +73,13 @@ test('a glab personal access token with its expiry; the plan names the login; Re
   assert.deepEqual(answers.map((a) => a.password === tok), [true, false], 'its host only');
   const out = g.removeHost(h.id);
   assert.equal(out.revokeAt, 'https://gitlab.example.com/-/user_settings/personal_access_tokens');
-  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', imported: { source: 'gh' } }), 'https://github.com/settings/applications');
-  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token' }), 'https://github.com/settings/personal-access-tokens');
+  // GitHub: by the token's kind — gh's OAuth token, a classic one, a fine-grained one (imported or not)
+  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', imported: { source: 'gh', tokenType: 'oauth' } }), 'https://github.com/settings/applications');
+  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', imported: { source: 'gh', tokenType: 'classic' } }), 'https://github.com/settings/tokens');
+  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', imported: { source: 'gh', tokenType: 'fine-grained' } }), 'https://github.com/settings/personal-access-tokens');
+  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', token: ['gh', 'p_x'].join('') }), 'https://github.com/settings/tokens');
+  assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', token: ['github', '_pat_x'].join('') }), 'https://github.com/settings/personal-access-tokens');
+  assert.equal(revokeAt({ kind: 'github', host: 'ghe.example:8443', port: null, auth: 'token', token: 'other' }), 'https://ghe.example:8443/settings/personal-access-tokens');
   assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'ssh' }), null);
   g.close();
 });
@@ -101,4 +106,47 @@ test('the store\'s lock: two processes adding at the same time both keep their h
   assert.deepEqual(await Promise.all(children), [0, 0, 0, 0]);
   const hosts = store.read().hosts.map((h) => h.host).sort();
   assert.equal(hosts.length, 10, hosts.join(' '));
+});
+
+test('the page\'s POST cannot claim an imported login: addHost and the store keep no "imported" from a request', () => {
+  const store = new GitHosts({ dir: path.join(ROOT, 'claim') });
+  const g = makeGitRemote({ call: async () => ({ result: {} }), store });
+  const fake = { source: 'gh', account: 'someone-else', scopes: ['admin:org'], tokenType: 'oauth', extra: 'x'.repeat(10000) };
+  const h = g.addHost({ kind: 'github', auth: 'token', token: 't'.repeat(20), imported: fake }, false);
+  assert.equal(h.imported, null);
+  assert.equal(store.get(h.id).imported, undefined);
+  const h2 = store.add({ kind: 'gitlab', auth: 'token', token: 't'.repeat(20), imported: fake });
+  assert.equal(store.get(h2.id).imported, undefined);
+  g.close();
+});
+
+test('the lock: a dead owner\'s is taken over at once; one that cannot be removed is waited for, then "busy" (no spin); never another\'s removed', async () => {
+  const dir = path.join(ROOT, 'stale');
+  const store = new GitHosts({ dir });
+  store.add({ kind: 'other', host: 'a.example', auth: 'ssh' });
+  const lock = path.join(store.dir, '.lock');
+  // a process that is gone held it (fresh, but its PID is not running): taken over at once
+  fs.writeFileSync(lock, `999999999 ${'a'.repeat(16)}`);
+  let t = Date.now();
+  store.add({ kind: 'other', host: 'b.example', auth: 'ssh' });
+  assert.ok(Date.now() - t < 1000, 'no wait for a dead owner');
+  assert.equal(fs.existsSync(lock), false);
+  // a stale lock that cannot be moved (EPERM, a read-only folder): waited for like a live one, then 503 — bounded
+  fs.writeFileSync(lock, `999999999 ${'b'.repeat(16)}`);
+  const rename = fs.renameSync;
+  fs.renameSync = (a, b) => { if (String(a).endsWith('.lock')) { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; } return rename(a, b); };
+  t = Date.now();
+  try {
+    assert.throws(() => store.add({ kind: 'other', host: 'c.example', auth: 'ssh' }), (e) => e.status === 503 && /busy/.test(e.message));
+  } finally { fs.renameSync = rename; }
+  const took = Date.now() - t;
+  assert.ok(took >= 2000 && took < 10000, `waited ${took} ms (300 tries of 10 ms, never a spin)`);
+  fs.unlinkSync(lock);
+  // a lock that another process took over while this one held it: left as it is
+  store.locked(() => { fs.writeFileSync(lock, `${process.pid} ${'c'.repeat(16)}`); });
+  assert.equal(fs.readFileSync(lock, 'utf8'), `${process.pid} ${'c'.repeat(16)}`, 'another\'s lock stays');
+  fs.unlinkSync(lock);
+  // its own: removed
+  store.locked(() => { assert.match(fs.readFileSync(lock, 'utf8'), new RegExp(`^${process.pid} [0-9a-f]{16}$`)); });
+  assert.equal(fs.existsSync(lock), false);
 });

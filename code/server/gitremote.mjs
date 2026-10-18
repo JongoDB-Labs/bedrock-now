@@ -6,7 +6,7 @@
 // default; turned on only from the computer running bedrock-now): then git.broker answers for that host, each use
 // noted in Activity. Everything the sandbox says is checked here first (its answers are data).
 import crypto from 'node:crypto';
-import { GitHosts, HostError } from './githosts.mjs';
+import { GitHosts, HostError, githubTokenType } from './githosts.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
 
@@ -422,11 +422,15 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     get brokerOpen() { return Boolean(brokerConn); } };
 }
 
-// revokeAt(h) -> the page where you revoke a host's token on the host yourself: gh's login at GitHub's authorized OAuth
-// apps (GitHub CLI), a token at GitHub's or GitLab's access tokens; null for an SSH key or another server
+// revokeAt(h) -> the page where you revoke a host's token on the host yourself — on GitHub by the token's kind: gh's
+// (or another OAuth app's) at Authorized OAuth Apps, a classic token at Tokens (classic), a fine-grained one at
+// Fine-grained tokens; on GitLab its access tokens; null for an SSH key or another server
 export function revokeAt(h) {
   if (!h || h.kind === 'other' || h.auth !== 'token') return null;
   const web = `https://${h.host}${h.port && h.port !== 443 ? `:${h.port}` : ''}`;
-  if (h.kind === 'github') return h.imported?.source === 'gh' ? `${web}/settings/applications` : `${web}/settings/personal-access-tokens`;
+  if (h.kind === 'github') {
+    const type = h.imported?.tokenType ?? githubTokenType(h.token);
+    return `${web}/settings/${type === 'oauth' ? 'applications' : type === 'classic' ? 'tokens' : 'personal-access-tokens'}`;
+  }
   return `${web}/-/user_settings/personal_access_tokens`;
 }
