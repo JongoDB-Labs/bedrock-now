@@ -1904,7 +1904,7 @@ def walkthrough_new(ctx):
 def walkthrough_git_hosts(ctx):
     """The Connect a git host step's Open Git hosts: the Code tab, unlocked, at its Git hosts dialog (?git=hosts); the
     step then shows how many hosts the Code page reports (a number only)."""
-    from checks_code import LOCKED_OK, code_frame, unlock_page
+    from checks_code import CODE, LOCKED_OK, code_frame, unlock_page
     if not TOUR_CODE:
         raise Skip("the Code page is off in this throwaway: no Connect a git host step")
     page, rec = ctx.page("walkthrough-git-hosts", tour=True)
@@ -1929,10 +1929,11 @@ def walkthrough_git_hosts(ctx):
     page.locator("#tour .tour-step.cur .tour-status", has_text="git host").wait_for(timeout=20000)
     status = page.inner_text("#tour .tour-step.cur .tour-status")
     shot(page, "w15-walkthrough-git-hosts-dialog")
-    probs = rec.problems(allow=FRAME_NOISE + LOCKED_OK)
+    # (the locked Code page answers its unlock form with 401, here for the deep link's address)
+    probs = rec.problems(allow=FRAME_NOISE + LOCKED_OK + [r"^401 GET " + re.escape(CODE) + r"/\?git=hosts$"])
     rec.save()
     expect(not probs, f"errors: {probs[:6]}")
-    return f"Open Git hosts → the Code tab, unlocked, its Git hosts dialog; the step: {status!r}"
+    return f"Open Git hosts → the Code tab, unlocked, its Git hosts dialog (the link kept through the unlock); the step: {status!r}"
 
 
 @check("browser", "walkthrough-api-step")
