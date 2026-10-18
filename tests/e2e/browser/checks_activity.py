@@ -413,13 +413,33 @@ def global_search_code(ctx):
         expect(page.locator(f'.act-item[data-id="{it["id"]}"] button', has_text="Answer").count() == 1, "no Answer")
         shot(page, "64-activity-code-session")
         page.keyboard.press("Escape")
+        # the frame's count of Git hosts (the walkthrough's Connect a git host): a whole number 0–99 only, capped; odd
+        # values are dropped; the same report from the portal's own window never gets that far
+        page.evaluate("""() => { window.__bnHosts = []; document.addEventListener('bn:code-status',
+            (e) => window.__bnHosts.push([((e.detail.sessions || [])[0] || {}).id || '', e.detail.hosts])); }""")
+        cases = [("NaN", None), ("'3'", None), ("1e9", 99), ("-1", None), ("({n: 2})", None), ("2.5", None), ("Infinity", None), ("4", 4)]
+        sids = [f"5e55a0b1-0c2d-4e3f-8a9b-0c1d2e3f4b{i:02d}" for i in range(len(cases))]
+        forged = "5e55a0b1-0c2d-4e3f-8a9b-0c1d2e3f4cff"
+        page.evaluate("""s => window.postMessage({type: 'bn-code-status', pending: 0, waiting: 0, sessions: [{id: s, title: 'forged', state: 'idle'}],
+            hosts: 7}, '*')""", forged)
+        for sid, (js, _) in zip(sids, cases):
+            f.evaluate(f"""([s, o]) => parent.postMessage({{type: 'bn-code-status', pending: 0, waiting: 0, busy: false, bypass: false,
+                sessions: [{{id: s, title: 'hosts', state: 'idle'}}], hosts: {js}}}, o)""", [sid, origin()])
+        page.wait_for_function("n => window.__bnHosts.filter((x) => x[0].startsWith('5e55a0b1-0c2d-4e3f-8a9b-0c1d2e3f4b')).length >= n",
+                               arg=len(cases), timeout=10000)
+        got = dict((k, v) for k, v in page.evaluate("() => window.__bnHosts"))
+        bad = [(js, got.get(sid), want) for sid, (js, want) in zip(sids, cases) if got.get(sid, "missing") != want]
+        expect(not bad, f"hosts taken as (sent, got, want): {bad}")
+        expect(forged not in got, "a report from the portal's own window reached the Code tab's checks")
+        expect(page.evaluate("() => window.bnCode.gitHosts()") == 4, "bnCode.gitHosts() is not the last good count")
     finally:
         f = code_frame(page)
         f.evaluate("n => fetch('/api/fs?path=' + encodeURIComponent(n), {method: 'DELETE'}).then(r => r.status)", name)
     probs = rec.problems(allow=LOCKED_OK)
     rec.save()
     expect(not probs, f"errors: {probs}")
-    return f"file {name} found through the Code tab's frame and opened in its editor; its waiting session → Activity (Answer), title as text; a forged report from another origin ignored"
+    return (f"file {name} found through the Code tab's frame and opened in its editor; its waiting session → Activity (Answer), title as text; "
+            "a forged report from another origin ignored; the count of Git hosts: whole numbers 0–99 only (1e9 → 99; NaN, '3', -1, 2.5, objects dropped)")
 
 
 @check("browser", "global-search-timing")

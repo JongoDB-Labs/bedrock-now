@@ -1719,7 +1719,7 @@ def walkthrough(ctx):
                            "return s && !/Checking/.test(s.textContent) }", timeout=10000)
     chat_status = page.inner_text("#tour .tour-step.cur .tour-status")
     saved = page.evaluate("() => JSON.parse(localStorage.getItem('bn.tour'))")
-    expect(isinstance((saved.get("base") or {}).get("open-webui"), (int, float)), f"no spend baseline: {saved.get('base')}")
+    expect(isinstance((saved.get("base") or {}).get("chat:open-webui"), (int, float)), f"no spend baseline of the Chat step: {saved.get('base')}")
 
     # Skip moves on and can be undone; Finish lists what is still open; Start over begins again.
     page.click("#tour [data-k=next]")
@@ -1875,7 +1875,8 @@ def walkthrough_new(ctx):
     page.click("#tour [data-k=first-new-card]")
     first = "git-hosts" if TOUR_CODE else "code-off"
     _to_step(page, first)
-    expect(page.locator("#tour .tour-step.cur .tour-badge.new").count() == 1, "the step opened has no New badge on its card")
+    expect(page.locator("#tour .tour-step.cur .tour-badge.new").count() == 1,
+           "the card of the step just opened lacks its New badge (it keeps it until the next load)")
     expect(page.inner_text("#tour-count") == f"{TOUR_NEW - 1} new", f"after opening one: {page.inner_text('#tour-count')!r}")
     page.reload()
     page.wait_for_selector("#tour:not([hidden]) #tour-cur")
@@ -1925,15 +1926,28 @@ def walkthrough_git_hosts(ctx):
     dlg = f.locator("[data-testid=git-hosts-dialog]")
     dlg.wait_for(timeout=30000)
     expect("git=" not in f.url, f"the deep link stayed in the frame's address: {f.url}")
-    # the frame reported its count: the step says it (no host connected in this throwaway unless the git server ran)
+    # the frame reported its count (a number only): no host is connected in this throwaway (the git server's checks,
+    # which add and remove some, run later), and the step says so
+    page.wait_for_function("() => window.bnCode && window.bnCode.gitHosts() !== null", timeout=20000)
+    n = page.evaluate("() => window.bnCode.gitHosts()")
+    expect(n == 0, f"the Code page reports {n!r} Git hosts")
     page.locator("#tour .tour-step.cur .tour-status", has_text="git host").wait_for(timeout=20000)
-    status = page.inner_text("#tour .tour-step.cur .tour-status")
+    status = page.inner_text("#tour .tour-step.cur .tour-status").strip()
+    expect(status == "No git host is connected yet.", f"the step says {status!r}")
     shot(page, "w15-walkthrough-git-hosts-dialog")
+    # again, with the Code tab running: the dialog opens in place — the page is not reloaded (unsaved edits stay)
+    f.evaluate("() => { window.__bnStay = 1; }")
+    dlg.get_by_role("button", name="Close").click()
+    dlg.wait_for(state="hidden", timeout=10000)
+    page.click("#tour [data-k=open-git-hosts]")
+    dlg.wait_for(timeout=15000)
+    expect(f.evaluate("() => window.__bnStay === 1"), "the Code page was reloaded to open Git hosts")
     # (the locked Code page answers its unlock form with 401, here for the deep link's address)
     probs = rec.problems(allow=FRAME_NOISE + LOCKED_OK + [r"^401 GET " + re.escape(CODE) + r"/\?git=hosts$"])
     rec.save()
     expect(not probs, f"errors: {probs[:6]}")
-    return f"Open Git hosts → the Code tab, unlocked, its Git hosts dialog (the link kept through the unlock); the step: {status!r}"
+    return (f"Open Git hosts → the Code tab, unlocked, its Git hosts dialog (the link kept through the unlock); the step: {status!r} "
+            f"({n} hosts reported); again with the tab running: in place, no reload")
 
 
 @check("browser", "walkthrough-api-step")
