@@ -6,6 +6,17 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An update could leave the portal unreachable** — "This site can't be reached" for `http://bedrock-now.localhost`,
+  every portal check of the smoke test `000` and the update reported as failed, with no portal left to roll back from.
+  Docker Desktop had kept forwarding the portal's port to the Caddy container the update replaced: this computer's
+  port accepted every connection and reset it while Caddy answered in its new container. Setup (so `./stack update`
+  and Home's **Update now**), `./stack up`, restore and rollback now check the port from this computer wherever Caddy
+  was recreated — before signing in to the portal and before the smoke test; when only the forward is broken, Caddy is
+  recreated once and that is said ("Caddy recreated: the portal answers again"), or how to go on ("restart Docker (on a
+  Mac: quit Docker Desktop and open it again), then `./stack up`").
+
 ## [0.14.0] - 2026-10-18
 
 ### Added

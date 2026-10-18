@@ -505,3 +505,60 @@ test_compose_renders_the_portals_docs_context_only_with_the_overlay() {
   # compose.yaml itself never names it (an older Compose refuses the whole file for an unknown key)
   assert_not_contains "$(cat "$STACK_DIR/compose.yaml")" "additional_contexts"
 }
+
+# Docker Desktop forwarding the portal's port to a Caddy that up replaced (an update from Home, 2026-10): every
+# connection reset (000) while Caddy answers in its container → Caddy recreated once, said
+_before() {   # _before FUNC A B: in FUNC's body (lib/commands.sh), A is called on a line before B's first call
+  local body a b
+  body="$(awk -v f="$1" '$0 ~ "^"f"\\(\\) \\{" {on=1} on {print} on && /^}/ {exit}' "$T_ROOT/lib/commands.sh")"
+  a="$(printf '%s\n' "$body" | grep -nE "(^| )$2([; ]|\$)" | head -n 1 | cut -d: -f1)"
+  b="$(printf '%s\n' "$body" | grep -nE "(^| )$3([; ]|\$)" | head -n 1 | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] || { echo "$1: $2 (line ${a:-none}) is not called before $3 (line ${b:-none})" >&2; return 1; }
+}
+_stub_forward() {   # FWD: the curl answers in turn (default 200); IN_OK=0: Caddy does not answer in its container either
+  printf '%s\n' ${FWD:-200} > "$TMP/fwd"; _IN_OK="${IN_OK:-1}"; _CADDY_UP="${CADDY_UP:-1}"
+  dc() {
+    echo "dc $*" >> "$TMP/calls"
+    case "$*" in
+      "ps -q --status running caddy") [ "$_CADDY_UP" = 0 ] || echo cid ;;
+      "exec -T caddy"*) [ "$_IN_OK" = 1 ] ;;
+    esac
+  }
+  curl() { echo "curl $*" >> "$TMP/calls"; local c; c="$(head -n 1 "$TMP/fwd")"; sed -i.bak 1d "$TMP/fwd"; [ -s "$TMP/fwd" ] || echo "$c" > "$TMP/fwd"; printf '%s' "$c"; }
+  sleep() { :; }
+}
+
+test_ensure_portal_reachable_recreates_caddy_when_its_port_forward_resets() {
+  printf 'PORTAL_PORT=80\n' > "$ENV_FILE"; : > "$TMP/calls"
+  FWD="000 000 000 200" _stub_forward
+  out="$(ensure_portal_reachable 2>&1)"
+  assert_contains "$out" "port 80 on this computer does not reach Caddy, although Caddy answers in its container"
+  assert_contains "$out" "Caddy recreated: the portal answers again"
+  assert_contains "$(cat "$TMP/calls")" "dc up -d --no-deps --force-recreate --wait caddy"
+  assert_contains "$(cat "$TMP/calls")" "http://127.0.0.1:80/caddy-health"
+  # still unreachable after it: said how to go on
+  : > "$TMP/calls"; FWD="000" _stub_forward
+  assert_contains "$(ensure_portal_reachable 2>&1)" "still does not reach Caddy: restart Docker (on a Mac: quit Docker Desktop and open it again), then ./stack up"
+}
+
+test_ensure_portal_reachable_leaves_caddy_alone_otherwise() {
+  printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"
+  # the port answers (any HTTP status, a 404 too): nothing recreated
+  : > "$TMP/calls"; FWD="200" _stub_forward; ensure_portal_reachable 2>/dev/null
+  assert_not_contains "$(cat "$TMP/calls")" "force-recreate"
+  assert_contains "$(cat "$TMP/calls")" "http://127.0.0.1:8800/caddy-health"
+  : > "$TMP/calls"; FWD="000 404" _stub_forward; ensure_portal_reachable 2>/dev/null
+  assert_not_contains "$(cat "$TMP/calls")" "force-recreate"
+  # Caddy itself does not answer either: not the port forward — left to the smoke test
+  : > "$TMP/calls"; FWD="000" IN_OK=0 _stub_forward; ensure_portal_reachable 2>/dev/null
+  assert_not_contains "$(cat "$TMP/calls")" "force-recreate"
+  # Caddy not running: no probe at all
+  : > "$TMP/calls"; CADDY_UP=0 _stub_forward; ensure_portal_reachable 2>/dev/null
+  assert_not_contains "$(cat "$TMP/calls")" "curl"
+  # where Caddy was recreated, before the portal is used: ./stack up and restore before their sign-in, setup before its
+  # sign-in and before the smoke test (the update path: ./stack update runs setup, which never calls ./stack up)
+  _before cmd_up ensure_portal_reachable portal_session_start
+  _before cmd_restore ensure_portal_reachable settings_reconcile_with_session
+  _before setup_keys_and_ui ensure_portal_reachable portal_session_or_die
+  _before cmd_setup ensure_portal_reachable cmd_test
+}

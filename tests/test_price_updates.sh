@@ -273,6 +273,7 @@ test_on_prices_changed_dispatches_to_installed_hooks() {
 _stub_up() {
   _stub_dc
   ensure_images() { :; }; cmd_status() { :; }; maybe_auto_open() { :; }; check_portal_host() { :; }; save_portal_origin() { :; }
+  ensure_portal_reachable() { :; }   # (tested in test_portal.sh)
   aws_auth_check() { :; }   # (tested in test_host.sh)
   portal_session_start() { echo session >> "$TMP/calls"; }; portal_session_end() { :; }; sync_budget_banner() { echo banner >> "$TMP/calls"; }
   run_phase() { shift 2; echo "phase $*" >> "$TMP/calls"; }

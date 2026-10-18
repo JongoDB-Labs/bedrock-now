@@ -514,6 +514,7 @@ cmd_setup() {
   SETUP_CODE_DEFAULT=0  # (settled: a Ctrl-C from here on leaves the Code page as it is)
   ! code_ready || setup_done "the terminal and the Code page started"
   setup_step "running the smoke test"
+  ensure_portal_reachable   # (the terminal's and the Code page's fronts recreate Caddy too)
   cmd_test
   setup_done "smoke test passed"; setup_step "finishing (claude-bedrock link, one-click updates, remote access)"
   offer_symlink
@@ -750,6 +751,7 @@ setup_keys_and_ui() {
   stt_setup_service   # lib/stt.sh: the stt container (Bedrock speech-to-text) before Open WebUI; never fatal
   run_phase "Open WebUI" open-webui dc up -d --wait open-webui
   up_portal
+  ensure_portal_reachable   # lib/portal.sh: Docker Desktop forwarding the portal's port to the Caddy it replaced
   portal_session_or_die
   settings_reconcile   # lib/settings.sh: Chat's owner and the Admin sign-in match .env (a change cut short, a restore)
   ensure_openwebui_api_key
@@ -996,6 +998,7 @@ cmd_up() {
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
   terminal_after_up   # TERMINAL_EGRESS: what its way out no longer uses goes once the container has left it
   remote_up_hook
+  ensure_portal_reachable   # lib/portal.sh: Docker Desktop forwarding the portal's port to a Caddy it replaced
   # Open WebUI keeps banners in memory only: re-apply the budget banner (through the portal, like setup).
   # The same session updates Open WebUI's prices once: after Bedrock price changes, on_prices_changed (cost
   # filter, which also carries OpenRouter's prices, and model descriptions) plus OpenRouter's label sync if
@@ -1393,6 +1396,7 @@ cmd_restore() {
   # shellcheck disable=SC2046  # word-split the service list on purpose
   dc up -d --wait $(stack_services)
   remote_up_hook
+  ensure_portal_reachable   # lib/portal.sh: Docker Desktop forwarding the portal's port to the Caddy it replaced
   settings_reconcile_with_session   # lib/settings.sh: the backup's databases may carry an older owner email or Admin password
   log "restored $dir; running the smoke test (if keys fail, ./stack setup --yes re-validates them)"
   cmd_test

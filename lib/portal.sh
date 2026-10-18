@@ -35,6 +35,35 @@ valid_hostname() {
 portal_host() { local h; h="$(get_env PORTAL_HOST)"; [ -n "$h" ] || h="$(default_portal_host "$(project_name)")"; printf '%s\n' "$h"; }
 portal_port() { local p; p="$(get_env PORTAL_PORT)"; printf '%s\n' "${p:-80}"; }
 
+# ensure_portal_reachable — Docker Desktop can keep forwarding the portal's port to a Caddy container that was just
+# replaced: the port on this computer then accepts every connection and resets it (curl: 000) while Caddy answers in
+# its new container. An update from Home ended that way (every portal check of the smoke test 000, and no portal left
+# to roll back from); recreating Caddy once mends the forward. Called wherever Caddy was recreated before the portal is
+# used: setup (before its portal sign-in and before the smoke test), ./stack up, restore. Said when it acts; never
+# fatal (the smoke test says what is left). Only while Caddy runs: with no Caddy, the caller's own checks say why.
+_portal_port_answers() {   # -> 0 unless every try is a connection failure (000); any HTTP status counts as reaching it
+  local i code
+  for i in 1 2 3; do
+    code="$(curl -q --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(portal_port)/caddy-health" 2>/dev/null || true)"
+    [ "$code" = 000 ] || return 0
+    [ "$i" = 3 ] || sleep 2
+  done
+  return 1
+}
+ensure_portal_reachable() {
+  [ -n "$(dc ps -q --status running caddy 2>/dev/null)" ] || return 0
+  _portal_port_answers && return 0   # (Caddy's catch-all site answers /caddy-health for any host name)
+  dc exec -T caddy wget -q -O /dev/null http://127.0.0.1:8080/caddy-health >/dev/null 2>&1 || return 0
+  warn "port $(portal_port) on this computer does not reach Caddy, although Caddy answers in its container (Docker's port forward): recreating Caddy"
+  dc up -d --no-deps --force-recreate --wait caddy >/dev/null 2>&1 || true
+  if _portal_port_answers; then
+    log "Caddy recreated: the portal answers again"
+  else
+    warn "port $(portal_port) still does not reach Caddy: restart Docker (on a Mac: quit Docker Desktop and open it again), then ./stack up"
+  fi
+  return 0
+}
+
 # app_host [SUB] -> PORTAL_HOST, or an app's host name: CHAT_HOST / ADMIN_HOST / FILES_HOST / TERMINAL_HOST / CODE_HOST from .env, else
 # SUB.PORTAL_HOST (the default; any other SUB is always SUB.PORTAL_HOST)
 app_host() {
