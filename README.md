@@ -937,11 +937,12 @@ credentials ever being kept in the sandbox.
   CA signed takes that CA (*More*). Adding a host, a token or a key, trusting a host key, and letting Claude use a host
   work only from the computer running bedrock-now; over remote access you can still use the hosts, remove one, or turn
   Claude's use off.
-- **Clone** (*Clone a repository…* in the Git panel or the command palette, or a new session's *Clone a repository*): a
-  URL, a new folder of the workspace (named after the repository; or the workspace folder itself while it is empty)
-  and, if you like, only the latest commit. A public repository needs no git host; a private one needs its host
-  connected. Submodules are not cloned and no hook of the repository runs. The panel then shows the new repository: a
-  **repository picker** at its top lists the workspace folder and the repositories in it (two levels down).
+- **Clone** (*Clone a repository…* in the command palette, a new session's *Clone a repository*, or the Git panel
+  while the workspace folder is not a repository itself): a URL, a new folder of the workspace (named after the
+  repository; or the workspace folder itself while it is empty) and, if you like, only the latest commit. A public
+  repository needs no git host; a private one needs its host connected. Submodules are not cloned and no hook of the
+  repository runs. The panel then shows the new repository: a **repository picker** at its top lists the workspace
+  folder and the repositories in it (two levels down).
 - **Fetch, pull, push.** Under the branch, the panel shows the remote (`origin → github.com/owner/repo`, with the Git
   host whose credential it uses) and **Fetch**, **Pull** (with how many commits are new there) and **Push** (with how
   many are yours) — or **Publish branch** for a branch that is not on the remote yet. Before anything is sent the page
