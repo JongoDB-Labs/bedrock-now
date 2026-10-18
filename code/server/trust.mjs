@@ -42,15 +42,22 @@ const PERM_KNOWN = new Set(['allow', 'ask', 'deny', 'defaultMode', 'additionalDi
 export const LIST_MAX = 200, TEXT_MAX = 2000;
 // eslint-disable-next-line no-control-regex
 const HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+// a value that could hide something in plain sight (a long run of spaces, many lines): the page asks for a careful look
+export const careful = (t) => typeof t === 'string' && (/\s{20,}/.test(t) || (t.match(/\n/g) ?? []).length > 5);
+// canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
+const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
 
-/** summarize(files) -> what they set, all of it or said to be incomplete: {hooks: [{file, event, matcher, command}],
- *  allow, ask, deny, defaultMode, directories, env: [{file, name, value}], commands: [{file, key, command}], mcp: [{file,
- *  key, value}], mcpServers: [{file, name, run}], other: [{file, key, value}], notes: [{file, note}], complete, missing:
- *  [why …]} — complete: every key and value of the files is in it, whole (no list or value cut, no hidden character, no
- *  file that could not be read as JSON) */
+/** summarize(files) -> what they set, all of it or said to be incomplete: {hooks: [{file, event, matcher, command,
+ *  json, mixed, careful}], allow, ask, deny, defaultMode, directories, env: [{file, name, value}], commands: [{file,
+ *  key, command}], mcp: [{file, key, value}], mcpServers: [{file, name, run, json, mixed, careful}], other: [{file,
+ *  key, value}], notes: [{file, note}], complete, missing: [why …], careful} — complete: every key and value of the
+ *  files is in it, whole (no list or value cut, no hidden character, no file that could not be read as JSON). A hook
+ *  and an MCP server come with their whole entry as canonical JSON (json: every field, sorted), a friendly line beside
+ *  it (command, run), mixed when it names more than one of a command, a URL and a prompt; careful: values with long
+ *  runs of whitespace or many lines (the page asks you to look at them in full). */
 export function summarize(files) {
   const out = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [],
-    complete: true, missing: [] };
+    complete: true, missing: [], careful: 0 };
   const why = new Map();
   const incomplete = (reason) => { out.complete = false; why.set(reason, (why.get(reason) ?? 0) + 1); };
   // text(v) -> a value as the page shows it (a string as is; anything else as JSON), whole or said
@@ -58,6 +65,7 @@ export function summarize(files) {
     let t;
     try { t = typeof v === 'string' ? v : JSON.stringify(v) ?? String(v); } catch { incomplete('a value that cannot be shown'); return '?'; }
     if (HIDDEN.test(t)) incomplete('a value with control characters the page cannot show');
+    if (careful(t)) out.careful++;
     if (t.length > TEXT_MAX) { incomplete(`a value over ${TEXT_MAX.toLocaleString('en')} characters`); return `${t.slice(0, TEXT_MAX)}… (${t.length - TEXT_MAX} more characters not shown)`; }
     return t;
   };
@@ -79,10 +87,12 @@ export function summarize(files) {
       if (v.mcpServers !== undefined && !obj(v.mcpServers)) add('other', { file: f.name, key: 'mcpServers', value: text(v.mcpServers) });
       for (const [name, c] of Object.entries(obj(v.mcpServers) ?? {})) {
         const sv = obj(c);
-        if (!sv) { add('mcpServers', { file: f.name, name: text(name), run: text(c) }); continue; }
-        const { command, args, url, ...rest } = sv;
-        const head = typeof url === 'string' ? url : [command, ...(Array.isArray(args) ? args : [args])].filter((x) => x !== undefined).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
-        add('mcpServers', { file: f.name, name: text(name), run: text(Object.keys(rest).length ? `${head}  ${JSON.stringify(rest)}` : head) });
+        // the friendly line (what it runs, or where it connects) — and always the whole entry beside it
+        const run = !sv ? '' : typeof sv.command === 'string' ? [sv.command, ...(Array.isArray(sv.args) ? sv.args : [])].map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')
+          : typeof sv.url === 'string' ? sv.url : '';
+        const mixed = Boolean(sv) && ['command', 'url'].filter((k) => sv[k] !== undefined).length > 1;
+        const json = text(canonical(c));
+        add('mcpServers', { file: f.name, name: text(name), run: text(run), json, mixed, careful: careful(json) || careful(run) });
       }
       for (const k of Object.keys(v).filter((k) => k !== 'mcpServers')) add('other', { file: f.name, key: text(k), value: text(v[k]) });
       continue;
@@ -96,12 +106,11 @@ export function summarize(files) {
         if (!hs) { add('hooks', { file: f.name, event: text(event), matcher, command: text(m) }); continue; }
         for (const h of hs) {
           const o = obj(h);
-          // the command (or URL, or prompt) it runs; anything else it says, as JSON after it
-          const { type, command, url, prompt, ...rest } = o ?? {};
-          const head = typeof command === 'string' ? command : typeof url === 'string' ? url : typeof prompt === 'string' ? `(prompt) ${prompt}` : '';
-          const extra = { ...(type !== undefined && type !== 'command' ? { type } : {}), ...rest };
-          const all = !o ? h : !head ? o : Object.keys(extra).length ? `${head}  ${JSON.stringify(extra)}` : head;
-          add('hooks', { file: f.name, event: text(event), matcher, command: text(all) });
+          // the friendly line (the command, URL or prompt it runs) — and always the whole entry beside it
+          const head = !o ? '' : typeof o.command === 'string' ? o.command : typeof o.url === 'string' ? o.url : typeof o.prompt === 'string' ? `(prompt) ${o.prompt}` : '';
+          const mixed = Boolean(o) && ['command', 'url', 'prompt'].filter((k) => o[k] !== undefined).length > 1;
+          const json = text(canonical(h));
+          add('hooks', { file: f.name, event: text(event), matcher, command: text(head), json, mixed, careful: careful(json) || careful(head) });
         }
       }
     }

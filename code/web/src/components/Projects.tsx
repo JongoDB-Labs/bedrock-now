@@ -33,7 +33,7 @@ import {
 } from '../app';
 import * as api from '../api';
 import { GROUP_LABEL, groupOf, type Group } from '../groups';
-import { rootOk, sessionsByProject, settingsApplied, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
+import { needsLook, rootOk, sessionsByProject, settingsApplied, visibleWs, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
 import type { SessionView } from '../session';
 import type { SessionInfo } from '../types';
 import { ago, label } from '../text';
@@ -591,6 +591,8 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
   const [v, setV] = useState<SettingsView | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // the entries that need a careful look, opened in full (Trust waits until every one was)
+  const [opened, setOpened] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
     api.getProjectSettings(id).then((x) => live && setV(x), (e) => live && setErr(e instanceof Error ? e.message : String(e)));
@@ -619,11 +621,49 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
   const fileNote = (f: SettingsView['files'][number]) =>
     f.type === 'missing' ? 'not there' : f.type === 'big' ? 'too large to show' : f.type === 'other' ? 'not a file' : f.type === 'link' ? `a link to ${f.target ?? '?'}` : `${f.size ?? 0} bytes`;
   const sm = v?.summary;
-  const section = (title: string, rows: string[], testid: string) =>
+  // a row: its text with whitespace made visible; a hook's or an MCP server's whole entry below it; one that could
+  // hide something in whitespace or lines folded until opened
+  type Row = { text: string; json?: string; mixed?: boolean; careful?: boolean };
+  const rowsOf = (title: string, rows: Row[]) => rows.map((r, i) => ({ ...r, key: `${title}#${i}`, careful: r.careful || needsLook(r.text) || (r.json ? needsLook(r.json) : false) }));
+  const sections: [string, Row[], string][] = sm ? [
+    ['Hooks (commands Claude Code runs)', sm.hooks.map((h) => ({ text: `${h.event}${h.matcher ? ` (${h.matcher})` : ''}: ${h.command}`, json: h.json, mixed: h.mixed, careful: h.careful })), 'settings-hooks'],
+    ['Allowed without asking', sm.allow.map((t) => ({ text: t })), 'settings-allow'],
+    ['Always asked', sm.ask.map((t) => ({ text: t })), 'settings-ask'],
+    ['Denied', sm.deny.map((t) => ({ text: t })), 'settings-deny'],
+    ['Default permission mode', sm.defaultMode ? [{ text: sm.defaultMode }] : [], 'settings-mode'],
+    ['More folders Claude may use', sm.directories.map((t) => ({ text: t })), 'settings-dirs'],
+    ['Environment variables', sm.env.map((e) => ({ text: `${e.name}=${e.value}` })), 'settings-env'],
+    ['Programs it names', sm.commands.map((c) => ({ text: `${c.key}: ${c.command}` })), 'settings-commands'],
+    ['MCP servers (.mcp.json)', sm.mcpServers.map((m) => ({ text: `${m.name}: ${m.run}`, json: m.json, mixed: m.mixed, careful: m.careful })), 'settings-mcp'],
+    ['MCP settings', sm.mcp.map((m) => ({ text: `${m.key}: ${m.value}` })), 'settings-mcp-keys'],
+    ['Other settings', sm.other.map((o) => ({ text: `${o.key}: ${o.value}` })), 'settings-other'],
+    ['Notes', sm.notes.map((n) => ({ text: `${n.file}: ${n.note}` })), 'settings-notes'],
+  ] : [];
+  const all = sections.flatMap(([title, rows]) => rowsOf(title, rows));
+  const unopened = all.filter((r) => r.careful && !opened.has(r.key)).length;
+  const section = (title: string, rows: Row[], testid: string) =>
     rows.length ? (
-      <div class="ps-sec" data-testid={testid}>
+      <div class="ps-sec" data-testid={testid} key={testid}>
         <div class="ps-head">{title}</div>
-        <ul class="ps-list">{rows.slice(0, 200).map((r, i) => <li key={i}><code>{r}</code></li>)}</ul>
+        <ul class="ps-list">
+          {rowsOf(title, rows).map((r) => {
+            const folded = r.careful && !opened.has(r.key);
+            const shown = visibleWs(r.text);
+            return (
+              <li key={r.key} class={r.careful ? 'ps-careful' : ''} data-testid={r.careful ? 'settings-careful' : undefined}>
+                <code>{folded ? `${shown.slice(0, 120)}…` : shown}</code>
+                {r.mixed && <span class="warn-text small"> — names more than one of a command, a URL and a prompt: check which one runs</span>}
+                {folded ? (
+                  <button type="button" class="btn small ghost" onClick={() => setOpened((x) => new Set(x).add(r.key))} data-testid="settings-open">
+                    Show all of it (long runs of spaces or many lines)
+                  </button>
+                ) : (
+                  r.json && <code class="ps-json">{visibleWs(r.json)}</code>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </div>
     ) : null;
   const canTrust = v && v.hash && v.summary.complete && (v.state === 'untrusted' || v.state === 'changed');
@@ -638,21 +678,12 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
               <li key={f.name}><code>{label(`${v.path}/${f.name}`, 300)}</code> — {label(fileNote(f), 300)}</li>
             ))}
           </ul>
-          {sm && (
-            <div class="ps-body">
-              {section('Hooks (commands Claude Code runs)', sm.hooks.map((h) => `${h.event}${h.matcher ? ` (${h.matcher})` : ''}: ${h.command}`), 'settings-hooks')}
-              {section('Allowed without asking', sm.allow, 'settings-allow')}
-              {section('Always asked', sm.ask, 'settings-ask')}
-              {section('Denied', sm.deny, 'settings-deny')}
-              {section('Default permission mode', sm.defaultMode ? [sm.defaultMode] : [], 'settings-mode')}
-              {section('More folders Claude may use', sm.directories, 'settings-dirs')}
-              {section('Environment variables', sm.env.map((e) => `${e.name}=${e.value}`), 'settings-env')}
-              {section('Programs it names', sm.commands.map((c) => `${c.key}: ${c.command}`), 'settings-commands')}
-              {section('MCP servers (.mcp.json)', sm.mcpServers.map((m) => `${m.name}: ${m.run}`), 'settings-mcp')}
-              {section('MCP settings', sm.mcp.map((m) => `${m.key}: ${m.value}`), 'settings-mcp-keys')}
-              {section('Other settings', sm.other.map((o) => `${o.key}: ${o.value}`), 'settings-other')}
-              {section('Notes', sm.notes.map((n) => `${n.file}: ${n.note}`), 'settings-notes')}
-            </div>
+          {sm && <div class="ps-body">{sections.map(([title, rows, testid]) => section(title, rows, testid))}</div>}
+          {canTrust && unopened > 0 && (
+            <p class="warn-text small" data-testid="settings-look">
+              {unopened === 1 ? 'One entry hides' : `${unopened} entries hide`} text in long runs of spaces or many lines: show {unopened === 1 ? 'it' : 'each'} in full before you
+              trust them.
+            </p>
           )}
           {!v.summary.complete && v.state !== 'workspace' && v.state !== 'none' && (
             <p class="warn-text small" data-testid="settings-incomplete">
@@ -682,7 +713,7 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
           </button>
         )}
         {canTrust && (
-          <button type="button" class="btn primary" disabled={busy} onClick={() => void go(true)} data-testid="settings-trust">
+          <button type="button" class="btn primary" disabled={busy || unopened > 0} onClick={() => void go(true)} data-testid="settings-trust">
             {busy ? <Spinner size={12} /> : null} {start ? 'Trust them and start' : 'Trust this project\'s Claude Code settings'}
           </button>
         )}

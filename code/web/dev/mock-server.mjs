@@ -729,10 +729,15 @@ function settingsView(pr) {
     complete: true, missing: [] };
   if (st) {
     const set = JSON.parse(st.files['.claude/settings.json'] ?? '{}');
-    for (const [event, list] of Object.entries(set.hooks ?? {})) for (const mm of list) for (const h of mm.hooks) summary.hooks.push({ file: '.claude/settings.json', event, matcher: mm.matcher ?? '', command: h.command });
+    const sorted = (v) => JSON.stringify(Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])));
+    for (const [event, list] of Object.entries(set.hooks ?? {})) {
+      for (const mm of list) for (const h of mm.hooks) summary.hooks.push({ file: '.claude/settings.json', event, matcher: mm.matcher ?? '', command: h.command, json: sorted(h), mixed: false, careful: false });
+    }
     summary.allow = set.permissions?.allow ?? [];
     summary.env = Object.entries(set.env ?? {}).map(([name, value]) => ({ file: '.claude/settings.json', name, value }));
-    for (const [name, c] of Object.entries(JSON.parse(st.files['.mcp.json'] ?? '{}').mcpServers ?? {})) summary.mcpServers.push({ name, run: [c.command, ...(c.args ?? [])].join(' ') });
+    for (const [name, c] of Object.entries(JSON.parse(st.files['.mcp.json'] ?? '{}').mcpServers ?? {})) {
+      summary.mcpServers.push({ file: '.mcp.json', name, run: [c.command, ...(c.args ?? [])].join(' '), json: sorted(c), mixed: false, careful: false });
+    }
     if (st.unverifiable) {
       summary.notes.push({ file: '.mcp.json', note: 'a link to /home/claude/elsewhere.json (not read: outside the workspace, or not a file)' });
       summary.complete = false;

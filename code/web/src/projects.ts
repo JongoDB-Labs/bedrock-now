@@ -173,8 +173,15 @@ export interface SettingsFile {
   size: number | null;
   target: string | null;
 }
+/** A hook or an MCP server: the friendly line, its whole entry (canonical JSON), whether it names more than one of
+ *  a command, a URL and a prompt, and whether it needs a careful look (long whitespace runs, many lines). */
+export interface SettingsEntry {
+  json: string;
+  mixed: boolean;
+  careful: boolean;
+}
 export interface SettingsSummary {
-  hooks: { file: string; event: string; matcher: string; command: string }[];
+  hooks: ({ file: string; event: string; matcher: string; command: string } & SettingsEntry)[];
   allow: string[];
   ask: string[];
   deny: string[];
@@ -183,13 +190,20 @@ export interface SettingsSummary {
   env: { file: string; name: string; value: string }[];
   commands: { file: string; key: string; command: string }[];
   mcp: { file: string; key: string; value: string }[];
-  mcpServers: { name: string; run: string }[];
+  mcpServers: ({ name: string; run: string } & SettingsEntry)[];
   other: { file: string; key: string; value: string }[];
   notes: { file: string; note: string }[];
   /** every key and value of the files is above, whole (else: never trustable — what was left out, in `missing`) */
   complete: boolean;
   missing: string[];
 }
+
+/** A value that could hide something in plain sight: a run of 20+ whitespace characters, or more than 5 lines (the
+ *  backend's rule too): the dialog shows it folded until you open it in full, and Trust waits for that. */
+export const needsLook = (t: string): boolean => /\s{20,}/.test(t) || (t.match(/\n/g) ?? []).length > 5;
+/** Whitespace made visible (the trust dialog): ⏎ for a line break, → for a tab, · for each space of a run of 3 or more
+ *  — so nothing goes on a line out of sight. */
+export const visibleWs = (t: string): string => t.replace(/\r/g, '␍').replace(/\n/g, '⏎').replace(/\t/g, '→').replace(/ {3,}/g, (m) => '·'.repeat(m.length));
 export interface SettingsView {
   project: string;
   path: string;
@@ -223,16 +237,22 @@ export function normSettingsView(v: unknown): SettingsView | null {
     if (x.length > LIST_MAX) cut = true;
     return x.slice(0, LIST_MAX).filter((r) => typeof r === 'string').map(many);
   };
+  // (an older backend without the whole entry: what it showed is all there is — never complete)
+  const entry = (r: Obj): SettingsEntry => {
+    if (typeof r.json !== 'string') cut = true;
+    const json = many(r.json);
+    return { json, mixed: r.mixed === true, careful: r.careful === true || needsLook(json) };
+  };
   const s = obj(o.summary) ?? {};
   const summary: SettingsSummary = {
-    hooks: rows(s.hooks, (h) => ({ file: one(h.file, 60), event: one(h.event, 200), matcher: many(h.matcher), command: many(h.command) })),
+    hooks: rows(s.hooks, (h) => ({ file: one(h.file, 60), event: one(h.event, 200), matcher: many(h.matcher), command: many(h.command), ...entry(h) })),
     allow: texts(s.allow), ask: texts(s.ask), deny: texts(s.deny),
     defaultMode: typeof s.defaultMode === 'string' ? many(s.defaultMode) : null,
     directories: texts(s.directories),
     env: rows(s.env, (e) => ({ file: one(e.file, 60), name: many(e.name), value: many(e.value) })),
     commands: rows(s.commands, (c) => ({ file: one(c.file, 60), key: one(c.key, 60), command: many(c.command) })),
     mcp: rows(s.mcp, (c) => ({ file: one(c.file, 60), key: one(c.key, 60), value: many(c.value) })),
-    mcpServers: rows(s.mcpServers, (m) => ({ name: many(m.name), run: many(m.run) })),
+    mcpServers: rows(s.mcpServers, (m) => ({ name: many(m.name), run: many(m.run), ...entry(m) })),
     other: rows(s.other, (x) => ({ file: one(x.file, 60), key: many(x.key), value: many(x.value) })),
     notes: rows(s.notes, (x) => ({ file: one(x.file, 60), note: one(x.note, 500) })),
     complete: false,
