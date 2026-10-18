@@ -141,14 +141,17 @@ export const importCommand = (kind: 'github' | 'gitlab', host = ''): string => {
   const extra = h && h !== (kind === 'github' ? 'github.com' : 'gitlab.com') && HOSTNAME.test(h) ? ` --host ${h}` : '';
   return `./stack git-host import ${kind === 'github' ? 'gh' : 'glab'}${extra}`;
 };
-/** What an imported login's token reaches, and that the CLI goes on using it. */
+/** What an imported login's token reaches (by its kind), that the CLI goes on using it, and when it expires. */
 export function importedReach(h: GitHostView, now = Date.now()): string {
   const o = h.imported;
   if (!o) return '';
   const scopes = o.scopes.length ? ` (${o.scopes.join(', ')})` : '';
-  if (o.source === 'gh') {
-    return `Every repository your GitHub account can reach${scopes}. It is gh's own token: gh goes on using it, and removing it here does not sign gh out.`;
-  }
   const until = o.expiresAt ? (o.expiresAt > now ? ` It expires on ${new Date(o.expiresAt).toLocaleDateString()}.` : ' It expired: import it again, or replace it.') : '';
-  return `What this personal access token may do${scopes}, on every project your account can reach. glab uses the same token.${until}`;
+  if (o.source === 'gh') {
+    const what = o.tokenType === 'fine-grained' ? 'The repositories and permissions this fine-grained token was given.' : `Every repository your GitHub account can reach${scopes}.`;
+    const whose = o.tokenType === 'oauth' ? " It is gh's own token: gh goes on using it" : ' gh uses the same token';
+    return `${what}${whose}, and removing it here does not sign gh out.${o.expiresAt ? until : o.tokenType === 'oauth' ? ' It does not expire.' : ''}`;
+  }
+  const api = o.scopes.includes('api') ? ' The api scope is full read and write access to GitLab\'s API as you, not only git.' : '';
+  return `What this personal access token may do${scopes}, on every project your account can reach. glab uses the same token.${api}${until}`;
 }

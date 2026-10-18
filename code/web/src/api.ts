@@ -1209,12 +1209,14 @@ const authOf = (v: unknown): 'token' | 'ssh' => (v === 'ssh' ? 'ssh' : 'token');
 const msTime = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1e14 ? v : null);
 const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
 const importSource = (v: unknown): 'gh' | 'glab' | null => (v === 'gh' || v === 'glab' ? v : null);
+const TOKEN_TYPES = ['oauth', 'classic', 'fine-grained', 'pat'] as const;
 function normImported(v: unknown): GitImported | null {
   const o = obj(v);
   const source = o ? importSource(o.source) : null;
   if (!o || !source) return null;
   return { source, account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null,
-    scopes: arr(o.scopes, 32).filter((x): x is string => typeof x === 'string').map((x) => label(x, 80)), app: o.app === 'oauth-app' ? 'oauth-app' : null,
+    scopes: arr(o.scopes, 32).filter((x): x is string => typeof x === 'string').map((x) => label(x, 80)),
+    tokenType: TOKEN_TYPES.includes(o.tokenType as (typeof TOKEN_TYPES)[number]) ? (o.tokenType as GitImported['tokenType']) : null,
     expiresAt: msTime(o.expiresAt), importedAt: msTime(o.importedAt) };
 }
 function normHostRef(v: unknown): GitHostRef | null {

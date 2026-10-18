@@ -1588,14 +1588,22 @@ operation you started, sent only where you saw it go.
   line (proven: in none of docker's, gh's or glab's arguments, nor docker's environment), a file, the browser or the
   portal; nothing prints it. Before it is kept, the account and the scopes (from the CLI's own `gh api` / `glab api`)
   and what the token reaches are shown, and you confirm (`--yes`: no question; no terminal and no `--yes`: refused).
-  It is then an access token like the others, with its source, account and scopes shown in the host's row. gh's
-  token is gh's OAuth app's: it does not expire, reaches what its scopes allow (by default `repo`, `read:org`, `gist`,
-  often `workflow`) on every repository the account can, and gh goes on using it — removing it here does not sign gh
-  out (the page says where to revoke it). glab's is taken only as a personal access token: glab's configuration says
-  it is no OAuth login and has no refresh token, and GitLab answers `personal_access_tokens/self` for it; an OAuth
-  login of glab's (single-use refresh tokens: sharing it would break glab or the Code page), or anything glab or GitLab
-  cannot confirm, is refused. Git hosts' file is written under a lock file, so the import and the code container never
-  write over each other's change.
+  It is then an access token like the others, with its source, account, scopes, kind and expiry shown in the host's
+  row — only `import-host.mjs` can say so: the page's own *Connect a git host* request cannot claim an imported login.
+  What gh holds is told by its prefix: gh's own OAuth token (`gho_`; it does not expire unless GitHub's
+  `github-authentication-token-expiration` header says so) and a classic token reach what their scopes allow (gh's
+  default: `repo`, `read:org`, `gist`, often `workflow`) on every repository the account can; a fine-grained one
+  reaches what it was given; the page says where each is revoked (Authorized OAuth Apps › GitHub CLI, Tokens
+  (classic), Fine-grained tokens). gh goes on using it — removing it here does not sign gh out — and *Let Claude use
+  this host* on such a token says how far it reaches. glab's is taken only as a personal access token (its `api` scope
+  said to be the whole API, not only git): glab's configuration says it is no OAuth login and has no refresh token, and
+  GitLab answers `personal_access_tokens/self` for it; an OAuth login of glab's (single-use refresh tokens: sharing it
+  would break glab or the Code page), or anything glab or GitLab cannot confirm, is refused. The import turns shell
+  tracing off before it reads a token (`bash -x` prints nothing of it). Git hosts' file is written under a lock file
+  holding its owner's PID and a random id, so the import and the code container never write over each other's
+  change: a lock whose process is gone (or older than 10 s) is taken over by a rename only one attempt wins, a lock
+  that cannot be taken over is waited for and then answered "busy" (never a spin), and only a lock this process still
+  owns is removed.
 - [x] **One operation, its host, while it runs — HTTPS token.** The network command (`git fetch`, `push`, `clone`,
   `ls-remote`) gets one more descriptor, a socket pair as its fd 3, which only it and its children inherit, and the
   configuration `credential.helper=` (empty: every helper the repository's or the sandbox's configuration names is

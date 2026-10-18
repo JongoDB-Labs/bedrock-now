@@ -13,11 +13,13 @@ All notable changes to bedrock-now are documented here. The format follows
   shown in the host's row. The token is read from the CLI (`gh auth token`, `glab config get token`) and handed to the
   code container on the stdin of `docker compose exec -T` — never a command line, an environment variable, a file,
   the browser or the portal; nothing prints it — after the account, the scopes and what it reaches were shown and
-  confirmed (`--yes`: without asking). gh's token reaches every repository your account can, and gh goes on using it
-  (removing it here does not sign gh out: the page says where to revoke it). glab: a personal access token only — an
-  OAuth login of glab's is refused (its single-use refresh tokens would break glab or the Code page), as is anything
-  glab or GitLab cannot confirm. The Git hosts dialog shows the command, with *Copy*; a plan names the login
-  (*via HTTPS token 'GitHub' (gh's login, octocat)*); **Remove** says where to revoke a token on the host.
+  confirmed (`--yes`: without asking). gh's own OAuth token, or a classic token gh was given, reaches every repository
+  your account can (a fine-grained one, what it was given), and gh goes on using it — removing it here does not sign gh
+  out: the page says where to revoke it, by the token's kind. glab: a personal access token only — an OAuth login of
+  glab's is refused (its single-use refresh tokens would break glab or the Code page), as is anything glab or GitLab
+  cannot confirm. The Git hosts dialog shows the command, with *Copy*; a plan names the login (*via HTTPS token
+  'GitHub' (gh's login, octocat)*); **Remove** says where to revoke a token on the host (classic and fine-grained
+  GitHub tokens each at their own page); *Let Claude use this host* on gh's token says how far it reaches.
 
 ## [0.13.0] - 2026-10-18
 

@@ -934,10 +934,11 @@ credentials ever being kept in the sandbox.
     fingerprint to compare with the one the server publishes (or paste the line `ssh-keyscan` prints).
   - **Already signed in with `gh` or `glab`** on this computer? `./stack git-host import gh` (or `glab`; `--host` for
     GitHub Enterprise or a GitLab of your own), run in the bedrock-now folder, imports that login as the host's access
-    token; the dialog shows the command with *Copy*. It shows the account, the scopes and what the token reaches, and
-    asks before anything is kept (`--yes`: without asking). gh's token reaches every repository your account can, and
-    gh goes on using the same token — the host's row says so. glab: only a personal access token; an OAuth login of
-    glab's is refused (its single-use refresh tokens would break glab or the Code page).
+    token; the dialog shows the command with *Copy*. It shows the account, the scopes, the expiry and what the token
+    reaches, and asks before anything is kept (`--yes`: without asking). gh's own OAuth token (or a classic token gh was
+    given) reaches every repository your account can — a fine-grained one, what it was given — and gh goes on using
+    the same token; the host's row says so. glab: only a personal access token (its `api` scope is the whole API, not
+    only git); an OAuth login of glab's is refused (its single-use refresh tokens would break glab or the Code page).
 
   **Test connection** lists a repository's branches with the host's credential. A server whose certificate a private
   CA signed takes that CA (*More*). Adding a host, a token or a key, trusting a host key, and letting Claude use a host
@@ -946,9 +947,9 @@ credentials ever being kept in the sandbox.
 
   **What each one reaches, and revoking it.** A fine-grained token: the repositories you picked for it. gh's login
   or a classic token: everything your account can reach. An SSH key: the account or repository you added it to.
-  **Remove** forgets the credential here, and says where to revoke it on the host: gh's login at *Settings ›
-  Applications › Authorized OAuth Apps › GitHub CLI* (that signs gh out too), a token where you made it, a key where
-  you added it.
+  **Remove** forgets the credential here, and says where to revoke it on the host: gh's own token at *Settings ›
+  Applications › Authorized OAuth Apps › GitHub CLI* (that signs gh out too), a classic token at *Tokens (classic)*, a
+  fine-grained one at *Fine-grained tokens*, GitLab's at *Access tokens*, a key where you added it.
 - **Clone** (*Clone a repository…* in the command palette, a new session's *Clone a repository*, or the Git panel
   while the workspace folder is not a repository itself): a URL, a new folder of the workspace (named after the
   repository; or the workspace folder itself while it is empty) and, if you like, only the latest commit. A public
@@ -1560,7 +1561,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack terminal status\|enable [--workspace DIR]\|disable` | Claude Code in the browser, a sandbox that sees one folder; on by default with the Code page ([above](#claude-code-in-the-browser)) | none (its sessions: per token) |
 | `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
-| `./stack git-host import gh|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
+| `./stack git-host import gh\|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
 | `./stack restart SERVICE` | Recreate one service with its current settings (`litellm`, `open-webui`, `shared-mcp`, `stt`, `rustfs`, `caddy`) | none |

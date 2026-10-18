@@ -2171,7 +2171,7 @@ const server = http.createServer(async (req, res) => {
         const account = url.searchParams.get('account') || 'mock-user';
         const h = { id: hostId(), kind: source === 'gh' ? 'github' : 'gitlab', label: source === 'gh' ? 'GitHub' : 'GitLab', host, port: null, auth: 'token',
           username: source === 'gh' ? 'x-access-token' : 'oauth2', createdAt: Date.now(),
-          imported: { source, account, scopes: source === 'gh' ? ['gist', 'read:org', 'repo', 'workflow'] : ['read_repository', 'write_repository'], app: source === 'gh' ? 'oauth-app' : null,
+          imported: { source, account, scopes: source === 'gh' ? ['gist', 'read:org', 'repo', 'workflow'] : ['read_repository', 'write_repository'], tokenType: source === 'gh' ? 'oauth' : 'pat',
             expiresAt: source === 'glab' ? Date.now() + 90 * 86400000 : null, importedAt: Date.now() } };
         gitHostsMock.push(h);
         gitEvent({ action: 'host', host: h.label, target: host, text: `connected with ${source}'s login as ${account} (./stack git-host import)` });

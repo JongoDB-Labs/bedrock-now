@@ -576,8 +576,8 @@ export interface GitImported {
   source: 'gh' | 'glab';
   account: string | null;
   scopes: string[];
-  /** gh's own OAuth token (gho_…) */
-  app: 'oauth-app' | null;
+  /** gh's own OAuth token (gho_…), a classic (ghp_…) or fine-grained (github_pat_…) token gh was given; glab's: pat */
+  tokenType: 'oauth' | 'classic' | 'fine-grained' | 'pat' | null;
   expiresAt: number | null;
   importedAt: number | null;
 }

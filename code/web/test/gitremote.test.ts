@@ -91,10 +91,18 @@ test('the panel\'s hint to connect a git host: only while no connected host cove
 test('an imported login: where it came from, its account and scopes (never a token); what it reaches; the command', () => {
   const tok = ['secret', 'never', 'here'].join('-');
   const h = normGitHost(host({ auth: 'token', publicKey: null, hasToken: true, token: tok,
-    imported: { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], app: 'oauth-app', expiresAt: null, importedAt: 5, token: tok } })) as GitHostView;
+    imported: { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], tokenType: 'oauth', expiresAt: null, importedAt: 5, token: tok } })) as GitHostView;
   assert.ok(!JSON.stringify(h).includes(tok));
-  assert.deepEqual(h.imported, { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], app: 'oauth-app', expiresAt: null, importedAt: 5 });
-  assert.equal(importedReach(h), "Every repository your GitHub account can reach (repo, read:org). It is gh's own token: gh goes on using it, and removing it here does not sign gh out.");
+  assert.deepEqual(h.imported, { source: 'gh', account: 'octocat', scopes: ['repo', 'read:org'], tokenType: 'oauth', expiresAt: null, importedAt: 5 });
+  assert.equal(importedReach(h), "Every repository your GitHub account can reach (repo, read:org). It is gh's own token: gh goes on using it, and removing it here does not sign gh out. It does not expire.");
+  // a fine-grained token gh was given: not "every repository"; a classic one: no claim it never expires
+  const fg = normGitHost(host({ auth: 'token', imported: { source: 'gh', scopes: [], tokenType: 'fine-grained', expiresAt: 9e12 } })) as GitHostView;
+  assert.match(importedReach(fg, 0), /^The repositories and permissions this fine-grained token was given\. gh uses the same token, and removing it here does not sign gh out\. It expires on /);
+  const cl = normGitHost(host({ auth: 'token', imported: { source: 'gh', scopes: ['repo'], tokenType: 'classic' } })) as GitHostView;
+  assert.equal(importedReach(cl), 'Every repository your GitHub account can reach (repo). gh uses the same token, and removing it here does not sign gh out.');
+  assert.equal(normGitHost(host({ auth: 'token', imported: { source: 'gh', tokenType: 'weird' } }))?.imported?.tokenType, null);
+  const api = normGitHost(host({ auth: 'token', kind: 'gitlab', imported: { source: 'glab', scopes: ['api'], tokenType: 'pat' } })) as GitHostView;
+  assert.match(importedReach(api), /The api scope is full read and write access to GitLab's API as you, not only git\./);
   assert.equal(normGitHost(host({ auth: 'token', imported: { source: 'svn' } }))?.imported, null);
   assert.equal(normGitHost(host({ auth: 'ssh', imported: { source: 'gh' } }))?.imported, null, 'an SSH key is never imported');
   assert.equal(normGitHost(host({ auth: 'token', imported: { source: 'glab', account: 'a b<script>' } }))?.imported?.account, null);

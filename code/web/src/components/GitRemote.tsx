@@ -591,6 +591,14 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
             Claude's own git commands — and anything that runs in the sandbox, or text Claude reads and follows — could then push to, or read, <strong>any repository this
             {h.auth === 'token' ? ' token' : ' key'} reaches</strong> on {label(h.host, 120)}, while this is on.
           </p>
+          {h.imported?.source === 'gh' && h.imported.tokenType !== 'fine-grained' && (
+            <p class="warn-text" data-testid="git-claude-imported">
+              This is {h.imported.tokenType === 'oauth' ? "gh's own token" : 'a token gh was given'}
+              {h.imported.scopes.length ? ` (${label(h.imported.scopes.join(', '), 200)})` : ''}: it reaches every repository of your account
+              {h.imported.scopes.includes('workflow') ? ', and with workflow its GitHub Actions workflow files too' : ''}. A fine-grained token for only the
+              repositories Claude should touch is the safer one to let it use.
+            </p>
+          )}
           <p class="small">
             The {h.auth === 'token' ? 'token' : 'key'} itself stays here (the sandbox asks for it each time; a token, once given to git there, is in that process's memory). Every use is listed
             in Activity. Prefer a fine-grained token or a deploy key that reaches only the repositories Claude should touch. You can turn it off any time, from anywhere.
