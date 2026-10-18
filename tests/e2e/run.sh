@@ -593,15 +593,19 @@ git_server_start() {
   t0="$(now)"; n="${PROJECT}_terminal-out"
   E2E_GIT_TOKEN="$(openssl rand -hex 24)"
   docker network inspect "$n" >/dev/null 2>&1 || { record git git-server FAIL 0 "no network $n (TERMINAL_EGRESS=$(get_env TERMINAL_EGRESS))"; return 1; }
-  docker build -q -t "$PROJECT/e2e-gitsrv:local" "$HERE/gitsrv" > "$LOGS/gitsrv-build.log" 2>&1 || { record git git-server FAIL 0 "docker build failed ($LOGS/gitsrv-build.log)"; return 1; }
+  # (its stand-in OAuth provider is the unit tests' own: code/test/oauth-mock.mjs, as the "mock" build context)
+  docker build -q --build-context mock="$ROOT/code/test" -t "$PROJECT/e2e-gitsrv:local" "$HERE/gitsrv" > "$LOGS/gitsrv-build.log" 2>&1 || { record git git-server FAIL 0 "docker build failed ($LOGS/gitsrv-build.log)"; return 1; }
   docker rm -f "$PROJECT-gitsrv" >/dev/null 2>&1 || true
-  docker run -d --name "$PROJECT-gitsrv" --label "io.bedrock-now.e2e=$PROJECT" --network "$n" --network-alias gitsrv \
+  # (its HTTPS also on a free port of this computer's 127.0.0.1, for the browser suite to play the user at the provider:
+  # /_e2e/approve, with this run's token)
+  docker run -d --name "$PROJECT-gitsrv" --label "io.bedrock-now.e2e=$PROJECT" --network "$n" --network-alias gitsrv -p 127.0.0.1::8443 \
     -e GITSRV_TOKEN="$E2E_GIT_TOKEN" "$PROJECT/e2e-gitsrv:local" > /dev/null 2>> "$LOGS/gitsrv-build.log" ||
     { record git git-server FAIL 0 "docker run failed ($LOGS/gitsrv-build.log)"; return 1; }
   for i in $(seq 1 60); do docker logs "$PROJECT-gitsrv" 2>&1 | grep -q '^https on' && { ok=1; break; }; sleep 1; done
-  if [ "$ok" = 1 ] && E2E_GIT_CA_B64="$(docker exec "$PROJECT-gitsrv" sh -c 'base64 -w0 /srv/ca.pem')" && [ -n "$E2E_GIT_CA_B64" ]; then
-    export E2E_GIT_SERVER=1 E2E_GIT_TOKEN E2E_GIT_CA_B64
-    record git git-server PASS "$(( $(now) - t0 ))" "tests/e2e/gitsrv on $n as gitsrv (https :8443 with a token of this run, ssh :2222)"
+  E2E_GIT_ADMIN_PORT="$(docker port "$PROJECT-gitsrv" 8443/tcp 2>/dev/null | sed -n 's/^127\.0\.0\.1:\([0-9]*\)$/\1/p' | head -n 1)"
+  if [ "$ok" = 1 ] && [ -n "$E2E_GIT_ADMIN_PORT" ] && E2E_GIT_CA_B64="$(docker exec "$PROJECT-gitsrv" sh -c 'base64 -w0 /srv/ca.pem')" && [ -n "$E2E_GIT_CA_B64" ]; then
+    export E2E_GIT_SERVER=1 E2E_GIT_TOKEN E2E_GIT_CA_B64 E2E_GIT_ADMIN_PORT
+    record git git-server PASS "$(( $(now) - t0 ))" "tests/e2e/gitsrv on $n as gitsrv (https :8443 with a token of this run, ssh :2222; its OAuth provider's admin on 127.0.0.1:$E2E_GIT_ADMIN_PORT)"
   else
     docker logs "$PROJECT-gitsrv" > "$LOGS/gitsrv.log" 2>&1
     record git git-server FAIL "$(( $(now) - t0 ))" "it did not answer ($LOGS/gitsrv.log)"; return 1

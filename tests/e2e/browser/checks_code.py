@@ -1530,6 +1530,7 @@ def ui_git_remotes(ctx):
     see(dlg).to_be_visible(timeout=30000)
     page.get_by_test_id("git-host-add").click()
     page.get_by_test_id("git-host-name").fill("gitsrv")
+    page.get_by_test_id("git-host-auth-token").check()   # (Sign in is the default once an app is set)
     page.get_by_test_id("git-host-token").fill(token)
     page.get_by_test_id("git-host-form").locator("details summary").click()
     page.get_by_test_id("git-host-user").fill("e2e")
@@ -1658,6 +1659,144 @@ def ui_git_remotes(ctx):
             f"clone over https into {a}/ (its plan first), a commit pushed after its confirmation, e2e/feature published with Open a pull request "
             f"({pr_href}), a clone over ssh into {b}/, a second push from {a}, fetch and a fast-forward pull in {b}; "
             "the token in no answer, event or .git/config; no model calls; no CSP violations")
+
+
+def git_admin(path, body=None):
+    """The suite's git server's stand-in OAuth provider (tests/e2e/gitsrv: code/test/oauth-mock.mjs), as the user and the
+    test see it: /_e2e/approve plays you entering the code on its page, /_e2e/revoke voids the refresh tokens, /_e2e/log
+    counts what it was asked (never a token). Over its HTTPS on 127.0.0.1 (run.sh), with its CA and this run's token."""
+    import ssl
+    import urllib.request
+    ctx = ssl.create_default_context(cadata=base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode())
+    req = urllib.request.Request(f"https://gitsrv:{os.environ['E2E_GIT_ADMIN_PORT']}{path}", method="GET" if body is None else "POST",
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Authorization": f"Bearer {os.environ.get('E2E_GIT_TOKEN', '')}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, context=ctx, timeout=15) as r:
+        return json.loads(r.read() or b"{}")
+
+
+@check("browser", "code-ui-git-oauth")
+@saved
+def ui_git_oauth(ctx):
+    """Sign in with GitLab — the suite's git server as a GitLab of your own (its stand-in provider, oauth-mock.mjs; never
+    a real host): the device flow from the Git hosts dialog (the instance's address, its application ID and CA), the code
+    shown with its page as a link, entered "there" by this check (the provider's /_e2e/approve); the host row; a clone
+    and a push with the sign-in's token — its tokens last 120 s, inside the 5 minutes before which the Code page renews
+    one, so each operation renews it first (the provider counts it; the server never sees a stale token) —; then the
+    refresh token revoked at the provider: the next fetch fails with "Sign in again", the row says so, and Sign in again
+    brings it back (a fetch works). The device flow's and the renewals' requests go from the code container through the
+    sandbox's tunnel (bn-coded's net.tunnel, TERMINAL_EGRESS=host here). No token on the page or in an answer; no model
+    calls."""
+    if not GIT_SERVER or not os.environ.get("E2E_GIT_ADMIN_PORT"):
+        raise Skip("needs the suite's git server with its OAuth provider (tests/e2e/run.sh --git-server)")
+    need_on()
+    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
+    log0 = git_admin("/_e2e/log")
+    page, rec = ui_page(ctx, "code-ui-git-oauth")
+    c = Code.on(page, rec, goto=False)
+    d = "e2e-oauth"
+    for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
+        c.api("DELETE", f"/api/git/hosts/{h['id']}")
+    if d in {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}:
+        c.api("DELETE", f"/api/fs?path={d}")
+    page.keyboard.press("Control+Shift+G")
+    see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
+    palette(page, "git: git hosts")
+    dlg = page.get_by_test_id("git-hosts-dialog")
+    see(dlg).to_be_visible(timeout=30000)
+    page.get_by_test_id("git-host-add").click()
+    page.get_by_test_id("git-host-kind").select_option("gitlab")
+    page.get_by_test_id("git-host-auth-oauth").check()
+    page.get_by_test_id("git-host-name").fill("gitsrv:8443")
+    page.get_by_test_id("git-host-client-id").fill("e2e-gitlab-app")
+    page.get_by_test_id("git-host-form").locator("details summary").click()
+    page.get_by_test_id("git-host-ca").fill(ca)
+    page.get_by_test_id("git-host-signin").click()
+    code = page.get_by_test_id("git-signin-code")
+    see(code).to_have_text(re.compile(r"^[0-9A-F]{4}-[0-9A-F]{4}$"), timeout=60000)
+    see(page.get_by_test_id("git-signin-link")).to_have_attribute("href", "https://gitsrv:8443/oauth/device")
+    see(page.get_by_test_id("git-signin-countdown")).to_have_text(re.compile(r"^1[45]:[0-5][0-9]$"))
+    shot(page, "o1-code-git-signin-code")
+    page.wait_for_timeout(3000)   # (a poll or two of the code container's: authorization_pending)
+    expect(git_admin("/_e2e/log")["pending"] > log0["pending"], "the code container did not poll the provider")
+    git_admin("/_e2e/approve", {"user_code": code.inner_text().strip(), "account": "e2e-user"})
+    row = dlg.get_by_test_id("git-host").filter(has_text="Signed in with GitLab")
+    see(row.get_by_test_id("git-host-account")).to_have_text("e2e-user", timeout=60000)
+    see(row.get_by_test_id("git-host-reach")).to_contain_text("read_repository, write_repository, read_user")
+    see(row.get_by_test_id("git-host-life")).to_contain_text("renews itself")
+    shot(page, "o2-code-git-signin-host")
+    hosts = c.api("GET", "/api/git/hosts")
+    expect(not re.search(r"\b[0-9a-f]{40}\b", hosts["text"]), "a token-like value in GET /api/git/hosts")
+    dlg.get_by_role("button", name="Close").click()
+    # clone with the sign-in: renewed first (its token is within 5 minutes of its end)
+    palette(page, "git: clone")
+    page.get_by_test_id("git-clone-url").fill("https://gitsrv:8443/e2e/demo.git")
+    page.get_by_test_id("git-clone-target").fill(d)
+    page.get_by_test_id("git-clone-next").click()
+    see(page.get_by_test_id("git-plan-summary")).to_have_text(f"Clone gitsrv:8443/e2e/demo into {d}/ via sign-in 'gitsrv' as e2e-user", timeout=30000)
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Cloned", timeout=120000)
+    log1 = git_admin("/_e2e/log")
+    expect(log1["refreshes"] >= log0["refreshes"] + 1, f"no renewal before the clone ({log0['refreshes']} → {log1['refreshes']})")
+    # a commit, pushed with the sign-in (renewed again)
+    c.api("PUT", f"/api/fs/file?path={d}/oauth.txt", {"text": "pushed with a sign-in\n"})
+    page.get_by_test_id("git-refresh").click()
+    f = page.locator("[data-testid=git-file][data-path='oauth.txt']")
+    see(f).to_have_count(1, timeout=30000)
+    f.hover()
+    f.get_by_test_id("git-stage").click()
+    see(page.locator("[data-testid=git-file][data-path='oauth.txt'][data-group=staged]")).to_have_count(1, timeout=30000)
+    page.get_by_test_id("git-message").fill("e2e: pushed with a sign-in")
+    page.get_by_test_id("git-commit").click()
+    see(page.get_by_test_id("git-push")).to_contain_text("Push 1", timeout=30000)
+    page.get_by_test_id("git-push").click()
+    see(page.get_by_test_id("git-plan-summary")).to_have_text("Push main → gitsrv:8443/e2e/demo (main) via sign-in 'gitsrv' as e2e-user", timeout=30000)
+    shot(page, "o3-code-git-signin-push-confirm")
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Pushed main", timeout=120000)
+    log2 = git_admin("/_e2e/log")
+    expect(log2["refreshes"] >= log1["refreshes"] + 1, f"no renewal before the push ({log1['refreshes']} → {log2['refreshes']})")
+    new_git = log2["git"][-60:]
+    expect(any("oauth(e2e-user)" in g for g in new_git) and not any("bad-auth" in g for g in new_git), f"the git server saw: {new_git[-8:]}")
+    # its refresh token revoked at the provider: the next fetch says Sign in again, and so does the row
+    git_admin("/_e2e/revoke", {"account": "e2e-user"})
+    page.get_by_test_id("git-fetch").click()
+    plan = page.get_by_test_id("git-plan-dialog")
+    see(plan).to_be_visible(timeout=30000)   # (the first fetch from this remote URL: asked)
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("its sign-in ended", timeout=60000)
+    see(page.get_by_test_id("toast").last).to_contain_text("Sign in again")
+    expect(git_admin("/_e2e/log")["refreshRefused"] == log2["refreshRefused"] + 1, "the renewal was not tried once")
+    page.get_by_test_id("git-hosts-open").first.click()
+    row = dlg.get_by_test_id("git-host").filter(has_text="Signed in with GitLab")
+    see(row.get_by_test_id("git-host-signin-again")).to_contain_text("The sign-in ended", timeout=30000)
+    shot(page, "o4-code-git-signin-ended")
+    row.get_by_test_id("git-host-signin-again-btn").click()
+    code = row.get_by_test_id("git-signin-code")
+    see(code).to_have_text(re.compile(r"^[0-9A-F]{4}-[0-9A-F]{4}$"), timeout=60000)
+    git_admin("/_e2e/approve", {"user_code": code.inner_text().strip(), "account": "e2e-user"})
+    see(row.get_by_test_id("git-host-signin-again")).to_have_count(0, timeout=60000)
+    see(row.get_by_test_id("git-host-life")).to_contain_text("renews itself")
+    dlg.get_by_role("button", name="Close").click()
+    page.get_by_test_id("git-fetch").click()
+    see(page.get_by_test_id("git-plan-dialog")).to_be_visible(timeout=30000)   # (still asked: the fetch before failed)
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Fetched", timeout=120000)
+    log3 = git_admin("/_e2e/log")
+    events = c.api("GET", "/api/git/hosts")["json"]["events"]
+    expect(any(e["text"] == "its sign-in renewed" for e in events), f"events: {[e['text'] for e in events][:8]}")
+    # clean up: the host (GitLab's sign-in revoked there too), the clone
+    r = c.api("DELETE", f"/api/git/hosts/{c.api('GET', '/api/git/hosts')['json']['hosts'][0]['id']}")
+    expect(r["json"]["revoked"] is True, f"Remove: {r['json']}")
+    expect(git_admin("/_e2e/log")["revokes"] == log3["revokes"] + 1, "no revocation sent")
+    page.get_by_test_id("git-repo").select_option("")
+    c.api("DELETE", f"/api/fs?path={d}")
+    csp_clean(page, rec, [r"^409 POST .*/api/git/run$", r"console.error Failed to load resource.*409"])
+    return (f"Sign in with GitLab (gitsrv:8443, its application ID and CA): the code shown and entered at the provider, the host row "
+            f"(e2e-user, its scopes, renews itself); clone and push with its token, renewed before each ({log0['refreshes']} → "
+            f"{log2['refreshes']} renewals), the server never saw a stale token; its refresh token revoked: the fetch said Sign in "
+            "again, so did the row; Sign in again, then a fetch worked; removed and revoked at the provider; no token in an answer; "
+            "no model calls; no CSP violations")
 
 
 @check("browser", "code-ui-phone")

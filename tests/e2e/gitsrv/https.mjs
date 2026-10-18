@@ -1,15 +1,24 @@
-// The e2e git server's smart HTTPS (git http-backend), every request needing Basic e2e:$GITSRV_TOKEN; each request
-// logged without its credentials.
+// The e2e git server's smart HTTPS (git http-backend), every request needing Basic e2e:$GITSRV_TOKEN — or a current
+// access token of its stand-in OAuth provider (oauth-mock.mjs: a sign-in's, as user oauth2 or x-access-token) — and
+// that provider's own paths; each request logged without its credentials.
 import https from 'node:https';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createOAuthMock } from './oauth-mock.mjs';
 
 const user = 'e2e', pass = process.env.GITSRV_TOKEN || '';
 if (pass.length < 20) { console.error('GITSRV_TOKEN missing'); process.exit(2); }
 const want = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+// (tokens that expire after 120 s: within the 5 minutes before which the Code page renews one, so each operation renews)
+const mock = createOAuthMock({ clients: { 'e2e-gitlab-app': 'gitlab', 'e2e-github-app': 'github' }, admin: pass, lifetime: Number(process.env.GITSRV_OAUTH_LIFETIME || 120), interval: 2 });
 const server = https.createServer({ key: fs.readFileSync('/srv/tls/srv.key'), cert: fs.readFileSync('/srv/tls/srv.pem') }, (req, res) => {
-  const ok = req.headers.authorization === want;
-  console.log(`${req.method} ${req.url.split('?')[0]} ${ok ? 'auth' : req.headers.authorization ? 'bad-auth' : 'no-auth'}`);
+  if (mock.handle(req, res, req.headers.host || 'gitsrv:8443')) { console.log(`oauth ${req.method} ${req.url.split('?')[0]}`); return; }
+  const signedIn = mock.basic(req.headers.authorization);
+  const ok = req.headers.authorization === want || Boolean(signedIn);
+  const how = req.headers.authorization === want ? 'auth' : signedIn ? `oauth(${signedIn})` : req.headers.authorization ? 'bad-auth' : 'no-auth';
+  mock.log.git.push(`${req.method} ${req.url.split('?')[0]} ${how}`);
+  if (mock.log.git.length > 500) mock.log.git.shift();
+  console.log(`${req.method} ${req.url.split('?')[0]} ${how}`);
   if (!ok) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="e2e"' }); res.end('auth'); return; }
   const u = new URL(req.url, 'https://gitsrv');
   const env = { PATH: '/usr/bin:/bin', GIT_PROJECT_ROOT: '/srv/git', GIT_HTTP_EXPORT_ALL: '1', PATH_INFO: u.pathname, QUERY_STRING: u.search.slice(1),
