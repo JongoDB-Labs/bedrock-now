@@ -42,6 +42,11 @@ services:
       CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}
     volumes:
       - code-socket:/run/bn-code:ro   # (the terminal's volume) connecting needs no write access; it never listens there
+      # Git hosts (the Code page's Git panel; code/server/githosts.mjs): the tokens and SSH keys of the git servers you
+      # connect, the host keys you trusted and the last uses — in a folder of mode 700, a file of mode 600. This
+      # container's alone: never the sandbox's, never in .env, the portal or a backup (a token is entered again, a key
+      # made again, after `docker volume rm`).
+      - code-state:/var/lib/bn-code
     networks:
       code-link:
         aliases: [code-upstream]
@@ -89,3 +94,6 @@ services:
 networks:
   code-link:
     internal: true
+
+volumes:
+  code-state:

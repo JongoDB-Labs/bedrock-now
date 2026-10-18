@@ -357,6 +357,8 @@ export type ServerMsg =
   | { kind: 'reply'; req: string; ok: boolean; error: string; data: unknown }
   | { kind: 'hello'; pending: number; maxImages: number | null }
   | { kind: 'pending'; count: number }
+  /** a use of a Git host (an operation of yours, or Claude's own git): the Git panel and Activity show it */
+  | { kind: 'git_event'; event: GitEvent }
   | { kind: 'commands'; session: string | null; commands: Command[] }
   | { kind: 'models'; session: string | null; models: CliModel[] }
   | { kind: 'mcp'; session: string | null; servers: McpServer[] }
@@ -540,6 +542,8 @@ export interface GitIdentity {
 export interface GitStatus {
   repo: boolean;
   reason: string;
+  /** the repository folder of the workspace this is ('' : the workspace folder itself) */
+  root: string;
   branch: string | null;
   detached: boolean;
   head: string | null;
@@ -563,6 +567,124 @@ export interface GitCommit {
   subject: string;
 }
 export type GitScope = 'staged' | 'unstaged' | 'untracked';
+
+// --- the Git panel's remotes and Git hosts (GET /api/git/remote, /api/git/hosts …: code/server/gitremote.mjs) ---
+export type GitHostKind = 'github' | 'gitlab' | 'other';
+export type GitAuth = 'token' | 'ssh';
+/** A connected git host as the page sees it: never its token or private key. */
+export interface GitHostView {
+  id: string;
+  kind: GitHostKind;
+  label: string;
+  host: string;
+  port: number | null;
+  auth: GitAuth;
+  username: string;
+  hasToken: boolean;
+  tokenSetAt: number | null;
+  /** an SSH host's public key ("ssh-ed25519 AAAA… comment"): to add to the repository or your account */
+  publicKey: string | null;
+  fingerprint: string | null;
+  keySetAt: number | null;
+  /** SSH host keys you trusted (Test connection, or pasted) */
+  knownHosts: { host: string; type: string; fingerprint: string }[];
+  /** github.com, gitlab.com, bitbucket.org: their host keys are built in */
+  builtinHostKeys: boolean;
+  ca: boolean;
+  /** Claude's own git may use this host's credential (off by default) */
+  claude: boolean;
+  claudeSince: number | null;
+  createdAt: number | null;
+}
+/** A use of a Git host (Activity): an operation of yours, or Claude's own git getting a credential. */
+export interface GitEvent {
+  id: string;
+  at: number;
+  who: 'you' | 'claude';
+  action: string;
+  host: string;
+  target: string;
+  ok: boolean;
+  text: string;
+}
+export interface GitHostRef {
+  id: string;
+  label: string;
+  kind: GitHostKind;
+  auth: GitAuth;
+}
+export interface GitRemoteUrl {
+  url: string;
+  /** a URL the panel uses (https:// or ssh); else why not */
+  ok: boolean;
+  why: string;
+  display: string;
+  scheme: 'https' | 'ssh' | null;
+  host: GitHostRef | null;
+}
+export interface GitRemote {
+  name: string;
+  urls: string[];
+  pushUrls: string[];
+  multiple: boolean;
+  fetch: GitRemoteUrl | null;
+  push: GitRemoteUrl | null;
+}
+export interface GitBranch {
+  name: string;
+  head: string | null;
+  upstream: { remote: string; branch: string } | null;
+  ahead: number | null;
+  behind: number | null;
+  gone: boolean;
+}
+export interface GitRemoteState {
+  repo: boolean;
+  reason: string;
+  root: string;
+  branch: string | null;
+  detached: boolean;
+  state: GitStatus['state'];
+  remotes: GitRemote[];
+  branches: GitBranch[];
+  remoteBranches: { remote: string; name: string }[];
+  remoteHeads: Record<string, string>;
+  /** url.*.insteadOf rules in the configuration (for git in the terminal; the panel uses each URL as written) */
+  rewrites: number;
+}
+export type GitNetAction = 'fetch' | 'pull' | 'push' | 'publish' | 'clone';
+/** What a remote operation will do, shown before anything is sent (POST /api/git/plan, /api/git/clone). */
+export interface GitPlan {
+  planId: string;
+  action: GitNetAction;
+  repo: string;
+  remote: string | null;
+  url: string;
+  display: string;
+  scheme: 'https' | 'ssh';
+  branch: string | null;
+  dst: string | null;
+  newBranch: boolean;
+  host: GitHostRef | null;
+  auth: GitAuth | 'none';
+  summary: string;
+  confirm: boolean;
+  target: string | null;
+  depth: number | null;
+}
+export interface GitRunResult {
+  ok: boolean;
+  action: GitNetAction;
+  display: string;
+  branch: string | null;
+  dst: string | null;
+  created: boolean;
+  upToDate: boolean;
+  updated: boolean;
+  /** GitHub's or GitLab's page to open a pull (merge) request — checked: https only */
+  prLink: string | null;
+  path: string | null;
+}
 /** GET /api/git/file: a file's staged or unstaged changes (or every staged change, without a path) */
 export interface GitFileDiff {
   repo: boolean;

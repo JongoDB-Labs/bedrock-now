@@ -2,9 +2,10 @@
 // changed files grouped Staged / Changes / Untracked (and Conflicts) with +/−; a file opens its diff in the editor area
 // (the Review's rows, read only); Stage / Unstage / Discard per file and per group (Discard asks first: the file's
 // current version goes to the workspace trash); the commit box (Ctrl/⌘+Enter commits; "Write message" has a helper
-// process with no tools — never your session — draft a message; it never commits); the last 20 commits. git runs in the sandbox with no hook, signing program
-// or editor (docs/security.md); no push, no pull — those run in the terminal. Every text from the sandbox is shown as
-// text (label/safe).
+// process with no tools — never your session — draft a message; it never commits); the last 20 commits; and the
+// remote (GitRemote.tsx): the repository folder, branches, Fetch / Pull / Push / Publish with their destination shown
+// first, Clone, Git hosts. git runs in the sandbox with no hook, signing program or editor (docs/security.md). Every
+// text from the sandbox is shown as text (label/safe).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
@@ -16,6 +17,7 @@ import {
   openFile,
   openGitDiff,
   refreshGit,
+  repoFile,
   setGitMessage,
   stageGit,
   unstageGit,
@@ -29,6 +31,7 @@ import type { GitEntry, GitScope, GitStatus } from '../types';
 import { Icon, Spinner } from './icons';
 import { ReadOnlyHunks } from './Review';
 import { Dialog, useMedia } from './ui';
+import { GitDialogs, NoRepoActions, RemoteBar, RepoPicker } from './GitRemote';
 
 type Kind = 'staged' | 'unstaged' | 'untracked' | 'conflicts';
 const PAGE = 200;
@@ -43,17 +46,18 @@ export function GitPanel() {
   // shown (also by a layout remembered from last time): git is asked now, and again after each turn
   useEffect(() => {
     if (!store.get().git.engaged) store.set((s) => ({ ...s, git: { ...s.git, engaged: true } }));
-    if (!store.get().git.status && !store.get().git.loading) void refreshGit();
+    if (!store.get().git.status && !store.get().git.loading) void refreshGit(true);
   }, []);
   return (
     <div class="gitp" data-testid="git-panel">
       <div class="gitp-head">
         <Icon name="branch" size={14} />
         <Branch st={st} />
-        <button type="button" class="icon-btn" title="Refresh" aria-label="Refresh" onClick={() => void refreshGit()} disabled={loading} data-testid="git-refresh">
+        <button type="button" class="icon-btn" title="Refresh" aria-label="Refresh" onClick={() => void refreshGit(true)} disabled={loading} data-testid="git-refresh">
           {loading ? <Spinner size={13} /> : <Icon name="refresh" size={14} />}
         </button>
       </div>
+      <RepoPicker />
       {error && (
         <div class="banner subtle small" role="alert" data-testid="git-error">
           {label(error, 300)}
@@ -65,10 +69,12 @@ export function GitPanel() {
         <div class="pane-msg" data-testid="git-norepo">
           <Icon name="branch" size={22} />
           <div>{label(st.reason, 300) || 'Not a git repository'}</div>
-          <div class="muted small">`git init` in the terminal makes the workspace folder a repository.</div>
+          <div class="muted small">Clone one here, or `git init` in the terminal makes this folder a repository.</div>
+          <NoRepoActions />
         </div>
       ) : (
         <div class="gitp-body">
+          <RemoteBar st={st} />
           {st.state && (
             <div class="banner subtle small" data-testid="git-state">
               A {st.state} is in progress{st.state === 'merge' ? ': resolve the conflicts, stage the files, then commit.' : ': finish it in the terminal.'}
@@ -92,6 +98,7 @@ export function GitPanel() {
         </div>
       )}
       {ask && <DiscardDialog ask={ask} staged={!!st?.staged.some((x) => x.path === ask.e.path)} onClose={() => setAsk(null)} />}
+      <GitDialogs />
     </div>
   );
 }
@@ -107,7 +114,7 @@ function Branch({ st }: { st: GitStatus | null }) {
       {st.upstream && (
         <span
           class="gitp-sync"
-          title={`Compared with ${label(st.upstream, 200)} as the sandbox last fetched it: ${st.ahead ?? 0} to push, ${st.behind ?? 0} to pull. Push and pull run in the terminal (git push / git pull) — this panel never sends anything out.`}
+          title={`Compared with ${label(st.upstream, 200)} as the sandbox last fetched it: ${st.ahead ?? 0} to push, ${st.behind ?? 0} to pull (Fetch asks the remote again).`}
           data-testid="git-ahead-behind"
         >
           ↑{st.ahead ?? 0} ↓{st.behind ?? 0}
@@ -266,7 +273,7 @@ function Row({ e, kind, busy, coarse, onDiscard }: { e: GitEntry; kind: Kind; bu
         type="button"
         class="gitp-open"
         title={`${e.path} — ${kind === 'conflicts' ? 'open the file' : 'show its changes'}`}
-        onClick={() => (kind === 'conflicts' ? void openFile(e.path, 'source') : openGitDiff(e.path, SCOPE[kind]))}
+        onClick={() => (kind === 'conflicts' ? void openFile(repoFile(e.path), 'source') : openGitDiff(e.path, SCOPE[kind]))}
         data-testid="git-open"
       >
         <span class={`rv-badge ${cls}`} title={what} aria-label={what}>
@@ -422,7 +429,7 @@ export function GitDiffPane({ tab, active }: { tab: GitDiffTab; active: boolean 
           <button type="button" class="btn small ghost" onClick={() => void loadGitDiff(tab.key)} disabled={tab.loading} data-testid="git-diff-refresh">
             {tab.loading ? <Spinner size={12} /> : <Icon name="refresh" size={14} />} Refresh
           </button>
-          <button type="button" class="btn small ghost" disabled={f?.status === 'deleted'} onClick={() => void openFile(tab.path, 'source')}>
+          <button type="button" class="btn small ghost" disabled={f?.status === 'deleted'} onClick={() => void openFile(repoFile(tab.path, tab.repo), 'source')}>
             <Icon name="file" size={14} /> Open the file
           </button>
         </span>

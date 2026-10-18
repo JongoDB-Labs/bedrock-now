@@ -91,6 +91,17 @@
         text: typeof s.title === "string" && s.title ? s.title.slice(0, 120) : "Untitled session",
         at: Math.floor(ep / 1000), link: "", notify: true, data: { session: s.id } });
     }
+    // Git hosts' uses the Code page reports (code.js checked them): Claude's own git getting a credential (it may push
+    // where the token reaches: worth a look, and a notification), a failed operation, your pushes and pulls
+    const git = report && Array.isArray(report.git) ? report.git.slice(0, 10) : [];
+    const VERB = { fetch: "Fetched", pull: "Pulled", push: "Pushed", publish: "Published", clone: "Cloned", test: "Tested a git host" };
+    for (const g of git) {
+      if (!g || typeof g.id !== "string" || !Number.isFinite(g.at)) continue;
+      const claude = g.who === "claude";
+      const title = claude ? `Claude's git used the Git host ${g.host || ""}`.trim() : g.ok ? `${VERB[g.action] || "Git"}${g.host ? ` (${g.host})` : ""}` : `A git ${g.action} failed`;
+      items.push({ id: `git:${g.id}`, kind: "git", level: claude || !g.ok ? "warn" : "info", title, text: String(g.target || "").slice(0, 200),
+        at: Math.floor(g.at / 1000), link: "", notify: claude || !g.ok, data: null });
+    }
     return { items, episodes: eps };
   }
 
@@ -164,6 +175,7 @@
       const label = typeof d.label === "string" && d.label ? d.label.slice(0, 40) : "a key";
       title = d.over === true ? `Budget used up: ${label}` : `Budget alert: ${label} at ${Number.isInteger(d.pct) ? d.pct : "?"} %`;
     } else if (it && it.kind === "code") title = "A Code session needs you";
+    else if (it && it.kind === "git") title = "A Git host was used";
     else if (it && it.kind === "job") title = d.phase === "failed" ? "A job failed" : d.phase === "skipped" ? "A job was skipped" : "A job finished";
     else if (it && it.kind === "update") title = "A bedrock-now update is available";
     else if (it && it.kind === "code-default") title = "The Code page was turned on";
@@ -342,6 +354,7 @@
     if (it.kind === "update") act("What's new", () => { onHome("#update-card"); const n = $(".update-notes"); if (n) n.open = true; });
     else if (it.kind === "budget") act("Change the budget", () => go(it.link));
     else if (it.kind === "code" && it.data && window.bnCode) act("Answer", () => { setOpen(false, false); window.bnCode.openSession(it.data.session); });
+    else if (it.kind === "git" && window.bnCode && window.bnCode.openGitHosts) act("Git hosts", () => { setOpen(false, false); window.bnCode.openGitHosts(); });
     else if (it.kind === "code-default") {
       act("Keep", () => dismiss(it), "action");
       act("Turn off", () => go("#settings/CODE_ENABLED"), "action");
@@ -375,7 +388,7 @@
       acts.append(x);
     }
     li.append(el("span", { class: "act-dot", "aria-hidden": "true" }), el("div", { class: "act-body" }, head,
-      it.text ? el("p", { class: it.kind === "code" ? "act-text act-untrusted" : "act-text", text: it.text }) : null, meta, acts));
+      it.text ? el("p", { class: it.kind === "code" || it.kind === "git" ? "act-text act-untrusted" : "act-text", text: it.text }) : null, meta, acts));
     return li;
   }
 

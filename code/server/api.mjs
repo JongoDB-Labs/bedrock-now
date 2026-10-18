@@ -10,6 +10,7 @@ import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } from './validate.mjs';
 import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
+import { repoOk } from './gitremote.mjs';
 import { watched } from './watch.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
@@ -306,7 +307,8 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return reviewOf(result, stdout.toString('utf8'));
   }
 
-  // --- the Git panel: bn-coded's git.* ops (the requests checked here and there; every answer checked here) ---
+  // --- the Git panel: bn-coded's git.* ops (the requests checked here and there; every answer checked here). repo: the
+  // repository folder of the workspace the panel shows ('' : the workspace folder itself) ---
   async function gitCall(req, opts = {}) {
     try {
       return await call(req, { timeoutMs: 45000, maxBytes: 4 << 20, ...opts });
@@ -315,8 +317,13 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
       throw e;
     }
   }
-  const gitStatus = async () => gitStatusOf((await gitCall({ op: 'git.status' })).result);
-  const gitLog = async () => gitLogOf((await gitCall({ op: 'git.log' })).result);
+  const repoOf = (v) => {
+    const r = v === undefined || v === null ? '' : v;
+    if (!repoOk(r)) throw new HttpError(400, 'not a repository folder of the workspace');
+    return r;
+  };
+  const gitStatus = async (repo) => gitStatusOf((await gitCall({ op: 'git.status', repo: repoOf(repo) })).result);
+  const gitLog = async (repo) => gitLogOf((await gitCall({ op: 'git.log', repo: repoOf(repo) })).result);
   // one file's staged or unstaged (or new) changes; scope staged without a path: every staged change (a commit message)
   async function gitFile(params) {
     const scope = ['staged', 'unstaged', 'untracked'].includes(params?.scope) ? params.scope : null;
@@ -324,14 +331,14 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     const p = params.path === undefined || params.path === null || params.path === '' ? null : params.path;
     if (p !== null && !gitPathOk(p)) throw new HttpError(400, 'bad path');
     if (p === null && scope !== 'staged') throw new HttpError(400, 'a path, please');
-    const { result, stdout } = await gitCall({ op: 'git.file', scope, ...(p ? { path: p } : {}) }, { maxBytes: 3 << 20 });
+    const { result, stdout } = await gitCall({ op: 'git.file', repo: repoOf(params.repo), scope, ...(p ? { path: p } : {}) }, { maxBytes: 3 << 20 });
     return gitFileOf(result, stdout.toString('utf8'), p, scope);
   }
-  const gitStage = async (body) => ({ ok: (await gitCall({ op: 'git.stage', ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
-  const gitUnstage = async (body) => ({ ok: (await gitCall({ op: 'git.unstage', ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
+  const gitStage = async (body) => ({ ok: (await gitCall({ op: 'git.stage', repo: repoOf(body?.repo), ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
+  const gitUnstage = async (body) => ({ ok: (await gitCall({ op: 'git.unstage', repo: repoOf(body?.repo), ...gitTargets(body) }, { timeoutMs: 60000 })).result?.ok === true });
   async function gitCommit(body) {
     const message = commitMessage(body?.message);
-    const { result } = await gitCall({ op: 'git.commit', message }, { timeoutMs: 60000 });
+    const { result } = await gitCall({ op: 'git.commit', repo: repoOf(body?.repo), message }, { timeoutMs: 60000 });
     const a = result?.author && typeof result.author === 'object' ? result.author : {};
     return { ok: result?.ok === true, head: typeof result?.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(result.head) ? result.head : null,
       subject: short(result?.subject, 300), author: { name: short(a.name, 200), email: short(a.email, 200), from: oneOf(a.from, ['repository', 'sandbox', 'default'], 'default') } };
@@ -352,10 +359,11 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     drafted.push(now);
     drafting++;
     try {
-      const st = await gitStatus();
+      const repo = repoOf(body?.repo);
+      const st = await gitStatus(repo);
       if (!st.repo) throw new HttpError(400, st.reason || 'not a git repository');
       if (!st.staged.length) throw new HttpError(400, 'nothing is staged');
-      const f = await gitFile({ scope: 'staged' });
+      const f = await gitFile({ scope: 'staged', repo });
       const r = await runDraft({ query: sessions.query, spawn: sessions.spawn, model, prompt: draftPrompt(st.staged, f.files), log: sessions.log ?? (() => {}), signal });
       return { message: r.message, denied: r.denied, turns: r.turns };
     } catch (e) {
@@ -368,7 +376,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     if (!gitPathOk(p)) throw new HttpError(400, 'bad path');
     const pre = body.ifMtimeMs === undefined || body.ifMtimeMs === null ? undefined : num(body.ifMtimeMs, 0, 1e14);
     if (pre === null) throw new HttpError(400, 'bad ifMtimeMs');
-    const { result } = await gitCall({ op: 'git.discard', path: p, ...(pre === undefined ? {} : { ifMtimeMs: pre }) }, { timeoutMs: 60000 });
+    const { result } = await gitCall({ op: 'git.discard', repo: repoOf(body?.repo), path: p, ...(pre === undefined ? {} : { ifMtimeMs: pre }) }, { timeoutMs: 60000 });
     return { ok: result?.ok === true, action: oneOf(result?.action, ['restored', 'trashed'], 'restored'), trash: relOk(result?.trash) ? result.trash : null };
   }
 
@@ -867,7 +875,7 @@ export function gitStatusOf(r) {
   };
   const id = r.identity && typeof r.identity === 'object' ? r.identity : null;
   return {
-    repo: true, reason: null,
+    repo: true, reason: null, root: repoOk(r.root) ? r.root : '',
     branch: short(r.branch, 250) || null, detached: r.detached === true, head: typeof r.head === 'string' && GIT_HEX.test(r.head) ? r.head : null,
     upstream: short(r.upstream, 250) || null, ahead: int(r.ahead, 0, 1e9), behind: int(r.behind, 0, 1e9), state: oneOf(r.state, GIT_STATES, null),
     identity: id ? { name: short(id.name, 200), email: short(id.email, 200), from: oneOf(id.from, GIT_FROM, 'default') } : null,

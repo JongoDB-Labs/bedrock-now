@@ -32,12 +32,21 @@ import type {
   Ev,
   FileData,
   FsEntry,
+  GitBranch,
   GitCommit,
   GitEntry,
+  GitEvent,
   GitFile,
   GitFileDiff,
+  GitHostRef,
+  GitHostView,
   GitIdentity,
+  GitPlan,
+  GitRemote,
+  GitRemoteState,
+  GitRemoteUrl,
   GitReview,
+  GitRunResult,
   GitScope,
   GitStatus,
   GrepResult,
@@ -529,6 +538,10 @@ export function normServerMsg(raw: string): ServerMsg | null {
     }
     case 'pending':
       return { kind: 'pending', count: Math.floor(nonneg(o.count) ?? 0) };
+    case 'git_event': {
+      const event = normGitEvent(o.event);
+      return event ? { kind: 'git_event', event } : null;
+    }
     case 'commands':
       return { kind: 'commands', session, commands: normCommands(o.commands) };
     case 'models':
@@ -1106,6 +1119,7 @@ export function normGitStatus(o: Obj): GitStatus {
   return {
     repo: o.repo === true,
     reason: label(o.reason, 300),
+    root: repoPath(o.root) ?? '',
     branch: o.branch ? label(o.branch, 250) || null : null,
     detached: o.detached === true,
     head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null,
@@ -1121,9 +1135,10 @@ export function normGitStatus(o: Obj): GitStatus {
     truncated: o.truncated === true || left <= 0,
   };
 }
-/** The branch, its changes (staged, unstaged, new, conflicts) and who a commit is by (git in the sandbox). */
-export async function getGitStatus(): Promise<GitStatus> {
-  return normGitStatus(await request('GET', '/api/git/status'));
+/** The branch, its changes (staged, unstaged, new, conflicts) and who a commit is by (git in the sandbox). repo: the
+ *  repository folder of the workspace ('' : the workspace folder itself) — the same for every Git panel call below. */
+export async function getGitStatus(repo = ''): Promise<GitStatus> {
+  return normGitStatus(await request('GET', '/api/git/status' + q({ repo: repo || undefined })));
 }
 export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: GitCommit[]; error: string | null } {
   const commits = arr(o.commits, 100)
@@ -1137,8 +1152,8 @@ export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: Gi
   return { repo: o.repo === true, reason: label(o.reason, 300), commits, error: o.error ? label(o.error, 300) : null };
 }
 /** HEAD's last 20 commits. */
-export async function getGitLog(): Promise<{ repo: boolean; reason: string; commits: GitCommit[]; error: string | null }> {
-  return normGitLog(await request('GET', '/api/git/log'));
+export async function getGitLog(repo = ''): Promise<{ repo: boolean; reason: string; commits: GitCommit[]; error: string | null }> {
+  return normGitLog(await request('GET', '/api/git/log' + q({ repo: repo || undefined })));
 }
 export function normGitFileDiff(o: Obj, scope: GitScope, path: string | null): GitFileDiff {
   const seen = new Set<string>();
@@ -1148,29 +1163,182 @@ export function normGitFileDiff(o: Obj, scope: GitScope, path: string | null): G
   return { repo: o.repo === true, reason: label(o.reason, 300), scope, path, files, truncated: o.truncated === true };
 }
 /** A file's staged or unstaged changes (or a new file's); scope staged without a path: every staged change. */
-export async function getGitFile(scope: GitScope, path: string | null): Promise<GitFileDiff> {
-  return normGitFileDiff(await request('GET', '/api/git/file' + q({ scope, path: path ?? undefined })), scope, path);
+export async function getGitFile(scope: GitScope, path: string | null, repo = ''): Promise<GitFileDiff> {
+  return normGitFileDiff(await request('GET', '/api/git/file' + q({ scope, path: path ?? undefined, repo: repo || undefined })), scope, path);
 }
-export async function gitStage(paths: string[] | 'all'): Promise<void> {
-  await request('POST', '/api/git/stage', paths === 'all' ? { all: true } : { paths });
+const withRepo = (repo: string) => (repo ? { repo } : {});
+export async function gitStage(paths: string[] | 'all', repo = ''): Promise<void> {
+  await request('POST', '/api/git/stage', paths === 'all' ? { all: true, ...withRepo(repo) } : { paths, ...withRepo(repo) });
 }
-export async function gitUnstage(paths: string[] | 'all'): Promise<void> {
-  await request('POST', '/api/git/unstage', paths === 'all' ? { all: true } : { paths });
+export async function gitUnstage(paths: string[] | 'all', repo = ''): Promise<void> {
+  await request('POST', '/api/git/unstage', paths === 'all' ? { all: true, ...withRepo(repo) } : { paths, ...withRepo(repo) });
 }
 /** Commit what is staged with this message (the sandbox runs no hook, no signing program). */
-export async function gitCommit(message: string): Promise<{ head: string | null; subject: string; author: GitIdentity | null }> {
-  const o = await request('POST', '/api/git/commit', { message });
+export async function gitCommit(message: string, repo = ''): Promise<{ head: string | null; subject: string; author: GitIdentity | null }> {
+  const o = await request('POST', '/api/git/commit', { message, ...withRepo(repo) });
   return { head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null, subject: label(o.subject, 300), author: normGitIdentity(o.author) };
 }
 /** "Write message": a commit message for the staged changes, from a helper process with no tools (never a session). */
-export async function gitDraft(model: string | null): Promise<{ message: string; denied: number }> {
-  const o = await request('POST', '/api/git/draft', model ? { model } : {});
+export async function gitDraft(model: string | null, repo = ''): Promise<{ message: string; denied: number }> {
+  const o = await request('POST', '/api/git/draft', { ...(model ? { model } : {}), ...withRepo(repo) });
   return { message: typeof o.message === 'string' ? o.message.slice(0, 20_000) : '', denied: typeof o.denied === 'number' && Number.isInteger(o.denied) && o.denied >= 0 ? o.denied : 0 };
 }
 /** A file's unstaged changes gone (its current version to the workspace trash), only while it is as shown. */
-export async function gitDiscard(path: string, ifMtimeMs: number | null): Promise<{ action: 'restored' | 'trashed'; trash: string | null }> {
-  const o = await request('POST', '/api/git/discard', { path, ...(ifMtimeMs === null ? {} : { ifMtimeMs }) });
+export async function gitDiscard(path: string, ifMtimeMs: number | null, repo = ''): Promise<{ action: 'restored' | 'trashed'; trash: string | null }> {
+  const o = await request('POST', '/api/git/discard', { path, ...(ifMtimeMs === null ? {} : { ifMtimeMs }), ...withRepo(repo) });
   return { action: o.action === 'trashed' ? 'trashed' : 'restored', trash: exactPath(o.trash) };
+}
+
+// ---------------------------------------------------------------- the Git panel's remotes, and Git hosts
+
+/** A repository folder of the workspace ('' : the workspace folder itself), or null. */
+export function repoPath(v: unknown): string | null {
+  if (v === '') return '';
+  const p = exactPath(v);
+  return p && p.split('/').length <= 8 && !p.split('/').some((x) => x.toLowerCase() === '.git') ? p : null;
+}
+const REMOTE_NAME = /^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BRANCH_NAME = /^(?!.*(?:\.\.|@\{|\/\/|\/\.|\.lock\/|\.lock$))(?!.*[./]$)[A-Za-z0-9_][A-Za-z0-9._/+-]{0,199}$/;
+export const isBranchName = (v: unknown): v is string => typeof v === 'string' && BRANCH_NAME.test(v);
+export const isRemoteName = (v: unknown): v is string => typeof v === 'string' && REMOTE_NAME.test(v);
+const HOST_ID = /^h_[0-9a-f]{12}$/;
+const KINDS = ['github', 'gitlab', 'other'] as const;
+const hostKind = (v: unknown): GitHostView['kind'] => (KINDS.includes(v as (typeof KINDS)[number]) ? (v as GitHostView['kind']) : 'other');
+const authOf = (v: unknown): 'token' | 'ssh' => (v === 'ssh' ? 'ssh' : 'token');
+const msTime = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1e14 ? v : null);
+function normHostRef(v: unknown): GitHostRef | null {
+  const o = obj(v);
+  if (!o || typeof o.id !== 'string' || !HOST_ID.test(o.id)) return null;
+  return { id: o.id, label: label(o.label, 60), kind: hostKind(o.kind), auth: authOf(o.auth) };
+}
+export function normGitHost(v: unknown): GitHostView | null {
+  const o = obj(v);
+  if (!o || typeof o.id !== 'string' || !HOST_ID.test(o.id)) return null;
+  const pub = typeof o.publicKey === 'string' && /^ssh-ed25519 [A-Za-z0-9+/]{68}={0,2}( [\x21-\x7e]{1,100})?$/.test(o.publicKey) ? o.publicKey : null;
+  return {
+    id: o.id, kind: hostKind(o.kind), label: label(o.label, 60), host: label(o.host, 253), port: count(o.port) || null, auth: authOf(o.auth), username: label(o.username, 100),
+    hasToken: o.hasToken === true, tokenSetAt: msTime(o.tokenSetAt), publicKey: pub, fingerprint: o.fingerprint ? label(o.fingerprint, 80) : null, keySetAt: msTime(o.keySetAt),
+    knownHosts: arr(o.knownHosts, 32).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })),
+    builtinHostKeys: o.builtinHostKeys === true, ca: o.ca === true, claude: o.claude === true, claudeSince: msTime(o.claudeSince), createdAt: msTime(o.createdAt),
+  };
+}
+export function normGitEvent(v: unknown): GitEvent | null {
+  const o = obj(v);
+  if (!o || typeof o.id !== 'string' || !/^[0-9a-f]{12}$/.test(o.id)) return null;
+  const at = msTime(o.at);
+  if (at === null) return null;
+  return { id: o.id, at, who: o.who === 'claude' ? 'claude' : 'you', action: label(o.action, 20), host: label(o.host, 60), target: label(o.target, 300), ok: o.ok !== false, text: label(o.text, 300) };
+}
+export interface GitHostsView {
+  hosts: GitHostView[];
+  events: GitEvent[];
+  /** this page is on the computer running bedrock-now (not over remote access): hosts, tokens, keys can be added */
+  local: boolean;
+}
+export async function getGitHosts(): Promise<GitHostsView> {
+  const o = await request('GET', '/api/git/hosts');
+  return { hosts: arr(o.hosts, 32).map(normGitHost).filter((h): h is GitHostView => h !== null), events: arr(o.events, 50).map(normGitEvent).filter((e): e is GitEvent => e !== null), local: o.local === true };
+}
+const hostOf = (o: Obj): GitHostView => {
+  const h = normGitHost(o.host);
+  if (!h) throw new ApiError(502, 'an unexpected answer');
+  return h;
+};
+export interface NewGitHost {
+  kind: GitHostView['kind'];
+  host?: string;
+  port?: number | null;
+  label?: string;
+  auth: 'token' | 'ssh';
+  username?: string;
+  token?: string;
+  ca?: string;
+  knownHosts?: string;
+}
+export const addGitHost = async (b: NewGitHost): Promise<GitHostView> => hostOf(await request('POST', '/api/git/hosts', b));
+export const setGitHostToken = async (id: string, token: string): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/token`, { token }));
+export const newGitHostKey = async (id: string): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/key`, {}));
+export const setGitHostClaude = async (id: string, on: boolean): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/claude`, { on }));
+export const addGitHostKnown = async (id: string, lines: string): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/known`, { lines }));
+export const forgetGitHostKnown = async (id: string): Promise<GitHostView> => hostOf(await request('DELETE', `/api/git/hosts/${id}/known`));
+export const removeGitHost = async (id: string): Promise<void> => void (await request('DELETE', `/api/git/hosts/${id}`));
+export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
+  const o = await request('POST', `/api/git/hosts/${id}/test`, { url });
+  return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), host: normGitHost(o.host),
+    learned: arr(o.learned, 8).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })) };
+}
+export async function getGitRepos(): Promise<string[]> {
+  const o = await request('GET', '/api/git/repos');
+  const out: string[] = [];
+  for (const v of arr(o.repos, 50)) {
+    const p = repoPath(obj(v)?.path);
+    if (p !== null && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+function normRemoteUrl(v: unknown): GitRemoteUrl | null {
+  const o = obj(v);
+  if (!o || typeof o.url !== 'string') return null;
+  return { url: label(o.url, 1200), ok: o.ok === true, why: label(o.why, 300), display: label(o.display, 300), scheme: o.scheme === 'https' || o.scheme === 'ssh' ? o.scheme : null, host: normHostRef(o.host) };
+}
+export function normGitRemoteState(o: Obj): GitRemoteState {
+  const remotes: GitRemote[] = [];
+  for (const v of arr(o.remotes, 32)) {
+    const r = obj(v);
+    if (!r || !isRemoteName(r.name) || remotes.some((x) => x.name === r.name)) continue;
+    remotes.push({ name: r.name, urls: arr(r.urls, 16).map((u) => label(u, 1200)), pushUrls: arr(r.pushUrls, 16).map((u) => label(u, 1200)), multiple: r.multiple === true,
+      fetch: normRemoteUrl(r.fetch), push: normRemoteUrl(r.push) });
+  }
+  const branches: GitBranch[] = [];
+  for (const v of arr(o.branches, 500)) {
+    const b = obj(v);
+    if (!b || !isBranchName(b.name) || branches.some((x) => x.name === b.name)) continue;
+    const u = obj(b.upstream);
+    branches.push({ name: b.name, head: typeof b.head === 'string' && GIT_HEX.test(b.head) ? b.head : null,
+      upstream: u && isRemoteName(u.remote) && isBranchName(u.branch) ? { remote: u.remote, branch: u.branch } : null, ahead: count(b.ahead), behind: count(b.behind), gone: b.gone === true });
+  }
+  const remoteBranches = arr(o.remoteBranches, 1000).map(obj).filter((x): x is Obj => x !== null && isRemoteName(x.remote) && isBranchName(x.name))
+    .map((x) => ({ remote: x.remote as string, name: x.name as string }));
+  const remoteHeads: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj(o.remoteHeads) ?? {}).slice(0, 32)) if (isRemoteName(k) && isBranchName(v)) remoteHeads[k] = v;
+  return { repo: o.repo === true, reason: label(o.reason, 300), root: repoPath(o.root) ?? '', branch: isBranchName(o.branch) ? o.branch : null, detached: o.detached === true,
+    state: GIT_STATES.includes(o.state as (typeof GIT_STATES)[number]) ? (o.state as GitStatus['state']) : null, remotes, branches, remoteBranches, remoteHeads, rewrites: count(o.rewrites) ?? 0 };
+}
+/** The repository's remotes, branches and their ahead/behind (as the last fetch left them): no network. */
+export async function getGitRemote(repo = ''): Promise<GitRemoteState> {
+  return normGitRemoteState(await request('GET', '/api/git/remote' + q({ repo: repo || undefined })));
+}
+export async function gitBranch(repo: string, action: 'switch' | 'create' | 'track', name: string, remote?: string): Promise<void> {
+  await request('POST', '/api/git/branch', { ...withRepo(repo), action, name, ...(remote ? { remote } : {}) });
+}
+export async function gitRemoteSet(repo: string, name: string, url: string): Promise<{ added: boolean }> {
+  const o = await request('POST', '/api/git/remote', { ...withRepo(repo), name, url });
+  return { added: o.added === true };
+}
+const NET = ['fetch', 'pull', 'push', 'publish', 'clone'] as const;
+export function normGitPlan(o: Obj): GitPlan {
+  if (typeof o.planId !== 'string' || !/^[0-9a-f]{32}$/.test(o.planId) || !NET.includes(o.action as (typeof NET)[number])) throw new ApiError(502, 'an unexpected answer');
+  return { planId: o.planId, action: o.action as GitPlan['action'], repo: repoPath(o.repo) ?? '', remote: isRemoteName(o.remote) ? o.remote : null, url: label(o.url, 1200),
+    display: label(o.display, 300), scheme: o.scheme === 'ssh' ? 'ssh' : 'https', branch: isBranchName(o.branch) ? o.branch : null, dst: isBranchName(o.dst) ? o.dst : null,
+    newBranch: o.newBranch === true, host: normHostRef(o.host), auth: o.auth === 'token' || o.auth === 'ssh' ? o.auth : 'none', summary: label(o.summary, 600),
+    confirm: o.confirm !== false, target: repoPath(o.target), depth: count(o.depth) || null };
+}
+/** What a fetch, pull, push or publish of this repository would do (nothing is sent yet). */
+export async function gitPlan(repo: string, action: 'fetch' | 'pull' | 'push' | 'publish', remote?: string): Promise<GitPlan> {
+  return normGitPlan(await request('POST', '/api/git/plan', { ...withRepo(repo), action, ...(remote ? { remote } : {}) }));
+}
+/** What a clone would do (nothing is sent yet). */
+export async function gitClonePlan(url: string, target: string, depth: number | null): Promise<GitPlan> {
+  return normGitPlan(await request('POST', '/api/git/clone', { url, target, ...(depth ? { depth } : {}) }));
+}
+// a link the page may open: GitHub's or GitLab's page on an https URL (the backend builds it; checked again)
+const PR_LINK = /^https:\/\/[a-z0-9.-]{1,253}(:[0-9]{1,5})?\/[\x21-\x7e]{1,2000}$/;
+/** Run a plan you confirmed (its credential only for that host, while it runs). */
+export async function gitRun(planId: string): Promise<GitRunResult> {
+  const o = await request('POST', '/api/git/run', { planId });
+  return { ok: o.ok === true, action: NET.includes(o.action as (typeof NET)[number]) ? (o.action as GitRunResult['action']) : 'fetch', display: label(o.display, 300),
+    branch: isBranchName(o.branch) ? o.branch : null, dst: isBranchName(o.dst) ? o.dst : null, created: o.created === true, upToDate: o.upToDate === true, updated: o.updated === true,
+    prLink: typeof o.prLink === 'string' && PR_LINK.test(o.prLink) ? o.prLink : null, path: repoPath(o.path) };
 }
 
 export interface GrepQuery {

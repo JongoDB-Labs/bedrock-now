@@ -127,6 +127,15 @@
         el("span", { class: "code-title", text: s.title || "Untitled session" }), el("span", { class: "note code-state", text: STATES[s.state] }), resume));
     }
   }
+  // the framed page's Git hosts uses (its Git panel: your pushes and pulls, Claude's own git getting a credential),
+  // checked: ids, times, a few words each, at most 10 — shown as text by Activity
+  const GIT_ACTIONS = ["fetch", "pull", "push", "publish", "clone", "test", "credential", "ssh-login"];
+  function takeGit(v) {
+    if (!Array.isArray(v)) return [];
+    return v.slice(0, 10).filter((x) => x && typeof x.id === "string" && /^[0-9a-f]{12}$/.test(x.id) && Number.isFinite(x.at) && x.at > 0 && GIT_ACTIONS.includes(x.action))
+      .map((x) => ({ id: x.id, at: Math.floor(x.at), who: x.who === "claude" ? "claude" : "you", action: x.action, ok: x.ok !== false,
+        host: typeof x.host === "string" ? shownTitle(x.host).slice(0, 60) : "", target: typeof x.target === "string" ? shownTitle(x.target) : "" }));
+  }
   // the framed page's list, checked: ids, states, short titles, at most 8
   function takeSessions(v) {
     if (!Array.isArray(v)) return [];
@@ -170,14 +179,14 @@
       badge.title = bypass ? "A Code session runs without asking (Bypass permissions)" : "";
       document.title = n ? `(${n}) bedrock-now` : "bedrock-now";
       if (e.data.type === "bn-code-status") {
-        reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions) };
+        reported = { waiting: Number.isInteger(e.data.waiting) && e.data.waiting > 0 ? Math.min(e.data.waiting, 99) : 0, sessions: takeSessions(e.data.sessions), git: takeGit(e.data.git) };
         renderCard();
         // the frame reported since it (re)loaded: the global search may ask it (search.js); a reload (a deep link, the
         // unlock ending) waits for its next report
         if (!hooked.has(f)) { hooked.add(f); f.addEventListener("load", () => { loadedAt = Date.now(); }); }
         reportedAt = Date.now();
         // Activity (activity.js): the sessions that wait for you — the same checked copy the card shows
-        document.dispatchEvent(new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map((x) => ({ ...x })) } }));
+        document.dispatchEvent(new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map((x) => ({ ...x })), git: reported.git.map((x) => ({ ...x })) } }));
       }
     });
   }
@@ -191,6 +200,8 @@
     ready: () => Boolean(reported) && reportedAt > loadedAt && Boolean(document.querySelector('#frames iframe[data-app="code"]')),
     sessions: () => (reported ? reported.sessions.map((x) => ({ id: x.id, title: x.title, state: x.state })) : []),
     openSession: (id) => { if (typeof id === "string" && UUID.test(id)) openLink({ session: id }); },
+    // Settings › Claude Code › Git hosts, and an Activity item of one: the Code page's Git hosts
+    openGitHosts: () => openLink({ git: "hosts" }),
     openFile: (path) => {
       const f = document.querySelector('#frames iframe[data-app="code"]');
       let origin = "";

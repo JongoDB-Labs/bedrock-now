@@ -247,7 +247,7 @@ def test_without_a_layout_every_setting_keeps_its_row():
     js = _js()
     fb = js[js.index("function fallbackLayout() {"):js.index("// The layout from catalog/settings-layout.tsv")]
     assert 'section: "all", place: "main"' in fb and 'place: "with", parent: FALLBACK_WITH[k]' in fb
-    assert '"+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart"' in fb
+    assert '"+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts"' in fb
     assert 'if (!(l.sections || []).length) l = fallbackLayout();' in js
     assert 'const list = s.id === "advanced" || s.id === "about";' in js   # "all" renders rows
 

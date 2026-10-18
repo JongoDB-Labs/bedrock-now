@@ -76,7 +76,10 @@ COPY --from=web /src/dist/ ./web/dist/
 # Readable by the user compose runs it as (TERMINAL_UID), whatever modes the checkout has: COPY keeps them, and a
 # checkout written with umask 077 (the update helper's) has 600 files — the server then failed with EACCES on its own
 # main.mjs. (The portal, shared-mcp and stt images do the same; node_modules and web/dist are already a+r.)
-RUN chmod -R a+rX /opt/code/package.json /opt/code/server /opt/code/plain
+RUN chmod -R a+rX /opt/code/package.json /opt/code/server /opt/code/plain \
+ && mkdir -p /var/lib/bn-code && chmod 1777 /var/lib/bn-code
+# /var/lib/bn-code: the code-state volume (compose.code.yaml) starts as a copy of this folder — writable by the user
+# compose runs this as (TERMINAL_UID, unknown here), which keeps Git hosts in a folder of its own, mode 700, in it
 ENV NODE_ENV=production
 # (compose runs it as TERMINAL_UID, read-only; this is for a plain docker run)
 USER node

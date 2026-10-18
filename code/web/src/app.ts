@@ -16,7 +16,7 @@ import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
 import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
-import type { GitCommit, GitEntry, GitFile, GitReview, GitScope, GitStatus, GrepResult } from './types';
+import type { GitCommit, GitEntry, GitEvent, GitFile, GitNetAction, GitPlan, GitRemoteState, GitReview, GitScope, GitStatus, GrepResult } from './types';
 import { proposedMessage } from './git';
 import { buildReview, deletedText, reverseHunks, sessionStart, takesComments, undoBlocker, withComments, type ReviewComment, type ReviewFile, type ReviewHunk } from './review';
 import { promptTitle } from './mentions';
@@ -111,6 +111,8 @@ export interface GitDiffTab {
   kind: 'gitdiff';
   key: string;
   path: string;
+  /** the repository folder the path is in ('' : the workspace folder itself) */
+  repo: string;
   scope: GitScope;
   loading: boolean;
   error: string | null;
@@ -157,6 +159,25 @@ export interface GitState {
   engaged: boolean;
   /** bumped to focus the commit box */
   focus: number;
+  /** the repository folder of the workspace the panel shows ('' : the workspace folder itself; remembered per browser) */
+  repo: string;
+  /** the repository folders of the workspace (the workspace itself, and folders in it two levels down) */
+  repos: string[];
+  /** the repository's remotes and branches, as the last fetch left them (no network) */
+  remote: GitRemoteState | null;
+  /** a remote operation (fetch, pull, push, publish, clone) on its way */
+  net: { action: GitNetAction; summary: string; since: number } | null;
+  /** what a remote operation will do, waiting for your confirmation */
+  plan: GitPlan | null;
+  /** the last push's result: where it went, and the host's page to open a pull request */
+  pushed: { display: string; branch: string; prLink: string | null; at: number } | null;
+  /** a dialog of the panel's: Git hosts, Clone, a remote's URL, the branches */
+  dialog: null | 'hosts' | 'clone' | 'remote' | 'branches';
+  /** Git hosts (GET /api/git/hosts), loaded when the dialog opens; local: this page is on the computer running
+   *  bedrock-now (hosts, tokens and keys can be added) */
+  hosts: api.GitHostsView | null;
+  /** the recent uses of Git hosts (Activity) */
+  events: GitEvent[];
 }
 export interface SearchState {
   q: string;
@@ -323,7 +344,8 @@ export const store: Store<AppState> = createStore<AppState>({
   startWith: null,
   modeSwitching: false,
   review: { git: null, loading: false, error: null, kept: {}, undone: {}, busy: null, filter: 'session', engaged: false },
-  git: { status: null, commits: [], loading: false, error: null, busy: null, message: '', drafting: null, engaged: false, focus: 0 },
+  git: { status: null, commits: [], loading: false, error: null, busy: null, message: '', drafting: null, engaged: false, focus: 0, repo: storedRepo(), repos: [], remote: null,
+    net: null, plan: null, pushed: null, dialog: null, hosts: null, events: [] },
   search: { q: '', regex: false, caseSensitive: false, include: '', exclude: '', globs: false, loading: false, result: null, error: null, focus: 0 },
   palette: null,
   comments: [],
@@ -672,6 +694,11 @@ function handle(m: ServerMsg): void {
       set((s) => ({ ...s, pendingTotal: m.count }));
       announce();
       return;
+    case 'git_event':
+      setGit((g) => (g.events.some((e) => e.id === m.event.id) ? g : { ...g, events: [m.event, ...g.events].slice(0, 50) }));
+      if (m.event.who === 'claude') toast(`Claude's git used ${label(m.event.host, 60)}: ${label(m.event.target, 120)}`, 'info');
+      announce();
+      return;
     case 'permission': {
       const r = m.req;
       if (!get().views[r.session]) ensureView(r.session);
@@ -858,11 +885,20 @@ function announce(): void {
   const origin = s.server?.portalOrigin;
   if (origin && window.parent !== window) {
     try {
-      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass, waiting: waitingSessions(s.views, s.pendingTotal), sessions: portalSessions(s) }, new URL(origin).origin);
+      window.parent.postMessage({ type: 'bn-code-status', pending, busy, bypass, waiting: waitingSessions(s.views, s.pendingTotal), sessions: portalSessions(s), git: portalGitEvents(s) },
+        new URL(origin).origin);
     } catch {
       /* not framed by the portal */
     }
   }
+}
+
+/** What the portal's Activity shows of Git hosts: the uses of the last 7 days this page heard of (Claude's own git
+ *  getting a credential, your pushes and pulls), at most 10 — text the portal shows as text. */
+function portalGitEvents(s: AppState): { id: string; at: number; who: string; action: string; host: string; target: string; ok: boolean }[] {
+  const since = Date.now() - 7 * 86400_000;
+  return s.git.events.filter((e) => e.at >= since && e.action !== 'host' && e.action !== 'claude').slice(0, 10)
+    .map((e) => ({ id: e.id, at: e.at, who: e.who, action: e.action, host: label(e.host, 60), target: label(e.target, 200), ok: e.ok }));
 }
 
 /** What Home's Code card lists (the portal frames this page): the open sessions — those that wait for you first, then
@@ -923,6 +959,13 @@ export async function boot(): Promise<void> {
     if (!link.session && !link.prompt && isPhone() && (server.pending > 0 || server.sessions.some((o) => o.pending > 0))) setSheet('sessions');
   } else set((s) => ({ ...s, serverError: errText(st.reason) }));
   void loadDir('');
+  // Git hosts' recent uses (for Activity: Claude's own git getting a credential is said there), and a link from
+  // Settings › Claude Code › Git hosts (?git=hosts) or one that clones (?git=clone)
+  void api.getGitHosts().then((h) => { setGit((g) => ({ ...g, hosts: h, events: h.events })); announce(); }, () => {});
+  if (link.git) {
+    showGit();
+    openGitDialog(link.git);
+  }
   announce();
   startPortWatch();
   startBudgetWatch();
@@ -2602,18 +2645,45 @@ function setGit(fn: (g: GitState) => GitState): void {
     return g === s.git ? s : { ...s, git: g };
   });
 }
+// the repository folder the panel shows, per browser ('' : the workspace folder itself)
+const REPO_KEY = 'bn.code.git.repo.v1';
+function storedRepo(): string {
+  try {
+    return api.repoPath(globalThis.localStorage?.getItem(REPO_KEY) ?? '') ?? '';
+  } catch {
+    return '';
+  }
+}
+/** A path git names in the panel's repository, as a path of the workspace (for the editor, the trash, the watchlist). */
+export function repoFile(path: string, repo = get().git.repo): string {
+  return repo ? `${repo}/${path}` : path;
+}
 /** The Git panel: the side panel's Git tab (a sheet on a phone); git is asked what changed. */
 export function showGit(focusMessage = false): void {
   set((s) => ({ ...s, palette: null, git: { ...s.git, engaged: true, focus: focusMessage ? s.git.focus + 1 : s.git.focus } }));
   if (isPhone()) setSheet('git');
   else if (typeof matchMedia === 'function' && matchMedia('(max-width: 1099.98px)').matches) setLayout({ tabletPane: 'files', side: 'git' });
   else setLayout({ explorer: true, side: 'git' });
-  void refreshGit();
+  void refreshGit(true);
 }
-/** git is asked once at a time (status, then the log); asked again meanwhile, once more when that answer is in. */
+/** The panel shows another repository folder of the workspace ('' : the workspace folder itself). */
+export function selectGitRepo(repo: string): void {
+  const r = api.repoPath(repo) ?? '';
+  try {
+    globalThis.localStorage?.setItem(REPO_KEY, r);
+  } catch {
+    /* storage blocked: fine */
+  }
+  setGit((g) => (g.repo === r ? g : { ...g, repo: r, status: null, commits: [], remote: null, pushed: null, error: null }));
+  void refreshGit(true);
+}
+/** git is asked once at a time (status, then the log and the remotes); asked again meanwhile, once more when that answer
+ *  is in. repos: the workspace's repository folders are listed again too. */
 let gitInflight: Promise<void> | null = null;
 let gitAgain = false;
-export function refreshGit(): Promise<void> {
+let reposAgain = false;
+export function refreshGit(repos = false): Promise<void> {
+  if (repos) reposAgain = true;
   if (gitInflight) {
     gitAgain = true;
     return gitInflight;
@@ -2623,10 +2693,28 @@ export function refreshGit(): Promise<void> {
     try {
       do {
         gitAgain = false;
+        const repo = get().git.repo;
         try {
-          const status = await api.getGitStatus();
-          const log = status.repo ? await api.getGitLog() : { commits: [] as GitCommit[], error: null };
-          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error }));
+          if (reposAgain) {
+            reposAgain = false;
+            const list = await api.getGitRepos().catch(() => null);
+            if (list) setGit((g) => ({ ...g, repos: list }));
+          }
+          let status: GitStatus;
+          try {
+            status = await api.getGitStatus(repo);
+          } catch (e) {
+            // a remembered folder that is gone (or no longer a folder): the workspace folder itself
+            if (repo && e instanceof api.ApiError && e.status === 400) {
+              selectGitRepo('');   // (asks again: gitAgain)
+              continue;
+            }
+            throw e;
+          }
+          const log = status.repo ? await api.getGitLog(repo) : { commits: [] as GitCommit[], error: null };
+          const remote = status.repo ? await api.getGitRemote(repo).catch(() => null) : null;
+          if (get().git.repo !== repo) continue;
+          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error, remote }));
         } catch (e) {
           // (two reads run already: the next refresh has the answer)
           if (!(e instanceof api.ApiError && e.status === 429)) setGit((g) => ({ ...g, error: errText(e) }));
@@ -2652,12 +2740,12 @@ export function setGitMessage(message: string): void {
   setGit((g) => (g.message === message ? g : { ...g, message }));
 }
 /** One change at a time: `what` names it (busy), then git is asked again — and the Review pane too, when it is open. */
-async function gitChange(what: string, fn: () => Promise<string | void>): Promise<boolean> {
-  if (get().git.busy) return false;
+async function gitChange(what: string, fn: (repo: string) => Promise<string | void>): Promise<boolean> {
+  if (get().git.busy || get().git.net) return false;
   setGit((g) => ({ ...g, busy: what }));
   let failed = '';
   try {
-    const ok = await fn();
+    const ok = await fn(get().git.repo);
     if (ok) toast(ok, 'ok');
     return true;
   } catch (e) {
@@ -2673,24 +2761,24 @@ async function gitChange(what: string, fn: () => Promise<string | void>): Promis
 }
 /** Stage files (git add), 100 at a time; 'all': every change and new file git lists (no conflicts). */
 export function stageGit(paths: string[] | 'all'): Promise<boolean> {
-  return gitChange(paths === 'all' ? '*stage' : paths.length === 1 ? paths[0] : '*stage', async () => {
-    if (paths === 'all') return void (await api.gitStage('all'));
-    for (let i = 0; i < paths.length; i += 100) await api.gitStage(paths.slice(i, i + 100));
+  return gitChange(paths === 'all' ? '*stage' : paths.length === 1 ? paths[0] : '*stage', async (repo) => {
+    if (paths === 'all') return void (await api.gitStage('all', repo));
+    for (let i = 0; i < paths.length; i += 100) await api.gitStage(paths.slice(i, i + 100), repo);
   });
 }
 /** Unstage files (git reset): their changes stay in the files. */
 export function unstageGit(paths: string[] | 'all'): Promise<boolean> {
-  return gitChange(paths === 'all' ? '*unstage' : paths.length === 1 ? paths[0] : '*unstage', async () => {
-    if (paths === 'all') return void (await api.gitUnstage('all'));
-    for (let i = 0; i < paths.length; i += 100) await api.gitUnstage(paths.slice(i, i + 100));
+  return gitChange(paths === 'all' ? '*unstage' : paths.length === 1 ? paths[0] : '*unstage', async (repo) => {
+    if (paths === 'all') return void (await api.gitUnstage('all', repo));
+    for (let i = 0; i < paths.length; i += 100) await api.gitUnstage(paths.slice(i, i + 100), repo);
   });
 }
 /** Discard a file's unstaged changes (or a new file): its current version goes to the workspace trash; only while the
  *  file is as git saw it. Open tabs of it reload; the watchlist is checked at once (a file that runs on your computer). */
 export function discardGit(e: GitEntry): Promise<boolean> {
-  return gitChange(e.path, async () => {
-    const r = await api.gitDiscard(e.path, e.mtimeMs);
-    afterUndo(e.path);
+  return gitChange(e.path, async (repo) => {
+    const r = await api.gitDiscard(e.path, e.mtimeMs, repo);
+    afterUndo(repoFile(e.path, repo));
     const sid = get().active;
     if (sid) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
     return r.action === 'trashed' ? `Moved ${label(e.path, 80)} to the workspace trash` : `Discarded the changes to ${label(e.path, 80)}${r.trash ? ' (its version is in the workspace trash)' : ''}`;
@@ -2701,8 +2789,8 @@ export async function commitGit(): Promise<boolean> {
   const message = get().git.message;
   if (!message.trim() || get().git.busy) return false;
   let done = false;
-  await gitChange('*commit', async () => {
-    const r = await api.gitCommit(message);
+  await gitChange('*commit', async (repo) => {
+    const r = await api.gitCommit(message, repo);
     done = true;
     // (the box is cleared only if it still holds what was committed)
     setGit((g) => (g.message === message ? { ...g, message: '' } : g));
@@ -2720,7 +2808,7 @@ export async function writeCommitMessage(): Promise<void> {
   setGit((g) => ({ ...g, drafting: { since } }));
   const current = () => get().git.drafting?.since === since;
   try {
-    const r = await api.gitDraft(sendModel(activeView()?.model) ?? (defaultModel() || null));
+    const r = await api.gitDraft(sendModel(activeView()?.model) ?? (defaultModel() || null), get().git.repo);
     if (!current()) return;   // (you said "Don't use it")
     const msg = proposedMessage(r.message);
     if (!msg) return toast('Claude\'s answer had no commit message in it.', 'error');
@@ -2738,12 +2826,113 @@ export function cancelDraft(): void {
   setGit((g) => ({ ...g, drafting: null }));
 }
 
+// --- remotes: fetch, pull, push, publish and clone (git.net in the sandbox, the credential from Git hosts) ---
+
+export function openGitDialog(dialog: GitState['dialog']): void {
+  setGit((g) => ({ ...g, dialog }));
+  if (dialog === 'hosts') void loadGitHosts();
+}
+export async function loadGitHosts(): Promise<void> {
+  try {
+    const hosts = await api.getGitHosts();
+    setGit((g) => ({ ...g, hosts, events: hosts.events }));
+  } catch (e) {
+    toast(`Git hosts: ${errText(e)}`, 'error');
+  }
+}
+/** A Git hosts change (add a host, a token, a key, Claude's use …): the list again, and what went wrong said. */
+export async function gitHostChange(fn: () => Promise<unknown>, done = ''): Promise<boolean> {
+  try {
+    await fn();
+    if (done) toast(done, 'ok');
+    return true;
+  } catch (e) {
+    toast(errText(e), 'error');
+    return false;
+  } finally {
+    await loadGitHosts();
+    void refreshGit();
+  }
+}
+const NET_VERB: Record<GitNetAction, string> = { fetch: 'Fetching', pull: 'Pulling', push: 'Pushing', publish: 'Publishing', clone: 'Cloning' };
+/** Fetch, pull, push or publish: what it would do is asked first (nothing sent); a push or publish, and the first
+ *  fetch or pull from a remote, waits for your confirmation — the rest runs at once. */
+export async function gitNet(action: 'fetch' | 'pull' | 'push' | 'publish', remote?: string): Promise<void> {
+  const g = get().git;
+  if (g.net || g.busy) return;
+  try {
+    const plan = await api.gitPlan(g.repo, action, remote);
+    if (plan.confirm) setGit((x) => ({ ...x, plan }));
+    else await runGitPlan(plan);
+  } catch (e) {
+    toast(errText(e), 'error');
+  }
+}
+/** A clone: what it would do (the dialog then shows it for your confirmation). */
+export async function planClone(url: string, target: string, depth: number | null): Promise<string> {
+  try {
+    const plan = await api.gitClonePlan(url, target, depth);
+    setGit((x) => ({ ...x, plan }));
+    return '';
+  } catch (e) {
+    return errText(e);
+  }
+}
+export function cancelGitPlan(): void {
+  setGit((g) => ({ ...g, plan: null }));
+}
+/** Run the plan you confirmed; its result said, and git asked again. */
+export async function runGitPlan(plan: GitPlan | null = get().git.plan): Promise<void> {
+  if (!plan || get().git.net) return;
+  setGit((g) => ({ ...g, plan: null, net: { action: plan.action, summary: plan.summary, since: Date.now() } }));
+  try {
+    const r = await api.gitRun(plan.planId);
+    if (plan.action === 'clone') {
+      toast(`Cloned ${label(plan.display, 120)} into ${plan.target ? label(plan.target, 120) : 'the workspace folder'}`, 'ok');
+      setGit((g) => ({ ...g, dialog: g.dialog === 'clone' ? null : g.dialog }));
+      selectGitRepo(r.path ?? plan.target ?? '');
+      return;
+    }
+    if (r.action === 'push' || r.action === 'publish') {
+      setGit((g) => ({ ...g, pushed: { display: r.display, branch: r.branch ?? '', prLink: r.prLink, at: Date.now() } }));
+      toast(r.upToDate ? `${label(r.branch ?? '', 80)} was up to date on ${label(r.display, 120)}` : `${r.action === 'publish' ? 'Published' : 'Pushed'} ${label(r.branch ?? '', 80)} → ${label(r.display, 120)}`, 'ok');
+    } else if (r.action === 'pull') toast(r.updated ? `Pulled: ${label(r.display, 120)}` : 'Already up to date', 'ok');
+    else toast(`Fetched ${label(r.display, 120)}`, 'ok');
+  } catch (e) {
+    toast(`${NET_VERB[plan.action]} failed: ${errText(e)}`, 'error');
+  } finally {
+    setGit((g) => ({ ...g, net: null }));
+    await refreshGit(plan.action === 'clone');
+    if (get().review.engaged) void refreshReview();
+  }
+}
+export function dismissPushed(): void {
+  setGit((g) => ({ ...g, pushed: null }));
+}
+/** Switch to a branch, create one (and switch to it), or make a local branch of a remote one. */
+export function gitBranchAction(action: 'switch' | 'create' | 'track', name: string, remote?: string): Promise<boolean> {
+  return gitChange(`*branch`, async (repo) => {
+    await api.gitBranch(repo, action, name, remote);
+    setGit((g) => ({ ...g, dialog: g.dialog === 'branches' ? null : g.dialog, pushed: null }));
+    return action === 'create' ? `Created ${label(name, 80)} and switched to it` : `Switched to ${label(name, 80)}`;
+  });
+}
+/** A remote added, or its URL changed. */
+export function setGitRemoteUrl(name: string, url: string): Promise<boolean> {
+  return gitChange('*remote', async (repo) => {
+    const r = await api.gitRemoteSet(repo, name, url);
+    setGit((g) => ({ ...g, dialog: g.dialog === 'remote' ? null : g.dialog }));
+    return r.added ? `Added the remote ${label(name, 60)}` : `${label(name, 60)} now points to ${label(url, 120)}`;
+  });
+}
+
 /** A file's staged or unstaged (or new) changes in a tab of the editor area (the editor sheet on a phone). */
 export function openGitDiff(path: string, scope: GitScope): void {
-  const key = `gitdiff:${scope}:${path}`;
+  const repo = get().git.repo;
+  const key = `gitdiff:${scope}:${repo}:${path}`;
   set((s) => ({
     ...s,
-    tabs: s.tabs.some((t) => t.key === key) ? s.tabs : [...s.tabs, { kind: 'gitdiff', key, path, scope, loading: true, error: null, file: null, n: 0 }],
+    tabs: s.tabs.some((t) => t.key === key) ? s.tabs : [...s.tabs, { kind: 'gitdiff', key, path, repo, scope, loading: true, error: null, file: null, n: 0 }],
     activeTab: key,
     sheet: isPhone() ? 'editor' : s.sheet,
     prefs: s.prefs.layout.tabletPane === 'editor' ? s.prefs : { ...s.prefs, layout: { ...s.prefs.layout, tabletPane: 'editor' } },
@@ -2757,7 +2946,7 @@ export async function loadGitDiff(key: string): Promise<void> {
   const n = t.n + 1;
   updateTab(key, (x) => (x.kind === 'gitdiff' ? { ...x, loading: true, error: null, n } : x));
   try {
-    const d = await api.getGitFile(t.scope, t.path);
+    const d = await api.getGitFile(t.scope, t.path, t.repo);
     updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: d.repo ? null : d.reason || 'not a git repository', file: d.files[0] ?? null } : x));
   } catch (e) {
     updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: errText(e) } : x));

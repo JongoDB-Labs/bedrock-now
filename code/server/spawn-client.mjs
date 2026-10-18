@@ -1,7 +1,9 @@
 // The code container's side of the spawn socket (terminal/bin/bn-coded.mjs, in the sandbox).
 //   sandboxProcess()  the Agent SDK's spawnClaudeCodeProcess: a SpawnedProcess whose stdin/stdout are framed over the
 //                     socket, so Claude Code runs in the sandbox while the SDK (and canUseTool) run here
-//   sandboxCall()     one non-process op (fs.*, sessions.*) or a short `claude plugin …`, and its answer
+//   sandboxCall()     one non-process op (fs.*, sessions.*) or a short `claude plugin …`, and its answer — and, for a
+//                     remote git operation, its credential questions (ASK) answered as it runs (onAsk)
+//   sandboxBroker()   git.broker: the connection kept open while Claude may use a git host (gitremote.mjs)
 // Everything that comes back is untrusted: frame and answer sizes are capped, a stdout line longer than MAX_LINE
 // ends the connection (the SDK would otherwise buffer it whole), every op has a timeout, and malformed control frames
 // read as errors. What goes in is bounded too: a sandbox that stops reading its stdin while the SDK goes on writing
@@ -106,13 +108,27 @@ export function sandboxProcess(opts, { litellmSession, onStderr, sock = SOCK } =
   return api;
 }
 
+// answerAsks(conn, p, onAsk): an ASK frame's question (a JSON object with a numeric id) to onAsk, and its answer back as
+// ANSWER {…, id} — {} when there is no onAsk, or it throws (the sandbox's git then gets no credential)
+function answerAsk(conn, p, onAsk) {
+  const q = json(p);
+  if (!Number.isInteger(q.id) || q.id < 1) return;
+  const id = q.id;
+  Promise.resolve().then(() => (onAsk ? onAsk(q) : {})).catch(() => ({})).then((a) => {
+    if (conn.destroyed) return;
+    const out = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+    try { conn.write(frame(T.ANSWER, { ...out, id })); } catch { /* too large: none */ }
+  });
+}
+
 /**
  * One op in the sandbox. Resolves {result, stdout} (RESULT: a JSON object; stdout: the data frames before it, for
  * fs.read) or, for a process op (cli), {exit: {code, signal}, stdout, stderr}. Rejects with a SandboxError: the
  * sandbox's ERROR (kind "refused"), a timeout, an unreachable socket, an answer over maxBytes.
  *   input: bytes sent as STDIN frames, then STDIN_END (fs.write)
+ *   onAsk(q) -> answer: a remote git operation's credential question (gitremote.mjs); without it every ASK gets {}
  */
-export function sandboxCall(req, { timeoutMs = 60000, maxBytes = MAX_RESULT, input = null, sock = SOCK } = {}) {
+export function sandboxCall(req, { timeoutMs = 60000, maxBytes = MAX_RESULT, input = null, sock = SOCK, onAsk = null } = {}) {
   return new Promise((resolve, reject) => {
     const conn = net.connect(sock);
     const parser = new FrameParser();
@@ -139,6 +155,7 @@ export function sandboxCall(req, { timeoutMs = 60000, maxBytes = MAX_RESULT, inp
           return settle(resolve, { result: v, stdout: Buffer.concat(out) });
         }
         if (type === T.ERROR) return settle(reject, new SandboxError(printable(json(p).error || 'refused'), 'refused'));
+        if (type === T.ASK) { if (!settled) answerAsk(conn, p, onAsk); continue; }
         if (type === T.STDOUT) out.push(p);
         else if (type === T.STDERR) err.push(p);
         else if (type === T.EXIT) {
@@ -152,5 +169,32 @@ export function sandboxCall(req, { timeoutMs = 60000, maxBytes = MAX_RESULT, inp
       return undefined;
     });
     conn.on('close', () => settle(reject, new SandboxError('the sandbox closed the connection')));
+  });
+}
+
+/**
+ * git.broker: one connection kept open while Claude may use a git host. Every ASK goes to onAsk (its answer back);
+ * nothing else is read. Resolves {close(), closed: Promise} once bn-coded says it is ready; rejects when it refuses or
+ * cannot be reached.
+ */
+export function sandboxBroker({ onAsk, sock = SOCK, timeoutMs = 15000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const conn = net.connect(sock);
+    const parser = new FrameParser();
+    let ready = false, closedResolve;
+    const closed = new Promise((r) => { closedResolve = r; });
+    const timer = setTimeout(() => { if (!ready) { conn.destroy(); reject(new SandboxError('the sandbox did not answer in time', 'timeout')); } }, timeoutMs);
+    conn.on('error', (e) => { if (!ready) { clearTimeout(timer); reject(new SandboxError(`sandbox unreachable: ${e.code || e.message}`, 'unreachable')); } });
+    conn.write(frame(T.OPEN, { op: 'git.broker' }));
+    conn.on('data', (chunk) => {
+      let frames;
+      try { frames = parser.push(chunk); } catch { conn.destroy(); return; }
+      for (const [type, p] of frames) {
+        if (type === T.ASK) answerAsk(conn, p, onAsk);
+        else if (type === T.STDOUT && !ready) { ready = true; clearTimeout(timer); resolve({ close: () => conn.destroy(), closed }); }
+        else if (type === T.ERROR && !ready) { clearTimeout(timer); conn.destroy(); reject(new SandboxError(printable(json(p).error || 'refused'), 'refused')); }
+      }
+    });
+    conn.on('close', () => { clearTimeout(timer); closedResolve(); if (!ready) reject(new SandboxError('the sandbox closed the connection')); });
   });
 }

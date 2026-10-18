@@ -16,6 +16,8 @@ import { SessionManager, SessionError } from './sessions.mjs';
 import { makeApi, HttpError, sandboxStatus, attachment } from './api.mjs';
 import { str, short, isUuid, isId } from './validate.mjs';
 import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
+import { GitHosts, HostError } from './githosts.mjs';
+import { makeGitRemote } from './gitremote.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -86,10 +88,11 @@ export function ownOrigin(req) {
 
 // allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Claude Code). sandbox: {egress, egressHost, workspace} what the page's
 // Bypass dialog says about the sandbox (TERMINAL_EGRESS: any internet, and this computer's services with it; the folder
-// of yours it sees — a label). watch: false turns the watchlist off.
+// of yours it sees — a label). watch: false turns the watchlist off. gitHosts: the Git hosts store (githosts.mjs; made
+// on first use: /var/lib/bn-code), openBroker: sandboxBroker (Claude's own git, while a host allows it).
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
-  allowBypass = false, allowAuto = false, sandbox = {}, watch = true }) {
+  allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -169,6 +172,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   });
   function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
   const api = makeApi({ call, sessions: mgr, reloadPollMs, reloadMaxMs });
+  // Git hosts and the Git panel's remote operations (gitremote.mjs): every use goes to the pages (Activity)
+  let gitRemoteApi = null;
+  const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: gitHosts || new GitHosts(), log: logger,
+    onEvent: (event) => toAll({ type: 'git_event', event }) }));
+  if (openBroker) setTimeout(() => { gitRemote().syncBroker().catch((e) => logger(`git broker: ${short(e.message, 200)}`)); }, 1000).unref?.();
   // an MCP server's name as the session reports it (plugin servers: plugin:x:y; claude.ai ones may have spaces)
   const MCP_SERVER = /^[\x20-\x7e]{1,200}$/;
   const mcpName = (v) => { if (typeof v !== 'string' || !MCP_SERVER.test(v)) throw new SessionError('bad MCP server name'); return v; };
@@ -260,10 +268,38 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, await api.grep({ q: q.get('q') ?? '', regex: q.get('regex') ?? '', case: q.get('case') ?? '', include: q.get('include') ?? '', exclude: q.get('exclude') ?? '' }));
     }
     if (p === '/api/git/diff' && m === 'GET') return send(res, 200, await api.gitDiff());
-    // the Git panel (changes only with the page's own Origin: checked above for every request but GET/HEAD)
-    if (p === '/api/git/status' && m === 'GET') return send(res, 200, await api.gitStatus());
-    if (p === '/api/git/log' && m === 'GET') return send(res, 200, await api.gitLog());
-    if (p === '/api/git/file' && m === 'GET') return send(res, 200, await api.gitFile({ scope: q.get('scope'), path: q.get('path') }));
+    // the Git panel (changes only with the page's own Origin: checked above for every request but GET/HEAD); repo: a
+    // repository folder of the workspace ('' or none: the workspace folder itself)
+    if (p === '/api/git/status' && m === 'GET') return send(res, 200, await api.gitStatus(q.get('repo') ?? ''));
+    if (p === '/api/git/log' && m === 'GET') return send(res, 200, await api.gitLog(q.get('repo') ?? ''));
+    if (p === '/api/git/file' && m === 'GET') return send(res, 200, await api.gitFile({ scope: q.get('scope'), path: q.get('path'), repo: q.get('repo') ?? '' }));
+    // Git hosts and remotes (gitremote.mjs). Over remote access (Caddy's remote sites say X-Bn-Remote: 1; a client's
+    // copy never gets here) a host, a token, a key, a trusted host key and Claude's use of a host are not added or
+    // turned on — removing and turning off work everywhere
+    {
+      const remote = req.headers['x-bn-remote'] === '1';
+      const g = () => gitRemote();
+      if (p === '/api/git/hosts' && m === 'GET') return send(res, 200, g().hostsView(remote));
+      if (p === '/api/git/hosts' && m === 'POST') return send(res, 200, { host: g().addHost(await readJson(req, 96 << 10), remote) });
+      if ((mm = /^\/api\/git\/hosts\/(h_[0-9a-f]{12})(?:\/(token|key|claude|test|known|ca))?$/.exec(p))) {
+        const id = mm[1], what = mm[2] || '';
+        if (!what && m === 'DELETE') return send(res, 200, { host: g().removeHost(id) });
+        if (what === 'token' && m === 'POST') return send(res, 200, { host: g().setToken(id, await readJson(req), remote) });
+        if (what === 'key' && m === 'POST') return send(res, 200, { host: g().newKey(id, remote) });
+        if (what === 'claude' && m === 'POST') return send(res, 200, { host: g().setClaude(id, await readJson(req), remote) });
+        if (what === 'test' && m === 'POST') return send(res, 200, await g().testHost(id, await readJson(req), remote));
+        if (what === 'known' && m === 'POST') return send(res, 200, { host: g().addKnown(id, await readJson(req), remote) });
+        if (what === 'known' && m === 'DELETE') return send(res, 200, { host: g().forgetKnown(id) });
+        if (what === 'ca' && m === 'POST') return send(res, 200, { host: g().setCa(id, await readJson(req, 96 << 10), remote) });
+      }
+      if (p === '/api/git/repos' && m === 'GET') return send(res, 200, await g().repos());
+      if (p === '/api/git/remote' && m === 'GET') return send(res, 200, await g().state(q.get('repo') ?? ''));
+      if (p === '/api/git/remote' && m === 'POST') return send(res, 200, await g().remoteSet(await readJson(req)));
+      if (p === '/api/git/branch' && m === 'POST') return send(res, 200, await g().branch(await readJson(req)));
+      if (p === '/api/git/plan' && m === 'POST') return send(res, 200, await g().plan(await readJson(req)));
+      if (p === '/api/git/clone' && m === 'POST') return send(res, 200, await g().clonePlan(await readJson(req)));
+      if (p === '/api/git/run' && m === 'POST') return send(res, 200, await g().run(await readJson(req)));
+    }
     if (p === '/api/git/stage' && m === 'POST') return send(res, 200, await api.gitStage(await readJson(req, 512 << 10)));
     if (p === '/api/git/unstage' && m === 'POST') return send(res, 200, await api.gitUnstage(await readJson(req, 512 << 10)));
     if (p === '/api/git/commit' && m === 'POST') return send(res, 200, await api.gitCommit(await readJson(req, 512 << 10)));
@@ -355,7 +391,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     try {
       return await route(req, res, url);
     } catch (e) {
-      const [status, msg] = e instanceof HttpError ? [e.status, e.message] : sandboxStatus(e);
+      const [status, msg] = e instanceof HttpError || e instanceof HostError ? [e.status, e.message] : sandboxStatus(e);
       if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
       if (res.headersSent) return res.destroy();
       return send(res, status, { error: short(msg, 500) });
@@ -551,11 +587,11 @@ function readVersions() {
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  const { sandboxProcess, sandboxCall } = await import('./spawn-client.mjs');
+  const { sandboxProcess, sandboxCall, sandboxBroker } = await import('./spawn-client.mjs');
   const on = (v) => /^(true|1|yes|on)$/i.test(String(v ?? '').trim());
   // TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode): host, off (false/0/no/off), else internet
   const egress = (v) => { const s = String(v ?? '').trim().toLowerCase(); return s === 'host' ? 'host' : /^(false|0|no|off)$/.test(s) ? 'off' : 'internet'; };
-  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(),
+  const { server, mgr } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(), openBroker: sandboxBroker,
     // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
     allowBypass: on(process.env.CODE_ALLOW_BYPASS), allowAuto: on(process.env.CODE_AUTO_MODE),
     sandbox: { egress: egress(process.env.TERMINAL_EGRESS) !== 'off', egressHost: egress(process.env.TERMINAL_EGRESS) === 'host',

@@ -161,6 +161,7 @@ code_disable() {
   code_network_cleanup
   [ "$own" = 0 ] || stack_unlock
   log "the Code page is off: no Code tab, no code host, no code container (the terminal and its workspace stay)"
+  log "kept: Git hosts — the tokens and SSH keys you connected (volume $(project_name)_code-state; docker volume rm $(project_name)_code-state forgets them, ./stack uninstall too)"
 }
 
 # code_terminal_off — ./stack terminal disable: the Code page needs the terminal, so it goes off too (its container
@@ -573,10 +574,12 @@ code_rollback_cleanup() {
   log "code: the version you rolled back to has no Code page (./stack update brings it back)"
 }
 
-# code_uninstall_cleanup — ./stack uninstall, after compose's down: its network and images by their exact names,
-# whether or not it is on now (the socket volume is the terminal's: terminal_uninstall_cleanup)
+# code_uninstall_cleanup — ./stack uninstall, after compose's down: its network, its state volume (Git hosts: tokens and
+# SSH keys go with the install) and images by their exact names, whether or not it is on now (the socket volume is the
+# terminal's: terminal_uninstall_cleanup)
 code_uninstall_cleanup() {
   local p; p="$(project_name)"
   code_network_cleanup
+  docker volume rm "${p}_code-state" >/dev/null 2>&1 || true
   docker image rm "$p/code:local" "$p/code:previous" >/dev/null 2>&1 || true
 }

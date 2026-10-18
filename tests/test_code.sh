@@ -489,6 +489,7 @@ test_images_rollback_and_uninstall() {
   assert_contains "$d" "docker network rm bedrock-now_code-link"
   assert_not_contains "$d" "code-socket"   # (the terminal's volume: terminal_uninstall_cleanup)
   assert_contains "$d" "docker image rm bedrock-now/code:local bedrock-now/code:previous"
+  assert_contains "$d" "docker volume rm bedrock-now_code-state"   # (Git hosts' tokens and keys go with the install)
   : > "$TMP/docker"; terminal_uninstall_cleanup
   assert_contains "$(cat "$TMP/docker")" "docker volume rm bedrock-now_terminal-home bedrock-now_terminal-socket bedrock-now_code-socket"
   assert_eq "$(code_image_refs)" ""
@@ -537,7 +538,9 @@ s = d["services"]; c, t, k = s["code"], s["terminal"], s["caddy"]
 assert list(c["networks"]) == ["code-link"] and c["networks"]["code-link"]["aliases"] == ["code-upstream"], c["networks"]
 assert d["networks"]["code-link"]["internal"] is True
 assert c["user"] == "501:20" and c["read_only"] and c["cap_drop"] == ["ALL"] and "ports" not in c
-assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] == [("code-socket", "/run/bn-code", True)], c["volumes"]
+assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] == [("code-socket", "/run/bn-code", True), ("code-state", "/var/lib/bn-code", None)], c["volumes"]
+# (Git hosts: the code container's own volume, never the sandbox's)
+assert not any(v.get("source") == "code-state" for n, x in s.items() if n != "code" for v in x.get("volumes") or [])
 assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "HOME", "TERMINAL_EGRESS"], c["environment"]
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 # Bypass permissions: off unless .env allows it; the folder only as a label (no volume of it)

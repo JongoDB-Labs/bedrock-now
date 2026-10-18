@@ -55,3 +55,53 @@
 
 /* a file's diff from the panel (editor area) */
 .gitd .rv-head .rv-path { min-width: 0; overflow-wrap: anywhere; }
+
+/* the remote: repository folder, branch, Fetch / Pull / Push, Git hosts (GitRemote.tsx) */
+.gitr-repo { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.gitr-repo select { flex: 1; min-width: 0; height: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: 12px var(--mono); }
+.gitr { display: grid; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.gitr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.gitr-branch { max-width: 100%; font: 600 12px var(--mono); }
+.gitr-where { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.gitr-host { margin-left: 4px; }
+.gitr-actions .btn { gap: 4px; }
+.gitr-ab { font-variant-numeric: tabular-nums; }
+.gitr-more { margin-left: auto; display: inline-flex; }
+.gitr-net { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); }
+.gitr-pad { padding: 0 2px; }
+.gitr-pushed { border-radius: 6px; }
+.gitr-norepo { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 10px; }
+.gitr-summary { font-weight: 600; overflow-wrap: anywhere; }
+.gitr-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; }
+.gitr-dl dt { color: var(--muted); }
+.gitr-dl dd { margin: 0; overflow-wrap: anywhere; }
+.gitr-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
+.gitr-form label { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 12px; color: var(--muted); }
+.gitr-form .wide, .gitr-form details, .gitr-form fieldset { grid-column: 1 / -1; }
+.gitr-form input[type='text'], .gitr-form input[type='password'], .gitr-form textarea, .gitr-form select, .gitr-inline input, .gitr-filter {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: 12.5px var(--mono); }
+.gitr-form label.gitr-check, .gitr-check { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); }
+.gitr-auth { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; }
+.gitr-auth legend { font-size: 12px; color: var(--muted); padding: 0; margin-bottom: 2px; }
+.gitr-hosts { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 10px; }
+.gitr-card { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.gitr-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.gitr-remove { margin-left: auto; }
+.gitr-key { width: 100%; resize: none; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: 11.5px var(--mono); overflow-wrap: anywhere; }
+.gitr-links, .gitr-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gitr-inline input { flex: 1; min-width: 180px; width: auto; }
+.gitr-gap { margin-left: 6px; }
+.gitr-claude { display: flex; align-items: flex-start; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line-soft, var(--line)); }
+.gitr-result { overflow-wrap: anywhere; }
+.gitr-add { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.gitr-events { margin-top: 12px; }
+.gitr-events ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 2px; }
+.gitr-filter { margin-bottom: 8px; }
+.gitr-create { margin-bottom: 8px; }
+.gitr-list { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+.gitr-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: none; color: var(--ink); text-align: left; }
+.gitr-item:hover:not(:disabled) { background: var(--hover); }
+.gitr-item:disabled { cursor: default; }
+.gitr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); }
+@media (max-width: 640px) { .gitr-form { grid-template-columns: minmax(0, 1fr); } }
+.sheet .gitr .btn { min-height: 36px; }

@@ -96,7 +96,7 @@
   function fallbackLayout() {
     const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
       ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
-    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
     return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
   }
 
@@ -417,7 +417,7 @@
   // rowFor LAYOUT-ROW -> the row of one setting (or of one of the page's own rows), or null
   function rowFor(r) {
     const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
-      "+report": actionRow, "+restart": restartRow };
+      "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow };
     if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
     const k = keys[r.key];
     if (!k) return null;
@@ -1098,6 +1098,21 @@
     const actions = el("div", { class: "set-actions" });
     rw.append(main, actions);
     rw._main = main; rw._actions = actions;
+    return rw;
+  }
+
+  // Git hosts: kept by the Code page itself (its own volume, never .env, this page or the update helper), so the row
+  // opens them there — the Code tab with ?git=hosts (code.js's window.bnCode), or the code host in a new tab
+  function gitHostsRow(r) {
+    const rw = ownFrame(r, "Git hosts");
+    rw._main.append(el("p", { class: "note set-extra",
+      text: "Connect GitHub, GitLab or any https/ssh git server with an access token or an SSH key the Code page makes. The Code page keeps them, apart from the sandbox: one push, pull or clone you start gets its host's credential while it runs; Claude's own git gets none unless you let it use a host there (off by default). Adding a host, a token or a key works only from the computer running bedrock-now." }));
+    const open = el("button", { type: "button", class: "action", text: "Open Git hosts" });
+    open.addEventListener("click", () => {
+      if (window.bnCode && window.bnCode.openGitHosts) window.bnCode.openGitHosts();
+      else { try { const u = new URL(appUrl("code")); u.searchParams.set("git", "hosts"); window.open(u.href, "_blank", "noopener"); } catch (_) { /* no Code page */ } }
+    });
+    rw._actions.append(open);
     return rw;
   }
 

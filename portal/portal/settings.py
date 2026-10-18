@@ -43,7 +43,7 @@ GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates"
 # the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
 SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
 PLACES = ("main", "more", "with")
-OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts")
 DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)

@@ -10,7 +10,7 @@ import type { GitEntry, GitStatus } from '../src/types';
 
 const entry = (path: string, add = 1, del = 0): GitEntry => ({ path, code: 'M', add, del, binary: false, mtimeMs: 1, watch: null });
 const status = (over: Partial<GitStatus> = {}): GitStatus => ({
-  repo: true, reason: '', branch: 'main', detached: false, head: 'a'.repeat(40), upstream: null, ahead: null, behind: null, state: null, identity: null,
+  repo: true, reason: '', root: '', branch: 'main', detached: false, head: 'a'.repeat(40), upstream: null, ahead: null, behind: null, state: null, identity: null,
   staged: [], unstaged: [], untracked: [], conflicts: [], truncated: false, ...over,
 });
 

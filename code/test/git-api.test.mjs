@@ -106,26 +106,26 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
   let r = await req('GET', '/api/git/status');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.staged.map((f) => f.path), ['a.txt']);
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.status' });
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.status', repo: '' });
   assert.equal((await req('GET', '/api/git/log')).json.commits[0].hash, H);
   r = await req('GET', '/api/git/file?scope=unstaged&path=src/x.ts');
   assert.deepEqual(r.json.files[0].hunks[0].lines, ['-a', '+b']);
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.file', scope: 'unstaged', path: 'src/x.ts' });
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.file', repo: '', scope: 'unstaged', path: 'src/x.ts' });
   r = await req('GET', '/api/git/file?scope=staged');
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.file', scope: 'staged' }, 'every staged change');
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.file', repo: '', scope: 'staged' }, 'every staged change');
   for (const bad of ['/api/git/file?scope=all', '/api/git/file?scope=unstaged', '/api/git/file?scope=staged&path=../x', '/api/git/file?scope=staged&path=.git/config']) {
     assert.equal((await req('GET', bad)).status, 400, bad);
   }
   r = await req('POST', '/api/git/stage', { paths: ['a.txt'], extra: '--force', op: 'git.commit' });
   assert.equal(r.status, 200);
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.stage', paths: ['a.txt'] }, 'only the checked parts go');
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.stage', repo: '', paths: ['a.txt'] }, 'only the checked parts go');
   r = await req('POST', '/api/git/unstage', { all: true });
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.unstage', all: true });
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.unstage', repo: '', all: true });
   assert.equal((await req('POST', '/api/git/stage', { paths: ['../../etc/passwd'] })).status, 400);
   assert.equal((await req('POST', '/api/git/stage', { paths: ['busy.txt'] })).status, 429);
   r = await req('POST', '/api/git/commit', { message: 'Subject\n\nBody', author: 'Evil <e@x>', amend: true });
   assert.equal(r.status, 200);
-  assert.deepEqual(calls.at(-1)[0], { op: 'git.commit', message: 'Subject\n\nBody' });
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.commit', repo: '', message: 'Subject\n\nBody' });
   assert.deepEqual(r.json, { ok: true, head: H, subject: 'Subject', author: { name: 'n', email: 'e', from: 'sandbox' } });
   assert.equal((await req('POST', '/api/git/commit', { message: 'nul\0' })).status, 400);
   const n = calls.length;
@@ -139,6 +139,17 @@ test('the routes: reads, changes with checked bodies (nothing else reaches the s
   assert.deepEqual(r.json, { ok: true, action: 'trashed', trash: '.bedrock-now-trash/t/x' });
   assert.equal(calls.at(-1)[0].ifMtimeMs, 1792187714134.0645);
   assert.equal((await req('POST', '/api/git/discard', { path: 'x', ifMtimeMs: 'NaN' })).status, 400);
+  // a repository folder of the workspace: checked here, passed on as it is
+  r = await req('GET', '/api/git/status?repo=clones/app');
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.status', repo: 'clones/app' });
+  await req('POST', '/api/git/stage', { repo: 'clones/app', paths: ['a.txt'] });
+  assert.deepEqual(calls.at(-1)[0], { op: 'git.stage', repo: 'clones/app', paths: ['a.txt'] });
+  const m = calls.length;
+  for (const bad of ['../x', '/abs', 'a/.git', 'a//b', '.git']) {
+    assert.equal((await req('GET', `/api/git/status?repo=${encodeURIComponent(bad)}`)).status, 400, bad);
+    assert.equal((await req('POST', '/api/git/commit', { repo: bad, message: 'x' })).status, 400, bad);
+  }
+  assert.equal(calls.length, m, 'a bad repository folder never reaches the sandbox');
 });
 
 test('changes need the page\'s own Origin (another site, or none, is refused before anything runs)', async () => {

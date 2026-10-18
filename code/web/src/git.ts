@@ -1,7 +1,7 @@
 // The Git panel's model, kept free of DOM and network (test/git.test.ts): the message "Write message" brings back, cleaned
 // once more for the commit box (the helper that drafts it, and its prompt, are the backend's: code/server/gitdraft.mjs),
 // the Commit blocker and small labels. Every scan here is linear in its input.
-import type { GitStatus } from './types';
+import type { GitHostKind, GitHostView, GitRemote, GitRemoteState, GitStatus } from './types';
 
 /** A proposal longer than this is cut (git takes 64 KiB; a commit message is a few lines). */
 export const PROPOSAL_MAX = 8_000;
@@ -73,4 +73,45 @@ export function codeTitle(code: string, untracked = false): string {
   if (untracked) return 'New, not tracked by git yet';
   const t: Record<string, string> = { M: 'Modified', A: 'Added', D: 'Deleted', T: 'Type changed (a file became a link, or the other way)', R: 'Renamed', C: 'Copied', U: 'Unmerged' };
   return t[code] ?? (code.length === 2 ? 'A conflict' : 'Changed');
+}
+
+// --- remotes ---
+
+/** The remote the panel offers: the current branch's upstream's, else origin, else the only one. */
+export function remoteFor(r: GitRemoteState | null): GitRemote | null {
+  if (!r?.repo || !r.remotes.length) return null;
+  const up = r.branches.find((b) => b.name === r.branch)?.upstream;
+  return r.remotes.find((x) => x.name === up?.remote) ?? r.remotes.find((x) => x.name === 'origin') ?? (r.remotes.length === 1 ? r.remotes[0] : r.remotes[0]);
+}
+/** The current branch's upstream and how far it is from it (as the last fetch saw it). */
+export function syncState(r: GitRemoteState | null): { upstream: { remote: string; branch: string } | null; ahead: number | null; behind: number | null } {
+  const b = r?.repo ? r.branches.find((x) => x.name === r.branch) : null;
+  return { upstream: b?.upstream ?? null, ahead: b?.ahead ?? null, behind: b?.behind ?? null };
+}
+/** A folder name for a clone: the URL's last part without .git (letters, digits, . _ -), or '' */
+export function cloneTarget(url: string): string {
+  const s = String(url ?? '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  const last = s.slice(Math.max(s.lastIndexOf('/'), s.lastIndexOf(':')) + 1).replace(/\.git$/i, '');
+  const name = last.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+/, '').slice(0, 100);
+  return name === '.' || name === '..' ? '' : name;
+}
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/;
+/** Where to make an access token for a host (GitHub's fine-grained ones, GitLab's), with what to give it. */
+export function compareHint(kind: GitHostKind, host: string): { token: string | null; tokenText: string } {
+  const h = (host || '').trim().toLowerCase() || (kind === 'github' ? 'github.com' : kind === 'gitlab' ? 'gitlab.com' : '');
+  if (!HOSTNAME.test(h)) return { token: null, tokenText: '' };
+  if (kind === 'github') return { token: `https://${h}/settings/personal-access-tokens/new`, tokenText: 'A fine-grained token: only the repositories you need, with Contents: Read and write.' };
+  if (kind === 'gitlab') return { token: `https://${h}/-/user_settings/personal_access_tokens`, tokenText: 'Scopes read_repository and write_repository (or a project access token).' };
+  return { token: null, tokenText: '' };
+}
+/** Where to add an SSH host's public key: to your account, or as a deploy key of the repository the panel shows (when
+ *  its remote is on that host). */
+export function hostLinks(h: GitHostView, r: GitRemoteState | null): { accountKey: string | null; deployKey: string | null } {
+  if (!HOSTNAME.test(h.host) || h.kind === 'other') return { accountKey: null, deployKey: null };
+  const accountKey = h.kind === 'github' ? `https://${h.host}/settings/ssh/new` : `https://${h.host}/-/user_settings/ssh_keys`;
+  const ref = remoteFor(r)?.push ?? remoteFor(r)?.fetch ?? null;
+  const path = ref?.ok && ref.display.startsWith(`${h.host}/`) ? ref.display.slice(h.host.length + 1) : '';
+  const okPath = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){1,9}$/.test(path) ? path : '';
+  const deployKey = !okPath ? null : h.kind === 'github' ? `https://${h.host}/${okPath}/settings/keys/new` : `https://${h.host}/${okPath}/-/settings/repository#js-deploy-keys-settings`;
+  return { accountKey, deployKey };
 }
