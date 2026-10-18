@@ -1,0 +1,15 @@
+Port 2222
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile none
+AuthorizedKeysCommand /usr/local/bin/anykey %t %k
+AuthorizedKeysCommandUser nobody
+AllowUsers git
+PermitRootLogin no
+StrictModes no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTTY no
+LogLevel VERBOSE

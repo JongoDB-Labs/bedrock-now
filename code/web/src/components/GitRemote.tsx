@@ -455,7 +455,8 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
     setResult('');
     try {
       const r = await api.testGitHost(h.id, testUrl.trim());
-      setResult(r.ok ? `It works: ${r.branches ?? 0} branch${r.branches === 1 ? '' : 'es'} listed.${r.learned.length ? ` Trusted the host key ${r.learned.map((k) => `${k.type} ${k.fingerprint}`).join(', ')} — compare it with the one the host publishes.` : ''}` : `It did not work: ${r.why}`);
+      const learned = r.learned.length ? ` Trusted the server's host key ${r.learned.map((k) => `${k.type} ${k.fingerprint}`).join(', ')} — compare it with the one the server publishes.` : '';
+      setResult(`${r.ok ? `It works: ${r.branches ?? 0} branch${r.branches === 1 ? '' : 'es'} listed.` : `It did not work: ${r.why}`}${learned}`);
     } catch (e) {
       setResult(e instanceof Error ? e.message : String(e));
     } finally {

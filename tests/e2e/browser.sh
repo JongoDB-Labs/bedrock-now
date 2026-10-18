@@ -39,6 +39,7 @@ docker run --rm --name "$project-playwright" --init --shm-size=1g "${opts[@]}" \
   -e E2E_OWUI_TAG="$(image_tag open-webui/open-webui)" -e E2E_LITELLM_TAG="$(image_tag berriai/litellm)" \
   -e E2E_RUSTFS_TAG="$(image_tag rustfs/rustfs)" -e E2E_TAG="${E2E_TAG:-}" -e E2E_TERMINAL_CLAUDE="${E2E_TERMINAL_CLAUDE:-0}" \
   -e E2E_TERMINAL_HOSTILE="${E2E_TERMINAL_HOSTILE:-0}" -e E2E_CODE_HOSTILE="${E2E_CODE_HOSTILE:-0}" -e E2E_HELPER_ON="${E2E_HELPER_ON:-0}" \
+  -e E2E_GIT_SERVER="${E2E_GIT_SERVER:-0}" -e E2E_GIT_TOKEN="${E2E_GIT_TOKEN:-}" -e E2E_GIT_CA_B64="${E2E_GIT_CA_B64:-}" \
   -v "$stack/.env:/run/e2e/env:ro" \
   -v "$here/browser:/suite:ro" \
   -v "$out/browser:/out" \

@@ -1489,6 +1489,173 @@ def ui_git(ctx):
             f"0 hook markers from the panel; no CSP violations")
 
 
+GIT_SERVER = os.environ.get("E2E_GIT_SERVER") == "1"
+
+
+def palette(page, text):
+    page.get_by_test_id("prompt").click()
+    page.keyboard.press("Control+k")
+    page.get_by_test_id("cp-input").fill(text)
+    page.get_by_test_id("cp-input").press("Enter")
+
+
+@check("browser", "code-ui-git-remotes")
+@saved
+def ui_git_remotes(ctx):
+    """The Git panel's remotes against the suite's own git server (run.sh E2E_GIT_SERVER=1: tests/e2e/gitsrv on the
+    sandbox's network, the sandbox on TERMINAL_EGRESS=host; never a real host): Git hosts with an access token (the
+    server's own CA) and with an SSH key made by the Code page (the server takes any key; Test connection learns its
+    host key); a clone over https into a folder of the workspace, a commit, Push with its confirmation, a new branch
+    published with Open a pull request; a second clone over ssh, then a pull of the first one's push (a fast-forward).
+    The token is never on the page or in an answer; the sandbox never has it on disk. No model calls."""
+    if not GIT_SERVER:
+        raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
+    need_on()
+    token = os.environ.get("E2E_GIT_TOKEN", "")
+    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
+    expect(len(token) >= 20 and "BEGIN CERTIFICATE" in ca, "no token or CA from run.sh")
+    page, rec = ui_page(ctx, "code-ui-git-remotes")
+    c = Code.on(page, rec, goto=False)
+    https_url, ssh_url = "https://gitsrv:8443/e2e/demo.git", "ssh://git@gitsrv:2222/srv/git/e2e/demo.git"
+    a, b = "e2e-remote-a", "e2e-remote-b"
+    for d in (a, b):
+        c.api("DELETE", f"/api/fs?path={d}")
+    page.keyboard.press("Control+Shift+G")
+    see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
+    # Git hosts: the https one (kind GitHub, for its pull request link), with the token and the server's CA
+    palette(page, "git: git hosts")
+    dlg = page.get_by_test_id("git-hosts-dialog")
+    see(dlg).to_be_visible(timeout=30000)
+    page.get_by_test_id("git-host-add").click()
+    page.get_by_test_id("git-host-name").fill("gitsrv")
+    page.get_by_test_id("git-host-token").fill(token)
+    page.get_by_test_id("git-host-form").locator("details summary").click()
+    page.get_by_test_id("git-host-user").fill("e2e")
+    page.get_by_test_id("git-host-port").fill("8443")
+    page.get_by_test_id("git-host-ca").fill(ca)
+    page.get_by_test_id("git-host-save").click()
+    tok = dlg.get_by_test_id("git-host").filter(has_text="HTTPS access token")
+    see(tok).to_contain_text("A token is set", timeout=30000)
+    tok.get_by_test_id("git-host-test-url").fill(https_url)
+    tok.get_by_test_id("git-host-test").click()
+    see(tok.get_by_test_id("git-host-test-result")).to_contain_text("It works", timeout=90000)
+    # the ssh one: a key made by the Code page; Test connection learns the server's host key (shown)
+    page.get_by_test_id("git-host-add").click()
+    page.get_by_test_id("git-host-kind").select_option("other")
+    page.get_by_test_id("git-host-name").fill("gitsrv")
+    page.get_by_test_id("git-host-auth-ssh").check()
+    page.get_by_test_id("git-host-form").locator("details summary").click()
+    page.get_by_test_id("git-host-port").fill("2222")
+    page.get_by_test_id("git-host-save").click()
+    key = dlg.get_by_test_id("git-host").filter(has_text="SSH key")
+    see(key.get_by_test_id("git-host-pubkey")).to_have_value(re.compile(r"^ssh-ed25519 AAAA"), timeout=30000)
+    key.get_by_test_id("git-host-test-url").fill(ssh_url)
+    key.get_by_test_id("git-host-test").click()
+    see(key.get_by_test_id("git-host-test-result")).to_contain_text("It works", timeout=90000)
+    see(key).to_contain_text("SHA256:", timeout=30000)
+    shot(page, "r1-code-git-hosts")
+    hosts = c.api("GET", "/api/git/hosts")
+    expect(token not in hosts["text"] and "PRIVATE KEY" not in hosts["text"], "a secret in GET /api/git/hosts")
+    dlg.get_by_role("button", name="Close").click()
+    # clone over https into a folder of the workspace: the plan first
+    palette(page, "git: clone")
+    page.get_by_test_id("git-clone-url").fill(https_url)
+    page.get_by_test_id("git-clone-target").fill(a)
+    page.get_by_test_id("git-clone-next").click()
+    see(page.get_by_test_id("git-plan-summary")).to_contain_text(f"Clone gitsrv:8443/e2e/demo into {a}/ via HTTPS token", timeout=30000)
+    shot(page, "r2-code-git-clone-confirm")
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Cloned", timeout=120000)
+    see(page.get_by_test_id("git-repo")).to_have_value(a, timeout=30000)
+    see(page.get_by_test_id("git-remote")).to_contain_text("origin → gitsrv:8443/e2e/demo", timeout=30000)
+    # a commit, then Push: where it goes, shown first
+    c.api("PUT", f"/api/fs/file?path={a}/e2e.txt", {"text": "pushed from the Code page\n"})
+    page.get_by_test_id("git-refresh").click()
+    row = page.locator("[data-testid=git-file][data-path='e2e.txt']")
+    see(row).to_have_count(1, timeout=30000)
+    row.hover()
+    row.get_by_test_id("git-stage").click()
+    see(page.locator("[data-testid=git-file][data-path='e2e.txt'][data-group=staged]")).to_have_count(1, timeout=30000)
+    page.get_by_test_id("git-message").fill("e2e: a commit pushed from the Git panel")
+    page.get_by_test_id("git-commit").click()
+    see(page.get_by_test_id("git-push")).to_contain_text("Push 1", timeout=30000)
+    page.get_by_test_id("git-push").click()
+    see(page.get_by_test_id("git-plan-summary")).to_have_text("Push main → gitsrv:8443/e2e/demo (main) via HTTPS token 'gitsrv'", timeout=30000)
+    see(page.get_by_test_id("git-plan-url")).to_have_text(https_url)
+    shot(page, "r3-code-git-push-confirm")
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Pushed main", timeout=120000)
+    # a branch, published: a new branch there, and the host's page to open a pull request
+    page.get_by_test_id("git-branches").click()
+    page.get_by_test_id("git-branch-filter").fill("e2e/feature")
+    page.get_by_test_id("git-branch-create").click()
+    see(page.get_by_test_id("git-publish")).to_be_visible(timeout=30000)
+    page.get_by_test_id("git-publish").click()
+    see(page.get_by_test_id("git-plan-summary")).to_contain_text("a new branch there", timeout=30000)
+    page.get_by_test_id("git-plan-run").click()
+    pr = page.get_by_test_id("git-pr-link")
+    see(pr).to_have_attribute("href", "https://gitsrv:8443/e2e/demo/pull/new/e2e/feature", timeout=120000)
+    shot(page, "r4-code-git-pr-link")
+    # back on main; a second clone over ssh (the key's login signed by the code container), then a pull in it
+    page.get_by_test_id("git-branches").click()
+    page.locator("[data-testid=git-branch-item][data-branch=main]").click()
+    see(page.get_by_test_id("git-branches")).to_contain_text("main", timeout=30000)
+    palette(page, "git: clone")
+    page.get_by_test_id("git-clone-url").fill(ssh_url)
+    page.get_by_test_id("git-clone-target").fill(b)
+    page.get_by_test_id("git-clone-next").click()
+    see(page.get_by_test_id("git-plan-summary")).to_contain_text("via SSH key", timeout=30000)
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("git-repo")).to_have_value(b, timeout=120000)
+    expect(c.api("GET", f"/api/fs/file?path={b}/e2e.txt")["status"] == 200, "the ssh clone lacks the pushed file")
+    # another commit pushed from the first clone; the second one pulls it (a fast-forward)
+    page.get_by_test_id("git-repo").select_option(a)
+    c.api("PUT", f"/api/fs/file?path={a}/e2e2.txt", {"text": "second\n"})
+    page.get_by_test_id("git-refresh").click()
+    row2 = page.locator("[data-testid=git-file][data-path='e2e2.txt']")
+    see(row2).to_have_count(1, timeout=30000)
+    row2.hover()
+    row2.get_by_test_id("git-stage").click()
+    see(page.locator("[data-testid=git-file][data-path='e2e2.txt'][data-group=staged]")).to_have_count(1, timeout=30000)
+    page.get_by_test_id("git-message").fill("e2e: a second commit")
+    page.get_by_test_id("git-commit").click()
+    see(page.get_by_test_id("git-push")).to_contain_text("Push 1", timeout=30000)
+    page.get_by_test_id("git-push").click()
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Pushed main", timeout=120000)
+    page.get_by_test_id("git-repo").select_option(b)
+    see(page.get_by_test_id("git-remote")).to_contain_text("gitsrv:2222", timeout=30000)
+    page.get_by_test_id("git-fetch").click()
+    plan = page.get_by_test_id("git-plan-dialog")
+    see(plan).to_be_visible(timeout=30000)   # (the first fetch from this remote URL: asked)
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("git-pull")).to_contain_text("Pull 1", timeout=120000)
+    page.get_by_test_id("git-pull").click()
+    page.get_by_test_id("git-plan-run").click()
+    see(page.get_by_test_id("toast").last).to_contain_text("Pulled", timeout=120000)
+    expect(c.api("GET", f"/api/fs/file?path={b}/e2e2.txt")["status"] == 200, "the pull did not bring e2e2.txt")
+    shot(page, "r5-code-git-pulled")
+    # Activity's record of it: the uses, never the token
+    events = c.api("GET", "/api/git/hosts")["json"]["events"]
+    expect(any(e["action"] == "push" for e in events) and any(e["action"] == "pull" for e in events), f"events: {[e['action'] for e in events][:10]}")
+    expect(token not in json.dumps(events), "the token in an event")
+    # nothing of the token in the sandbox's files of the workspace or its home (as far as the page's API sees)
+    for f in (f"{a}/.git/config", f"{b}/.git/config"):
+        r = c.api("GET", f"/api/fs/file?path={f}")
+        expect(r["status"] == 200 and token not in r["text"], f"{f}: {r['status']}")
+    # clean up: the hosts, the clones
+    for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
+        c.api("DELETE", f"/api/git/hosts/{h['id']}")
+    page.get_by_test_id("git-repo").select_option("")
+    for d in (a, b):
+        c.api("DELETE", f"/api/fs?path={d}")
+    csp_clean(page, rec, [r"^400 POST .*/api/git/", r"console.error Failed to load resource.*400"])
+    return ("Git hosts: a token (with the server's CA) and an SSH key made by the Code page (host key learned by Test connection); "
+            f"clone over https into {a}/ (its plan first), a commit pushed after its confirmation, e2e/feature published with Open a pull request "
+            f"({pr.get_attribute('href')}), a clone over ssh into {b}/, a second push from {a}, fetch and a fast-forward pull in {b}; "
+            "the token in no answer, event or .git/config; no model calls; no CSP violations")
+
+
 @check("browser", "code-ui-phone")
 @saved
 def ui_phone(ctx):

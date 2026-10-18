@@ -35,6 +35,12 @@
 #                    its own key with a budget of $0.06)
 #   --terminal       with --no-code: the browser terminal on (E2E_TERMINAL=1 does the same)
 #   --code           the default (kept for older scripts; E2E_CODE=1 does the same)
+#   --git-server     the Git panel's remotes against a git server of the suite's own (E2E_GIT_SERVER=1 does the same):
+#                    tests/e2e/gitsrv — HTTPS with a token and its own CA, SSH taking any key — started after setup on
+#                    the throwaway's terminal-out network as "gitsrv", which needs TERMINAL_EGRESS=host there (the egress
+#                    proxy never reaches private addresses): the throwaway is set up that way, and terminal-isolation
+#                    (whose checks are the proxy's) skips. browser/code-ui-git-remotes then connects both kinds of Git
+#                    host, clones, pushes, publishes, pulls. Never a real git host; no model calls.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -64,6 +70,7 @@ SKIP_MUTATING=0; DEEP_UPDATE=0; NO_CLAUDE=0; ONLY="cli,browser,voice,claude,muta
 TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
 CODE=1; [ "${E2E_NO_CODE:-0}" != 1 ] || CODE=0   # (on by default, as on a new install; E2E_CODE=1 is that too)
 HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
+GIT_SERVER=0; [ "${E2E_GIT_SERVER:-0}" != 1 ] || GIT_SERVER=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -80,6 +87,7 @@ while [ $# -gt 0 ]; do
     --code) CODE=1; shift ;;
     --no-code) CODE=0; shift ;;
     --helper) HELPER=1; shift ;;
+    --git-server) GIT_SERVER=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -236,6 +244,8 @@ stage() {
     set_env CODE_ENABLED false
     [ "$TERMINAL" = 1 ] || set_env TERMINAL_ENABLED false
   fi
+  # --git-server: the sandbox on the terminal-out network, where the suite's git server joins it
+  [ "$GIT_SERVER" = 0 ] || set_env TERMINAL_EGRESS host
   ( umask 022; mkdir -p "$STACK/.state/update-check" )
   chmod 700 "$STACK/.state"; : > "$STACK/.state/portal-password-shown"
   # The portal's daily release check counts as done: no GitHub call during the run, and nothing races the update
@@ -363,7 +373,8 @@ if [ "$TERMINAL" = 1 ]; then
   cli terminal-status 0 'Workspace .*-workspace → /workspace' terminal status
   t0="$(now)"
   tc="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=terminal)"
-  if [ -z "$tc" ]; then record terminal terminal-isolation FAIL 0 "no running terminal container"
+  if [ "$GIT_SERVER" = 1 ]; then record terminal terminal-isolation SKIP 0 "TERMINAL_EGRESS=host for the suite's git server (--git-server): the egress proxy's checks do not apply"
+  elif [ -z "$tc" ]; then record terminal terminal-isolation FAIL 0 "no running terminal container"
   else
     # (on Docker's default bridge: with --network none, --add-host writes no hosts entry)
     hg="$(docker run --rm --add-host hg:host-gateway --entrypoint getent "$PROJECT/terminal:local" ahostsv4 hg 2>/dev/null | awk 'NR == 1 { print $1 }')"
@@ -565,6 +576,33 @@ if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
   else record cli help-every-command FAIL "$(( $(now) - t0 ))" "no usage from --help:$bad"; fi
   cli uninstall-abort 1 'aborted — nothing was removed' uninstall --yes
   record cli open SKIP 0 "opens a GUI browser window (no headless mode)"
+fi
+
+# --- 2c. the suite's own git server (--git-server): on the sandbox's terminal-out network as gitsrv ---
+# git_server_start -> 0 when tests/e2e/gitsrv runs there and answered: E2E_GIT_TOKEN (new each run) and E2E_GIT_CA_B64
+# (its CA) exported for the browser suite
+git_server_start() {
+  local t0 n ok=0 i
+  t0="$(now)"; n="${PROJECT}_terminal-out"
+  E2E_GIT_TOKEN="$(openssl rand -hex 24)"
+  docker network inspect "$n" >/dev/null 2>&1 || { record git git-server FAIL 0 "no network $n (TERMINAL_EGRESS=$(get_env TERMINAL_EGRESS))"; return 1; }
+  docker build -q -t "$PROJECT/e2e-gitsrv:local" "$HERE/gitsrv" > "$LOGS/gitsrv-build.log" 2>&1 || { record git git-server FAIL 0 "docker build failed ($LOGS/gitsrv-build.log)"; return 1; }
+  docker rm -f "$PROJECT-gitsrv" >/dev/null 2>&1 || true
+  docker run -d --name "$PROJECT-gitsrv" --label "io.bedrock-now.e2e=$PROJECT" --network "$n" --network-alias gitsrv \
+    -e GITSRV_TOKEN="$E2E_GIT_TOKEN" "$PROJECT/e2e-gitsrv:local" > /dev/null 2>> "$LOGS/gitsrv-build.log" ||
+    { record git git-server FAIL 0 "docker run failed ($LOGS/gitsrv-build.log)"; return 1; }
+  for i in $(seq 1 60); do docker logs "$PROJECT-gitsrv" 2>&1 | grep -q '^https on' && { ok=1; break; }; sleep 1; done
+  if [ "$ok" = 1 ] && E2E_GIT_CA_B64="$(docker exec "$PROJECT-gitsrv" sh -c 'base64 -w0 /srv/ca.pem')" && [ -n "$E2E_GIT_CA_B64" ]; then
+    export E2E_GIT_SERVER=1 E2E_GIT_TOKEN E2E_GIT_CA_B64
+    record git git-server PASS "$(( $(now) - t0 ))" "tests/e2e/gitsrv on $n as gitsrv (https :8443 with a token of this run, ssh :2222)"
+  else
+    docker logs "$PROJECT-gitsrv" > "$LOGS/gitsrv.log" 2>&1
+    record git git-server FAIL "$(( $(now) - t0 ))" "it did not answer ($LOGS/gitsrv.log)"; return 1
+  fi
+}
+if [ "$GIT_SERVER" = 1 ]; then
+  if [ "$CODE" = 1 ] && part_on browser; then git_server_start || true
+  else record git git-server SKIP 0 "--git-server needs the Code page and the browser part"; fi
 fi
 
 # --- 3. the browser suite (Playwright container) ---

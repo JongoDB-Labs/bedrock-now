@@ -263,6 +263,8 @@ teardown() {
     warn "teardown: project $PROJECT is not known to be this suite's own — Docker left untouched"
   else
     say "teardown: project $PROJECT"
+    # (the suite's git server, --git-server: not compose's; by its name, before its network goes)
+    docker rm -f "$PROJECT-gitsrv" >/dev/null 2>&1 || true
     docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose -p $PROJECT down failed"
     docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
     # The browser terminal (--terminal) lives in overlay files that `down` without them does not read: its volume
@@ -272,7 +274,7 @@ teardown() {
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
                "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous" \
                "$PROJECT/terminal:local" "$PROJECT/terminal:previous" "$PROJECT/terminal-egress:local" "$PROJECT/terminal-egress:previous" \
-               "$PROJECT/code:local" "$PROJECT/code:previous"; do
+               "$PROJECT/code:local" "$PROJECT/code:previous" "$PROJECT/e2e-gitsrv:local"; do
       docker image rm "$img" >/dev/null 2>&1 || true
     done
     for id in $(docker image ls -q --no-trunc --filter dangling=true --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null); do
