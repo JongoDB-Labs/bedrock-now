@@ -20,10 +20,12 @@
 //   fs.find         paths under the root whose name matches (a bounded walk: the @-picker over the whole folder)
 //   fs.grep         a text (or a ripgrep regex) searched in the files of the root: ripgrep with fixed arguments, or
 //                   a bounded walk (literal text only); caps on hits, file size and time
-//   project.create / project.check / project.trash
+//   project.create / project.check / project.trash / project.settings
 //                   a new project's folder (and `git init`, no template: no hook); whether the project folders the code
-//                   container names are there (a real folder, a git repository; where they lead); a project's folder
-//                   itself into the workspace trash (Remove from Code, named again: never through a link)
+//                   container names are there (a real folder, a git repository; where they lead; their Claude Code
+//                   settings' hash); a project's folder itself into the workspace trash (Remove from Code, named again:
+//                   never through a link); a folder's own Claude Code settings and .mcp.json, as Claude Code would read
+//                   them (the page shows them before they apply)
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
@@ -159,8 +161,10 @@ const oneOf = (...v) => (x) => v.includes(x);
 // session to Bypass permissions (Claude Code refuses that switch otherwise); it changes no other mode. A process still
 // starts in one of --permission-mode's modes below.
 // --no-session-persistence and --tools= (empty: no built-in tool at all) only take away: the Git panel's "Write message"
-// helper runs with them (code/server/gitdraft.mjs) — no transcript, no tool.
-const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence']);
+// helper runs with them (code/server/gitdraft.mjs) — no transcript, no tool. --strict-mcp-config only takes away too:
+// a session in a folder whose .mcp.json you have not trusted gets only the stack's own MCP server (--mcp-config).
+const FLAGS = new Set(['--include-partial-messages', '--fork-session', '--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence',
+  '--strict-mcp-config']);
 // Refused on purpose (tests: code/test/bn-coded.test.mjs): --settings, --mcp-config, --plugin-dir, --debug-file,
 // --betas (Bedrock refuses beta headers), --task-budget (adds one), --managed-settings, --add-dir,
 // --dangerously-skip-permissions and the starting modes bypassPermissions / auto (a session is switched to Bypass
@@ -1737,16 +1741,55 @@ function rootType(r) {
 export function projectCheck(req) {
   const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
   return { roots: list.map((v) => {
-    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null };
+    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null, settings: null };
     const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
-    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null };
+    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null, settings: null };
     const type = rootType(r);
     let isGit = false;
     if (type === 'dir') { try { fs.lstatSync(path.join(WORKSPACE, r, '.git')); isGit = true; } catch { /* none */ } }
     let real = null;
     try { const x = fs.realpathSync(path.join(WORKSPACE, r)); real = inside(x) ? x : null; } catch { /* not there */ }
-    return { root: v, type, git: isGit, real };
+    return { root: v, type, git: isGit, real, settings: type === 'dir' ? settingsFiles(path.join(WORKSPACE, r)).hash : null };
   }) };
+}
+
+// --- a folder's own Claude Code settings (project.settings): what Claude Code started there reads of it ---
+// .claude/settings.json and settings.local.json (hooks, permission rules, env, …) and .mcp.json (MCP servers it starts):
+// a cloned repository's can run commands or silence the page's permission cards, so the code container applies them
+// only once you trusted exactly these files (their hash). Read as Claude Code reads them — through links, but only
+// what is in the workspace (a link out of it is named, never read); a FIFO or device is never opened.
+export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']);
+const SETTINGS_MAX = 8 << 20, SETTINGS_TEXT = 256 << 10;
+// settingsFiles(abs, {text}) -> {files: [{name, type: missing|file|link|big|other, size, sha256, target, text}], hash}:
+// hash: the SHA-256 of what is there (null when none of them is)
+export function settingsFiles(abs, { text = false } = {}) {
+  const files = SETTINGS_FILES.map((name) => {
+    const p = path.join(abs, name);
+    let lst;
+    try { lst = fs.lstatSync(p); } catch { lst = null; }
+    const real = confine(p);
+    if (!lst && !real) return { name, type: 'missing' };
+    const target = lst?.isSymbolicLink() ? (() => { try { return printable(fs.readlinkSync(p), 1000); } catch { return '?'; } })() : null;
+    // through a link (or a .claude that is one): only what is in the workspace is read
+    let st = null;
+    try { st = real ? fs.statSync(real) : null; } catch { st = null; }
+    if (!real || !st) return { name, type: 'link', target: target ?? '(out of the workspace)', sha256: sha256(`link:${target}`) };
+    if (!st.isFile()) return { name, type: 'other', target, sha256: sha256('other') };
+    if (st.size > SETTINGS_MAX) return { name, type: 'big', target, size: st.size, sha256: sha256(`big:${st.size}:${st.mtimeMs}`) };
+    const b = readRegular(real, SETTINGS_MAX);
+    if (!b) return { name, type: 'other', target, sha256: sha256('other') };
+    const out = { name, type: target ? 'link' : 'file', target, size: b.length, sha256: sha256(b) };
+    if (text) out.text = b.length <= SETTINGS_TEXT && isUtf8Buf(b) ? b.toString('utf8') : null;
+    return out;
+  });
+  const present = files.filter((f) => f.type !== 'missing');
+  const hash = present.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
+  return { files, hash };
+}
+const isUtf8Buf = (b) => { try { new TextDecoder('utf-8', { fatal: true }).decode(b); return true; } catch { return false; } };
+// project.settings {root?} -> {files (with their text, ≤ 256 KiB each), hash}: a project's folder (none: the workspace)
+export function projectSettings(req) {
+  return settingsFiles(rootArg(req?.root).abs, { text: true });
 }
 // project.trash {root} -> {trash}: Remove from Code with its folder — the project's folder itself (a real folder of
 // the workspace, every part of its path too: never through a link, never the workspace) moved to the workspace's trash
@@ -3795,6 +3838,7 @@ export function serve(sock) {
           return undefined;
         case 'project.check': return finish(T.RESULT, projectCheck(req));
         case 'project.trash': return finish(T.RESULT, projectTrash(req));
+        case 'project.settings': return finish(T.RESULT, projectSettings(req));
         // the Git panel's remotes: no network for these two; a branch switch or a remote's URL is a change
         case 'git.repos': return finish(T.RESULT, gitRepos({ root: root() }));
         case 'git.remote.state':
