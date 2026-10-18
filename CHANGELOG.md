@@ -6,6 +6,39 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The walkthrough covers what a developer uses**, in six parts: *Set up* (now with **Connect a git host**: GitHub,
+  GitLab or any https/ssh server, with an access token — fine-grained on GitHub with *Contents: Read and write*,
+  `read_repository` and `write_repository` on GitLab — or an SSH key the Code page makes; **Open Git hosts** opens the
+  Code page's dialog, and the step ticks itself off once a host is connected), *Your apps (one sign-in)*, *Chat*,
+  **Code with Claude** (open and ask, the permission modes and cards, picking a model from the whole catalog and its
+  badges, the workspace with its real folder, files, search and previews, @-mentions and comments on a plan's lines,
+  **Clone a repository**, review, commit and push, Run & test and previews of dev servers, the browser terminal, what
+  the sandbox can reach, plugins and MCP servers; where the Code page is off, one step on how to turn it on), **Your
+  own tools** (`claude-bedrock`, the models from your own code, the shared store) and **Keep it running** (Home,
+  Activity and Ctrl/⌘+K search, where the money went, updates, backups and rollback, the portal from your phone). Steps
+  that can tick themselves off do: the update helper running, remote access on, a git host connected (as the Code tab
+  reports it), as well as before.
+- **New since you last looked.** A browser that went through an earlier walkthrough finds the steps it has not opened
+  marked **New**, and the button says how many (*15 new* beside **Walkthrough**; under More, *15 new steps since you
+  last looked*) until each one is opened; the walkthrough does not open again by itself. A first visit has nothing
+  marked new. (`bn.tour` keeps the ids of the steps opened, in this browser only.)
+- **The models from your own code** — a walkthrough step and a README section: LiteLLM's API on this computer, at the
+  port this install uses (read from the Settings snapshot, `LITELLM_PORT`), OpenAI-compatible (`/v1/chat/completions`,
+  `/v1/models`) and Anthropic-compatible (`/v1/messages`); a key per tool in Admin › Virtual Keys with its own budget;
+  curl and Python (openai, anthropic) examples to copy, with `YOUR_KEY` — never a key; on `127.0.0.1` only, remote
+  access included. *What you get* has a row for it.
+
+### Changed
+
+- **Git hosts on the Code page are easier to find.** The Git panel's Git hosts control is a labelled **Hosts** button
+  (it was an icon), there whenever the folder is a repository, not only with a remote. While no connected host covers
+  the remote — or none is connected — a one-line hint says so, with **Connect a git host** (it replaces the small
+  *connect a token* link). A new session's welcome offers **Clone a repository** and **Connect a git host**, and the
+  not-a-repository state says *Connect a git host…* while none is connected. The Code page tells the portal how many
+  hosts are connected (a number only) for the walkthrough.
+
 ### Fixed
 
 - **`./stack update`'s What's new** cut a long release title at 120 bytes — mid-word ("… credentials that never en"),

@@ -1,15 +1,95 @@
-// Walkthrough: takes someone who has never used these apps through all of bedrock-now — what it needs (AWS models,
-// OpenRouter, voice, Claude Code, budgets), its apps behind the one portal sign-in, then using them together. It lives at the bottom
-// of the sidebar: on desktops a section of the widened sidebar (the apps' frames just get narrower), on tablets a
-// card next to the icon rail, on phones a sheet above the tab bar opened from More.
-// Loaded after app.js and mobile.js (all deferred); uses app.js's globals ($, el, api, showTab, appUrl, copy, toast,
-// usd, loadLogins, logins, lastSummary). Progress is a per-browser convenience in localStorage (bn.tour); with
-// storage blocked it works for the session. Every node is built with el()/textContent: nothing is parsed as HTML.
+// Walkthrough: takes a developer through all of bedrock-now — setting it up (AWS models, OpenRouter, voice, Claude Code,
+// a git host, budgets), its apps behind the one portal sign-in, Chat, coding with Claude on the Code page (modes, models,
+// the workspace, @-mentions, clone, review and push, run and preview, what the sandbox reaches, plugins), the models from
+// your own tools (claude-bedrock, the LiteLLM API, the shared store) and keeping it running (Home, Activity and search,
+// spend, updates and backups, your phone). It lives at the bottom of the sidebar: on desktops a section of the widened
+// sidebar (the apps' frames just get narrower), on tablets a card next to the icon rail, on phones a sheet above the tab
+// bar opened from More.
+// Loaded after app.js, mobile.js and code.js (all deferred); uses app.js's globals ($, el, api, showTab, appUrl, copy,
+// toast, usd, loadLogins, logins, lastSummary). Progress is a per-browser convenience in localStorage (bn.tour), with the
+// steps this browser has opened (seen): a browser that went through an older walkthrough sees the steps it never opened
+// marked New, and the Walkthrough button says how many ("15 new") until they are opened — a first visit
+// sees none. With storage blocked it works for the session. Every node is built with el()/textContent: nothing is
+// parsed as HTML. What it reads: /api/summary (as Home does) and, for a few steps, /api/settings (the same masked
+// snapshot the Settings page shows: the LiteLLM port, the workspace folder, the sandbox's internet, the update helper) —
+// it shows no secret, and the API step's snippets carry YOUR_KEY, never a key.
 "use strict";
 
-(() => {
+(function (root) {
   const KEY = "bn.tour";
+  // The step ids of every walkthrough before this one (v0.4.0 to v0.12.x): a browser that went through one of them has
+  // seen these; the rest are new to it.
+  const BEFORE = ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras", "signin-portal", "signin-chat",
+    "signin-admin", "signin-files", "home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"];
+  const KEYS_SPENT = ["open-webui", "claude-code", "claude-code-terminal"];
+
+  // --- pure parts (portal/tests/js/tour.test.mjs runs these in Node) ---
+
+  // parse(TEXT, KNOWN) -> the saved state, every field checked against KNOWN (the step ids there are):
+  // {first, open, cur, done, skipped, base, seen}. first: nothing (readable) was stored — a first visit. seen: the steps
+  // this browser opened; a state saved before there was such a list saw the old walkthrough's steps (BEFORE).
+  function parse(text, known) {
+    const ok = (id) => typeof id === "string" && known.includes(id);
+    const s = { first: true, open: null, cur: "welcome", done: [], skipped: [], base: {}, seen: [] };
+    let raw = null;
+    try { raw = JSON.parse(text || "null"); } catch (_) { raw = null; }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return s;
+    s.first = false;
+    if (typeof raw.open === "boolean") s.open = raw.open;
+    if (raw.cur === "" || ok(raw.cur)) s.cur = raw.cur;
+    for (const k of ["done", "skipped"]) if (Array.isArray(raw[k])) s[k] = [...new Set(raw[k].filter(ok))];
+    for (const a of KEYS_SPENT) if (raw.base && typeof raw.base === "object" && Number.isFinite(raw.base[a])) s.base[a] = raw.base[a];
+    const seen = Array.isArray(raw.seen) ? raw.seen.filter(ok) : BEFORE.filter(ok);
+    s.seen = [...new Set([...seen, ...s.done, ...s.skipped])];
+    return s;
+  }
+  // unseen(ORDER, SEEN) -> the steps of ORDER this browser has not opened yet
+  const unseen = (order, seen) => order.filter((id) => !seen.includes(id));
+
+  // What the walkthrough takes from /api/settings (the masked snapshot): plain values only, each checked.
+  function cfgFrom(d) {
+    const keys = {};
+    for (const k of (d && d.snapshot && Array.isArray(d.snapshot.keys) ? d.snapshot.keys : [])) {
+      if (k && typeof k.key === "string" && typeof k.value === "string") keys[k.key] = k.value;
+    }
+    const port = /^[0-9]{1,5}$/.test(keys.LITELLM_PORT || "") && Number(keys.LITELLM_PORT) > 0 && Number(keys.LITELLM_PORT) < 65536 ? keys.LITELLM_PORT : "";
+    const egress = String(keys.TERMINAL_EGRESS || "").toLowerCase();
+    return {
+      port,
+      workspace: typeof keys.TERMINAL_WORKSPACE === "string" ? keys.TERMINAL_WORKSPACE.slice(0, 300) : "",
+      egress: ["host", "off"].includes(egress) ? egress : ["false", "0", "no"].includes(egress) ? "off" : "internet",
+      helper: Boolean(d && d.helper && d.helper.running === true),
+      auto: keys.AUTO_UPDATE === "on",
+      nightly: keys.BACKUP_NIGHTLY === "on",
+    };
+  }
+
+  // The model the API step's snippets name: Haiku when it is enabled (the cheapest Claude), else another enabled chat
+  // model of Bedrock, else Haiku's id anyway.
+  function snippetModel(summary) {
+    const rows = (summary && summary.models && Array.isArray(summary.models.rows) ? summary.models.rows : [])
+      .filter((r) => r && r.enabled && r.kind === "chat" && (r.provider || "Bedrock") === "Bedrock" && /^[a-z0-9.-]{1,64}$/.test(r.name || ""));
+    for (const pref of ["claude-haiku-5-5", "claude-sonnet-5-5"]) if (rows.some((r) => r.name === pref)) return pref;
+    return rows.length ? rows[0].name : "claude-haiku-5-5";
+  }
+  // snippets(BASE, MODEL) -> short, copyable examples for the LiteLLM API at BASE (http://127.0.0.1:<port>), with the
+  // placeholder YOUR_KEY: OpenAI-style with curl and the openai SDK, Anthropic-style with the anthropic SDK
+  function snippets(base, model) {
+    return {
+      curl: `curl ${base}/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_KEY" \\\n  -H "Content-Type: application/json" \\\n` +
+        `  -d '{"model": "${model}", "messages": [{"role": "user", "content": "Hello"}]}'`,
+      openai: `from openai import OpenAI\n\nclient = OpenAI(base_url="${base}/v1", api_key="YOUR_KEY")\n` +
+        `r = client.chat.completions.create(\n    model="${model}",\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(r.choices[0].message.content)`,
+      anthropic: `import anthropic\n\nclient = anthropic.Anthropic(base_url="${base}", api_key="YOUR_KEY")\n` +
+        `m = client.messages.create(\n    model="${model}",\n    max_tokens=512,\n    messages=[{"role": "user", "content": "Hello"}],\n)\nprint(m.content[0].text)`,
+    };
+  }
+
+  root.bnTour = { _pure: { BEFORE, parse, unseen, cfgFrom, snippetModel, snippets } };
+  if (typeof document === "undefined" || typeof document.querySelector !== "function") return;
+
   const POLL_MS = 30000;
+  const CFG_MS = 300000;   // the settings snapshot, asked again after 5 minutes (at most once a minute)
   const PHONE = window.matchMedia("(max-width: 767.98px)");
   const TABLET = window.matchMedia("(min-width: 768px) and (max-width: 1099.98px)");
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -18,7 +98,7 @@
   const PROMPT = 'Write notes/hello.md to the shared store with a two-line summary of this folder, and ingest it into knowledge base "Claude Code".';
   const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   // The Code page (code.js reads the same): {enabled, here} — on at all, and usable on this site (remote access needs
-  // REMOTE_TERMINAL). Its Claude Code steps point at the Code tab while it is here, at Settings → Claude Code while off.
+  // REMOTE_TERMINAL). Its steps show while it is here; while it is off, one step says what it is and how to turn it on.
   const CODE = (() => {
     try { const c = JSON.parse(document.querySelector('meta[name="bn-code"]').content) || {}; return { enabled: c.enabled === true, here: c.here === true && Boolean(APP_URLS.code) }; } catch (_) { return { enabled: false, here: false }; }
   })();
@@ -33,20 +113,23 @@
   const note = (...c) => el("p", { class: "note" }, ...c);
   const b = (t) => el("strong", { text: t });
   const code = (t) => el("code", { text: t });
+  const kbd = (t) => el("kbd", { text: t });
   // the portal's Settings tab, opened at a section or a setting (settings.js: #settings/<section> or #settings/<KEY>):
   // settings(WHERE, PLACE), or settings(WHERE) for the places named here
-  const PLACES = { "Claude Code": "code", "Account & security": "account", "Spending & budgets": "spending" };
+  const PLACES = { "Claude Code": "code", "Account & security": "account", "Spending & budgets": "spending", "Updates & backups": "updates",
+    "Remote access": "remote" };
   const settings = (where, place) => el("a", { href: `#settings/${place || PLACES[where] || ""}`, text: `Settings → ${where}` });
   const list = (tag, items) => el(tag, { class: "tour-list" }, ...items.map((i) => el("li", {}, ...[].concat(i))));
   const ext = (href, text) => el("a", { href, target: "_blank", rel: "noopener noreferrer", "data-k": `link:${href}`, text });
+  const doc = (anchor, text) => ext(`${REPO}#${anchor}`, text);
 
   function button(label, k, fn, cls = "action") {
     const n = el("button", { type: "button", class: cls, "data-k": k, text: label });
     n.addEventListener("click", fn);
     return n;
   }
-  function cmd(text, what = "the command") {
-    return el("div", { class: "tour-cmd" }, el("code", { text }), button("Copy", `copy:${text}`, () => copy(text, what), "copy"));
+  function cmd(text, what = "the command", k = `copy:${text}`) {
+    return el("div", { class: "tour-cmd" }, el("code", { text }), button("Copy", k, () => copy(text, what), "copy"));
   }
   // An app's "Open" button: its tab, or on a phone (Admin and Files are no tabs there) a link to a new browser tab.
   function openApp(app) {
@@ -69,6 +152,18 @@
     }
     return button("Open Code", "open-code", () => { showTab("code"); away(); });
   }
+  // The Code page at one of its Git panel's dialogs — Git hosts, or Clone (empty: a link clones nothing) — as Settings ›
+  // Claude Code › Git hosts opens it: through the Code tab (code.js), else the Code page's address in a new tab.
+  function openGit(what) {
+    const k = what === "hosts" ? "open-git-hosts" : "open-clone";
+    return button(what === "hosts" ? "Open Git hosts" : "Clone a repository", k, () => {
+      const c = window.bnCode;
+      if (c && what === "hosts" && c.openGitHosts) c.openGitHosts();
+      else if (c && what === "clone" && c.openClone) c.openClone();
+      else { try { const u = new URL(appUrl("code")); u.searchParams.set("git", what); window.open(u.href, "_blank", "noopener"); } catch (_) { /* no Code page */ } }
+      away();
+    });
+  }
   // The Terminal tab (on a phone: full screen in a new browser tab, as under More)
   function openTerminal() {
     if (PHONE.matches) {
@@ -76,6 +171,16 @@
         "Open the terminal", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" }));
     }
     return button("Open the terminal", "open-terminal", () => { showTab("terminal"); away(); });
+  }
+  // Activity's panel and the portal's Search (activity.js, search.js)
+  function openPanel(which) {
+    const label = which === "activity" ? "Open Activity" : "Open Search";
+    return button(label, `open-${which}`, () => {
+      const o = which === "activity" ? window.bnActivity : window.bnSearch;
+      if (!o || !o.open) return;
+      if (PHONE.matches || TABLET.matches) setOpen(false, false);
+      o.open();
+    });
   }
   // Where Claude Code also runs: the Code tab when it is on here, else the tab's own page (how to turn it on)
   function codeLine(use) {
@@ -116,8 +221,13 @@
   // Admin / Files sign you in automatically (the portal signs in for you); their own sign-in stays for the API and in
   // case that fails, folded away as on Home: the user name as text (masked in the e2e screenshots), the password only
   // through Copy, and the app's own form (?sso=off). app.js loads the sign-ins at start-up (the panel redraws once
-  // they are in, see "wiring"); Copy asks for them only if that failed. A redraw keeps the fold open.
+  // they are in, see "wiring"); Copy asks for them only if that failed. A redraw keeps a fold open.
   const unfolded = new Set();
+  function folds(n, k) {
+    n.open = unfolded.has(k);
+    n.addEventListener("toggle", () => { if (n.open) unfolded.add(k); else unfolded.delete(k); });
+    return n;
+  }
   function fallback(app, nameLabel, userCopy, passCopy, hint) {
     const user = logins && logins[app] && logins[app].username;
     const form = logins && logins[app] && logins[app].manual;
@@ -126,7 +236,7 @@
       const v = logins && logins[app] && logins[app][field];
       if (v) copy(v, what); else toast("Not available yet: run ./stack setup");
     };
-    const fold = el("details", { class: "tour-fallback", "data-k": `fallback-${app}` },
+    return folds(el("details", { class: "tour-fallback", "data-k": `fallback-${app}` },
       el("summary", { text: "Credentials (for the API or if automatic sign-in fails)" }),
       el("p", { class: "tour-login" }, `${nameLabel} `, el("span", { class: "tour-cred", text: user || "–" })),
       el("div", { class: "tour-actions" },
@@ -134,33 +244,43 @@
         button(passCopy, `copy-${app}-pass`, grab("password", passCopy.replace(/^Copy /, "")), "copy"),
         form ? el("a", { class: "copy", href: form, target: "_blank", rel: "noopener", "data-k": `form-${app}` },
           "Its sign-in form", el("span", { "aria-hidden": "true", text: " ↗" }), el("span", { class: "tour-sr", text: " (opens in a new tab)" })) : null),
-      note(...hint));
-    fold.open = unfolded.has(app);
-    fold.addEventListener("toggle", () => { if (fold.open) unfolded.add(app); else unfolded.delete(app); });
-    return fold;
+      note(...hint)), app);
+  }
+  // A code snippet, folded (curl's starts open), with Copy
+  unfolded.add("curl");
+  function snippet(k, title, text) {
+    return folds(el("details", { class: "tour-snip", "data-k": `snip-${k}` }, el("summary", { text: title }),
+      el("pre", {}, el("code", { text })),
+      el("div", { class: "tour-actions" }, button("Copy", `copy-snip-${k}`, () => copy(text, `the ${title} example`), "copy"))), k);
   }
   const spendOf = (alias) => {
     const k = sum && sum.spend && (sum.spend.keys || []).find((r) => r.alias === alias);
     return k && !k.error && typeof k.spend === "number" ? k.spend : null;
   };
   const command = () => (sum && sum.claude && sum.claude.command) || "claude-bedrock";
+  const remote = () => Boolean(sum && sum.remote && sum.remote.here);
+  const onlyHere = () => (remote() ? " — you are on another device now, so open it there for that" : "");
 
   // --- the steps. info: Next marks it done. optional: Skip. skipOnly: no "Mark as done" (it is detected).
   // live: needs /api/summary while shown. detect(summary) → {ok, text, warn} or null. spendKey: done once that
-  // LiteLLM key spends more than when the step was first shown.
+  // LiteLLM key spends more than when the step was first shown. cfg: needs /api/settings while shown (detectCfg(cfg)
+  // like detect). local(): detected from this page (the Code tab's report), no summary needed. when: only where it
+  // applies (the Code page or the terminal on here).
   const STEPS = {
+    // ---------------- Set up
     welcome: {
       title: "Welcome", info: true,
       body: () => [
-        p("How the pieces fit together:"),
+        p("bedrock-now is your AI workbench, every model call billed to your AWS Bedrock account. Where you work:"),
         list("ul", [
+          CODE.here ? [b("Code"), ": Claude Code in the browser — a chat beside your files, Git, previews, Run & test — in a sandbox that sees one folder."]
+            : [b("Code"), ": Claude Code in the browser, once it is on (its step says how)."],
+          [b("Claude Code"), " in your own terminal (", code("claude-bedrock"), ")", TERM.here ? ", and the browser terminal." : "."],
           [b("Chat"), " (Open WebUI): conversations, voice and your documents."],
-          [b("Claude Code"), " in your terminal (", code("claude-bedrock"), "): coding",
-            ...(APP_URLS.code ? [" — or in the ", b("Code"), " tab, with a chat, your files and permission prompts."] : [" — or, once it is on, in the ", b("Code"), " tab."])],
-          [b("Files"), " (RustFS): the shared store both of them use."],
-          [b("Admin"), " (LiteLLM): keys, budgets, logs."]]),
-        p("One sign-in, the portal's, opens all of them. Every model call goes through one gateway to your AWS Bedrock account (plus OpenRouter, if you add it), and every answer shows what it cost."),
-        note("About 20 minutes; trying everything costs a few cents. Commands here run in a terminal, in your bedrock-now folder."),
+          [b("Your own tools"), ": scripts and apps use the same models through one OpenAI- and Anthropic-compatible API."],
+          [b("Admin"), " (keys, budgets, logs) and ", b("Files"), " (the store Claude Code and Chat share)."]]),
+        p("One sign-in, the portal's, opens all of them, and every answer shows what it cost."),
+        note("Six parts; skip what you do not need (each part folds away). Trying everything costs a few cents. Commands here run in a terminal, in your bedrock-now folder."),
       ],
     },
     aws: {
@@ -177,7 +297,7 @@
       },
       body: () => [
         p("The Models table on Home shows each model's status, its price and, under ", el("em", { text: "Why" }), ", why a model is not available."),
-        p("For more models, ask your AWS admin for model access (", ext(`${REPO}#asking-your-aws-admin-for-model-access`, "what to ask for"),
+        p("For more models, ask your AWS admin for model access (", doc("asking-your-aws-admin-for-model-access", "what to ask for"),
           "), then check again (< $0.01):"),
         cmd("./stack models --recheck"),
       ],
@@ -230,21 +350,43 @@
       },
     },
     "claude-setup": {
-      title: "Claude Code", optional: true,
+      title: "Claude Code on your computer", optional: true,
       body: () => [
         p(code("claude-bedrock"), " is Claude Code pointed at this stack, so Claude Code (", code("claude"), ") must be installed (",
-          ext(`${REPO}#quickstart`, "prerequisites"), ")."),
+          doc("quickstart", "prerequisites"), ")."),
         p("Setup offers to link it into ", code("~/.local/bin"), ". If your terminal says “command not found”, run ",
           code("./bin/claude-bedrock"), " from your bedrock-now folder, or re-run ", code("./stack setup"), " and answer y."),
         cmd(command()),
         p("It keeps its own config folder, ", code("~/.claude-bedrock"), ": your ", code("~/.claude"),
           " plugins, hooks and MCP servers are not loaded, which makes a prompt on Bedrock about 100× cheaper (",
-          ext(`${REPO}#a-lean-config-folder-for-bedrock`, "why"), "). Add only what you want with ",
+          doc("a-lean-config-folder-for-bedrock", "why"), "). Add only what you want with ",
           code("claude-bedrock plugin install …"), " or ", code("claude-bedrock mcp add …"), "; ",
           code("CLAUDE_BEDROCK_USE_MY_CONFIG=1"), " loads your whole setup."),
         codeLine(false),
       ],
       actions: () => [openCode()],   // (while it is off here: its tab's page, how to turn it on)
+    },
+    "git-hosts": {
+      title: "Connect a git host", optional: true, when: () => CODE.here,
+      // (how many hosts the Code tab last reported — a number only; null while it has not: Mark as done)
+      local: () => {
+        const n = window.bnCode && window.bnCode.gitHosts ? window.bnCode.gitHosts() : null;
+        if (n == null) return null;
+        return n ? { ok: true, text: `${n} git host${n === 1 ? "" : "s"} connected` } : { ok: false, text: "No git host is connected yet." };
+      },
+      body: () => [
+        p("For private repositories, and to push: GitHub, GitLab or any git server over https or ssh, connected once on the Code page."),
+        list("ol", [
+          [b("Open Git hosts"), " → ", b("Connect a git host…"), ": GitHub, GitLab or another server."],
+          ["An ", b("access token"), " for https:// URLs (the dialog links to where you make one): on GitHub a fine-grained token for only the repositories you need, with ",
+            b("Contents: Read and write"), "; on GitLab ", code("read_repository"), " and ", code("write_repository"), ". Paste it once: it is never shown again."],
+          ["Or an ", b("SSH key"), " the Code page makes, for git@… URLs: add its public half to your account, or as a deploy key of the repository (",
+            b("Allow write access"), " to push)."],
+          [b("Test connection"), " lists a repository's branches with it."]]),
+        note("Claude's own git gets nothing from it unless you turn on ", b("Let Claude use this host"), " (off by default; each use shows in Activity). Adding a host, a token or a key works only from the computer running bedrock-now",
+          onlyHere(), ". ", doc("remote-repositories-git-hosts-clone-push-and-pull", "More")),
+      ],
+      actions: () => [openGit("hosts")],
     },
     budgets: {
       title: "Budgets", info: true, live: true,
@@ -273,12 +415,12 @@
           open ? el("div", { class: "tour-actions" }, button("Open in the app", "open-app", () => open.click()))
             : install ? el("div", { class: "tour-actions" }, button("Install app", "install", () => install.click()))
               : note(app || how),
-          p(b("One-click Update, Rollback and Clean"), " on Home:"), cmd("./stack helper install"),
-          p(b("From your phone"), ": remote access over Tailscale (", ext(`${REPO}/blob/main/docs/remote.md`, "how it works"), "):"),
-          cmd("./stack remote enable tailscale"),
+          p(b("One-click Update, Rollback and Clean"), " on Home, and Settings you can change in the portal: the update helper (",
+            doc("updating", "how it works"), "):"), cmd("./stack helper install"),
         ];
       },
     },
+    // ---------------- Your apps (one sign-in)
     "signin-portal": {
       title: "The portal: your one sign-in", badges: ["Sign-in: Done"], info: true,
       body: () => [
@@ -314,17 +456,7 @@
       ],
       actions: () => [openApp("files")],
     },
-    home: {
-      title: "Home: your dashboard", info: true,
-      body: () => [
-        list("ul", [
-          [b("Services"), ": green means running."],
-          [b("Spend"), ": each app's key against its monthly budget, and the total of the last 30 days."],
-          [b("Models"), ": status, price, and why a model is not available."]]),
-        note("If you use free OpenRouter models, the cost switch on the Spend card shows what you were actually charged ($0 for free models) or what the same usage would have cost at paid rates."),
-      ],
-      actions: () => [showOnHome("spend", "Show spend"), showOnHome("services", "Show services"), showOnHome("models", "Show models")],
-    },
+    // ---------------- Chat
     chat: {
       title: "Chat: pick a model and ask", live: true, spendKey: "open-webui",
       waiting: "Not detected yet: spend can take a minute to show, and free models add none.",
@@ -354,8 +486,181 @@
       ],
       actions: () => [openApp("chat")],
     },
+    // ---------------- Code with Claude (the Code page; where it is off here, one step on how to turn it on)
+    "code-off": {
+      title: CODE.enabled ? "The Code page from this device" : "Turn on the Code page", optional: true, when: () => !CODE.here,
+      body: () => CODE.enabled ? [
+        p("The Code page — Claude Code in the browser, with a chat, your files, Git and previews — is on, on the computer running bedrock-now. Over remote access it stays off unless you allow it, because Claude runs commands there:"),
+        list("ol", [
+          ["On that computer, set ", code("REMOTE_TERMINAL=true"), " in ", code(".env"), ", then run ", code("./stack up"), " (it shares the browser terminal too)."],
+          ["With Tailscale, approve its new Services (", code("…-terminal"), ", ", code("…-code"), "); ", code("./stack remote status"), " lists them."]]),
+        note("Or open the portal on that computer: its steps then show here."),
+      ] : [
+        p("Claude Code in the browser, like its desktop app: a chat beside your project's files, Git with your git hosts, previews of dev servers, Run & test — and every command and file change shown to you first."),
+        list("ul", [
+          ["It runs in a sandbox that sees one folder of yours, with its own key and budget."],
+          [settings("Claude Code", "CODE_ENABLED"), " › ", b("Code page: On"), " (from the computer running bedrock-now), or in a terminal:"]]),
+        cmd("./stack code enable"),
+        note("Once it is on, reload the portal: this part of the walkthrough then shows its steps (", doc("the-code-page", "the Code page"), ")."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-open": {
+      title: "Open Code and ask", optional: true, when: () => CODE.here, live: true, spendKey: "claude-code-terminal",
+      waiting: "Not detected yet: send a prompt (its spend can take a minute to show).",
+      body: () => [
+        list("ol", [
+          [b("Open Code"), " and unlock it with the portal password (it stays unlocked for 12 hours in this browser)."],
+          ["Type in the prompt box and press ", kbd("Enter"), ": the answer streams in, each command and file change as a card; ", b("Stop"), " (or ", kbd("Esc"), ") interrupts."],
+          [b("New session"), " (+) starts another; the session list groups them as ", b("Needs you"), ", ", b("Working"), " and ", b("Done"),
+            ". A session keeps working when you close the tab, and Home's Code card lists the ones that need you."]]),
+        note("Every prompt is billed on the terminal's key (", code("claude-code-terminal"), "). A new session first writes Claude Code's prompt cache: about $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-modes": {
+      title: "Modes and permission cards", optional: true, when: () => CODE.here,
+      body: () => [
+        p("The mode next to Send decides what Claude may do without asking (", kbd("Shift+Tab"), " cycles, ", kbd("Alt+M"), " opens the menu):"),
+        list("ul", [
+          [b("Read only"), ": it reads and searches; anything else is denied."],
+          [b("Plan"), ": it reads, then shows a plan for you to approve — or to send back with your comments."],
+          [b("Manual"), ": every file edit and command waits for your OK."],
+          [b("Accept edits"), ": file edits in the workspace go ahead; other commands ask."]]),
+        p("A card says exactly what would run or change: ", b("Allow once"), ", ", b("Always"), " (the rule is shown first) or ", b("Deny"),
+          " (with a note for Claude). ⋯ › ", b("Permissions"), " lists the rules, with Remove."),
+        note(b("Auto"), " (a reviewer model decides; about $0.13 per 5 minutes in use) and ", b("Bypass permissions"), " stay off until ",
+          settings("Claude Code", "CODE_AUTO_MODE"), " allows them, from the computer running bedrock-now (", doc("permissions-and-modes", "details"), ")."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-models": {
+      title: "Pick a model", optional: true, when: () => CODE.here,
+      body: () => [
+        p("The model picker (top bar, or the model in the status bar) lists every enabled chat model: Claude, Bedrock's other providers and, with OpenRouter, the models you enabled — with prices, a search and ☆ to star the ones you use."),
+        list("ul", [
+          ["Claude (no badge): tools, thinking, prompt caching."],
+          [b("works"), ": its tool calls round-trip (GPT-6, Grok, Mistral Large 3)."],
+          [b("chat only"), ": it answers, but cannot read, edit or run anything (Llama 3.3 70B)."],
+          [b("not tested"), ": OpenRouter models nobody checked yet."]]),
+        p(settings("Claude Code", "CODE_MODELS"), " › ", b("Models for Claude Code"), " picks what the picker lists, and ", b("Default model for new sessions"),
+          " which one they start on. In your terminal, ", code("claude-bedrock --models"), " lists them and ", code("claude-bedrock --model mistral-large-3"), " starts on one."),
+        note("Switching writes the prompt cache for that model again (the picker says how much). ⋯ › ", b("Budget for this session"),
+          " warns at 50 % and 80 % of an amount you choose, and can stop Claude at it."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-workspace": {
+      title: "Your workspace: files, search, previews", optional: true, when: () => CODE.here, cfg: true,
+      body: () => [
+        p("Claude sees one folder of this computer: ", code((cfg && cfg.workspace) || "~/bedrock-now-workspace"), " (", code("/workspace"), " in the sandbox) — nothing else of yours."),
+        list("ul", [
+          ["The explorer: new file or folder, rename, delete (into ", code(".bedrock-now-trash/"), "), drag files in to upload them."],
+          [kbd("Ctrl/⌘+P"), " goes to a file, ", kbd("Ctrl/⌘+Shift+F"), " searches in files, ", kbd("Ctrl/⌘+K"), " opens the command palette (every action, session and file)."],
+          [b("Preview"), " shows Markdown (with Mermaid diagrams), PDF, Word, Excel, CSV, notebooks, images, and HTML in a sandboxed viewer; ", b("Source"), " is the editor."],
+          ["⋯ › ", b("Memory (CLAUDE.md)"), ": the workspace's standing instructions for Claude."]]),
+        note("Another folder: ", code("./stack code enable --workspace DIR"), ". What Claude writes there may run on your computer later (git hooks, package scripts): the page flags those files after each turn, with Revert."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-context": {
+      title: "Ask with context", optional: true, when: () => CODE.here,
+      body: () => [
+        p("Type ", code("@"), " in the prompt box:"),
+        list("ul", [
+          [code("@file"), " picks a file anywhere in the workspace; ", code("@file#L5-10"), " those lines — or select lines in the editor and press ", kbd("Alt+K"), "."],
+          [code("@terminal"), ": the terminal panel's last 200 lines; ", code("@diff"), ": the changes in Review; ", code("@problems"), ": Run & test's failed runs."],
+          ["Each becomes a chip: click it to see exactly what goes, × to drop it."],
+          ["On a plan, ", b("Comment on lines"), ": a note on any line goes back with ", b("Keep planning"), "."],
+          ["Paste or drop an image to send it; other files are uploaded into the workspace and mentioned."]]),
+        note("A chip carries the workspace's text as part of your message: in Auto or Bypass mode, read the chips before you send."),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-clone": {
+      title: "Clone a repository", optional: true, when: () => CODE.here,
+      body: () => [
+        p(b("Clone a repository…"), " in the Git panel (", kbd("Ctrl/⌘+Shift+G"), ") or the command palette: the URL, a new folder of the workspace (named after the repository) and, if you like, only the latest commit."),
+        list("ul", [
+          ["A public repository needs no git host; a private one needs its host connected (", b("Connect a git host"), ", above)."],
+          ["Nothing is fetched before you confirm where it clones from, and with which credential."],
+          ["Submodules are not cloned, and no hook of the repository runs."],
+          ["The repository picker at the top of the Git panel switches between the workspace folder and its clones."]]),
+      ],
+      actions: () => [openGit("clone")],
+    },
+    "code-review": {
+      title: "Review, commit, push", optional: true, when: () => CODE.here,
+      body: () => [
+        list("ul", [
+          [b("Review"), " in the top bar (", kbd("Ctrl/⌘+Shift+D"), ") lists every changed file: ", b("Keep"), " or ", b("Undo"), " each change; a comment on a line goes with your next prompt."],
+          ["The ", b("Git"), " panel: ", b("Stage"), ", then ", b("Commit"), " (", kbd("Ctrl/⌘+Enter"), "); ", b("Write message"),
+            " drafts one from the staged diff. Commits made here run no git hooks."],
+          [b("Fetch"), ", ", b("Pull"), " (fast-forward only) and ", b("Push"), " — or ", b("Publish branch"),
+            " for a new one: the page shows where it goes, and with which credential, before anything is sent."],
+          ["After a push to GitHub or GitLab, ", b("Open a pull request"), " opens the host's page for it. The branch button switches and creates branches."]]),
+      ],
+      actions: () => [openCode()],
+    },
+    "code-run": {
+      title: "Run, test, preview", optional: true, when: () => CODE.here,
+      body: () => [
+        list("ul", [
+          [b("Run & test"), " (", kbd("Alt+R"), ", or Run in the status bar): the workspace's ", code("package.json"), " scripts, Makefile targets and ",
+            code("pyproject.toml"), " entry points. ", b("Run"), " shows exactly what runs, then runs it in a terminal window; failures go to ",
+            b("Problems"), ", and ", b("Ask Claude"), " drafts a prompt to fix them."],
+          [b("Ports & previews"), " (", kbd("Alt+P"), "): every server listening in the sandbox. When Claude starts a dev server, ", b("Preview :5173"),
+            " shows it beside the chat; ", b("Open in a new tab"), " gives it the browser's developer tools."],
+          [code(".claude/launch.json"), "'s dev servers are listed there too, with ", b("Start"), "."]]),
+        note("All of it runs in the sandbox, not on your computer. Previews over remote access stay off unless you turn them on (",
+          doc("previews-of-dev-servers", "how"), ")."),
+      ],
+      actions: () => [openCode()],
+    },
+    terminal: {
+      title: "The browser terminal", optional: true, when: () => TERM.here,
+      body: () => [
+        p("Claude Code in a sandbox that sees only your workspace folder: in the ", b("Terminal"), " tab, ", code("claude-bedrock"),
+          " starts by itself in its first window. It asks for the portal password again."),
+        list("ul", [
+          ["Closing the tab keeps it running: come back later, or from your phone, and it is where you left it."],
+          [code("Ctrl-b c"), " opens a shell beside it; ", code("Ctrl-b n"), " goes to the next window."],
+          ["The Code page's ", b("Open in the terminal"), " continues one of its sessions here, in a window of its own."]]),
+      ],
+      actions: () => [openTerminal()],
+    },
+    sandbox: {
+      title: "What the sandbox can reach", info: true, when: () => CODE.here || TERM.here, cfg: true,
+      body: () => {
+        const now = cfg ? { internet: "Internet only (the default)", host: "+ this computer", off: "Off" }[cfg.egress] : "";
+        return [
+          now ? el("p", { class: "tour-status" }, "Now: ", b(now)) : null,
+          p(settings("Claude Code", "TERMINAL_EGRESS"), " › ", b("Sandbox internet access"), ":"),
+          list("ul", [
+            [b("Internet only"), ": public addresses on ports 80, 443 and 22 — git, npm, pip, web pages — through the sandbox's egress proxy; never this computer's own services or your network."],
+            [b("+ this computer"), ": also what runs on this computer (a dev server, a database) and your local network."],
+            [b("Off"), ": only LiteLLM and the shared MCP server."]]),
+          p("Narrower, in ", code(".env"), " and then ", code("./stack up"), ": ", code("TERMINAL_EGRESS_ALLOW"), " (only these names) and ",
+            code("TERMINAL_EGRESS_DENY"), " (never these). What the proxy refused: ", code("./stack logs terminal-egress"), "."),
+          note("Opening it further works only from the computer running bedrock-now; a change restarts the terminal (its shells and open Code sessions end)."),
+        ];
+      },
+    },
+    "code-plugins": {
+      title: "Plugins and MCP servers", optional: true, when: () => CODE.here,
+      body: () => [
+        list("ul", [
+          ["⋯ › ", b("Plugins & marketplaces"), ": add a marketplace (", code("owner/repo"), ", a git URL or a folder of the workspace), install, update or turn off plugins. One that installs by running a command shows it, with its SHA-256, before ",
+            b("Run this command and install"), "."],
+          ["⋯ › ", b("MCP servers"), ": each server of the session with its tools, ", b("Reconnect"), ", and your own (stdio, HTTP or SSE). A stdio server runs inside the sandbox, never on your computer."],
+          [code("bedrock-shared"), " is always there: the shared store and Chat's knowledge bases (", b("One store for both"), ", below)."]]),
+        note("Every plugin and MCP server adds its definitions to each request, billed per token: add what you use."),
+      ],
+      actions: () => [openCode()],
+    },
+    // ---------------- Your own tools
     claude: {
-      title: CODE.here ? "Claude Code: terminal or Code tab" : "Claude Code in your terminal", optional: true, live: true,
+      title: "Claude Code in your terminal", optional: true, live: true,
       spendKey: "claude-code", spendAlso: CODE.here ? "claude-code-terminal" : null,   // the Code tab spends the terminal's key
       waiting: "Not detected yet: spend can take a minute to show.",
       body: () => [
@@ -369,32 +674,31 @@
       ],
       actions: () => [openCode()],   // (while it is off here: its tab's page, how to turn it on)
     },
-    // (when: only where that app is offered here — the browser terminal, the Code page)
-    terminal: {
-      title: "The browser terminal", optional: true, when: () => TERM.here,
-      body: () => [
-        p("Claude Code in a sandbox that sees only your workspace folder: in the ", b("Terminal"), " tab, ", code("claude-bedrock"),
-          " starts by itself in its first window. It asks for the portal password again."),
-        list("ul", [
-          ["Closing the tab keeps it running: come back later, or from your phone, and it is where you left it."],
-          [code("Ctrl-b c"), " opens a shell beside it; ", code("Ctrl-b n"), " goes to the next window."],
-          ["The Code page's ", b("Open in the terminal"), " continues one of its sessions here, in a window of its own."]]),
-      ],
-      actions: () => [openTerminal()],
-    },
-    code: {
-      title: "The Code page: ask, approve, preview, review", optional: true, when: () => CODE.here,
-      body: () => [
-        p("Claude Code with a chat, your workspace's files and its permission cards, in the same sandbox. Five things to try:"),
-        list("ol", [
-          [b("Open Code"), " and unlock it with the portal password."],
-          [b("Ask"), ": type in the prompt box. In ", b("Manual"), " (the mode next to Send) every command and edit waits for your OK."],
-          [b("Approve a card"), ": Allow once, Always, or Deny. ⋯ › Permissions lists the Always rules and takes them out again."],
-          [b("Preview a server"), ": when Claude starts a dev server, ", b("Preview :port"), " shows it beside the chat (⋯ › Ports & previews)."],
-          [b("Review changes"), ": ", b("Review"), " in the top bar lists every change, with Keep and Undo; a comment on a line goes with your next prompt."]]),
-        note("⋯ › Budget for this session warns you at 50 % and 80 % of an amount you choose, and can stop Claude when it is reached."),
-      ],
-      actions: () => [openCode()],
+    api: {
+      title: "The models from your own code", optional: true, cfg: true, live: true,
+      body: (d) => {
+        const base = cfg && cfg.port ? `http://127.0.0.1:${cfg.port}` : "";
+        const shown = base || "http://127.0.0.1:PORT";
+        const ex = snippets(shown, snippetModel(d));
+        return [
+          p("Scripts, notebooks and other tools can use the same models, on the same budgets and logs, through LiteLLM's API on this computer:"),
+          base ? cmd(base, "the API's address", "copy-api-base")
+            : note(cfg ? "" : "Checking… ", "PORT below: the port on the LiteLLM API line ", code("./stack status"), " prints (", code("LITELLM_PORT"), " in ", code(".env"), ")."),
+          list("ul", [
+            ["OpenAI-compatible: ", code(`${shown}/v1`), " (", code("/chat/completions"), ", ", code("/models"), ")."],
+            ["Anthropic-compatible: ", code(shown), " (", code("/v1/messages"), ")."],
+            ["A key for each tool: ", b("Admin"), " › ", b("Virtual Keys"), " › ", b("+ Create New Key"),
+              ": a name, the models it may use and, under Optional Settings, its own budget. Its spend then shows in Admin, apart from the apps'."],
+            ["Model names: the Models card on Home, or ", code("./stack models"), "."]]),
+          snippet("curl", "curl", ex.curl),
+          snippet("openai", "Python: openai", ex.openai),
+          snippet("anthropic", "Python: anthropic", ex.anthropic),
+          note("Put the key in place of YOUR_KEY (or ", code("OPENAI_API_KEY"), " / ", code("ANTHROPIC_API_KEY"), " with ", code("OPENAI_BASE_URL"), " / ",
+            code("ANTHROPIC_BASE_URL"), "). Only this computer reaches ", code("127.0.0.1"), ": other devices cannot, remote access included (",
+            doc("the-models-from-your-own-code", "more"), ")."),
+        ];
+      },
+      actions: () => [openApp("admin"), showOnHome("models", "Show models")],
     },
     shared: {
       title: "One store for both", optional: true,
@@ -406,65 +710,116 @@
       ],
       actions: () => [openApp("files"), openApp("chat")],
     },
+    // ---------------- Keep it running
+    home: {
+      title: "Home: your dashboard", info: true,
+      body: () => [
+        list("ul", [
+          [b("Services"), ": green means running."],
+          [b("Spend"), ": each app's key against its monthly budget, and the total of the last 30 days."],
+          [b("Models"), ": status, price, and why a model is not available."],
+          CODE.here ? [b("Code"), ": the sessions that need you, with Answer and Resume, and a box to start a prompt in Code."] : null].filter(Boolean)),
+        note("If you use free OpenRouter models, the cost switch on the Spend card shows what you were actually charged ($0 for free models) or what the same usage would have cost at paid rates."),
+      ],
+      actions: () => [showOnHome("spend", "Show spend"), showOnHome("services", "Show services"), showOnHome("models", "Show models")],
+    },
+    activity: {
+      title: "Activity and search", info: true,
+      body: () => [
+        list("ul", [
+          [b("Activity"), PHONE.matches ? " (More → Activity)" : " (the bell at the top of the sidebar)",
+            ": budget alerts, an update, Code sessions that need you, jobs, and each use Claude's git made of a host. Mark as read, or ✕."],
+          [b("Search"), " (", kbd("Ctrl/⌘+K"), " with the focus in the portal, or the box at the top of the sidebar): pages, settings by name or key, Code sessions and workspace files, Chat conversations, these steps and the docs."],
+          ["Browser notifications are off until you turn them on in Activity's panel; they never show a prompt or a title."]]),
+      ],
+      actions: () => [openPanel("activity"), openPanel("search")],
+    },
     admin: {
       title: "Admin: where the money went",
       body: () => [
         list("ul", [
-          [b("Virtual Keys"), ": one key per app (claude-code, open-webui, setup) with its spend and budget."],
+          [b("Virtual Keys"), ": one key per app (claude-code, open-webui, ", CODE.here || TERM.here ? "claude-code-terminal, " : "", "setup) and the ones you made for your tools, each with its spend and budget."],
           [b("Usage"), ": spend by model and day."],
           [b("Logs"), ": every request with its tokens and cost."]]),
         p(code("./stack costs"), " prints the same in a terminal:"), cmd("./stack costs"),
       ],
       actions: () => [openApp("admin")],
     },
+    updates: {
+      title: "Updates, backups and rollback", optional: true, cfg: true,
+      detectCfg: (c) => c.helper ? { ok: true, text: `One-click updates are on${c.auto ? ", automatic at night" : ""}${c.nightly ? "; nightly backups on" : ""}` }
+        : { ok: false, text: "One-click updates are off: the update helper is not running." },
+      body: () => [
+        list("ul", [
+          ["When a release is out, Home shows an ", b("update card"), " with each release's notes; ", b("Update now"), " backs up, updates and restarts (a few minutes)."],
+          [settings("Updates & backups"), ": ", b("Automatic updates"), " at night, ", b("Nightly backups"), ", ", b("Back up now"), " and the list of backups."],
+          ["A new version misbehaves? ", b("Roll back"), " on Home, or ", code("./stack rollback"), ", goes back to the version before, with its data."]]),
+        cfg && !cfg.helper ? p("These buttons, and changes in Settings, need the update helper:") : p("In a terminal, the same:"),
+        cfg && !cfg.helper ? cmd("./stack helper install") : cmd("./stack update"),
+        note("Your data stays across updates; a backup is taken before each one (", doc("updating", "Updating"), ")."),
+      ],
+      actions: () => [showOnHome(null, "Show Home")],
+    },
+    phone: {
+      title: "From your phone", optional: true, live: true,
+      detect: (d) => (d.remote && d.remote.on ? { ok: true, text: `Remote access is on (${d.remote.mode === "domain" ? "your own domain" : "Tailscale"})` } : null),
+      body: () => [
+        p("Remote access serves the portal over HTTPS to your own devices, through Tailscale, with no port opened to the internet:"),
+        cmd("./stack remote enable tailscale"),
+        list("ul", [
+          ["On the phone: Safari's Share › ", b("Add to Home Screen"), " (Android: Chrome's ⋮ › Install app). Chat opens first; the rest is under ", b("More"), "."],
+          ["The Terminal and the Code page stay off there unless ", code("REMOTE_TERMINAL=true"), "; updates and Settings changes unless ", code("REMOTE_ADMIN_ACTIONS=true"), "."],
+          ["Claude Code over SSH instead: ", code("./stack ssh-info"), "."]]),
+        note(ext(`${REPO}/blob/main/docs/remote.md`, "How remote access works"), ", and ", doc("using-it-on-your-phone", "using it on your phone"), "."),
+      ],
+    },
     done: {
       title: "You're set", info: true,
       body: () => [
         p("Back on Home, the spend now includes what you just did."),
-        p("Next ideas: install the app, try it from your phone, and ", code("./stack help"), " for every command."),
+        p("Every step stays here: click one to read it again. ", code("./stack help"), " lists every command, and the README every feature (",
+          ext(REPO, "on GitHub"), ")."),
       ],
       actions: () => [showOnHome(null, "Back to Home")],
     },
   };
   const SECTIONS = [
-    { title: "Set up", steps: ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras"] },
+    { title: "Set up", steps: ["welcome", "aws", "openrouter", "voice", "claude-setup", "git-hosts", "budgets", "extras"] },
     { title: "Your apps (one sign-in)", steps: ["signin-portal", "signin-chat", "signin-admin", "signin-files"] },
-    { title: "Use it together", steps: ["home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"] },
+    { title: "Chat", steps: ["chat", "voice-use", "docs"] },
+    { title: "Code with Claude", steps: ["code-off", "code-open", "code-modes", "code-models", "code-workspace", "code-context", "code-clone", "code-review", "code-run", "terminal", "sandbox", "code-plugins"] },
+    { title: "Your own tools", steps: ["claude", "api", "shared"] },
+    { title: "Keep it running", steps: ["home", "activity", "admin", "updates", "phone", "done"] },
   ];
   // steps of apps this site does not offer (the terminal, the Code page) are left out, not shown as open
   for (const sec of SECTIONS) sec.steps = sec.steps.filter((id) => !STEPS[id].when || STEPS[id].when());
   const ORDER = SECTIONS.flatMap((s) => s.steps);
   const secOf = (id) => SECTIONS.findIndex((s) => s.steps.includes(id));
 
-  // --- state: {open, cur ("" = the finished view), done, skipped, base: {key alias: spend when first shown}} ---
+  // --- state: {open, cur ("" = the finished view), done, skipped, base: {key alias: spend when first shown}, seen} ---
   function load() {
-    const s = { open: null, cur: "welcome", done: [], skipped: [], base: {} };
     let text = null;
     try { text = localStorage.getItem(KEY); } catch (_) { /* storage blocked: start fresh */ }
-    try {
-      const raw = JSON.parse(text || "null");
-      if (raw && typeof raw === "object") {
-        if (typeof raw.open === "boolean") s.open = raw.open;
-        if (raw.cur === "" || (typeof raw.cur === "string" && has(STEPS, raw.cur))) s.cur = raw.cur;
-        for (const k of ["done", "skipped"]) {
-          if (Array.isArray(raw[k])) s[k] = [...new Set(raw[k].filter((id) => typeof id === "string" && has(STEPS, id)))];
-        }
-        for (const a of ["open-webui", "claude-code", "claude-code-terminal"]) {
-          if (raw.base && Number.isFinite(raw.base[a])) s.base[a] = raw.base[a];
-        }
-      }
-    } catch (_) { /* unreadable: start fresh */ }
-    return s;
+    return parse(text, Object.keys(STEPS));
   }
   // false when storage is blocked: progress then lasts for this page only
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); return true; } catch (_) { return false; } }
+  function save() {
+    const { open, cur, done, skipped, base, seen } = st;
+    try { localStorage.setItem(KEY, JSON.stringify({ open, cur, done, skipped, base, seen })); return true; } catch (_) { return false; }
+  }
 
   let st = load();
   let sum = null, sumAt = 0, askedAt = 0, failedAt = 0, pollT = null, shown = "";
+  let cfg = null, cfgAt = 0, cfgAsked = 0;
   let openSecs = new Set();
+  // A first visit has seen everything listed now; the steps new to this browser are marked New while it reads them.
+  if (st.first) st.seen = [...new Set([...st.seen, ...ORDER])];
+  const freshAtLoad = new Set(unseen(ORDER, st.seen));
   const isDone = (id) => st.done.includes(id);
   const isSkipped = (id) => st.skipped.includes(id);
   const handled = (id) => isDone(id) || isSkipped(id);
+  const isNew = (id) => !st.seen.includes(id);
+  const newCount = () => unseen(ORDER, st.seen).length;
   function mark(id, how) {   // how: "done" | "skipped" | null (undo)
     st.done = st.done.filter((x) => x !== id);
     st.skipped = st.skipped.filter((x) => x !== id);
@@ -475,7 +830,10 @@
   const spendKeys = (s) => (s.spendAlso ? [s.spendKey, s.spendAlso] : [s.spendKey]);
   function detection(id) {
     const s = STEPS[id];
-    if (!s || !sum) return null;
+    if (!s) return null;
+    if (s.local) return s.local();
+    if (s.detectCfg) return cfg ? s.detectCfg(cfg) : null;
+    if (!sum) return null;
     if (s.spendKey) {
       let seen = false;
       for (const k of spendKeys(s)) {
@@ -505,10 +863,19 @@
     }
     return flipped;
   }
-  // What the current card shows from the summary.
+  // What the current card shows from the summary, the settings and the Code tab's report.
   const digest = () => JSON.stringify([st.cur, detection(st.cur) || null, Boolean(sum), sum && sum.voice && sum.voice.on,
-    sum && sum.claude && sum.claude.command, sum && sum.spend && (sum.spend.keys || []).map((k) => [k.label, k.max_budget, k.error])]);
+    sum && sum.claude && sum.claude.command, sum && sum.spend && (sum.spend.keys || []).map((k) => [k.label, k.max_budget, k.error]),
+    STEPS[st.cur] && STEPS[st.cur].cfg ? cfg : null, st.cur === "api" ? snippetModel(sum) : ""]);
   function announce(text) { live.textContent = ""; setTimeout(() => { live.textContent = text; }, 50); }
+  // after new data: steps detected as done, the panel drawn again only when what it shows changed (a rebuild every 30 s
+  // would disturb reading and selecting)
+  function settle(store = false) {
+    const flipped = detectAll();
+    if (store || flipped.length) save();
+    if (st.open && flipped.includes(st.cur)) announce(`${STEPS[st.cur].title}: detected, done.`);
+    if (st.open && (flipped.length || digest() !== shown)) render(); else renderButtons();
+  }
 
   function onSummary(d) {
     if (!d || d === sum) return;
@@ -518,11 +885,7 @@
       if (v != null && v < st.base[a]) st.base[a] = v;
     }
     noteBaseline();
-    const flipped = detectAll();
-    save();
-    if (st.open && flipped.includes(st.cur)) announce(`${STEPS[st.cur].title}: detected, done.`);
-    // Re-drawn only when something it shows changed (a rebuild every 30 s would disturb reading and selecting).
-    if (st.open && (flipped.length || digest() !== shown)) render(); else renderButtons();
+    settle(true);
     poll();
   }
 
@@ -543,6 +906,15 @@
       if (st.open && !sum) render();   // an earlier summary stays on screen: no redraw every 30 s during an outage
     }).finally(() => { clearTimeout(pollT); pollT = setTimeout(poll, POLL_MS); });
   }
+  // The settings snapshot (the LiteLLM port, the workspace folder, the sandbox's internet, the update helper): asked
+  // while the panel shows a step that needs it, kept 5 minutes, asked at most once a minute.
+  function askCfg() {
+    const s = STEPS[st.cur];
+    if (!st.open || !s || !s.cfg || document.hidden) return;
+    if ((cfg && Date.now() - cfgAt < CFG_MS) || Date.now() - cfgAsked < 60000) return;
+    cfgAsked = Date.now();
+    api("/api/settings").then((d) => { cfg = cfgFrom(d); cfgAt = Date.now(); settle(); }, () => { /* the step says how to find it */ });
+  }
 
   // --- rendering ---
   const panel = $("#tour"), opener = $("#tour-btn"), moreEntry = $("#more-tour");
@@ -553,17 +925,23 @@
   panel.append(head, scroller, live);
 
   function progress() { return ORDER.filter(handled).length; }
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   function renderButtons() {
-    const n = progress(), all = n === ORDER.length;
-    $("#tour-count").textContent = all ? "✓" : `· ${n}/${ORDER.length}`;
+    const n = progress(), all = n === ORDER.length, fresh = newCount();
+    $("#tour-count").textContent = fresh ? `${fresh} new` : all ? "✓" : `· ${n}/${ORDER.length}`;
     $(".tour-btn-bar i", opener).style.width = `${(n / ORDER.length) * 100}%`;
     opener.setAttribute("aria-expanded", String(Boolean(st.open)));
-    const words = all ? "Walkthrough: finished" : `Walkthrough: ${n} of ${ORDER.length} steps done`;
+    opener.classList.toggle("has-new", fresh > 0);
+    const words = (fresh ? `Walkthrough: ${plural(fresh, "new step", "new steps")} · ` : "Walkthrough: ") + (all ? "finished" : `${n} of ${ORDER.length} steps done`);
     if (TABLET.matches) opener.title = words; else opener.removeAttribute("title");
-    if (moreEntry) $("#more-tour-note").textContent = all ? "Finished ✓ · read it again" : `Set up, your apps, use them together · ${n}/${ORDER.length}`;
+    if (moreEntry) {
+      $("#more-tour-note").textContent = fresh ? `${plural(fresh, "new step", "new steps")} since you last looked · ${n}/${ORDER.length}`
+        : all ? "Finished ✓ · read it again" : `Set up, Chat, Code, your own tools · ${n}/${ORDER.length}`;
+    }
   }
 
+  const newPill = () => el("span", { class: "tour-new", text: "New" });
   function stepItem(id) {
     const li = el("li", { class: "tour-step", "data-step": id });
     if (isDone(id)) li.classList.add("done"); else if (isSkipped(id)) li.classList.add("skipped");
@@ -574,7 +952,8 @@
     }
     const go = button("", `go-${id}`, () => nav(id), "tour-step-btn");
     go.append(el("span", { class: "tour-mark", "aria-hidden": "true", text: isDone(id) ? "✓" : isSkipped(id) ? "–" : "○" }),
-      el("span", { text: STEPS[id].title }));
+      el("span", { class: "tour-step-title", text: STEPS[id].title }));
+    if (isNew(id)) go.append(newPill());
     if (handled(id)) go.append(el("span", { class: "tour-sr", text: isDone(id) ? " (done)" : " (skipped)" }));
     li.append(go);
     return li;
@@ -585,12 +964,13 @@
     const n = el("div", { class: "tour-card" },
       el("h4", { id: "tour-cur", tabindex: "-1", "data-k": "heading" }, el("span", { class: "tour-mark", "aria-hidden": "true", text: isDone(id) ? "✓" : "●" }),
         el("span", { text: s.title })));
-    const tags = [...(s.badges || []), ...(s.optional ? ["Optional"] : [])];
-    if (tags.length) n.append(el("p", { class: "tour-badges" }, ...tags.map((t) => el("span", { class: "tour-badge", text: t }))));
+    const tags = [...(freshAtLoad.has(id) ? ["New"] : []), ...(s.badges || []), ...(s.optional ? ["Optional"] : [])];
+    if (tags.length) n.append(el("p", { class: "tour-badges" }, ...tags.map((t) => el("span", { class: `tour-badge${t === "New" ? " new" : ""}`, text: t }))));
     if (det && det.text) {
       n.append(el("p", { class: `tour-status${det.ok ? " ok" : det.warn ? " warn" : ""}`,
         text: det.ok && !det.text.startsWith("Detected") ? `✓ ${det.text}` : det.text }));
     } else if ((s.detect || s.spendKey) && !sum) n.append(el("p", { class: `tour-status${failedAt ? " warn" : ""}`, text: failedAt ? CHECK_FAILED : "Checking…" }));
+    else if (s.detectCfg && !cfg) n.append(el("p", { class: "tour-status", text: "Checking…" }));
     n.append(...s.body(sum).filter(Boolean));
     const acts = s.actions ? s.actions(sum).filter(Boolean) : [];
     if (acts.length) n.append(el("div", { class: "tour-actions" }, ...acts));
@@ -619,18 +999,23 @@
     return n;
   }
 
+  const firstNew = () => ORDER.find(isNew) || "";
   function finishedCard() {
-    const left = ORDER.filter((id) => !handled(id)).length;
+    const left = ORDER.filter((id) => !handled(id)).length, fresh = newCount();
     return el("div", { class: "tour-card tour-finished" },
-      el("h4", { id: "tour-cur", tabindex: "-1", "data-k": "heading", text: left ? `${left} step${left === 1 ? "" : "s"} still open` : "You're all set" }),
-      p(left ? "Pick one below to finish or skip it." : "Every step is done or skipped. Click any step below to read it again."),
+      el("h4", { id: "tour-cur", tabindex: "-1", "data-k": "heading",
+        text: fresh ? `${plural(fresh, "new step", "new steps")} since you last looked` : left ? `${left} step${left === 1 ? "" : "s"} still open` : "You're all set" }),
+      p(fresh ? "They are marked New below. " : left ? "Pick one below to finish or skip it." : "Every step is done or skipped. Click any step below to read it again.",
+        fresh ? button("Show the first new one", "first-new-card", () => nav(firstNew()), "tour-link") : ""),
       el("div", { class: "tour-nav" }, button("Start over", "restart", restart, "tour-link"),
         button("Close", "close-done", () => setOpen(false), "action primary")));
   }
 
   function render(opts = {}) {
+    // the step on screen has been opened: no longer new (its card keeps its New badge until the next load)
+    if (st.cur && isNew(st.cur)) { st.seen.push(st.cur); save(); }
     renderButtons();
-    const n = progress();
+    const n = progress(), fresh = newCount();
     const k = !opts.focus && panel.contains(document.activeElement) ? document.activeElement.dataset.k : null;
     const top = scroller.scrollTop;
     const close = button("", "close", () => setOpen(false), "tour-x");
@@ -643,15 +1028,20 @@
       el("p", { class: "tour-prog", text: n === ORDER.length ? `All ${ORDER.length} steps done` : `${n} of ${ORDER.length} steps done` }),
       close,
       el("div", { class: "tour-bar", role: "progressbar", "aria-label": "Walkthrough progress", "aria-valuemin": "0",
-        "aria-valuemax": String(ORDER.length), "aria-valuenow": String(n) }, bar));
+        "aria-valuemax": String(ORDER.length), "aria-valuenow": String(n) }, bar),
+      fresh && st.cur !== "" ? el("p", { class: "tour-newline", "data-k": "newline" }, `${plural(fresh, "step is", "steps are")} new since you last looked. `,
+        button("Show the first", "first-new", () => nav(firstNew()), "tour-link")) : "");
 
     const parts = st.cur === "" ? [finishedCard()] : [];
     SECTIONS.forEach((sec, si) => {
+      if (!sec.steps.length) return;
       const open = openSecs.has(si);
       const toggle = button("", `sec-${si}`, () => { if (openSecs.has(si)) openSecs.delete(si); else openSecs.add(si); render(); }, "tour-sec-btn");
       toggle.setAttribute("aria-expanded", String(open));
       toggle.setAttribute("aria-controls", `tour-sec-${si}`);
+      const freshHere = sec.steps.filter(isNew).length;
       toggle.append(el("span", { class: "tour-chev", "aria-hidden": "true" }), el("span", { class: "tour-sec-name", text: `${si + 1}. ${sec.title}` }),
+        freshHere ? el("span", { class: "tour-new", text: `${freshHere} new` }) : "",
         el("span", { class: "tour-sec-count", text: `${sec.steps.filter(handled).length}/${sec.steps.length}` }));
       const ol = el("ol", { class: "tour-steps", id: `tour-sec-${si}` }, ...sec.steps.map(stepItem));
       ol.hidden = !open;
@@ -691,6 +1081,7 @@
     noteBaseline();
     commit({ focus: "heading" });
     poll();
+    askCfg();
   }
   function advance() {   // after Mark as done / Skip
     const i = ORDER.indexOf(st.cur);
@@ -698,8 +1089,8 @@
   }
   function finish() { mark("done", "done"); nav(""); }
   function restart() {
-    st = { open: true, cur: "welcome", done: ["signin-portal"], skipped: [], base: {} };
-    if (sum) detectAll();
+    st = { open: true, cur: "welcome", done: ["signin-portal"], skipped: [], base: {}, seen: st.seen };
+    if (sum || cfg) detectAll();
     nav("welcome");
   }
 
@@ -719,6 +1110,7 @@
       if (focus) (PHONE.matches ? $("#more-btn") : opener).focus();
     }
     poll();
+    askCfg();
   }
   // Phones and tablets: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside,
   // and focus goes to what opens it again (the compass button, or More).
@@ -730,7 +1122,8 @@
 
   // --- wiring ---
   // First visit: open, except on phones (it would cover Chat; it is under More) and when storage is blocked (it
-  // would open again on every load). Phones also start closed after a visit that left it open.
+  // would open again on every load). Phones also start closed after a visit that left it open. A browser that went
+  // through an older walkthrough is not opened for what is new: the button says how many steps are.
   if (!isDone("signin-portal")) mark("signin-portal", "done");
   const first = st.open === null;
   if (first || PHONE.matches) st.open = !PHONE.matches && first;
@@ -751,13 +1144,16 @@
   if (updated) new MutationObserver(() => onSummary(lastSummary)).observe(updated, { childList: true, characterData: true, subtree: true });
 
   document.addEventListener("bn:tab", (e) => opened(e.detail));
-  document.addEventListener("DOMContentLoaded", () => setTimeout(poll, homeOwns() ? 10000 : 0));   // after app.js's
+  // the Code tab reported (code.js): how many Git hosts are connected may have changed
+  document.addEventListener("bn:code-status", () => settle());
+  document.addEventListener("DOMContentLoaded", () => { setTimeout(poll, homeOwns() ? 10000 : 0); askCfg(); });   // after app.js's
   // Back on the page: with Home on screen, app.js refreshes it at once and the #updated observer hands that over (the
   // panel asks only if it did not come); otherwise the panel asks itself if its summary is old.
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { clearTimeout(pollT); return; }
     if (homeOwns()) askedAt = Date.now();
     poll();
+    askCfg();
   });
   // app.js's sign-ins arrive: the Admin / Files step shows the user name.
   const signins = $("#logins");
@@ -779,11 +1175,11 @@
   // The Extras step offers Install app or Open in the app once install.js knows which.
   document.addEventListener("bn:app", () => { if (st.open && st.cur === "extras") render(); });
   // The global search (search.js): the steps by title, and the walkthrough opened at one (or where it was)
-  window.bnTour = {
+  Object.assign(root.bnTour, {
     steps: () => SECTIONS.flatMap((sec) => sec.steps.map((id) => ({ id, title: STEPS[id].title, section: sec.title }))),
     open: (id) => {
       if (id && has(STEPS, id) && ORDER.includes(id)) { if (!st.open) setOpen(true, false); nav(id); return; }
       if (!st.open) setOpen(true); else { const h = $("#tour-cur", panel); if (h) h.focus(); }
     },
-  };
-})();
+  });
+})(typeof window !== "undefined" ? window : globalThis);

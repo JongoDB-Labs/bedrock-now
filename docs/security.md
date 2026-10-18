@@ -312,10 +312,11 @@ you type into the search travels from your device to the portal, as every reques
   window: the portal takes messages only from the code host's origin and from its own Code tab's frame
   (`e.source === frame.contentWindow`), the Code page only from the portal origin it was given (`/api/state`'s
   `portal_origin`) and from `window.parent`; each answers to that one origin only (never `"*"`). The messages:
-  - Code page → portal `{type: "bn-code-status", pending, busy, bypass, waiting, sessions: [{id, title, state}]}`
-    (as before: the badge and Home's Code card); Activity uses the same checked copy (ids that are UUIDs, known
+  - Code page → portal `{type: "bn-code-status", pending, busy, bypass, waiting, sessions: [{id, title, state}], git,
+    hosts}` (as before: the badge and Home's Code card); Activity uses the same checked copy (ids that are UUIDs, known
     states, at most 8, titles cut to 120 characters with invisible and direction-changing characters shown as
-    `⟨U+…⟩`).
+    `⟨U+…⟩`). `hosts` is how many Git hosts are connected — a number only (0–99, else nothing), never a host's name,
+    URL or credential —, which the walkthrough's *Connect a git host* step uses to tick itself off.
   - portal → Code page `{type: "bn-portal-search", id, q}` (id: 1–32 letters and digits; q: at most 64 characters,
     control characters dropped), and back `{type: "bn-code-search", id, sessions: [{id, title}] (≤ 20), files:
     [path] (≤ 30), truncated}`: the session list's own fuzzy match and the @ picker's bounded walk (`/api/fs/find`).

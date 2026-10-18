@@ -10,6 +10,8 @@
 .tour-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .tour-count { justify-self: end; color: var(--muted); font-size: 13px; font-weight: 400; font-variant-numeric: tabular-nums; }
 .tour-btn-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--track); overflow: hidden; }
+/* Steps this browser has not opened yet (a walkthrough of an older version done before): "· 9 new" in accent. */
+.tour-btn.has-new .tour-count { color: var(--accent); font-size: 12.5px; font-weight: 600; }
 .tour-btn-bar i, .tour-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 /* The button (or the open panel) takes the free space; Install app and Sign out stay together below it. */
 .tour-btn:not([hidden]) ~ .install-btn, .tour-btn:not([hidden]) ~ .logout { margin-top: -12px; }
@@ -23,6 +25,8 @@
   background: none; color: var(--muted); font-size: 14px; }
 .tour-x:hover { color: var(--ink); background: var(--tour-card); }
 .tour-bar { grid-column: 1 / -1; height: 4px; margin-top: 8px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.tour-newline { grid-column: 1 / -1; margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+.tour-newline .tour-link, .tour-finished .tour-link { font-size: inherit; }
 /* The list scrolls inside the panel; its last 16 px fade out so a cut-off line reads as "more below". */
 .tour-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 16px;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); }
@@ -43,6 +47,11 @@
 .tour-mark { flex: none; width: 14px; text-align: center; font-size: 12px; }
 .tour-step.done .tour-mark { color: var(--ok); }
 .tour-step.done .tour-step-btn { color: var(--ink); }
+.tour-step-title { min-width: 0; }
+/* "New": a step (or how many in a section) this browser has not opened yet */
+.tour-new { flex: none; align-self: center; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent); font-size: 11px; font-weight: 600; line-height: 17px; }
+.tour-sec-btn .tour-new { font-weight: 600; }
 
 /* The current step: a card in the list, in place. */
 .tour-card { margin: 4px 0 8px; padding: 12px 12px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--tour-card);
@@ -60,6 +69,16 @@
 .tour-card a:not(.action) { color: var(--accent); }
 .tour-badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .tour-badge { padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.tour-badge.new { border-color: transparent; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 600; }
+.tour-card kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--tour-well);
+  font: 12px var(--mono); white-space: nowrap; }
+/* The API step's examples: folded, each with Copy; long lines scroll inside the block, never the page. */
+.tour-snip { margin: 2px 0 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.tour-snip summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tour-snip[open] summary { margin-bottom: 6px; }
+.tour-snip pre { margin: 0 0 6px; padding: 6px 8px; overflow-x: auto; border-radius: 6px; background: var(--tour-well); font-size: 12px; line-height: 1.45; }
+.tour-snip pre code { padding: 0; background: none; overflow-wrap: normal; white-space: pre; }
+.tour-snip .tour-actions { margin-bottom: 2px; }
 .tour-status { padding: 6px 10px; border-left: 3px solid var(--line); border-radius: 6px; background: var(--tour-well); font-size: 13px; }
 .tour-status.ok { border-left-color: var(--ok); }
 .tour-status.warn { border-left-color: var(--warn); }
@@ -113,6 +132,9 @@
   .tour-btn svg { width: 22px; height: 22px; }
   .tour-btn-text, .tour-count { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .tour-btn-bar { width: 34px; }
+  .tour-btn.has-new { position: relative; }
+  .tour-btn.has-new::after { content: ""; position: absolute; top: 7px; right: calc(50% - 15px); width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 2px var(--surface); }
   .tour { --tour-card: var(--bg); --tour-well: var(--surface); position: absolute; z-index: 5; left: calc(100% + 12px); bottom: 12px;
     width: min(360px, calc(100vw - 100px)); max-height: 75%; display: flex; flex-direction: column; padding: 14px 12px 0;
     background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 14px 40px rgb(0 0 0 / 0.18); }

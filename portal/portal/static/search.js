@@ -147,7 +147,7 @@
     if (APP_URLS.terminal) out.push(tab("terminal", "Terminal", "Claude Code in a sandbox shell", "shell"));
     out.push(tab("settings", "Settings", "Passwords, keys, budgets, voice, the Code page, updates", "preferences"));
     if (window.bnActivity && window.bnActivity.open) out.push({ group: "pages", key: "page:activity", title: "Activity", sub: "Budgets, updates, jobs, Code sessions that need you", alt: "notifications bell", run: () => window.bnActivity.open() });
-    if (window.bnTour && window.bnTour.open) out.push({ group: "pages", key: "page:tour", title: "Walkthrough", sub: "Set up, your apps, use them together", alt: "tour", run: () => window.bnTour.open() });
+    if (window.bnTour && window.bnTour.open) out.push({ group: "pages", key: "page:tour", title: "Walkthrough", sub: "Set up, Chat, Code, your own tools", alt: "tour", run: () => window.bnTour.open() });
     return out;
   }
   function openTab(id) {

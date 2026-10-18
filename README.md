@@ -18,6 +18,7 @@ disable` the Code page alone; either stays off across updates).
 | [**Chat**](#chat-open-webui) | Open WebUI with the Bedrock models your key can use: the cost under every answer, documents and knowledge bases, images | on | — |
 | [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock, with a lean config folder and each session's cost; any chat model of the catalog (`--models` lists them and how each works, `--model` picks one) | on (needs `claude`) | setup offers to put it on your `PATH` |
 | [**Home, Admin, Files**](#the-portal-one-login-for-everything) | health, spend and budgets; LiteLLM's UI; the shared file store (also an MCP server for Claude Code) | on | — |
+| [**The API for your tools**](#the-models-from-your-own-code) | the same models for your own scripts and apps: OpenAI- and Anthropic-compatible, on `127.0.0.1`, a key and budget per tool (Admin › Virtual Keys) | on | — |
 | [**Activity & search**](#activity-and-search) | a bell for budget alerts, updates, Code sessions that need you and jobs; **Ctrl/⌘+K** finds pages, settings, Code sessions and workspace files, Chat conversations, the walkthrough and these docs | on (the docs part with Docker Compose 2.17+) | — |
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
 | [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) and reaches public internet addresses through an egress proxy of its own — not this computer's services or your network | on, as the Code page's sandbox (internet: public addresses only) | `./stack terminal disable` / `enable` (disable turns the Code page off too); its internet: Settings › Claude Code › Sandbox internet access |
@@ -183,7 +184,8 @@ Each app stays open while you switch tabs; the arrow next to a tab opens it in i
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
 password, use **Settings → Account & security** (or `./stack config set PORTAL_PASSWORD`). Setup prints the password once, and only
 in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
-`http://127.0.0.1:4000` (OpenAI- and Anthropic-compatible; keys in `.env`).
+`http://127.0.0.1:4000` (`LITELLM_PORT`; OpenAI- and Anthropic-compatible): [the models from your own
+code](#the-models-from-your-own-code).
 
 The installed version is always shown: under **bedrock-now** in the sidebar (on a tablet's icon rail as a tiny
 label, the full version in the logo's tooltip; on a phone in Home's header). A build after a release reads
@@ -194,26 +196,39 @@ reloading the page shows the new version.
 
 ### Walkthrough
 
-New to the apps? **Walkthrough** at the bottom of the sidebar takes you through all of bedrock-now in about
-20 minutes (a few cents of usage). It opens by itself on your first visit (not on a phone, where it would cover
-Chat); on a desktop it widens the sidebar instead of covering an app, on a tablet it is a card next to the icons, and
-on a phone it is under **More**.
+New here? **Walkthrough** at the bottom of the sidebar takes you through what a developer uses in bedrock-now, in six
+parts you can fold away or skip (about 30 minutes for all of it, a few cents of usage). It opens by itself on your
+first visit (not on a phone, where it would cover Chat); on a desktop it widens the sidebar instead of covering an app,
+on a tablet it is a card next to the icons, and on a phone it is under **More**.
 
-1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models, voice,
-   Claude Code (and its lean `~/.claude-bedrock` config folder), each app's budget, and extras (the desktop app,
-   one-click updates, use from your phone). Each step shows its live status from Home and the commands to run, with
-   Copy buttons.
+1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models and voice,
+   Claude Code on your computer (`claude-bedrock` and its lean `~/.claude-bedrock` config folder), **Connect a git
+   host** for the Code page (an access token or an SSH key it makes; **Open Git hosts** opens its dialog), each app's
+   budget, and extras (the desktop app, one-click updates). Each step shows its live status and the commands to run,
+   with Copy buttons.
 2. **Your apps (one sign-in):** the portal password is the only one you type; Chat, Admin (on Virtual Keys) and
    Files (on its buckets) open signed in, and opening each one ticks its step off. Admin's and Files' own sign-ins
    are folded away under **Credentials**, with Copy buttons and a link to each app's own form, for the API or in
    case the automatic sign-in ever fails.
-3. **Use it together:** Home, a chat with its cost line, voice, your documents, Claude Code writing to the shared
-   store and Chat answering from that file, and where the money went in Admin — plus, where they are on, the browser
-   terminal and the Code page (open Code → ask → approve a card → preview a server → review the changes).
+3. **Chat:** a chat with its cost line, voice, your documents.
+4. **Code with Claude** (where the Code page is on; otherwise one step on how to turn it on): open Code and ask, the
+   permission modes and cards, picking a model, your workspace (its folder on this computer, files, search, previews),
+   @-mentions and comments on a plan's lines, **Clone a repository**, review, commit and push, Run & test and
+   previews of dev servers, the browser terminal, what the sandbox can reach, plugins and MCP servers.
+5. **Your own tools:** `claude-bedrock` in your terminal, [the models from your own
+   code](#the-models-from-your-own-code) (this install's API address, a key per tool, curl and Python examples to
+   copy) and the store Claude Code and Chat share.
+6. **Keep it running:** Home, Activity and search, where the money went, updates, backups and rollback, and the portal
+   from your phone.
 
-Steps tick off by themselves where the portal can tell (models enabled, OpenRouter or voice on, Chat, Admin or
-Files opened, a key's spend going up); the others have **Mark as done** or **Skip**. Progress is kept in this browser only;
-closing the walkthrough leaves the button with your progress, and **Start over** at the end resets it.
+Steps tick off by themselves where the portal can tell (models enabled; OpenRouter, voice or remote access on; Chat,
+Admin or Files opened; a key's spend going up; a git host connected, as the Code tab reports it; the update helper
+running); the others have **Mark as done** or **Skip**. Progress is kept in this browser only; closing the walkthrough
+leaves the button with your progress, and **Start over** at the end resets it.
+
+**After an update** the walkthrough does not open again. A browser that went through an earlier one finds the steps
+it has not opened yet marked **New**, and the button says how many (*15 new* beside **Walkthrough**; under More, *15
+new steps since you last looked*) until each one is opened. On a first visit nothing is marked new.
 
 ### Activity and search
 
@@ -902,9 +917,10 @@ maps to it).
 The Git panel works with remotes too — GitHub, GitLab or any git server over https or ssh — without your
 credentials ever being kept in the sandbox.
 
-- **Connect a git host** (the Git panel's server button, *Git hosts…* when the workspace is not a repository yet, the
-  command palette's *Git: Git hosts*, or Settings › Claude Code › **Git hosts**). Choose GitHub, GitLab or another
-  server and how to connect:
+- **Connect a git host** (the Git panel's **Hosts** button — and its *Connect a git host* line while no connected host
+  covers the remote, or none is connected —, *Connect a git host…* when the workspace is not a repository yet, a new
+  session's *Connect a git host*, the command palette's *Git: Git hosts*, Settings › Claude Code › **Git hosts**, or the
+  walkthrough's *Connect a git host*). Choose GitHub, GitLab or another server and how to connect:
   - **An access token**, for `https://` URLs. The dialog links to the place to create one: on GitHub a
     *fine-grained* token for only the repositories you need, with *Contents: Read and write*; on GitLab one with
     `read_repository` and `write_repository`. Paste it once; it is kept by the Code page and never shown again (*Replace
@@ -919,11 +935,11 @@ credentials ever being kept in the sandbox.
   CA signed takes that CA (*More*). Adding a host, a token or a key, trusting a host key, and letting Claude use a host
   work only from the computer running bedrock-now; over remote access you can still use the hosts, remove one, or turn
   Claude's use off.
-- **Clone** (*Clone a repository…* in the Git panel or the command palette): a URL, a new folder of the workspace
-  (named after the repository; or the workspace folder itself while it is empty) and, if you like, only the latest
-  commit. A public repository needs no git host; a private one needs its host connected. Submodules are not cloned and
-  no hook of the repository runs. The panel then shows the new repository: a **repository picker** at its top lists the
-  workspace folder and the repositories in it (two levels down).
+- **Clone** (*Clone a repository…* in the Git panel or the command palette, or a new session's *Clone a repository*): a
+  URL, a new folder of the workspace (named after the repository; or the workspace folder itself while it is empty)
+  and, if you like, only the latest commit. A public repository needs no git host; a private one needs its host
+  connected. Submodules are not cloned and no hook of the repository runs. The panel then shows the new repository: a
+  **repository picker** at its top lists the workspace folder and the repositories in it (two levels down).
 - **Fetch, pull, push.** Under the branch, the panel shows the remote (`origin → github.com/owner/repo`, with the Git
   host whose credential it uses) and **Fetch**, **Pull** (with how many commits are new there) and **Push** (with how
   many are yours) — or **Publish branch** for a branch that is not on the remote yet. Before anything is sent the page
@@ -1079,6 +1095,44 @@ In `claude-bedrock`, `/mcp` shows the **`bedrock-shared`** server with the tools
 then shows up in the **Files** tab (bucket `shared`) and in Chat as a knowledge base, and `search_knowledge`
 searches the same index as Chat's `#`. `read_file` reads UTF-8 text up to 2 MB; `list_files` returns at most 500
 files (narrow it with a prefix).
+
+### The models from your own code
+
+Your scripts, notebooks and other tools can use the same models as Chat and Claude Code — on the same AWS account,
+with the same prices, logs and budgets — through LiteLLM's API on this computer: `http://127.0.0.1:4000`, or the port
+on the *LiteLLM API* line of `./stack status` (`LITELLM_PORT`; the walkthrough's *The models from your own code* step
+shows yours).
+
+- **OpenAI-compatible:** base URL `http://127.0.0.1:4000/v1` — `/chat/completions` (streaming too) and `/models`.
+- **Anthropic-compatible:** base URL `http://127.0.0.1:4000` — `/v1/messages` (streaming too), what `claude-bedrock`
+  uses.
+- **A key for each tool:** **Admin › Virtual Keys › + Create New Key**: a name, the models it may use and, under
+  *Optional Settings*, its own budget. Admin then shows each tool's spend apart from the apps', and deleting the key
+  there revokes it. The apps' own keys work too, but they share that app's budget.
+- **Model names:** the ids on Home's Models card or in `./stack models` (`claude-haiku-5-5`, `claude-sonnet-5-5` …);
+  `/v1/models` lists the ones a key may use.
+
+```bash
+curl http://127.0.0.1:4000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "claude-haiku-5-5", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+```python
+from openai import OpenAI          # pip install openai
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="YOUR_KEY")
+r = client.chat.completions.create(model="claude-haiku-5-5", messages=[{"role": "user", "content": "Hello"}])
+print(r.choices[0].message.content)
+
+import anthropic                   # pip install anthropic
+client = anthropic.Anthropic(base_url="http://127.0.0.1:4000", api_key="YOUR_KEY")
+m = client.messages.create(model="claude-haiku-5-5", max_tokens=512, messages=[{"role": "user", "content": "Hello"}])
+print(m.content[0].text)
+```
+
+Tools that read the usual variables take `OPENAI_BASE_URL` and `OPENAI_API_KEY`, or `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_API_KEY`. The API listens on `127.0.0.1` only: another device cannot reach it, and remote access does not
+change that (its sites are the portal's pages, behind your sign-in). Keep keys out of code you share.
 
 ## Settings
 
