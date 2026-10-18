@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-18
+
 ### Added
 
 - **Check for updates.** Under Home's title a line says *Up to date · checked 12 min ago ·* **Check for updates**, or
@@ -20,6 +22,12 @@ All notable changes to bedrock-now are documented here. The format follows
   when nothing changed). It works with `UPDATE_CHECK=false` — a click is an explicit request — while the daily and Home
   checks stay off. It sends nothing about your install. `POST /api/update/check`: a session, `X-Requested-With` and the
   portal's own Origin; over remote access too.
+
+### Fixed
+
+- **Tests:** the end-to-end suite's sandbox check failed when `nip.io` (the public name it uses to test that a name
+  resolving to a private address is refused) could not be resolved itself. That outside outage now reads as "DNS
+  rebinding not checked" instead of a failure; a name that resolves and is not refused still fails.
 
 ## [0.14.1] - 2026-10-18
 
@@ -1840,7 +1848,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.12.0...v0.13.0

@@ -339,7 +339,10 @@ printf 'direct-host\t%s %s\n' "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{h
   "$(curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}' "http://$HG:$PP/" || true)"
 # (the proxy logs at most 20 refusals per 10 s: a fresh window, and the ones the log is checked for first)
 sleep 11
-printf 'proxy-rebind\t%s\n' "$(for u in http://127.0.0.1.nip.io/ http://10.255.255.1.nip.io/ http://169.254.169.254.nip.io/; do x "$u" | grep -c 'resolves to'; done | tr '\n' ' ')"
+# (each: 1 = refused for the address the name resolves to; dns = nip.io itself did not resolve — an outside outage, not
+# the proxy's doing: not counted as a failure)
+printf 'proxy-rebind\t%s\n' "$(for u in http://127.0.0.1.nip.io/ http://10.255.255.1.nip.io/ http://169.254.169.254.nip.io/; do
+  r="$(x "$u")"; case "$r" in *'resolves to'*) echo 1 ;; *'does not resolve'*) echo dns ;; *) echo 0 ;; esac; done | tr '\n' ' ')"
 # (port 22 is open through it: this computer's address on it is refused for the address itself)
 printf 'proxy-host-ssh\t%s\n' "$(x -o /dev/null -w '%{http_connect}' "https://$HG:22/")"
 printf 'proxy-host\t%s\n' "$(for u in "http://host.docker.internal:$LP/" "http://gateway.docker.internal:$LP/" "http://$HG:$LP/v1/models" "http://$HG:$PP/" \
@@ -391,11 +394,15 @@ if [ "$TERMINAL" = 1 ]; then
               host-docker-internal="100::1 192.0.2.1 " internet=200 master-key-in-env=0 docker-socket=2 \
               egress-env="http://egress:3128 1 1" dns-outside=none direct-internet=000 direct-host="000 000" \
               proxy-host="403 403 403 403 403 403 403 403 " proxy-private="403 403 403 403 403 403 403 403 403 " \
-              proxy-host-ssh=403 proxy-tls-private="403 403 403 " proxy-rebind="1 1 1 " proxy-port=403 proxy-public="200 200" node-fetch=200 \
+              proxy-host-ssh=403 proxy-tls-private="403 403 403 " proxy-port=403 proxy-public="200 200" node-fetch=200 \
               npm-install=ok pip-download=1 git-https=1 git-ssh=1; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
     [ "$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "user" { print $2 }')" = "$(id -u)" ] || bad="$bad not-your-uid"
+    # DNS rebinding: a public name resolving to a refused address is refused for the address; when nip.io itself is
+    # unreachable (an outside DNS outage) that one is not checked, and said
+    rebind_note=""; rb="$(printf '%s\n' "$probe" | awk -F'\t' '$1 == "proxy-rebind" { print $2 }')"
+    case "$rb" in *0*|"") bad="$bad proxy-rebind:$rb" ;; *dns*) rebind_note=" (DNS rebinding not checked: nip.io did not resolve)" ;; esac
     # LiteLLM through this computer's loopback: with the egress proxy (the default) refused by it, and no route around
     # it (direct-host above); with TERMINAL_EGRESS=host reachable on Docker Desktop (the 200 shows it), but the key gets
     # 403 off its routes (and 404 for a ../ path, which LiteLLM routes nowhere)
@@ -408,7 +415,7 @@ if [ "$TERMINAL" = 1 ]; then
     elog="$(docker logs "$eg" 2>&1)"; printf '%s\n' "$elog" > "$LOGS/terminal-egress.log"
     printf '%s\n' "$elog" | grep -q '"event":"refused".*"host":"169.254.169.254".*"why":"link-local' || bad="$bad egress-log-no-refusal"
     printf '%s\n' "$elog" | grep -q 'meta-data' && bad="$bad egress-log-has-a-path"
-    printf '%s\n' "$elog" | grep -q '"address":"127.0.0.1".*resolves to 127.0.0.1' || bad="$bad egress-log-no-rebind"
+    case "$rb" in 1*) printf '%s\n' "$elog" | grep -q '"address":"127.0.0.1".*resolves to 127.0.0.1' || bad="$bad egress-log-no-rebind" ;; esac
     printf '%s\n' "$elog" | grep -q "\"port\":22,\"address\":\"$hg\",\"status\":403" || bad="$bad egress-log-no-host-gateway"
     [ "$(docker inspect -f '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}}' "$eg" 2>/dev/null)" = "65534:65534 true [ALL]" ] ||
       bad="$bad egress-not-hardened"
@@ -426,7 +433,7 @@ if [ "$TERMINAL" = 1 ]; then
     out="$(docker exec "$tgw" sh -c 'for h in portal:8000 open-webui:8080 postgres:5432 rustfs:9000 stt:8000; do wget -q -T 3 -O /dev/null "http://$h/" 2>&1 | head -n 1 | grep -q "bad address" || echo "$h"; done; wget -q -T 5 -O /dev/null http://litellm:4000/health/liveliness || echo litellm-unreachable' 2>&1)"
     [ -z "$out" ] || bad="$bad gateway-neighbours:$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80)"
     if [ -z "$bad" ]; then
-      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions and ../ or // paths) and the internet through its egress proxy alone (no direct route: 000 to the registry and this computer, no outside names in its DNS; curl, Node's fetch, npm install, pip download, git over https and ssh work through it; refused with 403 before any connection: host.docker.internal, gateway.docker.internal, the host gateway's LiteLLM and portal ports, 127.0.0.1, localhost, ::1, ::ffff:127.0.0.1, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254.169.254, fd00::1, fe80::1, the stack's containers by name, CONNECT to private addresses, port 25, and public names resolving to 127.0.0.1, 10.x and the metadata address; refusals logged without paths; the proxy runs as 65534, read-only, no capabilities); LiteLLM via the loopback ($lbr): refused; Claude Code's WebFetch: $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude-webfetch" { print substr($2, 1, 60) }'); make there; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd on a socket only (no TCP listener), 407 at the gateway without the secret, which is nowhere in the sandbox; the gateway's neighbours: LiteLLM, not the portal, Open WebUI or the data; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')"
+      record terminal terminal-isolation PASS "$(( $(now) - t0 ))" "only the gateway's paths (LiteLLM's Anthropic API with its own key, shared-mcp's tools with the token and 401 without; 404 for /ui/, /key/generate, /bedrock/…, /spend/logs, /v1/chat/completions and ../ or // paths) and the internet through its egress proxy alone (no direct route: 000 to the registry and this computer, no outside names in its DNS; curl, Node's fetch, npm install, pip download, git over https and ssh work through it; refused with 403 before any connection: host.docker.internal, gateway.docker.internal, the host gateway's LiteLLM and portal ports, 127.0.0.1, localhost, ::1, ::ffff:127.0.0.1, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254.169.254, fd00::1, fe80::1, the stack's containers by name, CONNECT to private addresses, port 25, and public names resolving to 127.0.0.1, 10.x and the metadata address; refusals logged without paths; the proxy runs as 65534, read-only, no capabilities); LiteLLM via the loopback ($lbr): refused; Claude Code's WebFetch: $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude-webfetch" { print substr($2, 1, 60) }'); make there; no portal, Open WebUI, Postgres, RustFS, LiteLLM/shared-mcp directly, stt, main Caddy or other gateway ports; ttyd on a socket only (no TCP listener), 407 at the gateway without the secret, which is nowhere in the sandbox; the gateway's neighbours: LiteLLM, not the portal, Open WebUI or the data; Docker's host names → 192.0.2.1 / 100::1; your uid; no Docker socket; no master or claude-code key; $(printf '%s\n' "$probe" | awk -F'\t' '$1 == "claude" { print $2 }')${rebind_note:-}"
     else record terminal terminal-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/terminal-isolation.log)"; fi
     # A failed request to ttyd (the terminal stopped) writes no request headers — so not the secret — into the
     # gateway's log; the secret goes to the main Caddy's wget on stdin, never onto a command line here
