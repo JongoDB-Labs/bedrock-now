@@ -558,9 +558,10 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
           const check = s.resumeCheck = (s.resumeCheck ?? Promise.resolve()).catch(() => {}).then(() => (s.open ? null : api.notRunning(s.id)));
           await check;
         }
-        // a process may start for it (resumed, restarted for its budget or its folder's configuration): what of the
-        // folder's own configuration it gets, decided now
-        if (!s.open || s.budgetRestart() || s.settingsRestart()) await mgr.prepare(s.cwd);
+        // its folder's own configuration decided now: for a process that may start (resumed, restarted for its budget),
+        // and for a running one in a project's folder (changed since it started — a pull, an edited hook —: it restarts
+        // with the configuration as it now applies)
+        if (!s.open || s.cwd !== WS || s.budgetRestart() || s.settingsRestart()) await mgr.prepare(s.cwd);
         s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
         c.attached.add(s.id);
         return reply({});
@@ -586,7 +587,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'allow_blocked': {
         if (!isUuid(m.id)) throw new SessionError('bad blocked-action id');
         const bs = sessionOf(m);
-        if (!bs.open || bs.budgetRestart() || bs.settingsRestart()) await mgr.prepare(bs.cwd);   // (its retry is a prompt)
+        if (!bs.open || bs.cwd !== WS || bs.budgetRestart() || bs.settingsRestart()) await mgr.prepare(bs.cwd);   // (its retry is a prompt)
         bs.allowBlocked(m.id);
         return reply({});
       }

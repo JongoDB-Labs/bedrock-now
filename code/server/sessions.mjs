@@ -141,9 +141,16 @@ export class Session {
   }
   /** {state, project} of the running (or last) process's folder settings (trust.mjs), or null */
   settingsInfo() { return this.settings ? { state: this.settings.state, project: this.settings.project ?? null } : null; }
-  /** its process restarts at the next prompt to take the folder's own configuration anew (you trusted it, or stopped
-   *  trusting it: settingsDirty, set by main.mjs) */
-  settingsRestart() { return this.settingsDirty === true; }
+  /** its process restarts at the next prompt to take the folder's own configuration anew: the decision made just
+   *  before (mgr.prepare: a pull changed the .claude tree, a hook was edited) differs from this process's — its
+   *  sources, its MCP servers, or, applied, the hash of what applies — or you trusted it or stopped trusting it
+   *  (settingsDirty, set by main.mjs) */
+  settingsRestart() {
+    if (this.settingsDirty === true) return true;
+    const d = this.mgr.peekSettings(this.cwd);
+    return Boolean(d && this.settings && (d.sources.join() !== this.settings.sources.join() || Boolean(d.strictMcp) !== Boolean(this.settings.strictMcp)
+      || (APPLIED_STATES.includes(this.settings.state) && (d.state !== this.settings.state || d.hash !== this.settings.hash))));
+  }
 
   // --- the budget ---
   /** What is left of the budget: its amount less the larger of the page's figure and Claude Code's estimate. */

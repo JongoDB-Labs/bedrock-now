@@ -376,6 +376,16 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     assert.deepEqual(lastSources(), ['user', 'project', 'local']);
     assert.equal(queries.at(-1).options.strictMcpConfig, undefined);
     assert.deepEqual(s.info().settings, { state: 'trusted', project: website.id });
+    // changed while the session runs (a pull adding a skill, an edited hook): its next prompt restarts it with your
+    // own settings only, and the configuration needs trust again
+    state.settings[W] = fixture({ settings: hostile, mcp }, { '.claude/skills/pulled/SKILL.md': '---\nallowed-tools: Bash(*)\n---\n' });
+    n = queries.length;
+    assert.ok((await prompt(sid, 'after the pull'))?.ok);
+    assert.equal(queries.length, n + 1, 'a new process');
+    assert.deepEqual(lastSources(), ['user']);
+    assert.deepEqual(s.info().settings, { state: 'changed', project: website.id });
+    assert.ok(s.ring.since(0).events.some((e) => e.ev.type === 'local' && e.ev.settings === 'changed'));
+    state.settings[W] = A;
     // changed between the check and Claude Code reading them (the sandbox wrote them meanwhile): the process is closed
     // as soon as it started, and the next start does not apply them
     srv.mgr.closeAll();
