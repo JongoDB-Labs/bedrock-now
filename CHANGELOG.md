@@ -47,6 +47,21 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
+- **Sign in with GitHub / Sign in with GitLab** — a third way to connect a Git host, next to an access token and an SSH
+  key: *Connect a git host…* shows a code, large, with *Copy*; you open the host's page it links to (the page never
+  opens it), enter the code and approve. GitHub's device flow with a GitHub App (no client secret: GitHub's PKCE web
+  flow needs one, so it is not used) reaches only the repositories you install the app on (*Choose repositories*),
+  its token renewing itself every 8 hours for 6 months; GitLab's Device Authorization Grant with a non-confidential
+  application asks for `read_repository`, `write_repository` and `read_user`. A GitLab of your own or GitHub
+  Enterprise takes its address and its application ID. The token is handed to git exactly like an access token — for
+  one operation, only for the host of the URL you confirmed — and renewed before an operation when it expires within
+  5 minutes (once for operations at the same moment, written before git gets it); a renewal the host refuses marks the
+  host **Sign in again** and fails the operation with that, without trying again. Remove revokes a GitLab sign-in on
+  GitLab too, and says where to revoke a GitHub one. The code container keeps no network of its own: its requests to
+  the host go through the sandbox's way out (bn-coded's new `net.tunnel`; the egress proxy's CONNECT by default), with
+  TLS from end to end in the code container, strict (the system's roots; a CA of yours only for a server of your own):
+  the sandbox sees ciphertext and can at worst block a sign-in. Starting a sign-in works only from the computer running
+  bedrock-now.
 - **`./stack git-host import gh|glab [--host HOST]`**: the login of the GitHub CLI or the GitLab CLI on this computer
   as a Git host of the Code page — kept as its access token, with where it came from, the account and the scopes
   shown in the host's row. The token is read from the CLI (`gh auth token`, `glab config get token`) and handed to the
@@ -59,6 +74,15 @@ All notable changes to bedrock-now are documented here. The format follows
   cannot confirm. The Git hosts dialog shows the command, with *Copy*; a plan names the login (*via HTTPS token
   'GitHub' (gh's login, octocat)*); **Remove** says where to revoke a token on the host (classic and fine-grained
   GitHub tokens each at their own page); *Let Claude use this host* on gh's token says how far it reaches.
+- **Settings › Claude Code › More: GitHub app client ID, GitHub app name, GitLab application ID**
+  (`GIT_GITHUB_CLIENT_ID`, `GIT_GITHUB_APP_SLUG`, `GIT_GITLAB_CLIENT_ID`): public values, blank = bedrock-now's own
+  apps once they are registered (until then: README › *Your own app for sign-in*, a minute and no secret); changed only
+  from the computer running bedrock-now.
+
+### Changed
+
+- **The walkthrough's Connect a git host** and Settings' Git hosts row mention Sign in with GitHub / GitLab;
+  `./stack git-host import` points to it (gh: it reaches less; glab's OAuth login: sign in with GitLab instead).
 
 ## [0.13.0] - 2026-10-18
 

@@ -203,9 +203,9 @@ on a tablet it is a card next to the icons, and on a phone it is under **More**.
 
 1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models and voice,
    Claude Code on your computer (`claude-bedrock` and its lean `~/.claude-bedrock` config folder), **Connect a git
-   host** for the Code page (an access token or an SSH key it makes; **Open Git hosts** opens its dialog), each app's
-   budget, and extras (the desktop app, one-click updates). Each step shows its live status and the commands to run,
-   with Copy buttons.
+   host** for the Code page (Sign in with GitHub or GitLab, an access token or an SSH key it makes; **Open Git hosts**
+   opens its dialog), each app's budget, and extras (the desktop app, one-click updates). Each step shows its live
+   status and the commands to run, with Copy buttons.
 2. **Your apps (one sign-in):** the portal password is the only one you type; Chat, Admin (on Virtual Keys) and
    Files (on its buckets) open signed in, and opening each one ticks its step off. Admin's and Files' own sign-ins
    are folded away under **Credentials**, with Copy buttons and a link to each app's own form, for the API or in
@@ -924,6 +924,18 @@ credentials ever being kept in the sandbox.
   covers the remote, or none is connected —, *Connect a git host…* when the workspace is not a repository yet, a new
   session's *Connect a git host*, the command palette's *Git: Git hosts*, Settings › Claude Code › **Git hosts**, or the
   walkthrough's *Connect a git host*). Choose GitHub, GitLab or another server and how to connect:
+  - **Sign in with GitHub** / **Sign in with GitLab** (recommended once an app is set: [your own
+    app](#your-own-app-for-sign-in) until bedrock-now's are), for `https://` URLs. The dialog shows a code, large, with
+    *Copy*; open the host's page it links to (*Open github.com/login/device*), enter the code there and approve. The
+    page never opens it for you, and your browser never talks to the host about it: the code container asks the host
+    for the code and waits for your approval, through the sandbox's own way out. On GitHub it signs in with a GitHub App, which reaches only the
+    repositories you install it on (*Choose repositories* in the host's row), with *Contents: Read and write*; its
+    token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts 6 months). On GitLab it asks
+    for `read_repository`, `write_repository` and `read_user`: every project your account can reach; its token renews
+    itself too. A GitLab of your own, or GitHub Enterprise: its address (`gitlab.example.com`), the application ID of
+    an app you registered there, and its CA under *More* when a private CA signed its certificate. When a sign-in ends
+    (revoked on the host, or too old to renew), the host's row says so and **Sign in again** keeps the host and its
+    settings.
   - **An access token**, for `https://` URLs. The dialog links to the place to create one: on GitHub a
     *fine-grained* token for only the repositories you need, with *Contents: Read and write*; on GitLab one with
     `read_repository` and `write_repository`. Paste it once; it is kept by the Code page and never shown again (*Replace
@@ -939,18 +951,21 @@ credentials ever being kept in the sandbox.
     reaches, and asks before anything is kept (`--yes`: without asking). gh's own OAuth token (or a classic token gh was
     given) reaches every repository your account can — a fine-grained one, what it was given — and gh goes on using
     the same token; the host's row says so. glab: only a personal access token (its `api` scope is the whole API, not
-    only git); an OAuth login of glab's is refused (its single-use refresh tokens would break glab or the Code page).
+    only git); an OAuth login of glab's is refused (its single-use refresh tokens would break glab or the Code page):
+    Sign in with GitLab instead.
 
   **Test connection** lists a repository's branches with the host's credential. A server whose certificate a private
-  CA signed takes that CA (*More*). Adding a host, a token or a key, trusting a host key, and letting Claude use a host
-  work only from the computer running bedrock-now; over remote access you can still use the hosts, remove one, or turn
-  Claude's use off.
+  CA signed takes that CA (*More*). Adding a host, signing in, a token or a key, trusting a host key, and letting
+  Claude use a host work only from the computer running bedrock-now; over remote access you can still use the hosts,
+  remove one, or turn Claude's use off.
 
-  **What each one reaches, and revoking it.** A fine-grained token: the repositories you picked for it. gh's login
-  or a classic token: everything your account can reach. An SSH key: the account or repository you added it to.
-  **Remove** forgets the credential here, and says where to revoke it on the host: gh's own token at *Settings ›
-  Applications › Authorized OAuth Apps › GitHub CLI* (that signs gh out too), a classic token at *Tokens (classic)*, a
-  fine-grained one at *Fine-grained tokens*, GitLab's at *Access tokens*, a key where you added it.
+  **What each one reaches, and revoking it.** A fine-grained token: the repositories you picked for it. A GitHub
+  sign-in: the repositories you installed its app on. A GitLab sign-in, gh's login or a classic token: everything your
+  account can reach. An SSH key: the account or repository you added it to. **Remove** forgets the credential here; a
+  GitLab sign-in is revoked on GitLab too. Revoke the rest on the host: a GitHub sign-in at *Settings › Applications ›
+  Authorized GitHub Apps* (`github.com/settings/apps/authorizations`), gh's own token at *Authorized OAuth Apps ›
+  GitHub CLI* (that signs gh out too), a classic token at *Tokens (classic)*, a fine-grained one at *Fine-grained
+  tokens*, GitLab's at *Access tokens*, a key where you added it.
 - **Clone** (*Clone a repository…* in the command palette, a new session's *Clone a repository*, or the Git panel
   while the workspace folder is not a repository itself): a URL, a new folder of the workspace (named after the
   repository; or the workspace folder itself while it is empty) and, if you like, only the latest commit. A public
@@ -974,6 +989,28 @@ credentials ever being kept in the sandbox.
   logins too — so Claude, or text it reads and follows, could push to any repository the token or key reaches — and
   each use is listed in the host's *Recent use* and in Activity. Prefer a fine-grained token or a deploy key for that.
 
+##### Your own app for sign-in
+
+Sign in with GitHub and Sign in with GitLab need an application registered with the host; its ID is public (no
+client secret, no private key: the device flow needs none). Until bedrock-now's own are set (Settings › Claude Code ›
+More shows them blank), or to use one of your own:
+
+- **GitHub** — *Settings › Developer settings › GitHub Apps › New GitHub App* (or your organization's): a name, a
+  homepage URL (this repository's will do), no callback URL, **Enable Device Flow** ticked, *Expire user authorization
+  tokens* left ticked, *Webhook › Active* unticked, *Repository permissions › Contents: Read and write* (GitHub adds
+  *Metadata: Read-only*; add *Workflows: Read and write* only to push changes to `.github/workflows`), *Any account*
+  or *Only on this account*. Do not generate a client secret or a private key. Copy its **Client ID** (`Iv…`) into
+  Settings › Claude Code › More › **GitHub app client ID** (`GIT_GITHUB_CLIENT_ID`) and its name as its address has it
+  (`github.com/apps/NAME`) into **GitHub app name** (`GIT_GITHUB_APP_SLUG`), then **Install App** on the accounts and
+  repositories it may reach (Git hosts' *Choose repositories* opens that page).
+- **GitLab** — *Edit profile › Applications › Add new application* (GitLab 17.9 or later for a GitLab of your own): a
+  name, **Confidential** unticked, the scopes `read_repository`, `write_repository` and `read_user`, and the device
+  authorization grant where the form lists grant types; a redirect URI is not used by the device sign-in (if the form
+  insists, `http://localhost/`). Copy its **Application ID** into **GitLab application ID** (`GIT_GITLAB_CLIENT_ID`)
+  — for gitlab.com; a GitLab of your own takes it in the Git hosts dialog.
+
+The settings change only from the computer running bedrock-now (another app is another party you would authorize).
+
 The credentials are kept by the code container, in its own volume (`<project>_code-state`): not in `.env`, not in the
 portal, not in backups, never in the sandbox. They are stored there unencrypted (a file of mode 600): anyone who can
 read Docker's volumes on this computer can read them — revoke a token or key you think was exposed. A push, pull,
@@ -982,7 +1019,8 @@ has, and only for the host of the URL you confirmed — the repository's configu
 rewrites, proxies, credential helpers, ssh commands are neutralised; hooks, filters and merge drivers do not run).
 `./stack code disable` keeps them; `./stack uninstall`, or `docker volume rm <project>_code-state`, forgets them —
 revoke tokens and keys on the host too. Details, and what remains possible for a process in the sandbox while an
-operation runs: [docs/security.md](docs/security.md#git-remotes-and-git-hosts).
+operation runs: [docs/security.md](docs/security.md#git-remotes-and-git-hosts) (and for a sign-in:
+[docs/security.md](docs/security.md#signing-in-to-a-git-host-oauth)).
 
 #### Previews of dev servers
 
@@ -1525,8 +1563,10 @@ troubleshooting: [docs/voice.md](docs/voice.md).
   (`UPDATE_CHECK`) turns it off; **Check for updates** on Home asks once more, when you click it.
 - **The browser terminal and the Code page (on by default):** what you run in the sandbox may use the public internet
   (git, npm, pip, Claude Code's web fetch) through its egress proxy unless `TERMINAL_EGRESS=off`; Claude Code there
-  still talks only to Bedrock, through its gateway and LiteLLM, with its non-essential traffic off. Building their
-  images downloads Debian packages, Claude Code and the page's packages from npm, and ttyd from GitHub.
+  still talks only to Bedrock, through its gateway and LiteLLM, with its non-essential traffic off. A Git host you
+  sign in to (Sign in with GitHub / GitLab) is asked for the sign-in and its renewals by the code container, the same
+  way out. Building their images downloads Debian packages, Claude Code and the page's packages from npm, and ttyd
+  from GitHub.
 - **Remote access, only if you turn it on:** the Tailscale container talks to Tailscale's coordination servers; in
   own-domain mode Caddy asks Let's Encrypt for certificates through Cloudflare's DNS API.
 - **Nothing else.** Open WebUI runs in offline mode with telemetry, web search and community sharing off;

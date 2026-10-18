@@ -856,7 +856,9 @@ spawn server, Claude Code or any file at will.
   Code — 0.3.N ↔ 2.1.N, a test enforces it — and `ws`; no peer dependencies and no bundled Claude Code binaries,
   which the image build checks) runs as your user id, read-only, `cap_drop: ALL`, `no-new-privileges`, 768 MB, 128
   processes. It holds **no LiteLLM key** (not the terminal's, not the master key), **mounts no folder of yours**
-  and is on **no network but `code-link`**: no internet, no LiteLLM, no portal, no sandbox network. Its one secret
+  and is on **no network but `code-link`**: no internet, no LiteLLM, no portal, no sandbox network (a Git host
+  sign-in's requests go through the sandbox's way out in a tunnel, with TLS from end to end in the code container:
+  [below](#signing-in-to-a-git-host-oauth)). Its one secret
   is `CODE_PROXY_SECRET`, in its environment only. Prices and spend come from the portal (`/.bn/models`,
   `/.bn/spend` on the code host, answered after the same check; the master key stays in the portal, and a
   session's spend is filtered to the terminal key's rows). It can reach the main Caddy (its only peer): with no
@@ -1568,7 +1570,8 @@ repository can plant in `.git/` or in a configuration file.
 ### Git remotes and Git hosts
 
 The Git panel clones, fetches, pulls and pushes (README: *Remote repositories*), with the credentials of **Git hosts**
-— GitHub, GitLab or any https/ssh server you connect with an access token or an SSH key the Code page makes. The
+— GitHub, GitLab or any https/ssh server you connect with a sign-in ([next section](#signing-in-to-a-git-host-oauth)),
+an access token or an SSH key the Code page makes. The
 sandbox runs git, so the question is how git there can use a credential that the sandbox never holds, for one
 operation you started, sent only where you saw it go.
 
@@ -1577,9 +1580,9 @@ operation you started, sent only where you saw it go.
   not in `.env`, not in the portal or the update helper's requests (the secrets never pass them), not in backups or
   diagnostic reports, and no other container mounts it — the sandbox has no path to it. A token is entered once and
   never shown again (*Replace it* takes a new one; replace-only); an SSH key is an ed25519 key made there, whose
-  private half never leaves it — the page sees the public half and the fingerprint. Adding a host, a token or a key,
-  trusting a host key and turning on Claude's use of a host work only from the computer running bedrock-now: the code
-  container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy is stripped before
+  private half never leaves it — the page sees the public half and the fingerprint. Adding a host, a sign-in, a token
+  or a key, trusting a host key and turning on Claude's use of a host work only from the computer running
+  bedrock-now: the code container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy is stripped before
   it gets there). Removing a host and turning Claude's use off work everywhere. `./stack uninstall` removes the volume.
   **The tokens and SSH private keys are stored unencrypted** (the file's mode 600 is the protection): whoever can read
   the `code-state` volume — Docker on this computer, its disk, a backup of Docker's own data, root — can read them. If
@@ -1710,6 +1713,82 @@ operation you started, sent only where you saw it go.
   `code/test/import-host.test.mjs`: an imported login kept as an access token (never printed), refusals, the lock with
   another process writing at the same time; `tests/test_githost.sh`: `./stack git-host import` with fake gh, glab and
   docker programs.
+
+### Signing in to a Git host (OAuth)
+
+**Sign in with GitHub** and **Sign in with GitLab** (README: *Remote repositories*) connect a Git host with a token the
+host issues to an application registered for bedrock-now, once you approve it on the host's own page (a gh or glab
+login imported with `./stack git-host import` is an access token instead: [above](#git-remotes-and-git-hosts)). Such
+a host is one of Git hosts like the others (auth `oauth`): the same file, its token handed to git the same way (fd 3,
+only for the confirmed URL's host, while the operation runs), the same *Let Claude use this host* switch (off by
+default).
+
+- [x] **No secret; the device flow only.** GitHub's device flow and GitLab's Device Authorization Grant take the
+  application's (client) ID alone, which is public: no client secret and no private key are anywhere in bedrock-now —
+  a program you run on your own computer could not keep one. GitHub's web flow with PKCE still needs the client
+  secret, so it is not used; GitLab's device grant needs a non-confidential application. The IDs are settings
+  (`GIT_GITHUB_CLIENT_ID`, `GIT_GITHUB_APP_SLUG`, `GIT_GITLAB_CLIENT_ID`; blank: bedrock-now's own apps), changed only
+  from the computer running bedrock-now: an app someone else registered is theirs, and a GitHub App you install on
+  repositories lets its owner act on them too.
+- [x] **The code container talks to the host; TLS ends there.** The code container keeps no network of its own. Its
+  requests to the host — the device code, the polling, the renewals, the account (`/user`), a GitLab revocation — go
+  through a TCP connection bn-coded opens on request (`net.tunnel`) through the sandbox's own way out: the egress
+  proxy's CONNECT while `TERMINAL_EGRESS=internet` (public addresses only, on the ports it opens — where git goes),
+  directly with `host`, nowhere with `off`. TLS runs in the code container over that connection, and strictly: the
+  certificate must name the Git host and chain to the system's roots — for github.com, api.github.com and gitlab.com
+  always; a CA of your own only for a server of your own, and only when you gave it for that host in Git hosts (it then
+  replaces the roots for that host alone; the dialog refuses one for github.com or gitlab.com). Verification is set
+  explicitly (`rejectUnauthorized`: not even `NODE_TLS_REJECT_UNAUTHORIZED=0` in the container's environment relaxes
+  it, proven), TLS 1.2 or later, and a failed check is an error — never a retry without it. So the sandbox and the proxy
+  only ever see ciphertext they cannot read or change (proven: a CONNECT proxy in the test never sees the refresh
+  token), and a sandbox that misbehaves can at worst drop or delay the connection: the sign-in or the renewal fails
+  (a renewal that fails this way leaves the sign-in as it was; the next operation tries again), no more. It cannot
+  stand in for the host without a certificate the code container trusts for that name. Only the Git
+  host's own name is asked for (and `api.github.com` for github.com); no redirect is followed; an answer is at most
+  64 KiB; a tunnel is at most 2 MiB each way and 2 minutes, four at once. This is the one thing bn-coded connects for
+  itself, and no new way out for the sandbox, which reaches the same addresses on its own.
+- [x] **The code you enter, and where.** The dialog shows the user code, a countdown, and the host's page to enter it
+  on as a link that you open — the page never opens it, and the browser never talks to the host about it. The code
+  container checks first that the page the host named is `https://` on the Git host itself (its name and port): an
+  answer naming another site is refused before anything is shown. The device code never leaves the code container.
+  Starting a sign-in and following it work only from the computer running bedrock-now (like adding a token);
+  cancelling works anywhere. The polling keeps the host's interval (5 s more after each `slow_down`), stops at the
+  code's expiry, after `access_denied`, `expired_token` or any other refusal, and after five failures in a row.
+- **Phishing with device codes — what remains.** A device code signs in whoever enters it: someone who gets you to
+  enter *their* code ("enter ABCD-1234 at github.com/login/device") gets a token of your account for *their* app.
+  bedrock-now never sends you a code: you see one only in the Git hosts dialog, right after you pressed Sign in, and
+  the dialog says so. GitHub and GitLab show the app's name before you approve: check it is the one you meant
+  (bedrock-now's, or your own).
+- [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
+  account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
+  unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews
+  itself — never a token, in no answer, event or log line. A GitHub App's user token reaches only the repositories the
+  app is installed on, with its permissions (8 hours, renewed for 6 months); a GitLab sign-in asks for
+  `read_repository`, `write_repository` and `read_user` (the account's name), and reaches every project of the account.
+- [x] **Renewed before it is used, once.** Before an operation (and before Claude's git gets it, while that is on), a
+  token that expires within 5 minutes is renewed with the refresh token, one renewal per host at a time (operations at
+  the same moment wait for it), and the new pair is written — a temporary file renamed over the old one — before git
+  gets the new token; a question git asks later in an operation is answered with the token the file holds then.
+  GitHub and GitLab void the old access token with the refresh token, so an operation that still holds the old one at
+  that moment may fail (start it again). A renewal the host refuses (`invalid_grant`, `bad_refresh_token`: revoked,
+  used up, expired) marks the host **Sign in again**: its tokens are dropped, the operation fails with that message,
+  and nothing is tried again until you sign in again. A renewal that cannot reach the host changes nothing (the token
+  is used while it has more than 15 s left; the next operation tries again). A host that gives no refresh token
+  (GitLab's device grant may not) asks you to sign in again once its token expired.
+- [x] **Removing.** **Remove** forgets the sign-in here. A GitLab sign-in is revoked on GitLab too (RFC 7009: a
+  non-confidential application's own token, no secret). GitHub revokes a user token only for the app's client
+  secret, which bedrock-now never has: the page says where to do it (*Settings › Applications › Authorized GitHub
+  Apps*).
+- **Proof** (`code/test/oauth.test.mjs`, against a stand-in provider over real TLS with a CA of the test's own,
+  `code/test/oauth-mock.mjs`): the device flow (pending, `slow_down`'s 5 s more, approved; declined; expired at the
+  provider and here; a verification page elsewhere refused; an unknown application), one renewal for two operations at
+  once, written before git's question was answered, the old token void at the provider; a refused renewal → Sign in
+  again, never a second try; a renewal that cannot reach the host; a question for another host, port or protocol gets
+  nothing; GitLab's sign-in revoked on Remove; the routes only locally; no token in any answer, event or log line;
+  strict TLS (another name, the system's roots for a private CA's certificate, `NODE_TLS_REJECT_UNAUTHORIZED=0`: all
+  refused; a CA of yours for github.com or gitlab.com refused); `net.tunnel` directly and through a CONNECT proxy.
+  e2e `browser/code-ui-git-oauth` (`--git-server`): Sign in with GitLab against the suite's git server's provider, a
+  clone and a push each renewing first, Sign in again after its refresh token was revoked there.
 
 ### Previews of dev servers in the sandbox
 

@@ -221,6 +221,8 @@ def test_git_host_step_opens_the_code_pages_git_hosts():
     for words in ("Connect a git host…", "access token", "Contents: Read and write", '"read_repository"', '"write_repository"', "SSH key",
                   "Allow write access", "Test connection", "Let Claude use this host", "off by default",
                   "only from the computer running bedrock-now", 'openGit("hosts")', "window.bnCode.gitHosts()",
+                  # (the sign-in: the code entered on the host's own page, which you open; gh's / glab's login imported)
+                  'b("Sign in with GitHub")', 'b("Sign in with GitLab")', "the page never opens it for you", 'b("Choose repositories")',
                   'code("./stack git-host import gh")'):
         assert words in step, words
     opener = js[js.index("function openGit(what)"):js.index("// The Terminal tab")]

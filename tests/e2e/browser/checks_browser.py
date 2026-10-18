@@ -2125,8 +2125,8 @@ def walkthrough_git_hosts(ctx):
     page.evaluate("() => window.bnTour.open('git-hosts')")
     _to_step(page, "git-hosts")
     card = page.inner_text("#tour .tour-step.cur")
-    for words in ("Connect a git host…", "Contents: Read and write", "read_repository", "write_repository", "SSH key",
-                  "./stack git-host import gh", "Test connection", "Let Claude use this host", "only from the computer running bedrock-now"):
+    for words in ("Connect a git host…", "Sign in with GitHub", "Sign in with GitLab", "./stack git-host import gh", "Contents: Read and write",
+                  "read_repository", "write_repository", "SSH key", "Test connection", "Let Claude use this host", "only from the computer running bedrock-now"):
         expect(words in card, f"the step lacks {words!r}")
     shot(page, "w14-walkthrough-git-hosts")
     page.click("#tour [data-k=open-git-hosts]")
