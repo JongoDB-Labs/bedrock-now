@@ -11,6 +11,7 @@ export const GIT_REASONS = Object.freeze([
   'not a git repository',
   'that folder is not the top of a git repository',
   'the repository is not the workspace folder itself',
+  'the repository is not the project folder itself',
   'git: no git folder',
   'git config: no answer in time',
   'git config: too much configuration',

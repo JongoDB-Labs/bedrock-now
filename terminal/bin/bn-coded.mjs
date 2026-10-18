@@ -9,12 +9,20 @@
 //                   this container's environment (LiteLLM through the gateway, the terminal key) and the shared MCP
 //                   server (~/.config/bedrock-now/mcp.json, written by bn-terminal)
 //   cli             a plugin / marketplace / MCP listing or change (`claude plugin …`, `claude mcp …`: fixed shapes)
+// Roots: a project of the Code page is a folder the sandbox sees — /workspace itself, or a folder of it. Every op that
+// takes a path takes a `root` too ("/workspace" or "/workspace/<folder>", checked here: a real folder of the workspace,
+// never through a link; none: /workspace): a relative path is relative to it, and what comes back is relative to it.
+// Paths stay confined to the workspace (a link from one project into another resolves; one out of it does not).
 //   fs.list / fs.read / fs.write / fs.mkdir / fs.rename / fs.delete
 //                   files under /workspace (the code container mounts no folder of yours). Paths are resolved here,
-//                   in the sandbox's own view, so a symlink can only lead somewhere this container sees anyway.
-//   fs.find         paths under /workspace whose name matches (a bounded walk: the @-picker over the whole folder)
-//   fs.grep         a text (or a ripgrep regex) searched in the files of /workspace: ripgrep with fixed arguments, or
+//                   in the sandbox's own view, so a symlink can only lead somewhere this container sees anyway. A
+//                   delete moves into the root's trash (<root>/.bedrock-now-trash)
+//   fs.find         paths under the root whose name matches (a bounded walk: the @-picker over the whole folder)
+//   fs.grep         a text (or a ripgrep regex) searched in the files of the root: ripgrep with fixed arguments, or
 //                   a bounded walk (literal text only); caps on hits, file size and time
+//   project.create / project.check
+//                   a new project's folder (and `git init`, no template: no hook); whether the project folders the code
+//                   container names are there (a real folder, a git repository)
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
@@ -22,9 +30,10 @@
 //                   (message on stdin), discarding a file's changes (its current version to the workspace trash) — the
 //                   same hardening, and no hook, signing program or editor ever runs; in /workspace or a repository
 //                   folder of it (repo)
-//   git.repos / git.remote.state / git.branch / git.remote.set / git.net / git.clone / git.test / git.broker
-//                   its remotes: the repositories in the workspace, the remotes and branches (no network), a branch
-//                   switched or made, a remote's URL; fetch, pull (a fast-forward), push, publish, clone and a test of
+//   git.repos / git.remote.state / git.branch / git.remote.set / git.init / git.net / git.clone / git.test / git.broker
+//                   its remotes: the repositories in a project, the remotes and branches (no network), a branch
+//                   switched or made, a remote's URL, a folder made a repository (git init, no template); fetch, pull (a
+//                   fast-forward), push, publish, clone and a test of
 //                   a Git host's credential — which the code container gives for that one operation (ASK frames), never
 //                   kept here; and Claude's own git's credential, only while the code container allows it (git.broker)
 //   net.tunnel      a TCP connection to a Git host's https port through this sandbox's way out (the egress proxy while
@@ -33,9 +42,10 @@
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title / sessions.running
-//                   this sandbox's Claude Code transcripts for /workspace (~/.claude/projects/-workspace/*.jsonl), and
-//                   whether a process other than this one's children runs a session now (the terminal, after Open in
-//                   the terminal: the page then does not resume it a second time)
+//                   this sandbox's Claude Code transcripts of the workspace and its folders (~/.claude/projects/
+//                   -workspace*/*.jsonl, each placed by the working folder it records — the folder names are lossy),
+//                   and whether a process other than this one's children runs a session now (the terminal, after Open
+//                   in the terminal: the page then does not resume it a second time)
 //   ports.list / ports.stop
 //                   the servers listening on the sandbox's loopback or all addresses (/proc/net/tcp, tcp6) with their
 //                   process, for the page's previews (bn-preview); stop: SIGTERM/SIGKILL to such a server's process only
@@ -55,9 +65,10 @@
 //                   where "Always" writes), and /workspace/.claude/settings.json and settings.local.json (read only); one
 //                   rule taken out of the user settings — that one fixed file, only while it is as the page saw it, every
 //                   other key kept, written to a temporary file and renamed
-//   terminal.resume a session continued in the terminal: a new window of the terminal's tmux session, with
-//                   `claude-bedrock --resume <id>` typed into its shell (a checked UUID of a transcript that is there;
-//                   nothing else is ever typed)
+//   terminal.resume a session continued in the terminal: a new window of the terminal's tmux session, in the
+//                   session's folder, with `claude-bedrock --resume <id>` typed into its shell (a checked UUID of a
+//                   transcript that is there; nothing else is ever typed)
+//   terminal.window a new window of the terminal's tmux session in a project's folder (a shell; nothing typed)
 //   terminal.capture
 //                   the last lines (≤ 2,000, ≤ 64 KiB) of the terminal panel's current tmux pane as plain text — the
 //                   Code page's @terminal: `capture-pane -p -J` with fixed arguments and a checked pane id, escapes and
@@ -100,7 +111,8 @@ const MAX_PROCS = { claude: 6, cli: 4 };   // processes at once: Claude Code ses
                                            // (a slow listing never keeps a session from starting, nor the other way)
 const MAX_CONNECTIONS = 32;
 const MAX_LIST = 5000;                     // directory entries
-const MAX_SESSIONS = 200;                  // sessions.list rows (the most recent)
+const MAX_SESSIONS = 300;                  // sessions.list rows (the most recent, of every folder)
+const SESSION_DIRS = 200, SESSION_FILES = 20000;   // sessions.list: store folders looked at, transcripts stat'ed
 const MAX_TRANSCRIPT = 3 << 20;            // sessions.load: a transcript's last 3 MiB
 // ASK (out) / ANSWER (in): a remote git operation asks the code container for its credential while it runs (a token
 // for git's credential helper, an SSH agent's signature) — the one case where this side asks and the other answers
@@ -281,13 +293,36 @@ export function cliEnv(base = process.env) {
 
 const printable = (s, n) => String(s).replace(/[^\x20-\x7e]/g, '?').slice(0, n);
 const inside = (real) => real === WORKSPACE || real.startsWith(WORKSPACE + '/');
+const TRASH = '.bedrock-now-trash';
 
-// confine(p) -> the real path when it is /workspace or below (symlinks resolved here, in the sandbox), else null.
-// "/workspace/…" as given; anything else is relative to /workspace ("", "/" and "." are /workspace itself).
-// mustExist false: the last part may be missing (a file to create); its folder must exist and be inside.
-export function confine(p, { mustExist = true } = {}) {
+// --- roots (see the head of this file): {abs, rel} — the workspace itself is {abs: WORKSPACE, rel: ''} ---
+export const WS_ROOT = Object.freeze({ abs: WORKSPACE, rel: '' });
+export const ROOT_DEPTH = 8;
+// rootRel(rel) -> whether a workspace-relative folder may be a root: a path git can name (no "", "." or ".." part, no
+// NUL), no .git part, not the trash, at most ROOT_DEPTH levels
+const rootRel = (r) => typeof r === 'string' && gitPathOk(r) && r.split('/').length <= ROOT_DEPTH && !r.split('/').includes(TRASH);
+// rootArg(v) -> {abs, rel} of a project folder the code container names ("/workspace" or "/workspace/<folder>"; none:
+// the workspace), or throws: anything else, a folder that is not there, a link on its way or at its end
+export function rootArg(v) {
+  if (v === undefined || v === null || v === '' || v === WORKSPACE) return WS_ROOT;
+  if (typeof v !== 'string' || v.length > 1024 || !v.startsWith(`${WORKSPACE}/`)) throw new Error('not a project folder of the workspace');
+  const r = v.slice(WORKSPACE.length + 1);
+  if (!rootRel(r)) throw new Error('not a project folder of the workspace');
+  if (statRel(r)?.type !== 'dir') throw new Error('no such project folder in the workspace (or a link on its way)');
+  return { abs: path.join(WORKSPACE, r), rel: r };
+}
+const inRoot = (abs, root) => abs === root.abs || abs.startsWith(root.abs + '/');
+
+// confine(p, {mustExist, root}) -> the real path when it is /workspace or below (symlinks resolved here, in the
+// sandbox), else null. "/workspace/…" as given; anything else is relative to the root ("", "/" and "." are the root
+// itself; no root: /workspace) and may not leave it by its "..". A link may lead from one project into another (all of
+// them are the workspace's); never out of the workspace. mustExist false: the last part may be missing (a file to
+// create); its folder must exist and be inside.
+export function confine(p, { mustExist = true, root = WS_ROOT } = {}) {
   if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
-  const abs = p === WORKSPACE || p.startsWith(WORKSPACE + '/') ? path.resolve(p) : path.resolve(WORKSPACE, p.replace(/^\/+/, ''));
+  const named = p === WORKSPACE || p.startsWith(WORKSPACE + '/');
+  const abs = named ? path.resolve(p) : path.resolve(root.abs, p.replace(/^\/+/, ''));
+  if (!named && !inRoot(abs, root)) return null;
   let real;
   try { real = fs.realpathSync(abs); } catch {
     if (mustExist) return null;
@@ -297,20 +332,46 @@ export function confine(p, { mustExist = true } = {}) {
   }
   return inside(real) ? real : null;
 }
-const rel = (real) => path.relative(WORKSPACE, real) || '.';
+// rel(real, root) -> what an answer names: relative to the root; a path in another project (through a link): its
+// absolute path in the workspace
+const rel = (real, root = WS_ROOT) => (inRoot(real, root) ? path.relative(root.abs, real) || '.' : real);
 // existing(p) -> the real path of something that exists in the workspace; ENOENT when it would be inside but is not
 // there, "not in the workspace" when it is outside (or not a path)
-function existing(p) {
-  const real = confine(p);
+function existing(p, root = WS_ROOT) {
+  const real = confine(p, { root });
   if (real) return real;
-  if (confine(p, { mustExist: false })) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  if (confine(p, { mustExist: false, root })) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   throw new Error('not in the workspace');
 }
-const TRASH = '.bedrock-now-trash';
+// trashFor(real, root) -> the trash a deleted entry goes to: its root's (<root>/.bedrock-now-trash) when it is in the
+// root, else the workspace's
+const trashFor = (real, root) => path.join(real.startsWith(root.abs + '/') ? root.abs : WORKSPACE, TRASH);
+// newTrashDir(trash) -> a fresh <trash>/<time>-<random> (the trash made with a .gitignore of "*": git leaves it alone)
+function newTrashDir(trash) {
+  const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.writeFileSync(path.join(trash, '.gitignore'), '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
+  return dir;
+}
 
-// --- Claude Code's transcripts for /workspace (the SDK's project folder name: every non-alphanumeric is "-") ---
+// --- Claude Code's transcripts: ~/.claude/projects/<folder>/<id>.jsonl, the folder named after the session's working
+// --- folder with every non-alphanumeric a "-" (the SDK's naming) — lossy: /workspace/a-b and /workspace/a/b share
+// --- -workspace-a-b, so a transcript is placed by the working folder it records, never by its folder's name ---
 const encodeCwd = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
-const projectDir = () => path.join(CONFIG_DIR, 'projects', encodeCwd(WORKSPACE));
+const PROJECTS = () => path.join(CONFIG_DIR, 'projects');
+// cwdOk(v): a working folder of the workspace a session may have — absolute, normalized, one line (it need not exist)
+export const cwdOk = (v) => typeof v === 'string' && v.length <= 1024 && (v === WORKSPACE || v.startsWith(`${WORKSPACE}/`))
+  && path.posix.normalize(v) === v && !v.endsWith('/') && !/[\x00-\x1f\x7f]/.test(v);
+// transcriptFile(id, cwd) -> the path of a session's transcript in the store folder of its working folder (none: the
+// workspace), or null when that folder is not a real folder; throws for a bad id or folder
+function transcriptFile(id, cwd) {
+  if (!UUID.test(String(id))) throw new Error('bad session id');
+  const c = cwd === undefined || cwd === null || cwd === '' ? WORKSPACE : cwd;
+  if (!cwdOk(c)) throw new Error('bad session folder');
+  const dir = path.join(PROJECTS(), encodeCwd(c));
+  try { if (!fs.lstatSync(dir).isDirectory()) return null; } catch { return null; }
+  return path.join(dir, `${id}.jsonl`);
+}
 
 function readSlice(fd, start, n) {
   const b = Buffer.alloc(n);
@@ -332,32 +393,49 @@ const humanPrompt = (e) => {
   return typeof t === 'string' && t && !t.startsWith('<') ? t : '';
 };
 
-// sessionsList -> the most recent transcripts with what a list shows: their head (first prompt, start, branch) and
-// tail (titles, last prompt, branch) read here — at most 64 KiB of each end per file.
+// sessionsList -> the most recent transcripts of the workspace and its folders, with what a list shows: their head
+// (first prompt, start, branch, working folder) and tail (titles, last prompt, branch) read here — at most 64 KiB of
+// each end per file. The store's folders of the workspace (-workspace) and of folders in it (-workspace-…), never
+// through a link; each transcript's `cwd` is the working folder it records at its start — kept only when it is a folder
+// of the workspace whose store folder is the one the transcript is in (two folders' sessions sharing a store folder are
+// told apart this way); the workspace's own folder's are the workspace's.
 export function sessionsList() {
-  const dir = projectDir();
-  let names = [];
-  try { names = fs.readdirSync(dir).filter((n) => /^[0-9a-f-]{36}\.jsonl$/.test(n) && UUID.test(n.slice(0, 36))); } catch { return []; }
+  const own = encodeCwd(WORKSPACE);
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(PROJECTS(), { withFileTypes: true }).filter((d) => d.isDirectory() && (d.name === own || d.name.startsWith(`${own}-`)))
+      .map((d) => d.name).sort().slice(0, SESSION_DIRS);
+  } catch { return []; }
   const stats = [];
-  for (const n of names) {
-    try { const st = fs.lstatSync(path.join(dir, n)); if (st.isFile()) stats.push([n, st]); } catch { /* gone */ }
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(PROJECTS(), dir)).filter((n) => /^[0-9a-f-]{36}\.jsonl$/.test(n) && UUID.test(n.slice(0, 36))); } catch { continue; }
+    for (const n of names) {
+      if (stats.length >= SESSION_FILES) break;
+      try { const st = fs.lstatSync(path.join(PROJECTS(), dir, n)); if (st.isFile()) stats.push([dir, n, st]); } catch { /* gone */ }
+    }
   }
-  stats.sort((a, b) => b[1].mtimeMs - a[1].mtimeMs);
+  stats.sort((a, b) => b[2].mtimeMs - a[2].mtimeMs);
   const rows = [];
-  for (const [n, st] of stats.slice(0, MAX_SESSIONS)) {
+  for (const [dir, n, st] of stats) {
+    if (rows.length >= MAX_SESSIONS) break;
     let fd;
     try {
-      fd = fs.openSync(path.join(dir, n), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      fd = fs.openSync(path.join(PROJECTS(), dir, n), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
       const size = fs.fstatSync(fd).size, span = 64 << 10;
       const head = lines(readSlice(fd, 0, Math.min(size, span)));
       const tail = size > span ? lines(readSlice(fd, Math.max(span, size - span), Math.min(span, size - span))) : [];
       const row = { id: n.slice(0, 36), mtimeMs: st.mtimeMs, size };
+      let said = null;
       for (const e of head) {
         if (!row.createdAt && typeof e.timestamp === 'string') row.createdAt = e.timestamp;
-        if (!row.cwd && typeof e.cwd === 'string') row.cwd = e.cwd;
+        if (said === null && typeof e.cwd === 'string') said = e.cwd;
         if (!row.firstPrompt && humanPrompt(e)) row.firstPrompt = humanPrompt(e);
         if (e.isSidechain === true) row.sidechain = true;
       }
+      if (dir === own) row.cwd = WORKSPACE;
+      else if (cwdOk(said) && said !== WORKSPACE && encodeCwd(said) === dir) row.cwd = said;
+      else continue;   // (a folder it does not name, or not one of the workspace: not resumable from here)
       for (const e of head.concat(tail)) {
         if (e.type === 'custom-title' && typeof e.customTitle === 'string') row.customTitle = e.customTitle;
         if (e.type === 'ai-title' && typeof e.aiTitle === 'string') row.aiTitle = e.aiTitle;
@@ -373,11 +451,13 @@ export function sessionsList() {
   return rows;
 }
 
-// One transcript's entries (the SDK's SessionStore.load shape): no symlink, at most its last 3 MiB.
-export function sessionsLoad(id) {
-  if (!UUID.test(String(id))) throw new Error('bad session id');
+// One transcript's entries (the SDK's SessionStore.load shape): no symlink, at most its last 3 MiB. cwd: the session's
+// working folder (its store folder; none: the workspace's)
+export function sessionsLoad(id, cwd) {
+  const file = transcriptFile(id, cwd);
+  if (!file) return { entries: null };
   let fd;
-  try { fd = fs.openSync(path.join(projectDir(), `${id}.jsonl`), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return { entries: null }; }
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return { entries: null }; }
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) return { entries: null };
@@ -388,10 +468,10 @@ export function sessionsLoad(id) {
 
 // A title for a session (what /rename writes): one custom-title line appended (O_APPEND: a single small write, so
 // it never interleaves with Claude Code's own lines).
-export function sessionsTitle(id, title) {
-  if (!UUID.test(String(id))) throw new Error('bad session id');
+export function sessionsTitle(id, title, cwd) {
+  const file = transcriptFile(id, cwd);
   if (typeof title !== 'string' || !/^[^\x00-\x1f\x7f]{1,200}$/u.test(title)) throw new Error('bad title');
-  const file = path.join(projectDir(), `${id}.jsonl`);
+  if (!file) throw new Error('no such session');
   const fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
   try {
     const st = fs.fstatSync(fd);
@@ -404,53 +484,52 @@ export function sessionsTitle(id, title) {
 }
 
 // --- files under /workspace ---
-function fsList(p) {
-  const real = existing(p ?? '');
+function fsList(p, root = WS_ROOT) {
+  const real = existing(p ?? '', root);
   const all = fs.readdirSync(real, { withFileTypes: true });
   const entries = all.slice(0, MAX_LIST).map((d) => {
     let size = 0, mtimeMs = 0;
     try { const st = fs.lstatSync(path.join(real, d.name)); size = st.size; mtimeMs = st.mtimeMs; } catch { /* gone */ }
     return { name: d.name, type: d.isDirectory() ? 'dir' : d.isFile() ? 'file' : d.isSymbolicLink() ? 'symlink' : 'other', size, mtimeMs };
   });
-  return { path: rel(real), entries, truncated: all.length > MAX_LIST };
+  return { path: rel(real, root), entries, truncated: all.length > MAX_LIST };
 }
 
-function fsMkdir(p) {
-  const real = confine(p, { mustExist: false });
-  if (!real || real === WORKSPACE) throw new Error('not in the workspace');
+// (never the workspace or the root itself: those are the project's, not an entry of it)
+const notTop = (real, root) => real && real !== WORKSPACE && real !== root.abs;
+function fsMkdir(p, root = WS_ROOT) {
+  const real = confine(p, { mustExist: false, root });
+  if (!notTop(real, root)) throw new Error('not in the workspace');
   fs.mkdirSync(real, { mode: 0o755 });
-  return { path: rel(real) };
+  return { path: rel(real, root) };
 }
 
-function fsRename(from, to) {
-  const a = existing(from), b = confine(to, { mustExist: false });
-  if (!a || !b || a === WORKSPACE || b === WORKSPACE) throw new Error('not in the workspace');
+function fsRename(from, to, root = WS_ROOT) {
+  const a = existing(from, root), b = confine(to, { mustExist: false, root });
+  if (!notTop(a, root) || !notTop(b, root)) throw new Error('not in the workspace');
   if (fs.existsSync(b)) throw new Error('that name exists already');
   fs.renameSync(a, b);
-  return { path: rel(b) };
+  return { path: rel(b, root) };
 }
 
-// delete: into /workspace/.bedrock-now-trash/<time>-<random>/<name> — nothing is removed for good here. ifMtimeMs: only
-// while the entry's modification time is still that (the Review pane's Undo of a new file)
-function fsDelete(p, ifMtimeMs) {
-  const real = existing(p);
-  const trash = path.join(WORKSPACE, TRASH);
-  if (!real || real === WORKSPACE || real === trash) throw new Error('not in the workspace');
+// delete: into the root's trash, <root>/.bedrock-now-trash/<time>-<random>/<name> (an entry outside the root, through a
+// link: the workspace's) — nothing is removed for good here. ifMtimeMs: only while the entry's modification time is
+// still that (the Review pane's Undo of a new file)
+function fsDelete(p, ifMtimeMs, root = WS_ROOT) {
+  const real = existing(p, root);
+  const trash = trashFor(real, root);
+  if (!notTop(real, root) || real === trash || real === path.join(WORKSPACE, TRASH)) throw new Error('not in the workspace');
   if (ifMtimeMs !== undefined && ifMtimeMs !== null && fs.lstatSync(real).mtimeMs !== ifMtimeMs) throw new Error('changed on disk since it was opened');
-  const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // git (and whatever honours .gitignore) leaves the trash alone
-  const ignore = path.join(trash, '.gitignore');
-  try { fs.writeFileSync(ignore, '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
-  const dest = path.join(dir, path.basename(real));
+  // (git, and whatever honours .gitignore, leaves the trash alone)
+  const dest = path.join(newTrashDir(trash), path.basename(real));
   fs.renameSync(real, dest);
-  return { trash: rel(dest) };
+  return { trash: rel(dest, root) };
 }
 
 // fs.read: STDOUT frames with the file's first `max` bytes, then RESULT {size, mtimeMs, truncated}. Regular files
 // only; O_NONBLOCK so a FIFO cannot hang it.
-function fsRead(send, p, max) {
-  const real = existing(p);
+function fsRead(send, p, max, root = WS_ROOT) {
+  const real = existing(p, root);
   const limit = Number.isInteger(max) && max >= 0 ? Math.min(max, MAX_READ) : 2 << 20;
   const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
   try {
@@ -467,18 +546,18 @@ function fsRead(send, p, max) {
   } finally { fs.closeSync(fd); }
 }
 
-// fs.write: OPEN {path, size, ifMtimeMs?, mode: replace|create|unique}, then STDIN frames with exactly `size` bytes,
-// then STDIN_END. Written to a temporary file beside it, then renamed into place: the editor's "changed on disk"
+// fs.write: OPEN {path, size, ifMtimeMs?, mode: replace|create|unique, root?}, then STDIN frames with exactly `size`
+// bytes, then STDIN_END. Written to a temporary file beside it, then renamed into place: the editor's "changed on disk"
 // check (ifMtimeMs) happens just before. "unique" (uploads) picks a free name: a.txt, a-1.txt, a-2.txt …
-function fsWriteBegin(req) {
+function fsWriteBegin(req, root = WS_ROOT) {
   const size = req.size;
   if (!Number.isInteger(size) || size < 0 || size > MAX_WRITE) throw new Error('bad size');
   const mode = ['replace', 'create', 'unique'].includes(req.mode) ? req.mode : 'replace';
-  const real = confine(req.path, { mustExist: false });
-  if (!real || real === WORKSPACE || path.basename(real).startsWith('.bn-upload-')) throw new Error('not in the workspace');
+  const real = confine(req.path, { mustExist: false, root });
+  if (!notTop(real, root) || path.basename(real).startsWith('.bn-upload-')) throw new Error('not in the workspace');
   const tmp = path.join(path.dirname(real), `.bn-upload-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
   const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o644);
-  return { real, tmp, fd, size, got: 0, mode, ifMtimeMs: req.ifMtimeMs };
+  return { real, tmp, fd, size, got: 0, mode, ifMtimeMs: req.ifMtimeMs, root };
 }
 function fsWriteChunk(w, chunk) {
   if (w.got + chunk.length > w.size) throw new Error('more bytes than announced');
@@ -501,7 +580,7 @@ function fsWriteEnd(w) {
     if (!w.fixed && !inside(dest)) throw new Error('not in the workspace');
     fs.renameSync(w.tmp, dest);
     const st = fs.statSync(dest);
-    return { path: w.fixed ? w.display : rel(dest), size: st.size, mtimeMs: st.mtimeMs };
+    return { path: w.fixed ? w.display : rel(dest, w.root ?? WS_ROOT), size: st.size, mtimeMs: st.mtimeMs };
   } catch (e) {
     if (w.fd !== null) { try { fs.closeSync(w.fd); } catch { /* closed */ } w.fd = null; }
     try { fs.unlinkSync(w.tmp); } catch { /* gone */ }
@@ -536,12 +615,12 @@ function memoryWriteBegin(req) {
   return { real, tmp, fd, size, got: 0, mode: 'replace', ifMtimeMs: req.ifMtimeMs, fixed: true, display: '~/.claude/CLAUDE.md' };
 }
 
-// --- fs.find: paths under /workspace whose relative path contains q (case-insensitive) — a bounded walk that never
+// --- fs.find: paths under the root whose relative path contains q (case-insensitive) — a bounded walk that never
 // --- follows links and skips .git, the trash, dependencies and build output (node_modules, .venv, venv, __pycache__,
 // --- dist, build, target, .next, .cache)
 const FIND_VISIT = 20000, FIND_DEPTH = 12;
 const FIND_SKIP = new Set(['.git', TRASH, 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'target', '.next', '.cache']);
-export function fsFind(q, limit) {
+export function fsFind(q, limit, root = WS_ROOT) {
   const needle = typeof q === 'string' ? q.toLowerCase().slice(0, 200) : '';
   const max = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50;
   const paths = [];
@@ -550,7 +629,7 @@ export function fsFind(q, limit) {
   while (queue.length && paths.length < max) {
     const [dir, depth] = queue.shift();
     let entries;
-    try { entries = fs.readdirSync(path.join(WORKSPACE, dir), { withFileTypes: true }); } catch { continue; }
+    try { entries = fs.readdirSync(path.join(root.abs, dir), { withFileTypes: true }); } catch { continue; }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       if (++visited > FIND_VISIT) { truncated = true; queue.length = 0; break; }
@@ -633,6 +712,7 @@ export const GIT_REASONS = Object.freeze({
   notRepo: 'not a git repository',
   notTop: 'that folder is not the top of a git repository',
   notWorkspace: 'the repository is not the workspace folder itself',
+  notProject: 'the repository is not the project folder itself',
   noGitDir: 'git: no git folder',
   configNoAnswer: 'git config: no answer in time',
   configTooMuch: 'git config: too much configuration',
@@ -741,11 +821,13 @@ function untrackedDiff(rel, st, budget, wsRel = rel) {
 }
 // gitDiff(send) -> STDOUT: the patch (git's own, then the untracked files'), RESULT {repo, reason?, head, files:
 // [{path, status, mtimeMs, size, type}], untracked: [{path, mtimeMs, size, shown}], truncated, timedOut}
-export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, namesMax = 4 << 20, listBytes = GIT_LIST_BYTES } = {}) {
+export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, namesMax = 4 << 20, listBytes = GIT_LIST_BYTES, root = WS_ROOT } = {}) {
   const t0 = Date.now();
   const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
   let extra = [];
-  const run = (args, opts = {}) => runCapped(git, [...GIT_PRE, ...args], { env: gitEnv(extra), timeoutMs: left(), ...opts });
+  // (in the root, the folder above it where git stops looking: the repository must be the root itself)
+  const run = (args, opts = {}) => runCapped(git, [...GIT_PRE, ...args], { cwd: root.abs, env: gitEnv(extra, {}, { ceiling: path.dirname(root.abs) }), timeoutMs: left(), ...opts });
+  const ws = (p) => (root.rel ? `${root.rel}/${p}` : p);
   const no = (reason) => ({ repo: false, reason });
   const why = (r) => printable((r.err || '').trim().split('\n').pop() || `exit ${r.code}`, 200);
   let r = await run(GIT_ARGS.toplevel, { maxOut: 8192 });
@@ -755,7 +837,7 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   const [top, format] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(WORKSPACE)) return no(GIT_REASONS.notWorkspace);
+  if (realTop !== fs.realpathSync(root.abs)) return no(root.rel ? GIT_REASONS.notProject : GIT_REASONS.notWorkspace);
   // every filter and diff driver the configuration defines, switched off
   r = await run(GIT_ARGS.drivers, { maxOut: 1 << 20 });
   if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return no(r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${why(r)}`);
@@ -776,7 +858,7 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   if (names.length > GIT_NAMES_MAX) truncated = true;
   // the files that run on your computer (the watchlist's targets, core.hooksPath and all): the Review marks them
   let targets = null;
-  try { targets = watchTargets(); } catch { /* not marked */ }
+  try { targets = watchTargets(root); } catch { /* not marked */ }
   const isW = (p) => { try { return targets ? isWatched(p, targets) : false; } catch { return false; } };
   // (the lists stop at listBytes in all: very long names degrade to "not every change listed", never an answer too large)
   let room = listBytes;
@@ -784,7 +866,7 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   const files = [];
   for (const p of names.slice(0, GIT_NAMES_MAX)) {
     if (!fits(p)) break;
-    const st = statRel(p);
+    const st = statRel(ws(p));
     files.push({ ...(st ? { path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type } : { path: p, mtimeMs: null, size: 0, type: 'missing' }), ...(isW(p) ? { watched: true } : {}) });
   }
   let sent = 0;
@@ -808,10 +890,10 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
     if (list.length > GIT_NAMES_MAX) truncated = true;
     const budget = { left: GIT_UNTRACKED_TOTAL };
     for (const p of list.slice(0, GIT_NAMES_MAX)) {
-      const st = statRel(p);
+      const st = statRel(ws(p));
       if (!st) continue;
       if (!fits(p)) break;
-      const d = sent < GIT_PATCH_MAX ? untrackedDiff(p, st, budget) : null;
+      const d = sent < GIT_PATCH_MAX ? untrackedDiff(p, st, budget, ws(p)) : null;
       if (d !== null) { const b = Buffer.from(d); send(T.STDOUT, b); sent += b.length; }
       untracked.push({ path: p, mtimeMs: st.mtimeMs, size: st.size, type: st.type, shown: d !== null, ...(isW(p) ? { watched: true } : {}) });
     }
@@ -1075,8 +1157,9 @@ export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, li
   const un = parseNumstat(unstaged.code === 0 || unstaged.cut ? unstaged.out.toString('utf8') : '');
   if (staged.cut || unstaged.cut) truncated = true;
   let targets = null;
-  try { targets = watchTargets(); } catch { /* not marked */ }
-  const w = (p) => { try { return targets && isWatched(g.ws(p), targets) ? { watched: true } : {}; } catch { return {}; } };
+  // (the files of this repository's folder that run on your computer: the watchlist of that folder)
+  try { targets = watchTargets(g.root); } catch { /* not marked */ }
+  const w = (p) => { try { return targets && isWatched(p, targets) ? { watched: true } : {}; } catch { return {}; } };
   let room = listBytes, n = 0;
   const fits = (p) => { room -= Buffer.byteLength(p) + 128; n++; if (room < 0 || n > GIT_NAMES_MAX) truncated = true; return room >= 0 && n <= GIT_NAMES_MAX; };
   const out = { staged: [], unstaged: [], untracked: [], conflicts: [] };
@@ -1241,9 +1324,9 @@ export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLIN
   return { ok: true, head: head && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head) ? head : null, subject: s.code === 0 ? s.out.toString('utf8').trim().slice(0, 1000) : '',
     author: { name: who.name, email: who.email, from: who.from } };
 }
-// trashEntry(rel) -> the entry itself (a file, or a link as a link) moved into /workspace/.bedrock-now-trash/<time>/,
-// never through a link on its way
-function trashEntry(rel) {
+// trashEntry(rel, home) -> the entry itself (a file, or a link as a link) moved into the trash of `home` (the
+// repository's project folder; none: the workspace) — <home>/.bedrock-now-trash/<time>/ — never through a link on its way
+function trashEntry(rel, home = WORKSPACE) {
   // (any name git can name — a backslash or a newline is part of it —, every folder on the way a real folder)
   let on = WORKSPACE;
   for (const seg of rel.split('/').slice(0, -1)) {
@@ -1253,11 +1336,7 @@ function trashEntry(rel) {
     if (!st.isDirectory()) throw new Error('a folder on its way is a link');
   }
   const abs = path.join(WORKSPACE, rel);
-  const trash = path.join(WORKSPACE, TRASH);
-  const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { fs.writeFileSync(path.join(trash, '.gitignore'), '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
-  const dest = path.join(dir, path.basename(rel));
+  const dest = path.join(newTrashDir(path.join(abs.startsWith(home + '/') ? home : WORKSPACE, TRASH)), path.basename(rel));
   fs.renameSync(abs, dest);
   return { abs, dest };
 }
@@ -1279,12 +1358,12 @@ export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
   if (req.ifMtimeMs !== undefined && req.ifMtimeMs !== null && (st ? st.mtimeMs : null) !== req.ifMtimeMs) throw new Error('changed on disk since it was shown');
   if (e.kind === 'untracked') {
     if (!st || st.type === 'dir') throw new Error('not a file');
-    const { dest } = trashEntry(g.ws(p));
+    const { dest } = trashEntry(g.ws(p), g.root.abs);
     return { ok: true, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
   }
   if (e.xy[1] === '.') throw new Error('only staged changes: unstage it first');
   let moved = null;
-  if (st && st.type !== 'dir') moved = trashEntry(g.ws(p));
+  if (st && st.type !== 'dir') moved = trashEntry(g.ws(p), g.root.abs);
   const c = await g.run(GIT_PANEL_ARGS.restore([p]), { maxOut: 64 << 10 });
   if (c.code !== 0) {
     if (moved) { try { fs.renameSync(moved.dest, moved.abs); } catch { /* left in the trash: said below */ } }
@@ -1590,29 +1669,83 @@ async function remoteUrls(g, name) {
 const mergeDriverOverrides = (text) => [...new Set(String(text).split('\0').map((r) => r.split('\n')[0].match(/^merge\.(.+)\.driver$/)?.[1]).filter(Boolean))]
   .slice(0, GIT_DRIVERS_MAX).map((n) => [`merge.${n}.driver`, '/dev/null/no-merge-driver']);
 
-// git.repos -> {repos: [{path, kind: dir|file}]}: the workspace itself when it is a repository, and the folders in it
-// (two levels down, never through a link, not the trash or dependencies) that are — no git runs for this
-export function gitRepos({ depth = 2, max = 50 } = {}) {
+// git.repos {root} -> {repos: [{path, kind: dir|file}]}: the root itself when it is a repository, and the folders in it
+// (two levels down, never through a link, not the trash or dependencies) that are — paths relative to the root; no git
+// runs for this
+export function gitRepos({ depth = 2, max = 50, root = WS_ROOT } = {}) {
   const out = [];
   const has = (abs) => { try { const st = fs.lstatSync(path.join(abs, '.git')); return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null; } catch { return null; } };
-  const top = has(WORKSPACE);
+  const top = has(root.abs);
   if (top) out.push({ path: '', kind: top });
   const walk = (rel, d) => {
     if (out.length >= max || d > depth) return;
     let ents = [];
-    try { ents = fs.readdirSync(path.join(WORKSPACE, rel), { withFileTypes: true }); } catch { return; }
+    try { ents = fs.readdirSync(path.join(root.abs, rel), { withFileTypes: true }); } catch { return; }
     for (const e of ents.sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (out.length >= max) return;
       if (!e.isDirectory() || FIND_SKIP.has(e.name) || e.name.startsWith('.')) continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (!gitPathOk(r)) continue;
-      const k = has(path.join(WORKSPACE, r));
+      const k = has(path.join(root.abs, r));
       if (k) out.push({ path: r, kind: k });
       else walk(r, d + 1);
     }
   };
   walk('', 1);
   return { repos: out, truncated: out.length >= max };
+}
+
+// gitInitIn(abs, git) -> {git: true} or {git: false, gitError}: `git init` in a folder — no template (no hook, no
+// sample), the first branch main, nothing of the sandbox's own git configuration
+async function gitInitIn(abs, { git = GIT } = {}) {
+  const r = await runCapped(git, [...GIT_PRE, 'init', '--quiet', '--template=', '--initial-branch=main'],
+    { cwd: abs, env: gitEnv(GIT_PANEL_CONFIG, {}, { ceiling: path.dirname(abs) }), timeoutMs: 20000, maxOut: 16 << 10 });
+  return r.code === 0 ? { git: true } : { git: false, gitError: r.missing ? 'git is not installed in the sandbox' : `git init: ${gitWhy(r)}` };
+}
+// project.create {root, git} — a new project's folder: "/workspace/<folder>" that is not there yet (its parent a real
+// folder of the workspace, never through a link), made, then (git: true) `git init` in it
+export async function projectCreate(req, { git = GIT } = {}) {
+  const v = req?.root;
+  if (typeof v !== 'string' || v.length > 1024 || !v.startsWith(`${WORKSPACE}/`) || !rootRel(v.slice(WORKSPACE.length + 1))) throw new Error('not a folder name for the workspace');
+  const r = v.slice(WORKSPACE.length + 1);
+  const parent = path.dirname(r);
+  if (parent !== '.' && statRel(parent)?.type !== 'dir') throw new Error('its parent folder is not there (or a link is on its way)');
+  if (statRel(r)) throw new Error('something of that name is there already');
+  const abs = path.join(WORKSPACE, r);
+  fs.mkdirSync(abs, { mode: 0o755 });
+  if (statRel(r)?.type !== 'dir') throw new Error('the new folder is not a folder any more');
+  if (req.git !== true) return { ok: true, root: r, git: false };
+  return { ok: true, root: r, ...(await gitInitIn(abs, { git })) };
+}
+// project.check {roots: [abs…]} -> {roots: [{root, type: dir|missing|link|other|bad, git}]}: whether the project folders
+// the code container names are there — a real folder (never through a link), and a git repository (a .git in it)
+export const CHECK_ROOTS = 64;
+export function projectCheck(req) {
+  const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
+  return { roots: list.map((v) => {
+    if (typeof v !== 'string') return { root: '', type: 'bad', git: false };
+    const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
+    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false };
+    let p = WORKSPACE, type = 'dir';
+    for (const seg of r ? r.split('/') : []) {
+      p = path.join(p, seg);
+      let st;
+      try { st = fs.lstatSync(p); } catch { type = 'missing'; break; }
+      if (st.isSymbolicLink()) { type = 'link'; break; }
+      if (!st.isDirectory()) { type = 'other'; break; }
+    }
+    let isGit = false;
+    if (type === 'dir') { try { fs.lstatSync(path.join(p, '.git')); isGit = true; } catch { /* none */ } }
+    return { root: v, type, git: isGit };
+  }) };
+}
+// git.init {repo} — `git init` in a folder of the workspace that is no repository yet (Connect a git repository)
+export async function gitInit(req, { git = GIT } = {}) {
+  const root = repoRoot(req?.repo);
+  try { fs.lstatSync(path.join(root.abs, '.git')); throw new Error('it is a git repository already'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const r = await gitInitIn(root.abs, { git });
+  if (!r.git) throw new Error(r.gitError);
+  return { ok: true, repo: root.rel };
 }
 
 // git.remote.state {repo} -> the repository's remotes (each URL as the configuration has it, and parsed — or why it is
@@ -2001,7 +2134,7 @@ function hitText(line, col, len) {
   return { text: l.slice(from, from + GREP_TEXT), col: col - from, len: Math.min(len, GREP_TEXT - (col - from)), cut: true };
 }
 const byteCol = (s, bytes) => Buffer.from(s, 'utf8').subarray(0, bytes).toString('utf8').length;
-async function grepRg(c, rg, timeoutMs) {
+async function grepRg(c, rg, timeoutMs, root = WS_ROOT) {
   const files = new Map();
   let hits = 0, buf = '', bad = false;
   const take = (line) => {
@@ -2018,7 +2151,7 @@ async function grepRg(c, rg, timeoutMs) {
     files.get(p).push({ line: d.line_number, ...hitText(text, col, Math.max(0, end - col)), count: Array.isArray(d.submatches) ? d.submatches.length : 1 });
     return ++hits < GREP_MAX;
   };
-  const r = await runCapped(rg, rgArgs(c), { env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C.UTF-8' }, timeoutMs, onData: (d) => {
+  const r = await runCapped(rg, rgArgs(c), { cwd: root.abs, env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C.UTF-8' }, timeoutMs, onData: (d) => {
     buf += d.toString('utf8');
     if (buf.length > 8 << 20 && buf.indexOf('\n') < 0) { bad = true; return false; }
     let i;
@@ -2055,16 +2188,16 @@ export function globMatch(glob, s) {
   while (g < glob.length && glob[g] === '*') g++;
   return g === glob.length;
 }
-// the simple part of the top .gitignore (names and *.ext patterns, no negation): what the walk skips
-function topIgnores() {
-  const t = readSmall('.gitignore', 64 << 10);
+// the simple part of the root's .gitignore (names and *.ext patterns, no negation): what the walk skips
+function topIgnores(root = WS_ROOT) {
+  const t = readSmall('.gitignore', 64 << 10, root);
   if (!t) return [];
   return t.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !l.startsWith('!') && /^\/?[A-Za-z0-9._*?-]+\/?$/.test(l)).map((l) => l.replace(/^\/|\/$/g, '')).slice(0, 200);
 }
-async function grepWalk(c, timeoutMs) {
+async function grepWalk(c, timeoutMs, root = WS_ROOT) {
   if (c.regex) throw new Error('regular expressions need ripgrep, which is not in the sandbox: search for the text itself');
   const t0 = Date.now();
-  const ignores = topIgnores();
+  const ignores = topIgnores(root);
   const named = (name) => GREP_SKIP.includes(name) || ignores.some((g) => globMatch(g, name));
   const matches = (globs, rel) => globs.some((g) => (g.includes('/') ? globMatch(g.replace(/^\//, ''), rel) : rel.split('/').some((seg) => globMatch(g, seg))));
   const needle = c.caseSensitive ? c.q : c.q.toLowerCase();
@@ -2074,7 +2207,7 @@ async function grepWalk(c, timeoutMs) {
   walk: while (queue.length) {
     const dir = queue.shift();
     let entries;
-    try { entries = fs.readdirSync(path.join(WORKSPACE, dir), { withFileTypes: true }); } catch { continue; }
+    try { entries = fs.readdirSync(path.join(root.abs, dir), { withFileTypes: true }); } catch { continue; }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const e of entries) {
       if (++visited > 50000) { truncated = true; break walk; }
@@ -2084,7 +2217,7 @@ async function grepWalk(c, timeoutMs) {
       if (named(e.name) || matches(c.exclude, rel)) continue;
       if (e.isDirectory()) { if (rel.split('/').length < 40) queue.push(rel); continue; }
       if (!e.isFile() || (c.include.length && !matches(c.include, rel))) continue;   // (links: never followed)
-      const b = readRegular(path.join(WORKSPACE, rel), GREP_FILE_MAX);
+      const b = readRegular(path.join(root.abs, rel), GREP_FILE_MAX);
       if (!b || b.subarray(0, 8192).includes(0)) continue;
       const lines = b.toString('utf8').split('\n');
       const found = [];
@@ -2102,9 +2235,9 @@ async function grepWalk(c, timeoutMs) {
   }
   return { engine: 'node', files, hits, truncated, timedOut };
 }
-export async function fsGrep(req, { rg = RG, timeoutMs = GREP_TIMEOUT } = {}) {
+export async function fsGrep(req, { rg = RG, timeoutMs = GREP_TIMEOUT, root = WS_ROOT } = {}) {
   const c = checkGrep(req);
-  return (await grepRg(c, rg, timeoutMs)) ?? grepWalk(c, timeoutMs);
+  return (await grepRg(c, rg, timeoutMs, root)) ?? grepWalk(c, timeoutMs, root);
 }
 
 // --- ports: what listens in the sandbox (as VS Code's port finder reads it), for the page's previews ---
@@ -2283,8 +2416,9 @@ export function stripJsonc(s) {
   return out.replace(/,(\s*[}\]])/g, '$1');
 }
 const strList = (v, n, len) => v === undefined || (Array.isArray(v) && v.length <= n && v.every((x) => typeof x === 'string' && x.length <= len && ONE_LINE.test(x)));
-// launchConfig(raw) -> {name, argv, port, cwd, env, url, autoPort, command} or {name?, error}
-export function launchConfig(c) {
+// launchConfig(raw, root) -> {name, argv, port, cwd, env, url, autoPort, command} or {name?, error} (cwd: relative to the
+// root, the project's folder)
+export function launchConfig(c, root = WS_ROOT) {
   if (!c || typeof c !== 'object' || Array.isArray(c)) return { error: 'not an object' };
   const name = typeof c.name === 'string' && /^[^\x00-\x1f\x7f]{1,100}$/.test(c.name) ? c.name : null;
   if (!name) return { error: 'no name' };
@@ -2305,7 +2439,7 @@ export function launchConfig(c) {
   const quote = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
   // the program it runs (Start runs that file): its first argument found as Start's environment finds it (taskPath:
   // the image's folders first; a path from the entry's folder), and whether it is the image's own
-  const where = argv ? confine(cwd) : null;
+  const where = argv ? confine(cwd, { root }) : null;
   const prog = argv && where ? whichProgram(argv[0], taskPath(), where) : null;
   // one that is not the image's own is bound by its contents too (up to 1 MiB: a script, a small binary)
   const body = prog && !prog.own ? readRegular(prog.path, 1 << 20) : null;
@@ -2326,9 +2460,10 @@ export function launchDigest({ argv, cwd, env, port, program, programOwn, progra
   return crypto.createHash('sha256').update(JSON.stringify([argv ?? null, cwd ?? '.', pairs, port ?? null, program ?? null, programOwn === true, programSha256 ?? null]))
     .digest('hex');
 }
-// launchList() -> {exists, configurations, error}: the file's entries, checked (a broken one says why)
-export function launchList() {
-  const real = confine(LAUNCH_FILE);
+// launchList(root) -> {exists, configurations, error}: the root's .claude/launch.json entries, checked (a broken one says
+// why)
+export function launchList(root = WS_ROOT) {
+  const real = confine(LAUNCH_FILE, { root });
   if (!real) return { exists: false, configurations: [] };
   let fd;
   try { fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW); } catch { return { exists: false, configurations: [] }; }
@@ -2344,7 +2479,7 @@ export function launchList() {
   const list = Array.isArray(j?.configurations) ? j.configurations.slice(0, 20) : null;
   if (!list) return { exists: true, configurations: [], error: 'no "configurations" list' };
   const names = new Set();
-  return { exists: true, configurations: list.map(launchConfig).map((c) => (c.name && names.has(c.name) ? { name: c.name, error: 'the name is used twice' } : (names.add(c.name), c))) };
+  return { exists: true, configurations: list.map((x) => launchConfig(x, root)).map((c) => (c.name && names.has(c.name) ? { name: c.name, error: 'the name is used twice' } : (names.add(c.name), c))) };
 }
 const TMUX_SESSION = 'claude';   // bn-session's: the terminal panel shows this session's windows
 // the image's tmux by its path (never one of the sandbox's first in PATH: ~/.local/bin); BN_TMUX_BIN: tests
@@ -2420,14 +2555,14 @@ export async function tmuxGuard(tmux, { procDir = '/proc' } = {}) {
 // in a new tmux window of the terminal's session, named after it, in its folder, with PORT=<port> and its env; when
 // the command ends, a shell stays in the window (with its exit status). The session is created as bn-session would
 // (Claude Code in its first window) when none runs yet.
-export async function launchStart(name, digest, { tmux = tmuxBin() } = {}) {
+export async function launchStart(name, digest, { tmux = tmuxBin(), root = WS_ROOT } = {}) {
   if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the entry shown');
-  const c = launchList().configurations.find((x) => x.name === name);
+  const c = launchList(root).configurations.find((x) => x.name === name);
   if (!c) throw new Error('no such entry in .claude/launch.json');
   if (c.error) throw new Error(`.claude/launch.json: ${c.name}: ${c.error}`);
   if (c.digest !== digest) throw new Error('.claude/launch.json changed since it was shown: review it again');
   if (!c.argv) throw new Error('that entry has no command (runtimeExecutable or program): it only names a running server');
-  const cwd = confine(c.cwd);
+  const cwd = confine(c.cwd, { root });
   if (!cwd) throw new Error('cwd: not a folder in the workspace');
   try { if (!fs.statSync(cwd).isDirectory()) throw new Error('x'); } catch { throw new Error('cwd: not a folder in the workspace'); }
   if (!c.program) throw new Error(`${printable(c.argv[0], 100)}: not found`);
@@ -2448,21 +2583,26 @@ export async function launchStart(name, digest, { tmux = tmuxBin() } = {}) {
   return { ok: true, name: c.name, window, port: c.port, command: c.command };
 }
 
-// terminalResume(id) — a Code-page session continued in the terminal: a new window of the terminal's tmux session
-// (made the current one, so the terminal panel shows it), in /workspace, and `claude-bedrock --resume <id>` typed into
-// its fresh shell and run — there, in your shell's history. Only a checked UUID of a transcript that is there is ever
-// part of what is typed (the page's own process for that session is closed first, by the code container).
+// terminalResume(id, {cwd}) — a Code-page session continued in the terminal: a new window of the terminal's tmux
+// session (made the current one, so the terminal panel shows it), in the session's working folder (cwd: a folder of the
+// workspace; none: the workspace — Claude Code finds a session by the folder it runs in), and `claude-bedrock --resume
+// <id>` typed into its fresh shell and run — there, in your shell's history. Only a checked UUID of a transcript that is
+// there is ever part of what is typed (the page's own process for that session is closed first, by the code container).
 const RESUME_CMD = (id) => `claude-bedrock --resume ${id}`;
-export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc' } = {}) {
+export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc', cwd = null } = {}) {
   if (typeof id !== 'string' || !UUID.test(id)) throw new Error('bad session id');
+  const file = transcriptFile(id, cwd);
   let st;
-  try { st = fs.lstatSync(path.join(projectDir(), `${id}.jsonl`)); } catch { throw new Error('no such session in this workspace (it has no prompts yet?)'); }
+  try { st = file && fs.lstatSync(file); } catch { st = null; }
+  if (!st) throw new Error('no such session in this workspace (it has no prompts yet?)');
   if (!st.isFile()) throw new Error('no such session in this workspace');
+  const where = confine(cwd || WORKSPACE);
+  if (!where) throw new Error('the session\'s folder is not in the workspace any more');
   // never a second process on that conversation (the page's own has ended by now: the code container waited for it)
   if (sessionRunning(id, procDir).running) throw new Error('that conversation is already open in the sandbox (the terminal?)');
   await tmuxSession(tmux);
   const window = `resume-${id.slice(0, 8)}`;
-  const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', WORKSPACE]);
+  const w = await run(tmux, ['new-window', '-P', '-F', '#{pane_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', where]);
   if (w.code !== 0) throw new Error(`tmux: ${printable(w.err, 200) || `exit ${w.code}`}`);
   const pane = w.out.trim();
   if (!/^%[0-9]{1,6}$/.test(pane)) throw new Error('tmux: no pane for the new window');
@@ -2471,6 +2611,19 @@ export async function terminalResume(id, { tmux = tmuxBin(), procDir = '/proc' }
   const e = t.code === 0 ? await run(tmux, ['send-keys', '-t', pane, 'Enter']) : t;
   if (e.code !== 0) throw new Error(`tmux: ${printable(e.err, 200) || `exit ${e.code}`}`);
   return { ok: true, window, command: RESUME_CMD(id) };
+}
+
+// terminalWindow(root) — a project's terminal: a new window of the terminal's tmux session in its folder (a shell of
+// the session's default command; nothing typed), made the current one so the terminal panel shows it
+export async function terminalWindow(root = WS_ROOT, { tmux = tmuxBin() } = {}) {
+  const where = confine('.', { root });
+  if (!where) throw new Error('the project folder is not there');
+  await tmuxSession(tmux);
+  const window = (path.basename(root.abs).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 30) || 'workspace');
+  const w = await run(tmux, ['new-window', '-P', '-F', '#{window_id}', '-t', `=${TMUX_SESSION}:`, '-n', window, '-c', where]);
+  if (w.code !== 0) throw new Error(`tmux: ${printable(w.err, 200) || `exit ${w.code}`}`);
+  const id = w.out.trim();
+  return { ok: true, window, id: RUN_WINDOW.test(id) ? id : null };
 }
 
 // --- terminal.capture: the last lines of the terminal panel's current pane, as text (the Code page's @terminal) ---
@@ -2668,10 +2821,10 @@ function taskRow(source, name, argv, detail, files = [], notes = []) {
 }
 const taskError = (source, name, error) => ({ source, name: String(name).slice(0, 200), error });
 
-// taskFile(rel) -> {text, sha256} of a regular file in the workspace's top folder (never through a link, never a FIFO
+// taskFile(rel, root) -> {text, sha256} of a regular file in the root's top folder (never through a link, never a FIFO
 // or device), {error} when one is there that cannot be used, null when there is none
-function taskFile(rel) {
-  const top = confine('.');
+function taskFile(rel, root = WS_ROOT) {
+  const top = confine('.', { root });
   if (!top) return null;
   let fd;
   try { fd = fs.openSync(path.join(top, rel), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
@@ -2813,16 +2966,16 @@ export function pyEntries(text) {
   return { entries, more };
 }
 
-// runList() -> {sources: [{source, file, exists, error, more}], tasks}: every task of the workspace's top folder, each
-// with its wrapper's arguments, its texts and its digest (or why it is not offered)
-export function runList() {
+// runList(root) -> {sources: [{source, file, exists, error, more}], tasks}: every task of the root's top folder (the
+// project's), each with its wrapper's arguments, its texts and its digest (or why it is not offered)
+export function runList(root = WS_ROOT) {
   const sources = [], tasks = [];
   const progs = imagePrograms();
-  const pkg = taskFile('package.json');
+  const pkg = taskFile('package.json', root);
   const src = (source, file, f, r = {}) => sources.push({ source, file, exists: f !== null, error: f?.error ?? r.error ?? null, more: r.more === true });
   if (!pkg || pkg.error) src('npm', 'package.json', pkg);
   else {
-    const rc = taskFile('.npmrc');
+    const rc = taskFile('.npmrc', root);
     if (rc?.error) src('npm', 'package.json', pkg, { error: `the workspace's .npmrc is ${rc.error}: npm would read it — run npm in the terminal` });
     else {
       const r = npmTasks(pkg.text, rc && { sha256: rc.sha256, keys: npmrcKeys(rc.text), shown: npmrcShown(rc.text) }, progs);
@@ -2834,9 +2987,9 @@ export function runList() {
   // before it had one — but not offered then)
   let mfName = 'Makefile', mf = null;
   let here = [];
-  try { here = fs.readdirSync(confine('.') || WORKSPACE).slice(0, 100000); } catch { /* none */ }
+  try { here = fs.readdirSync(confine('.', { root }) || root.abs).slice(0, 100000); } catch { /* none */ }
   // (by the names in the folder: on a case-insensitive disk "makefile" would open "Makefile" too)
-  for (const n of ['GNUmakefile', 'makefile', 'Makefile']) { if (!here.includes(n)) continue; const f = taskFile(n); if (f !== null) { mfName = n; mf = f; break; } }
+  for (const n of ['GNUmakefile', 'makefile', 'Makefile']) { if (!here.includes(n)) continue; const f = taskFile(n, root); if (f !== null) { mfName = n; mf = f; break; } }
   if (!mf || mf.error) src('make', mfName, mf);
   else if (!progs.make) {
     const r = makeTargets(mf.text);
@@ -2852,7 +3005,7 @@ export function runList() {
         : taskRow('make', t.name, runArgv('make', t.name, null, progs), [{ name: `${mfName}: ${t.name}`, text: t.recipe }], files, notes));
     }
   }
-  const py = taskFile('pyproject.toml');
+  const py = taskFile('pyproject.toml', root);
   if (!py || py.error) src('python', 'pyproject.toml', py);
   else {
     const r = pyEntries(py.text);
@@ -2916,14 +3069,14 @@ function runState(rec, procDir) {
 // runStart(source, name, digest) — that task (listed again now: it must still be what the page showed) in a new window
 // of the terminal's tmux session, through its fixed wrapper, run by this file's runner; the window stays (a shell in
 // the workspace) when it ends
-export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir = '/proc' } = {}) {
+export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir = '/proc', root = WS_ROOT } = {}) {
   if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('no digest of the task shown');
   if (typeof source !== 'string' || !Object.hasOwn(RUN_NAME, source) || typeof name !== 'string' || !RUN_NAME[source].test(name)) throw new Error('no such task');
-  const t = runList().tasks.find((x) => x.source === source && x.name === name);
+  const t = runList(root).tasks.find((x) => x.source === source && x.name === name);
   if (!t) throw new Error('no such task in the workspace (any more)');
   if (t.error) throw new Error(`${name}: ${t.error}`);
   if (t.digest !== digest) throw new Error('the task changed since it was shown: review it again');
-  const top = confine('.');
+  const top = confine('.', { root });
   if (!top) throw new Error('no workspace');
   const node = imageProgram('node');
   if (!node) throw new Error('node is not the image\'s own here: run it in the terminal');
@@ -2936,7 +3089,7 @@ export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir
   // (the last 20 runs are kept: the oldest go, with their files)
   for (const old of runIds().slice(RUNS_KEEP - 1)) for (const f of runFiles(old)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
   const id = crypto.randomBytes(8).toString('hex');
-  const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null };
+  const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null, root: root.rel };
   writeRunFile(RUN_DIR, `${id}.json`, rec);
   const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
   // the runner and the wrapper as their own arguments (no shell parses them), in the environment made here (taskEnv;
@@ -2962,7 +3115,7 @@ export function runResults(id = null, { procDir = '/proc' } = {}) {
   const max = id === null ? RUN_LIST_TAIL : RUN_TAIL;
   return { runs: recs.map((rec) => {
     const { state, res } = runState(rec, procDir);
-    const row = { id: rec.id, source: rec.source, name: rec.name, command: rec.command, window: rec.window, startedAt: rec.startedAt, state };
+    const row = { id: rec.id, source: rec.source, name: rec.name, command: rec.command, window: rec.window, startedAt: rec.startedAt, state, root: typeof rec.root === 'string' ? rec.root : '' };
     if (res) {
       const tail = typeof res.tail === 'string' ? res.tail : '';
       Object.assign(row, { exitCode: res.exitCode, signal: res.signal, error: res.error ?? null, endedAt: res.endedAt, bytes: res.bytes,
@@ -3111,18 +3264,18 @@ function permFile(abs, display) {
     return { path: display, exists: true, size: st.size, mtimeMs: st.mtimeMs, sha256: sha256(b), ...permOf(b) };
   } finally { fs.closeSync(fd); }
 }
-// a file of the workspace's .claude folder: never through a link on the way (missing folder: not there)
-function workspacePerm(rel) {
+// a file of the root's .claude folder (the project's): never through a link on the way (missing folder: not there)
+function workspacePerm(rel, root = WS_ROOT) {
   let st = null;
-  try { st = fs.lstatSync(path.join(WORKSPACE, '.claude')); } catch { return { path: rel, exists: false }; }
+  try { st = fs.lstatSync(path.join(root.abs, '.claude')); } catch { return { path: rel, exists: false }; }
   if (!st.isDirectory()) return { path: rel, exists: false, error: 'a folder on its way is a link (or not a folder): not read' };
-  return permFile(watchPath(rel), rel);
+  return permFile(watchPath(rel, false, root), rel);
 }
-export function permRead() {
+export function permRead(root = WS_ROOT) {
   return {
     user: permFile(USER_SETTINGS(), '~/.claude/settings.json'),
-    project: workspacePerm('.claude/settings.json'),
-    local: workspacePerm('.claude/settings.local.json'),
+    project: workspacePerm('.claude/settings.json', root),
+    local: workspacePerm('.claude/settings.local.json', root),
   };
 }
 // permRemove({list, rule, ifSha256}) — that rule (every copy of it) out of the user settings' permissions[list], only
@@ -3205,14 +3358,13 @@ const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 export const watchRel = (rel) => typeof rel === 'string' && rel.length > 0 && rel.length <= 1024 && !rel.startsWith('/') &&
   !/[\x00-\x1f\x7f\\]/.test(rel) && rel.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
 const inWorkspace = (abs) => abs === WORKSPACE || abs.startsWith(WORKSPACE + '/');
-const relOf = (abs) => path.relative(WORKSPACE, abs);
 const isFlag = (v) => /^(true|false|yes|no|on|off|1|0)?$/i.test(v.trim());
 
-// watchPath(rel, create) -> the absolute path when every folder on the way is a real folder (create: missing ones are
-// made, never through a link), else null
-function watchPath(rel, create = false) {
+// watchPath(rel, create, root) -> the absolute path (rel: relative to the root, the project's folder) when every folder
+// on the way is a real folder (create: missing ones are made, never through a link), else null
+function watchPath(rel, create = false, root = WS_ROOT) {
   if (!watchRel(rel)) return null;
-  let p = WORKSPACE;
+  let p = root.abs;
   for (const seg of rel.split('/').slice(0, -1)) {
     p = path.join(p, seg);
     let st;
@@ -3222,7 +3374,7 @@ function watchPath(rel, create = false) {
     }
     if (!st.isDirectory()) return null;
   }
-  return path.join(WORKSPACE, rel);
+  return path.join(root.abs, rel);
 }
 // readRegular(abs, max) -> the bytes of a regular file of at most `max` bytes, never through a link at its last part
 // and never blocking on a FIFO or device put there meanwhile (O_NONBLOCK, then fstat: a regular file or nothing)
@@ -3242,19 +3394,19 @@ function readRegular(abs, max) {
     return Buffer.concat(parts);
   } catch { return null; } finally { fs.closeSync(fd); }
 }
-// readSmall(rel, max) -> the text of a regular file of the workspace (never through a link), or null
-function readSmall(rel, max = WATCH_MAX_FILE) {
-  const abs = watchPath(rel);
+// readSmall(rel, max, root) -> the text of a regular file of the root (never through a link), or null
+function readSmall(rel, max = WATCH_MAX_FILE, root = WS_ROOT) {
+  const abs = watchPath(rel, false, root);
   const b = abs ? readRegular(abs, max) : null;
   return b ? b.toString('utf8') : null;
 }
-// a path git names (relative to `base`, a workspace-relative folder) -> workspace-relative, or null when outside
-function gitPathRel(value, base) {
+// a path git names (relative to `base`, a root-relative folder) -> root-relative, or null when outside the root
+function gitPathRel(value, base, root = WS_ROOT) {
   const v = value.trim();
   if (!v || v.startsWith('~') || v.includes('\0')) return null;
-  const abs = path.resolve(path.join(WORKSPACE, base), v);
-  if (!inWorkspace(abs) || abs === WORKSPACE) return null;
-  const rel = relOf(abs);
+  const abs = path.resolve(path.join(root.abs, base), v);
+  if (!inRoot(abs, root) || abs === root.abs) return null;
+  const rel = path.relative(root.abs, abs);
   return watchRel(rel) ? rel : null;
 }
 // gitConfigLines(text) -> [{section, key, value}] as git reads them: comments (; #) end a line only outside double
@@ -3300,20 +3452,20 @@ export function gitConfigLines(text) {
 // not evaluate; and .git/hooks), .husky, the core.fsmonitor programs in /workspace (every distinct value), and
 // submodules (their config and hooks, listed last). truncated: something was left out (too many includes, values or
 // modules).
-function gitLayout() {
+function gitLayout(root = WS_ROOT) {
   const out = { gitdirs: [], configs: [], hookDirs: [], moduleConfigs: [], moduleHookDirs: [], fsmonitor: [], truncated: false };
-  const top = watchPath('.git');
+  const top = watchPath('.git', false, root);
   let st = null;
   try { st = top && fs.lstatSync(top); } catch { st = null; }
   if (st && st.isDirectory()) out.gitdirs.push('.git');
   else if (st && st.isFile()) {
-    const m = (readSmall('.git', 4096) || '').match(/^gitdir:\s*(.+)$/m);
-    const g = m && gitPathRel(m[1], '.');
+    const m = (readSmall('.git', 4096, root) || '').match(/^gitdir:\s*(.+)$/m);
+    const g = m && gitPathRel(m[1], '.', root);
     if (g) out.gitdirs.push(g);
   }
   for (const g of [...out.gitdirs]) {
-    const common = readSmall(`${g}/commondir`, 4096);
-    const c = common && gitPathRel(common.split('\n')[0], g);
+    const common = readSmall(`${g}/commondir`, 4096, root);
+    const c = common && gitPathRel(common.split('\n')[0], g, root);
     if (c && !out.gitdirs.includes(c)) out.gitdirs.push(c);
   }
   // the configs git reads for this worktree: the common one (or the gitdir's), then config.worktree; includes inline
@@ -3325,14 +3477,14 @@ function gitLayout() {
     if (seen.has(rel)) return;
     seen.add(rel);
     (main ? out.configs : out.moduleConfigs).push(rel);
-    const text = readSmall(rel);
+    const text = readSmall(rel, WATCH_MAX_FILE, root);
     if (text === null) return;
     for (const { section, key, value } of gitConfigLines(text)) {
       if (main && section === 'core' && key === 'hookspath' && value.trim() !== '') note(hooksPaths, value);
       if (main && section === 'core' && key === 'fsmonitor' && !isFlag(value)) note(fsmonitors, value);
       if (main && section === 'extensions' && key === 'worktreeconfig') worktreeConfig = /^(true|yes|on|1)$/i.test(value);
       if ((section === 'include' || section === 'includeif') && key === 'path') {
-        const f = gitPathRel(value, path.dirname(rel));
+        const f = gitPathRel(value, path.dirname(rel), root);
         if (!f || seen.has(f)) continue;
         if (depth >= 3 || includes >= WATCH_MAX_INCLUDES) { out.truncated = true; continue; }
         includes++;
@@ -3347,15 +3499,15 @@ function gitLayout() {
   // git applies the last value whose include applies: all of them are watched (the last read first), up to the cap
   if (hooksPaths.length > WATCH_MAX_GIT_VALUES || fsmonitors.length > WATCH_MAX_GIT_VALUES) out.truncated = true;
   for (const v of hooksPaths.slice(-WATCH_MAX_GIT_VALUES).reverse()) {
-    const d = gitPathRel(v, '.');
-    if (d && !out.hookDirs.includes(d)) out.hookDirs.push(d);   // (outside the workspace: not this folder's)
+    const d = gitPathRel(v, '.', root);
+    if (d && !out.hookDirs.includes(d)) out.hookDirs.push(d);   // (outside the root: not this folder's)
   }
   if (common && !out.hookDirs.includes(`${common}/hooks`)) out.hookDirs.push(`${common}/hooks`);   // (with no hooksPath, or a later config dropping it)
   out.hookDirs.push('.husky');
-  for (const v of fsmonitors.slice(-WATCH_MAX_GIT_VALUES).reverse()) { const f = gitPathRel(v, '.'); if (f && !out.fsmonitor.includes(f)) out.fsmonitor.push(f); }
+  for (const v of fsmonitors.slice(-WATCH_MAX_GIT_VALUES).reverse()) { const f = gitPathRel(v, '.', root); if (f && !out.fsmonitor.includes(f)) out.fsmonitor.push(f); }
   for (const g of out.gitdirs) {
     let mods = [];
-    try { mods = fs.readdirSync(path.join(WORKSPACE, g, 'modules')).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..').sort(); } catch { /* none */ }
+    try { mods = fs.readdirSync(path.join(root.abs, g, 'modules')).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..').sort(); } catch { /* none */ }
     if (mods.length > WATCH_MAX_MODULES) { out.truncated = true; mods = mods.slice(0, WATCH_MAX_MODULES); }
     for (const n of mods) { walk(`${g}/modules/${n}/config`, 0, false); out.moduleHookDirs.push(`${g}/modules/${n}/hooks`); }
   }
@@ -3363,20 +3515,20 @@ function gitLayout() {
 }
 // what is watched at this moment: the hook folders (git's own first), single files (git's configs and fsmonitor
 // program, then the fixed list and the patterns), the submodules' configs and hook folders last
-function watchTargets() {
-  const g = gitLayout();
+function watchTargets(root = WS_ROOT) {
+  const g = gitLayout(root);
   let truncated = g.truncated;
   const files = [...g.configs, ...g.fsmonitor, ...WATCH_FILES];
   let subs = [];
-  try { subs = fs.readdirSync(path.join(WORKSPACE, '.devcontainer'), { withFileTypes: true }).filter((d) => d.isDirectory() && WATCH_NAME.test(d.name) && d.name !== '.' && d.name !== '..').map((d) => d.name).sort(); } catch { /* none */ }
+  try { subs = fs.readdirSync(path.join(root.abs, '.devcontainer'), { withFileTypes: true }).filter((d) => d.isDirectory() && WATCH_NAME.test(d.name) && d.name !== '.' && d.name !== '..').map((d) => d.name).sort(); } catch { /* none */ }
   if (subs.length > 16) { truncated = true; subs = subs.slice(0, 16); }
   for (const n of subs) files.push(`.devcontainer/${n}/devcontainer.json`);
   let ws = [];
-  try { ws = fs.readdirSync(WORKSPACE).filter((n) => /^[A-Za-z0-9._-]{1,100}\.code-workspace$/.test(n)).sort(); } catch { /* none */ }
+  try { ws = fs.readdirSync(root.abs).filter((n) => /^[A-Za-z0-9._-]{1,100}\.code-workspace$/.test(n)).sort(); } catch { /* none */ }
   if (ws.length > 16) { truncated = true; ws = ws.slice(0, 16); }
   files.push(...ws, ...g.moduleConfigs);
   return { files: [...new Set(files)], hookDirs: [...new Set(g.hookDirs)], moduleHookDirs: g.moduleHookDirs, gitdirs: g.gitdirs,
-    configs: [...g.configs, ...g.moduleConfigs], fsmonitor: g.fsmonitor, truncated };
+    configs: [...g.configs, ...g.moduleConfigs], fsmonitor: g.fsmonitor, truncated, root };
 }
 export function isWatched(rel, t = watchTargets()) {
   if (!watchRel(rel)) return false;
@@ -3385,9 +3537,9 @@ export function isWatched(rel, t = watchTargets()) {
   const i = rel.lastIndexOf('/');
   return i > 0 && dirs.includes(rel.slice(0, i)) && WATCH_NAME.test(rel.slice(i + 1)) && !rel.endsWith('.sample');
 }
-// watchEntry(rel, budget, kind) -> {path, kind?, type: file|symlink|dir, size, mode, sha256, data?, target?} or null
-function watchEntry(rel, budget, kind) {
-  const abs = watchPath(rel);
+// watchEntry(rel, budget, kind, root) -> {path, kind?, type: file|symlink|dir, size, mode, sha256, data?, target?} or null
+function watchEntry(rel, budget, kind, root = WS_ROOT) {
+  const abs = watchPath(rel, false, root);
   if (!abs) return null;
   let st;
   try { st = fs.lstatSync(abs); } catch { return null; }
@@ -3428,26 +3580,26 @@ function watchEntry(rel, budget, kind) {
 }
 // ws.sensitive -> {files, truncated?}: the hook folders and their files first (what runs at every commit), then the
 // single files, the submodules last; at most WATCH_MAX_ENTRIES entries — truncated: true when anything was left out
-export function wsSensitive() {
-  const t = watchTargets();
+export function wsSensitive(root = WS_ROOT) {
+  const t = watchTargets(root);
   const files = [], budget = { left: WATCH_MAX_DATA }, seen = new Set();
   let truncated = t.truncated;
   const room = () => (files.length < WATCH_MAX_ENTRIES ? true : ((truncated = true), false));
-  const add = (rel, kind) => { if (seen.has(rel) || !room()) return; seen.add(rel); const e = watchEntry(rel, budget, kind); if (e) files.push(e); };
+  const add = (rel, kind) => { if (seen.has(rel) || !room()) return; seen.add(rel); const e = watchEntry(rel, budget, kind, root); if (e) files.push(e); };
   const addDir = (dir) => {
     if (seen.has(dir) || !room()) return;
-    const d = watchEntry(dir, budget, 'git-hooks');
+    const d = watchEntry(dir, budget, 'git-hooks', root);
     seen.add(dir);
     if (!d) return;
     files.push(d);
     if (d.type !== 'dir') return;
     let names = [];
-    try { names = fs.readdirSync(path.join(WORKSPACE, dir)).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..' && !n.endsWith('.sample')).sort(); } catch { /* gone */ }
+    try { names = fs.readdirSync(path.join(root.abs, dir)).filter((n) => WATCH_NAME.test(n) && n !== '.' && n !== '..' && !n.endsWith('.sample')).sort(); } catch { /* gone */ }
     if (names.length > WATCH_MAX_DIR) { truncated = true; names = names.slice(0, WATCH_MAX_DIR); }
     for (const n of names) {
       const rel = `${dir}/${n}`;
       if (seen.has(rel) || !room()) continue;
-      const e = watchEntry(rel, budget, dir === '.husky' ? 'husky' : 'git-hook');
+      const e = watchEntry(rel, budget, dir === '.husky' ? 'husky' : 'git-hook', root);
       if (e && e.type !== 'dir') { seen.add(rel); files.push(e); }   // (a folder in it may be a hook folder of its own)
     }
   };
@@ -3460,26 +3612,23 @@ export function wsSensitive() {
 }
 // ws.restore {path, ifSha256, data: base64 | null, mode}: a watched file put back — data null: it was not there, so it
 // goes to the workspace trash — only while its SHA-256 is still ifSha256 (null: still not there)
-export function wsRestore(req) {
+export function wsRestore(req, root = WS_ROOT) {
   const rel = req?.path;
-  const t = watchTargets();
+  const t = watchTargets(root);
   if (!isWatched(rel, t) || t.hookDirs.includes(rel) || t.moduleHookDirs.includes(rel) || rel === '.git') throw new Error('not a watched file');
-  const cur = watchEntry(rel, { left: 0 });
+  const cur = watchEntry(rel, { left: 0 }, undefined, root);
   if (cur?.type === 'dir') throw new Error('a folder is there now');
   if ((req.ifSha256 ?? null) !== (cur ? cur.sha256 : null)) throw new Error('it changed again since: not put back');
   if (req.data === null || req.data === undefined) {
     if (!cur) return { path: rel, action: 'none' };
-    const trash = path.join(WORKSPACE, TRASH);
-    const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    try { fs.writeFileSync(path.join(trash, '.gitignore'), '*\n', { flag: 'wx', mode: 0o644 }); } catch { /* there already */ }
-    const dest = path.join(dir, path.basename(rel));
-    fs.renameSync(watchPath(rel), dest);   // the entry itself (a link stays a link): never what it points to
-    return { path: rel, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
+    // (into the root's trash: the entry itself — a link stays a link —, never what it points to)
+    const dest = path.join(newTrashDir(path.join(root.abs, TRASH)), path.basename(rel));
+    fs.renameSync(watchPath(rel, false, root), dest);
+    return { path: rel, action: 'trashed', trash: path.relative(root.abs, dest) };
   }
   if (typeof req.data !== 'string' || req.data.length > Math.ceil(WATCH_MAX_FILE / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(req.data)) throw new Error('bad data');
   const mode = Number.isInteger(req.mode) && req.mode >= 0 && req.mode <= 0o777 ? req.mode : 0o644;
-  const abs = watchPath(rel, true);
+  const abs = watchPath(rel, true, root);
   if (!abs) throw new Error('a folder on its way is a link');
   const tmp = path.join(path.dirname(abs), `.bn-upload-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
   const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
@@ -3589,37 +3738,49 @@ export function serve(sock) {
       return startProcess(req.args, WORKSPACE, cliEnv(), { noStdin: true, kind: 'cli' });
     }
     try {
+      // (the project folder an op works in: checked here — a real folder of the workspace, never through a link)
+      const root = () => rootArg(req.root);
       switch (req.op) {
         case 'sessions.list': return finish(T.RESULT, { sessions: sessionsList() });
-        case 'sessions.load': return finish(T.RESULT, sessionsLoad(req.id));
-        case 'sessions.title': return finish(T.RESULT, sessionsTitle(req.id, req.title));
-        case 'fs.list': return finish(T.RESULT, fsList(req.path));
-        case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path));
-        case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to));
-        case 'fs.delete': return finish(T.RESULT, fsDelete(req.path, Number.isFinite(req.ifMtimeMs) ? req.ifMtimeMs : undefined));
-        case 'fs.read': return finish(T.RESULT, fsRead(send, req.path, req.max));
-        case 'fs.write': writer = fsWriteBegin(req); return undefined;   // the data follows as STDIN frames
-        case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit));
+        case 'sessions.load': return finish(T.RESULT, sessionsLoad(req.id, req.cwd));
+        case 'sessions.title': return finish(T.RESULT, sessionsTitle(req.id, req.title, req.cwd));
+        case 'fs.list': return finish(T.RESULT, fsList(req.path, root()));
+        case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path, root()));
+        case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to, root()));
+        case 'fs.delete': return finish(T.RESULT, fsDelete(req.path, Number.isFinite(req.ifMtimeMs) ? req.ifMtimeMs : undefined, root()));
+        case 'fs.read': return finish(T.RESULT, fsRead(send, req.path, req.max, root()));
+        case 'fs.write': writer = fsWriteBegin(req, root()); return undefined;   // the data follows as STDIN frames
+        case 'fs.find': return finish(T.RESULT, fsFind(req.q, req.limit, root()));
         // (two of each at once: a page typing fast, or many tabs, never piles up processes here)
         case 'git.diff':
         case 'fs.grep': {
           const kind = req.op === 'git.diff' ? 'git' : 'grep';
+          const r0 = root();
           if (helpers[kind] >= 2) return fail('busy: try again in a moment');
           helpers[kind]++;
-          (kind === 'git' ? gitDiff(send) : fsGrep(req)).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
+          (kind === 'git' ? gitDiff(send, { root: r0 }) : fsGrep(req, { root: r0 })).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
           return undefined;
         }
+        // a new project's folder (and git init); whether the project folders are there
+        case 'project.create':
+          if (helpers.gitWrite >= 1) return fail('busy: another git change is on its way');
+          helpers.gitWrite++;
+          projectCreate(req).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers.gitWrite--; });
+          return undefined;
+        case 'project.check': return finish(T.RESULT, projectCheck(req));
         // the Git panel's remotes: no network for these two; a branch switch or a remote's URL is a change
-        case 'git.repos': return finish(T.RESULT, gitRepos());
+        case 'git.repos': return finish(T.RESULT, gitRepos({ root: root() }));
         case 'git.remote.state':
         case 'git.branch':
         case 'git.remote.set':
+        case 'git.init':
         case 'git.net': {
           const kind = req.op === 'git.remote.state' ? 'gitRead' : 'gitWrite';
           const o = { root: repoRoot(req.repo), ask };
           if (helpers[kind] >= (kind === 'gitRead' ? 2 : 1)) return fail(kind === 'gitRead' ? 'busy: try again in a moment' : 'busy: another git change is on its way');
           helpers[kind]++;
-          const job = { 'git.remote.state': () => gitRemoteState(o), 'git.branch': () => gitBranch(req, o), 'git.remote.set': () => gitRemoteSet(req, o), 'git.net': () => gitNet(req, o) }[req.op];
+          const job = { 'git.remote.state': () => gitRemoteState(o), 'git.branch': () => gitBranch(req, o), 'git.remote.set': () => gitRemoteSet(req, o), 'git.net': () => gitNet(req, o),
+            'git.init': () => gitInit(req) }[req.op];
           Promise.resolve().then(job).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
           return undefined;
         }
@@ -3658,29 +3819,38 @@ export function serve(sock) {
           return undefined;
         }
         case 'memory.read': return finish(T.RESULT, memoryRead(send));
-        case 'ws.sensitive': return finish(T.RESULT, wsSensitive());
-        case 'ws.restore': return finish(T.RESULT, wsRestore(req));
+        case 'ws.sensitive': return finish(T.RESULT, wsSensitive(root()));
+        case 'ws.restore': return finish(T.RESULT, wsRestore(req, root()));
         case 'memory.write': writer = memoryWriteBegin(req); return undefined;   // the data follows as STDIN frames
         case 'ports.list': return finish(T.RESULT, portsList());
         case 'ports.stop': return finish(T.RESULT, portsStop(req.pid, req.port, req.signal ?? 'SIGTERM'));
-        case 'launch.list': return finish(T.RESULT, launchList());
-        case 'launch.start':
+        case 'launch.list': return finish(T.RESULT, launchList(root()));
+        case 'launch.start': {
           if (typeof req.name !== 'string') return fail('bad name');
-          launchStart(req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          const r0 = root();
+          launchStart(req.name, req.digest, { root: r0 }).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
-        case 'run.list': return finish(T.RESULT, runList());
-        case 'run.start':
-          runStart(req.source, req.name, req.digest).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+        }
+        case 'run.list': return finish(T.RESULT, runList(root()));
+        case 'run.start': {
+          const r0 = root();
+          runStart(req.source, req.name, req.digest, { root: r0 }).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
+        }
         case 'run.results': return finish(T.RESULT, runResults(req.id ?? null));
         case 'run.show':
           runShow(req.id).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
-        case 'perm.read': return finish(T.RESULT, permRead());
+        case 'perm.read': return finish(T.RESULT, permRead(root()));
         case 'perm.remove': return finish(T.RESULT, permRemove(req));
         case 'terminal.resume':
-          terminalResume(req.id).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          terminalResume(req.id, { cwd: req.cwd ?? null }).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
+        case 'terminal.window': {
+          const r0 = root();
+          terminalWindow(r0).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
+        }
         // (read only; two at once: a page's @terminal, and the chip's "capture again")
         case 'terminal.capture':
           if (helpers.capture >= 2) return fail('busy: try again in a moment');
