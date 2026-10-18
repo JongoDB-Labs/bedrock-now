@@ -924,17 +924,23 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(JSONResponse({"error": "missing X-Requested-With"}, status_code=400))
         return None
 
-    # Home opens with a release check older than updates.STALE_S: one more in the background (rate-limited there)
-    release_refresh = updates.Refresher(summary.update_paths(settings), transport) if settings.update_check else None
+    # The release check, one at a time (updates.Refresher): Home opens with one older than updates.STALE_S (with
+    # UPDATE_CHECK on: one more in the background, rate-limited there), Check for updates (a click; also with the daily
+    # check off) and the daily loop.
+    release_refresh = updates.Refresher(summary.update_paths(settings), transport, auto=settings.update_check)
+
+    def update_status() -> dict:
+        u = updates.status(summary.update_paths(settings), settings.update_check)
+        u["checking"] = release_refresh.checking
+        return u
 
     async def api_summary(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
             return deny
-        if release_refresh is not None:
-            release_refresh.kick()
+        release_refresh.kick()
         data = await summary.build(request.app.state.http, settings)
         # a check is running now: Home asks again soon, for its answer
-        data["update"]["checking"] = bool(release_refresh and release_refresh.checking)
+        data["update"]["checking"] = release_refresh.checking
         rem = remote(request)
         data["portal"]["url"] = settings.origin(remote=rem)
         data["apps"] = settings.app_urls(rem)
@@ -1032,6 +1038,38 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         log.warning("admin action requested: %s%s", action, " (remote)" if admin.is_remote(request) else "")
         return _no_store(JSONResponse({"id": nonce, "action": action}, status_code=202))
 
+    async def api_update_check(request: Request) -> Response:
+        """POST (no body): Check for updates — a release check now (static/updatecheck.js: Home's header, Settings ›
+        Updates & backups, Ctrl/⌘+K). It reads GitHub's public release list and sends nothing about this install, so it
+        is allowed wherever Home's update card is shown (remote sessions too) and with UPDATE_CHECK=false; a session,
+        X-Requested-With and the portal's own Origin like every state-changing request (Caddy's same-site guard,
+        not_from_preview, refuses a preview's before it gets here). One check at a time: while one runs, the click gets
+        its answer. Waits up to updates.MANUAL_WAIT_S for the answer -> 200 {started, checking, update} (checking:
+        the page follows /api/summary's update.checking); 429 {reason: again | limit, retry_after, retry_at} while the
+        click floor or GitHub's own limit says not yet (nothing is asked then)."""
+        if (deny := api_guard(request)) is not None:
+            return deny
+        if not same_origin(request.headers, settings):
+            return _no_store(JSONResponse({"error": "cross-site request refused"}, status_code=403))
+        got = release_refresh.manual()
+        if got["reason"] in ("again", "limit"):
+            wait = got["wait"]
+            msg = (f"GitHub's limit of requests for this hour is used up: try again in {max(1, round(wait / 60))} min."
+                   if got["reason"] == "limit" else f"Checked a moment ago: try again in {wait} s.")
+            r = JSONResponse({"error": msg, "reason": got["reason"], "retry_after": wait,
+                              "retry_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + wait)),
+                              "update": update_status()}, status_code=429)
+            r.headers["Retry-After"] = str(wait)
+            return _no_store(r)
+        task = release_refresh.task
+        if task is not None and not task.done():
+            # (asyncio.wait never cancels it: a check outlives a page that went away, and its answer is saved)
+            await asyncio.wait({task}, timeout=updates.MANUAL_WAIT_S)
+        u = update_status()
+        log.info("release check asked for%s%s", " (remote)" if remote(request) else "",
+                 "" if got["started"] else " (joined the one running)")
+        return _no_store(JSONResponse({"started": got["started"], "checking": u["checking"], "update": u}))
+
     # --- the notification centre (static/activity.js): what the status files say, as items (portal/activity.py) ---
     async def api_activity(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
@@ -1109,13 +1147,15 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             # Daily price update (public price lists only; no credentials). Never blocks start-up or requests.
             if settings.price_updates:
                 tasks.append(asyncio.create_task(prices.daily_loop(summary.price_paths(settings), settings.aws_region)))
-            # Daily release check (GitHub's public releases API; nothing about this install is sent).
+            # Daily release check (GitHub's public releases API; nothing about this install is sent), through the
+            # portal's one check at a time (release_refresh: never two requests at once with Home's or a click's).
             if settings.update_check:
-                tasks.append(asyncio.create_task(updates.daily_loop(summary.update_paths(settings), transport)))
+                tasks.append(asyncio.create_task(updates.daily_loop(summary.update_paths(settings), transport,
+                                                                    refresher=release_refresh)))
             try:
                 yield
             finally:
-                if release_refresh is not None and release_refresh.task is not None:
+                if release_refresh.task is not None:
                     tasks.append(release_refresh.task)
                 for task in tasks:
                     task.cancel()
@@ -1149,6 +1189,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/api/activity", api_activity, methods=["GET"]),
             Route("/api/search/index", api_search_index, methods=["GET"]),
             Route("/api/search/chats", api_search_chats, methods=["GET"]),
+            Route("/api/update/check", api_update_check, methods=["POST"]),
             *settings_api.routes(settings_api.Ctx(
                 settings=settings, sessions=sessions, throttle=throttle, remote=remote, api_guard=api_guard,
                 session_login=lambda r: session_login(r.headers, settings), set_session=set_session,

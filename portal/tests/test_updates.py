@@ -201,7 +201,8 @@ def test_summary_carries_the_update_card(settings, paths):
 def test_the_daily_loop_starts_only_when_enabled(settings, monkeypatch):
     started = []
 
-    async def fake_loop(paths, transport=None):
+    async def fake_loop(paths, transport=None, refresher=None):
+        assert isinstance(refresher, updates.Refresher)   # the portal's one check at a time
         started.append(paths.update_dir)
 
     monkeypatch.setattr(updates, "daily_loop", fake_loop)
@@ -525,3 +526,281 @@ def test_home_lists_every_release_and_says_when_it_checked():
     assert "`What's new: ${rels.length} releases since ${u.installed}`" in js
     assert "Checked ${checked(u.checked_at)}." in js and "release check: ${" in js
     assert "if (u && u.checking) renderUpdate.again = setTimeout(refresh, 6000);" in js
+
+
+# --- Check for updates: a click (POST /api/update/check; static/updatecheck.js) ---
+
+XRW = {"X-Requested-With": "bedrock-now"}
+ORIGIN = {"Origin": "http://bedrock-now.localhost"}
+PREVIEW = "bedrock-now-preview.localhost"
+
+
+class Slow:
+    """A GitHub that holds its answer until release() (a check that is still running), in the portal's event loop."""
+
+    def __init__(self, gh):
+        import threading
+        self.gh, self.go = gh, threading.Event()
+
+    def release(self):
+        self.go.set()
+
+    async def __call__(self, request):
+        if request.url.host == "api.github.com":
+            for _ in range(500):
+                if self.go.is_set():
+                    break
+                await asyncio.sleep(0.01)
+        return self.gh(request)
+
+
+def portal(settings, paths, gh, check=True, **kw):
+    s = replace(settings, update_check=check, update_dir=paths.update_dir, status_dir=paths.status_dir, **kw)
+    return TestClient(create_app(s, transport=httpx.MockTransport(github_or_503(gh))),
+                      base_url="http://bedrock-now.localhost", follow_redirects=False)
+
+
+def sign_in(c):
+    assert c.post("/login", data={"password": "correct horse"}, headers=ORIGIN).status_code == 303
+
+
+def asked(gh):
+    return len([q for q in gh.seen if q.url.host == "api.github.com"])
+
+
+def wait_done(c):
+    import time
+    for _ in range(100):
+        u = c.get("/api/summary", headers=XRW).json()["update"]
+        if not u["checking"]:
+            return u
+        time.sleep(0.05)
+    raise AssertionError("the check never ended")
+
+
+def test_check_for_updates_asks_github_now_and_answers_the_result(settings, paths):
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))   # just checked: up to date (Home would not ask again)
+    gh = GitHub(rels=releases(), etag=None)
+    with portal(settings, paths, gh) as c:
+        sign_in(c)
+        assert c.get("/api/summary", headers=XRW).json()["update"]["available"] is False and asked(gh) == 0
+        r = c.post("/api/update/check", headers={**XRW, **ORIGIN})
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+        d = r.json()
+        assert d["started"] is True and d["checking"] is False   # the answer, within MANUAL_WAIT_S
+        u = d["update"]
+        assert u["available"] is True and u["latest"] == "v0.9.0" and u["behind"] == 5 and u["by"] == "manual"
+        assert u["error"] is None and u["limited"] is False and u["retry_at"] is None
+        assert c.get("/api/summary", headers=XRW).json()["update"]["latest"] == "v0.9.0"
+    assert asked(gh) == 1
+    # nothing about this install is sent: no cookie, no version, no token
+    q = next(q for q in gh.seen if q.url.host == "api.github.com")
+    assert "cookie" not in q.headers and "authorization" not in q.headers and "v0.4.1" not in str(q.url)
+
+
+@pytest.mark.parametrize("headers,status", [
+    ({}, 400),                                                        # no X-Requested-With
+    ({**XRW}, 403),                                                   # no Origin, no Referer
+    ({**XRW, "Origin": "http://evil.example"}, 403),                  # another site
+    ({**XRW, "Origin": "http://chat.bedrock-now.localhost"}, 403),    # another host of the site (an app's script)
+    ({**XRW, "Origin": f"http://p3000-abc123.{PREVIEW}"}, 403),       # a preview of the sandbox (Caddy refuses it first)
+    ({**XRW, "Origin": "null"}, 403),                                 # an opaque origin (a sandboxed frame)
+    ({**XRW, "Referer": "http://evil.example/http://bedrock-now.localhost/"}, 403),
+])
+def test_check_for_updates_needs_the_portals_own_page(settings, paths, headers, status):
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub())   # (checked just now: the daily loop does not ask at start)
+    before = paths.json.read_bytes()
+    gh = GitHub(rels=releases(), etag=None)
+    with portal(settings, paths, gh, preview_domain=PREVIEW) as c:
+        assert c.post("/api/update/check", headers={**XRW, **ORIGIN}).status_code == 401   # signed out
+        sign_in(c)
+        r = c.post("/api/update/check", headers=headers)
+        assert r.status_code == status, r.text
+        assert c.get("/api/update/check", headers={**XRW, **ORIGIN}).status_code == 405   # a POST only
+    assert gh.seen == [] and paths.json.read_bytes() == before   # nobody asked GitHub
+
+
+def test_a_click_while_a_check_runs_gets_that_ones_answer_not_a_second_request(settings, paths, monkeypatch):
+    monkeypatch.setattr(updates, "MANUAL_WAIT_S", 0.05)
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))
+    slow = Slow(GitHub(rels=releases(), etag=None))
+    with portal(settings, paths, slow) as c:
+        sign_in(c)
+        first = c.post("/api/update/check", headers={**XRW, **ORIGIN}).json()
+        assert first["started"] is True and first["checking"] is True and first["update"]["checking"] is True
+        again = c.post("/api/update/check", headers={**XRW, **ORIGIN})
+        assert again.status_code == 200 and again.json()["started"] is False and again.json()["checking"] is True
+        _age(paths, 5)   # Home opens: a check is due, but one runs already
+        assert c.get("/api/summary", headers=XRW).json()["update"]["checking"] is True
+        slow.release()
+        u = wait_done(c)
+    assert u["latest"] == "v0.9.0" and u["by"] == "manual"
+    assert asked(slow.gh) == 1
+
+
+def test_clicks_are_at_most_every_30_s_and_20_an_hour(settings, paths):
+    write_version(paths, "v0.4.1")
+    gh = GitHub(rels=releases())   # (the ETag: the second check is a 304)
+    clock = [5000.0]
+    r = updates.Refresher(paths, httpx.MockTransport(gh), clock=lambda: clock[0], auto=False)
+
+    async def go():
+        assert r.manual() == {"started": True, "reason": "", "wait": 0}
+        assert r.manual()["reason"] == "checking"
+        await r.task
+        clock[0] += 10
+        assert r.manual() == {"started": False, "reason": "again", "wait": updates.MANUAL_MIN_S - 10}
+        clock[0] += updates.MANUAL_MIN_S
+        assert r.manual()["started"] is True
+        await r.task
+        for _ in range(updates.MANUAL_PER_HOUR - 2):
+            clock[0] += updates.MANUAL_MIN_S
+            assert r.manual()["started"] is True
+            await r.task
+        clock[0] += updates.MANUAL_MIN_S
+        got = r.manual()   # the 21st within the hour
+        assert got["reason"] == "again" and 0 < got["wait"] <= 3600 - updates.MANUAL_MIN_S * (updates.MANUAL_PER_HOUR - 1)
+        clock[0] += got["wait"]
+        assert r.manual()["started"] is True
+        await r.task
+    asyncio.run(go())
+    assert asked(gh) == updates.MANUAL_PER_HOUR + 1
+    assert gh.seen[-1].headers.get("if-none-match") == 'W/"abc"'   # a 304 when nothing changed
+    # through the portal: a second click at once is told when, and nothing is asked
+    gh2 = GitHub(rels=releases(), etag=None)
+    with portal(settings, paths, gh2) as c:
+        sign_in(c)
+        assert c.post("/api/update/check", headers={**XRW, **ORIGIN}).status_code == 200
+        r2 = c.post("/api/update/check", headers={**XRW, **ORIGIN})
+        d = r2.json()
+        assert r2.status_code == 429 and d["reason"] == "again" and 0 < d["retry_after"] <= updates.MANUAL_MIN_S
+        assert r2.headers["retry-after"] == str(d["retry_after"]) and d["update"]["latest"] == "v0.9.0"
+        assert "try again in" in d["error"] and d["retry_at"].endswith("+00:00")
+    assert asked(gh2) == 1
+
+
+def test_githubs_rate_limit_says_when_to_try_again_and_nothing_is_asked_before(settings, paths, monkeypatch):
+    import time
+    monkeypatch.setattr(updates, "MANUAL_MIN_S", 0)   # (the floor between clicks is the test above)
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))
+    reset = int(time.time()) + 14 * 60
+
+    class Limited(GitHub):
+        def __call__(self, request):
+            self.seen.append(request)
+            return httpx.Response(403, json={"message": "API rate limit exceeded"},
+                                  headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)})
+    gh = Limited()
+    with portal(settings, paths, gh) as c:
+        sign_in(c)
+        u = c.post("/api/update/check", headers={**XRW, **ORIGIN}).json()["update"]
+        assert u["limited"] is True and "HTTP 403" in u["error"] and u["latest"] == "v0.4.1"   # the last answer stays
+        assert abs(updates._epoch(u["retry_at"]) - reset) <= 2
+        r = c.post("/api/update/check", headers={**XRW, **ORIGIN})
+        d = r.json()
+        assert r.status_code == 429 and d["reason"] == "limit" and abs(d["retry_after"] - 14 * 60) <= 2
+        assert int(r.headers["retry-after"]) == d["retry_after"] and "limit" in d["error"]
+    assert asked(gh) == 1
+    # nor does Home, though its last check is old: GitHub said when
+    _age(paths, 4)
+    home = updates.Refresher(paths, httpx.MockTransport(gh), wall=lambda: reset - 60)
+    assert home.due() is False and home.manual_wait()[0] == "limit"
+    assert updates.Refresher(paths, httpx.MockTransport(gh), wall=lambda: reset + 1).due() is True
+
+
+@pytest.mark.parametrize("status,headers,wait", [
+    (429, {"retry-after": "90"}, 90),                                     # a secondary limit: Retry-After
+    (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "FAR"}, updates.RETRY_AFTER_ERROR),   # never past 1 h
+    (403, {}, updates.RETRY_AFTER_ERROR),                                 # it said nothing: RETRY_AFTER_ERROR
+    (403, {"retry-after": "\u0661\u0662".encode()}, updates.RETRY_AFTER_ERROR),   # (ASCII digits only)
+    (403, {"x-ratelimit-remaining": "3", "x-ratelimit-reset": "SOON"}, updates.RETRY_AFTER_ERROR),  # not the limit's reset
+])
+def test_the_retry_time_comes_from_githubs_headers_within_an_hour(paths, status, headers, wait):
+    import time
+    now = time.time()
+    headers = {k: (str(int(now) + 9 * 3600) if v == "FAR" else str(int(now) + 60) if v == "SOON" else v) for k, v in headers.items()}
+
+    def limited(request):
+        return httpx.Response(status, headers=headers)
+    rec = run_check(paths, limited)
+    assert rec["limited"] is True and f"HTTP {status}" in rec["error"]
+    assert abs(updates.retry_wait(rec, now) - wait) <= 2
+    assert updates.retry_wait(rec, now + wait + 1) == 0
+    # a check that is not refused: no wait, whatever came before
+    ok = run_check(paths, GitHub())
+    assert ok["limited"] is False and ok["retry_at"] is None and updates.retry_wait(ok) == 0
+    # another failure (GitHub unreachable) is no reason to wait: a click may try again
+    assert updates.retry_wait(run_check(paths, GitHub(status=500))) == 0
+
+
+def test_with_the_daily_check_off_a_click_still_checks_and_the_rest_stays_off(settings, paths, monkeypatch):
+    started = []
+
+    async def fake_loop(*a, **kw):
+        started.append(1)
+    monkeypatch.setattr(updates, "daily_loop", fake_loop)
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.6.0", "v0.4.1"))))   # an answer from before it was turned off
+    _age(paths, 30)
+    gh = GitHub(rels=releases(), etag=None)
+    with portal(settings, paths, gh, check=False) as c:
+        sign_in(c)
+        u = c.get("/api/summary", headers=XRW).json()["update"]
+        assert u["enabled"] is False and u["latest"] is None and u["checking"] is False   # the old answer is not shown
+        assert asked(gh) == 0                                                              # nor does Home ask
+        d = c.post("/api/update/check", headers={**XRW, **ORIGIN}).json()
+        assert d["started"] is True and d["update"]["enabled"] is False
+        assert d["update"]["latest"] == "v0.9.0" and d["update"]["available"] is True and d["update"]["by"] == "manual"
+        _age(paths, 5)
+        u = c.get("/api/summary", headers=XRW).json()["update"]
+        assert u["latest"] == "v0.9.0" and u["checking"] is False   # the click's answer shows; Home asks nothing
+    assert asked(gh) == 1 and started == []   # no daily loop
+    # latest.txt says it too, and ./stack ignores it while UPDATE_CHECK=false (lib/version.sh latest_release_seen)
+    assert paths.txt.read_text().startswith("latest=v0.9.0\n")
+
+
+def test_the_daily_check_waits_for_a_running_one_instead_of_asking_again(paths):
+    write_version(paths, "v0.4.1")
+    gh = GitHub(rels=releases(), etag=None)
+    slow = Slow(gh)
+
+    async def go():
+        r = updates.Refresher(paths, httpx.MockTransport(slow), auto=True)
+        assert r.manual()["started"] is True
+        loop = asyncio.create_task(updates.daily_loop(paths, None, refresher=r))   # no answer yet: it wants one
+        await asyncio.sleep(0.05)
+        slow.release()
+        await r.task
+        await asyncio.sleep(0.05)
+        loop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await loop
+    asyncio.run(go())
+    assert asked(gh) == 1 and json.loads(paths.json.read_text())["by"] == "manual"
+
+
+def test_check_for_updates_works_over_remote_access(settings, paths):
+    from portal.security import REMOTE_COOKIE
+    tn, proxy = "tail1234.ts.net", "p" * 64
+    host, origin = f"bn.{tn}", f"https://bn.{tn}"
+    remote = {"X-Portal-Remote": "1", "X-Portal-Proxy": proxy, "Tailscale-User-Login": "me@example.com"}
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))
+    gh = GitHub(rels=releases(), etag=None)
+    s = replace(settings, update_check=True, update_dir=paths.update_dir, status_dir=paths.status_dir,
+                state_dir=settings.litellm_dir.parent, remote_mode="tailscale", remote_host=host,
+                remote_app_hosts={"chat": f"bn-chat.{tn}", "admin": f"bn-admin.{tn}", "files": f"bn-files.{tn}"},
+                tailscale_allowed_login="me@example.com", proxy_secret=proxy)
+    with TestClient(create_app(s, transport=httpx.MockTransport(github_or_503(gh))), base_url=origin, follow_redirects=False) as c:
+        assert c.post("/login", data={"password": "correct horse"}, headers={"Origin": origin, **remote}).status_code == 303
+        assert c.cookies.get(REMOTE_COOKIE)
+        assert c.post("/api/update/check", headers={**XRW, **remote, "Origin": "https://evil.example"}).status_code == 403
+        assert c.post("/api/update/check", headers={**XRW, **remote, "Origin": f"https://bn-chat.{tn}"}).status_code == 403
+        r = c.post("/api/update/check", headers={**XRW, **remote, "Origin": origin})
+        assert r.status_code == 200 and r.json()["update"]["latest"] == "v0.9.0"   # reading releases is harmless
+    assert asked(gh) == 1
+

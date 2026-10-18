@@ -5,14 +5,18 @@ ETag makes repeat checks cheap) for the project's recent releases (one request: 
 only when the newest is newer than the installed version, the new release's compose.yaml from
 raw.githubusercontent.com to estimate the download. The newest release is the highest vX.Y.Z tag — what
 ./stack update installs — and Home shows the notes of every release between the installed one and it, so a jump
-over several releases names all of them. Nothing about this install is sent. UPDATE_CHECK=false in .env turns it
-off. Besides the daily check, Home asks for one when it opens and the last is older than STALE_S (Refresher: one at
-a time, at most every ON_DEMAND_MIN_S, and not again within RETRY_AFTER_ERROR of a failed one).
+over several releases names all of them. Nothing about this install is sent. UPDATE_CHECK=false in .env turns the
+daily check off. Besides the daily check, Home asks for one when it opens and the last is older than STALE_S
+(Refresher: one at a time, at most every ON_DEMAND_MIN_S, and not again within RETRY_AFTER_ERROR of a failed one),
+and Check for updates asks for one now (Refresher.manual: also with UPDATE_CHECK=false — a click is an explicit
+request — at most every MANUAL_MIN_S and MANUAL_PER_HOUR times an hour, never while one runs, and not before GitHub's
+own limit lets it: a 403/429 says when, else RETRY_AFTER_ERROR after it).
 
 Files (the update-check directory is the portal's only other writable place besides the price files):
   UPDATE_DIR/latest.json   the last answer: the newest release's tag, name, notes, url, published_at, and
                            releases (each recent release: tag, name, headline, notes, url, published_at), etag,
-                           checked_at, error, images
+                           checked_at, error, error_at, limited (GitHub refused for its rate limit) and retry_at (when it
+                           allows the next one), by (daily, home or manual: what asked), images
   UPDATE_DIR/latest.txt    latest=vX.Y.Z / checked_at=<epoch>: what ./stack status and claude-bedrock read
 The installed version comes from STATUS_DIR/version.json, written by ./stack setup and ./stack up (the
 portal cannot see the checkout).
@@ -23,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import tempfile
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +60,10 @@ DAILY = 24 * 3600
 RETRY_AFTER_ERROR = 3600
 STALE_S = 3 * 3600          # Home opens and the last check is older: one more, in the background
 ON_DEMAND_MIN_S = 15 * 60   # ... at most this often (GitHub allows 60 unauthenticated requests an hour; a 304 is free)
+MANUAL_MIN_S = 30           # Check for updates (a click): at most this often ...
+MANUAL_PER_HOUR = 20        # ... and this many times an hour: GitHub's 60 an hour stay for everything else
+MANUAL_WAIT_S = 8.0         # the click's answer waits this long for the check (else the page follows /api/summary)
+BY = ("daily", "home", "manual")  # what asked for a check (latest.json "by")
 RELEASE_TAG = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
 INSTALLED = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:-(\d+)-g[0-9a-f]{4,40})?")
 IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,250}")
@@ -87,7 +97,24 @@ class Paths:
 
 
 class CheckError(Exception):
-    pass
+    """A check that got no usable answer. limited: GitHub refused for its rate limit (403/429); retry_at: when it said
+    it allows the next request (epoch seconds; None when it did not say)."""
+
+    def __init__(self, message: str, limited: bool = False, retry_at: float | None = None):
+        super().__init__(message)
+        self.limited, self.retry_at = limited, retry_at
+
+
+def _limit_reset(headers, now: float) -> float | None:
+    """When GitHub allows the next request after a 403/429 (epoch seconds): Retry-After (its secondary limits), else
+    X-RateLimit-Reset while X-RateLimit-Remaining is 0 (the hourly limit); None when it says neither. ASCII digits only."""
+    ra = (headers.get("retry-after") or "").strip()
+    if ra.isascii() and ra.isdigit() and len(ra) <= 6:
+        return now + int(ra)
+    reset = (headers.get("x-ratelimit-reset") or "").strip()
+    if (headers.get("x-ratelimit-remaining") or "").strip() == "0" and reset.isascii() and reset.isdigit() and len(reset) <= 12:
+        return float(reset)
+    return None
 
 
 def parse_release(tag: str) -> tuple[int, int, int] | None:
@@ -162,6 +189,10 @@ async def _get(client: httpx.AsyncClient, url: str, cap: int, headers: dict | No
         async with client.stream("GET", url, headers=hdrs, timeout=TIMEOUT, follow_redirects=False) as r:
             if r.status_code == 304:
                 return 304, b"", dict(r.headers)
+            if r.status_code in (403, 429):
+                # GitHub's rate limit (60 unauthenticated requests an hour per address): not again before it says
+                raise CheckError(f"{host} refused: its limit of requests for this address is used up (HTTP {r.status_code})",
+                                 limited=True, retry_at=_limit_reset(r.headers, time.time()))
             if r.status_code != 200:
                 raise CheckError(f"{host} answered HTTP {r.status_code}")
             enc = (r.headers.get("content-encoding") or "identity").strip().lower()
@@ -274,23 +305,39 @@ def _releases(d) -> list[dict]:
     return out
 
 
-async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = TOTAL_TIMEOUT_S) -> dict:
-    """One check, at most TOTAL_TIMEOUT_S in all. Never raises: errors are recorded next to the last good answer."""
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+
+
+def _epoch(iso) -> float | None:
+    if not isinstance(iso, str) or len(iso) > 40:
+        return None
     try:
-        return await asyncio.wait_for(_check(client, paths), total_timeout)
+        t = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+
+
+async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = TOTAL_TIMEOUT_S, by: str = "daily") -> dict:
+    """One check, at most TOTAL_TIMEOUT_S in all. Never raises: errors are recorded next to the last good answer.
+    by: what asked (BY), kept in latest.json (with UPDATE_CHECK=false only a manual check's answer is shown)."""
+    try:
+        return await asyncio.wait_for(_check(client, paths, by), total_timeout)
     except asyncio.TimeoutError:
         rec = read_latest(paths)
         rec["checked_at"] = _now_iso()
         rec["error"] = f"no answer within {int(total_timeout)} s"
-        rec["error_at"] = rec["checked_at"]
+        rec.update({"error_at": rec["checked_at"], "limited": False, "retry_at": None, "by": by if by in BY else "daily"})
         save(paths, rec)
         return rec
 
 
-async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
+async def _check(client: httpx.AsyncClient, paths: Paths, by: str = "daily") -> dict:
     prev = read_latest(paths)
     rec = dict(prev)
     rec["checked_at"] = _now_iso()
+    rec["by"] = by if by in BY else "daily"
     try:
         hdrs = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         # (an answer from before the list, without "releases", is asked for again in full)
@@ -320,11 +367,12 @@ async def _check(client: httpx.AsyncClient, paths: Paths) -> dict:
                     rec["images"] = compose_images(text.decode("utf-8", "replace"))
                 except CheckError as e:
                     log.info("update check: no download estimate (%s)", e)
-        rec["error"] = None
-        rec["error_at"] = None
+        rec.update({"error": None, "error_at": None, "limited": False, "retry_at": None})
     except CheckError as e:
         rec["error"] = str(e)[:300]
         rec["error_at"] = rec["checked_at"]
+        rec["limited"] = e.limited
+        rec["retry_at"] = _iso(e.retry_at) if e.retry_at else None
     save(paths, rec)
     return rec
 
@@ -349,15 +397,35 @@ def _age_s(rec: dict) -> float | None:
     return (datetime.now(timezone.utc) - t).total_seconds()
 
 
-async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = None) -> None:
-    """Portal background task: at start unless checked in the last 20 h, then every 24 h (1 h after an error)."""
+def retry_wait(rec: dict, now: float | None = None) -> int:
+    """Seconds until GitHub may be asked again after it refused the last check for its rate limit (0: now): the time it
+    gave, else RETRY_AFTER_ERROR after the refusal — never later than that."""
+    if not rec.get("error") or rec.get("limited") is not True:
+        return 0
+    now = time.time() if now is None else now
+    refused = _epoch(rec.get("error_at")) or _epoch(rec.get("checked_at"))
+    if refused is None:
+        return 0
+    at = refused + RETRY_AFTER_ERROR
+    given = _epoch(rec.get("retry_at"))
+    if given is not None:
+        at = min(at, given)
+    return max(0, math.ceil(at - now))
+
+
+async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = None, refresher: "Refresher | None" = None) -> None:
+    """Portal background task: at start unless checked in the last 20 h, then every 24 h (1 h after an error). With
+    REFRESHER (the portal's), through it: never a second request while Home's or a click's check runs."""
     while True:
         rec = read_latest(paths)
         age = _age_s(rec)
         if age is None or age > 20 * 3600 or (rec.get("error") and age > RETRY_AFTER_ERROR):
             try:
-                async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
-                    rec = await check(client, paths)
+                if refresher is not None:
+                    rec = await refresher.start("daily")
+                else:
+                    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+                        rec = await check(client, paths)
                 log.info("update check: latest %s%s", rec.get("tag"), f" ({rec['error']})" if rec.get("error") else "")
             except Exception:  # never let the loop die
                 log.exception("update check crashed")
@@ -408,20 +476,27 @@ def status(paths: Paths, enabled: bool) -> dict:
     """The update card's data, and the installed version for Home's version label (in every state: also with the
     check off or no answer yet). releases: every release the update brings, newest first (one per release between
     the installed version and the newest; notes, a one-line headline, its page); stale: the last check is older than
-    STALE_S (Home then asks for another)."""
+    STALE_S (Home then asks for another); limited: GitHub refused the last check for its rate limit, retry_at: until
+    when (only while that is still ahead). With the daily check off (ENABLED false) only the answer of a check asked
+    for by a click (Check for updates) is shown."""
     inst = installed(paths)
     out = {"enabled": enabled, "installed": inst["version"] or None, "branch": inst["branch"] or None,
            "commit": inst["commit"] or None, "commit_date": inst["commit_date"] or None,
            "release_url": release_url(inst["version"]),
            "latest": None, "available": False, "releases": [], "behind": 0, "more": False,
-           "checked_at": None, "error": None, "error_at": None, "stale": False, "command": "./stack update"}
-    if not enabled:
-        return out
+           "checked_at": None, "error": None, "error_at": None, "limited": False, "retry_at": None, "by": None,
+           "stale": False, "command": "./stack update"}
     rec = read_latest(paths)
+    if not enabled and rec.get("by") != "manual":
+        return out
     tag = rec.get("tag") if parse_release(rec.get("tag") or "") else None
+    error = rec.get("error") if isinstance(rec.get("error"), str) else None
+    wait = retry_wait(rec)
     out.update({"latest": tag, "checked_at": rec.get("checked_at") if isinstance(rec.get("checked_at"), str) else None,
-                "error": rec.get("error") if isinstance(rec.get("error"), str) else None,
-                "error_at": rec.get("error_at") if isinstance(rec.get("error_at"), str) else None, "stale": stale(rec)})
+                "error": error, "error_at": rec.get("error_at") if isinstance(rec.get("error_at"), str) else None,
+                "limited": bool(error) and rec.get("limited") is True,
+                "retry_at": _iso(time.time() + wait) if wait else None,
+                "by": rec.get("by") if rec.get("by") in BY else None, "stale": stale(rec)})
     if tag and newer(tag, inst["version"]):
         imgs = rec.get("images")
         known = _release_list(rec)
@@ -443,40 +518,83 @@ def status(paths: Paths, enabled: bool) -> dict:
 
 
 class Refresher:
-    """The check Home asks for when it opens and the last one is older than STALE_S: run in the background, one at a
-    time, at most every ON_DEMAND_MIN_S, and not within RETRY_AFTER_ERROR of a failed check (GitHub answers 403
-    once its unauthenticated limit is used up). Home's next summary shows the answer."""
+    """The portal's one release check at a time: Home's (it opens and the last one is older than STALE_S; at most every
+    ON_DEMAND_MIN_S, and not within RETRY_AFTER_ERROR of a failed check — GitHub answers 403 once its unauthenticated
+    limit is used up), a click's (manual: Check for updates) and the daily loop's. Each runs in the background; while
+    one runs, nobody starts another (the daily loop and a click wait for it). auto: Home's may run (UPDATE_CHECK);
+    a click's always may (it is an explicit request). Home's next summary shows the answer."""
 
-    def __init__(self, paths: Paths, transport: httpx.AsyncBaseTransport | None = None, clock=time.monotonic):
-        self.paths, self.transport, self.clock = paths, transport, clock
+    def __init__(self, paths: Paths, transport: httpx.AsyncBaseTransport | None = None, clock=time.monotonic,
+                 auto: bool = True, wall=time.time):
+        self.paths, self.transport, self.clock, self.auto, self.wall = paths, transport, clock, auto, wall
         self.task: asyncio.Task | None = None
-        self.last: float | None = None
+        self.last: float | None = None          # Home's or a click's last start (the on-demand gap)
+        self.manual_at: deque = deque()         # the clicks' starts of the last hour
 
     @property
     def checking(self) -> bool:
         return self.task is not None and not self.task.done()
 
     def due(self, rec: dict | None = None) -> bool:
-        if self.checking or (self.last is not None and self.clock() - self.last < ON_DEMAND_MIN_S):
+        if not self.auto or self.checking or (self.last is not None and self.clock() - self.last < ON_DEMAND_MIN_S):
             return False
         rec = read_latest(self.paths) if rec is None else rec
         age = _age_s(rec)
         if rec.get("error") and age is not None and age < RETRY_AFTER_ERROR:
             return False
+        if retry_wait(rec, self.wall()):   # GitHub said when, for its rate limit
+            return False
         return stale(rec)
 
+    def start(self, by: str) -> asyncio.Task:
+        """The check running now, else a new one (in the running event loop); its result is latest.json's record."""
+        if not self.checking:
+            self.task = asyncio.get_running_loop().create_task(self._run(by))
+        return self.task
+
     def kick(self) -> bool:
-        """Starts a check when one is due (in the running event loop); True when it did."""
+        """Home's: starts a check when one is due; True when it did."""
         if not self.due():
             return False
         self.last = self.clock()
-        self.task = asyncio.get_running_loop().create_task(self._run())
+        self.start("home")
         return True
 
-    async def _run(self) -> None:
+    def manual_wait(self) -> tuple[str, int]:
+        """Why a click would not ask GitHub now, and for how many seconds: ("again", s) — the last click's check was
+        MANUAL_MIN_S ago or less, or MANUAL_PER_HOUR in the last hour; ("limit", s) — GitHub refused the last check for its
+        rate limit; ("", 0) — it may."""
+        now = self.clock()
+        while self.manual_at and now - self.manual_at[0] >= 3600:
+            self.manual_at.popleft()
+        if self.manual_at and now - self.manual_at[-1] < MANUAL_MIN_S:
+            return "again", math.ceil(MANUAL_MIN_S - (now - self.manual_at[-1]))
+        if len(self.manual_at) >= MANUAL_PER_HOUR:
+            return "again", math.ceil(3600 - (now - self.manual_at[0]))
+        wait = retry_wait(read_latest(self.paths), self.wall())
+        return ("limit", wait) if wait else ("", 0)
+
+    def manual(self) -> dict:
+        """A click on Check for updates: {"started": True} when it started a check, {"started": False, "reason":
+        "checking"} while one runs (no second request: the click gets that one's answer), else {"started": False,
+        "reason": "again" | "limit", "wait": seconds}. Also with UPDATE_CHECK=false; the ETag keeps it a 304 when
+        nothing changed."""
+        if self.checking:
+            return {"started": False, "reason": "checking", "wait": 0}
+        reason, wait = self.manual_wait()
+        if reason:
+            return {"started": False, "reason": reason, "wait": wait}
+        self.last = self.clock()
+        self.manual_at.append(self.last)
+        self.start("manual")
+        return {"started": True, "reason": "", "wait": 0}
+
+    async def _run(self, by: str) -> dict:
         try:
             async with httpx.AsyncClient(transport=self.transport, follow_redirects=False) as client:
-                rec = await check(client, self.paths)
-            log.info("update check (Home): latest %s%s", rec.get("tag"), f" ({rec['error']})" if rec.get("error") else "")
+                rec = await check(client, self.paths, by=by)
+            log.info("update check (%s): latest %s%s", by, rec.get("tag"), f" ({rec['error']})" if rec.get("error") else "")
+            return rec
         except Exception:  # noqa: BLE001 — never an unhandled task error
-            log.exception("update check (Home) crashed")
+            log.exception("update check (%s) crashed", by)
+            return read_latest(self.paths)
