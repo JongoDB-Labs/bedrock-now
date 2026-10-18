@@ -18,6 +18,7 @@ export const WORKSPACE_ID = 'ws';
 export const PROJECTS_MAX = 64, FILED_MAX = 2000;
 export const NAME_MAX = 80, ROOT_BYTES = 160, ROOT_DEPTH = 4, SEGMENT_MAX = 100;
 const ID = /^p_[0-9a-f]{8}$/;
+const SHA = /^[0-9a-f]{64}$/;
 // (names and folders are shown as text; these would turn the text around, break its line or hide in it: controls,
 // direction marks and isolates, zero-width and invisible operators, line and paragraph separators, tag characters)
 // eslint-disable-next-line no-control-regex
@@ -68,7 +69,10 @@ export class Projects {
     const projects = [];
     for (const p of Array.isArray(v.projects) ? v.projects.slice(0, PROJECTS_MAX) : []) {
       if (!p || !ID.test(p.id) || !nameOk(p.name) || !rootOk(p.root) || projects.some((x) => x.id === p.id || x.root === p.root)) continue;
-      projects.push({ id: p.id, name: p.name, root: p.root, created: Number.isInteger(p.created) && p.created > 0 ? p.created : null });
+      const rec = { id: p.id, name: p.name, root: p.root, created: Number.isInteger(p.created) && p.created > 0 ? p.created : null };
+      // its own Claude Code settings, trusted as they were then (their hash: bn-coded's project.settings)
+      if (p.trust && SHA.test(p.trust.hash) && Number.isInteger(p.trust.at) && p.trust.at > 0) rec.trust = { hash: p.trust.hash, at: p.trust.at };
+      projects.push(rec);
     }
     const filed = {};
     const f = v.filed && typeof v.filed === 'object' && !Array.isArray(v.filed) ? v.filed : {};
@@ -137,6 +141,18 @@ export class Projects {
       const [p] = v.projects.splice(i, 1);
       for (const [k, pid] of Object.entries(v.filed)) if (pid === id) delete v.filed[k];
       return p;
+    });
+  }
+  /** trust(id, hash) -> the record: its folder's own Claude Code settings applied while they are exactly these
+   *  (hash); null hash: no longer (the Workspace's always are: it has no record). */
+  trust(id, hash) {
+    if (id === WORKSPACE_ID) throw new ProjectError(400, 'the Workspace\'s own settings always apply (as they did before projects)');
+    if (hash !== null && !SHA.test(hash ?? '')) throw new ProjectError(400, 'bad hash');
+    return this.update((v) => {
+      const p = v.projects.find((x) => x.id === id);
+      if (!p) throw new ProjectError(404, 'no such project (it was removed?)');
+      if (hash === null) delete p.trust; else p.trust = { hash, at: this.now() };
+      return { ...p };
     });
   }
   /** file(ids, pid): these sessions shown in that project (a label: each still runs in its own folder). */

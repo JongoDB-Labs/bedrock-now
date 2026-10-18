@@ -122,3 +122,19 @@ test('removal: the record and the labels filed there go; the sessions are shown 
   assert.throws(() => s.remove('ws'), (e) => e.status === 400, 'the Workspace is always there');
   assert.deepEqual(fs.readdirSync(path.join(dir, 'projects')), before, 'only its own file: no folder of anyone\'s is touched');
 });
+
+test('trust: a project keeps the hash of its own settings you trusted (or none); a file someone changed cannot plant one', () => {
+  const s = store();
+  const a = s.add({ root: 'cloned' });
+  const H = 'c'.repeat(64);
+  assert.deepEqual(s.trust(a.id, H).trust, { hash: H, at: 1_700_000_000_000 });
+  assert.deepEqual(s.get(a.id).trust, { hash: H, at: 1_700_000_000_000 });
+  assert.equal(s.trust(a.id, null).trust, undefined);
+  for (const bad of ['', 'x', 'C'.repeat(64), 7, undefined]) assert.throws(() => s.trust(a.id, bad), (e) => e.status === 400, String(bad));
+  assert.throws(() => s.trust('ws', H), (e) => e.status === 400, 'the Workspace\'s settings always apply');
+  assert.throws(() => s.trust('p_00000000', H), (e) => e.status === 404);
+  const v = JSON.parse(fs.readFileSync(s.jsonFile, 'utf8'));
+  v.projects[0].trust = { hash: 'not-a-hash', at: 1 };
+  fs.writeFileSync(s.jsonFile, JSON.stringify(v));
+  assert.equal(s.get(a.id).trust, undefined, 'a trust that does not fit is dropped');
+});

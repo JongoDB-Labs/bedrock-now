@@ -10,6 +10,7 @@ import { isUuid, isModel, isFullModel, str, short, capped, num } from './validat
 import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions, startFlags } from './modes.mjs';
 import { checkSnapshot, diffSnapshots, mergeSnapshots, watchEvent, revertOf } from './watch.mjs';
 import { WS, cwdOk } from './projects.mjs';
+import { ALL_SOURCES, APPLIED as APPLIED_STATES, withheldText } from './trust.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
@@ -77,6 +78,8 @@ export class Session {
     this.cwd = cwdOk(cwd) ? cwd : WS;
     // the watchlist's folder: the project folder that holds cwd (the code container's records), set at each start
     this.watchRoot = null;
+    // what of cwd's own Claude Code settings this process got (trust.mjs: a decision per folder, at each start)
+    this.settings = null;
     // The budget (set_budget; null: none). hard: Claude Code's own stop, maxBudgetUsd — its estimate, checked after
     // every request, per process — at what is left when a process starts (left()); a budget changed while a process
     // runs restarts it at the next prompt that starts a turn. spent: the page's figure (LiteLLM's spend logs);
@@ -127,7 +130,14 @@ export class Session {
   info() {
     return { id: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, title: this.title, open: this.open,
       pending: this.mgr.broker.forSession(this.id).length, lastActive: this.lastActive, error: this.error, epoch: this.epoch,
-      budget: this.budget ? { ...this.budget } : null, terminal: this.inTerminal !== null, cwd: this.cwd };
+      budget: this.budget ? { ...this.budget } : null, terminal: this.inTerminal !== null, cwd: this.cwd, settings: this.settingsInfo() };
+  }
+  /** {state, project} of the running (or last) process's folder settings (trust.mjs), or null */
+  settingsInfo() { return this.settings ? { state: this.settings.state, project: this.settings.project ?? null } : null; }
+  /** the folder's settings decision changed since this process started (you trusted them, or they changed): restart */
+  settingsRestart() {
+    const d = this.mgr.settingsFor?.(this.cwd);
+    return Boolean(d && this.settings && (d.sources.join() !== this.settings.sources.join() || Boolean(d.strictMcp) !== Boolean(this.settings.strictMcp)));
   }
 
   // --- the budget ---
@@ -197,19 +207,24 @@ export class Session {
     if ((wr?.abs ?? WS) !== (this.watchRoot?.abs ?? WS)) { this.watchBase = null; this.watchLast = null; }
     this.watchRoot = wr;
     const feed = { inbox: [], wake: null, closed: false, ready: null };
+    // this folder's own Claude Code settings: applied, or (not trusted) only your own settings and the stack's MCP server
+    const settings = this.mgr.settingsFor?.(this.cwd) ?? { state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: null };
+    this.settings = settings;
     const options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: '/usr/local/bin/claude',   // a path in the sandbox: only the arguments travel
       spawnClaudeCodeProcess: (o) => this.mgr.spawn(o, { litellmSession: this.id, onStderr: (s) => this.mgr.logStderr(this.id, `claude ${this.id.slice(0, 8)} stderr: ${short(s, 300)}`) }),
       env: {},                                                 // nothing of this container's environment
       systemPrompt: { type: 'preset', preset: 'claude_code' },  // the SDK's default is an empty system prompt
-      settingSources: ['user', 'project', 'local'],            // the sandbox's plugins, skills, CLAUDE.md
+      // the sandbox's plugins, skills, CLAUDE.md — and the folder's own .claude settings only when they apply (trust.mjs)
+      settingSources: [...(settings.sources ?? ALL_SOURCES)],
       includePartialMessages: true,
       enableFileCheckpointing: true,                           // backups in the sandbox: rewind_files can put files back
       permissionMode: cliMode(wantAuto ? 'default' : this.mode),   // explicit: omitted, the CLI may start in auto
       canUseTool: (tool, input, o) => this.mgr.broker.ask(this.id, tool, input, o),
       stderr: (s) => this.mgr.logStderr(this.id, `sdk ${this.id.slice(0, 8)}: ${short(s, 300)}`),
     };
+    if (settings.strictMcp) options.strictMcpConfig = true;
     if (this.model) options.model = this.model;
     if (this.effort) options.effort = this.effort;
     // stop at the budget: Claude Code's own limit for this process, what is left of it now
@@ -258,6 +273,7 @@ export class Session {
     }
     // (Claude Code says init with its first turn; until a prompt comes the session simply waits.)
     this.setState('idle');
+    if (!APPLIED_STATES.includes(settings.state)) this.emit({ type: 'local', settings: settings.state, text: withheldText(settings) });
     this.lastActive = Date.now();
     let ended;
     this.exited = new Promise((r) => { ended = r; });
@@ -459,6 +475,7 @@ export class Session {
       throw new SessionError(`This session reached its budget of ${money(this.budget.usd)}, and its stop is on: raise the budget or turn the stop off (⋯ › Budget) to go on.`, 409);
     }
     if (this.open && startsTurn && this.budgetRestart()) this.close('budget');
+    else if (this.open && startsTurn && this.settingsRestart()) this.close('settings');
     if (!this.open) this.start({ resume: this.id });
     const id = isUuid(uuid) ? uuid : crypto.randomUUID();
     // typed in the page: a human origin, stamped explicitly (absent, the CLI's strict trust gates fail closed)
@@ -791,6 +808,7 @@ export class Session {
       : reason === 'reset' ? 'This conversation continues in a new session.'
         : reason === 'bypass' ? 'Restarting Claude Code for this session so it can run without asking (its next turn writes the prompt cache again).'
           : reason === 'budget' ? `Restarting Claude Code for this session so its new budget applies${this.budget?.hard ? ` (stop at ${money(this.budget.usd)})` : ''}${wasBypass ? ', in Manual (Bypass permissions ends with its process)' : ''}; its next turn may write the prompt cache again.`
+            : reason === 'settings' ? 'Restarting Claude Code for this session: the folder\'s own Claude Code settings apply differently now (you trusted them, or they changed); its next turn writes the prompt cache again.'
             : reason === 'terminal' ? `Continued in the terminal${wasBypass ? ' (in Manual)' : ''}: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.`
               : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
     this.emit({ type: 'local', text });
@@ -804,13 +822,15 @@ export class SessionManager {
   //            start in it, and "Allow once" reaches the actions it blocked)
   // watcher: {snapshot() -> ws.sensitive's RESULT, restore({path, ifSha256, data, mode}) -> ws.restore's} (bn-coded),
   //          or null (no watchlist)
+  // settingsFor(cwd) -> {state, sources, strictMcp, project}: what of a folder's own Claude Code settings a process
+  // started there gets (trust.mjs; synchronous: the caller decided before the start), or null: all of them
   // watchRootOf(cwd) -> {rel, abs} of the project folder that holds a session's folder (its watchlist's), or null: the
   // workspace's
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
     transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null,
-    watchRootOf = () => null }) {
+    watchRootOf = () => null, settingsFor = null }) {
     Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true,
-      allowAuto: allowAuto === true, watcher, watchRootOf });
+      allowAuto: allowAuto === true, watcher, watchRootOf, settingsFor });
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
     this.timer = setInterval(() => this.sweepIdle(), 60000);

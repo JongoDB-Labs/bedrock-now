@@ -19,6 +19,7 @@ import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 import { GitHosts, HostError } from './githosts.mjs';
 import { makeGitRemote, NEVER_ASKS, sandboxWords } from './gitremote.mjs';
 import { Projects, ProjectError, projectIdOk, WS } from './projects.mjs';
+import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -133,7 +134,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     onCount: (count) => toAll({ type: 'pending', count }),
   });
   const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error,
-    budget: s.budget ? { ...s.budget } : null, lastActive: s.lastActive });
+    budget: s.budget ? { ...s.budget } : null, lastActive: s.lastActive, settings: s.settingsInfo() });
   // the project records (projects.mjs): made on first use, as Git hosts are
   let projectStore = projects;
   const proj = () => (projectStore ??= new Projects());
@@ -143,6 +144,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     snapshot: async (root) => (await call({ op: 'ws.sensitive', ...rootField(root) }, { timeoutMs: 15000 })).result,
     restore: async (r, root) => (await call({ op: 'ws.restore', ...r, ...rootField(root) }, { timeoutMs: 20000 })).result,
   };
+  // a project's own Claude Code settings: applied once you trusted them (trust.mjs); decided before a process starts
+  const trust = makeTrust({ call, store: proj, log: logger });
   const watchRootOf = (cwd) => {
     try { const p = proj().folderOf(cwd); return p.root ? { rel: p.root, abs: `${WS}/${p.root}` } : null; } catch { return null; }
   };
@@ -150,7 +153,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
-    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf,
+    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf, settingsFor: trust.cached,
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
@@ -193,6 +196,12 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     const r = proj().rootOf(v);
     if (!r) throw new HttpError(404, 'no such project (it was removed?)');
     return r.rel ? r : null;
+  };
+  // recordOf(id) -> the project's record (the Workspace's too), else 404
+  const recordOf = (id) => {
+    const rec = proj().get(id);
+    if (!rec) throw new HttpError(404, 'no such project (it was removed?)');
+    return rec;
   };
   // the sessions of /api/state, each with the project it is shown in
   const listed = () => { let place = null; try { place = proj().placer(); } catch { /* none */ } return mgr.list().map((x) => ({ ...x, project: place ? place(x.id, x.cwd) : 'ws' })); };
@@ -252,6 +261,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       }
       // a conversation resumed here that runs in the terminal (or anywhere else in the sandbox) right now: refused
       if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
+      // what of the folder's own Claude Code settings its process gets (trusted, or not applied)
+      await trust.decide(base.cwd);
       if (b.before !== undefined && b.before !== null) {
         // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
         if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
@@ -306,8 +317,19 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     // there, removal (the record; its folder into the trash only when named again), its terminal, git init in it
     if (p === '/api/projects' && m === 'GET') return send(res, 200, await api.listProjects());
     if (p === '/api/projects' && m === 'POST') return send(res, 200, await api.addProject(await readJson(req)));
-    if ((mm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init))?$/.exec(p))) {
+    if ((mm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init|settings|trust))?$/.exec(p))) {
       const id = mm[1], what = mm[2] || '';
+      // its own Claude Code settings: what they set, and your trust in exactly these files (or no longer)
+      if (what === 'settings' && m === 'GET') return send(res, 200, await trust.view(recordOf(id)));
+      if (what === 'trust' && (m === 'POST' || m === 'DELETE')) {
+        const rec = recordOf(id);
+        if (rec.id === 'ws') throw new HttpError(400, 'the Workspace\'s own settings always apply (as they did before projects)');
+        if (m === 'DELETE') { await trust.untrust(rec); return send(res, 200, await trust.view(proj().get(id))); }
+        const b = await readJson(req);
+        const r = await trust.trust(rec, typeof b.hash === 'string' ? b.hash : '');
+        if (r.conflict) throw new HttpError(409, r.conflict);
+        return send(res, 200, await trust.view(proj().get(id)));
+      }
       if (!what && m === 'POST') return send(res, 200, api.renameProject(id, await readJson(req)));
       if (!what && m === 'DELETE') return send(res, 200, await api.removeProject(id, { trash: q.get('trash') === '1', confirm: q.get('confirm') }));
       if (what === 'sessions' && m === 'POST') return send(res, 200, api.fileSessions(id, await readJson(req)));
@@ -532,6 +554,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
           const check = s.resumeCheck = (s.resumeCheck ?? Promise.resolve()).catch(() => {}).then(() => (s.open ? null : api.notRunning(s.id)));
           await check;
         }
+        // a project's folder: its own settings looked at again (changed since a process started there: it restarts
+        // without them; trusted meanwhile: with them)
+        if (s.cwd !== WS || !s.open) await trust.decide(s.cwd);
         s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
         c.attached.add(s.id);
         return reply({});
@@ -540,6 +565,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'set_model': await sessionOf(m).setModel(m.model); return reply({ model: m.model });
       case 'set_mode': {
         const s = sessionOf(m);
+        if (!s.open || m.mode === 'bypassPermissions') await trust.decide(s.cwd);   // (a switch to Bypass may start a process)
         await s.setMode(m.mode, { confirmed: m.confirmed === true });
         return reply({ mode: s.mode });
       }
@@ -612,7 +638,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       // file checkpoints: what Claude changed since a prompt of yours, put back (dryRun: only what would change)
       case 'rewind_files': {
         if (!isUuid(m.message)) throw new SessionError('bad message id');
-        const r = await sessionOf(m).rewindFiles(m.message, { dryRun: m.dryRun === true });
+        const rs = sessionOf(m);
+        if (!rs.open) await trust.decide(rs.cwd);
+        const r = await rs.rewindFiles(m.message, { dryRun: m.dryRun === true });
         const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
         return reply({ canRewind: r?.canRewind === true, error: str(typeof r?.error === 'string' ? r.error : '', 500),
           filesChanged: (Array.isArray(r?.filesChanged) ? r.filesChanged : []).slice(0, 200).filter((x) => typeof x === 'string').map((x) => short(x, 4096)),

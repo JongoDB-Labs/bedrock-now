@@ -18,6 +18,7 @@ import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
 import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
+import { stateOf } from './trust.mjs';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -676,13 +677,18 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       const rows = Array.isArray(result?.roots) ? result.roots : [];
       list.forEach((p, i) => {
         const r = rows[i];
-        if (r && r.root === absOf(p.root)) out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true });
+        if (!r || r.root !== absOf(p.root)) return;
+        // its own Claude Code settings (trust.mjs): none, trusted as they are, never trusted, changed since; an older
+        // sandbox that does not say: null
+        const hash = r.settings === null || /^[0-9a-f]{64}$/.test(r.settings ?? '') ? r.settings : undefined;
+        const settings = hash === undefined ? null : stateOf({ workspace: p.id === WORKSPACE_ID, present: hash !== null, hash, trust: p.trust });
+        out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true, settings });
       });
     } catch { /* not said */ }
     return out;
   }
   const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
-    folder: f?.folder ?? null, git: f?.git ?? null });
+    folder: f?.folder ?? null, git: f?.git ?? null, settings: f?.settings ?? null });
   async function listProjects() {
     const list = store().list();
     const f = await folders(list);
@@ -707,7 +713,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     const had = store().list().find((p) => p.root === folder);
     if (had) throw new HttpError(409, `that folder is the project ${had.name} already`);
     if (store().list().length - 1 >= PROJECTS_MAX) throw new HttpError(409, `at most ${PROJECTS_MAX} projects: remove one first`);
-    let made = {};
+    let made = {}, settings = 'none';   // (a new folder holds no settings of its own)
     if (kind === 'new') {
       const { result } = await call({ op: 'project.create', root: absOf(folder), git: b.git === true }, { timeoutMs: 30000 });
       made = { git: result?.git === true, gitError: short(result?.gitError, 300) || null };
@@ -716,9 +722,10 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       if (!f) throw new HttpError(502, 'the sandbox did not say whether that folder is there');
       if (f.folder !== 'dir') throw new HttpError(f.folder === 'missing' ? 404 : 400, f.folder === 'missing' ? 'no such folder in the workspace' : 'a link, or a link on its way: add the folder it points to');
       made = { git: f.git };
+      settings = f.settings;
     }
     const p = store().add({ name: name ?? undefined, root: folder });
-    return { project: projectOut(p, { folder: 'dir', git: made.git }), ...made };
+    return { project: projectOut(p, { folder: 'dir', git: made.git, settings }), ...made };
   }
   // removeProject(id, {trash, confirm}) — the record goes (its sessions stay, shown where their folder is). trash: its
   // folder too, into the workspace's trash — only with its folder named again (confirm) and no session of it running

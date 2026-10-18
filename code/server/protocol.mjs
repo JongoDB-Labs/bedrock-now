@@ -61,8 +61,9 @@
 //   workspace, as before projects):
 //   GET    /api/projects                   {projects: [{id, name, root (its folder in the workspace; "" the Workspace),
 //                                           path, created, workspace, folder: dir|missing|link|other|null, git:
-//                                           bool|null}], max} — the Workspace first; folder/git: what the sandbox says
-//                                           (null: not said)
+//                                           bool|null, settings: workspace|none|trusted|untrusted|changed|null}], max} —
+//                                           the Workspace first; folder/git: what the sandbox says (null: not said);
+//                                           settings: its own Claude Code settings (trust.mjs)
 //   POST   /api/projects {kind: new|folder, folder, name?, git?}   {project, git, gitError?} — new: the folder made in
 //                                           the sandbox (not there yet, its parent a real folder) and, git: true, `git
 //                                           init` in it (no template); folder: one that is there. folder: 1–4 names,
@@ -78,6 +79,14 @@
 //   POST   /api/projects/ID/terminal       {ok, window} — a new window of the terminal in its folder
 //   POST   /api/projects/ID/git-init       {ok} — Connect a git repository: its folder made a repository (git init,
 //                                           no template); 409 it is one already
+//   GET    /api/projects/ID/settings       {project, path, state, hash, trustedAt, files: [{name, type, size, target}],
+//                                           summary: {hooks, allow, ask, deny, defaultMode, directories, env, commands,
+//                                           mcp, mcpServers, other, notes}} — its own .claude/settings.json,
+//                                           settings.local.json and .mcp.json: what they set (text), and their hash
+//   POST   /api/projects/ID/trust {hash}   the same view — those files applied to sessions there from now on, while
+//                                           they stay as shown (409: changed since, or none); not the Workspace (400:
+//                                           its own always apply). Open sessions there restart with them at their next
+//                                           prompt. DELETE: no longer (sessions there restart without them)
 //   GET    /api/permissions?project=ID     {user, project, local: {path, exists, error, sha256, allow, ask, deny, other,
 //                                           truncated, defaultMode, directories}, bypassAsk, readOnlyDeny} — the permission
 //                                           rules: the sandbox's ~/.claude/settings.json (where "Always" writes), the
@@ -336,9 +345,11 @@
 //          rule may be offered (rules and projectRules are then empty)
 //   {type: "permission_done", id, session, decision}         decision: once|always|always_project|plan|deny|answer|
 //                                                             timeout|cancelled
-//   {type: "session_state", session, state, model, mode, effort, error, budget, lastActive}   state: starting|idle|busy|ended
-//                                                             (ended with `error` when the process failed); mode: a
-//                                                             page mode (MODES)
+//   {type: "session_state", session, state, model, mode, effort, error, budget, lastActive, settings}   state:
+//                                                             starting|idle|busy|ended (ended with `error` when the
+//                                                             process failed); mode: a page mode (MODES); settings:
+//                                                             {state, project} of its folder's own Claude Code settings
+//                                                             for its process (trust.mjs), or null
 //   {type: "reset", session, new_session}                     Claude Code started a new conversation (/clear, a plan
 //                                                             approved with "clear context" …): the old session's
 //                                                             process ended after its turn; new_session (same model,
