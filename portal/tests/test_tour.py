@@ -143,8 +143,10 @@ def test_claude_steps_point_at_the_code_tab_or_at_settings():
     # while off here: its tab's page (a page of the portal, on a phone too), never the code host
     off = opener[opener.index("if (!CODE.here)"):opener.index("if (PHONE.matches)")]
     assert 'button("About the Code tab", "open-code", () => { showTab("code"); away(); })' in off and "appUrl" not in off
-    assert 'spendAlso: CODE.here ? "claude-code-terminal" : null' in use
-    assert '["open-webui", "claude-code", "claude-code-terminal"]' in js   # its baseline survives a reload too
+    # each step its own spend baseline (spendState / withBaseline, tour.test.mjs): the Claude Code step watches
+    # claude-bedrock's key only — the Code tab's spend is Open Code and ask's
+    assert 'spendKey: "claude-code",' in use and "spendAlso" not in js
+    assert 'spendKey: "claude-code-terminal"' in _step(js, "code-open")
 
 
 def test_home_card_points_at_the_code_tab_and_settings_while_the_code_page_is_off():
@@ -192,10 +194,11 @@ def test_the_code_steps_name_what_a_developer_uses():
                        "Auto", "Bypass permissions", '"CODE_AUTO_MODE"'),
         "code-models": ("works", "chat only", "not tested", "Models for Claude Code", "Default model for new sessions",
                         "claude-bedrock --models", "claude-bedrock --model mistral-large-3", "Budget for this session"),
-        "code-workspace": ("cfg.workspace", "~/bedrock-now-workspace", "Ctrl/⌘+P", "Ctrl/⌘+Shift+F", "Ctrl/⌘+K", "Preview", "Mermaid",
+        "code-workspace": ("cfg.workspace", '"./stack code status"', "Ctrl/⌘+P", "Ctrl/⌘+Shift+F", "Ctrl/⌘+K", "Preview", "Mermaid",
                            "Memory (CLAUDE.md)", "./stack code enable --workspace DIR"),
         "code-context": ('code("@file#L5-10")', "Alt+K", '"@terminal"', '"@diff"', '"@problems"', "Comment on lines", "Keep planning"),
-        "code-clone": ("Clone a repository…", "Ctrl/⌘+Shift+G", 'openGit("clone")', "Submodules are not cloned"),
+        "code-clone": ("Git: clone a repository…", "Ctrl/⌘+K", "Ctrl/⌘+Shift+G", "while the workspace is not a repository yet",
+                       'openGit("clone")', "Submodules are not cloned"),
         "code-review": ("Review", "Ctrl/⌘+Shift+D", "Keep", "Undo", "Stage", "Commit", "Write message", "no git hooks", "Fetch", "Pull",
                         "Push", "Publish branch", "Open a pull request"),
         "code-run": ("Run & test", "Alt+R", "package.json", "Makefile", "pyproject.toml", "Problems", "Ask Claude", "Ports & previews",
@@ -224,7 +227,11 @@ def test_git_host_step_opens_the_code_pages_git_hosts():
     assert 'u.searchParams.set("git", what)' in opener and 'window.open(u.href, "_blank", "noopener")' in opener
     assert "<input" not in js and 'el("input"' not in js and 'type: "password"' not in js
     code = (STATIC / "code.js").read_text(encoding="utf-8")
-    assert 'openGitHosts: () => openLink({ git: "hosts" })' in code and 'openClone: () => openLink({ git: "clone" })' in code
+    assert 'openGitHosts: () => openGit("hosts")' in code and 'openClone: () => openGit("clone")' in code
+    # a running Code tab is asked in place (no reload: unsaved edits stay), to the code host's origin only; else ?git=
+    og = code[code.index("function openGit(dialog)"):code.index("// The badge needs the page running")]
+    assert 'f.contentWindow.postMessage({ type: "bn-portal-git", dialog }, origin)' in og and "window.bnCode.ready()" in og
+    assert "openLink({ git: dialog })" in og
     # the Code tab's count of hosts: a number only, through the bridge's own origin and frame checks
     assert "hosts: Number.isInteger(e.data.hosts) && e.data.hosts >= 0 ? Math.min(e.data.hosts, 99) : null" in code
     listener = code[code.index('window.addEventListener("message"'):code.index("const hooked = new WeakSet()")]
@@ -239,7 +246,8 @@ def test_the_api_step_shows_the_port_and_placeholders_never_a_key():
     step = _step(js, "api")
     assert "cfg: true" in step and "http://127.0.0.1:${cfg.port}" in step and "4000" not in js
     for words in ("/v1", "/chat/completions", "/models", "/v1/messages", "Virtual Keys", "+ Create New Key", "Optional Settings",
-                  "./stack models", "YOUR_KEY", "remote access included", 'doc("the-models-from-your-own-code"'):
+                  "./stack models", "YOUR_KEY", "listens on ", "tools on other devices cannot reach it",
+                  "Over remote access LiteLLM is the ", "not an endpoint for tools", 'doc("the-models-from-your-own-code"'):
         assert words in step, words
     assert "logins" not in step and "MASTER" not in js and "LITELLM_KEY" not in js and "/api/logins" not in js
     assert 'api("/api/settings")' in js and "cfg = cfgFrom(d)" in js
@@ -251,15 +259,14 @@ def test_the_api_step_shows_the_port_and_placeholders_never_a_key():
 
 def test_new_steps_are_marked_for_a_browser_that_did_an_older_walkthrough():
     js = (STATIC / "tour.js").read_text(encoding="utf-8")
-    # a first visit has seen everything listed; an older state saw the old walkthrough's steps (parse, tour.test.mjs)
-    assert "if (st.first) st.seen = [...new Set([...st.seen, ...ORDER])];" in js
-    assert "const seen = Array.isArray(raw.seen) ? raw.seen.filter(ok) : BEFORE.filter(ok);" in js
+    # (what is seen and what is New, the saved state's migration: parse / resolve, tour.test.mjs)
+    assert "let st = resolve(load(), ORDER);" in js
     # the button and More say how many; a step opened is seen; nothing opens the walkthrough for an upgrader
     assert '$("#tour-count").textContent = fresh ? `${fresh} new`' in js
     assert 'opener.classList.toggle("has-new", fresh > 0)' in js
     assert "if (st.cur && isNew(st.cur)) { st.seen.push(st.cur); save(); }" in js
     assert "const first = st.open === null;" in js and "if (first || PHONE.matches) st.open = !PHONE.matches && first;" in js
-    assert "seen" in js[js.index("function save()"):js.index("let st = load();")]
+    assert "seen" in js[js.index("function save()"):js.index("let st = resolve(load(), ORDER);")]
     css = (STATIC / "tour.css").read_text(encoding="utf-8")
     assert ".tour-new {" in css and ".tour-btn.has-new" in css
 

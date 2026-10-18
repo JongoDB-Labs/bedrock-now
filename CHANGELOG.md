@@ -27,11 +27,15 @@ All notable changes to bedrock-now are documented here. The format follows
 - **The models from your own code** — a walkthrough step and a README section: LiteLLM's API on this computer, at the
   port this install uses (read from the Settings snapshot, `LITELLM_PORT`), OpenAI-compatible (`/v1/chat/completions`,
   `/v1/models`) and Anthropic-compatible (`/v1/messages`); a key per tool in Admin › Virtual Keys with its own budget;
-  curl and Python (openai, anthropic) examples to copy, with `YOUR_KEY` — never a key; on `127.0.0.1` only, remote
-  access included. *What you get* has a row for it.
+  curl and Python (openai, anthropic) examples to copy, with `YOUR_KEY` — never a key. LiteLLM's port listens on
+  `127.0.0.1` only; over remote access LiteLLM is the Admin site, behind the portal sign-in, not an endpoint for tools.
+  *What you get* has a row for it.
 
 ### Changed
 
+- **Settings' Open Git hosts, an Activity item of a Git host and the walkthrough** open the Git panel's dialog in the
+  Code tab in place, when its page is running (a message to it, only `hosts` or `clone`): the page is no longer
+  reloaded, so unsaved edits in its editor stay. Otherwise they open its address with `?git=` as before.
 - **Git hosts on the Code page are easier to find.** The Git panel's Git hosts control is a labelled **Hosts** button
   (it was an icon), there whenever the folder is a repository, not only with a remote. While no connected host covers
   the remote — or none is connected — a one-line hint says so, with **Connect a git host** (it replaces the small

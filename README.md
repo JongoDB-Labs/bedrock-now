@@ -1133,8 +1133,9 @@ print(m.content[0].text)
 ```
 
 Tools that read the usual variables take `OPENAI_BASE_URL` and `OPENAI_API_KEY`, or `ANTHROPIC_BASE_URL` and
-`ANTHROPIC_API_KEY`. The API listens on `127.0.0.1` only: another device cannot reach it, and remote access does not
-change that (its sites are the portal's pages, behind your sign-in). Keep keys out of code you share.
+`ANTHROPIC_API_KEY`. LiteLLM's port listens on `127.0.0.1` only: tools on other devices cannot reach it. Over [remote
+access](#remote-access) LiteLLM is the **Admin** site (`-admin` of your tailnet name, or `admin.` of your domain),
+behind your portal sign-in: a page for you, not an endpoint for tools. Keep keys out of code you share.
 
 ## Settings
 

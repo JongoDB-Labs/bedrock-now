@@ -33,25 +33,75 @@ test("a browser that went through an older walkthrough (no seen list): its steps
   assert.equal(s.open, false);
   assert.equal(s.cur, "welcome");   // (its old Code page step is gone)
   assert.deepEqual(s.done, ["welcome", "aws", "signin-portal"]);
-  assert.deepEqual(s.base, { "open-webui": 0.01 });
+  assert.deepEqual(s.base, { "chat:open-webui": 0.01 });   // (the Chat step's, from then)
   for (const id of T.BEFORE.filter((x) => x !== "code")) assert.ok(s.seen.includes(id), id);
   const fresh = T.unseen(ids, s.seen);
   assert.ok(fresh.includes("git-hosts") && fresh.includes("api") && fresh.includes("code-clone"), fresh.join(","));
   assert.ok(!fresh.includes("welcome") && !fresh.includes("shared"), fresh.join(","));
-  // a step done or skipped counts as seen whatever the list says
-  const s2 = plain(T.parse(JSON.stringify({ seen: [], done: ["api"], skipped: ["phone"] }), ids));
-  assert.deepEqual(s2.seen.sort(), ["api", "phone"]);
+  // migrating such a state: what it did or skipped counts as seen too (it went through those steps)
+  const m = plain(T.parse(JSON.stringify({ open: false, done: ["api"], skipped: ["phone"] }), ids));
+  assert.ok(m.seen.includes("api") && m.seen.includes("phone"));
+});
+
+test("a state with its own seen list: a step stays New until it is opened — done, skipped or detected do not count", () => {
+  const s = plain(T.parse(JSON.stringify({ open: false, seen: ["welcome"], done: ["welcome", "api", "updates"], skipped: ["phone"] }), ids));
+  assert.deepEqual(s.seen, ["welcome"]);
+  const fresh = T.unseen(ids, s.seen);
+  for (const id of ["api", "updates", "phone"]) assert.ok(fresh.includes(id), id);
 });
 
 test("a state of this version: its own seen list, unknown and odd ids dropped", () => {
   const s = plain(T.parse(JSON.stringify({ open: true, cur: "api", seen: ["api", "constructor", "__proto__", 5, "git-hosts", "api"] }), ids));
   assert.deepEqual(s.seen, ["api", "git-hosts"]);
   assert.equal(s.cur, "api");
-  const h = plain(T.parse(JSON.stringify({ cur: "constructor", done: "x", base: { "open-webui": "1e9", toString: 1 }, seen: "x" }), ids));
+  const h = plain(T.parse(JSON.stringify({ cur: "constructor", done: "x", base: { "open-webui": "1e9", toString: 1, "constructor:open-webui": 1, "chat:x": 1 }, seen: "x" }), ids));
   assert.equal(h.cur, "welcome");
   assert.deepEqual(h.done, []);
   assert.deepEqual(h.base, {});
   assert.ok(h.seen.includes("welcome") && !h.seen.includes("api"));   // (no list: the old walkthrough's)
+});
+
+test("resolve: a first visit has seen what is listed; a current step this site does not list falls back to the first", () => {
+  const order = ["welcome", "aws", "code-off", "api", "done"];
+  const first = plain(T.resolve(T.parse(null, ids), order));
+  assert.deepEqual(first.seen, order);
+  assert.deepEqual(T.unseen(order, first.seen), []);
+  // the Code page was on when the browser was last here (its step was the current one), it is off here now
+  const s = plain(T.resolve(T.parse(JSON.stringify({ open: true, cur: "code-modes", seen: ["welcome"] }), ids), order));
+  assert.equal(s.cur, "welcome");
+  assert.deepEqual(s.seen, ["welcome"]);   // (not a first visit: nothing made seen)
+  assert.equal(T.resolve(T.parse(JSON.stringify({ cur: "" }), ids), order).cur, "");    // the finished view stays
+  assert.equal(T.resolve(T.parse(JSON.stringify({ cur: "api" }), ids), order).cur, "api");
+});
+
+test("spend: each step its own baseline, taken when it is first shown; an older walkthrough's never ticks a new step", () => {
+  // an upgrader: the old Claude Code step's baselines (per key, the terminal's among them), spend grown since
+  const old = plain(T.parse(JSON.stringify({ open: false, done: [], base: { "open-webui": 0.01, "claude-code": 0.02, "claude-code-terminal": 0.03 } }), ids));
+  assert.deepEqual(old.base, { "chat:open-webui": 0.01, "claude:claude-code": 0.02 });
+  const now = { "open-webui": 0.01, "claude-code": 0.02, "claude-code-terminal": 0.5 };
+  // Open Code and ask has no baseline yet: nothing to tell, whatever the key spent before
+  assert.equal(T.spendState(old.base, "code-open", ["claude-code-terminal"], now), null);
+  // shown: its baseline is what the key has spent now — no tick until it spends more
+  let base = T.withBaseline(old.base, "code-open", ["claude-code-terminal"], now);
+  assert.equal(base["code-open:claude-code-terminal"], 0.5);
+  assert.deepEqual(plain(T.spendState(base, "code-open", ["claude-code-terminal"], now)), { ok: false });
+  const later = { ...now, "claude-code-terminal": 0.52 };
+  const r = plain(T.spendState(base, "code-open", ["claude-code-terminal"], later));
+  assert.equal(r.ok, true);
+  assert.equal(r.alias, "claude-code-terminal");
+  assert.ok(Math.abs(r.more - 0.02) < 1e-9);
+  // another step's baseline is not this one's: the Claude Code step does not tick on the terminal's key
+  assert.equal(T.spendState(base, "claude", ["claude-code"], later).ok, false);
+  // shown again: the first baseline stays; a new budget period (spend below it) brings it down
+  base = T.withBaseline(base, "code-open", ["claude-code-terminal"], later);
+  assert.equal(base["code-open:claude-code-terminal"], 0.5);
+  base = T.withBaseline(base, "code-open", ["claude-code-terminal"], { "claude-code-terminal": 0.001 });
+  assert.equal(base["code-open:claude-code-terminal"], 0.001);
+  // no spend known: no baseline, nothing to tell
+  assert.equal(T.spendState(T.withBaseline({}, "chat", ["open-webui"], {}), "chat", ["open-webui"], {}), null);
+  // a state of this version keeps its per-step baselines (and only those)
+  const cur = plain(T.parse(JSON.stringify({ seen: [], base: { "code-open:claude-code-terminal": 0.4, "open-webui": 0.3, "code-open:setup": 1 } }), ids));
+  assert.deepEqual(cur.base, { "code-open:claude-code-terminal": 0.4 });
 });
 
 test("what the walkthrough takes from /api/settings: plain values only, each checked", () => {
@@ -59,11 +109,15 @@ test("what the walkthrough takes from /api/settings: plain values only, each che
   assert.deepEqual(plain(T.cfgFrom(snap([["LITELLM_PORT", "4123"], ["TERMINAL_WORKSPACE", "~/ws"], ["TERMINAL_EGRESS", "host"], ["AUTO_UPDATE", "on"]], true))),
     { port: "4123", workspace: "~/ws", egress: "host", helper: true, auto: true, nightly: false });
   for (const bad of ["", "0", "65536", "4000; rm -rf", "40 00", "-1", "123456"]) assert.equal(T.cfgFrom(snap([["LITELLM_PORT", bad]])).port, "", bad);
-  assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", ""]])).egress, "internet");
+  assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", ""]])).egress, "internet");   // (blank: the default)
+  assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", "true"]])).egress, "internet");   // (the old on value)
   assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", "false"]])).egress, "off");
   assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", "OFF"]])).egress, "off");
+  assert.equal(T.cfgFrom(snap([["TERMINAL_EGRESS", "sideways"]])).egress, null);    // (unknown: not claimed)
+  // no row for it (an older snapshot, none at all): unknown, never "internet"
+  assert.equal(T.cfgFrom(snap([["LITELLM_PORT", "4123"]])).egress, null);
   assert.equal(T.cfgFrom(snap([["LITELLM_PORT", 4000]])).port, "");   // (a value that is not text: not taken)
-  assert.deepEqual(plain(T.cfgFrom(null)), { port: "", workspace: "", egress: "internet", helper: false, auto: false, nightly: false });
+  assert.deepEqual(plain(T.cfgFrom(null)), { port: "", workspace: "", egress: null, helper: false, auto: false, nightly: false });
 });
 
 test("the API step's snippets: the address given, YOUR_KEY, an enabled model — nothing else", () => {

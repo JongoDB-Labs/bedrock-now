@@ -22,12 +22,16 @@
   const BEFORE = ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras", "signin-portal", "signin-chat",
     "signin-admin", "signin-files", "home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"];
   const KEYS_SPENT = ["open-webui", "claude-code", "claude-code-terminal"];
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
   // --- pure parts (portal/tests/js/tour.test.mjs runs these in Node) ---
 
   // parse(TEXT, KNOWN) -> the saved state, every field checked against KNOWN (the step ids there are):
   // {first, open, cur, done, skipped, base, seen}. first: nothing (readable) was stored — a first visit. seen: the steps
-  // this browser opened; a state saved before there was such a list saw the old walkthrough's steps (BEFORE).
+  // this browser opened (a step stays New until it is opened, whatever else happens to it); a state saved before there
+  // was such a list went through an older walkthrough: its steps (BEFORE), and what it did or skipped, count as seen.
+  // base: each step's spend baseline (STEP:ALIAS, see spendState); an older state's per-key baselines become the Chat and
+  // Claude Code steps' (the old Claude Code step's terminal key one is dropped: Open Code and ask takes its own).
   function parse(text, known) {
     const ok = (id) => typeof id === "string" && known.includes(id);
     const s = { first: true, open: null, cur: "welcome", done: [], skipped: [], base: {}, seen: [] };
@@ -38,26 +42,68 @@
     if (typeof raw.open === "boolean") s.open = raw.open;
     if (raw.cur === "" || ok(raw.cur)) s.cur = raw.cur;
     for (const k of ["done", "skipped"]) if (Array.isArray(raw[k])) s[k] = [...new Set(raw[k].filter(ok))];
-    for (const a of KEYS_SPENT) if (raw.base && typeof raw.base === "object" && Number.isFinite(raw.base[a])) s.base[a] = raw.base[a];
-    const seen = Array.isArray(raw.seen) ? raw.seen.filter(ok) : BEFORE.filter(ok);
-    s.seen = [...new Set([...seen, ...s.done, ...s.skipped])];
+    const base = raw.base && typeof raw.base === "object" && !Array.isArray(raw.base) ? raw.base : {};
+    const OLD = { "open-webui": "chat", "claude-code": "claude" };
+    for (const [k, v] of Object.entries(base)) {
+      if (!Number.isFinite(v)) continue;
+      const m = /^([a-z][a-z-]*):([a-z-]+)$/.exec(k);
+      if (m && ok(m[1]) && KEYS_SPENT.includes(m[2])) s.base[k] = v;
+      else if (Array.isArray(raw.seen) || !has(OLD, k)) continue;
+      else if (ok(OLD[k])) s.base[baseKey(OLD[k], k)] = v;
+    }
+    s.seen = Array.isArray(raw.seen) ? [...new Set(raw.seen.filter(ok))] : [...new Set([...BEFORE.filter(ok), ...s.done, ...s.skipped])];
     return s;
+  }
+  // resolve(STATE, ORDER) -> STATE as this page starts with it: a first visit has seen every step listed now (nothing
+  // is New); a current step this site does not list (the Code page or the terminal off here) falls back to the first.
+  function resolve(s, order) {
+    const out = { ...s, seen: s.first ? [...new Set([...s.seen, ...order])] : s.seen };
+    if (out.cur !== "" && !order.includes(out.cur)) out.cur = order[0] || "";
+    return out;
   }
   // unseen(ORDER, SEEN) -> the steps of ORDER this browser has not opened yet
   const unseen = (order, seen) => order.filter((id) => !seen.includes(id));
 
-  // What the walkthrough takes from /api/settings (the masked snapshot): plain values only, each checked.
+  // A step's spend baseline: what ALIAS's key had spent when STEP was first shown (each step its own, never shared).
+  const baseKey = (step, alias) => `${step}:${alias}`;
+  // spendState(BASE, STEP, ALIASES, NOW) -> {ok: true, alias, more} once one of the keys spent more than STEP's baseline,
+  // {ok: false} while none did, null without a baseline (STEP not shown yet, or no spend known). NOW: {alias: spend}.
+  function spendState(base, step, aliases, now) {
+    let seen = false;
+    for (const a of aliases) {
+      const b = base[baseKey(step, a)], n = now[a];
+      if (!Number.isFinite(b) || !Number.isFinite(n)) continue;
+      if (n > b + 1e-9) return { ok: true, alias: a, more: n - b };
+      seen = true;
+    }
+    return seen ? { ok: false } : null;
+  }
+  // withBaseline(BASE, STEP, ALIASES, NOW) -> BASE with STEP's baselines taken from NOW where it has none yet; a baseline
+  // above what the key has spent now (a new budget period) comes down to it.
+  function withBaseline(base, step, aliases, now) {
+    const out = { ...base };
+    for (const a of aliases) {
+      const k = baseKey(step, a), n = now[a];
+      if (Number.isFinite(n) && (!Number.isFinite(out[k]) || n < out[k])) out[k] = n;
+    }
+    return out;
+  }
+
+  // What the walkthrough takes from /api/settings (the masked snapshot): plain values only, each checked; what the
+  // snapshot does not have stays unknown ("" / null), never a default the stack may not be using.
   function cfgFrom(d) {
     const keys = {};
     for (const k of (d && d.snapshot && Array.isArray(d.snapshot.keys) ? d.snapshot.keys : [])) {
       if (k && typeof k.key === "string" && typeof k.value === "string") keys[k.key] = k.value;
     }
     const port = /^[0-9]{1,5}$/.test(keys.LITELLM_PORT || "") && Number(keys.LITELLM_PORT) > 0 && Number(keys.LITELLM_PORT) < 65536 ? keys.LITELLM_PORT : "";
-    const egress = String(keys.TERMINAL_EGRESS || "").toLowerCase();
+    const egress = has(keys, "TERMINAL_EGRESS") ? keys.TERMINAL_EGRESS.trim().toLowerCase() : null;
     return {
       port,
       workspace: typeof keys.TERMINAL_WORKSPACE === "string" ? keys.TERMINAL_WORKSPACE.slice(0, 300) : "",
-      egress: ["host", "off"].includes(egress) ? egress : ["false", "0", "no"].includes(egress) ? "off" : "internet",
+      // (blank, and the old on values, read as internet, as ./stack reads them)
+      egress: egress === null ? null : ["host", "off"].includes(egress) ? egress : ["false", "0", "no"].includes(egress) ? "off"
+        : ["", "internet", "true", "1", "yes", "on"].includes(egress) ? "internet" : null,
       helper: Boolean(d && d.helper && d.helper.running === true),
       auto: keys.AUTO_UPDATE === "on",
       nightly: keys.BACKUP_NIGHTLY === "on",
@@ -85,7 +131,7 @@
     };
   }
 
-  root.bnTour = { _pure: { BEFORE, parse, unseen, cfgFrom, snippetModel, snippets } };
+  root.bnTour = { _pure: { BEFORE, parse, resolve, unseen, baseKey, spendState, withBaseline, cfgFrom, snippetModel, snippets } };
   if (typeof document === "undefined" || typeof document.querySelector !== "function") return;
 
   const POLL_MS = 30000;
@@ -96,7 +142,6 @@
   const REPO = "https://github.com/JongoDB-Labs/bedrock-now";
   const NAMES = { chat: "Chat", admin: "Admin", files: "Files" };
   const PROMPT = 'Write notes/hello.md to the shared store with a two-line summary of this folder, and ingest it into knowledge base "Claude Code".';
-  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   // The Code page (code.js reads the same): {enabled, here} — on at all, and usable on this site (remote access needs
   // REMOTE_TERMINAL). Its steps show while it is here; while it is off, one step says what it is and how to turn it on.
   const CODE = (() => {
@@ -107,6 +152,7 @@
     try { const t = JSON.parse(document.querySelector('meta[name="bn-terminal"]').content) || {}; return { here: t.here === true && Boolean(APP_URLS.terminal) }; } catch (_) { return { here: false }; }
   })();
   const CHECK_FAILED = "Could not check: Home says why; trying again every 30 s.";
+  const CFG_FAILED = "Could not read Settings: trying again every 30 s.";
 
   // --- small builders ---
   const p = (...c) => el("p", {}, ...c);
@@ -263,7 +309,7 @@
 
   // --- the steps. info: Next marks it done. optional: Skip. skipOnly: no "Mark as done" (it is detected).
   // live: needs /api/summary while shown. detect(summary) → {ok, text, warn} or null. spendKey: done once that
-  // LiteLLM key spends more than when the step was first shown. cfg: needs /api/settings while shown (detectCfg(cfg)
+  // LiteLLM key spends more than when this step was first shown (its own baseline: spendState). cfg: needs /api/settings while shown (detectCfg(cfg)
   // like detect). local(): detected from this page (the Code tab's report), no summary needed. when: only where it
   // applies (the Code page or the terminal on here).
   const STEPS = {
@@ -553,7 +599,8 @@
     "code-workspace": {
       title: "Your workspace: files, search, previews", optional: true, when: () => CODE.here, cfg: true,
       body: () => [
-        p("Claude sees one folder of this computer: ", code((cfg && cfg.workspace) || "~/bedrock-now-workspace"), " (", code("/workspace"), " in the sandbox) — nothing else of yours."),
+        cfg && cfg.workspace ? p("Claude sees one folder of this computer: ", code(cfg.workspace), " (", code("/workspace"), " in the sandbox) — nothing else of yours.")
+          : p("Claude sees one folder of this computer, its workspace (", code("/workspace"), " in the sandbox; ", code("./stack code status"), " names it) — nothing else of yours."),
         list("ul", [
           ["The explorer: new file or folder, rename, delete (into ", code(".bedrock-now-trash/"), "), drag files in to upload them."],
           [kbd("Ctrl/⌘+P"), " goes to a file, ", kbd("Ctrl/⌘+Shift+F"), " searches in files, ", kbd("Ctrl/⌘+K"), " opens the command palette (every action, session and file)."],
@@ -580,7 +627,8 @@
     "code-clone": {
       title: "Clone a repository", optional: true, when: () => CODE.here,
       body: () => [
-        p(b("Clone a repository…"), " in the Git panel (", kbd("Ctrl/⌘+Shift+G"), ") or the command palette: the URL, a new folder of the workspace (named after the repository) and, if you like, only the latest commit."),
+        p(b("Clone a repository"), " below, a new session's ", b("Clone a repository"), ", or the command palette's ", b("Git: clone a repository…"), " (", kbd("Ctrl/⌘+K"),
+          "; the Git panel, ", kbd("Ctrl/⌘+Shift+G"), ", has it too while the workspace is not a repository yet): the URL, a new folder of the workspace (named after the repository) and, if you like, only the latest commit."),
         list("ul", [
           ["A public repository needs no git host; a private one needs its host connected (", b("Connect a git host"), ", above)."],
           ["Nothing is fetched before you confirm where it clones from, and with which credential."],
@@ -632,7 +680,7 @@
     sandbox: {
       title: "What the sandbox can reach", info: true, when: () => CODE.here || TERM.here, cfg: true,
       body: () => {
-        const now = cfg ? { internet: "Internet only (the default)", host: "+ this computer", off: "Off" }[cfg.egress] : "";
+        const now = cfg && cfg.egress ? { internet: "Internet only (the default)", host: "+ this computer", off: "Off" }[cfg.egress] : "";
         return [
           now ? el("p", { class: "tour-status" }, "Now: ", b(now)) : null,
           p(settings("Claude Code", "TERMINAL_EGRESS"), " › ", b("Sandbox internet access"), ":"),
@@ -661,7 +709,7 @@
     // ---------------- Your own tools
     claude: {
       title: "Claude Code in your terminal", optional: true, live: true,
-      spendKey: "claude-code", spendAlso: CODE.here ? "claude-code-terminal" : null,   // the Code tab spends the terminal's key
+      spendKey: "claude-code",   // (claude-bedrock's key; the Code tab's spend is Open Code and ask's, on the terminal's key)
       waiting: "Not detected yet: spend can take a minute to show.",
       body: () => [
         p("In a terminal, in a project folder:"), cmd(command()),
@@ -683,7 +731,7 @@
         return [
           p("Scripts, notebooks and other tools can use the same models, on the same budgets and logs, through LiteLLM's API on this computer:"),
           base ? cmd(base, "the API's address", "copy-api-base")
-            : note(cfg ? "" : "Checking… ", "PORT below: the port on the LiteLLM API line ", code("./stack status"), " prints (", code("LITELLM_PORT"), " in ", code(".env"), ")."),
+            : note("PORT below: the port on the LiteLLM API line ", code("./stack status"), " prints (", code("LITELLM_PORT"), " in ", code(".env"), ")."),
           list("ul", [
             ["OpenAI-compatible: ", code(`${shown}/v1`), " (", code("/chat/completions"), ", ", code("/models"), ")."],
             ["Anthropic-compatible: ", code(shown), " (", code("/v1/messages"), ")."],
@@ -694,8 +742,8 @@
           snippet("openai", "Python: openai", ex.openai),
           snippet("anthropic", "Python: anthropic", ex.anthropic),
           note("Put the key in place of YOUR_KEY (or ", code("OPENAI_API_KEY"), " / ", code("ANTHROPIC_API_KEY"), " with ", code("OPENAI_BASE_URL"), " / ",
-            code("ANTHROPIC_BASE_URL"), "). Only this computer reaches ", code("127.0.0.1"), ": other devices cannot, remote access included (",
-            doc("the-models-from-your-own-code", "more"), ")."),
+            code("ANTHROPIC_BASE_URL"), "). LiteLLM's port listens on ", code("127.0.0.1"), " only: tools on other devices cannot reach it. Over remote access LiteLLM is the ",
+            b("Admin"), " site, behind your portal sign-in — not an endpoint for tools (", doc("the-models-from-your-own-code", "more"), ")."),
         ];
       },
       actions: () => [openApp("admin"), showOnHome("models", "Show models")],
@@ -808,12 +856,11 @@
     try { localStorage.setItem(KEY, JSON.stringify({ open, cur, done, skipped, base, seen })); return true; } catch (_) { return false; }
   }
 
-  let st = load();
+  // (a first visit has seen everything listed now; the steps new to this browser are marked New while it reads them)
+  let st = resolve(load(), ORDER);
   let sum = null, sumAt = 0, askedAt = 0, failedAt = 0, pollT = null, shown = "";
-  let cfg = null, cfgAt = 0, cfgAsked = 0;
+  let cfg = null, cfgAt = 0, cfgAsked = 0, cfgFailed = 0, cfgT = null;
   let openSecs = new Set();
-  // A first visit has seen everything listed now; the steps new to this browser are marked New while it reads them.
-  if (st.first) st.seen = [...new Set([...st.seen, ...ORDER])];
   const freshAtLoad = new Set(unseen(ORDER, st.seen));
   const isDone = (id) => st.done.includes(id);
   const isSkipped = (id) => st.skipped.includes(id);
@@ -826,8 +873,12 @@
     if (how === "done") st.done.push(id); else if (how === "skipped") st.skipped.push(id);
   }
 
-  // the LiteLLM keys whose spend marks a step done (the Claude Code step: claude-bedrock's, and the Code tab's too)
-  const spendKeys = (s) => (s.spendAlso ? [s.spendKey, s.spendAlso] : [s.spendKey]);
+  // what each LiteLLM key has spent, from the summary: {alias: spend}
+  function spentNow() {
+    const out = {};
+    for (const a of ["open-webui", "claude-code", "claude-code-terminal"]) { const v = spendOf(a); if (v != null) out[a] = v; }
+    return out;
+  }
   function detection(id) {
     const s = STEPS[id];
     if (!s) return null;
@@ -835,25 +886,17 @@
     if (s.detectCfg) return cfg ? s.detectCfg(cfg) : null;
     if (!sum) return null;
     if (s.spendKey) {
-      let seen = false;
-      for (const k of spendKeys(s)) {
-        const base = st.base[k], now = spendOf(k);
-        if (base == null || now == null) continue;
-        if (now > base + 1e-9) return { ok: true, text: `Detected ✓ (${usd(now - base)} more on the ${k} key)` };
-        seen = true;
-      }
-      return seen ? { ok: false, text: s.waiting } : null;
+      const r = spendState(st.base, id, [s.spendKey], spentNow());
+      return !r ? null : r.ok ? { ok: true, text: `Detected ✓ (${usd(r.more)} more on the ${r.alias} key)` } : { ok: false, text: s.waiting };
     }
     return s.detect ? s.detect(sum) : null;
   }
-  // The spend a "did it work?" step compares against: taken from a summary at most 30 s old.
+  // The spend a "did it work?" step compares against: its own, taken when it is first shown, from a summary at most
+  // 30 s old (never another step's, nor one an older walkthrough left).
   function noteBaseline() {
     const s = STEPS[st.cur];
     if (!s || !s.spendKey || Date.now() - sumAt > POLL_MS) return;
-    for (const k of spendKeys(s)) {
-      const v = st.base[k] == null ? spendOf(k) : null;
-      if (v != null) st.base[k] = v;
-    }
+    st.base = withBaseline(st.base, st.cur, [s.spendKey], spentNow());
   }
   function detectAll() {
     const flipped = [];
@@ -866,7 +909,7 @@
   // What the current card shows from the summary, the settings and the Code tab's report.
   const digest = () => JSON.stringify([st.cur, detection(st.cur) || null, Boolean(sum), sum && sum.voice && sum.voice.on,
     sum && sum.claude && sum.claude.command, sum && sum.spend && (sum.spend.keys || []).map((k) => [k.label, k.max_budget, k.error]),
-    STEPS[st.cur] && STEPS[st.cur].cfg ? cfg : null, st.cur === "api" ? snippetModel(sum) : ""]);
+    STEPS[st.cur] && STEPS[st.cur].cfg ? [cfg, Boolean(cfgFailed)] : null, st.cur === "api" ? snippetModel(sum) : ""]);
   function announce(text) { live.textContent = ""; setTimeout(() => { live.textContent = text; }, 50); }
   // after new data: steps detected as done, the panel drawn again only when what it shows changed (a rebuild every 30 s
   // would disturb reading and selecting)
@@ -880,9 +923,10 @@
   function onSummary(d) {
     if (!d || d === sum) return;
     sum = d; sumAt = Date.now(); failedAt = 0;
-    for (const a of Object.keys(st.base)) {
-      const v = spendOf(a);
-      if (v != null && v < st.base[a]) st.base[a] = v;
+    // a key's spend below a baseline: a new budget period — the baseline comes down to it
+    for (const k of Object.keys(st.base)) {
+      const v = spendOf(k.slice(k.indexOf(":") + 1));
+      if (v != null && v < st.base[k]) st.base[k] = v;
     }
     noteBaseline();
     settle(true);
@@ -907,13 +951,20 @@
     }).finally(() => { clearTimeout(pollT); pollT = setTimeout(poll, POLL_MS); });
   }
   // The settings snapshot (the LiteLLM port, the workspace folder, the sandbox's internet, the update helper): asked
-  // while the panel shows a step that needs it, kept 5 minutes, asked at most once a minute.
+  // while the panel shows a step that needs it, kept 5 minutes; when it cannot be read, the step says so and it is
+  // asked again every 30 s while such a step is shown.
   function askCfg() {
+    clearTimeout(cfgT); cfgT = null;
     const s = STEPS[st.cur];
     if (!st.open || !s || !s.cfg || document.hidden) return;
-    if ((cfg && Date.now() - cfgAt < CFG_MS) || Date.now() - cfgAsked < 60000) return;
+    if ((cfg && Date.now() - cfgAt < CFG_MS) || Date.now() - cfgAsked < POLL_MS) return;
     cfgAsked = Date.now();
-    api("/api/settings").then((d) => { cfg = cfgFrom(d); cfgAt = Date.now(); settle(); }, () => { /* the step says how to find it */ });
+    api("/api/settings").then((d) => { cfg = cfgFrom(d); cfgAt = Date.now(); cfgFailed = 0; settle(); }, (e) => {
+      if (e && e.message === "signed out") return;
+      cfgFailed = Date.now();
+      if (st.open) render();
+      clearTimeout(cfgT); cfgT = setTimeout(askCfg, POLL_MS);
+    });
   }
 
   // --- rendering ---
@@ -970,7 +1021,7 @@
       n.append(el("p", { class: `tour-status${det.ok ? " ok" : det.warn ? " warn" : ""}`,
         text: det.ok && !det.text.startsWith("Detected") ? `✓ ${det.text}` : det.text }));
     } else if ((s.detect || s.spendKey) && !sum) n.append(el("p", { class: `tour-status${failedAt ? " warn" : ""}`, text: failedAt ? CHECK_FAILED : "Checking…" }));
-    else if (s.detectCfg && !cfg) n.append(el("p", { class: "tour-status", text: "Checking…" }));
+    else if (s.cfg && !cfg) n.append(el("p", { class: `tour-status${cfgFailed ? " warn" : ""}`, text: cfgFailed ? CFG_FAILED : "Checking…" }));
     n.append(...s.body(sum).filter(Boolean));
     const acts = s.actions ? s.actions(sum).filter(Boolean) : [];
     if (acts.length) n.append(el("div", { class: "tour-actions" }, ...acts));
