@@ -1260,9 +1260,10 @@ direction-changing character; a record that does not fit (a file someone changed
     entries in a section, a value over 2,000 characters, a control character, invalid JSON) gets no hash to trust:
     neither is ever trusted. The page cuts nothing silently either. Each hook and MCP server is shown whole (its entry
     as JSON with sorted keys, beside a friendly line; one naming more than one of a command, a URL and a prompt is
-    marked), whitespace is made visible (⏎, →, ·) and invisible, direction-changing or unusual whitespace characters
-    as `⟨U+…⟩`, and a value with such a character, a long run of whitespace (or much of it) or many lines must be
-    opened in full before *Trust* is offered — the same rule on both sides.
+    marked); every character but printable ASCII, a tab or a line break is shown as `⟨U+…⟩` (line breaks, tabs and
+    runs of spaces as ⏎, →, ·), and a value with such a character, a long run of whitespace (or much of it) or many
+    lines must be opened in full before *Trust* is offered — one rule, written in the backend and the page alike (a
+    test compares them).
   - *Every start decides, and fails closed.* A decision is made for each process start — a new session, a resume, a
     prompt that restarts one, a switch to *Bypass permissions*, a file restore, *Allow once*, a new conversation Claude
     Code started — and taken by that start only; a start without one gets your own settings only. A decision that

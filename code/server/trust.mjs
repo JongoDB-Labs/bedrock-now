@@ -40,16 +40,14 @@ const PERM_KNOWN = new Set(['allow', 'ask', 'deny', 'defaultMode', 'additionalDi
 // what the page shows of them: at most this many entries per section, this many characters per value — beyond that
 // the summary is incomplete, and incomplete settings are never trusted (nothing you were not shown can apply)
 export const LIST_MAX = 200, TEXT_MAX = 2000;
-// eslint-disable-next-line no-control-regex
-const HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
-// a value that could hide something in plain sight: an invisible or direction-changing character (Unicode's format
-// characters — zero-width ones, bidi controls, tags, the BOM —, line and paragraph separators, any whitespace but a
-// plain space, tab or line break), a run of 20+ whitespace characters (format characters between them do not break
-// it), more than 60 of them in all, or more than 5 lines: the page asks for a careful look (the same rule as its
-// needsLook, code/web/src/projects.ts)
-export const ODD_CHAR = /[\p{Cf}\u2028\u2029]|(?![ \t\n\r])\s/u;
-export const careful = (t) => typeof t === 'string' && (ODD_CHAR.test(t) || /\s{20,}/u.test(t.replace(/\p{Cf}/gu, ''))
-  || (t.match(/\s/gu) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5);
+// A value of the trust summary that could hide something in plain sight: any character but printable ASCII, a tab or a
+// line break (the page shows each as ⟨U+XXXX⟩), a run of 20+ whitespace characters, more than 60 of them in all, or
+// more than 5 lines — the page folds it until you open it in full, and Trust waits for that.
+// --- the trust summary's text rule: the same lines in code/web/src/projects.ts (tests/test_code.sh compares them) ---
+const NOT_PLAIN = /[^\x20-\x7e\t\n]/;
+const looksHidden = (t) => NOT_PLAIN.test(t) || /\s{20,}/.test(t) || (t.match(/\s/g) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5;
+// --- end of the rule ---
+export const careful = (t) => typeof t === 'string' && looksHidden(t);
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
 const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
 
@@ -70,7 +68,6 @@ export function summarize(files) {
   const text = (v) => {
     let t;
     try { t = typeof v === 'string' ? v : JSON.stringify(v) ?? String(v); } catch { incomplete('a value that cannot be shown'); return '?'; }
-    if (HIDDEN.test(t)) incomplete('a value with control characters the page cannot show');
     if (careful(t)) out.careful++;
     if (t.length > TEXT_MAX) { incomplete(`a value over ${TEXT_MAX.toLocaleString('en')} characters`); return `${t.slice(0, TEXT_MAX)}… (${t.length - TEXT_MAX} more characters not shown)`; }
     return t;

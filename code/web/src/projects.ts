@@ -4,7 +4,7 @@
 // the workspace by the same rules as the backend's, a name of one line), and a session is shown in the project the
 // backend says only when that is a project of the list — else in the Workspace: nothing a list says makes a project.
 // Kept free of DOM and network (test/projects.test.ts).
-import { label, safe } from './text';
+import { label } from './text';
 import type { SessionInfo } from './types';
 
 export const WORKSPACE_ID = 'ws';
@@ -198,20 +198,21 @@ export interface SettingsSummary {
   missing: string[];
 }
 
-// an invisible or direction-changing character: Unicode's format characters (zero-width ones, bidi controls, tags, the
-// BOM), line and paragraph separators, and any whitespace but a plain space, tab or line break
-const ODD_CHAR = /[\p{Cf}\u2028\u2029]|(?![ \t\n\r])\s/u;
-/** A value that could hide something in plain sight (the backend's rule too, trust.mjs careful): such a character, a
- *  run of 20+ whitespace characters (format characters between them do not break it), more than 60 of them in all, or
- *  more than 5 lines. The dialog shows it folded until you open it in full, and Trust waits for that. */
-export const needsLook = (t: string): boolean => ODD_CHAR.test(t) || /\s{20,}/u.test(t.replace(/\p{Cf}/gu, ''))
-  || (t.match(/\s/gu) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5;
-/** Whitespace and invisible characters made visible (the trust dialog): ⟨U+XXXX⟩ for each invisible, direction-changing
- *  or unusual whitespace character, ⏎ for a line break, → for a tab, · for each space of a run of 3 or more — so nothing
- *  hides on a line out of sight or behind a character you cannot see. */
-export const visibleWs = (t: string): string => t
-  .replace(/[\p{Cf}\u2028\u2029]|(?![ \t\n\r])\s/gu, (c) => `⟨U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}⟩`)
-  .replace(/\r/g, '␍').replace(/\n/g, '⏎').replace(/\t/g, '→').replace(/ {3,}/g, (m) => '·'.repeat(m.length));
+// A value of the trust summary that could hide something in plain sight: any character but printable ASCII, a tab or a
+// line break (shown as ⟨U+XXXX⟩), a run of 20+ whitespace characters, more than 60 of them in all, or more than 5 lines.
+// --- the trust summary's text rule: the same lines in code/server/trust.mjs (tests/test_code.sh compares them) ---
+const NOT_PLAIN = /[^\x20-\x7e\t\n]/;
+const looksHidden = (t: string): boolean => NOT_PLAIN.test(t) || /\s{20,}/.test(t) || (t.match(/\s/g) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5;
+// --- end of the rule ---
+/** The dialog folds such a value until you open it in full, and Trust waits for that (the backend's careful flag, by
+ *  the same rule). */
+export const needsLook = (t: string): boolean => looksHidden(t);
+/** A value as the trust dialog shows it: printable ASCII as is; ⏎ for a line break, → for a tab, · for each space of a
+ *  run of 3 or more; every other character as ⟨U+XXXX⟩ — nothing hides behind a character you cannot see or tell apart,
+ *  or on a line out of sight. */
+export const visibleWs = (t: string): string =>
+  t.replace(/ {3,}|[^\x20-\x7e]/gu, (m) => (m[0] === ' ' ? '·'.repeat(m.length) : m === '\n' ? '⏎' : m === '\t' ? '→'
+    : `⟨U+${(m.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}⟩`));
 export interface SettingsView {
   project: string;
   path: string;
@@ -234,7 +235,8 @@ export function normSettingsView(v: unknown): SettingsView | null {
   if (!o || !state || !projectIdOk(o.project)) return null;
   let cut = false;
   const one = (x: unknown, max = 300): string => { if (typeof x !== 'string') return ''; if (x.length > max) cut = true; return label(x, max); };
-  const many = (x: unknown): string => { if (typeof x !== 'string') return ''; if (x.length > TEXT_MAX) cut = true; return safe(x, TEXT_MAX); };
+  // (a value as it is — the dialog shows every character but printable ASCII as an escape: visibleWs)
+  const many = (x: unknown): string => { if (typeof x !== 'string') return ''; if (x.length > TEXT_MAX) cut = true; return x.slice(0, TEXT_MAX); };
   const rows = <T>(x: unknown, f: (r: Obj) => T): T[] => {
     if (!Array.isArray(x)) return [];
     if (x.length > LIST_MAX) cut = true;

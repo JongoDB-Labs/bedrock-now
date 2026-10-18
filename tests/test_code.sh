@@ -746,3 +746,16 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
   assert_contains "$out" "FAIL  the code container reaches bn-coded"
   assert_contains "$out" "FAIL  the sandbox cannot reach the code container"
 }
+
+# the trust summary of a project's own Claude Code settings: the backend (code/server/trust.mjs, its careful flag) and
+# the page (code/web/src/projects.ts, needsLook and the dialog's escapes) decide by one rule, written twice — the same
+# lines (the page's type annotations aside)
+_rule_of() { sed -n "/--- the trust summary's text rule/,/--- end of the rule ---/p" "$1" | sed '1d;$d' | sed 's/: string//g; s/: boolean//g'; }
+test_the_trust_summarys_text_rule_is_the_same_in_the_backend_and_the_page() {
+  local a b
+  a="$(_rule_of "$STACK_DIR/code/server/trust.mjs")"
+  b="$(_rule_of "$STACK_DIR/code/web/src/projects.ts")"
+  assert_eq "$(printf '%s\n' "$a" | wc -l | tr -d ' ')" 2
+  assert_contains "$a" 'const NOT_PLAIN = /[^\x20-\x7e\t\n]/;'
+  assert_eq "$b" "$a"
+}

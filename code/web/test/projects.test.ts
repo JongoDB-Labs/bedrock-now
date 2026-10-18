@@ -159,7 +159,9 @@ test('the trust dialog\'s text: whitespace made visible, a value that could hide
   assert.equal(needsLook('npm test && npm run lint'), false);
   // invisible and unusual characters: shown as escapes, and a look is asked for
   for (const [t, shown] of [['a\u00a0b', 'a⟨U+00A0⟩b'], ['a\u2028b', 'a⟨U+2028⟩b'], ['a\u202eb', 'a⟨U+202E⟩b'], ['a\u200db', 'a⟨U+200D⟩b'], ['a\ufeffb', 'a⟨U+FEFF⟩b'],
-    ['a\u{e0041}b', 'a⟨U+E0041⟩b'], ['a\u3000b', 'a⟨U+3000⟩b']] as const) {
+    ['a\u{e0041}b', 'a⟨U+E0041⟩b'], ['a\u3000b', 'a⟨U+3000⟩b'], ['a\u2800b', 'a⟨U+2800⟩b'], ['a\u3164b', 'a⟨U+3164⟩b'], ['a\u115fb', 'a⟨U+115F⟩b'],
+    ['a\uffa0b', 'a⟨U+FFA0⟩b'], ['a\u180eb', 'a⟨U+180E⟩b'], ['cu\u0301rl', 'cu⟨U+0301⟩rl'], ['a\u0007b', 'a⟨U+0007⟩b'], ['a\u001b[8mb', 'a⟨U+001B⟩[8mb'],
+    ['a\rb', 'a⟨U+000D⟩b'], ['echo \u{1F600}', 'echo ⟨U+1F600⟩']] as const) {
     assert.equal(visibleWs(t), shown, shown);
     assert.equal(needsLook(t), true, shown);
   }
