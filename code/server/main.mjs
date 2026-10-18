@@ -89,10 +89,12 @@ export function ownOrigin(req) {
 // allowBypass: CODE_ALLOW_BYPASS, allowAuto: CODE_AUTO_MODE (Settings › Claude Code). sandbox: {egress, egressHost, workspace} what the page's
 // Bypass dialog says about the sandbox (TERMINAL_EGRESS: any internet, and this computer's services with it; the folder
 // of yours it sees — a label). watch: false turns the watchlist off. gitHosts: the Git hosts store (githosts.mjs; made
-// on first use: /var/lib/bn-code), openBroker: sandboxBroker (Claude's own git, while a host allows it).
+// on first use: /var/lib/bn-code), openBroker: sandboxBroker (Claude's own git, while a host allows it). gitConnect:
+// sandboxTunnel (a Git host sign-in's requests to its provider, TLS here: oauth.mjs), gitApps: Settings' application IDs
+// ({github: {clientId, appSlug}, gitlab: {clientId}}; blank: the project's own).
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
-  allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null }) {
+  allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null, gitConnect = null, gitApps = {}, gitOAuthDelay = null }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -174,7 +176,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const api = makeApi({ call, sessions: mgr, reloadPollMs, reloadMaxMs });
   // Git hosts and the Git panel's remote operations (gitremote.mjs): every use goes to the pages (Activity)
   let gitRemoteApi = null;
-  const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: gitHosts || new GitHosts(), log: logger,
+  const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: gitHosts || new GitHosts(), log: logger, connect: gitConnect, apps: gitApps,
+    oauthDelay: gitOAuthDelay,
     onEvent: (event) => toAll({ type: 'git_event', event }) }));
   if (openBroker) setTimeout(() => { gitRemote().syncBroker().catch((e) => logger(`git broker: ${short(e.message, 200)}`)); }, 1000).unref?.();
   // an MCP server's name as the session reports it (plugin servers: plugin:x:y; claude.ai ones may have spaces)
@@ -274,16 +277,22 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/git/log' && m === 'GET') return send(res, 200, await api.gitLog(q.get('repo') ?? ''));
     if (p === '/api/git/file' && m === 'GET') return send(res, 200, await api.gitFile({ scope: q.get('scope'), path: q.get('path'), repo: q.get('repo') ?? '' }));
     // Git hosts and remotes (gitremote.mjs). Over remote access (Caddy's remote sites say X-Bn-Remote: 1; a client's
-    // copy never gets here) a host, a token, a key, a trusted host key and Claude's use of a host are not added or
-    // turned on — removing and turning off work everywhere
+    // copy never gets here) a host, a token, a key, a sign-in, a trusted host key and Claude's use of a host are not
+    // added, started or turned on — removing, cancelling and turning off work everywhere
     {
       const remote = req.headers['x-bn-remote'] === '1';
       const g = () => gitRemote();
       if (p === '/api/git/hosts' && m === 'GET') return send(res, 200, g().hostsView(remote));
       if (p === '/api/git/hosts' && m === 'POST') return send(res, 200, { host: g().addHost(await readJson(req, 96 << 10), remote) });
+      // a sign-in (oauth.mjs): started, followed (the page asks every few seconds; this side polls the provider), cancelled
+      if (p === '/api/git/oauth' && m === 'POST') return send(res, 200, await g().startSignIn(await readJson(req, 96 << 10), remote));
+      if ((mm = /^\/api\/git\/oauth\/([0-9a-f]{32})$/.exec(p))) {
+        if (m === 'GET') return send(res, 200, g().signInStatus(mm[1], remote));
+        if (m === 'DELETE') return send(res, 200, g().cancelSignIn(mm[1]));
+      }
       if ((mm = /^\/api\/git\/hosts\/(h_[0-9a-f]{12})(?:\/(token|key|claude|test|known|ca))?$/.exec(p))) {
         const id = mm[1], what = mm[2] || '';
-        if (!what && m === 'DELETE') return send(res, 200, g().removeHost(id));
+        if (!what && m === 'DELETE') return send(res, 200, await g().removeHost(id));
         if (what === 'token' && m === 'POST') return send(res, 200, { host: g().setToken(id, await readJson(req), remote) });
         if (what === 'key' && m === 'POST') return send(res, 200, { host: g().newKey(id, remote) });
         if (what === 'claude' && m === 'POST') return send(res, 200, { host: g().setClaude(id, await readJson(req), remote) });
@@ -587,11 +596,14 @@ function readVersions() {
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  const { sandboxProcess, sandboxCall, sandboxBroker } = await import('./spawn-client.mjs');
+  const { sandboxProcess, sandboxCall, sandboxBroker, sandboxTunnel } = await import('./spawn-client.mjs');
   const on = (v) => /^(true|1|yes|on)$/i.test(String(v ?? '').trim());
   // TERMINAL_EGRESS as the stack reads it (lib/common.sh egress_mode): host, off (false/0/no/off), else internet
   const egress = (v) => { const s = String(v ?? '').trim().toLowerCase(); return s === 'host' ? 'host' : /^(false|0|no|off)$/.test(s) ? 'off' : 'internet'; };
   const { server, mgr, closeGit } = createServer({ secret: process.env.CODE_PROXY_SECRET, query, spawn: sandboxProcess, call: sandboxCall, versions: readVersions(), openBroker: sandboxBroker,
+    // (a Git host sign-in reaches its provider through the sandbox's way out; Settings' application IDs, public values)
+    gitConnect: (host, port) => sandboxTunnel({ host, port }),
+    gitApps: { github: { clientId: process.env.GIT_GITHUB_CLIENT_ID || '', appSlug: process.env.GIT_GITHUB_APP_SLUG || '' }, gitlab: { clientId: process.env.GIT_GITLAB_CLIENT_ID || '' } },
     // (compose.code.yaml: the stack's .env values, read at the container's start — a change restarts the container)
     allowBypass: on(process.env.CODE_ALLOW_BYPASS), allowAuto: on(process.env.CODE_AUTO_MODE),
     sandbox: { egress: egress(process.env.TERMINAL_EGRESS) !== 'off', egressHost: egress(process.env.TERMINAL_EGRESS) === 'host',

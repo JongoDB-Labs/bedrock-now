@@ -4,9 +4,11 @@
 // are answered here: only for the host of the URL you confirmed, only while that operation runs, a token at most 3
 // times and one SSH login signed (askFor). Claude's own git gets nothing unless you let it use a host (off by
 // default; turned on only from the computer running bedrock-now): then git.broker answers for that host, each use
-// noted in Activity. Everything the sandbox says is checked here first (its answers are data).
+// noted in Activity. Everything the sandbox says is checked here first (its answers are data). A signed-in host's
+// token (oauth.mjs) is renewed here before an operation that uses it, and is then given like an access token.
 import crypto from 'node:crypto';
-import { GitHosts, HostError, githubTokenType } from './githosts.mjs';
+import { GitHosts, HostError, githubTokenType, httpsAuth } from './githosts.mjs';
+import { makeOAuth } from './oauth.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
 
@@ -111,11 +113,17 @@ const CLAUDE_PER_MINUTE = 30;
 const err = (status, m) => new HostError(status, m);
 const localOnly = (remote, what) => { if (remote) throw err(403, `${what} only from the computer running bedrock-now (not over remote access)`); };
 
-// makeGitRemote({call, openBroker, store, onEvent}) -> the API of Git hosts and remote operations (main.mjs routes):
-//   call(req, opts) — sandboxCall; openBroker({onAsk}) — sandboxBroker; onEvent(event) — a use, for the pages
-export function makeGitRemote({ call, openBroker = null, store = new GitHosts(), onEvent = () => {}, now = () => Date.now(), log = () => {} }) {
+// makeGitRemote({call, openBroker, store, onEvent, connect, apps}) -> the API of Git hosts and remote operations (main.mjs
+// routes): call(req, opts) — sandboxCall; openBroker({onAsk}) — sandboxBroker; onEvent(event) — a use, for the pages;
+// connect(host, port) — sandboxTunnel (a sign-in's requests to its provider, TLS here); apps — Settings' application IDs
+export function makeGitRemote({ call, openBroker = null, store = new GitHosts(), onEvent = () => {}, now = () => Date.now(), log = () => {}, connect = null, apps = {},
+  oauthDelay = null }) {
   const plans = new Map();
   const event = (e) => { try { const ev = store.event(e); onEvent(ev); return ev; } catch (x) { log(`git event: ${x.message}`); return null; } };
+  const noTunnel = async () => { throw new Error('no way out from here (the Code page\'s sandbox is not connected)'); };
+  const oauth = makeOAuth({ store, connect: connect || noTunnel, apps, now, log, delay: oauthDelay, onEvent: (e) => event(e) });
+  // fresh(h) -> the host with a token good for a while yet (a sign-in's renewed first; "Sign in again" when it cannot be)
+  const fresh = async (h) => (h?.auth === 'oauth' ? (await oauth.fresh(h.id)) || h : h);
 
   // the answers to one operation's credential questions: its host's credential, for its URL's host, a few times — a
   // token at most 3 times, one SSH login signed (ssh needs one), for the URL's user, and (a host-bound login, OpenSSH
@@ -126,8 +134,11 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     return async (q) => {
       if (!h || !q || typeof q !== 'object') return {};
       if (q.kind === 'cred') {
-        if (h.auth !== 'token' || p.scheme !== 'https' || q.protocol !== 'https' || !sameCredHost(q.host, p) || ++creds > 3) return {};
-        return { username: h.username, password: h.token };
+        if (!httpsAuth(h.auth) || p.scheme !== 'https' || q.protocol !== 'https' || !sameCredHost(q.host, p) || ++creds > 3) return {};
+        // (as the store has it now: a sign-in renewed meanwhile by another operation has a new token, the old one is void)
+        const cur = store.get(h.id);
+        const password = GitHosts.secret(cur && cur.host === h.host && (cur.port ?? null) === (h.port ?? null) ? cur : h);
+        return password ? { username: h.username, password } : {};
       }
       if (q.kind === 'agent') {
         const key = h.auth === 'ssh' && p.scheme === 'ssh' ? GitHosts.key(h) : null;
@@ -143,40 +154,53 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
   // and known host keys (ssh) — never the token or the private key (those only through askFor)
   function authFor(h, p, { learn = false } = {}) {
     if (!h) return { kind: 'none' };
-    if (h.auth === 'token') return { kind: 'token', ...(h.ca ? { ca: h.ca } : {}) };
+    if (httpsAuth(h.auth)) return { kind: 'token', ...(h.ca ? { ca: h.ca } : {}) };
     return { kind: 'ssh', publicKey: h.ssh.publicKey, knownHosts: GitHosts.knownHosts(h, p.port), ...(learn ? { learn: true } : {}) };
   }
-  // (an imported login says so: "HTTPS token 'GitHub' (gh's login, octocat)")
-  const via = (h) => (h ? `${h.auth === 'token' ? 'HTTPS token' : 'SSH key'} '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}`
-    : 'no credential (a public repository)');
-  const hostRef = (h) => (h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account ?? null } : {}) } : null);
+  // (a sign-in names its account: "sign-in 'GitHub' as octocat"; an imported login says so: "HTTPS token 'GitHub' (gh's
+  // login, octocat)")
+  const via = (h) => (!h ? 'no credential (a public repository)' : h.auth === 'oauth' ? `sign-in '${h.label}'${h.oauth?.account ? ` as ${h.oauth.account}` : ''}`
+    : `${h.auth === 'token' ? 'HTTPS token' : 'SSH key'} '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}`);
+  const credText = (a) => (a === 'token' ? 'an access token' : a === 'oauth' ? 'a sign-in' : 'a new SSH key');
+  const hostRef = (h) => (!h ? null : { id: h.id, label: h.label, kind: h.kind, auth: h.auth,
+    ...(h.auth === 'oauth' ? { account: h.oauth?.account ?? null } : h.imported ? { source: h.imported.source, account: h.imported.account ?? null } : {}) });
+  // a signed-in host whose sign-in ended: refused before anything is planned
+  const needsSignIn = (h) => { if (h?.auth === 'oauth' && h.oauth?.needsSignIn) throw err(409, `${h.label}: its sign-in ended${h.oauth.why ? ` (${h.oauth.why})` : ''} — Sign in again (Git hosts)`); };
   // a fetch or pull asks the first time for a remote URL with that credential (a public fetch first, then a host's
   // token for the same URL: asked again)
   const fetchKey = (h, url) => `${h?.id ?? 'none'} ${url}`;
 
   // --- Git hosts ---
-  const hostsView = (remote) => ({ hosts: store.list(), events: store.events(50), local: !remote });
+  const hostsView = (remote) => ({ hosts: store.list(), events: store.events(50), local: !remote, signIn: oauth.config() });
   function addHost(b, remote) {
     localOnly(remote, 'A git host is added');
     const h = store.add(b);
-    event({ action: 'host', host: h.label, target: h.host, text: `connected with ${h.auth === 'token' ? 'an access token' : 'a new SSH key'}` });
+    event({ action: 'host', host: h.label, target: h.host, text: `connected with ${credText(h.auth)}` });
     void syncBroker();
     return h;
   }
+  // a sign-in (the device flow): started only from the computer running bedrock-now; its state read there too;
+  // cancelled from anywhere
+  async function startSignIn(b, remote) { localOnly(remote, 'A sign-in is started'); return oauth.start(b); }
+  function signInStatus(id, remote) { localOnly(remote, 'A sign-in is followed'); const v = oauth.status(id); if (v.state === 'done') void syncBroker(); return v; }
+  const cancelSignIn = (id) => oauth.cancel(id);
   function setToken(id, b, remote) { localOnly(remote, 'A token is replaced'); const h = store.setToken(id, b?.token); event({ action: 'host', host: h.label, target: h.host, text: 'its token replaced' }); return h; }
   function newKey(id, remote) { localOnly(remote, 'A new SSH key is made'); const h = store.newKey(id); event({ action: 'host', host: h.label, target: h.host, text: 'a new SSH key (add its public key where the old one was)' }); return h; }
   function setCa(id, b, remote) { localOnly(remote, 'A CA certificate is set'); return store.setCa(id, b?.ca ?? null); }
   function addKnown(id, b, remote) { localOnly(remote, 'A host key is trusted'); return store.addKnown(id, b?.lines); }
   function forgetKnown(id) { return store.forgetKnown(id); }
-  // removeHost(id) -> {host, revokeAt}: gone from here; where to revoke it on the host yourself (gh's login: GitHub's
-  // authorized OAuth apps, which signs gh out too)
-  function removeHost(id) {
+  // removeHost(id) -> {host, revoked, revokeAt}: gone from here; a GitLab sign-in revoked there too (when GitLab takes
+  // it); where to revoke the rest by hand (GitHub's token needs the app's secret to revoke: you do it on github.com)
+  async function removeHost(id) {
     const before = store.get(id);
+    if (!before) throw err(404, 'no such git host');
+    const revoked = before.auth === 'oauth' ? await oauth.revoke(before) : null;
     const h = store.remove(id);
     const at = revokeAt(before);
-    event({ action: 'host', host: h.label, target: h.host, text: `removed (its token or key is gone from here; revoke it on the host too${at ? `: ${at}` : ''})` });
+    event({ action: 'host', host: h.label, target: h.host, text: revoked ? 'removed, and its sign-in revoked on the host'
+      : `removed (its ${before.auth === 'ssh' ? 'key' : before.auth === 'oauth' ? 'sign-in' : 'token'} is gone from here; revoke it on the host too${at ? `: ${at}` : ''})` });
     void syncBroker();
-    return { host: h, revokeAt: at };
+    return { host: h, revoked, revokeAt: revoked ? null : at };
   }
   function setClaude(id, b, remote) {
     const on = b?.on === true;
@@ -189,11 +213,12 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
   // Test connection: git ls-remote of a repository on that host with its credential; an ssh host key not known yet is
   // learned and kept — only from the computer running bedrock-now (you see its fingerprint)
   async function testHost(id, b, remote) {
-    const h = store.get(id);
+    let h = store.get(id);
     if (!h) throw err(404, 'no such git host');
     let p;
     try { p = parseRemoteUrl(b?.url); } catch (e) { throw err(400, e.message); }
-    if (store.match(p, [h]) !== h) throw err(400, `that URL is not on ${h.host}${h.port ? `:${h.port}` : ''} over ${h.auth === 'token' ? 'https' : 'ssh'} (this host's ${h.auth === 'token' ? 'token is for https://' : 'key is for ssh'} URLs)`);
+    if (store.match(p, [h]) !== h) throw err(400, `that URL is not on ${h.host}${h.port ? `:${h.port}` : ''} over ${httpsAuth(h.auth) ? 'https' : 'ssh'} (this host's ${httpsAuth(h.auth) ? 'token is for https://' : 'key is for ssh'} URLs)`);
+    try { h = await fresh(h); } catch (e) { event({ action: 'test', host: h.label, target: p.display, ok: false, text: short(e.message, 200) }); throw e; }
     // (a key is learned only from the computer running bedrock-now, and never for a host whose keys are built in)
     const learn = h.auth === 'ssh' && !remote && !((p.port ?? 22) === 22 && (KNOWN_HOSTS[h.host] || []).length);
     let result;
@@ -270,8 +295,9 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     try { p = parseRemoteUrl(url); } catch (e) { throw err(400, `${name}'s URL is not used from here: ${e.message}`); }
     const h = store.match(p);
     if (!h && (push || p.scheme === 'ssh')) {
-      throw err(400, `${p.host}${p.port ? `:${p.port}` : ''} is not a connected git host: connect it (Git hosts) with ${p.scheme === 'https' ? 'an access token' : 'an SSH key'} to ${push ? 'push' : action} over ${p.scheme}`);
+      throw err(400, `${p.host}${p.port ? `:${p.port}` : ''} is not a connected git host: connect it (Git hosts) with ${p.scheme === 'https' ? 'a sign-in or an access token' : 'an SSH key'} to ${push ? 'push' : action} over ${p.scheme}`);
     }
+    needsSignIn(h);
     let dst = null;
     if (action === 'publish') dst = cur;
     else if (action === 'push') {
@@ -300,6 +326,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     if (depth !== null && (!Number.isInteger(depth) || depth < 1 || depth > 1000)) throw err(400, 'depth: 1 to 1000 commits (or none: the whole history)');
     const h = store.match(p);
     if (!h && p.scheme === 'ssh') throw err(400, `${p.host} is not a connected git host: connect it (Git hosts) with an SSH key, or clone its https:// URL`);
+    needsSignIn(h);
     const summary = `Clone ${p.display} into ${target ? `${target}/` : 'the workspace folder'}${depth ? ` (shallow: the last ${depth} commit${depth === 1 ? '' : 's'})` : ''} via ${via(h)}`;
     const planId = keep({ action: 'clone', url: b.url, p, target, depth, hostId: h?.id ?? null });
     return { planId, action: 'clone', url: b.url, display: p.display, scheme: p.scheme, target, depth, host: hostRef(h),
@@ -310,10 +337,12 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     const pl = plans.get(id);
     plans.delete(id);
     if (!pl || pl.expires < now()) throw err(409, 'that confirmation is out of date: look again');
-    const h = pl.hostId ? store.get(pl.hostId) : null;
+    let h = pl.hostId ? store.get(pl.hostId) : null;
     if (pl.hostId && !h) throw err(409, 'that git host was removed meanwhile');
-    const auth = authFor(h, pl.p);
     const target = pl.p.display;
+    // (a sign-in's token renewed first when it expires within 5 minutes: written, then used — or "Sign in again")
+    try { h = await fresh(h); } catch (e) { event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: short(e.message, 300) }); throw e; }
+    const auth = authFor(h, pl.p);
     let result;
     try {
       ({ result } = pl.action === 'clone'
@@ -368,11 +397,17 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       const m = q.host.toLowerCase().match(/^([a-z0-9.-]{1,253})(?::([0-9]{1,5}))?$/);
       if (!m) return {};
       const port = m[2] ? Number(m[2]) : 443;
-      const h = hosts.find((x) => x.auth === 'token' && x.host === m[1] && (x.port ?? 443) === port);
+      let h = hosts.find((x) => httpsAuth(x.auth) && x.host === m[1] && (x.port ?? 443) === port);
       if (!h) return {};
       if (!rate()) { refusedOnce(h, q.host); return {}; }
+      try { h = await fresh(h); } catch (e) {
+        event({ who: 'claude', action: 'credential', host: h.label, target: q.host, ok: false, text: short(e.message, 200) });
+        return {};
+      }
+      const password = GitHosts.secret(h);
+      if (!password) return {};
       event({ who: 'claude', action: 'credential', host: h.label, target: `${q.host}/${short(q.path || '', 200)}`, text: 'git in the sandbox got the token' });
-      return { username: h.username, password: h.token };
+      return { username: h.username, password };
     }
     if (q.kind === 'agent') {
       const keyed = hosts.filter((x) => x.auth === 'ssh').map((x) => ({ h: x, k: GitHosts.key(x) })).filter((x) => x.k);
@@ -416,21 +451,23 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
       retry.unref?.();
     } finally { brokerOpening = false; }
   }
-  const close = () => { closing = true; clearTimeout(retry); if (brokerConn) { const c = brokerConn; brokerConn = null; c.close(); } };
+  const close = () => { closing = true; clearTimeout(retry); oauth.close(); if (brokerConn) { const c = brokerConn; brokerConn = null; c.close(); } };
 
   return { hostsView, addHost, setToken, newKey, setCa, addKnown, forgetKnown, removeHost, setClaude, testHost, repos, state, branch, remoteSet, plan, clonePlan, run, syncBroker, close,
-    get brokerOpen() { return Boolean(brokerConn); } };
+    startSignIn, signInStatus, cancelSignIn, oauth, get brokerOpen() { return Boolean(brokerConn); } };
 }
 
-// revokeAt(h) -> the page where you revoke a host's token on the host yourself — on GitHub by the token's kind: gh's
-// (or another OAuth app's) at Authorized OAuth Apps, a classic token at Tokens (classic), a fine-grained one at
-// Fine-grained tokens; on GitLab its access tokens; null for an SSH key or another server
+// revokeAt(h) -> the page where you revoke a host's credential on the host yourself: a GitHub sign-in at Authorized
+// GitHub Apps (or OAuth apps), a GitLab sign-in at its applications; a token — on GitHub by its kind: gh's (or another
+// OAuth app's) at Authorized OAuth Apps, a classic one at Tokens (classic), a fine-grained one at Fine-grained tokens;
+// on GitLab its access tokens; null for an SSH key or another server
 export function revokeAt(h) {
-  if (!h || h.kind === 'other' || h.auth !== 'token') return null;
+  if (!h || h.kind === 'other' || h.auth === 'ssh') return null;
   const web = `https://${h.host}${h.port && h.port !== 443 ? `:${h.port}` : ''}`;
   if (h.kind === 'github') {
+    if (h.auth === 'oauth') return h.oauth?.app === 'github-app' ? `${web}/settings/apps/authorizations` : `${web}/settings/applications`;
     const type = h.imported?.tokenType ?? githubTokenType(h.token);
     return `${web}/settings/${type === 'oauth' ? 'applications' : type === 'classic' ? 'tokens' : 'personal-access-tokens'}`;
   }
-  return `${web}/-/user_settings/personal_access_tokens`;
+  return h.auth === 'oauth' ? `${web}/-/user_settings/applications` : `${web}/-/user_settings/personal_access_tokens`;
 }

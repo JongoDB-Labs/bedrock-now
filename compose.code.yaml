@@ -8,7 +8,8 @@
 # come from the portal (/.bn/spend, /.bn/models on the code host). Its only network, code-link (internal), it shares
 # with the main Caddy alone, which asks the portal first (session, a fresh unlock, the Origin) and then adds the secret
 # header (CODE_PROXY_SECRET) the code container requires. It reaches nothing else: not the internet, not LiteLLM, not
-# the portal, not the sandbox's network. Everything that comes back from the sandbox is treated as untrusted data.
+# the portal, not the sandbox's network — a Git host sign-in's requests to GitHub or GitLab go through a byte tunnel of
+# bn-coded's (the sandbox's own way out), with TLS from end to end in this container. Everything that comes back from the sandbox is treated as untrusted data.
 # Its previews of dev servers in the sandbox (caddy/preview-on.caddy; over remote access remote_preview) do not pass
 # through the code container: the main Caddy reaches bn-preview in the sandbox through the terminal's gateway (:7682).
 services:
@@ -40,6 +41,12 @@ services:
       # label only: this container mounts no folder)
       TERMINAL_EGRESS: ${TERMINAL_EGRESS:-}
       CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}
+      # Git hosts' Sign in with GitHub / GitLab (code/server/oauth.mjs): the applications' client IDs and the GitHub App's
+      # name in its URL — public values, no secret (Settings › Claude Code › More; blank: bedrock-now's own apps). The
+      # device flow's and the renewals' requests go through the sandbox's way out (bn-coded's net.tunnel), TLS here.
+      GIT_GITHUB_CLIENT_ID: ${GIT_GITHUB_CLIENT_ID:-}
+      GIT_GITHUB_APP_SLUG: ${GIT_GITHUB_APP_SLUG:-}
+      GIT_GITLAB_CLIENT_ID: ${GIT_GITLAB_CLIENT_ID:-}
     volumes:
       - code-socket:/run/bn-code:ro   # (the terminal's volume) connecting needs no write access; it never listens there
       # Git hosts (the Code page's Git panel; code/server/githosts.mjs): the tokens and SSH keys of the git servers you

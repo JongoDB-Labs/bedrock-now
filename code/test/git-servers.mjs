@@ -8,17 +8,19 @@ import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 
 const which = (n) => ['/usr/bin', '/usr/local/bin', '/bin', '/usr/sbin', '/usr/local/sbin', '/opt/homebrew/bin'].map((d) => path.join(d, n)).find((f) => fs.existsSync(f));
-export const OPENSSL = which('openssl'), SSHD = which('sshd'), SSH_KEYGEN = which('ssh-keygen'), SSH = which('ssh');
+// (BN_TEST_OPENSSL: another openssl than the system's, e.g. on macOS, whose LibreSSL makes certificates Node refuses)
+export const OPENSSL = process.env.BN_TEST_OPENSSL || which('openssl'), SSHD = which('sshd'), SSH_KEYGEN = which('ssh-keygen'), SSH = which('ssh');
 
 // makeCA(dir, names) -> {ca: PEM, key, cert}: a CA and a server certificate it signed for `names` (DNS) and 127.0.0.1
 export function makeCA(dir, names = ['localhost', 'gitsrv.test']) {
   const f = (n) => path.join(dir, n);
   const run = (...a) => execFileSync(OPENSSL, a, { cwd: dir, stdio: ['ignore', 'ignore', 'pipe'] });
-  run('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', f('ca.key'), '-out', f('ca.pem'), '-days', '2', '-subj', '/CN=bn test CA',
+  // (-sha256: LibreSSL, macOS's openssl, signs with SHA-1 otherwise, which Node refuses)
+  run('req', '-x509', '-sha256', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', f('ca.key'), '-out', f('ca.pem'), '-days', '2', '-subj', '/CN=bn test CA',
     '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign');
   run('req', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', f('srv.key'), '-out', f('srv.csr'), '-subj', '/CN=localhost');
   fs.writeFileSync(f('ext.cnf'), `subjectAltName=${names.map((n) => `DNS:${n}`).join(',')},IP:127.0.0.1\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n`);
-  run('x509', '-req', '-in', f('srv.csr'), '-CA', f('ca.pem'), '-CAkey', f('ca.key'), '-CAcreateserial', '-out', f('srv.pem'), '-days', '2', '-extfile', f('ext.cnf'));
+  run('x509', '-req', '-sha256', '-in', f('srv.csr'), '-CA', f('ca.pem'), '-CAkey', f('ca.key'), '-CAcreateserial', '-out', f('srv.pem'), '-days', '2', '-extfile', f('ext.cnf'));
   return { ca: fs.readFileSync(f('ca.pem'), 'utf8'), key: fs.readFileSync(f('srv.key')), cert: fs.readFileSync(f('srv.pem')) };
 }
 

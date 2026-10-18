@@ -1,9 +1,10 @@
 // Git hosts (the Code page's Git panel › Git hosts; Settings › Claude Code links here): the git servers you connect
-// for clone, fetch, pull and push — GitHub, GitLab or any https/ssh host — each with an HTTPS access token or an SSH key
-// made here (an access token may come from a gh / glab login on the computer running bedrock-now: ./stack git-host
-// import, import-host.mjs — its source, account and scopes kept with it, for the page). They are kept in this
-// container's own volume (code-state, at /var/lib/bn-code: compose.code.yaml), in one file of mode 600 in a folder of
-// mode 700 — unencrypted: whoever can read that volume (Docker, the computer's disk,
+// for clone, fetch, pull and push — GitHub, GitLab or any https/ssh host — each with an HTTPS access token (one may come
+// from a gh / glab login on the computer running bedrock-now: ./stack git-host import, import-host.mjs — its source,
+// account and scopes kept with it, for the page), an SSH key made here, or a sign-in (auth "oauth": GitHub's or
+// GitLab's device flow, oauth.mjs), whose token is handed to git like an access token and renewed before it expires.
+// They are kept in this container's own volume (code-state, at /var/lib/bn-code: compose.code.yaml), in one file of
+// mode 600 in a folder of mode 700 — unencrypted: whoever can read that volume (Docker, the computer's disk,
 // root) can read the credentials — never in .env, the portal, the update helper's requests, backups or diagnostic
 // reports, and never in the sandbox — which gets a token for one operation of yours (bn-coded's git.net:
 // gitremote.mjs) or a signature of a login (sshagent.mjs), never the file. A token or key is never shown again: the
@@ -26,14 +27,21 @@ export const TOKEN = /^[\x21-\x7e]{8,1024}$/;
 const KNOWN = /^(\[[a-z0-9.-]{1,253}\]:[0-9]{1,5}|[a-z0-9.-]{1,253}) (ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]{16,2000}={0,2}$/;
 const PEM = /^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?(?:-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?){0,9}$/;
 export const knownOk = (l) => typeof l === 'string' && KNOWN.test(l);
-// an imported login's account and scopes (./stack git-host import gh | glab)
+// a sign-in's parts: the application (client) ID it came from, the account, its scopes, the GitHub App's name in its URL
+export const CLIENT_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
 const SCOPE = /^[A-Za-z0-9:_./-]{1,80}$/;
+export const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/;
+export const PROVIDERS = ['github', 'gitlab'];
+// where a sign-in came from (Sign in with GitHub / GitLab); an imported gh / glab login is an access token instead
+export const SOURCES = ['signed-in'];
 export const IMPORT_SOURCES = ['gh', 'glab'];
 // githubTokenType(token) -> what a GitHub token is, by its prefix (GitHub's documented ones): gh's or another OAuth
 // app's token (gho_), a classic personal access token (ghp_), a fine-grained one (github_pat_); null: none of these
 export const githubTokenType = (t) => (typeof t !== 'string' ? null : t.startsWith('gho_') ? 'oauth' : t.startsWith('ghp_') ? 'classic'
   : t.startsWith('github_pat_') ? 'fine-grained' : null);
+// the credentials git sends over https: an access token, or a sign-in's token (one of them per host and port)
+export const httpsAuth = (a) => a === 'token' || a === 'oauth';
 // the defaults of the well-known hosts: the name, and the user name git sends with a token (any non-empty one works)
 export const DEFAULTS = {
   github: { host: 'github.com', label: 'GitHub', tokenUser: 'x-access-token', sshUser: 'git' },
@@ -136,10 +144,25 @@ export class GitHosts {
   // public(h) -> what the page may see of a host: never the token or the private key
   static public(h) {
     return { id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username,
-      hasToken: h.auth === 'token' && typeof h.token === 'string', tokenSetAt: h.tokenSetAt ?? null, imported: h.auth === 'token' && h.imported ? { ...h.imported } : null,
+      hasToken: Boolean(GitHosts.secret(h)), tokenSetAt: h.auth === 'oauth' ? h.oauth?.signedInAt ?? null : h.tokenSetAt ?? null,
+      imported: h.auth === 'token' && h.imported ? { ...h.imported } : null, oauth: h.auth === 'oauth' ? GitHosts.publicOAuth(h.oauth) : null,
       publicKey: h.ssh?.publicKey ?? null, fingerprint: h.ssh?.fingerprint ?? null, keySetAt: h.ssh?.createdAt ?? null,
       knownHosts: (h.knownHosts || []).map(knownHostFingerprint).filter(Boolean), builtinHostKeys: (KNOWN_HOSTS[h.host] || []).length > 0,
       ca: typeof h.ca === 'string', claude: h.claude === true, claudeSince: h.claudeSince ?? null, createdAt: h.createdAt };
+  }
+  // publicOAuth(o) -> what the page may see of a sign-in: never its tokens
+  static publicOAuth(o) {
+    if (!o) return null;
+    return { provider: o.provider, source: o.source, clientId: o.clientId ?? null, account: o.account ?? null, scopes: o.scopes || [], app: o.app ?? null,
+      appSlug: o.appSlug ?? null, installations: o.installations || [], expiresAt: o.expiresAt ?? null, refreshExpiresAt: o.refreshExpiresAt ?? null,
+      refreshable: typeof o.refreshToken === 'string', needsSignIn: o.needsSignIn === true, why: o.why ?? null, signedInAt: o.signedInAt ?? null,
+      refreshedAt: o.refreshedAt ?? null };
+  }
+  // secret(h) -> what git sends as the password: the access token, or the sign-in's current token (null for ssh)
+  static secret(h) {
+    if (h?.auth === 'token') return typeof h.token === 'string' ? h.token : null;
+    if (h?.auth === 'oauth') return typeof h.oauth?.accessToken === 'string' ? h.oauth.accessToken : null;
+    return null;
   }
   list() { return this.read().hosts.map(GitHosts.public); }
   get(id) { return this.read().hosts.find((h) => h.id === id) || null; }
@@ -175,7 +198,8 @@ export class GitHosts {
     }
     return this.update((v) => {
       if (v.hosts.length >= HOSTS_MAX) throw new HostError(400, `at most ${HOSTS_MAX} git hosts`);
-      if (v.hosts.some((x) => x.host === host && (x.port ?? null) === port && x.auth === auth)) throw new HostError(409, `${host} is connected with ${auth === 'token' ? 'a token' : 'an SSH key'} already: replace that one's ${auth === 'token' ? 'token' : 'key'} instead`);
+      const same = v.hosts.find((x) => x.host === host && (x.port ?? null) === port && (auth === 'ssh' ? x.auth === 'ssh' : httpsAuth(x.auth)));
+      if (same) throw conflict(same);
       v.hosts.push(h);
       return GitHosts.public(h);
     });
@@ -194,16 +218,66 @@ export class GitHosts {
     const h = this.add({ kind: source === 'gh' ? 'github' : 'gitlab', host: b.host, label: b.label, auth: 'token', token: b.token }, { imported });
     return h;
   }
+  // addOAuth({kind, host, port, label, ca, oauth}) -> the new host (public): a sign-in (oauth.mjs) — one https
+  // credential per host and port, like a token
+  addOAuth(b) {
+    const kind = PROVIDERS.includes(b?.kind) ? b.kind : null;
+    if (!kind) throw new HostError(400, 'kind: github or gitlab');
+    const d = DEFAULTS[kind];
+    const host = String(b.host || d.host).trim().toLowerCase();
+    if (!HOST.test(host)) throw new HostError(400, 'a host name, please (letters, digits, dots and dashes: git.example.com)');
+    const port = b.port === undefined || b.port === null || b.port === '' ? null : Number(b.port);
+    if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new HostError(400, 'a port from 1 to 65535 (or none: the default)');
+    const label = String(b.label || (host === d.host ? d.label : host)).trim();
+    if (!LABEL.test(label)) throw new HostError(400, 'a name of one line, up to 60 characters');
+    const h = { id: `h_${crypto.randomBytes(6).toString('hex')}`, kind, label, host, port, auth: 'oauth', username: d.tokenUser, knownHosts: [], ca: null, claude: false,
+      oauth: checkOAuth({ ...b.oauth, provider: kind }, this.now()), createdAt: this.now(), updatedAt: this.now() };
+    if (b.ca !== undefined && b.ca !== null && b.ca !== '') h.ca = checkCa(b.ca);
+    return this.update((v) => {
+      if (v.hosts.length >= HOSTS_MAX) throw new HostError(400, `at most ${HOSTS_MAX} git hosts`);
+      const same = v.hosts.find((x) => x.host === host && (x.port ?? null) === port && httpsAuth(x.auth));
+      if (same) throw conflict(same);
+      v.hosts.push(h);
+      return GitHosts.public(h);
+    });
+  }
+  // a sign-in again: the host's new tokens, account and scopes (its name, settings and Claude's use stay)
+  replaceOAuth(id, oauth) {
+    return this.change(id, (h) => {
+      if (h.auth !== 'oauth') throw new HostError(400, 'that host is not signed in');
+      h.oauth = checkOAuth({ ...oauth, provider: h.kind }, this.now());
+    });
+  }
+  // setOAuthTokens(id, {accessToken, refreshToken, expiresAt, refreshExpiresAt}) -> the host (public): a refresh's new
+  // pair, written (a temporary file renamed over the old one) before anything uses it
+  setOAuthTokens(id, t) {
+    return this.change(id, (h) => {
+      if (h.auth !== 'oauth') throw new HostError(400, 'that host is not signed in');
+      const o = checkOAuth({ ...h.oauth, ...t, needsSignIn: false, why: null, refreshedAt: this.now() }, this.now());
+      h.oauth = o;
+    });
+  }
+  // the sign-in ended (its refresh token refused, or expired): "Sign in again" — the tokens are dropped
+  markSignIn(id, why) {
+    return this.change(id, (h) => {
+      if (h.auth !== 'oauth') return;
+      h.oauth = { ...h.oauth, accessToken: null, refreshToken: null, needsSignIn: true, why: String(why || '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 200) };
+    });
+  }
   // a host's token replaced (never shown: replace-only)
   setToken(id, token) {
     if (typeof token !== 'string' || !TOKEN.test(token)) throw new HostError(400, 'the access token, please (printable characters, no spaces)');
     // (an imported login's token replaced: an access token of yours from then on)
-    return this.change(id, (h) => { if (h.auth !== 'token') throw new HostError(400, 'that host uses an SSH key'); h.token = token; h.tokenSetAt = this.now(); delete h.imported; });
+    return this.change(id, (h) => {
+      if (h.auth === 'oauth') throw new HostError(400, 'that host is signed in: Sign in again replaces its token');
+      if (h.auth !== 'token') throw new HostError(400, 'that host uses an SSH key');
+      h.token = token; h.tokenSetAt = this.now(); delete h.imported;
+    });
   }
   // a new SSH key for a host (the old one stops working where you added it — remove it there)
   newKey(id) {
     return this.change(id, (h) => {
-      if (h.auth !== 'ssh') throw new HostError(400, 'that host uses a token');
+      if (h.auth !== 'ssh') throw new HostError(400, h.auth === 'oauth' ? 'that host is signed in (https)' : 'that host uses a token');
       const k = newKey(`bedrock-now ${h.label}`);
       h.ssh = { privatePem: k.privatePem, publicKey: k.publicKey, fingerprint: k.fingerprint, createdAt: this.now() };
     });
@@ -212,7 +286,7 @@ export class GitHosts {
     return this.change(id, (h) => { h.claude = on === true; h.claudeSince = on === true ? this.now() : null; });
   }
   setCa(id, ca) {
-    return this.change(id, (h) => { if (h.auth !== 'token') throw new HostError(400, 'a CA certificate is for https'); h.ca = ca === null || ca === '' ? null : checkCa(ca); });
+    return this.change(id, (h) => { if (!httpsAuth(h.auth)) throw new HostError(400, 'a CA certificate is for https'); h.ca = ca === null || ca === '' ? null : checkCa(ca); });
   }
   // host keys added (pasted, or learned by a test); at most KNOWN_MAX, for this host's name and port only
   addKnown(id, lines) {
@@ -241,11 +315,11 @@ export class GitHosts {
   }
 
   // match(parsed) -> the host connected for a parsed remote URL (gitremote.mjs parseRemoteUrl): its name, its port (the
-  // scheme's default when it names none) and the credential the scheme takes (https: a token; ssh: a key)
+  // scheme's default when it names none) and the credential the scheme takes (https: a token or a sign-in; ssh: a key)
   match(p, hosts = this.read().hosts) {
-    const auth = p.scheme === 'https' ? 'token' : 'ssh';
+    const fits = (a) => (p.scheme === 'https' ? httpsAuth(a) : a === 'ssh');
     const def = p.scheme === 'https' ? 443 : 22;
-    return hosts.find((h) => h.host === p.host && h.auth === auth && (h.port ?? def) === (p.port ?? def)) || null;
+    return hosts.find((h) => h.host === p.host && fits(h.auth) && (h.port ?? def) === (p.port ?? def)) || null;
   }
   // knownHosts(h, port) -> the known_hosts lines an ssh operation with this host gets: the built-in ones (port 22) and
   // the ones you trusted
@@ -274,7 +348,39 @@ export class GitHosts {
   events(n = 50) { return this.read().events.slice(-n).reverse(); }
 }
 
-function checkCa(ca) {
+const conflict = (x) => new HostError(409, x.auth === 'ssh' ? `${x.host} is connected with an SSH key already: make a new key for that one instead`
+  : `${x.host}${x.port ? `:${x.port}` : ''} is connected with ${x.auth === 'oauth' ? 'a sign-in' : 'an access token'} already ('${x.label}'): ${x.auth === 'oauth' ? 'Sign in again there, or remove it first' : 'replace its token, or remove it first'}`);
+
+// checkOAuth(o, now) -> a sign-in as the store keeps it, every part checked (a token as git sends it; times in ms)
+function checkOAuth(o, now) {
+  const tok = (v, what) => { if (typeof v !== 'string' || !TOKEN.test(v)) throw new HostError(400, `${what}: printable characters, no spaces`); return v; };
+  const provider = PROVIDERS.includes(o?.provider) ? o.provider : null;
+  if (!provider) throw new HostError(400, 'provider: github or gitlab');
+  const source = SOURCES.includes(o.source) ? o.source : null;
+  if (!source) throw new HostError(400, 'source: signed-in');
+  const needsSignIn = o.needsSignIn === true;
+  const out = { provider, source, clientId: null, accessToken: needsSignIn ? null : tok(o.accessToken, 'the access token'),
+    refreshToken: !needsSignIn && o.refreshToken !== undefined && o.refreshToken !== null ? tok(o.refreshToken, 'the refresh token') : null,
+    expiresAt: msTime(o.expiresAt), refreshExpiresAt: msTime(o.refreshExpiresAt), account: null, scopes: [], app: null, appSlug: null, installations: [],
+    needsSignIn, why: needsSignIn ? String(o.why || '').slice(0, 200) : null, signedInAt: msTime(o.signedInAt) ?? now, refreshedAt: msTime(o.refreshedAt) };
+  if (o.clientId !== undefined && o.clientId !== null) {
+    if (typeof o.clientId !== 'string' || !CLIENT_ID.test(o.clientId)) throw new HostError(400, 'an application (client) ID of letters, digits, ., _ and -');
+    out.clientId = o.clientId;
+  }
+  if (!out.clientId) throw new HostError(400, 'a sign-in needs the application (client) ID it came from');
+  if (o.account !== undefined && o.account !== null && o.account !== '') {
+    if (typeof o.account !== 'string' || !ACCOUNT.test(o.account)) throw new HostError(400, 'not an account name');
+    out.account = o.account;
+  }
+  out.scopes = (Array.isArray(o.scopes) ? o.scopes : []).filter((x) => typeof x === 'string' && SCOPE.test(x)).slice(0, 32);
+  out.app = o.app === 'github-app' || o.app === 'oauth-app' ? o.app : null;
+  out.appSlug = typeof o.appSlug === 'string' && SLUG.test(o.appSlug) ? o.appSlug : null;
+  out.installations = (Array.isArray(o.installations) ? o.installations : []).slice(0, 10)
+    .filter((x) => x && typeof x.account === 'string' && ACCOUNT.test(x.account)).map((x) => ({ account: x.account, selection: x.selection === 'all' ? 'all' : 'selected' }));
+  return out;
+}
+
+export function checkCa(ca) {
   const t = String(ca).replace(/\r\n/g, '\n').trim() + '\n';
   if (!PEM.test(t)) throw new HostError(400, 'a CA certificate in PEM (-----BEGIN CERTIFICATE----- …), up to 10');
   return t;

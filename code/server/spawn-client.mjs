@@ -4,6 +4,8 @@
 //   sandboxCall()     one non-process op (fs.*, sessions.*) or a short `claude plugin …`, and its answer — and, for a
 //                     remote git operation, its credential questions (ASK) answered as it runs (onAsk)
 //   sandboxBroker()   git.broker: the connection kept open while Claude may use a git host (gitremote.mjs)
+//   sandboxTunnel()   net.tunnel: a TCP connection through the sandbox's way out, for a Git host sign-in's requests to
+//                     its provider (oauth.mjs) — TLS runs on this side, over it: the sandbox passes bytes it cannot read
 // Everything that comes back is untrusted: frame and answer sizes are capped, a stdout line longer than MAX_LINE
 // ends the connection (the SDK would otherwise buffer it whole), every op has a timeout, and malformed control frames
 // read as errors. What goes in is bounded too: a sandbox that stops reading its stdin while the SDK goes on writing
@@ -11,7 +13,7 @@
 // This side only ever connects to the socket; it never listens there.
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
-import { PassThrough, Writable } from 'node:stream';
+import { Duplex, PassThrough, Writable } from 'node:stream';
 import { T, FrameParser, frame, dataFrames, json } from './frames.mjs';
 
 export const SOCK = process.env.BN_CODE_SOCK || '/run/bn-code/coded.sock';
@@ -20,6 +22,8 @@ export const MAX_RESULT = 8 << 20;     // a RESULT / ERROR / a cli op's output
 // bytes written to the sandbox's stdin that it has not read yet: more than the largest prompt leaves for a moment
 // (4 images of 5 MiB, base64, and the text: ~28 MiB in one line)
 export const MAX_STDIN_BACKLOG = 32 << 20;
+// a tunnel's bytes, each way (a sign-in's few requests are a few KiB)
+export const MAX_TUNNEL = 2 << 20;
 const SDK_ENV = ['CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_AGENT_SDK_VERSION', 'CLAUDE_CODE_SDK_READS_SESSION_STATE',
   'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING', 'CLAUDE_CODE_QUESTION_PREVIEW_FORMAT'];
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL'];
@@ -196,5 +200,53 @@ export function sandboxBroker({ onAsk, sock = SOCK, timeoutMs = 15000 } = {}) {
       }
     });
     conn.on('close', () => { clearTimeout(timer); closedResolve(); if (!ready) reject(new SandboxError('the sandbox closed the connection')); });
+  });
+}
+
+/**
+ * net.tunnel: a Duplex to host:port through the sandbox's way out (bn-coded connects: through the egress proxy while
+ * the sandbox has one, else directly). Resolves once connected; rejects with the sandbox's reason (a refusal of the
+ * proxy, no route) or a timeout. At most MAX_TUNNEL bytes come back. Only bytes pass: the caller runs TLS over it.
+ */
+export function sandboxTunnel({ host, port, sock = SOCK, timeoutMs = 20000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const conn = net.connect(sock);
+    const parser = new FrameParser();
+    let ready = false, got = 0, sent = 0, ended = false;
+    const duplex = new Duplex({
+      write(chunk, _enc, cb) {
+        if (conn.destroyed) return cb(new SandboxError('the sandbox closed the tunnel'));
+        sent += chunk.length;
+        if (sent > MAX_TUNNEL) return cb(new SandboxError('too much through the tunnel', 'too-large'));
+        for (const f of dataFrames(T.STDIN, chunk)) conn.write(f);
+        return cb();
+      },
+      final(cb) { if (!conn.destroyed) conn.write(frame(T.STDIN_END, Buffer.alloc(0))); cb(); },
+      read() { conn.resume(); },
+      destroy(e, cb) { conn.destroy(); cb(e); },
+    });
+    const eof = () => { if (!ended) { ended = true; duplex.push(null); } };
+    const timer = setTimeout(() => { if (!ready) { conn.destroy(); reject(new SandboxError(`the sandbox did not connect to ${printable(host, 100)} in time`, 'timeout')); } }, timeoutMs);
+    conn.on('error', (e) => {
+      if (!ready) { clearTimeout(timer); reject(new SandboxError(`sandbox unreachable: ${e.code || e.message}`, 'unreachable')); } else duplex.destroy(new SandboxError('the tunnel broke'));
+    });
+    conn.on('close', () => { clearTimeout(timer); if (!ready) reject(new SandboxError('the sandbox closed the connection')); else eof(); });
+    conn.on('data', (chunk) => {
+      let frames;
+      try { frames = parser.push(chunk); } catch (e) { conn.destroy(); if (!ready) reject(new SandboxError(e.message, 'too-large')); return; }
+      for (const [type, p] of frames) {
+        if (!ready) {
+          if (type === T.RESULT && json(p).connected === true) { ready = true; clearTimeout(timer); resolve(duplex); continue; }
+          if (type === T.ERROR) { clearTimeout(timer); conn.destroy(); reject(new SandboxError(printable(json(p).error || 'refused'), 'refused')); return; }
+          continue;
+        }
+        if (type === T.STDOUT) {
+          got += p.length;
+          if (got > MAX_TUNNEL) { duplex.destroy(new SandboxError('too much through the tunnel', 'too-large')); return; }
+          if (!duplex.push(p)) conn.pause();
+        } else if (type === T.EXIT || type === T.ERROR) eof();
+      }
+    });
+    conn.write(frame(T.OPEN, { op: 'net.tunnel', host, port }));
   });
 }

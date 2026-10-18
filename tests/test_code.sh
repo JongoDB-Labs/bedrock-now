@@ -541,7 +541,10 @@ assert c["user"] == "501:20" and c["read_only"] and c["cap_drop"] == ["ALL"] and
 assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]] == [("code-socket", "/run/bn-code", True), ("code-state", "/var/lib/bn-code", None)], c["volumes"]
 # (Git hosts: the code container's own volume, never the sandbox's)
 assert not any(v.get("source") == "code-state" for n, x in s.items() if n != "code" for v in x.get("volumes") or [])
-assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "HOME", "TERMINAL_EGRESS"], c["environment"]
+assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "GIT_GITHUB_APP_SLUG", "GIT_GITHUB_CLIENT_ID",
+  "GIT_GITLAB_CLIENT_ID", "HOME", "TERMINAL_EGRESS"], c["environment"]
+# (Git hosts sign-in: public application IDs, blank by default: the apps of bedrock-now; no network of its own for it)
+assert c["environment"]["GIT_GITHUB_CLIENT_ID"] == "" and c["environment"]["GIT_GITLAB_CLIENT_ID"] == "" 
 assert c["environment"]["CODE_PROXY_SECRET"] == "fedcba9876543210fedcba9876543210"
 # Bypass permissions: off unless .env allows it; the folder only as a label (no volume of it)
 assert c["environment"]["CODE_ALLOW_BYPASS"] == "false" and c["environment"]["TERMINAL_EGRESS"] == ""
@@ -638,11 +641,18 @@ test_spawn_server_in_the_terminal_image() {
   assert_contains "$d" "chmod 700 /home/claude /run/bn-ttyd /run/bn-code"
   assert_contains "$d" "/usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs"
   c="$(cat "$STACK_DIR/terminal/bin/bn-coded.mjs")"
-  # Node built-ins only; never connects out; never a shell
+  # Node built-ins only; never a shell; it connects out for one op alone, net.tunnel (the code container's TLS to a Git
+  # host, for a sign-in): one net.connect, in tunnelConnect, to the egress proxy whenever HTTPS_PROXY names it, to a
+  # host name it checks
   if printf '%s\n' "$c" | grep -E "^import " | grep -v "from 'node:" >/dev/null; then echo "bn-coded imports a package" >&2; return 1; fi
-  for bad in "net.connect" "shell: true" "execSync" "exec(" "'-y'" "'--dangerously-skip-permissions'" "bypassPermissions'" "'auto'"; do
+  for bad in "shell: true" "execSync" "exec(" "'-y'" "'--dangerously-skip-permissions'" "bypassPermissions'" "'auto'"; do
     assert_not_contains "$(printf '%s\n' "$c" | grep -v '^//')" "$bad"
   done
+  assert_eq "$(printf '%s\n' "$c" | grep -v '^ *//' | grep -c 'net\.connect')" 1
+  tc="$(awk '/^export function tunnelConnect/,/^}/' "$STACK_DIR/terminal/bin/bn-coded.mjs")"
+  assert_contains "$tc" "const s = net.connect({ host: via ? via.hostname : host, port: via ? Number(via.port) : port });"
+  assert_contains "$tc" "proxy = egressProxy()"
+  assert_contains "$tc" "!HOST_NAME.test(host)"
   # a session may be switched to Bypass permissions (CODE_ALLOW_BYPASS), never started in it; the Git panel's
   # Write-message helper may take tools away (--tools= empty only) and keep no transcript
   assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence']"

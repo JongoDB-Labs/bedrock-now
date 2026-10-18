@@ -36,7 +36,7 @@ test('a gh login from stdin: an access token with its source, account and scopes
   // a second time, or another token for that host: refused, said
   r = run(dir, JSON.stringify({ source: 'gh', host: 'github.com', account: 'octocat', token: tok }));
   assert.equal(r.status, 1);
-  assert.match(JSON.parse(r.stdout).error, /github.com is connected with a token already/);
+  assert.match(JSON.parse(r.stdout).error, /github.com is connected with an access token already/);
   for (const bad of ['not json', '[]', JSON.stringify({ source: 'svn', token: tok }), JSON.stringify({ source: 'glab', host: 'gitlab.com', token: 'with space x' }),
     JSON.stringify({ source: 'gh', host: 'evil host', token: tok }), JSON.stringify({ source: 'gh', host: 'ghe.example', account: 'a b', token: tok })]) {
     r = run(dir, bad);
@@ -71,7 +71,7 @@ test('a glab personal access token with its expiry; the plan names the login; Re
   assert.deepEqual(p.host, { id: h.id, label: 'gitlab.example.com', kind: 'gitlab', auth: 'token', source: 'glab', account: 'gl-user' });
   await g.run({ planId: p.planId });
   assert.deepEqual(answers.map((a) => a.password === tok), [true, false], 'its host only');
-  const out = g.removeHost(h.id);
+  const out = await g.removeHost(h.id);
   assert.equal(out.revokeAt, 'https://gitlab.example.com/-/user_settings/personal_access_tokens');
   // GitHub: by the token's kind — gh's OAuth token, a classic one, a fine-grained one (imported or not)
   assert.equal(revokeAt({ kind: 'github', host: 'github.com', auth: 'token', imported: { source: 'gh', tokenType: 'oauth' } }), 'https://github.com/settings/applications');

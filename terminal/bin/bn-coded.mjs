@@ -2,8 +2,9 @@
 // bn-coded: the Code page's spawn server inside the sandbox (compose.terminal.yaml; the page: ./stack code enable,
 // compose.code.yaml). bn-terminal always starts it (and restarts it when it exits); without the code container it
 // has no client and does nothing. It listens on a UNIX socket in the code-socket volume, which only the code
-// container shares — as a client: this side never connects anywhere. Per connection it does
-// exactly one allowlisted thing:
+// container shares — as a client: this side connects nowhere of its own accord (git does, for the remote operations
+// you start; net.tunnel, for the code container's own requests to a Git host). Per connection it does exactly one
+// allowlisted thing:
 //   claude          Claude Code in stream-json mode (the Agent SDK's arguments, checked against an allowlist), with
 //                   this container's environment (LiteLLM through the gateway, the terminal key) and the shared MCP
 //                   server (~/.config/bedrock-now/mcp.json, written by bn-terminal)
@@ -26,6 +27,9 @@
 //                   switched or made, a remote's URL; fetch, pull (a fast-forward), push, publish, clone and a test of
 //                   a Git host's credential — which the code container gives for that one operation (ASK frames), never
 //                   kept here; and Claude's own git's credential, only while the code container allows it (git.broker)
+//   net.tunnel      a TCP connection to a Git host's https port through this sandbox's way out (the egress proxy while
+//                   HTTPS_PROXY names it, else directly), for the code container's sign-in and its renewal: it runs TLS
+//                   over it itself (the certificate checked there), so only bytes this side cannot read pass here
 //   memory.read / memory.write
 //                   your user memory for Claude Code in the sandbox (~/.claude/CLAUDE.md): that one fixed file
 //   sessions.list / sessions.load / sessions.title / sessions.running
@@ -1851,6 +1855,52 @@ export async function gitTest(req, { git = GIT, deadlineMs = 60000, ask } = {}) 
   });
 }
 
+// net.tunnel {host, port} — a TCP connection for the code container's own TLS: a Git host sign-in's device flow and the
+// renewal of its token (code/server/oauth.mjs), whose requests go where git goes — through the egress proxy's CONNECT
+// while HTTPS_PROXY names it (public addresses only, as for everything here), else directly (TERMINAL_EGRESS=host).
+// The host is a name or address the code container's Git hosts hold; nothing is read or changed here: RESULT
+// {connected: true} once it is connected, then the server's bytes as STDOUT frames, the code container's STDIN frames
+// to it (STDIN_END: its half closed), EXIT when it closed. At most TUNNEL_MAX at once, TUNNEL_BYTES each way, for
+// TUNNEL_MS.
+const TUNNEL_MAX = 4, TUNNEL_BYTES = 2 << 20, TUNNEL_MS = 120000, TUNNEL_CONNECT_MS = 15000;
+let tunnels = 0;
+// tunnelConnect(host, port) -> a connected socket (after the proxy's 200, when there is one), or throws why not
+export function tunnelConnect(host, port, { proxy = egressProxy(), connectMs = TUNNEL_CONNECT_MS } = {}) {
+  if (typeof host !== 'string' || !HOST_NAME.test(host) || host.startsWith('-')) return Promise.reject(new Error('not a host name'));
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.reject(new Error('not a port'));
+  return new Promise((resolve, reject) => {
+    const via = proxy ? new URL(proxy) : null;
+    const s = net.connect({ host: via ? via.hostname : host, port: via ? Number(via.port) : port });
+    let done = false, head = Buffer.alloc(0);
+    const fail = (why) => { if (done) return; done = true; clearTimeout(t); s.destroy(); reject(new Error(why)); };
+    const t = setTimeout(() => fail(`${host}:${port} did not answer in time`), connectMs);
+    s.on('error', (e) => fail(via ? `the sandbox's egress proxy: ${e.code || e.message}` : `${host}:${port}: ${e.code || e.message}${e.code === 'ENOTFOUND' || e.code === 'EAI_AGAIN'
+      ? ' (no name lookup: the sandbox may have no internet access — TERMINAL_EGRESS)' : ''}`));
+    s.on('connect', () => {
+      if (!via) { done = true; clearTimeout(t); s.removeAllListeners('error'); resolve(s); return; }
+      s.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
+    });
+    if (!via) return;
+    const onData = (d) => {
+      head = Buffer.concat([head, d]);
+      const i = head.indexOf('\r\n\r\n');
+      if (i < 0) { if (head.length > 16384) fail('the egress proxy answered with too long a header'); return; }
+      s.removeListener('data', onData);
+      const lines = head.subarray(0, i).toString('latin1').split('\r\n');
+      if (!/^HTTP\/1\.[01] 200( |$)/.test(lines[0])) {
+        const body = head.subarray(i + 4).toString('utf8').split('\n')[0].replace(/^bedrock-now's sandbox proxy: /, '');
+        fail(`the sandbox's egress proxy: ${printable(body || lines[0], 200)}`);
+        return;
+      }
+      done = true; clearTimeout(t); s.removeAllListeners('error');
+      const rest = head.subarray(i + 4);
+      if (rest.length) s.unshift(rest);
+      resolve(s);
+    };
+    s.on('data', onData);
+  });
+}
+
 // git.broker — Claude's own git (Settings › Git hosts › "Let Claude use this host", off by default): while the code
 // container keeps this connection open, /tmp/bn-git/claude/cred.sock answers bn-git-credential run by any git in the
 // sandbox, and /tmp/bn-git/claude/agent.sock is an SSH agent (the image's ssh configuration names it while it is
@@ -3465,7 +3515,7 @@ const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0, gitNet: 0, capture: 
 let brokerSock = null;
 export function serve(sock) {
   const parser = new FrameParser();
-  let child = null, opened = false, writer = null, done = false;
+  let child = null, opened = false, writer = null, done = false, tunnel = null;
   const send = (t, p) => (sock.destroyed ? false : sock.write(frame(t, p)));
   const finish = (t, p) => { if (done) return; done = true; send(t, p); sock.end(); };
   const fail = (msg) => finish(T.ERROR, { error: printable(msg, 300) });
@@ -3619,6 +3669,28 @@ export function serve(sock) {
           terminalCapture({ lines: req.lines, pane: req.pane }).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers.capture--; });
           return undefined;
         case 'sessions.running': return finish(T.RESULT, sessionRunning(req.id));
+        case 'net.tunnel': {
+          if (tunnels >= TUNNEL_MAX) return fail('busy: too many connections at once');
+          tunnels++;
+          let counted = true;
+          const uncount = () => { if (counted) { counted = false; tunnels--; } };
+          tunnelConnect(req.host, req.port).then((s) => {
+            if (done || sock.destroyed) { s.destroy(); uncount(); return; }
+            tunnel = s;
+            let got = 0;
+            const life = setTimeout(() => { s.destroy(); }, TUNNEL_MS);
+            life.unref?.();
+            s.on('data', (d) => {
+              got += d.length;
+              if (got > TUNNEL_BYTES) { s.destroy(); return; }
+              if (!send(T.STDOUT, d)) { s.pause(); sock.once('drain', () => s.resume()); }
+            });
+            s.on('error', () => {});
+            s.on('close', () => { clearTimeout(life); uncount(); if (tunnel === s) tunnel = null; finish(T.EXIT, { code: 0 }); });
+            send(T.RESULT, { connected: true });
+          }, (e) => { uncount(); fail(e.message); });
+          return undefined;
+        }
         default: return fail('unknown op');
       }
     } catch (e) { return fail(e.code || e.message); }
@@ -3637,6 +3709,14 @@ export function serve(sock) {
       try { a = JSON.parse(payload.toString('utf8')); } catch { /* ignored */ }
       const w = a && typeof a === 'object' ? asks.get(a.id) : null;
       if (w) { asks.delete(a.id); clearTimeout(w.t); w.resolve(a); }
+      return undefined;
+    }
+    if (tunnel) {
+      if (type === T.STDIN) {
+        tunnel.sent = (tunnel.sent || 0) + payload.length;
+        if (tunnel.sent > TUNNEL_BYTES) { tunnel.destroy(); return undefined; }
+        if (!tunnel.write(payload)) { sock.pause(); tunnel.once('drain', () => sock.resume()); }
+      } else if (type === T.STDIN_END) tunnel.end();
       return undefined;
     }
     if (writer) {
@@ -3668,6 +3748,7 @@ export function serve(sock) {
     for (const w of asks.values()) { clearTimeout(w.t); w.reject(new Error('the connection ended')); }
     asks.clear();
     if (brokerSock === sock) { brokerSock = null; brokerStop(); }
+    if (tunnel) { tunnel.destroy(); tunnel = null; }
     fsWriteAbort(writer); writer = null;
     const c = child;
     if (!c) return;
