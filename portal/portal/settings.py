@@ -359,6 +359,16 @@ def _code_model(v, remote_on=False):
     return None if v == "" or MODEL_ID.fullmatch(v) else "must be a model id (blank = the main model)"
 
 
+def _oauth_client_id(v, remote_on=False):
+    return None if v == "" or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", v) else \
+        "must be an application (client) ID: letters, digits, ., _ and - (blank = bedrock-now's own app)"
+
+
+def _app_slug(v, remote_on=False):
+    return None if v == "" or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?", v) else \
+        "must be the app's name as its URL has it: lowercase letters, digits and - (github.com/apps/NAME)"
+
+
 def _models_list(v, remote_on=False):
     return None if v == "" or (re.fullmatch(r"[a-z0-9.-]+(,[a-z0-9.-]+)*", v) and len(v) <= MAX_VALUE) else \
         "must be a comma list of model names"
@@ -384,7 +394,7 @@ VALIDATORS = {
     "pct": _range(50, 99, "must be a percentage from 50 to 99 (blank = 80)"),
     "keep": _range(1, 60, "must be a whole number from 1 to 60 (blank = 7)"),
     "model_pin": _model_pin, "models_list": _models_list, "pw_hash": _pw_hash,
-    "code_models": _code_models, "code_model": _code_model,
+    "code_models": _code_models, "code_model": _code_model, "oauth_client_id": _oauth_client_id, "app_slug": _app_slug,
 }
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")

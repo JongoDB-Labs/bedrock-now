@@ -1108,7 +1108,7 @@
   function gitHostsRow(r) {
     const rw = ownFrame(r, "Git hosts");
     rw._main.append(el("p", { class: "note set-extra",
-      text: "Connect GitHub, GitLab or any https/ssh git server with an access token or an SSH key the Code page makes. The Code page keeps them, apart from the sandbox: one push, pull or clone you start gets its host's credential while it runs; Claude's own git gets none unless you let it use a host there (off by default). Adding a host, a token or a key works only from the computer running bedrock-now." }));
+      text: "Connect GitHub, GitLab or any https/ssh git server: Sign in with GitHub or GitLab, an access token, or an SSH key the Code page makes. The Code page keeps them, apart from the sandbox: one push, pull or clone you start gets its host's credential while it runs; Claude's own git gets none unless you let it use a host there (off by default). Adding a host, a sign-in, a token or a key works only from the computer running bedrock-now." }));
     const open = el("button", { type: "button", class: "action", text: "Open Git hosts" });
     open.addEventListener("click", () => {
       if (window.bnCode && window.bnCode.openGitHosts) window.bnCode.openGitHosts();

@@ -63,7 +63,7 @@ OPENROUTER_INCLUDE_ALIASES	chat	more	OPENROUTER_API_KEY	Also offer OpenRouter's 
 CODE_ENABLED	code	main	-	The Code tab: Claude Code in the browser with a chat, permission prompts and your workspace's files (on by default).
 CODE_ALLOW_BYPASS	code	main	CODE_ENABLED	Offer Bypass permissions: Claude runs every command and edit in the sandbox without asking.
 CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves routine actions and blocks risky ones (it costs extra).
-+git-hosts	code	main	CODE_ENABLED	Git hosts for the Code page's push, pull and clone: GitHub, GitLab or any git server, with a token or an SSH key.
++git-hosts	code	main	CODE_ENABLED	Git hosts for the Code page's push, pull and clone: GitHub, GitLab or any git server — a sign-in, a token or an SSH key.
 TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
 TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
 TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet: public addresses only (the default), with this computer's services too, or off.
@@ -79,6 +79,9 @@ CLAUDE_BEDROCK_SONNET_MODEL	code	with	CLAUDE_MODEL_SONNET	-
 CLAUDE_MODEL_HAIKU	code	more	-	Claude Code's haiku slot: quick background tasks.
 CLAUDE_BEDROCK_HAIKU_MODEL	code	with	CLAUDE_MODEL_HAIKU	-
 TERMINAL_MEM_LIMIT	code	more	TERMINAL_ENABLED	The sandbox container's memory limit.
+GIT_GITHUB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitHub (Git hosts): the GitHub App's client ID (blank: bedrock-now's own).
+GIT_GITHUB_APP_SLUG	code	with	GIT_GITHUB_CLIENT_ID	-
+GIT_GITLAB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitLab (Git hosts): the gitlab.com application's ID (blank: bedrock-now's own).
 
 @files	Files & sharing	The file store behind the Files tab, and the shared file server Claude Code and Chat use.	README.md#shared-files-and-knowledge-mcp
 RUSTFS_ACCESS_KEY	files	main	-	The Files tab's sign-in (the portal signs you in with it); also the storage key of Chat and backups.

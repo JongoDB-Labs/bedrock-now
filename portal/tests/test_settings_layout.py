@@ -191,7 +191,12 @@ def test_sections_hold_what_their_task_needs():
         if r["section"] == "about":
             assert table[k][3] == "derived", k
     editable = [k for k, t in table.items() if t[3] in ("edit", "local", "on-only", "widen-local", "regen")]
-    assert all(rows[k]["place"] in ("main", "more") or k in ("AWS_SECRET_ACCESS_KEY", "STT_API_KEY", "STT_MODEL", "RUSTFS_SECRET_KEY") for k in editable)
+    assert all(rows[k]["place"] in ("main", "more") or k in ("AWS_SECRET_ACCESS_KEY", "STT_API_KEY", "STT_MODEL", "RUSTFS_SECRET_KEY", "GIT_GITHUB_APP_SLUG")
+               for k in editable)
+    # Git hosts' sign-in: the apps' IDs under the Code page's More (the GitHub App's name with its client ID)
+    assert where("GIT_GITHUB_CLIENT_ID") == ("code", "more", "CODE_ENABLED") and where("GIT_GITLAB_CLIENT_ID") == ("code", "more", "CODE_ENABLED")
+    assert where("GIT_GITHUB_APP_SLUG") == ("code", "with", "GIT_GITHUB_CLIENT_ID")
+    assert all(table[k][3] == "local" for k in ("GIT_GITHUB_CLIENT_ID", "GIT_GITHUB_APP_SLUG", "GIT_GITLAB_CLIENT_ID"))
 
 
 @need_repo

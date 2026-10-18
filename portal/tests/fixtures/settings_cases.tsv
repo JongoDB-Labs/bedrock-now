@@ -200,3 +200,19 @@ egress	0	bad	HOST
 egress	0	bad	internet 
 egress	0	bad	lan
 egress	1	bad	internet; rm -rf
+oauth_client_id	0	ok	
+oauth_client_id	0	ok	Iv23liAbCdEf01234567
+oauth_client_id	0	ok	0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+oauth_client_id	0	ok	Iv1.0123456789abcdef
+oauth_client_id	0	bad	has space
+oauth_client_id	0	bad	quote'in
+oauth_client_id	0	bad	slash/in
+oauth_client_id	0	bad	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+app_slug	0	ok	
+app_slug	0	ok	bedrock-now
+app_slug	0	ok	a
+app_slug	0	bad	Bedrock-Now
+app_slug	0	bad	-dash
+app_slug	0	bad	dash-
+app_slug	0	bad	with space
+app_slug	0	bad	under_score
