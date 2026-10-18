@@ -37,6 +37,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Docs
 
+- **README: Git remotes.** *What you get*'s Code page row says Git with remotes (Git hosts: clone, fetch, pull,
+  push), and Settings › Claude Code lists **Git hosts** (it opens the Code page's dialog, where the tokens and keys are
+  kept).
 - **README checked against the code of v0.11.0.** *What you get* has a row for Activity & search, and its rows say
   what v0.10–v0.11 added: `claude-bedrock --models` / `--model`, the Code page's models from the whole catalog,
   @-mentions and comments on a plan's lines, the Terminal's internet through its egress proxy (not this computer's

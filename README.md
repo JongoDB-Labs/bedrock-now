@@ -21,7 +21,7 @@ disable` the Code page alone; either stays off across updates).
 | [**Activity & search**](#activity-and-search) | a bell for budget alerts, updates, Code sessions that need you and jobs; **Ctrl/⌘+K** finds pages, settings, Code sessions and workspace files, Chat conversations, the walkthrough and these docs | on (the docs part with Docker Compose 2.17+) | — |
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
 | [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) and reaches public internet addresses through an egress proxy of its own — not this computer's services or your network | on, as the Code page's sandbox (internet: public addresses only) | `./stack terminal disable` / `enable` (disable turns the Code page off too); its internet: Settings › Claude Code › Sandbox internet access |
-| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat with any chat model of the catalog, @-mentions of the terminal, the changes, failed runs and file lines, permission modes, comments on a plan's lines, editor, file and dev-server previews, review changes, Git, Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
+| [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat with any chat model of the catalog, @-mentions of the terminal, the changes, failed runs and file lines, permission modes, comments on a plan's lines, editor, file and dev-server previews, review changes, Git with remotes (Git hosts: clone, fetch, pull, push), Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
@@ -943,13 +943,13 @@ credentials ever being kept in the sandbox.
 
 The credentials are kept by the code container, in its own volume (`<project>_code-state`): not in `.env`, not in the
 portal, not in backups, never in the sandbox. They are stored there unencrypted (a file of mode 600): anyone who can
-read Docker's volumes on this computer can read them — revoke a token or key you think was exposed. A push, pull, fetch or clone you start gets its host's credential for
-that one operation, through a channel only that git process has, and only for the host of the URL you confirmed — the
-repository's configuration cannot send it elsewhere (URL rewrites, proxies, credential helpers, ssh commands are
-neutralised; hooks, filters and merge drivers do not run). `./stack code disable` keeps them; `./stack uninstall`, or
-`docker volume rm <project>_code-state`, forgets them — revoke tokens and keys on the host too. Details, and what
-remains possible for a process in the sandbox while an operation runs:
-[docs/security.md](docs/security.md#git-remotes-and-git-hosts).
+read Docker's volumes on this computer can read them — revoke a token or key you think was exposed. A push, pull,
+fetch or clone you start gets its host's credential for that one operation, through a channel only that git process
+has, and only for the host of the URL you confirmed — the repository's configuration cannot send it elsewhere (URL
+rewrites, proxies, credential helpers, ssh commands are neutralised; hooks, filters and merge drivers do not run).
+`./stack code disable` keeps them; `./stack uninstall`, or `docker volume rm <project>_code-state`, forgets them —
+revoke tokens and keys on the host too. Details, and what remains possible for a process in the sandbox while an
+operation runs: [docs/security.md](docs/security.md#git-remotes-and-git-hosts).
 
 #### Previews of dev servers
 
@@ -1134,6 +1134,8 @@ reads `.env`: `./stack` writes a masked copy, `.state/status/settings.json`, whe
   the browser terminal's *Auto mode in the terminal* ([The Code page](#turning-the-code-page-on-and-off)) and the
   sandbox's internet access (*Internet only*, *+ this computer*, *Off*: the terminal restarts, its shells and open
   Code sessions end; [Claude Code in the browser](#claude-code-in-the-browser));
+- **Git hosts** (*Open Git hosts*: the Code page's dialog, where its tokens and SSH keys for clone, fetch, pull and
+  push are kept — not on this page; [Remote repositories](#remote-repositories-git-hosts-clone-push-and-pull));
 - the daily release and price checks, automatic updates and their hour, signed releases only (on only);
   **Back up now** (the newest 5 made here are kept), **nightly backups** (by the update helper, in a three-hour
   window you pick or, with automatic updates on, theirs, keeping the newest 1-60) and the list of backups (name,
