@@ -153,7 +153,7 @@ _terminal_egress_up() {
   if [ "$(terminal_egress_mode)" = internet ]; then dc up -d --wait terminal-egress; else terminal_proxy_rm; fi
 }
 _terminal_front() {
-  dc up -d --wait portal && dc up -d --wait --force-recreate caddy && dc up -d --wait --no-deps litellm shared-mcp
+  dc up -d --wait portal && recreate_caddy && dc up -d --wait --no-deps litellm shared-mcp
 }
 
 # terminal_secrets [rotate] — what the terminal needs besides the stack's own: the secret header the main Caddy adds

@@ -906,6 +906,7 @@ _cfg_post() {
   svc="$(printf '%s\n' $svc | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
   # shellcheck disable=SC2086  # word-split the service list on purpose
   [ -z "$svc" ] || run_phase "Restart:$svc" "${svc# }" dc up -d --no-deps --wait $svc
+  case " $svc " in *" caddy "*) ensure_portal_reachable ;; esac   # lib/portal.sh: before the sign-in that verifies it
   if _cfg_on budget || _cfg_on alert-pct; then
     for k in BUDGET_CLAUDE_CODE BUDGET_OPENWEBUI BUDGET_SETUP BUDGET_TERMINAL; do
       cfg_has "$k" || _cfg_on alert-pct || continue   # a new alert threshold: every key's soft budget
@@ -1391,6 +1392,7 @@ cmd_restart() {
   stack_lock restart
   quiet_compose
   run_phase "$s (restarted)" "$s" dc up -d --no-deps --force-recreate --wait "$s"
+  [ "$s" != caddy ] || ensure_portal_reachable   # lib/portal.sh: Docker's port forward to the new Caddy
   [ "$s" != rustfs ] || dc up -d rustfs-init >/dev/null 2>&1 || true
   if [ "$s" = open-webui ] && portal_session_start; then sync_budget_banner; fi
   portal_session_end

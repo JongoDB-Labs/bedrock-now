@@ -668,7 +668,7 @@ _build_and_up_portal() {
   set_env PORTAL_PORT "$PORTAL_FALLBACK_PORT"
   resolve_port PORTAL_PORT "$PORTAL_FALLBACK_PORT" caddy 8080
   save_portal_origin
-  dc up -d --wait portal && dc up -d --wait --force-recreate caddy   # portal: its PORTAL_PORT changed too
+  dc up -d --wait portal && recreate_caddy   # portal: its PORTAL_PORT changed too
 }
 
 # up_portal — the portal phase of setup (and models --recheck): new code, settings and Caddyfile take effect.

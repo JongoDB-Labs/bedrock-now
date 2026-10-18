@@ -102,7 +102,7 @@ code_build() { fix_checkout_modes; dc build -q code; }   # (its sources must be 
 # drop for a moment and reconnect), then the code container. The terminal is not touched: it runs bn-coded and
 # bn-preview already.
 _code_up() { _code_front && dc up -d --wait terminal-gateway && dc up -d --wait code; }
-_code_front() { dc up -d --wait portal && dc up -d --wait --force-recreate caddy; }
+_code_front() { dc up -d --wait portal && recreate_caddy; }
 # code_spawn_ready — bn-coded listens in the running terminal (a terminal container started by a version without it
 # has to be recreated once)
 code_spawn_ready() { dc exec -T terminal test -S /run/bn-code/coded.sock >/dev/null 2>&1; }

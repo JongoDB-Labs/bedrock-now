@@ -541,7 +541,7 @@ remote_login_warning() {
 remote_restart_front() {
   run_phase "Portal + Chat + Caddy (remote settings)" "portal open-webui caddy" _remote_up_front
 }
-_remote_up_front() { ensure_portal_password_hash && dc up -d --wait portal open-webui && dc up -d --wait --force-recreate caddy; }
+_remote_up_front() { ensure_portal_password_hash && dc up -d --wait portal open-webui && recreate_caddy; }
 
 remote_disable() {
   local mode

@@ -562,3 +562,25 @@ test_ensure_portal_reachable_leaves_caddy_alone_otherwise() {
   _before setup_keys_and_ui ensure_portal_reachable portal_session_or_die
   _before cmd_setup ensure_portal_reachable cmd_test
 }
+
+test_every_caddy_recreate_checks_the_port_forward() {
+  # Caddy is replaced only through recreate_caddy (lib/portal.sh), except setup's first start of it, which captures
+  # the output for its port-80 fallback and is followed by ensure_portal_reachable in setup_keys_and_ui
+  local direct
+  direct="$(grep -nE 'force-recreate caddy' "$T_ROOT"/lib/*.sh | grep -vE 'lib/portal\.sh:|out="\$\(dc up -d --wait --force-recreate caddy 2>&1\)"' || true)"
+  assert_eq "$direct" ""
+  for f in _code_front _terminal_front _remote_up_front; do
+    assert_contains "$(grep -hE "^$f\(\)" -A3 "$T_ROOT"/lib/*.sh)" "recreate_caddy"
+  done
+  # a Settings change that restarts Caddy, and ./stack restart caddy, check it before the portal is used
+  assert_contains "$(sed -n '/^_cfg_post() {/,/^}/p' "$T_ROOT/lib/settings.sh")" '*" caddy "*) ensure_portal_reachable'
+  assert_contains "$(sed -n '/^cmd_restart() {/,/^}/p' "$T_ROOT/lib/settings.sh")" '[ "$s" != caddy ] || ensure_portal_reachable'
+  # recreate_caddy: the recreate, then the check; a failed recreate is the caller's to report (no check)
+  : > "$TMP/calls"; FWD="200" _stub_forward
+  recreate_caddy 2>/dev/null
+  assert_contains "$(head -n 1 "$TMP/calls")" "dc up -d --wait --force-recreate caddy"
+  assert_contains "$(cat "$TMP/calls")" "/caddy-health"
+  dc() { echo "dc $*" >> "$TMP/calls"; return 1; }; : > "$TMP/calls"
+  if recreate_caddy 2>/dev/null; then echo "a failed recreate reported success" >&2; return 1; fi
+  assert_not_contains "$(cat "$TMP/calls")" "curl"
+}

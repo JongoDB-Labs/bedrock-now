@@ -50,6 +50,12 @@ _portal_port_answers() {   # -> 0 unless every try is a connection failure (000)
   done
   return 1
 }
+# recreate_caddy — Caddy recreated (it reads its config and the app hosts at start), then ensure_portal_reachable: every
+# place that replaces Caddy goes through here, so a stale port forward is caught wherever it happens
+recreate_caddy() {
+  dc up -d --wait --force-recreate caddy || return
+  ensure_portal_reachable
+}
 ensure_portal_reachable() {
   [ -n "$(dc ps -q --status running caddy 2>/dev/null)" ] || return 0
   _portal_port_answers && return 0   # (Caddy's catch-all site answers /caddy-health for any host name)
