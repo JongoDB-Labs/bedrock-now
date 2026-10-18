@@ -18,9 +18,10 @@ export const WORKSPACE_ID = 'ws';
 export const PROJECTS_MAX = 64, FILED_MAX = 2000;
 export const NAME_MAX = 80, ROOT_BYTES = 160, ROOT_DEPTH = 4, SEGMENT_MAX = 100;
 const ID = /^p_[0-9a-f]{8}$/;
-// (names and folders are shown as text; these would turn the text around or hide in it)
+// (names and folders are shown as text; these would turn the text around, break its line or hide in it: controls,
+// direction marks and isolates, zero-width and invisible operators, line and paragraph separators, tag characters)
 // eslint-disable-next-line no-control-regex
-const ODD = /[\x00-\x1f\x7f؜​-‏‪-‮⁦-⁩﻿]/;
+const ODD = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 export class ProjectError extends Error {
   constructor(status, message) { super(message); this.status = status; }

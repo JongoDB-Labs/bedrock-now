@@ -11,9 +11,10 @@ export const WORKSPACE_ID = 'ws';
 export const WORKSPACE_PATH = '/workspace';
 export const PROJECTS_MAX = 64;
 const ID = /^p_[0-9a-f]{8}$/;
-// (shown as text, but these would turn it around or hide in it)
+// (shown as text, but these would turn it around, break its line or hide in it: controls, direction marks and
+// isolates, zero-width and invisible operators, line and paragraph separators, tag characters)
 // eslint-disable-next-line no-control-regex
-const ODD = /[\x00-\x1f\x7f؜​-‏‪-‮⁦-⁩﻿]/;
+const ODD = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 export type FolderState = 'dir' | 'missing' | 'link' | 'other';
 export interface Project {

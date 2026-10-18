@@ -18,6 +18,11 @@ test('folders and names: what a project may be', () => {
     assert.equal(rootOk(bad), false, JSON.stringify(bad));
   }
   for (const ok of ['bedrock-now', 'Website (old)', 'x'.repeat(80), '日本']) assert.ok(nameOk(ok), ok);
+  // line and paragraph separators, invisible operators (U+2060–2064), tag characters, C1 controls: in a name or a folder
+  for (const odd of ['\u2028', '\u2029', '\u2060', '\u2061', '\u2064', '\u{E0041}', '\u{E007F}', '\u0085', '\u061C', '\uFEFF']) {
+    assert.equal(nameOk(`a${odd}b`), false, escape(odd));
+    assert.equal(rootOk(`a${odd}b`), false, escape(odd));
+  }
   for (const bad of ['', ' x', 'x ', 'a\nb', 'a‮b', 'x'.repeat(81), '​', 7, null]) assert.equal(nameOk(bad), false, JSON.stringify(bad));
   for (const ok of ['/workspace', '/workspace/app', '/workspace/a b/c']) assert.ok(cwdOk(ok), ok);
   for (const bad of ['/etc', '/workspace/', '/workspace/../etc', '/workspace/./a', '/workspace//a', 'workspace/a', '/workspacex', '/workspace/a\nb', '/home/claude/.ssh', 7]) {

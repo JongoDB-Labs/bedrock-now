@@ -19,6 +19,10 @@ test('folders and names: the backend\'s rules (a folder of the workspace, one li
   }
   assert.ok(nameOk('My app'));
   for (const bad of ['', ' x', 'a\nb', 'a⁦b', 'x'.repeat(81), 3]) assert.equal(nameOk(bad), false, JSON.stringify(bad));
+  for (const odd of ['\u2028', '\u2029', '\u2060', '\u2064', '\u{E0041}', '\u0085']) {
+    assert.equal(nameOk(`a${odd}b`), false, escape(odd));
+    assert.equal(rootOk(`a${odd}b`), false, escape(odd));
+  }
   for (const ok of ['/workspace', '/workspace/app', '/workspace/a b']) assert.ok(cwdOk(ok), ok);
   for (const bad of ['/etc', '/workspace/', '/workspace/../etc', '/workspace/./a', '/workspace//a', '/workspacex', 'workspace/a', '/home/claude/.ssh', '/workspace/a\nb']) {
     assert.equal(cwdOk(bad), false, bad);
