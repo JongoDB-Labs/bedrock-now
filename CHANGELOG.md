@@ -6,6 +6,20 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Check for updates.** Under Home's title a line says *Up to date · checked 12 min ago ·* **Check for updates**, or
+  *Update available — v0.x.y* (it leads to the update card); a click asks GitHub now instead of waiting for the daily
+  check or Home's 3-hourly one. It says *Checking for updates…*, then the answer — a newer release shows the update
+  card and scrolls to it — or *GitHub could not be reached — try again later*, or *GitHub's limit for this hour — try
+  again after 14:05* (GitHub's 60 requests an hour without an account; the button waits until then, and the portal
+  asks nothing before). The same line is in Settings › Updates & backups › *Daily release check*, and Ctrl/⌘+K has
+  *Check for updates*. A click asks at most every 30 s and 20 times an hour, never while a check runs (it gets that
+  one's answer; the daily check waits for it too), with the same conditional request (a 304 when nothing changed). It
+  works with `UPDATE_CHECK=false` — a click is an explicit request — while the daily and Home checks stay off. It sends
+  nothing about your install. `POST /api/update/check`: a session, `X-Requested-With` and the portal's own Origin;
+  over remote access too.
+
 ## [0.14.1] - 2026-10-18
 
 ### Fixed

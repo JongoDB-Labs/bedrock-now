@@ -154,7 +154,7 @@ your browser.
 
 | Tab | What it is | Sign-in |
 |---|---|---|
-| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Refreshes every 30 s; makes no Bedrock calls. Above the tabs: **Search** (Ctrl/⌘+K) and the **Activity** bell ([Activity and search](#activity-and-search)). | the portal |
+| **Home** | Health of each service, spend per key against its budget, the models your key can use with prices, the price source, the `claude-bedrock` command; with the Code page on, its card (the sessions that need you, Resume, a prompt to open in Code). Under the title: *Up to date · checked 12 min ago ·* **Check for updates** ([Updating](#updating)). Refreshes every 30 s; makes no Bedrock calls. Above the tabs: **Search** (Ctrl/⌘+K) and the **Activity** bell ([Activity and search](#activity-and-search)). | the portal |
 | **Chat** | Open WebUI at `chat.bedrock-now.localhost`: chat, documents/knowledge, images (if enabled) | automatic |
 | **Code** | On by default: Claude Code with a chat and your files, at `code.bedrock-now.localhost` ([The Code page](#the-code-page)); while it is off the tab stays, muted, and says how to turn it on | the portal, then the portal password again (12 hours) |
 | **Admin** | LiteLLM's UI at `admin.bedrock-now.localhost/ui`: keys, spend by model and day, logs | automatic |
@@ -254,7 +254,8 @@ session needs you", "A job failed", "Budget alert: Claude Code at 85 %"), never 
 message, which can show on a lock screen: those stay in the panel.
 
 **Search** (**Ctrl+K**, **⌘K** on a Mac, or the box at the top of the sidebar; on a phone **More → Search**) finds, as
-you type: the portal's pages, every Settings section and setting by name or key (Enter opens it, lit up), Code
+you type: the portal's pages and **Check for updates**, every Settings section and setting by name or key (Enter opens
+it, lit up), Code
 sessions and **workspace file names** (asked from the Code tab while this browser has it open; Enter opens the file in
 its editor), **Chat conversations** (Open WebUI's own search), the walkthrough's steps, and the sections of this README
 and `docs/` (on GitHub, as of your release; indexed when the portal's image is built, with Docker Compose 2.17 or
@@ -1165,7 +1166,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code* and the *Default model for new sessions*; *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
-| **Updates & backups** | daily release check, automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
+| **Updates & backups** | daily release check (when it last checked, and **Check for updates**), automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
 | **Diagnostics** | smoke test, AWS key check, status report, restart a service |
 | **Advanced** | read-only: addresses, ports and internal keys, each with why and the command that changes it |
 | **About this install** | read-only: what setup and `./stack` chose or wrote (embedding and voice models, origins, remote addresses …) |
@@ -1521,7 +1522,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
   bedrock-now release and, only when it is newer than yours, fetches that release's `compose.yaml` from
   `raw.githubusercontent.com` to estimate the download. Unauthenticated, https only; nothing about your
   install is sent (GitHub sees your IP address, as for any download). Settings → Updates & backups
-  (`UPDATE_CHECK`) turns it off.
+  (`UPDATE_CHECK`) turns it off; **Check for updates** on Home asks once more, when you click it.
 - **The browser terminal and the Code page (on by default):** what you run in the sandbox may use the public internet
   (git, npm, pip, Claude Code's web fetch) through its egress proxy unless `TERMINAL_EGRESS=off`; Claude Code there
   still talks only to Bedrock, through its gateway and LiteLLM, with its non-essential traffic off. Building their
@@ -1585,6 +1586,15 @@ downtime) and the command to copy; `./stack status` and the `claude-bedrock` lau
 the portal's last check; no network of their own). The portal checks once a day, and again when you open Home and
 its last check is more than 3 hours old (at most every 15 minutes); the card and the version label say when it last
 checked. Settings → Updates & backups (`UPDATE_CHECK=false`) turns the check off.
+
+To ask now, click **Check for updates** under Home's title (also in Settings → Updates & backups → *Daily release
+check*, and as *Check for updates* in Ctrl/⌘+K search). The line then says *Checking for updates…*, then *Up to
+date · checked just now* or *Update available — v0.x.y* (the update card opens, as on any visit), or why it could not
+check: *GitHub could not be reached — try again later*, or *GitHub's limit for this hour — try again after 14:05*
+(GitHub answers 60 requests an hour from one address without an account; the button waits until then). A click asks
+at most every 30 seconds and 20 times an hour, and never while a check runs. It works with `UPDATE_CHECK=false` too:
+a click is an explicit request, and the daily and Home checks stay off. Like them, it asks GitHub's public list of
+releases and sends nothing about your install.
 
 The update first asks git whether there is anything new. If not, and the last successful setup ran on exactly
 this code, it says so (`already on v0.9.0 — nothing to update`) and stops: no backup, no restart, no Bedrock
