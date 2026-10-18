@@ -1857,7 +1857,8 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   Settings row, the Git panel (Claude edits a file; stage, commit and the log from the panel, Write message's helper
   ignoring an instruction planted in the diff, while planted hooks never run), its remotes when `E2E_GIT_SERVER=1`
   (a throwaway git server of the suite's own, reached with `TERMINAL_EGRESS=host`: a Git host with a token and one with
-  an SSH key, clone, push with its confirmation, Open a pull request, pull — never a real host) — each with zero CSP
+  an SSH key, clone, push with its confirmation, Open a pull request, pull; and Sign in with GitLab against its stand-in
+  OAuth provider — renewals, Sign in again — never a real host) — each with zero CSP
   violations;
   previews of a dev server in the sandbox, no model calls: an echo server and Vite started from `.claude/launch.json`,
   isolation checked from inside the preview, refused capabilities, a hot update over Vite's WebSocket; Word, Excel,
