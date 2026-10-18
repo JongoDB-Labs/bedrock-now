@@ -7,14 +7,14 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 from playwright.sync_api import Error as PwError
 
-from common import (CHECKS_RE, ENV, HOST, NET, OUT, SHOTS, Skip, check, expect, host_of, need, origin, real_helper_running,
-                    redact, url_path)
+from common import (CHECKS_RE, ENV, HOST, NET, OUT, PORT, SHOTS, Skip, check, expect, host_of, http, need, origin, portal_login,
+                    real_helper_running, redact, url_path)
 
 STATE = Path("/state")
 HOME_URL = re.compile("^" + re.escape(origin()) + r"/(#\w*)?$")
@@ -333,6 +333,187 @@ def update_card(ctx):
             up.write_bytes(saved)
         for f in (STATE / "requests").glob("req-*.json"):
             f.unlink()
+    rec.save()
+    return "; ".join(states)
+
+
+@check("browser", "home-update-check-button")
+def update_check_button(ctx):
+    """Check for updates (static/updatecheck.js, POST /api/update/check): the line in Home's header and in Settings ›
+    Updates & backups, in each state, from latest.json as the portal writes it (no GitHub here: the run's latest.json
+    counts as just checked). A click's answers come from a route in this browser (the portal would ask GitHub);
+    what the portal itself answers without asking GitHub is asked for real: GitHub's limit (429 limit, nothing asked)
+    and every refusal before it (signed out, no X-Requested-With, another Origin, a preview's Origin)."""
+    up = STATE / "update-check" / "latest.json"
+    saved = up.read_bytes() if up.exists() else None
+    page, rec = ctx.page("update-check")
+    login(page)
+    api = re.compile(r"/api/update/check$")
+    states, pending = [], []
+    now = datetime.now(timezone.utc)
+    iso = lambda t: t.isoformat(timespec="seconds")   # noqa: E731
+    summary = lambda: page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")  # noqa: E731
+    line = page.locator("#release-line")
+
+    def state(want, timeout=15000):
+        page.locator(f'#release-line[data-state="{want}"]').wait_for(timeout=timeout)
+        return " ".join(line.inner_text().split())
+
+    try:
+        inst = summary()["update"]["installed"] or ""
+        m = re.match(r"v\d+\.\d+\.\d+", inst)
+        expect(m, f"the installed version {inst!r} is not a release or a build after one (./stack setup records it)")
+        tag = m.group(0)
+        rel = lambda t: {"tag": t, "name": t, "headline": f"the fake release {t}", "notes": f"- fake {t}",   # noqa: E731
+                         "url": f"https://github.com/JongoDB-Labs/bedrock-now/releases/tag/{t}", "published_at": iso(now)}
+        current = {"tag": tag, "name": tag, "checked_at": iso(now), "error": None, "releases": [rel(tag)], "by": "daily"}
+        newer = {**current, "tag": "v99.0.0", "name": "v99.0.0", "releases": [rel("v99.0.0"), rel(tag)], "by": "manual",
+                 "images": []}
+        # 1. up to date (or, for an install that is not a release, the newest release), just checked
+        _write_json(up, current)
+        page.click("#refresh")
+        want = "current"
+        text = state(want)
+        expect(text.startswith("Up to date · checked just now"), f"line {text!r}")
+        btn = page.locator("#release-line .rl-check")
+        tip = btn.get_attribute("title") or ""
+        expect("public list of bedrock-now releases" in tip and "sends nothing about this install" in tip, f"tooltip {tip!r}")
+        expect(page.locator("#release-line .rl-state[aria-live=polite]").count() == 1, "the result is not announced")
+        shot(page, "04b-home-update-check-up-to-date")
+        states.append(f"{want}: {text}")
+        # 2. a click: Checking… while the portal asks (the answer held here), then a newer release — the card, scrolled to
+        _write_json(up, newer)
+        avail = summary()["update"]
+        _write_json(up, current)
+        page.click("#refresh")
+        state(want)
+        page.route(api, lambda route: pending.append(route))
+        btn.click()
+        text = state("checking", 5000)
+        expect(text.startswith("Checking for updates…") and btn.get_attribute("aria-disabled") == "true", f"checking: {text!r}")
+        t0 = time.time()
+        while not pending and time.time() - t0 < 5:
+            page.wait_for_timeout(50)
+        expect(len(pending) == 1, f"{len(pending)} requests for one click")
+        expect(page.evaluate("document.activeElement && document.activeElement.classList.contains('rl-check')"), "the button lost the focus")
+        shot(page, "04c-home-update-check-checking")
+        _write_json(up, newer)   # (what the portal's check would have saved: Home's next summary agrees)
+        pending.pop().fulfill(status=200, content_type="application/json", headers={"Cache-Control": "no-store"},
+                              body=json.dumps({"started": True, "checking": False, "update": {**avail, "checking": False}}))
+        text = state("available")
+        expect(text.startswith("Update available — v99.0.0 · checked just now"), f"available: {text!r}")
+        page.wait_for_selector("#update-card:not([hidden])", timeout=5000)
+        page.wait_for_timeout(1200)   # (a smooth scroll)
+        top = page.evaluate("document.querySelector('#update-card').getBoundingClientRect().top")
+        expect(top < 80, f"the update card was not scrolled to: its top at {top}")
+        shot(page, "04d-home-update-check-found")
+        states.append("click: checking → v99.0.0, card scrolled to")
+        # 3. a second click at once: the portal's floor (its answer, here from the route)
+        page.unroute(api)
+        page.route(api, lambda route: route.fulfill(status=429, content_type="application/json", headers={"Retry-After": "20"},
+                                                    body=json.dumps({"error": "Checked a moment ago: try again in 20 s.", "reason": "again",
+                                                                     "retry_after": 20, "update": {**avail, "checking": False}})))
+        btn.click()
+        text = state("again", 5000)
+        expect(text.startswith("Checked a moment ago — try again in 20 s"), f"again: {text!r}")
+        page.unroute(api)
+        states.append("again: " + text)
+        # 4. GitHub could not be reached
+        _write_json(up, {**current, "error": "api.github.com did not answer (ConnectError)", "error_at": iso(now)})
+        page.click("#refresh")
+        text = state("error")
+        expect(text.startswith("GitHub could not be reached — try again later"), f"error: {text!r}")
+        expect(btn.get_attribute("aria-disabled") is None, "the button waits after an unreachable GitHub")
+        states.append("unreachable")
+        # 5. GitHub's limit: said with the time, the button waits — and the portal itself refuses to ask before then
+        reset = now + timedelta(minutes=14)
+        _write_json(up, {**current, "error": "api.github.com refused: its limit of requests for this address is used up (HTTP 403)",
+                         "error_at": iso(now), "limited": True, "retry_at": iso(reset)})
+        page.click("#refresh")
+        text = state("limit")
+        expect(re.match(r"GitHub's limit for this hour — try again after \d{1,2}:\d\d", text) and btn.get_attribute("aria-disabled") == "true",
+               f"limit: {text!r}")
+        seen = len(rec.responses(r"/api/update/check$"))
+        btn.click(force=True)   # (aria-disabled: it waits, and nothing is sent)
+        page.wait_for_timeout(500)
+        expect(len(rec.responses(r"/api/update/check$")) == seen, "a click while GitHub's limit holds was sent")
+        shot(page, "04e-home-update-check-limit")
+        real = page.evaluate("""() => fetch('/api/update/check', {method: 'POST', headers: {'X-Requested-With': 'bedrock-now'}})
+            .then(async (r) => ({status: r.status, retry: r.headers.get('Retry-After'), body: await r.json()}))""")
+        b = real["body"]
+        expect(real["status"] == 429 and b.get("reason") == "limit" and 600 <= b.get("retry_after", 0) <= 841
+               and real["retry"] == str(b["retry_after"]), f"the portal's answer under GitHub's limit: {real['status']} {b}")
+        expect(json.loads(up.read_text()).get("checked_at") == iso(now), "the portal asked GitHub under its limit")
+        states.append(f"limit: {text}; the portal: 429 limit, retry in {b['retry_after']} s")
+        # 6. the endpoint's door, for real (each refused before anything is asked)
+        cookie = portal_login()
+        xrw = {"X-Requested-With": "bedrock-now", "Content-Length": "0"}
+        door = {
+            "signed out": http("POST", None, "/api/update/check", {**xrw, "Origin": origin()}).status,
+            "no X-Requested-With": http("POST", None, "/api/update/check", {"Origin": origin(), "Content-Length": "0"}, cookie=cookie).status,
+            "another site": http("POST", None, "/api/update/check", {**xrw, "Origin": "http://evil.example"}, cookie=cookie).status,
+            "an app's host": http("POST", None, "/api/update/check", {**xrw, "Origin": origin("chat")}, cookie=cookie).status,
+        }
+        pv = http("POST", None, "/api/update/check", {**xrw, "Origin": f"http://p3000-e2e.{ENV.get('PREVIEW_DOMAIN') or 'preview.invalid'}:{PORT}",
+                                                      "Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}, cookie=cookie)
+        door["a preview"] = pv.status
+        expect(door == {"signed out": 401, "no X-Requested-With": 400, "another site": 403, "an app's host": 403, "a preview": 403},
+               f"refusals {door}")
+        if ENV.get("PREVIEW_DOMAIN"):   # (without one, the portal's own Origin check refused it)
+            expect("same-site guard" in (pv.header("X-Bn-Refused") or ""), f"a preview's POST was not refused by Caddy's guard: {pv.header('X-Bn-Refused')!r}")
+        expect(json.loads(up.read_text()).get("checked_at") == iso(now), "a refused request asked GitHub")
+        states.append("door: " + ", ".join(f"{k} {v}" for k, v in door.items()))
+        # 7. Settings › Updates & backups › Daily release check: the same line
+        page.goto(origin() + "/#settings/UPDATE_CHECK")
+        row = page.locator("#settings .set-row[data-key=UPDATE_CHECK]")
+        row.wait_for(state="visible", timeout=20000)
+        row.locator('.release-line[data-state="limit"] .rl-check').wait_for(timeout=10000)
+        rtext = " ".join(row.locator(".release-line").inner_text().split())
+        expect(rtext.startswith("GitHub's limit for this hour — try again after"), f"Settings: {rtext!r}")
+        shot(page, "04f-settings-update-check")
+        states.append("Settings row")
+        # 8. Ctrl+K: "Check for updates" runs it from anywhere, on Home (the answer from the route)
+        _write_json(up, current)
+        cur = {**summary()["update"], "checking": False}
+        page.route(api, lambda route: route.fulfill(status=200, content_type="application/json",
+                                                    body=json.dumps({"started": True, "checking": False, "update": cur})))
+        page.keyboard.press("Control+k")
+        page.wait_for_selector("#search[open]", timeout=5000)
+        page.fill("#search-input", "check for updates")
+        page.locator("#search-list .search-opt", has_text="Check for updates").first.wait_for(timeout=10000)
+        page.keyboard.press("Enter")
+        page.wait_for_selector("#home:not([hidden])", timeout=10000)
+        text = state(want)
+        expect(page.evaluate("document.activeElement && document.activeElement.classList.contains('rl-check')"), "⌘K did not lead to the line")
+        page.unroute(api)
+        states.append(f"Ctrl+K → Home: {text}")
+        probs = rec.problems(allow=[r"^429 POST .*/api/update/check$"])
+        expect(not probs, f"errors: {probs}")
+        # 9. a phone: the line in Home's header, its button a 44 px target, no sideways scroll
+        page2, rec2 = ctx.page("update-check-phone", device="phone")
+        login(page2)
+        page2.click(".tab[data-tab=home]")
+        page2.locator('#release-line[data-state]:not([data-state="none"])').wait_for(timeout=15000)
+        box = page2.locator("#release-line .rl-check").bounding_box()
+        wide = page2.evaluate("[document.documentElement.scrollWidth, innerWidth]")
+        expect(box and box["height"] >= 43.5 and wide[0] <= wide[1], f"phone: button {box}, width {wide}")
+        shot(page2, "04g-phone-update-check")
+        rec2.save()
+        states.append("phone")
+    finally:
+        for r in pending:
+            try:
+                r.abort()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            page.unroute(api)
+        except Exception:  # noqa: BLE001
+            pass
+        if saved is None:
+            up.unlink(missing_ok=True)
+        else:
+            up.write_bytes(saved)
     rec.save()
     return "; ".join(states)
 
@@ -1419,7 +1600,9 @@ def same_site_guard(ctx):
     cdp.on("Network.requestWillBeSentExtraInfo", sent_x)
     cdp.on("Network.responseReceivedExtraInfo", got_x)
     targets = {"portal fetch": origin() + "/api/summary?bn-guard=1", "files fetch": origin("files") + "/rustfs/console/?bn-guard=1",
-               "admin no-cors POST": origin("admin") + "/key/generate?bn-guard=1"}
+               "admin no-cors POST": origin("admin") + "/key/generate?bn-guard=1",
+               # (Check for updates: were it let through, the portal would still refuse it — no X-Requested-With)
+               "portal update-check no-cors POST": origin() + "/api/update/check?bn-guard=1"}
     if (ENV.get("CODE_ENABLED") or "").lower() == "true":
         targets["code fetch"] = origin("code") + "/api/state?bn-guard=1"
     form_url = origin("admin") + "/key/delete?bn-guard=form"
