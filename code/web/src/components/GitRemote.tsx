@@ -26,7 +26,7 @@ import {
 } from '../app';
 import * as api from '../api';
 import type { GitAuth, GitHostKind, GitHostView, GitPlan, GitRemoteState, GitSignInConfig, GitSignInFlow, GitStatus } from '../types';
-import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState } from '../git';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, saidIn, signInLife, signInReach, signInReady, syncState } from '../git';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
@@ -451,22 +451,37 @@ export function GitHostsDialog({ onClose }: { onClose: () => void }) {
         <details class="gitr-events small" data-testid="git-events">
           <summary>Recent use ({events.length})</summary>
           <ul role="list">
-            {events.slice(0, 30).map((e) => (
-              <li key={e.id} class={e.ok ? '' : 'warn-text'}>
-                <span class="muted">{ago(e.at)}</span> {e.who === 'claude' ? <strong>Claude</strong> : 'You'} · {label(e.action, 20)} · {label(e.host, 60)} {label(e.target, 200)}
-                {e.text ? ` — ${label(e.text, 200)}` : ''}
-              </li>
-            ))}
+            {events.slice(0, 30).map((e) => {
+              const said = e.text ? saidIn(e.text) : null;
+              return (
+                <li key={e.id} class={e.ok ? '' : 'warn-text'}>
+                  <span class="muted">{ago(e.at)}</span> {e.who === 'claude' ? <strong>Claude</strong> : 'You'} · {label(e.action, 20)} · {label(e.host, 60)} {label(e.target, 200)}
+                  {said !== null ? <> — <span class="said-who">git in the sandbox said:</span> <q class="said-text" data-testid="git-event-said">{label(said, 200)}</q></>
+                    : e.text ? ` — ${label(e.text, 200)}` : ''}
+                </li>
+              );
+            })}
           </ul>
+          {events.slice(0, 30).some((e) => e.text && saidIn(e.text) !== null) && <p class="said-never" data-testid="git-events-never">{NEVER_ASKS}</p>}
         </details>
       )}
     </Dialog>
   );
 }
 
+/** What git in the sandbox said: apart and labelled as its words — never as a sentence of ours — with NEVER_ASKS. */
+export function SandboxSaid({ said }: { said: string }) {
+  return (
+    <div class="said" data-testid="sandbox-said">
+      <span class="said-who">git in the sandbox said:</span> <q class="said-text" data-testid="sandbox-said-text">{label(said, 300)}</q>
+      <span class="said-never" data-testid="sandbox-said-never">{NEVER_ASKS}</span>
+    </div>
+  );
+}
+
 function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote: GitRemoteState | null }) {
   const [testUrl, setTestUrl] = useState('');
-  const [result, setResult] = useState<string>('');
+  const [result, setResult] = useState<{ text: string; said: string | null } | null>(null);
   const [testing, setTesting] = useState(false);
   const [token, setToken] = useState('');
   const [replacing, setReplacing] = useState(false);
@@ -496,13 +511,16 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   };
   const test = async () => {
     setTesting(true);
-    setResult('');
+    setResult(null);
     try {
       const r = await api.testGitHost(h.id, testUrl.trim());
       const learned = r.learned.length ? ` Trusted the server's host key ${r.learned.map((k) => `${k.type} ${k.fingerprint}`).join(', ')} — compare it with the one the server publishes.` : '';
-      setResult(`${r.ok ? `It works: ${r.branches ?? 0} branch${r.branches === 1 ? '' : 'es'} listed.` : `It did not work: ${r.why}`}${learned}`);
+      // (why it did not work is git's own words, from the sandbox: shown apart as such)
+      setResult(r.ok ? { text: `It works: ${r.branches ?? 0} branch${r.branches === 1 ? '' : 'es'} listed.${learned}`, said: null }
+        : r.said !== null ? { text: `It did not work.${learned}`, said: r.said } : { text: `It did not work: ${r.why}${learned}`, said: null });
     } catch (e) {
-      setResult(e instanceof Error ? e.message : String(e));
+      const said = api.saidOf(e);
+      setResult(said !== null ? { text: 'It did not work.', said } : { text: e instanceof Error ? e.message : String(e), said: null });
     } finally {
       setTesting(false);
       void gitHostChange(async () => {});
@@ -637,7 +655,12 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
           {testing ? <Spinner size={12} /> : <Icon name="play" size={13} />} Test connection
         </button>
       </div>
-      {result && <div class="small gitr-result" role="status" data-testid="git-host-test-result">{label(result, 600)}</div>}
+      {result && (
+        <div class="small gitr-result" role="status" data-testid="git-host-test-result">
+          {label(result.text, 600)}
+          {result.said !== null && <SandboxSaid said={result.said} />}
+        </div>
+      )}
       <div class="gitr-claude small">
         <button type="button" class={`switch${h.claude ? ' on' : ''}`} role="switch" aria-checked={h.claude} aria-label="Let Claude use this host" disabled={!h.claude && !local}
           onClick={() => (h.claude ? void gitHostChange(() => api.setGitHostClaude(h.id, false), 'Claude can no longer use this host') : setClaudeAsk(true))} data-testid="git-host-claude">

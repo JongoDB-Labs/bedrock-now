@@ -31,6 +31,8 @@ export interface Toast {
   level: 'info' | 'ok' | 'error';
   /** a button on the toast ("Preview" when a new server listens) */
   action?: { label: string; run: () => void };
+  /** what git in the sandbox said: shown apart, as its words (never as a sentence of ours), with NEVER_ASKS */
+  said?: string;
 }
 
 export interface DirState {
@@ -359,16 +361,23 @@ const get = store.get;
 // ---------------------------------------------------------------- small helpers
 
 let toastId = 1;
-export function toast(text: string, level: Toast['level'] = 'info', action?: Toast['action']): void {
+export function toast(text: string, level: Toast['level'] = 'info', action?: Toast['action'], said?: string | null): void {
   const id = toastId++;
-  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level, ...(action ? { action } : {}) }] }));
-  setTimeout(() => dismissToast(id), level === 'error' || action ? 8000 : 4000);
+  set((s) => ({ ...s, toasts: [...s.toasts.slice(-3), { id, text: label(text, 400), level, ...(action ? { action } : {}), ...(said != null ? { said: label(said, 300) } : {}) }] }));
+  setTimeout(() => dismissToast(id), said != null ? 15000 : level === 'error' || action ? 8000 : 4000);
 }
 export function dismissToast(id: number): void {
   set((s) => ({ ...s, toasts: s.toasts.filter((t) => t.id !== id) }));
 }
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : 'Something went wrong.';
+}
+/** A Git host operation's failure: ours as `text` says it — or, when it is git in the sandbox's own words, `what`
+ *  failed and its words apart (Toast.said), never as a sentence of ours. */
+function gitFailed(e: unknown, text: (msg: string) => string, what: string): void {
+  const said = api.saidOf(e);
+  if (said === null) toast(text(errText(e)), 'error');
+  else toast(what, 'error', undefined, said);
 }
 
 function updateView(id: string, fn: (v: SessionView) => SessionView): void {
@@ -2746,18 +2755,20 @@ async function gitChange(what: string, fn: (repo: string) => Promise<string | vo
   if (get().git.busy || get().git.net) return false;
   setGit((g) => ({ ...g, busy: what }));
   let failed = '';
+  let said: string | null = null;
   try {
     const ok = await fn(get().git.repo);
     if (ok) toast(ok, 'ok');
     return true;
   } catch (e) {
-    failed = e instanceof api.ApiError && e.status === 429 ? 'Another git change is on its way: try again in a moment.' : `git: ${errText(e)}`;
+    said = api.saidOf(e);
+    failed = e instanceof api.ApiError && e.status === 429 ? 'Another git change is on its way: try again in a moment.' : said !== null ? 'The git change was not made' : `git: ${errText(e)}`;
     return false;
   } finally {
     setGit((g) => ({ ...g, busy: null }));
     await refreshGit();
     // (a failure is said once git was asked again: the panel shows the files as they are by then)
-    if (failed) toast(failed, 'error');
+    if (failed) toast(failed, 'error', undefined, said);
     if (get().review.engaged) void refreshReview();
   }
 }
@@ -2868,7 +2879,7 @@ export async function gitNet(action: 'fetch' | 'pull' | 'push' | 'publish', remo
     if (plan.confirm) setGit((x) => ({ ...x, plan }));
     else await runGitPlan(plan);
   } catch (e) {
-    toast(errText(e), 'error');
+    gitFailed(e, (m) => m, `${NET_VERB[action]} failed`);
   }
 }
 /** A clone: what it would do (the dialog then shows it for your confirmation). */
@@ -2902,7 +2913,7 @@ export async function runGitPlan(plan: GitPlan | null = get().git.plan): Promise
     } else if (r.action === 'pull') toast(r.updated ? `Pulled: ${label(r.display, 120)}` : 'Already up to date', 'ok');
     else toast(`Fetched ${label(r.display, 120)}`, 'ok');
   } catch (e) {
-    toast(`${NET_VERB[plan.action]} failed: ${errText(e)}`, 'error');
+    gitFailed(e, (m) => `${NET_VERB[plan.action]} failed: ${m}`, `${NET_VERB[plan.action]} failed`);
   } finally {
     setGit((g) => ({ ...g, net: null }));
     await refreshGit(plan.action === 'clone');

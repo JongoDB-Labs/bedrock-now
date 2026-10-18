@@ -15,8 +15,9 @@ const USER_CODE = () => `${crypto.randomBytes(2).toString('hex').toUpperCase()}-
 //   clients: {clientId: 'github' | 'gitlab'} — the applications it knows, and the flavor of each
 export function createOAuthMock({ clients = {}, lifetime = 3600, refreshLifetime = 86400 * 180, now = () => Date.now(), admin = '', expiresIn = 900, interval = 5 } = {}) {
   // (noExpiry: tokens without expires_in — a GitHub App with expiring tokens turned off; tokenError: the token endpoint
-  // answers this error code instead, for a test of what a provider's own words may become)
-  const cfg = { lifetime, refreshLifetime, expiresIn, interval, slowDownOnce: false, noRefresh: false, noExpiry: false, tokenError: '' };
+  // answers this error code instead, for a test of what a provider's own words may become; reuseAccess: a new sign-in
+  // hands back the account's current access token — a provider that reuses them)
+  const cfg = { lifetime, refreshLifetime, expiresIn, interval, slowDownOnce: false, noRefresh: false, noExpiry: false, tokenError: '', reuseAccess: false };
   const devices = new Map();   // device_code -> {clientId, flavor, userCode, scope, state, account, polls, expiresAt, slowed}
   const access = new Map();    // token -> {account, clientId, expiresAt, void}
   const refresh = new Map();   // token -> {account, clientId, used, void, access}
@@ -25,7 +26,8 @@ export function createOAuthMock({ clients = {}, lifetime = 3600, refreshLifetime
 
   function issue(clientId, account, flavor) {
     const pre = flavor === 'github' ? ['gh', 'u_'].join('') : '';
-    const t = `${pre}${rand(20)}`;
+    const same = cfg.reuseAccess ? [...access].find(([, a]) => a.account === account && a.clientId === clientId && !a.void && a.expiresAt > now())?.[0] : null;
+    const t = same || `${pre}${rand(20)}`;
     access.set(t, { account, clientId, expiresAt: cfg.noExpiry ? Infinity : now() + cfg.lifetime * 1000, void: false });
     const out = { access_token: t, token_type: 'bearer', ...(cfg.noExpiry ? {} : { expires_in: cfg.lifetime }), scope: flavor === 'github' ? '' : 'read_repository write_repository read_user', created_at: Math.floor(now() / 1000) };
     if (!cfg.noRefresh) {

@@ -17,7 +17,7 @@ import { makeApi, HttpError, sandboxStatus, attachment } from './api.mjs';
 import { str, short, isUuid, isId } from './validate.mjs';
 import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 import { GitHosts, HostError } from './githosts.mjs';
-import { makeGitRemote } from './gitremote.mjs';
+import { makeGitRemote, NEVER_ASKS } from './gitremote.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -403,7 +403,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       const [status, msg] = e instanceof HttpError || e instanceof HostError ? [e.status, e.message] : sandboxStatus(e);
       if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
       if (res.headersSent) return res.destroy();
-      return send(res, status, { error: short(msg, 500) });
+      // (a Git op's failure in the sandbox's own words: labelled — said, and the line the page shows beside it)
+      return send(res, status, { error: short(msg, 500), ...(typeof e?.said === 'string' ? { said: short(e.said, 300), neverAsks: NEVER_ASKS } : {}) });
     }
   });
   server.requestTimeout = 180000;

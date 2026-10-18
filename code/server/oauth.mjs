@@ -285,8 +285,9 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       const before = f.hostId ? store.get(f.hostId) : null;
       const h = f.hostId ? store.replaceOAuth(f.hostId, oauth)
         : store.addOAuth({ kind: f.provider, host: f.target.host, port: f.target.port, label: f.label || undefined, ca: f.target.ca, oauth });
-      // (Sign in again: the session it replaces is revoked at GitLab too — best effort, never in the way)
-      if (before?.auth === 'oauth') void revoke(before).catch(() => {});
+      // (Sign in again: the session it replaces is revoked at GitLab too — best effort, never in the way; not when the
+      // provider handed back the same access token: revoking it would sign out the new session)
+      if (before?.auth === 'oauth' && before.oauth?.accessToken !== oauth.accessToken) void revoke(before).catch(() => {});
       f.gitHost = h;
       end(f, 'done');
       event({ action: 'host', host: h.label, target: h.host, text: `${f.hostId ? 'signed in again' : 'connected with a sign-in'}${who.account ? ` as ${who.account}` : ''}` });

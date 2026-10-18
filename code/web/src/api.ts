@@ -1347,9 +1347,13 @@ export async function removeGitHost(id: string): Promise<{ revoked: boolean | nu
   const o = await request('DELETE', `/api/git/hosts/${id}`);
   return { revoked: typeof o.revoked === 'boolean' ? o.revoked : null, revokeAt: typeof o.revokeAt === 'string' && HTTPS_LINK.test(o.revokeAt) ? o.revokeAt : null };
 }
-export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
+/** saidOf(e) -> what git in the sandbox said when a failure is its words (the server's `said`: shown as its own), else null */
+export function saidOf(e: unknown): string | null {
+  return e instanceof ApiError && typeof e.body?.said === 'string' ? label(e.body.said, 300) : null;
+}
+export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; said: string | null; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
   const o = await request('POST', `/api/git/hosts/${id}/test`, { url });
-  return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), host: normGitHost(o.host),
+  return { ok: o.ok === true, branches: count(o.branches), why: label(o.why, 300), said: o.ok !== true && typeof o.said === 'string' ? label(o.said, 300) : null, host: normGitHost(o.host),
     learned: arr(o.learned, 8).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })) };
 }
 export async function getGitRepos(): Promise<string[]> {

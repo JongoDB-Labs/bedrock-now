@@ -11,6 +11,7 @@ import { GitHosts, HostError, githubTokenType, httpsAuth } from './githosts.mjs'
 import { makeOAuth } from './oauth.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
+import { SandboxError } from './spawn-client.mjs';
 
 // --- the URL rules (bn-coded's parseRemoteUrl, the same: the sandbox checks again, and re-reads the URL itself) ---
 const HOST_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$/;
@@ -111,14 +112,35 @@ export function remoteStateOf(r) {
 const PLAN_MS = 10 * 60000;
 const CLAUDE_PER_MINUTE = 30;
 const err = (status, m) => new HostError(status, m);
+// What git in the sandbox says is the sandbox's text — a hostile sandbox could word it as a message from us ("Push
+// failed: GitHub asks you to re-confirm this computer: enter … at github.com/login/device"). It travels labelled as
+// its own (said), never as a sentence of ours, and the page shows this fixed line beside it.
+export const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
+export class SandboxSaid extends HostError {
+  constructor(status, said) {
+    super(status, `git in the sandbox said: “${said}” (${NEVER_ASKS})`);
+    this.said = said;
+  }
+}
+// sandboxFailure(e) -> the sandbox's refusal (its ERROR, in its own words) labelled as the sandbox's (SandboxSaid);
+// anything else as it is — ours (a timeout, an unreachable socket, a malformed answer: main.mjs's sandboxStatus)
+export function sandboxFailure(e) {
+  if (!(e instanceof SandboxError) || e.kind !== 'refused') return e;
+  if (/ENOENT/.test(e.message)) return err(404, 'no such file or folder');
+  return new SandboxSaid(/changed on disk|exists already/.test(e.message) ? 409 : 400, short(e.message, 300) || 'refused');
+}
+// failText(e) -> what Activity notes of a failure: ours as it is, the sandbox's labelled
+const failText = (e, n = 300) => (e instanceof SandboxSaid ? `git in the sandbox said: “${short(e.said, n - 40)}”` : short(e?.message, n));
 const localOnly = (remote, what) => { if (remote) throw err(403, `${what} only from the computer running bedrock-now (not over remote access)`); };
 
 // makeGitRemote({call, openBroker, store, onEvent, connect, apps}) -> the API of Git hosts and remote operations (main.mjs
 // routes): call(req, opts) — sandboxCall; openBroker({onAsk}) — sandboxBroker; onEvent(event) — a use, for the pages;
 // connect(host, port) — sandboxTunnel (a sign-in's requests to its provider, TLS here); apps — Settings' application IDs
-export function makeGitRemote({ call, openBroker = null, store = new GitHosts(), onEvent = () => {}, now = () => Date.now(), log = () => {}, connect = null, apps = {},
+export function makeGitRemote({ call: sandboxCall, openBroker = null, store = new GitHosts(), onEvent = () => {}, now = () => Date.now(), log = () => {}, connect = null, apps = {},
   oauthDelay = null }) {
   const plans = new Map();
+  // every op of the sandbox's: its failures labelled as its own (sandboxFailure)
+  const call = async (req, opts) => { try { return await sandboxCall(req, opts); } catch (e) { throw sandboxFailure(e); } };
   const event = (e) => { try { const ev = store.event(e); onEvent(ev); return ev; } catch (x) { log(`git event: ${x.message}`); return null; } };
   const noTunnel = async () => { throw new Error('no way out from here (the Code page\'s sandbox is not connected)'); };
   const oauth = makeOAuth({ store, connect: connect || noTunnel, apps, now, log, delay: oauthDelay, onEvent: (e) => event(e) });
@@ -218,22 +240,24 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     let p;
     try { p = parseRemoteUrl(b?.url); } catch (e) { throw err(400, e.message); }
     if (store.match(p, [h]) !== h) throw err(400, `that URL is not on ${h.host}${h.port ? `:${h.port}` : ''} over ${httpsAuth(h.auth) ? 'https' : 'ssh'} (this host's ${httpsAuth(h.auth) ? 'token is for https://' : 'key is for ssh'} URLs)`);
-    try { h = await fresh(h); } catch (e) { event({ action: 'test', host: h.label, target: p.display, ok: false, text: short(e.message, 200) }); throw e; }
+    try { h = await fresh(h); } catch (e) { event({ action: 'test', host: h.label, target: p.display, ok: false, text: failText(e, 200) }); throw e; }
     // (a key is learned only from the computer running bedrock-now, and never for a host whose keys are built in)
     const learn = h.auth === 'ssh' && !remote && !((p.port ?? 22) === 22 && (KNOWN_HOSTS[h.host] || []).length);
     let result;
     try {
       ({ result } = await call({ op: 'git.test', url: b.url, auth: authFor(h, p, { learn }) }, { timeoutMs: 90000, onAsk: askFor(h, p, { learn }) }));
     } catch (e) {
-      event({ action: 'test', host: h.label, target: p.display, ok: false, text: short(e.message, 200) });
+      event({ action: 'test', host: h.label, target: p.display, ok: false, text: failText(e, 200) });
       throw e;
     }
     const learned = (Array.isArray(result?.learned) ? result.learned : []).filter((l) => typeof l === 'string').slice(0, 8);
     let kept = [];
     if (learned.length && learn) { try { store.addKnown(id, learned); kept = learned; } catch (e) { log(`host keys: ${e.message}`); } }
     const ok = result?.ok === true;
-    event({ action: 'test', host: h.label, target: p.display, ok, text: ok ? `${int(result.branches, 0, 1e6) ?? 0} branches listed` : short(result?.why, 200) });
-    return { ok, branches: ok ? int(result.branches, 0, 1e6) ?? 0 : null, why: ok ? null : short(result?.why, 300) || 'the test failed',
+    // (why it did not work: git's own words, from the sandbox — labelled as such, the page shows NEVER_ASKS beside it)
+    const said = ok ? null : short(result?.why, 300) || 'no reason given';
+    event({ action: 'test', host: h.label, target: p.display, ok, text: ok ? `${int(result.branches, 0, 1e6) ?? 0} branches listed` : `git in the sandbox said: “${short(said, 160)}”` });
+    return { ok, branches: ok ? int(result.branches, 0, 1e6) ?? 0 : null, why: ok ? null : `git in the sandbox said: “${said}”`, said, neverAsks: ok ? null : NEVER_ASKS,
       learned: kept.map(knownHostFingerprint).filter(Boolean), host: GitHosts.public(store.get(id) || h) };
   }
 
@@ -341,7 +365,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     if (pl.hostId && !h) throw err(409, 'that git host was removed meanwhile');
     const target = pl.p.display;
     // (a sign-in's token renewed first when it expires within 5 minutes: written, then used — or "Sign in again")
-    try { h = await fresh(h); } catch (e) { event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: short(e.message, 300) }); throw e; }
+    try { h = await fresh(h); } catch (e) { event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: failText(e) }); throw e; }
     const auth = authFor(h, pl.p);
     let result;
     try {
@@ -351,7 +375,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
           ...(pl.action !== 'fetch' && pl.head ? { expect: pl.head } : {}), auth },
           { timeoutMs: 6 * 60000, onAsk: askFor(h, pl.p) }));
     } catch (e) {
-      event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: short(e.message, 300) });
+      event({ action: pl.action, host: h?.label ?? '', target, ok: false, text: failText(e) });
       throw e;
     }
     const ok = result?.ok === true;

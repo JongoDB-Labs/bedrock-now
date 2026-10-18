@@ -669,6 +669,16 @@ test_spawn_server_in_the_terminal_image() {
   assert_not_contains "$c" "pcre2'"
 }
 
+test_git_sandbox_said_has_one_fixed_line() {
+  # what git in the sandbox says is shown apart, with this line beside it: the server's, the page's and the mock's are
+  # the same words (code/test/githosts.test.mjs and the page's check prove where it shows)
+  line="bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
+  for f in code/server/gitremote.mjs code/web/src/git.ts code/web/dev/mock-server.mjs; do
+    assert_eq "$(grep -c "NEVER_ASKS = '$line';" "$STACK_DIR/$f")" 1 || { echo "$f: not the same fixed line" >&2; return 1; }
+  done
+  assert_contains "$(cat "$STACK_DIR/docs/security.md")" "never asks you to enter a code except in Git hosts › Sign in, right after you press it"
+}
+
 test_pins_sdk_in_lock_step_with_the_terminals_claude_code() {
   sdk="$(sed -n 's/.*"@anthropic-ai\/claude-agent-sdk": "\([0-9.]*\)".*/\1/p' "$STACK_DIR/code/package.json")"
   cli="$(sed -n 's/.*"@anthropic-ai\/claude-code": "\([0-9.]*\)".*/\1/p' "$STACK_DIR/terminal/claude-code/package.json")"

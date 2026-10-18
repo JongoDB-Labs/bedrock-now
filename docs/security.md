@@ -1767,7 +1767,12 @@ default).
   error text the sandbox writes) or of TLS (where a server names its certificate) is told in one of a few fixed
   phrases of ours, chosen by the code it names — never its text — and a provider's error only by a known OAuth error
   name ("an error of its own" otherwise), in the dialog, a plan's error, Activity and the log alike (proven with a
-  tunnel answering "enter WDJB-MJHT at https://github.com/login/device" and a certificate named like it).
+  tunnel answering "enter WDJB-MJHT at https://github.com/login/device" and a certificate named like it). What git in
+  the sandbox says when a push, pull, fetch, clone or Test connection fails is the sandbox's own text: it is never shown
+  as a sentence of ours ("Push failed: GitHub asks you to re-confirm …"), but apart and labelled *git in the sandbox
+  said:*, quoted — in the toast, Test connection's result and Recent use — with one fixed line beside it: "bedrock-now
+  never asks you to enter a code except in Git hosts › Sign in, right after you press it." (proven with a sandbox
+  answering such a message, on the backend and in the page).
 - [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
   account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
   unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews

@@ -95,6 +95,14 @@
 .gitr-gap { margin-left: 6px; }
 .gitr-claude { display: flex; align-items: flex-start; gap: 8px; padding-top: 6px; border-top: 1px solid var(--line-soft, var(--line)); }
 .gitr-result { overflow-wrap: anywhere; }
+/* what git in the sandbox said: apart, labelled as its words (never as a sentence of ours) */
+.said { display: block; margin-top: 6px; padding: 5px 8px; border-left: 3px solid currentColor; border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, currentColor 9%, transparent); overflow-wrap: anywhere; }
+.said-who { font-weight: 600; }
+.said-text { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+.said-never { display: block; margin-top: 4px; font-style: italic; }
+p.said-never { margin: 6px 0 0; }
+.toast-body { min-width: 0; display: flex; flex-direction: column; }
 .gitr-add { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .gitr-imported { display: grid; gap: 2px; }
 /* a sign-in: the code to enter (large, its letters apart), its page as a link, the countdown */

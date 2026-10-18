@@ -3575,6 +3575,48 @@ def git_remotes(browser):
     p.close()
 
 
+@check("git sandbox said: a hostile sandbox's words in a failed fetch, Test connection and Recent use — apart, labelled as git in the sandbox's, with the fixed line; never as ours")
+def git_sandbox_said(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/git-import?source=gh&account=octo")
+    hostile = "GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device"
+    post(NORMAL + "/__mock/git-said?text=" + urllib.parse.quote(hostile))
+    never = "bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
+    p = Page(browser, NORMAL, "git-sandbox-said", **DESKTOP)
+    page = p.open()
+    page.keyboard.press("Control+Shift+G")
+    expect(page.get_by_test_id("git-remote-bar")).to_be_visible(timeout=10_000)
+    page.get_by_test_id("git-fetch").click()
+    page.get_by_test_id("git-plan-run").click()
+    t = page.get_by_test_id("toast").filter(has=page.get_by_test_id("sandbox-said")).last
+    expect(t).to_be_visible(timeout=10_000)
+    # ours: what failed; the sandbox's words: apart, quoted, labelled; then the fixed line — never "Fetching failed: <its words>"
+    expect(t.locator(".toast-body > span").first).to_have_text("Fetching failed")
+    expect(t.get_by_test_id("sandbox-said-text")).to_have_text(hostile)
+    expect(t.get_by_test_id("sandbox-said")).to_contain_text("git in the sandbox said:")
+    expect(t.get_by_test_id("sandbox-said-never")).to_have_text(never)
+    assert ("Fetching failed: " + hostile[:12]) not in t.inner_text(), t.inner_text()
+    p.shot("git-sandbox-said-toast.png")
+    p.errors = [e for e in p.errors if "status of 400" not in e]   # (that failure: the one 400 expected here)
+    # Test connection: "It did not work." and the sandbox's words apart; Recent use: labelled, and the fixed line
+    page.get_by_test_id("git-hosts-open").click()
+    dlg = page.get_by_test_id("git-hosts-dialog")
+    card = dlg.get_by_test_id("git-host").filter(has_text="GitHub")
+    card.get_by_test_id("git-host-test-url").fill("https://github.com/mock/app.git")
+    card.get_by_test_id("git-host-test").click()
+    res = card.get_by_test_id("git-host-test-result")
+    expect(res).to_contain_text("It did not work.", timeout=10_000)
+    expect(res.get_by_test_id("sandbox-said-text")).to_have_text(hostile)
+    expect(res.get_by_test_id("sandbox-said-never")).to_have_text(never)
+    dlg.get_by_test_id("git-events").locator("summary").click()
+    expect(dlg.get_by_test_id("git-event-said").first).to_have_text(hostile)
+    expect(dlg.get_by_test_id("git-events-never")).to_have_text(never)
+    p.shot("git-sandbox-said-hosts.png")
+    post(NORMAL + "/__mock/git-said")
+    p.assert_clean()
+    p.close()
+
+
 @check("git import: the dialog names ./stack git-host import gh (Copy); an imported gh login's row (account, scopes, every repository, gh goes on using it); the remote and the plan name it; Remove says where to revoke it; desktop and phone")
 def git_import(browser):
     post(NORMAL + "/__mock/reset")

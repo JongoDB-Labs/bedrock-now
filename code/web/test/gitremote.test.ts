@@ -3,8 +3,8 @@
 // the small model (src/git.ts): which remote, ahead/behind, a clone's folder name, where to make a token or add a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
-import { normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, signInLink } from '../src/api';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, saidIn, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
+import { ApiError, normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
 import type { GitHostView } from '../src/types';
 
 const host = (over: Record<string, unknown> = {}) => ({ id: 'h_0123456789ab', kind: 'github', label: 'GitHub', host: 'github.com', port: null, auth: 'ssh', username: 'git',
@@ -167,4 +167,22 @@ test('the sign-in in progress: the code, the page to enter it on (https, on that
   assert.equal(importCommand('github'), './stack git-host import gh');
   assert.equal(importCommand('gitlab', 'gitlab.example.com'), './stack git-host import glab --host gitlab.example.com');
   assert.equal(importCommand('gitlab', 'evil; rm -rf'), './stack git-host import glab');
+});
+
+test('git in the sandbox\'s words: told apart from ours (a failure, Recent use); the fixed line is the server\'s', () => {
+  const hostile = 'GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device';
+  // a failure: its words only from the server's said (a string), never taken from the message
+  assert.equal(saidOf(new ApiError(400, `git in the sandbox said: “${hostile}”`, { error: 'x', said: hostile })), hostile);
+  assert.equal(saidOf(new ApiError(400, hostile, { error: hostile })), null);
+  assert.equal(saidOf(new ApiError(400, 'x', { said: 5 })), null);
+  assert.equal(saidOf(new Error(hostile)), null);
+  const odd = saidOf(new ApiError(400, 'x', { said: `${hostile}\n\u202eevil` }));
+  assert.ok(odd !== null && !odd.includes('\n') && !odd.includes('\u202e'), String(odd));
+  // Recent use: the server's label, whole — not anything that merely contains it
+  assert.equal(saidIn(`git in the sandbox said: “${hostile}”`), hostile);
+  assert.equal(saidIn(hostile), null);
+  assert.equal(saidIn(`Push failed: git in the sandbox said: “${hostile}”`), null);
+  assert.equal(saidIn('2 branches listed'), null);
+  // the page's fixed line, word for word (the server's and the mock's the same: tests/test_code.sh)
+  assert.equal(NEVER_ASKS, 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.');
 });

@@ -573,3 +573,25 @@ test('Sign in again revokes the GitLab session it replaces (best effort)', async
   assert.equal(mock.tokenAccount(old), null, 'the old session is void');
   assert.equal(mock.tokenAccount(store.get(end.gitHost.id).oauth.accessToken), 'alice');
 });
+
+test('Sign in again: a provider that hands back the same access token — the session it replaced is not revoked', async () => {
+  const { g, store } = remoteOf('again-same');
+  mock.set({ lifetime: 7200, reuseAccess: true });
+  try {
+    const { end } = await signIn(g, { provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA }, { account: 'carol' });
+    const old = store.get(end.gitHost.id).oauth.accessToken;
+    const revokes = mock.log.revokes;
+    const again = await g.startSignIn({ provider: 'gitlab', hostId: end.gitHost.id }, false);
+    const polls = mock.log.polls;
+    await until(() => mock.log.polls > polls);
+    mock.approve(again.userCode, 'carol');
+    await until(() => g.signInStatus(again.flowId, false).state !== 'pending');
+    assert.equal(g.signInStatus(again.flowId, false).state, 'done');
+    assert.equal(store.get(end.gitHost.id).oauth.accessToken, old, 'the provider handed back the same token');
+    await new Promise((r) => setTimeout(r, 300));   // (a revocation would have been sent at once: none was)
+    assert.equal(mock.log.revokes, revokes);
+    assert.equal(mock.tokenAccount(old), 'carol', 'the session still works');
+  } finally {
+    mock.set({ reuseAccess: false });
+  }
+});

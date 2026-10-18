@@ -32,6 +32,7 @@ import {
   openModelMenu,
 } from '../app';
 import { GitPanel } from './GitPanel';
+import { SandboxSaid } from './GitRemote';
 import { changedCount } from '../git';
 import { BudgetDialog } from './Budget';
 import { PermissionsDialog } from './Permissions';
@@ -445,8 +446,15 @@ function Toasts() {
   return (
     <div class="toasts" aria-live="polite">
       {toasts.map((t) => (
-        <div key={t.id} class={`toast toast-${t.level}`} role={t.level === 'error' ? 'alert' : 'status'} data-testid="toast">
-          <span>{t.text}</span>
+        <div key={t.id} class={`toast toast-${t.level}${t.said != null ? ' toast-has-said' : ''}`} role={t.level === 'error' ? 'alert' : 'status'} data-testid="toast">
+          {t.said != null ? (
+            <div class="toast-body">
+              <span>{t.text}</span>
+              <SandboxSaid said={t.said} />
+            </div>
+          ) : (
+            <span>{t.text}</span>
+          )}
           {t.action && (
             <button
               type="button"

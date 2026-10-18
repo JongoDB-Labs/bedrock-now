@@ -32,6 +32,10 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **The walkthrough's Connect a git host** and Settings' Git hosts row mention Sign in with GitHub / GitLab;
   `./stack git-host import` points to it (gh: it reaches less; glab's OAuth login: sign in with GitLab instead).
+- **What git in the sandbox says when a remote operation fails** (push, pull, fetch, clone, Test connection) is shown
+  apart, quoted and labelled *git in the sandbox said:*, never as a sentence of ours, with the line "bedrock-now never
+  asks you to enter a code except in Git hosts › Sign in, right after you press it." — in the toast, Test connection's
+  result and Recent use: a hostile sandbox cannot word its text as a message from bedrock-now asking for a code.
 
 ## [0.15.0] - 2026-10-18
 

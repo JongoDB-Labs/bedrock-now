@@ -11,7 +11,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { GitHosts, HostError, KINDS } from '../server/githosts.mjs';
-import { makeGitRemote, parseRemoteUrl, prLink, remoteStateOf, reposOf, repoOk, credHost } from '../server/gitremote.mjs';
+import { makeGitRemote, parseRemoteUrl, prLink, remoteStateOf, reposOf, repoOk, credHost, NEVER_ASKS, SandboxSaid } from '../server/gitremote.mjs';
+import { SandboxError } from '../server/spawn-client.mjs';
 import { agentAnswer, AGENT, sshString, keyBlob, fingerprint, publicKeyBlob, newKey, loadKey, userauth, KNOWN_HOSTS, FAILURE } from '../server/sshagent.mjs';
 import { createServer } from '../server/main.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
@@ -159,6 +160,8 @@ function fakeSandbox(stateOf) {
   const calls = [];
   const call = async (req, opts = {}) => {
     calls.push({ req, opts });
+    const hostile = fakeSandbox.hostile?.(req);   // (a test's sandbox that answers in words of its own)
+    if (hostile) return hostile;
     if (req.op === 'git.remote.state') return { result: stateOf(req) };
     if (req.op === 'git.repos') return { result: { repos: [{ path: '' }] } };
     if (['git.net', 'git.clone', 'git.test'].includes(req.op)) {
@@ -337,4 +340,66 @@ test('the routes: adding a host, a token, a key or Claude\'s use only locally; r
   assert.equal((await req('DELETE', `/api/git/hosts/${id}`, undefined, true)).status, 200);
   assert.equal((await req('DELETE', `/api/git/hosts/${id}`)).status, 404);
   assert.deepEqual(KINDS, ['github', 'gitlab', 'other']);
+});
+
+// a hostile sandbox words its failure as a message from us: it is shown as git in the sandbox's words, never as ours
+const HOSTILE = 'GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device';
+const LABELLED = `git in the sandbox said: “${HOSTILE}”`;
+test('git in the sandbox\'s own words: labelled as its words (with the fixed line), in a failure, Activity and Test connection', async () => {
+  const s = store('hostile');
+  const events = [];
+  const fx = fakeSandbox(() => repoState());
+  fakeSandbox.asks = [];
+  const g = makeGitRemote({ call: fx.call, store: s, onEvent: (e) => events.push(e) });
+  const h = s.add({ kind: 'github', auth: 'token', token: TOKEN });
+  try {
+    // push: the sandbox's ERROR — a failure that carries its words apart (said), the message labelled
+    fakeSandbox.hostile = (q) => { if (q.op === 'git.net' || q.op === 'git.test') throw new SandboxError(HOSTILE, 'refused'); };
+    let p = await g.plan({ action: 'push' });
+    const e = await g.run({ planId: p.planId }).then(() => null, (x) => x);
+    assert.ok(e instanceof SandboxSaid);
+    assert.deepEqual([e.status, e.said], [400, HOSTILE]);
+    assert.equal(e.message, `${LABELLED} (${NEVER_ASKS})`);
+    assert.equal(events.at(-1).text, LABELLED, 'Activity: labelled too');
+    // Test connection: an ERROR, and a failed test's reason — both its words, labelled, with the fixed line
+    await assert.rejects(g.testHost(h.id, { url: 'https://github.com/o/r.git' }), (x) => x instanceof SandboxSaid && x.said === HOSTILE);
+    assert.equal(events.at(-1).text, LABELLED);
+    fakeSandbox.hostile = (q) => (q.op === 'git.test' ? { result: { ok: false, why: HOSTILE } } : null);
+    const t = await g.testHost(h.id, { url: 'https://github.com/o/r.git' });
+    assert.deepEqual([t.ok, t.why, t.said, t.neverAsks], [false, LABELLED, HOSTILE, NEVER_ASKS]);
+    assert.equal(events.at(-1).text, LABELLED);
+    // nothing of the sandbox's is ever the start of a text of ours
+    for (const ev of events) assert.ok(!String(ev.text).startsWith(HOSTILE.slice(0, 12)), ev.text);
+    // our own failures stay ours: a timeout is not the sandbox's words
+    fakeSandbox.hostile = (q) => { if (q.op === 'git.net') throw new SandboxError('the sandbox did not answer in time', 'timeout'); };
+    p = await g.plan({ action: 'push' });
+    const t2 = await g.run({ planId: p.planId }).then(() => null, (x) => x);
+    assert.ok(t2 instanceof SandboxError && !(t2 instanceof SandboxSaid));
+    assert.equal(events.at(-1).text, 'the sandbox did not answer in time');
+  } finally {
+    fakeSandbox.hostile = null;
+  }
+});
+
+test('the routes: a failure in git in the sandbox\'s words travels apart (said) with the fixed line; ours stays as it is', async () => {
+  let r = await req('POST', '/api/git/hosts', { kind: 'github', auth: 'token', token: TOKEN });
+  const id = r.json.host.id;
+  try {
+    fakeSandbox.hostile = (q) => { if (q.op === 'git.net') throw new SandboxError(HOSTILE, 'refused'); };
+    const p = await req('POST', '/api/git/plan', { action: 'push' });
+    r = await req('POST', '/api/git/run', { planId: p.json.planId });
+    assert.equal(r.status, 400);
+    assert.deepEqual([r.json.said, r.json.neverAsks], [HOSTILE, NEVER_ASKS]);
+    assert.ok(r.json.error.startsWith('git in the sandbox said: “'), r.json.error);
+    fakeSandbox.hostile = (q) => (q.op === 'git.test' ? { result: { ok: false, why: HOSTILE } } : null);
+    r = await req('POST', `/api/git/hosts/${id}/test`, { url: 'https://github.com/o/r.git' });
+    assert.deepEqual([r.status, r.json.ok, r.json.said, r.json.why, r.json.neverAsks], [200, false, HOSTILE, LABELLED, NEVER_ASKS]);
+    fakeSandbox.hostile = (q) => { if (q.op === 'git.net') throw new SandboxError('the sandbox did not answer in time', 'timeout'); };
+    const p2 = await req('POST', '/api/git/plan', { action: 'push' });
+    r = await req('POST', '/api/git/run', { planId: p2.json.planId });
+    assert.deepEqual([r.status, r.json], [504, { error: 'the sandbox did not answer in time' }]);
+  } finally {
+    fakeSandbox.hostile = null;
+    await req('DELETE', `/api/git/hosts/${id}`);
+  }
 });
