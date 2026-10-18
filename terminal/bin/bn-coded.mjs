@@ -1763,6 +1763,31 @@ export function projectCheck(req) {
 // never opened. Bounded: at most CONFIG_FILES files, CONFIG_BYTES in all, CONFIG_FILE each, CONFIG_DEPTH folders deep —
 // beyond that it cannot be verified (and is never trusted).
 export const CONFIG_FILES = 500, CONFIG_BYTES = 2 << 20, CONFIG_FILE = 256 << 10, CONFIG_DEPTH = 12, CONFIG_SHOWN = 3 << 20;
+// .claude/ folders below the root too (Claude Code finds skills and commands in nested ones): looked for in at most
+// NESTED_DIRS folders, NESTED_DEPTH deep, never in .git, node_modules or the trash, never through a link — beyond
+// that it cannot be verified
+export const NESTED_DIRS = 3000, NESTED_DEPTH = 10;
+const NESTED_SKIP = new Set(['.git', 'node_modules', TRASH, '.claude']);
+// nestedClaude(abs) -> {dirs: [rel …] of the .claude entries below abs (a folder, or anything else named so), over}
+function nestedClaude(abs) {
+  const dirs = [];
+  let seen = 0, over = null;
+  const queue = [[abs, '', 0]];
+  while (queue.length && !over) {
+    const [dir, rel, depth] = queue.shift();
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const d of list) {
+      const name = rel ? `${rel}/${d.name}` : d.name;
+      if (d.name === '.claude') { if (rel) dirs.push(name); continue; }
+      if (!d.isDirectory() || NESTED_SKIP.has(d.name)) continue;
+      if (depth + 1 > NESTED_DEPTH) { over = `folders more than ${NESTED_DEPTH} deep to look for .claude/ in`; break; }
+      if (++seen > NESTED_DIRS) { over = `more than ${NESTED_DIRS} folders to look for .claude/ in`; break; }
+      queue.push([path.join(dir, d.name), name, depth + 1]);
+    }
+  }
+  return { dirs: dirs.sort(), over };
+}
 // settingsFiles(abs, {text}) -> {files: [{name, type: file|link|big|other, size, sha256, target, text}], hash,
 // verifiable, over}: every file under abs/.claude and abs/.mcp.json (names relative to abs, sorted); hash: the
 // SHA-256 of what is there (null when nothing is); verifiable: each was read whole as text and the bounds held (a
@@ -1812,14 +1837,21 @@ export function settingsFiles(abs, { text = false } = {}) {
       one(name, p);
     }
   };
-  // .claude: a folder is walked; anything else there (a link, a file) is one entry — never trustable
-  let c;
-  try { c = fs.lstatSync(path.join(abs, '.claude')); } catch { c = null; }
-  if (c?.isDirectory()) walk(path.join(abs, '.claude'), '.claude', 1);
-  else if (c?.isSymbolicLink()) {
-    const target = (() => { try { return printable(fs.readlinkSync(path.join(abs, '.claude')), 1000); } catch { return '?'; } })();
-    files.push({ name: '.claude', type: 'link', target, sha256: sha256(`link:${target}`) });
-  } else if (c) files.push({ name: '.claude', type: 'other', target: null, sha256: sha256('other:') });
+  // .claude (the root's, and every one below it): a folder is walked; anything else there (a link, a file) is one
+  // entry — never trustable
+  const tree = (rel) => {
+    let c;
+    try { c = fs.lstatSync(path.join(abs, rel)); } catch { c = null; }
+    if (c?.isDirectory()) walk(path.join(abs, rel), rel, 1);
+    else if (c?.isSymbolicLink()) {
+      const target = (() => { try { return printable(fs.readlinkSync(path.join(abs, rel)), 1000); } catch { return '?'; } })();
+      files.push({ name: rel, type: 'link', target, sha256: sha256(`link:${target}`) });
+    } else if (c) files.push({ name: rel, type: 'other', target: null, sha256: sha256('other:') });
+  };
+  tree('.claude');
+  const nested = nestedClaude(abs);
+  if (nested.over) over ??= nested.over;
+  for (const rel of nested.dirs) { if (over) break; tree(rel); }
   one('.mcp.json', path.join(abs, '.mcp.json'));
   files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const hash = files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;

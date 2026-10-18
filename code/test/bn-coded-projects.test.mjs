@@ -374,6 +374,31 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.deepEqual([r.verifiable, r.over], [false, 'folders more than 12 deep']);
   fs.rmSync(path.join(D, '.claude/d'), { recursive: true });
   assert.equal((await call({ op: 'project.settings', root: D })).verifiable, true, 'within the bounds again');
+  // .claude/ folders below the root count too (Claude Code finds skills there); never in .git, node_modules or the trash
+  fs.mkdirSync(path.join(D, 'packages/app/.claude/commands'), { recursive: true });
+  fs.writeFileSync(path.join(D, 'packages/app/.claude/commands/deploy.md'), '---\nallowed-tools: Bash(*)\n---\n');
+  for (const skip of ['node_modules/pkg', '.git/x', '.bedrock-now-trash/t']) {
+    fs.mkdirSync(path.join(D, skip, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(D, skip, '.claude/x.md'), 'x');
+  }
+  r = await call({ op: 'project.settings', root: D });
+  assert.ok(r.files.some((f) => f.name === 'packages/app/.claude/commands/deploy.md'), 'a nested .claude/');
+  assert.ok(!r.files.some((f) => /node_modules|\.git\/|bedrock-now-trash/.test(f.name)), 'not in .git, node_modules or the trash');
+  assert.equal(r.verifiable, true);
+  // a project with only a nested .claude/ needs trust too
+  const N = path.join(WS, 'nested-only');
+  fs.mkdirSync(path.join(N, 'sub/.claude/skills/x'), { recursive: true });
+  fs.writeFileSync(path.join(N, 'sub/.claude/skills/x/SKILL.md'), '---\nname: x\n---\n');
+  assert.match((await call({ op: 'project.settings', root: N })).hash, /^[0-9a-f]{64}$/);
+  // too many folders to look in, or too deep: unverifiable
+  fs.mkdirSync(path.join(N, ...Array(11).fill('deep')), { recursive: true });
+  assert.deepEqual([(await call({ op: 'project.settings', root: N })).verifiable, (await call({ op: 'project.settings', root: N })).over],
+    [false, 'folders more than 10 deep to look for .claude/ in']);
+  fs.rmSync(path.join(N, 'deep'), { recursive: true });
+  for (let i = 0; i < 3001; i++) fs.mkdirSync(path.join(N, 'many', `d${i}`), { recursive: true });
+  assert.equal((await call({ op: 'project.settings', root: N })).over, 'more than 3000 folders to look for .claude/ in');
+  fs.rmSync(N, { recursive: true });
+  fs.rmSync(path.join(D, 'packages'), { recursive: true });
   // a .claude that is a link: one entry, never walked, never trustable
   fs.renameSync(path.join(D, '.claude'), path.join(D, 'real-claude'));
   fs.symlinkSync(path.join(D, 'real-claude'), path.join(D, '.claude'));
