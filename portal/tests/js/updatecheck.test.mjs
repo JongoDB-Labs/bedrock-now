@@ -10,6 +10,7 @@ const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
 const base = { enabled: true, installed: "v0.9.0", latest: "v0.9.0", available: false, checked_at: iso(12 * 60000),
   error: null, limited: false, retry_at: null, checking: false };
 const say = (u, busy = false, note = null) => plain(U.describe(u, NOW, busy, note));
+const BASE_STATUS = base;
 
 test("up to date: when it checked, and the button; Details say why, GitHub's public list and that nothing is sent", () => {
   const d = say(base);
@@ -99,6 +100,19 @@ test("GitHub refused otherwise (no rate-limit headers): said as such, the button
   assert.equal(d.disabled, true);
   assert.match(d.why, /^GitHub refused the last check \(api\.github\.com refused the request \(HTTP 403\)\), so the portal waits up to an hour/);
   assert.equal(say({ ...base, error: "x", refused: true, retry_at: null }).disabled, false);
+});
+
+test("a click's note is about the status it answered: a new status (another check) is said instead", () => {
+  const base = U.statusKey({ ...BASE_STATUS });
+  const note = { kind: "again", wait: 20, until: NOW + 20000, base };
+  assert.equal(say({ ...BASE_STATUS }, false, note).state, "again");
+  const failed = { ...BASE_STATUS, error: "api.github.com did not answer (ConnectError)", checked_at: iso(1000) };
+  assert.equal(say(failed, false, note).state, "error");
+  assert.equal(say({ ...BASE_STATUS, latest: "v1.0.0", available: true, installed: "v0.9.0" }, false, note).state, "available");
+  const hourly = { kind: "hourly", wait: 3000, at: new Date(NOW + 3000000).toISOString(), until: NOW + 3000000, base };
+  assert.equal(say({ ...BASE_STATUS }, false, hourly).state, "hourly");
+  assert.equal(say(failed, false, hourly).state, "error");
+  assert.equal(U.statusKey(null), "");
 });
 
 test("the clicks' hourly cap: said with the time, in minutes' terms; the button waits", () => {

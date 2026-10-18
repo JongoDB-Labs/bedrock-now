@@ -37,7 +37,9 @@
 
   // What the line says. U: /api/summary's update (null before it loaded); BUSY: a click is waiting for its answer;
   // NOTE: what the last click's answer said besides U ({kind: "again" | "hourly" | "failed", until (ms), wait (s), at
-  // (ISO)}) — said as it was answered (no countdown: the line is announced, and once is enough), until UNTIL.
+  // (ISO), base: statusKey of the status it answered}) — said as it was answered (no countdown: the line is announced,
+  // and once is enough), until UNTIL, and only while U is still that status: a new one (another device's check, the
+  // daily one) is said instead.
   // -> {state, text (announced), link (a release tag: "Update available — <tag>" leads to Home's card), when, why (the
   // reason, shown under About this check: visible text, for touch and keyboard too), disabled (the button waits)}
   function describe(u, now, busy, note) {
@@ -45,7 +47,7 @@
     const out = { state: "", text: "", link: "", when: "", why: "", disabled: false };
     const said = (o) => ({ ...o, why: [o.why, off && o.state !== "off" ? OFF : "", PRIVACY].filter(Boolean).join(" ") });
     if (busy || (u && u.checking)) return said({ ...out, state: "checking", text: "Checking for updates…", why: "GitHub is being asked now.", disabled: true });
-    const n = note && note.until > now ? note : null;
+    const n = note && note.until > now && (note.base === undefined || note.base === statusKey(u)) ? note : null;
     if (n && n.kind === "failed") return said({ ...out, state: "failed", text: "The portal could not be reached — try again", why: "The portal did not answer the click." });
     if (n && n.kind === "hourly") {
       return said({ ...out, state: "hourly", text: `Checked many times this hour — try again after ${clock(n.at, now)}`,
@@ -76,6 +78,11 @@
     return said({ ...out, state: off ? "off" : "none", text: off ? "Daily release check is off" : "Not checked yet", why: off ? OFF : "No check has run yet." });
   }
 
+  // which status a click's note was about: its check (time, error, newest release)
+  function statusKey(u) {
+    return u && typeof u === "object" ? `${u.checked_at || ""}|${u.error || ""}|${u.latest || ""}` : "";
+  }
+
   // A summary asked for while a click's check ran can land after the click's answer: within FRESH_MS of that answer
   // (ANSWERED: {u, at}), a status from before it (an older check, or none) is replaced by it — only then, so a clock set
   // back never pins an old answer for good.
@@ -85,7 +92,7 @@
     return !isNaN(tb) && !(ta >= tb) ? answered.u : u;
   }
 
-  root.bnUpdateCheck = { _pure: { describe, ago, clock, fresher } };
+  root.bnUpdateCheck = { _pure: { describe, ago, clock, fresher, statusKey } };
   if (typeof document === "undefined") return;
 
   let last = null;          // the last update status seen (Home's summary, or a click's answer)
@@ -187,13 +194,14 @@
     busy = false;
     if (r && r.status === 401) { location.assign("/login"); return; }
     const wait = Math.min(3600, Math.max(1, Number(d.retry_after) || 30));
-    if (!r || (!r.ok && r.status !== 429)) note = { kind: "failed", until: Date.now() + 60000 };
-    else if (r.status === 429 && d.reason === "again") note = { kind: "again", wait, until: Date.now() + wait * 1000 };
+    const u = d && d.update && typeof d.update === "object" ? d.update : null;
+    const base = statusKey(u || last);
+    if (!r || (!r.ok && r.status !== 429)) note = { kind: "failed", until: Date.now() + 60000, base };
+    else if (r.status === 429 && d.reason === "again") note = { kind: "again", wait, until: Date.now() + wait * 1000, base };
     else if (r.status === 429 && d.reason === "hourly") {
-      note = { kind: "hourly", wait, until: Date.now() + wait * 1000, at: new Date(Date.now() + wait * 1000).toISOString() };
+      note = { kind: "hourly", wait, until: Date.now() + wait * 1000, at: new Date(Date.now() + wait * 1000).toISOString(), base };
     }
     if (note) { clearTimeout(noteT); noteT = setTimeout(draw, note.until - Date.now() + 50); }
-    const u = d && d.update && typeof d.update === "object" ? d.update : null;
     following = Boolean(r && r.ok);
     if (following && u && !u.checking) answered = { u, at: Date.now() };
     if (u && typeof renderUpdate === "function") renderUpdate(u);   // the card, the version label and this line

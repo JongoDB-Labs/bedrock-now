@@ -343,7 +343,11 @@ def update_check_button(ctx):
     Updates & backups, in each state, from latest.json as the portal writes it (no GitHub here: the run's latest.json
     counts as just checked). A click's answers come from a route in this browser (the portal would ask GitHub);
     what the portal itself answers without asking GitHub is asked for real: GitHub's limit (429 limit, nothing asked)
-    and every refusal before it (signed out, no X-Requested-With, another Origin, a preview's Origin)."""
+    and every refusal before it (signed out, no X-Requested-With, another Origin, a preview's Origin).
+    Every status written after a click is a newer check (a checked_at of its own, as the portal's checks write): the page
+    lets a click's answer outrank an older status for 15 s, and says a click's "try again in 20 s" only while the status
+    is the one it answered. Nothing here lets the throwaway's portal check for real (its records are fresh, so Home asks
+    for none; the only real click is refused under GitHub's limit): the steps check latest.json is still theirs."""
     up = STATE / "update-check" / "latest.json"
     saved = up.read_bytes() if up.exists() else None
     page, rec = ctx.page("update-check")
@@ -352,6 +356,7 @@ def update_check_button(ctx):
     states, pending = [], []
     now = datetime.now(timezone.utc)
     iso = lambda t: t.isoformat(timespec="seconds")   # noqa: E731
+    fresh = lambda: datetime.now(timezone.utc) + timedelta(seconds=1)   # noqa: E731  (a check after the last one)
     summary = lambda: page.evaluate("""() => fetch('/api/summary', {headers: {'X-Requested-With': 'bedrock-now'}}).then(r => r.json())""")  # noqa: E731
     line = page.locator("#release-line")
 
@@ -425,17 +430,19 @@ def update_check_button(ctx):
         expect(text.startswith("Checked a moment ago — try again in 20 s"), f"again: {text!r}")
         page.unroute(api)
         states.append("again: " + text)
-        # 4. GitHub could not be reached
-        _write_json(up, {**current, "error": "api.github.com did not answer (ConnectError)", "error_at": iso(now)})
+        # 4. GitHub could not be reached (a newer check: the click's "try again in 20 s" gives way to it at once)
+        t4 = iso(fresh())
+        _write_json(up, {**current, "checked_at": t4, "error": "api.github.com did not answer (ConnectError)", "error_at": t4})
         page.click("#refresh")
         text = state("error")
         expect(text.startswith("GitHub could not be reached — try again later"), f"error: {text!r}")
         expect(btn.get_attribute("aria-disabled") is None, "the button waits after an unreachable GitHub")
         states.append("unreachable")
         # 5. GitHub's limit: said with the time, the button waits — and the portal itself refuses to ask before then
-        reset = now + timedelta(minutes=14)
-        _write_json(up, {**current, "error": "api.github.com refused: its limit of requests for this address is used up (HTTP 403)",
-                         "error_at": iso(now), "limited": True, "retry_at": iso(reset)})
+        t5 = fresh()
+        reset = t5 + timedelta(minutes=14)
+        _write_json(up, {**current, "checked_at": iso(t5), "error": "api.github.com refused: its limit of requests for this address is used up (HTTP 403)",
+                         "error_at": iso(t5), "refused": True, "limited": True, "retry_at": iso(reset)})
         page.click("#refresh")
         text = state("limit")
         expect(re.match(r"GitHub's limit for this hour — try again after \d{1,2}:\d\d", text) and btn.get_attribute("aria-disabled") == "true",
@@ -459,7 +466,7 @@ def update_check_button(ctx):
         b = real["body"]
         expect(real["status"] == 429 and b.get("reason") == "limit" and 600 <= b.get("retry_after", 0) <= 841
                and real["retry"] == str(b["retry_after"]), f"the portal's answer under GitHub's limit: {real['status']} {b}")
-        expect(json.loads(up.read_text()).get("checked_at") == iso(now), "the portal asked GitHub under its limit")
+        expect(json.loads(up.read_text()).get("checked_at") == iso(t5), "the portal asked GitHub under its limit")
         states.append(f"limit: {text}; the portal: 429 limit, retry in {b['retry_after']} s")
         # 6. the endpoint's door, for real (each refused before anything is asked)
         cookie = portal_login()
@@ -477,7 +484,7 @@ def update_check_button(ctx):
                f"refusals {door}")
         if ENV.get("PREVIEW_DOMAIN"):   # (without one, the portal's own Origin check refused it)
             expect("same-site guard" in (pv.header("X-Bn-Refused") or ""), f"a preview's POST was not refused by Caddy's guard: {pv.header('X-Bn-Refused')!r}")
-        expect(json.loads(up.read_text()).get("checked_at") == iso(now), "a refused request asked GitHub")
+        expect(json.loads(up.read_text()).get("checked_at") == iso(t5), "a refused request asked GitHub")
         states.append("door: " + ", ".join(f"{k} {v}" for k, v in door.items()))
         # 7. Settings › Updates & backups › Daily release check: the same line
         page.goto(origin() + "/#settings/UPDATE_CHECK")
@@ -488,8 +495,9 @@ def update_check_button(ctx):
         expect(rtext.startswith("GitHub's limit for this hour — try again after"), f"Settings: {rtext!r}")
         shot(page, "04f-settings-update-check")
         states.append("Settings row")
+        expect(json.loads(up.read_text()).get("checked_at") == iso(t5), "latest.json changed under GitHub's limit")
         # 8. Ctrl+K: "Check for updates" runs it from anywhere, on Home (the answer from the route)
-        _write_json(up, current)
+        _write_json(up, {**current, "checked_at": iso(fresh())})
         page.evaluate("() => refresh()")   # (Home's summary, as every 30 s: GitHub's limit is over)
         row.locator('.release-line[data-state="current"]').wait_for(timeout=10000)
         cur = {**summary()["update"], "checking": False}
